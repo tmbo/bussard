@@ -187,7 +187,7 @@ pub struct DeviceTables {
 pub enum TablesError {
     /// The device is not System B; only mask `07B0` is supported for now.
     #[error(
-        "{address} reports mask {mask:04X}: unsupported (`bussard reconstruct` speaks System B / mask 07B0 only for now)"
+        "{address} reports mask {mask:04X}: unsupported (`bussard reconstruct` speaks the System B family / mask x7B0 only for now)"
     )]
     UnsupportedMask {
         /// The device.
@@ -225,7 +225,7 @@ pub type Result<T> = std::result::Result<T, TablesError>;
 pub async fn read_tables<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Result<DeviceTables> {
     let address = l4.target();
     let mask = device_descriptor(l4).await?;
-    if mask != 0x07B0 {
+    if !crate::is_system_b(mask) {
         return Err(TablesError::UnsupportedMask { address, mask });
     }
 

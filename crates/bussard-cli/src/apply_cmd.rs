@@ -96,7 +96,7 @@ pub fn run(
 
     // The 07B0 gate is enforced by read_tables (UnsupportedMask above), but assert
     // it here too as a belt-and-braces guard before any write.
-    if live.mask != 0x07B0 {
+    if !bussard_mgmt::is_system_b(live.mask) {
         eprintln!(
             "{target} reports mask {:04X} ({}) — refusing to write a non-System-B device",
             live.mask,
