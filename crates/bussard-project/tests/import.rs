@@ -99,18 +99,42 @@ fn project_password() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Loads the real import and the oracle, or returns `None` (skipping the test)
-/// when any prerequisite is missing.
-fn load_real_and_oracle() -> Option<(bussard_model::Model, Value)> {
-    let knxproj = real_knxproj()?;
-    let oracle_path = oracle_json()?;
-    let password = project_password()?;
-    let model = bussard_project::import(&knxproj, Some(&password))
-        .expect("import real .knxproj with password");
-    let oracle: Value =
-        serde_json::from_str(&std::fs::read_to_string(oracle_path).expect("read oracle"))
-            .expect("parse oracle");
-    Some((model, oracle))
+/// Imports the real `.knxproj` and parses the oracle JSON exactly once per test
+/// binary, sharing the result across all `oracle_*` tests.
+///
+/// Importing the real project decrypts a WinZip-AES archive and streams ~15 MB
+/// of XML; at the test profile's opt-level that costs ~14 s. The three oracle
+/// tests previously each did this independently (~42 s of redundant work per
+/// run). Caching it in a process-wide [`OnceLock`] makes the second and third
+/// tests effectively free. Nextest runs each test binary in its own process, so
+/// this cache is scoped to this binary's oracle tests (which is all of them).
+///
+/// The value is `Option`: `None` means a prerequisite (private fixture, oracle
+/// dump, or password) is missing, in which case every oracle test skips.
+type RealAndOracle = Option<(bussard_model::Model, Value)>;
+
+fn shared_real_and_oracle() -> &'static RealAndOracle {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<RealAndOracle> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        let knxproj = real_knxproj()?;
+        let oracle_path = oracle_json()?;
+        let password = project_password()?;
+        let model = bussard_project::import(&knxproj, Some(&password))
+            .expect("import real .knxproj with password");
+        let oracle: Value =
+            serde_json::from_str(&std::fs::read_to_string(oracle_path).expect("read oracle"))
+                .expect("parse oracle");
+        Some((model, oracle))
+    })
+}
+
+/// Borrows the shared real import and oracle, or returns `None` (skipping the
+/// test) when any prerequisite is missing.
+fn load_real_and_oracle() -> Option<(&'static bussard_model::Model, &'static Value)> {
+    shared_real_and_oracle()
+        .as_ref()
+        .map(|(model, oracle)| (model, oracle))
 }
 
 /// A DPT string in the model's canonical form, from an oracle dpt object.

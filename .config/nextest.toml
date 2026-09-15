@@ -1,0 +1,46 @@
+# cargo-nextest configuration.
+#
+# nextest runs each test in its own process, so tests are isolated from each
+# other's environment and global state. That isolation is why the workspace's
+# mock-gateway/device tests (which each bind their own 127.0.0.1:0 UDP socket)
+# and any env-var-driven timing tests do not race under nextest even though they
+# might when run in a single `cargo test` process.
+
+[profile.default]
+# Local default: fail fast so an iterating developer sees the first failure
+# immediately instead of waiting out the whole suite.
+fail-fast = true
+
+# Never auto-retry locally: a flaky pass would hide a real problem while
+# iterating. (CI retries a small number of times — see [profile.ci].)
+retries = 0
+
+# Surface slow tests without failing them. The real-import oracle tests
+# (decrypt + ~15 MB XML) are legitimately the slowest at a few seconds even
+# with the crypto/parser crates compiled optimized; warn well above that so the
+# marker means "unexpectedly slow", not "known-slow oracle test".
+slow-timeout = { period = "20s", terminate-after = 3 }
+
+# Show the final per-test timing summary; makes regressions in individual tests
+# visible in local runs.
+status-level = "pass"
+final-status-level = "slow"
+
+[profile.ci]
+# CI wants the full failure picture across every platform in one run, so do not
+# stop at the first failure.
+fail-fast = false
+
+# Real-socket mock tests (UDP on 127.0.0.1) can occasionally lose a datagram or
+# hit scheduler jitter on a loaded CI runner. Allow a couple of retries so a
+# one-off timing blip does not red a whole run; a truly broken test still fails
+# all attempts.
+retries = 2
+
+# On CI a hung test must not wedge the runner: kill anything that blows past the
+# budget and report it as a failure.
+slow-timeout = { period = "30s", terminate-after = 2 }
+
+# Emit JUnit XML so CI can surface per-test results and timings.
+[profile.ci.junit]
+path = "junit.xml"

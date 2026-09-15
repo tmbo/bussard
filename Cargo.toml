@@ -54,3 +54,56 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 bitflags = "2"
 owo-colors = "4"
+
+# ---------------------------------------------------------------------------
+# Build profiles tuned for test iteration speed.
+#
+# The `.knxproj` import path runs PBKDF2-HMAC-SHA256 for 65_536 iterations to
+# derive the ZIP password. At the default test/dev opt-level of 0 the crypto is
+# unoptimized and dominates the oracle-import tests (and the pure
+# `derive_zip_password` unit test). Compiling ONLY the crypto crates with
+# optimizations keeps the rest of the workspace at opt-level 0 (fast to compile,
+# fast to iterate) while making the hot inner loops orders of magnitude faster
+# to run. These deps are third-party and rarely rebuilt, so the one-time
+# optimized compile is amortized across every subsequent test run.
+[profile.test.package.pbkdf2]
+opt-level = 3
+[profile.test.package.sha2]
+opt-level = 3
+[profile.test.package.hmac]
+opt-level = 3
+[profile.test.package.digest]
+opt-level = 3
+# The AES-encrypted inner ZIP is decrypted on every real-import test; optimize
+# the cipher and ZIP crates for the same reason.
+[profile.test.package.aes]
+opt-level = 3
+[profile.test.package.zip]
+opt-level = 3
+# The real-import oracle tests also inflate ~15 MB of DEFLATE and stream that
+# XML through quick-xml. These crates are the inner loop of that ~14 s import,
+# so optimizing them shrinks the slowest test in the suite.
+[profile.test.package.quick-xml]
+opt-level = 3
+[profile.test.package.flate2]
+opt-level = 3
+[profile.test.package.miniz_oxide]
+opt-level = 3
+[profile.test.package.crc32fast]
+opt-level = 3
+
+# `cargo test --doc` and any `cargo run` in tests use the `dev` profile, and the
+# CLI integration tests spawn the built `bussard` binary — which itself imports
+# the project. Mirror the crypto optimization there so those paths are fast too.
+[profile.dev.package.pbkdf2]
+opt-level = 3
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.hmac]
+opt-level = 3
+[profile.dev.package.digest]
+opt-level = 3
+[profile.dev.package.aes]
+opt-level = 3
+[profile.dev.package.zip]
+opt-level = 3
