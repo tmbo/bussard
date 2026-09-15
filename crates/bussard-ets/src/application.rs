@@ -1,0 +1,1325 @@
+//! One streaming parser for a manufacturer ApplicationProgram XML file.
+//!
+//! These files reach 28 MB, so we never build a DOM: `quick-xml` pulls events
+//! and we accumulate typed records. This is the superset both consumers need:
+//!
+//! * `.knxprod` reading (`bussard-prod`) needs identity, the com-object table,
+//!   parameter types, parameters and their refs, code segments (metadata only)
+//!   and the load procedure.
+//! * `.knxproj` import (`bussard-project`) additionally needs the Dynamic
+//!   section's `<Channel>` definitions and module `<Argument>` ids, plus the
+//!   base com-object `BaseNumber` reference used for module object numbering.
+//!
+//! Everything is keyed by full XML `Id`, so refs resolve by lookup. English
+//! (`en-US`) translations from the file's `<Languages>` section override the
+//! default-language `Name`/`Text` attributes, matching ETS behaviour.
+
+use std::collections::HashMap;
+
+use quick_xml::Reader;
+use quick_xml::events::{BytesStart, Event};
+
+use crate::attrs::{attrs_map, flagset_from, get};
+use crate::dpt::parse_ets_dpt;
+use crate::error::{EtsError, Result};
+use crate::flags::FlagSet;
+use crate::translation::TranslationCollector;
+use bussard_model::Dpt;
+
+/// A base `<ComObject>` from the application program.
+#[derive(Debug, Clone, Default)]
+pub struct ComObject {
+    /// The full XML `Id`.
+    pub id: String,
+    /// The com-object number (the stable, user-visible handle).
+    pub number: u16,
+    /// Object `Name`.
+    pub name: Option<String>,
+    /// Object `Text`.
+    pub text: Option<String>,
+    /// `FunctionText`.
+    pub function_text: Option<String>,
+    /// Declared `ObjectSize`, e.g. `"1 Bit"`.
+    pub object_size: Option<String>,
+    /// Effective DPT declared on the base object, if any.
+    pub dpt: Option<Dpt>,
+    /// Flags declared on the base object.
+    pub flags: FlagSet,
+    /// For a module com-object: the argument id (its `BaseNumber` attribute)
+    /// whose value is added to `number` to compute the instance's effective
+    /// object number.
+    pub base_number_ref: Option<String>,
+}
+
+/// A `<ComObjectRef>` from the application program.
+#[derive(Debug, Clone, Default)]
+pub struct ComObjectRef {
+    /// The full XML `Id`.
+    pub id: String,
+    /// The base `<ComObject>` id this ref points at (its `RefId`).
+    pub ref_id: String,
+    /// Optional `Name` override.
+    pub name: Option<String>,
+    /// Optional `Text` override.
+    pub text: Option<String>,
+    /// Optional `FunctionText` override.
+    pub function_text: Option<String>,
+    /// Optional `ObjectSize` override.
+    pub object_size: Option<String>,
+    /// Optional DPT override.
+    pub dpt: Option<Dpt>,
+    /// Flags declared on the ref (override the base's).
+    pub flags: FlagSet,
+}
+
+/// A `<Channel>` definition from the application program's Dynamic section.
+#[derive(Debug, Clone, Default)]
+pub struct ChannelDef {
+    /// Channel `Name` (the manufacturer's short label, e.g. `"Relaisausgänge"`).
+    pub name: Option<String>,
+    /// Channel `Text` (the human label, often carrying `{{Arg…}}` placeholders,
+    /// e.g. `"{{ArgBeschriftungRelais}} {{ArgBeschriftung}} ({{0:...}})"`).
+    pub text: Option<String>,
+}
+
+/// A resolved com-object: a ref merged onto its base.
+#[derive(Debug, Clone)]
+pub struct ResolvedComObject<'a> {
+    /// The base object.
+    pub base: &'a ComObject,
+    /// The ref pointing at it.
+    pub cref: &'a ComObjectRef,
+}
+
+impl ResolvedComObject<'_> {
+    /// The effective object number.
+    pub fn number(&self) -> u16 {
+        self.base.number
+    }
+
+    /// The effective DPT (ref overrides base).
+    pub fn dpt(&self) -> Option<Dpt> {
+        self.cref.dpt.or(self.base.dpt)
+    }
+
+    /// The effective object size (ref overrides base).
+    pub fn object_size(&self) -> Option<&str> {
+        self.cref
+            .object_size
+            .as_deref()
+            .or(self.base.object_size.as_deref())
+    }
+
+    /// The effective display text (ref overrides base, falling back to name).
+    pub fn text(&self) -> Option<&str> {
+        self.cref
+            .text
+            .as_deref()
+            .or(self.base.text.as_deref())
+            .or(self.base.name.as_deref())
+    }
+
+    /// The effective function text (ref overrides base).
+    pub fn function_text(&self) -> Option<&str> {
+        self.cref
+            .function_text
+            .as_deref()
+            .or(self.base.function_text.as_deref())
+    }
+
+    /// The effective flags: base merged with the ref (ref wins per-flag).
+    pub fn flags(&self) -> bussard_model::Flags {
+        self.base.flags.merge(self.cref.flags).to_flags()
+    }
+}
+
+/// A parameter type: the shape (int/enum/text/float/none) plus its size.
+#[derive(Debug, Clone)]
+pub enum ParameterType {
+    /// `<TypeNumber>`: a bounded integer.
+    Int {
+        /// Size in bits.
+        size_bits: Option<u32>,
+        /// Inclusive minimum, if declared.
+        min: Option<i64>,
+        /// Inclusive maximum, if declared.
+        max: Option<i64>,
+        /// Whether the encoding is signed (`Type="signedInt"`).
+        signed: bool,
+    },
+    /// `<TypeRestriction>`: an enumeration of value/text pairs.
+    Enum {
+        /// Size in bits.
+        size_bits: Option<u32>,
+        /// The `(value, text)` pairs, in document order.
+        values: Vec<EnumValue>,
+    },
+    /// `<TypeText>`: a fixed-length string.
+    Text {
+        /// Size in bits (length in bytes is `size_bits / 8`).
+        size_bits: Option<u32>,
+    },
+    /// `<TypeFloat>`: a KNX float parameter.
+    Float {
+        /// Encoding string, e.g. `"DPT 9"`.
+        encoding: Option<String>,
+        /// Inclusive minimum, if declared.
+        min: Option<f64>,
+        /// Inclusive maximum, if declared.
+        max: Option<f64>,
+    },
+    /// `<TypeNone>`: a marker type carrying no memory value.
+    None,
+    /// Any other type element (e.g. `TypeColor`, `TypeTime`, `TypePicture`),
+    /// preserved by name so nothing is silently dropped.
+    Other {
+        /// The type element's local name, e.g. `"TypeTime"`.
+        kind: String,
+        /// Size in bits, if the element declared one.
+        size_bits: Option<u32>,
+    },
+}
+
+/// One `<Enumeration>` in a `<TypeRestriction>`.
+#[derive(Debug, Clone)]
+pub struct EnumValue {
+    /// The numeric `Value`.
+    pub value: i64,
+    /// The display `Text`.
+    pub text: String,
+}
+
+/// A named parameter type declaration (`<ParameterType>` wrapping one shape).
+#[derive(Debug, Clone)]
+pub struct ParameterTypeDecl {
+    /// The full XML `Id`.
+    pub id: String,
+    /// The declared `Name`.
+    pub name: Option<String>,
+    /// The concrete shape.
+    pub kind: ParameterType,
+}
+
+/// A `<Parameter>` definition.
+#[derive(Debug, Clone, Default)]
+pub struct Parameter {
+    /// The full XML `Id`.
+    pub id: String,
+    /// The `Name`.
+    pub name: Option<String>,
+    /// The display `Text`.
+    pub text: Option<String>,
+    /// The `ParameterType` id this parameter uses.
+    pub parameter_type: Option<String>,
+    /// The default `Value`.
+    pub default: Option<String>,
+    /// The `Access` attribute (`None`/`Read`/`ReadWrite`).
+    pub access: Option<String>,
+    /// The memory location this parameter's value occupies, if any.
+    pub memory: Option<Memory>,
+}
+
+/// A parameter's memory location (`<Memory CodeSegment Offset BitOffset>`).
+#[derive(Debug, Clone, Default)]
+pub struct Memory {
+    /// The code-segment id this offset is relative/absolute to.
+    pub code_segment: Option<String>,
+    /// Byte offset within the segment.
+    pub offset: Option<u32>,
+    /// Bit offset within the byte.
+    pub bit_offset: Option<u8>,
+}
+
+/// A `<ParameterRef>`: a reference to a [`Parameter`] with optional overrides.
+#[derive(Debug, Clone, Default)]
+pub struct ParameterRef {
+    /// The full XML `Id`.
+    pub id: String,
+    /// The `Parameter` id this ref points at.
+    pub ref_id: String,
+    /// A `Value` override, if present.
+    pub value: Option<String>,
+    /// An `Access` override, if present.
+    pub access: Option<String>,
+}
+
+/// A code segment (`<RelativeSegment>` / `<AbsoluteSegment>`), metadata only —
+/// the binary payload is never carried into the model.
+#[derive(Debug, Clone)]
+pub struct CodeSegment {
+    /// The full XML `Id`.
+    pub id: String,
+    /// Whether this is a relative or absolute segment.
+    pub kind: SegmentKind,
+    /// Declared `Size` in bytes, if present.
+    pub size: Option<u32>,
+    /// For absolute segments, the `Address`; for relative, the `Offset`.
+    pub address_or_offset: Option<u32>,
+    /// `LoadStateMachine` index, for relative segments.
+    pub load_state_machine: Option<u32>,
+}
+
+/// Which flavour of code segment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SegmentKind {
+    /// A `<RelativeSegment>`.
+    Relative,
+    /// An `<AbsoluteSegment>`.
+    Absolute,
+}
+
+/// One step of a load procedure, a faithful (uninterpreted) representation of an
+/// `LdCtrl*` element. Known control ops get a typed variant carrying the
+/// attributes phase-3 (`bussard-download`) will need; unrecognized ops are kept
+/// verbatim as [`LoadOp::Raw`] so nothing is lost.
+#[derive(Debug, Clone)]
+pub enum LoadOp {
+    /// `<LdCtrlConnect>`.
+    Connect,
+    /// `<LdCtrlDisconnect>`.
+    Disconnect,
+    /// `<LdCtrlRestart>`.
+    Restart,
+    /// `<LdCtrlUnload LsmIdx=…>`.
+    Unload {
+        /// Load-state-machine index.
+        lsm_idx: Option<u32>,
+    },
+    /// `<LdCtrlLoad LsmIdx=…>`.
+    Load {
+        /// Load-state-machine index.
+        lsm_idx: Option<u32>,
+    },
+    /// `<LdCtrlLoadCompleted LsmIdx=…>`.
+    LoadCompleted {
+        /// Load-state-machine index.
+        lsm_idx: Option<u32>,
+    },
+    /// `<LdCtrlTaskSegment LsmIdx=… Address=…>`.
+    TaskSegment {
+        /// Load-state-machine index.
+        lsm_idx: Option<u32>,
+        /// Target address.
+        address: Option<u32>,
+    },
+    /// `<LdCtrlTaskCtrl1 LsmIdx=… Address=… Count=…>`.
+    TaskCtrl1 {
+        /// Load-state-machine index.
+        lsm_idx: Option<u32>,
+        /// Target address.
+        address: Option<u32>,
+        /// Repeat count.
+        count: Option<u32>,
+    },
+    /// `<LdCtrlRelSegment …>`: a relative-segment control op.
+    RelSegment {
+        /// Load-state-machine index.
+        lsm_idx: Option<u32>,
+        /// Declared size in bytes.
+        size: Option<u32>,
+        /// `AppliesTo` filter (e.g. `"full"`, `"par"`, `"full,par"`).
+        applies_to: Option<String>,
+    },
+    /// `<LdCtrlAbsSegment …>`: an absolute-segment control op.
+    AbsSegment {
+        /// Load-state-machine index.
+        lsm_idx: Option<u32>,
+        /// Target address.
+        address: Option<u32>,
+        /// Declared size in bytes.
+        size: Option<u32>,
+    },
+    /// `<LdCtrlWriteRelMem …>`: write into relative (parameter) memory.
+    WriteRelMem {
+        /// Object index.
+        obj_idx: Option<u32>,
+        /// Byte offset.
+        offset: Option<u32>,
+        /// Size in bytes.
+        size: Option<u32>,
+        /// `AppliesTo` filter.
+        applies_to: Option<String>,
+    },
+    /// `<LdCtrlWriteMem …>`: write into absolute memory.
+    WriteMem {
+        /// Target address.
+        address: Option<u32>,
+        /// Size in bytes.
+        size: Option<u32>,
+    },
+    /// `<LdCtrlWriteProp …>`: write an interface-object property.
+    WriteProp {
+        /// Object type.
+        obj_type: Option<u32>,
+        /// Property id.
+        prop_id: Option<u32>,
+    },
+    /// Any other `LdCtrl*` element, preserved by name and attribute list.
+    Raw {
+        /// The element's local name (e.g. `"LdCtrlLoadImageProp"`).
+        name: String,
+        /// Its attributes as `(key, value)` pairs, in document order.
+        attrs: Vec<(String, String)>,
+    },
+}
+
+/// A named load procedure (`<LoadProcedure>`), a list of ordered ops. The
+/// `MergeId` groups merged procedures; bussard keeps it for later ordering.
+#[derive(Debug, Clone, Default)]
+pub struct LoadProcedure {
+    /// The `MergeId`, if this is part of a merged procedure.
+    pub merge_id: Option<String>,
+    /// The ordered control operations.
+    pub ops: Vec<LoadOp>,
+}
+
+/// One parsed ApplicationProgram.
+#[derive(Debug, Clone, Default)]
+pub struct ApplicationProgram {
+    /// The application-program id (e.g. `M-0004_A-20D7-26-053C-O000A`).
+    pub id: String,
+    /// `ApplicationNumber`.
+    pub application_number: Option<u32>,
+    /// `ApplicationVersion` as a parsed number.
+    pub application_version: Option<u32>,
+    /// `ApplicationVersion` as the raw attribute string (project keeps this
+    /// verbatim for device provenance).
+    pub version: Option<String>,
+    /// The mask version with the `MV-` prefix stripped, e.g. `"07B0"`.
+    pub mask_version: Option<String>,
+    /// Application-program display name (en-US resolved).
+    pub name: Option<String>,
+    /// The declared `LoadProcedureStyle`.
+    pub load_procedure_style: Option<String>,
+    /// The XML schema version this file declared, e.g. `"20"`, `"21"`, `"23"`.
+    pub schema_version: Option<String>,
+    /// Base com-objects, keyed by full `Id`.
+    pub com_objects: HashMap<String, ComObject>,
+    /// Com-object refs, keyed by full `Id`.
+    pub com_object_refs: HashMap<String, ComObjectRef>,
+    /// Parameter type declarations, keyed by full `Id`.
+    pub parameter_types: HashMap<String, ParameterTypeDecl>,
+    /// Parameters, keyed by full `Id`.
+    pub parameters: HashMap<String, Parameter>,
+    /// Parameter refs, keyed by full `Id`.
+    pub parameter_refs: HashMap<String, ParameterRef>,
+    /// Code segments, keyed by full `Id`.
+    pub code_segments: HashMap<String, CodeSegment>,
+    /// Load procedures, in document order.
+    pub load_procedures: Vec<LoadProcedure>,
+    /// Dynamic-section channel definitions, keyed by the app-relative channel id
+    /// (e.g. `MD-1_CH-13`, or `CH-2` for a non-module channel).
+    pub channels: HashMap<String, ChannelDef>,
+    /// Module `<Argument>` name → app-relative argument id (e.g.
+    /// `ArgBeschriftung` → `MD-1_A-3`), used to resolve `{{Arg…}}` placeholders
+    /// in channel and com-object texts against a module instance's values.
+    pub argument_ids: HashMap<String, String>,
+}
+
+impl ApplicationProgram {
+    /// Iterates resolved com-objects (ref merged onto base) sorted by number,
+    /// skipping refs whose base is missing.
+    pub fn resolved_com_objects(&self) -> Vec<ResolvedComObject<'_>> {
+        let mut out: Vec<ResolvedComObject<'_>> = self
+            .com_object_refs
+            .values()
+            .filter_map(|cref| {
+                self.com_objects
+                    .get(&cref.ref_id)
+                    .map(|base| ResolvedComObject { base, cref })
+            })
+            .collect();
+        out.sort_by(|a, b| {
+            a.number()
+                .cmp(&b.number())
+                .then_with(|| a.cref.id.cmp(&b.cref.id))
+        });
+        out
+    }
+
+    /// Resolves a `ComObjectInstanceRef` `RefId` (relative to this program) to
+    /// its effective base + ref, if both resolve.
+    ///
+    /// The `RefId` on an instance is relative (e.g. `O-0_R-1`); the full ref id
+    /// is `<program-id>_<RefId>` and the base id is the ref's `RefId`.
+    pub fn resolve(&self, instance_ref_id: &str) -> Option<(&ComObject, &ComObjectRef)> {
+        let full_ref_id = format!("{}_{instance_ref_id}", self.id);
+        let cor = self.com_object_refs.get(&full_ref_id)?;
+        let base = self.com_objects.get(&cor.ref_id)?;
+        Some((base, cor))
+    }
+
+    /// Resolves an app-relative channel id (e.g. `MD-1_CH-13`) to its definition.
+    pub fn channel(&self, app_channel_id: &str) -> Option<&ChannelDef> {
+        self.channels.get(app_channel_id)
+    }
+
+    /// Looks up the app-relative argument id (e.g. `MD-1_A-3`) for an argument
+    /// `Name` (e.g. `ArgBeschriftung`).
+    pub fn argument_id(&self, name: &str) -> Option<&str> {
+        self.argument_ids.get(name).map(String::as_str)
+    }
+
+    /// Resolves a parameter ref to its effective value/access/type, applying the
+    /// ref's `Value`/`Access` overrides over the parameter's own.
+    pub fn resolved_parameter(&self, ref_id: &str) -> Option<ResolvedParameter<'_>> {
+        let pref = self.parameter_refs.get(ref_id)?;
+        let param = self.parameters.get(&pref.ref_id)?;
+        Some(ResolvedParameter { param, pref })
+    }
+}
+
+/// A parameter ref merged onto its parameter.
+#[derive(Debug, Clone)]
+pub struct ResolvedParameter<'a> {
+    /// The underlying parameter.
+    pub param: &'a Parameter,
+    /// The ref pointing at it.
+    pub pref: &'a ParameterRef,
+}
+
+impl ResolvedParameter<'_> {
+    /// The effective default value (ref `Value` overrides the parameter's).
+    pub fn value(&self) -> Option<&str> {
+        self.pref.value.as_deref().or(self.param.default.as_deref())
+    }
+
+    /// The effective access (ref `Access` overrides the parameter's).
+    pub fn access(&self) -> Option<&str> {
+        self.pref.access.as_deref().or(self.param.access.as_deref())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Parsing
+// ---------------------------------------------------------------------------
+
+/// Parses an ApplicationProgram XML string.
+///
+/// `id` is the application-program id (used for error context and as the
+/// returned id).
+pub fn parse_application_program(id: &str, xml: &str) -> Result<ApplicationProgram> {
+    let context = format!("application program {id}");
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(false);
+
+    let mut app = ApplicationProgram {
+        id: id.to_string(),
+        ..Default::default()
+    };
+
+    // en-US translations, applied after the main pass.
+    let mut translations = TranslationCollector::new();
+
+    // The parameter-type currently being built (a <ParameterType> wraps one
+    // shape element, sometimes with child <Enumeration>s).
+    let mut cur_pt_id: Option<String> = None;
+    let mut cur_pt_name: Option<String> = None;
+    let mut cur_pt_kind: Option<ParameterType> = None;
+
+    // The load procedure currently being built.
+    let mut cur_lp: Option<LoadProcedure> = None;
+
+    // The parameter whose <Memory> child we are waiting for.
+    let mut cur_param_id: Option<String> = None;
+
+    loop {
+        let ev = reader.read_event().map_err(|source| EtsError::Xml {
+            context: context.clone(),
+            source,
+        })?;
+        match ev {
+            Event::Eof => break,
+            Event::Start(e) => {
+                handle_start(
+                    &e,
+                    &context,
+                    &mut app,
+                    &mut translations,
+                    &mut cur_pt_id,
+                    &mut cur_pt_name,
+                    &mut cur_pt_kind,
+                    &mut cur_lp,
+                    &mut cur_param_id,
+                )?;
+            }
+            Event::Empty(e) => {
+                handle_empty(
+                    &e,
+                    &context,
+                    &mut app,
+                    &mut translations,
+                    &mut cur_pt_kind,
+                    &mut cur_lp,
+                    &cur_param_id,
+                )?;
+            }
+            Event::End(e) => match e.local_name().as_ref() {
+                b"Language" => translations.exit_language(),
+                b"TranslationElement" => translations.exit_element(),
+                b"Parameter" => cur_param_id = None,
+                b"ParameterType" => {
+                    if let (Some(pt_id), kind) = (cur_pt_id.take(), cur_pt_kind.take()) {
+                        app.parameter_types.insert(
+                            pt_id.clone(),
+                            ParameterTypeDecl {
+                                id: pt_id,
+                                name: cur_pt_name.take(),
+                                kind: kind.unwrap_or(ParameterType::None),
+                            },
+                        );
+                    }
+                    cur_pt_name = None;
+                }
+                b"LoadProcedure" => {
+                    if let Some(lp) = cur_lp.take() {
+                        app.load_procedures.push(lp);
+                    }
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+
+    apply_translations(&mut app, &translations);
+    Ok(app)
+}
+
+/// Handles a `Start` event (elements that have children).
+#[allow(clippy::too_many_arguments)]
+fn handle_start(
+    e: &BytesStart,
+    context: &str,
+    app: &mut ApplicationProgram,
+    translations: &mut TranslationCollector,
+    cur_pt_id: &mut Option<String>,
+    cur_pt_name: &mut Option<String>,
+    cur_pt_kind: &mut Option<ParameterType>,
+    cur_lp: &mut Option<LoadProcedure>,
+    cur_param_id: &mut Option<String>,
+) -> Result<()> {
+    let m = attrs_map(e, context)?;
+    match e.local_name().as_ref() {
+        b"KNX" => {
+            // The XML schema version is declared as the default namespace on the
+            // root element, e.g. `http://knx.org/xml/project/23`.
+            app.schema_version = get(&m, b"xmlns")
+                .and_then(|ns| ns.rsplit('/').next())
+                .map(str::to_string);
+        }
+        b"ApplicationProgram" => {
+            app.application_number = get(&m, b"ApplicationNumber").and_then(|s| s.parse().ok());
+            app.application_version = get(&m, b"ApplicationVersion").and_then(|s| s.parse().ok());
+            app.version = get(&m, b"ApplicationVersion").map(str::to_string);
+            if let Some(mv) = get(&m, b"MaskVersion") {
+                app.mask_version = Some(mv.strip_prefix("MV-").unwrap_or(mv).to_string());
+            }
+            app.name = get(&m, b"Name").map(str::to_string);
+            app.load_procedure_style = get(&m, b"LoadProcedureStyle").map(str::to_string);
+        }
+        b"RelativeSegment" => insert_segment(app, &m, SegmentKind::Relative),
+        b"AbsoluteSegment" => insert_segment(app, &m, SegmentKind::Absolute),
+        b"Language" => translations.enter_language(get(&m, b"Identifier")),
+        b"TranslationElement" => translations.enter_element(get(&m, b"RefId")),
+        b"ComObject" => insert_com_object(app, &m),
+        b"ComObjectRef" => insert_com_object_ref(app, &m),
+        b"Channel" => insert_channel(app, &m),
+        b"Argument" => insert_argument(app, &m),
+        b"ParameterType" => {
+            *cur_pt_id = get(&m, b"Id").map(str::to_string);
+            *cur_pt_name = get(&m, b"Name").map(str::to_string);
+            *cur_pt_kind = None;
+        }
+        b"TypeRestriction" => {
+            *cur_pt_kind = Some(ParameterType::Enum {
+                size_bits: get(&m, b"SizeInBit").and_then(|s| s.parse().ok()),
+                values: Vec::new(),
+            });
+        }
+        b"Parameter" => {
+            *cur_param_id = insert_parameter_start(app, &m);
+        }
+        b"LoadProcedure" => {
+            *cur_lp = Some(LoadProcedure {
+                merge_id: get(&m, b"MergeId").map(str::to_string),
+                ops: Vec::new(),
+            });
+        }
+        // A control op with children (e.g. LdCtrlCompareProp wrapping data).
+        name if name.starts_with(b"LdCtrl") => {
+            push_load_op(cur_lp, e, &m);
+        }
+        _ => {}
+    }
+
+    // A `<Translation>` may appear as a Start with a nested value; capture attr.
+    if e.local_name().as_ref() == b"Translation" {
+        translations.record(&m, &["Name", "Text"]);
+    }
+    Ok(())
+}
+
+/// Handles an `Empty` (self-closing) event.
+#[allow(clippy::too_many_arguments)]
+fn handle_empty(
+    e: &BytesStart,
+    context: &str,
+    app: &mut ApplicationProgram,
+    translations: &mut TranslationCollector,
+    cur_pt_kind: &mut Option<ParameterType>,
+    cur_lp: &mut Option<LoadProcedure>,
+    cur_param_id: &Option<String>,
+) -> Result<()> {
+    let m = attrs_map(e, context)?;
+    match e.local_name().as_ref() {
+        b"ComObject" => insert_com_object(app, &m),
+        b"ComObjectRef" => insert_com_object_ref(app, &m),
+        b"Channel" => insert_channel(app, &m),
+        b"Argument" => insert_argument(app, &m),
+        b"Parameter" => {
+            // A parameter with no <Memory> child.
+            insert_parameter_start(app, &m);
+        }
+        b"ParameterRef" => insert_parameter_ref(app, &m),
+        b"Memory" => attach_memory(app, cur_param_id, &m),
+        b"TranslationElement" => translations.enter_element(get(&m, b"RefId")),
+        b"Translation" => translations.record(&m, &["Name", "Text"]),
+        // Parameter-type shapes (all self-closing except TypeRestriction).
+        b"TypeNumber" => {
+            *cur_pt_kind = Some(ParameterType::Int {
+                size_bits: get(&m, b"SizeInBit").and_then(|s| s.parse().ok()),
+                min: get(&m, b"minInclusive").and_then(|s| s.parse().ok()),
+                max: get(&m, b"maxInclusive").and_then(|s| s.parse().ok()),
+                signed: get(&m, b"Type") == Some("signedInt"),
+            });
+        }
+        b"TypeText" => {
+            *cur_pt_kind = Some(ParameterType::Text {
+                size_bits: get(&m, b"SizeInBit").and_then(|s| s.parse().ok()),
+            });
+        }
+        b"TypeFloat" => {
+            *cur_pt_kind = Some(ParameterType::Float {
+                encoding: get(&m, b"Encoding").map(str::to_string),
+                min: get(&m, b"minInclusive").and_then(|s| s.parse().ok()),
+                max: get(&m, b"maxInclusive").and_then(|s| s.parse().ok()),
+            });
+        }
+        b"TypeNone" => *cur_pt_kind = Some(ParameterType::None),
+        b"Enumeration" => {
+            if let Some(ParameterType::Enum { values, .. }) = cur_pt_kind.as_mut() {
+                if let (Some(value), Some(text)) = (
+                    get(&m, b"Value").and_then(|s| s.parse::<i64>().ok()),
+                    get(&m, b"Text"),
+                ) {
+                    values.push(EnumValue {
+                        value,
+                        text: text.to_string(),
+                    });
+                }
+            }
+        }
+        b"RelativeSegment" => insert_segment(app, &m, SegmentKind::Relative),
+        b"AbsoluteSegment" => insert_segment(app, &m, SegmentKind::Absolute),
+        name if name.starts_with(b"Type") => {
+            // Other type shapes (TypeColor, TypeTime, TypePicture, TypeIPAddress…).
+            let kind = String::from_utf8_lossy(name).into_owned();
+            *cur_pt_kind = Some(ParameterType::Other {
+                kind,
+                size_bits: get(&m, b"SizeInBit").and_then(|s| s.parse().ok()),
+            });
+        }
+        name if name.starts_with(b"LdCtrl") => {
+            push_load_op(cur_lp, e, &m);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Applies collected en-US translations to names/texts.
+fn apply_translations(app: &mut ApplicationProgram, translations: &TranslationCollector) {
+    if translations.is_empty() {
+        return;
+    }
+    // Application name.
+    if let Some(t) = translations.get(&app.id, "Name") {
+        app.name = Some(t.to_string());
+    }
+    for (id, obj) in app.com_objects.iter_mut() {
+        if let Some(t) = translations.get(id, "Text") {
+            obj.text = Some(t.to_string());
+        }
+    }
+    for (id, cref) in app.com_object_refs.iter_mut() {
+        if let Some(t) = translations.get(id, "Text") {
+            cref.text = Some(t.to_string());
+        }
+    }
+    for (id, param) in app.parameters.iter_mut() {
+        if let Some(t) = translations.get(id, "Text") {
+            param.text = Some(t.to_string());
+        }
+    }
+}
+
+fn insert_com_object(app: &mut ApplicationProgram, m: &HashMap<Vec<u8>, String>) {
+    let Some(id) = get(m, b"Id") else { return };
+    let id = id.to_string();
+    app.com_objects.insert(
+        id.clone(),
+        ComObject {
+            id,
+            number: get(m, b"Number").and_then(|s| s.parse().ok()).unwrap_or(0),
+            name: get(m, b"Name").map(str::to_string),
+            text: get(m, b"Text").map(str::to_string),
+            function_text: get(m, b"FunctionText").map(str::to_string),
+            object_size: get(m, b"ObjectSize").map(str::to_string),
+            dpt: get(m, b"DatapointType").and_then(parse_ets_dpt),
+            flags: flagset_from(m),
+            base_number_ref: get(m, b"BaseNumber").map(str::to_string),
+        },
+    );
+}
+
+fn insert_com_object_ref(app: &mut ApplicationProgram, m: &HashMap<Vec<u8>, String>) {
+    let (Some(id), Some(ref_id)) = (get(m, b"Id"), get(m, b"RefId")) else {
+        return;
+    };
+    let id = id.to_string();
+    app.com_object_refs.insert(
+        id.clone(),
+        ComObjectRef {
+            id,
+            ref_id: ref_id.to_string(),
+            name: get(m, b"Name").map(str::to_string),
+            text: get(m, b"Text").map(str::to_string),
+            function_text: get(m, b"FunctionText").map(str::to_string),
+            object_size: get(m, b"ObjectSize").map(str::to_string),
+            dpt: get(m, b"DatapointType").and_then(parse_ets_dpt),
+            flags: flagset_from(m),
+        },
+    );
+}
+
+/// Inserts a Dynamic-section `<Channel>` keyed by its app-relative id.
+fn insert_channel(app: &mut ApplicationProgram, m: &HashMap<Vec<u8>, String>) {
+    let Some(id) = get(m, b"Id") else { return };
+    let Some(rel) = app_relative_id(id, &app.id) else {
+        return;
+    };
+    app.channels.insert(
+        rel.to_string(),
+        ChannelDef {
+            name: get(m, b"Name")
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            text: get(m, b"Text")
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+        },
+    );
+}
+
+/// Records a module `<Argument>`'s name → app-relative id (first wins).
+fn insert_argument(app: &mut ApplicationProgram, m: &HashMap<Vec<u8>, String>) {
+    let (Some(id), Some(name)) = (get(m, b"Id"), get(m, b"Name")) else {
+        return;
+    };
+    if let Some(rel) = app_relative_id(id, &app.id) {
+        app.argument_ids
+            .entry(name.to_string())
+            .or_insert_with(|| rel.to_string());
+    }
+}
+
+/// Inserts a parameter, returning its id so the caller can attach a later
+/// `<Memory>` child to it.
+fn insert_parameter_start(
+    app: &mut ApplicationProgram,
+    m: &HashMap<Vec<u8>, String>,
+) -> Option<String> {
+    let id = get(m, b"Id")?.to_string();
+    app.parameters.insert(
+        id.clone(),
+        Parameter {
+            id: id.clone(),
+            name: get(m, b"Name").map(str::to_string),
+            text: get(m, b"Text").map(str::to_string),
+            parameter_type: get(m, b"ParameterType").map(str::to_string),
+            default: get(m, b"Value").map(str::to_string),
+            access: get(m, b"Access").map(str::to_string),
+            memory: None,
+        },
+    );
+    Some(id)
+}
+
+fn attach_memory(
+    app: &mut ApplicationProgram,
+    cur_param_id: &Option<String>,
+    m: &HashMap<Vec<u8>, String>,
+) {
+    let Some(pid) = cur_param_id else {
+        return;
+    };
+    if let Some(param) = app.parameters.get_mut(pid) {
+        param.memory = Some(Memory {
+            code_segment: get(m, b"CodeSegment").map(str::to_string),
+            offset: get(m, b"Offset").and_then(|s| s.parse().ok()),
+            bit_offset: get(m, b"BitOffset").and_then(|s| s.parse().ok()),
+        });
+    }
+}
+
+fn insert_parameter_ref(app: &mut ApplicationProgram, m: &HashMap<Vec<u8>, String>) {
+    let (Some(id), Some(ref_id)) = (get(m, b"Id"), get(m, b"RefId")) else {
+        return;
+    };
+    let id = id.to_string();
+    app.parameter_refs.insert(
+        id.clone(),
+        ParameterRef {
+            id,
+            ref_id: ref_id.to_string(),
+            value: get(m, b"Value").map(str::to_string),
+            access: get(m, b"Access").map(str::to_string),
+        },
+    );
+}
+
+fn insert_segment(app: &mut ApplicationProgram, m: &HashMap<Vec<u8>, String>, kind: SegmentKind) {
+    let Some(id) = get(m, b"Id") else { return };
+    let id = id.to_string();
+    let address_or_offset = match kind {
+        SegmentKind::Relative => get(m, b"Offset").and_then(|s| s.parse().ok()),
+        SegmentKind::Absolute => get(m, b"Address").and_then(|s| s.parse().ok()),
+    };
+    app.code_segments.insert(
+        id.clone(),
+        CodeSegment {
+            id,
+            kind,
+            size: get(m, b"Size").and_then(|s| s.parse().ok()),
+            address_or_offset,
+            load_state_machine: get(m, b"LoadStateMachine").and_then(|s| s.parse().ok()),
+        },
+    );
+}
+
+/// Parses one `LdCtrl*` element into a typed [`LoadOp`], appending to the
+/// current load procedure (if any).
+fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m: &HashMap<Vec<u8>, String>) {
+    let Some(lp) = cur_lp.as_mut() else {
+        return;
+    };
+    let u = |k: &[u8]| get(m, k).and_then(|s| s.parse::<u32>().ok());
+    let s = |k: &[u8]| get(m, k).map(str::to_string);
+    let op = match e.local_name().as_ref() {
+        b"LdCtrlConnect" => LoadOp::Connect,
+        b"LdCtrlDisconnect" => LoadOp::Disconnect,
+        b"LdCtrlRestart" => LoadOp::Restart,
+        b"LdCtrlUnload" => LoadOp::Unload {
+            lsm_idx: u(b"LsmIdx"),
+        },
+        b"LdCtrlLoad" => LoadOp::Load {
+            lsm_idx: u(b"LsmIdx"),
+        },
+        b"LdCtrlLoadCompleted" => LoadOp::LoadCompleted {
+            lsm_idx: u(b"LsmIdx"),
+        },
+        b"LdCtrlTaskSegment" => LoadOp::TaskSegment {
+            lsm_idx: u(b"LsmIdx"),
+            address: u(b"Address"),
+        },
+        b"LdCtrlTaskCtrl1" => LoadOp::TaskCtrl1 {
+            lsm_idx: u(b"LsmIdx"),
+            address: u(b"Address"),
+            count: u(b"Count"),
+        },
+        b"LdCtrlRelSegment" => LoadOp::RelSegment {
+            lsm_idx: u(b"LsmIdx"),
+            size: u(b"Size"),
+            applies_to: s(b"AppliesTo"),
+        },
+        b"LdCtrlAbsSegment" => LoadOp::AbsSegment {
+            lsm_idx: u(b"LsmIdx"),
+            address: u(b"Address"),
+            size: u(b"Size"),
+        },
+        b"LdCtrlWriteRelMem" => LoadOp::WriteRelMem {
+            obj_idx: u(b"ObjIdx"),
+            offset: u(b"Offset"),
+            size: u(b"Size"),
+            applies_to: s(b"AppliesTo"),
+        },
+        b"LdCtrlWriteMem" => LoadOp::WriteMem {
+            address: u(b"Address"),
+            size: u(b"Size"),
+        },
+        b"LdCtrlWriteProp" => LoadOp::WriteProp {
+            obj_type: u(b"ObjType"),
+            prop_id: u(b"PropId"),
+        },
+        other => LoadOp::Raw {
+            name: String::from_utf8_lossy(other).into_owned(),
+            attrs: ordered_attrs(m),
+        },
+    };
+    lp.ops.push(op);
+}
+
+/// Returns the attribute map as sorted `(key, value)` pairs for a stable `Raw`.
+fn ordered_attrs(m: &HashMap<Vec<u8>, String>) -> Vec<(String, String)> {
+    let mut pairs: Vec<(String, String)> = m
+        .iter()
+        .map(|(k, v)| (String::from_utf8_lossy(k).into_owned(), v.clone()))
+        .collect();
+    pairs.sort();
+    pairs
+}
+
+/// Strips the `<app-id>_` prefix from a fully-qualified element id, returning the
+/// app-relative remainder (e.g. `<app>_MD-1_CH-13` → `MD-1_CH-13`). Returns
+/// `None` if the id does not carry the app prefix.
+fn app_relative_id<'a>(id: &'a str, app_id: &str) -> Option<&'a str> {
+    id.strip_prefix(app_id)?.strip_prefix('_')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A fabricated ApplicationProgram exercising every ParameterType, a
+    // ParameterRef override, com-object DPT/flag resolution, a code segment,
+    // and every typed LoadProcedure variant plus a Raw fallback.
+    const SAMPLE: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<KNX xmlns="http://knx.org/xml/project/23">
+ <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
+  <ApplicationProgram Id="M-00FA_A-1" ApplicationNumber="7" ApplicationVersion="17" MaskVersion="MV-07B0" Name="Sample" LoadProcedureStyle="MergedProcedure">
+   <Static>
+    <Code>
+     <RelativeSegment Id="M-00FA_A-1_RS-4" Size="10" LoadStateMachine="4" Offset="0"><Data>AAA=</Data></RelativeSegment>
+     <AbsoluteSegment Id="M-00FA_A-1_AS-1" Size="256" Address="16384" />
+    </Code>
+    <ComObjectTable>
+     <ComObject Id="M-00FA_A-1_O-0" Number="0" Name="Switch" Text="Switch" FunctionText="On/Off" ObjectSize="1 Bit" CommunicationFlag="Enabled" WriteFlag="Enabled" TransmitFlag="Enabled" ReadFlag="Disabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled" />
+     <ComObject Id="M-00FA_A-1_O-1" Number="1" Name="Val" Text="Value" ObjectSize="2 Bytes" CommunicationFlag="Enabled" />
+    </ComObjectTable>
+    <ComObjectRefs>
+     <ComObjectRef Id="M-00FA_A-1_O-0_R-1" RefId="M-00FA_A-1_O-0" DatapointType="DPST-1-1" ReadFlag="Enabled" />
+     <ComObjectRef Id="M-00FA_A-1_O-1_R-1" RefId="M-00FA_A-1_O-1" DatapointType="DPST-9-1" />
+    </ComObjectRefs>
+    <ParameterTypes>
+     <ParameterType Id="M-00FA_A-1_PT-int" Name="anint"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="100" /></ParameterType>
+     <ParameterType Id="M-00FA_A-1_PT-sint" Name="asint"><TypeNumber SizeInBit="8" Type="signedInt" minInclusive="-5" maxInclusive="5" /></ParameterType>
+     <ParameterType Id="M-00FA_A-1_PT-enum" Name="anenum"><TypeRestriction Base="Value" SizeInBit="8"><Enumeration Text="Off" Value="0" Id="e0" /><Enumeration Text="On" Value="1" Id="e1" /></TypeRestriction></ParameterType>
+     <ParameterType Id="M-00FA_A-1_PT-txt" Name="atext"><TypeText SizeInBit="112" /></ParameterType>
+     <ParameterType Id="M-00FA_A-1_PT-flt" Name="afloat"><TypeFloat Encoding="DPT 9" minInclusive="-10" maxInclusive="10" /></ParameterType>
+     <ParameterType Id="M-00FA_A-1_PT-none" Name="anone"><TypeNone /></ParameterType>
+     <ParameterType Id="M-00FA_A-1_PT-col" Name="acolor"><TypeColor Space="RGB" /></ParameterType>
+    </ParameterTypes>
+    <Parameters>
+     <Parameter Id="M-00FA_A-1_P-1" Name="Threshold" Text="Threshold" ParameterType="M-00FA_A-1_PT-int" Value="50" Access="ReadWrite"><Memory CodeSegment="M-00FA_A-1_RS-4" Offset="3" BitOffset="2" /></Parameter>
+     <Parameter Id="M-00FA_A-1_P-2" Name="Mode" ParameterType="M-00FA_A-1_PT-enum" Value="0" />
+    </Parameters>
+    <ParameterRefs>
+     <ParameterRef Id="M-00FA_A-1_P-1_R-1" RefId="M-00FA_A-1_P-1" Value="75" />
+     <ParameterRef Id="M-00FA_A-1_P-2_R-1" RefId="M-00FA_A-1_P-2" Access="None" />
+    </ParameterRefs>
+   </Static>
+   <LoadProcedures>
+    <LoadProcedure MergeId="1">
+     <LdCtrlConnect />
+     <LdCtrlUnload LsmIdx="1" />
+     <LdCtrlLoad LsmIdx="2" />
+     <LdCtrlTaskSegment LsmIdx="1" Address="16384" />
+     <LdCtrlTaskCtrl1 LsmIdx="3" Address="19385" Count="1" />
+     <LdCtrlRelSegment AppliesTo="par" LsmIdx="4" Size="19155" />
+     <LdCtrlAbsSegment LsmIdx="1" Address="16384" Size="511" />
+     <LdCtrlWriteRelMem AppliesTo="full,par" ObjIdx="5" Offset="0" Size="10" Verify="true" />
+     <LdCtrlWriteProp ObjType="11" PropId="204" />
+     <LdCtrlLoadCompleted LsmIdx="1" />
+     <LdCtrlRestart />
+     <LdCtrlDisconnect />
+     <LdCtrlLoadImageProp ObjIdx="5" PropId="27" />
+    </LoadProcedure>
+   </LoadProcedures>
+  </ApplicationProgram>
+ </ApplicationPrograms></Manufacturer></ManufacturerData>
+</KNX>"#;
+
+    fn sample() -> ApplicationProgram {
+        parse_application_program("M-00FA_A-1", SAMPLE).unwrap()
+    }
+
+    #[test]
+    fn parses_identity_and_schema() {
+        let app = sample();
+        assert_eq!(app.application_number, Some(7));
+        assert_eq!(app.application_version, Some(17));
+        assert_eq!(app.version.as_deref(), Some("17"));
+        assert_eq!(app.mask_version.as_deref(), Some("07B0"));
+        assert_eq!(app.name.as_deref(), Some("Sample"));
+        assert_eq!(app.load_procedure_style.as_deref(), Some("MergedProcedure"));
+        assert_eq!(app.schema_version.as_deref(), Some("23"));
+    }
+
+    #[test]
+    fn resolves_com_objects_with_dpt_and_flags() {
+        let app = sample();
+        let cobs = app.resolved_com_objects();
+        assert_eq!(cobs.len(), 2);
+        // #0: base C W T + ref R  => CRWT, dpt from ref.
+        assert_eq!(cobs[0].number(), 0);
+        assert_eq!(cobs[0].dpt(), Some(Dpt::new(1, Some(1))));
+        assert_eq!(cobs[0].flags().to_string(), "CRWT");
+        // #1: base C only, dpt from ref.
+        assert_eq!(cobs[1].number(), 1);
+        assert_eq!(cobs[1].dpt(), Some(Dpt::new(9, Some(1))));
+        assert_eq!(cobs[1].flags().to_string(), "C");
+        assert_eq!(cobs[1].object_size(), Some("2 Bytes"));
+    }
+
+    #[test]
+    fn resolve_instance_ref() {
+        let app = sample();
+        let (base, cor) = app.resolve("O-0_R-1").unwrap();
+        assert_eq!(base.number, 0);
+        assert_eq!(cor.dpt, Some(Dpt::new(1, Some(1))));
+        assert_eq!(base.flags.merge(cor.flags).to_flags().to_string(), "CRWT");
+    }
+
+    #[test]
+    fn parses_all_parameter_type_kinds() {
+        let app = sample();
+        let kind = |id: &str| &app.parameter_types.get(id).unwrap().kind;
+        assert!(matches!(
+            kind("M-00FA_A-1_PT-int"),
+            ParameterType::Int {
+                min: Some(0),
+                max: Some(100),
+                size_bits: Some(8),
+                signed: false
+            }
+        ));
+        assert!(matches!(
+            kind("M-00FA_A-1_PT-sint"),
+            ParameterType::Int { signed: true, .. }
+        ));
+        match kind("M-00FA_A-1_PT-enum") {
+            ParameterType::Enum { values, .. } => {
+                assert_eq!(values.len(), 2);
+                assert_eq!(values[0].value, 0);
+                assert_eq!(values[0].text, "Off");
+            }
+            other => panic!("expected enum, got {other:?}"),
+        }
+        assert!(matches!(
+            kind("M-00FA_A-1_PT-txt"),
+            ParameterType::Text {
+                size_bits: Some(112)
+            }
+        ));
+        assert!(matches!(
+            kind("M-00FA_A-1_PT-flt"),
+            ParameterType::Float {
+                min: Some(_),
+                max: Some(_),
+                ..
+            }
+        ));
+        assert!(matches!(kind("M-00FA_A-1_PT-none"), ParameterType::None));
+        match kind("M-00FA_A-1_PT-col") {
+            ParameterType::Other { kind, .. } => assert_eq!(kind, "TypeColor"),
+            other => panic!("expected other, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parameter_ref_value_override_applies() {
+        let app = sample();
+        let rp = app.resolved_parameter("M-00FA_A-1_P-1_R-1").unwrap();
+        // The parameter's own default is 50; the ref overrides it to 75.
+        assert_eq!(rp.value(), Some("75"));
+        // P-2's ref overrides Access to None.
+        let rp2 = app.resolved_parameter("M-00FA_A-1_P-2_R-1").unwrap();
+        assert_eq!(rp2.access(), Some("None"));
+    }
+
+    #[test]
+    fn parses_memory_location() {
+        let app = sample();
+        let mem = app
+            .parameters
+            .get("M-00FA_A-1_P-1")
+            .unwrap()
+            .memory
+            .as_ref()
+            .unwrap();
+        assert_eq!(mem.code_segment.as_deref(), Some("M-00FA_A-1_RS-4"));
+        assert_eq!(mem.offset, Some(3));
+        assert_eq!(mem.bit_offset, Some(2));
+        // A parameter with no <Memory> child has None.
+        assert!(
+            app.parameters
+                .get("M-00FA_A-1_P-2")
+                .unwrap()
+                .memory
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn parses_code_segments_metadata_only() {
+        let app = sample();
+        assert_eq!(app.code_segments.len(), 2);
+        let rel = app.code_segments.get("M-00FA_A-1_RS-4").unwrap();
+        assert_eq!(rel.kind, SegmentKind::Relative);
+        assert_eq!(rel.size, Some(10));
+        assert_eq!(rel.load_state_machine, Some(4));
+        assert_eq!(rel.address_or_offset, Some(0));
+        let abs = app.code_segments.get("M-00FA_A-1_AS-1").unwrap();
+        assert_eq!(abs.kind, SegmentKind::Absolute);
+        assert_eq!(abs.address_or_offset, Some(16384));
+    }
+
+    #[test]
+    fn parses_every_load_op_variant() {
+        let app = sample();
+        assert_eq!(app.load_procedures.len(), 1);
+        assert_eq!(app.load_procedures[0].merge_id.as_deref(), Some("1"));
+        let ops = &app.load_procedures[0].ops;
+        assert!(matches!(ops[0], LoadOp::Connect));
+        assert!(matches!(ops[1], LoadOp::Unload { lsm_idx: Some(1) }));
+        assert!(matches!(ops[2], LoadOp::Load { lsm_idx: Some(2) }));
+        assert!(matches!(
+            ops[3],
+            LoadOp::TaskSegment {
+                lsm_idx: Some(1),
+                address: Some(16384)
+            }
+        ));
+        assert!(matches!(ops[4], LoadOp::TaskCtrl1 { count: Some(1), .. }));
+        assert!(matches!(
+            ops[5],
+            LoadOp::RelSegment {
+                size: Some(19155),
+                ..
+            }
+        ));
+        assert!(matches!(
+            ops[6],
+            LoadOp::AbsSegment {
+                size: Some(511),
+                ..
+            }
+        ));
+        assert!(matches!(
+            ops[7],
+            LoadOp::WriteRelMem {
+                obj_idx: Some(5),
+                size: Some(10),
+                ..
+            }
+        ));
+        assert!(matches!(
+            ops[8],
+            LoadOp::WriteProp {
+                obj_type: Some(11),
+                prop_id: Some(204)
+            }
+        ));
+        assert!(matches!(ops[9], LoadOp::LoadCompleted { lsm_idx: Some(1) }));
+        assert!(matches!(ops[10], LoadOp::Restart));
+        assert!(matches!(ops[11], LoadOp::Disconnect));
+        // Unknown LdCtrl* is preserved verbatim as Raw.
+        match &ops[12] {
+            LoadOp::Raw { name, attrs } => {
+                assert_eq!(name, "LdCtrlLoadImageProp");
+                assert!(attrs.iter().any(|(k, v)| k == "PropId" && v == "27"));
+            }
+            other => panic!("expected Raw, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn en_us_translation_overrides_text() {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-1" Name="Deutsch">
+          <Static><ComObjectTable>
+           <ComObject Id="M-1_A-1_O-0" Number="0" Text="Schalten" CommunicationFlag="Enabled" />
+          </ComObjectTable></Static>
+          <Languages><Language Identifier="en-US">
+           <TranslationUnit RefId="M-1_A-1">
+            <TranslationElement RefId="M-1_A-1"><Translation AttributeName="Name" Text="English" /></TranslationElement>
+            <TranslationElement RefId="M-1_A-1_O-0"><Translation AttributeName="Text" Text="Switch" /></TranslationElement>
+           </TranslationUnit>
+          </Language>
+          <Language Identifier="fr-FR">
+           <TranslationUnit RefId="M-1_A-1">
+            <TranslationElement RefId="M-1_A-1"><Translation AttributeName="Name" Text="Francais" /></TranslationElement>
+           </TranslationUnit>
+          </Language></Languages>
+         </ApplicationProgram>
+        </KNX>"#;
+        let app = parse_application_program("M-1_A-1", xml).unwrap();
+        assert_eq!(app.name.as_deref(), Some("English"));
+        assert_eq!(
+            app.com_objects.get("M-1_A-1_O-0").unwrap().text.as_deref(),
+            Some("Switch")
+        );
+    }
+
+    const MODULE_SAMPLE: &str = r#"<?xml version="1.0"?>
+<KNX xmlns="http://knx.org/xml/project/23">
+  <ApplicationProgram Id="M-0004_A-1" MaskVersion="MV-07B0" Name="Jung">
+    <Dynamic>
+      <Channel Id="M-0004_A-1_MD-1_CH-13" Name="Relaisausgänge"
+        Text="{{ArgBeschriftungRelais}} {{ArgBeschriftung}} ({{0:...}})" Number="13" />
+      <ParameterBlock>
+        <Module Id="M-0004_A-1_MD-1">
+          <Arguments>
+            <Argument Id="M-0004_A-1_MD-1_A-3" Name="ArgBeschriftung" Type="Text" />
+            <Argument Id="M-0004_A-1_MD-1_A-5" Name="ArgBeschriftungRelais" Type="Text" />
+          </Arguments>
+        </Module>
+      </ParameterBlock>
+    </Dynamic>
+  </ApplicationProgram>
+</KNX>"#;
+
+    #[test]
+    fn parses_channels_and_arguments() {
+        let app = parse_application_program("M-0004_A-1", MODULE_SAMPLE).unwrap();
+        let ch = app.channel("MD-1_CH-13").expect("channel def");
+        assert_eq!(ch.name.as_deref(), Some("Relaisausgänge"));
+        assert_eq!(
+            ch.text.as_deref(),
+            Some("{{ArgBeschriftungRelais}} {{ArgBeschriftung}} ({{0:...}})")
+        );
+        assert_eq!(app.argument_id("ArgBeschriftung"), Some("MD-1_A-3"));
+        assert_eq!(app.argument_id("ArgBeschriftungRelais"), Some("MD-1_A-5"));
+    }
+
+    #[test]
+    fn parses_base_number_ref() {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+          <ApplicationProgram Id="M-1_A-1" Name="x">
+            <Static><ComObjectTable>
+              <ComObject Id="M-1_A-1_MD-1_O-2" Number="2" BaseNumber="M-1_A-1_MD-1_A-9" Text="Rel" CommunicationFlag="Enabled" />
+            </ComObjectTable></Static>
+          </ApplicationProgram>
+        </KNX>"#;
+        let app = parse_application_program("M-1_A-1", xml).unwrap();
+        assert_eq!(
+            app.com_objects
+                .get("M-1_A-1_MD-1_O-2")
+                .unwrap()
+                .base_number_ref
+                .as_deref(),
+            Some("M-1_A-1_MD-1_A-9")
+        );
+    }
+}

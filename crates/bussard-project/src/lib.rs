@@ -10,9 +10,10 @@
 //! [`save`](bussard_model::loader::Model::save).
 //!
 //! Manufacturer application-program XML can be tens of megabytes, so it is read
-//! with a streaming pull parser (`quick-xml`) and only the com-object tables,
-//! mask version and program identity are kept; parameters and load procedures
-//! are skipped (later phases).
+//! with the shared streaming parser in `bussard-ets` (bounded memory, no DOM).
+//! Import consumes the com-object tables, channel definitions, mask version and
+//! program identity; parameters and load procedures are parsed but unused here
+//! (later phases and `.knxprod` reading need them).
 
 #![warn(missing_docs)]
 

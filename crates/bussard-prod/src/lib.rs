@@ -6,7 +6,7 @@
 //! manufacturer folders (each with `Hardware.xml`, `Catalog.xml`, and the
 //! ApplicationProgram XML files), and — for ETS-produced files — RSA signature
 //! entries that bussard ignores. Application-program files reach ~28 MB, so
-//! parsing is streaming ([`quick_xml`]); no DOM is ever built.
+//! parsing is streaming (via `bussard-ets`); no DOM is ever built.
 //!
 //! # Entry points
 //!
@@ -14,20 +14,12 @@
 //! * [`application::parse_application_program`] parses one ApplicationProgram
 //!   XML string in isolation (used for testing against `.knxproj` folders).
 //!
-//! # Dedup opportunities with `bussard-project`
+//! # Shared ETS-XML layer
 //!
-//! By file-set discipline this crate duplicates three small helpers rather than
-//! refactoring shared code across crate boundaries:
-//!
-//! * [`dpt_map::parse_ets_dpt`] is identical to `bussard-project::dpt_map`.
-//! * [`flag_map`] (`FlagSet`, `parse_flag_value`) mirrors
-//!   `bussard-project::flag_map`.
-//! * [`hardware`] and the com-object streaming shape mirror
-//!   `bussard-project::hardware` / `manufacturer`.
-//!
-//! A future `bussard-knxxml` crate could host the shared ETS-XML primitives
-//! (attribute maps, DPT/flag mapping, translation resolution, the ZIP/BOM
-//! reader) that both `bussard-project` and `bussard-prod` re-implement.
+//! The ApplicationProgram / `Hardware.xml` parsers, DPT/flag mapping,
+//! translation resolution and capped zip reading all live in `bussard-ets` and
+//! are shared with `bussard-project`; this crate's [`application`], [`hardware`],
+//! [`dpt_map`] and [`flag_map`] modules re-export them for stable paths.
 
 pub mod application;
 mod container;

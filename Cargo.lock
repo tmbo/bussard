@@ -169,6 +169,7 @@ name = "bussard-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bussard-bus",
  "bussard-ha",
  "bussard-mcp",
  "bussard-mgmt",
@@ -193,7 +194,9 @@ name = "bussard-ets"
 version = "0.1.0"
 dependencies = [
  "bussard-model",
+ "quick-xml",
  "thiserror",
+ "zip",
 ]
 
 [[package]]
@@ -212,6 +215,7 @@ name = "bussard-mcp"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bussard-bus",
  "bussard-model",
  "bussard-monitor",
  "bussard-transport",
@@ -227,6 +231,7 @@ dependencies = [
 name = "bussard-mgmt"
 version = "0.1.0"
 dependencies = [
+ "bussard-bus",
  "bussard-model",
  "bussard-transport",
  "thiserror",
@@ -249,6 +254,7 @@ dependencies = [
 name = "bussard-monitor"
 version = "0.1.0"
 dependencies = [
+ "bussard-bus",
  "bussard-model",
  "bussard-transport",
  "owo-colors",
@@ -265,8 +271,8 @@ dependencies = [
 name = "bussard-prod"
 version = "0.1.0"
 dependencies = [
+ "bussard-ets",
  "bussard-model",
- "quick-xml",
  "serde",
  "tempfile",
  "thiserror",
@@ -279,6 +285,7 @@ name = "bussard-project"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "bussard-ets",
  "bussard-model",
  "hmac",
  "pbkdf2",

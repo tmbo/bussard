@@ -93,6 +93,11 @@ pub enum ImportError {
         /// The underlying JSON error.
         source: serde_json::Error,
     },
+
+    /// An error from the shared ETS-XML primitive layer (XML parsing, capped
+    /// zip reads).
+    #[error(transparent)]
+    Ets(#[from] bussard_ets::EtsError),
 }
 
 /// Convenience result alias for the import path.

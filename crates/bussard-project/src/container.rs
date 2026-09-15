@@ -164,50 +164,29 @@ fn read_project_xml(
     let bytes = if encrypted {
         let pw = password.ok_or(ImportError::PasswordRequired)?;
         let zip_pw = derive_zip_password(pw);
-        let mut file = inner
+        let file = inner
             .by_index_decrypt(idx, zip_pw.as_bytes())
             .map_err(|_| ImportError::WrongPassword)?;
-        let mut buf = Vec::new();
-        file.read_to_end(&mut buf)
-            .map_err(|_| ImportError::WrongPassword)?;
-        buf
+        // Cap the decrypted stream too: a hostile inner archive is untrusted.
+        bussard_ets::read_capped(file, "0.xml").map_err(|_| ImportError::WrongPassword)?
     } else {
-        let mut file = inner.by_index(idx).map_err(|source| ImportError::Zip {
+        let file = inner.by_index(idx).map_err(|source| ImportError::Zip {
             path: PathBuf::from(&inner_name),
             source,
         })?;
-        let mut buf = Vec::new();
-        file.read_to_end(&mut buf)
-            .map_err(|source| ImportError::Io {
-                path: PathBuf::from(&inner_name),
-                source,
-            })?;
-        buf
+        bussard_ets::read_capped(file, "0.xml")?
     };
 
     Ok(strip_bom(bytes))
 }
 
-/// Reads a named entry from an archive as raw bytes, or `None` if absent.
+/// Reads a named entry from an archive as raw bytes (capped, a zip-bomb guard),
+/// or `None` if absent.
 fn read_entry_opt<R: Read + Seek>(
     archive: &mut ZipArchive<R>,
     name: &str,
 ) -> Result<Option<Vec<u8>>> {
-    let idx = match archive.index_for_name(name) {
-        Some(i) => i,
-        None => return Ok(None),
-    };
-    let mut file = archive.by_index(idx).map_err(|source| ImportError::Zip {
-        path: PathBuf::from(name),
-        source,
-    })?;
-    let mut buf = Vec::new();
-    file.read_to_end(&mut buf)
-        .map_err(|source| ImportError::Io {
-            path: PathBuf::from(name),
-            source,
-        })?;
-    Ok(Some(buf))
+    Ok(bussard_ets::read_entry_opt(archive, name)?)
 }
 
 /// Reads a named entry as a UTF-8 string, erroring if absent.
@@ -227,6 +206,5 @@ fn read_entry_to_string<R: Read + Seek>(
 
 /// Converts bytes to a `String`, dropping a leading UTF-8 BOM if present.
 fn strip_bom(bytes: Vec<u8>) -> String {
-    let s = String::from_utf8_lossy(&bytes).into_owned();
-    s.strip_prefix('\u{feff}').map(str::to_string).unwrap_or(s)
+    bussard_ets::strip_bom(bytes)
 }

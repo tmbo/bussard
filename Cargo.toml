@@ -28,6 +28,7 @@ bussard-model = { path = "crates/bussard-model", version = "0.1.0" }
 bussard-project = { path = "crates/bussard-project", version = "0.1.0" }
 bussard-transport = { path = "crates/bussard-transport", version = "0.1.0" }
 bussard-monitor = { path = "crates/bussard-monitor", version = "0.1.0" }
+bussard-bus = { path = "crates/bussard-bus", version = "0.1.0" }
 bussard-mcp = { path = "crates/bussard-mcp", version = "0.1.0" }
 
 # Third-party (all MIT and/or Apache-2.0)

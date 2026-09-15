@@ -10,7 +10,6 @@
 //! hold more than one entry's bytes at a time.
 
 use std::fs::File;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use zip::ZipArchive;
@@ -115,25 +114,11 @@ impl Container {
         }
     }
 
-    /// Reads a named entry as raw bytes, or `None` if absent.
+    /// Reads a named entry as raw bytes, or `None` if absent. The decompressed
+    /// size is capped (a zip-bomb guard); an oversized entry errors rather than
+    /// exhausting memory.
     fn read_entry_opt(&mut self, name: &str) -> Result<Option<Vec<u8>>> {
-        let idx = match self.archive.index_for_name(name) {
-            Some(i) => i,
-            None => return Ok(None),
-        };
-        let mut file = self
-            .archive
-            .by_index(idx)
-            .map_err(|source| ProdError::Zip {
-                path: PathBuf::from(name),
-                source,
-            })?;
-        let mut buf = Vec::new();
-        file.read_to_end(&mut buf).map_err(|source| ProdError::Io {
-            path: PathBuf::from(name),
-            source,
-        })?;
-        Ok(Some(buf))
+        Ok(bussard_ets::read_entry_opt(&mut self.archive, name)?)
     }
 }
 
