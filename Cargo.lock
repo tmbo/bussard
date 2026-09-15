@@ -160,14 +160,18 @@ dependencies = [
  "anyhow",
  "bussard-ha",
  "bussard-mcp",
+ "bussard-mgmt",
  "bussard-model",
  "bussard-monitor",
+ "bussard-prod",
  "bussard-project",
  "bussard-transport",
  "clap",
  "owo-colors",
  "rpassword",
+ "serde",
  "serde_json",
+ "serde_norway",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -243,9 +247,12 @@ name = "bussard-prod"
 version = "0.1.0"
 dependencies = [
  "bussard-model",
+ "quick-xml",
  "serde",
+ "tempfile",
  "thiserror",
  "tracing",
+ "zip",
 ]
 
 [[package]]
