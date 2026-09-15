@@ -1,14 +1,16 @@
 //! The rmcp server handler and its tools.
 //!
-//! [`BussardMcp`] holds the shared state and exposes the eight read-only tools
-//! (seven in `--passive` mode) over the Model Context Protocol. Each `#[tool]`
+//! [`BussardMcp`] holds the shared state and exposes the read-only tools (eight
+//! by default, seven in `--passive` mode) plus, with `--allow-writes`, the
+//! `knx_write_group` write tool (nine total) over the Model Context Protocol.
+//! Each `#[tool]`
 //! method is a thin adapter: it parses arguments, calls the pure logic in
 //! [`crate::tools`], and boxes the JSON in a `CallToolResult::structured`.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use bussard_model::{GroupAddress, IndividualAddress};
+use bussard_model::{Dpt, GroupAddress, IndividualAddress};
 use bussard_monitor::{ApciKind, CaptureStore, Filter, QueryFilter};
 use bussard_transport::cemi::CemiFrame;
 use rmcp::ErrorData;
@@ -34,12 +36,17 @@ pub struct BussardMcp {
 }
 
 impl BussardMcp {
-    /// Builds the server over `state`. In passive mode the `knx_read_group`
-    /// tool is unregistered so it does not appear in `tools/list`.
+    /// Builds the server over `state`. The instance router starts with every
+    /// tool registered, then unregisters the ones this mode must not expose:
+    /// `knx_read_group` in passive mode, and `knx_write_group` unless
+    /// `--allow-writes` is set (and never in passive mode).
     pub fn new(state: Arc<SharedState>) -> Self {
         let mut tool_router = Self::tool_router();
         if state.passive {
             tool_router.remove_route("knx_read_group");
+        }
+        if !state.allow_writes || state.passive {
+            tool_router.remove_route("knx_write_group");
         }
         BussardMcp { state, tool_router }
     }
@@ -66,6 +73,21 @@ pub struct LookupArgs {
 pub struct GaArgs {
     /// A 3-level group address like `"3/2/0"`.
     pub ga: String,
+}
+
+/// Arguments for `knx_write_group`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct WriteArgs {
+    /// A 3-level group address like `"3/0/4"`.
+    pub ga: String,
+    /// The value to write, in human form: `on`/`off`, `up`/`down`, a number, a
+    /// percentage like `75%`, a temperature like `21.5`, an HVAC mode name, etc.
+    /// Interpreted according to the resolved DPT.
+    pub value: String,
+    /// Override the DPT to encode as (e.g. `"1.001"`). Defaults to the GA's DPT
+    /// from `groups.yaml`.
+    #[serde(default)]
+    pub dpt: Option<String>,
 }
 
 /// Arguments for `knx_get_device`.
@@ -337,6 +359,134 @@ impl BussardMcp {
             })),
         }
     }
+
+    /// `knx_write_group` (registered only with `--allow-writes`, never in passive
+    /// mode).
+    #[tool(
+        description = "Write a value to a KNX group address (GroupValueWrite) on the PHYSICAL bus. \
+        This has real-world effects: lights toggle, blinds and actuators MOVE, setpoints change. \
+        Only available when the server was started with --allow-writes. The value is human-typed \
+        (e.g. on/off, up/down, 75%, 21.5, a scene number, or an HVAC mode name) and is interpreted \
+        against the group address's DPT (override with `dpt`). Rate-limited (minimum 250ms between \
+        bus operations). Protected group addresses (safety-critical objects such as a wind alarm or \
+        central functions) are REFUSED outright — there is no override via MCP. When you are \
+        uncertain whether a write is safe or intended, ASK THE HUMAN before calling this tool."
+    )]
+    async fn knx_write_group(
+        &self,
+        Parameters(args): Parameters<WriteArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        // Writes disabled: the tool is unregistered, but guard anyway.
+        let Some(outbound) = &self.state.outbound else {
+            return ok(json!({
+                "ga": args.ga,
+                "ok": false,
+                "reason": "bus writes are disabled on this server",
+            }));
+        };
+
+        let ga: GroupAddress = args
+            .ga
+            .parse()
+            .map_err(|_| invalid(format!("invalid group address {:?}", args.ga)))?;
+
+        // Hard-refuse protected GAs. There is no override via MCP.
+        if let Some(group) = self.state.model.groups.groups.get(&ga) {
+            if group.protected {
+                return ok(json!({
+                    "ga": ga.to_string(),
+                    "ok": false,
+                    "refused": true,
+                    "reason": format!(
+                        "GA {ga} ({:?}) is protected (safety-critical); writes are refused via MCP",
+                        group.name
+                    ),
+                }));
+            }
+        }
+
+        // Resolve the DPT: explicit `dpt` wins, else the GA's DPT.
+        let dpt: Dpt = match &args.dpt {
+            Some(s) => s
+                .parse()
+                .map_err(|e| invalid(format!("invalid dpt {s:?}: {e}")))?,
+            None => match self.state.model.groups.groups.get(&ga).and_then(|g| g.dpt) {
+                Some(d) => d,
+                None => {
+                    return ok(json!({
+                        "ga": ga.to_string(),
+                        "ok": false,
+                        "reason": format!(
+                            "GA {ga} has no DPT in the model; pass `dpt` to write it"
+                        ),
+                    }));
+                }
+            },
+        };
+
+        // Parse + encode the value. Parse/encode errors are structured refusals.
+        let typed = match bussard_model::parse_value(&dpt, &args.value) {
+            Ok(v) => v,
+            Err(e) => {
+                return ok(json!({
+                    "ga": ga.to_string(),
+                    "ok": false,
+                    "reason": e.to_string(),
+                }));
+            }
+        };
+        let payload = match bussard_model::encode(&dpt, &typed) {
+            Ok(p) => p,
+            Err(e) => {
+                return ok(json!({
+                    "ga": ga.to_string(),
+                    "ok": false,
+                    "reason": e.to_string(),
+                }));
+            }
+        };
+
+        if self.state.bus.state() != ConnState::Connected {
+            return ok(json!({
+                "ga": ga.to_string(),
+                "ok": false,
+                "reason": "bus is not connected",
+                "bus": self.state.bus.to_json(),
+            }));
+        }
+
+        // Share the read rate limiter (spacing + concurrency cap) with writes.
+        let _permit = self.state.read_limiter.acquire().await;
+
+        // Send the GroupValueWrite on the shared connection.
+        let frame = CemiFrame::group_write(ga, self.state.source_ia, &payload);
+        if outbound.send(frame).is_err() {
+            return ok(json!({
+                "ga": ga.to_string(),
+                "ok": false,
+                "reason": "bus connection is gone",
+            }));
+        }
+
+        let name = self
+            .state
+            .model
+            .groups
+            .groups
+            .get(&ga)
+            .map(|g| g.name.clone());
+
+        ok(json!({
+            "ga": ga.to_string(),
+            "ok": true,
+            "written": {
+                "address": ga.to_string(),
+                "name": name,
+                "value": typed.to_string(),
+                "dpt": dpt.to_string(),
+            },
+        }))
+    }
 }
 
 impl BussardMcp {
@@ -401,7 +551,10 @@ impl ServerHandler for BussardMcp {
                  knx_get_group / knx_get_device to explore, knx_recent_telegrams and \
                  knx_wait_for_telegram to observe live traffic (the latter enables 'press the \
                  button now' debugging), knx_validate to check the model, and knx_read_group to \
-                 actively read a value (unless the server is in passive mode).",
+                 actively read a value (unless the server is in passive mode). When started with \
+                 --allow-writes the knx_write_group tool is also available; it writes to the \
+                 physical bus (actuators move) and refuses protected group addresses — prefer \
+                 asking the human when a write's intent or safety is unclear.",
             )
     }
 }

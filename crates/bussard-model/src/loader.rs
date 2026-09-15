@@ -279,6 +279,7 @@ mod tests {
                 name: "Auf/Ab".to_string(),
                 dpt: Some("1.008".parse().unwrap()),
                 description: None,
+                ..Default::default()
             },
         );
         let model = Model {
