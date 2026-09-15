@@ -349,6 +349,67 @@ async fn open_bus(addr: SocketAddrV4) -> Transport {
     Transport::connect(&config).await.unwrap()
 }
 
+/// The lease path: an L4 session driven over a [`LeaseChannel`] on the bus actor
+/// must read the device correctly, *and* a concurrent group subscriber on the
+/// same bus must still see the device's response frames (the single-consumer
+/// fix — the old `recv` would have stolen them).
+#[tokio::test]
+async fn device_read_over_a_lease_and_group_subscriber_both_see_frames() {
+    use bussard_bus::Bus;
+    use bussard_mgmt::LeaseChannel;
+
+    let (addr, gw) = bind_mock().await;
+    let devices = vec![responder("1.1.4", 0x07B0, 0x0083)];
+    let gw_task = tokio::spawn(run_mock(gw, devices));
+
+    let (handle, _task) = Bus::connect(ConnectionConfig::tunnel(addr));
+    // Wait for the actor to connect.
+    for _ in 0..300 {
+        if handle.status() == bussard_bus::BusState::Connected {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // A concurrent group subscriber: it must observe the device's response
+    // frames flowing over the shared bus while the L4 session is active.
+    let mut sub = handle.subscribe();
+    let observer = tokio::spawn(async move {
+        // Collect whatever arrives within a short window.
+        let mut seen = 0usize;
+        while (tokio::time::timeout(Duration::from_secs(2), sub.recv()).await)
+            .is_ok_and(|f| f.is_some())
+        {
+            seen += 1;
+            if seen >= 1 {
+                break;
+            }
+        }
+        seen
+    });
+
+    let lease = handle.lease().await.unwrap();
+    let channel = LeaseChannel::new(lease);
+    let target: IndividualAddress = "1.1.4".parse().unwrap();
+    let source: IndividualAddress = "0.0.255".parse().unwrap();
+    let mut dev = DeviceConnection::connect(channel, target, source)
+        .await
+        .unwrap();
+
+    let mask = dev.device_descriptor().await.unwrap();
+    assert_eq!(mask, 0x07B0, "the L4 session over a lease reads correctly");
+    dev.disconnect().await.unwrap();
+
+    let seen = observer.await.unwrap();
+    assert!(
+        seen >= 1,
+        "a concurrent group subscriber must see the device's response frames"
+    );
+
+    let _ = handle.close().await;
+    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+}
+
 #[tokio::test]
 async fn device_descriptor_property_and_memory() {
     let (addr, gw) = bind_mock().await;

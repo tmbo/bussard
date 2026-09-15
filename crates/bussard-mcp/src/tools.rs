@@ -329,7 +329,7 @@ pub fn decode_for_dpt(dpt: Option<Dpt>, payload: &[u8]) -> (Option<String>, Valu
 }
 
 /// A structured JSON rendering of a [`TypedValue`] for tool responses.
-fn typed_value_json(v: &TypedValue) -> Value {
+pub(crate) fn typed_value_json(v: &TypedValue) -> Value {
     match v {
         TypedValue::Bool { value, label } => json!({ "bool": value, "label": label }),
         TypedValue::Percent(p) => json!({ "percent": p }),

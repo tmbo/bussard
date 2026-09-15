@@ -12,6 +12,7 @@ description = "MCP stdio server for bussard: read-only KNX model and bus introsp
 bussard-model = { workspace = true }
 bussard-transport = { workspace = true }
 bussard-monitor = { workspace = true }
+bussard-bus = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
@@ -28,5 +29,6 @@ serde_json = { workspace = true }
 bussard-model = { workspace = true }
 bussard-monitor = { workspace = true }
 bussard-transport = { workspace = true }
+bussard-bus = { workspace = true }
 # The client half of rmcp for the in-process integration test.
 rmcp = { version = "3.3.0", features = ["server", "client", "macros", "transport-io", "schemars"] }

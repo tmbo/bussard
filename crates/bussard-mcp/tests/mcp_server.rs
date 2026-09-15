@@ -81,18 +81,14 @@ fn build_server_modes(passive: bool, allow_writes: bool) -> BussardMcp {
         capture_db: None,
     };
     // Reconstruct state directly so we control passivity without touching disk.
-    let (outbound, _rx) = if passive {
-        (None, None)
-    } else {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        (Some(tx), Some(rx))
-    };
+    // No bus handle is wired here (the tools we exercise are model-only, and the
+    // read/write tools report "bus not connected" without one).
+    let _ = &cfg;
     let state = Arc::new(SharedState {
         model: model(),
         dir: cfg.dir.clone(),
         ring: bussard_monitor::TelegramRing::new(),
         bus: BusStatus::new(TransportKind::Tunnel),
-        outbound,
         passive,
         allow_writes,
         read_limiter: ReadLimiter::new(

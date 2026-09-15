@@ -10,9 +10,9 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
+use bussard_bus::ops::{self, WriteOptions};
 use bussard_model::{Dpt, GroupAddress, IndividualAddress};
-use bussard_monitor::{ApciKind, CaptureStore, DestinationRef, Filter, QueryFilter};
-use bussard_transport::cemi::{CemiFrame, MessageCode};
+use bussard_monitor::{CaptureStore, Filter, QueryFilter};
 use rmcp::ErrorData;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -287,18 +287,27 @@ impl BussardMcp {
         Parameters(args): Parameters<GaArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         // Passive mode: the tool is unregistered, but guard anyway.
-        let Some(outbound) = &self.state.outbound else {
+        if self.state.passive {
             return ok(json!({
                 "ga": args.ga,
                 "ok": false,
                 "reason": "server is in passive mode; bus reads are disabled",
             }));
-        };
+        }
 
         let ga: GroupAddress = args
             .ga
             .parse()
             .map_err(|_| invalid(format!("invalid group address {:?}", args.ga)))?;
+
+        let Some(handle) = self.state.bus.handle() else {
+            return ok(json!({
+                "ga": ga.to_string(),
+                "ok": false,
+                "reason": "bus is not wired",
+                "bus": self.state.bus.to_json(),
+            }));
+        };
 
         if self.state.bus.state() != ConnState::Connected {
             return ok(json!({
@@ -312,58 +321,34 @@ impl BussardMcp {
         // Rate limit + concurrency cap. Hold the permit across the whole read.
         let _permit = self.state.read_limiter.acquire().await;
 
-        // Subscribe to the ring *before* sending so we cannot miss the response.
-        // The subscription exists from this line on (no spawned-task race, #32).
-        let mut sub = self.state.ring.subscribe();
-
-        // Send the GroupValueRead on the shared connection.
-        let frame = CemiFrame::group_read(ga, self.state.source_ia);
-        if outbound.send(frame).is_err() {
-            return ok(json!({
-                "ga": ga.to_string(),
-                "ok": false,
-                "reason": "bus connection is gone",
-            }));
-        }
-
-        // Await a real answer: a GroupValueResponse or GroupValueWrite to our GA
-        // that is a bus indication — NOT the gateway's L_Data.con echo of our
-        // own request, and not from our own source address (issue #32).
-        let source_ia = self.state.source_ia;
-        let response = sub
-            .wait_for_matching(READ_RESPONSE_TIMEOUT, |t, code| {
-                matches!(t.destination, DestinationRef::Group(g) if g == ga)
-                    && matches!(t.apci, ApciKind::Response | ApciKind::Write)
-                    && code != MessageCode::LDataCon
-                    && t.source != source_ia
-            })
-            .await;
-        match response {
-            Some(t)
-                if matches!(t.apci, ApciKind::Response | ApciKind::Write)
-                    && !t.payload.is_empty() =>
-            {
-                let dpt = self.state.model.groups.groups.get(&ga).and_then(|g| g.dpt);
-                let (display, typed) = tools::decode_for_dpt(dpt, &t.payload);
+        // The shared read implementation: subscribe, send (completion-tracked),
+        // skip the L_Data.con echo, decode against the GA's DPT (#32, #30).
+        let dpt = self.state.model.groups.groups.get(&ga).and_then(|g| g.dpt);
+        match ops::read_group(handle, ga, dpt, READ_RESPONSE_TIMEOUT).await {
+            Ok(Some(outcome)) => {
+                let (display, typed) = match &outcome.value {
+                    Some(v) => (Some(v.to_string()), tools::typed_value_json(v)),
+                    None => (None, Value::Null),
+                };
                 ok(json!({
                     "ga": ga.to_string(),
                     "ok": true,
                     "value": display,
                     "typed": typed,
-                    "dpt": dpt.map(|d| d.to_string()),
-                    "telegram": tools::telegram_json(&t),
+                    "dpt": outcome.dpt.map(|d| d.to_string()),
+                    "source": outcome.source.to_string(),
                 }))
             }
-            Some(t) => ok(json!({
-                "ga": ga.to_string(),
-                "ok": true,
-                "telegram": tools::telegram_json(&t),
-            })),
-            None => ok(json!({
+            Ok(None) => ok(json!({
                 "ga": ga.to_string(),
                 "ok": false,
                 "timed_out": true,
                 "reason": "no response within timeout",
+            })),
+            Err(err) => ok(json!({
+                "ga": ga.to_string(),
+                "ok": false,
+                "reason": format!("bus send failed: {err}"),
             })),
         }
     }
@@ -385,13 +370,13 @@ impl BussardMcp {
         Parameters(args): Parameters<WriteArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         // Writes disabled: the tool is unregistered, but guard anyway.
-        let Some(outbound) = &self.state.outbound else {
+        if self.state.passive || !self.state.allow_writes {
             return ok(json!({
                 "ga": args.ga,
                 "ok": false,
                 "reason": "bus writes are disabled on this server",
             }));
-        };
+        }
 
         let ga: GroupAddress = args
             .ga
@@ -454,6 +439,14 @@ impl BussardMcp {
             }
         };
 
+        let Some(handle) = self.state.bus.handle() else {
+            return ok(json!({
+                "ga": ga.to_string(),
+                "ok": false,
+                "reason": "bus is not wired",
+            }));
+        };
+
         if self.state.bus.state() != ConnState::Connected {
             return ok(json!({
                 "ga": ga.to_string(),
@@ -466,16 +459,9 @@ impl BussardMcp {
         // Share the read rate limiter (spacing + concurrency cap) with writes.
         let _permit = self.state.read_limiter.acquire().await;
 
-        // Send the GroupValueWrite on the shared connection.
-        let frame = CemiFrame::group_write(ga, self.state.source_ia, &payload);
-        if outbound.send(frame).is_err() {
-            return ok(json!({
-                "ga": ga.to_string(),
-                "ok": false,
-                "reason": "bus connection is gone",
-            }));
-        }
-
+        // The shared write implementation: send (completion-tracked against the
+        // gateway ACK). A transport failure surfaces as ok:false — an honest
+        // failure, not a silent success.
         let name = self
             .state
             .model
@@ -484,16 +470,24 @@ impl BussardMcp {
             .get(&ga)
             .map(|g| g.name.clone());
 
-        ok(json!({
-            "ga": ga.to_string(),
-            "ok": true,
-            "written": {
-                "address": ga.to_string(),
-                "name": name,
-                "value": typed.to_string(),
-                "dpt": dpt.to_string(),
-            },
-        }))
+        match ops::write_group(handle, ga, &payload, WriteOptions::default()).await {
+            Ok(outcome) => ok(json!({
+                "ga": ga.to_string(),
+                "ok": true,
+                "confirmed": outcome.confirmed,
+                "written": {
+                    "address": ga.to_string(),
+                    "name": name,
+                    "value": typed.to_string(),
+                    "dpt": dpt.to_string(),
+                },
+            })),
+            Err(err) => ok(json!({
+                "ga": ga.to_string(),
+                "ok": false,
+                "reason": format!("bus send failed: {err}"),
+            })),
+        }
     }
 }
 

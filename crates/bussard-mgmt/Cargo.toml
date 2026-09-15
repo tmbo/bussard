@@ -10,6 +10,7 @@ rust-version.workspace = true
 [dependencies]
 bussard-model = { path = "../bussard-model" }
 bussard-transport = { path = "../bussard-transport" }
+bussard-bus = { path = "../bussard-bus" }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

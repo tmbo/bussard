@@ -23,18 +23,12 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::Context;
+use bussard_bus::{Bus, ops};
 use bussard_mgmt::tables::{DeviceTables, TablesError, read_tables};
-use bussard_mgmt::{Layer4Connection, system_type};
+use bussard_mgmt::{Layer4Connection, LeaseChannel, system_type};
 use bussard_model::{GroupAddress, IndividualAddress, Model};
-use bussard_transport::{BusConnection, Transport};
 
 use crate::conn_cmd::{ConnOverrides, load_model_optional, resolve_config};
-
-/// The fallback source individual address when the transport assigns none
-/// (routing, or a gateway that reports `0.0.0`). On a tunnel the
-/// gateway-assigned address is used instead — devices commonly ignore
-/// connection-oriented management frames from any other source.
-const FALLBACK_SOURCE_IA: &str = "0.0.255";
 
 /// One (object, GA) pair in the diff.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
@@ -110,22 +104,26 @@ pub fn run(
 
     let runtime = tokio::runtime::Runtime::new()?;
     let result = runtime.block_on(async move {
-        let mut bus = Transport::connect(&config)
-            .await
-            .context("opening the bus connection")?;
+        let (handle, _task) = Bus::connect(config);
         // Present the tunnel-assigned address as the source — devices commonly
-        // ignore management frames from any other address.
-        let source = bus
-            .assigned_individual_address()
-            .map(IndividualAddress::from_raw)
-            .unwrap_or_else(|| FALLBACK_SOURCE_IA.parse().expect("valid source IA"));
-        let mut l4 = Layer4Connection::connect(&mut bus, target, source)
-            .await
-            .context("opening the device connection")?;
-        let result = read_tables(&mut l4).await;
-        let _ = l4.disconnect().await;
-        let _ = bus.close().await;
-        anyhow::Ok(result)
+        // ignore management frames from any other address (falling back to
+        // 0.0.255 on routing, issue #30).
+        let source = ops::group_source(&handle);
+        // Lease the bus for this connection-oriented session; group traffic and
+        // other subscribers keep flowing on the shared connection.
+        let lease = handle.lease().await.context("leasing the bus")?;
+        let channel = LeaseChannel::new(lease);
+        let table_result = match Layer4Connection::connect(channel, target, source).await {
+            Ok(mut l4) => {
+                let result = read_tables(&mut l4).await;
+                let _ = l4.disconnect().await;
+                result
+            }
+            Err(err) => Err(TablesError::Mgmt(err)),
+        };
+        // Close the bus cleanly (release the gateway tunnel slot) — issue #31.
+        let _ = handle.close().await;
+        anyhow::Ok(table_result)
     })?;
 
     let read = match result {

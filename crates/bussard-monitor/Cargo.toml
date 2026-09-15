@@ -11,6 +11,7 @@ description = "Bus monitor and capture for bussard: decode pipeline, SQLite capt
 [dependencies]
 bussard-model = { workspace = true }
 bussard-transport = { workspace = true }
+bussard-bus = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 owo-colors = { workspace = true }

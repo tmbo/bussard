@@ -1,17 +1,16 @@
 //! Shared server state: the loaded model, the live telegram ring, the bus
-//! connection status, the outbound-frame channel and the read rate limiter.
+//! handle (actor), and the read rate limiter.
 
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
+use bussard_bus::{BusHandle, BusState};
 use bussard_model::Model;
 use bussard_monitor::TelegramRing;
 use bussard_transport::TransportKind;
-use bussard_transport::cemi::CemiFrame;
 use serde_json::{Value, json};
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::Mutex;
 
 /// Minimum spacing between bus reads (rate limit for `knx_read_group`).
 pub const READ_MIN_INTERVAL: Duration = Duration::from_millis(250);
@@ -22,31 +21,25 @@ pub const READ_RESPONSE_TIMEOUT: Duration = Duration::from_secs(3);
 /// Concurrency cap on in-flight bus reads.
 pub const READ_MAX_CONCURRENT: usize = 2;
 
-/// The live bus connection state, updated by the stream task and read by tools.
+/// The live bus connection state as reported to tools. A thin re-projection of
+/// the actor's [`BusState`], kept as a distinct enum so the JSON tags stay
+/// stable across the MCP surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnState {
     /// Never yet connected (startup, before the first successful connect).
     Connecting,
     /// Connected and streaming.
     Connected,
-    /// Dropped; reconnecting with backoff.
+    /// Dropped; reconnecting with backoff, or closed.
     Reconnecting,
 }
 
 impl ConnState {
-    fn as_u8(self) -> u8 {
-        match self {
-            ConnState::Connecting => 0,
-            ConnState::Connected => 1,
-            ConnState::Reconnecting => 2,
-        }
-    }
-
-    fn from_u8(v: u8) -> Self {
-        match v {
-            1 => ConnState::Connected,
-            2 => ConnState::Reconnecting,
-            _ => ConnState::Connecting,
+    fn from_bus(state: BusState) -> Self {
+        match state {
+            BusState::Connected => ConnState::Connected,
+            BusState::Reconnecting | BusState::Closed => ConnState::Reconnecting,
+            BusState::Connecting => ConnState::Connecting,
         }
     }
 
@@ -60,30 +53,49 @@ impl ConnState {
     }
 }
 
-/// Bus status shared between the stream task and the tools, cheaply cloneable.
+/// Bus status: a view onto the bus actor for tool output.
+///
+/// Wraps the actor [`BusHandle`] (present once the server has wired the bus) and
+/// the configured transport kind. When there is no handle (a test that never
+/// spawned the actor, or before wiring) it reports `connecting`.
 #[derive(Clone)]
 pub struct BusStatus {
-    state: Arc<AtomicU8>,
+    /// Wired once by the runner after the actor is spawned. Cheap to share.
+    handle: Arc<OnceLock<BusHandle>>,
     transport: TransportKind,
 }
 
 impl BusStatus {
-    /// Creates a status starting in [`ConnState::Connecting`].
+    /// Creates a status with no handle yet (reports `connecting`).
     pub fn new(transport: TransportKind) -> Self {
         BusStatus {
-            state: Arc::new(AtomicU8::new(ConnState::Connecting.as_u8())),
+            handle: Arc::new(OnceLock::new()),
             transport,
         }
     }
 
-    /// Records a new connection state (called from the stream task).
-    pub fn set(&self, state: ConnState) {
-        self.state.store(state.as_u8(), Ordering::Relaxed);
+    /// Creates a status already backed by a live bus handle.
+    pub fn with_handle(transport: TransportKind, handle: BusHandle) -> Self {
+        let cell = OnceLock::new();
+        let _ = cell.set(handle);
+        BusStatus {
+            handle: Arc::new(cell),
+            transport,
+        }
     }
 
-    /// The current connection state.
+    /// Wires the bus handle once (called by the runner after spawning the
+    /// actor). A second call is a no-op.
+    pub fn wire(&self, handle: BusHandle) {
+        let _ = self.handle.set(handle);
+    }
+
+    /// The current connection state (from the handle, or `connecting`).
     pub fn state(&self) -> ConnState {
-        ConnState::from_u8(self.state.load(Ordering::Relaxed))
+        match self.handle.get() {
+            Some(h) => ConnState::from_bus(h.status()),
+            None => ConnState::Connecting,
+        }
     }
 
     /// The transport kind (tunnel or routing) as a stable tag.
@@ -92,6 +104,11 @@ impl BusStatus {
             TransportKind::Tunnel => "tunnel",
             TransportKind::Routing => "routing",
         }
+    }
+
+    /// The bus handle, if wired.
+    pub fn handle(&self) -> Option<&BusHandle> {
+        self.handle.get()
     }
 
     /// A JSON object describing the bus status.
@@ -155,12 +172,9 @@ pub struct SharedState {
     pub dir: PathBuf,
     /// The live telegram ring buffer, shared with the stream task.
     pub ring: TelegramRing,
-    /// The bus connection status.
+    /// The bus connection status (wraps the actor handle when wired).
     pub bus: BusStatus,
-    /// Sender for outbound frames (a `GroupValueRead`), or `None` in passive
-    /// mode (no writes to the bus at all).
-    pub outbound: Option<mpsc::UnboundedSender<CemiFrame>>,
-    /// Whether the server is in passive mode (no `knx_read_group`).
+    /// Whether the server is in passive mode (no `knx_read_group`, no writes).
     pub passive: bool,
     /// Whether bus writes are allowed (registers `knx_write_group`). Mutually
     /// exclusive with `passive`.
@@ -179,26 +193,34 @@ mod tests {
     use super::*;
 
     #[test]
-    fn conn_state_tags_roundtrip() {
-        for s in [
-            ConnState::Connecting,
-            ConnState::Connected,
-            ConnState::Reconnecting,
-        ] {
-            assert_eq!(ConnState::from_u8(s.as_u8()), s);
-        }
+    fn conn_state_maps_from_bus_state() {
+        use bussard_bus::BusState;
+        assert_eq!(
+            ConnState::from_bus(BusState::Connecting),
+            ConnState::Connecting
+        );
+        assert_eq!(
+            ConnState::from_bus(BusState::Connected),
+            ConnState::Connected
+        );
+        assert_eq!(
+            ConnState::from_bus(BusState::Reconnecting),
+            ConnState::Reconnecting
+        );
+        // A closed actor reads as reconnecting (the server stays up).
+        assert_eq!(
+            ConnState::from_bus(BusState::Closed),
+            ConnState::Reconnecting
+        );
     }
 
     #[test]
-    fn bus_status_transitions() {
+    fn bus_status_without_handle_is_connecting() {
         let bus = BusStatus::new(TransportKind::Routing);
         assert_eq!(bus.state(), ConnState::Connecting);
         assert_eq!(bus.transport_tag(), "routing");
-        bus.set(ConnState::Connected);
-        assert_eq!(bus.to_json()["connected"], true);
-        bus.set(ConnState::Reconnecting);
-        assert_eq!(bus.to_json()["state"], "reconnecting");
         assert_eq!(bus.to_json()["connected"], false);
+        assert_eq!(bus.to_json()["state"], "connecting");
     }
 
     #[tokio::test]

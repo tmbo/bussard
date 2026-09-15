@@ -7,8 +7,8 @@
 
 use std::time::Duration;
 
+use crate::connection::L4Channel;
 use bussard_model::IndividualAddress;
-use bussard_transport::BusConnection;
 use bussard_transport::cemi::CemiFrame;
 use tokio::time::{Instant, timeout};
 
@@ -28,8 +28,8 @@ pub const PROGRAMMING_MODE_WINDOW: Duration = Duration::from_millis(1500);
 /// address; there is no payload. Returns the responders (deduplicated, in the
 /// order first seen). Normally there is exactly zero or one — pressing the
 /// programming button on two devices at once is a user error this surfaces.
-pub async fn devices_in_programming_mode<C: BusConnection>(
-    bus: &mut C,
+pub async fn devices_in_programming_mode<Ch: L4Channel>(
+    mut bus: Ch,
     source: IndividualAddress,
 ) -> Result<Vec<IndividualAddress>> {
     let request = CemiFrame::t_broadcast(source, apci::A_INDIVIDUAL_ADDRESS_READ, &[]);
@@ -77,8 +77,8 @@ fn is_individual_address_response(frame: &CemiFrame) -> bool {
 /// connection to `new_address` and read the device descriptor). Sending this
 /// while more than one device is in programming mode would address them all
 /// identically, so callers must ensure exactly one responder first.
-pub async fn write_individual_address<C: BusConnection>(
-    bus: &mut C,
+pub async fn write_individual_address<Ch: L4Channel>(
+    mut bus: Ch,
     source: IndividualAddress,
     new_address: IndividualAddress,
 ) -> Result<()> {
@@ -96,8 +96,8 @@ pub async fn write_individual_address<C: BusConnection>(
 /// 6-byte KNX serial number, so **no button press is required**. The answering
 /// device's address is the frame source of its
 /// `A_IndividualAddressSerialNumber_Response`.
-pub async fn read_individual_address_by_serial<C: BusConnection>(
-    bus: &mut C,
+pub async fn read_individual_address_by_serial<Ch: L4Channel>(
+    mut bus: Ch,
     source: IndividualAddress,
     serial: [u8; 6],
 ) -> Result<Option<IndividualAddress>> {
@@ -130,8 +130,8 @@ pub async fn read_individual_address_by_serial<C: BusConnection>(
 /// reserved zero octets (the field the standard reserves for a domain address).
 /// Like [`write_individual_address`], this service defines no response, so the
 /// caller must verify separately.
-pub async fn write_individual_address_by_serial<C: BusConnection>(
-    bus: &mut C,
+pub async fn write_individual_address_by_serial<Ch: L4Channel>(
+    mut bus: Ch,
     source: IndividualAddress,
     serial: [u8; 6],
     new_address: IndividualAddress,

@@ -98,19 +98,13 @@ fn connect_response_body(channel: u8, gw: &UdpSocket) -> Vec<u8> {
     body
 }
 
-/// Builds a live server state with an outbound channel; the bus stream (wired
-/// by the caller) targets the mock gateway.
-fn state_for() -> (
-    Arc<SharedState>,
-    tokio::sync::mpsc::UnboundedReceiver<CemiFrame>,
-) {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-    let state = Arc::new(SharedState {
+/// Builds a live server state (no handle wired yet; the caller spawns the bus).
+fn state_for() -> Arc<SharedState> {
+    Arc::new(SharedState {
         model: model(),
         dir: std::path::PathBuf::from("knx"),
         ring: bussard_monitor::TelegramRing::new(),
         bus: BusStatus::new(TransportKind::Tunnel),
-        outbound: Some(tx),
         passive: false,
         allow_writes: true,
         read_limiter: ReadLimiter::new(
@@ -119,67 +113,41 @@ fn state_for() -> (
         ),
         capture_db: None,
         source_ia: "0.0.255".parse().unwrap(),
-    });
-    (state, rx)
+    })
 }
 
 async fn connect_client_over(
     state: Arc<SharedState>,
     config: ConnectionConfig,
-    rx: tokio::sync::mpsc::UnboundedReceiver<CemiFrame>,
 ) -> (
     rmcp::service::RunningService<rmcp::RoleClient, ()>,
     tokio::task::JoinHandle<()>,
 ) {
-    // We cannot use serve_stdio (it owns real stdio), so replicate its wiring
-    // over a duplex transport: spawn the bus stream, then serve MCP.
+    // Replicate serve_stdio's wiring over a duplex transport: spawn the bus
+    // actor, wire it into the status, feed the ring from a subscription, serve.
     let (server_io, client_io) = tokio::io::duplex(16 * 1024);
-    let server = bussard_mcp::server::BussardMcp::new(state.clone());
 
-    // The bus stream feeding the shared ring + draining outbound.
+    let (handle, _task) = bussard_bus::Bus::connect(config);
+    state.bus.wire(handle.clone());
+
     let model = state.model.clone();
     let ring = state.ring.clone();
-    let bus = state.bus.clone();
-    let stream = tokio::spawn(async move {
-        struct Sink {
-            ring: bussard_monitor::TelegramRing,
-            bus: BusStatus,
+    let feeder_handle = handle.clone();
+    let feeder = tokio::spawn(async move {
+        let mut sub = feeder_handle.subscribe();
+        while let Some(inbound) = sub.recv().await {
+            let decoded =
+                bussard_monitor::DecodedTelegram::from_frame(&inbound.frame, Some(&model));
+            ring.push_with_code(decoded, inbound.message_code);
         }
-        impl bussard_monitor::stream::TelegramSink for Sink {
-            fn on_telegram(
-                &mut self,
-                t: &bussard_monitor::DecodedTelegram,
-                f: &bussard_transport::TimestampedFrame,
-            ) -> bussard_monitor::stream::Flow {
-                // Same as run.rs's RingSink: carry the message code so the
-                // read tool can skip L_Data.con echoes (issue #32).
-                self.ring.push_with_code(t.clone(), f.frame.message_code);
-                bussard_monitor::stream::Flow::Continue
-            }
-            fn on_connect(&mut self, _r: bool) -> bussard_monitor::stream::Flow {
-                self.bus.set(bussard_mcp::state::ConnState::Connected);
-                bussard_monitor::stream::Flow::Continue
-            }
-            fn on_disconnect(
-                &mut self,
-                _e: &bussard_transport::TransportError,
-                _b: Duration,
-            ) -> bussard_monitor::stream::Flow {
-                self.bus.set(bussard_mcp::state::ConnState::Reconnecting);
-                bussard_monitor::stream::Flow::Continue
-            }
-        }
-        let mut sink = Sink { ring, bus };
-        let _ =
-            bussard_monitor::run_stream_with_outbound(&config, Some(&model), &mut sink, Some(rx))
-                .await;
     });
 
+    let server = bussard_mcp::server::BussardMcp::new(state.clone());
     let server_task = tokio::spawn(async move {
         if let Ok(running) = server.serve(server_io).await {
             let _ = running.waiting().await;
         }
-        stream.abort();
+        feeder.abort();
     });
     let client = ().serve(client_io).await.expect("client connects");
     (client, server_task)
@@ -236,8 +204,8 @@ async fn read_group_sends_read_and_returns_value() {
     });
 
     let config = ConnectionConfig::tunnel(addr);
-    let (state, rx) = state_for();
-    let (client, server_task) = connect_client_over(state, config, rx).await;
+    let state = state_for();
+    let (client, server_task) = connect_client_over(state, config).await;
 
     // Give the bus a moment to connect.
     tokio::time::sleep(Duration::from_millis(150)).await;
@@ -328,8 +296,8 @@ async fn read_group_skips_con_echo_and_returns_device_response() {
     });
 
     let config = ConnectionConfig::tunnel(addr);
-    let (state, rx) = state_for();
-    let (client, server_task) = connect_client_over(state, config, rx).await;
+    let state = state_for();
+    let (client, server_task) = connect_client_over(state, config).await;
 
     tokio::time::sleep(Duration::from_millis(150)).await;
 
@@ -393,8 +361,8 @@ async fn write_group_sends_write_and_confirms() {
     });
 
     let config = ConnectionConfig::tunnel(addr);
-    let (state, rx) = state_for();
-    let (client, server_task) = connect_client_over(state, config, rx).await;
+    let state = state_for();
+    let (client, server_task) = connect_client_over(state, config).await;
 
     // Give the bus a moment to connect.
     tokio::time::sleep(Duration::from_millis(150)).await;
@@ -451,8 +419,8 @@ async fn wait_for_telegram_returns_pushed_write() {
     });
 
     let config = ConnectionConfig::tunnel(addr);
-    let (state, rx) = state_for();
-    let (client, server_task) = connect_client_over(state, config, rx).await;
+    let state = state_for();
+    let (client, server_task) = connect_client_over(state, config).await;
 
     let mut args = serde_json::Map::new();
     args.insert("ga".to_string(), serde_json::json!("3/2/0"));
@@ -478,10 +446,6 @@ async fn wait_for_telegram_returns_pushed_write() {
 /// not exercise stdio here since the other tests own the transport, but this
 /// keeps the public entry point covered by a reference.
 #[allow(dead_code)]
-async fn _serve_stdio_is_public(
-    state: Arc<SharedState>,
-    config: ConnectionConfig,
-    rx: Option<tokio::sync::mpsc::UnboundedReceiver<CemiFrame>>,
-) {
-    let _ = serve_stdio(state, config, rx).await;
+async fn _serve_stdio_is_public(state: Arc<SharedState>, config: ConnectionConfig) {
+    let _ = serve_stdio(state, config).await;
 }

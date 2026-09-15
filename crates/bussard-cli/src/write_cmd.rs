@@ -1,42 +1,31 @@
 //! The `bussard write <ga> <value>` subcommand: encode a human value and send a
 //! `GroupValueWrite` on the bus.
 //!
-//! This mirrors [`read_cmd`](crate::read_cmd)'s use of the outbound channel on
-//! [`run_stream_with_outbound`](bussard_monitor::run_stream_with_outbound): the
-//! command opens the bus, injects a single `GroupValueWrite`, waits for the
-//! local `L_Data.con` echo (or a short settle), then confirms what it wrote.
+//! Runs over the [`bussard_bus`] actor: it opens a [`Bus`], calls the shared
+//! [`ops::write_group`] (which sends completion-tracked against the gateway ACK
+//! and watches for a confirmation), then reports what it wrote. The write's exit
+//! code is now honest — a send receipt failure (ACK exhaustion, staleness) exits
+//! non-zero (review A3).
 //!
 //! Safety: a GA marked `protected: true` in `groups.yaml` is refused unless
-//! `--force` is given (see the design document §8).
+//! `--force` is given (see the design document §8). That policy stays at this
+//! edge; `ops` transmits whatever it is handed.
 
 use std::path::Path;
 use std::process::ExitCode;
-use std::time::Duration;
 
 use anyhow::{Context, anyhow, bail};
+use bussard_bus::ops::{self, WriteOptions};
+use bussard_bus::{Bus, BusError};
 use bussard_model::{Dpt, GroupAddress, Model, encode, parse_value};
-use bussard_monitor::stream::{Flow, TelegramSink};
-use bussard_monitor::{
-    CancelToken, DecodedTelegram, DestinationRef, Filter, TelegramRing,
-    run_stream_with_outbound_cancellable,
-};
-use bussard_transport::cemi::CemiFrame;
-use bussard_transport::{TimestampedFrame, TransportError};
-use tokio::sync::mpsc;
 
 use crate::conn_cmd::{ConnOverrides, load_model_optional, resolve_config};
-
-/// How long to wait for the local `L_Data.con` echo before settling.
-const CONFIRM_TIMEOUT: Duration = Duration::from_millis(1500);
-
-/// The source IA for outgoing writes (matches the read/MCP default).
-const SOURCE_IA: &str = "0.0.255";
 
 /// Sends a `GroupValueWrite` to the bus.
 ///
 /// Resolves the DPT (`--dpt` wins, else the GA's DPT from the model), refuses
 /// protected GAs without `--force`, encodes the human value, transmits, and
-/// confirms. Returns a failure exit code on parse/encode/connect errors.
+/// confirms. Returns a failure exit code on parse/encode/connect/send errors.
 pub fn run(
     ga_str: &str,
     value: &str,
@@ -72,75 +61,43 @@ pub fn run(
         .map(|g| g.name.clone());
 
     let config = resolve_config(model.as_ref(), &overrides)?;
-    let source_ia = SOURCE_IA.parse().expect("valid source IA");
 
     let runtime = tokio::runtime::Runtime::new()?;
-    let confirmed = runtime.block_on(async move {
-        let ring = TelegramRing::new();
-        let (out_tx, out_rx) = mpsc::unbounded_channel();
-        let mut sink = RingSink { ring: ring.clone() };
-
-        // A cancel token stops the stream with a clean bus close (releasing the
-        // gateway tunnel slot) instead of aborting the task — see issue #31.
-        let (cancel, cancel_watch) = CancelToken::new();
-        let stream = tokio::spawn(async move {
-            let _ = run_stream_with_outbound_cancellable(
-                &config,
-                model.as_ref(),
-                &mut sink,
-                Some(out_rx),
-                cancel_watch,
-            )
-            .await;
-        });
-
-        // Subscribe before sending so the con echo cannot be missed.
-        let filter = Filter::parse(&ga.to_string()).expect("GA is a valid filter term");
-        let waiter = {
-            let ring = ring.clone();
-            tokio::spawn(async move { ring.wait_for(&filter, CONFIRM_TIMEOUT).await })
-        };
-
-        // Send the write. A send failure surfaces as a settle-timeout below; we
-        // never leave the user without a clear result.
-        let sent = out_tx
-            .send(CemiFrame::group_write(ga, source_ia, &payload))
-            .is_ok();
-
-        let echo = waiter.await.ok().flatten();
-        // Cancel and wait for the stream to close the connection cleanly.
-        cancel.cancel();
-        let _ = stream.await;
-        // Confirmed if we saw an echo for our GA; otherwise "sent" (fire-and-
-        // forget) as long as the frame was queued onto a live-or-reconnecting
-        // connection.
-        (sent, echo)
+    let outcome = runtime.block_on(async move {
+        let (handle, _task) = Bus::connect(config);
+        let result = ops::write_group(&handle, ga, &payload, WriteOptions::default()).await;
+        // Close the bus cleanly (release the gateway tunnel slot) — issue #31.
+        let _ = handle.close().await;
+        result
     });
 
-    let (sent, echo) = confirmed;
-    if !sent {
-        eprintln!("error: could not queue the write for {ga} (bus channel closed)");
-        return Ok(ExitCode::FAILURE);
-    }
-
-    // Confirmation line, e.g.
-    // `3/0/4 Jalousie Wohnen Süd — Auf/Ab ← Down (1.008)`.
     let value_display = typed.to_string();
-    let confirmed_echo = echo
-        .as_ref()
-        .is_some_and(|t| matches!(t.destination, DestinationRef::Group(g) if g == ga));
-
-    match &ga_name {
-        Some(name) => println!("{ga} {name} ← {value_display} ({dpt})"),
-        None => println!("{ga} ← {value_display} ({dpt})"),
+    match outcome {
+        Ok(write) => {
+            // Confirmation line, e.g.
+            // `3/0/4 Jalousie Wohnen Süd — Auf/Ab ← Down (1.008)`.
+            match &ga_name {
+                Some(name) => println!("{ga} {name} ← {value_display} ({dpt})"),
+                None => println!("{ga} ← {value_display} ({dpt})"),
+            }
+            if !write.confirmed {
+                // Not an error: KNX group writes are fire-and-forget. Note the
+                // missing confirmation on stderr so scripts still see success.
+                eprintln!("note: sent (no bus confirmation observed)");
+            }
+            Ok(ExitCode::SUCCESS)
+        }
+        Err(BusError::Stale) => {
+            eprintln!(
+                "error: could not write {ga}: bus not connected (dropped after staleness cutoff)"
+            );
+            Ok(ExitCode::FAILURE)
+        }
+        Err(err) => {
+            eprintln!("error: could not write {ga}: {err}");
+            Ok(ExitCode::FAILURE)
+        }
     }
-    if !confirmed_echo {
-        // Not an error: KNX group writes are fire-and-forget. Note the missing
-        // confirmation on stderr so scripts still see success on stdout.
-        eprintln!("note: sent (no bus confirmation observed within {CONFIRM_TIMEOUT:?})");
-    }
-
-    Ok(ExitCode::SUCCESS)
 }
 
 /// Returns a refusal message if `ga` is protected in the model and `force` is
@@ -181,30 +138,6 @@ fn resolve_dpt(
             }
             bail!("GA {ga} has no DPT in groups.yaml; pass --dpt <dpt> (e.g. --dpt 1.001)")
         }
-    }
-}
-
-/// A sink that pushes each decoded telegram into a shared ring.
-struct RingSink {
-    ring: TelegramRing,
-}
-
-impl TelegramSink for RingSink {
-    fn on_telegram(&mut self, telegram: &DecodedTelegram, frame: &TimestampedFrame) -> Flow {
-        // Carry the cEMI message code; the write confirmation deliberately
-        // accepts the L_Data.con echo (that IS the confirmation), so its waiter
-        // keeps the plain GA filter.
-        self.ring
-            .push_with_code(telegram.clone(), frame.frame.message_code);
-        Flow::Continue
-    }
-
-    fn on_disconnect(&mut self, error: &TransportError, backoff: Duration) -> Flow {
-        tracing::warn!(
-            "bus connection issue: {error}; retrying in {}s",
-            backoff.as_secs()
-        );
-        Flow::Continue
     }
 }
 
