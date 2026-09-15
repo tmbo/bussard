@@ -228,6 +228,46 @@ jobs:
           echo $! | sudo tee /tmp/tcpdump.pid >/dev/null
           sleep 1  # let it bind before traffic starts
 
+      # Probe: prove multicast physically crosses the veth in BOTH directions,
+      # independent of bussard/device, so we know the plumbing carries the KNX
+      # routing group. A listener joins 224.0.23.12:3671 on one side; a sender on
+      # the other fires a datagram. We test root->dev and dev->root.
+      - name: Probe veth multicast (both directions)
+        run: |
+          cat > /tmp/mcast_probe.py <<'PY'
+          import socket, struct, sys, time
+          role, iface_ip, group, port = sys.argv[1], sys.argv[2], "224.0.23.12", 3671
+          if role == "listen":
+              s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+              s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+              s.bind(("", port))
+              mreq = struct.pack("4s4s", socket.inet_aton(group), socket.inet_aton(iface_ip))
+              s.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+              s.settimeout(6)
+              try:
+                  data, addr = s.recvfrom(1024)
+                  print(f"LISTEN-OK received {data!r} from {addr}")
+              except socket.timeout:
+                  print("LISTEN-TIMEOUT no packet received"); sys.exit(1)
+          else:
+              s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+              s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(iface_ip))
+              s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+              for _ in range(10):
+                  s.sendto(b"PROBE", (group, port)); time.sleep(0.3)
+              print("SEND-DONE")
+          PY
+          echo "=== root -> dev ==="
+          sudo ip netns exec knxdev python3 /tmp/mcast_probe.py listen 10.213.0.2 &
+          lpid=$!; sleep 1
+          python3 /tmp/mcast_probe.py send 10.213.0.1 || true
+          wait $lpid; echo "root->dev exit: $?"
+          echo "=== dev -> root ==="
+          python3 /tmp/mcast_probe.py listen 10.213.0.1 &
+          lpid=$!; sleep 1
+          sudo ip netns exec knxdev python3 /tmp/mcast_probe.py send 10.213.0.2 || true
+          wait $lpid; echo "dev->root exit: $?"
+
       # Pre-flight: prove the device actually boots inside the namespace and
       # joins the multicast group, before the Rust harness drives it. This
       # isolates "device won't start / won't join" from "bussard can't reach it".
