@@ -105,9 +105,12 @@ fn mcp_stdio_handshake_is_pure_json_and_lists_seven_passive_tools() {
         }
     }
 
-    // Close stdin so the server exits, then reap.
+    // Close stdin so the server exits on EOF, then reap. The assertion above
+    // already has the tools/list response, so this is only a graceful-exit grace
+    // window: a short poll (the server exits near-instantly on EOF) followed by
+    // an unconditional kill, rather than a fixed 3s wait.
     drop(stdin);
-    let _ = child.wait_timeout(Duration::from_secs(3));
+    let _ = child.wait_timeout(Duration::from_millis(500));
     let _ = child.kill();
 
     let mut tools = tools.expect("received a tools/list response");

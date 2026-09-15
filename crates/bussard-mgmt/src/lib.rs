@@ -56,8 +56,9 @@ pub mod manufacturers;
 pub mod tables;
 
 pub use broadcast::{
-    devices_in_programming_mode, read_individual_address_by_serial, write_individual_address,
-    write_individual_address_by_serial,
+    devices_in_programming_mode, devices_in_programming_mode_within,
+    read_individual_address_by_serial, read_individual_address_by_serial_within,
+    write_individual_address, write_individual_address_by_serial,
 };
 pub use connection::{L4Channel, Layer4Connection, LeaseChannel, Timeouts};
 pub use device::DeviceConnection;

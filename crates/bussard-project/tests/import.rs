@@ -149,7 +149,16 @@ fn oracle_dpt_string(dpt: &Value) -> Option<String> {
     }
 }
 
+/// One combined oracle test: the decrypt+parse of the real project dominates
+/// (~7.5s) and nextest isolates processes, so three separate tests paid it
+/// three times. One test, three assertion sections.
 #[test]
+fn oracle_matches() {
+    oracle_group_addresses_match();
+    oracle_devices_match();
+    oracle_com_object_links_match();
+}
+
 fn oracle_group_addresses_match() {
     let Some((model, oracle)) = load_real_and_oracle() else {
         eprintln!("skipping oracle_group_addresses_match: fixtures/password not available");
@@ -179,7 +188,6 @@ fn oracle_group_addresses_match() {
     }
 }
 
-#[test]
 fn oracle_devices_match() {
     let Some((model, oracle)) = load_real_and_oracle() else {
         eprintln!("skipping oracle_devices_match: fixtures/password not available");
@@ -203,7 +211,6 @@ fn oracle_devices_match() {
     }
 }
 
-#[test]
 fn oracle_com_object_links_match() {
     let Some((model, oracle)) = load_real_and_oracle() else {
         eprintln!("skipping oracle_com_object_links_match: fixtures/password not available");

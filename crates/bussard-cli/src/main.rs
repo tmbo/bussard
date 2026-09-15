@@ -76,6 +76,12 @@ enum Command {
         /// The line to scan, e.g. `1.1`.
         #[arg(value_name = "LINE", default_value = "1.1")]
         line: String,
+        /// The first device number to probe (0–255).
+        #[arg(long, value_name = "N", default_value_t = 0)]
+        from: u8,
+        /// The last device number to probe (0–255).
+        #[arg(long, value_name = "N", default_value_t = 255)]
+        to: u8,
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
@@ -312,12 +318,16 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
     match command {
         Command::Scan {
             line,
+            from,
+            to,
             dir,
             json,
             gateway,
             routing,
         } => scan_cmd::run(
             &line,
+            from,
+            to,
             &dir,
             json,
             conn_cmd::ConnOverrides { gateway, routing },
