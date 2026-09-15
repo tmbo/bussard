@@ -1,0 +1,16 @@
+[package]
+name = "bussard-model"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "Core KNX domain model for bussard: GA/IA/DPT/flags types, DPT codecs, YAML schema, loader, validation"
+
+[dependencies]
+serde = { workspace = true }
+serde_norway = { workspace = true }
+serde_path_to_error = { workspace = true }
+thiserror = { workspace = true }
+bitflags = { workspace = true }
