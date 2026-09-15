@@ -9,3 +9,24 @@ rust-version.workspace = true
 description = "MCP stdio server for bussard: read-only KNX model and bus introspection tools"
 
 [dependencies]
+bussard-model = { workspace = true }
+bussard-transport = { workspace = true }
+bussard-monitor = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+# The official Rust MCP SDK. Apache-2.0. Server + macros + stdio transport +
+# JSON-Schema generation for tool parameters. Pinned to 3.x; MSRV 1.88 < 1.98.
+rmcp = { version = "3.3.0", features = ["server", "macros", "transport-io", "schemars"] }
+
+[dev-dependencies]
+tokio = { workspace = true }
+serde_json = { workspace = true }
+bussard-model = { workspace = true }
+bussard-monitor = { workspace = true }
+bussard-transport = { workspace = true }
+# The client half of rmcp for the in-process integration test.
+rmcp = { version = "3.3.0", features = ["server", "client", "macros", "transport-io", "schemars"] }
