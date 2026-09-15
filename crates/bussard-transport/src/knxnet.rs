@@ -79,7 +79,7 @@ impl ServiceType {
                 return Err(TransportError::InvalidField {
                     field: "KNXnet/IP service type",
                     value: other,
-                })
+                });
             }
         })
     }

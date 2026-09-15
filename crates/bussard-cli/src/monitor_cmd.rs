@@ -6,10 +6,10 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use bussard_monitor::stream::{Flow, TelegramSink};
-use bussard_monitor::{json_line, pretty_line, run_stream, DecodedTelegram, Filter};
+use bussard_monitor::{DecodedTelegram, Filter, json_line, pretty_line, run_stream};
 use bussard_transport::{TimestampedFrame, TransportError};
 
-use crate::conn_cmd::{load_model_optional, resolve_config, ConnOverrides};
+use crate::conn_cmd::{ConnOverrides, load_model_optional, resolve_config};
 
 /// Runs `bussard monitor`.
 pub fn run(

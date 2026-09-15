@@ -13,10 +13,10 @@
 
 use std::time::SystemTime;
 
-use bussard_model::codec::{decode, TypedValue};
+use bussard_model::codec::{TypedValue, decode};
 use bussard_model::{ApduSize, Dpt, GroupAddress, IndividualAddress, Model};
-use bussard_transport::cemi::{Apdu, Destination, GroupData};
 use bussard_transport::TimestampedFrame;
+use bussard_transport::cemi::{Apdu, Destination, GroupData};
 
 /// The application-layer service kind of a telegram, classified for display and
 /// filtering. [`ApciKind::Other`] preserves the raw 10-bit APCI so management
@@ -274,8 +274,8 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    use bussard_model::schema::{BussardConfig, Device, Group, Groups, Link, Links};
     use bussard_model::LoadedDevice;
+    use bussard_model::schema::{BussardConfig, Device, Group, Groups, Link, Links};
     use bussard_transport::cemi::CemiFrame;
 
     fn ia(s: &str) -> IndividualAddress {

@@ -8,7 +8,7 @@ use std::io::IsTerminal;
 use std::path::Path;
 use std::process::ExitCode;
 
-use bussard_model::{validate, Diagnostic, Model, Severity};
+use bussard_model::{Diagnostic, Model, Severity, validate};
 use owo_colors::OwoColorize;
 
 /// Runs the validate command over the model in `dir`.

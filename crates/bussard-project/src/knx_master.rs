@@ -2,8 +2,8 @@
 
 use std::collections::HashMap;
 
-use quick_xml::events::Event;
 use quick_xml::Reader;
+use quick_xml::events::Event;
 
 use crate::error::{ImportError, Result};
 
@@ -20,31 +20,29 @@ pub fn parse_manufacturers(xml: &str) -> Result<HashMap<String, String>> {
             source,
         })? {
             Event::Eof => break,
-            Event::Start(e) | Event::Empty(e) => {
-                if e.local_name().as_ref() == b"Manufacturer" {
-                    let mut id = None;
-                    let mut name = None;
-                    for a in e.attributes() {
-                        let a = a.map_err(|source| ImportError::XmlAttr {
+            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"Manufacturer" => {
+                let mut id = None;
+                let mut name = None;
+                for a in e.attributes() {
+                    let a = a.map_err(|source| ImportError::XmlAttr {
+                        context: context.to_string(),
+                        source,
+                    })?;
+                    let value = a
+                        .unescape_value()
+                        .map_err(|source| ImportError::Xml {
                             context: context.to_string(),
                             source,
-                        })?;
-                        let value = a
-                            .unescape_value()
-                            .map_err(|source| ImportError::Xml {
-                                context: context.to_string(),
-                                source,
-                            })?
-                            .into_owned();
-                        match a.key.as_ref() {
-                            b"Id" => id = Some(value),
-                            b"Name" => name = Some(value),
-                            _ => {}
-                        }
+                        })?
+                        .into_owned();
+                    match a.key.as_ref() {
+                        b"Id" => id = Some(value),
+                        b"Name" => name = Some(value),
+                        _ => {}
                     }
-                    if let (Some(id), Some(name)) = (id, name) {
-                        map.insert(id, name);
-                    }
+                }
+                if let (Some(id), Some(name)) = (id, name) {
+                    map.insert(id, name);
                 }
             }
             _ => {}

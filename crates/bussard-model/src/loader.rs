@@ -13,8 +13,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 
 use crate::address::IndividualAddress;
 use crate::schema::{BussardConfig, Device, Groups, Links};

@@ -18,8 +18,8 @@ pub mod schema;
 pub mod validate;
 
 pub use address::{AddressParseError, GroupAddress, IndividualAddress};
-pub use codec::{decode, encode, EncodeError, HvacMode, TypedValue};
+pub use codec::{EncodeError, HvacMode, TypedValue, decode, encode};
 pub use dpt::{ApduSize, Dpt, DptParseError};
 pub use flags::{Flags, FlagsParseError};
 pub use loader::{LoadError, LoadedDevice, Model, SaveError};
-pub use validate::{has_errors, validate, Diagnostic, Severity};
+pub use validate::{Diagnostic, Severity, has_errors, validate};

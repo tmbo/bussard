@@ -32,4 +32,4 @@ pub use ring::TelegramRing;
 pub use store::{
     CaptureRecord, CaptureStore, CaptureWriter, QueryFilter, StoreError, StoredTelegram,
 };
-pub use stream::{run_stream, StreamError, TelegramSink};
+pub use stream::{StreamError, TelegramSink, run_stream};

@@ -7,9 +7,9 @@
 use std::net::{Ipv4Addr, SocketAddrV4, ToSocketAddrs};
 use std::path::Path;
 
-use anyhow::{anyhow, Context};
-use bussard_model::schema::Transport as ModelTransport;
+use anyhow::{Context, anyhow};
 use bussard_model::Model;
+use bussard_model::schema::Transport as ModelTransport;
 use bussard_transport::config::{DEFAULT_MULTICAST, DEFAULT_PORT};
 use bussard_transport::{ConnectionConfig, TransportKind};
 

@@ -8,12 +8,12 @@
 
 use std::collections::HashMap;
 
-use quick_xml::events::Event;
 use quick_xml::Reader;
+use quick_xml::events::Event;
 
 use crate::dpt_map::parse_ets_dpt;
 use crate::error::{ImportError, Result};
-use crate::flag_map::{parse_flag_value, FlagSet};
+use crate::flag_map::{FlagSet, parse_flag_value};
 use bussard_model::Dpt;
 
 /// A base `<ComObject>` from the application program.

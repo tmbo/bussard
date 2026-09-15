@@ -36,7 +36,9 @@ pub struct Filter {
 
 /// An error parsing a filter expression.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("invalid filter term {term:?}: expected a group address (3/2/0), a GA prefix (3/ or 3/2/), or an individual address (1.1.30)")]
+#[error(
+    "invalid filter term {term:?}: expected a group address (3/2/0), a GA prefix (3/ or 3/2/), or an individual address (1.1.30)"
+)]
 pub struct FilterParseError {
     /// The offending term.
     pub term: String,
