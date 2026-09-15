@@ -1,4 +1,4 @@
-# `bussard ha-config` — Home Assistant KNX config generation
+# `bussard ha-config`: Home Assistant KNX config generation
 
 Generate the [Home Assistant KNX integration](https://www.home-assistant.io/integrations/knx/)
 YAML (the `knx:` platform schema) straight from the bussard YAML model, so the
@@ -34,7 +34,7 @@ knx:
 # summary
 # entities: 39 switch, 5 light, 34 cover, 159 sensor, 41 binary_sensor
 # group addresses: 378/421 mapped
-# unmapped: 43 group addresses (dpt 20: 22, dpt 1: 7, ...)
+# unmapped: 43 group addresses (no-dpt: 1, dpt 1: 7, dpt 3: 6, dpt 5: 2, dpt 9: 2, dpt 10: 1, dpt 11: 1, dpt 19: 1, dpt 20: 22)
 ```
 
 Output is deterministic: entities are sorted by platform, then name, then
@@ -45,28 +45,28 @@ Assistant configuration (or `!include` the file).
 ## How entities are derived
 
 bussard has devices, com-objects and group addresses (GAs); Home Assistant
-wants entities. Derivation reasons **per device**: it walks each device's
+wants entities. Derivation reasons per device: it walks each device's
 com-objects, resolves each to the GA it sends or listens to (from `links.yaml`),
-groups related objects into a *cluster* (by channel where the model records one,
+groups related objects into a cluster (by channel where the model records one,
 otherwise one object per cluster), and emits one entity per cluster.
 
 Roles come from the com-object flags:
 
-- an object with the **W** flag *receives* commands — its listened GA is a
-  **command address** (the GA Home Assistant sends to);
-- an object with the **T** flag *transmits* status — its sent GA is a **state
-  address** (the GA Home Assistant reads).
+- an object with the W flag receives commands, so its listened GA is a command
+  address (the GA Home Assistant sends to);
+- an object with the T flag transmits status, so its sent GA is a state address
+  (the GA Home Assistant reads).
 
 ### Mapping rules
 
 | Model shape | Home Assistant entity |
 |---|---|
 | `1.008` up/down `[+ 1.007` step/stop`, 5.001` position ± status`]` | `cover` (move_long / move_short / position / position_state) |
-| `1.001` switch (has a **W** command object) | `switch` (or `light`) |
+| `1.001` switch (has a W command object) | `switch` (or `light`) |
 | `1.001` switch `+ 5.001` brightness on the same channel | `light` with `brightness_address` |
 | `9.xxx` value a sensor sends | `sensor` with `type` per DPT sub |
 | other numeric value (`7`/`12`/`13`/`14`/`5`) a sensor sends | `sensor` with the matching `type` |
-| `1.xxx` a sensor *sends* (**T**) — presence, contacts, alarms | `binary_sensor` |
+| `1.xxx` a sensor sends (T flag): presence, contacts, alarms | `binary_sensor` |
 
 `device_class` is inferred from the GA/device name and DPT sub where it is
 unambiguous:
@@ -80,9 +80,9 @@ Sensor `type` per DPT sub: `9.001` → `temperature`, `9.004` → `illuminance`,
 `9.005` → `wind_speed_ms`, `9.007` → `humidity`, `9.008` → `ppm`, and so on
 (unknown `9.x` falls back to `2byte_float`).
 
-### What does *not* map
+### What does not map
 
-A GA that fits no rule is **never silently dropped** — it is counted in the
+A GA that fits no rule is never silently dropped: it is counted in the
 `# unmapped:` footer, grouped by DPT main number, so you can see the coverage.
 Typical unmapped GAs are scene/HVAC-mode datapoints (`20.102`), relative
 dimming (`3.007`), date/time (`10.001`/`11.001`), and setpoints the model does
@@ -90,8 +90,8 @@ not tie to a controllable entity.
 
 ### Deduplication
 
-The same GA is often touched by several devices — an actuator that switches it
-and the push-buttons that command it. Actuators are derived first and *claim*
+The same GA is often touched by several devices: an actuator that switches it
+and the push-buttons that command it. Actuators are derived first and claim
 their GAs; a later sensor pass only maps GAs no actuator claimed, and any entity
 whose GAs are already spoken for is dropped. The result is one entity per GA.
 Colliding entity names get their primary GA appended (`Name (1/2/3)`) so names
@@ -100,11 +100,11 @@ stay unique per platform, as Home Assistant requires.
 ## Overrides: `ha.yaml`
 
 Put an optional `ha.yaml` next to your model (in the `--dir`) to tune the
-result. It is parsed **strictly** — unknown fields and duplicate keys are
-rejected — so a typo is an error, not a silent no-op.
+result. It is parsed strictly, rejecting unknown fields and duplicate keys, so
+a typo is an error, not a silent no-op.
 
 ```yaml
-# ha.yaml — overrides for `bussard ha-config`.
+# ha.yaml: overrides for `bussard ha-config`.
 global:
   # A plain switchable actuator becomes a `switch` (default) or a `light`.
   default_platform_for_switches: switch   # or: light
@@ -130,12 +130,12 @@ entities:
 
 ### Precedence
 
-1. **Exclusions win over everything** — an excluded GA never produces an entity.
-2. An explicit per-entity **`platform`** overrides the heuristic (only the
+1. Exclusions win over everything: an excluded GA never produces an entity.
+2. An explicit per-entity `platform` overrides the heuristic (only the
    `switch` ↔ `light` promotion is offered; cover/sensor/binary_sensor are
    structural).
-3. An explicit **`name`** / **`device_class`** overrides the derived value.
-4. **`merge`** adds the listed GAs to the entity's extra addresses.
+3. An explicit `name` / `device_class` overrides the derived value.
+4. `merge` adds the listed GAs to the entity's extra addresses.
 
 ## Quality check against your model
 
