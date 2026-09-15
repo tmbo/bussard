@@ -202,13 +202,22 @@ impl Model {
     /// YAML). Stale device files (whose address is no longer in the saved set)
     /// are pruned and reported on stderr (issue #18) — see
     /// [`Model::save_pruning`] for the wrapper the importer uses.
+    ///
+    /// `bussard.yaml` is *user-owned* — nothing in it derives from the ETS
+    /// project — so it is written only when absent and an existing one is left
+    /// byte-untouched (issue #28). This preserves the user's gateway/transport
+    /// choice across re-imports. (`bussard init` writes its own `bussard.yaml`
+    /// directly, so it is unaffected.)
     pub fn save(&self, dir: &Path) -> Result<(), SaveError> {
         fs::create_dir_all(dir).map_err(|source| SaveError::Io {
             path: dir.to_path_buf(),
             source,
         })?;
 
-        write_yaml(&dir.join("bussard.yaml"), &self.config, BUSSARD_HEADER)?;
+        let bussard_path = dir.join("bussard.yaml");
+        if !bussard_path.exists() {
+            write_yaml(&bussard_path, &self.config, BUSSARD_HEADER)?;
+        }
         write_yaml(&dir.join("groups.yaml"), &self.groups, GROUPS_HEADER)?;
         write_yaml(&dir.join("links.yaml"), &self.links, LINKS_HEADER)?;
 
@@ -634,6 +643,47 @@ com_objects:
         assert!(report.pruned.is_empty());
         let second = fs::read_to_string(&path).unwrap();
         assert_eq!(first, second);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_creates_bussard_yaml_when_absent() {
+        let dir = tmp_dir("bussard-fresh");
+        let model = small_model();
+        model.save(&dir).unwrap();
+        assert!(
+            dir.join("bussard.yaml").exists(),
+            "fresh save must create bussard.yaml"
+        );
+        let text = fs::read_to_string(dir.join("bussard.yaml")).unwrap();
+        assert!(text.starts_with("# bussard.yaml"), "banner present: {text}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_leaves_existing_bussard_yaml_byte_untouched() {
+        // A user-owned bussard.yaml (hand-edited, with a gateway) must survive a
+        // re-import byte-for-byte — nothing in it derives from the ETS project
+        // (issue #28).
+        let dir = tmp_dir("bussard-owned");
+        fs::create_dir_all(&dir).unwrap();
+        let hand_edited =
+            "# my own file\nconnection:\n  transport: tunnel\n  gateway: 10.0.0.9:3671\n";
+        fs::write(dir.join("bussard.yaml"), hand_edited).unwrap();
+
+        let model = small_model();
+        model.save_pruning(&dir).unwrap();
+
+        let after = fs::read_to_string(dir.join("bussard.yaml")).unwrap();
+        assert_eq!(
+            after, hand_edited,
+            "existing bussard.yaml must be untouched"
+        );
+
+        // A second import is still a no-op for it.
+        model.save_pruning(&dir).unwrap();
+        let after2 = fs::read_to_string(dir.join("bussard.yaml")).unwrap();
+        assert_eq!(after2, hand_edited);
         let _ = fs::remove_dir_all(&dir);
     }
 
