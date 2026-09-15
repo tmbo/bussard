@@ -18,6 +18,8 @@ use serde::Serialize;
 pub enum Platform {
     /// A `binary_sensor` entity.
     BinarySensor,
+    /// A `climate` entity.
+    Climate,
     /// A `cover` entity.
     Cover,
     /// A `light` entity.
@@ -33,6 +35,7 @@ impl Platform {
     pub fn key(self) -> &'static str {
         match self {
             Platform::BinarySensor => "binary_sensor",
+            Platform::Climate => "climate",
             Platform::Cover => "cover",
             Platform::Light => "light",
             Platform::Sensor => "sensor",
@@ -126,6 +129,49 @@ pub struct BinarySensor {
     pub device_class: Option<String>,
 }
 
+/// A `climate` entity (a room heating controller).
+///
+/// Assembled from a per-room cluster of KNX group addresses that span several
+/// devices (a room controller sends the operation mode; a heating actuator
+/// drives the valve; a sensor sends the temperature), correlated by room name.
+/// Field names match the HA KNX `climate` schema exactly.
+///
+/// For the central-heating installation this targets, the operation mode is the
+/// control and temperature/valve are read-only telemetry; the setpoint-shift and
+/// target-temperature fields are part of the schema but left unwired by the
+/// derivation (see `derive::derive_climate` and docs/ha-config.md). They remain
+/// on the struct so an `ha.yaml` override can populate them for installations
+/// that do per-room setpoint control.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Climate {
+    /// Display name.
+    pub name: String,
+    /// The GA the current room temperature is read from (DPT 9.001).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature_address: Option<GroupAddress>,
+    /// The GA the current target (setpoint) temperature is read from (9.001).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_temperature_state_address: Option<GroupAddress>,
+    /// The GA setpoint shift is written to (DPT 9.002).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub setpoint_shift_address: Option<GroupAddress>,
+    /// The GA setpoint shift is read from (DPT 9.002).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub setpoint_shift_state_address: Option<GroupAddress>,
+    /// The DPT of the setpoint-shift addresses (`DPT9002` for a 9.002 shift).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub setpoint_shift_mode: Option<String>,
+    /// The GA the HVAC operation mode is written to (DPT 20.102).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation_mode_address: Option<GroupAddress>,
+    /// The GA the HVAC operation mode is read from (DPT 20.102).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation_mode_state_address: Option<GroupAddress>,
+    /// The GA the current valve/command value (percent) is read from (5.001).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command_value_state_address: Option<GroupAddress>,
+}
+
 /// One derived entity, before it is placed into the platform-keyed document.
 ///
 /// Carries its [`Platform`] and sort name so the emitter can order entities
@@ -142,6 +188,8 @@ pub enum Entity {
     Sensor(Sensor),
     /// A binary sensor entity.
     BinarySensor(BinarySensor),
+    /// A climate entity.
+    Climate(Climate),
 }
 
 impl Entity {
@@ -153,6 +201,7 @@ impl Entity {
             Entity::Cover(_) => Platform::Cover,
             Entity::Sensor(_) => Platform::Sensor,
             Entity::BinarySensor(_) => Platform::BinarySensor,
+            Entity::Climate(_) => Platform::Climate,
         }
     }
 
@@ -164,6 +213,7 @@ impl Entity {
             Entity::Cover(e) => &e.name,
             Entity::Sensor(e) => &e.name,
             Entity::BinarySensor(e) => &e.name,
+            Entity::Climate(e) => &e.name,
         }
     }
 
@@ -199,6 +249,18 @@ impl Entity {
             .collect(),
             Entity::Sensor(e) => vec![e.state_address],
             Entity::BinarySensor(e) => vec![e.state_address],
+            Entity::Climate(e) => [
+                e.temperature_address,
+                e.target_temperature_state_address,
+                e.setpoint_shift_address,
+                e.setpoint_shift_state_address,
+                e.operation_mode_address,
+                e.operation_mode_state_address,
+                e.command_value_state_address,
+            ]
+            .into_iter()
+            .flatten()
+            .collect(),
         }
     }
 
@@ -220,6 +282,16 @@ impl Entity {
                 .unwrap_or_else(|| GroupAddress::from_raw(0)),
             Entity::Sensor(e) => e.state_address,
             Entity::BinarySensor(e) => e.state_address,
+            // A climate entity is always constructed with at least an operation
+            // mode or a setpoint-shift command (the anchor requirement). The
+            // fallback chain (and the reserved `0/0/0`) only guard the type.
+            Entity::Climate(e) => e
+                .operation_mode_address
+                .or(e.setpoint_shift_address)
+                .or(e.operation_mode_state_address)
+                .or(e.setpoint_shift_state_address)
+                .or(e.temperature_address)
+                .unwrap_or_else(|| GroupAddress::from_raw(0)),
         }
     }
 }

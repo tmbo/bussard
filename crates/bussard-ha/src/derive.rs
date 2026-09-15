@@ -39,7 +39,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use bussard_model::schema::{ComObject, Device};
 use bussard_model::{Dpt, Flags, GroupAddress, Model};
 
-use crate::entities::{BinarySensor, Cover, Entity, Light, Sensor, Switch};
+use crate::entities::{BinarySensor, Climate, Cover, Entity, Light, Sensor, Switch};
 use crate::overrides::{Overrides, PlatformOverride, SwitchPlatform};
 
 /// The result of deriving entities from a model.
@@ -55,6 +55,10 @@ pub struct Derived {
     pub total_gas: usize,
     /// The number of distinct GAs consumed by at least one emitted entity.
     pub mapped_gas: usize,
+    /// Free-form notes for the summary footer (e.g. climate GAs recognised but
+    /// deliberately left unwired because the HA schema has no matching key).
+    /// Sorted and deduplicated for deterministic output.
+    pub notes: BTreeSet<String>,
 }
 
 /// Which kind of entity a derivation pass produces.
@@ -142,7 +146,23 @@ pub fn derive(model: &Model, overrides: &Overrides) -> Derived {
             &mut claimed,
         );
     }
-    // Pass 2 — sensors and binary_sensors on the GAs actuators did not claim.
+    // Pass 2 — climate. Room heating clusters span several devices (a room
+    // controller sends the operation mode; a heating actuator drives the valve;
+    // a separate sensor may send the temperature), so climate is derived by
+    // correlating group addresses on their room name rather than per device. It
+    // runs after actuators (covers/switches already own their GAs) but before the
+    // generic sensor pass, so the mode/valve/temperature GAs it wires are claimed
+    // by the climate entity instead of leaking into standalone sensors.
+    derive_climate(
+        model,
+        overrides,
+        &mut out.entities,
+        &mut consumed,
+        &mut claimed,
+        &mut out.notes,
+    );
+
+    // Pass 3 — sensors and binary_sensors on the GAs actuators did not claim.
     for loaded in model.devices.values() {
         derive_device(
             &loaded.device,
@@ -374,6 +394,29 @@ fn wire_merged_ga(entity: &mut Entity, ga: GroupAddress) -> bool {
             e.angle_state_address = Some(ga);
             true
         }
+        // Climate: fill the first free state slot in a fixed, documented order
+        // (temperature, target state, operation-mode state, setpoint-shift
+        // state, command value). Command GAs are never merge targets.
+        Entity::Climate(e) if e.temperature_address.is_none() => {
+            e.temperature_address = Some(ga);
+            true
+        }
+        Entity::Climate(e) if e.target_temperature_state_address.is_none() => {
+            e.target_temperature_state_address = Some(ga);
+            true
+        }
+        Entity::Climate(e) if e.operation_mode_state_address.is_none() => {
+            e.operation_mode_state_address = Some(ga);
+            true
+        }
+        Entity::Climate(e) if e.setpoint_shift_state_address.is_none() => {
+            e.setpoint_shift_state_address = Some(ga);
+            true
+        }
+        Entity::Climate(e) if e.command_value_state_address.is_none() => {
+            e.command_value_state_address = Some(ga);
+            true
+        }
         // Sensor/binary_sensor have only one address and no spare state slot.
         _ => false,
     }
@@ -402,6 +445,222 @@ fn push_unclaimed(
     claimed.insert(primary);
     consumed.extend(gas);
     entities.push(entity);
+}
+
+// --- climate derivation ---------------------------------------------------
+
+/// The role a group address plays within a room's heating cluster, recognised
+/// from its DPT and the German suffix of its name.
+///
+/// The real installation names heating GAs `"<Room> <suffix>"` with a stable set
+/// of suffixes (see the table below). Because these GAs are sent by different
+/// devices (a room controller, a heating actuator, a standalone temperature
+/// sensor), they cannot be clustered per device the way covers are — the shared
+/// signal is the room name, so climate correlation is name-based.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClimateRole {
+    /// Room temperature, DPT 9.001 (`Isttemperatur`).
+    Temperature,
+    /// Current target/setpoint temperature, DPT 9.001 (`Soll-Temperatur aktuell`).
+    TargetState,
+    /// Operation-mode command, DPT 20.102 (`Betriebsmodus Vorgabe`).
+    ModeCommand,
+    /// Operation-mode status, DPT 20.102 (`Betriebsmodus Vorgabe Status`).
+    ModeState,
+    /// Forced operation mode, DPT 20.102 (`Betriebsmodus Zwang`). Recognised but
+    /// left unwired: the HA KNX climate schema has no forced-mode address key.
+    Forced,
+    /// Setpoint-shift command, DPT 9.002 (`Sollwertverschiebung`).
+    ShiftCommand,
+    /// Setpoint-shift status, DPT 9.002 (`Sollwertverschiebung Status`).
+    ShiftState,
+    /// Valve position / command value, DPT 5.001 (`Stellgröße Heizen/Kühlen`).
+    Valve,
+}
+
+/// Classifies a heating group address into a [`ClimateRole`] and its room name.
+///
+/// Returns `(room, role)` where `room` is the GA name with the matched suffix
+/// stripped. Matching is by DPT main/sub *and* a name suffix, so a stray 9.001
+/// temperature elsewhere is only treated as a climate temperature when its name
+/// ends in a heating suffix. Suffixes are checked longest-first so
+/// `"... Vorgabe Status"` wins over `"... Vorgabe"`.
+fn classify_climate_ga(name: &str, dpt: Option<Dpt>) -> Option<(String, ClimateRole)> {
+    let d = dpt?;
+    let (main, sub) = (d.main, d.sub);
+    // (suffix, role, main, sub). Longest suffixes first so a more specific match
+    // (e.g. "... Status") is preferred over its prefix.
+    const TABLE: &[(&str, ClimateRole, u16, u16)] = &[
+        (
+            "Betriebsmodus Vorgabe Status",
+            ClimateRole::ModeState,
+            20,
+            102,
+        ),
+        ("Betriebsmodus Vorgabe", ClimateRole::ModeCommand, 20, 102),
+        ("Betriebsmodus Zwang", ClimateRole::Forced, 20, 102),
+        ("Sollwertverschiebung Status", ClimateRole::ShiftState, 9, 2),
+        ("Sollwertverschiebung", ClimateRole::ShiftCommand, 9, 2),
+        ("Stellgröße Heizen/Kühlen", ClimateRole::Valve, 5, 1),
+        ("Soll-Temperatur aktuell", ClimateRole::TargetState, 9, 1),
+        ("Isttemperatur", ClimateRole::Temperature, 9, 1),
+    ];
+    for &(suffix, role, m, s) in TABLE {
+        if main == m && sub == Some(s) {
+            if let Some(room) = name.strip_suffix(suffix) {
+                let room = room.trim();
+                if !room.is_empty() {
+                    return Some((room.to_string(), role));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// A room's collected climate group addresses, keyed by role (last-writer wins,
+/// but each role has a single GA in the real model).
+#[derive(Debug, Default)]
+struct ClimateCluster {
+    roles: BTreeMap<u8, GroupAddress>,
+}
+
+/// Stable numeric key for a role so the cluster map is deterministic.
+fn role_key(role: ClimateRole) -> u8 {
+    match role {
+        ClimateRole::Temperature => 0,
+        ClimateRole::TargetState => 1,
+        ClimateRole::ModeCommand => 2,
+        ClimateRole::ModeState => 3,
+        ClimateRole::Forced => 4,
+        ClimateRole::ShiftCommand => 5,
+        ClimateRole::ShiftState => 6,
+        ClimateRole::Valve => 7,
+    }
+}
+
+/// Derives `climate` entities by correlating heating GAs on their room name.
+///
+/// Anchoring rule: a room only becomes a climate entity if it has an
+/// operation-mode command *or* a setpoint-shift command GA. A lone temperature
+/// sensor (or a stray base-temperature status) never fabricates a climate
+/// entity — those GAs fall through to the sensor pass.
+///
+/// Claiming: every GA wired onto a climate entity is claimed (via
+/// [`push_unclaimed`]), so the generic sensor pass will not re-map the
+/// temperature (9.001), setpoint shift (9.002) or valve (5.001) into standalone
+/// sensors. GAs already claimed by an earlier pass (an actuator) are skipped and
+/// left `None` on the climate entity.
+fn derive_climate(
+    model: &Model,
+    overrides: &Overrides,
+    entities: &mut Vec<Entity>,
+    consumed: &mut BTreeSet<GroupAddress>,
+    claimed: &mut BTreeSet<GroupAddress>,
+    notes: &mut BTreeSet<String>,
+) {
+    // Collect per-room clusters. `model.groups.groups` is a BTreeMap, so
+    // iteration is deterministic; rooms are keyed in a BTreeMap too.
+    let mut rooms: BTreeMap<String, ClimateCluster> = BTreeMap::new();
+    for (&ga, group) in &model.groups.groups {
+        if overrides.is_excluded(ga) {
+            continue;
+        }
+        if let Some((room, role)) = classify_climate_ga(&group.name, group.dpt) {
+            rooms
+                .entry(room)
+                .or_default()
+                .roles
+                .insert(role_key(role), ga);
+        }
+    }
+
+    for (room, cluster) in rooms {
+        // Slot resolver: return the GA for a role unless it is already claimed by
+        // an earlier entity (then leave the field empty). This never *claims* the
+        // GA here; `push_unclaimed` does that atomically once the entity is built.
+        let slot = |role: ClimateRole| -> Option<GroupAddress> {
+            cluster
+                .roles
+                .get(&role_key(role))
+                .copied()
+                .filter(|ga| !consumed.contains(ga))
+        };
+
+        // This is a CENTRAL-heating installation: the flow (Vorlauf) temperature
+        // steers heating for the whole house; per-room *temperature* is not
+        // controllable. The per-room control is the operation mode (Betriebsmodus
+        // = "heat this room or leave it off"). So the operation-mode command is
+        // the sole anchor, and it is the only *command* wired. Setpoint-shift and
+        // target-temperature are deliberately NOT wired (no HA key invites a
+        // temperature change); the room temperature and the valve position stay
+        // as read-only telemetry. See docs/ha-config.md for the rationale and how
+        // an ha.yaml override could re-enable setpoint wiring for a different
+        // installation.
+        let operation_mode_address = slot(ClimateRole::ModeCommand);
+
+        // Anchor requirement: a controllable room needs an operation-mode command.
+        // Without one (a lone temperature sensor, or a room with only a valve),
+        // this is not a controllable climate device — skip it so those GAs fall
+        // through to the sensor pass.
+        let Some(anchor) = operation_mode_address else {
+            continue;
+        };
+
+        // The anchor GA drives the name and override lookup.
+        let name = entity_name_for(model, anchor).unwrap_or_else(|| format!("{room} Klima"));
+        // Only name/exclusion/merge overrides apply to climate; platform is N/A.
+        if overrides.is_excluded(anchor) {
+            continue;
+        }
+        let name = apply_name_override(overrides, anchor, name);
+
+        let climate = Climate {
+            name,
+            // Read-only telemetry.
+            temperature_address: slot(ClimateRole::Temperature),
+            command_value_state_address: slot(ClimateRole::Valve),
+            // The control: operation mode (comfort = heated, standby/economy/frost
+            // protection = off), plus its status where the model exposes one.
+            operation_mode_address,
+            operation_mode_state_address: slot(ClimateRole::ModeState),
+            // Deliberately unwired for central heating (see above): no setpoint
+            // shift and no target-temperature command/state.
+            target_temperature_state_address: None,
+            setpoint_shift_address: None,
+            setpoint_shift_state_address: None,
+            setpoint_shift_mode: None,
+        };
+
+        // Record a note for a recognised-but-unwired forced-mode GA: the HA KNX
+        // climate schema has no key for "Zwang" (forced operation mode), so we
+        // surface it in the footer rather than guessing a mapping. It is left in
+        // the unmapped 20.102 count.
+        if cluster.roles.contains_key(&role_key(ClimateRole::Forced)) {
+            notes.insert(format!(
+                "climate '{room}': forced-mode (Zwang, DPT 20.102) recognised but unwired \
+                 (no HA KNX schema key); left unmapped"
+            ));
+        }
+
+        push_merged(
+            Entity::Climate(climate),
+            overrides,
+            entities,
+            claimed,
+            consumed,
+        );
+    }
+}
+
+/// The name of the GA `ga` from `groups.yaml`, if it has a non-empty one.
+fn entity_name_for(model: &Model, ga: GroupAddress) -> Option<String> {
+    model
+        .groups
+        .groups
+        .get(&ga)
+        .map(|g| g.name.clone())
+        .filter(|n| !n.trim().is_empty())
 }
 
 /// Whether a DPT has the given main number.
@@ -746,6 +1005,7 @@ fn set_name(e: &mut Entity, name: String) {
         Entity::Cover(x) => x.name = name,
         Entity::Sensor(x) => x.name = name,
         Entity::BinarySensor(x) => x.name = name,
+        Entity::Climate(x) => x.name = name,
     }
 }
 

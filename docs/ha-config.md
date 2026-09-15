@@ -26,15 +26,22 @@ knx:
     position_address: 1/2/2
     position_state_address: 1/2/3
     device_class: blind
+  climate:
+  - name: Büro UG Betriebsmodus Vorgabe
+    temperature_address: 0/3/0
+    command_value_state_address: 0/3/6
+    operation_mode_address: 0/3/2
+    operation_mode_state_address: 0/3/102
   sensor:
   - name: Außen Temperatur
     state_address: 4/1/11
     type: temperature
 
 # summary
-# entities: 39 switch, 5 light, 34 cover, 159 sensor, 41 binary_sensor
-# group addresses: 378/421 mapped
-# unmapped: 43 group addresses (no-dpt: 1, dpt 1: 7, dpt 3: 6, dpt 5: 2, dpt 9: 2, dpt 10: 1, dpt 11: 1, dpt 19: 1, dpt 20: 22)
+# entities: 39 switch, 5 light, 26 cover, 10 climate, 135 sensor, 60 binary_sensor
+# group addresses: 393/424 mapped
+# unmapped: 31 group addresses (no-dpt: 1, dpt 1: 7, dpt 3: 6, dpt 5: 2, dpt 9: 2, dpt 10: 1, dpt 11: 1, dpt 19: 1, dpt 20: 10)
+# note: climate 'Büro UG': forced-mode (Zwang, DPT 20.102) recognised but unwired (no HA KNX schema key); left unmapped
 ```
 
 Output is deterministic: entities are sorted by platform, then name, then
@@ -67,6 +74,7 @@ Roles come from the com-object flags:
 | `9.xxx` value a sensor sends | `sensor` with `type` per DPT sub |
 | other numeric value (`7`/`12`/`13`/`14`/`5`) a sensor sends | `sensor` with the matching `type` |
 | `1.xxx` a sensor sends (T flag): presence, contacts, alarms | `binary_sensor` |
+| a per-room heating cluster anchored by a `20.102` operation-mode command | `climate` (see below) |
 
 `device_class` is inferred from the GA/device name and DPT sub where it is
 unambiguous:
@@ -80,13 +88,72 @@ Sensor `type` per DPT sub: `9.001` → `temperature`, `9.004` → `illuminance`,
 `9.005` → `wind_speed_ms`, `9.007` → `humidity`, `9.008` → `ppm`, and so on
 (unknown `9.x` falls back to `2byte_float`).
 
+### Climate (room heating)
+
+A heating cluster is not one device. The operation mode and setpoint come from a
+room controller, the valve position from a heating actuator, and the room
+temperature often from a third device (a presence detector or a thermostat).
+Because the GAs are spread across devices, climate is the one place derivation
+correlates by **room name** instead of by device channel: it reads GA names from
+`groups.yaml`, strips a known German heating suffix, and groups the remainder by
+the room prefix.
+
+Recognised suffixes (DPT in brackets): `Isttemperatur` (9.001, room temp),
+`Betriebsmodus Vorgabe` (20.102, operation-mode command),
+`Betriebsmodus Vorgabe Status` (20.102, its status), `Betriebsmodus Zwang`
+(20.102, forced mode), `Sollwertverschiebung` / `… Status` (9.002, setpoint
+shift), `Stellgröße Heizen/Kühlen` (5.001, valve position), and
+`Soll-Temperatur aktuell` (9.001, current target). A suffix only matches when the
+DPT matches too, so a plain `9.001` temperature elsewhere is never pulled into a
+climate cluster.
+
+**Anchor rule.** A room becomes a `climate` entity only if it has an
+operation-mode command (`Betriebsmodus Vorgabe`, 20.102). A room with just a
+temperature sensor, or just a valve, is not controllable and is left to the
+sensor pass. This keeps the ~54 stray `9.001` temperatures (and rooms like the
+utility room that only report a temperature) from fabricating empty climate
+entities.
+
+**Central-heating installations (this model's mapping).** This installation is
+centrally heated: the flow (Vorlauf) temperature steers the whole house, and a
+room is heated or not as a unit rather than driven to a per-room target. There is
+therefore no per-room target temperature to set. Derivation reflects that:
+
+- the **operation mode** is the control — `operation_mode_address` (+
+  `operation_mode_state_address` where the room has a `… Vorgabe Status`). In
+  Home Assistant this surfaces as preset modes: comfort = room heated,
+  standby / economy / frost protection = off;
+- the **room temperature** (`temperature_address`) and the **valve position**
+  (`command_value_state_address`, from the 5.001 `Stellgröße`) are wired as
+  read-only telemetry;
+- **setpoint shift** (`setpoint_shift_address` / `…_state_address`) and
+  **target temperature** (`target_temperature_state_address`) are deliberately
+  **not** wired. Emitting them would invite a temperature change the central
+  system does not honour. The `Sollwertverschiebung` and `Soll-Temperatur
+  aktuell` GAs fall through to the sensor pass as read-only values instead.
+
+If your installation *does* do per-room setpoint control, re-enable setpoint
+wiring per room with an `ha.yaml` `merge` on the climate entity's primary GA (the
+operation-mode command). The mapped keys match the Home Assistant KNX `climate`
+schema exactly: `temperature_address`, `operation_mode_address`,
+`operation_mode_state_address`, `command_value_state_address`,
+`target_temperature_state_address`, `setpoint_shift_address`,
+`setpoint_shift_state_address`, `setpoint_shift_mode`.
+
+**Forced mode (Zwang).** The `Betriebsmodus Zwang` (20.102) GA overrides the
+operation mode, but the Home Assistant KNX `climate` schema has no key for a
+forced-mode address. Rather than guess a mapping, bussard leaves it unwired,
+counts it in the `# unmapped:` dpt-20 total, and emits a `# note:` line naming
+the room, so nothing is silently dropped.
+
 ### What does not map
 
 A GA that fits no rule is never silently dropped: it is counted in the
 `# unmapped:` footer, grouped by DPT main number, so you can see the coverage.
-Typical unmapped GAs are scene/HVAC-mode datapoints (`20.102`), relative
-dimming (`3.007`), date/time (`10.001`/`11.001`), and setpoints the model does
-not tie to a controllable entity.
+Typical unmapped GAs are forced HVAC-mode datapoints (`20.102` `Zwang`), relative
+dimming (`3.007`), date/time (`10.001`/`11.001`), and base setpoints the model
+does not tie to a controllable entity. Recognised-but-unwired GAs (such as the
+climate forced mode) also get a `# note:` line so the reason is explicit.
 
 ### Deduplication
 
@@ -126,22 +193,32 @@ entities:
     device_class: outlet     # set/override the Home Assistant device_class
   "3/1/5":
     merge: ["3/1/6"]         # merge extra GAs onto this entity
+  "0/3/2":                   # a climate entity, keyed by its operation-mode GA
+    name: "Büro heating"     # rename it
+    merge: ["0/3/8"]         # e.g. re-enable a setpoint-shift status GA
 ```
 
 ### Precedence
 
 1. Exclusions win over everything: an excluded GA never produces an entity.
 2. An explicit per-entity `platform` overrides the heuristic (only the
-   `switch` ↔ `light` promotion is offered; cover/sensor/binary_sensor are
-   structural).
-3. An explicit `name` / `device_class` overrides the derived value.
-4. `merge` adds the listed GAs to the entity's extra addresses.
+   `switch` ↔ `light` promotion is offered; cover/sensor/binary_sensor/climate
+   are structural).
+3. An explicit `name` / `device_class` overrides the derived value. For a
+   `climate` entity, key the override by its operation-mode command GA;
+   `platform` and `device_class` do not apply, but `name` and `merge` do.
+4. `merge` adds the listed GAs to the entity's extra addresses. On a `climate`
+   entity a merged GA fills the first free state slot in the order
+   `temperature_address`, `target_temperature_state_address`,
+   `operation_mode_state_address`, `setpoint_shift_state_address`,
+   `command_value_state_address` (command slots are never merge targets).
 
 ## Quality check against your model
 
 Run it and read the footer: the entity counts and the `# unmapped:` line tell
 you how much of the model mapped and what remains. Spot-check a few entities;
-adjust with `ha.yaml`. On the reference 46-device / 421-GA model, 378 GAs map
-(39 switch, 5 light, 34 cover, 159 sensor, 41 binary_sensor) with the remaining
-43 reported as unmapped (mostly `20.102` HVAC modes and `3.007` relative
-dimming).
+adjust with `ha.yaml`. On the reference model (424 GAs), 393 GAs map
+(39 switch, 5 light, 26 cover, 10 climate, 135 sensor, 60 binary_sensor) with the
+remaining 31 reported as unmapped. Ten of those are the `20.102` `Zwang`
+forced-mode GAs (one per heating room), each named in a `# note:` line; the rest
+are relative dimming (`3.007`), date/time, and a few unhandled one-offs.
