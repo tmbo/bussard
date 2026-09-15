@@ -15,12 +15,16 @@ path = "src/main.rs"
 [dependencies]
 bussard-model = { workspace = true }
 bussard-project = { workspace = true }
+bussard-prod = { path = "../bussard-prod" }
 bussard-transport = { workspace = true }
 bussard-monitor = { workspace = true }
 bussard-mcp = { workspace = true }
+bussard-mgmt = { path = "../bussard-mgmt" }
 bussard-ha = { path = "../bussard-ha" }
 clap = { workspace = true }
 anyhow = { workspace = true }
+serde = { workspace = true }
+serde_norway = { workspace = true }
 serde_json = { workspace = true }
 owo-colors = { workspace = true }
 tokio = { workspace = true }

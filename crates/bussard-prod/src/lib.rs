@@ -2,5 +2,120 @@
 //! implementations): application programs, com objects, parameters, and load
 //! procedures.
 //!
-//! Not implemented yet — see <https://github.com/tmbo/bussard/issues/8> and
-//! <https://github.com/tmbo/bussard/issues/25>.
+//! A `.knxprod` is a plain ZIP holding `knx_master.xml`, one or more `M-XXXX/`
+//! manufacturer folders (each with `Hardware.xml`, `Catalog.xml`, and the
+//! ApplicationProgram XML files), and — for ETS-produced files — RSA signature
+//! entries that bussard ignores. Application-program files reach ~28 MB, so
+//! parsing is streaming ([`quick_xml`]); no DOM is ever built.
+//!
+//! # Entry points
+//!
+//! * [`read_knxprod`] opens a `.knxprod` file and returns [`ProductData`].
+//! * [`application::parse_application_program`] parses one ApplicationProgram
+//!   XML string in isolation (used for testing against `.knxproj` folders).
+//!
+//! # Dedup opportunities with `bussard-project`
+//!
+//! By file-set discipline this crate duplicates three small helpers rather than
+//! refactoring shared code across crate boundaries:
+//!
+//! * [`dpt_map::parse_ets_dpt`] is identical to `bussard-project::dpt_map`.
+//! * [`flag_map`] (`FlagSet`, `parse_flag_value`) mirrors
+//!   `bussard-project::flag_map`.
+//! * [`hardware`] and the com-object streaming shape mirror
+//!   `bussard-project::hardware` / `manufacturer`.
+//!
+//! A future `bussard-knxxml` crate could host the shared ETS-XML primitives
+//! (attribute maps, DPT/flag mapping, translation resolution, the ZIP/BOM
+//! reader) that both `bussard-project` and `bussard-prod` re-implement.
+
+pub mod application;
+mod container;
+pub mod dpt_map;
+mod error;
+pub mod flag_map;
+pub mod hardware;
+
+use std::collections::HashMap;
+use std::path::Path;
+
+pub use application::{
+    ApplicationProgram, CodeSegment, ComObject, ComObjectRef, EnumValue, LoadOp, LoadProcedure,
+    Memory, Parameter, ParameterRef, ParameterType, ParameterTypeDecl, ResolvedComObject,
+    ResolvedParameter, SegmentKind, parse_application_program,
+};
+pub use container::AppEntry;
+pub use error::{ProdError, Result};
+pub use hardware::HardwareCatalog;
+
+/// The parsed contents of a `.knxprod`.
+#[derive(Debug, Default)]
+pub struct ProductData {
+    /// Manufacturer ids present in the archive, e.g. `["M-0004"]`.
+    pub manufacturers: Vec<String>,
+    /// Order number → application-program refs, joined across all manufacturers.
+    pub hardware: HardwareCatalog,
+    /// Every ApplicationProgram in the archive, sorted by id.
+    pub applications: Vec<ApplicationProgram>,
+}
+
+impl ProductData {
+    /// Looks up the application programs a given order number maps to, resolving
+    /// each ref to its parsed [`ApplicationProgram`].
+    ///
+    /// Returns them in the order the hardware declared (primary first), skipping
+    /// refs whose application program is not present in the archive.
+    pub fn application_for_order_number(&self, order_number: &str) -> Vec<&ApplicationProgram> {
+        let Some(refs) = self.hardware.order_to_apps.get(order_number) else {
+            return Vec::new();
+        };
+        let by_id: HashMap<&str, &ApplicationProgram> = self
+            .applications
+            .iter()
+            .map(|a| (a.id.as_str(), a))
+            .collect();
+        refs.iter()
+            .filter_map(|r| by_id.get(r.as_str()).copied())
+            .collect()
+    }
+
+    /// The application program with the given id, if present.
+    pub fn application_by_id(&self, id: &str) -> Option<&ApplicationProgram> {
+        self.applications.iter().find(|a| a.id == id)
+    }
+}
+
+/// Reads a `.knxprod` file into [`ProductData`].
+///
+/// Streams every ApplicationProgram XML with bounded memory. Signature entries
+/// and binary baggage are ignored. Errors if the archive cannot be opened or an
+/// application-program XML is malformed.
+pub fn read_knxprod(path: &Path) -> Result<ProductData> {
+    let mut container = container::Container::open(path)?;
+
+    let manufacturers = container.manufacturer_ids();
+
+    // Join every manufacturer's Hardware.xml into one order-number catalogue.
+    let mut hardware = HardwareCatalog::default();
+    for m in &manufacturers {
+        if let Some(xml) = container.hardware_xml(m)? {
+            hardware.extend(hardware::parse_hardware(&xml)?);
+        }
+    }
+
+    // Parse each ApplicationProgram, one at a time (bounded memory).
+    let entries = container.application_entries();
+    let mut applications = Vec::with_capacity(entries.len());
+    for entry in &entries {
+        let xml = container.read_to_string(&entry.entry)?;
+        let app = parse_application_program(&entry.application_id, &xml)?;
+        applications.push(app);
+    }
+    applications.sort_by(|a, b| a.id.cmp(&b.id));
+
+    Ok(ProductData {
+        manufacturers,
+        hardware,
+        applications,
+    })
+}
