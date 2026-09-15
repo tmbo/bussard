@@ -7,7 +7,7 @@
 
 ## 1. What we're building
 
-`bussard`: an open-source (MIT), cross-platform CLI for KNX. No GUI, ever.
+`bussard`: an open-source (MIT), cross-platform CLI for KNX. No GUI.
 
 The goal is to replace ETS for day-to-day work on an existing KNX installation:
 
