@@ -104,3 +104,52 @@ jobs:
       # the compilation already done above, so it is cheap.
       - name: Doc-tests
         run: cargo test --workspace --doc
+
+  # cargo-deny is the automated guard for bussard's central "never GPL"
+  # constraint: the license allow-list in deny.toml fails this job if any crate
+  # in the dependency tree carries a copyleft (or otherwise unapproved) license.
+  # It also fails on known security advisories. Policy lives in deny.toml.
+  #
+  # This job does not compile the workspace (it only reads Cargo.lock + crate
+  # metadata), so it is fast and needs no rustc/cargo cache.
+  deny:
+    name: cargo-deny (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1 # deny reads Cargo.lock, not history
+
+      - name: cargo-deny
+        # Pinned to a tagged release for reproducibility. The action ships a
+        # prebuilt cargo-deny binary, so there is nothing to compile here.
+        uses: EmbarkStudios/cargo-deny-action@v2.1.1
+        with:
+          command: check
+
+  # MSRV gate: the workspace declares rust-version = "1.85", so verify the code
+  # still builds on exactly that toolchain. This is `cargo check` only (no
+  # tests): it type-checks the whole workspace without paying for codegen +
+  # test execution, which is enough to catch use of newer-than-1.85 std/lang
+  # features. The `test` matrix already exercises behaviour on stable.
+  msrv:
+    name: MSRV 1.85 (cargo check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install Rust 1.85
+        uses: dtolnay/rust-toolchain@1.85
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Own cache key: the 1.85 build graph differs from the stable one, so
+          # it must not share with the rust-ubuntu cache used by lint/test.
+          shared-key: rust-msrv-1-85
+
+      - name: cargo check (workspace)
+        run: cargo check --workspace
