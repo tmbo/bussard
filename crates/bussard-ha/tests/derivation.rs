@@ -83,7 +83,6 @@ impl ModelBuilder {
         self.device.com_objects.insert(
             number,
             ComObject {
-                name: format!("obj {number}"),
                 dpt: Some(dpt(d)),
                 size: None,
                 flags: flags(fl),
@@ -93,7 +92,7 @@ impl ModelBuilder {
         );
         self.links.push(Link {
             object: number,
-            name: None,
+            name: Some(format!("obj {number}")),
             send: send.map(ga),
             listen: listen.iter().map(|s| ga(s)).collect(),
         });
@@ -346,7 +345,6 @@ fn no_duplicate_entity_for_shared_command_ga() {
             m.insert(
                 7,
                 ComObject {
-                    name: "Wippe".to_string(),
                     dpt: Some(dpt("1.001")),
                     size: None,
                     flags: flags("CRT"),

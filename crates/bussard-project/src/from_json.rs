@@ -244,12 +244,22 @@ pub fn model_from_json(json: &str) -> Result<Model> {
         }
 
         if let Some(dev) = devices.get_mut(&address) {
+            // Size is derived from the DPT on demand; only stored when there is
+            // no DPT at all, normalized to lowercase (issue #17). The name lives
+            // in links.yaml only (issue #19), not on the com-object.
+            let size = match dpt {
+                Some(_) => None,
+                None => co
+                    .object_size
+                    .as_deref()
+                    .map(|s| s.trim().to_ascii_lowercase())
+                    .filter(|s| !s.is_empty()),
+            };
             dev.device.com_objects.insert(
                 co.number,
                 ComObject {
-                    name: name.clone(),
                     dpt,
-                    size: co.object_size.clone().filter(|s| !s.is_empty()),
+                    size,
                     flags: co.flags.to_flags(),
                     reference: None,
                     channel: co.channel.clone().filter(|s| !s.is_empty()),

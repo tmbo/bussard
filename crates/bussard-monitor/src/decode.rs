@@ -184,6 +184,9 @@ fn device_name(model: &Model, addr: IndividualAddress) -> Option<String> {
 }
 
 /// Finds the name of the com object on `source` whose `send` GA is `ga`.
+///
+/// The informational com-object name lives only in `links.yaml` (issue #19), so
+/// it is read straight from the matching link.
 fn sending_object_name(
     model: &Model,
     source: IndividualAddress,
@@ -192,17 +195,7 @@ fn sending_object_name(
     let links = model.links.links.get(&source)?;
     for link in links {
         if link.send == Some(ga) {
-            // Prefer the informational link name, falling back to the device's
-            // generated com-object table.
-            if let Some(name) = &link.name {
-                return Some(name.clone());
-            }
-            if let Some(dev) = model.devices.get(&source) {
-                if let Some(obj) = dev.device.com_objects.get(&link.object) {
-                    return Some(obj.name.clone());
-                }
-            }
-            return None;
+            return link.name.clone();
         }
     }
     None

@@ -418,10 +418,7 @@ fn check_orphans_and_unlinked(model: &Model, diags: &mut Vec<Diagnostic>) {
                     "I009",
                     Severity::Info,
                     format!("devices/{}.yaml com_objects.{obj_num}", loaded.file_stem),
-                    format!(
-                        "com object {obj_num} ({:?}) on {ia} has T/W flags but is not linked",
-                        co.name
-                    ),
+                    format!("com object {obj_num} on {ia} has T/W flags but is not linked"),
                 ));
             }
         }
@@ -480,9 +477,10 @@ mod tests {
         }
     }
 
-    fn com_object(name: &str, dpt_str: Option<&str>, flags: &str) -> ComObject {
+    // `_name` is kept for call-site readability; the name now lives in
+    // links.yaml, not on the com-object (issue #19).
+    fn com_object(_name: &str, dpt_str: Option<&str>, flags: &str) -> ComObject {
         ComObject {
-            name: name.to_string(),
             dpt: dpt_str.map(dpt),
             size: None,
             flags: flags.parse().unwrap(),

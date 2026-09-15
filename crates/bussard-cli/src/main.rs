@@ -61,9 +61,9 @@ enum Command {
         /// Project password (else `BUSSARD_PROJECT_PASSWORD`, else prompt).
         #[arg(long)]
         password: Option<String>,
-        /// Output directory for the generated model.
+        /// The model directory to write (aligned with every other command).
         #[arg(long, default_value = "knx")]
-        out: PathBuf,
+        dir: PathBuf,
     },
     /// Validate the YAML model and report diagnostics.
     Validate {
@@ -218,12 +218,12 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             project,
             from_json,
             password,
-            out,
+            dir,
         } => {
             if let Some(json) = from_json {
-                import_cmd::run_json(&json, &out)
+                import_cmd::run_json(&json, &dir)
             } else if let Some(project) = project {
-                import_cmd::run_knxproj(&project, &out, password)
+                import_cmd::run_knxproj(&project, &dir, password)
             } else {
                 anyhow::bail!("provide a .knxproj path or --from-json <file>")
             }

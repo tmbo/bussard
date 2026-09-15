@@ -23,14 +23,25 @@ use crate::project::{RawComObjectInstance, RawDevice, RawProject};
 /// A fully-resolved com object on a device.
 struct ResolvedComObject {
     number: u16,
+    /// Informational name; lives only in `links.yaml` (issue #19).
     name: String,
     dpt: Option<Dpt>,
     size: Option<String>,
     flags: Flags,
+    /// The owning channel *key* (a raw module-instance id today).
     channel: Option<String>,
+    /// A human-readable channel label, when one distinct from the key is known.
+    /// Currently always `None` — resolving these is the open remainder of #11.
+    channel_name: Option<String>,
     reference: String,
     /// GA references (suffixes) in link order; first is the sending GA.
     link_suffixes: Vec<String>,
+}
+
+/// Normalizes an ETS `ObjectSize` string (e.g. `"1 Bit"`, `"2 Bytes"`) to the
+/// lowercase `"1 bit"` / `"2 bytes"` style used across bussard (issue #17).
+fn normalize_size(size: &str) -> String {
+    size.trim().to_ascii_lowercase()
 }
 
 /// Builds the model from a parsed project, reading manufacturer XML from the
@@ -96,22 +107,37 @@ pub fn build_model(project: RawProject, container: &mut Container) -> Result<Mod
                 }
             }
 
-            // Record com object.
+            // Record com object. The size is derived from the DPT on demand, so
+            // it is only stored when there is no DPT at all (issue #17); when
+            // stored, its casing is normalized to the lowercase "1 bit" style.
+            let size = match r.dpt {
+                Some(_) => None,
+                None => r.size.as_deref().map(normalize_size),
+            };
             com_objects.insert(
                 r.number,
                 ComObject {
-                    name: r.name.clone(),
                     dpt: r.dpt,
-                    size: r.size.clone(),
+                    size,
                     flags: r.flags,
                     reference: Some(r.reference.clone()),
                     channel: r.channel.clone(),
                 },
             );
+            // Channel noise fix (issue #11, interim): a `channels:` entry only
+            // earns its place when it carries a real human label distinct from
+            // its raw key. The com-object still references its channel *key*
+            // (used to cluster objects), but we no longer emit a `channels:`
+            // block that merely echoes those keys as names — that was pure
+            // noise. Resolving the manufacturer's human channel labels from the
+            // functional blocks is the still-open remainder of #11; when it
+            // lands, a real label distinct from the key would be recorded here.
             if let Some(ch) = &r.channel {
-                channels
-                    .entry(ch.clone())
-                    .or_insert_with(|| Channel { name: ch.clone() });
+                if r.channel_name.as_deref().is_some_and(|label| label != ch) {
+                    channels.entry(ch.clone()).or_insert_with(|| Channel {
+                        name: r.channel_name.clone().unwrap(),
+                    });
+                }
             }
 
             // Infer DPTs for linked GAs that will end up without an explicit one.
@@ -319,6 +345,7 @@ fn resolve_com_object(
         size,
         flags,
         channel: ci.channel.clone(),
+        channel_name: None,
         reference: ci.ref_id.clone(),
         link_suffixes: ci.links.clone(),
     })

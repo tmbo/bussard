@@ -135,10 +135,11 @@ fn apci_style(apci: ApciKind) -> Style {
 
 /// A single JSON Lines record for a telegram, with stable field names.
 ///
-/// Fields: `ts` (RFC3339 UTC), `source`, `source_name`, `destination`,
-/// `destination_name`, `dest_type` (`group`|`individual`), `apci`, `payload`
-/// (hex), `value` (display string), `dpt`, `object`, `note`. Absent fields are
-/// `null` so the schema is uniform.
+/// Fields: `ts_utc` (RFC3339 UTC — matches the SQLite capture column),
+/// `source`, `source_name`, `destination`, `destination_name`, `dest_type`
+/// (`group`|`individual`), `apci`, `payload` (hex), `value` (display string),
+/// `dpt`, `object_name` (the sending com-object's informational name), `note`.
+/// Absent fields are `null` so the schema is uniform.
 pub fn json_line(t: &DecodedTelegram) -> String {
     let dest_type = match t.destination {
         DestinationRef::Group(_) => "group",
@@ -151,7 +152,7 @@ pub fn json_line(t: &DecodedTelegram) -> String {
     }
 
     let record = json!({
-        "ts": format_rfc3339(t.timestamp),
+        "ts_utc": format_rfc3339(t.timestamp),
         "source": t.source.to_string(),
         "source_name": t.source_name,
         "destination": t.destination.to_string(),
@@ -161,7 +162,7 @@ pub fn json_line(t: &DecodedTelegram) -> String {
         "payload": payload_hex,
         "value": t.value.as_ref().map(|v| v.to_string()),
         "dpt": t.dpt.map(|d| d.to_string()),
-        "object": t.object_name,
+        "object_name": t.object_name,
         "note": t.decode_note,
     });
     // serde_json::Value serialization is infallible for a well-formed value.
@@ -242,7 +243,7 @@ mod tests {
     fn json_line_stable_fields() {
         let line = json_line(&sample());
         let v: serde_json::Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(v["ts"], "1970-01-01T00:00:01.500Z");
+        assert_eq!(v["ts_utc"], "1970-01-01T00:00:01.500Z");
         assert_eq!(v["source"], "1.1.30");
         assert_eq!(v["source_name"], "Meteodata");
         assert_eq!(v["destination"], "3/2/0");
@@ -252,7 +253,7 @@ mod tests {
         assert_eq!(v["payload"], "01");
         assert_eq!(v["value"], "Alarm");
         assert_eq!(v["dpt"], "1.005");
-        assert_eq!(v["object"], "Windalarm 1");
+        assert_eq!(v["object_name"], "Windalarm 1");
         assert_eq!(v["note"], serde_json::Value::Null);
     }
 

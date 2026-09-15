@@ -195,15 +195,22 @@ impl Model {
     /// All maps in the schema are `BTreeMap`s keyed by their sorted key type
     /// (GA / IA / object number), so serialization is already deterministic;
     /// each device is written to `devices/<address>-<slug>.yaml`.
+    ///
+    /// Every file is prefixed with a generated-file banner (issue #16) and the
+    /// `com_objects:` block in each device file carries a "regenerated on
+    /// re-import" marker; loading tolerates these comments (they are free in
+    /// YAML). Stale device files (whose address is no longer in the saved set)
+    /// are pruned and reported on stderr (issue #18) — see
+    /// [`Model::save_pruning`] for the wrapper the importer uses.
     pub fn save(&self, dir: &Path) -> Result<(), SaveError> {
         fs::create_dir_all(dir).map_err(|source| SaveError::Io {
             path: dir.to_path_buf(),
             source,
         })?;
 
-        write_yaml(&dir.join("bussard.yaml"), &self.config)?;
-        write_yaml(&dir.join("groups.yaml"), &self.groups)?;
-        write_yaml(&dir.join("links.yaml"), &self.links)?;
+        write_yaml(&dir.join("bussard.yaml"), &self.config, BUSSARD_HEADER)?;
+        write_yaml(&dir.join("groups.yaml"), &self.groups, GROUPS_HEADER)?;
+        write_yaml(&dir.join("links.yaml"), &self.links, LINKS_HEADER)?;
 
         let devices_dir = dir.join("devices");
         fs::create_dir_all(&devices_dir).map_err(|source| SaveError::Io {
@@ -212,22 +219,197 @@ impl Model {
         })?;
         for loaded in self.devices.values() {
             let filename = format!("{}.yaml", loaded.file_stem);
-            write_yaml(&devices_dir.join(filename), &loaded.device)?;
+            write_device(&devices_dir.join(filename), &loaded.device)?;
         }
         Ok(())
     }
+
+    /// Saves the model, then prunes device files whose address is not in the
+    /// saved set and reports pruned/renamed files on `stderr` (issue #18).
+    ///
+    /// `address:` is the device identity; the filename slug is cosmetic, so a
+    /// renamed device (same address, new name → new slug) writes the new file
+    /// and prunes the old one, leaving no duplicate `address:` behind (which
+    /// would otherwise be a validation `E002`). Untouched device files are
+    /// byte-stable.
+    pub fn save_pruning(&self, dir: &Path) -> Result<PruneReport, SaveError> {
+        // The device filenames this save produces (the fresh set).
+        let kept: BTreeMap<String, ()> = self
+            .devices
+            .values()
+            .map(|l| (format!("{}.yaml", l.file_stem), ()))
+            .collect();
+
+        // Existing device files before the save, so we can detect renames.
+        let devices_dir = dir.join("devices");
+        let existing = list_device_files(&devices_dir);
+
+        self.save(dir)?;
+
+        // Remove any existing device file that the fresh set did not produce.
+        // A stale file whose leading `<address>-` prefix still names a device
+        // in the model is a *rename* (the new slug file replaced it); anything
+        // else is a true prune (the device left the project).
+        let mut report = PruneReport::default();
+        for name in &existing {
+            if kept.contains_key(name) {
+                continue;
+            }
+            let path = devices_dir.join(name);
+            fs::remove_file(&path).map_err(|source| SaveError::Io {
+                path: path.clone(),
+                source,
+            })?;
+            match stale_file_rename_target(name, &self.devices) {
+                Some(new_name) => report.renamed.push((name.clone(), new_name)),
+                None => report.pruned.push(name.clone()),
+            }
+        }
+
+        for (old, new) in &report.renamed {
+            eprintln!("renamed device file devices/{old} → devices/{new} (same address, new name)");
+        }
+        for name in &report.pruned {
+            eprintln!("pruned stale device file devices/{name} (device no longer in the project)");
+        }
+        Ok(report)
+    }
 }
 
-/// Serializes a value to a YAML file.
-fn write_yaml<T: Serialize>(path: &Path, value: &T) -> Result<(), SaveError> {
-    let text = serde_norway::to_string(value).map_err(|source| SaveError::Yaml {
+/// If a stale device filename's `<address>-` prefix matches a device still in
+/// the model, returns that device's fresh filename (a rename), else `None`.
+fn stale_file_rename_target(
+    stale_name: &str,
+    devices: &BTreeMap<IndividualAddress, LoadedDevice>,
+) -> Option<String> {
+    let stem = stale_name.strip_suffix(".yaml")?;
+    let addr: IndividualAddress = stem.split('-').next()?.parse().ok()?;
+    devices
+        .get(&addr)
+        .map(|l| format!("{}.yaml", l.file_stem))
+        .filter(|new_name| new_name != stale_name)
+}
+
+/// The result of a pruning save: which device files were removed or renamed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PruneReport {
+    /// Device filenames (relative to `devices/`) removed because their device
+    /// left the project.
+    pub pruned: Vec<String>,
+    /// `(old, new)` device filenames replaced because the device kept its
+    /// address but changed name (and therefore filename slug).
+    pub renamed: Vec<(String, String)>,
+}
+
+/// The set of `*.yaml`/`*.yml` filenames currently in a `devices/` directory.
+fn list_device_files(devices_dir: &Path) -> Vec<String> {
+    let mut out: Vec<String> = match fs::read_dir(devices_dir) {
+        Ok(rd) => rd
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| {
+                p.extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e == "yaml" || e == "yml")
+            })
+            .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    out.sort();
+    out
+}
+
+/// The banner prefixed to `bussard.yaml`.
+const BUSSARD_HEADER: &str = "\
+# bussard.yaml — connection config for `bussard`.
+#
+# Generated by `bussard init`; hand-editable. Sets the transport (tunnel or
+# routing), the gateway and the multicast endpoint.
+# Docs: https://github.com/tmbo/bussard/blob/main/docs/DESIGN.md#52-the-yaml-model
+";
+
+/// The banner prefixed to `groups.yaml`.
+const GROUPS_HEADER: &str = "\
+# groups.yaml — the group-address plan (generated by `bussard import`).
+#
+# Hand-editable: names, DPTs, descriptions and `protected:` flags are yours to
+# refine and survive re-import merges where the address is unchanged.
+#
+# `ranges:` keys name main/middle group ranges: \"3\" is a main group,
+# \"3/2\" a middle group. Group addresses are keyed as 3-level strings (\"3/2/0\").
+# Docs: https://github.com/tmbo/bussard/blob/main/docs/DESIGN.md#52-the-yaml-model
+";
+
+/// The banner prefixed to `links.yaml`.
+const LINKS_HEADER: &str = "\
+# links.yaml — com-object → group-address assignments (generated by `bussard import`).
+#
+# This is the single home for the informational com-object `name:` (hand-edit it
+# here). Entries are keyed by device address; each references a com-object by its
+# ETS `object:` number, with at most one `send:` GA and any number of `listen:` GAs.
+# Docs: https://github.com/tmbo/bussard/blob/main/docs/DESIGN.md#52-the-yaml-model
+";
+
+/// The banner prefixed to each `devices/*.yaml` file.
+const DEVICE_HEADER: &str = "\
+# Device file (generated by `bussard import`).
+#
+# `address:` is the device identity; the filename slug is cosmetic. The identity,
+# name, location, product and channel names above `com_objects:` are hand-editable.
+# Docs: https://github.com/tmbo/bussard/blob/main/docs/DESIGN.md#52-the-yaml-model
+";
+
+/// The marker injected immediately above the `com_objects:` key in device files.
+const COM_OBJECTS_MARKER: &str = "\
+# --- GENERATED: regenerated on re-import; hand edits here are lost. ---
+";
+
+/// Serializes a value to a YAML file, prefixed with a generated-file `header`.
+fn write_yaml<T: Serialize>(path: &Path, value: &T, header: &str) -> Result<(), SaveError> {
+    let body = serde_norway::to_string(value).map_err(|source| SaveError::Yaml {
         path: path.to_path_buf(),
         source,
     })?;
+    let text = format!("{header}{body}");
     fs::write(path, text).map_err(|source| SaveError::Io {
         path: path.to_path_buf(),
         source,
     })
+}
+
+/// Serializes a [`Device`] to a YAML file, with the device banner and a
+/// "regenerated" marker injected immediately above the `com_objects:` key.
+///
+/// serde_norway emits no comments, so the marker is injected at the string
+/// level. The emitter controls the exact output: `com_objects:` is a top-level
+/// key, so it appears at column 0 — we match the first line equal to
+/// `com_objects:` and insert the marker above it.
+fn write_device(path: &Path, device: &Device) -> Result<(), SaveError> {
+    let body = serde_norway::to_string(device).map_err(|source| SaveError::Yaml {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let body = inject_com_objects_marker(&body);
+    let text = format!("{DEVICE_HEADER}{body}");
+    fs::write(path, text).map_err(|source| SaveError::Io {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+/// Inserts [`COM_OBJECTS_MARKER`] on the line immediately above the top-level
+/// `com_objects:` key, if present. A no-op when the device has no com-objects.
+fn inject_com_objects_marker(body: &str) -> String {
+    let mut out = String::with_capacity(body.len() + COM_OBJECTS_MARKER.len());
+    for line in body.split_inclusive('\n') {
+        // The key is top-level (column 0), so match the exact line start.
+        if line == "com_objects:\n" || line.trim_end() == "com_objects:" {
+            out.push_str(COM_OBJECTS_MARKER);
+        }
+        out.push_str(line);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -261,6 +443,198 @@ mod tests {
         } else {
             panic!("expected schema error, got {err:?}");
         }
+    }
+
+    /// Builds a tiny one-device model for the emitted-format tests.
+    fn small_model() -> Model {
+        use crate::schema::{ComObject, Device, Group, Groups, Link, Links};
+
+        let mut groups = BTreeMap::new();
+        groups.insert(
+            "3/0/4".parse().unwrap(),
+            Group {
+                name: "Jalousie Wohnen".to_string(),
+                dpt: Some("1.008".parse().unwrap()),
+                ..Default::default()
+            },
+        );
+
+        let mut links = BTreeMap::new();
+        links.insert(
+            "1.1.4".parse().unwrap(),
+            vec![Link {
+                object: 12,
+                name: Some("A: Behang Auf/Ab".to_string()),
+                send: None,
+                listen: vec!["3/0/4".parse().unwrap()],
+            }],
+        );
+
+        let mut com_objects = BTreeMap::new();
+        com_objects.insert(
+            12u16,
+            ComObject {
+                dpt: Some("1.008".parse().unwrap()),
+                size: None,
+                flags: "CW".parse().unwrap(),
+                reference: None,
+                channel: Some("A".to_string()),
+            },
+        );
+
+        let device = Device {
+            address: "1.1.4".parse().unwrap(),
+            name: "Jalousieaktor Wohnen".to_string(),
+            description: None,
+            location: None,
+            product: None,
+            channels: BTreeMap::new(),
+            com_objects,
+        };
+
+        let mut devices = BTreeMap::new();
+        devices.insert(
+            "1.1.4".parse().unwrap(),
+            LoadedDevice {
+                device,
+                file_stem: "1.1.4-jalousieaktor-wohnen".to_string(),
+            },
+        );
+
+        Model {
+            config: BussardConfig::default(),
+            groups: Groups {
+                project: None,
+                imported_from: None,
+                ranges: BTreeMap::new(),
+                groups,
+            },
+            links: Links { links },
+            devices,
+        }
+    }
+
+    fn tmp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "bussard-loader-{tag}-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn emitted_files_carry_headers_and_markers() {
+        let dir = tmp_dir("golden");
+        let model = small_model();
+        model.save(&dir).unwrap();
+
+        // groups.yaml: banner present, documents the ranges convention.
+        let groups = fs::read_to_string(dir.join("groups.yaml")).unwrap();
+        assert!(
+            groups.starts_with("# groups.yaml"),
+            "groups banner: {groups}"
+        );
+        assert!(
+            groups.contains("\"3\" is a main group"),
+            "ranges doc: {groups}"
+        );
+        assert!(groups.contains("groups:"), "still has body");
+
+        // links.yaml: banner naming it the single home for the name.
+        let links = fs::read_to_string(dir.join("links.yaml")).unwrap();
+        assert!(links.starts_with("# links.yaml"));
+        assert!(links.contains("single home"));
+
+        // Device file: banner + a GENERATED marker directly above com_objects.
+        let dev = fs::read_to_string(dir.join("devices/1.1.4-jalousieaktor-wohnen.yaml")).unwrap();
+        assert!(dev.starts_with("# Device file"), "device banner: {dev}");
+        let marker = "# --- GENERATED: regenerated on re-import; hand edits here are lost. ---\ncom_objects:";
+        assert!(dev.contains(marker), "marker above com_objects: {dev}");
+        // com_objects entries carry no `name:` and no `size:` (dpt present).
+        assert!(
+            !dev.contains("name: 'A: Behang"),
+            "no com-object name: {dev}"
+        );
+        assert!(!dev.contains("size:"), "no size when dpt present: {dev}");
+
+        // Golden byte assertion for the device file (small, stable model).
+        let expected = "\
+# Device file (generated by `bussard import`).
+#
+# `address:` is the device identity; the filename slug is cosmetic. The identity,
+# name, location, product and channel names above `com_objects:` are hand-editable.
+# Docs: https://github.com/tmbo/bussard/blob/main/docs/DESIGN.md#52-the-yaml-model
+address: 1.1.4
+name: Jalousieaktor Wohnen
+# --- GENERATED: regenerated on re-import; hand edits here are lost. ---
+com_objects:
+  12:
+    dpt: '1.008'
+    flags: CW
+    channel: A
+";
+        assert_eq!(dev, expected, "device golden mismatch");
+
+        // The headers/markers are tolerated on load (round-trips).
+        let reloaded = Model::load(&dir).unwrap();
+        assert_eq!(model, reloaded);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_pruning_removes_stale_and_renamed_files() {
+        let dir = tmp_dir("prune");
+        let mut model = small_model();
+        model.save_pruning(&dir).unwrap();
+
+        // Rename the device (same address, new name → new slug).
+        let loaded = model.devices.get_mut(&"1.1.4".parse().unwrap()).unwrap();
+        loaded.device.name = "Rollo Wohnen".to_string();
+        loaded.file_stem = "1.1.4-rollo-wohnen".to_string();
+
+        let report = model.save_pruning(&dir).unwrap();
+        // The old slug file is replaced (a rename, since the address is still
+        // present); no duplicate address left behind.
+        assert_eq!(
+            report.renamed,
+            vec![(
+                "1.1.4-jalousieaktor-wohnen.yaml".to_string(),
+                "1.1.4-rollo-wohnen.yaml".to_string()
+            )]
+        );
+        assert!(report.pruned.is_empty());
+        let names = list_device_files(&dir.join("devices"));
+        assert_eq!(names, vec!["1.1.4-rollo-wohnen.yaml".to_string()]);
+
+        // Removing the device entirely prunes its file too.
+        model.devices.clear();
+        let report = model.save_pruning(&dir).unwrap();
+        assert_eq!(report.pruned, vec!["1.1.4-rollo-wohnen.yaml"]);
+        assert!(report.renamed.is_empty());
+        assert!(list_device_files(&dir.join("devices")).is_empty());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn untouched_device_files_are_byte_stable() {
+        let dir = tmp_dir("stable");
+        let model = small_model();
+        model.save_pruning(&dir).unwrap();
+        let path = dir.join("devices/1.1.4-jalousieaktor-wohnen.yaml");
+        let first = fs::read_to_string(&path).unwrap();
+        // Re-import the same model: the device file is byte-identical, no prune.
+        let report = model.save_pruning(&dir).unwrap();
+        assert!(report.pruned.is_empty());
+        let second = fs::read_to_string(&path).unwrap();
+        assert_eq!(first, second);
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
