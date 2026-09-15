@@ -51,6 +51,7 @@ pub mod broadcast;
 pub mod connection;
 pub mod device;
 pub mod error;
+pub mod load;
 pub mod manufacturers;
 pub mod tables;
 
@@ -61,6 +62,10 @@ pub use broadcast::{
 pub use connection::{L4Channel, Layer4Connection, LeaseChannel, Timeouts};
 pub use device::DeviceConnection;
 pub use error::{MgmtError, Result};
+pub use load::{
+    LoadControl, LoadState, PID_LOAD_STATE_CONTROL, WriteError, read_load_state,
+    write_load_control, write_property, write_table,
+};
 pub use tables::{DeviceTables, ResolvedLink, TableSource, TablesError, read_tables};
 
 /// Maps a device descriptor mask version to a human-readable KNX system type.
