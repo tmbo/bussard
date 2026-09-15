@@ -6,6 +6,7 @@ members = [
     "crates/bussard-transport",
     "crates/bussard-monitor",
     "crates/bussard-mcp",
+    "crates/bussard-ha",
     "crates/bussard-cli",
 ]
 

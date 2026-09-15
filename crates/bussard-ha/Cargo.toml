@@ -1,0 +1,13 @@
+[package]
+name = "bussard-ha"
+description = "Home Assistant KNX config generation from the bussard YAML model"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bussard-model = { path = "../bussard-model" }
+serde = { workspace = true }
+thiserror = { workspace = true }
