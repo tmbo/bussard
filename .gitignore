@@ -1,0 +1,19 @@
+# Secrets — never commit
+.env
+.env.*
+
+# ETS project exports and vendor product data are copyrighted / contain personal data
+*.knxproj
+*.knxprod
+bussard-initial.md
+
+# Local KNX installation data
+knx/
+captures/
+*.db
+
+# Rust
+target/
+
+# xknxproject oracle dumps (derived from the private .knxproj)
+fixtures/private/
