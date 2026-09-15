@@ -32,23 +32,10 @@ pub enum ProdError {
         entry: String,
     },
 
-    /// An XML parse error, annotated with which file/element was being parsed.
-    #[error("parsing {context}: {source}")]
-    Xml {
-        /// Human description of what was being parsed.
-        context: String,
-        /// The underlying XML error.
-        source: quick_xml::Error,
-    },
-
-    /// An XML attribute error.
-    #[error("parsing {context}: bad attribute: {source}")]
-    XmlAttr {
-        /// Human description of what was being parsed.
-        context: String,
-        /// The underlying attribute error.
-        source: quick_xml::events::attributes::AttrError,
-    },
+    /// An error from the shared ETS-XML primitive layer: XML parsing of an
+    /// application program or `Hardware.xml`, and capped zip reads.
+    #[error(transparent)]
+    Ets(#[from] bussard_ets::EtsError),
 }
 
 /// Convenience result alias for the product-data reader.

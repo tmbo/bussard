@@ -9,12 +9,10 @@ rust-version.workspace = true
 
 [dependencies]
 bussard-model = { path = "../bussard-model" }
+bussard-ets = { path = "../bussard-ets" }
 serde = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-# Streaming XML: quick-xml never builds a DOM, so 20+ MB application-program
-# files are read with bounded memory. MIT licensed.
-quick-xml = "0.36"
 # ZIP support for the `.knxprod` container. No AES feature: unlike `.knxproj`,
 # the manufacturer folders inside a `.knxprod` are not password-protected, and
 # bussard never writes/signs these archives. MIT licensed.
