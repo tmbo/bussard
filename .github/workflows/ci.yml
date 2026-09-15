@@ -349,39 +349,61 @@ jobs:
           # Prove the fix path: connect to 15.15.255 and write PID_PROG_MODE=1
           # (device object 0, property 54), then re-issue the broadcast read and
           # check for an A_IndividualAddress_Response.
-          def send_cemi_to(dst, tpci_apci_bytes, npdu_extra=b""):
-              # ctrl1 0xBC (point-to-point, not broadcast, normal prio), ctrl2 0xE0
-              # (individual dst, hop 6). npdu_len counts TPDU octets after the len.
-              tpdu = tpci_apci_bytes + npdu_extra
+          def send_to(dst, tpdu):
+              # ctrl1 0xBC (point-to-point, normal prio, not broadcast), ctrl2 0x60
+              # (individual dst, hop 6). npdu_len = TPDU octets after the len byte
+              # minus 1 (KNX convention: length excludes the TPCI octet).
               body = bytes([0x11,0x00,0xBC,0x60,0x00,0xFF]) + struct.pack(">H", dst) + bytes([len(tpdu)-1]) + tpdu
               frame = bytes([0x06,0x10,0x05,0x30]) + struct.pack(">H", 6+len(body)) + body
               tx.sendto(frame, (group, port))
               return frame
-          DST = (15<<12)|(15<<8)|255  # 15.15.255 = 0xFFFF
+          def recv_from(dst, want_secs=1.5):
+              # Collect frames whose cEMI source == dst (the device) for want_secs.
+              out = []
+              deadline = time.time() + want_secs
+              while time.time() < deadline:
+                  try:
+                      data, _ = rx.recvfrom(1024)
+                  except BlockingIOError:
+                      time.sleep(0.02); continue
+                  # cEMI src is bytes 10-11 of the datagram (6 hdr + 4 into cEMI).
+                  if len(data) >= 12 and struct.unpack(">H", data[10:12])[0] == dst:
+                      out.append(data)
+              return out
+          DST = 0xFFFF  # 15.15.255, the device's default address
           drain()
-          # T_Connect (control, TPCI 0x80)
-          send_cemi_to(DST, bytes([0x80]))
-          time.sleep(0.3)
-          # A_PropertyValue_Write, seq 0 (TPCI 0x42): obj 0, PID 54, count1|start1, val 01.
-          # APCI 0x3D7 packed into two octets over TPCI: hi=(0x3D7>>8)|0x42? -> build
-          # the 2 apci octets as 0x03,0xD7 combined with TPCI in first byte.
+          # T_Connect (control PDU, TPCI 0x80).
+          send_to(DST, bytes([0x80]))
+          time.sleep(0.2)
+          # A_PropertyValue_Write seq0: TPCI numbered-data 0x40 | apci_hi; obj 0,
+          # PID 54 (PROG_MODE), (count=1<<12 | start=1), value 0x01.
           apci = 0x3D7
-          b0 = 0x42 | ((apci >> 8) & 0x03)          # TPCI numbered data seq0 + apci hi
-          b1 = apci & 0xFF
-          pw = bytes([b0, b1, 0x00, 54]) + struct.pack(">H", (1<<12)|1) + bytes([0x01])
-          send_cemi_to(DST, pw)
-          time.sleep(0.5)
-          # Now re-broadcast the read and look for a response.
+          pw = bytes([0x40 | ((apci>>8)&0x03), apci&0xFF, 0x00, 54]) + struct.pack(">H",(1<<12)|1) + bytes([0x01])
+          send_to(DST, pw)
+          # ACK whatever the device sends on the connection (its numbered response),
+          # then send our own T_ACK seq0 (TPCI 0xC2) so the connection stays healthy.
+          for f in recv_from(DST, 1.0):
+              print("  CO recv:", f.hex())
+          send_to(DST, bytes([0xC2]))  # T_ACK seq0
+          time.sleep(0.3)
+          # T_Disconnect (0x81) to cleanly close before the broadcast read.
+          send_to(DST, bytes([0x81]))
+          time.sleep(0.3)
+          # Now the device should be in programming mode: re-broadcast the read.
           drain()
           rframe = wrap(cemi(0x11, 0xB6))
           tx.sendto(rframe, (group, port))
           print("SENT prog-mode-set + read")
-          deadline = time.time() + 3; answered = False
+          answered = False
+          for data in recv_from(0x00FF if False else DST, 3.0) or []:
+              pass
+          # Listen broadly for the A_IndividualAddress_Response (source = device).
+          deadline = time.time() + 3
           while time.time() < deadline:
               try:
                   data, addr = rx.recvfrom(1024)
               except BlockingIOError:
-                  time.sleep(0.05); continue
+                  time.sleep(0.03); continue
               if data == rframe: continue
               print(f"  RECV from {addr}: {data.hex()}")
               if len(data) >= 2 and (data[-2] & 0x03) == 0x01 and data[-1] == 0x40:
