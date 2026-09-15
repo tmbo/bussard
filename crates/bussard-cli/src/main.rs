@@ -2,7 +2,10 @@
 //!
 //! Phase 0 wires up the command surface; only `validate` is functional so far.
 
+mod capture_cmd;
+mod conn_cmd;
 mod import_cmd;
+mod monitor_cmd;
 mod validate_cmd;
 
 use std::path::PathBuf;
@@ -54,10 +57,43 @@ enum Command {
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
     },
-    /// Live-monitor the bus (not implemented yet).
-    Monitor,
-    /// Capture telegrams to SQLite (not implemented yet).
-    Capture,
+    /// Live-monitor the bus, decoding telegrams against the model.
+    Monitor {
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Emit JSON Lines (for tooling) instead of the pretty text format.
+        #[arg(long)]
+        json: bool,
+        /// Only show telegrams matching this filter: a comma-separated list of
+        /// GAs (`3/2/0`), GA prefixes (`3/` or `3/2/`) or IAs (`1.1.30`).
+        #[arg(long, value_name = "EXPR")]
+        filter: Option<String>,
+        /// Override the gateway `host[:port]` for tunneling.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Force KNXnet/IP routing (multicast) transport.
+        #[arg(long)]
+        routing: bool,
+    },
+    /// Capture telegrams to a SQLite database.
+    Capture {
+        /// The database file to write (created if absent).
+        #[arg(long, value_name = "DB")]
+        to: PathBuf,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Only capture telegrams matching this filter (see `monitor --filter`).
+        #[arg(long, value_name = "EXPR")]
+        filter: Option<String>,
+        /// Override the gateway `host[:port]` for tunneling.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Force KNXnet/IP routing (multicast) transport.
+        #[arg(long)]
+        routing: bool,
+    },
     /// Read a group value from the bus (not implemented yet).
     Read,
     /// Run the read-only MCP server (not implemented yet).
@@ -101,8 +137,30 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
                 anyhow::bail!("provide a .knxproj path or --from-json <file>")
             }
         }
-        Command::Monitor => not_implemented("monitor"),
-        Command::Capture => not_implemented("capture"),
+        Command::Monitor {
+            dir,
+            json,
+            filter,
+            gateway,
+            routing,
+        } => monitor_cmd::run(
+            &dir,
+            json,
+            filter.as_deref(),
+            conn_cmd::ConnOverrides { gateway, routing },
+        ),
+        Command::Capture {
+            to,
+            dir,
+            filter,
+            gateway,
+            routing,
+        } => capture_cmd::run(
+            &to,
+            &dir,
+            filter.as_deref(),
+            conn_cmd::ConnOverrides { gateway, routing },
+        ),
         Command::Read => not_implemented("read"),
         Command::Mcp => not_implemented("mcp"),
     }
