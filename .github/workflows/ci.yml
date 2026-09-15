@@ -4,7 +4,7 @@ on:
   push:
     # `ci/virtual-device-shakedown` is included temporarily so the interop job
     # can be iterated on its own branch before it is re-blocked and merged.
-    branches: [main, ci/virtual-device-shakedown]
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch: {}
