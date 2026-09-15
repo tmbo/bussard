@@ -201,6 +201,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "bussard-mgmt"
+version = "0.1.0"
+dependencies = [
+ "bussard-model",
+ "bussard-transport",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "bussard-model"
 version = "0.1.0"
 dependencies = [
@@ -224,6 +235,16 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "bussard-prod"
+version = "0.1.0"
+dependencies = [
+ "bussard-model",
+ "serde",
+ "thiserror",
  "tracing",
 ]
 
