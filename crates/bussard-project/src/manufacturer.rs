@@ -53,6 +53,16 @@ pub struct ComObjectRef {
     pub flags: FlagSet,
 }
 
+/// A `<Channel>` definition from the application program's Dynamic section.
+#[derive(Debug, Clone, Default)]
+pub struct ChannelDef {
+    /// Channel `Name` (the manufacturer's short label, e.g. `"Relaisausgänge"`).
+    pub name: Option<String>,
+    /// Channel `Text` (the human label, often carrying `{{Arg…}}` placeholders,
+    /// e.g. `"{{ArgBeschriftungRelais}} {{ArgBeschriftung}} ({{0:...}})"`).
+    pub text: Option<String>,
+}
+
 /// The parsed pieces of one ApplicationProgram file.
 #[derive(Debug, Clone, Default)]
 pub struct ApplicationProgram {
@@ -68,6 +78,13 @@ pub struct ApplicationProgram {
     pub com_objects: HashMap<String, ComObjectBase>,
     /// Com-object refs, keyed by their full `Id`.
     pub com_object_refs: HashMap<String, ComObjectRef>,
+    /// Dynamic-section channel definitions, keyed by the app-relative channel id
+    /// (e.g. `MD-1_CH-13`, or `CH-2` for a non-module channel).
+    pub channels: HashMap<String, ChannelDef>,
+    /// Module `<Argument>` name → app-relative argument id (e.g.
+    /// `ArgBeschriftung` → `MD-1_A-3`), used to resolve `{{Arg…}}` placeholders
+    /// in channel and com-object texts against a module instance's values.
+    pub argument_ids: HashMap<String, String>,
 }
 
 impl ApplicationProgram {
@@ -81,6 +98,17 @@ impl ApplicationProgram {
         let cor = self.com_object_refs.get(&full_ref_id)?;
         let base = self.com_objects.get(&cor.ref_id)?;
         Some((base, cor))
+    }
+
+    /// Resolves an app-relative channel id (e.g. `MD-1_CH-13`) to its definition.
+    pub fn channel(&self, app_channel_id: &str) -> Option<&ChannelDef> {
+        self.channels.get(app_channel_id)
+    }
+
+    /// Looks up the app-relative argument id (e.g. `MD-1_A-3`) for an argument
+    /// `Name` (e.g. `ArgBeschriftung`).
+    pub fn argument_id(&self, name: &str) -> Option<&str> {
+        self.argument_ids.get(name).map(String::as_str)
     }
 }
 
@@ -209,6 +237,35 @@ pub fn parse_application_program(id: &str, xml: &str) -> Result<ApplicationProgr
                     };
                     app.com_object_refs.insert(id, cor);
                 }
+                b"Channel" => {
+                    let m = attrs_map(&e, &context)?;
+                    if let Some(id) = get(&m, b"Id") {
+                        if let Some(rel) = app_relative_id(id, &app.id) {
+                            app.channels.insert(
+                                rel.to_string(),
+                                ChannelDef {
+                                    name: get(&m, b"Name")
+                                        .filter(|s| !s.is_empty())
+                                        .map(str::to_string),
+                                    text: get(&m, b"Text")
+                                        .filter(|s| !s.is_empty())
+                                        .map(str::to_string),
+                                },
+                            );
+                        }
+                    }
+                }
+                b"Argument" => {
+                    let m = attrs_map(&e, &context)?;
+                    if let (Some(id), Some(name)) = (get(&m, b"Id"), get(&m, b"Name")) {
+                        if let Some(rel) = app_relative_id(id, &app.id) {
+                            // First definition wins; names are stable per module.
+                            app.argument_ids
+                                .entry(name.to_string())
+                                .or_insert_with(|| rel.to_string());
+                        }
+                    }
+                }
                 _ => {}
             },
             _ => {}
@@ -216,6 +273,13 @@ pub fn parse_application_program(id: &str, xml: &str) -> Result<ApplicationProgr
     }
 
     Ok(app)
+}
+
+/// Strips the `<app-id>_` prefix from a fully-qualified element id, returning the
+/// app-relative remainder (e.g. `<app>_MD-1_CH-13` → `MD-1_CH-13`). Returns
+/// `None` if the id does not carry the app prefix.
+fn app_relative_id<'a>(id: &'a str, app_id: &str) -> Option<&'a str> {
+    id.strip_prefix(app_id)?.strip_prefix('_')
 }
 
 #[cfg(test)]
@@ -236,6 +300,37 @@ mod tests {
     </ComObjectRefs>
   </ApplicationProgram>
 </KNX>"#;
+
+    const MODULE_SAMPLE: &str = r#"<?xml version="1.0"?>
+<KNX xmlns="http://knx.org/xml/project/23">
+  <ApplicationProgram Id="M-0004_A-1" MaskVersion="MV-07B0" Name="Jung">
+    <Dynamic>
+      <Channel Id="M-0004_A-1_MD-1_CH-13" Name="Relaisausgänge"
+        Text="{{ArgBeschriftungRelais}} {{ArgBeschriftung}} ({{0:...}})" Number="13" />
+      <ParameterBlock>
+        <Module Id="M-0004_A-1_MD-1">
+          <Arguments>
+            <Argument Id="M-0004_A-1_MD-1_A-3" Name="ArgBeschriftung" Type="Text" />
+            <Argument Id="M-0004_A-1_MD-1_A-5" Name="ArgBeschriftungRelais" Type="Text" />
+          </Arguments>
+        </Module>
+      </ParameterBlock>
+    </Dynamic>
+  </ApplicationProgram>
+</KNX>"#;
+
+    #[test]
+    fn parses_channels_and_arguments() {
+        let app = parse_application_program("M-0004_A-1", MODULE_SAMPLE).unwrap();
+        let ch = app.channel("MD-1_CH-13").expect("channel def");
+        assert_eq!(ch.name.as_deref(), Some("Relaisausgänge"));
+        assert_eq!(
+            ch.text.as_deref(),
+            Some("{{ArgBeschriftungRelais}} {{ArgBeschriftung}} ({{0:...}})")
+        );
+        assert_eq!(app.argument_id("ArgBeschriftung"), Some("MD-1_A-3"));
+        assert_eq!(app.argument_id("ArgBeschriftungRelais"), Some("MD-1_A-5"));
+    }
 
     #[test]
     fn parses_mask_and_objects() {

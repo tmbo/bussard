@@ -28,11 +28,9 @@ struct ResolvedComObject {
     dpt: Option<Dpt>,
     size: Option<String>,
     flags: Flags,
-    /// The owning channel *key* (a raw module-instance id today).
+    /// The owning channel *key* (a raw module-instance channel ref, e.g.
+    /// `MD-1_M-1_MI-1_CH-13`); the human label is resolved separately (#11).
     channel: Option<String>,
-    /// A human-readable channel label, when one distinct from the key is known.
-    /// Currently always `None` — resolving these is the open remainder of #11.
-    channel_name: Option<String>,
     reference: String,
     /// GA references (suffixes) in link order; first is the sending GA.
     link_suffixes: Vec<String>,
@@ -42,6 +40,186 @@ struct ResolvedComObject {
 /// lowercase `"1 bit"` / `"2 bytes"` style used across bussard (issue #17).
 fn normalize_size(size: &str) -> String {
     size.trim().to_ascii_lowercase()
+}
+
+/// Resolves the `{{…}}` placeholders in a manufacturer `Text`.
+///
+/// Two placeholder families appear in the ETS product data (issue #11):
+///
+/// * `{{ArgName}}` — a module argument reference (e.g. `{{ArgBeschriftung}}`).
+///   It is resolved against the owning module instance's argument values: the
+///   application program maps the argument `Name` to its app-relative id (e.g.
+///   `ArgBeschriftung` → `MD-1_A-3`) and the module instance holds that id's
+///   value (e.g. `"1/2"`). When the value is missing or empty the placeholder is
+///   dropped.
+/// * `{{N:...}}` — a numbered format token ETS substitutes at display time
+///   (e.g. `{{0:...}}`). We have no value for it, so it is stripped cleanly.
+///
+/// After substitution the result is whitespace-normalized (runs collapsed,
+/// ends trimmed) and any now-empty parenthetical left behind by a stripped
+/// token (e.g. `" ()"`) is removed. Returns `None` if nothing readable remains.
+fn resolve_placeholders(
+    text: &str,
+    app: &ApplicationProgram,
+    module_instance_id: Option<&str>,
+    module_instances: &HashMap<String, HashMap<String, String>>,
+) -> Option<String> {
+    if !text.contains("{{") {
+        return non_empty_label(text);
+    }
+
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find("{{") {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 2..];
+        let Some(close) = after.find("}}") else {
+            // Unterminated placeholder: keep the remainder verbatim.
+            out.push_str(&rest[open..]);
+            rest = "";
+            break;
+        };
+        let token = &after[..close];
+        // A numbered format token like `0:...` — no value available, strip it.
+        let is_numbered = token
+            .split_once(':')
+            .map(|(n, _)| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            .unwrap_or(false);
+        if !is_numbered {
+            // Treat as an argument-name reference.
+            if let Some(value) = module_instance_id
+                .and_then(|mi| lookup_argument(app, token, mi, module_instances))
+                .filter(|v| !v.is_empty())
+            {
+                out.push_str(&value);
+            }
+        }
+        rest = &after[close + 2..];
+    }
+    out.push_str(rest);
+
+    // Drop parentheticals emptied by a stripped token, then normalize.
+    let cleaned = out.replace("()", " ");
+    non_empty_label(&cleaned)
+}
+
+/// Resolves placeholders in a com-object `Text` when an application program is
+/// available, else strips any `{{…}}` tokens and normalizes whitespace so a raw
+/// placeholder never reaches the model. Returns `None` if nothing readable
+/// remains (the caller then falls back to `Name`).
+fn resolve_text(
+    text: &str,
+    app: Option<&ApplicationProgram>,
+    module_instance_id: Option<&str>,
+    module_instances: &HashMap<String, HashMap<String, String>>,
+) -> Option<String> {
+    match app {
+        Some(app) => resolve_placeholders(text, app, module_instance_id, module_instances),
+        None => {
+            // No program to resolve argument names against: strip every token.
+            let empty = HashMap::new();
+            let stub = ApplicationProgram::default();
+            resolve_placeholders(text, &stub, module_instance_id, &empty)
+        }
+    }
+}
+
+/// Resolves an argument `Name` (e.g. `ArgBeschriftung`) to its value for a given
+/// module instance, via the application program's name → id map.
+fn lookup_argument(
+    app: &ApplicationProgram,
+    arg_name: &str,
+    module_instance_id: &str,
+    module_instances: &HashMap<String, HashMap<String, String>>,
+) -> Option<String> {
+    let arg_id = app.argument_id(arg_name)?;
+    module_instances
+        .get(module_instance_id)
+        .and_then(|args| args.get(arg_id))
+        .cloned()
+}
+
+/// Collapses internal whitespace and trims ends, returning `None` when nothing
+/// printable remains.
+fn non_empty_label(s: &str) -> Option<String> {
+    let joined = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if joined.is_empty() {
+        None
+    } else {
+        Some(joined)
+    }
+}
+
+/// The app-relative channel id for a com-object channel ref, plus the owning
+/// module-instance id. Mirrors [`normalize_ref`] for channel refs.
+///
+/// * `"MD-1_M-1_MI-1_CH-13"` → (`"MD-1_CH-13"`, `Some("MD-1_M-1_MI-1")`).
+/// * `"CH-2"` (a non-module channel) → (`"CH-2"`, `None`).
+fn normalize_channel_ref(channel_ref: &str) -> (String, Option<String>) {
+    if channel_ref.starts_with("MD-") {
+        if let Some(md_end) = channel_ref.find("_M-") {
+            let after = &channel_ref[md_end + 1..]; // "M-1_MI-1_CH-13"
+            if let Some(mi_pos) = after.find("_MI-") {
+                let rest = &after[mi_pos + "_MI-".len()..]; // "1_CH-13"
+                if let Some(obj_pos) = rest.find('_') {
+                    let module_selector = &after[..mi_pos + "_MI-".len() + obj_pos]; // "M-1_MI-1"
+                    let channel_part = &rest[obj_pos + 1..]; // "CH-13"
+                    let module_def = &channel_ref[..md_end]; // "MD-1"
+                    let mi_id = format!("{module_def}_{module_selector}");
+                    let app_channel = format!("{module_def}_{channel_part}");
+                    return (app_channel, Some(mi_id));
+                }
+            }
+        }
+    }
+    (channel_ref.to_string(), None)
+}
+
+/// Resolves a human channel label for a com-object channel ref, if one distinct
+/// from the raw ref can be derived from the manufacturer data.
+///
+/// Prefers the channel `Text` (with `{{Arg…}}` placeholders resolved from the
+/// module instance and `{{N:…}}` tokens stripped) over the channel `Name`. When
+/// no manufacturer channel definition matches, falls back to a cleaned generic
+/// label built from the channel number (e.g. `CH-13` → `"Kanal 13"`) so a raw
+/// ref is never surfaced as a label. Returns `None` only if even that is
+/// impossible (an unparseable ref).
+fn resolve_channel_label(
+    channel_ref: &str,
+    apps: &[&ApplicationProgram],
+    module_instances: &HashMap<String, HashMap<String, String>>,
+) -> Option<String> {
+    let (app_channel_id, mi_id) = normalize_channel_ref(channel_ref);
+
+    for app in apps {
+        if let Some(ch) = app.channel(&app_channel_id) {
+            if let Some(text) = &ch.text {
+                if let Some(label) =
+                    resolve_placeholders(text, app, mi_id.as_deref(), module_instances)
+                {
+                    return Some(label);
+                }
+            }
+            if let Some(name) = ch.name.as_deref().and_then(non_empty_label) {
+                return Some(name);
+            }
+        }
+    }
+
+    // Fallback: a clean generic label from the channel number.
+    generic_channel_label(&app_channel_id)
+}
+
+/// Builds a generic `"Kanal N"` label from an app-relative channel id whose
+/// trailing segment is `CH-<n>`; `None` if no channel number can be read.
+fn generic_channel_label(app_channel_id: &str) -> Option<String> {
+    let ch = app_channel_id.rsplit('_').next().unwrap_or(app_channel_id);
+    let num = ch.strip_prefix("CH-")?;
+    if !num.is_empty() && num.bytes().all(|b| b.is_ascii_digit()) {
+        Some(format!("Kanal {num}"))
+    } else {
+        None
+    }
 }
 
 /// Builds the model from a parsed project, reading manufacturer XML from the
@@ -124,19 +302,20 @@ pub fn build_model(project: RawProject, container: &mut Container) -> Result<Mod
                     channel: r.channel.clone(),
                 },
             );
-            // Channel noise fix (issue #11, interim): a `channels:` entry only
-            // earns its place when it carries a real human label distinct from
-            // its raw key. The com-object still references its channel *key*
-            // (used to cluster objects), but we no longer emit a `channels:`
-            // block that merely echoes those keys as names — that was pure
-            // noise. Resolving the manufacturer's human channel labels from the
-            // functional blocks is the still-open remainder of #11; when it
-            // lands, a real label distinct from the key would be recorded here.
+            // Channel labels (issue #11): the com-object keeps its raw channel
+            // *ref* as the key (it stays the stable cluster handle bussard-ha
+            // groups by), and the `channels:` block carries the resolved human
+            // label. The label comes from the manufacturer's `<Channel>` Text
+            // (with `{{Arg…}}` placeholders resolved from the module instance and
+            // `{{N:…}}` tokens stripped), falling back to a clean generic
+            // "Kanal N". We only emit an entry when the label is distinct from
+            // the key, so name==key noise is never surfaced.
             if let Some(ch) = &r.channel {
-                if r.channel_name.as_deref().is_some_and(|label| label != ch) {
-                    channels.entry(ch.clone()).or_insert_with(|| Channel {
-                        name: r.channel_name.clone().unwrap(),
-                    });
+                let label = resolve_channel_label(ch, &apps, &raw_dev.module_instances);
+                if let Some(label) = label.filter(|l| l != ch) {
+                    channels
+                        .entry(ch.clone())
+                        .or_insert_with(|| Channel { name: label });
                 }
             }
 
@@ -328,12 +507,32 @@ fn resolve_com_object(
     });
 
     // Effective display name: prefer the ref/base Text (the human label ETS
-    // shows), falling back to Name.
+    // shows), falling back to Name. Texts may carry `{{Arg…}}` / `{{N:…}}`
+    // placeholders (issue #11); resolve them against the owning module instance
+    // (using the first app that carries the argument definitions).
+    let resolve_app = apps.first().copied();
     let name = cor
         .text
         .clone()
         .filter(|s| !s.is_empty())
-        .or_else(|| base.text.clone().filter(|s| !s.is_empty()))
+        .and_then(|t| {
+            resolve_text(
+                &t,
+                resolve_app,
+                module_instance_id.as_deref(),
+                module_instances,
+            )
+        })
+        .or_else(|| {
+            base.text.clone().filter(|s| !s.is_empty()).and_then(|t| {
+                resolve_text(
+                    &t,
+                    resolve_app,
+                    module_instance_id.as_deref(),
+                    module_instances,
+                )
+            })
+        })
         .or_else(|| cor.name.clone().filter(|s| !s.is_empty()))
         .or_else(|| base.name.clone().filter(|s| !s.is_empty()))
         .unwrap_or_else(|| format!("Object {number}"));
@@ -345,7 +544,6 @@ fn resolve_com_object(
         size,
         flags,
         channel: ci.channel.clone(),
-        channel_name: None,
         reference: ci.ref_id.clone(),
         link_suffixes: ci.links.clone(),
     })
@@ -566,6 +764,105 @@ mod tests {
         let (app_ref, mi) = normalize_ref("MD-1_M-6_MI-1_O-2-1_R-37");
         assert_eq!(app_ref, "MD-1_O-2-1_R-37");
         assert_eq!(mi.as_deref(), Some("MD-1_M-6_MI-1"));
+    }
+
+    #[test]
+    fn normalize_channel_ref_module_and_plain() {
+        let (app_ch, mi) = normalize_channel_ref("MD-1_M-1_MI-1_CH-13");
+        assert_eq!(app_ch, "MD-1_CH-13");
+        assert_eq!(mi.as_deref(), Some("MD-1_M-1_MI-1"));
+
+        let (app_ch, mi) = normalize_channel_ref("CH-2");
+        assert_eq!(app_ch, "CH-2");
+        assert_eq!(mi, None);
+    }
+
+    #[test]
+    fn generic_channel_label_from_number() {
+        assert_eq!(
+            generic_channel_label("MD-1_CH-13").as_deref(),
+            Some("Kanal 13")
+        );
+        assert_eq!(generic_channel_label("CH-2").as_deref(), Some("Kanal 2"));
+        assert_eq!(generic_channel_label("MD-1_X-1"), None);
+    }
+
+    /// Builds an [`ApplicationProgram`] with one module argument and one channel
+    /// for the placeholder tests.
+    fn app_with_channel() -> ApplicationProgram {
+        use crate::manufacturer::ChannelDef;
+        let mut app = ApplicationProgram {
+            id: "M-0004_A-1".to_string(),
+            ..Default::default()
+        };
+        app.argument_ids
+            .insert("ArgBeschriftung".to_string(), "MD-1_A-3".to_string());
+        app.argument_ids
+            .insert("ArgBeschriftungRelais".to_string(), "MD-1_A-5".to_string());
+        app.channels.insert(
+            "MD-1_CH-13".to_string(),
+            ChannelDef {
+                name: Some("Relaisausgänge".to_string()),
+                text: Some("{{ArgBeschriftungRelais}} {{ArgBeschriftung}} ({{0:...}})".to_string()),
+            },
+        );
+        app
+    }
+
+    fn module_instances_fixture() -> HashMap<String, HashMap<String, String>> {
+        let mut mi = HashMap::new();
+        let mut args = HashMap::new();
+        args.insert("MD-1_A-3".to_string(), "1/2".to_string());
+        args.insert("MD-1_A-5".to_string(), "Relaisausgänge".to_string());
+        mi.insert("MD-1_M-1_MI-1".to_string(), args);
+        mi
+    }
+
+    #[test]
+    fn resolves_channel_label_with_arguments() {
+        let app = app_with_channel();
+        let mis = module_instances_fixture();
+        let label = resolve_channel_label("MD-1_M-1_MI-1_CH-13", &[&app], &mis);
+        assert_eq!(label.as_deref(), Some("Relaisausgänge 1/2"));
+    }
+
+    #[test]
+    fn resolves_com_object_text_strips_numbered_token() {
+        let app = app_with_channel();
+        let mis = module_instances_fixture();
+        let out = resolve_text(
+            "Venetian blind {{ArgBeschriftung}} ({{0:...}}) - Input",
+            Some(&app),
+            Some("MD-1_M-1_MI-1"),
+            &mis,
+        );
+        assert_eq!(out.as_deref(), Some("Venetian blind 1/2 - Input"));
+    }
+
+    #[test]
+    fn missing_argument_strips_placeholder_cleanly() {
+        // No module instance value → the `{{ArgBeschriftung}}` token is dropped
+        // and the `{{0:...}}` token stripped, leaving a clean label.
+        let app = app_with_channel();
+        let empty = HashMap::new();
+        let out = resolve_text(
+            "Venetian blind {{ArgBeschriftung}} ({{0:...}}) - Input",
+            Some(&app),
+            Some("MD-1_M-1_MI-1"),
+            &empty,
+        );
+        assert_eq!(out.as_deref(), Some("Venetian blind - Input"));
+    }
+
+    #[test]
+    fn channel_label_falls_back_to_generic_without_def() {
+        let app = ApplicationProgram {
+            id: "M-0004_A-1".to_string(),
+            ..Default::default()
+        };
+        let empty = HashMap::new();
+        let label = resolve_channel_label("MD-1_M-1_MI-1_CH-13", &[&app], &empty);
+        assert_eq!(label.as_deref(), Some("Kanal 13"));
     }
 
     #[test]
