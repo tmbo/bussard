@@ -195,16 +195,17 @@ async fn run_gateway(gw: UdpSocket, devices: Vec<Device>) {
 
 fn write_model(dir: &std::path::Path) {
     std::fs::create_dir_all(dir.join("devices")).unwrap();
-    // Model knows 1.1.4 and 1.1.20; 1.1.20 will NOT respond (missing from bus),
-    // and 1.1.37 responds but is NOT in the model.
+    // Model knows 1.1.4 and 1.1.6; 1.1.6 will NOT respond (missing from bus),
+    // and 1.1.7 responds but is NOT in the model. Kept in a tight device-number
+    // cluster so the test can restrict the sweep to `--from 1 --to 8`.
     std::fs::write(
         dir.join("devices").join("1.1.4-jal.yaml"),
         "address: 1.1.4\nname: Rollladen Wohnzimmer\n",
     )
     .unwrap();
     std::fs::write(
-        dir.join("devices").join("1.1.20-dimmer.yaml"),
-        "address: 1.1.20\nname: Dimmer Flur\n",
+        dir.join("devices").join("1.1.6-dimmer.yaml"),
+        "address: 1.1.6\nname: Dimmer Flur\n",
     )
     .unwrap();
 }
@@ -219,11 +220,12 @@ fn scan_reports_devices_and_model_delta() {
         (sock, port)
     });
 
-    // Three present devices among absent addresses.
+    // Three present devices among absent addresses, all inside 1..=8 so the
+    // sweep can be restricted to a handful of addresses.
     let devices = vec![
         device("1.1.4", 0x07B0, 0x0083, b"MDT-JAL0410"), // MDT, System B, known
-        device("1.1.37", 0x0705, 0x0004, b"2118REGHE"),  // Jung, System 7, not in model
-        device("1.1.50", 0x0012, 0x0002, b"6197/15"),    // ABB, System 1, not in model
+        device("1.1.7", 0x0705, 0x0004, b"2118REGHE"),   // Jung, System 7, not in model
+        device("1.1.8", 0x0012, 0x0002, b"6197/15"),     // ABB, System 1, not in model
     ];
 
     let handle = rt.spawn(run_gateway(gw, devices));
@@ -236,14 +238,18 @@ fn scan_reports_devices_and_model_delta() {
         .args([
             "scan",
             "1.1",
+            "--from",
+            "1",
+            "--to",
+            "8",
             "--dir",
             model_dir.to_str().unwrap(),
             "--gateway",
             &format!("127.0.0.1:{port}"),
             "--json",
         ])
-        // Keep the absent-address probes fast so a full 256-address mock sweep
-        // finishes in seconds, not minutes.
+        // Keep the few absent-address probes fast; combined with the 1..=8 range
+        // restriction the whole mock sweep finishes in well under a second.
         .env("BUSSARD_SCAN_DISCOVERY_MS", "40")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -276,22 +282,22 @@ fn scan_reports_devices_and_model_delta() {
     assert_eq!(d4["order"], "MDT-JAL0410");
     assert_eq!(d4["model_status"], "known");
 
-    // 1.1.37 responds but is not in the model.
-    let d37 = found
+    // 1.1.7 responds but is not in the model.
+    let d7 = found
         .iter()
-        .find(|d| d["address"] == "1.1.37")
-        .expect("1.1.37 present");
-    assert_eq!(d37["manufacturer"], "Jung");
-    assert_eq!(d37["system_type"], "System 7");
-    assert_eq!(d37["model_status"], "not_in_model");
+        .find(|d| d["address"] == "1.1.7")
+        .expect("1.1.7 present");
+    assert_eq!(d7["manufacturer"], "Jung");
+    assert_eq!(d7["system_type"], "System 7");
+    assert_eq!(d7["model_status"], "not_in_model");
 
-    // 1.1.50 → ABB, System 1.
-    let d50 = found
+    // 1.1.8 → ABB, System 1.
+    let d8 = found
         .iter()
-        .find(|d| d["address"] == "1.1.50")
-        .expect("1.1.50 present");
-    assert_eq!(d50["manufacturer"], "ABB");
-    assert_eq!(d50["system_type"], "System 1");
+        .find(|d| d["address"] == "1.1.8")
+        .expect("1.1.8 present");
+    assert_eq!(d8["manufacturer"], "ABB");
+    assert_eq!(d8["system_type"], "System 1");
 
     // Cross-reference deltas.
     let not_in_model: Vec<&str> = json["not_in_model"]
@@ -300,8 +306,8 @@ fn scan_reports_devices_and_model_delta() {
         .iter()
         .map(|v| v.as_str().unwrap())
         .collect();
-    assert!(not_in_model.contains(&"1.1.37"));
-    assert!(not_in_model.contains(&"1.1.50"));
+    assert!(not_in_model.contains(&"1.1.7"));
+    assert!(not_in_model.contains(&"1.1.8"));
 
     let missing: Vec<&str> = json["missing_from_bus"]
         .as_array()
@@ -309,5 +315,5 @@ fn scan_reports_devices_and_model_delta() {
         .iter()
         .map(|v| v["address"].as_str().unwrap())
         .collect();
-    assert_eq!(missing, vec!["1.1.20"], "1.1.20 is in the model but silent");
+    assert_eq!(missing, vec!["1.1.6"], "1.1.6 is in the model but silent");
 }

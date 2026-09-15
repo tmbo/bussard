@@ -30,6 +30,11 @@ use bussard_transport::{ConnectionConfig, Transport};
 
 const CHANNEL: u8 = 0x15;
 
+/// A tight programming-mode collection window for the broadcast tests. The mock
+/// gateway answers instantly, so this replaces the production 1500ms window
+/// without weakening any assertion.
+const SHORT_WINDOW: Duration = Duration::from_millis(150);
+
 /// Shared mutable state for one simulated device: its current address (which the
 /// address-write mutates) and whether it is in programming mode.
 #[derive(Clone)]
@@ -351,8 +356,10 @@ async fn discover_write_and_verify_round_trip() {
     let mut bus = open_bus(addr).await;
     let source: IndividualAddress = "0.0.255".parse().unwrap();
 
-    // 1. Discover exactly one device in programming mode.
-    let found = broadcast::devices_in_programming_mode(&mut bus, source)
+    // 1. Discover exactly one device in programming mode. The mock answers
+    //    instantly, so a short collection window keeps the test fast without
+    //    changing what it proves.
+    let found = broadcast::devices_in_programming_mode_within(&mut bus, source, SHORT_WINDOW)
         .await
         .unwrap();
     assert_eq!(found, vec!["15.15.255".parse().unwrap()]);
@@ -394,7 +401,7 @@ async fn zero_devices_in_programming_mode_is_empty() {
 
     let mut bus = open_bus(addr).await;
     let source: IndividualAddress = "0.0.255".parse().unwrap();
-    let found = broadcast::devices_in_programming_mode(&mut bus, source)
+    let found = broadcast::devices_in_programming_mode_within(&mut bus, source, SHORT_WINDOW)
         .await
         .unwrap();
     assert!(found.is_empty());
@@ -412,7 +419,7 @@ async fn two_devices_in_programming_mode_both_reported() {
 
     let mut bus = open_bus(addr).await;
     let source: IndividualAddress = "0.0.255".parse().unwrap();
-    let found = broadcast::devices_in_programming_mode(&mut bus, source)
+    let found = broadcast::devices_in_programming_mode_within(&mut bus, source, SHORT_WINDOW)
         .await
         .unwrap();
     assert_eq!(found.len(), 2, "both responders surface: {found:?}");
@@ -432,14 +439,17 @@ async fn verify_fails_when_address_not_applied() {
     let source: IndividualAddress = "0.0.255".parse().unwrap();
     let target: IndividualAddress = "1.1.7".parse().unwrap();
 
-    let mut dev = DeviceConnection::connect_with(
-        &mut bus,
-        target,
-        source,
-        bussard_mgmt::Timeouts::discovery(),
-    )
-    .await
-    .unwrap();
+    // Nobody answers at 1.1.7, so this connect rules out an absent address at
+    // `2 × ack_timeout`. discovery()'s 1500ms attempts would waste ~3s; a tight
+    // budget keeps the test fast without changing what it proves.
+    let fast = bussard_mgmt::Timeouts {
+        ack_timeout: Duration::from_millis(50),
+        max_repetitions: 1,
+        response_timeout: Duration::from_millis(50),
+    };
+    let mut dev = DeviceConnection::connect_with(&mut bus, target, source, fast)
+        .await
+        .unwrap();
     let err = dev.device_descriptor().await.unwrap_err();
     assert!(
         !err.device_present(),
@@ -494,9 +504,16 @@ async fn serial_read_unknown_serial_is_none() {
     let mut bus = open_bus(addr).await;
     let source: IndividualAddress = "0.0.255".parse().unwrap();
     let unknown = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
-    let found = read_individual_address_by_serial(&mut bus, source, unknown)
-        .await
-        .unwrap();
+    // An unknown serial is ruled out only once the window elapses; a short one
+    // keeps this absent-path test fast.
+    let found = broadcast::read_individual_address_by_serial_within(
+        &mut bus,
+        source,
+        unknown,
+        SHORT_WINDOW,
+    )
+    .await
+    .unwrap();
     assert_eq!(found, None);
     let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
 }

@@ -7,6 +7,11 @@
 //! `devices/*.yaml`: which are known, which are unexpected, and which model
 //! devices did not answer. That delta is the command's real value.
 //!
+//! The address range can be narrowed with `--from`/`--to` (defaults `0`/`255`),
+//! which cuts the sweep time when you already know the device numbers of
+//! interest — a full line is 256 serial probes, each costing up to a couple of
+//! seconds on an absent address.
+//!
 //! It always exits 0 — it is a report, not a check.
 
 use std::io::Write;
@@ -79,18 +84,26 @@ struct Report {
 /// Runs `bussard scan`.
 pub fn run(
     line: &str,
+    from: u8,
+    to: u8,
     dir: &Path,
     json: bool,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
     let (area, line_no) = parse_line(line)?;
+    if from > to {
+        return Err(anyhow!(
+            "invalid range: --from {from} is greater than --to {to}"
+        ));
+    }
     let model = load_model_optional(dir);
     let config = resolve_config(model.as_ref(), &overrides)?;
 
-    // Up-front estimate (256 addresses × per-address budget).
-    let estimate = PER_ADDRESS_ESTIMATE * 256;
+    // Up-front estimate (address count × per-address budget).
+    let count = to as u32 - from as u32 + 1;
+    let estimate = PER_ADDRESS_ESTIMATE * count;
     eprintln!(
-        "scanning line {area}.{line_no}.0–255 sequentially — estimated up to {}m{:02}s on TP1",
+        "scanning line {area}.{line_no}.{from}–{to} sequentially — estimated up to {}m{:02}s on TP1",
         estimate.as_secs() / 60,
         estimate.as_secs() % 60
     );
@@ -112,7 +125,7 @@ pub fn run(
         // through to a clean `handle.close()` so the gateway tunnel slot is
         // released rather than leaked (~2 min hold) — see issue #31.
         let found = tokio::select! {
-            found = sweep(&handle, area, line_no, source) => found,
+            found = sweep(&handle, area, line_no, from, to, source) => found,
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\ninterrupted; closing the bus connection");
                 Vec::new()
@@ -137,10 +150,17 @@ pub fn run(
 /// One [`Bus`] is shared for the whole sweep; each probe leases it for its
 /// connection-oriented session (TP1 etiquette — one open connection at a time),
 /// releasing the lease before the next address.
-async fn sweep(handle: &BusHandle, area: u8, line_no: u8, source: IndividualAddress) -> Vec<Found> {
+async fn sweep(
+    handle: &BusHandle,
+    area: u8,
+    line_no: u8,
+    from: u8,
+    to: u8,
+    source: IndividualAddress,
+) -> Vec<Found> {
     let mut found = Vec::new();
-    for device in 0..=255u16 {
-        let addr = match IndividualAddress::new(area, line_no, device as u8) {
+    for device in from..=to {
+        let addr = match IndividualAddress::new(area, line_no, device) {
             Ok(a) => a,
             Err(_) => continue,
         };

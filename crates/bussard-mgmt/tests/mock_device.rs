@@ -545,8 +545,15 @@ async fn silent_device_is_absent() {
     let mut bus = open_bus(addr).await;
     let target: IndividualAddress = "1.1.9".parse().unwrap();
     let source: IndividualAddress = "0.0.255".parse().unwrap();
-    // Use the tight discovery budget so an absent address is ruled out fast.
-    let mut dev = DeviceConnection::connect_with(&mut bus, target, source, Timeouts::discovery())
+    // A silent address costs `2 × ack_timeout` to rule out; the real discovery()
+    // budget is 1500ms per attempt (~3s wasted here). Nothing about this test
+    // depends on that duration, so use a tight budget that keeps the wall low.
+    let fast = Timeouts {
+        ack_timeout: Duration::from_millis(50),
+        max_repetitions: 1,
+        response_timeout: Duration::from_millis(50),
+    };
+    let mut dev = DeviceConnection::connect_with(&mut bus, target, source, fast)
         .await
         .unwrap();
 

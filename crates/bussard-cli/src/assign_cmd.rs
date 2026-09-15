@@ -41,8 +41,10 @@ const PROGRAMMING_WAIT_TOTAL: Duration = Duration::from_secs(30);
 const INITIAL_POLL_TOTAL: Duration = Duration::from_secs(3);
 
 /// Environment variable that shortens the programming-mode wait windows. Set by
-/// the integration tests so a "no device / two devices" case fails fast; unset
-/// in normal use so the full [`PROGRAMMING_WAIT_TOTAL`] budget applies.
+/// the integration tests so both the outer poll budgets (initial-nag / total)
+/// and the per-poll response-collection window shrink together; unset in normal
+/// use so the full [`PROGRAMMING_WAIT_TOTAL`] and default collection window
+/// apply. Behaviour is unchanged without the variable.
 const WAIT_MS_ENV: &str = "BUSSARD_ASSIGN_WAIT_MS";
 
 /// Runs `bussard assign`.
@@ -189,10 +191,11 @@ async fn wait_for_single_device(
     let start = tokio::time::Instant::now();
     let mut nagged = false;
 
+    let window = collection_window();
     loop {
         // Lease a fresh channel for this broadcast read (released each poll).
         let channel = LeaseChannel::new(handle.lease().await.context("leasing the bus")?);
-        let found = broadcast::devices_in_programming_mode(channel, source).await?;
+        let found = broadcast::devices_in_programming_mode_within(channel, source, window).await?;
         match found.len() {
             1 => return Ok(Some(found[0])),
             n if n > 1 => {
@@ -239,17 +242,29 @@ async fn wait_for_single_device(
     }
 }
 
-/// The (initial-nag, total) wait budgets, honouring [`WAIT_MS_ENV`] for tests.
-fn wait_budgets() -> (Duration, Duration) {
-    if let Some(ms) = std::env::var(WAIT_MS_ENV)
+/// Reads [`WAIT_MS_ENV`] as a millisecond budget, if set and parseable.
+fn wait_ms_override() -> Option<Duration> {
+    std::env::var(WAIT_MS_ENV)
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
-    {
-        let total = Duration::from_millis(ms);
-        (total / 2, total)
-    } else {
-        (INITIAL_POLL_TOTAL, PROGRAMMING_WAIT_TOTAL)
+        .map(Duration::from_millis)
+}
+
+/// The (initial-nag, total) wait budgets, honouring [`WAIT_MS_ENV`] for tests.
+/// With the override set, the initial-nag budget scales to half the total so
+/// [`INITIAL_POLL_TOTAL`] is gated under the same variable as the total.
+fn wait_budgets() -> (Duration, Duration) {
+    match wait_ms_override() {
+        Some(total) => (total / 2, total),
+        None => (INITIAL_POLL_TOTAL, PROGRAMMING_WAIT_TOTAL),
     }
+}
+
+/// The per-poll response-collection window, honouring [`WAIT_MS_ENV`] for tests.
+/// Without the override the mgmt default ([`PROGRAMMING_MODE_WINDOW`]) applies,
+/// so behaviour is unchanged in normal use.
+fn collection_window() -> Duration {
+    wait_ms_override().unwrap_or(bussard_mgmt::broadcast::PROGRAMMING_MODE_WINDOW)
 }
 
 /// Validates an explicit `--address`/positional argument against the model.

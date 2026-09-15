@@ -278,6 +278,10 @@ fn assign_writes_address_and_stub_file() {
             "--gateway",
             &format!("127.0.0.1:{port}"),
         ])
+        // Shrink both the poll budgets and the per-poll collection window: the
+        // programming-mode device answers instantly, so a 200ms window is ample
+        // and avoids the default 1500ms wait.
+        .env("BUSSARD_ASSIGN_WAIT_MS", "200")
         .stdin(Stdio::null()) // non-TTY: explicit address must be accepted
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -346,6 +350,9 @@ fn assign_refuses_implicit_address_without_tty() {
             "--gateway",
             &format!("127.0.0.1:{port}"),
         ])
+        // The device is in programming mode and answers instantly; a short
+        // collection window keeps the safety-refusal path fast.
+        .env("BUSSARD_ASSIGN_WAIT_MS", "200")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

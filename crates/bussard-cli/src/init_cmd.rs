@@ -40,17 +40,25 @@ enum Resolution {
 /// in a stub. Kept as a function pointer to avoid a trait-object dance.
 type DiscoverFn = fn() -> anyhow::Result<Vec<GatewayInfo>>;
 
+/// Injection point for the `--gateway` reachability probe so tests never touch
+/// the network. Defaults to [`probe_reachability`]; tests swap in an instant
+/// no-op so `init --gateway <dead-address>` does not spend the real ~5s connect
+/// budget against an unreachable endpoint.
+type ProbeFn = fn(SocketAddrV4);
+
 /// Creates a fresh `knx/` model directory.
 pub fn run(dir: &Path, gateway: Option<&str>, routing: bool) -> anyhow::Result<ExitCode> {
-    run_with(dir, gateway, routing, real_discover)
+    run_with(dir, gateway, routing, real_discover, probe_reachability)
 }
 
-/// The testable core: same as [`run`] but with an injectable discovery source.
+/// The testable core: same as [`run`] but with injectable discovery and probe
+/// sources.
 fn run_with(
     dir: &Path,
     gateway: Option<&str>,
     routing: bool,
     discover: DiscoverFn,
+    probe: ProbeFn,
 ) -> anyhow::Result<ExitCode> {
     // 1. Refuse a non-empty target directory.
     if dir_is_non_empty(dir)? {
@@ -65,7 +73,7 @@ fn run_with(
     }
 
     // 2. Resolve the gateway.
-    let resolution = resolve_gateway(gateway, routing, discover)?;
+    let resolution = resolve_gateway(gateway, routing, discover, probe)?;
 
     // 3. Write the skeleton.
     write_skeleton(dir, &resolution)?;
@@ -95,6 +103,7 @@ fn resolve_gateway(
     gateway: Option<&str>,
     routing: bool,
     discover: DiscoverFn,
+    probe: ProbeFn,
 ) -> anyhow::Result<Resolution> {
     // --routing wins: no gateway needed.
     if routing {
@@ -105,7 +114,7 @@ fn resolve_gateway(
     // --gateway given: use it, skip discovery, but do a best-effort probe.
     if let Some(spec) = gateway {
         let endpoint = parse_gateway(spec)?;
-        probe_reachability(endpoint);
+        probe(endpoint);
         return Ok(Resolution::Tunnel(endpoint));
     }
 
@@ -413,6 +422,10 @@ mod tests {
         Ok(Vec::new())
     }
 
+    /// An instant no-op reachability probe: keeps `init --gateway` off the
+    /// network (the real probe spends up to ~5s connecting to a dead address).
+    fn no_probe(_endpoint: SocketAddrV4) {}
+
     fn one_gateway() -> anyhow::Result<Vec<GatewayInfo>> {
         Ok(vec![gw(
             [192, 168, 1, 10],
@@ -438,7 +451,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("something.txt"), "hi").unwrap();
 
-        let code = run_with(&dir, None, false, no_gateways).unwrap();
+        let code = run_with(&dir, None, false, no_gateways, no_probe).unwrap();
         assert_eq!(code, ExitCode::FAILURE);
         // Original content untouched: we didn't write a skeleton.
         assert!(!dir.join("bussard.yaml").exists());
@@ -451,7 +464,7 @@ mod tests {
         let dir = temp_dir("empty");
         std::fs::create_dir_all(&dir).unwrap();
 
-        let code = run_with(&dir, None, true, no_gateways).unwrap();
+        let code = run_with(&dir, None, true, no_gateways, no_probe).unwrap();
         assert_eq!(code, ExitCode::SUCCESS);
         assert!(dir.join("bussard.yaml").exists());
 
@@ -461,11 +474,13 @@ mod tests {
     #[test]
     fn gateway_skips_discovery_and_writes_tunnel() {
         let dir = temp_dir("gateway");
-        // A discovery source that would panic proves discovery is skipped.
+        // A discovery source that would panic proves discovery is skipped, and an
+        // instant no-op probe keeps the test off the network (the real probe
+        // spends up to ~5s connecting to the dead address).
         fn boom() -> anyhow::Result<Vec<GatewayInfo>> {
             panic!("discovery must not run when --gateway is given");
         }
-        let code = run_with(&dir, Some("192.168.1.50"), false, boom).unwrap();
+        let code = run_with(&dir, Some("192.168.1.50"), false, boom, no_probe).unwrap();
         assert_eq!(code, ExitCode::SUCCESS);
 
         let yaml = std::fs::read_to_string(dir.join("bussard.yaml")).unwrap();
@@ -476,10 +491,38 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// The reachability probe is invoked exactly once for the given endpoint when
+    /// `--gateway` is used. A thread-local counter proves the wiring without a
+    /// real connect (item 2: the probe is injectable).
+    #[test]
+    fn gateway_invokes_reachability_probe() {
+        use std::cell::Cell;
+        thread_local! {
+            static PROBED: Cell<Option<SocketAddrV4>> = const { Cell::new(None) };
+        }
+        fn record_probe(endpoint: SocketAddrV4) {
+            PROBED.with(|p| p.set(Some(endpoint)));
+        }
+        fn boom() -> anyhow::Result<Vec<GatewayInfo>> {
+            panic!("discovery must not run when --gateway is given");
+        }
+
+        let dir = temp_dir("gateway-probe");
+        let code = run_with(&dir, Some("192.168.1.50:3671"), false, boom, record_probe).unwrap();
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert_eq!(
+            PROBED.with(|p| p.get()),
+            Some(SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 50), 3671)),
+            "the reachability probe must run once against the parsed endpoint"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn routing_writes_routing_config() {
         let dir = temp_dir("routing");
-        let code = run_with(&dir, None, true, no_gateways).unwrap();
+        let code = run_with(&dir, None, true, no_gateways, no_probe).unwrap();
         assert_eq!(code, ExitCode::SUCCESS);
 
         let yaml = std::fs::read_to_string(dir.join("bussard.yaml")).unwrap();
@@ -493,7 +536,7 @@ mod tests {
     #[test]
     fn single_discovered_gateway_is_used() {
         let dir = temp_dir("discovered");
-        let code = run_with(&dir, None, false, one_gateway).unwrap();
+        let code = run_with(&dir, None, false, one_gateway, no_probe).unwrap();
         assert_eq!(code, ExitCode::SUCCESS);
 
         let yaml = std::fs::read_to_string(dir.join("bussard.yaml")).unwrap();
@@ -507,7 +550,7 @@ mod tests {
     #[test]
     fn no_gateway_writes_placeholder_and_validates() {
         let dir = temp_dir("placeholder");
-        let code = run_with(&dir, None, false, no_gateways).unwrap();
+        let code = run_with(&dir, None, false, no_gateways, no_probe).unwrap();
         assert_eq!(code, ExitCode::SUCCESS);
 
         let yaml = std::fs::read_to_string(dir.join("bussard.yaml")).unwrap();
@@ -521,7 +564,7 @@ mod tests {
     #[test]
     fn skeleton_is_complete_and_validates() {
         let dir = temp_dir("skeleton");
-        run_with(&dir, None, true, no_gateways).unwrap();
+        run_with(&dir, None, true, no_gateways, no_probe).unwrap();
 
         for f in ["bussard.yaml", "groups.yaml", "links.yaml", "README.md"] {
             assert!(dir.join(f).exists(), "missing {f}");
@@ -540,7 +583,7 @@ mod tests {
         let dir = temp_dir("absent");
         // Deliberately do not create it.
         assert!(!dir.exists());
-        let code = run_with(&dir, None, true, no_gateways).unwrap();
+        let code = run_with(&dir, None, true, no_gateways, no_probe).unwrap();
         assert_eq!(code, ExitCode::SUCCESS);
         assert!(dir.join("bussard.yaml").exists());
 

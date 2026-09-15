@@ -29,14 +29,25 @@ pub const PROGRAMMING_MODE_WINDOW: Duration = Duration::from_millis(1500);
 /// order first seen). Normally there is exactly zero or one — pressing the
 /// programming button on two devices at once is a user error this surfaces.
 pub async fn devices_in_programming_mode<Ch: L4Channel>(
+    bus: Ch,
+    source: IndividualAddress,
+) -> Result<Vec<IndividualAddress>> {
+    devices_in_programming_mode_within(bus, source, PROGRAMMING_MODE_WINDOW).await
+}
+
+/// Like [`devices_in_programming_mode`] but with an explicit collection
+/// `window`. Used by `bussard assign` so its integration tests can shrink the
+/// window (via `BUSSARD_ASSIGN_WAIT_MS`) without changing the default behaviour.
+pub async fn devices_in_programming_mode_within<Ch: L4Channel>(
     mut bus: Ch,
     source: IndividualAddress,
+    window: Duration,
 ) -> Result<Vec<IndividualAddress>> {
     let request = CemiFrame::t_broadcast(source, apci::A_INDIVIDUAL_ADDRESS_READ, &[]);
     bus.send(request).await?;
 
     let mut found: Vec<IndividualAddress> = Vec::new();
-    let deadline = Instant::now() + PROGRAMMING_MODE_WINDOW;
+    let deadline = Instant::now() + window;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -97,14 +108,26 @@ pub async fn write_individual_address<Ch: L4Channel>(
 /// device's address is the frame source of its
 /// `A_IndividualAddressSerialNumber_Response`.
 pub async fn read_individual_address_by_serial<Ch: L4Channel>(
+    bus: Ch,
+    source: IndividualAddress,
+    serial: [u8; 6],
+) -> Result<Option<IndividualAddress>> {
+    read_individual_address_by_serial_within(bus, source, serial, PROGRAMMING_MODE_WINDOW).await
+}
+
+/// Like [`read_individual_address_by_serial`] but with an explicit collection
+/// `window`. Lets integration tests rule out an unknown serial quickly instead
+/// of waiting the full default window.
+pub async fn read_individual_address_by_serial_within<Ch: L4Channel>(
     mut bus: Ch,
     source: IndividualAddress,
     serial: [u8; 6],
+    window: Duration,
 ) -> Result<Option<IndividualAddress>> {
     let frame = CemiFrame::t_broadcast(source, apci::A_INDIVIDUAL_ADDRESS_SERIAL_READ, &serial);
     bus.send(frame).await?;
 
-    let deadline = Instant::now() + PROGRAMMING_MODE_WINDOW;
+    let deadline = Instant::now() + window;
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
