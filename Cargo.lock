@@ -154,6 +154,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
+name = "bussard-bus"
+version = "0.1.0"
+dependencies = [
+ "bussard-model",
+ "bussard-transport",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "bussard-cli"
 version = "0.1.0"
 dependencies = [
@@ -175,6 +186,14 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "bussard-ets"
+version = "0.1.0"
+dependencies = [
+ "bussard-model",
+ "thiserror",
 ]
 
 [[package]]
