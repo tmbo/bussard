@@ -40,6 +40,16 @@ pub const A_PROPERTY_VALUE_WRITE: u16 = 0x3D7;
 pub const A_MEMORY_READ: u16 = 0x200;
 /// `A_Memory_Response`.
 pub const A_MEMORY_RESPONSE: u16 = 0x240;
+/// `A_Memory_Write` — write device memory.
+///
+/// Same low-6-bits-count framing as `A_Memory_Read`: the octet count lives in
+/// the **low 6 bits of the APCI**, and the payload is `[addr_hi, addr_lo,
+/// data…]`. A device optionally answers with an `A_Memory_Response` echoing the
+/// stored octets (the "verify mode" some System B devices support), but that
+/// echo is optional and not cross-stack reliable; bussard verifies every write
+/// by an independent `A_Memory_Read` read-back compare instead. See
+/// [`encode_memory_write`] and [`crate::device::DeviceConnection::write_memory`].
+pub const A_MEMORY_WRITE: u16 = 0x280;
 
 /// `A_Restart` — restart the device.
 pub const A_RESTART: u16 = 0x380;
@@ -84,6 +94,12 @@ pub const PID_HARDWARE_TYPE: u8 = 78;
 /// The maximum number of data octets a single `A_Memory_Read` may request. The
 /// count field is 6 bits but the practical per-telegram limit on TP1 is 12.
 pub const MAX_MEMORY_READ_LEN: u8 = 12;
+
+/// The maximum number of data octets a single `A_Memory_Write` may carry. Same
+/// 12-octet per-telegram TP1 ceiling as [`MAX_MEMORY_READ_LEN`]: the APDU is
+/// `count(6b in APCI) + [addr_hi, addr_lo, data…]`, and 12 data octets keeps the
+/// whole telegram inside the 15-octet APDU that every System B device accepts.
+pub const MAX_MEMORY_WRITE_LEN: u8 = 12;
 
 /// Encodes the `A_PropertyValue_Read` payload (object index, PID, count/start).
 ///
@@ -273,6 +289,62 @@ pub fn decode_memory_response(resp_apci: u16, payload: &[u8]) -> Option<MemoryRe
     })
 }
 
+/// Encodes an `A_Memory_Write` request: the octet count lives in the **low 6
+/// bits of the APCI**, followed by the two address octets and then the data.
+///
+/// Returns the `(apci, payload)` pair to send. `data` must be at most
+/// [`MAX_MEMORY_WRITE_LEN`] octets; longer slices are truncated to that limit
+/// (callers chunk larger ranges — see
+/// [`crate::device::DeviceConnection::write_memory`]). The framing is the strict,
+/// spec-correct mirror of [`encode_memory_read`]: count in the APCI low bits,
+/// never in a leading payload octet.
+pub fn encode_memory_write(addr: u16, data: &[u8]) -> (u16, Vec<u8>) {
+    let count = (data.len().min(usize::from(MAX_MEMORY_WRITE_LEN)) as u8) & 0x3f;
+    let mut payload = addr.to_be_bytes().to_vec();
+    payload.extend_from_slice(&data[..usize::from(count)]);
+    (A_MEMORY_WRITE | u16::from(count), payload)
+}
+
+/// A parsed `A_Memory_Write` request: the target address and the data octets.
+///
+/// The mock device and tests use this to interpret a write; the client side
+/// builds writes with [`encode_memory_write`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemoryWrite {
+    /// Number of octets written.
+    pub count: u8,
+    /// The memory address the data starts at.
+    pub addr: u16,
+    /// The memory octets to store.
+    pub data: Vec<u8>,
+}
+
+/// Decodes an `A_Memory_Write` request, given the request APCI and its payload.
+///
+/// The octet count lives in the **low 6 bits of `req_apci`**; the payload is
+/// `[addr_hi] [addr_lo] data…`. Returns `None` if the APCI selector is not
+/// `A_Memory_Write`, the payload is shorter than the 2-byte address header, or
+/// the payload holds fewer data octets than the count advertises.
+pub fn decode_memory_write(req_apci: u16, payload: &[u8]) -> Option<MemoryWrite> {
+    if req_apci & APCI_SELECTOR_MASK != A_MEMORY_WRITE {
+        return None;
+    }
+    if payload.len() < 2 {
+        return None;
+    }
+    let count = (req_apci & 0x3f) as u8;
+    let addr = u16::from_be_bytes([payload[0], payload[1]]);
+    let data = &payload[2..];
+    if data.len() < usize::from(count) {
+        return None;
+    }
+    Some(MemoryWrite {
+        count,
+        addr,
+        data: data[..usize::from(count)].to_vec(),
+    })
+}
+
 /// Decodes an `A_DeviceDescriptor_Response` payload into the 16-bit mask
 /// version (descriptor type 0).
 ///
@@ -386,6 +458,38 @@ mod tests {
         assert!(decode_memory_response(A_MEMORY_RESPONSE | 1, &[0x00]).is_none());
         // Count advertises more data than present.
         assert!(decode_memory_response(A_MEMORY_RESPONSE | 3, &[0x00, 0x60, 0xAA]).is_none());
+    }
+
+    #[test]
+    fn memory_write_encodes_count_in_apci() {
+        // Count in the APCI low bits; payload = addr + data (no leading count octet).
+        let (apci, payload) = encode_memory_write(0x4000, &[0xAA, 0xBB, 0xCC]);
+        assert_eq!(apci, A_MEMORY_WRITE | 3);
+        assert_eq!(payload, vec![0x40, 0x00, 0xAA, 0xBB, 0xCC]);
+        // Over-long writes truncate to MAX_MEMORY_WRITE_LEN.
+        let big = vec![0x11u8; 40];
+        let (apci, payload) = encode_memory_write(0x0100, &big);
+        assert_eq!((apci & 0x3f) as u8, MAX_MEMORY_WRITE_LEN);
+        assert_eq!(payload.len(), 2 + usize::from(MAX_MEMORY_WRITE_LEN));
+    }
+
+    #[test]
+    fn memory_write_roundtrips_through_decode() {
+        let (apci, payload) = encode_memory_write(0x4010, &[0x01, 0x02, 0x03, 0x04]);
+        let parsed = decode_memory_write(apci, &payload).unwrap();
+        assert_eq!(parsed.count, 4);
+        assert_eq!(parsed.addr, 0x4010);
+        assert_eq!(parsed.data, vec![0x01, 0x02, 0x03, 0x04]);
+    }
+
+    #[test]
+    fn memory_write_decode_rejects_wrong_apci_or_short_payload() {
+        // Wrong selector (a memory READ is not a WRITE).
+        assert!(decode_memory_write(A_MEMORY_READ | 3, &[0x40, 0x00, 0xAA, 0xBB, 0xCC]).is_none());
+        // Too short for the address header.
+        assert!(decode_memory_write(A_MEMORY_WRITE | 1, &[0x40]).is_none());
+        // Count advertises more data than present.
+        assert!(decode_memory_write(A_MEMORY_WRITE | 3, &[0x40, 0x00, 0xAA]).is_none());
     }
 
     #[test]

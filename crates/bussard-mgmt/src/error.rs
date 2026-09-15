@@ -50,6 +50,25 @@ pub enum MgmtError {
         reason: &'static str,
     },
 
+    /// A memory write-back verification failed: after writing a chunk, an
+    /// `A_Memory_Read` of the same address returned octets that differ from what
+    /// was written. Names the exact address, what was expected and what was read
+    /// so the caller can pinpoint the diverging octet.
+    #[error(
+        "{address}: memory verify failed at {addr:#06X} (wrote {expected:02X?}, read back \
+         {got:02X?})"
+    )]
+    MemoryVerifyFailed {
+        /// The device.
+        address: IndividualAddress,
+        /// The address of the chunk that did not verify.
+        addr: u16,
+        /// The octets that were written.
+        expected: Vec<u8>,
+        /// The octets read back.
+        got: Vec<u8>,
+    },
+
     /// An underlying transport error (socket, gateway, framing).
     #[error(transparent)]
     Transport(#[from] TransportError),
@@ -57,8 +76,9 @@ pub enum MgmtError {
 
 impl MgmtError {
     /// Whether this error indicates the device is **present** (as opposed to
-    /// simply absent). A NAK, disconnect or malformed response all mean a device
-    /// answered in some way; only [`MgmtError::NoResponse`] means absent.
+    /// simply absent). A NAK, disconnect, malformed response or failed memory
+    /// verify all mean a device answered in some way; only
+    /// [`MgmtError::NoResponse`] means absent.
     pub fn device_present(&self) -> bool {
         !matches!(self, MgmtError::NoResponse { .. })
     }

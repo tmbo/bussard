@@ -64,7 +64,7 @@
 use crate::apci::{self, A_PROPERTY_VALUE_READ, A_PROPERTY_VALUE_WRITE};
 use crate::connection::{L4Channel, Layer4Connection};
 use crate::error::MgmtError;
-use crate::tables::PID_TABLE;
+use crate::tables::{PID_TABLE, PID_TABLE_REFERENCE};
 use bussard_model::IndividualAddress;
 
 /// `PID_LOAD_STATE_CONTROL` (5) — the load-state property of a loadable
@@ -380,6 +380,239 @@ pub async fn write_load_control<Ch: L4Channel>(
     Ok(state)
 }
 
+// --- Segment allocation via AdditionalLoadControls -------------------------
+
+/// The `AdditionalLoadControls` sub-command for a **relative** (device-placed)
+/// segment allocation — "Data Relative Allocation".
+///
+/// Evidence: thelsing/knx `table_object.cpp` `additionalLoadControls(data)`
+/// refuses any sub-command but this one (`if (data[1] != 0x0B) { LS_ERROR;
+/// E_INVALID_OPCODE }`), then reads a big-endian `u32` size from `data[2..6]`, a
+/// fill flag from `data[6]` and a fill byte from `data[7]`. This is the KNX
+/// standard's `LdCtrlRelSegment` service (KNX 3/5/2 "Management Procedures"): the
+/// tool asks the device to allocate a backing segment of a given size and the
+/// device chooses the address, which is read back afterwards via
+/// [`PID_TABLE_REFERENCE`].
+pub const LD_CTRL_REL_SEGMENT: u8 = 0x0B;
+
+/// The `AdditionalLoadControls` sub-command for an **absolute** (tool-placed)
+/// segment allocation — `LdCtrlAbsSegment` (KNX 3/5/2). The tool supplies the
+/// segment's absolute memory address, size, access/mem-type flags and a checksum
+/// control.
+///
+/// **Uncertain / unverified against a device.** thelsing's System B path
+/// implements only the relative form (`0x0B`); its `additionalLoadControls`
+/// rejects everything else outright. The absolute layout below follows the ETS
+/// `LdCtrlAbsSegment` element (`LsmIdx, SegType, Address, Size, Access, MemType,
+/// SegFlags`) but no non-GPL device-side decoder was available to pin the exact
+/// octet order, so [`encode_abs_segment`] is provided for the downloader to build
+/// on and is flagged as needing live confirmation. Prefer [`allocate_segment`]
+/// (relative) wherever the device places the segment itself.
+pub const LD_CTRL_ABS_SEGMENT: u8 = 0x01;
+
+/// The fill flag `data[6]` of a relative allocation: `0x01` fills the freshly
+/// allocated segment with the fill byte, `0x00` leaves it untouched (thelsing:
+/// `bool doFill = data[6] == 0x1`).
+const LD_CTRL_FILL: u8 = 0x01;
+
+/// Encodes the 10-octet `AdditionalLoadControls` property value for a
+/// **relative** segment allocation (`LdCtrlRelSegment`), written to
+/// `PID_LOAD_STATE_CONTROL` while the object is in [`LoadState::Loading`].
+///
+/// Layout (all evidence from thelsing `table_object.cpp::additionalLoadControls`,
+/// KNX `LdCtrlRelSegment`):
+///
+/// | octet | field                | value                                    |
+/// |-------|----------------------|------------------------------------------|
+/// | 0     | load event           | [`LoadControl::AdditionalLoadControls`] (3) |
+/// | 1     | sub-command          | [`LD_CTRL_REL_SEGMENT`] (`0x0B`)         |
+/// | 2..6  | size (u32, BE)       | `((data[2]<<24)|…|data[5])`              |
+/// | 6     | fill flag            | `0x01` = fill, else no fill              |
+/// | 7     | fill byte            | the byte written when the fill flag set  |
+/// | 8..10 | reserved (`0x00`)    | pads the structure to the standard 10    |
+///
+/// The property value is exactly 10 octets. Octets 8–9 are reserved zero in the
+/// relative form (thelsing reads only `data[0..8]`); they keep the structure at
+/// the standard `AdditionalLoadControls` width so a stricter device that expects
+/// the full 10-octet write still accepts it.
+pub fn encode_rel_segment(size: u32, fill_byte: Option<u8>) -> [u8; 10] {
+    let mut v = [0u8; 10];
+    v[0] = LoadControl::AdditionalLoadControls.octet();
+    v[1] = LD_CTRL_REL_SEGMENT;
+    v[2..6].copy_from_slice(&size.to_be_bytes());
+    if let Some(byte) = fill_byte {
+        v[6] = LD_CTRL_FILL;
+        v[7] = byte;
+    }
+    v
+}
+
+/// Encodes the 10-octet `AdditionalLoadControls` property value for an
+/// **absolute** segment allocation (`LdCtrlAbsSegment`).
+///
+/// **Unverified layout** — see [`LD_CTRL_ABS_SEGMENT`]. Provided for the
+/// downloader; the exact octet order for `access`/`mem_type`/`seg_flags` must be
+/// confirmed against a live device before this is relied on. Current layout:
+/// `[event=3, sub=0x01, addr(u32 BE), size(u16 BE), access, mem_type, seg_flags]`
+/// — 11 octets would overflow, so the size is a `u16` here to fit the 10-octet
+/// structure; a device that wants a `u32` size will reject this. Flagged as an
+/// open uncertainty for the download engine.
+pub fn encode_abs_segment(
+    addr: u32,
+    size: u16,
+    access: u8,
+    mem_type: u8,
+    seg_flags: u8,
+) -> [u8; 10] {
+    let mut v = [0u8; 10];
+    v[0] = LoadControl::AdditionalLoadControls.octet();
+    v[1] = LD_CTRL_ABS_SEGMENT;
+    v[2..6].copy_from_slice(&addr.to_be_bytes());
+    v[6..8].copy_from_slice(&size.to_be_bytes());
+    v[8] = access;
+    v[9] = mem_type;
+    // seg_flags has no octet left in the 10-octet structure; folded into the
+    // caller's mem_type/access on real devices. Kept in the signature so the
+    // downloader's call sites are explicit; documented uncertainty.
+    let _ = seg_flags;
+    v
+}
+
+/// The device-reported result of a successful [`allocate_segment`]: the absolute
+/// memory address at which the device placed the segment, and the requested size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SegmentAllocation {
+    /// The segment's start address, as the device reports it through
+    /// `PID_TABLE_REFERENCE` after the allocation. This is the address the
+    /// subsequent `A_Memory_Write`s target.
+    pub address: u32,
+    /// The size (octets) that was requested and allocated.
+    pub size: u32,
+}
+
+/// Allocates a backing segment for a loadable table object via a
+/// **relative** `AdditionalLoadControls` write, and returns the device-reported
+/// segment start address.
+///
+/// Preconditions and sequence (evidence: thelsing `table_object.cpp`):
+///
+/// 1. The object must already be in [`LoadState::Loading`] — thelsing only
+///    dispatches `AdditionalLoadControls` from `loadEventLoading`; in any other
+///    state the 10-octet write is ignored (`Unloaded`/`Loaded`) or errors, so
+///    this checks the state first and fails with
+///    [`WriteError::UnexpectedLoadState`] rather than issuing a write that the
+///    device silently drops.
+/// 2. Writes the 10-octet [`encode_rel_segment`] structure to
+///    `PID_LOAD_STATE_CONTROL`. `allocTable` frees any prior backing store and
+///    allocates `size` octets, optionally filled; on failure the object goes to
+///    [`LoadState::Error`] (`E_MAX_TABLE_LENGTH_EXEEDED`).
+/// 3. Re-reads the load state: `Error` means the device **refused** the
+///    allocation (out of memory / too large) → [`WriteError::LoadError`]; still
+///    `Loading` means success.
+/// 4. Reads `PID_TABLE_REFERENCE` element 1 — a big-endian `u32` — which after a
+///    successful allocation is `_memory.toRelative(_data)`, the segment's start
+///    address (thelsing returns `0` while `Unloaded`). That address is where the
+///    caller writes the table content with
+///    [`crate::device::DeviceConnection::write_memory`].
+///
+/// `fill_byte` mirrors the relative structure's fill flag/byte: `Some(b)` asks
+/// the device to pre-fill the segment with `b`, `None` leaves it uninitialised.
+pub async fn allocate_segment<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    object_index: u8,
+    size: u32,
+    fill_byte: Option<u8>,
+) -> Result<SegmentAllocation> {
+    let address = l4.target();
+
+    // 1. The object must be Loading for the allocation to be accepted.
+    let state = read_load_state(l4, object_index).await?;
+    if state != LoadState::Loading {
+        return Err(WriteError::UnexpectedLoadState {
+            address,
+            object_index,
+            control: LoadControl::AdditionalLoadControls,
+            expected: LoadState::Loading,
+            actual: state,
+        });
+    }
+
+    // 2. Write the 10-octet relative-allocation structure. The device echoes the
+    //    resulting load state (best-effort); the authoritative check is the
+    //    fresh read-back below, matching `write_load_control`'s discipline.
+    let structure = encode_rel_segment(size, fill_byte);
+    let payload =
+        apci::encode_property_value_write(object_index, PID_LOAD_STATE_CONTROL, 1, 1, &structure);
+    let (resp_apci, data) = l4.request(A_PROPERTY_VALUE_WRITE, &payload).await?;
+    if resp_apci != apci::A_PROPERTY_VALUE_RESPONSE {
+        return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
+            address,
+            reason: "expected A_PropertyValue_Response to an AdditionalLoadControls write",
+        }));
+    }
+    let _ = apci::decode_property_value_response(&data);
+
+    // 3. A refused allocation drops the object into Error.
+    let state = read_load_state(l4, object_index).await?;
+    if state == LoadState::Error {
+        return Err(WriteError::LoadError {
+            address,
+            object_index,
+        });
+    }
+    if state != LoadState::Loading {
+        return Err(WriteError::UnexpectedLoadState {
+            address,
+            object_index,
+            control: LoadControl::AdditionalLoadControls,
+            expected: LoadState::Loading,
+            actual: state,
+        });
+    }
+
+    // 4. Read the device-placed segment address from PID_TABLE_REFERENCE (u32 BE).
+    let seg_addr = read_table_reference(l4, object_index).await?;
+    Ok(SegmentAllocation {
+        address: seg_addr,
+        size,
+    })
+}
+
+/// Reads `PID_TABLE_REFERENCE` element 1 of a loadable object as a big-endian
+/// `u32` — the segment's backing memory address (thelsing `table_object.cpp`
+/// `tableReference()`; `0` while the object is `Unloaded`).
+async fn read_table_reference<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    object_index: u8,
+) -> Result<u32> {
+    let payload = apci::encode_property_value_read(object_index, PID_TABLE_REFERENCE, 1, 1);
+    let (resp_apci, data) = l4.request(A_PROPERTY_VALUE_READ, &payload).await?;
+    if resp_apci != apci::A_PROPERTY_VALUE_RESPONSE {
+        return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
+            address: l4.target(),
+            reason: "expected A_PropertyValue_Response for PID_TABLE_REFERENCE",
+        }));
+    }
+    let resp = apci::decode_property_value_response(&data).ok_or(WriteError::Mgmt(
+        MgmtError::MalformedResponse {
+            address: l4.target(),
+            reason: "table reference response too short",
+        },
+    ))?;
+    if resp.count == 0 || resp.data.len() < 4 {
+        return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
+            address: l4.target(),
+            reason: "table reference is not a readable u32",
+        }));
+    }
+    Ok(u32::from_be_bytes([
+        resp.data[0],
+        resp.data[1],
+        resp.data[2],
+        resp.data[3],
+    ]))
+}
+
 /// How many table elements to write per `A_PropertyValue_Write`, sized so the
 /// request (4-octet header + data) fits the conservative 15-octet APDU every
 /// System B device supports. 4-octet association elements are the largest, so
@@ -479,6 +712,35 @@ mod tests {
         );
         assert_eq!(LoadControl::NoOperation.expected_state(), None);
         assert_eq!(LoadControl::AdditionalLoadControls.expected_state(), None);
+    }
+
+    #[test]
+    fn rel_segment_structure_matches_thelsing_offsets() {
+        // event=3, sub=0x0B, size u32 BE, fill flag + byte, reserved tail.
+        let v = encode_rel_segment(0x0000_0140, Some(0xEE));
+        assert_eq!(v.len(), 10);
+        assert_eq!(v[0], LoadControl::AdditionalLoadControls.octet());
+        assert_eq!(v[1], LD_CTRL_REL_SEGMENT);
+        assert_eq!(&v[2..6], &[0x00, 0x00, 0x01, 0x40]); // size 320 big-endian
+        assert_eq!(v[6], 0x01); // fill flag set
+        assert_eq!(v[7], 0xEE); // fill byte
+        assert_eq!(&v[8..10], &[0x00, 0x00]); // reserved
+
+        // No fill: flag and byte are zero.
+        let v = encode_rel_segment(0x10, None);
+        assert_eq!(&v[2..6], &[0x00, 0x00, 0x00, 0x10]);
+        assert_eq!(v[6], 0x00);
+        assert_eq!(v[7], 0x00);
+    }
+
+    #[test]
+    fn abs_segment_carries_event_and_subcommand() {
+        let v = encode_abs_segment(0x0000_4000, 0x0140, 0xFF, 0x00, 0x00);
+        assert_eq!(v.len(), 10);
+        assert_eq!(v[0], LoadControl::AdditionalLoadControls.octet());
+        assert_eq!(v[1], LD_CTRL_ABS_SEGMENT);
+        assert_eq!(&v[2..6], &[0x00, 0x00, 0x40, 0x00]); // address big-endian
+        assert_eq!(&v[6..8], &[0x01, 0x40]); // size big-endian
     }
 
     #[test]
