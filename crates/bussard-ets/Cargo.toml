@@ -13,6 +13,9 @@ thiserror = { workspace = true }
 # Streaming XML: quick-xml never builds a DOM, so 20+ MB application-program
 # files are read with bounded memory. MIT licensed.
 quick-xml = "0.41"
+# Decodes code-segment <Data>/<Mask> base64 payloads (the application binary
+# image) into bytes during streaming parse. MIT/Apache-2.0.
+base64 = { workspace = true }
 # ZIP support for reading `.knxproj`/`.knxprod` container entries with a size
 # cap. No AES here: encrypted `.knxproj` inner archives are handled by the
 # `bussard-project` crate. MIT licensed.

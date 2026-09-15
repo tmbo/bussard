@@ -17,3 +17,6 @@ target/
 
 # xknxproject oracle dumps (derived from the private .knxproj)
 fixtures/private/
+
+# Parallels/VM share for exe round-trips — never commit binaries
+shared-with-windows/

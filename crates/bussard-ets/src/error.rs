@@ -53,6 +53,17 @@ pub enum EtsError {
         /// The cap, in bytes.
         cap: u64,
     },
+
+    /// The XML was syntactically valid but semantically malformed: a payload
+    /// bussard expected to decode (e.g. a code segment's base64 `<Data>`) could
+    /// not be interpreted.
+    #[error("parsing {context}: {reason}")]
+    Malformed {
+        /// Human description of what was being parsed.
+        context: String,
+        /// What was wrong.
+        reason: String,
+    },
 }
 
 /// Convenience result alias for the shared ETS-XML layer.

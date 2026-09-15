@@ -32,6 +32,17 @@ pub enum ProdError {
         entry: String,
     },
 
+    /// A parameter's default (or override) could not be laid into its segment
+    /// memory image: the value did not parse for its type, exceeded the field's
+    /// declared width, or the memory location was incomplete.
+    #[error("parameter `{parameter}`: {reason}")]
+    ParameterImage {
+        /// The offending parameter's name (or id if it has no name).
+        parameter: String,
+        /// What went wrong.
+        reason: String,
+    },
+
     /// An error from the shared ETS-XML primitive layer: XML parsing of an
     /// application program or `Hardware.xml`, and capped zip reads.
     #[error(transparent)]
