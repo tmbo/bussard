@@ -1,0 +1,47 @@
+# Manually triggered release-style builds: downloadable bussard binaries per
+# platform (workflow_dispatch), e.g. a Windows .exe for testing against KNX
+# Virtual inside a VM.
+name: Build binaries
+
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: bussard-windows-x64
+            path: target/release/bussard.exe
+          - os: macos-latest
+            artifact: bussard-macos-arm64
+            path: target/release/bussard
+          - os: ubuntu-latest
+            artifact: bussard-linux-x64
+            path: target/release/bussard
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-build
+      - name: Build
+        run: cargo build --release -p bussard-cli
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.path }}
+          retention-days: 14
