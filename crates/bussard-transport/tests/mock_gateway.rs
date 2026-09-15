@@ -370,12 +370,12 @@ async fn dropping_tunnel_sends_disconnect_request() {
 }
 
 #[tokio::test]
-async fn control_hpais_are_wildcard_everywhere() {
-    // Issue #39: CONNECT already advertised a wildcard (route-back) control HPAI,
-    // but CONNECTIONSTATE_REQUEST and DISCONNECT_REQUEST advertised the real
-    // local address. Behind NAT a strict gateway then replies to that
-    // unreachable HPAI and the tunnel dies (~2.5 min). All three must now use
-    // the same wildcard 0.0.0.0:0 so the gateway replies on the source socket.
+async fn control_hpais_are_the_real_endpoint_everywhere() {
+    // Interop finding (KNX Virtual): literal-minded gateways reply to the HPAI
+    // they are given, so a wildcard 0.0.0.0:0 CONNECT never completes. All
+    // control HPAIs (CONNECT, CONNECTIONSTATE, DISCONNECT) must consistently
+    // carry the REAL local endpoint, which every gateway supports on
+    // loopback/LAN/routed paths (classic mode).
     let (addr, gw) = bind_mock().await;
 
     let gw_task = tokio::spawn(async move {
@@ -383,8 +383,8 @@ async fn control_hpais_are_wildcard_everywhere() {
         let (peer, service, body) = recv_frame(&gw).await;
         assert_eq!(service, ServiceType::ConnectRequest);
         assert!(
-            hpai_is_wildcard(&body[0..8]),
-            "CONNECT control HPAI must be wildcard, got {:?}",
+            hpai_matches(&body[0..8], peer),
+            "CONNECT control HPAI must be the real local endpoint {peer}, got {:?}",
             &body[0..8]
         );
         let resp = knxnet_frame(
@@ -406,8 +406,8 @@ async fn control_hpais_are_wildcard_everywhere() {
                         ServiceType::DisconnectRequest => {
                             // body: [channel_id, reserved, HPAI(8)]
                             assert!(
-                                hpai_is_wildcard(&parsed.body[2..10]),
-                                "DISCONNECT control HPAI must be wildcard, got {:?}",
+                                hpai_matches(&parsed.body[2..10], peer),
+                                "DISCONNECT control HPAI must be the real local endpoint, got {:?}",
                                 &parsed.body[2..10]
                             );
                             let resp = knxnet::disconnect_response(0x0D, 0);
@@ -417,8 +417,8 @@ async fn control_hpais_are_wildcard_everywhere() {
                         ServiceType::ConnectionstateRequest => {
                             // body: [channel_id, reserved, HPAI(8)]
                             assert!(
-                                hpai_is_wildcard(&parsed.body[2..10]),
-                                "CONNECTIONSTATE control HPAI must be wildcard, got {:?}",
+                                hpai_matches(&parsed.body[2..10], peer),
+                                "CONNECTIONSTATE control HPAI must be the real local endpoint, got {:?}",
                                 &parsed.body[2..10]
                             );
                             let resp = knxnet::connectionstate_response(0x0D, 0);
@@ -485,14 +485,17 @@ fn knxnet_frame(service: ServiceType, body: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Whether an 8-byte HPAI slice encodes the wildcard endpoint `0.0.0.0:0`
-/// (structure `[len=0x08, code=0x01, 0,0,0,0, 0,0]`).
-fn hpai_is_wildcard(hpai: &[u8]) -> bool {
+/// Whether an 8-byte HPAI slice encodes exactly the given peer socket address
+/// (structure `[len=0x08, code=0x01, ip(4), port(2)]`).
+fn hpai_matches(hpai: &[u8], peer: std::net::SocketAddr) -> bool {
+    let std::net::SocketAddr::V4(v4) = peer else {
+        return false;
+    };
     hpai.len() == 8
         && hpai[0] == 0x08
         && hpai[1] == 0x01
-        && hpai[2..6] == [0, 0, 0, 0]
-        && hpai[6..8] == [0, 0]
+        && hpai[2..6] == v4.ip().octets()
+        && hpai[6..8] == v4.port().to_be_bytes()
 }
 
 fn connect_response_body(channel: u8, gw: &UdpSocket) -> Vec<u8> {

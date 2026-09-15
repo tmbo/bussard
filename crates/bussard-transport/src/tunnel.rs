@@ -75,11 +75,19 @@ impl Tunnel {
             });
         }
 
-        // Handshake. We use route-back (wildcard) HPAIs so the gateway replies on
-        // the same socket — NAT-friendly and works when we don't know our own
-        // routable address.
-        let control_hpai = Hpai::wildcard();
-        let data_hpai = Hpai::wildcard();
+        // Handshake. Advertise the REAL local endpoint (classic mode). Wildcard
+        // route-back HPAIs are NAT-friendly and real gateways (e.g. the Jung IP
+        // interface) honor them, but simpler stacks take the HPAI literally and
+        // reply to 0.0.0.0:0 — KNX Virtual does exactly that, so a wildcard
+        // CONNECT never completes against it. On loopback and LAN/routed paths
+        // (KNX's home reality) the real endpoint always works; NAT traversal
+        // would need a wildcard opt-in, which nothing has required yet.
+        let local = match socket.local_addr()? {
+            std::net::SocketAddr::V4(v4) => v4,
+            std::net::SocketAddr::V6(_) => unreachable!("rejected above"),
+        };
+        let control_hpai = Hpai::new(local);
+        let data_hpai = Hpai::new(local);
         let (channel_id, assigned_ia) = Self::handshake(&socket, control_hpai, data_hpai).await?;
 
         let (cmd_tx, cmd_rx) = mpsc::channel(16);
@@ -88,6 +96,7 @@ impl Tunnel {
         let task_state = TaskState {
             socket,
             channel_id,
+            local_hpai: control_hpai,
             outgoing_seq: 0,
             incoming_seq: 0,
             first_incoming: true,
@@ -197,6 +206,8 @@ struct TaskState {
     incoming_seq: u8,
     /// Whether we have yet to receive our first inbound request.
     first_incoming: bool,
+    /// The real local endpoint advertised in every HPAI (see `connect`).
+    local_hpai: Hpai,
     commands: mpsc::Receiver<Command>,
     frames: mpsc::Sender<Result<TimestampedFrame>>,
 }
@@ -397,13 +408,9 @@ impl TaskState {
 
     /// Sends a heartbeat and awaits its response, retrying per the spec.
     async fn do_heartbeat(&mut self, buf: &mut [u8]) -> Result<()> {
-        // Advertise the same wildcard (route-back) control HPAI the CONNECT used.
-        // A strict/NAT gateway replies to the HPAI it is given; if we advertised
-        // our real local address here (unreachable behind NAT) the gateway would
-        // send CONNECTIONSTATE_RESPONSEs somewhere we never receive them, the
-        // heartbeat would time out, and the tunnel would die after a few
-        // intervals (~2.5 min). Wildcard makes it reply on the source socket.
-        let control = Hpai::wildcard();
+        // The same real control HPAI the CONNECT used (see `connect` for why
+        // wildcard route-back breaks literal-minded gateways like KNX Virtual).
+        let control = self.local_hpai;
         let req = knxnet::connectionstate_request(self.channel_id, control);
 
         for attempt in 0..HEARTBEAT_RETRIES {
@@ -447,11 +454,9 @@ impl TaskState {
 
     /// Sends a DISCONNECT_REQUEST and waits briefly for the response.
     async fn do_close(&mut self, buf: &mut [u8]) -> Result<()> {
-        // Use the same wildcard (route-back) control HPAI as CONNECT and the
-        // heartbeat, so a NAT/strict gateway replies on the source socket. The
-        // DISCONNECT_RESPONSE is best-effort, but staying consistent avoids the
-        // gateway routing it to an unreachable advertised address.
-        let control = Hpai::wildcard();
+        // The same real control HPAI as CONNECT and the heartbeat, for the same
+        // interop reason. The DISCONNECT_RESPONSE is best-effort.
+        let control = self.local_hpai;
         let req = knxnet::disconnect_request(self.channel_id, control);
         self.socket.send(&req).await?;
 
