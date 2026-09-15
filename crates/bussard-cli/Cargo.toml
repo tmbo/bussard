@@ -18,6 +18,7 @@ bussard-project = { workspace = true }
 bussard-prod = { path = "../bussard-prod" }
 bussard-transport = { workspace = true }
 bussard-monitor = { workspace = true }
+bussard-bus = { workspace = true }
 bussard-mcp = { workspace = true }
 bussard-mgmt = { path = "../bussard-mgmt" }
 bussard-ha = { path = "../bussard-ha" }

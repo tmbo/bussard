@@ -92,12 +92,10 @@
 //! [`MgmtError`]; a device that answers but does not expose a readable table
 //! surfaces as [`TablesError::TableUnreadable`].
 
-use bussard_model::{GroupAddress, IndividualAddress};
-use bussard_transport::BusConnection;
-
 use crate::apci::{self, A_PROPERTY_VALUE_READ, MAX_MEMORY_READ_LEN};
-use crate::connection::Layer4Connection;
+use crate::connection::{L4Channel, Layer4Connection};
 use crate::error::MgmtError;
+use bussard_model::{GroupAddress, IndividualAddress};
 
 // --- Identifiers not (yet) in `apci.rs` ---
 // Defined locally per the standard's interface-object resource definitions;
@@ -224,9 +222,7 @@ pub type Result<T> = std::result::Result<T, TablesError>;
 /// a fixed index. Each table is read via the `PID_TABLE` property array,
 /// falling back to `PID_TABLE_REFERENCE` + memory reads; `sources` records
 /// which path worked.
-pub async fn read_tables<C: BusConnection>(
-    l4: &mut Layer4Connection<'_, C>,
-) -> Result<DeviceTables> {
+pub async fn read_tables<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Result<DeviceTables> {
     let address = l4.target();
     let mask = device_descriptor(l4).await?;
     if mask != 0x07B0 {
@@ -328,7 +324,7 @@ pub async fn read_tables<C: BusConnection>(
 ///
 /// The descriptor type lives in the low 6 APCI bits and the request carries
 /// **no** payload octet (see the module docs on wire encodings).
-async fn device_descriptor<C: BusConnection>(l4: &mut Layer4Connection<'_, C>) -> Result<u16> {
+async fn device_descriptor<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Result<u16> {
     let (req_apci, payload) = apci::encode_device_descriptor_read(0);
     let (resp_apci, data) = l4.request(req_apci, &payload).await?;
     if resp_apci & APCI_SELECTOR_MASK != APCI_DEVICE_DESCRIPTOR_RESPONSE || data.len() < 2 {
@@ -344,8 +340,8 @@ async fn device_descriptor<C: BusConnection>(l4: &mut Layer4Connection<'_, C>) -
 ///
 /// Returns the raw value octets; an empty vec means the device reported zero
 /// elements (property or object absent / not readable at that index).
-async fn read_property<C: BusConnection>(
-    l4: &mut Layer4Connection<'_, C>,
+async fn read_property<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
     object_index: u8,
     property_id: u8,
     start: u16,
@@ -375,8 +371,8 @@ async fn read_property<C: BusConnection>(
 ///
 /// The octet count lives in the low 6 APCI bits of both request and response
 /// (see the module docs on wire encodings); the payload is address-only.
-async fn read_memory<C: BusConnection>(
-    l4: &mut Layer4Connection<'_, C>,
+async fn read_memory<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
     addr: u16,
     len: u8,
 ) -> Result<Vec<u8>> {
@@ -398,7 +394,7 @@ async fn read_memory<C: BusConnection>(
 ///
 /// Interface objects are contiguously indexed, so the first index whose
 /// `PID_OBJECT_TYPE` read comes back empty ends discovery.
-async fn discover_objects<C: BusConnection>(l4: &mut Layer4Connection<'_, C>) -> Result<Vec<u16>> {
+async fn discover_objects<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Result<Vec<u16>> {
     let mut types = Vec::new();
     for index in 0..MAX_OBJECT_INDEX {
         let data = read_property(l4, index, PID_OBJECT_TYPE, 1, 1).await?;
@@ -428,8 +424,8 @@ fn find_object(types: &[u16], object_type: u16) -> Option<u8> {
 /// Best-effort element count of the group object table, trying the property
 /// path then the memory path. `None` means neither is readable — the caller
 /// skips the table with a note rather than failing (it is a nice-to-have).
-async fn group_object_count<C: BusConnection>(
-    l4: &mut Layer4Connection<'_, C>,
+async fn group_object_count<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
     object_index: u8,
 ) -> Result<Option<(u16, TableSource)>> {
     if let Some(count) = read_element_count(l4, object_index).await? {
@@ -464,8 +460,8 @@ fn decode_table_reference(refbytes: &[u8]) -> Option<u32> {
 ///
 /// Returns `Ok(None)` when the property is not readable (the response reported
 /// zero elements) — the caller then falls back or skips.
-async fn read_element_count<C: BusConnection>(
-    l4: &mut Layer4Connection<'_, C>,
+async fn read_element_count<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
     object_index: u8,
 ) -> Result<Option<u16>> {
     let data = read_property(l4, object_index, PID_TABLE, 0, 1).await?;
@@ -480,8 +476,8 @@ async fn read_element_count<C: BusConnection>(
 ///
 /// Returns the concatenated element octets (`count × elem_size`) and which
 /// path produced them.
-async fn read_table<C: BusConnection>(
-    l4: &mut Layer4Connection<'_, C>,
+async fn read_table<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
     object_index: u8,
     elem_size: usize,
     what: &str,
@@ -500,8 +496,8 @@ async fn read_table<C: BusConnection>(
 ///
 /// Returns `Ok(None)` when `PID_TABLE` is not readable at all (element-count
 /// read reports zero elements), signalling the caller to fall back.
-async fn read_table_via_property<C: BusConnection>(
-    l4: &mut Layer4Connection<'_, C>,
+async fn read_table_via_property<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
     object_index: u8,
     elem_size: usize,
     what: &str,
@@ -537,8 +533,8 @@ async fn read_table_via_property<C: BusConnection>(
 
 /// The memory fallback: `PID_TABLE_REFERENCE` names the table's address; the
 /// table starts with a big-endian `u16` entry count followed by the entries.
-async fn read_table_via_memory<C: BusConnection>(
-    l4: &mut Layer4Connection<'_, C>,
+async fn read_table_via_memory<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
     object_index: u8,
     elem_size: usize,
     what: &str,

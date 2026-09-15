@@ -14,19 +14,15 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use anyhow::{Context, anyhow};
+use anyhow::anyhow;
+use bussard_bus::{Bus, BusHandle, ops};
 use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO, PID_SERIAL_NUMBER};
-use bussard_mgmt::{DeviceConnection, Timeouts, manufacturers, system_type};
+use bussard_mgmt::{
+    DeviceConnection, L4Channel, LeaseChannel, Timeouts, manufacturers, system_type,
+};
 use bussard_model::IndividualAddress;
-use bussard_transport::{BusConnection, Transport};
 
 use crate::conn_cmd::{ConnOverrides, load_model_optional, resolve_config};
-
-/// The fallback source individual address the scanner presents as when the
-/// gateway assigns none (e.g. a routing transport). Connection-oriented
-/// management frames must carry the tunnel-assigned address as source, or the
-/// gateway will not route the device's replies back — see issue #30.
-const FALLBACK_SOURCE_IA: &str = "0.0.255";
 
 /// Environment variable that overrides the per-attempt discovery timeout in
 /// milliseconds. Set only by the integration test to keep a full-line mock sweep
@@ -101,28 +97,26 @@ pub fn run(
 
     let runtime = tokio::runtime::Runtime::new()?;
     let found = runtime.block_on(async move {
-        let mut bus = Transport::connect(&config)
-            .await
-            .context("opening the bus connection")?;
+        let (handle, _task) = Bus::connect(config);
         // Present the tunnel-assigned individual address as the source; devices
         // ignore connection-oriented frames from any other source, and the
         // gateway only routes replies back to the assigned address (issue #30).
-        // Fall back to 0.0.255 on a routing transport that assigns none.
-        let source = bus
-            .assigned_individual_address()
-            .map(IndividualAddress::from_raw)
-            .unwrap_or_else(|| FALLBACK_SOURCE_IA.parse().expect("valid source IA"));
+        // Fall back to 0.0.255 on a routing transport that assigns none. The
+        // actor may still be connecting; group_source reads the assigned IA once
+        // it is up (the first probe waits on the lease anyway).
+        wait_connected(&handle).await;
+        let source = ops::group_source(&handle);
         // Guard the sweep with Ctrl-C: on interrupt, stop sweeping and fall
-        // through to a clean `bus.close()` so the gateway tunnel slot is
+        // through to a clean `handle.close()` so the gateway tunnel slot is
         // released rather than leaked (~2 min hold) — see issue #31.
         let found = tokio::select! {
-            found = sweep(&mut bus, area, line_no, source) => found,
+            found = sweep(&handle, area, line_no, source) => found,
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\ninterrupted; closing the bus connection");
                 Vec::new()
             }
         };
-        let _ = bus.close().await;
+        let _ = handle.close().await;
         anyhow::Ok(found)
     })?;
 
@@ -137,12 +131,11 @@ pub fn run(
 }
 
 /// Sweeps every device address on the line, returning the responders.
-async fn sweep(
-    bus: &mut Transport,
-    area: u8,
-    line_no: u8,
-    source: IndividualAddress,
-) -> Vec<Found> {
+///
+/// One [`Bus`] is shared for the whole sweep; each probe leases it for its
+/// connection-oriented session (TP1 etiquette — one open connection at a time),
+/// releasing the lease before the next address.
+async fn sweep(handle: &BusHandle, area: u8, line_no: u8, source: IndividualAddress) -> Vec<Found> {
     let mut found = Vec::new();
     for device in 0..=255u16 {
         let addr = match IndividualAddress::new(area, line_no, device as u8) {
@@ -153,7 +146,7 @@ async fn sweep(
         eprint!("\rscanning {addr}…  {} found   ", found.len());
         let _ = std::io::stderr().flush();
 
-        if let Some(dev) = probe(bus, addr, source).await {
+        if let Some(dev) = probe(handle, addr, source).await {
             found.push(dev);
         }
     }
@@ -164,15 +157,18 @@ async fn sweep(
     found
 }
 
-/// Probes one address: connect, read the descriptor, and — if present —
-/// best-effort read manufacturer/serial/order. Returns `None` for an absent or
-/// refusing device.
+/// Probes one address: lease the bus, connect, read the descriptor, and — if
+/// present — best-effort read manufacturer/serial/order. Returns `None` for an
+/// absent or refusing device. The lease is released when the [`LeaseChannel`] is
+/// dropped at the end of this function.
 async fn probe(
-    bus: &mut Transport,
+    handle: &BusHandle,
     addr: IndividualAddress,
     source: IndividualAddress,
 ) -> Option<Found> {
-    let mut dev = DeviceConnection::connect_with(bus, addr, source, discovery_timeouts())
+    let lease = handle.lease().await.ok()?;
+    let channel = LeaseChannel::new(lease);
+    let mut dev = DeviceConnection::connect_with(channel, addr, source, discovery_timeouts())
         .await
         .ok()?;
 
@@ -213,8 +209,22 @@ async fn probe(
     })
 }
 
+/// Waits (up to ~10s) for the bus actor to report connected, so the
+/// tunnel-assigned source address is available before the sweep starts. Returns
+/// even if it never connects — the sweep then simply finds nothing.
+async fn wait_connected(handle: &BusHandle) {
+    use bussard_bus::BusState;
+    for _ in 0..1000 {
+        match handle.status() {
+            BusState::Connected => return,
+            BusState::Closed => return,
+            _ => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+        }
+    }
+}
+
 /// Reads a 2-byte property as a `u16`, returning `None` on any failure.
-async fn read_u16<C: BusConnection>(dev: &mut DeviceConnection<'_, C>, pid: u8) -> Option<u16> {
+async fn read_u16<Ch: L4Channel>(dev: &mut DeviceConnection<Ch>, pid: u8) -> Option<u16> {
     match dev.read_device_property(pid).await {
         Ok(bytes) if bytes.len() >= 2 => Some(u16::from_be_bytes([bytes[0], bytes[1]])),
         _ => None,

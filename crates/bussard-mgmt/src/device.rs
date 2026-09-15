@@ -8,10 +8,9 @@
 //! and a NAK/disconnect into a "present but refusing" error.
 
 use bussard_model::IndividualAddress;
-use bussard_transport::BusConnection;
 
 use crate::apci;
-use crate::connection::{Layer4Connection, Timeouts};
+use crate::connection::{L4Channel, Layer4Connection, Timeouts};
 use crate::error::{MgmtError, Result};
 
 /// A management client bound to a single device over a connection-oriented
@@ -20,31 +19,35 @@ use crate::error::{MgmtError, Result};
 /// Construct one with [`DeviceConnection::connect`]; it opens a `T_Connect`.
 /// Call the typed procedures; then drop or [`DeviceConnection::disconnect`] to
 /// send a clean `T_Disconnect`.
-pub struct DeviceConnection<'a, C: BusConnection> {
-    inner: Layer4Connection<'a, C>,
+pub struct DeviceConnection<Ch: L4Channel> {
+    inner: Layer4Connection<Ch>,
 }
 
-impl<'a, C: BusConnection> DeviceConnection<'a, C> {
+impl<Ch: L4Channel> DeviceConnection<Ch> {
     /// Opens a connection-oriented session to `target`, presenting `source` as
     /// the tool's own individual address.
+    ///
+    /// `conn` is the frame channel — a borrowed
+    /// [`BusConnection`](bussard_transport::BusConnection) or a
+    /// [`LeaseChannel`](crate::connection::LeaseChannel) over the bus actor.
     pub async fn connect(
-        bus: &'a mut C,
+        conn: Ch,
         target: IndividualAddress,
         source: IndividualAddress,
-    ) -> Result<DeviceConnection<'a, C>> {
-        let inner = Layer4Connection::connect(bus, target, source).await?;
+    ) -> Result<DeviceConnection<Ch>> {
+        let inner = Layer4Connection::connect(conn, target, source).await?;
         Ok(DeviceConnection { inner })
     }
 
     /// Like [`connect`](Self::connect) but with an explicit timeout budget — use
     /// [`Timeouts::discovery`] for fast absent-address probing during a scan.
     pub async fn connect_with(
-        bus: &'a mut C,
+        conn: Ch,
         target: IndividualAddress,
         source: IndividualAddress,
         timeouts: Timeouts,
-    ) -> Result<DeviceConnection<'a, C>> {
-        let inner = Layer4Connection::connect_with(bus, target, source, timeouts).await?;
+    ) -> Result<DeviceConnection<Ch>> {
+        let inner = Layer4Connection::connect_with(conn, target, source, timeouts).await?;
         Ok(DeviceConnection { inner })
     }
 

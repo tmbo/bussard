@@ -27,13 +27,99 @@
 
 use std::time::Duration;
 
+use bussard_bus::{BusError, BusLease, FrameSubscription};
 use bussard_model::IndividualAddress;
 use bussard_transport::cemi::{Apdu, CemiFrame, Tpci};
 use bussard_transport::tpci::{self, TpciKind};
-use bussard_transport::{BusConnection, TransportError};
+use bussard_transport::{BusConnection, TimestampedFrame, TransportError};
 use tokio::time::{Instant, timeout};
 
 use crate::error::{MgmtError, Result};
+
+/// The two operations the layer-4 state machine needs from whatever carries its
+/// frames: an ACK-completed `send` and a `recv` of the next inbound frame.
+///
+/// This lets [`Layer4Connection`] drive **either** a borrowed
+/// [`BusConnection`](bussard_transport::BusConnection) (the standalone /
+/// scripted-test path) **or** a [`BusLease`] over the bus actor (the real path,
+/// where group traffic and other subscribers keep flowing) with byte-identical
+/// state-machine logic. Receivers deliver *every* inbound frame; the state
+/// machine filters to its peer itself.
+#[allow(async_fn_in_trait)]
+pub trait L4Channel: Send {
+    /// Sends a frame, completing when the transport confirms it.
+    async fn send(&mut self, frame: CemiFrame) -> Result<()>;
+
+    /// Receives the next inbound frame.
+    async fn recv(&mut self) -> Result<TimestampedFrame>;
+}
+
+/// A borrowed [`BusConnection`] as an [`L4Channel`] — the standalone path used by
+/// the scripted unit tests and the mock-device integration tests.
+impl<C: BusConnection> L4Channel for &mut C {
+    async fn send(&mut self, frame: CemiFrame) -> Result<()> {
+        BusConnection::send(*self, frame)
+            .await
+            .map_err(MgmtError::Transport)
+    }
+
+    async fn recv(&mut self) -> Result<TimestampedFrame> {
+        BusConnection::recv(*self)
+            .await
+            .map_err(MgmtError::Transport)
+    }
+}
+
+/// A [`BusLease`] over the bus actor as an [`L4Channel`].
+///
+/// `send` goes through the handle (ACK-completed against the tunnel); `recv`
+/// drains a frame subscription taken when the channel is built, so an L4 session
+/// observes the bus without stealing frames from the monitor / MCP ring / other
+/// subscribers (the core single-consumer fix). The subscription is live from
+/// construction, so the peer's `T_ACK` cannot slip in before the first `recv`.
+pub struct LeaseChannel {
+    lease: BusLease,
+    sub: FrameSubscription,
+}
+
+impl LeaseChannel {
+    /// Builds a channel over `lease`, subscribing to inbound frames immediately.
+    pub fn new(lease: BusLease) -> Self {
+        let sub = lease.subscribe();
+        LeaseChannel { lease, sub }
+    }
+
+    /// Consumes the channel and returns the underlying lease (releasing it on
+    /// drop).
+    pub fn into_lease(self) -> BusLease {
+        self.lease
+    }
+}
+
+fn map_bus_error(err: BusError) -> MgmtError {
+    match err {
+        BusError::Transport(e) => MgmtError::Transport(e),
+        // A stale drop or a gone actor both mean the connection is unusable.
+        BusError::Stale | BusError::ActorGone => MgmtError::Transport(TransportError::Closed),
+    }
+}
+
+impl L4Channel for LeaseChannel {
+    async fn send(&mut self, frame: CemiFrame) -> Result<()> {
+        self.lease
+            .send(frame)
+            .await
+            .map(|_| ())
+            .map_err(map_bus_error)
+    }
+
+    async fn recv(&mut self) -> Result<TimestampedFrame> {
+        match self.sub.recv().await {
+            Some(inbound) => Ok(inbound.frame),
+            None => Err(MgmtError::Transport(TransportError::Closed)),
+        }
+    }
+}
 
 /// How long to wait for a `T_ACK` after sending a numbered data telegram. This
 /// is the KNX-standard value; `bussard scan` overrides it with a shorter value
@@ -93,8 +179,8 @@ impl Timeouts {
 /// Borrow-based: it drives an existing [`BusConnection`] and does not own it, so
 /// several sequential connections can reuse one bus session (important on TP1,
 /// where only one connection should be open at a time).
-pub struct Layer4Connection<'a, C: BusConnection> {
-    conn: &'a mut C,
+pub struct Layer4Connection<Ch: L4Channel> {
+    conn: Ch,
     target: IndividualAddress,
     source: IndividualAddress,
     timeouts: Timeouts,
@@ -111,27 +197,29 @@ pub struct Layer4Connection<'a, C: BusConnection> {
     closed: bool,
 }
 
-impl<'a, C: BusConnection> Layer4Connection<'a, C> {
+impl<Ch: L4Channel> Layer4Connection<Ch> {
     /// Opens a connection to `target`, sending `T_Connect`.
     ///
-    /// `source` is the individual address the tool presents as. The connection
-    /// is established optimistically; the first `send_data` that times out
-    /// without any `T_ACK` surfaces the device as absent.
+    /// `conn` is the frame channel — a borrowed
+    /// [`BusConnection`](bussard_transport::BusConnection) or a
+    /// [`LeaseChannel`]. `source` is the individual address the tool presents as.
+    /// The connection is established optimistically; the first `send_data` that
+    /// times out without any `T_ACK` surfaces the device as absent.
     pub async fn connect(
-        conn: &'a mut C,
+        conn: Ch,
         target: IndividualAddress,
         source: IndividualAddress,
-    ) -> Result<Layer4Connection<'a, C>> {
+    ) -> Result<Layer4Connection<Ch>> {
         Self::connect_with(conn, target, source, Timeouts::default()).await
     }
 
     /// Like [`connect`](Self::connect) but with an explicit timeout budget.
     pub async fn connect_with(
-        conn: &'a mut C,
+        mut conn: Ch,
         target: IndividualAddress,
         source: IndividualAddress,
         timeouts: Timeouts,
-    ) -> Result<Layer4Connection<'a, C>> {
+    ) -> Result<Layer4Connection<Ch>> {
         let frame = CemiFrame::t_control(target, source, tpci::T_CONNECT);
         conn.send(frame).await?;
         Ok(Layer4Connection {
@@ -364,13 +452,14 @@ impl<'a, C: BusConnection> Layer4Connection<'a, C> {
         }
     }
 
-    fn map_recv_error(&mut self, err: TransportError) -> MgmtError {
+    fn map_recv_error(&mut self, err: MgmtError) -> MgmtError {
         self.closed = true;
         match err {
-            TransportError::Disconnected(_) => MgmtError::Disconnected {
+            MgmtError::Transport(TransportError::Disconnected(_))
+            | MgmtError::Transport(TransportError::Closed) => MgmtError::Disconnected {
                 address: self.target,
             },
-            other => MgmtError::Transport(other),
+            other => other,
         }
     }
 }

@@ -70,9 +70,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use bussard_model::Model;
-use bussard_transport::cemi::CemiFrame;
 use bussard_transport::{ConnectionConfig, TransportKind};
-use tokio::sync::mpsc;
 
 pub use server::BussardMcp;
 pub use state::{READ_MAX_CONCURRENT, READ_MIN_INTERVAL, SharedState};
@@ -106,11 +104,9 @@ pub struct McpConfig {
 /// *not* opened here — that happens in the stream task, which reconnects, so a
 /// bus that is down at startup does not stop the server.
 ///
-/// Returns the state plus the outbound receiver (`None` in passive mode) to hand
-/// to [`run::serve_stdio`].
-pub fn build_state(
-    config: &McpConfig,
-) -> anyhow::Result<(Arc<SharedState>, Option<mpsc::UnboundedReceiver<CemiFrame>>)> {
+/// Returns the built state (with no bus handle wired yet — [`run::serve_stdio`]
+/// spawns the actor and wires it in).
+pub fn build_state(config: &McpConfig) -> anyhow::Result<Arc<SharedState>> {
     if !config.dir.exists() {
         anyhow::bail!(
             "model directory {} not found; the MCP server needs a loaded model (pass --dir)",
@@ -125,10 +121,13 @@ pub fn build_state(
 
 /// Builds state from an already-loaded model (used by tests with an in-code
 /// model, and by [`build_state`] after loading from disk).
+///
+/// The bus handle is not wired here (the actor is spawned by
+/// [`run::serve_stdio`]); the status starts as `connecting`.
 pub fn build_state_from_model(
     model: Model,
     config: &McpConfig,
-) -> anyhow::Result<(Arc<SharedState>, Option<mpsc::UnboundedReceiver<CemiFrame>>)> {
+) -> anyhow::Result<Arc<SharedState>> {
     let source_ia = DEFAULT_SOURCE_IA
         .parse()
         .expect("DEFAULT_SOURCE_IA is a valid individual address");
@@ -136,20 +135,11 @@ pub fn build_state_from_model(
     let bus = state::BusStatus::new(config.connection.transport.clone());
     let ring = bussard_monitor::TelegramRing::new();
 
-    // In passive mode there is no outbound channel at all.
-    let (outbound, outbound_rx) = if config.passive {
-        (None, None)
-    } else {
-        let (tx, rx) = mpsc::unbounded_channel();
-        (Some(tx), Some(rx))
-    };
-
     let state = Arc::new(SharedState {
         model,
         dir: config.dir.clone(),
         ring,
         bus,
-        outbound,
         passive: config.passive,
         allow_writes: config.allow_writes,
         read_limiter: state::ReadLimiter::new(READ_MIN_INTERVAL, READ_MAX_CONCURRENT),
@@ -157,7 +147,7 @@ pub fn build_state_from_model(
         source_ia,
     });
 
-    Ok((state, outbound_rx))
+    Ok(state)
 }
 
 /// Convenience: the transport kind as a stable tag (used in docs/tests).
@@ -171,8 +161,8 @@ pub fn transport_tag(kind: &TransportKind) -> &'static str {
 /// Loads and serves the MCP server over stdio from a [`McpConfig`], blocking
 /// until the client disconnects.
 pub async fn run(config: &McpConfig) -> anyhow::Result<()> {
-    let (state, outbound_rx) = build_state(config)?;
-    run::serve_stdio(state, config.connection.clone(), outbound_rx).await
+    let state = build_state(config)?;
+    run::serve_stdio(state, config.connection.clone()).await
 }
 
 /// The set of tool names exposed, in registration order. Used by tests and docs.

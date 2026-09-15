@@ -58,7 +58,7 @@ pub use broadcast::{
     devices_in_programming_mode, read_individual_address_by_serial, write_individual_address,
     write_individual_address_by_serial,
 };
-pub use connection::{Layer4Connection, Timeouts};
+pub use connection::{L4Channel, Layer4Connection, LeaseChannel, Timeouts};
 pub use device::DeviceConnection;
 pub use error::{MgmtError, Result};
 pub use tables::{DeviceTables, ResolvedLink, TableSource, TablesError, read_tables};

@@ -20,20 +20,15 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow, bail};
+use bussard_bus::{Bus, BusHandle, BusState, ops};
 use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO, PID_SERIAL_NUMBER};
 use bussard_mgmt::{
-    DeviceConnection, broadcast, manufacturers, system_type, write_individual_address,
+    DeviceConnection, LeaseChannel, broadcast, manufacturers, system_type, write_individual_address,
 };
 use bussard_model::schema::{Device, Product};
 use bussard_model::{IndividualAddress, LoadedDevice, Model};
-use bussard_transport::{BusConnection, Transport};
 
 use crate::conn_cmd::{ConnOverrides, resolve_config};
-
-/// The fallback source individual address the tool presents as when the gateway
-/// assigns none. Connection-oriented management frames must carry the
-/// tunnel-assigned address as source, or replies are not routed back — #30.
-const FALLBACK_SOURCE_IA: &str = "0.0.255";
 
 /// The line to allocate on when the model has no devices to infer one from.
 const FALLBACK_LINE: (u8, u8) = (1, 1);
@@ -63,28 +58,34 @@ pub fn run(
 
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
-        let mut bus = Transport::connect(&config)
-            .await
-            .context("opening the bus connection")?;
-        // Present the tunnel-assigned individual address as the source (falling
-        // back to 0.0.255 when the gateway assigns none) — issue #30.
-        let source = bus
-            .assigned_individual_address()
-            .map(IndividualAddress::from_raw)
-            .unwrap_or_else(|| FALLBACK_SOURCE_IA.parse().expect("valid source IA"));
+        let (handle, _task) = Bus::connect(config);
+        // Wait for the actor to connect so the tunnel-assigned source address is
+        // available (falling back to 0.0.255 on routing) — issue #30.
+        wait_connected(&handle).await;
+        let source = ops::group_source(&handle);
         // Guard the assign flow with Ctrl-C: on interrupt, fall through to a
-        // clean `bus.close()` so the gateway tunnel slot is released rather than
-        // leaked — see issue #31.
+        // clean `handle.close()` so the gateway tunnel slot is released rather
+        // than leaked — see issue #31.
         let result = tokio::select! {
-            result = assign_flow(&mut bus, source, address, model.as_ref(), dir) => result,
+            result = assign_flow(&handle, source, address, model.as_ref(), dir) => result,
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\ninterrupted; closing the bus connection");
                 Err(anyhow!("assign interrupted by Ctrl-C"))
             }
         };
-        let _ = bus.close().await;
+        let _ = handle.close().await;
         result
     })
+}
+
+/// Waits (up to ~10s) for the bus actor to report connected.
+async fn wait_connected(handle: &BusHandle) {
+    for _ in 0..1000 {
+        match handle.status() {
+            BusState::Connected | BusState::Closed => return,
+            _ => tokio::time::sleep(Duration::from_millis(10)).await,
+        }
+    }
 }
 
 /// Loads the model for an assign run.
@@ -115,16 +116,18 @@ fn load_model_for_assign(dir: &Path, have_explicit_address: bool) -> anyhow::Res
     }
 }
 
-/// The end-to-end assign flow over an open bus.
-async fn assign_flow<C: BusConnection>(
-    bus: &mut C,
+/// The end-to-end assign flow over the bus actor. Each connectionless broadcast
+/// and each connection-oriented verify leases the bus for the duration of that
+/// step (releasing it in between), so other bus consumers keep observing.
+async fn assign_flow(
+    handle: &BusHandle,
     source: IndividualAddress,
     address: Option<&str>,
     model: Option<&Model>,
     dir: &Path,
 ) -> anyhow::Result<ExitCode> {
     // 2. Find exactly one device in programming mode.
-    let current = match wait_for_single_device(bus, source).await? {
+    let current = match wait_for_single_device(handle, source).await? {
         Some(addr) => addr,
         None => return Ok(ExitCode::FAILURE),
     };
@@ -150,12 +153,13 @@ async fn assign_flow<C: BusConnection>(
     }
 
     // 5. Write, then verify.
-    write_individual_address(bus, source, target)
+    let write_channel = LeaseChannel::new(handle.lease().await.context("leasing the bus")?);
+    write_individual_address(write_channel, source, target)
         .await
         .context("broadcasting the new individual address")?;
     eprintln!("wrote {target}; verifying…");
 
-    let verified = verify_assignment(bus, source, target).await?;
+    let verified = verify_assignment(handle, source, target).await?;
 
     // 6. Create the stub device file.
     let device = build_stub_device(target, &verified);
@@ -185,8 +189,8 @@ async fn assign_flow<C: BusConnection>(
 /// Returns `Ok(Some(addr))` for the single found device, or `Ok(None)` after
 /// printing friendly guidance for the zero-found (timeout) and multiple-found
 /// cases — both of which are a clean command failure, not an error.
-async fn wait_for_single_device<C: BusConnection>(
-    bus: &mut C,
+async fn wait_for_single_device(
+    handle: &BusHandle,
     source: IndividualAddress,
 ) -> anyhow::Result<Option<IndividualAddress>> {
     let (initial, total) = wait_budgets();
@@ -194,7 +198,9 @@ async fn wait_for_single_device<C: BusConnection>(
     let mut nagged = false;
 
     loop {
-        let found = broadcast::devices_in_programming_mode(bus, source).await?;
+        // Lease a fresh channel for this broadcast read (released each poll).
+        let channel = LeaseChannel::new(handle.lease().await.context("leasing the bus")?);
+        let found = broadcast::devices_in_programming_mode(channel, source).await?;
         match found.len() {
             1 => return Ok(Some(found[0])),
             n if n > 1 => {
@@ -389,12 +395,13 @@ struct Verified {
 /// A device descriptor read is the proof the address took: if it fails, the
 /// write did not land (or the device dropped programming mode without applying
 /// it), which is a clear error naming both the old and new addresses.
-async fn verify_assignment<C: BusConnection>(
-    bus: &mut C,
+async fn verify_assignment(
+    handle: &BusHandle,
     source: IndividualAddress,
     target: IndividualAddress,
 ) -> anyhow::Result<Verified> {
-    let mut dev = DeviceConnection::connect(bus, target, source)
+    let channel = LeaseChannel::new(handle.lease().await.context("leasing the bus")?);
+    let mut dev = DeviceConnection::connect(channel, target, source)
         .await
         .map_err(|err| {
             anyhow!(
