@@ -2,6 +2,7 @@
 //!
 //! Phase 0 wires up the command surface; only `validate` is functional so far.
 
+mod assign_cmd;
 mod capture_cmd;
 mod conn_cmd;
 mod ha_config_cmd;
@@ -11,6 +12,7 @@ mod init_cmd;
 mod mcp_cmd;
 mod monitor_cmd;
 mod read_cmd;
+mod reconstruct_cmd;
 mod scan_cmd;
 mod validate_cmd;
 mod write_cmd;
@@ -76,6 +78,39 @@ enum Command {
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// Emit JSON instead of the table format.
+        #[arg(long)]
+        json: bool,
+        /// Override the gateway `host[:port]` for tunneling.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Force KNXnet/IP routing (multicast) transport.
+        #[arg(long)]
+        routing: bool,
+    },
+    /// Assign an individual address to the device in programming mode.
+    Assign {
+        /// The address to assign, e.g. `1.1.47` (default: next free on the line).
+        #[arg(value_name = "ADDRESS")]
+        address: Option<String>,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Override the gateway `host[:port]` for tunneling.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Force KNXnet/IP routing (multicast) transport.
+        #[arg(long)]
+        routing: bool,
+    },
+    /// Read a device's tables back over the bus and diff them against the model.
+    Reconstruct {
+        /// The device to read, e.g. `1.1.4`.
+        #[arg(value_name = "ADDRESS")]
+        address: String,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Emit JSON instead of the report format.
         #[arg(long)]
         json: bool,
         /// Override the gateway `host[:port]` for tunneling.
@@ -245,6 +280,28 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             routing,
         } => scan_cmd::run(
             &line,
+            &dir,
+            json,
+            conn_cmd::ConnOverrides { gateway, routing },
+        ),
+        Command::Assign {
+            address,
+            dir,
+            gateway,
+            routing,
+        } => assign_cmd::run(
+            address.as_deref(),
+            &dir,
+            conn_cmd::ConnOverrides { gateway, routing },
+        ),
+        Command::Reconstruct {
+            address,
+            dir,
+            json,
+            gateway,
+            routing,
+        } => reconstruct_cmd::run(
+            &address,
             &dir,
             json,
             conn_cmd::ConnOverrides { gateway, routing },
