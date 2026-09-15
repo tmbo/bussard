@@ -226,7 +226,12 @@ jobs:
         run: |
           sudo tcpdump -i any -w vdev.pcap 'udp port 3671' &
           echo $! | sudo tee /tmp/tcpdump.pid >/dev/null
-          sleep 1  # let it bind before traffic starts
+          # Also capture INSIDE the device namespace, so we see whether the device
+          # receives bussard's broadcast and whether it transmits a reply — the
+          # root-ns capture cannot observe intra-namespace rx.
+          sudo ip netns exec knxdev tcpdump -i knxveth1 -w vdev-netns.pcap 'udp port 3671' &
+          echo $! | sudo tee /tmp/tcpdump-netns.pid >/dev/null
+          sleep 1  # let them bind before traffic starts
 
       # Probe: prove multicast physically crosses the veth in BOTH directions,
       # independent of bussard/device, so we know the plumbing carries the KNX
@@ -313,9 +318,12 @@ jobs:
         if: always()
         run: |
           sudo kill "$(cat /tmp/tcpdump.pid)" 2>/dev/null || true
+          sudo kill "$(cat /tmp/tcpdump-netns.pid)" 2>/dev/null || true
           sleep 1
-          echo "--- pcap summary (udp/3671) ---"
+          echo "--- root-ns pcap summary (udp/3671) ---"
           sudo tcpdump -n -r vdev.pcap 2>/dev/null | head -80 || true
+          echo "--- device-netns pcap summary (udp/3671) ---"
+          sudo tcpdump -n -r vdev-netns.pcap 2>/dev/null | head -80 || true
 
       - name: Collect device logs
         if: always()
@@ -335,6 +343,7 @@ jobs:
           name: virtual-device-diagnostics
           path: |
             vdev.pcap
+            vdev-netns.pcap
             vdev-logs/
             netns.env
           if-no-files-found: warn
