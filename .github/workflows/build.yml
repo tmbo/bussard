@@ -21,6 +21,9 @@ jobs:
           - os: windows-latest
             artifact: bussard-windows-x64
             path: target/release/bussard.exe
+            # Static CRT: the exe must run on a bare Windows without the VC++
+            # redistributable (single-binary install story).
+            rustflags: "-C target-feature=+crt-static"
           - os: macos-latest
             artifact: bussard-macos-arm64
             path: target/release/bussard
@@ -38,6 +41,8 @@ jobs:
         with:
           key: release-build
       - name: Build
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags || '' }}
         run: cargo build --release -p bussard-cli
       - name: Upload artifact
         uses: actions/upload-artifact@v4
