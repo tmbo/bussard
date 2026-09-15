@@ -21,6 +21,11 @@ pub fn attrs_map(e: &BytesStart, context: &str) -> Result<HashMap<Vec<u8>, Strin
             context: context.to_string(),
             source,
         })?;
+        // quick-xml 0.41 deprecates unescape_value in favor of normalized_value,
+        // which also applies XML attribute-value normalization (whitespace
+        // folding). ETS emission is held to byte-equal output, so keep the
+        // plain-unescape semantics deliberately.
+        #[allow(deprecated)]
         let value = attr
             .unescape_value()
             .map_err(|source| EtsError::Xml {
@@ -47,6 +52,7 @@ pub fn attr_value(e: &BytesStart, key: &[u8], context: &str) -> Result<Option<St
             source,
         })?;
         if attr.key.as_ref() == key {
+            #[allow(deprecated)] // see attrs_map: plain unescape is deliberate
             let cow = attr.unescape_value().map_err(|source| EtsError::Xml {
                 context: context.to_string(),
                 source,

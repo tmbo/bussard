@@ -8,6 +8,10 @@
 //! The heavy resolution against manufacturer XML happens later in
 //! [`crate::build`]; this module only reads the project file itself.
 
+// quick-xml 0.41 deprecates unescape_value in favor of normalized_value,
+// which adds attribute-value whitespace normalization. Import output is held
+// to byte-equal stability, so the plain-unescape semantics are deliberate.
+#![allow(deprecated)]
 use std::collections::HashMap;
 
 use quick_xml::Reader;

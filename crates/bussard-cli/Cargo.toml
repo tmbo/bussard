@@ -21,6 +21,7 @@ bussard-monitor = { workspace = true }
 bussard-bus = { workspace = true }
 bussard-mcp = { workspace = true }
 bussard-mgmt = { path = "../bussard-mgmt" }
+bussard-download = { path = "../bussard-download" }
 bussard-ha = { path = "../bussard-ha" }
 clap = { workspace = true }
 anyhow = { workspace = true }

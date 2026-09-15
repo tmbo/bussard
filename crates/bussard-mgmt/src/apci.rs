@@ -27,6 +27,14 @@ pub const APCI_SELECTOR_MASK: u16 = 0x3C0;
 pub const A_PROPERTY_VALUE_READ: u16 = 0x3D5;
 /// `A_PropertyValue_Response`.
 pub const A_PROPERTY_VALUE_RESPONSE: u16 = 0x3D6;
+/// `A_PropertyValue_Write` — write a property of an interface object.
+///
+/// Same 4-octet addressing header as `A_PropertyValue_Read` (object index, PID,
+/// count/start), followed by the new value octets. The device answers with an
+/// `A_PropertyValue_Response` echoing the *stored* value (per the KNX
+/// application layer: the write's confirmation is a read-back response), so the
+/// writer validates by comparing the echoed octets to what it sent.
+pub const A_PROPERTY_VALUE_WRITE: u16 = 0x3D7;
 
 /// `A_Memory_Read` — read device memory.
 pub const A_MEMORY_READ: u16 = 0x200;
@@ -96,6 +104,27 @@ pub fn encode_property_value_read(
         (count << 4) | ((start >> 8) as u8 & 0x0f),
         (start & 0xff) as u8,
     ]
+}
+
+/// Encodes an `A_PropertyValue_Write` payload: the same 4-octet header as
+/// [`encode_property_value_read`] (object index, PID, count/start) followed by
+/// the new value octets.
+///
+/// `count` is the number of *elements* being written (1–15) and `start` the
+/// 12-bit element index; `value` carries the raw element octets. Writing a
+/// property-array element 0 with a `u16` count sets the array's element count
+/// (mirroring the read side, where element 0 is the count — see
+/// [`crate::tables`]); writing elements from index 1 upward sets the elements.
+pub fn encode_property_value_write(
+    object_index: u8,
+    property_id: u8,
+    count: u8,
+    start: u16,
+    value: &[u8],
+) -> Vec<u8> {
+    let mut payload = encode_property_value_read(object_index, property_id, count, start);
+    payload.extend_from_slice(value);
+    payload
 }
 
 /// A parsed `A_PropertyValue_Read` request.
@@ -279,6 +308,24 @@ mod tests {
         assert_eq!(parsed.count, 1);
         assert_eq!(parsed.start, 1);
         assert_eq!(parsed.data, vec![0x00, 0x04]);
+    }
+
+    #[test]
+    fn property_value_write_shares_the_read_header() {
+        // Write 1 element of object 1 / PID 23 at start 1 with value 0x1234.
+        let w = encode_property_value_write(1, 23, 1, 1, &[0x12, 0x34]);
+        assert_eq!(w, vec![0x01, 23, 0x10, 0x01, 0x12, 0x34]);
+        // The header is byte-identical to a read of the same addressing.
+        let r = encode_property_value_read(1, 23, 1, 1);
+        assert_eq!(&w[..4], &r[..]);
+        // The device echoes the stored value in an A_PropertyValue_Response; the
+        // response parser reads it back with the same header layout.
+        let parsed = decode_property_value_response(&w).unwrap();
+        assert_eq!(parsed.object_index, 1);
+        assert_eq!(parsed.property_id, 23);
+        assert_eq!(parsed.count, 1);
+        assert_eq!(parsed.start, 1);
+        assert_eq!(parsed.data, vec![0x12, 0x34]);
     }
 
     #[test]
