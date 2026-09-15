@@ -1,0 +1,77 @@
+# Release builds: pushing a version tag (e.g. `0.1.0` or `v0.1.0`) creates a
+# GitHub Release with prebuilt binaries for the three platforms attached.
+# The README links to the releases page for downloads.
+name: Release
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+*"
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  create-release:
+    name: create release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${{ github.ref_name }}" >/dev/null 2>&1 || \
+            gh release create "${{ github.ref_name }}" --generate-notes \
+              --title "bussard ${{ github.ref_name }}"
+
+  build:
+    name: build (${{ matrix.os }})
+    needs: create-release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            asset: bussard-windows-x64.exe
+            path: target/release/bussard.exe
+            # Static CRT: must run on a bare Windows without the VC++
+            # redistributable (single-binary install story).
+            rustflags: "-C target-feature=+crt-static"
+          - os: macos-latest
+            asset: bussard-macos-arm64
+            path: target/release/bussard
+          - os: ubuntu-latest
+            asset: bussard-linux-x64
+            path: target/release/bussard
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-build
+      - name: Build
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags || '' }}
+        run: cargo build --release -p bussard-cli
+      - name: Upload release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          cp "${{ matrix.path }}" "${{ matrix.asset }}"
+          shasum -a 256 "${{ matrix.asset }}" > "${{ matrix.asset }}.sha256"
+          gh release upload "${{ github.ref_name }}" \
+            "${{ matrix.asset }}" "${{ matrix.asset }}.sha256" --clobber
