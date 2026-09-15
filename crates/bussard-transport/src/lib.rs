@@ -82,6 +82,20 @@ impl Transport {
             TransportKind::Routing => Ok(Transport::Router(Router::connect(config).await?)),
         }
     }
+
+    /// The raw individual address the gateway assigned to this connection's
+    /// tunnel, if any.
+    ///
+    /// Connection-oriented management traffic should present this as its
+    /// source address — many devices ignore frames from an address that is not
+    /// the tunnel's. Routing connections have no assigned address (`None`);
+    /// gateways that assign none report `0.0.0`, which is also `None` here.
+    pub fn assigned_individual_address(&self) -> Option<u16> {
+        match self {
+            Transport::Tunnel(t) => t.assigned_individual_address().filter(|&ia| ia != 0),
+            Transport::Router(_) => None,
+        }
+    }
 }
 
 impl BusConnection for Transport {
