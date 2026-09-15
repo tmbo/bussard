@@ -222,12 +222,38 @@ impl BussardMcp {
         let mut telegrams = tools::recent_telegrams(&self.state.ring, &filter, since, limit);
 
         // Fall back to the capture store when the ring window is exceeded: if we
-        // got fewer than asked and a DB is configured, top up from it.
+        // got fewer than asked and a DB is configured, top up from it with OLDER
+        // rows. The DB query runs on a blocking thread (rusqlite is synchronous)
+        // and its rows are re-filtered against the same `Filter` (so a GA prefix
+        // like "3/" is honoured, not silently dropped) and de-duplicated against
+        // the ring rows we already have.
         if telegrams.len() < limit {
-            if let Some(db) = &self.state.capture_db {
-                if let Some(extra) = self.query_capture(db, &args, since, limit - telegrams.len()) {
+            if let Some(db) = self.state.capture_db.clone() {
+                let want = limit - telegrams.len();
+                let state = self.state.clone();
+                let filter = filter.clone();
+                // Push only *exact* terms into SQL; a GA prefix stays out of the
+                // query and is enforced by the `Filter` re-check post-decode.
+                let exact_ga = args.ga.as_deref().and_then(|s| s.parse().ok());
+                let exact_source = args.source.as_deref().and_then(|s| s.parse().ok());
+                let extra = tokio::task::spawn_blocking(move || {
+                    query_capture(&state, &db, &filter, exact_ga, exact_source, since, want)
+                })
+                .await
+                .ok()
+                .flatten();
+
+                if let Some(extra) = extra {
+                    // Drop any store row that duplicates a ring row (same
+                    // instant/source/dest/payload): the ring is the source of
+                    // truth for the recent window and the two can overlap.
+                    let seen: std::collections::HashSet<TelegramKey> =
+                        telegrams.iter().map(telegram_key).collect();
+                    let mut combined: Vec<_> = extra
+                        .into_iter()
+                        .filter(|t| !seen.contains(&telegram_key(t)))
+                        .collect();
                     // Prepend older store rows before the newer ring rows.
-                    let mut combined = extra;
                     combined.extend(telegrams);
                     // Keep the newest `limit`, chronological.
                     if combined.len() > limit {
@@ -491,34 +517,70 @@ impl BussardMcp {
     }
 }
 
-impl BussardMcp {
-    /// Queries the capture store for older telegrams to top up the ring window.
-    fn query_capture(
-        &self,
-        db: &std::path::Path,
-        args: &RecentArgs,
-        since: Option<SystemTime>,
-        limit: usize,
-    ) -> Option<Vec<bussard_monitor::DecodedTelegram>> {
-        let store = CaptureStore::open(db).ok()?;
-        let ga = args.ga.as_deref().and_then(|s| s.parse().ok());
-        let source = args.source.as_deref().and_then(|s| s.parse().ok());
-        let qf = QueryFilter {
-            ga,
-            source,
-            since,
-            limit: Some(limit),
-        };
-        let rows = store.query(&qf).ok()?;
-        // Re-decode each row against the current model; skip undecodable rows.
-        let mut out: Vec<bussard_monitor::DecodedTelegram> = rows
-            .iter()
-            .filter_map(|r| r.redecode(Some(&self.state.model)).ok())
-            .collect();
-        // Store rows are newest-first; make them chronological.
-        out.reverse();
-        Some(out)
-    }
+/// A dedup key for a telegram: the fields that uniquely identify one bus event.
+/// Used to drop capture-store rows that duplicate rows already in the ring.
+type TelegramKey = (SystemTime, String, String, Vec<u8>);
+
+/// Builds the dedup key for a decoded telegram.
+fn telegram_key(t: &bussard_monitor::DecodedTelegram) -> TelegramKey {
+    (
+        t.timestamp,
+        t.source.to_string(),
+        t.destination.to_string(),
+        t.payload.clone(),
+    )
+}
+
+/// Upper bound on rows scanned from the capture DB in one fallback query.
+///
+/// A GA *prefix* filter (e.g. `"3/"`) cannot be expressed in SQL here, so those
+/// rows are re-filtered in Rust after decoding. To keep a prefix query from
+/// missing matches that sit behind many non-matching rows we do not push a tight
+/// SQL `LIMIT`; this cap bounds the scan instead so a huge capture cannot blow
+/// up memory.
+const MAX_CAPTURE_SCAN: usize = 50_000;
+
+/// Queries the capture store for older telegrams to top up the ring window.
+///
+/// Runs on a blocking thread (rusqlite is synchronous). The precise SQL filters
+/// (exact GA, source, `since`) narrow the scan; the full [`Filter`] is then
+/// re-applied to the decoded rows so GA prefixes are honoured, and the caller
+/// de-duplicates against the ring rows. Returns rows chronological (oldest
+/// first), truncated to `limit` *after* filtering.
+fn query_capture(
+    state: &SharedState,
+    db: &std::path::Path,
+    filter: &Filter,
+    exact_ga: Option<GroupAddress>,
+    exact_source: Option<IndividualAddress>,
+    since: Option<SystemTime>,
+    limit: usize,
+) -> Option<Vec<bussard_monitor::DecodedTelegram>> {
+    let store = CaptureStore::open(db).ok()?;
+    let qf = QueryFilter {
+        // Only an *exact* GA can be pushed into SQL; a prefix stays None here and
+        // is enforced by `filter.matches` below. `build_filter` already put both
+        // ga and source into `filter`, so SQL is a coarse pre-filter only.
+        ga: exact_ga,
+        source: exact_source,
+        since,
+        // Do NOT push a tight LIMIT: a prefix filter is applied post-decode, so
+        // a small LIMIT could return only non-matching rows. Bound the scan
+        // instead; we truncate to `limit` after filtering.
+        limit: Some(MAX_CAPTURE_SCAN),
+    };
+    let rows = store.query(&qf).ok()?;
+    // Re-decode against the current model, drop undecodable rows, and re-apply
+    // the requested filter (this is what makes a GA prefix like "3/" correct).
+    let mut out: Vec<bussard_monitor::DecodedTelegram> = rows
+        .iter()
+        .filter_map(|r| r.redecode(Some(&state.model)).ok())
+        .filter(|t| filter.matches(t))
+        .collect();
+    // Rows are newest-first; keep the newest `limit`, then make chronological.
+    out.truncate(limit);
+    out.reverse();
+    Some(out)
 }
 
 /// Parses an RFC3339 timestamp, mapping failures to an invalid-params error.

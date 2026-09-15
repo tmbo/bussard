@@ -183,6 +183,10 @@ impl RingSubscription {
         matches: impl Fn(&DecodedTelegram, MessageCode) -> bool,
     ) -> Option<DecodedTelegram> {
         let deadline = tokio::time::Instant::now() + timeout;
+        // Warn at most once per contiguous lag burst: set on the first Lagged,
+        // cleared by the next successful recv, so a sustained overrun logs once
+        // rather than on every dropped batch.
+        let mut lagged_reported = false;
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
@@ -192,9 +196,24 @@ impl RingSubscription {
                 // A matching telegram arrived.
                 Ok(Ok(ev)) if matches(&ev.telegram, ev.message_code) => return Some(ev.telegram),
                 // A non-matching telegram: keep waiting.
-                Ok(Ok(_)) => continue,
-                // Lagged (we missed some): keep waiting on fresh ones.
-                Ok(Err(broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Ok(_)) => {
+                    lagged_reported = false;
+                    continue;
+                }
+                // Lagged (we missed some): the broadcast buffer overran and this
+                // waiter dropped `skipped` telegrams. Warn once per burst so a
+                // missed "press the button now" response is not silent, then keep
+                // waiting on fresh ones.
+                Ok(Err(broadcast::error::RecvError::Lagged(skipped))) => {
+                    if !lagged_reported {
+                        tracing::warn!(
+                            skipped,
+                            "telegram ring subscription lagged; dropped telegrams (buffer overrun)"
+                        );
+                        lagged_reported = true;
+                    }
+                    continue;
+                }
                 // Sender dropped: no more telegrams will arrive.
                 Ok(Err(broadcast::error::RecvError::Closed)) => return None,
                 // Timed out.
@@ -315,6 +334,28 @@ mod tests {
             })
             .await
             .expect("the indication must be delivered");
+        assert_eq!(got.destination.to_string(), "3/2/0");
+    }
+
+    #[tokio::test]
+    async fn lagged_subscription_recovers_and_matches() {
+        // Overrun the broadcast buffer (depth is max(16)) with a subscription
+        // that has not been polled yet, forcing a Lagged on its first recv, then
+        // confirm the waiter recovers and still delivers a later matching frame.
+        let ring = TelegramRing::with_capacity(4);
+        let mut sub = ring.subscribe();
+        // Push well past the broadcast depth so `sub` is guaranteed lagged.
+        for i in 0..64u16 {
+            ring.push(tel(&format!("1/0/{}", i % 8)));
+        }
+        // Now push the frame we actually want, after the lag.
+        ring.push(tel("3/2/0"));
+        let got = sub
+            .wait_for_matching(Duration::from_millis(500), |t, _| {
+                t.destination.to_string() == "3/2/0"
+            })
+            .await
+            .expect("the waiter must recover from Lagged and match the fresh frame");
         assert_eq!(got.destination.to_string(), "3/2/0");
     }
 

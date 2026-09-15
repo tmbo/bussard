@@ -189,11 +189,15 @@ groups:
 }
 
 // ---------------------------------------------------------------------------
-// Duplicate device addresses across files (E002 path: last-wins in the map).
+// Duplicate device addresses across files: a hard load error naming both files
+// (issue #39). Previously the loader silently collapsed to last-wins in the map,
+// dropping a device and misattributing its links; that is now rejected.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn duplicate_device_address_across_files_collapses_last_wins() {
+fn duplicate_device_address_across_files_is_a_load_error() {
+    use bussard_model::loader::LoadError;
+
     let dir = tmp("dupdev");
     write(&dir, "groups.yaml", b"groups: {}\n");
     write(
@@ -206,14 +210,20 @@ fn duplicate_device_address_across_files_collapses_last_wins() {
         "devices/1.1.4-bbb.yaml",
         b"address: 1.1.4\nname: Second\n",
     );
-    let m = Model::load(&dir).expect("load with dup addr");
-    // Both files map to the same IA key; sorted-order load means "bbb" (last)
-    // wins in the BTreeMap.
-    assert_eq!(m.devices.len(), 1);
-    let dev = m.devices.get(&"1.1.4".parse().unwrap()).unwrap();
-    assert_eq!(dev.device.name, "Second", "last file in sorted order wins");
-    // The kept file_stem is the winner's.
-    assert_eq!(dev.file_stem, "1.1.4-bbb");
+    let err = Model::load(&dir).expect_err("duplicate device address must be rejected");
+    match err {
+        LoadError::DuplicateDeviceAddress {
+            address,
+            first,
+            second,
+        } => {
+            assert_eq!(address, "1.1.4".parse().unwrap());
+            // Sorted order: the "aaa" file is first, the "bbb" file second.
+            assert!(first.ends_with("1.1.4-aaa.yaml"), "first: {first:?}");
+            assert!(second.ends_with("1.1.4-bbb.yaml"), "second: {second:?}");
+        }
+        other => panic!("expected DuplicateDeviceAddress, got {other:?}"),
+    }
     let _ = fs::remove_dir_all(&dir);
 }
 

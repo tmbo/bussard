@@ -369,6 +369,80 @@ async fn dropping_tunnel_sends_disconnect_request() {
     );
 }
 
+#[tokio::test]
+async fn control_hpais_are_wildcard_everywhere() {
+    // Issue #39: CONNECT already advertised a wildcard (route-back) control HPAI,
+    // but CONNECTIONSTATE_REQUEST and DISCONNECT_REQUEST advertised the real
+    // local address. Behind NAT a strict gateway then replies to that
+    // unreachable HPAI and the tunnel dies (~2.5 min). All three must now use
+    // the same wildcard 0.0.0.0:0 so the gateway replies on the source socket.
+    let (addr, gw) = bind_mock().await;
+
+    let gw_task = tokio::spawn(async move {
+        // 1. CONNECT_REQUEST: assert its control HPAI (first HPAI in the body).
+        let (peer, service, body) = recv_frame(&gw).await;
+        assert_eq!(service, ServiceType::ConnectRequest);
+        assert!(
+            hpai_is_wildcard(&body[0..8]),
+            "CONNECT control HPAI must be wildcard, got {:?}",
+            &body[0..8]
+        );
+        let resp = knxnet_frame(
+            ServiceType::ConnectResponse,
+            &connect_response_body(0x0D, &gw),
+        );
+        gw.send_to(&resp, peer).await.unwrap();
+
+        // 2. The client calls close(): capture the DISCONNECT_REQUEST and assert
+        // its control HPAI (body after channel_id + reserved) is wildcard too.
+        loop {
+            let mut buf = [0u8; 1024];
+            match tokio::time::timeout(Duration::from_secs(5), gw.recv_from(&mut buf)).await {
+                Ok(Ok((n, peer))) => {
+                    let Ok(parsed) = knxnet::parse(&buf[..n]) else {
+                        continue;
+                    };
+                    match parsed.service {
+                        ServiceType::DisconnectRequest => {
+                            // body: [channel_id, reserved, HPAI(8)]
+                            assert!(
+                                hpai_is_wildcard(&parsed.body[2..10]),
+                                "DISCONNECT control HPAI must be wildcard, got {:?}",
+                                &parsed.body[2..10]
+                            );
+                            let resp = knxnet::disconnect_response(0x0D, 0);
+                            let _ = gw.send_to(&resp, peer).await;
+                            return true;
+                        }
+                        ServiceType::ConnectionstateRequest => {
+                            // body: [channel_id, reserved, HPAI(8)]
+                            assert!(
+                                hpai_is_wildcard(&parsed.body[2..10]),
+                                "CONNECTIONSTATE control HPAI must be wildcard, got {:?}",
+                                &parsed.body[2..10]
+                            );
+                            let resp = knxnet::connectionstate_response(0x0D, 0);
+                            let _ = gw.send_to(&resp, peer).await;
+                        }
+                        _ => {}
+                    }
+                }
+                _ => return false,
+            }
+        }
+    });
+
+    let config = ConnectionConfig::tunnel(addr);
+    let conn = Transport::connect(&config).await.unwrap();
+    conn.close().await.unwrap();
+
+    let saw_disconnect = tokio::time::timeout(Duration::from_secs(5), gw_task)
+        .await
+        .expect("gateway task should finish")
+        .unwrap();
+    assert!(saw_disconnect, "close() must send a DISCONNECT_REQUEST");
+}
+
 // --- Optional multicast loopback test, gated behind an env var ---
 
 #[tokio::test]
@@ -409,6 +483,16 @@ fn knxnet_frame(service: ServiceType, body: &[u8]) -> Vec<u8> {
     out.extend_from_slice(&total.to_be_bytes());
     out.extend_from_slice(body);
     out
+}
+
+/// Whether an 8-byte HPAI slice encodes the wildcard endpoint `0.0.0.0:0`
+/// (structure `[len=0x08, code=0x01, 0,0,0,0, 0,0]`).
+fn hpai_is_wildcard(hpai: &[u8]) -> bool {
+    hpai.len() == 8
+        && hpai[0] == 0x08
+        && hpai[1] == 0x01
+        && hpai[2..6] == [0, 0, 0, 0]
+        && hpai[6..8] == [0, 0]
 }
 
 fn connect_response_body(channel: u8, gw: &UdpSocket) -> Vec<u8> {

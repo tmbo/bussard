@@ -5,29 +5,22 @@ use std::time::SystemTime;
 use crate::cemi::CemiFrame;
 use crate::error::Result;
 
-/// A received cEMI frame stamped with the local time it arrived, plus any
-/// out-of-band router events. `bussard-monitor` consumes a stream of these.
+/// A received cEMI frame stamped with the local time it arrived.
+/// `bussard-monitor` consumes a stream of these.
+///
+/// Out-of-band router conditions (ROUTING_BUSY / ROUTING_LOST_MESSAGE) are not
+/// carried here: the actor that owns a connection only awaits
+/// [`recv`](BusConnection::recv), so nothing would read a side channel. The
+/// [`Router`](crate::Router) logs those conditions via `tracing::warn` and
+/// honours ROUTING_BUSY's pause internally. A former `BusEvent` enum plus a
+/// `Router::last_event` poll existed for this but were never read by any caller,
+/// so they were removed rather than left as unreachable API.
 #[derive(Debug, Clone)]
 pub struct TimestampedFrame {
     /// Local time the frame was received.
     pub received_at: SystemTime,
     /// The decoded cEMI frame.
     pub frame: CemiFrame,
-}
-
-/// An out-of-band event surfaced by a connection, alongside normal frames.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BusEvent {
-    /// A router reported dropped messages (ROUTING_LOST_MESSAGE).
-    RoutingLost {
-        /// Number of frames the router dropped.
-        lost: u16,
-    },
-    /// A router asked senders to back off (ROUTING_BUSY).
-    RoutingBusy {
-        /// Milliseconds to wait before sending again.
-        wait_ms: u16,
-    },
 }
 
 /// A KNX bus connection: send and receive cEMI frames.

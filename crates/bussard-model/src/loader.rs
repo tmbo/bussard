@@ -48,6 +48,22 @@ pub enum LoadError {
         /// The error message.
         message: String,
     },
+    /// Two device files declare the same individual `address:`. This is a hard
+    /// load error (not a silent last-wins collapse): the address is the device
+    /// identity, so a duplicate means one device would be dropped and its links
+    /// silently misattributed.
+    #[error(
+        "duplicate device address {address}: declared in both {first} and {second} \
+         (each device address must be unique across devices/*.yaml)"
+    )]
+    DuplicateDeviceAddress {
+        /// The colliding individual address.
+        address: IndividualAddress,
+        /// The first file that declared it (sorted order).
+        first: PathBuf,
+        /// The second file that declared it.
+        second: PathBuf,
+    },
 }
 
 /// An error saving the model to disk.
@@ -144,10 +160,13 @@ impl Model {
     /// Loads the model from a directory.
     ///
     /// Reads `bussard.yaml` (optional), `groups.yaml`, `links.yaml` and every
-    /// `devices/*.yaml`. Devices with duplicate individual addresses across
-    /// files are *not* rejected here — they surface as validation error
-    /// `E002` — but the last one loaded wins in the map (files are processed
-    /// in sorted order for determinism).
+    /// `devices/*.yaml`. Two device files declaring the same individual
+    /// `address:` are a hard load error ([`LoadError::DuplicateDeviceAddress`],
+    /// naming both files): the address is the device identity, and a silent
+    /// last-wins collapse would drop a device and misattribute its links. Files
+    /// are processed in sorted order for a deterministic "first" file in the
+    /// error. The validator's `E002` still flags duplicates that reach a loaded
+    /// model by other routes, but the loader no longer produces such a model.
     pub fn load(dir: &Path) -> Result<Self, LoadError> {
         let config: BussardConfig = load_optional(&dir.join("bussard.yaml"))?;
         let groups: Groups = load_optional(&dir.join("groups.yaml"))?;
@@ -171,6 +190,8 @@ impl Model {
                 .collect();
             entries.sort();
 
+            // Track the source file per address so a duplicate names both files.
+            let mut source_file: BTreeMap<IndividualAddress, PathBuf> = BTreeMap::new();
             for path in entries {
                 let device: Device = load_file(&path)?;
                 let file_stem = path
@@ -178,6 +199,14 @@ impl Model {
                     .and_then(|s| s.to_str())
                     .unwrap_or_default()
                     .to_string();
+                if let Some(first) = source_file.get(&device.address) {
+                    return Err(LoadError::DuplicateDeviceAddress {
+                        address: device.address,
+                        first: first.clone(),
+                        second: path,
+                    });
+                }
+                source_file.insert(device.address, path);
                 devices.insert(device.address, LoadedDevice { device, file_stem });
             }
         }
@@ -643,6 +672,50 @@ com_objects:
         assert!(report.pruned.is_empty());
         let second = fs::read_to_string(&path).unwrap();
         assert_eq!(first, second);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_rejects_duplicate_device_address_across_files() {
+        // Two device files declaring the same `address:` must be a hard load
+        // error naming BOTH files — not a silent last-wins collapse.
+        let dir = tmp_dir("dup-addr");
+        let devices_dir = dir.join("devices");
+        fs::create_dir_all(&devices_dir).unwrap();
+
+        let banner_and = |name: &str| {
+            format!(
+                "address: 1.1.4\nname: {name}\ncom_objects: {{}}\n",
+                name = name
+            )
+        };
+        // Sorted order makes "a-..." the first file, "b-..." the second.
+        fs::write(devices_dir.join("1.1.4-a-first.yaml"), banner_and("First")).unwrap();
+        fs::write(
+            devices_dir.join("1.1.4-b-second.yaml"),
+            banner_and("Second"),
+        )
+        .unwrap();
+
+        let err = Model::load(&dir).unwrap_err();
+        match err {
+            LoadError::DuplicateDeviceAddress {
+                address,
+                first,
+                second,
+            } => {
+                assert_eq!(address, "1.1.4".parse().unwrap());
+                assert!(
+                    first.ends_with("1.1.4-a-first.yaml"),
+                    "first names the earlier file: {first:?}"
+                );
+                assert!(
+                    second.ends_with("1.1.4-b-second.yaml"),
+                    "second names the later file: {second:?}"
+                );
+            }
+            other => panic!("expected DuplicateDeviceAddress, got {other:?}"),
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 
