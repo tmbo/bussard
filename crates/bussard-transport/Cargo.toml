@@ -9,3 +9,18 @@ rust-version.workspace = true
 description = "KNXnet/IP transport for bussard: Tunnel + Router behind one trait, cEMI codec"
 
 [dependencies]
+# Reuse the model's GroupAddress / IndividualAddress types.
+bussard-model = { workspace = true }
+# Async runtime + UDP sockets. From the workspace pin (MIT).
+tokio = { workspace = true }
+# Structured logging. From the workspace pin (MIT).
+tracing = { workspace = true }
+# Fine-grained socket control for multicast routing (join group, SO_REUSEADDR /
+# SO_REUSEPORT, interface selection). MIT OR Apache-2.0. Pinned for rustc 1.82.
+socket2 = { version = "0.5", features = ["all"] }
+# Error enums. From the workspace pin (MIT).
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# `#[tokio::test]` for the async integration tests.
+tokio = { workspace = true }

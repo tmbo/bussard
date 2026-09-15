@@ -2,6 +2,7 @@
 //!
 //! Phase 0 wires up the command surface; only `validate` is functional so far.
 
+mod import_cmd;
 mod validate_cmd;
 
 use std::path::PathBuf;
@@ -29,8 +30,21 @@ enum Format {
 /// The top-level subcommands.
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Import an existing `.knxproj` into the YAML model (not implemented yet).
-    Import,
+    /// Import an existing `.knxproj` (or xknxproject JSON dump) into the model.
+    Import {
+        /// The `.knxproj` file to import (omit when using `--from-json`).
+        #[arg(value_name = "PROJECT", required_unless_present = "from_json")]
+        project: Option<PathBuf>,
+        /// Import from an xknxproject JSON dump instead of a `.knxproj`.
+        #[arg(long, value_name = "FILE", conflicts_with = "project")]
+        from_json: Option<PathBuf>,
+        /// Project password (else `BUSSARD_PROJECT_PASSWORD`, else prompt).
+        #[arg(long)]
+        password: Option<String>,
+        /// Output directory for the generated model.
+        #[arg(long, default_value = "knx")]
+        out: PathBuf,
+    },
     /// Validate the YAML model and report diagnostics.
     Validate {
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
@@ -73,7 +87,20 @@ fn main() -> ExitCode {
 fn run(command: Command) -> anyhow::Result<ExitCode> {
     match command {
         Command::Validate { dir, format } => validate_cmd::run(&dir, format == Format::Json),
-        Command::Import => not_implemented("import"),
+        Command::Import {
+            project,
+            from_json,
+            password,
+            out,
+        } => {
+            if let Some(json) = from_json {
+                import_cmd::run_json(&json, &out)
+            } else if let Some(project) = project {
+                import_cmd::run_knxproj(&project, &out, password)
+            } else {
+                anyhow::bail!("provide a .knxproj path or --from-json <file>")
+            }
+        }
         Command::Monitor => not_implemented("monitor"),
         Command::Capture => not_implemented("capture"),
         Command::Read => not_implemented("read"),

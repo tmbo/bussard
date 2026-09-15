@@ -9,3 +9,23 @@ rust-version.workspace = true
 description = ".knxproj import for bussard: AES zip + streaming XML into the model"
 
 [dependencies]
+bussard-model = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# Streaming XML: quick-xml never builds a DOM, so 20+ MB manufacturer files
+# are read with bounded memory. MIT licensed.
+quick-xml = "0.36"
+# WinZip-AES ZIP support (compression method 99). MIT licensed. Pinned to 2.2.x
+# so its transitive deps build on rustc 1.82 (newer releases require edition2024
+# via indexmap/zeroize_derive).
+zip = { version = "2.2", default-features = false, features = ["aes-crypto", "deflate"] }
+# ETS6 zip-password derivation: PBKDF2-HMAC-SHA256 then base64. All MIT/Apache-2.0.
+pbkdf2 = "0.12"
+sha2 = "0.10"
+hmac = "0.12"
+base64 = "0.22"
+
+[dev-dependencies]
+tempfile = "3"
