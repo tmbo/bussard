@@ -501,4 +501,17 @@ mod tests {
         );
         assert!(decode_device_descriptor_response(&[0x07]).is_none());
     }
+
+    #[test]
+    fn device_descriptor_response_accepts_extra_trailing_payload() {
+        // The mask version is the leading big-endian word; a legal descriptor
+        // response may carry more (a type-2 descriptor is longer, and the KNX
+        // Virtual IP/TP interface was observed answering type 0 with extra
+        // trailing octets). We read the mask and ignore the tail rather than
+        // rejecting the frame.
+        assert_eq!(
+            decode_device_descriptor_response(&[0x07, 0xB0, 0x00, 0x11, 0x22]),
+            Some(0x07B0)
+        );
+    }
 }

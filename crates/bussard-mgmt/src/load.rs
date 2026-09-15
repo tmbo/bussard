@@ -63,7 +63,7 @@
 
 use crate::apci::{self, A_PROPERTY_VALUE_READ, A_PROPERTY_VALUE_WRITE};
 use crate::connection::{L4Channel, Layer4Connection};
-use crate::error::MgmtError;
+use crate::error::{MgmtError, raw_response_detail};
 use crate::tables::{PID_TABLE, PID_TABLE_REFERENCE};
 use bussard_model::IndividualAddress;
 
@@ -271,15 +271,21 @@ pub async fn write_property<Ch: L4Channel>(
     if resp_apci != apci::A_PROPERTY_VALUE_RESPONSE {
         return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
             address: l4.target(),
-            reason: "expected A_PropertyValue_Response to a property write",
+            reason: format!(
+                "expected A_PropertyValue_Response to a property write ({})",
+                raw_response_detail(resp_apci, &data)
+            ),
         }));
     }
-    let resp = apci::decode_property_value_response(&data).ok_or(WriteError::Mgmt(
-        MgmtError::MalformedResponse {
+    let resp = apci::decode_property_value_response(&data).ok_or_else(|| {
+        WriteError::Mgmt(MgmtError::MalformedResponse {
             address: l4.target(),
-            reason: "property value response too short",
-        },
-    ))?;
+            reason: format!(
+                "property value response too short ({})",
+                raw_response_detail(resp_apci, &data)
+            ),
+        })
+    })?;
     let echoed = resp.data;
     let want = expected_echo.unwrap_or(value);
     // A zero-count response means the device refused the write outright.
@@ -306,19 +312,28 @@ pub async fn read_load_state<Ch: L4Channel>(
     if resp_apci != apci::A_PROPERTY_VALUE_RESPONSE {
         return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
             address: l4.target(),
-            reason: "expected A_PropertyValue_Response for the load state",
+            reason: format!(
+                "expected A_PropertyValue_Response for the load state ({})",
+                raw_response_detail(resp_apci, &data)
+            ),
         }));
     }
-    let resp = apci::decode_property_value_response(&data).ok_or(WriteError::Mgmt(
-        MgmtError::MalformedResponse {
+    let resp = apci::decode_property_value_response(&data).ok_or_else(|| {
+        WriteError::Mgmt(MgmtError::MalformedResponse {
             address: l4.target(),
-            reason: "load state response too short",
-        },
-    ))?;
+            reason: format!(
+                "load state response too short ({})",
+                raw_response_detail(resp_apci, &data)
+            ),
+        })
+    })?;
     if resp.count == 0 || resp.data.is_empty() {
         return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
             address: l4.target(),
-            reason: "load state property is not readable",
+            reason: format!(
+                "load state property is not readable ({})",
+                raw_response_detail(resp_apci, &data)
+            ),
         }));
     }
     Ok(LoadState::from_octet(resp.data[0]))
@@ -353,7 +368,10 @@ pub async fn write_load_control<Ch: L4Channel>(
     if resp_apci != apci::A_PROPERTY_VALUE_RESPONSE {
         return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
             address,
-            reason: "expected A_PropertyValue_Response to a load-control write",
+            reason: format!(
+                "expected A_PropertyValue_Response to a load-control write ({})",
+                raw_response_detail(resp_apci, &data)
+            ),
         }));
     }
     // Decode is best-effort here; the authoritative state comes from a fresh read.
@@ -547,7 +565,10 @@ pub async fn allocate_segment<Ch: L4Channel>(
     if resp_apci != apci::A_PROPERTY_VALUE_RESPONSE {
         return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
             address,
-            reason: "expected A_PropertyValue_Response to an AdditionalLoadControls write",
+            reason: format!(
+                "expected A_PropertyValue_Response to an AdditionalLoadControls write ({})",
+                raw_response_detail(resp_apci, &data)
+            ),
         }));
     }
     let _ = apci::decode_property_value_response(&data);
@@ -590,19 +611,28 @@ async fn read_table_reference<Ch: L4Channel>(
     if resp_apci != apci::A_PROPERTY_VALUE_RESPONSE {
         return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
             address: l4.target(),
-            reason: "expected A_PropertyValue_Response for PID_TABLE_REFERENCE",
+            reason: format!(
+                "expected A_PropertyValue_Response for PID_TABLE_REFERENCE ({})",
+                raw_response_detail(resp_apci, &data)
+            ),
         }));
     }
-    let resp = apci::decode_property_value_response(&data).ok_or(WriteError::Mgmt(
-        MgmtError::MalformedResponse {
+    let resp = apci::decode_property_value_response(&data).ok_or_else(|| {
+        WriteError::Mgmt(MgmtError::MalformedResponse {
             address: l4.target(),
-            reason: "table reference response too short",
-        },
-    ))?;
+            reason: format!(
+                "table reference response too short ({})",
+                raw_response_detail(resp_apci, &data)
+            ),
+        })
+    })?;
     if resp.count == 0 || resp.data.len() < 4 {
         return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
             address: l4.target(),
-            reason: "table reference is not a readable u32",
+            reason: format!(
+                "table reference is not a readable u32 ({})",
+                raw_response_detail(resp_apci, &data)
+            ),
         }));
     }
     Ok(u32::from_be_bytes([
@@ -690,12 +720,15 @@ pub async fn read_memory<Ch: L4Channel>(
 ) -> Result<Vec<u8>> {
     let (req_apci, payload) = apci::encode_memory_read(addr, len);
     let (resp_apci, data) = l4.request(req_apci, &payload).await?;
-    let resp = apci::decode_memory_response(resp_apci, &data).ok_or(WriteError::Mgmt(
-        MgmtError::MalformedResponse {
+    let resp = apci::decode_memory_response(resp_apci, &data).ok_or_else(|| {
+        WriteError::Mgmt(MgmtError::MalformedResponse {
             address: l4.target(),
-            reason: "expected A_Memory_Response with matching count",
-        },
-    ))?;
+            reason: format!(
+                "expected A_Memory_Response with matching count ({})",
+                raw_response_detail(resp_apci, &data)
+            ),
+        })
+    })?;
     Ok(resp.data)
 }
 
@@ -721,7 +754,7 @@ pub async fn write_memory<Ch: L4Channel>(
         let chunk_addr = addr.checked_add(offset as u16).ok_or(WriteError::Mgmt(
             MgmtError::MalformedResponse {
                 address: l4.target(),
-                reason: "memory write range exceeds the 16-bit address space",
+                reason: "memory write range exceeds the 16-bit address space".to_string(),
             },
         ))?;
 

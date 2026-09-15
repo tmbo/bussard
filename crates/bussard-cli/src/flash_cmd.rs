@@ -32,8 +32,9 @@ use bussard_bus::{Bus, ops};
 use bussard_download::{
     FlashPlan, FlashStep, Progress, flash, plan_flash, select_application, trace,
 };
-use bussard_mgmt::{DeviceConnection, Layer4Connection, LeaseChannel};
+use bussard_mgmt::{DeviceConnection, Layer4Connection, LeaseChannel, MgmtError};
 use bussard_model::IndividualAddress;
+use bussard_prod::{ApplicationProgram, ProductData, normalize_order_number};
 
 use crate::conn_cmd::{ConnOverrides, load_model_optional, resolve_config};
 
@@ -42,6 +43,7 @@ pub fn run(
     address: &str,
     product: &Path,
     application: Option<&str>,
+    order_number: Option<&str>,
     dir: &Path,
     yes: bool,
     overrides: ConnOverrides,
@@ -54,16 +56,28 @@ pub fn run(
     let product_data = bussard_prod::read_knxprod(product)
         .with_context(|| format!("reading product data from {}", product.display()))?;
 
-    // Resolve candidate applications: an explicit id looks it up directly; else
-    // every application in the archive is a candidate (a single-app .knxprod is
-    // the common case).
-    let candidates: Vec<&bussard_prod::ApplicationProgram> =
-        product_data.applications.iter().collect();
-    let app = match select_application(&candidates, application) {
-        Ok(app) => app,
-        Err(err) => {
-            eprintln!("cannot select an application program: {err}");
-            return Ok(ExitCode::FAILURE);
+    // Resolve the application program. Three modes, in precedence order:
+    //   --order-number : look the order number up in the hardware catalogue and
+    //                    require exactly one matching application (clap already
+    //                    rejects combining it with --application);
+    //   --application  : an explicit application ref, looked up directly;
+    //   neither        : the sole application in a single-app archive.
+    let app = if let Some(order) = order_number {
+        match resolve_by_order_number(&product_data, order) {
+            Ok(app) => app,
+            Err(err) => {
+                eprintln!("{err}");
+                return Ok(ExitCode::FAILURE);
+            }
+        }
+    } else {
+        let candidates: Vec<&ApplicationProgram> = product_data.applications.iter().collect();
+        match select_application(&candidates, application) {
+            Ok(app) => app,
+            Err(err) => {
+                eprintln!("cannot select an application program: {err}");
+                return Ok(ExitCode::FAILURE);
+            }
         }
     };
 
@@ -86,23 +100,28 @@ pub fn run(
             let source = ops::group_source(&handle);
             let lease = handle.lease().await.context("leasing the bus")?;
             let channel = LeaseChannel::new(lease);
-            let result = match DeviceConnection::connect(channel, target, source).await {
+            // Track whether the T_Connect established before the first read: a
+            // connect-then-disconnect on the descriptor read is the diagnostic
+            // pattern (see `descriptor_read_error`).
+            let (connected, result) = match DeviceConnection::connect(channel, target, source).await
+            {
                 Ok(mut dev) => {
                     let r = dev.device_descriptor().await;
                     let _ = dev.disconnect().await;
-                    r
+                    (true, r)
                 }
-                Err(err) => Err(err),
+                Err(err) => (false, Err(err)),
             };
             let _ = handle.close().await;
-            anyhow::Ok(result)
+            anyhow::Ok((connected, result))
         })?
     };
 
+    let (connected, device_mask) = device_mask;
     let device_mask = match device_mask {
         Ok(mask) => mask,
         Err(err) => {
-            return Err(anyhow::Error::new(err).context("reading the device descriptor"));
+            return Err(descriptor_read_error(target, connected, err));
         }
     };
 
@@ -164,6 +183,123 @@ pub fn run(
             recovery_notice(target);
             Ok(ExitCode::FAILURE)
         }
+    }
+}
+
+/// Resolves an application program from a hardware order number, requiring
+/// exactly one match.
+///
+/// Matching is index-style normalized (trim + upper-case, interior separators
+/// preserved — the same rule the product pointer index uses), so `akk-0216.03 `
+/// resolves to `AKK-0216.03`. Every order number in the archive's hardware
+/// catalogue is normalized and compared; the applications the matching order
+/// numbers map to are collected and de-duplicated by id.
+///
+/// - Exactly one distinct application → returned.
+/// - Zero → an error naming the order number and (up to a few) known order
+///   numbers as candidates.
+/// - More than one → an error listing the candidate application ids so the user
+///   can fall back to `--application`.
+fn resolve_by_order_number<'a>(
+    product: &'a ProductData,
+    order_number: &str,
+) -> anyhow::Result<&'a ApplicationProgram> {
+    let want = normalize_order_number(order_number);
+
+    // Every order-number key that normalizes to the wanted value, and the
+    // application refs each maps to (joined, de-duplicated by ref).
+    let mut app_refs: Vec<&str> = Vec::new();
+    for (order, refs) in &product.hardware.order_to_apps {
+        if normalize_order_number(order) == want {
+            for r in refs {
+                if !app_refs.contains(&r.as_str()) {
+                    app_refs.push(r.as_str());
+                }
+            }
+        }
+    }
+
+    // Resolve refs to the parsed applications present in the archive, keeping
+    // them distinct by id (a ref may repeat across hardware rows).
+    let mut apps: Vec<&ApplicationProgram> = Vec::new();
+    for r in &app_refs {
+        if let Some(app) = product.application_by_id(r) {
+            if !apps.iter().any(|a| a.id == app.id) {
+                apps.push(app);
+            }
+        }
+    }
+
+    match apps.as_slice() {
+        [only] => Ok(only),
+        [] => {
+            let mut known: Vec<&str> = product
+                .hardware
+                .order_to_apps
+                .keys()
+                .map(String::as_str)
+                .collect();
+            known.sort_unstable();
+            let candidates = if known.is_empty() {
+                "the archive lists no order numbers".to_string()
+            } else {
+                let shown: Vec<&str> = known.iter().take(10).copied().collect();
+                let suffix = if known.len() > shown.len() {
+                    format!(", … ({} total)", known.len())
+                } else {
+                    String::new()
+                };
+                format!("known order numbers: {}{suffix}", shown.join(", "))
+            };
+            bail!(
+                "no application matches order number {order_number:?} in {}; {candidates}. \
+                 Pass --application <ref> to select by application id instead.",
+                product_display(product),
+            )
+        }
+        many => {
+            let ids: Vec<&str> = many.iter().map(|a| a.id.as_str()).collect();
+            bail!(
+                "order number {order_number:?} maps to {} applications ({}); \
+                 disambiguate with --application <ref>.",
+                many.len(),
+                ids.join(", "),
+            )
+        }
+    }
+}
+
+/// Turns a failed device-descriptor read into a helpful error.
+///
+/// The KNX Virtual IP-medium devices (order `*.ip`, e.g. a binary output at
+/// `1.0.10`) accept the `T_Connect` but `T_Disconnect` on the very first
+/// descriptor read, while their TP-medium siblings answer fully. When we see
+/// exactly that shape — the connection established, then the first read
+/// disconnected — name the pattern so the user gets guidance instead of a bare
+/// "disconnected". Any other failure is passed through with context.
+fn descriptor_read_error(
+    target: IndividualAddress,
+    connected: bool,
+    err: MgmtError,
+) -> anyhow::Error {
+    if connected && matches!(err, MgmtError::Disconnected { .. }) {
+        return anyhow::anyhow!(
+            "{target} accepted the connection but disconnected on the first read: typical for \
+             devices whose management is gated on a loaded application or a different medium \
+             profile (e.g. KNX Virtual IP-medium `*.ip` devices, which disconnect on descriptor \
+             reads while their `*.tp` siblings answer). Flash targets the application download, \
+             which this device is not accepting management for over this connection."
+        );
+    }
+    anyhow::Error::new(err).context("reading the device descriptor")
+}
+
+/// A short label for the product in an error message: its manufacturer id(s).
+fn product_display(product: &ProductData) -> String {
+    if product.manufacturers.is_empty() {
+        "the product archive".to_string()
+    } else {
+        format!("the product archive ({})", product.manufacturers.join(", "))
     }
 }
 
@@ -274,4 +410,160 @@ fn recovery_notice(target: IndividualAddress) {
          device with ETS. Do not assume the device is functional until a re-flash\n\
          reports the application is Loaded and verified.",
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bussard_prod::parse_application_program;
+
+    /// A minimal parseable single-segment System B application under id `id`.
+    fn app(id: &str) -> ApplicationProgram {
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/23">
+             <ApplicationProgram Id="{id}" ApplicationNumber="1" ApplicationVersion="1"
+                MaskVersion="MV-07B0" Name="Fab" LoadProcedureStyle="ProductDefault">
+              <Static>
+               <Code>
+                <RelativeSegment Id="{id}_RS-1" Size="1" LoadStateMachine="4" Offset="0"><Data>AA==</Data></RelativeSegment>
+               </Code>
+               <LoadProcedures>
+                <LoadProcedure><LdCtrlConnect /><LdCtrlDisconnect /></LoadProcedure>
+               </LoadProcedures>
+              </Static>
+             </ApplicationProgram></KNX>"#
+        );
+        parse_application_program(id, &xml).unwrap()
+    }
+
+    /// Builds a [`ProductData`] from `(order_number, [app_ref…])` rows and the
+    /// application ids present in the archive.
+    fn product(rows: &[(&str, &[&str])], app_ids: &[&str]) -> ProductData {
+        let mut data = ProductData {
+            manufacturers: vec!["M-0083".to_string()],
+            ..ProductData::default()
+        };
+        for id in app_ids {
+            data.applications.push(app(id));
+        }
+        for (order, refs) in rows {
+            data.hardware.order_to_apps.insert(
+                order.to_string(),
+                refs.iter().map(|r| r.to_string()).collect(),
+            );
+        }
+        data
+    }
+
+    #[test]
+    fn resolves_exactly_one_match() {
+        let data = product(
+            &[("AKK-0216.03", &["M-0083_A-000D-23-5BFD"])],
+            &["M-0083_A-000D-23-5BFD"],
+        );
+        let app = resolve_by_order_number(&data, "AKK-0216.03").unwrap();
+        assert_eq!(app.id, "M-0083_A-000D-23-5BFD");
+    }
+
+    #[test]
+    fn resolution_normalizes_case_and_whitespace() {
+        // Index-style normalization: trim + upper-case, interior separators kept.
+        let data = product(
+            &[("AKK-0216.03", &["M-0083_A-000D-23-5BFD"])],
+            &["M-0083_A-000D-23-5BFD"],
+        );
+        let app = resolve_by_order_number(&data, "  akk-0216.03 ").unwrap();
+        assert_eq!(app.id, "M-0083_A-000D-23-5BFD");
+    }
+
+    #[test]
+    fn zero_matches_lists_known_order_numbers() {
+        let data = product(
+            &[
+                ("AKK-0216.03", &["M-0083_A-1"]),
+                ("AKK-0416.03", &["M-0083_A-1"]),
+            ],
+            &["M-0083_A-1"],
+        );
+        let err = resolve_by_order_number(&data, "NOPE-9").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("no application matches order number"), "{msg}");
+        assert!(
+            msg.contains("AKK-0216.03"),
+            "should list known order numbers: {msg}"
+        );
+        assert!(
+            msg.contains("--application"),
+            "should point at the fallback: {msg}"
+        );
+    }
+
+    #[test]
+    fn multiple_matches_lists_candidate_ids() {
+        // One order number mapping to two distinct applications is ambiguous.
+        let data = product(
+            &[("AKK-0216.03", &["M-0083_A-1", "M-0083_A-2"])],
+            &["M-0083_A-1", "M-0083_A-2"],
+        );
+        let err = resolve_by_order_number(&data, "AKK-0216.03").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("maps to 2 applications"), "{msg}");
+        assert!(
+            msg.contains("M-0083_A-1") && msg.contains("M-0083_A-2"),
+            "{msg}"
+        );
+        assert!(msg.contains("--application"), "{msg}");
+    }
+
+    #[test]
+    fn descriptor_disconnect_after_connect_names_the_pattern() {
+        let target: IndividualAddress = "1.0.10".parse().unwrap();
+        let err = descriptor_read_error(
+            target,
+            true, // the T_Connect established before the read
+            MgmtError::Disconnected { address: target },
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("accepted the connection but disconnected on the first read"),
+            "{msg}"
+        );
+        assert!(msg.contains("*.ip") && msg.contains("*.tp"), "{msg}");
+    }
+
+    #[test]
+    fn descriptor_disconnect_without_connect_is_passed_through() {
+        // A disconnect that happened before the connection established is not the
+        // IP-medium pattern; it passes through with the generic context.
+        let target: IndividualAddress = "1.0.10".parse().unwrap();
+        let err = descriptor_read_error(target, false, MgmtError::Disconnected { address: target });
+        let msg = err.to_string();
+        assert!(msg.contains("reading the device descriptor"), "{msg}");
+        assert!(
+            !msg.contains("accepted the connection but disconnected"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn descriptor_other_error_is_passed_through() {
+        let target: IndividualAddress = "1.0.10".parse().unwrap();
+        let err = descriptor_read_error(target, true, MgmtError::NoResponse { address: target });
+        let msg = err.to_string();
+        assert!(msg.contains("reading the device descriptor"), "{msg}");
+    }
+
+    #[test]
+    fn duplicate_refs_across_rows_collapse_to_one() {
+        // Two order-number rows pointing at the same application resolve cleanly.
+        let data = product(
+            &[
+                ("AKK-0216.03", &["M-0083_A-1"]),
+                ("AKK-0216.03 ", &["M-0083_A-1"]),
+            ],
+            &["M-0083_A-1"],
+        );
+        let app = resolve_by_order_number(&data, "AKK-0216.03").unwrap();
+        assert_eq!(app.id, "M-0083_A-1");
+    }
 }

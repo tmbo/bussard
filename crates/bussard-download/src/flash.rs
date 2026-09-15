@@ -669,7 +669,7 @@ pub async fn discover_application_object<Ch: L4Channel>(
     Err(WriteError::Mgmt(
         bussard_mgmt::MgmtError::MalformedResponse {
             address: l4.target(),
-            reason: "device is missing the application-program interface object",
+            reason: "device is missing the application-program interface object".to_string(),
         },
     ))
 }
@@ -796,7 +796,7 @@ async fn write_with_progress<Ch: L4Channel, F: FnMut(Progress)>(
         let chunk_addr = addr.checked_add(offset as u16).ok_or(WriteError::Mgmt(
             bussard_mgmt::MgmtError::MalformedResponse {
                 address: l4.target(),
-                reason: "memory write range exceeds the 16-bit address space",
+                reason: "memory write range exceeds the 16-bit address space".to_string(),
             },
         ))?;
         write_memory(l4, chunk_addr, &bytes[offset..offset + take]).await?;
