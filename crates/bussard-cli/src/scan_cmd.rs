@@ -1,19 +1,383 @@
-//! The `bussard scan` subcommand — device discovery on a line.
+//! The `bussard scan` subcommand: sequential device discovery on one line.
+//!
+//! Sweeps `LINE.0` … `LINE.255` one connection at a time (TP1 etiquette — most
+//! gateways will not multiplex connection-oriented sessions), reading each
+//! responding device's mask version, manufacturer, serial and order info. When a
+//! model directory is present it cross-references the discovered devices against
+//! `devices/*.yaml`: which are known, which are unexpected, and which model
+//! devices did not answer. That delta is the command's real value.
+//!
+//! It always exits 0 — it is a report, not a check.
 
+use std::io::Write;
 use std::path::Path;
-
-use anyhow::bail;
 use std::process::ExitCode;
+use std::time::Duration;
 
-use crate::conn_cmd::ConnOverrides;
+use anyhow::{Context, anyhow};
+use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO, PID_SERIAL_NUMBER};
+use bussard_mgmt::{DeviceConnection, Timeouts, manufacturers, system_type};
+use bussard_model::IndividualAddress;
+use bussard_transport::{BusConnection, Transport};
 
-/// Scans a line for devices: mask version, manufacturer, order number.
-#[expect(unused_variables, reason = "stub — implementation tracked in #10")]
+use crate::conn_cmd::{ConnOverrides, load_model_optional, resolve_config};
+
+/// The source individual address the scanner presents as.
+const SOURCE_IA: &str = "0.0.255";
+
+/// Environment variable that overrides the per-attempt discovery timeout in
+/// milliseconds. Set only by the integration test to keep a full-line mock sweep
+/// fast; unset in normal use so the standard [`Timeouts::discovery`] budget
+/// applies.
+const DISCOVERY_MS_ENV: &str = "BUSSARD_SCAN_DISCOVERY_MS";
+
+/// The discovery timeout budget, honouring [`DISCOVERY_MS_ENV`] when set.
+fn discovery_timeouts() -> Timeouts {
+    match std::env::var(DISCOVERY_MS_ENV)
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        Some(ms) => Timeouts {
+            ack_timeout: Duration::from_millis(ms),
+            max_repetitions: 0,
+            response_timeout: Duration::from_millis(ms),
+        },
+        None => Timeouts::discovery(),
+    }
+}
+
+/// Per-address time budget used to estimate the sweep duration up front. A
+/// present device answers in well under this; an absent one costs about
+/// `2 × discovery ack_timeout`.
+const PER_ADDRESS_ESTIMATE: Duration = Duration::from_millis(3200);
+
+/// A single discovered device and everything read from it.
+#[derive(Debug, Clone)]
+struct Found {
+    address: IndividualAddress,
+    mask: u16,
+    manufacturer_id: Option<u16>,
+    serial: Option<Vec<u8>>,
+    order: Option<String>,
+}
+
+/// The final cross-referenced report.
+struct Report {
+    found: Vec<Found>,
+    /// Addresses that responded but are not in the model.
+    not_in_model: Vec<IndividualAddress>,
+    /// Model devices (name) that did not respond, keyed by address.
+    missing: Vec<(IndividualAddress, String)>,
+    /// Whether a model was loaded at all (drives cross-reference columns).
+    have_model: bool,
+}
+
+/// Runs `bussard scan`.
 pub fn run(
     line: &str,
     dir: &Path,
     json: bool,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
-    bail!("`bussard scan` is not implemented yet (https://github.com/tmbo/bussard/issues/10)")
+    let (area, line_no) = parse_line(line)?;
+    let model = load_model_optional(dir);
+    let config = resolve_config(model.as_ref(), &overrides)?;
+    let source: IndividualAddress = SOURCE_IA.parse().expect("valid source IA");
+
+    // Up-front estimate (256 addresses × per-address budget).
+    let estimate = PER_ADDRESS_ESTIMATE * 256;
+    eprintln!(
+        "scanning line {area}.{line_no}.0–255 sequentially — estimated up to {}m{:02}s on TP1",
+        estimate.as_secs() / 60,
+        estimate.as_secs() % 60
+    );
+
+    let runtime = tokio::runtime::Runtime::new()?;
+    let found = runtime.block_on(async move {
+        let mut bus = Transport::connect(&config)
+            .await
+            .context("opening the bus connection")?;
+        let found = sweep(&mut bus, area, line_no, source).await;
+        let _ = bus.close().await;
+        anyhow::Ok(found)
+    })?;
+
+    let report = cross_reference(found, model.as_ref());
+
+    if json {
+        print_json(&report)?;
+    } else {
+        print_table(&report);
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Sweeps every device address on the line, returning the responders.
+async fn sweep(
+    bus: &mut Transport,
+    area: u8,
+    line_no: u8,
+    source: IndividualAddress,
+) -> Vec<Found> {
+    let mut found = Vec::new();
+    for device in 0..=255u16 {
+        let addr = match IndividualAddress::new(area, line_no, device as u8) {
+            Ok(a) => a,
+            Err(_) => continue,
+        };
+        // Progress line to stderr, rewritten in place.
+        eprint!("\rscanning {addr}…  {} found   ", found.len());
+        let _ = std::io::stderr().flush();
+
+        if let Some(dev) = probe(bus, addr, source).await {
+            found.push(dev);
+        }
+    }
+    eprintln!(
+        "\rscan complete: {} device(s) found            ",
+        found.len()
+    );
+    found
+}
+
+/// Probes one address: connect, read the descriptor, and — if present —
+/// best-effort read manufacturer/serial/order. Returns `None` for an absent or
+/// refusing device.
+async fn probe(
+    bus: &mut Transport,
+    addr: IndividualAddress,
+    source: IndividualAddress,
+) -> Option<Found> {
+    let mut dev = DeviceConnection::connect_with(bus, addr, source, discovery_timeouts())
+        .await
+        .ok()?;
+
+    let mask = match dev.device_descriptor().await {
+        Ok(mask) => mask,
+        Err(err) => {
+            // Present-but-refusing devices are logged but not listed as found
+            // (we could not read a descriptor). Absent devices are silent.
+            if err.device_present() {
+                tracing::debug!("{addr} is present but refused the descriptor read: {err}");
+            }
+            let _ = dev.disconnect().await;
+            return None;
+        }
+    };
+
+    // Best-effort property reads: any failure just leaves the field empty.
+    let manufacturer_id = read_u16(&mut dev, PID_MANUFACTURER_ID).await;
+    let serial = dev
+        .read_device_property(PID_SERIAL_NUMBER)
+        .await
+        .ok()
+        .filter(|v| !v.is_empty());
+    let order = dev
+        .read_device_property(PID_ORDER_INFO)
+        .await
+        .ok()
+        .map(|v| clean_ascii(&v))
+        .filter(|s| !s.is_empty());
+
+    let _ = dev.disconnect().await;
+    Some(Found {
+        address: addr,
+        mask,
+        manufacturer_id,
+        serial,
+        order,
+    })
+}
+
+/// Reads a 2-byte property as a `u16`, returning `None` on any failure.
+async fn read_u16<C: BusConnection>(dev: &mut DeviceConnection<'_, C>, pid: u8) -> Option<u16> {
+    match dev.read_device_property(pid).await {
+        Ok(bytes) if bytes.len() >= 2 => Some(u16::from_be_bytes([bytes[0], bytes[1]])),
+        _ => None,
+    }
+}
+
+/// Cross-references the discovered devices against the loaded model.
+fn cross_reference(found: Vec<Found>, model: Option<&bussard_model::Model>) -> Report {
+    let have_model = model.is_some();
+    let mut not_in_model = Vec::new();
+    let mut missing = Vec::new();
+
+    if let Some(model) = model {
+        for f in &found {
+            if !model.devices.contains_key(&f.address) {
+                not_in_model.push(f.address);
+            }
+        }
+        for (addr, loaded) in &model.devices {
+            if !found.iter().any(|f| &f.address == addr) {
+                missing.push((*addr, loaded.device.name.clone()));
+            }
+        }
+    }
+
+    Report {
+        found,
+        not_in_model,
+        missing,
+        have_model,
+    }
+}
+
+/// Parses a `area.line` (e.g. `1.1`) or a full `area.line.device` (ignoring the
+/// device part) into `(area, line)`.
+fn parse_line(line: &str) -> anyhow::Result<(u8, u8)> {
+    let parts: Vec<&str> = line.split('.').collect();
+    if parts.len() < 2 {
+        return Err(anyhow!(
+            "invalid line {line:?}; expected area.line like \"1.1\""
+        ));
+    }
+    let area: u8 = parts[0]
+        .parse()
+        .map_err(|_| anyhow!("invalid area in {line:?}"))?;
+    let line_no: u8 = parts[1]
+        .parse()
+        .map_err(|_| anyhow!("invalid line in {line:?}"))?;
+    if area > 15 || line_no > 15 {
+        return Err(anyhow!("area and line must each be 0–15 (got {line:?})"));
+    }
+    Ok((area, line_no))
+}
+
+/// Cleans a raw property value to printable ASCII, trimming trailing NULs/space.
+fn clean_ascii(bytes: &[u8]) -> String {
+    let s: String = bytes
+        .iter()
+        .take_while(|b| **b != 0)
+        .filter(|b| b.is_ascii_graphic() || **b == b' ')
+        .map(|b| *b as char)
+        .collect();
+    s.trim().to_string()
+}
+
+/// Formats a byte slice as lowercase hex.
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Prints the aligned table plus a summary.
+fn print_table(report: &Report) {
+    if report.found.is_empty() {
+        println!("no devices responded");
+    } else {
+        // Precompute the model-status column when a model is loaded.
+        println!(
+            "{:<9}  {:<6}  {:<9}  {:<14}  {:<16}  {:<5}",
+            "IA", "MASK", "SYSTEM", "MANUFACTURER", "ORDER", "MODEL"
+        );
+        for f in &report.found {
+            let manufacturer = f
+                .manufacturer_id
+                .map(manufacturers::display)
+                .unwrap_or_else(|| "-".to_string());
+            let order = f.order.clone().unwrap_or_else(|| "-".to_string());
+            let status = if !report.have_model {
+                "-".to_string()
+            } else if report.not_in_model.contains(&f.address) {
+                "NOT in model".to_string()
+            } else {
+                "known".to_string()
+            };
+            println!(
+                "{:<9}  {:04X}    {:<9}  {:<14}  {:<16}  {}",
+                f.address.to_string(),
+                f.mask,
+                system_type(f.mask),
+                manufacturer,
+                order,
+                status
+            );
+        }
+    }
+
+    println!();
+    println!("{} device(s) responded", report.found.len());
+    if report.have_model {
+        println!("{} not in model", report.not_in_model.len());
+        if report.missing.is_empty() {
+            println!("all model devices on this line responded");
+        } else {
+            println!("{} model device(s) did NOT respond:", report.missing.len());
+            for (addr, name) in &report.missing {
+                println!("  {addr}  {name}");
+            }
+        }
+    }
+}
+
+/// Prints a stable JSON array of the discovered devices plus the model delta.
+fn print_json(report: &Report) -> anyhow::Result<()> {
+    use serde_json::json;
+    let devices: Vec<_> = report
+        .found
+        .iter()
+        .map(|f| {
+            let status = if !report.have_model {
+                serde_json::Value::Null
+            } else if report.not_in_model.contains(&f.address) {
+                json!("not_in_model")
+            } else {
+                json!("known")
+            };
+            json!({
+                "address": f.address.to_string(),
+                "mask": format!("{:04X}", f.mask),
+                "system_type": system_type(f.mask),
+                "manufacturer_id": f.manufacturer_id.map(|id| format!("{id:#06X}")),
+                "manufacturer": f.manufacturer_id.map(manufacturers::display),
+                "serial": f.serial.as_deref().map(hex),
+                "order": f.order,
+                "model_status": status,
+            })
+        })
+        .collect();
+
+    let out = json!({
+        "found": devices,
+        "not_in_model": report.not_in_model.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
+        "missing_from_bus": report
+            .missing
+            .iter()
+            .map(|(a, name)| json!({ "address": a.to_string(), "name": name }))
+            .collect::<Vec<_>>(),
+    });
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_line_accepts_area_line() {
+        assert_eq!(parse_line("1.1").unwrap(), (1, 1));
+        assert_eq!(parse_line("15.15").unwrap(), (15, 15));
+        // A full address ignores the device part.
+        assert_eq!(parse_line("2.3.55").unwrap(), (2, 3));
+    }
+
+    #[test]
+    fn parse_line_rejects_bad_input() {
+        assert!(parse_line("1").is_err());
+        assert!(parse_line("16.1").is_err());
+        assert!(parse_line("x.y").is_err());
+    }
+
+    #[test]
+    fn clean_ascii_strips_control_and_nul() {
+        assert_eq!(clean_ascii(b"ABB/S 1.1\0\0"), "ABB/S 1.1");
+        assert_eq!(clean_ascii(&[0x01, 0x02]), "");
+    }
+
+    #[test]
+    fn hex_formats_lowercase() {
+        assert_eq!(hex(&[0xDE, 0xAD]), "dead");
+    }
 }

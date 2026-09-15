@@ -51,6 +51,7 @@ pub mod discovery;
 mod error;
 pub mod knxnet;
 mod router;
+pub mod tpci;
 mod tunnel;
 
 pub use config::{ConnectionConfig, TransportKind};

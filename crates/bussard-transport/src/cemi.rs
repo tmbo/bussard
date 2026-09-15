@@ -211,8 +211,14 @@ pub enum Tpci {
     /// `T_Data_Group` unnumbered data telegram (UDT/NDT), TPCI high bits `00`.
     /// This is what group value services use.
     DataGroup,
-    /// Any other TPCI (connection-oriented, T_Connect, etc.). The full raw first
-    /// octet is preserved so the frame round-trips untouched.
+    /// A transport-control frame with no application layer: `T_Connect`,
+    /// `T_Disconnect`, `T_ACK`, `T_NAK`. The full raw TPCI octet is preserved and
+    /// there is no APDU (the paired [`Apdu`] is [`Apdu::Empty`]). This is a
+    /// decode-time refinement of [`Tpci::Other`] for the single-octet
+    /// connection-control telegrams the management layer sends and receives.
+    Control(u8),
+    /// Any other TPCI (connection-oriented numbered data, etc.). The full raw
+    /// first octet is preserved so the frame round-trips untouched.
     Other(u8),
 }
 
@@ -240,6 +246,10 @@ pub enum Apdu {
         /// Trailing data octets after the APCI octets.
         data: Vec<u8>,
     },
+    /// No application layer at all: the frame is a single-octet transport-control
+    /// telegram (`T_Connect` / `T_Disconnect` / `T_ACK` / `T_NAK`). Paired with
+    /// [`Tpci::Control`]. Its on-wire NPDU length is 0 (one TPDU octet total).
+    Empty,
 }
 
 /// The payload of a group-value service, tagging the "small" packed form apart
@@ -421,6 +431,122 @@ impl CemiFrame {
             Destination::Individual(_) => None,
         }
     }
+
+    /// Convenience: the destination as an individual address, if it is one.
+    ///
+    /// The connection-oriented management layer addresses a single device, so it
+    /// needs the individual-address view of the destination.
+    pub fn individual_destination(&self) -> Option<IndividualAddress> {
+        match self.destination {
+            Destination::Individual(i) => Some(i),
+            Destination::Group(_) => None,
+        }
+    }
+
+    /// Builds an `L_Data.req` carrying a raw transport-control frame (no APDU)
+    /// to an **individual** address.
+    ///
+    /// This is the primitive the connection-oriented management layer uses for
+    /// `T_Connect`, `T_Disconnect`, `T_ACK` and `T_NAK`: frames whose entire
+    /// meaning lives in the single TPCI octet with no application layer. The
+    /// `tpci` byte is placed verbatim as the first (and only) TPDU octet; the
+    /// on-wire NPDU length is 0.
+    ///
+    /// See [`tpci`](crate::tpci) for the control-octet constants.
+    pub fn t_control(destination: IndividualAddress, source: IndividualAddress, tpci: u8) -> Self {
+        CemiFrame {
+            message_code: MessageCode::LDataReq,
+            additional_info: Vec::new(),
+            control1: Control1::default(),
+            control2: Control2 {
+                group_address: false,
+                ..Control2::default()
+            },
+            source,
+            destination: Destination::Individual(destination),
+            tpci: Tpci::Control(tpci),
+            apdu: Apdu::Empty,
+        }
+    }
+
+    /// Builds an `L_Data.req` carrying a numbered connection-oriented data
+    /// telegram (`T_Data_Connected`, NDT) to an **individual** address.
+    ///
+    /// `tpci` is the full NDT control octet (`0x40 | seq << 2`); `apci` is the
+    /// 10-bit application service and `data` its trailing octets. This is how
+    /// every A_* management service (device descriptor, property, memory, …) is
+    /// carried once a connection is open.
+    pub fn t_data_connected(
+        destination: IndividualAddress,
+        source: IndividualAddress,
+        tpci: u8,
+        apci: u16,
+        data: &[u8],
+    ) -> Self {
+        CemiFrame {
+            message_code: MessageCode::LDataReq,
+            additional_info: Vec::new(),
+            control1: Control1::default(),
+            control2: Control2 {
+                group_address: false,
+                ..Control2::default()
+            },
+            source,
+            destination: Destination::Individual(destination),
+            tpci: Tpci::Other(tpci),
+            apdu: Apdu::Other {
+                apci,
+                data: data.to_vec(),
+            },
+        }
+    }
+
+    /// Builds an `L_Data.req` carrying a connectionless broadcast APDU (a
+    /// `T_Data_Broadcast`, unnumbered) to the broadcast group address `0/0/0`.
+    ///
+    /// Broadcast management services (`A_IndividualAddress_Read`,
+    /// `A_IndividualAddress_Write`, …) use TPCI `0x00` with a `system_broadcast`
+    /// frame and a group destination of raw `0x0000`.
+    pub fn t_broadcast(source: IndividualAddress, apci: u16, data: &[u8]) -> Self {
+        CemiFrame {
+            message_code: MessageCode::LDataReq,
+            additional_info: Vec::new(),
+            control1: Control1 {
+                system_broadcast: true,
+                ..Control1::default()
+            },
+            control2: Control2 {
+                group_address: true,
+                ..Control2::default()
+            },
+            source,
+            destination: Destination::Group(GroupAddress::from_raw(0x0000)),
+            tpci: Tpci::DataGroup,
+            apdu: Apdu::Other {
+                apci,
+                data: data.to_vec(),
+            },
+        }
+    }
+
+    /// The raw TPCI octet of this frame, whatever its kind.
+    ///
+    /// For [`Tpci::DataGroup`] the transport-control bits are `00`, so this
+    /// reconstructs the octet from the APCI high bits; for the connection-oriented
+    /// kinds it is the preserved raw octet. Management code inspects this to
+    /// classify incoming `T_Connect` / `T_ACK` / NDT frames.
+    pub fn tpci_octet(&self) -> u8 {
+        match self.tpci {
+            Tpci::DataGroup => match &self.apdu {
+                Apdu::GroupValueRead => (APCI_GROUP_READ >> 8) as u8 & 0x03,
+                Apdu::GroupValueResponse(_) => (APCI_GROUP_RESPONSE >> 8) as u8 & 0x03,
+                Apdu::GroupValueWrite(_) => (APCI_GROUP_WRITE >> 8) as u8 & 0x03,
+                Apdu::Other { apci, .. } => (apci >> 8) as u8 & 0x03,
+                Apdu::Empty => 0,
+            },
+            Tpci::Control(raw) | Tpci::Other(raw) => raw,
+        }
+    }
 }
 
 /// Classifies a raw payload into the packed-small or separate-large APDU form.
@@ -437,6 +563,14 @@ fn small_or_large(payload: &[u8]) -> GroupData {
 /// `npdu_len` is the on-wire NPDU length byte; the TPDU slice is `npdu_len + 1`
 /// octets long.
 fn decode_tpdu(tpdu: &[u8], npdu_len: usize) -> Result<(Tpci, Apdu)> {
+    // A single-octet TPDU (npdu_len == 0) is a transport-control frame with no
+    // application layer: T_Connect / T_Disconnect / T_ACK / T_NAK. The TPCI
+    // control bits are the two high bits of the octet; the whole octet is
+    // preserved for the management layer to classify.
+    if tpdu.len() == 1 {
+        return Ok((Tpci::Control(tpdu[0]), Apdu::Empty));
+    }
+
     // At minimum we need the two octets that carry TPCI + APCI high bits.
     if tpdu.len() < 2 {
         return Err(TransportError::Truncated {
@@ -497,6 +631,8 @@ fn decode_group_data(octet1: u8, tpdu: &[u8], npdu_len: usize) -> GroupData {
 /// byte (which excludes the first APDU octet).
 fn encode_tpdu(tpci: &Tpci, apdu: &Apdu) -> (Vec<u8>, usize) {
     match tpci {
+        // A transport-control frame: exactly one octet, NPDU length 0.
+        Tpci::Control(raw) => (vec![*raw], 0),
         Tpci::Other(raw) => {
             // Management / connection-oriented: rebuild from the raw APCI + data.
             let (apci, data) = match apdu {
@@ -521,6 +657,9 @@ fn encode_tpdu(tpci: &Tpci, apdu: &Apdu) -> (Vec<u8>, usize) {
                     let npdu_len = tpdu.len() - 1;
                     return (tpdu, npdu_len);
                 }
+                // An empty APDU under group TPCI should not occur; emit a single
+                // zero octet (a bare T_Data_Group) so encoding never panics.
+                Apdu::Empty => return (vec![0x00], 0),
             };
 
             // octet0: TPCI (00) + APCI high two bits.
@@ -782,6 +921,87 @@ mod tests {
         assert_eq!(frame.apdu, Apdu::GroupValueWrite(GroupData::Small(0x3f)));
         let bytes = frame.encode();
         assert_eq!(&bytes[bytes.len() - 2..], &[0x00, 0x80 | 0x3f]);
+    }
+
+    #[test]
+    fn t_connect_control_frame_roundtrips() {
+        // T_Connect (0x80) to an individual address, NPDU length 0, one TPDU
+        // octet. This exercises the new single-octet control path.
+        let frame = CemiFrame::t_control(ia("1.1.4"), ia("0.0.255"), 0x80);
+        let bytes = frame.encode();
+        // Last two bytes: NPDU length 0, TPCI 0x80.
+        assert_eq!(&bytes[bytes.len() - 2..], &[0x00, 0x80]);
+        let back = CemiFrame::decode(&bytes).unwrap();
+        assert_eq!(back.tpci, Tpci::Control(0x80));
+        assert_eq!(back.apdu, Apdu::Empty);
+        assert_eq!(back.individual_destination(), Some(ia("1.1.4")));
+        assert_eq!(back.tpci_octet(), 0x80);
+        assert_eq!(back.encode(), bytes);
+    }
+
+    #[test]
+    fn t_ack_control_frame_roundtrips() {
+        // T_ACK for seq 3 = 0xC2 | (3<<2) = 0xCE.
+        let frame = CemiFrame::t_control(ia("1.1.4"), ia("0.0.255"), 0xCE);
+        let back = CemiFrame::decode(&frame.encode()).unwrap();
+        assert_eq!(back.tpci, Tpci::Control(0xCE));
+        assert_eq!(back.tpci_octet(), 0xCE);
+    }
+
+    #[test]
+    fn ndt_data_connected_roundtrips() {
+        // NDT seq 0 (0x40) carrying A_DeviceDescriptor_Read (APCI 0x300). The
+        // APCI's top two bits (0x03) share octet0 with the TPCI, so the encoded
+        // first octet is 0x40 | 0x03 = 0x43 — this is the real KNX packing, and
+        // the APCI reconstructs to 0x300 on decode.
+        let frame = CemiFrame::t_data_connected(ia("1.1.4"), ia("0.0.255"), 0x40, 0x300, &[]);
+        let bytes = frame.encode();
+        let back = CemiFrame::decode(&bytes).unwrap();
+        assert_eq!(back.tpci, Tpci::Other(0x43));
+        match back.apdu {
+            Apdu::Other { apci, ref data } => {
+                assert_eq!(apci, 0x300);
+                assert!(data.is_empty());
+            }
+            other => panic!("expected Apdu::Other, got {other:?}"),
+        }
+        // The transport-control bits (masking off the APCI's shared bits) are NDT
+        // seq 0.
+        assert_eq!(back.tpci_octet() & 0xfc, 0x40);
+        assert_eq!(back.encode(), bytes);
+    }
+
+    #[test]
+    fn ndt_with_data_roundtrips() {
+        // NDT seq 1 (0x44) carrying A_Memory_Read (0x200) with 3 trailing octets.
+        let frame = CemiFrame::t_data_connected(
+            ia("1.1.4"),
+            ia("0.0.255"),
+            0x44,
+            0x200,
+            &[0x03, 0x01, 0x00],
+        );
+        let back = CemiFrame::decode(&frame.encode()).unwrap();
+        match back.apdu {
+            Apdu::Other { apci, ref data } => {
+                assert_eq!(apci, 0x200);
+                assert_eq!(data, &[0x03, 0x01, 0x00]);
+            }
+            other => panic!("expected Apdu::Other, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn broadcast_frame_targets_zero_group() {
+        // A_IndividualAddress_Read (0x100) as a system broadcast.
+        let frame = CemiFrame::t_broadcast(ia("0.0.255"), 0x100, &[]);
+        assert_eq!(frame.group_destination(), Some(GroupAddress::from_raw(0)));
+        assert!(frame.control1.system_broadcast);
+        let back = CemiFrame::decode(&frame.encode()).unwrap();
+        match back.apdu {
+            Apdu::Other { apci, .. } => assert_eq!(apci, 0x100),
+            other => panic!("expected Apdu::Other, got {other:?}"),
+        }
     }
 
     #[test]

@@ -208,6 +208,9 @@ fn classify(apdu: &Apdu) -> (ApciKind, Vec<u8>) {
         Apdu::GroupValueWrite(d) => (ApciKind::Write, group_bytes(d)),
         Apdu::GroupValueResponse(d) => (ApciKind::Response, group_bytes(d)),
         Apdu::Other { apci, data } => (ApciKind::Other(*apci), data.clone()),
+        // A transport-control frame (T_Connect/T_ACK/…) carries no application
+        // layer; classify it as "other" with an empty payload.
+        Apdu::Empty => (ApciKind::Other(0), Vec::new()),
     }
 }
 
