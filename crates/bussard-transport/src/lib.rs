@@ -1,7 +1,107 @@
 //! KNXnet/IP transport for bussard.
 //!
-//! Will expose a `BusConnection` trait with parallel Tunnel (unicast) and
-//! Router (multicast) implementations behind one interface, plus a cEMI
-//! `L_Data` codec. Written from scratch (MIT) — no GPL KNX stacks.
+//! This crate speaks KNXnet/IP over UDP and exposes a single [`BusConnection`]
+//! trait with two implementations:
 //!
-//! Stub for phase 0; not yet implemented.
+//! - [`Tunnel`] — a unicast **tunneling** client to a KNXnet/IP gateway, with
+//!   the full CONNECT / heartbeat / TUNNELING_REQUEST+ACK / DISCONNECT state
+//!   machine and sequence counters.
+//! - [`Router`] — a **routing** (multicast) participant on `224.0.23.12:3671`.
+//!
+//! Underneath sits a pure, heavily-tested [`cemi`] codec for the KNX link-layer
+//! `L_Data` telegrams (including the 6-bit "small APDU" packing) and a
+//! [`knxnet`] module for the framing of every service.
+//!
+//! It is written from scratch under the crate's MIT license, from the published
+//! KNXnet/IP protocol structure — no GPL KNX stacks were used.
+//!
+//! # Example
+//!
+//! ```no_run
+//! use bussard_transport::{BusConnection, ConnectionConfig, Transport};
+//! use bussard_transport::cemi::CemiFrame;
+//! use bussard_model::{GroupAddress, IndividualAddress};
+//!
+//! # async fn run() -> bussard_transport::Result<()> {
+//! // Open a tunnel to a gateway at 192.168.1.10:3671.
+//! let gateway = "192.168.1.10:3671".parse().unwrap();
+//! let config = ConnectionConfig::tunnel(gateway);
+//! let mut conn = Transport::connect(&config).await?;
+//!
+//! // Write the 1-bit value `1` to group address 3/0/4.
+//! let ga: GroupAddress = "3/0/4".parse().unwrap();
+//! let ia: IndividualAddress = "1.1.255".parse().unwrap();
+//! conn.send(CemiFrame::group_write(ga, ia, &[1])).await?;
+//!
+//! // Observe the bus.
+//! let stamped = conn.recv().await?;
+//! println!("{:?} from {}", stamped.frame.apdu, stamped.frame.source);
+//!
+//! conn.close().await?;
+//! # Ok(())
+//! # }
+//! ```
+
+#![warn(missing_docs)]
+
+pub mod cemi;
+pub mod config;
+mod conn;
+pub mod discovery;
+mod error;
+pub mod knxnet;
+mod router;
+mod tunnel;
+
+pub use config::{ConnectionConfig, TransportKind};
+pub use conn::{BusConnection, BusEvent, TimestampedFrame};
+pub use discovery::discover;
+pub use error::{Result, TransportError};
+pub use router::Router;
+pub use tunnel::Tunnel;
+
+use crate::cemi::CemiFrame;
+
+/// A config-driven bus connection, dispatching to [`Tunnel`] or [`Router`].
+///
+/// Use [`Transport::connect`] as the single entry point when the transport is
+/// chosen at runtime from configuration.
+pub enum Transport {
+    /// A tunneling connection.
+    Tunnel(Tunnel),
+    /// A routing (multicast) connection.
+    Router(Router),
+}
+
+impl Transport {
+    /// Opens the connection described by `config`.
+    pub async fn connect(config: &ConnectionConfig) -> Result<Transport> {
+        match config.transport {
+            TransportKind::Tunnel => Ok(Transport::Tunnel(Tunnel::connect(config).await?)),
+            TransportKind::Routing => Ok(Transport::Router(Router::connect(config).await?)),
+        }
+    }
+}
+
+impl BusConnection for Transport {
+    async fn send(&mut self, frame: CemiFrame) -> Result<()> {
+        match self {
+            Transport::Tunnel(t) => t.send(frame).await,
+            Transport::Router(r) => r.send(frame).await,
+        }
+    }
+
+    async fn recv(&mut self) -> Result<TimestampedFrame> {
+        match self {
+            Transport::Tunnel(t) => t.recv().await,
+            Transport::Router(r) => r.recv().await,
+        }
+    }
+
+    async fn close(self) -> Result<()> {
+        match self {
+            Transport::Tunnel(t) => t.close().await,
+            Transport::Router(r) => r.close().await,
+        }
+    }
+}

@@ -1,0 +1,85 @@
+{
+  "info": {
+    "project_id": "P-TEST",
+    "name": "Tiny Test Project",
+    "group_address_style": "ThreeLevel"
+  },
+  "group_addresses": {
+    "1/0/1": {
+      "name": "Living room light switch",
+      "identifier": "GA-1",
+      "raw_address": 2049,
+      "address": "1/0/1",
+      "dpt": { "main": 1, "sub": 1 },
+      "communication_object_ids": ["1.1.1/O-0_R-1"],
+      "description": ""
+    },
+    "1/0/2": {
+      "name": "Living room light status",
+      "identifier": "GA-2",
+      "raw_address": 2050,
+      "address": "1/0/2",
+      "dpt": { "main": 1, "sub": null },
+      "communication_object_ids": ["1.1.1/O-1_R-2"],
+      "description": ""
+    }
+  },
+  "group_ranges": {
+    "1": {
+      "name": "Ground floor",
+      "group_ranges": {
+        "1/0": { "name": "Lighting", "group_ranges": {} }
+      }
+    }
+  },
+  "devices": {
+    "1.1.1": {
+      "name": "Test Switch Actuator",
+      "hardware_name": "Test Switch Actuator",
+      "order_number": "TST-1",
+      "manufacturer_name": "Test Manufacturer",
+      "individual_address": "1.1.1",
+      "application": "M-9999_A-0001-1-0000",
+      "description": "",
+      "communication_object_ids": ["1.1.1/O-0_R-1", "1.1.1/O-1_R-2"]
+    }
+  },
+  "communication_objects": {
+    "1.1.1/O-0_R-1": {
+      "name": "Switch",
+      "number": 0,
+      "text": "Switch output A",
+      "function_text": "On/Off",
+      "device_address": "1.1.1",
+      "object_size": "1 Bit",
+      "dpts": [{ "main": 1, "sub": 1 }],
+      "flags": {
+        "read": false,
+        "write": true,
+        "communication": true,
+        "transmit": false,
+        "update": false,
+        "read_on_init": false
+      },
+      "group_address_links": ["1/0/1"]
+    },
+    "1.1.1/O-1_R-2": {
+      "name": "Status",
+      "number": 1,
+      "text": "Status output A",
+      "function_text": "Status",
+      "device_address": "1.1.1",
+      "object_size": "1 Bit",
+      "dpts": [{ "main": 1, "sub": null }],
+      "flags": {
+        "read": true,
+        "write": false,
+        "communication": true,
+        "transmit": true,
+        "update": false,
+        "read_on_init": false
+      },
+      "group_address_links": ["1/0/2"]
+    }
+  }
+}
