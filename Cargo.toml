@@ -11,6 +11,7 @@ members = [
     "crates/bussard-prod",
     "crates/bussard-ets",
     "crates/bussard-bus",
+    "crates/bussard-download",
     "crates/bussard-cli",
 ]
 
@@ -30,6 +31,11 @@ bussard-transport = { path = "crates/bussard-transport", version = "0.1.0" }
 bussard-monitor = { path = "crates/bussard-monitor", version = "0.1.0" }
 bussard-bus = { path = "crates/bussard-bus", version = "0.1.0" }
 bussard-mcp = { path = "crates/bussard-mcp", version = "0.1.0" }
+bussard-mgmt = { path = "crates/bussard-mgmt", version = "0.1.0" }
+bussard-prod = { path = "crates/bussard-prod", version = "0.1.0" }
+bussard-ets = { path = "crates/bussard-ets", version = "0.1.0" }
+bussard-ha = { path = "crates/bussard-ha", version = "0.1.0" }
+bussard-download = { path = "crates/bussard-download", version = "0.1.0" }
 
 # Third-party (all MIT and/or Apache-2.0)
 tokio = { version = "1", features = ["full"] }

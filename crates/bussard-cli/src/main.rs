@@ -2,6 +2,7 @@
 //!
 //! Phase 0 wires up the command surface; only `validate` is functional so far.
 
+mod apply_cmd;
 mod assign_cmd;
 mod capture_cmd;
 mod conn_cmd;
@@ -11,6 +12,7 @@ mod import_product_cmd;
 mod init_cmd;
 mod mcp_cmd;
 mod monitor_cmd;
+mod plan_cmd;
 mod read_cmd;
 mod reconstruct_cmd;
 mod scan_cmd;
@@ -128,6 +130,42 @@ enum Command {
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
+    },
+    /// Read a device's live tables and show what `apply` would change.
+    Plan {
+        /// The device to plan for, e.g. `1.1.4`.
+        #[arg(value_name = "ADDRESS")]
+        address: String,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Emit JSON instead of the report format.
+        #[arg(long)]
+        json: bool,
+        /// Override the gateway `host[:port]` for tunneling.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Force KNXnet/IP routing (multicast) transport.
+        #[arg(long)]
+        routing: bool,
+    },
+    /// Apply the model's link tables to a device (plan, confirm, write, verify).
+    Apply {
+        /// The device to program, e.g. `1.1.4`.
+        #[arg(value_name = "ADDRESS")]
+        address: String,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Skip the interactive confirmation (dangerous; for scripts).
+        #[arg(long)]
+        yes: bool,
+        /// Override the gateway `host[:port]` for tunneling.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Force KNXnet/IP routing (multicast) transport.
+        #[arg(long)]
+        routing: bool,
     },
     /// Validate the YAML model and report diagnostics.
     Validate {
@@ -307,6 +345,30 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             conn_cmd::ConnOverrides { gateway, routing },
         ),
         Command::ImportProduct { file, dir } => import_product_cmd::run(&file, &dir),
+        Command::Plan {
+            address,
+            dir,
+            json,
+            gateway,
+            routing,
+        } => plan_cmd::run(
+            &address,
+            &dir,
+            json,
+            conn_cmd::ConnOverrides { gateway, routing },
+        ),
+        Command::Apply {
+            address,
+            dir,
+            yes,
+            gateway,
+            routing,
+        } => apply_cmd::run(
+            &address,
+            &dir,
+            yes,
+            conn_cmd::ConnOverrides { gateway, routing },
+        ),
         Command::Validate { dir, format } => validate_cmd::run(&dir, format == Format::Json),
         Command::Init {
             dir,

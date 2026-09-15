@@ -190,6 +190,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "bussard-download"
+version = "0.1.0"
+dependencies = [
+ "bussard-bus",
+ "bussard-mgmt",
+ "bussard-model",
+ "bussard-transport",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "bussard-ets"
 version = "0.1.0"
 dependencies = [
