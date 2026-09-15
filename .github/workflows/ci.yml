@@ -6,19 +6,37 @@ on:
   pull_request:
     branches: [main]
 
+# Cancel superseded runs on the same ref (e.g. force-pushes to a PR branch).
+# On main we still want every push to complete, so the group is keyed by ref.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 env:
   CARGO_TERM_COLOR: always
+  # Incremental compilation only helps for repeated local rebuilds; in CI every
+  # job starts from a cache restore, so it just adds artifacts that bloat the
+  # cache and slow linking. Disable it everywhere.
+  CARGO_INCREMENTAL: "0"
+  # We never debug the binaries in CI, so skip generating debuginfo. Less data
+  # to codegen and (especially on Windows/macOS) link. Applies to the dev/test
+  # profile used by clippy and the test build.
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  # Fail fast on network flakiness fetching crates instead of hanging.
+  CARGO_NET_RETRY: "10"
 
 jobs:
-  build-and-test:
-    name: build & test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+  # fmt + clippy are platform-independent for this pure-Rust workspace, so we
+  # run them once on the fastest/cheapest runner (ubuntu) instead of 3x. The
+  # per-OS test jobs below no longer run clippy, cutting the biggest cost off
+  # the slow Windows runner (clippy was ~75s there).
+  lint:
+    name: fmt + clippy (ubuntu)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1 # we never need history for lint
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -27,12 +45,62 @@ jobs:
 
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          # Only write a new cache from main. PR runs restore the main cache
+          # read-only, which stops every PR from churning its own cache entry
+          # (and evicting others under the 10 GB repo cache budget).
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Shared key so this job reuses the same build cache as the test job
+          # on ubuntu — the dev/test profile compilation graph is identical.
+          shared-key: rust-ubuntu
 
       - name: Check formatting
         run: cargo fmt --all --check
 
+      # --all-targets makes clippy compile tests/benches/examples too, which
+      # warms the exact same build graph the test job needs. Kept as its own
+      # step so a clippy failure is clearly attributed.
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: Test
-        run: cargo test --workspace
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false # report all platforms' failures, not just the first
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        # No rustfmt/clippy components here: linting lives in the `lint` job.
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # On ubuntu, share the cache with the lint job (same profile/graph),
+          # so whichever finishes its build first warms it for the other.
+          # macOS/Windows get their own per-OS cache automatically (the action
+          # keys on the runner OS + rustc version).
+          shared-key: ${{ matrix.os == 'ubuntu-latest' && 'rust-ubuntu' || '' }}
+
+      # nextest runs tests in a process-parallel harness that is meaningfully
+      # faster than `cargo test` for a multi-crate workspace, and gives cleaner
+      # output. install-action pulls a prebuilt binary (a few seconds), so the
+      # install cost is far below the runtime saved.
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Test (nextest)
+        run: cargo nextest run --workspace
+
+      # nextest does NOT run doc-tests, so we run them separately to keep the
+      # quality gate equivalent (this workspace has real doc-tests). This reuses
+      # the compilation already done above, so it is cheap.
+      - name: Doc-tests
+        run: cargo test --workspace --doc
