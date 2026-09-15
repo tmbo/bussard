@@ -16,7 +16,7 @@ use bussard_model::Model;
 /// (only when stdin is a TTY).
 pub fn run_knxproj(
     path: &Path,
-    out: &Path,
+    dir: &Path,
     password_flag: Option<String>,
 ) -> anyhow::Result<ExitCode> {
     let password = resolve_password(password_flag);
@@ -38,25 +38,32 @@ pub fn run_knxproj(
         Err(e) => return Err(e.into()),
     };
 
-    write_model(&model, out)
+    write_model(&model, dir)
 }
 
 /// Runs `bussard import --from-json`.
-pub fn run_json(path: &Path, out: &Path) -> anyhow::Result<ExitCode> {
+pub fn run_json(path: &Path, dir: &Path) -> anyhow::Result<ExitCode> {
     let model = bussard_project::import_from_json(path)?;
-    write_model(&model, out)
+    write_model(&model, dir)
 }
 
-/// Writes the model and prints a short summary.
-fn write_model(model: &Model, out: &Path) -> anyhow::Result<ExitCode> {
-    model.save(out)?;
+/// Writes the model (idempotently, pruning stale device files) and prints a
+/// short summary.
+fn write_model(model: &Model, dir: &Path) -> anyhow::Result<ExitCode> {
+    let report = model.save_pruning(dir)?;
     println!(
         "imported {} group addresses, {} devices, {} link entries → {}",
         model.groups.groups.len(),
         model.devices.len(),
         model.links.links.values().map(Vec::len).sum::<usize>(),
-        out.display()
+        dir.display()
     );
+    if !report.renamed.is_empty() {
+        println!("renamed {} device file(s)", report.renamed.len());
+    }
+    if !report.pruned.is_empty() {
+        println!("pruned {} stale device file(s)", report.pruned.len());
+    }
     Ok(ExitCode::SUCCESS)
 }
 

@@ -136,19 +136,12 @@ pub fn model_lookup(model: &Model, query: &str, limit: usize) -> Value {
         }
     }
 
-    // Com-objects (by name), with the GAs each is linked to.
+    // Com-objects (by name), with the GAs each is linked to. The name lives in
+    // links.yaml only (issue #19).
     let mut objects = Vec::new();
     'outer: for (ia, links) in &model.links.links {
-        let dev = model.devices.get(ia);
         for link in links {
-            let obj_name = link
-                .name
-                .clone()
-                .or_else(|| {
-                    dev.and_then(|d| d.device.com_objects.get(&link.object))
-                        .map(|o| o.name.clone())
-                })
-                .unwrap_or_default();
+            let obj_name = link.name.clone().unwrap_or_default();
             if hit(&obj_name) {
                 let mut linked: Vec<String> = Vec::new();
                 if let Some(send) = &link.send {
@@ -181,7 +174,8 @@ pub fn model_lookup(model: &Model, query: &str, limit: usize) -> Value {
 pub fn get_group(model: &Model, ring: &TelegramRing, ga: GroupAddress) -> Value {
     let group = model.groups.groups.get(&ga);
 
-    // Every link that sends or listens on this GA.
+    // Every link that sends or listens on this GA. The com-object name lives in
+    // links.yaml only (issue #19).
     let mut links = Vec::new();
     for (ia, dev_links) in &model.links.links {
         let dev = model.devices.get(ia);
@@ -191,16 +185,12 @@ pub fn get_group(model: &Model, ring: &TelegramRing, ga: GroupAddress) -> Value 
             if !sends && !listens {
                 continue;
             }
-            let obj_name = link.name.clone().or_else(|| {
-                dev.and_then(|d| d.device.com_objects.get(&link.object))
-                    .map(|o| o.name.clone())
-            });
             let role = if sends { "send" } else { "listen" };
             links.push(json!({
                 "device_ia": ia.to_string(),
                 "device_name": dev.map(|d| d.device.name.clone()),
                 "object": link.object,
-                "object_name": obj_name,
+                "object_name": link.name.clone(),
                 "role": role,
             }));
         }

@@ -508,14 +508,16 @@ fn try_binary_sensor(
         return None;
     }
 
-    // Prefer the GA's own name for device-class hinting; fall back to the
-    // com-object name.
+    // The GA's own name drives device-class hinting. The com-object no longer
+    // carries a name (issue #19); the informational name in links.yaml isn't
+    // threaded here, so fall back to the device name for the hint.
     let hint_name = model
         .groups
         .groups
         .get(&state)
         .map(|g| g.name.as_str())
-        .unwrap_or_else(|| o.obj.name.as_str());
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or(device.name.as_str());
     let device_class = binary_sensor_device_class(dpt, hint_name);
 
     let name = entity_name(device, model, state);

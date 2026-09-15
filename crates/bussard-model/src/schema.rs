@@ -210,15 +210,20 @@ pub struct Channel {
 }
 
 /// A single generated com object on a device.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// The informational name lives in `links.yaml` (the single home for it — see
+/// issue #19), not here. The on-wire payload size is a pure function of the DPT
+/// (see [`Dpt::expected_size`]); it is only serialized in the rare case where a
+/// com-object has no DPT at all, so nothing about it can otherwise be inferred
+/// (issue #17).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ComObject {
-    /// Display name.
-    pub name: String,
     /// Datapoint type, if known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dpt: Option<Dpt>,
-    /// Declared size string (e.g. `"1 bit"`), if given.
+    /// Declared size string (e.g. `"1 bit"`), serialized *only* when no `dpt`
+    /// is present (otherwise the size is derived from the DPT on demand).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size: Option<String>,
     /// Communication flags.

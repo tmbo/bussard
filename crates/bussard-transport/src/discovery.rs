@@ -75,3 +75,66 @@ pub async fn discover(timeout: Duration, interface: Ipv4Addr) -> Result<Vec<Gate
 
     Ok(found)
 }
+
+/// Enumerates the machine's usable local IPv4 interfaces.
+///
+/// Loopback is excluded (a gateway is never reachable there) and the wildcard
+/// `0.0.0.0` is skipped. The result feeds [`discover_all`], which searches on
+/// each interface because KNXnet/IP discovery is multicast and multicast does
+/// not route between subnets — the SEARCH_REQUEST must egress the interface on
+/// the gateway's own network.
+pub fn local_ipv4_interfaces() -> Vec<Ipv4Addr> {
+    let mut addrs: Vec<Ipv4Addr> = match if_addrs::get_if_addrs() {
+        Ok(ifaces) => ifaces
+            .into_iter()
+            .filter_map(|iface| match iface.addr.ip() {
+                std::net::IpAddr::V4(v4) if !v4.is_loopback() && !v4.is_unspecified() => Some(v4),
+                _ => None,
+            })
+            .collect(),
+        Err(err) => {
+            tracing::warn!("could not enumerate local interfaces: {err}");
+            Vec::new()
+        }
+    };
+    addrs.sort();
+    addrs.dedup();
+    addrs
+}
+
+/// Discovers gateways across every local IPv4 interface concurrently.
+///
+/// Runs [`discover`] on each interface returned by [`local_ipv4_interfaces`]
+/// (each with its own `timeout`) and merges the results, de-duplicating by
+/// control endpoint. If no interfaces can be enumerated, falls back to a single
+/// wildcard search so discovery still works in constrained environments.
+pub async fn discover_all(timeout: Duration) -> Result<Vec<GatewayInfo>> {
+    let mut interfaces = local_ipv4_interfaces();
+    if interfaces.is_empty() {
+        // Fall back to a single wildcard search so discovery still works when
+        // interface enumeration is unavailable.
+        interfaces.push(Ipv4Addr::UNSPECIFIED);
+    }
+
+    let mut set = tokio::task::JoinSet::new();
+    for iface in interfaces {
+        set.spawn(async move { discover(timeout, iface).await });
+    }
+
+    let mut merged: Vec<GatewayInfo> = Vec::new();
+    while let Some(joined) = set.join_next().await {
+        match joined {
+            Ok(Ok(gateways)) => {
+                for gw in gateways {
+                    if !merged.iter().any(|g| g.endpoint == gw.endpoint) {
+                        merged.push(gw);
+                    }
+                }
+            }
+            // A failure on one interface (e.g. no route) must not sink the rest.
+            Ok(Err(err)) => tracing::debug!("discovery on one interface failed: {err}"),
+            Err(err) => tracing::debug!("discovery task join error: {err}"),
+        }
+    }
+    Ok(merged)
+}

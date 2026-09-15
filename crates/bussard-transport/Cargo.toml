@@ -20,6 +20,10 @@ tracing = { workspace = true }
 socket2 = { version = "0.5", features = ["all"] }
 # Error enums. From the workspace pin (MIT).
 thiserror = { workspace = true }
+# Enumerate local network interfaces so discovery can search on each (multicast
+# does not route, so we must send the SEARCH_REQUEST out of every interface).
+# MIT OR Apache-2.0.
+if-addrs = "0.15"
 
 [dev-dependencies]
 # `#[tokio::test]` for the async integration tests.

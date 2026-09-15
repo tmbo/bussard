@@ -56,14 +56,19 @@ fn from_json_tiny_fixture() {
         dev.product.as_ref().and_then(|p| p.manufacturer.as_deref()),
         Some("Test Manufacturer")
     );
-    // Two generated com objects.
+    // Two generated com objects. The DPT is present, so the redundant `size`
+    // is not stored (issue #17); the informational name lives in links.yaml
+    // only, not on the com-object (issue #19).
     assert_eq!(dev.com_objects.len(), 2);
-    assert_eq!(dev.com_objects.get(&0).unwrap().name, "Switch output A");
+    let co0 = dev.com_objects.get(&0).unwrap();
+    assert_eq!(co0.dpt.map(|d| d.to_string()).as_deref(), Some("1.001"));
+    assert!(co0.size.is_none(), "size derived from dpt, not stored");
 
     // Links: object 0 has no transmit flag -> listen only; object 1 has
-    // transmit -> send.
+    // transmit -> send. The name lives here.
     let links = model.links.links.get(&ia).expect("links for 1.1.1");
     let obj0 = links.iter().find(|l| l.object == 0).unwrap();
+    assert_eq!(obj0.name.as_deref(), Some("Switch output A"));
     assert!(obj0.send.is_none());
     assert_eq!(obj0.listen, vec!["1/0/1".parse().unwrap()]);
     let obj1 = links.iter().find(|l| l.object == 1).unwrap();
