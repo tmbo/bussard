@@ -70,14 +70,25 @@ pub use load::{
 };
 pub use tables::{DeviceTables, ResolvedLink, TableSource, TablesError, read_tables};
 
+/// Whether a mask version belongs to the System B family (`x7B0`).
+///
+/// The medium lives in the high bits (07 = TP1, 27 = RF, 57 = KNX-IP) while
+/// the management stack - interface objects, loadable tables, property
+/// access - is shared. bussard's table read/write path applies to the whole
+/// family (established against thelsing's BauSystemB, which serves the same
+/// stack under 07B0 and 57B0).
+pub fn is_system_b(mask: u16) -> bool {
+    mask & 0x0FFF == 0x07B0
+}
+
 /// Maps a device descriptor mask version to a human-readable KNX system type.
 ///
 /// The mask version reported by `A_DeviceDescriptor_Read` classifies the device
 /// medium and system generation, which in turn decides whether links are written
 /// via interface-object **properties** (System B) or raw **memory** (older
-/// systems). Common TP1 masks:
+/// systems). Common masks:
 ///
-/// - `0x07B0` → System B
+/// - `0x07B0` / `0x57B0` / `0x27B0` → System B (TP1 / KNX-IP / RF)
 /// - `0x0705`, `0x0701` → System 7
 /// - `0x0300`, `0x0310`, `0x0311` → System 2
 /// - `0x0010`–`0x0013`, `0x0020`/`0x0021`/`0x0025` → System 1 (BCU1 family)
@@ -88,6 +99,8 @@ pub use tables::{DeviceTables, ResolvedLink, TableSource, TablesError, read_tabl
 pub fn system_type(mask: u16) -> &'static str {
     match mask {
         0x07B0 => "System B",
+        0x57B0 => "System B (IP)",
+        0x27B0 => "System B (RF)",
         0x0705 | 0x0701 | 0x0700 => "System 7",
         0x0300 | 0x0310 | 0x0311 => "System 2",
         // System 1 / BCU1 family: the classic 0x001x masks plus the 0x002x

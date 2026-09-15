@@ -157,3 +157,59 @@ jobs:
 
       - name: cargo check (workspace)
         run: cargo check --workspace
+
+  # Optional interop job: build thelsing/knx's knx-linux-ip demo as an EXTERNAL
+  # process and drive bussard's management ladder against it over KNXnet/IP
+  # routing multicast. Ubuntu-only (the demo is #ifdef __linux__), and kept OFF
+  # the required path: it is its own job name (`virtual-device`) so a flake here
+  # does not block a merge, and it is not a dependency of any required job.
+  #
+  # Licence note: thelsing/knx is GPL and is fetched + built + run as a separate
+  # peer here; it is never linked into or vendored by bussard (all bussard crates
+  # stay MIT, guarded by the `deny` job). This job compiles that GPL code into a
+  # standalone binary at CI time and talks to it over a socket — no linkage.
+  virtual-device:
+    name: virtual-device (ubuntu, interop)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Reuse the ubuntu build graph warmed by lint/test.
+          shared-key: rust-ubuntu
+
+      # Cache the built external device binary keyed on the pinned commit, so a
+      # green run does not re-clone/rebuild thelsing/knx every time. The key must
+      # track the pin in build.sh; bump it there and this cache misses once.
+      - name: Cache virtual-device build
+        id: vdev-cache
+        uses: actions/cache@v4
+        with:
+          path: target/virtual-device
+          key: vdev-thelsing-980c047ad7fc5e27bf2fae95e48acde5d5e0b4fd
+
+      - name: Build the virtual device (thelsing/knx knx-linux-ip)
+        run: tests-support/virtual-device/build.sh
+
+      # The multicast rungs need a multicast-capable loopback. Bring loopback up
+      # for multicast so a same-host routing exchange works on the runner.
+      - name: Enable multicast on loopback
+        run: sudo ip link set lo multicast on || true
+
+      - name: Run the interop ladder
+        env:
+          BUSSARD_VIRTUAL_DEVICE: "1"
+          BUSSARD_TEST_MULTICAST: "1"
+        run: |
+          BIN="$(cat target/virtual-device/binary-path.txt)"
+          echo "device binary: $BIN"
+          BUSSARD_VIRTUAL_DEVICE_BIN="$BIN" \
+            cargo test -p bussard-cli --test virtual_device -- --ignored --nocapture
