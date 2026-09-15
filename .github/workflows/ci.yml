@@ -394,25 +394,27 @@ jobs:
           send_to(DST, bytes([0xC6]))  # T_ACK seq1
           time.sleep(0.2)
           # Broadcast read WITHOUT disconnecting first (some stacks drop prog mode
-          # on T_Disconnect). Listen long for the A_IndividualAddress_Response.
-          drain()
-          rframe = wrap(cemi(0x11, 0xB6))
-          tx.sendto(rframe, (group, port))
-          print("SENT prog-mode-set + read")
-          answered = False
-          deadline = time.time() + 3
-          while time.time() < deadline:
-              try:
-                  data, addr = rx.recvfrom(1024)
-              except BlockingIOError:
-                  time.sleep(0.03); continue
-              if data == rframe: continue
-              print(f"  RECV from {addr}: {data.hex()}")
-              if len(data) >= 2 and (data[-2] & 0x03) == 0x01 and data[-1] == 0x40:
-                  print("  >>> GOT A_IndividualAddress_Response after PROG_MODE=1!"); answered = True
+          # on T_Disconnect). Dump EVERY frame the device (src 0xFFFF) emits so we
+          # do not miss a differently-shaped reply. Also try both the normal and
+          # system-broadcast forms of the read.
+          for label, c1 in [("bcast", 0xB6), ("sysbcast", 0xA6)]:
+              drain()
+              rframe = wrap(cemi(0x11, c1))
+              tx.sendto(rframe, (group, port))
+              print(f"SENT prog-mode read ({label})")
+              deadline = time.time() + 2.5
+              while time.time() < deadline:
+                  try:
+                      data, addr = rx.recvfrom(1024)
+                  except BlockingIOError:
+                      time.sleep(0.03); continue
+                  if data == rframe: continue
+                  src = struct.unpack(">H", data[10:12])[0] if len(data) >= 12 else -1
+                  print(f"  RECV src={src:#06x}: {data.hex()}")
+                  if len(data) >= 2 and (data[-2] & 0x03) == 0x01 and data[-1] == 0x40:
+                      print("  >>> GOT A_IndividualAddress_Response!")
           # Clean disconnect at the very end.
           send_to(DST, bytes([0x81]))
-          print(f"  prog-mode-set result: {'ANSWERED' if answered else 'still no reply'}")
           print("done")
           PY
           python3 /tmp/knx_read.py || true
