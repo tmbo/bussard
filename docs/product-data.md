@@ -70,10 +70,12 @@ It extracts:
 ## `bussard import-product`
 
 ```
-bussard import-product <file.knxprod> [--dir knx]
+bussard import-product <file.knxprod> [--dir knx]        # a local file
+bussard import-product --order-number "AKK-0216.03"       # look up + download
+bussard import-product --list                             # show the pointer index
 ```
 
-The command:
+In positional mode the command:
 
 1. reads the `.knxprod`,
 2. caches the source file byte-identically under `<dir>/vendor/<original-name>`
@@ -116,6 +118,8 @@ With `--order-number`, bussard:
    vouches for (the vendor may have re-published it), and
 6. caches the verified file under `<dir>/vendor/` and runs the normal import on
    it.
+
+A full worked transcript is in [commissioning.md](commissioning.md#import-product-by-order-number).
 
 ### Index schema
 
