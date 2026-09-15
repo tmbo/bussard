@@ -8,8 +8,8 @@
 //! sender pauses for the requested wait time.
 
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
 
 use socket2::{Domain, Protocol, Socket, Type};

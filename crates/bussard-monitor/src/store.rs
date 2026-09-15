@@ -30,8 +30,8 @@ use std::path::Path;
 use std::time::SystemTime;
 
 use bussard_model::{GroupAddress, IndividualAddress, Model};
-use bussard_transport::cemi::CemiFrame;
 use bussard_transport::TimestampedFrame;
+use bussard_transport::cemi::CemiFrame;
 use rusqlite::Connection;
 use tokio::sync::mpsc;
 

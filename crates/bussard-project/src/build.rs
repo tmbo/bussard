@@ -17,7 +17,7 @@ use crate::container::Container;
 use crate::error::Result;
 use crate::hardware::Hardware;
 use crate::knx_master;
-use crate::manufacturer::{parse_application_program, ApplicationProgram};
+use crate::manufacturer::{ApplicationProgram, parse_application_program};
 use crate::project::{RawComObjectInstance, RawDevice, RawProject};
 
 /// A fully-resolved com object on a device.
@@ -336,7 +336,7 @@ fn normalize_ref(ref_id: &str) -> (String, Option<String>) {
         if ref_id.starts_with("MD-") {
             // The selector runs from `_M-` up to the segment after `_MI-<n>`.
             let after = &ref_id[md_end + 1..]; // e.g. "M-6_MI-1_O-2-1_R-37"
-                                               // Split off the object part after `MI-<n>_`.
+            // Split off the object part after `MI-<n>_`.
             if let Some(mi_pos) = after.find("_MI-") {
                 let rest = &after[mi_pos + "_MI-".len()..]; // "1_O-2-1_R-37"
                 if let Some(obj_pos) = rest.find('_') {

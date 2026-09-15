@@ -25,7 +25,7 @@ use tokio::time::{self, Instant};
 
 use crate::cemi::CemiFrame;
 use crate::config::{
-    ConnectionConfig, CONNECT_TIMEOUT, DISCONNECT_TIMEOUT, HEARTBEAT_INTERVAL, HEARTBEAT_RETRIES,
+    CONNECT_TIMEOUT, ConnectionConfig, DISCONNECT_TIMEOUT, HEARTBEAT_INTERVAL, HEARTBEAT_RETRIES,
     HEARTBEAT_TIMEOUT, TUNNELING_ACK_TIMEOUT, TUNNELING_RETRANSMITS,
 };
 use crate::conn::{BusConnection, TimestampedFrame};
@@ -73,7 +73,7 @@ impl Tunnel {
                 return Err(TransportError::InvalidField {
                     field: "local socket is IPv6, KNXnet/IP requires IPv4",
                     value: 0,
-                })
+                });
             }
         };
 

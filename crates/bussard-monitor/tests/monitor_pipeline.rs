@@ -17,7 +17,7 @@ use tokio::net::UdpSocket;
 use bussard_model::schema::{BussardConfig, Group, Groups, Links};
 use bussard_model::{GroupAddress, IndividualAddress, Model};
 use bussard_monitor::stream::{Flow, TelegramSink};
-use bussard_monitor::{run_stream, DecodedTelegram};
+use bussard_monitor::{DecodedTelegram, run_stream};
 use bussard_transport::cemi::CemiFrame;
 use bussard_transport::knxnet::{self, ServiceType};
 use bussard_transport::{ConnectionConfig, TimestampedFrame, TransportError};

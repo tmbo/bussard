@@ -33,7 +33,9 @@ pub enum ImportError {
     },
 
     /// The project is password-protected but no password was supplied.
-    #[error("project is password-protected; supply a password (--password, BUSSARD_PROJECT_PASSWORD, or prompt)")]
+    #[error(
+        "project is password-protected; supply a password (--password, BUSSARD_PROJECT_PASSWORD, or prompt)"
+    )]
     PasswordRequired,
 
     /// The supplied password did not decrypt the inner project archive.
@@ -41,7 +43,9 @@ pub enum ImportError {
     WrongPassword,
 
     /// A referenced manufacturer application-program file was missing.
-    #[error("application program `{application}` referenced by device {device} was not found in the archive")]
+    #[error(
+        "application program `{application}` referenced by device {device} was not found in the archive"
+    )]
     MissingApplication {
         /// The application program id.
         application: String,

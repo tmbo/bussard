@@ -10,12 +10,12 @@
 
 use std::collections::HashMap;
 
-use quick_xml::events::{BytesStart, Event};
 use quick_xml::Reader;
+use quick_xml::events::{BytesStart, Event};
 
 use crate::dpt_map::parse_ets_dpt;
 use crate::error::{ImportError, Result};
-use crate::flag_map::{parse_flag_value, FlagSet};
+use crate::flag_map::{FlagSet, parse_flag_value};
 use bussard_model::{Dpt, GroupAddress, IndividualAddress};
 
 /// A group address as read from the project file.
@@ -339,7 +339,7 @@ fn parse_device_start(
                     "DeviceInstance {} has no enclosing Area/Line",
                     get(&m, b"Id").unwrap_or("?")
                 ),
-            })
+            });
         }
     };
     let address =

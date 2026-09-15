@@ -2,15 +2,15 @@
 
 use std::path::Path;
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use bussard_monitor::stream::{Flow, TelegramSink};
 use bussard_monitor::{CaptureRecord, CaptureWriter, DecodedTelegram, Filter};
 use bussard_transport::{TimestampedFrame, TransportError};
 
-use crate::conn_cmd::{load_model_optional, resolve_config, ConnOverrides};
+use crate::conn_cmd::{ConnOverrides, load_model_optional, resolve_config};
 
 /// How often the running count is printed to stderr.
 const COUNT_INTERVAL: Duration = Duration::from_secs(3);
