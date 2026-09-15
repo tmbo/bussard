@@ -607,8 +607,9 @@ fn derive_climate(
             continue;
         };
 
-        // The anchor GA drives the name and override lookup.
-        let name = entity_name_for(model, anchor).unwrap_or_else(|| format!("{room} Klima"));
+        // The room is the entity name (the anchor GA's own name would carry its
+        // "Betriebsmodus Vorgabe" suffix); the anchor GA drives override lookup.
+        let name = room.clone();
         // Only name/exclusion/merge overrides apply to climate; platform is N/A.
         if overrides.is_excluded(anchor) {
             continue;
