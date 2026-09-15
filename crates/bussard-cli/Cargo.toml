@@ -1,0 +1,22 @@
+[package]
+name = "bussard-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+description = "bussard: an open-source CLI for KNX"
+
+[[bin]]
+name = "bussard"
+path = "src/main.rs"
+
+[dependencies]
+bussard-model = { workspace = true }
+clap = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+owo-colors = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
