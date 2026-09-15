@@ -2,9 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # `ci/virtual-device-shakedown` is included temporarily so the interop job
+    # can be iterated on its own branch before it is re-blocked and merged.
+    branches: [main, ci/virtual-device-shakedown]
   pull_request:
     branches: [main]
+  workflow_dispatch: {}
 
 # Cancel superseded runs on the same ref (e.g. force-pushes to a PR branch).
 # On main we still want every push to complete, so the group is keyed by ref.
@@ -202,10 +205,28 @@ jobs:
       - name: Build the virtual device (thelsing/knx knx-linux-ip)
         run: tests-support/virtual-device/build.sh
 
-      # The multicast rungs need a multicast-capable loopback. Bring loopback up
-      # for multicast so a same-host routing exchange works on the runner.
-      - name: Enable multicast on loopback
-        run: sudo ip link set lo multicast on || true
+      # Root cause of the first-run failure: thelsing's Linux platform hard-codes
+      # IP_MULTICAST_LOOP=0 on its multicast socket, so its routing replies are
+      # NOT delivered to a bussard on the same host (that loop flag gates
+      # same-host multicast delivery on Linux). We put the device in its own
+      # network namespace joined to the root ns by a veth pair, so its multicast
+      # crosses a real link as inbound traffic — where the loop flag no longer
+      # applies. See tests-support/virtual-device/netns-setup.sh for the detail.
+      - name: Set up device network namespace (veth)
+        run: |
+          sudo tests-support/virtual-device/netns-setup.sh | tee netns.env
+          echo "--- root-ns multicast state ---"
+          ip maddr show || true
+          ip route show | grep -i 224 || true
+
+      # Diagnostics: capture the multicast exchange in the background so a failing
+      # run has a packet-level record. `any` catches both the veth and any stray
+      # eth0 traffic. Killed after the ladder; the pcap is uploaded as an artifact.
+      - name: Start tcpdump (background)
+        run: |
+          sudo tcpdump -i any -w vdev.pcap 'udp port 3671' &
+          echo $! | sudo tee /tmp/tcpdump.pid >/dev/null
+          sleep 1  # let it bind before traffic starts
 
       - name: Run the interop ladder
         env:
@@ -214,5 +235,45 @@ jobs:
         run: |
           BIN="$(cat target/virtual-device/binary-path.txt)"
           echo "device binary: $BIN"
+          # The device is spawned by the test through this wrapper, which drops it
+          # into the netns created above. `sudo` is needed for `ip netns exec`.
+          export BUSSARD_VIRTUAL_DEVICE_WRAP="sudo ip netns exec knxdev"
           BUSSARD_VIRTUAL_DEVICE_BIN="$BIN" \
             cargo test -p bussard-cli --test virtual_device -- --ignored --nocapture
+
+      - name: Stop tcpdump and dump capture summary
+        if: always()
+        run: |
+          sudo kill "$(cat /tmp/tcpdump.pid)" 2>/dev/null || true
+          sleep 1
+          echo "--- pcap summary (udp/3671) ---"
+          sudo tcpdump -n -r vdev.pcap 2>/dev/null | head -80 || true
+
+      - name: Collect device logs
+        if: always()
+        run: |
+          # The test writes each device's stdout/stderr to dev.log in a temp dir
+          # (bussard-vdev-dev-*). Gather any that survived for the artifact.
+          mkdir -p vdev-logs
+          find "${TMPDIR:-/tmp}" -maxdepth 2 -name dev.log -path '*bussard-vdev-*' \
+            -exec cp {} vdev-logs/ \; 2>/dev/null || true
+          echo "--- collected device logs ---"
+          for f in vdev-logs/*; do echo "== $f =="; cat "$f"; done 2>/dev/null || true
+
+      - name: Upload interop diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: virtual-device-diagnostics
+          path: |
+            vdev.pcap
+            vdev-logs/
+            netns.env
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Tear down device network namespace
+        if: always()
+        run: |
+          sudo pkill -f knx-linux-ip 2>/dev/null || true
+          sudo tests-support/virtual-device/netns-setup.sh --teardown || true

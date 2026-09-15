@@ -53,10 +53,11 @@
 //! The value of this test is proving (a)-(c) against a foreign stack and pinning
 //! (d) as a concrete, reproducible interop finding.
 
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// A self-cleaning temporary directory, so this test file needs no `tempfile`
 /// dev-dependency (the crate's manifest is out of scope for this change). Uses a
@@ -123,18 +124,84 @@ struct VirtualDevice {
 impl VirtualDevice {
     /// Spawns the demo in a fresh temp working directory (so `flash.bin` is
     /// absent and the device boots unconfigured → programming mode).
-    fn spawn_fresh(bin: &PathBuf) -> std::io::Result<Self> {
+    ///
+    /// The device command can be wrapped by setting `BUSSARD_VIRTUAL_DEVICE_WRAP`
+    /// to a space-separated command prefix (e.g. `sudo ip netns exec knxdev`).
+    /// This is how CI puts the device in its own network namespace so its
+    /// multicast frames physically cross a veth pair to bussard — sidestepping
+    /// thelsing's `IP_MULTICAST_LOOP=0`, which otherwise stops same-host loopback
+    /// delivery of its responses (see `tests-support/virtual-device/README.md`).
+    ///
+    /// stdout+stderr are streamed to `dev.log` inside `workdir` so a CI run can
+    /// upload the device's output as an artifact and callers can wait for its
+    /// startup banner instead of sleeping blindly.
+    fn spawn_fresh(bin: &Path) -> std::io::Result<Self> {
         let workdir = TmpDir::new("dev")?;
+
+        // Optional wrapper: split on whitespace, first token is the program.
+        let wrap: Vec<String> = std::env::var("BUSSARD_VIRTUAL_DEVICE_WRAP")
+            .ok()
+            .map(|s| s.split_whitespace().map(str::to_string).collect())
+            .unwrap_or_default();
+
+        let bin_abs = std::fs::canonicalize(bin)?;
+        let mut cmd = if let Some((prog, rest)) = wrap.split_first() {
+            let mut c = Command::new(prog);
+            c.args(rest);
+            c.arg(&bin_abs);
+            c
+        } else {
+            Command::new(&bin_abs)
+        };
+
         // The demo writes flash.bin into its CWD; an empty CWD means prog mode.
-        let child = Command::new(bin)
+        // (A wrapper like `ip netns exec` preserves CWD, so this still controls
+        // where flash.bin lands.)
+        let log = std::fs::File::create(workdir.path().join("dev.log"))?;
+        let log_err = log.try_clone()?;
+        let child = cmd
             .current_dir(workdir.path())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stdin(Stdio::null())
+            .stdout(Stdio::from(log))
+            .stderr(Stdio::from(log_err))
             .spawn()?;
         Ok(VirtualDevice {
             child,
             _workdir: workdir,
         })
+    }
+
+    /// Waits until the device has printed its startup banner (`main() start.` in
+    /// thelsing's demo) to `dev.log`, or `timeout` elapses. Readiness by output
+    /// beats a blind sleep on slow CI runners. Returns whether the banner was
+    /// seen (a `false` is non-fatal: the ladder still runs and will surface a
+    /// clearer failure downstream, with the log uploaded as an artifact).
+    fn wait_ready(&self, timeout: Duration) -> bool {
+        let log_path = self._workdir.path().join("dev.log");
+        let start = Instant::now();
+        while start.elapsed() < timeout {
+            if let Ok(f) = std::fs::File::open(&log_path) {
+                for line in BufReader::new(f).lines().map_while(Result::ok) {
+                    if line.contains("main() start.") || line.contains("FDSK:") {
+                        return true;
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        false
+    }
+
+    /// Prints the captured device log to stderr (so `--nocapture` and the CI
+    /// artifact both carry it) — called on assertion paths for diagnosis.
+    fn dump_log(&self) {
+        let log_path = self._workdir.path().join("dev.log");
+        if let Ok(contents) = std::fs::read_to_string(&log_path) {
+            eprintln!(
+                "--- virtual device log ({}) ---\n{contents}",
+                log_path.display()
+            );
+        }
     }
 }
 
@@ -148,12 +215,16 @@ impl Drop for VirtualDevice {
 /// Runs the built `bussard` binary with `--routing` and the given args, returning
 /// (success, stdout, stderr). A short assign/scan window keeps the run brisk.
 fn bussard(args: &[&str]) -> (bool, String, String) {
+    // Keep the assign/scan windows generous on slow CI runners; overridable via
+    // env so a fast local box can shorten them. The netns hop adds latency, so
+    // the default here is deliberately roomy (5s assign, 800ms scan discovery).
+    let assign_wait = std::env::var("BUSSARD_ASSIGN_WAIT_MS").unwrap_or_else(|_| "5000".into());
+    let scan_disc = std::env::var("BUSSARD_SCAN_DISCOVERY_MS").unwrap_or_else(|_| "800".into());
     let out = Command::new(env!("CARGO_BIN_EXE_bussard"))
         .args(args)
         .arg("--routing")
-        // Shorten the programming-mode/scan windows for a responsive local device.
-        .env("BUSSARD_ASSIGN_WAIT_MS", "2000")
-        .env("BUSSARD_SCAN_DISCOVERY_MS", "300")
+        .env("BUSSARD_ASSIGN_WAIT_MS", assign_wait)
+        .env("BUSSARD_SCAN_DISCOVERY_MS", scan_disc)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -178,9 +249,17 @@ fn ladder_against_thelsing_knx_linux_ip() {
     // The address we assign the fresh device. `scan` and `reconstruct` target it.
     let assigned = "1.1.47";
 
-    let _device = VirtualDevice::spawn_fresh(&bin).expect("spawn virtual device");
-    // Give the device a moment to join the multicast group and settle.
-    std::thread::sleep(Duration::from_millis(1500));
+    let device = VirtualDevice::spawn_fresh(&bin).expect("spawn virtual device");
+    // Wait for the device to print its startup banner rather than sleeping
+    // blindly; then a short settle for the multicast join to take effect.
+    if !device.wait_ready(Duration::from_secs(20)) {
+        eprintln!(
+            "warning: virtual device did not print its startup banner within 20s; \
+             continuing (the ladder will surface a clearer failure and the log is dumped below)"
+        );
+        device.dump_log();
+    }
+    std::thread::sleep(Duration::from_millis(1000));
 
     // --- Rung (a)+(b): assign finds the fresh device and writes its address ---
     // `assign <addr> --routing` is non-interactive-safe with an explicit address
@@ -191,6 +270,9 @@ fn ladder_against_thelsing_knx_linux_ip() {
     let dir = tmp.path().join("knx");
     let (ok, out, err) = bussard(&["assign", assigned, "--dir", dir.to_str().unwrap()]);
     eprintln!("--- assign stdout ---\n{out}\n--- assign stderr ---\n{err}");
+    if !ok {
+        device.dump_log();
+    }
     assert!(
         ok,
         "rung (a)+(b): assign should find the fresh device in programming mode \
