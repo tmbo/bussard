@@ -384,20 +384,22 @@ jobs:
           # then send our own T_ACK seq0 (TPCI 0xC2) so the connection stays healthy.
           for f in recv_from(DST, 1.0):
               print("  CO recv:", f.hex())
-          send_to(DST, bytes([0xC2]))  # T_ACK seq0
+          send_to(DST, bytes([0xC2]))  # T_ACK seq0 for the device's response
           time.sleep(0.3)
-          # T_Disconnect (0x81) to cleanly close before the broadcast read.
-          send_to(DST, bytes([0x81]))
-          time.sleep(0.3)
-          # Now the device should be in programming mode: re-broadcast the read.
+          # Read PROG_MODE back (seq1) to CONFIRM it is now 1, staying connected.
+          rd = bytes([0x40 | (1<<2) | ((0x3D5>>8)&0x03), 0x3D5&0xFF, 0x00, 54]) + struct.pack(">H",(1<<12)|1)
+          send_to(DST, rd)
+          for f in recv_from(DST, 1.0):
+              print("  progmode-read resp:", f.hex())
+          send_to(DST, bytes([0xC6]))  # T_ACK seq1
+          time.sleep(0.2)
+          # Broadcast read WITHOUT disconnecting first (some stacks drop prog mode
+          # on T_Disconnect). Listen long for the A_IndividualAddress_Response.
           drain()
           rframe = wrap(cemi(0x11, 0xB6))
           tx.sendto(rframe, (group, port))
           print("SENT prog-mode-set + read")
           answered = False
-          for data in recv_from(0x00FF if False else DST, 3.0) or []:
-              pass
-          # Listen broadly for the A_IndividualAddress_Response (source = device).
           deadline = time.time() + 3
           while time.time() < deadline:
               try:
@@ -408,6 +410,8 @@ jobs:
               print(f"  RECV from {addr}: {data.hex()}")
               if len(data) >= 2 and (data[-2] & 0x03) == 0x01 and data[-1] == 0x40:
                   print("  >>> GOT A_IndividualAddress_Response after PROG_MODE=1!"); answered = True
+          # Clean disconnect at the very end.
+          send_to(DST, bytes([0x81]))
           print(f"  prog-mode-set result: {'ANSWERED' if answered else 'still no reply'}")
           print("done")
           PY
