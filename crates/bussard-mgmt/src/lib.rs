@@ -52,11 +52,16 @@ pub mod connection;
 pub mod device;
 pub mod error;
 pub mod manufacturers;
+pub mod tables;
 
-pub use broadcast::devices_in_programming_mode;
+pub use broadcast::{
+    devices_in_programming_mode, read_individual_address_by_serial, write_individual_address,
+    write_individual_address_by_serial,
+};
 pub use connection::{Layer4Connection, Timeouts};
 pub use device::DeviceConnection;
 pub use error::{MgmtError, Result};
+pub use tables::{DeviceTables, ResolvedLink, TableSource, TablesError, read_tables};
 
 /// Maps a device descriptor mask version to a human-readable KNX system type.
 ///

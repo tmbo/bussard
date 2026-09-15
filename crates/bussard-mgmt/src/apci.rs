@@ -34,6 +34,25 @@ pub const A_INDIVIDUAL_ADDRESS_READ: u16 = 0x100;
 /// `A_IndividualAddress_Response`.
 pub const A_INDIVIDUAL_ADDRESS_RESPONSE: u16 = 0x140;
 
+/// `A_IndividualAddress_Write` — broadcast: set the individual address of the
+/// device currently in programming mode. Payload is the 2-byte new address.
+/// Only a device in programming mode accepts it; no response is defined.
+pub const A_INDIVIDUAL_ADDRESS_WRITE: u16 = 0x0C0;
+
+/// `A_IndividualAddressSerialNumber_Read` — broadcast: ask the device with a
+/// given 6-byte KNX serial number to report its individual address. Payload is
+/// the 6-byte serial number.
+pub const A_INDIVIDUAL_ADDRESS_SERIAL_READ: u16 = 0x3DC;
+/// `A_IndividualAddressSerialNumber_Response` — the serial-addressed device's
+/// answer; its individual address is the frame source, and the payload echoes
+/// the 6-byte serial number followed by 2 reserved (domain-address) octets.
+pub const A_INDIVIDUAL_ADDRESS_SERIAL_RESPONSE: u16 = 0x3DD;
+/// `A_IndividualAddressSerialNumber_Write` — broadcast: set the individual
+/// address of the device with a given serial number, without a button press.
+/// Payload is the 6-byte serial number followed by the 2-byte new address (and
+/// 4 reserved zero octets).
+pub const A_INDIVIDUAL_ADDRESS_SERIAL_WRITE: u16 = 0x3DE;
+
 // --- Standardised interface-object / property identifiers ---
 
 /// The device object is always interface object index 0.
