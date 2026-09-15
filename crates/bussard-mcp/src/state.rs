@@ -162,7 +162,10 @@ pub struct SharedState {
     pub outbound: Option<mpsc::UnboundedSender<CemiFrame>>,
     /// Whether the server is in passive mode (no `knx_read_group`).
     pub passive: bool,
-    /// The read rate limiter.
+    /// Whether bus writes are allowed (registers `knx_write_group`). Mutually
+    /// exclusive with `passive`.
+    pub allow_writes: bool,
+    /// The read rate limiter (shared by reads and writes).
     pub read_limiter: ReadLimiter,
     /// Optional capture database path, used to extend `knx_recent_telegrams`
     /// beyond the in-memory ring window.

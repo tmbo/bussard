@@ -34,6 +34,7 @@ fn model() -> Model {
             name: "Windalarm".to_string(),
             dpt: Some("1.005".parse().unwrap()),
             description: None,
+            protected: true,
         },
     );
     let mut links = BTreeMap::new();
@@ -62,6 +63,10 @@ fn model() -> Model {
 /// Builds a server handler over an in-code model without spawning the bus
 /// stream (the tools we exercise here don't need live traffic).
 fn build_server(passive: bool) -> BussardMcp {
+    build_server_modes(passive, false)
+}
+
+fn build_server_modes(passive: bool, allow_writes: bool) -> BussardMcp {
     let connection = ConnectionConfig {
         transport: TransportKind::Tunnel,
         gateway: Some(SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 1), 3671)),
@@ -72,6 +77,7 @@ fn build_server(passive: bool) -> BussardMcp {
         dir: std::path::PathBuf::from("knx"),
         connection: connection.clone(),
         passive,
+        allow_writes,
         capture_db: None,
     };
     // Reconstruct state directly so we control passivity without touching disk.
@@ -88,6 +94,7 @@ fn build_server(passive: bool) -> BussardMcp {
         bus: BusStatus::new(TransportKind::Tunnel),
         outbound,
         passive,
+        allow_writes,
         read_limiter: ReadLimiter::new(
             bussard_mcp::READ_MIN_INTERVAL,
             bussard_mcp::READ_MAX_CONCURRENT,
@@ -120,10 +127,28 @@ async fn tools_list_has_eight_tools_by_default() {
     let tools = client.list_all_tools().await.unwrap();
     let mut names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
     names.sort();
-    let mut expected = bussard_mcp::tool_names(false);
+    let mut expected = bussard_mcp::tool_names(false, false);
     expected.sort();
     assert_eq!(names, expected, "default mode exposes 8 tools");
     assert_eq!(tools.len(), 8);
+    assert!(!names.contains(&"knx_write_group".to_string()));
+
+    client.cancel().await.unwrap();
+    server_task.abort();
+}
+
+#[tokio::test]
+async fn tools_list_has_nine_tools_with_allow_writes() {
+    let (client, server_task) = connect_client(build_server_modes(false, true)).await;
+    let tools = client.list_all_tools().await.unwrap();
+    let mut names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
+    names.sort();
+    let mut expected = bussard_mcp::tool_names(false, true);
+    expected.sort();
+    assert_eq!(names, expected, "--allow-writes exposes 9 tools");
+    assert_eq!(tools.len(), 9);
+    assert!(names.contains(&"knx_write_group".to_string()));
+    assert!(names.contains(&"knx_read_group".to_string()));
 
     client.cancel().await.unwrap();
     server_task.abort();
@@ -185,6 +210,78 @@ async fn model_lookup_and_get_group_roundtrip() {
     let structured = res.structured_content.unwrap();
     assert_eq!(structured["found"], true);
     assert_eq!(structured["links"][0]["role"], "send");
+
+    client.cancel().await.unwrap();
+    server_task.abort();
+}
+
+#[tokio::test]
+async fn write_group_absent_without_allow_writes() {
+    // Default mode (no --allow-writes): the write tool is not registered.
+    let (client, server_task) = connect_client(build_server(false)).await;
+    let mut args = serde_json::Map::new();
+    args.insert("ga".to_string(), serde_json::json!("3/2/0"));
+    args.insert("value".to_string(), serde_json::json!("on"));
+    let res = client
+        .call_tool(CallToolRequestParams::new("knx_write_group").with_arguments(args))
+        .await;
+    assert!(
+        res.is_err(),
+        "knx_write_group must not exist without --allow-writes"
+    );
+
+    client.cancel().await.unwrap();
+    server_task.abort();
+}
+
+#[tokio::test]
+async fn write_group_refuses_protected_ga() {
+    // 3/2/0 (Windalarm) is protected in the fixture model: refuse outright.
+    let (client, server_task) = connect_client(build_server_modes(false, true)).await;
+    let mut args = serde_json::Map::new();
+    args.insert("ga".to_string(), serde_json::json!("3/2/0"));
+    args.insert("value".to_string(), serde_json::json!("alarm"));
+    let res = client
+        .call_tool(CallToolRequestParams::new("knx_write_group").with_arguments(args))
+        .await
+        .unwrap();
+    let s = res.structured_content.expect("structured");
+    assert_eq!(s["ok"], false, "protected write must be refused: {s:?}");
+    assert_eq!(s["refused"], true);
+    assert!(
+        s["reason"].as_str().unwrap().contains("protected"),
+        "reason: {}",
+        s["reason"]
+    );
+
+    client.cancel().await.unwrap();
+    server_task.abort();
+}
+
+#[tokio::test]
+async fn write_group_reports_parse_error() {
+    // A value that cannot be parsed for the DPT is a structured failure, not a
+    // bus write. 3/2/0 is protected though, so use a non-existent GA with an
+    // explicit DPT to reach the parser (bus is disconnected, so nothing sends).
+    let (client, server_task) = connect_client(build_server_modes(false, true)).await;
+    let mut args = serde_json::Map::new();
+    args.insert("ga".to_string(), serde_json::json!("6/0/0"));
+    args.insert(
+        "value".to_string(),
+        serde_json::json!("definitely-not-a-bool"),
+    );
+    args.insert("dpt".to_string(), serde_json::json!("1.001"));
+    let res = client
+        .call_tool(CallToolRequestParams::new("knx_write_group").with_arguments(args))
+        .await
+        .unwrap();
+    let s = res.structured_content.expect("structured");
+    assert_eq!(s["ok"], false, "parse error must fail: {s:?}");
+    assert!(
+        s["reason"].as_str().unwrap().contains("1.001"),
+        "reason names the DPT: {}",
+        s["reason"]
+    );
 
     client.cancel().await.unwrap();
     server_task.abort();

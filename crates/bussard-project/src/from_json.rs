@@ -163,6 +163,7 @@ pub fn model_from_json(json: &str) -> Result<Model> {
                 name: ga.name.clone(),
                 dpt: ga.dpt.as_ref().map(JsonDpt::to_dpt),
                 description: ga.description.clone().filter(|s| !s.is_empty()),
+                ..Default::default()
             },
         );
     }

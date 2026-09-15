@@ -88,7 +88,7 @@ pub struct Range {
 }
 
 /// A single group address definition.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Group {
     /// Display name.
@@ -99,6 +99,19 @@ pub struct Group {
     /// Free-text description.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Whether this GA is safety-critical and guarded against casual writes.
+    ///
+    /// When `true`, the CLI refuses to write to it without `--force` and the MCP
+    /// server refuses outright (there is no MCP override). Used for objects like
+    /// a wind alarm or central functions (see the design document §8). Serialized
+    /// only when `true`, so unprotected GAs stay diff-clean.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub protected: bool,
+}
+
+/// Serde helper: skip a `bool` field when it is `false`.
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// Com-object → GA assignments (`links.yaml`).

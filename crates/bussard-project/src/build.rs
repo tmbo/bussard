@@ -184,6 +184,7 @@ pub fn build_model(project: RawProject, container: &mut Container) -> Result<Mod
                 name: ga.name.clone(),
                 dpt,
                 description: ga.description.clone(),
+                ..Default::default()
             },
         );
     }

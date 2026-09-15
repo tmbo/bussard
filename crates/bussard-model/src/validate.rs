@@ -98,6 +98,7 @@ pub fn validate(model: &Model) -> Vec<Diagnostic> {
     check_links(model, &mut diags);
     check_ga_consistency(model, &mut diags);
     check_orphans_and_unlinked(model, &mut diags);
+    check_protected_gas(model, &mut diags);
 
     diags.sort_by(|a, b| a.location.cmp(&b.location).then(a.code.cmp(b.code)));
     diags
@@ -427,6 +428,28 @@ fn check_orphans_and_unlinked(model: &Model, diags: &mut Vec<Diagnostic>) {
     }
 }
 
+/// I015: informational note listing each GA marked `protected: true`.
+///
+/// This surfaces the safety-critical GAs in `bussard validate` output so a
+/// reviewer can see, at a glance, which objects are guarded against casual
+/// writes (see the design document §8). Emitted once per protected GA, in the
+/// deterministic GA order of `groups.yaml`.
+fn check_protected_gas(model: &Model, diags: &mut Vec<Diagnostic>) {
+    for (ga, group) in &model.groups.groups {
+        if group.protected {
+            diags.push(Diagnostic::new(
+                "I015",
+                Severity::Info,
+                format!("groups.\"{ga}\""),
+                format!(
+                    "GA {ga} ({:?}) is protected; writes require --force (CLI) and are refused via MCP",
+                    group.name
+                ),
+            ));
+        }
+    }
+}
+
 /// Whether any diagnostic in the list is an [`Severity::Error`].
 pub fn has_errors(diags: &[Diagnostic]) -> bool {
     diags.iter().any(|d| d.severity == Severity::Error)
@@ -453,6 +476,7 @@ mod tests {
             name: name.to_string(),
             dpt: dpt_str.map(dpt),
             description: None,
+            protected: false,
         }
     }
 
@@ -690,6 +714,55 @@ mod tests {
                 "rule {expected} not triggered; found {found:?}\n{diags:#?}"
             );
         }
+    }
+
+    #[test]
+    fn protected_gas_emit_i015_deterministically() {
+        let mut groups = BTreeMap::new();
+        // Two protected GAs and one plain one; I015 must list only the protected
+        // ones, in GA order.
+        groups.insert(
+            ga("3/2/0"),
+            Group {
+                name: "Windalarm".to_string(),
+                dpt: Some("1.005".parse().unwrap()),
+                description: None,
+                protected: true,
+            },
+        );
+        groups.insert(
+            ga("1/0/0"),
+            Group {
+                name: "Zentral Aus".to_string(),
+                dpt: Some("1.001".parse().unwrap()),
+                description: None,
+                protected: true,
+            },
+        );
+        groups.insert(ga("2/0/0"), group("Plain", Some("1.001")));
+
+        let model = Model {
+            config: BussardConfig::default(),
+            groups: Groups {
+                project: None,
+                imported_from: None,
+                ranges: BTreeMap::new(),
+                groups,
+            },
+            links: Links {
+                links: BTreeMap::new(),
+            },
+            devices: BTreeMap::new(),
+        };
+
+        let diags = validate(&model);
+        let i015: Vec<&Diagnostic> = diags.iter().filter(|d| d.code == "I015").collect();
+        assert_eq!(i015.len(), 2, "one I015 per protected GA");
+        // Deterministic order: sorted by location, so 1/0/0 before 3/2/0.
+        assert_eq!(i015[0].location, "groups.\"1/0/0\"");
+        assert_eq!(i015[1].location, "groups.\"3/2/0\"");
+        assert!(i015[0].message.contains("protected"));
+        assert_eq!(i015[0].severity, Severity::Info);
     }
 
     #[test]

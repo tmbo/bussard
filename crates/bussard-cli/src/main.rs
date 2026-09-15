@@ -162,6 +162,10 @@ enum Command {
         /// tool). The server only observes.
         #[arg(long)]
         passive: bool,
+        /// Allow bus writes: registers the `knx_write_group` tool. Off by
+        /// default. Mutually exclusive with `--passive`.
+        #[arg(long, conflicts_with = "passive")]
+        allow_writes: bool,
         /// Path to a capture SQLite database to extend `knx_recent_telegrams`
         /// history beyond the in-memory ring window.
         #[arg(long, value_name = "PATH")]
@@ -258,11 +262,13 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             gateway,
             routing,
             passive,
+            allow_writes,
             capture_db,
         } => mcp_cmd::run(
             &dir,
             conn_cmd::ConnOverrides { gateway, routing },
             passive,
+            allow_writes,
             capture_db,
         ),
     }

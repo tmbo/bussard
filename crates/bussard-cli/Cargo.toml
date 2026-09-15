@@ -18,6 +18,7 @@ bussard-project = { workspace = true }
 bussard-transport = { workspace = true }
 bussard-monitor = { workspace = true }
 bussard-mcp = { workspace = true }
+bussard-ha = { path = "../bussard-ha" }
 clap = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }

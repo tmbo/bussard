@@ -38,6 +38,7 @@ fn model() -> Model {
             name: "Windalarm".to_string(),
             dpt: Some("1.005".parse().unwrap()),
             description: None,
+            ..Default::default()
         },
     );
     Model {

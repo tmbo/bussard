@@ -24,9 +24,13 @@
 //! | `knx_wait_for_telegram` | Block for the next matching telegram ("press the button now"). |
 //! | `knx_validate` | Model validation diagnostics as JSON. |
 //! | `knx_read_group` | Send a GroupValueRead and return the value (omitted in `--passive`). |
+//! | `knx_write_group` | Send a GroupValueWrite (registered only with `--allow-writes`). |
 //!
 //! In `--passive` mode `knx_read_group` is unregistered, so `tools/list`
 //! contains seven tools instead of eight and the server never transmits.
+//! `knx_write_group` is registered only when the server is started with
+//! `--allow-writes` (which conflicts with `--passive`), making nine tools; it
+//! writes to the physical bus and hard-refuses `protected` GAs.
 //!
 //! # Connecting this to Claude Code
 //!
@@ -49,9 +53,11 @@
 //! }
 //! ```
 //!
-//! Add `--passive` to the `args` to forbid any bus writes (read-only observation
-//! only). Because the server talks MCP on stdout and logs on stderr, it plugs
-//! directly into any MCP client that speaks stdio.
+//! Add `--passive` to the `args` to forbid any bus transmission (read-only
+//! observation only), or `--allow-writes` to additionally expose
+//! `knx_write_group` for value writes (the two flags are mutually exclusive).
+//! Because the server talks MCP on stdout and logs on stderr, it plugs directly
+//! into any MCP client that speaks stdio.
 
 #![warn(missing_docs)]
 
@@ -86,6 +92,9 @@ pub struct McpConfig {
     pub connection: ConnectionConfig,
     /// Passive mode: no `knx_read_group`, no outbound channel.
     pub passive: bool,
+    /// Allow bus writes: registers `knx_write_group`. Mutually exclusive with
+    /// `passive` (enforced by the CLI).
+    pub allow_writes: bool,
     /// Optional capture database to extend `knx_recent_telegrams` history.
     pub capture_db: Option<PathBuf>,
 }
@@ -142,6 +151,7 @@ pub fn build_state_from_model(
         bus,
         outbound,
         passive: config.passive,
+        allow_writes: config.allow_writes,
         read_limiter: state::ReadLimiter::new(READ_MIN_INTERVAL, READ_MAX_CONCURRENT),
         capture_db: config.capture_db.clone(),
         source_ia,
@@ -166,7 +176,11 @@ pub async fn run(config: &McpConfig) -> anyhow::Result<()> {
 }
 
 /// The set of tool names exposed, in registration order. Used by tests and docs.
-pub fn tool_names(passive: bool) -> Vec<&'static str> {
+///
+/// - passive mode: 7 tools (no `knx_read_group`, no `knx_write_group`).
+/// - default mode: 8 tools (adds `knx_read_group`).
+/// - `--allow-writes`: 9 tools (adds `knx_write_group`).
+pub fn tool_names(passive: bool, allow_writes: bool) -> Vec<&'static str> {
     let mut names = vec![
         "knx_project_summary",
         "knx_model_lookup",
@@ -178,6 +192,9 @@ pub fn tool_names(passive: bool) -> Vec<&'static str> {
     ];
     if !passive {
         names.push("knx_read_group");
+    }
+    if allow_writes && !passive {
+        names.push("knx_write_group");
     }
     names
 }

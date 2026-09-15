@@ -377,6 +377,7 @@ pub(crate) mod test_fixtures {
                 name: "Windalarm".to_string(),
                 dpt: Some("1.005".parse().unwrap()),
                 description: Some("wind alarm".to_string()),
+                protected: true,
             },
         );
         groups.insert(
@@ -385,6 +386,7 @@ pub(crate) mod test_fixtures {
                 name: "Jalousie Auf/Ab".to_string(),
                 dpt: Some("1.008".parse().unwrap()),
                 description: None,
+                protected: false,
             },
         );
 

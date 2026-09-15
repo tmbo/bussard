@@ -147,6 +147,7 @@ groups:
     name: "Windalarm"
     dpt: "1.005"
     description: "Wetterstation → alle Raffstore-Kanäle; Sperrobjekt"
+    protected: true   # safety-critical: CLI needs --force, MCP refuses outright
 ```
 
 `links.yaml` — keyed by device address; entries reference com objects by their ETS
@@ -223,9 +224,18 @@ buffer. Tools: `knx_project_summary`, `knx_model_lookup`, `knx_get_device`,
 `knx_get_group`, `knx_recent_telegrams`, `knx_wait_for_telegram` (enables
 "press the button now" debugging loops), `knx_validate`, and `knx_read_group`
 (a GroupValueRead — transmits on the bus, rate-limited, disableable via a passive-only
-flag). No write or programming tools in phase 0; later write tools go through the
-plan/approve mechanism with a denylist for safety-critical objects (wind alarm, central
-functions).
+flag).
+
+Phase 1 adds a single, opt-in write tool: `knx_write_group` (a GroupValueWrite with
+human-typed values, sharing the read rate limiter). It is registered **only** when the
+server is started with `--allow-writes` (mutually exclusive with `--passive`), so the
+default remains read-only. It **hard-refuses** any GA marked `protected: true` — there is
+no override via MCP (that stance is deliberate: the LLM must ask a human, who can then run
+`bussard write … --force` from the CLI). Its tool description states the consequences
+plainly for LLM callers (it writes to the physical bus, actuators move, protected GAs are
+refused, prefer asking the human when uncertain). Programming/download tools remain out of
+scope and, when they land, go through the plan/approve mechanism with the same denylist for
+safety-critical objects (wind alarm, central functions).
 
 ## 6. Roadmap
 

@@ -10,4 +10,6 @@ rust-version.workspace = true
 [dependencies]
 bussard-model = { path = "../bussard-model" }
 serde = { workspace = true }
+serde_norway = { workspace = true }
+serde_path_to_error = { workspace = true }
 thiserror = { workspace = true }

@@ -19,6 +19,7 @@ pub fn run(
     dir: &Path,
     overrides: ConnOverrides,
     passive: bool,
+    allow_writes: bool,
     capture_db: Option<PathBuf>,
 ) -> anyhow::Result<ExitCode> {
     if !dir.exists() {
@@ -37,6 +38,7 @@ pub fn run(
         dir: dir.to_path_buf(),
         connection,
         passive,
+        allow_writes,
         capture_db,
     };
 

@@ -35,6 +35,38 @@ pub enum EncodeError {
     },
 }
 
+/// Error parsing a human-typed value into a [`TypedValue`] for a DPT.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ParseValueError {
+    /// The input did not match any accepted form for this DPT. `accepted`
+    /// describes what would have been valid.
+    #[error("cannot parse {input:?} as DPT {dpt}: expected {accepted}")]
+    Invalid {
+        /// The DPT being parsed for.
+        dpt: String,
+        /// The offending input.
+        input: String,
+        /// A human description of the accepted forms.
+        accepted: String,
+    },
+    /// The value parsed but fell outside the DPT's representable range.
+    #[error("value {input:?} is out of range for DPT {dpt}: {range}")]
+    OutOfRange {
+        /// The DPT being parsed for.
+        dpt: String,
+        /// The offending input.
+        input: String,
+        /// A human description of the valid range.
+        range: String,
+    },
+    /// bussard does not know how to parse human input for this DPT main type.
+    #[error("parsing human input for DPT {dpt} is not supported")]
+    Unsupported {
+        /// The DPT being parsed for.
+        dpt: String,
+    },
+}
+
 /// A decoded, typed group value.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypedValue {
@@ -491,6 +523,306 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
     }
 }
 
+/// Parses human-typed text into a [`TypedValue`] appropriate for `dpt`.
+///
+/// This is the input side of the CLI `write` command and the MCP
+/// `knx_write_group` tool: it turns friendly strings (`on`, `down`, `75%`,
+/// `21.5°C`, `comfort`, a scene number) into the [`TypedValue`] that [`encode`]
+/// serializes. Accepted forms, by DPT main type:
+///
+/// - **1.x** — `on`/`off`, `true`/`false`, `1`/`0`, and subtype words:
+///   `up`/`down` (1.008), `open`/`closed` (1.009), `start`/`stop` (1.010),
+///   `enable`/`disable` (1.003), `alarm`/`no-alarm` (1.005).
+/// - **5.001** — a percentage: `75%` or a bare `0`–`100`.
+/// - **5.003** — an angle `0`–`360` (bare number).
+/// - **5.x** (other) — an integer `0`–`255`.
+/// - **6.x** — a signed integer `-128`–`127`.
+/// - **7.x** — an unsigned integer `0`–`65535`.
+/// - **8.x** — a signed integer `-32768`–`32767`.
+/// - **9.x** — a decimal, optionally with the subtype's unit suffix
+///   (`21.5`, `21.5°C`).
+/// - **12.x** — an unsigned integer `0`–`4294967295`.
+/// - **13.x** — a signed 32-bit integer, optional unit suffix.
+/// - **14.x** — a decimal (IEEE float), optional unit suffix.
+/// - **17.001 / 18.001** — a scene number `0`–`63` (18.001 accepts a leading
+///   `learn ` prefix).
+/// - **20.102** — a mode name: `auto`, `comfort`, `standby`, `economy`,
+///   `building-protection` (aliases `frost`, `protection`).
+///
+/// Errors name the DPT and the accepted forms so a caller (human or LLM) can
+/// correct the input.
+pub fn parse_value(dpt: &Dpt, input: &str) -> Result<TypedValue, ParseValueError> {
+    let raw = input.trim();
+    let invalid = |accepted: &str| ParseValueError::Invalid {
+        dpt: dpt.to_string(),
+        input: raw.to_string(),
+        accepted: accepted.to_string(),
+    };
+    let out_of_range = |range: &str| ParseValueError::OutOfRange {
+        dpt: dpt.to_string(),
+        input: raw.to_string(),
+        range: range.to_string(),
+    };
+
+    match dpt.main {
+        1 => {
+            let (false_label, true_label) = bool_labels(dpt.sub);
+            let value = parse_bool(raw, dpt.sub)
+                .ok_or_else(|| invalid(&bool_accepted(false_label, true_label)))?;
+            Ok(TypedValue::Bool {
+                value,
+                label: if value { true_label } else { false_label },
+            })
+        }
+        5 => match dpt.sub {
+            Some(1) => {
+                let p = parse_percent(raw)
+                    .ok_or_else(|| invalid("a percentage like `75%` or a number 0-100"))?;
+                if !(0.0..=100.0).contains(&p) {
+                    return Err(out_of_range("0-100 %"));
+                }
+                Ok(TypedValue::Percent(p))
+            }
+            Some(3) => {
+                let v = parse_uint(strip_unit(raw, Some("°")))
+                    .ok_or_else(|| invalid("an angle 0-360"))?;
+                if v > 360 {
+                    return Err(out_of_range("0-360 degrees"));
+                }
+                Ok(TypedValue::Unsigned {
+                    value: v as u32,
+                    unit: Some("°"),
+                })
+            }
+            _ => {
+                let v = parse_uint(raw).ok_or_else(|| invalid("an integer 0-255"))?;
+                if v > 255 {
+                    return Err(out_of_range("0-255"));
+                }
+                Ok(TypedValue::Unsigned {
+                    value: v as u32,
+                    unit: None,
+                })
+            }
+        },
+        6 => {
+            let v = parse_int(raw).ok_or_else(|| invalid("a signed integer -128..127"))?;
+            if !(-128..=127).contains(&v) {
+                return Err(out_of_range("-128..127"));
+            }
+            Ok(TypedValue::Signed {
+                value: v,
+                unit: None,
+            })
+        }
+        7 => {
+            let v = parse_uint(raw).ok_or_else(|| invalid("an unsigned integer 0-65535"))?;
+            if v > 0xffff {
+                return Err(out_of_range("0-65535"));
+            }
+            Ok(TypedValue::Unsigned {
+                value: v as u32,
+                unit: None,
+            })
+        }
+        8 => {
+            let v = parse_int(raw).ok_or_else(|| invalid("a signed integer -32768..32767"))?;
+            if !(-32768..=32767).contains(&v) {
+                return Err(out_of_range("-32768..32767"));
+            }
+            Ok(TypedValue::Signed {
+                value: v,
+                unit: None,
+            })
+        }
+        9 => {
+            let unit = float16_unit(dpt.sub);
+            let v = parse_float(raw, unit)
+                .ok_or_else(|| invalid("a decimal number (optionally with unit)"))?;
+            // Confirm the value is representable by DPT 9's coarse encoding.
+            if encode_float16(v).is_err() {
+                return Err(out_of_range("roughly -671088.64 .. 670760.96"));
+            }
+            Ok(TypedValue::Float { value: v, unit })
+        }
+        12 => {
+            let v = parse_uint(raw).ok_or_else(|| invalid("an unsigned integer 0-4294967295"))?;
+            if v > u32::MAX as u64 {
+                return Err(out_of_range("0-4294967295"));
+            }
+            Ok(TypedValue::Unsigned {
+                value: v as u32,
+                unit: None,
+            })
+        }
+        13 => {
+            let unit = match dpt.sub {
+                Some(10) => Some("Wh"),
+                Some(13) => Some("kWh"),
+                _ => None,
+            };
+            let v = parse_int_with_unit(raw, unit)
+                .ok_or_else(|| invalid("a signed 32-bit integer (optionally with unit)"))?;
+            if !(i32::MIN as i64..=i32::MAX as i64).contains(&v) {
+                return Err(out_of_range("-2147483648..2147483647"));
+            }
+            Ok(TypedValue::Signed { value: v, unit })
+        }
+        14 => {
+            let unit = float32_unit(dpt.sub);
+            let v = parse_float(raw, unit)
+                .ok_or_else(|| invalid("a decimal number (optionally with unit)"))?;
+            Ok(TypedValue::Float { value: v, unit })
+        }
+        17 => {
+            let v = parse_scene(raw).ok_or_else(|| invalid("a scene number 0-63"))?;
+            if v > 63 {
+                return Err(out_of_range("0-63"));
+            }
+            Ok(TypedValue::Scene(v))
+        }
+        18 => {
+            let lower = raw.to_lowercase();
+            let (learn, rest) = match lower.strip_prefix("learn") {
+                Some(r) => (true, r.trim()),
+                None => (false, lower.as_str()),
+            };
+            let v = parse_scene(rest)
+                .ok_or_else(|| invalid("a scene number 0-63 (optionally prefixed `learn`)"))?;
+            if v > 63 {
+                return Err(out_of_range("0-63"));
+            }
+            Ok(TypedValue::SceneControl { learn, scene: v })
+        }
+        20 => {
+            let mode = parse_hvac_mode(raw).ok_or_else(|| {
+                invalid("one of auto, comfort, standby, economy, building-protection")
+            })?;
+            Ok(TypedValue::HvacMode(mode))
+        }
+        _ => Err(ParseValueError::Unsupported {
+            dpt: dpt.to_string(),
+        }),
+    }
+}
+
+/// Parses a boolean from human text, honoring the DPT 1.x subtype's word pair.
+fn parse_bool(input: &str, sub: Option<u16>) -> Option<bool> {
+    let s = input.trim().to_lowercase();
+    // Universal forms first.
+    match s.as_str() {
+        "on" | "true" | "1" | "yes" => return Some(true),
+        "off" | "false" | "0" | "no" => return Some(false),
+        _ => {}
+    }
+    // Subtype-specific words. The `true` word maps to the raw bit 1.
+    let (false_word, true_word): (&[&str], &[&str]) = match sub {
+        Some(3) => (&["disable"], &["enable"]),
+        Some(5) => (&["no-alarm", "no alarm", "noalarm"], &["alarm"]),
+        Some(8) => (&["up"], &["down"]),
+        Some(9) => (&["open"], &["closed", "close"]),
+        Some(10) => (&["stop"], &["start"]),
+        _ => (&[], &[]),
+    };
+    if true_word.contains(&s.as_str()) {
+        return Some(true);
+    }
+    if false_word.contains(&s.as_str()) {
+        return Some(false);
+    }
+    None
+}
+
+/// A human description of the accepted words for a 1.x subtype.
+fn bool_accepted(false_label: &str, true_label: &str) -> String {
+    format!("on/off, true/false, 1/0, or {true_label}/{false_label}")
+}
+
+/// Parses a percentage: `75%`, `75 %`, or a bare `0`–`100`.
+fn parse_percent(input: &str) -> Option<f32> {
+    let s = input.trim().trim_end_matches('%').trim();
+    s.parse::<f32>().ok()
+}
+
+/// Parses a non-negative integer (rejecting a leading sign).
+fn parse_uint(input: &str) -> Option<u64> {
+    input.trim().parse::<u64>().ok()
+}
+
+/// Parses a signed integer.
+fn parse_int(input: &str) -> Option<i64> {
+    input.trim().parse::<i64>().ok()
+}
+
+/// Parses a signed integer, tolerating a trailing known unit suffix.
+fn parse_int_with_unit(input: &str, unit: Option<&str>) -> Option<i64> {
+    let s = strip_unit(input.trim(), unit);
+    s.trim().parse::<i64>().ok()
+}
+
+/// Parses a scene number, tolerating a leading `scene ` word.
+fn parse_scene(input: &str) -> Option<u8> {
+    let s = input.trim().to_lowercase();
+    let s = s.strip_prefix("scene").map(str::trim).unwrap_or(s.as_str());
+    s.trim().parse::<u8>().ok()
+}
+
+/// Parses a float, tolerating a trailing known unit suffix (`21.5°C` → `21.5`).
+fn parse_float(input: &str, unit: Option<&str>) -> Option<f32> {
+    let s = strip_unit(input.trim(), unit);
+    s.trim().parse::<f32>().ok()
+}
+
+/// Strips a trailing unit suffix (case-insensitive) if present; otherwise
+/// returns the input unchanged. Also strips a few common bare unit letters so
+/// that, e.g., `21.5C` works as well as `21.5°C`.
+fn strip_unit<'a>(input: &'a str, unit: Option<&str>) -> &'a str {
+    if let Some(u) = unit {
+        if let Some(stripped) = strip_suffix_ci(input, u) {
+            return stripped;
+        }
+        // `°C` also matches a bare `C`, `m/s` a bare unit, etc.: try the unit
+        // without a leading degree sign.
+        if let Some(bare) = u.strip_prefix('°') {
+            if let Some(stripped) = strip_suffix_ci(input, bare) {
+                return stripped;
+            }
+        }
+    }
+    // A lone trailing degree sign (e.g. an angle `45°`) is always tolerated.
+    input.strip_suffix('°').unwrap_or(input)
+}
+
+/// Case-insensitive `strip_suffix`.
+fn strip_suffix_ci<'a>(input: &'a str, suffix: &str) -> Option<&'a str> {
+    let il = input.to_lowercase();
+    let sl = suffix.to_lowercase();
+    if il.ends_with(&sl) {
+        Some(&input[..input.len() - suffix.len()])
+    } else {
+        None
+    }
+}
+
+/// Parses an HVAC operating mode name (DPT 20.102).
+fn parse_hvac_mode(input: &str) -> Option<HvacMode> {
+    match input
+        .trim()
+        .to_lowercase()
+        .replace(['_', ' '], "-")
+        .as_str()
+    {
+        "auto" | "automatic" => Some(HvacMode::Auto),
+        "comfort" => Some(HvacMode::Comfort),
+        "standby" => Some(HvacMode::Standby),
+        "economy" | "night" | "eco" => Some(HvacMode::Economy),
+        "building-protection" | "frost" | "protection" | "frost-protection" => {
+            Some(HvacMode::BuildingProtection)
+        }
+        _ => None,
+    }
+}
+
 /// Encodes a [`TypedValue`] into a group-value payload under the given DPT.
 ///
 /// Only the straightforward DPTs are supported; others return
@@ -565,6 +897,30 @@ pub fn encode(dpt: &Dpt, value: &TypedValue) -> Result<Vec<u8>, EncodeError> {
         },
         17 => match value {
             TypedValue::Scene(n) if *n <= 63 => Ok(vec![*n & 0x3f]),
+            _ => Err(mismatch()),
+        },
+        18 => match value {
+            TypedValue::SceneControl { learn, scene } if *scene <= 63 => {
+                let mut b = scene & 0x3f;
+                if *learn {
+                    b |= 0x80;
+                }
+                Ok(vec![b])
+            }
+            _ => Err(mismatch()),
+        },
+        20 => match value {
+            TypedValue::HvacMode(mode) => {
+                let code = match mode {
+                    HvacMode::Auto => 0,
+                    HvacMode::Comfort => 1,
+                    HvacMode::Standby => 2,
+                    HvacMode::Economy => 3,
+                    HvacMode::BuildingProtection => 4,
+                    HvacMode::Unknown(v) => *v,
+                };
+                Ok(vec![code])
+            }
             _ => Err(mismatch()),
         },
         232 => match value {
@@ -857,5 +1213,299 @@ mod tests {
             encode(&dpt("250"), &v),
             Err(EncodeError::Unsupported { .. })
         ));
+    }
+
+    // ---- parse_value ------------------------------------------------------
+
+    #[test]
+    fn parse_bool_universal_and_subtype_words() {
+        // Universal on/off/true/false/1/0.
+        for (input, expect) in [
+            ("on", true),
+            ("On", true),
+            ("TRUE", true),
+            ("1", true),
+            ("yes", true),
+            ("off", false),
+            ("false", false),
+            ("0", false),
+            ("no", false),
+        ] {
+            match parse_value(&dpt("1.001"), input).unwrap() {
+                TypedValue::Bool { value, .. } => assert_eq!(value, expect, "{input}"),
+                other => panic!("expected bool for {input}, got {other:?}"),
+            }
+        }
+
+        // Subtype words carry the right label.
+        assert_eq!(
+            parse_value(&dpt("1.008"), "down").unwrap(),
+            TypedValue::Bool {
+                value: true,
+                label: "Down"
+            }
+        );
+        assert_eq!(
+            parse_value(&dpt("1.008"), "up").unwrap(),
+            TypedValue::Bool {
+                value: false,
+                label: "Up"
+            }
+        );
+        assert_eq!(
+            parse_value(&dpt("1.009"), "closed").unwrap(),
+            TypedValue::Bool {
+                value: true,
+                label: "Closed"
+            }
+        );
+        assert_eq!(
+            parse_value(&dpt("1.010"), "start").unwrap(),
+            TypedValue::Bool {
+                value: true,
+                label: "Start"
+            }
+        );
+        assert_eq!(
+            parse_value(&dpt("1.003"), "enable").unwrap(),
+            TypedValue::Bool {
+                value: true,
+                label: "Enable"
+            }
+        );
+        assert_eq!(
+            parse_value(&dpt("1.005"), "no-alarm").unwrap(),
+            TypedValue::Bool {
+                value: false,
+                label: "No Alarm"
+            }
+        );
+    }
+
+    #[test]
+    fn parse_bool_rejects_garbage() {
+        let err = parse_value(&dpt("1.001"), "maybe").unwrap_err();
+        assert!(matches!(err, ParseValueError::Invalid { .. }));
+        // The wrong subtype word does not leak across subtypes.
+        assert!(parse_value(&dpt("1.001"), "down").is_err());
+    }
+
+    #[test]
+    fn parse_percent_forms_and_range() {
+        assert_eq!(
+            parse_value(&dpt("5.001"), "75%").unwrap(),
+            TypedValue::Percent(75.0)
+        );
+        assert_eq!(
+            parse_value(&dpt("5.001"), "0").unwrap(),
+            TypedValue::Percent(0.0)
+        );
+        assert_eq!(
+            parse_value(&dpt("5.001"), "100 %").unwrap(),
+            TypedValue::Percent(100.0)
+        );
+        assert!(matches!(
+            parse_value(&dpt("5.001"), "150"),
+            Err(ParseValueError::OutOfRange { .. })
+        ));
+        assert!(matches!(
+            parse_value(&dpt("5.001"), "abc"),
+            Err(ParseValueError::Invalid { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_scaling_and_angle() {
+        // 5.x generic scaling byte.
+        assert_eq!(
+            parse_value(&dpt("5.010"), "200").unwrap(),
+            TypedValue::Unsigned {
+                value: 200,
+                unit: None
+            }
+        );
+        assert!(parse_value(&dpt("5.010"), "300").is_err());
+        // 5.003 angle with a stray degree sign.
+        assert_eq!(
+            parse_value(&dpt("5.003"), "180°").unwrap(),
+            TypedValue::Unsigned {
+                value: 180,
+                unit: Some("°")
+            }
+        );
+    }
+
+    #[test]
+    fn parse_signed_and_unsigned_ints() {
+        assert_eq!(
+            parse_value(&dpt("6.010"), "-5").unwrap(),
+            TypedValue::Signed {
+                value: -5,
+                unit: None
+            }
+        );
+        assert!(parse_value(&dpt("6.010"), "200").is_err());
+        assert_eq!(
+            parse_value(&dpt("7.001"), "1000").unwrap(),
+            TypedValue::Unsigned {
+                value: 1000,
+                unit: None
+            }
+        );
+        assert!(parse_value(&dpt("7.001"), "70000").is_err());
+        assert_eq!(
+            parse_value(&dpt("8.001"), "-1000").unwrap(),
+            TypedValue::Signed {
+                value: -1000,
+                unit: None
+            }
+        );
+        assert_eq!(
+            parse_value(&dpt("12.001"), "4000000000").unwrap(),
+            TypedValue::Unsigned {
+                value: 4_000_000_000,
+                unit: None
+            }
+        );
+    }
+
+    #[test]
+    fn parse_float_with_unit_suffix() {
+        // Bare decimal.
+        assert_eq!(
+            parse_value(&dpt("9.001"), "21.5").unwrap(),
+            TypedValue::Float {
+                value: 21.5,
+                unit: Some("°C")
+            }
+        );
+        // With the exact unit suffix.
+        assert_eq!(
+            parse_value(&dpt("9.001"), "21.5°C").unwrap(),
+            TypedValue::Float {
+                value: 21.5,
+                unit: Some("°C")
+            }
+        );
+        // With the bare unit letter.
+        assert_eq!(
+            parse_value(&dpt("9.001"), "21.5C").unwrap(),
+            TypedValue::Float {
+                value: 21.5,
+                unit: Some("°C")
+            }
+        );
+        // IEEE float (14.x).
+        match parse_value(&dpt("14.056"), "1500 W").unwrap() {
+            TypedValue::Float { value, unit } => {
+                assert!((value - 1500.0).abs() < 0.001);
+                assert_eq!(unit, Some("W"));
+            }
+            other => panic!("expected float, got {other:?}"),
+        }
+        assert!(parse_value(&dpt("9.001"), "hot").is_err());
+    }
+
+    #[test]
+    fn parse_energy_with_unit() {
+        assert_eq!(
+            parse_value(&dpt("13.013"), "10 kWh").unwrap(),
+            TypedValue::Signed {
+                value: 10,
+                unit: Some("kWh")
+            }
+        );
+    }
+
+    #[test]
+    fn parse_scene_and_scene_control() {
+        assert_eq!(
+            parse_value(&dpt("17.001"), "5").unwrap(),
+            TypedValue::Scene(5)
+        );
+        assert_eq!(
+            parse_value(&dpt("17.001"), "scene 5").unwrap(),
+            TypedValue::Scene(5)
+        );
+        assert!(parse_value(&dpt("17.001"), "64").is_err());
+        assert_eq!(
+            parse_value(&dpt("18.001"), "3").unwrap(),
+            TypedValue::SceneControl {
+                learn: false,
+                scene: 3
+            }
+        );
+        assert_eq!(
+            parse_value(&dpt("18.001"), "learn 3").unwrap(),
+            TypedValue::SceneControl {
+                learn: true,
+                scene: 3
+            }
+        );
+    }
+
+    #[test]
+    fn parse_hvac_modes() {
+        assert_eq!(
+            parse_value(&dpt("20.102"), "comfort").unwrap(),
+            TypedValue::HvacMode(HvacMode::Comfort)
+        );
+        assert_eq!(
+            parse_value(&dpt("20.102"), "building-protection").unwrap(),
+            TypedValue::HvacMode(HvacMode::BuildingProtection)
+        );
+        assert_eq!(
+            parse_value(&dpt("20.102"), "Frost").unwrap(),
+            TypedValue::HvacMode(HvacMode::BuildingProtection)
+        );
+        assert!(parse_value(&dpt("20.102"), "tropical").is_err());
+    }
+
+    #[test]
+    fn parse_unsupported_dpt() {
+        assert!(matches!(
+            parse_value(&dpt("250.001"), "1"),
+            Err(ParseValueError::Unsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_encode_decode_roundtrip() {
+        // parse -> encode -> decode should land back at (approximately) the same
+        // value for a spread of DPTs.
+        let cases: &[(&str, &str)] = &[
+            ("1.001", "on"),
+            ("1.008", "down"),
+            ("5.001", "50%"),
+            ("5.010", "200"),
+            ("6.010", "-5"),
+            ("7.001", "1000"),
+            ("8.001", "-1000"),
+            ("9.001", "21.5"),
+            ("12.001", "70000"),
+            ("13.013", "12345"),
+            ("14.056", "1500"),
+            ("17.001", "7"),
+            ("18.001", "learn 9"),
+            ("20.102", "comfort"),
+        ];
+        for (d, input) in cases {
+            let dpt = dpt(d);
+            let parsed =
+                parse_value(&dpt, input).unwrap_or_else(|e| panic!("parse {input} as {d}: {e}"));
+            let bytes =
+                encode(&dpt, &parsed).unwrap_or_else(|e| panic!("encode {input} as {d}: {e}"));
+            let back = decode(&dpt, &bytes);
+            match (&parsed, &back) {
+                (TypedValue::Float { value: a, .. }, TypedValue::Float { value: b, .. }) => {
+                    let tol = 0.1_f32.max(a.abs() * 0.01);
+                    assert!((a - b).abs() <= tol, "{d} {input}: {a} != {b}");
+                }
+                (TypedValue::Percent(a), TypedValue::Percent(b)) => {
+                    assert!((a - b).abs() <= 0.5, "{d} {input}: {a} != {b}");
+                }
+                _ => assert_eq!(&parsed, &back, "{d} {input} roundtrip"),
+            }
+        }
     }
 }

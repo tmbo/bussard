@@ -295,6 +295,7 @@ mod tests {
                 name: "Windalarm".to_string(),
                 dpt: Some("1.005".parse().unwrap()),
                 description: None,
+                ..Default::default()
             },
         );
         // A GA present but with no DPT.
@@ -304,6 +305,7 @@ mod tests {
                 name: "Nodpt".to_string(),
                 dpt: None,
                 description: None,
+                ..Default::default()
             },
         );
         // A GA whose DPT is 9.001 (2-byte temperature) — used for size mismatch.
@@ -313,6 +315,7 @@ mod tests {
                 name: "Temp".to_string(),
                 dpt: Some("9.001".parse().unwrap()),
                 description: None,
+                ..Default::default()
             },
         );
 
