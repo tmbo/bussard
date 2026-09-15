@@ -66,7 +66,7 @@ pub use error::{MgmtError, Result};
 pub use load::{
     LD_CTRL_ABS_SEGMENT, LD_CTRL_REL_SEGMENT, LoadControl, LoadState, PID_LOAD_STATE_CONTROL,
     SegmentAllocation, WriteError, allocate_segment, encode_abs_segment, encode_rel_segment,
-    read_load_state, write_load_control, write_property, write_table,
+    read_load_state, read_memory, write_load_control, write_memory, write_property, write_table,
 };
 pub use tables::{DeviceTables, ResolvedLink, TableSource, TablesError, read_tables};
 

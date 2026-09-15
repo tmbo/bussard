@@ -18,10 +18,15 @@
 
 pub mod apply;
 pub mod compute;
+pub mod flash;
 pub mod plan;
 
 pub use apply::{
     TableObjectIndexes, VerifyOutcome, apply_tables, discover_table_objects, read_states,
 };
 pub use compute::{DesiredTables, compute_tables};
+pub use flash::{
+    AppIdentity, FlashOutcome, FlashPlan, FlashStep, ImageKind, ImageRef, PlanError, Progress,
+    discover_application_object, flash, plan_flash, select_application, trace,
+};
 pub use plan::{LoadStep, ObjectGa, PlanReport, plan};
