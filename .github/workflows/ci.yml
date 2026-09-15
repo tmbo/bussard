@@ -226,10 +226,11 @@ jobs:
         run: |
           sudo tcpdump -i any -w vdev.pcap 'udp port 3671' &
           echo $! | sudo tee /tmp/tcpdump.pid >/dev/null
-          # Also capture INSIDE the device namespace, so we see whether the device
-          # receives bussard's broadcast and whether it transmits a reply — the
-          # root-ns capture cannot observe intra-namespace rx.
-          sudo ip netns exec knxdev tcpdump -i knxveth1 -w vdev-netns.pcap 'udp port 3671' &
+          # Also capture INSIDE the device namespace on ALL interfaces (so we see
+          # both knxveth1 and lo), to observe whether the device receives
+          # bussard's broadcast AND whether/where it transmits a reply — thelsing
+          # sets no IP_MULTICAST_IF, so a reply could egress the wrong interface.
+          sudo ip netns exec knxdev tcpdump -i any -w vdev-netns.pcap 'udp port 3671' &
           echo $! | sudo tee /tmp/tcpdump-netns.pid >/dev/null
           sleep 1  # let them bind before traffic starts
 
@@ -272,6 +273,63 @@ jobs:
           lpid=$!; sleep 1
           sudo ip netns exec knxdev python3 /tmp/mcast_probe.py send 10.213.0.2 || true
           wait $lpid; echo "dev->root exit: $?"
+
+      # Decisive protocol repro, independent of bussard: boot the device in the
+      # namespace, then from the root ns send the EXACT KNXnet/IP ROUTING
+      # A_IndividualAddress_Read frame bussard emits, and listen for the device's
+      # A_IndividualAddress_Response. This tells us whether thelsing answers the
+      # broadcast read at all, separating "device won't answer the protocol" from
+      # "bussard-specific frame problem". Both the request and the expected
+      # response are pure KNXnet/IP routing (service 0x0530), cEMI L_Data.
+      - name: Protocol repro (raw KNX read to the device)
+        run: |
+          BIN="$(cat target/virtual-device/binary-path.txt)"
+          workdir="$(mktemp -d)"
+          sudo ip netns exec knxdev stdbuf -oL -eL "$BIN" >"$workdir/repro-dev.log" 2>&1 &
+          # Wait for the device to join the group.
+          for i in $(seq 1 50); do
+            sudo ip netns exec knxdev ip maddr show | grep -q 224.0.23.12 && break
+            sleep 0.2
+          done
+          sleep 1
+          cat > /tmp/knx_read.py <<'PY'
+          import socket, struct, sys, time
+          group, port = "224.0.23.12", 3671
+          # KNXnet/IP header (6) + service ROUTING_INDICATION 0x0530 + total len,
+          # then cEMI: msg L_Data.req 0x11, ai_len 0, ctrl1 0xB6, ctrl2 0xE0,
+          # src 0.0.255 (0x00FF), dst 0x0000, npdu_len 1, TPDU 0x00 0x01 (A_IndAddr_Read).
+          cemi = bytes([0x11,0x00,0xB6,0xE0,0x00,0xFF,0x00,0x00,0x01,0x00,0x01])
+          hdr  = bytes([0x06,0x10,0x05,0x30]) + struct.pack(">H", 6+len(cemi))
+          frame = hdr + cemi
+          rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+          rx.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+          rx.bind(("", port))
+          mreq = struct.pack("4s4s", socket.inet_aton(group), socket.inet_aton("10.213.0.1"))
+          rx.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
+          rx.settimeout(5)
+          tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+          tx.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton("10.213.0.1"))
+          tx.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+          tx.sendto(frame, (group, port))
+          print("SENT read:", frame.hex())
+          deadline = time.time() + 5
+          while time.time() < deadline:
+              try:
+                  data, addr = rx.recvfrom(1024)
+              except socket.timeout:
+                  break
+              if data == frame:
+                  continue  # our own echo (loop)
+              print(f"RECV from {addr}: {data.hex()}")
+              # A_IndividualAddress_Response has APCI 0x0140 in the last two APDU bytes.
+              if len(data) >= 2 and data[-2:] and (data[-2] & 0x03) == 0x01 and data[-1] == 0x40:
+                  print("GOT A_IndividualAddress_Response — device answers the read!")
+          print("done")
+          PY
+          python3 /tmp/knx_read.py || true
+          echo "--- repro device log ---"; cat "$workdir/repro-dev.log" || true
+          sudo pkill -f knx-linux-ip 2>/dev/null || true
+          sleep 1
 
       # Pre-flight: prove the device actually boots inside the namespace and
       # joins the multicast group, before the Rust harness drives it. This
