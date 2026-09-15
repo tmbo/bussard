@@ -9,3 +9,17 @@ rust-version.workspace = true
 description = "Bus monitor and capture for bussard: decode pipeline, SQLite capture, formatters"
 
 [dependencies]
+bussard-model = { workspace = true }
+bussard-transport = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+owo-colors = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+# SQLite with a bundled amalgamation so no system libsqlite3 is required. MIT
+# licensed; pinned to a version whose bundled sqlite builds on rustc 1.82.
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[dev-dependencies]
+tempfile = "3"

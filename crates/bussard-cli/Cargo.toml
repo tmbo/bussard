@@ -15,10 +15,13 @@ path = "src/main.rs"
 [dependencies]
 bussard-model = { workspace = true }
 bussard-project = { workspace = true }
+bussard-transport = { workspace = true }
+bussard-monitor = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }
 owo-colors = { workspace = true }
+tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 # Interactive password prompt (only used when a TTY is present). MIT licensed.
