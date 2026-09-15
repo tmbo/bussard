@@ -29,6 +29,7 @@
 //! | `WriteRelMem{off,sz}`| [`write_memory`]`(base+off, image)`                 | `image` is the code segment `.data` (`AppliesTo=full`) or the computed parameter image (`AppliesTo=par`) |
 //! | `WriteMem{addr,sz}` | [`write_memory`]`(addr, image)`                      | absolute placement (an absolute segment's data) |
 //! | `WriteProp{ot,pid}` | [`write_property`]                                   | a property write, echo-validated |
+//! | `LoadImageProp{oi,pid}`| [`read_mcb_table`]                                | reads the object's `PID_MCB_TABLE` and checks the device CRC over the stored segment against the written image |
 //! | `Restart`           | `restart`                                            | last op; fire-and-forget |
 //!
 //! # `lsm_idx` → interface-object index
@@ -47,8 +48,10 @@
 //!
 //! [`plan_flash`] validates the **whole** selected procedure up front: it refuses
 //! a mask mismatch, an unsupported op (`AbsSegment`, `TaskSegment`, `TaskCtrl1`,
-//! and any `Raw`/`LoadImageProp`), and a procedure whose segment references it
-//! cannot resolve. Only a fully-executable [`FlashPlan`] reaches [`flash`], so
+//! and any `Raw`), and a procedure whose segment references it cannot resolve.
+//! `LoadImageProp` is executable: it lowers to an MCB-table integrity read that
+//! validates the device's CRC over the segment it stored against the bytes
+//! bussard wrote. Only a fully-executable [`FlashPlan`] reaches [`flash`], so
 //! the engine never begins writing a procedure it cannot finish. Every memory
 //! write is read-back-verified and every property/load-control write is
 //! confirmed, so a device that drops or refuses a write fails loudly at that op.
@@ -57,7 +60,7 @@ use std::collections::BTreeMap;
 
 use bussard_mgmt::connection::{L4Channel, Layer4Connection};
 use bussard_mgmt::load::{
-    self, LoadControl, LoadState, WriteError, allocate_segment, read_load_state,
+    self, LoadControl, LoadState, WriteError, allocate_segment, read_load_state, read_mcb_table,
     write_load_control, write_memory,
 };
 use bussard_mgmt::tables::{OT_APPLICATION_PROGRAM, PID_OBJECT_TYPE};
@@ -98,6 +101,25 @@ pub enum FlashStep {
         obj_type: u32,
         /// The property id.
         prop_id: u32,
+    },
+    /// Validate a loadable object's image via its memory-control-block table
+    /// (`LdCtrlLoadImageProp`). After the object is `Loaded`, read its
+    /// `PID_MCB_TABLE` (PID 27) and, where this engine wrote the object's image,
+    /// confirm the device's CRC16-CCITT over the stored segment matches the CRC
+    /// over the bytes bussard streamed.
+    LoadImageProp {
+        /// The target object index (`ObjIdx`), resolved at plan time. For an op
+        /// that targets the single application-program object bussard flashes,
+        /// this is that object; other indices are read but not our own image.
+        obj_idx: u32,
+        /// The property id to read (27 = `PID_MCB_TABLE`).
+        prop_id: u32,
+        /// How many MCB elements to read (`Count`), at least 1.
+        count: u32,
+        /// The segment image whose CRC to check against the device's MCB, when
+        /// this engine wrote the target object's image; `None` when the op
+        /// targets an object bussard did not itself write (read-only confirm).
+        image: Option<ImageRef>,
     },
     /// Persist and activate the load (`LdCtrlLoadCompleted`).
     LoadCompleted,
@@ -400,11 +422,17 @@ pub fn plan_flash(
         });
     }
 
-    // 3. Choose a procedure. A merged style splits one logical procedure across
-    //    several `<LoadProcedure MergeId=…>` blocks; pick the one with the most
-    //    ops as the representative single procedure to execute. A single-style
-    //    app has exactly one. Empty apps are refused.
-    let procedure = pick_procedure(app).ok_or_else(|| PlanError::NoProcedure(app.id.clone()))?;
+    // 3. Assemble the op sequence to execute. A `MergedProcedure` app splits one
+    //    logical download across several `<LoadProcedure MergeId=…>` blocks
+    //    (e.g. Jung 23024: MergeId 2 allocates + seeds the MCB, 4 writes the
+    //    segment, 7 runs the LoadImageProp integrity checks); those blocks are
+    //    concatenated in MergeId order so the whole download lowers, not just the
+    //    richest single block. A single-style app has one block, used as-is.
+    //    Empty apps are refused.
+    let ops = assemble_ops(app);
+    if ops.is_empty() {
+        return Err(PlanError::NoProcedure(app.id.clone()));
+    }
 
     // Resolve the parameter images once, up front (used by AppliesTo=par writes).
     let param_images = bussard_prod::compute_parameter_image(app, overrides).map_err(|e| {
@@ -420,8 +448,11 @@ pub fn plan_flash(
     // Track the segment id most-recently allocated so a following WriteRelMem
     // resolves to it when its own AppliesTo does not pin one.
     let mut last_rel_segment: Option<String> = None;
+    // Track the image most-recently streamed into device memory so a following
+    // LoadImageProp checks the device's MCB CRC against the very bytes we wrote.
+    let mut last_written_image: Option<ImageRef> = None;
 
-    for (i, op) in procedure.ops.iter().enumerate() {
+    for (i, op) in ops.iter().enumerate() {
         let step_no = i + 1;
         match op {
             // Session boundaries: the engine holds one connection open across the
@@ -470,13 +501,15 @@ pub fn plan_flash(
                 })?;
                 let len = bytes.len();
                 images.insert(segment_id.clone(), bytes);
+                let image = ImageRef {
+                    segment_id,
+                    kind,
+                    len,
+                };
+                last_written_image = Some(image.clone());
                 steps.push(FlashStep::WriteRelMem {
                     offset: offset.unwrap_or(0),
-                    image: ImageRef {
-                        segment_id,
-                        kind,
-                        len,
-                    },
+                    image,
                 });
             }
 
@@ -491,13 +524,15 @@ pub fn plan_flash(
                 })?;
                 let len = bytes.len();
                 images.insert(segment_id.clone(), bytes);
+                let image = ImageRef {
+                    segment_id,
+                    kind: ImageKind::Code,
+                    len,
+                };
+                last_written_image = Some(image.clone());
                 steps.push(FlashStep::WriteMem {
                     address: address.unwrap_or(0),
-                    image: ImageRef {
-                        segment_id,
-                        kind: ImageKind::Code,
-                        len,
-                    },
+                    image,
                 });
             }
 
@@ -506,10 +541,34 @@ pub fn plan_flash(
                 steps.push(FlashStep::WriteProp { obj_type, prop_id });
             }
 
+            LoadOp::LoadImageProp {
+                obj_idx,
+                prop_id,
+                count,
+                ..
+            } => {
+                // The MCB integrity check for a loadable object. Resolve the
+                // segment image whose CRC the device's PID_MCB_TABLE should
+                // match: the most-recently written relative-memory image (the
+                // procedures observed write one `full,par` image per object, then
+                // check each object's MCB). Where no image was written into this
+                // procedure the op still executes as a read-only confirm.
+                let obj_idx = obj_idx.unwrap_or(0);
+                let prop_id = prop_id.unwrap_or(u32::from(bussard_mgmt::PID_MCB_TABLE));
+                let count = count.unwrap_or(1).max(1);
+                let image = last_written_image.clone();
+                steps.push(FlashStep::LoadImageProp {
+                    obj_idx,
+                    prop_id,
+                    count,
+                    image,
+                });
+            }
+
             // Unsupported: refuse the whole procedure at pre-flight. These need
             // device-side behaviour bussard cannot yet verify (absolute segment
-            // allocation is an unverified stub in bussard-mgmt; task segments and
-            // any Raw/LoadImageProp op have no clean-room-verified execution).
+            // allocation is an unverified stub in bussard-mgmt; task segments have
+            // no clean-room-verified execution).
             LoadOp::AbsSegment { .. } => {
                 return Err(PlanError::UnsupportedOp {
                     op: "LdCtrlAbsSegment (absolute segment allocation is unverified)".to_string(),
@@ -546,14 +605,47 @@ pub fn plan_flash(
     })
 }
 
-/// Picks the procedure to execute: the one with the most ops (a merged style
-/// spreads a logical procedure across `MergeId` blocks; the richest block is the
-/// download proper).
-fn pick_procedure(app: &ApplicationProgram) -> Option<&LoadProcedure> {
-    app.load_procedures
+/// Assembles the op sequence to execute from an app's load procedures.
+///
+/// A `MergedProcedure` app spreads one logical download across several
+/// `<LoadProcedure MergeId=…>` blocks that ETS splices into the master template
+/// at ordered merge points; at the app-local level the correct execution order is
+/// the blocks concatenated by ascending `MergeId` (e.g. allocate → write →
+/// image-prop). When every block carries a `MergeId`, they are concatenated in
+/// that order. A single-style app (one block, or blocks without a `MergeId`) has
+/// no merge ordering to honour, so the single richest non-empty block is used —
+/// preserving the previous behaviour for those apps.
+fn assemble_ops(app: &ApplicationProgram) -> Vec<LoadOp> {
+    let non_empty: Vec<&LoadProcedure> = app
+        .load_procedures
         .iter()
         .filter(|p| !p.ops.is_empty())
+        .collect();
+    if non_empty.is_empty() {
+        return Vec::new();
+    }
+    // Merged style: every block is tagged with a MergeId. Concatenate all blocks
+    // in ascending MergeId order (numeric where the ids parse, else lexical).
+    if non_empty.iter().all(|p| p.merge_id.is_some()) && non_empty.len() > 1 {
+        let mut blocks = non_empty.clone();
+        blocks.sort_by(|a, b| {
+            let key = |p: &&LoadProcedure| {
+                p.merge_id
+                    .as_deref()
+                    .and_then(|m| m.parse::<u32>().ok())
+                    .map(|n| (0u8, n, String::new()))
+                    .unwrap_or_else(|| (1u8, 0, p.merge_id.clone().unwrap_or_default()))
+            };
+            key(a).cmp(&key(b))
+        });
+        return blocks.into_iter().flat_map(|p| p.ops.clone()).collect();
+    }
+    // Single style: the richest block is the download proper.
+    non_empty
+        .into_iter()
         .max_by_key(|p| p.ops.len())
+        .map(|p| p.ops.clone())
+        .unwrap_or_default()
 }
 
 /// Resolves which relative segment a `RelSegment` op allocates, preferring one
@@ -576,7 +668,11 @@ fn resolve_rel_segment(
 
 /// Resolves the bytes a `WriteRelMem` streams from its `AppliesTo` hint. `full`
 /// (or unset) streams the current relative segment's code `<Data>`; `par`
-/// streams the computed parameter image for that segment.
+/// streams the computed parameter image for that segment; the combined
+/// `full,par` (the real MDT / Jung shape, one write covering the whole segment)
+/// streams the parameter image when parameters target the segment, else the
+/// code `<Data>` — either way the segment's own bytes, so a following
+/// `LoadImageProp` MCB check runs over a real image.
 fn resolve_write_image(
     app: &ApplicationProgram,
     applies_to: Option<&str>,
@@ -603,8 +699,17 @@ fn resolve_write_image(
         .unwrap_or(false);
 
     if wants_params {
-        let bytes = param_images.get(&seg_id).cloned().unwrap_or_default();
-        return Ok((seg_id, ImageKind::Parameters, bytes));
+        // A non-empty parameter image is the intended content; but a combined
+        // `full,par` write whose segment carries no parameters (or a pure `par`
+        // write with none) still owns the segment's code `<Data>`. Fall back to
+        // that so the streamed image is never spuriously empty.
+        if let Some(bytes) = param_images.get(&seg_id).filter(|b| !b.is_empty()) {
+            return Ok((seg_id, ImageKind::Parameters, bytes.clone()));
+        }
+        if let Some(data) = app.code_segments.get(&seg_id).and_then(|s| s.data.clone()) {
+            return Ok((seg_id, ImageKind::Code, data));
+        }
+        return Ok((seg_id, ImageKind::Parameters, Vec::new()));
     }
 
     // Code image: the segment's `<Data>`.
@@ -754,6 +859,28 @@ pub async fn flash<Ch: L4Channel, F: FnMut(Progress)>(
                 // op is recorded for the trace and skipped. (A future revision
                 // will carry the property value once bussard-prod exposes it.)
             }
+            FlashStep::LoadImageProp {
+                prop_id,
+                count,
+                image,
+                ..
+            } => {
+                // Read the loaded object's PID_MCB_TABLE and, where we wrote the
+                // object's image, validate the device's CRC over the stored
+                // segment against the bytes we streamed. The op names a vendor
+                // object index in the app's own numbering; the image bussard
+                // wrote lives on the single application-program object it
+                // discovered and loaded, so the MCB check targets `app_obj`.
+                // `read_mcb_table` compares the device's CRC16-CCITT to the CRC
+                // over `expected`; a mismatch surfaces `ImagePropMismatch`.
+                if *prop_id == u32::from(bussard_mgmt::PID_MCB_TABLE) {
+                    let expected = image
+                        .as_ref()
+                        .and_then(|img| plan.images.get(&img.segment_id))
+                        .map(Vec::as_slice);
+                    read_mcb_table(l4, app_obj, 1, (*count).min(255) as u8, expected).await?;
+                }
+            }
             FlashStep::LoadCompleted => {
                 write_load_control(l4, app_obj, LoadControl::LoadCompleted).await?;
             }
@@ -835,6 +962,18 @@ fn step_label(step: &FlashStep) -> String {
         FlashStep::WriteProp { obj_type, prop_id } => {
             format!("write property (object type {obj_type}, PID {prop_id})")
         }
+        FlashStep::LoadImageProp {
+            obj_idx,
+            prop_id,
+            image,
+            ..
+        } => match image {
+            Some(img) => format!(
+                "verify image (object {obj_idx}, PID {prop_id} MCB CRC over {} bytes)",
+                img.len
+            ),
+            None => format!("read image MCB (object {obj_idx}, PID {prop_id})"),
+        },
         FlashStep::LoadCompleted => "complete load".to_string(),
         FlashStep::Restart => "restart device".to_string(),
     }
@@ -952,15 +1091,15 @@ mod tests {
 
     #[test]
     fn plan_refuses_unsupported_op() {
-        // An app whose procedure carries a Raw LoadImageProp op (the real Jung
-        // MergedProcedure style) is refused whole, at pre-flight.
+        // An app whose procedure carries a task-segment op (device-side
+        // behaviour bussard cannot yet verify) is refused whole, at pre-flight.
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
          <ApplicationProgram Id="M-1_A-2" MaskVersion="MV-07B0" Name="Merged">
           <Static>
            <Code><RelativeSegment Id="M-1_A-2_RS-1" Size="4" LoadStateMachine="4" Offset="0"><Data>AAECAw==</Data></RelativeSegment></Code>
            <LoadProcedures>
             <LoadProcedure MergeId="1">
-             <LdCtrlLoadImageProp ObjIdx="0" />
+             <LdCtrlTaskSegment LsmIdx="4" Address="16384" />
              <LdCtrlRelSegment LsmIdx="4" Size="4" />
             </LoadProcedure>
            </LoadProcedures>
@@ -969,9 +1108,71 @@ mod tests {
         let app = parse_application_program("M-1_A-2", xml.as_bytes()).unwrap();
         let err = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides()).unwrap_err();
         match err {
-            PlanError::UnsupportedOp { op } => assert!(op.contains("LoadImageProp"), "{op}"),
+            PlanError::UnsupportedOp { op } => assert!(op.contains("TaskSegment"), "{op}"),
             other => panic!("expected UnsupportedOp, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn plan_lowers_load_image_prop() {
+        // A procedure in the real MDT A-0007 / Jung 23024 shape: allocate +
+        // write a combined full,par segment, then LoadImageProp x4 for the MCB
+        // integrity check. Every LoadImageProp lowers (none is refused); the
+        // ones following the write carry the written image for CRC validation.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-3" ApplicationNumber="7" ApplicationVersion="35"
+            MaskVersion="MV-07B0" Name="AKK" LoadProcedureStyle="MergedProcedure">
+          <Static>
+           <Code><RelativeSegment Id="M-1_A-3_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment></Code>
+           <LoadProcedures>
+            <LoadProcedure MergeId="1">
+             <LdCtrlUnload LsmIdx="4" />
+             <LdCtrlLoad LsmIdx="4" />
+             <LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="6" Mode="1" Fill="0" />
+             <LdCtrlWriteRelMem AppliesTo="full,par" ObjIdx="4" Offset="0" Size="6" Verify="true" />
+             <LdCtrlLoadImageProp ObjIdx="1" PropId="27" />
+             <LdCtrlLoadImageProp ObjIdx="2" PropId="27" />
+             <LdCtrlLoadImageProp ObjIdx="3" PropId="27" />
+             <LdCtrlLoadImageProp ObjIdx="4" PropId="27" Count="2" />
+             <LdCtrlLoadCompleted LsmIdx="4" />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-1_A-3", xml.as_bytes()).unwrap();
+        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides()).unwrap();
+
+        let image_props: Vec<&FlashStep> = plan
+            .steps
+            .iter()
+            .filter(|s| matches!(s, FlashStep::LoadImageProp { .. }))
+            .collect();
+        assert_eq!(image_props.len(), 4, "all four LoadImageProp ops lower");
+        // Each carries the written image (the full,par segment) for CRC checking.
+        for step in &image_props {
+            match step {
+                FlashStep::LoadImageProp {
+                    prop_id,
+                    image,
+                    count,
+                    ..
+                } => {
+                    assert_eq!(*prop_id, 27);
+                    assert!(*count >= 1);
+                    let img = image.as_ref().expect("image resolved after the write");
+                    assert_eq!(img.segment_id, "M-1_A-3_RS-1");
+                    assert_eq!(img.len, 6);
+                }
+                other => panic!("expected LoadImageProp, got {other:?}"),
+            }
+        }
+        // The last op carries Count=2.
+        assert!(matches!(
+            image_props[3],
+            FlashStep::LoadImageProp { count: 2, .. }
+        ));
+        // The trace names the verify step.
+        assert!(trace(&plan).iter().any(|l| l.contains("verify image")));
     }
 
     #[test]

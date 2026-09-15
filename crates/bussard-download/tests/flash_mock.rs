@@ -12,9 +12,22 @@
 //! - **`A_Memory_Write`/`A_Memory_Read`** over that sparse memory, so the
 //!   client's read-back verification sees exactly what it wrote.
 //!
+//! It also gives the mock **`PID_MCB_TABLE`** (PID 27) semantics: after a load
+//! completes, a read of the loaded object's MCB returns the 8-octet
+//! `PDT_GENERIC_08` entry `[size u32 BE][crc_ctrl=0x00][access=0xFF][crc16 u16
+//! BE]` where the device computes the CRC16-CCITT over the segment bytes it
+//! actually holds. The mock computes its **own** CRC, so a wrong tool-side CRC
+//! fails the `LdCtrlLoadImageProp` integrity check rather than passing by
+//! construction.
+//!
 //! Cases mirror the acceptance ladder for #43:
 //! - full happy flash (2 segments: code + params over a base image) → `Loaded`
 //!   and every spot check matches;
+//! - a full flash of the real MDT A-0007 / Jung 23024 shape (a combined
+//!   `full,par` segment followed by four `LdCtrlLoadImageProp` MCB checks) →
+//!   `Loaded` with every integrity check passing;
+//! - a device that stored a corrupted image → the MCB CRC diverges and
+//!   `LdCtrlLoadImageProp` surfaces `ImagePropMismatch`;
 //! - a device that flips to load `Error` on `LoadCompleted` → surfaced;
 //! - a mid-write memory NAK → aborts with the underlying error;
 //! - zero-touch: a plan-only pre-flight writes no load control.
@@ -53,6 +66,28 @@ const APCI_SELECTOR: u16 = 0x3C0;
 const PID_OBJECT_TYPE: u8 = 1;
 const PID_LOAD_STATE_CONTROL: u8 = 5;
 const PID_TABLE_REFERENCE: u8 = 7;
+const PID_MCB_TABLE: u8 = 27;
+
+/// CRC16-CCITT (poly 0x1021, init 0xFFFF, no reflection, no final XOR), the CRC
+/// the KNX `PID_MCB_TABLE` uses. De-mirrored from the KNX spec here so the mock
+/// computes its OWN CRC over the segment bytes it received — a wrong tool-side
+/// CRC must therefore fail the integrity check rather than pass by construction.
+fn crc16_ccitt(data: &[u8]) -> u16 {
+    let mut result: u32 = 0xFFFF;
+    for i in 0..8 * (data.len() + 2) {
+        result <<= 1;
+        let bit = if (i / 8) < data.len() {
+            ((data[i / 8] >> (7 - (i % 8))) & 1) as u32
+        } else {
+            0
+        };
+        result |= bit;
+        if result & 0x1_0000 != 0 {
+            result ^= 0x1021;
+        }
+    }
+    (result & 0xFFFF) as u16
+}
 
 const OT_DEVICE: u16 = 0;
 const OT_ADDRESS_TABLE: u16 = 1;
@@ -78,6 +113,10 @@ enum Fault {
     ErrorOnLoadCompleted,
     /// NAK every `A_Memory_Write` (models a refused write mid-flash).
     NakMemoryWrite,
+    /// Silently corrupt one stored octet of every memory write, so the segment
+    /// the device holds differs from what the tool sent: the device's own MCB
+    /// CRC will then diverge from the tool's, and `LoadImageProp` must catch it.
+    CorruptStoredImage,
 }
 
 /// The mutable mock-device state, shared with the gateway task.
@@ -90,6 +129,9 @@ struct DeviceState {
     /// The base of the most-recently allocated segment (reported via
     /// `PID_TABLE_REFERENCE`).
     last_segment_base: u16,
+    /// The size (octets) of the most-recently allocated segment, so a
+    /// `PID_MCB_TABLE` read can CRC exactly the segment the device stored.
+    last_segment_size: u32,
     /// Sparse device memory: address → octet.
     memory: HashMap<u16, u8>,
     fault: Fault,
@@ -250,6 +292,33 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
                 prop_response(oi, pid, 1, start, &base.to_be_bytes()),
             );
         }
+        if pid == PID_MCB_TABLE {
+            // The memory control block for the last-loaded segment, computed by
+            // the device (this mock) over the bytes it actually holds — an
+            // 8-octet PDT_GENERIC_08 entry
+            // `[size u32 BE][crc_ctrl=0x00][access=0xFF][crc16 u16 BE]`, valid
+            // only while Loaded. A wrong tool-side CRC must NOT match this.
+            if app_object_index(&s) != Some(oi) || s.app_load_state != LS_LOADED {
+                return Reaction::Answer(
+                    A_PROPERTY_VALUE_RESPONSE,
+                    prop_response(oi, pid, 0, start, &[]),
+                );
+            }
+            let base = s.last_segment_base;
+            let size = s.last_segment_size;
+            let segment: Vec<u8> = (0..size)
+                .map(|i| *s.memory.get(&base.wrapping_add(i as u16)).unwrap_or(&0))
+                .collect();
+            let crc = crc16_ccitt(&segment);
+            let mut entry = size.to_be_bytes().to_vec();
+            entry.push(0x00); // CRC control byte.
+            entry.push(0xFF); // access.
+            entry.extend_from_slice(&crc.to_be_bytes());
+            return Reaction::Answer(
+                A_PROPERTY_VALUE_RESPONSE,
+                prop_response(oi, pid, 1, start, &entry),
+            );
+        }
         return Reaction::Answer(
             A_PROPERTY_VALUE_RESPONSE,
             prop_response(oi, pid, 0, start, &[]),
@@ -279,6 +348,7 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
                 };
                 let base = s.next_segment_base;
                 s.last_segment_base = base;
+                s.last_segment_size = size;
                 s.next_segment_base = base.wrapping_add(size.max(1) as u16);
                 // Stays in Loading; echo the resulting state.
                 return Reaction::Answer(
@@ -298,6 +368,15 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
                             s.app_load_state = LS_ERROR;
                             LS_ERROR
                         } else {
+                            // A device that stored a corrupted image: flip one
+                            // octet of the last segment now (after the per-chunk
+                            // read-backs have already passed), so only the
+                            // MCB-CRC integrity check can catch the divergence.
+                            if fault == Fault::CorruptStoredImage {
+                                let base = s.last_segment_base;
+                                let cur = *s.memory.get(&base).unwrap_or(&0);
+                                s.memory.insert(base, cur ^ 0xFF);
+                            }
                             s.app_load_state = LS_LOADED;
                             LS_LOADED
                         }
@@ -433,6 +512,7 @@ fn fresh_device(fault: Fault) -> Shared {
         app_load_state: LS_UNLOADED,
         next_segment_base: 0x4000,
         last_segment_base: 0,
+        last_segment_size: 0,
         memory: HashMap::new(),
         fault,
         control_writes: 0,
@@ -469,6 +549,38 @@ fn fabricated_app() -> ApplicationProgram {
       </Static>
      </ApplicationProgram></KNX>"#;
     parse_application_program("M-1_A-1", xml.as_bytes()).unwrap()
+}
+
+/// A single-application System B app in the real MDT A-0007 / Jung 23024 shape:
+/// one relative segment written as a combined `full,par` image, followed by four
+/// `LdCtrlLoadImageProp` MCB integrity checks (ObjIdx 1..4, the last Count=2).
+fn app_with_image_prop() -> ApplicationProgram {
+    let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+     <ApplicationProgram Id="M-2_A-7" ApplicationNumber="7" ApplicationVersion="35"
+        MaskVersion="MV-07B0" Name="AKK" LoadProcedureStyle="MergedProcedure">
+      <Static>
+       <Code>
+        <RelativeSegment Id="M-2_A-7_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment>
+       </Code>
+       <LoadProcedures>
+        <LoadProcedure MergeId="1">
+         <LdCtrlConnect />
+         <LdCtrlUnload LsmIdx="4" />
+         <LdCtrlLoad LsmIdx="4" />
+         <LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="6" Mode="1" Fill="0" />
+         <LdCtrlWriteRelMem AppliesTo="full,par" ObjIdx="4" Offset="0" Size="6" Verify="true" />
+         <LdCtrlLoadCompleted LsmIdx="4" />
+         <LdCtrlLoadImageProp ObjIdx="1" PropId="27" />
+         <LdCtrlLoadImageProp ObjIdx="2" PropId="27" />
+         <LdCtrlLoadImageProp ObjIdx="3" PropId="27" />
+         <LdCtrlLoadImageProp ObjIdx="4" PropId="27" Count="2" />
+         <LdCtrlRestart />
+         <LdCtrlDisconnect />
+        </LoadProcedure>
+       </LoadProcedures>
+      </Static>
+     </ApplicationProgram></KNX>"#;
+    parse_application_program("M-2_A-7", xml.as_bytes()).unwrap()
 }
 
 async fn setup(fault: Fault) -> (Transport, Shared, tokio::task::JoinHandle<()>) {
@@ -517,6 +629,78 @@ async fn flash_happy_path_loads_and_verifies() {
     assert_eq!(code, vec![0, 1, 2, 3, 4, 5]);
     assert_eq!(*s.memory.get(&0x4006).unwrap_or(&0), 7); // parameter default 7
 
+    handle.abort();
+}
+
+#[tokio::test]
+async fn flash_with_image_prop_loads_and_verifies_mcb() {
+    // A full flash of the real MDT/Jung shape: write the segment, complete the
+    // load, then four LoadImageProp MCB checks. The device computes its own CRC
+    // over the stored segment; the tool's CRC over the bytes it sent matches, so
+    // the flash reaches Loaded and every integrity check passes.
+    let (mut bus, state, handle) = setup(Fault::None).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+
+    let app = app_with_image_prop();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides()).unwrap();
+    // The plan carries the four MCB checks.
+    let checks = plan
+        .steps
+        .iter()
+        .filter(|s| matches!(s, FlashStep::LoadImageProp { .. }))
+        .count();
+    assert_eq!(checks, 4);
+
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    let outcome = flash(&mut l4, &plan, |_| {}).await.unwrap();
+    let _ = l4.disconnect().await;
+
+    assert!(
+        outcome.ok(),
+        "flash with LoadImageProp must verify: {outcome:?}"
+    );
+    assert_eq!(outcome.load_state, LoadState::Loaded);
+
+    // The code image landed at the segment base.
+    let s = state.lock().unwrap();
+    let code: Vec<u8> = (0x4000u16..0x4006)
+        .map(|a| *s.memory.get(&a).unwrap_or(&0))
+        .collect();
+    assert_eq!(code, vec![0, 1, 2, 3, 4, 5]);
+    handle.abort();
+}
+
+#[tokio::test]
+async fn flash_image_prop_catches_corrupted_stored_image() {
+    // The device stores a corrupted segment (one octet flipped after the load
+    // completes). Its own MCB CRC therefore diverges from the CRC the tool
+    // computed over the bytes it sent, and the LoadImageProp step must surface
+    // an ImagePropMismatch — proving the mock's independent CRC really gates it.
+    let (mut bus, _state, handle) = setup(Fault::CorruptStoredImage).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+
+    let app = app_with_image_prop();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides()).unwrap();
+
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    let err = flash(&mut l4, &plan, |_| {})
+        .await
+        .expect_err("a corrupted stored image must fail the MCB integrity check");
+    let _ = l4.disconnect().await;
+
+    assert!(
+        matches!(
+            err,
+            bussard_mgmt::load::WriteError::ImagePropMismatch { .. }
+        ),
+        "expected ImagePropMismatch, got {err:?}"
+    );
     handle.abort();
 }
 

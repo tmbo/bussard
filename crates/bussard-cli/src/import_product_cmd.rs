@@ -632,6 +632,20 @@ fn load_op_summary(op: &LoadOp) -> String {
                 opt(prop_id)
             )
         }
+        LoadOp::LoadImageProp {
+            obj_idx,
+            obj_type,
+            occurrence,
+            prop_id,
+            count,
+        } => format!(
+            "load_image_prop obj_idx={} obj_type={} occurrence={} prop_id={} count={}",
+            opt(obj_idx),
+            opt(obj_type),
+            opt(occurrence),
+            opt(prop_id),
+            opt(count)
+        ),
         LoadOp::Raw { name, attrs } => {
             let joined: Vec<String> = attrs.iter().map(|(k, v)| format!("{k}={v}")).collect();
             format!("raw {name} [{}]", joined.join(" "))
