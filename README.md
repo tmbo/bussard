@@ -1,118 +1,97 @@
 # bussard
 
-An open-source, cross-platform CLI for KNX. No GUI, ever.
+A buzzard circles the field and sees everything move. `bussard` does that for a KNX house: an open-source CLI that watches, decodes, and programs the bus. No GUI, ever.
 
-`bussard` (German for buzzard, a bird that watches the field from above; the name also
-contains "bus") aims to replace ETS for day-to-day work on an existing KNX installation:
+Your KNX configuration becomes YAML in a git repo: group addresses, links, devices. Changes are reviewable diffs, an LLM can propose them, and `bussard` pushes them to the devices over your KNXnet/IP gateway. ETS stays in the drawer for the things only ETS can do (certification, planning, the odd exotic device).
 
-- **Configuration as code.** Group addresses, links, and device parameters live in YAML
-  files in a git repo, so changes are reviewable diffs and an LLM can propose them safely.
-- **Terraform-shaped workflow.** `import → validate → plan → apply`: bootstrap the model
-  from an existing ETS project, check it, preview a change, push it to the devices over
-  the bus.
-- **Bus observation.** Live monitor, telegram capture, and decoding against the same YAML
-  model, plus an MCP server so LLMs can debug the installation.
+![How bussard fits together](docs/assets/overview.svg)
+
+<details>
+<summary>Text version of the figure</summary>
 
 ```
 .knxproj (ETS export)      .knxprod (vendor data)
-      │ import                   │ import-product
-      ▼                          ▼
- ┌──────────────────────────────────────┐
- │  YAML model in git (knx/)            │──▶ validate · ha-config
- └──────────────────┬───────────────────┘
-                    │ decode / encode
-     monitor · capture · read · write · mcp
-                    │  plan · apply · flash (downloader)
-         KNXnet/IP gateway ↔ KNX bus
+      | import                   | import-product
+      v                          v
+ +--------------------------------------+
+ |  YAML model in git (knx/)            |   reviewable diffs,
+ +------------------+-------------------+   humans + LLMs edit it
+     write path     |     observe path
+  validate . plan   |   monitor . capture
+  apply . flash     v   read
+ +--------------------------------------+
+ |  bussard  <---MCP---  Claude / LLM   |
+ +------------------+-------------------+
+                    |
+         KNXnet/IP gateway <-> KNX bus
 ```
 
-**Status: early development.** The read-only workflow (import, validate, monitor,
-capture, MCP), runtime writes (read, write, ha-config), the commissioning helpers
-(scan, assign, adopt, reconstruct, import-product), and the ETS-free downloader
-(plan/apply for link tables, flash for the first application download) work today. See
-[docs/commissioning.md](docs/commissioning.md) for the device lifecycle,
-[docs/getting-started.md](docs/getting-started.md) to get running, and the
-[milestones](https://github.com/tmbo/bussard/milestones).
+</details>
 
-## Design goals
+## What you need
 
-- Easy and quick to install: a single static binary (Homebrew / winget / Scoop /
-  `curl | sh`), no runtime.
-- Primary target: home owners and small installations.
-- Speed everywhere: sub-second to first frame, pipelined multi-device operations,
-  differential downloads.
-- All configuration is file based.
-- Fail fast and fail gracefully; never leave the KNX system in an inconsistent state.
+A KNXnet/IP gateway (tunneling or routing). That is it. Optional but nice: your ETS project export (`.knxproj`) for an instantly named model, and vendor product data (`.knxprod`, free downloads from manufacturer sites) for commissioning new devices.
 
-Non-goals: replacing ETS for certification, planning, or documentation; supporting every
-KNX device ever made; any graphical interface.
+## Install
 
-## Getting started
-
-Build and install from this repo (prebuilt binaries are planned):
-
-```
-cargo install --path crates/bussard-cli
+```console
+$ cargo install --path crates/bussard-cli
 ```
 
-Two ways in. With an ETS project, `bussard import project.knxproj` populates the model,
-then `bussard validate` and `bussard monitor` give you a live, decoded bus. Without one,
-`bussard init` discovers your gateway and writes an empty model to watch with
-`bussard monitor`, and `bussard adopt` walks a new device into it.
+Prebuilt binaries (Homebrew, winget, `curl | sh`) are planned.
 
-See [docs/getting-started.md](docs/getting-started.md) for the full walkthrough
-(including the MCP setup for LLM-assisted debugging) and
-[docs/commissioning.md](docs/commissioning.md) for the device lifecycle.
+## Quickstart
 
-## CLI surface
+Have an ETS export? Import it and watch your bus decode itself:
 
-Every command below works today.
-
+```console
+$ bussard import home.knxproj
+imported 421 group addresses, 46 devices, 531 link entries → knx
+$ bussard validate
+0 errors, 51 warnings
+$ bussard monitor
+12:03:44.809  1.1.12 Taster Flur EG  → 1/0/1 Licht Flur         = On (1.001, obj "Taste 1")
+12:03:44.981  1.1.7 Schaltaktor UV   → 1/0/2 Licht Flur Status  = On (1.001)
 ```
-bussard init                            # discover the gateway, write an empty model
-bussard import project.knxproj          # bootstrap YAML from an existing ETS project
-bussard validate [--format json]        # schema + semantic checks on the YAML
-bussard monitor [--filter EXPR]         # live bus, decoded against the model
-bussard capture --to bus.db             # persistent telegram store (SQLite)
-bussard read 3/2/0                      # group value read
-bussard write 3/0/4 down [--force]      # group value write
-bussard scan 1.1 [--from N --to N]      # find devices on a line, diff against the model
-bussard assign [1.1.47]                 # address the device in programming mode
-bussard adopt [--product dev.knxprod]   # guided new-device wizard
-bussard reconstruct 1.1.4               # read one device's tables back, diff vs the model
-bussard reconstruct --line 1.1 --out d  # sweep a line, synthesize a fresh ETS-less model
-bussard import-product dev.knxprod      # cache vendor data, generate a device model
-bussard import-product --order-number X # look up + download a .knxprod by order number
-bussard plan 1.1.4                      # diff live link tables vs links.yaml (read-only)
-bussard apply 1.1.4 [--yes]             # download the link tables (backup, write, verify)
-bussard flash 1.0.10 --product dev.knxprod  # first application download (no ETS)
-bussard ha-config [--out FILE]          # generate the Home Assistant KNX config
-bussard mcp [--passive|--allow-writes]  # serve MCP over stdio
+
+No ETS project? Start empty and adopt devices as you go:
+
+```console
+$ bussard init
+Found gateway: KNX IP Interface (192.168.1.74:3671, IA 1.1.250)
+Created a fresh KNX model in knx.
+$ bussard adopt --product actuator.knxprod    # press the programming button
+adopted 15.15.255 → 1.1.5
 ```
+
+From there, the payoff:
+
+```console
+$ bussard read 4/1/11                # 21.4 °C (9.001)
+$ bussard write 3/0/4 down           # the blind moves
+$ bussard plan 1.1.5                 # diff the device's live tables vs the model
+$ bussard apply 1.1.5                # write them: confirm, backup, verify
+$ bussard ha-config --out ha.yaml    # Home Assistant config from the same model
+$ claude mcp add knx -- bussard mcp --dir knx    # let Claude debug your bus
+```
+
+## Safety
+
+- A GA marked `protected: true` (wind alarm, central functions) is refused: the CLI needs `--force`, MCP has no override at all.
+- Every device write is plan-before-apply: read the live state, show the diff, confirm on a terminal, back up, verify.
+- The MCP server has three tiers: passive (never transmits), read (default, rate-limited), write (opt-in via `--allow-writes`).
 
 ## Documentation
 
-- [docs/getting-started.md](docs/getting-started.md): install, import, monitor, MCP. Start here.
-- [docs/commissioning.md](docs/commissioning.md): the device lifecycle — adopt, import-product, plan/apply, flash, reconstruct.
-- [docs/DESIGN.md](docs/DESIGN.md): architecture, feasibility, YAML model reference, roadmap.
-- [docs/ha-config.md](docs/ha-config.md): Home Assistant config generation.
-- [docs/product-data.md](docs/product-data.md): vendor `.knxprod` files and generated models.
-
-## Workspace layout
-
-Crates in use: `bussard-model`, `bussard-project`, `bussard-transport`, `bussard-bus`,
-`bussard-monitor`, `bussard-mgmt`, `bussard-prod`, `bussard-ets`, `bussard-download`,
-`bussard-ha`, `bussard-mcp`, `bussard-cli`. See
-[docs/DESIGN.md](docs/DESIGN.md) for what each crate does.
+- [Reference](docs/reference.md): every command, flag, YAML field, and MCP tool.
+- [How do I ...](docs/howto.md): recipes, from watching the bus to flashing a device.
+- [Design](docs/DESIGN.md): architecture, feasibility, roadmap.
+- [Home Assistant](docs/ha-config.md): how `ha-config` derives entities.
+- [Product data](docs/product-data.md): `.knxprod` handling and the pointer index.
 
 ## Legal notes
 
-- Never commit ETS project exports (`.knxproj`) or vendor product data (`.knxprod`) to a
-  repository; the application XML is the manufacturer's copyrighted work. Users supply
-  their own product files, obtainable free of charge from manufacturer service sites or
-  the MyKNX catalogue. Details in [docs/product-data.md](docs/product-data.md).
-- `bussard` is an independent project. It is not affiliated with, endorsed by, or
-  certified by the KNX Association. KNX is a registered trademark of the KNX Association.
+Never commit `.knxproj` or `.knxprod` files: the application XML is the manufacturer's copyrighted work. Users supply their own product files, free from manufacturer sites or the MyKNX catalogue ([details](docs/product-data.md)). `bussard` is an independent project, not affiliated with or certified by the KNX Association. KNX is a registered trademark of the KNX Association.
 
 ## License
 

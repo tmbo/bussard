@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 420" width="800" height="420" role="img" aria-label="bussard overview: ETS exports and vendor product data feed a YAML model in git; bussard sits between the model and the KNX bus, writing via validate, plan, apply, flash and observing via monitor, capture, read; Claude taps in over MCP.">
+  <defs>
+    <marker id="arrow-muted" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#8b949e"/>
+    </marker>
+    <marker id="arrow-write" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#d29922"/>
+    </marker>
+    <marker id="arrow-observe" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 8 5 L 0 9 z" fill="#539bf5"/>
+    </marker>
+  </defs>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+
+    <!-- sources -->
+    <rect x="70" y="16" width="230" height="54" rx="8" fill="#8b949e" fill-opacity="0.10" stroke="#8b949e" stroke-width="1.4"/>
+    <text x="185" y="39" text-anchor="middle" font-size="14" font-weight="600" fill="#8b949e">ETS project export</text>
+    <text x="185" y="58" text-anchor="middle" font-size="11.5" fill="#8b949e">.knxproj &#183; optional</text>
+
+    <rect x="500" y="16" width="230" height="54" rx="8" fill="#8b949e" fill-opacity="0.10" stroke="#8b949e" stroke-width="1.4"/>
+    <text x="615" y="39" text-anchor="middle" font-size="14" font-weight="600" fill="#8b949e">Vendor product data</text>
+    <text x="615" y="58" text-anchor="middle" font-size="11.5" fill="#8b949e">.knxprod &#183; free downloads</text>
+
+    <line x1="200" y1="70" x2="285" y2="110" stroke="#8b949e" stroke-width="1.4" marker-end="url(#arrow-muted)"/>
+    <text x="222" y="97" text-anchor="end" font-size="12" fill="#8b949e">import</text>
+    <line x1="600" y1="70" x2="515" y2="110" stroke="#8b949e" stroke-width="1.4" marker-end="url(#arrow-muted)"/>
+    <text x="580" y="97" text-anchor="start" font-size="12" fill="#8b949e">import-product</text>
+
+    <!-- the model -->
+    <rect x="170" y="112" width="460" height="62" rx="8" fill="#539bf5" fill-opacity="0.08" stroke="#8b949e" stroke-width="1.4"/>
+    <text x="400" y="138" text-anchor="middle" font-size="15" font-weight="600" fill="#8b949e">YAML model in git (knx/)</text>
+    <text x="400" y="158" text-anchor="middle" font-size="11.5" fill="#8b949e">reviewable diffs &#183; humans and LLMs edit it</text>
+
+    <!-- lanes: model to bussard -->
+    <line x1="370" y1="174" x2="370" y2="224" stroke="#d29922" stroke-width="1.6" marker-end="url(#arrow-write)"/>
+    <line x1="430" y1="224" x2="430" y2="174" stroke="#539bf5" stroke-width="1.6" marker-end="url(#arrow-observe)"/>
+    <text x="352" y="204" text-anchor="end" font-size="12.5" fill="#d29922">validate &#183; plan &#183; apply &#183; flash</text>
+    <text x="448" y="204" text-anchor="start" font-size="12.5" fill="#539bf5">monitor &#183; capture &#183; read</text>
+
+    <!-- bussard -->
+    <rect x="310" y="226" width="180" height="56" rx="8" fill="#8b949e" fill-opacity="0.14" stroke="#8b949e" stroke-width="1.6"/>
+    <text x="400" y="251" text-anchor="middle" font-size="16" font-weight="700" fill="#8b949e">bussard</text>
+    <text x="400" y="270" text-anchor="middle" font-size="11.5" fill="#8b949e">one CLI, no GUI</text>
+
+    <!-- MCP side tap -->
+    <rect x="610" y="232" width="150" height="44" rx="8" fill="#8b949e" fill-opacity="0.06" stroke="#8b949e" stroke-width="1.2" stroke-dasharray="5 4"/>
+    <text x="685" y="250" text-anchor="middle" font-size="13" font-weight="600" fill="#8b949e">Claude / LLM</text>
+    <text x="685" y="266" text-anchor="middle" font-size="11" fill="#8b949e">bussard mcp</text>
+    <line x1="490" y1="254" x2="606" y2="254" stroke="#8b949e" stroke-width="1.2" stroke-dasharray="5 4"/>
+
+    <!-- lanes: bussard to gateway -->
+    <line x1="370" y1="284" x2="370" y2="326" stroke="#d29922" stroke-width="1.6" marker-end="url(#arrow-write)"/>
+    <line x1="430" y1="326" x2="430" y2="284" stroke="#539bf5" stroke-width="1.6" marker-end="url(#arrow-observe)"/>
+    <text x="352" y="309" text-anchor="end" font-size="11" fill="#d29922">write path</text>
+    <text x="448" y="309" text-anchor="start" font-size="11" fill="#539bf5">observe path</text>
+
+    <!-- gateway and bus -->
+    <rect x="300" y="328" width="200" height="44" rx="8" fill="#8b949e" fill-opacity="0.10" stroke="#8b949e" stroke-width="1.4"/>
+    <text x="400" y="346" text-anchor="middle" font-size="13.5" font-weight="600" fill="#8b949e">KNXnet/IP gateway</text>
+    <text x="400" y="363" text-anchor="middle" font-size="11" fill="#8b949e">tunneling or routing</text>
+
+    <line x1="400" y1="372" x2="400" y2="394" stroke="#8b949e" stroke-width="1.6"/>
+    <line x1="130" y1="394" x2="640" y2="394" stroke="#8b949e" stroke-width="2.6" stroke-linecap="round"/>
+    <rect x="185" y="388" width="14" height="12" rx="2" fill="#8b949e" fill-opacity="0.55"/>
+    <rect x="265" y="388" width="14" height="12" rx="2" fill="#8b949e" fill-opacity="0.55"/>
+    <rect x="505" y="388" width="14" height="12" rx="2" fill="#8b949e" fill-opacity="0.55"/>
+    <rect x="585" y="388" width="14" height="12" rx="2" fill="#8b949e" fill-opacity="0.55"/>
+    <text x="654" y="399" text-anchor="start" font-size="11.5" fill="#8b949e">KNX bus &#183; devices</text>
+  </g>
+</svg>
