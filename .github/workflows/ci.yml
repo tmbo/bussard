@@ -96,8 +96,12 @@ jobs:
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
 
+      # The `ci` profile (.config/nextest.toml) does not fail-fast (so every
+      # platform reports all its failures), retries flaky real-socket mock tests
+      # a couple of times, and enforces a per-test slow-timeout so a hung test
+      # cannot wedge the runner. It also emits junit.xml.
       - name: Test (nextest)
-        run: cargo nextest run --workspace
+        run: cargo nextest run --workspace --profile ci
 
       # nextest does NOT run doc-tests, so we run them separately to keep the
       # quality gate equivalent (this workspace has real doc-tests). This reuses
