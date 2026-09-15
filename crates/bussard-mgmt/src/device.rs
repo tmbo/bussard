@@ -135,6 +135,64 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
         Ok(resp.data)
     }
 
+    /// Writes `data` to device memory starting at `addr`, in
+    /// [`apci::MAX_MEMORY_WRITE_LEN`]-octet chunks, **verifying each chunk by
+    /// read-back**.
+    ///
+    /// For every chunk this sends `A_Memory_Write` (count in the APCI low bits,
+    /// payload `[addr_hi, addr_lo, data…]`), then immediately reads the same
+    /// address back with `A_Memory_Read` and compares. Any divergence fails with
+    /// [`MgmtError::MemoryVerifyFailed`], naming the address, the octets written
+    /// and the octets read back, so a partial or silently-dropped write surfaces
+    /// loudly rather than corrupting device memory.
+    ///
+    /// # Why read-back rather than the write's own echo
+    ///
+    /// `A_Memory_Write` has **no mandatory response**. Some System B devices run
+    /// in a "verify mode" where they answer an `A_Memory_Response` echoing the
+    /// stored octets, but that mode is optional, device-configurable and not
+    /// observable from the tool ahead of time. An explicit `A_Memory_Read`
+    /// read-back is the one confirmation that works across every stack, so it is
+    /// the path bussard takes; the optional write echo is ignored. Callers that
+    /// need speed over safety on a known-good link can fall back to the raw
+    /// [`apci::encode_memory_write`] primitive and skip verification.
+    ///
+    /// An empty `data` is a no-op.
+    pub async fn write_memory(&mut self, addr: u16, data: &[u8]) -> Result<()> {
+        let chunk = usize::from(apci::MAX_MEMORY_WRITE_LEN);
+        let mut offset = 0usize;
+        while offset < data.len() {
+            let take = chunk.min(data.len() - offset);
+            let piece = &data[offset..offset + take];
+            // A u16 address space; a write that would run past 0xFFFF is a
+            // programming error caught here rather than silently wrapping.
+            let chunk_addr =
+                addr.checked_add(offset as u16)
+                    .ok_or(MgmtError::MalformedResponse {
+                        address: self.inner.target(),
+                        reason: "memory write range exceeds the 16-bit address space",
+                    })?;
+
+            let (req_apci, payload) = apci::encode_memory_write(chunk_addr, piece);
+            // A_Memory_Write is acknowledged (T_ACK) but not answered, so send it
+            // and wait only for the ACK; the read-back is the confirmation.
+            self.inner.send_data(req_apci, &payload).await?;
+
+            // Verify: read the same address back and compare octet-for-octet.
+            let got = self.read_memory(chunk_addr, take as u8).await?;
+            if got != piece {
+                return Err(MgmtError::MemoryVerifyFailed {
+                    address: self.inner.target(),
+                    addr: chunk_addr,
+                    expected: piece.to_vec(),
+                    got,
+                });
+            }
+            offset += take;
+        }
+        Ok(())
+    }
+
     /// Restarts the device (`A_Restart`). Fire-and-forget: the device does not
     /// answer and typically drops the connection as it reboots, so this only
     /// sends the request NDT and awaits its `T_ACK`.
