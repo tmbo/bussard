@@ -14,8 +14,9 @@ An open-source, cross-platform CLI for KNX. No GUI, ever.
 - **Bus observation.** Live monitor, telegram capture, and decoding against the same YAML
   model — plus an MCP server so LLMs can debug the installation.
 
-**Status: early development.** Nothing is usable yet. Phase 0 (read-only: import, validate,
-monitor, capture, MCP) is being built first — see the
+**Status: early development.** Phase 0 (read-only: import, validate, monitor, capture,
+MCP) works — see [docs/getting-started.md](docs/getting-started.md). Writes and the
+device downloader come next; see the
 [milestones](https://github.com/tmbo/bussard/milestones).
 
 ## Design goals
@@ -31,20 +32,39 @@ monitor, capture, MCP) is being built first — see the
 Non-goals: replacing ETS for certification, planning, or documentation; supporting every
 KNX device ever made; any graphical interface.
 
-## Planned CLI surface
+## Getting started
+
+Build and install from this repo (prebuilt binaries are planned):
 
 ```
-bussard scan                          # find devices, report mask version, order number
-bussard info 1.1.4                    # device descriptor, properties, load state
-bussard monitor [--filter] [--decode] # live bus, decoded against the model
-bussard capture --to bus.db           # persistent telegram store
-bussard read 2/1/5                    # group value read
-bussard write 2/1/5 --dpt 1.001 on    # group value write
+cargo install --path crates/bussard-cli
+```
+
+Two ways in. **Have an ETS project?** `bussard import project.knxproj` populates
+the model, then `bussard validate` and `bussard monitor` give you a live,
+decoded bus. **No ETS project?** `bussard init` discovers your gateway and writes
+an empty model to watch with `bussard monitor`.
+
+See [docs/getting-started.md](docs/getting-started.md) for the full walkthrough,
+including the MCP setup for LLM-assisted debugging.
+
+## CLI surface
+
+Everything below works today except the commands marked *planned*, which land
+in later phases.
+
+```
+bussard init                          # discover the gateway, write an empty model
 bussard import project.knxproj        # bootstrap YAML from an existing ETS project
-bussard validate                      # schema + semantic checks on the YAML
-bussard plan                          # diff YAML vs. device state
-bussard apply [--device 1.1.4]        # execute the download
-bussard mcp                           # serve MCP over stdio
+bussard validate [--format json]      # schema + semantic checks on the YAML
+bussard monitor [--filter EXPR]       # live bus, decoded against the model
+bussard capture --to bus.db           # persistent telegram store
+bussard read 3/2/0                    # group value read
+bussard write 3/0/4 down [--force]    # group value write
+bussard ha-config [--out FILE]        # generate the Home Assistant KNX config
+bussard mcp [--passive|--allow-writes]# serve MCP over stdio
+bussard scan 1.1                      # find devices, report mask version   (planned)
+bussard import-product dev.knxprod    # generate a device model from .knxprod (planned)
 ```
 
 ## Workspace layout
