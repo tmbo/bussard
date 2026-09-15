@@ -17,7 +17,8 @@ use anyhow::{Context, anyhow, bail};
 use bussard_model::{Dpt, GroupAddress, Model, encode, parse_value};
 use bussard_monitor::stream::{Flow, TelegramSink};
 use bussard_monitor::{
-    DecodedTelegram, DestinationRef, Filter, TelegramRing, run_stream_with_outbound,
+    CancelToken, DecodedTelegram, DestinationRef, Filter, TelegramRing,
+    run_stream_with_outbound_cancellable,
 };
 use bussard_transport::cemi::CemiFrame;
 use bussard_transport::{TimestampedFrame, TransportError};
@@ -79,9 +80,18 @@ pub fn run(
         let (out_tx, out_rx) = mpsc::unbounded_channel();
         let mut sink = RingSink { ring: ring.clone() };
 
+        // A cancel token stops the stream with a clean bus close (releasing the
+        // gateway tunnel slot) instead of aborting the task — see issue #31.
+        let (cancel, cancel_watch) = CancelToken::new();
         let stream = tokio::spawn(async move {
-            let _ =
-                run_stream_with_outbound(&config, model.as_ref(), &mut sink, Some(out_rx)).await;
+            let _ = run_stream_with_outbound_cancellable(
+                &config,
+                model.as_ref(),
+                &mut sink,
+                Some(out_rx),
+                cancel_watch,
+            )
+            .await;
         });
 
         // Subscribe before sending so the con echo cannot be missed.
@@ -98,7 +108,9 @@ pub fn run(
             .is_ok();
 
         let echo = waiter.await.ok().flatten();
-        stream.abort();
+        // Cancel and wait for the stream to close the connection cleanly.
+        cancel.cancel();
+        let _ = stream.await;
         // Confirmed if we saw an echo for our GA; otherwise "sent" (fire-and-
         // forget) as long as the frame was queued onto a live-or-reconnecting
         // connection.
@@ -178,8 +190,12 @@ struct RingSink {
 }
 
 impl TelegramSink for RingSink {
-    fn on_telegram(&mut self, telegram: &DecodedTelegram, _frame: &TimestampedFrame) -> Flow {
-        self.ring.push(telegram.clone());
+    fn on_telegram(&mut self, telegram: &DecodedTelegram, frame: &TimestampedFrame) -> Flow {
+        // Carry the cEMI message code; the write confirmation deliberately
+        // accepts the L_Data.con echo (that IS the confirmation), so its waiter
+        // keeps the plain GA filter.
+        self.ring
+            .push_with_code(telegram.clone(), frame.frame.message_code);
         Flow::Continue
     }
 

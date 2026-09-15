@@ -11,8 +11,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use bussard_model::{Dpt, GroupAddress, IndividualAddress};
-use bussard_monitor::{ApciKind, CaptureStore, Filter, QueryFilter};
-use bussard_transport::cemi::CemiFrame;
+use bussard_monitor::{ApciKind, CaptureStore, DestinationRef, Filter, QueryFilter};
+use bussard_transport::cemi::{CemiFrame, MessageCode};
 use rmcp::ErrorData;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -313,14 +313,12 @@ impl BussardMcp {
         let _permit = self.state.read_limiter.acquire().await;
 
         // Subscribe to the ring *before* sending so we cannot miss the response.
-        let filter = Filter::parse(&ga.to_string()).map_err(|e| invalid(e.to_string()))?;
-        let ring = self.state.ring.clone();
-        let wait = tokio::spawn(async move { ring.wait_for(&filter, READ_RESPONSE_TIMEOUT).await });
+        // The subscription exists from this line on (no spawned-task race, #32).
+        let mut sub = self.state.ring.subscribe();
 
         // Send the GroupValueRead on the shared connection.
         let frame = CemiFrame::group_read(ga, self.state.source_ia);
         if outbound.send(frame).is_err() {
-            wait.abort();
             return ok(json!({
                 "ga": ga.to_string(),
                 "ok": false,
@@ -328,8 +326,18 @@ impl BussardMcp {
             }));
         }
 
-        // Await the matching response (a write or response both carry a value).
-        let response = wait.await.ok().flatten();
+        // Await a real answer: a GroupValueResponse or GroupValueWrite to our GA
+        // that is a bus indication — NOT the gateway's L_Data.con echo of our
+        // own request, and not from our own source address (issue #32).
+        let source_ia = self.state.source_ia;
+        let response = sub
+            .wait_for_matching(READ_RESPONSE_TIMEOUT, |t, code| {
+                matches!(t.destination, DestinationRef::Group(g) if g == ga)
+                    && matches!(t.apci, ApciKind::Response | ApciKind::Write)
+                    && code != MessageCode::LDataCon
+                    && t.source != source_ia
+            })
+            .await;
         match response {
             Some(t)
                 if matches!(t.apci, ApciKind::Response | ApciKind::Write)

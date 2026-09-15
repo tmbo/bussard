@@ -17,7 +17,9 @@ use tokio::net::UdpSocket;
 use bussard_model::schema::{BussardConfig, Group, Groups, Links};
 use bussard_model::{GroupAddress, IndividualAddress, Model};
 use bussard_monitor::stream::{Flow, TelegramSink};
-use bussard_monitor::{DecodedTelegram, run_stream, run_stream_with_outbound};
+use bussard_monitor::{
+    CancelToken, DecodedTelegram, run_stream, run_stream_cancellable, run_stream_with_outbound,
+};
 use bussard_transport::cemi::CemiFrame;
 use bussard_transport::knxnet::{self, ServiceType};
 use bussard_transport::{ConnectionConfig, TimestampedFrame, TransportError};
@@ -295,5 +297,100 @@ async fn outbound_read_is_sent_and_response_flows_back() {
         })
     );
 
+    let _ = gw_task.await;
+}
+
+/// A sink that never stops the stream on its own — used for the cancellation
+/// test, where the stream is ended by a [`CancelToken`], not by the sink.
+struct NeverStopSink;
+
+impl TelegramSink for NeverStopSink {
+    fn on_telegram(&mut self, _telegram: &DecodedTelegram, _frame: &TimestampedFrame) -> Flow {
+        Flow::Continue
+    }
+    fn on_disconnect(&mut self, _error: &TransportError, _backoff: Duration) -> Flow {
+        Flow::Continue
+    }
+}
+
+/// Issue #31: cancelling a running stream must close the tunnel cleanly — the
+/// gateway receives a DISCONNECT_REQUEST rather than having its slot leaked.
+#[tokio::test]
+async fn cancelling_the_stream_sends_disconnect_request() {
+    let (addr, gw) = bind_mock().await;
+    let channel = 0x44u8;
+
+    // The gateway records whether it saw a DISCONNECT_REQUEST after cancel.
+    let (saw_disc_tx, saw_disc_rx) = std::sync::mpsc::channel::<bool>();
+
+    let gw_task = tokio::spawn(async move {
+        let mut buf = [0u8; 1024];
+        // CONNECT handshake.
+        let (n, peer) = gw.recv_from(&mut buf).await.unwrap();
+        let parsed = knxnet::parse(&buf[..n]).unwrap();
+        assert_eq!(parsed.service, ServiceType::ConnectRequest);
+        let resp = knxnet_frame(
+            ServiceType::ConnectResponse,
+            &connect_response_body(channel, &gw),
+        );
+        gw.send_to(&resp, peer).await.unwrap();
+
+        // Wait for the client's DISCONNECT_REQUEST (sent when it is cancelled),
+        // answering heartbeats meanwhile.
+        loop {
+            match tokio::time::timeout(Duration::from_secs(5), gw.recv_from(&mut buf)).await {
+                Ok(Ok((n, peer))) => {
+                    let Ok(parsed) = knxnet::parse(&buf[..n]) else {
+                        continue;
+                    };
+                    match parsed.service {
+                        ServiceType::DisconnectRequest => {
+                            let resp = knxnet::disconnect_response(channel, 0);
+                            let _ = gw.send_to(&resp, peer).await;
+                            let _ = saw_disc_tx.send(true);
+                            return;
+                        }
+                        ServiceType::ConnectionstateRequest => {
+                            let resp = knxnet::connectionstate_response(channel, 0);
+                            let _ = gw.send_to(&resp, peer).await;
+                        }
+                        _ => {}
+                    }
+                }
+                _ => {
+                    let _ = saw_disc_tx.send(false);
+                    return;
+                }
+            }
+        }
+    });
+
+    let config = ConnectionConfig::tunnel(addr);
+    let model = model();
+    let (cancel, cancel_watch) = CancelToken::new();
+
+    // Cancel shortly after the stream is up.
+    let canceller = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        cancel.cancel();
+    });
+
+    let mut sink = NeverStopSink;
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        run_stream_cancellable(&config, Some(&model), &mut sink, cancel_watch),
+    )
+    .await
+    .expect("cancel should end the stream")
+    .expect("stream ran cleanly");
+
+    canceller.await.unwrap();
+    let saw = saw_disc_rx
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap_or(false);
+    assert!(
+        saw,
+        "the gateway must receive a DISCONNECT_REQUEST when the stream is cancelled"
+    );
     let _ = gw_task.await;
 }

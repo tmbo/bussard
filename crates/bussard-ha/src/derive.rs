@@ -283,23 +283,99 @@ fn derive_cluster(
         Phase::Actuators => {
             // Cover first (most GAs, most specific), then switch/light.
             if let Some(e) = try_cover(device, model, cluster, overrides) {
-                push_unclaimed(e, entities, claimed, consumed);
+                push_merged(e, overrides, entities, claimed, consumed);
                 return;
             }
             if let Some(e) = try_switchable(device, model, cluster, overrides) {
-                push_unclaimed(e, entities, claimed, consumed);
+                push_merged(e, overrides, entities, claimed, consumed);
             }
         }
         Phase::Sensors => {
             // One sensor/binary_sensor per object (no clustering benefit).
             for o in cluster {
                 if let Some(e) = try_sensor(device, model, o, overrides, &*consumed) {
-                    push_unclaimed(e, entities, claimed, consumed);
+                    push_merged(e, overrides, entities, claimed, consumed);
                 } else if let Some(e) = try_binary_sensor(device, model, o, overrides, &*consumed) {
-                    push_unclaimed(e, entities, claimed, consumed);
+                    push_merged(e, overrides, entities, claimed, consumed);
                 }
             }
         }
+    }
+}
+
+/// Applies any `merge` override for `entity`'s primary GA, then pushes it.
+///
+/// See [`crate::overrides::EntityOverride::merge`] for the exact per-platform
+/// semantics. In short: each merged GA that is not excluded is wired into a free
+/// state slot on the entity where the platform has one, and every merged GA is
+/// folded into the entity's consumed set so it is claimed and no longer reported
+/// as unmapped. Exclusion wins over merge: an excluded merged GA is ignored (and
+/// still surfaces in the unmapped footer if nothing else maps it).
+fn push_merged(
+    mut entity: Entity,
+    overrides: &Overrides,
+    entities: &mut Vec<Entity>,
+    claimed: &mut BTreeSet<GroupAddress>,
+    consumed: &mut BTreeSet<GroupAddress>,
+) {
+    let primary = entity.primary_ga();
+    let merged: Vec<GroupAddress> = overrides
+        .entity(primary)
+        .map(|ov| ov.merge.clone())
+        .unwrap_or_default()
+        .into_iter()
+        // Exclusion wins over merge.
+        .filter(|ga| !overrides.is_excluded(*ga))
+        .collect();
+
+    let mut extra_consumed = Vec::new();
+    for ga in merged {
+        // Skip a merged GA already owned by an earlier entity: wiring it into a
+        // slot would make `push_unclaimed` drop this whole entity as a duplicate.
+        if consumed.contains(&ga) {
+            continue;
+        }
+        // Wire into a free platform slot where one exists; otherwise just mark it
+        // consumed so it is claimed and drops out of the unmapped summary.
+        if !wire_merged_ga(&mut entity, ga) {
+            extra_consumed.push(ga);
+        }
+    }
+
+    push_unclaimed(entity, entities, claimed, consumed);
+    // Only fold in the leftover merged GAs if the entity was actually accepted
+    // (its own GAs are now consumed). If it was dropped as a duplicate, leave the
+    // merged GAs untouched so they can still map elsewhere.
+    if !extra_consumed.is_empty() && claimed.contains(&primary) {
+        consumed.extend(extra_consumed);
+    }
+}
+
+/// Wires a merged GA into a free state slot on `entity`, returning `true` if it
+/// found a home. Only fills an empty slot — merge never overwrites a GA the
+/// heuristic already derived.
+fn wire_merged_ga(entity: &mut Entity, ga: GroupAddress) -> bool {
+    match entity {
+        // Switch/light/binary_sensor: the state address is the natural extra slot.
+        Entity::Switch(e) if e.state_address.is_none() => {
+            e.state_address = Some(ga);
+            true
+        }
+        Entity::Light(e) if e.state_address.is_none() => {
+            e.state_address = Some(ga);
+            true
+        }
+        // Cover: prefer position-state, then angle-state.
+        Entity::Cover(e) if e.position_state_address.is_none() => {
+            e.position_state_address = Some(ga);
+            true
+        }
+        Entity::Cover(e) if e.angle_state_address.is_none() => {
+            e.angle_state_address = Some(ga);
+            true
+        }
+        // Sensor/binary_sensor have only one address and no spare state slot.
+        _ => false,
     }
 }
 
@@ -335,8 +411,13 @@ fn is_main(dpt: Option<Dpt>, main: u16) -> bool {
 
 /// Attempts to assemble a `cover` from a cluster.
 ///
-/// Requires at least a 1.008 up/down object. Adds 1.007 step/stop and 5.001
-/// position (command + state) when present in the cluster.
+/// Requires a 1.008 up/down *command* object (a W-flag object whose listened GA
+/// HA drives). Requiring a command — like [`try_switchable`] — stops a
+/// push-button's T-flag 1.008 sender from anchoring a cover and pre-empting the
+/// actuator's richer cover cluster: the button has no command GA here, so it
+/// falls through to the sensor pass instead. Adds 1.007 step/stop, 5.001
+/// position (command + state) and 5.003 slat angle (command + state) when
+/// present in the cluster.
 fn try_cover(
     device: &Device,
     model: &Model,
@@ -346,7 +427,8 @@ fn try_cover(
     let up_down = cluster
         .iter()
         .find(|o| is_main(o.dpt(), 1) && o.dpt().and_then(|d| d.sub) == Some(8))?;
-    let move_long = up_down.command_ga().or_else(|| up_down.any_ga())?;
+    // Require a command GA (a writable up/down), not merely any GA.
+    let move_long = up_down.command_ga()?;
     if overrides.is_excluded(move_long) {
         return None;
     }
@@ -356,15 +438,28 @@ fn try_cover(
         .find(|o| is_main(o.dpt(), 1) && o.dpt().and_then(|d| d.sub) == Some(7))
         .and_then(|o| o.command_ga().or_else(|| o.any_ga()));
 
-    // 5.001 position objects: a writable one is the command (position_address),
-    // a transmitting one is the status (position_state_address).
+    // Position is DPT 5.001 (scaling, 0–100 %); slat angle is DPT 5.003 (angle).
+    // Match on the sub so a 5.003 angle is never mistaken for a position (and
+    // vice-versa) — the fields exist on `Cover` and were previously hardwired to
+    // `None`. A writable object is the command; a transmitting one is the state.
+    let is_dpt5_sub = |o: &&&ObjectLink<'_>, sub: u16| {
+        is_main(o.dpt(), 5) && o.dpt().and_then(|d| d.sub) == Some(sub)
+    };
     let position_cmd = cluster
         .iter()
-        .filter(|o| is_main(o.dpt(), 5))
+        .filter(|o| is_dpt5_sub(o, 1))
         .find_map(|o| o.command_ga());
     let position_state = cluster
         .iter()
-        .filter(|o| is_main(o.dpt(), 5))
+        .filter(|o| is_dpt5_sub(o, 1))
+        .find_map(|o| o.state_ga());
+    let angle_cmd = cluster
+        .iter()
+        .filter(|o| is_dpt5_sub(o, 3))
+        .find_map(|o| o.command_ga());
+    let angle_state = cluster
+        .iter()
+        .filter(|o| is_dpt5_sub(o, 3))
         .find_map(|o| o.state_ga());
 
     let name = entity_name(device, model, move_long);
@@ -384,8 +479,8 @@ fn try_cover(
         move_short_address: step_stop,
         position_address: position_cmd,
         position_state_address: position_state,
-        angle_address: None,
-        angle_state_address: None,
+        angle_address: angle_cmd,
+        angle_state_address: angle_state,
         device_class,
     }))
 }

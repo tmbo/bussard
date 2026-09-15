@@ -397,6 +397,174 @@ fn yaml_round_trips() {
 }
 
 #[test]
+fn merge_attaches_ga_and_clears_unmapped() {
+    // A switch on 0/0/1 with no derived state GA. An unmapped 1.001 status GA
+    // 0/0/9 (belonging to no object) is merged onto the switch: it must become
+    // the switch's state_address and drop out of the unmapped summary.
+    let model = ModelBuilder::new("1.1.5", "Aktor", None)
+        .group("0/0/1", "Licht schalten", "1.001")
+        .group("0/0/9", "Licht Status extern", "1.001")
+        .object(1, "1.001", "CWU", None, None, &["0/0/1"])
+        .build();
+
+    let text = r#"
+entities:
+  "0/0/1":
+    merge: ["0/0/9"]
+"#;
+    let ov = Overrides::parse("ha.yaml", text).unwrap();
+    let d = derive(&model, &ov);
+    // The merged GA is now consumed, so nothing 1.x remains unmapped.
+    assert!(
+        d.unmapped.get(&Some(1)).copied().unwrap_or(0) == 0,
+        "merged GA should not be unmapped: {:?}",
+        d.unmapped
+    );
+    let yaml = generate(&model, &ov).unwrap();
+    assert!(yaml.contains("switch:"), "{yaml}");
+    // 0/0/9 wired as the free state slot.
+    assert!(yaml.contains("state_address: 0/0/9"), "{yaml}");
+}
+
+#[test]
+fn exclusion_wins_over_merge_and_warns_unmapped() {
+    // 0/0/9 is both listed in `merge` and excluded by prefix "0/0/9". Exclusion
+    // wins: the merge is ignored. Because the GA is excluded it also does NOT
+    // appear in the unmapped footer (exclusions are dropped from that summary),
+    // and it is never wired as a state address.
+    let model = ModelBuilder::new("1.1.5", "Aktor", None)
+        .group("0/0/1", "Licht schalten", "1.001")
+        .group("0/0/9", "Licht Status extern", "1.001")
+        .object(1, "1.001", "CWU", None, None, &["0/0/1"])
+        .build();
+
+    let text = r#"
+global:
+  exclude:
+    - "0/0/9"
+entities:
+  "0/0/1":
+    merge: ["0/0/9"]
+"#;
+    let ov = Overrides::parse("ha.yaml", text).unwrap();
+    let yaml = generate(&model, &ov).unwrap();
+    // Exclusion wins: the excluded GA is never wired.
+    assert!(
+        !yaml.contains("0/0/9"),
+        "excluded GA must not appear: {yaml}"
+    );
+    // And excluded GAs are not counted as unmapped.
+    let d = derive(&model, &ov);
+    assert_eq!(
+        d.unmapped.get(&Some(1)).copied().unwrap_or(0),
+        0,
+        "excluded GA is neither mapped nor unmapped"
+    );
+}
+
+#[test]
+fn cover_requires_command_ga_not_a_button_sender() {
+    // An actuator owns the cover channel: 1.008 up/down command (W). A separate
+    // push-button *sends* 1.008 on a different GA (T-only). The button must not
+    // anchor a cover of its own; only the actuator's cover is produced.
+    let mut model = ModelBuilder::new("1.1.4", "Jalousieaktor", Some("Wohnen"))
+        .group("1/2/0", "Raffstore Auf/Ab", "1.008")
+        .object(20, "1.008", "CWU", Some("A"), None, &["1/2/0"])
+        .build();
+
+    // Push-button that only transmits a 1.008 up/down telegram on 1/2/5.
+    model = {
+        let pb = Device {
+            address: ia("1.1.10"),
+            name: "Taster".to_string(),
+            description: None,
+            location: None,
+            product: None,
+            channels: BTreeMap::new(),
+            com_objects: {
+                let mut m = BTreeMap::new();
+                m.insert(
+                    7,
+                    ComObject {
+                        dpt: Some(dpt("1.008")),
+                        size: None,
+                        flags: flags("CRT"),
+                        reference: None,
+                        channel: None,
+                    },
+                );
+                m
+            },
+        };
+        model.devices.insert(
+            ia("1.1.10"),
+            LoadedDevice {
+                device: pb,
+                file_stem: "pb".to_string(),
+            },
+        );
+        model.groups.groups.insert(
+            ga("1/2/5"),
+            Group {
+                name: "Taster Auf/Ab".to_string(),
+                dpt: Some(dpt("1.008")),
+                description: None,
+                ..Default::default()
+            },
+        );
+        model.links.links.insert(
+            ia("1.1.10"),
+            vec![Link {
+                object: 7,
+                name: None,
+                send: Some(ga("1/2/5")),
+                listen: vec![],
+            }],
+        );
+        model
+    };
+
+    let d = derive(&model, &Overrides::default());
+    let covers: Vec<_> = d
+        .entities
+        .iter()
+        .filter(|e| matches!(e, bussard_ha::entities::Entity::Cover(_)))
+        .collect();
+    assert_eq!(covers.len(), 1, "only the actuator anchors a cover");
+    let yaml = generate(&model, &Overrides::default()).unwrap();
+    assert!(yaml.contains("move_long_address: 1/2/0"), "{yaml}");
+    // The button's send-only GA does not become a second cover.
+    assert!(!yaml.contains("move_long_address: 1/2/5"), "{yaml}");
+}
+
+#[test]
+fn cover_wires_position_5001_and_angle_5003() {
+    // A jalousie channel with a 5.001 position (command + state) AND a 5.003 slat
+    // angle (command + state). Position and angle must land in their own slots,
+    // never cross-mapped.
+    let model = ModelBuilder::new("1.1.4", "Aktor", Some("Wohnen"))
+        .group("1/2/0", "Raffstore Auf/Ab", "1.008")
+        .group("1/2/2", "Raffstore Position", "5.001")
+        .group("1/2/3", "Raffstore Position Status", "5.001")
+        .group("1/2/4", "Raffstore Lamelle", "5.003")
+        .group("1/2/5", "Raffstore Lamelle Status", "5.003")
+        .object(20, "1.008", "CWU", Some("A"), None, &["1/2/0"])
+        .object(22, "5.001", "CWU", Some("A"), None, &["1/2/2"])
+        .object(23, "5.001", "CRTU", Some("A"), Some("1/2/3"), &[])
+        .object(24, "5.003", "CWU", Some("A"), None, &["1/2/4"])
+        .object(25, "5.003", "CRTU", Some("A"), Some("1/2/5"), &[])
+        .build();
+
+    let yaml = generate(&model, &Overrides::default()).unwrap();
+    assert!(yaml.contains("position_address: 1/2/2"), "{yaml}");
+    assert!(yaml.contains("position_state_address: 1/2/3"), "{yaml}");
+    assert!(yaml.contains("angle_address: 1/2/4"), "{yaml}");
+    assert!(yaml.contains("angle_state_address: 1/2/5"), "{yaml}");
+    // The 5.003 angle GAs must not have been mis-wired as position.
+    assert!(!yaml.contains("position_address: 1/2/4"), "{yaml}");
+}
+
+#[test]
 fn status_only_object_is_not_a_switch() {
     // A 1.001 object that only transmits status (T, no W) must not become a
     // switch — it is a binary_sensor.

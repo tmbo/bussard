@@ -176,10 +176,17 @@ impl BusConnection for Tunnel {
 
 impl Drop for Tunnel {
     fn drop(&mut self) {
-        // Abort the background task if the handle is dropped without close().
-        if let Some(task) = self.task.take() {
-            task.abort();
-        }
+        // Do NOT abort the task. Dropping the `Tunnel` drops `self.commands`
+        // (the only command sender), so the task's `commands.recv()` yields
+        // `None` and its `None` branch runs `do_close`, which sends a
+        // DISCONNECT_REQUEST and briefly awaits the response before exiting.
+        // Aborting here would kill that graceful close and leak the gateway's
+        // tunnel slot (~2 min hold) — see issue #31.
+        //
+        // The task is detached (its `JoinHandle` is simply dropped): it owns its
+        // socket and channel and finishes on its own. Callers that need to *wait*
+        // for the close to complete use `close().await` instead of dropping.
+        self.task.take();
     }
 }
 

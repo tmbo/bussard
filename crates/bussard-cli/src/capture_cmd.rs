@@ -7,7 +7,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use bussard_monitor::stream::{Flow, TelegramSink};
-use bussard_monitor::{CaptureRecord, CaptureWriter, DecodedTelegram, Filter};
+use bussard_monitor::{
+    CancelToken, CaptureRecord, CaptureWriter, DecodedTelegram, Filter, run_stream_cancellable,
+};
 use bussard_transport::{TimestampedFrame, TransportError};
 
 use crate::conn_cmd::{ConnOverrides, load_model_optional, resolve_config};
@@ -56,16 +58,21 @@ pub fn run(
             }
         });
 
-        tokio::select! {
-            res = bussard_monitor::run_stream(&config, model.as_ref(), &mut sink) => {
-                res.map_err(anyhow::Error::from)?;
-            }
-            _ = tokio::signal::ctrl_c() => {
+        // On Ctrl-C, cancel the stream so the bus connection closes cleanly
+        // (releasing the gateway tunnel slot) rather than being dropped — #31.
+        let (cancel, cancel_watch) = CancelToken::new();
+        let ctrl_c_cancel = cancel.clone();
+        let signal = tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
                 eprintln!();
                 tracing::info!("interrupted; flushing capture");
+                ctrl_c_cancel.cancel();
             }
-        }
+        });
+        let res = run_stream_cancellable(&config, model.as_ref(), &mut sink, cancel_watch).await;
+        signal.abort();
         ticker.abort();
+        res.map_err(anyhow::Error::from)?;
         Ok::<(), anyhow::Error>(())
     })?;
 

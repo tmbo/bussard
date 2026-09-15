@@ -82,13 +82,13 @@ fn from_json_tiny_fixture() {
 
 /// Path to the real `.knxproj` under test, if present.
 fn real_knxproj() -> Option<PathBuf> {
-    let p = repo_root().join("home_test_outdated.knxproj");
+    let p = repo_root().join("home_test.knxproj");
     p.exists().then_some(p)
 }
 
 /// Path to the oracle JSON dump, if present.
 fn oracle_json() -> Option<PathBuf> {
-    let p = repo_root().join("fixtures/private/home_test_outdated.xknxproject.json");
+    let p = repo_root().join("fixtures/private/home_test.xknxproject.json");
     p.exists().then_some(p)
 }
 

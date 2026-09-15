@@ -6,7 +6,9 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use bussard_monitor::stream::{Flow, TelegramSink};
-use bussard_monitor::{DecodedTelegram, Filter, json_line, pretty_line, run_stream};
+use bussard_monitor::{
+    CancelToken, DecodedTelegram, Filter, json_line, pretty_line, run_stream_cancellable,
+};
 use bussard_transport::{TimestampedFrame, TransportError};
 
 use crate::conn_cmd::{ConnOverrides, load_model_optional, resolve_config};
@@ -29,16 +31,24 @@ pub fn run(
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
         let mut sink = PrintSink::new(json, filter);
-        tokio::select! {
-            res = run_stream(&config, model.as_ref(), &mut sink) => {
-                res.map_err(anyhow::Error::from)?;
-            }
-            _ = tokio::signal::ctrl_c() => {
+        // On Ctrl-C, *cancel* the stream (which closes the bus connection
+        // cleanly, releasing the gateway tunnel slot) rather than dropping it
+        // mid-flight — see issue #31.
+        let (cancel, cancel_watch) = CancelToken::new();
+        let ctrl_c_cancel = cancel.clone();
+        let signal = tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
                 // Print a newline so the shell prompt is clean after ^C.
                 eprintln!();
                 tracing::info!("interrupted; shutting down monitor");
+                ctrl_c_cancel.cancel();
             }
-        }
+        });
+        let res = run_stream_cancellable(&config, model.as_ref(), &mut sink, cancel_watch).await;
+        // Stop the signal task (its own future is cheap to drop; the stream has
+        // already closed the connection cleanly on cancel).
+        signal.abort();
+        res.map_err(anyhow::Error::from)?;
         Ok::<(), anyhow::Error>(())
     })?;
 

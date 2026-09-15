@@ -100,6 +100,12 @@ pub struct Layer4Connection<'a, C: BusConnection> {
     timeouts: Timeouts,
     send_seq: u8,
     recv_seq: u8,
+    /// A response NDT the device folded in *before* its `T_ACK` (some stacks
+    /// answer and acknowledge in one step). [`await_ack`](Self::await_ack)
+    /// stashes its decoded `(apci, data)` here after ACKing it and advancing the
+    /// receive sequence; [`recv_response`](Self::recv_response) drains this
+    /// first so the folded answer is not lost.
+    pending_response: Option<(u16, Vec<u8>)>,
     /// Set once the peer disconnects or a protocol error occurs, so a stale
     /// `disconnect()` is a no-op.
     closed: bool,
@@ -135,6 +141,7 @@ impl<'a, C: BusConnection> Layer4Connection<'a, C> {
             timeouts,
             send_seq: 0,
             recv_seq: 0,
+            pending_response: None,
             closed: false,
         })
     }
@@ -163,10 +170,16 @@ impl<'a, C: BusConnection> Layer4Connection<'a, C> {
                     return Ok(());
                 }
                 AckOutcome::Nak => {
-                    self.mark_closed_disconnect().await;
-                    return Err(MgmtError::Nak {
-                        address: self.target,
-                    });
+                    // Style-1: a NAK asks for a repeat. Retransmit up to
+                    // `max_repetitions` times before giving up and tearing the
+                    // connection down.
+                    if attempt >= self.timeouts.max_repetitions {
+                        self.mark_closed_disconnect().await;
+                        return Err(MgmtError::Nak {
+                            address: self.target,
+                        });
+                    }
+                    attempt += 1;
                 }
                 AckOutcome::Disconnected => {
                     self.closed = true;
@@ -197,6 +210,11 @@ impl<'a, C: BusConnection> Layer4Connection<'a, C> {
     /// sources) are skipped. A wrong-sequence NDT is acknowledged with
     /// `expected - 1` and dropped. Times out as [`MgmtError::NoResponse`].
     pub async fn recv_response(&mut self) -> Result<(u16, Vec<u8>)> {
+        // A folded-ACK response that arrived while we were awaiting the T_ACK has
+        // already been acknowledged and sequenced; hand it back first.
+        if let Some(pending) = self.pending_response.take() {
+            return Ok(pending);
+        }
         if self.closed {
             return Err(MgmtError::Disconnected {
                 address: self.target,
@@ -323,10 +341,21 @@ impl<'a, C: BusConnection> Layer4Connection<'a, C> {
                 TpciKind::Disconnect => return AckOutcome::Disconnected,
                 TpciKind::NumberedData(nseq) => {
                     // The device answered before we saw its ACK (some stacks fold
-                    // the ACK). Acknowledge the data so it does not retransmit,
-                    // and treat our send as acknowledged.
+                    // the ACK into the response). Acknowledge the data so it does
+                    // not retransmit, stash the APDU as the pending response and
+                    // advance the receive sequence, and treat our send as
+                    // acknowledged. Without stashing, the folded answer would be
+                    // dropped and `recv_response` would wait forever for a second
+                    // NDT that never comes (permanent desync).
                     if nseq == self.recv_seq {
                         let _ = self.send_control(tpci::t_ack(nseq)).await;
+                        self.recv_seq = (self.recv_seq + 1) & 0x0f;
+                        self.pending_response = Some(extract_apdu(&frame));
+                    } else {
+                        // A duplicate/out-of-window folded NDT: ACK expected-1 and
+                        // drop it, per the style-1 procedure.
+                        let ack_seq = self.recv_seq.wrapping_sub(1) & 0x0f;
+                        let _ = self.send_control(tpci::t_ack(ack_seq)).await;
                     }
                     return AckOutcome::Acked;
                 }
@@ -525,6 +554,59 @@ mod tests {
             })
             .collect();
         assert_eq!(acks, vec![15, 0], "wrong-seq ACKed with expected-1, then 0");
+    }
+
+    #[tokio::test]
+    async fn folded_ack_response_is_delivered() {
+        // The device folds the ACK: instead of a T_ACK, it answers directly with
+        // the response NDT(0). await_ack must stash it, advance recv_seq and ACK
+        // it; recv_response then drains the stash. Without the fix the APDU is
+        // lost and recv_response times out.
+        let inbox = vec![ndt_from_dev(0, 0x340, &[0x07, 0xB0])];
+        let mut bus = ScriptedBus::new(inbox);
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool())
+            .await
+            .unwrap();
+        let (apci, data) = l4.request(0x300, &[0x00]).await.unwrap();
+        assert_eq!(apci, 0x340);
+        assert_eq!(data, vec![0x07, 0xB0]);
+        // The receive sequence advanced exactly once.
+        assert_eq!(l4.recv_seq, 1);
+        drop(l4);
+        // We ACKed the folded response (seq 0) even though no separate T_ACK came.
+        let acks: Vec<u8> = bus
+            .sent
+            .iter()
+            .filter_map(|f| match tpci::classify(f.tpci_octet()) {
+                TpciKind::Ack(s) => Some(s),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(acks, vec![0], "the folded response NDT(0) was acknowledged");
+    }
+
+    #[tokio::test]
+    async fn nak_retries_before_failing() {
+        // A device that NAKs every attempt should be retransmitted
+        // max_repetitions times before surfacing MgmtError::Nak.
+        let mut inbox = Vec::new();
+        for _ in 0..4 {
+            inbox.push(control_from_dev(tpci::t_nak(0)));
+        }
+        let mut bus = ScriptedBus::new(inbox);
+        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast())
+            .await
+            .unwrap();
+        let err = l4.send_data(0x300, &[0x00]).await.unwrap_err();
+        assert!(matches!(err, MgmtError::Nak { .. }), "got {err:?}");
+        // fast() has max_repetitions = 1: one initial send + one retransmit = 2
+        // NDT sends before the NAK is fatal.
+        let ndt_sends = bus
+            .sent
+            .iter()
+            .filter(|f| matches!(tpci::classify(f.tpci_octet()), TpciKind::NumberedData(_)))
+            .count();
+        assert_eq!(ndt_sends, 2, "one initial send plus one retransmit on NAK");
     }
 
     #[tokio::test]

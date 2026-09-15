@@ -2,8 +2,8 @@
 //! parsers (bussard-model). Added by the hardening pass.
 //!
 //! These are table-driven loop tests over every implemented DPT plus hostile
-//! parse inputs. A test tagged `#[ignore = "exposes bug: ..."]` documents a real
-//! defect in `src/` that this pass is not permitted to fix (see the report).
+//! parse inputs. The defects they originally quarantined behind `#[ignore]` have
+//! since been fixed (issue #34), so every test here now runs.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -60,11 +60,15 @@ fn decode_boundary_bytes_never_panic() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn float16_invalid_sentinel_and_extremes_decode_without_panic() {
-    // 0x7FFF is the KNX "invalid data" sentinel; bussard decodes it as a normal
-    // float (documented observation, not a panic). We only assert no panic and a
-    // Float variant.
-    for bytes in [[0x7F, 0xFF], [0xFF, 0xFF], [0x80, 0x00], [0x00, 0x00]] {
+fn float16_invalid_sentinel_decodes_to_raw_and_extremes_are_floats() {
+    // 0x7FFF is the KNX DPT 9 "invalid data" sentinel; bussard now surfaces it as
+    // `Raw` rather than a bogus ~670760 float (issue #34, fix 5).
+    assert_eq!(
+        decode(&dpt("9.001"), &[0x7F, 0xFF]),
+        TypedValue::Raw(vec![0x7F, 0xFF])
+    );
+    // Other extremes remain ordinary floats and never panic.
+    for bytes in [[0xFF, 0xFF], [0x80, 0x00], [0x00, 0x00]] {
         let v = decode(&dpt("9.001"), &bytes);
         assert!(
             matches!(v, TypedValue::Float { .. }),
@@ -95,17 +99,15 @@ fn float16_full_exponent_sweep_roundtrips_or_errors_cleanly() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn float32_nan_inf_decode_and_reencode() {
-    // NaN and infinities are valid IEEE bit patterns; decode must produce a
-    // Float and re-encode must round-trip the bytes.
-    let cases: &[[u8; 4]] = &[
-        [0x7f, 0xc0, 0x00, 0x00], // NaN
-        [0x7f, 0x80, 0x00, 0x00], // +Inf
-        [0xff, 0x80, 0x00, 0x00], // -Inf
+fn float32_nan_inf_decode_lenient_but_encode_rejects_non_finite() {
+    // NaN and infinities are valid IEEE bit patterns; decode stays lenient and
+    // produces a Float. Finite values re-encode and round-trip the bytes;
+    // non-finite values are rejected on encode (issue #34, fix 2).
+    let finite: &[[u8; 4]] = &[
         [0x00, 0x00, 0x00, 0x00], // 0
         [0x80, 0x00, 0x00, 0x00], // -0
     ];
-    for bytes in cases {
+    for bytes in finite {
         let v = decode(&dpt("14.056"), bytes);
         match &v {
             TypedValue::Float { .. } => {
@@ -114,6 +116,22 @@ fn float32_nan_inf_decode_and_reencode() {
             }
             other => panic!("14.056 {bytes:?} decoded to {other:?}"),
         }
+    }
+    let non_finite: &[[u8; 4]] = &[
+        [0x7f, 0xc0, 0x00, 0x00], // NaN
+        [0x7f, 0x80, 0x00, 0x00], // +Inf
+        [0xff, 0x80, 0x00, 0x00], // -Inf
+    ];
+    for bytes in non_finite {
+        let v = decode(&dpt("14.056"), bytes);
+        assert!(matches!(v, TypedValue::Float { .. }), "decode lenient");
+        assert!(
+            matches!(
+                encode(&dpt("14.056"), &v),
+                Err(EncodeError::OutOfRange { .. })
+            ),
+            "encode rejects non-finite {bytes:?}"
+        );
     }
 }
 
@@ -202,13 +220,12 @@ const HOSTILE_INPUTS: &[&str] = &[
 
 #[test]
 fn parse_value_never_panics_on_hostile_input() {
-    // NOTE: DPT 9.x is deliberately excluded here because it DOES panic on large
-    // magnitudes / infinities (e.g. "1e999" -> +Inf). That defect is captured by
-    // the dedicated, ignored `parse_value_9x_large_magnitude_should_error_not_panic`
-    // test so this broad guard can stay green for the rest of the DPTs.
+    // DPT 9.x is now included: the encode_float16 overflow that made large
+    // magnitudes / infinities panic is fixed (issue #34, fix 1), so 9.x must also
+    // survive every hostile input with a clean Err.
     let parseable = &[
-        "1.001", "1.008", "5.001", "5.003", "5.010", "6.010", "7.001", "8.001", "12.001", "13.013",
-        "14.056", "17.001", "18.001", "20.102",
+        "1.001", "1.008", "5.001", "5.003", "5.010", "6.010", "7.001", "8.001", "9.001", "12.001",
+        "13.013", "14.056", "17.001", "18.001", "20.102",
     ];
     for d in parseable {
         let dp = dpt(d);
@@ -223,23 +240,18 @@ fn parse_value_never_panics_on_hostile_input() {
     }
 }
 
-/// BUG: parse_value for a 2-byte-float DPT (9.x) panics with an arithmetic
-/// overflow when handed any large finite (or infinite) magnitude. The CLI
-/// `write` command and MCP `knx_write_group` feed user/LLM text straight into
-/// `parse_value`, so `bussard write <ga> 1e9` (DPT 9) aborts the process.
+/// Regression (was issue #34, fix 1): parse_value for a 2-byte-float DPT (9.x)
+/// used to panic with an arithmetic overflow when handed any large finite (or
+/// infinite) magnitude. `bussard write <ga> 1e9` (DPT 9) aborted the process.
 ///
-/// Root cause: `codec::parse_value` accepts the float, then `encode_float16`
-/// (called only to range-check) does `(value*100.0).round() as i32`, which
-/// saturates to `i32::MAX`/`i32::MIN` for large inputs. The subsequent halving
-/// loop computes `(mantissa + 1) / 2` / `(mantissa - 1) / 2` on `i32::MAX` /
-/// `i32::MIN`, overflowing (panic in debug; wrap in release). See
-/// `crates/bussard-model/src/codec.rs:316-327` (panic at :322 / :324).
-///
-/// Expected: parse_value should return `ParseValueError::OutOfRange`, matching
-/// its documented "roughly -671088.64 .. 670760.96" contract.
+/// Root cause was `encode_float16` (called by parse_value only to range-check)
+/// doing `(value*100.0).round() as i32`, which saturated to `i32::MAX`/`i32::MIN`
+/// for large inputs; the mantissa-halving loop then overflowed on `mantissa ± 1`.
+/// Fixed by rejecting non-finite and out-of-range values before the integer
+/// math, so parse_value returns `ParseValueError::OutOfRange` per its documented
+/// "roughly -671088.64 .. 670760.96" contract.
 #[test]
-#[ignore = "exposes bug: parse_value(9.x, large/inf) panics with i32 add/sub overflow in encode_float16 (codec.rs:322/324)"]
-fn parse_value_9x_large_magnitude_should_error_not_panic() {
+fn parse_value_9x_large_magnitude_errors_not_panic() {
     for input in ["1e9", "inf", "-1e9", "21474836.48", "1e30"] {
         let r = parse_value(&dpt("9.001"), input);
         assert!(
@@ -249,32 +261,60 @@ fn parse_value_9x_large_magnitude_should_error_not_panic() {
     }
 }
 
-/// Observation (not asserted as bug here, kept green): parse_value(9.x, "nan")
-/// silently succeeds as a value that later encodes to 0. It does NOT panic
-/// because `NaN as i32 == 0`. It is still wrong (a "nan" write becomes 0.0 °C),
-/// but distinct from the overflow panic above.
+/// Regression (was issue #34, fix 2): parse_value(9.x, "nan") used to silently
+/// succeed and later encode to 0.0 (a "nan" write became 0.0 °C, because
+/// `NaN as i32 == 0`). It is now rejected as OutOfRange, like any other value
+/// outside the DPT 9 representable range.
 #[test]
-fn parse_value_9x_nan_is_accepted_as_zeroish() {
-    // Documented current behaviour: "nan" parses to a NaN float.
-    let r = parse_value(&dpt("9.001"), "nan");
-    assert!(r.is_ok(), "current behaviour accepts nan: {r:?}");
-    if let Ok(v) = r {
-        // encode does not panic for NaN (unlike inf) and yields the zero encoding.
-        let enc = encode(&dpt("9.001"), &v).expect("nan encodes to something");
-        assert_eq!(enc, vec![0x00, 0x00], "nan encodes as zero float");
-    }
+fn parse_value_9x_nan_is_rejected() {
+    assert!(
+        matches!(
+            parse_value(&dpt("9.001"), "nan"),
+            Err(ParseValueError::OutOfRange { .. })
+        ),
+        "9.001 nan should be OutOfRange"
+    );
+    // A directly-constructed NaN Float also fails to encode rather than
+    // producing the zero encoding.
+    let nan = TypedValue::Float {
+        value: f32::NAN,
+        unit: Some("°C"),
+    };
+    assert!(matches!(
+        encode(&dpt("9.001"), &nan),
+        Err(EncodeError::OutOfRange { .. })
+    ));
 }
 
-/// DPT 14.x accepts NaN/Inf and round-trips the bit pattern, but a NaN value is
-/// then `!= itself`, so a naive parse->encode->decode equality check fails.
-/// Documented as a robustness observation.
+/// Regression (was issue #34, fix 2): DPT 14.x used to accept NaN/Inf on encode
+/// and round-trip the bit pattern. NaN/Inf are now rejected on both parse and
+/// encode (a NaN/Inf write is a typo, not a bus value); decode stays lenient so
+/// any 4-byte IEEE pattern seen on the wire still renders.
 #[test]
-fn parse_value_14x_nan_roundtrip_is_not_equal_to_itself() {
-    let v = parse_value(&dpt("14.056"), "nan").expect("14.x accepts nan");
-    let bytes = encode(&dpt("14.056"), &v).expect("encode nan");
-    let back = decode(&dpt("14.056"), &bytes);
-    // NaN != NaN, so the values are unequal even though the bytes round-trip.
-    assert_ne!(v, back, "NaN is never equal to itself");
+fn parse_value_14x_nan_and_inf_are_rejected() {
+    for input in ["nan", "inf", "-inf", "Infinity"] {
+        assert!(
+            matches!(
+                parse_value(&dpt("14.056"), input),
+                Err(ParseValueError::OutOfRange { .. })
+            ),
+            "14.056 {input:?} should be OutOfRange"
+        );
+    }
+    // encode of a constructed NaN Float is rejected too.
+    let nan = TypedValue::Float {
+        value: f32::NAN,
+        unit: None,
+    };
+    assert!(matches!(
+        encode(&dpt("14.056"), &nan),
+        Err(EncodeError::OutOfRange { .. })
+    ));
+    // Decode remains lenient: a NaN bit pattern still decodes to a Float.
+    assert!(matches!(
+        decode(&dpt("14.056"), &[0x7f, 0xc0, 0x00, 0x00]),
+        TypedValue::Float { .. }
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -323,21 +363,59 @@ fn parse_value_percent_accepts_scientific_and_signed_zero() {
 // encode(): DPT 5.003 angle mismatch.
 // ---------------------------------------------------------------------------
 
-/// BUG: parse_value(5.003, "180") produces `Unsigned { unit: Some("°") }`, but
-/// encode has no arm for DPT main 5 sub 3 that accepts a unit-bearing Unsigned —
-/// its 5.x arm only matches `(_, Unsigned)` with `v <= 255`, and an angle can be
-/// up to 360. So `bussard write <ga> 360` for a 5.003 GA parses fine then fails
-/// to encode (EncodeError::Mismatch) — the value cannot be sent even though it
-/// parsed. 5.003 angles 256..=360 are unsendable.
-///
-/// See `codec::encode` main==5 arm (`crates/bussard-model/src/codec.rs:840-852`):
-/// the `Unsigned` guard is `*v <= 255`, but 5.003 permits 0..=360.
+/// Regression (was issue #34, fix 3): parse_value(5.003, "360") produces
+/// `Unsigned { unit: Some("°") }`, but encode used to have no scaled arm for DPT
+/// 5.003, so angles 256..=360 parsed then failed to encode (Mismatch) — they
+/// were unsendable. Now encode scales degrees 0..=360 onto the raw 0..=255 byte,
+/// the inverse of the decode scaling.
 #[test]
-#[ignore = "exposes bug: DPT 5.003 angle 256..=360 parses but encode() rejects it (Mismatch); values >255 unsendable (codec.rs:850)"]
-fn dpt_5003_angle_above_255_should_encode() {
+fn dpt_5003_angle_above_255_encodes() {
     let v = parse_value(&dpt("5.003"), "360").expect("5.003 parses 360");
-    let r = encode(&dpt("5.003"), &v);
-    assert!(r.is_ok(), "5.003 angle 360 should encode, got {r:?}");
+    assert_eq!(
+        encode(&dpt("5.003"), &v).expect("5.003 angle 360 encodes"),
+        vec![255]
+    );
+
+    // Round-trip both directions within the quantization: encode(decode(raw)) is
+    // stable to within one raw step, and decode(encode(deg)) preserves degrees to
+    // within the ~1.41°/step resolution.
+    for raw in 0u8..=255 {
+        if let TypedValue::Unsigned { value: deg, .. } = decode(&dpt("5.003"), &[raw]) {
+            let re = encode(
+                &dpt("5.003"),
+                &TypedValue::Unsigned {
+                    value: deg,
+                    unit: Some("°"),
+                },
+            )
+            .expect("re-encode angle");
+            assert!(
+                (re[0] as i16 - raw as i16).abs() <= 1,
+                "raw {raw} -> {deg}° -> {} not within one step",
+                re[0]
+            );
+        } else {
+            panic!("5.003 decode should be Unsigned");
+        }
+    }
+    for deg in [0u32, 45, 90, 180, 270, 360] {
+        let bytes = encode(
+            &dpt("5.003"),
+            &TypedValue::Unsigned {
+                value: deg,
+                unit: Some("°"),
+            },
+        )
+        .expect("encode angle");
+        if let TypedValue::Unsigned { value: back, .. } = decode(&dpt("5.003"), &bytes) {
+            assert!(
+                (back as i64 - deg as i64).abs() <= 2,
+                "{deg}° -> {back}° round-trip drifted"
+            );
+        } else {
+            panic!("expected unsigned angle");
+        }
+    }
 }
 
 #[test]

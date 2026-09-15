@@ -149,9 +149,11 @@ async fn connect_client_over(
             fn on_telegram(
                 &mut self,
                 t: &bussard_monitor::DecodedTelegram,
-                _f: &bussard_transport::TimestampedFrame,
+                f: &bussard_transport::TimestampedFrame,
             ) -> bussard_monitor::stream::Flow {
-                self.ring.push(t.clone());
+                // Same as run.rs's RingSink: carry the message code so the
+                // read tool can skip L_Data.con echoes (issue #32).
+                self.ring.push_with_code(t.clone(), f.frame.message_code);
                 bussard_monitor::stream::Flow::Continue
             }
             fn on_connect(&mut self, _r: bool) -> bussard_monitor::stream::Flow {
@@ -254,6 +256,100 @@ async fn read_group_sends_read_and_returns_value() {
     assert_eq!(s["ga"], "3/2/0");
     assert_eq!(s["ok"], true, "response was {s:?}");
     assert_eq!(s["value"], "Alarm");
+    assert_eq!(s["dpt"], "1.005");
+
+    client.cancel().await.unwrap();
+    server_task.abort();
+    let _ = gw_task.await;
+}
+
+/// Issue #32: the gateway echoes our own request back as `L_Data.con` BEFORE
+/// the device's response arrives. `knx_read_group` must skip the echo(es) and
+/// return the real `L_Data.ind` GroupValueResponse.
+#[tokio::test]
+async fn read_group_skips_con_echo_and_returns_device_response() {
+    use bussard_transport::cemi::MessageCode;
+
+    let (addr, gw) = bind_mock().await;
+    let channel = 0x45u8;
+
+    let gw_task = tokio::spawn(async move {
+        let mut buf = [0u8; 1024];
+        // CONNECT handshake.
+        let (n, peer) = gw.recv_from(&mut buf).await.unwrap();
+        let parsed = knxnet::parse(&buf[..n]).unwrap();
+        assert_eq!(parsed.service, ServiceType::ConnectRequest);
+        let resp = knxnet_frame(
+            ServiceType::ConnectResponse,
+            &connect_response_body(channel, &gw),
+        );
+        gw.send_to(&resp, peer).await.unwrap();
+
+        // Expect the injected GroupValueRead; ACK it, then push the echo(es)
+        // BEFORE the device's response.
+        loop {
+            let (n, peer) = gw.recv_from(&mut buf).await.unwrap();
+            let parsed = knxnet::parse(&buf[..n]).unwrap();
+            if parsed.service != ServiceType::TunnelingRequest {
+                continue;
+            }
+            let tr = knxnet::parse_tunneling_request(parsed.body).unwrap();
+            let ack = knxnet::tunneling_ack(tr.header.channel_id, tr.header.seq, 0);
+            gw.send_to(&ack, peer).await.unwrap();
+            if tr.cemi.apdu != Apdu::GroupValueRead {
+                continue;
+            }
+
+            // 1. The realistic con echo: our own GroupValueRead back as
+            //    L_Data.con (same GA, our source IA 0.0.255).
+            let mut read_echo = CemiFrame::group_read(ga("3/2/0"), ia("0.0.255"));
+            read_echo.message_code = MessageCode::LDataCon;
+            // 2. An adversarial con that a GA-only wait WOULD match: a
+            //    GroupValueWrite con carrying the WRONG value (No Alarm = 0).
+            let mut write_echo = CemiFrame::group_write(ga("3/2/0"), ia("0.0.255"), &[0]);
+            write_echo.message_code = MessageCode::LDataCon;
+            // 3. The device's real answer: alarm = 1.
+            let response = CemiFrame::group_response(ga("3/2/0"), ia("1.1.30"), &[1]);
+
+            for (seq, frame) in [read_echo, write_echo, response].iter().enumerate() {
+                let hdr = knxnet::ConnectionHeader {
+                    channel_id: channel,
+                    seq: seq as u8,
+                };
+                let ind = knxnet::tunneling_request(hdr, frame);
+                gw.send_to(&ind, peer).await.unwrap();
+                let _ = gw.recv_from(&mut buf).await; // client ACK
+            }
+            break;
+        }
+
+        // Drain any later frames (disconnect) quietly.
+        let _ = tokio::time::timeout(Duration::from_millis(200), gw.recv_from(&mut buf)).await;
+    });
+
+    let config = ConnectionConfig::tunnel(addr);
+    let (state, rx) = state_for();
+    let (client, server_task) = connect_client_over(state, config, rx).await;
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let mut args = serde_json::Map::new();
+    args.insert("ga".to_string(), serde_json::json!("3/2/0"));
+    let res = tokio::time::timeout(
+        Duration::from_secs(5),
+        client.call_tool(CallToolRequestParams::new("knx_read_group").with_arguments(args)),
+    )
+    .await
+    .expect("read_group returns in time")
+    .unwrap();
+
+    let s = res.structured_content.expect("structured");
+    assert_eq!(s["ga"], "3/2/0");
+    assert_eq!(s["ok"], true, "response was {s:?}");
+    assert_eq!(
+        s["value"], "Alarm",
+        "the DEVICE response (Alarm) must be returned, not the con echo: {s:?}"
+    );
     assert_eq!(s["dpt"], "1.005");
 
     client.cancel().await.unwrap();
