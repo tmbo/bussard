@@ -17,10 +17,11 @@ obtain it from:
 bussard reads these files; it never ships or redistributes them. See
 [the never-redistribute rule](#the-never-redistribute-rule) below.
 
-> Planned ([#27](https://github.com/tmbo/bussard/issues/27)): a pointer index that maps
-> an order number to where its `.knxprod` can be downloaded, so bussard can tell you
-> which file to fetch for a device it sees on the bus, without ever hosting the file
-> itself.
+To save you hunting for the right file, bussard ships a
+[pointer index](#the-product-data-pointer-index) that maps an order number to
+where its `.knxprod` can be downloaded — the URL and a checksum, never the file
+itself. `bussard import-product --order-number <ORDER>` uses it to fetch and
+verify the file for a device you saw on the bus.
 
 ## What is inside a `.knxprod`
 
@@ -87,6 +88,88 @@ model filename is just `<application-id>.yaml`, with no redundant prefix.
 
 Output is deterministic: running the command twice on the same file produces
 byte-identical model YAML.
+
+## The product-data pointer index
+
+Finding the right `.knxprod` for a device you just scanned means knowing its
+order number and then hunting the manufacturer's site. The pointer index does
+that lookup for you. It is a small JSON file, `data/product-index.json`, that
+ships with bussard and holds *pointers only* — a download URL and a checksum for
+each product database, never the copyrighted payload.
+
+```
+bussard import-product --list                          # show the index
+bussard import-product --order-number "AKK-0216.03"    # look up, confirm, download, import
+bussard import-product --order-number "AKK-0216.03" --yes-download   # skip the prompt
+```
+
+With `--order-number`, bussard:
+
+1. normalizes the order number (trims whitespace, upper-cases) and looks it up
+   in the index,
+2. shows you what it found and where it will download from,
+3. asks for confirmation (a TTY prompt, or `--yes-download` to skip it; on a
+   non-TTY it refuses unless `--yes-download` is given),
+4. downloads to memory with a hard 100 MiB cap,
+5. verifies the download's byte size **and** SHA-256 against the index — a
+   mismatch is a hard error, since it means the file is not the one the index
+   vouches for (the vendor may have re-published it), and
+6. caches the verified file under `<dir>/vendor/` and runs the normal import on
+   it.
+
+### Index schema
+
+`data/product-index.json` is `{ "entries": [ … ] }`, each entry:
+
+| field             | type      | meaning |
+| ----------------- | --------- | ------- |
+| `manufacturer`    | string    | Human-readable name, e.g. `"MDT"`. |
+| `manufacturer_id` | string    | KNX id as inside the `.knxprod`, e.g. `"M-0083"`. |
+| `order_numbers`   | [string]  | Every order number this download serves, verbatim as in `Hardware.xml` (e.g. `"AKK-0216.03"`). One file often bundles a whole family. |
+| `name`            | string    | Product/family display name. |
+| `url`             | string    | Vendor-hosted download URL for the `.knxprod`. |
+| `sha256`          | string    | Lower-case hex SHA-256 of the download. |
+| `size`            | number    | Exact byte size of the download. |
+| `filename`        | string    | Original vendor filename; also the cache name under `vendor/`. |
+| `application_ref` | string?   | Optional: the application-program ref an order number resolves to (documentation only). |
+| `redistributable` | bool      | Whether bussard may mirror the file itself. Always `false` for vendor-hosted copyrighted data. |
+| `notes`           | string?   | Optional version / date-verified / caveats. |
+
+Order-number matching is case- and whitespace-insensitive but preserves interior
+separators: `AKK-0216.03` and `akk-0216.03` match, but `AKK021603` does not,
+because `-` and `.` distinguish real KNX order numbers.
+
+### What is seeded, and the archive question
+
+The seed entries are MDT switch-actuator databases, verified by downloading them
+and computing the checksum:
+
+- **MDT AKK family** (`AKK-0216.03`, `AKK-0416.03`, …): a single bare `.knxprod`
+  hosted directly at mdt.de.
+- **MDT AKS/AKI family** (`AKS-0216.03`, `AKI-0416.04`, …): likewise a single
+  bare `.knxprod`.
+
+The fetch path deliberately handles **only bare `.knxprod` files** — the index
+points at direct `.knxprod` downloads, and the fetched bytes are imported as-is.
+This keeps the download path simple and the checksum meaningful (it covers the
+exact file ETS would read).
+
+Two vendor realities shaped that decision:
+
+- **MDT** hosts bare `.knxprod` files directly on each product page. Perfect for
+  the index; no archive handling needed.
+- **OpenKNX** publishes GitHub releases with *stable* URLs, which would be ideal
+  redistributable seeds — but their release `.zip` bundles do **not** contain a
+  built `.knxprod`. They ship the raw ETS `data/*.xml` plus a `Build-knxprod.ps1`
+  that runs OpenKNXproducer to assemble the `.knxprod` on your machine. So there
+  is no bare `.knxprod` to point at, and bussard does not run their build step.
+  If OpenKNX later attaches built `.knxprod` assets to releases, they can be
+  added as `redistributable: true` entries.
+
+If a future vendor only offers a zip-of-`.knxprod`, the honest options are to
+extract-on-fetch (with the inner filename recorded in the entry) or to skip it;
+for now every seeded entry is a direct `.knxprod`, so no archive extraction code
+exists.
 
 ## The model file format
 

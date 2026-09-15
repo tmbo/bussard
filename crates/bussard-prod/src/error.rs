@@ -43,6 +43,21 @@ pub enum ProdError {
         reason: String,
     },
 
+    /// The product-data pointer index could not be parsed.
+    #[error("product index: {reason}")]
+    Index {
+        /// What went wrong parsing the index.
+        reason: String,
+    },
+
+    /// A vendor download failed, was oversize, or did not match the index's
+    /// declared size or checksum.
+    #[error("fetching product data: {reason}")]
+    Fetch {
+        /// What went wrong (includes remediation guidance).
+        reason: String,
+    },
+
     /// An error from the shared ETS-XML primitive layer: XML parsing of an
     /// application program or `Hardware.xml`, and capped zip reads.
     #[error(transparent)]

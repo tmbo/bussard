@@ -25,9 +25,11 @@ pub mod application;
 mod container;
 pub mod dpt_map;
 mod error;
+pub mod fetch;
 pub mod flag_map;
 pub mod hardware;
 pub mod image;
+pub mod index;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -39,8 +41,10 @@ pub use application::{
 };
 pub use container::AppEntry;
 pub use error::{ProdError, Result};
+pub use fetch::{DownloadConsent, MAX_DOWNLOAD_BYTES, fetch_entry};
 pub use hardware::HardwareCatalog;
 pub use image::compute_parameter_image;
+pub use index::{IndexEntry, ProductIndex, normalize_order_number};
 
 /// The parsed contents of a `.knxprod`.
 #[derive(Debug, Default)]

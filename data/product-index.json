@@ -1,0 +1,48 @@
+{
+  "entries": [
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "AKK-01UP.03",
+        "AKK-02UP.03",
+        "AKK-0216.03",
+        "AKK-0416.03",
+        "AKK-0816.03",
+        "AKK-1616.03",
+        "AKK-2416.03"
+      ],
+      "name": "MDT Switch Actuator AKK (compact, REG)",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_AKK_03_Switch_Actuator_V23.knxprod",
+      "sha256": "05b20395667510c16b83c47d46935a69f52b4534d71371f848f96141b74ca1b9",
+      "size": 334088,
+      "filename": "MDT_KP_AKK_03_Switch_Actuator_V23.knxprod",
+      "application_ref": "M-0083_A-000D-23-5BFD",
+      "redistributable": false,
+      "notes": "ETS5/6 database V2.3 (03/2024). One .knxprod bundles the whole AKK family. Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "AKS-01UP.03",
+        "AKS-02UP.03",
+        "AKS-0210.03",
+        "AKS-0216.03",
+        "AKS-0410.03",
+        "AKS-0416.03",
+        "AKS-0810.03",
+        "AKI-0416.04",
+        "AKI-0816.04",
+        "AKI-1216.04"
+      ],
+      "name": "MDT Switch Actuator AKS/AKI (standard 16A)",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_AKI_AKS_03_Switch_Actuator_V32d.knxprod",
+      "sha256": "c9d0cf54ebc1dad47b680f574da3004913e8c9d2d8e24281a3e6246d2f4cccd5",
+      "size": 1002017,
+      "filename": "MDT_KP_AKI_AKS_03_Switch_Actuator_V32d.knxprod",
+      "redistributable": false,
+      "notes": "ETS5/6 database V3.2d (12/2022). One .knxprod bundles the AKS and AKI families. Verified by download 2026-09-16."
+    }
+  ]
+}
