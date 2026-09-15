@@ -6,6 +6,7 @@ mod capture_cmd;
 mod conn_cmd;
 mod ha_config_cmd;
 mod import_cmd;
+mod init_cmd;
 mod mcp_cmd;
 mod monitor_cmd;
 mod read_cmd;
@@ -37,6 +38,18 @@ enum Format {
 /// The top-level subcommands.
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Create a fresh model directory: discover the gateway, write the skeleton.
+    Init {
+        /// The directory to create the model in.
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Use this gateway `host[:port]` instead of discovering one.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Configure KNXnet/IP routing (multicast) instead of tunneling.
+        #[arg(long)]
+        routing: bool,
+    },
     /// Import an existing `.knxproj` (or xknxproject JSON dump) into the model.
     Import {
         /// The `.knxproj` file to import (omit when using `--from-json`).
@@ -196,6 +209,11 @@ fn main() -> ExitCode {
 fn run(command: Command) -> anyhow::Result<ExitCode> {
     match command {
         Command::Validate { dir, format } => validate_cmd::run(&dir, format == Format::Json),
+        Command::Init {
+            dir,
+            gateway,
+            routing,
+        } => init_cmd::run(&dir, gateway.as_deref(), routing),
         Command::Import {
             project,
             from_json,
