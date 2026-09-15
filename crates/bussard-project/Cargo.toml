@@ -17,7 +17,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 # Streaming XML: quick-xml never builds a DOM, so 20+ MB manufacturer files
 # are read with bounded memory. MIT licensed.
-quick-xml = "0.36"
+quick-xml = "0.41"
 # WinZip-AES ZIP support (compression method 99). MIT licensed.
 zip = { version = "2.4", default-features = false, features = ["aes-crypto", "deflate"] }
 # ETS6 zip-password derivation: PBKDF2-HMAC-SHA256 then base64. All MIT/Apache-2.0.

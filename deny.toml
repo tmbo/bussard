@@ -1,0 +1,57 @@
+# cargo-deny configuration for bussard.
+#
+# The license gate below is this project's automated clean-room guard. bussard
+# is MIT-licensed and must never take on a copyleft dependency (GPL/LGPL/EPL/
+# MPL), which would contaminate the license and defeat the whole point of the
+# open-source reimplementation. cargo-deny fails CI if any crate in the tree
+# carries a license that is not on the allow-list, so a copyleft dep can never
+# slip in unnoticed.
+#
+# Run `cargo deny check` locally after changing dependencies.
+
+[graph]
+# Evaluate the full dependency graph for the host by default. bussard targets
+# Linux/macOS/Windows; we intentionally do not restrict targets here so the
+# gate sees every platform-specific dependency.
+all-features = true
+
+[licenses]
+# Only these licenses may appear anywhere in the dependency tree. Everything
+# here is a permissive / public-domain-equivalent license compatible with
+# shipping under MIT. Copyleft licenses (GPL, LGPL, AGPL, EPL, MPL, CDDL, ...)
+# are deliberately absent, so they FAIL the gate.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Zlib",
+    "Unicode-3.0",
+    "BSL-1.0",
+    "Unlicense",
+]
+# Fail if a crate ships no detectable license (better to find out explicitly
+# than to assume it is safe).
+confidence-threshold = 0.8
+
+[bans]
+# No banned crates for now. The license gate is the primary policy; add
+# specific crate/version bans here if a problematic dependency shows up.
+multiple-versions = "allow"
+wildcards = "allow"
+
+[advisories]
+# Security advisories: hard-fail on known vulnerabilities, warn (do not fail)
+# on unmaintained/yanked crates so they surface in CI without blocking work.
+version = 2
+yanked = "warn"
+unmaintained = "workspace"
+
+[sources]
+# Only crates.io. Git dependencies and alternative registries are forbidden so
+# every dependency is a published, auditable crate. (A git dep would also be an
+# easy way to smuggle in copyleft code past the license gate.)
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

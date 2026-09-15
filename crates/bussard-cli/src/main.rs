@@ -1,6 +1,6 @@
 //! `bussard` — an open-source CLI for KNX.
 //!
-//! Phase 0 wires up the command surface; only `validate` is functional so far.
+//! Each subcommand lives in its own `*_cmd` module and is dispatched from `main`.
 
 mod apply_cmd;
 mod assign_cmd;

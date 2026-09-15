@@ -12,7 +12,7 @@ bussard-model = { path = "../bussard-model" }
 thiserror = { workspace = true }
 # Streaming XML: quick-xml never builds a DOM, so 20+ MB application-program
 # files are read with bounded memory. MIT licensed.
-quick-xml = "0.36"
+quick-xml = "0.41"
 # ZIP support for reading `.knxproj`/`.knxprod` container entries with a size
 # cap. No AES here: encrypted `.knxproj` inner archives are handled by the
 # `bussard-project` crate. MIT licensed.
