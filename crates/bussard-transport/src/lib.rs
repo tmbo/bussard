@@ -55,7 +55,7 @@ pub mod tpci;
 mod tunnel;
 
 pub use config::{ConnectionConfig, TransportKind};
-pub use conn::{BusConnection, BusEvent, TimestampedFrame};
+pub use conn::{BusConnection, TimestampedFrame};
 pub use discovery::{discover, discover_all, local_ipv4_interfaces};
 pub use error::{Result, TransportError};
 pub use router::Router;

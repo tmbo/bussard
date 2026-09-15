@@ -170,6 +170,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bussard-bus",
+ "bussard-download",
  "bussard-ha",
  "bussard-mcp",
  "bussard-mgmt",
@@ -197,6 +198,7 @@ dependencies = [
  "bussard-mgmt",
  "bussard-model",
  "bussard-transport",
+ "serde_json",
  "thiserror",
  "tokio",
  "tracing",
@@ -235,6 +237,7 @@ dependencies = [
  "rmcp",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "tokio",
  "tracing",

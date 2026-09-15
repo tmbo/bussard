@@ -4,8 +4,8 @@
 //! `224.0.23.12:3671`) and exchanges ROUTING_INDICATION frames. Unlike
 //! tunneling there is no connection, sequence counter or ACK: sending is
 //! fire-and-forget onto the group. ROUTING_LOST_MESSAGE and ROUTING_BUSY are
-//! decoded and surfaced as [`BusEvent`]s / log warnings; on ROUTING_BUSY the
-//! sender pauses for the requested wait time.
+//! decoded and surfaced as `tracing::warn` log records; on ROUTING_BUSY the
+//! sender additionally pauses for the requested wait time.
 
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
@@ -18,7 +18,7 @@ use tokio::time::Instant;
 
 use crate::cemi::CemiFrame;
 use crate::config::ConnectionConfig;
-use crate::conn::{BusConnection, BusEvent, TimestampedFrame};
+use crate::conn::{BusConnection, TimestampedFrame};
 use crate::error::Result;
 use crate::knxnet::{self, ServiceType};
 
@@ -29,8 +29,6 @@ pub struct Router {
     /// Instant (as millis since an epoch) until which sending is paused because
     /// of a ROUTING_BUSY. Shared so it survives across `send`/`recv` calls.
     pause_until: Arc<PauseClock>,
-    /// The most recent out-of-band event, if the caller wants to poll it.
-    last_event: Option<BusEvent>,
 }
 
 /// A monotonic pause deadline stored as milliseconds since process start.
@@ -88,13 +86,7 @@ impl Router {
             socket,
             group,
             pause_until: Arc::new(PauseClock::new()),
-            last_event: None,
         })
-    }
-
-    /// The most recent out-of-band router event seen by [`recv`](Router::recv).
-    pub fn last_event(&self) -> Option<&BusEvent> {
-        self.last_event.as_ref()
     }
 
     /// Builds a UDP socket bound for multicast reception with the appropriate
@@ -169,19 +161,21 @@ impl BusConnection for Router {
                 }
                 ServiceType::RoutingBusy => {
                     if let Ok(busy) = knxnet::parse_routing_busy(parsed.body) {
+                        // Surface the back-off request and honour it. No waiter is
+                        // notified out-of-band: the actor that owns this Router
+                        // only awaits `recv`, so a `tracing::warn` is the honest
+                        // surfacing (see conn.rs BusEvent removal).
                         tracing::warn!(wait_ms = busy.wait_time_ms, "ROUTING_BUSY: pausing sends");
                         self.pause_until
                             .set_pause(Duration::from_millis(busy.wait_time_ms as u64));
-                        self.last_event = Some(BusEvent::RoutingBusy {
-                            wait_ms: busy.wait_time_ms,
-                        });
                     }
                     continue;
                 }
                 ServiceType::RoutingLostMessage => {
                     if let Ok(lost) = knxnet::parse_routing_lost(parsed.body) {
+                        // Same rationale as ROUTING_BUSY: warn, since no consumer
+                        // reads router events out of band.
                         tracing::warn!(lost = lost.lost, "ROUTING_LOST_MESSAGE");
-                        self.last_event = Some(BusEvent::RoutingLost { lost: lost.lost });
                     }
                     continue;
                 }

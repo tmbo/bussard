@@ -283,6 +283,127 @@ async fn write_group_reports_parse_error() {
     server_task.abort();
 }
 
+/// Builds a server whose state points at a pre-populated capture DB and whose
+/// ring is pre-filled, for the `knx_recent_telegrams` fallback tests.
+fn build_server_with_capture(
+    capture_db: std::path::PathBuf,
+    ring: bussard_monitor::TelegramRing,
+) -> BussardMcp {
+    let state = Arc::new(SharedState {
+        model: model(),
+        dir: std::path::PathBuf::from("knx"),
+        ring,
+        bus: BusStatus::new(TransportKind::Tunnel),
+        passive: false,
+        allow_writes: false,
+        read_limiter: ReadLimiter::new(
+            bussard_mcp::READ_MIN_INTERVAL,
+            bussard_mcp::READ_MAX_CONCURRENT,
+        ),
+        capture_db: Some(capture_db),
+        source_ia: "0.0.255".parse().unwrap(),
+    });
+    BussardMcp::new(state)
+}
+
+/// A decoded 1-bit write telegram to `dest` from `src` at `ts`, with its frame,
+/// for seeding the ring and/or the capture DB identically (so dedup can fire).
+fn decoded_pair(
+    dest: &str,
+    src: &str,
+    ts: std::time::SystemTime,
+) -> (
+    bussard_monitor::DecodedTelegram,
+    bussard_transport::TimestampedFrame,
+) {
+    let frame = bussard_transport::TimestampedFrame {
+        received_at: ts,
+        frame: bussard_transport::cemi::CemiFrame::group_write(ga(dest), ia(src), &[1]),
+    };
+    let decoded = bussard_monitor::DecodedTelegram::from_frame(&frame, None);
+    (decoded, frame)
+}
+
+#[tokio::test]
+async fn recent_telegrams_db_fallback_prefix_filters_and_dedupes() {
+    use std::time::{Duration, SystemTime};
+
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("capture.db");
+    let base = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+
+    // Seed the capture DB: three OLD rows under prefix "3/2/" plus one that must
+    // NOT match the prefix ("4/0/0"), and one row that will ALSO be in the ring
+    // (identical fields) to exercise dedup.
+    let dup = decoded_pair("3/2/9", "1.1.30", base + Duration::from_secs(50));
+    {
+        let writer = bussard_monitor::CaptureWriter::open(&db_path).unwrap();
+        let seed = |ts_off: u64, dest: &str| {
+            let (d, f) = decoded_pair(dest, "1.1.30", base + Duration::from_secs(ts_off));
+            bussard_monitor::CaptureRecord::from_decoded(&d, &f)
+        };
+        assert!(writer.record(seed(1, "3/2/1")));
+        assert!(writer.record(seed(2, "3/2/2")));
+        assert!(writer.record(seed(3, "4/0/0"))); // out of prefix
+        // The duplicate row (same instant/source/dest/payload as a ring row).
+        assert!(writer.record(bussard_monitor::CaptureRecord::from_decoded(&dup.0, &dup.1)));
+        writer.finish().unwrap();
+    }
+
+    // Seed the ring: the newest matching row plus the SAME duplicate row.
+    let ring = bussard_monitor::TelegramRing::new();
+    ring.push(dup.0.clone()); // duplicate of a DB row
+    let newest = decoded_pair("3/2/3", "1.1.30", base + Duration::from_secs(100));
+    ring.push(newest.0.clone());
+
+    let server = build_server_with_capture(db_path, ring);
+    let (client, server_task) = connect_client(server).await;
+
+    let mut args = serde_json::Map::new();
+    args.insert("ga".to_string(), serde_json::json!("3/2/"));
+    args.insert("limit".to_string(), serde_json::json!(50));
+    let res = client
+        .call_tool(CallToolRequestParams::new("knx_recent_telegrams").with_arguments(args))
+        .await
+        .unwrap();
+    let s = res.structured_content.expect("structured");
+
+    let telegrams = s["telegrams"].as_array().expect("telegrams array");
+    let dests: Vec<&str> = telegrams
+        .iter()
+        .map(|t| t["destination"].as_str().unwrap())
+        .collect();
+
+    // The out-of-prefix "4/0/0" DB row must be filtered out (this was the bug:
+    // a prefix filter previously fell through to an unfiltered SQL query).
+    assert!(
+        !dests.contains(&"4/0/0"),
+        "prefix filter must exclude 4/0/0: {dests:?}"
+    );
+    // Every returned row is under 3/2/.
+    assert!(
+        dests.iter().all(|d| d.starts_with("3/2/")),
+        "all rows under prefix: {dests:?}"
+    );
+    // The duplicate row (in both ring and DB) appears exactly once.
+    let dup_count = dests.iter().filter(|d| **d == "3/2/9").count();
+    assert_eq!(
+        dup_count, 1,
+        "ring/DB duplicate must be de-duped: {dests:?}"
+    );
+    // Chronological, newest last: the ring's 3/2/3 at +100s is the final row.
+    assert_eq!(
+        dests.last().copied(),
+        Some("3/2/3"),
+        "newest ring row is last: {dests:?}"
+    );
+    // Expected matching set: DB 3/2/1, 3/2/2, dup 3/2/9, ring 3/2/3 = 4 rows.
+    assert_eq!(s["count"], 4, "matched rows: {dests:?}");
+
+    client.cancel().await.unwrap();
+    server_task.abort();
+}
+
 #[tokio::test]
 async fn read_group_in_passive_mode_is_absent() {
     // In passive mode the tool is unregistered, so calling it errors at the

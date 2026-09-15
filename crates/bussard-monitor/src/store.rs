@@ -5,10 +5,19 @@
 //! while still reading fine with no model at all.
 //!
 //! The transport is async but `rusqlite` is synchronous, so the writer runs on
-//! a dedicated blocking thread fed by a [`tokio::sync::mpsc`] channel. Callers
-//! push [`CaptureRecord`]s through a [`CaptureWriter`]; the reader API
-//! ([`CaptureStore::query`]) is a plain synchronous SQLite read intended for
-//! later MCP use.
+//! a dedicated blocking thread fed by a [`std::sync::mpsc`] channel. Callers
+//! push [`CaptureRecord`]s through a [`CaptureWriter`] (a non-blocking `send`);
+//! the reader API ([`CaptureStore::query`]) is a plain synchronous SQLite read
+//! intended for later MCP use.
+//!
+//! # Batching
+//!
+//! The writer coalesces inserts into transactions instead of committing one per
+//! telegram: it flushes when [`BATCH_SIZE`] records have accumulated or
+//! [`BATCH_INTERVAL`] has elapsed since the batch opened, whichever comes first,
+//! and always flushes the tail on shutdown. A single transaction over many rows
+//! is far cheaper than a commit (fsync) per row, so a busy bus does not thrash
+//! the disk. Rows only become visible to readers once their batch commits.
 //!
 //! # Schema
 //!
@@ -33,7 +42,6 @@ use bussard_model::{GroupAddress, IndividualAddress, Model};
 use bussard_transport::TimestampedFrame;
 use bussard_transport::cemi::CemiFrame;
 use rusqlite::Connection;
-use tokio::sync::mpsc;
 
 use crate::decode::{DecodedTelegram, DestinationRef};
 use crate::format::json_line;
@@ -112,13 +120,21 @@ fn open_and_init(path: &Path) -> Result<Connection, rusqlite::Error> {
     Ok(conn)
 }
 
+/// Flush the batch once this many records have accumulated.
+pub const BATCH_SIZE: usize = 50;
+
+/// Flush the batch at most this long after it opened, even if under
+/// [`BATCH_SIZE`], so a trickle of telegrams still lands promptly.
+pub const BATCH_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
 /// The write side of a capture: an async handle over a background writer thread.
 ///
 /// Records pushed through [`record`](CaptureWriter::record) are batched onto a
-/// dedicated blocking thread. Dropping the writer (and any clones) closes the
-/// channel; call [`finish`](CaptureWriter::finish) to flush and join cleanly.
+/// dedicated blocking thread and committed in transactions (see the module
+/// docs). Dropping the writer (and any clones) closes the channel; call
+/// [`finish`](CaptureWriter::finish) to flush and join cleanly.
 pub struct CaptureWriter {
-    tx: Option<mpsc::UnboundedSender<CaptureRecord>>,
+    tx: Option<std::sync::mpsc::Sender<CaptureRecord>>,
     handle: Option<std::thread::JoinHandle<Result<u64, rusqlite::Error>>>,
 }
 
@@ -127,21 +143,11 @@ impl CaptureWriter {
     pub fn open(path: &Path) -> Result<CaptureWriter, StoreError> {
         // Open once here so schema/permission errors surface synchronously.
         let conn = open_and_init(path)?;
-        let (tx, mut rx) = mpsc::unbounded_channel::<CaptureRecord>();
+        let (tx, rx) = std::sync::mpsc::channel::<CaptureRecord>();
 
         let handle = std::thread::Builder::new()
             .name("bussard-capture".to_string())
-            .spawn(move || -> Result<u64, rusqlite::Error> {
-                let mut conn = conn;
-                let mut count = 0u64;
-                // Drain the channel on this blocking thread. `blocking_recv`
-                // parks the thread until a record arrives or the channel closes.
-                while let Some(rec) = rx.blocking_recv() {
-                    insert(&mut conn, &rec)?;
-                    count += 1;
-                }
-                Ok(count)
-            })
+            .spawn(move || -> Result<u64, rusqlite::Error> { write_loop(conn, rx) })
             .map_err(StoreError::Spawn)?;
 
         Ok(CaptureWriter {
@@ -188,9 +194,87 @@ impl Drop for CaptureWriter {
     }
 }
 
-/// Inserts a single record.
-fn insert(conn: &mut Connection, rec: &CaptureRecord) -> Result<(), rusqlite::Error> {
-    conn.execute(
+/// The background writer loop: drains the channel, batching inserts into
+/// transactions that flush at [`BATCH_SIZE`] records or [`BATCH_INTERVAL`],
+/// whichever comes first, and flushes the tail before returning.
+///
+/// Returns the total number of rows committed, or the first fatal SQLite error.
+fn write_loop(
+    mut conn: Connection,
+    rx: std::sync::mpsc::Receiver<CaptureRecord>,
+) -> Result<u64, rusqlite::Error> {
+    use std::sync::mpsc::RecvTimeoutError;
+    use std::time::Instant;
+
+    let mut count = 0u64;
+    let mut batch: Vec<CaptureRecord> = Vec::with_capacity(BATCH_SIZE);
+    // Deadline for the currently-open batch; `None` when the batch is empty.
+    let mut batch_deadline: Option<Instant> = None;
+
+    loop {
+        // Block indefinitely when no batch is open; otherwise wait only until
+        // this batch's flush deadline so a trickle still lands within
+        // BATCH_INTERVAL.
+        let recv = match batch_deadline {
+            None => rx.recv().map_err(|_| RecvTimeoutError::Disconnected),
+            Some(deadline) => {
+                let now = Instant::now();
+                if now >= deadline {
+                    Err(RecvTimeoutError::Timeout)
+                } else {
+                    rx.recv_timeout(deadline - now)
+                }
+            }
+        };
+
+        match recv {
+            Ok(rec) => {
+                if batch.is_empty() {
+                    batch_deadline = Some(Instant::now() + BATCH_INTERVAL);
+                }
+                batch.push(rec);
+                if batch.len() >= BATCH_SIZE {
+                    count += flush_batch(&mut conn, &mut batch)?;
+                    batch_deadline = None;
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {
+                // The open batch's interval elapsed: flush what we have.
+                count += flush_batch(&mut conn, &mut batch)?;
+                batch_deadline = None;
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                // All senders dropped: flush the tail (shutdown guarantee) and
+                // exit.
+                count += flush_batch(&mut conn, &mut batch)?;
+                return Ok(count);
+            }
+        }
+    }
+}
+
+/// Commits `batch` as a single transaction and clears it, returning the number
+/// of rows written. A no-op (returns 0) when the batch is empty.
+fn flush_batch(
+    conn: &mut Connection,
+    batch: &mut Vec<CaptureRecord>,
+) -> Result<u64, rusqlite::Error> {
+    if batch.is_empty() {
+        return Ok(0);
+    }
+    let tx = conn.transaction()?;
+    for rec in batch.iter() {
+        insert_tx(&tx, rec)?;
+    }
+    tx.commit()?;
+    let n = batch.len() as u64;
+    batch.clear();
+    Ok(n)
+}
+
+/// Inserts a single record within an open transaction.
+fn insert_tx(tx: &rusqlite::Transaction<'_>, rec: &CaptureRecord) -> Result<(), rusqlite::Error> {
+    tx.execute(
         "INSERT INTO telegrams (ts_utc, source, destination, apci, raw_cemi, decoded)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         rusqlite::params![
@@ -428,6 +512,105 @@ mod tests {
             .unwrap();
         assert_eq!(since.len(), 1);
         assert_eq!(since[0].destination, "3/2/2");
+    }
+
+    #[tokio::test]
+    async fn batch_flushes_on_size_boundary() {
+        // Writing exactly BATCH_SIZE records fills one batch; those rows must be
+        // committed and visible to an independent reader even before `finish`,
+        // because the size boundary triggers a flush.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("batch-size.db");
+
+        let writer = CaptureWriter::open(&path).unwrap();
+        for i in 0..BATCH_SIZE {
+            let f = frame(
+                &format!("3/2/{}", i % 200),
+                "1.1.30",
+                SystemTime::UNIX_EPOCH,
+            );
+            let decoded = DecodedTelegram::from_frame(&f, None);
+            assert!(writer.record(CaptureRecord::from_decoded(&decoded, &f)));
+        }
+
+        // Poll a separate reader until the size-triggered batch commits. No
+        // `finish` yet: this proves the flush happened mid-stream, not at close.
+        let store = CaptureStore::open(&path).unwrap();
+        let mut seen = 0;
+        for _ in 0..100 {
+            seen = store.count().unwrap();
+            if seen as usize >= BATCH_SIZE {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            seen as usize, BATCH_SIZE,
+            "the full batch must commit at the size boundary before finish"
+        );
+
+        writer.finish().unwrap();
+    }
+
+    #[tokio::test]
+    async fn batch_flushes_on_interval() {
+        // A sub-batch trickle (fewer than BATCH_SIZE) must still land within
+        // BATCH_INTERVAL, not sit uncommitted until shutdown.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("batch-interval.db");
+
+        let writer = CaptureWriter::open(&path).unwrap();
+        for i in 0..3u8 {
+            let f = frame(&format!("3/2/{i}"), "1.1.30", SystemTime::UNIX_EPOCH);
+            let decoded = DecodedTelegram::from_frame(&f, None);
+            assert!(writer.record(CaptureRecord::from_decoded(&decoded, &f)));
+        }
+
+        let store = CaptureStore::open(&path).unwrap();
+        // Wait comfortably longer than one interval, then confirm the trickle is
+        // visible without `finish` having been called.
+        let mut seen = 0;
+        for _ in 0..50 {
+            tokio::time::sleep(BATCH_INTERVAL / 2 + Duration::from_millis(20)).await;
+            seen = store.count().unwrap();
+            if seen == 3 {
+                break;
+            }
+        }
+        assert_eq!(
+            seen, 3,
+            "the interval flush must commit a sub-batch trickle"
+        );
+
+        writer.finish().unwrap();
+    }
+
+    #[tokio::test]
+    async fn finish_flushes_partial_tail() {
+        // A partial batch (< BATCH_SIZE) left open at shutdown must be committed
+        // by `finish` — the shutdown-flush guarantee — and counted.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("batch-tail.db");
+
+        let writer = CaptureWriter::open(&path).unwrap();
+        let n = BATCH_SIZE + 7; // one full batch plus a partial tail
+        for i in 0..n {
+            let f = frame(
+                &format!("3/2/{}", i % 200),
+                "1.1.30",
+                SystemTime::UNIX_EPOCH,
+            );
+            let decoded = DecodedTelegram::from_frame(&f, None);
+            assert!(writer.record(CaptureRecord::from_decoded(&decoded, &f)));
+        }
+        let written = writer.finish().unwrap();
+        assert_eq!(
+            written as usize, n,
+            "finish must count every row it flushed"
+        );
+
+        let store = CaptureStore::open(&path).unwrap();
+        assert_eq!(store.count().unwrap() as usize, n);
     }
 
     #[tokio::test]

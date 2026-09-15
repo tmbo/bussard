@@ -67,15 +67,13 @@ impl Tunnel {
         let local_bind = SocketAddrV4::new(config.local_interface, 0);
         let socket = UdpSocket::bind(local_bind).await?;
         socket.connect(gateway).await?;
-        let local_addr = match socket.local_addr()? {
-            std::net::SocketAddr::V4(v4) => v4,
-            std::net::SocketAddr::V6(_) => {
-                return Err(TransportError::InvalidField {
-                    field: "local socket is IPv6, KNXnet/IP requires IPv4",
-                    value: 0,
-                });
-            }
-        };
+        // Reject an IPv6 local socket up front: KNXnet/IP HPAIs are IPv4-only.
+        if let std::net::SocketAddr::V6(_) = socket.local_addr()? {
+            return Err(TransportError::InvalidField {
+                field: "local socket is IPv6, KNXnet/IP requires IPv4",
+                value: 0,
+            });
+        }
 
         // Handshake. We use route-back (wildcard) HPAIs so the gateway replies on
         // the same socket — NAT-friendly and works when we don't know our own
@@ -89,7 +87,6 @@ impl Tunnel {
 
         let task_state = TaskState {
             socket,
-            local_addr,
             channel_id,
             outgoing_seq: 0,
             incoming_seq: 0,
@@ -193,7 +190,6 @@ impl Drop for Tunnel {
 /// State owned by the background task.
 struct TaskState {
     socket: UdpSocket,
-    local_addr: SocketAddrV4,
     channel_id: u8,
     /// Sequence counter for frames we send.
     outgoing_seq: u8,
@@ -401,7 +397,13 @@ impl TaskState {
 
     /// Sends a heartbeat and awaits its response, retrying per the spec.
     async fn do_heartbeat(&mut self, buf: &mut [u8]) -> Result<()> {
-        let control = Hpai::new(self.local_addr);
+        // Advertise the same wildcard (route-back) control HPAI the CONNECT used.
+        // A strict/NAT gateway replies to the HPAI it is given; if we advertised
+        // our real local address here (unreachable behind NAT) the gateway would
+        // send CONNECTIONSTATE_RESPONSEs somewhere we never receive them, the
+        // heartbeat would time out, and the tunnel would die after a few
+        // intervals (~2.5 min). Wildcard makes it reply on the source socket.
+        let control = Hpai::wildcard();
         let req = knxnet::connectionstate_request(self.channel_id, control);
 
         for attempt in 0..HEARTBEAT_RETRIES {
@@ -445,7 +447,11 @@ impl TaskState {
 
     /// Sends a DISCONNECT_REQUEST and waits briefly for the response.
     async fn do_close(&mut self, buf: &mut [u8]) -> Result<()> {
-        let control = Hpai::new(self.local_addr);
+        // Use the same wildcard (route-back) control HPAI as CONNECT and the
+        // heartbeat, so a NAT/strict gateway replies on the source socket. The
+        // DISCONNECT_RESPONSE is best-effort, but staying consistent avoids the
+        // gateway routing it to an unreachable advertised address.
+        let control = Hpai::wildcard();
         let req = knxnet::disconnect_request(self.channel_id, control);
         self.socket.send(&req).await?;
 
