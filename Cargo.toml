@@ -7,6 +7,8 @@ members = [
     "crates/bussard-monitor",
     "crates/bussard-mcp",
     "crates/bussard-ha",
+    "crates/bussard-mgmt",
+    "crates/bussard-prod",
     "crates/bussard-cli",
 ]
 

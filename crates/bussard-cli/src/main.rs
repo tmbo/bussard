@@ -6,10 +6,12 @@ mod capture_cmd;
 mod conn_cmd;
 mod ha_config_cmd;
 mod import_cmd;
+mod import_product_cmd;
 mod init_cmd;
 mod mcp_cmd;
 mod monitor_cmd;
 mod read_cmd;
+mod scan_cmd;
 mod validate_cmd;
 mod write_cmd;
 
@@ -62,6 +64,33 @@ enum Command {
         #[arg(long)]
         password: Option<String>,
         /// The model directory to write (aligned with every other command).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+    },
+    /// Scan a line for devices: mask version, manufacturer, order number.
+    Scan {
+        /// The line to scan, e.g. `1.1`.
+        #[arg(value_name = "LINE", default_value = "1.1")]
+        line: String,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Emit JSON instead of the table format.
+        #[arg(long)]
+        json: bool,
+        /// Override the gateway `host[:port]` for tunneling.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Force KNXnet/IP routing (multicast) transport.
+        #[arg(long)]
+        routing: bool,
+    },
+    /// Import vendor product data (`.knxprod`): cache it and generate a model.
+    ImportProduct {
+        /// The `.knxprod` file to import.
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
     },
@@ -208,6 +237,19 @@ fn main() -> ExitCode {
 /// Dispatches a subcommand, returning the process exit code on success.
 fn run(command: Command) -> anyhow::Result<ExitCode> {
     match command {
+        Command::Scan {
+            line,
+            dir,
+            json,
+            gateway,
+            routing,
+        } => scan_cmd::run(
+            &line,
+            &dir,
+            json,
+            conn_cmd::ConnOverrides { gateway, routing },
+        ),
+        Command::ImportProduct { file, dir } => import_product_cmd::run(&file, &dir),
         Command::Validate { dir, format } => validate_cmd::run(&dir, format == Format::Json),
         Command::Init {
             dir,
