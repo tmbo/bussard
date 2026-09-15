@@ -69,20 +69,34 @@ impl Container {
     }
 
     /// Reads a manufacturer application-program file by its id, e.g.
-    /// `M-0004_A-7066-11-7A9E-O000A`, returning its XML.
+    /// `M-0004_A-7066-11-7A9E-O000A`, returning its raw (inflated, BOM-stripped)
+    /// XML bytes.
     ///
     /// The file lives at `M-XXXX/<id>.xml` where `M-XXXX` is the leading
     /// manufacturer segment of the id.
-    pub fn application_xml(&mut self, application_id: &str, device: &str) -> Result<String> {
+    ///
+    /// The import path reads every referenced entry serially from the shared
+    /// archive (inflate is a small fraction of the cost) and hands the bytes to
+    /// [`bussard_ets::parse_application_program`], which reads UTF-8 event by
+    /// event and so needs no eager whole-file `String` validation.
+    pub fn application_raw(&mut self, application_id: &str, device: &str) -> Result<Vec<u8>> {
         let manufacturer = application_id.split('_').next().unwrap_or(application_id);
         let entry = format!("{manufacturer}/{application_id}.xml");
         match read_entry_opt(&mut self.archive, &entry)? {
-            Some(bytes) => Ok(strip_bom(bytes)),
+            Some(bytes) => Ok(strip_bom_bytes(bytes)),
             None => Err(ImportError::MissingApplication {
                 application: application_id.to_string(),
                 device: device.to_string(),
             }),
         }
+    }
+}
+
+/// Drops a leading UTF-8 BOM from raw bytes, if present.
+fn strip_bom_bytes(bytes: Vec<u8>) -> Vec<u8> {
+    match bytes.strip_prefix(b"\xEF\xBB\xBF") {
+        Some(rest) => rest.to_vec(),
+        None => bytes,
     }
 }
 

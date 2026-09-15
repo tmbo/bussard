@@ -456,7 +456,7 @@ mod tests {
               </Static>
              </ApplicationProgram></KNX>"#
         );
-        parse_application_program("M-1_A-1", &xml).unwrap()
+        parse_application_program("M-1_A-1", xml.as_bytes()).unwrap()
     }
 
     fn image_of(app: &ApplicationProgram) -> Vec<u8> {
@@ -668,7 +668,7 @@ mod tests {
           <Parameters><Parameter Id="M-1_A-1_P-0" Name="thr" ParameterType="M-1_A-1_PT-0" Value="50"><Memory CodeSegment="M-1_A-1_RS-1" Offset="0" BitOffset="0" /></Parameter></Parameters>
           <ParameterRefs><ParameterRef Id="M-1_A-1_P-0_R-1" RefId="M-1_A-1_P-0" Value="75" /></ParameterRefs>
          </Static></ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-1_A-1", xml).unwrap();
+        let app = parse_application_program("M-1_A-1", xml.as_bytes()).unwrap();
 
         // No override: ref Value 75 wins over default 50.
         let img = compute_parameter_image(&app, &no_overrides()).unwrap();
@@ -705,7 +705,7 @@ mod tests {
           <ParameterTypes><ParameterType Id="M-1_A-1_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType></ParameterTypes>
           <Parameters><Parameter Id="M-1_A-1_P-0" Name="x" ParameterType="M-1_A-1_PT-0" Value="1"><Memory CodeSegment="M-1_A-1_RS-1" Offset="2" BitOffset="0" /></Parameter></Parameters>
          </Static></ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-1_A-1", xml).unwrap();
+        let app = parse_application_program("M-1_A-1", xml.as_bytes()).unwrap();
         let img = compute_parameter_image(&app, &no_overrides()).unwrap();
         // Byte 2 overwritten to 1; the rest keep the base image.
         assert_eq!(img["M-1_A-1_RS-1"], vec![0xAA, 0xBB, 0x01, 0xDD]);
@@ -721,7 +721,7 @@ mod tests {
           <ParameterTypes><ParameterType Id="M-1_A-1_PT-0" Name="n"><TypeNumber SizeInBit="2" Type="unsignedInt" maxInclusive="3" /></ParameterType></ParameterTypes>
           <Parameters><Parameter Id="M-1_A-1_P-0" Name="x" ParameterType="M-1_A-1_PT-0" Value="1"><Memory CodeSegment="M-1_A-1_RS-1" Offset="0" BitOffset="0" /></Parameter></Parameters>
          </Static></ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-1_A-1", xml).unwrap();
+        let app = parse_application_program("M-1_A-1", xml.as_bytes()).unwrap();
         let img = compute_parameter_image(&app, &no_overrides()).unwrap();
         assert_eq!(img["M-1_A-1_RS-1"][0], 0b0111_1111);
     }

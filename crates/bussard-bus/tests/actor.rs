@@ -233,6 +233,33 @@ async fn two_subscribers_both_receive_frames_during_a_lease() {
 }
 
 #[tokio::test]
+async fn wait_connected_resolves_on_connect() {
+    // Event-driven `wait_connected`: it must return `true` once the actor
+    // reaches Connected, driven by the watch signal rather than a poll.
+    let (addr, gw) = bind_mock().await;
+    let gw_task = tokio::spawn(run_mock(gw, AckPolicy::Ack, None));
+
+    let (handle, _task) = Bus::connect(ConnectionConfig::tunnel(addr));
+    let connected = handle.wait_connected(Duration::from_secs(3)).await;
+    assert!(connected, "wait_connected returns true once connected");
+    assert_eq!(handle.status(), BusState::Connected);
+
+    let _ = handle.close().await;
+    let _ = gw_task.await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn wait_connected_times_out_without_gateway() {
+    // No gateway is bound at this address, so the actor never connects. With the
+    // clock paused, the deadline elapses in virtual time: the wait returns
+    // `false` (and would hang forever if it were not deadline-bounded).
+    let addr = SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 1);
+    let (handle, _task) = Bus::connect(ConnectionConfig::tunnel(addr));
+    let connected = handle.wait_connected(Duration::from_millis(50)).await;
+    assert!(!connected, "wait_connected times out when never connected");
+}
+
+#[tokio::test]
 async fn send_receipt_resolves_on_ack() {
     let (addr, gw) = bind_mock().await;
     let gw_task = tokio::spawn(run_mock(gw, AckPolicy::Ack, None));

@@ -55,7 +55,7 @@ fn dry_run_trace_of_real_vendor_procedures() {
             .unwrap()
             .strip_suffix(".xml")
             .unwrap();
-        let app = bussard_prod::parse_application_program(id, &xml).unwrap();
+        let app = bussard_prod::parse_application_program(id, xml.as_bytes()).unwrap();
 
         // Build the plan in dry-run against the app's OWN declared mask, so the
         // System B gate and the mask compare pass and we exercise the op lowering

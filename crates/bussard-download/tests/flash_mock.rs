@@ -468,7 +468,7 @@ fn fabricated_app() -> ApplicationProgram {
        </LoadProcedures>
       </Static>
      </ApplicationProgram></KNX>"#;
-    parse_application_program("M-1_A-1", xml).unwrap()
+    parse_application_program("M-1_A-1", xml.as_bytes()).unwrap()
 }
 
 async fn setup(fault: Fault) -> (Transport, Shared, tokio::task::JoinHandle<()>) {
