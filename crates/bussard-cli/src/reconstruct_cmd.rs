@@ -105,6 +105,9 @@ pub fn run(
     let runtime = tokio::runtime::Runtime::new()?;
     let result = runtime.block_on(async move {
         let (handle, _task) = Bus::connect(config);
+        if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
+            eprintln!("warning: bus not connected yet; management traffic may use the 0.0.255 fallback source");
+        }
         // Present the tunnel-assigned address as the source — devices commonly
         // ignore management frames from any other address (falling back to
         // 0.0.255 on routing, issue #30).

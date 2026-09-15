@@ -104,7 +104,9 @@ pub fn run(
         // Fall back to 0.0.255 on a routing transport that assigns none. The
         // actor may still be connecting; group_source reads the assigned IA once
         // it is up (the first probe waits on the lease anyway).
-        wait_connected(&handle).await;
+        handle
+            .wait_connected(std::time::Duration::from_secs(10))
+            .await;
         let source = ops::group_source(&handle);
         // Guard the sweep with Ctrl-C: on interrupt, stop sweeping and fall
         // through to a clean `handle.close()` so the gateway tunnel slot is
@@ -207,20 +209,6 @@ async fn probe(
         serial,
         order,
     })
-}
-
-/// Waits (up to ~10s) for the bus actor to report connected, so the
-/// tunnel-assigned source address is available before the sweep starts. Returns
-/// even if it never connects — the sweep then simply finds nothing.
-async fn wait_connected(handle: &BusHandle) {
-    use bussard_bus::BusState;
-    for _ in 0..1000 {
-        match handle.status() {
-            BusState::Connected => return,
-            BusState::Closed => return,
-            _ => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
-        }
-    }
 }
 
 /// Reads a 2-byte property as a `u16`, returning `None` on any failure.

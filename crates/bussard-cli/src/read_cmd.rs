@@ -41,6 +41,9 @@ pub fn run(ga_str: &str, dir: &Path, overrides: ConnOverrides) -> anyhow::Result
     let runtime = tokio::runtime::Runtime::new()?;
     let outcome = runtime.block_on(async move {
         let (handle, _task) = Bus::connect(config);
+        if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
+            eprintln!("warning: bus not connected yet; management traffic may use the 0.0.255 fallback source");
+        }
         let result = ops::read_group(&handle, ga, dpt, READ_TIMEOUT).await;
         // Close the bus cleanly (release the gateway tunnel slot) — issue #31.
         let _ = handle.close().await;
