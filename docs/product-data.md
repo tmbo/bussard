@@ -1,11 +1,9 @@
 # Product data (`.knxprod`) and generated models
 
-`bussard` reads vendor **product data** to learn a device's com-object table,
-parameters, and — later — how to download a configuration into it. Product data
-lives in `.knxprod` files that you download yourself; bussard never ships it.
-
-This document covers the `.knxprod` format, the `bussard import-product`
-command, the model files it generates, and the licensing and versioning caveats.
+`bussard` reads vendor product data to learn a device's com-object table, parameters,
+and, later, how to download a configuration into it. This document covers the `.knxprod`
+format, the `bussard import-product` command, the model files it generates, and the
+licensing and versioning caveats.
 
 ## Where product data comes from
 
@@ -16,16 +14,17 @@ obtain it from:
 - the MyKNX catalogue (knx.org), or
 - an ETS export of a product you already have.
 
-bussard reads these files; it never redistributes them. See
-[never redistribute](#the-never-redistribute-rule) below.
+bussard reads these files; it never ships or redistributes them. See
+[the never-redistribute rule](#the-never-redistribute-rule) below.
 
-> **Planned (issue #27):** a pointer index that maps an order number to *where*
-> its `.knxprod` can be downloaded, so bussard can tell you which file to fetch
-> for a device it sees on the bus — without ever hosting the file itself.
+> Planned ([#27](https://github.com/tmbo/bussard/issues/27)): a pointer index that maps
+> an order number to where its `.knxprod` can be downloaded, so bussard can tell you
+> which file to fetch for a device it sees on the bus, without ever hosting the file
+> itself.
 
 ## What is inside a `.knxprod`
 
-A `.knxprod` is a plain ZIP (no encryption — unlike a password-protected
+A `.knxprod` is a plain ZIP (no encryption, unlike a password-protected
 `.knxproj`). It contains:
 
 ```
@@ -34,38 +33,38 @@ M-XXXX/                    # one folder per manufacturer id, e.g. M-0004 (Jung)
   Hardware.xml            # order numbers → Hardware2Program → application refs
   Catalog.xml             # catalogue tree (not used by bussard)
   M-XXXX_A-….xml          # one ApplicationProgram per programmable variant
-  *.signature             # RSA signatures — IGNORED (see below)
+  *.signature             # RSA signatures, ignored (see below)
 ```
 
-The **signature** files authenticate the archive to ETS. They are not access
+The signature files authenticate the archive to ETS. They are not access
 control: they stop third parties from forging files ETS will accept, but they do
 not stop reading a legitimately downloaded file. bussard skips them.
 
 ### The ApplicationProgram XML
 
 Each `M-XXXX_A-….xml` is the interesting part. These files are large (20–28 MB
-is normal), so bussard **streams** them with `quick-xml` and never builds a DOM.
+is normal), so bussard streams them with `quick-xml` and never builds a DOM.
 It extracts:
 
-- **Identity** — `Id`, `ApplicationNumber`, `ApplicationVersion`, `MaskVersion`,
+- Identity: `Id`, `ApplicationNumber`, `ApplicationVersion`, `MaskVersion`,
   `Name` (resolved to `en-US` where a translation exists),
   `LoadProcedureStyle`, and the XML schema version.
-- **Com-objects** — the `ComObject` base table and `ComObjectRef` overrides,
+- Com-objects: the `ComObject` base table and `ComObjectRef` overrides,
   resolved into effective number / DPT / flags / size / text, exactly as the
-  `.knxproj` importer does (the two agree; see the cross-check below).
-- **Parameter types** — `TypeNumber` (int min/max/size), `TypeRestriction`
+  `.knxproj` importer does (the two agree).
+- Parameter types: `TypeNumber` (int min/max/size), `TypeRestriction`
   (enum value/text pairs), `TypeText` (string length), `TypeFloat`, `TypeNone`,
   and any other `Type*` element preserved by name.
-- **Parameters and parameter refs** — name, text, type ref, default value,
+- Parameters and parameter refs: name, text, type ref, default value,
   access, and the memory location (`CodeSegment` + `Offset` + `BitOffset`). A
   parameter-ref `Value`/`Access` overrides the parameter's own.
-- **Code segments** — `RelativeSegment` / `AbsoluteSegment` **metadata only**
+- Code segments: `RelativeSegment` / `AbsoluteSegment` metadata only
   (id, size, address/offset, load-state-machine). The binary payload is dropped.
-- **Load procedure** — the `LdCtrl*` control script (`LdCtrlConnect`,
+- Load procedure: the `LdCtrl*` control script (`LdCtrlConnect`,
   `LdCtrlUnload`, `LdCtrlLoad`, `LdCtrlWriteRelMem`, `LdCtrlTaskSegment`,
   `LdCtrlLoadCompleted`, `LdCtrlRestart`, …), parsed into a typed op list.
-  Unknown ops are kept verbatim so nothing is lost. bussard does **not** yet
-  interpret this — that is a later phase (`bussard-download`).
+  Unknown ops are kept verbatim so nothing is lost. bussard does not yet
+  interpret this; that is the downloader phase (`bussard-download`).
 
 ## `bussard import-product`
 
@@ -84,9 +83,9 @@ The command:
    so the copyrighted originals cannot be committed by accident.
 
 The application id already carries the manufacturer id (`M-0004_A-…`), so the
-model filename is just `<application-id>.yaml` — no redundant prefix.
+model filename is just `<application-id>.yaml`, with no redundant prefix.
 
-Output is **deterministic**: running the command twice on the same file produces
+Output is deterministic: running the command twice on the same file produces
 byte-identical model YAML.
 
 ## The model file format
@@ -145,33 +144,33 @@ load_procedure:
 
 Field notes:
 
-- **`identity`** — the application program's stable identity.
-- **`order_numbers`** — the catalogue part numbers that map to this program
+- `identity`: the application program's stable identity.
+- `order_numbers`: the catalogue part numbers that map to this program
   (via `Hardware.xml`). This is the join key: a device file's `application_ref`
   and its `order_number` both point here.
-- **`com_objects`** — keyed by com-object number, in the same field style as the
+- `com_objects`: keyed by com-object number, in the same field style as the
   device schema. `dpt` and `flags` (compact `CRWTUI` string) are the effective,
   ref-resolved values. `size` appears only when there is no DPT to imply it.
   `ref_id` is the application ref the value was resolved through.
-- **`parameters`** — each with its resolved `type`, `default`, and `memory`
+- `parameters`: each with its resolved `type`, `default`, and `memory`
   location. The `type` is a tagged union: `!int {min, max, size, signed}`,
   `!enum {values: [{value, text}]}`, `!text {size}`,
   `!float {encoding, min, max}`, `!none`, or `!other {kind, size}`.
   `memory` (`segment` + `offset` + `bit_offset`) is what a later phase needs to
   place the value into the device's parameter memory.
-- **`load_procedure`** — the ordered op summary. This is a faithful, still
-  *uninterpreted* view of the download script; the downloader phase turns it
+- `load_procedure`: the ordered op summary. This is a faithful, still
+  uninterpreted view of the download script; the downloader phase turns it
   into bus traffic.
 
 ## The never-redistribute rule
 
-Both `<dir>/vendor/` and `<dir>/models/` are **local-only** and git-ignored:
+Both `<dir>/vendor/` and `<dir>/models/` are local-only and git-ignored:
 
 - `vendor/` holds the copyrighted vendor `.knxprod` verbatim.
-- `models/` holds files *derived* from that copyrighted data.
+- `models/` holds files derived from that copyrighted data.
 
 A user's committed repo carries only their own choices (group addresses, links,
-device parameter values) — never product data. Anyone who clones the repo
+device parameter values), never product data. Anyone who clones the repo
 regenerates their models from `.knxprod` files they download themselves. This is
 the same footing as any interoperability tool: bussard reads legitimately
 obtained vendor files to interoperate; it never hosts or ships them.
@@ -180,19 +179,19 @@ obtained vendor files to interoperate; it never hosts or ships them.
 
 ApplicationProgram XML declares its schema as the default namespace on the root
 `<KNX>` element, e.g. `http://knx.org/xml/project/23` for the ETS 6 generation.
-bussard parses **namespace-agnostically by local element name**, so a file from
+bussard parses namespace-agnostically by local element name, so a file from
 `/20`, `/21`, or `/23` reads the same way, and it records the schema version in
 `identity.schema_version` for provenance.
 
 Other caveats:
 
-- **Mask version drives behaviour.** `mask_version` (e.g. `07B0`, `0705`,
+- Mask version drives behaviour. `mask_version` (e.g. `07B0`, `0705`,
   `0701`, `0021`) tells later phases whether the device is property-based
   (System B) or memory-based (older System 1/2). The reader only records it.
-- **Modules.** Complex devices define com-objects and parameters inside
-  reusable *module definitions* (`MD-…`) that the device instantiates
+- Modules. Complex devices define com-objects and parameters inside
+  reusable module definitions (`MD-…`) that the device instantiates
   (`MD-…_M-n_MI-n_…`). The model file lists the application-level refs; the
   device file maps its instances onto them by dropping the `_M-n_MI-n` instance
   segment.
-- **Translations.** Names/texts resolve to `en-US` when a translation is present,
-  falling back to the file's default language otherwise — matching ETS.
+- Translations. Names and texts resolve to `en-US` when a translation is
+  present, falling back to the file's default language otherwise, matching ETS.
