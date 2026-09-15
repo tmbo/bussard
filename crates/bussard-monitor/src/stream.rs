@@ -13,9 +13,11 @@
 use std::time::Duration;
 
 use bussard_model::Model;
+use bussard_transport::cemi::CemiFrame;
 use bussard_transport::{
     BusConnection, ConnectionConfig, TimestampedFrame, Transport, TransportError,
 };
+use tokio::sync::mpsc;
 
 use crate::decode::DecodedTelegram;
 
@@ -80,6 +82,28 @@ pub async fn run_stream(
     model: Option<&Model>,
     sink: &mut dyn TelegramSink,
 ) -> Result<(), StreamError> {
+    run_stream_with_outbound(config, model, sink, None).await
+}
+
+/// Like [`run_stream`], but also drains an optional outbound channel, sending
+/// each queued [`CemiFrame`] onto the live connection.
+///
+/// This is the injection point the MCP server (and the `bussard read` command)
+/// use to transmit a `GroupValueRead` on the *same* connection that feeds the
+/// telegram stream, so a request and its response share one bus session.
+/// Passing `None` for `outbound` is byte-for-byte equivalent to [`run_stream`]
+/// — existing callers are unaffected.
+///
+/// Frames queued while the connection is down (during reconnect backoff) stay
+/// in the channel and are sent once a fresh connection is up. A send error on
+/// the bus is treated like any other connection drop: it triggers a reconnect,
+/// not a permanent failure.
+pub async fn run_stream_with_outbound(
+    config: &ConnectionConfig,
+    model: Option<&Model>,
+    sink: &mut dyn TelegramSink,
+    mut outbound: Option<mpsc::UnboundedReceiver<CemiFrame>>,
+) -> Result<(), StreamError> {
     let mut backoff = BACKOFF_START;
     let mut first = true;
 
@@ -94,7 +118,7 @@ pub async fn run_stream(
                 }
                 first = false;
 
-                match consume(conn, model, sink).await {
+                match consume(conn, model, sink, outbound.as_mut()).await {
                     ConsumeOutcome::Stopped => return Ok(()),
                     ConsumeOutcome::Dropped(err) => {
                         if sink.on_disconnect(&err, backoff).is_stop() {
@@ -126,22 +150,50 @@ enum ConsumeOutcome {
 }
 
 /// Receives and dispatches frames from a single live connection until it drops
-/// or the sink stops.
+/// or the sink stops, while also forwarding any queued outbound frames onto it.
 async fn consume(
     mut conn: Transport,
     model: Option<&Model>,
     sink: &mut dyn TelegramSink,
+    mut outbound: Option<&mut mpsc::UnboundedReceiver<CemiFrame>>,
 ) -> ConsumeOutcome {
     loop {
-        match conn.recv().await {
-            Ok(stamped) => {
-                let decoded = DecodedTelegram::from_frame(&stamped, model);
-                if sink.on_telegram(&decoded, &stamped).is_stop() {
-                    let _ = conn.close().await;
-                    return ConsumeOutcome::Stopped;
-                }
+        // When no outbound channel is present, this collapses to a plain
+        // `conn.recv().await` (the disabled branch is never polled), so the
+        // classic monitor/capture path is unchanged.
+        let out_recv = async {
+            match outbound.as_mut() {
+                Some(rx) => rx.recv().await,
+                None => std::future::pending().await,
             }
-            Err(err) => return ConsumeOutcome::Dropped(err),
+        };
+
+        tokio::select! {
+            received = conn.recv() => match received {
+                Ok(stamped) => {
+                    let decoded = DecodedTelegram::from_frame(&stamped, model);
+                    if sink.on_telegram(&decoded, &stamped).is_stop() {
+                        let _ = conn.close().await;
+                        return ConsumeOutcome::Stopped;
+                    }
+                }
+                Err(err) => return ConsumeOutcome::Dropped(err),
+            },
+            frame = out_recv => match frame {
+                // A frame to transmit. A send failure is a connection problem:
+                // drop and reconnect (the frame is lost, matching fire-and-forget
+                // KNX semantics; the caller times out waiting for a response).
+                Some(frame) => {
+                    if let Err(err) = conn.send(frame).await {
+                        return ConsumeOutcome::Dropped(err);
+                    }
+                }
+                // The outbound sender was dropped: stop selecting on it but keep
+                // serving the stream (rebuild the async each loop, so just clear).
+                None => {
+                    outbound = None;
+                }
+            },
         }
     }
 }

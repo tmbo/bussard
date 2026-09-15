@@ -17,6 +17,7 @@ bussard-model = { workspace = true }
 bussard-project = { workspace = true }
 bussard-transport = { workspace = true }
 bussard-monitor = { workspace = true }
+bussard-mcp = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 serde_json = { workspace = true }

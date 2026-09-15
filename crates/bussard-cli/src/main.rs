@@ -5,7 +5,9 @@
 mod capture_cmd;
 mod conn_cmd;
 mod import_cmd;
+mod mcp_cmd;
 mod monitor_cmd;
+mod read_cmd;
 mod validate_cmd;
 
 use std::path::PathBuf;
@@ -94,10 +96,42 @@ enum Command {
         #[arg(long)]
         routing: bool,
     },
-    /// Read a group value from the bus (not implemented yet).
-    Read,
-    /// Run the read-only MCP server (not implemented yet).
-    Mcp,
+    /// Read a group value from the bus (sends a GroupValueRead, prints the
+    /// typed response; exits non-zero on timeout).
+    Read {
+        /// The group address to read, e.g. `3/2/0`.
+        #[arg(value_name = "GA")]
+        ga: String,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Override the gateway `host[:port]` for tunneling.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Force KNXnet/IP routing (multicast) transport.
+        #[arg(long)]
+        routing: bool,
+    },
+    /// Run the read-only MCP server over stdio.
+    Mcp {
+        /// The directory containing the model (required for the MCP server).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Override the gateway `host[:port]` for tunneling.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Force KNXnet/IP routing (multicast) transport.
+        #[arg(long)]
+        routing: bool,
+        /// Passive mode: never transmit on the bus (omits the `knx_read_group`
+        /// tool). The server only observes.
+        #[arg(long)]
+        passive: bool,
+        /// Path to a capture SQLite database to extend `knx_recent_telegrams`
+        /// history beyond the in-memory ring window.
+        #[arg(long, value_name = "PATH")]
+        capture_db: Option<PathBuf>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -161,12 +195,23 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             filter.as_deref(),
             conn_cmd::ConnOverrides { gateway, routing },
         ),
-        Command::Read => not_implemented("read"),
-        Command::Mcp => not_implemented("mcp"),
+        Command::Read {
+            ga,
+            dir,
+            gateway,
+            routing,
+        } => read_cmd::run(&ga, &dir, conn_cmd::ConnOverrides { gateway, routing }),
+        Command::Mcp {
+            dir,
+            gateway,
+            routing,
+            passive,
+            capture_db,
+        } => mcp_cmd::run(
+            &dir,
+            conn_cmd::ConnOverrides { gateway, routing },
+            passive,
+            capture_db,
+        ),
     }
-}
-
-/// Returns a uniform "not implemented yet" error for stubbed subcommands.
-fn not_implemented(name: &str) -> anyhow::Result<ExitCode> {
-    anyhow::bail!("`{name}` is not implemented yet")
 }
