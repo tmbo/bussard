@@ -4,11 +4,13 @@
 
 mod capture_cmd;
 mod conn_cmd;
+mod ha_config_cmd;
 mod import_cmd;
 mod mcp_cmd;
 mod monitor_cmd;
 mod read_cmd;
 mod validate_cmd;
+mod write_cmd;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -112,6 +114,39 @@ enum Command {
         #[arg(long)]
         routing: bool,
     },
+    /// Write a group value to the bus, e.g. `bussard write 3/0/4 down`.
+    Write {
+        /// The group address to write, e.g. `3/0/4`.
+        #[arg(value_name = "GA")]
+        ga: String,
+        /// The value: `on`/`off`, `up`/`down`, a number, a percentage like `75%`, …
+        #[arg(value_name = "VALUE")]
+        value: String,
+        /// The DPT to encode as (default: the GA's DPT from `groups.yaml`).
+        #[arg(long, value_name = "DPT")]
+        dpt: Option<String>,
+        /// Write even if the GA is marked `protected: true` in the model.
+        #[arg(long)]
+        force: bool,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Override the gateway `host[:port]` for tunneling.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Force KNXnet/IP routing (multicast) transport.
+        #[arg(long)]
+        routing: bool,
+    },
+    /// Generate the Home Assistant KNX integration YAML from the model.
+    HaConfig {
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Output file (default: stdout).
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+    },
     /// Run the read-only MCP server over stdio.
     Mcp {
         /// The directory containing the model (required for the MCP server).
@@ -201,6 +236,23 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             gateway,
             routing,
         } => read_cmd::run(&ga, &dir, conn_cmd::ConnOverrides { gateway, routing }),
+        Command::Write {
+            ga,
+            value,
+            dpt,
+            force,
+            dir,
+            gateway,
+            routing,
+        } => write_cmd::run(
+            &ga,
+            &value,
+            dpt.as_deref(),
+            force,
+            &dir,
+            conn_cmd::ConnOverrides { gateway, routing },
+        ),
+        Command::HaConfig { dir, out } => ha_config_cmd::run(&dir, out.as_deref()),
         Command::Mcp {
             dir,
             gateway,
