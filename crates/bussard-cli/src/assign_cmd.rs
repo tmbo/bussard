@@ -30,8 +30,10 @@ use bussard_transport::{BusConnection, Transport};
 
 use crate::conn_cmd::{ConnOverrides, resolve_config};
 
-/// The source individual address the tool presents as on the bus.
-const SOURCE_IA: &str = "0.0.255";
+/// The fallback source individual address the tool presents as when the gateway
+/// assigns none. Connection-oriented management frames must carry the
+/// tunnel-assigned address as source, or replies are not routed back — #30.
+const FALLBACK_SOURCE_IA: &str = "0.0.255";
 
 /// The line to allocate on when the model has no devices to infer one from.
 const FALLBACK_LINE: (u8, u8) = (1, 1);
@@ -58,14 +60,28 @@ pub fn run(
     //    empty/missing model is allowed with a warning.
     let model = load_model_for_assign(dir, address.is_some())?;
     let config = resolve_config(model.as_ref(), &overrides)?;
-    let source: IndividualAddress = SOURCE_IA.parse().expect("valid source IA");
 
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
         let mut bus = Transport::connect(&config)
             .await
             .context("opening the bus connection")?;
-        let result = assign_flow(&mut bus, source, address, model.as_ref(), dir).await;
+        // Present the tunnel-assigned individual address as the source (falling
+        // back to 0.0.255 when the gateway assigns none) — issue #30.
+        let source = bus
+            .assigned_individual_address()
+            .map(IndividualAddress::from_raw)
+            .unwrap_or_else(|| FALLBACK_SOURCE_IA.parse().expect("valid source IA"));
+        // Guard the assign flow with Ctrl-C: on interrupt, fall through to a
+        // clean `bus.close()` so the gateway tunnel slot is released rather than
+        // leaked — see issue #31.
+        let result = tokio::select! {
+            result = assign_flow(&mut bus, source, address, model.as_ref(), dir) => result,
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("\ninterrupted; closing the bus connection");
+                Err(anyhow!("assign interrupted by Ctrl-C"))
+            }
+        };
         let _ = bus.close().await;
         result
     })

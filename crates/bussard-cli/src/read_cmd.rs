@@ -11,10 +11,13 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use bussard_model::GroupAddress;
+use bussard_model::{GroupAddress, IndividualAddress};
 use bussard_monitor::stream::{Flow, TelegramSink};
-use bussard_monitor::{DecodedTelegram, Filter, TelegramRing, run_stream_with_outbound};
-use bussard_transport::cemi::CemiFrame;
+use bussard_monitor::{
+    ApciKind, CancelToken, DecodedTelegram, DestinationRef, TelegramRing,
+    run_stream_with_outbound_cancellable,
+};
+use bussard_transport::cemi::{CemiFrame, MessageCode};
 use bussard_transport::{TimestampedFrame, TransportError};
 use tokio::sync::mpsc;
 
@@ -34,7 +37,7 @@ pub fn run(ga_str: &str, dir: &Path, overrides: ConnOverrides) -> anyhow::Result
 
     let model = load_model_optional(dir);
     let config = resolve_config(model.as_ref(), &overrides)?;
-    let source_ia = SOURCE_IA.parse().expect("valid source IA");
+    let source_ia: IndividualAddress = SOURCE_IA.parse().expect("valid source IA");
 
     let runtime = tokio::runtime::Runtime::new()?;
     let outcome = runtime.block_on(async move {
@@ -42,28 +45,46 @@ pub fn run(ga_str: &str, dir: &Path, overrides: ConnOverrides) -> anyhow::Result
         let (out_tx, out_rx) = mpsc::unbounded_channel();
 
         // A sink that pushes each telegram into the ring; it never stops the
-        // stream on its own (we stop by aborting the task).
+        // stream on its own (we stop via the cancel token).
         let mut sink = RingSink { ring: ring.clone() };
 
-        // Run the stream in the background; inject the read once it is up.
+        // Run the stream in the background; inject the read once it is up. A
+        // cancel token lets us stop it with a *clean* bus close (releasing the
+        // gateway tunnel slot) instead of aborting the task — see issue #31.
+        let (cancel, cancel_watch) = CancelToken::new();
         let stream = tokio::spawn(async move {
-            let _ =
-                run_stream_with_outbound(&config, model.as_ref(), &mut sink, Some(out_rx)).await;
+            let _ = run_stream_with_outbound_cancellable(
+                &config,
+                model.as_ref(),
+                &mut sink,
+                Some(out_rx),
+                cancel_watch,
+            )
+            .await;
         });
 
-        // Subscribe before sending so the response cannot be missed.
-        let filter = Filter::parse(&ga.to_string()).expect("GA is a valid filter term");
-        let waiter = {
-            let ring = ring.clone();
-            tokio::spawn(async move { ring.wait_for(&filter, READ_TIMEOUT).await })
-        };
+        // Subscribe before sending so the response cannot be missed (the
+        // subscription exists from this line on — no spawned-task race, #32).
+        let mut sub = ring.subscribe();
 
-        // Give the connection a moment, then send the read. If it never sends
-        // (bus down), the waiter still times out and we report that.
+        // Send the read. If it never transmits (bus down), the wait below still
+        // times out and we report that.
         let _ = out_tx.send(CemiFrame::group_read(ga, source_ia));
 
-        let result = waiter.await.ok().flatten();
-        stream.abort();
+        // Wait for a real answer: a GroupValueResponse or a GroupValueWrite to
+        // our GA that is a bus indication (not the gateway's L_Data.con echo of
+        // our own request) and not from our own source address — issue #32.
+        let result = sub
+            .wait_for_matching(READ_TIMEOUT, |t, code| {
+                matches!(t.destination, DestinationRef::Group(g) if g == ga)
+                    && matches!(t.apci, ApciKind::Response | ApciKind::Write)
+                    && code != MessageCode::LDataCon
+                    && t.source != source_ia
+            })
+            .await;
+        // Cancel and wait for the stream to close the connection cleanly.
+        cancel.cancel();
+        let _ = stream.await;
         result
     });
 
@@ -102,8 +123,10 @@ struct RingSink {
 }
 
 impl TelegramSink for RingSink {
-    fn on_telegram(&mut self, telegram: &DecodedTelegram, _frame: &TimestampedFrame) -> Flow {
-        self.ring.push(telegram.clone());
+    fn on_telegram(&mut self, telegram: &DecodedTelegram, frame: &TimestampedFrame) -> Flow {
+        // Carry the cEMI message code so the waiter can skip L_Data.con echoes.
+        self.ring
+            .push_with_code(telegram.clone(), frame.frame.message_code);
         Flow::Continue
     }
 

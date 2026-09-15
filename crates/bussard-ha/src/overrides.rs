@@ -36,9 +36,12 @@
 //! ```
 //!
 //! Override precedence: exclusions win over everything (an excluded GA never
-//! produces an entity); an explicit per-entity `platform` overrides the
-//! heuristic; an explicit `name`/`device_class` overrides the derived value;
-//! `merge` adds the listed GAs to the entity's extra addresses.
+//! produces an entity, and an excluded GA listed in a `merge` is ignored); an
+//! explicit per-entity `platform` overrides the heuristic; an explicit
+//! `name`/`device_class` overrides the derived value; `merge` attaches the
+//! listed GAs to the entity — wiring each into a free state slot where the
+//! platform has one and folding them all into the entity's claimed set (see
+//! [`EntityOverride::merge`] for the exact per-platform behaviour).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -129,6 +132,23 @@ pub struct EntityOverride {
     pub device_class: Option<String>,
     /// Extra group addresses to merge onto this entity (e.g. a state GA the
     /// heuristic did not associate).
+    ///
+    /// Applied after the entity is derived, for the entity whose *primary* GA is
+    /// this override's key. Each merged GA is attached to the entity and folded
+    /// into its group-address set, so it is claimed (no other entity re-maps it)
+    /// and no longer reported in the unmapped footer. Per platform:
+    ///
+    /// - **switch / light**: the first merged GA fills a free `state_address`;
+    ///   any further merged GAs are still consumed but have no slot to occupy.
+    /// - **cover**: the first free of `position_state_address` then
+    ///   `angle_state_address` is filled; extras are consumed only.
+    /// - **sensor / binary_sensor**: these have a single address and no spare
+    ///   state slot, so merged GAs are consumed only (claimed + removed from the
+    ///   unmapped summary) without being wired anywhere.
+    ///
+    /// Merge never overwrites a GA the heuristic already derived, and never
+    /// overwrites a merged GA that an earlier entity already owns. Exclusion wins
+    /// over merge: an excluded GA listed in `merge` is ignored.
     #[serde(default)]
     pub merge: Vec<GroupAddress>,
 }

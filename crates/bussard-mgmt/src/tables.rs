@@ -95,7 +95,7 @@
 use bussard_model::{GroupAddress, IndividualAddress};
 use bussard_transport::BusConnection;
 
-use crate::apci::{self, A_DEVICE_DESCRIPTOR_READ, A_PROPERTY_VALUE_READ, MAX_MEMORY_READ_LEN};
+use crate::apci::{self, A_PROPERTY_VALUE_READ, MAX_MEMORY_READ_LEN};
 use crate::connection::Layer4Connection;
 use crate::error::MgmtError;
 
@@ -114,14 +114,11 @@ pub const PID_TABLE_REFERENCE: u8 = 7;
 pub const PID_TABLE: u8 = 23;
 
 /// The 10-bit APCI selector mask for services that embed data in the low 6
-/// APCI bits (`A_DeviceDescriptor_*`, `A_Memory_*`).
-const APCI_SELECTOR_MASK: u16 = 0x3C0;
+/// APCI bits (`A_DeviceDescriptor_*`, `A_Memory_*`). Re-exported from
+/// [`apci::APCI_SELECTOR_MASK`] for local readability.
+const APCI_SELECTOR_MASK: u16 = apci::APCI_SELECTOR_MASK;
 /// `A_DeviceDescriptor_Response` selector (low 6 bits = descriptor type).
-const APCI_DEVICE_DESCRIPTOR_RESPONSE: u16 = 0x340;
-/// `A_Memory_Read` selector (low 6 bits = octet count).
-const APCI_MEMORY_READ: u16 = 0x200;
-/// `A_Memory_Response` selector (low 6 bits = octet count).
-const APCI_MEMORY_RESPONSE: u16 = 0x240;
+const APCI_DEVICE_DESCRIPTOR_RESPONSE: u16 = apci::A_DEVICE_DESCRIPTOR_RESPONSE;
 
 /// Object type of the device object.
 pub const OT_DEVICE: u16 = 0;
@@ -332,7 +329,8 @@ pub async fn read_tables<C: BusConnection>(
 /// The descriptor type lives in the low 6 APCI bits and the request carries
 /// **no** payload octet (see the module docs on wire encodings).
 async fn device_descriptor<C: BusConnection>(l4: &mut Layer4Connection<'_, C>) -> Result<u16> {
-    let (resp_apci, data) = l4.request(A_DEVICE_DESCRIPTOR_READ, &[]).await?;
+    let (req_apci, payload) = apci::encode_device_descriptor_read(0);
+    let (resp_apci, data) = l4.request(req_apci, &payload).await?;
     if resp_apci & APCI_SELECTOR_MASK != APCI_DEVICE_DESCRIPTOR_RESPONSE || data.len() < 2 {
         return Err(TablesError::Mgmt(MgmtError::MalformedResponse {
             address: l4.target(),
@@ -382,20 +380,15 @@ async fn read_memory<C: BusConnection>(
     addr: u16,
     len: u8,
 ) -> Result<Vec<u8>> {
-    let len = len.min(MAX_MEMORY_READ_LEN);
-    let req_apci = APCI_MEMORY_READ | u16::from(len & 0x3F);
-    let (resp_apci, data) = l4.request(req_apci, &addr.to_be_bytes()).await?;
-    let count = usize::from((resp_apci & 0x3F) as u8);
-    if resp_apci & APCI_SELECTOR_MASK != APCI_MEMORY_RESPONSE
-        || data.len() < 2
-        || data.len() < 2 + count
-    {
-        return Err(TablesError::Mgmt(MgmtError::MalformedResponse {
+    let (req_apci, payload) = apci::encode_memory_read(addr, len);
+    let (resp_apci, data) = l4.request(req_apci, &payload).await?;
+    let resp = apci::decode_memory_response(resp_apci, &data).ok_or(TablesError::Mgmt(
+        MgmtError::MalformedResponse {
             address: l4.target(),
             reason: "unexpected memory response",
-        }));
-    }
-    Ok(data[2..2 + count].to_vec())
+        },
+    ))?;
+    Ok(resp.data)
 }
 
 // --- Discovery and table assembly ---

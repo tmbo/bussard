@@ -28,8 +28,11 @@ pub mod timefmt;
 pub use decode::{ApciKind, DecodedTelegram, DestinationRef};
 pub use filter::{Filter, FilterParseError};
 pub use format::{json_line, pretty_line};
-pub use ring::TelegramRing;
+pub use ring::{RingEvent, RingSubscription, TelegramRing};
 pub use store::{
     CaptureRecord, CaptureStore, CaptureWriter, QueryFilter, StoreError, StoredTelegram,
 };
-pub use stream::{StreamError, TelegramSink, run_stream, run_stream_with_outbound};
+pub use stream::{
+    CancelToken, CancelWatch, StreamError, TelegramSink, run_stream, run_stream_cancellable,
+    run_stream_with_outbound, run_stream_with_outbound_cancellable,
+};

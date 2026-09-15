@@ -22,8 +22,11 @@ use bussard_transport::{BusConnection, Transport};
 
 use crate::conn_cmd::{ConnOverrides, load_model_optional, resolve_config};
 
-/// The source individual address the scanner presents as.
-const SOURCE_IA: &str = "0.0.255";
+/// The fallback source individual address the scanner presents as when the
+/// gateway assigns none (e.g. a routing transport). Connection-oriented
+/// management frames must carry the tunnel-assigned address as source, or the
+/// gateway will not route the device's replies back — see issue #30.
+const FALLBACK_SOURCE_IA: &str = "0.0.255";
 
 /// Environment variable that overrides the per-attempt discovery timeout in
 /// milliseconds. Set only by the integration test to keep a full-line mock sweep
@@ -70,6 +73,11 @@ struct Report {
     missing: Vec<(IndividualAddress, String)>,
     /// Whether a model was loaded at all (drives cross-reference columns).
     have_model: bool,
+    /// The number of devices in the loaded model's inventory. Zero with
+    /// `have_model` true means a model loaded but has no `devices/*.yaml` — the
+    /// missing/known cross-reference is then vacuous and must not be reported as
+    /// "all model devices responded" (issue #30).
+    model_device_count: usize,
 }
 
 /// Runs `bussard scan`.
@@ -82,7 +90,6 @@ pub fn run(
     let (area, line_no) = parse_line(line)?;
     let model = load_model_optional(dir);
     let config = resolve_config(model.as_ref(), &overrides)?;
-    let source: IndividualAddress = SOURCE_IA.parse().expect("valid source IA");
 
     // Up-front estimate (256 addresses × per-address budget).
     let estimate = PER_ADDRESS_ESTIMATE * 256;
@@ -97,7 +104,24 @@ pub fn run(
         let mut bus = Transport::connect(&config)
             .await
             .context("opening the bus connection")?;
-        let found = sweep(&mut bus, area, line_no, source).await;
+        // Present the tunnel-assigned individual address as the source; devices
+        // ignore connection-oriented frames from any other source, and the
+        // gateway only routes replies back to the assigned address (issue #30).
+        // Fall back to 0.0.255 on a routing transport that assigns none.
+        let source = bus
+            .assigned_individual_address()
+            .map(IndividualAddress::from_raw)
+            .unwrap_or_else(|| FALLBACK_SOURCE_IA.parse().expect("valid source IA"));
+        // Guard the sweep with Ctrl-C: on interrupt, stop sweeping and fall
+        // through to a clean `bus.close()` so the gateway tunnel slot is
+        // released rather than leaked (~2 min hold) — see issue #31.
+        let found = tokio::select! {
+            found = sweep(&mut bus, area, line_no, source) => found,
+            _ = tokio::signal::ctrl_c() => {
+                eprintln!("\ninterrupted; closing the bus connection");
+                Vec::new()
+            }
+        };
         let _ = bus.close().await;
         anyhow::Ok(found)
     })?;
@@ -216,11 +240,14 @@ fn cross_reference(found: Vec<Found>, model: Option<&bussard_model::Model>) -> R
         }
     }
 
+    let model_device_count = model.map(|m| m.devices.len()).unwrap_or(0);
+
     Report {
         found,
         not_in_model,
         missing,
         have_model,
+        model_device_count,
     }
 }
 
@@ -299,13 +326,21 @@ fn print_table(report: &Report) {
     println!();
     println!("{} device(s) responded", report.found.len());
     if report.have_model {
-        println!("{} not in model", report.not_in_model.len());
-        if report.missing.is_empty() {
-            println!("all model devices on this line responded");
+        if report.model_device_count == 0 {
+            // A model loaded but has no device inventory: the cross-reference is
+            // vacuous. Say so rather than the misleading "all responded" (#30).
+            println!(
+                "model has no device inventory (no devices/*.yaml); cannot cross-reference — run `bussard import` or add device files"
+            );
         } else {
-            println!("{} model device(s) did NOT respond:", report.missing.len());
-            for (addr, name) in &report.missing {
-                println!("  {addr}  {name}");
+            println!("{} not in model", report.not_in_model.len());
+            if report.missing.is_empty() {
+                println!("all model devices on this line responded");
+            } else {
+                println!("{} model device(s) did NOT respond:", report.missing.len());
+                for (addr, name) in &report.missing {
+                    println!("  {addr}  {name}");
+                }
             }
         }
     }
@@ -340,6 +375,7 @@ fn print_json(report: &Report) -> anyhow::Result<()> {
 
     let out = json!({
         "found": devices,
+        "model_device_count": report.model_device_count,
         "not_in_model": report.not_in_model.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
         "missing_from_bus": report
             .missing
@@ -379,5 +415,112 @@ mod tests {
     #[test]
     fn hex_formats_lowercase() {
         assert_eq!(hex(&[0xDE, 0xAD]), "dead");
+    }
+
+    // --- cross_reference regression coverage (issue #30) ---
+
+    use std::collections::BTreeMap;
+
+    use bussard_model::schema::{BussardConfig, Device, Groups, Links};
+    use bussard_model::{LoadedDevice, Model};
+
+    fn ia(s: &str) -> IndividualAddress {
+        s.parse().unwrap()
+    }
+
+    /// Builds a model whose `devices` map contains exactly `addrs`.
+    fn model_with_devices(addrs: &[&str]) -> Model {
+        let mut devices = BTreeMap::new();
+        for a in addrs {
+            let addr = ia(a);
+            devices.insert(
+                addr,
+                LoadedDevice {
+                    device: Device {
+                        address: addr,
+                        name: format!("dev {a}"),
+                        description: None,
+                        location: None,
+                        product: None,
+                        channels: BTreeMap::new(),
+                        com_objects: BTreeMap::new(),
+                    },
+                    file_stem: a.to_string(),
+                },
+            );
+        }
+        Model {
+            config: BussardConfig::default(),
+            groups: Groups {
+                project: None,
+                imported_from: None,
+                ranges: BTreeMap::new(),
+                groups: BTreeMap::new(),
+            },
+            links: Links {
+                links: BTreeMap::new(),
+            },
+            devices,
+        }
+    }
+
+    fn found_at(addr: &str) -> Found {
+        Found {
+            address: ia(addr),
+            mask: 0x07B0,
+            manufacturer_id: None,
+            serial: None,
+            order: None,
+        }
+    }
+
+    /// The live shape from issue #30: a 46-device model is loaded and exactly
+    /// one of those devices responds (the rest were silent because of the
+    /// source-IA bug). The missing list MUST name the other 45 — it was empty
+    /// in the field, which this test guards against.
+    #[test]
+    fn cross_reference_lists_all_non_responders() {
+        let addrs: Vec<String> = (1..=46u16).map(|n| format!("1.1.{n}")).collect();
+        let addr_refs: Vec<&str> = addrs.iter().map(String::as_str).collect();
+        let model = model_with_devices(&addr_refs);
+
+        // Only 1.1.1 answered; it IS a model device, so it is "known".
+        let report = cross_reference(vec![found_at("1.1.1")], Some(&model));
+
+        assert!(report.have_model);
+        assert!(
+            report.not_in_model.is_empty(),
+            "the sole responder is in the model, so nothing is unexpected"
+        );
+        assert_eq!(
+            report.missing.len(),
+            45,
+            "the 45 silent model devices must all be listed as missing"
+        );
+        // The responder itself is not listed as missing.
+        assert!(
+            !report.missing.iter().any(|(a, _)| *a == ia("1.1.1")),
+            "the device that responded must not be in the missing list"
+        );
+    }
+
+    /// A responder that is *not* in the model is reported as not_in_model, and
+    /// every model device is missing.
+    #[test]
+    fn cross_reference_flags_unexpected_and_all_missing() {
+        let model = model_with_devices(&["1.1.4", "1.1.20"]);
+        // The IP interface (1.1.200) answered but is not modelled.
+        let report = cross_reference(vec![found_at("1.1.200")], Some(&model));
+        assert_eq!(report.not_in_model, vec![ia("1.1.200")]);
+        assert_eq!(report.missing.len(), 2, "both model devices are missing");
+    }
+
+    /// Without a model, there is no cross-reference at all.
+    #[test]
+    fn cross_reference_without_model_has_no_delta() {
+        let report = cross_reference(vec![found_at("1.1.1")], None);
+        assert!(!report.have_model);
+        assert!(report.not_in_model.is_empty());
+        assert!(report.missing.is_empty());
     }
 }

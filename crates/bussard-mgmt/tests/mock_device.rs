@@ -40,6 +40,13 @@ enum Behavior {
     Nak,
     /// Never reacts at all (an absent address).
     Silent,
+    /// Answers management reads normally, but **folds the ACK**: it emits the
+    /// response NDT *before* (in fact instead of) a separate `T_ACK`. This models
+    /// the real device behaviour that used to desync the connection.
+    FoldsAck {
+        /// The mask version reported by the device descriptor read.
+        mask: u16,
+    },
 }
 
 /// One simulated device at an individual address.
@@ -210,6 +217,21 @@ async fn handle_device_frame(
                     let nak = CemiFrame::t_control(source, dev_ia, tpci::t_nak(client_seq));
                     push_indication(gw, peer, gw_seq, &nak).await;
                 }
+                Behavior::FoldsAck { mask } => {
+                    // Fold the ACK: send the response NDT *before* / instead of a
+                    // separate T_ACK. The client's await_ack must treat the folded
+                    // NDT as the acknowledgement, stash it and deliver it.
+                    let seq = *dev_send_seq.get(&dev_ia.raw()).unwrap_or(&0);
+                    let resp = CemiFrame::t_data_connected(
+                        source,
+                        dev_ia,
+                        tpci::ndt(seq),
+                        apci::A_DEVICE_DESCRIPTOR_RESPONSE,
+                        &mask.to_be_bytes(),
+                    );
+                    push_indication(gw, peer, gw_seq, &resp).await;
+                    dev_send_seq.insert(dev_ia.raw(), (seq + 1) & 0x0f);
+                }
                 Behavior::Responds { .. } => {
                     // 1. ACK the client's request NDT.
                     let ack = CemiFrame::t_control(source, dev_ia, tpci::t_ack(client_seq));
@@ -247,15 +269,43 @@ fn device_response(behavior: &Behavior, cemi: &CemiFrame) -> Option<(u16, Vec<u8
     else {
         return None;
     };
-    let (apci, data) = match (&cemi.tpci, &cemi.apdu) {
+    let (req_apci, data) = match (&cemi.tpci, &cemi.apdu) {
         (Tpci::Other(_), Apdu::Other { apci, data }) => (*apci, data.clone()),
         _ => return None,
     };
-    match apci {
-        apci::A_DEVICE_DESCRIPTOR_READ => Some((
+
+    // Strict, spec-independent framing (implemented from the KNX standard, not
+    // mirrored from the client): the descriptor type and memory octet count live
+    // in the low 6 APCI bits, so the request selector is masked with 0x3C0 and a
+    // strict device refuses the over-long forms.
+    const APCI_SELECTOR: u16 = 0x3C0;
+
+    if req_apci & APCI_SELECTOR == apci::A_DEVICE_DESCRIPTOR_READ {
+        if !data.is_empty() {
+            return None; // over-long descriptor read: a strict device refuses
+        }
+        return Some((
             apci::A_DEVICE_DESCRIPTOR_RESPONSE,
             mask.to_be_bytes().to_vec(),
-        )),
+        ));
+    }
+
+    if req_apci & APCI_SELECTOR == apci::A_MEMORY_READ {
+        let count = (req_apci & 0x3f) as u8;
+        if data.len() != 2 {
+            return None; // strict: the payload is exactly the 2 address octets
+        }
+        let addr = u16::from_be_bytes([data[0], data[1]]);
+        let mem = memory
+            .get(&addr)
+            .cloned()
+            .unwrap_or_else(|| vec![0; count as usize]);
+        // Response: count in the APCI low bits, payload = addr + data.
+        let (resp_apci, payload) = apci::encode_memory_response(addr, &mem);
+        return Some((resp_apci, payload));
+    }
+
+    match req_apci {
         apci::A_PROPERTY_VALUE_READ => {
             let pv = apci::decode_property_value_read(&data)?;
             let value = match pv.property_id {
@@ -273,17 +323,6 @@ fn device_response(behavior: &Behavior, cemi: &CemiFrame) -> Option<(u16, Vec<u8
             ];
             resp.extend_from_slice(&value);
             Some((apci::A_PROPERTY_VALUE_RESPONSE, resp))
-        }
-        apci::A_MEMORY_READ => {
-            let count = data.first().copied().unwrap_or(0) & 0x3f;
-            let addr = u16::from_be_bytes([data[1], data[2]]);
-            let mem = memory
-                .get(&addr)
-                .cloned()
-                .unwrap_or_else(|| vec![0; count as usize]);
-            let mut resp = vec![count, (addr >> 8) as u8, (addr & 0xff) as u8];
-            resp.extend_from_slice(&mem);
-            Some((apci::A_MEMORY_RESPONSE, resp))
         }
         _ => None,
     }
@@ -373,6 +412,40 @@ async fn wraparound_across_many_requests() {
             .unwrap();
         assert_eq!(manu, vec![0x00, 0x83]);
     }
+    dev.disconnect().await.unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+}
+
+#[tokio::test]
+async fn folded_ack_device_still_delivers_response() {
+    // A device that folds its ACK (answers with the response NDT before/instead
+    // of a separate T_ACK) must still yield the descriptor, and the connection
+    // must stay in sync for a following request.
+    let (addr, gw) = bind_mock().await;
+    let devices = vec![MockDevice {
+        address: "1.1.4".parse().unwrap(),
+        behavior: Behavior::FoldsAck { mask: 0x07B0 },
+    }];
+    let gw_task = tokio::spawn(run_mock(gw, devices));
+
+    let mut bus = open_bus(addr).await;
+    let target: IndividualAddress = "1.1.4".parse().unwrap();
+    let source: IndividualAddress = "0.0.255".parse().unwrap();
+    let mut dev = DeviceConnection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+
+    let mask = dev.device_descriptor().await.unwrap();
+    assert_eq!(mask, 0x07B0, "folded-ACK response must still decode");
+
+    // A second request must also succeed: the receive sequence advanced exactly
+    // once for the folded response, so nothing is dropped as a duplicate.
+    let mask2 = dev.device_descriptor().await.unwrap();
+    assert_eq!(
+        mask2, 0x07B0,
+        "connection stayed in sync after a folded ACK"
+    );
+
     dev.disconnect().await.unwrap();
     let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
 }

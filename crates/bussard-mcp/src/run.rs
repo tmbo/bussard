@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bussard_monitor::stream::{Flow, TelegramSink};
-use bussard_monitor::{DecodedTelegram, run_stream_with_outbound};
+use bussard_monitor::{CancelToken, DecodedTelegram, run_stream_with_outbound_cancellable};
 use bussard_transport::{ConnectionConfig, TimestampedFrame, TransportError};
 use rmcp::ServiceExt;
 use rmcp::transport::io::stdio;
@@ -27,8 +27,11 @@ struct RingSink {
 }
 
 impl TelegramSink for RingSink {
-    fn on_telegram(&mut self, telegram: &DecodedTelegram, _frame: &TimestampedFrame) -> Flow {
-        self.ring.push(telegram.clone());
+    fn on_telegram(&mut self, telegram: &DecodedTelegram, frame: &TimestampedFrame) -> Flow {
+        // Carry the cEMI message code so `knx_read_group`'s waiter can tell the
+        // gateway's L_Data.con echo apart from a real indication (issue #32).
+        self.ring
+            .push_with_code(telegram.clone(), frame.frame.message_code);
         Flow::Continue
     }
 
@@ -69,12 +72,22 @@ pub async fn serve_stdio(
     let ring = state.ring.clone();
     let bus = state.bus.clone();
 
-    // Spawn the reconnecting stream feeding the shared ring.
+    // Spawn the reconnecting stream feeding the shared ring. A cancel token lets
+    // us stop it with a *clean* bus close (DISCONNECT_REQUEST) at shutdown
+    // instead of aborting the task and leaking the gateway tunnel slot — #31.
+    let (cancel, cancel_watch) = CancelToken::new();
     let stream_handle = tokio::spawn(async move {
         let mut sink = RingSink { ring, bus };
-        // This future only returns if the sink stops it, which it never does, so
-        // it runs until the task is aborted at shutdown.
-        let _ = run_stream_with_outbound(&config, Some(&model), &mut sink, outbound_rx).await;
+        // This future only returns when cancelled at shutdown; on cancel it
+        // closes the bus connection cleanly before returning.
+        let _ = run_stream_with_outbound_cancellable(
+            &config,
+            Some(&model),
+            &mut sink,
+            outbound_rx,
+            cancel_watch,
+        )
+        .await;
     });
 
     // Serve MCP over stdio. `stdio()` returns (stdin, stdout).
@@ -92,6 +105,9 @@ pub async fn serve_stdio(
         .map_err(|e| anyhow::anyhow!("MCP service error: {e}"))?;
     tracing::info!("MCP client disconnected: {quit_reason:?}");
 
-    stream_handle.abort();
+    // Cancel the stream and wait for it to close the bus connection cleanly,
+    // releasing the gateway tunnel slot before we exit.
+    cancel.cancel();
+    let _ = stream_handle.await;
     Ok(())
 }

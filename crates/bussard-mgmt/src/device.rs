@@ -56,12 +56,19 @@ impl<'a, C: BusConnection> DeviceConnection<'a, C> {
     /// Reads the device descriptor (type 0): the 16-bit **mask version** that
     /// decides property-based vs memory-based link writes.
     ///
-    /// Sends `A_DeviceDescriptor_Read` and decodes the `Response`.
+    /// Sends `A_DeviceDescriptor_Read` with the descriptor type in the APCI low
+    /// bits and an **empty** payload (the spec-correct framing — strict devices
+    /// `T_Disconnect` the over-long form), and decodes the `Response`,
+    /// validating that its APCI is an `A_DeviceDescriptor_Response`.
     pub async fn device_descriptor(&mut self) -> Result<u16> {
-        let (_apci, data) = self
-            .inner
-            .request(apci::A_DEVICE_DESCRIPTOR_READ, &[0x00])
-            .await?;
+        let (req_apci, payload) = apci::encode_device_descriptor_read(0);
+        let (resp_apci, data) = self.inner.request(req_apci, &payload).await?;
+        if resp_apci & apci::APCI_SELECTOR_MASK != apci::A_DEVICE_DESCRIPTOR_RESPONSE {
+            return Err(MgmtError::MalformedResponse {
+                address: self.inner.target(),
+                reason: "expected A_DeviceDescriptor_Response",
+            });
+        }
         apci::decode_device_descriptor_response(&data).ok_or(MgmtError::MalformedResponse {
             address: self.inner.target(),
             reason: "device descriptor response too short",
@@ -82,10 +89,16 @@ impl<'a, C: BusConnection> DeviceConnection<'a, C> {
         count: u8,
     ) -> Result<Vec<u8>> {
         let payload = apci::encode_property_value_read(object_index, property_id, count, start);
-        let (_apci, data) = self
+        let (resp_apci, data) = self
             .inner
             .request(apci::A_PROPERTY_VALUE_READ, &payload)
             .await?;
+        if resp_apci != apci::A_PROPERTY_VALUE_RESPONSE {
+            return Err(MgmtError::MalformedResponse {
+                address: self.inner.target(),
+                reason: "expected A_PropertyValue_Response",
+            });
+        }
         let resp =
             apci::decode_property_value_response(&data).ok_or(MgmtError::MalformedResponse {
                 address: self.inner.target(),
@@ -109,12 +122,13 @@ impl<'a, C: BusConnection> DeviceConnection<'a, C> {
     /// the golden-fixture dump primitive; callers loop over addresses for larger
     /// ranges). Returns the octets from the `A_Memory_Response`.
     pub async fn read_memory(&mut self, addr: u16, len: u8) -> Result<Vec<u8>> {
-        let payload = apci::encode_memory_read(addr, len);
-        let (_apci, data) = self.inner.request(apci::A_MEMORY_READ, &payload).await?;
-        let resp = apci::decode_memory_response(&data).ok_or(MgmtError::MalformedResponse {
-            address: self.inner.target(),
-            reason: "memory response too short",
-        })?;
+        let (req_apci, payload) = apci::encode_memory_read(addr, len);
+        let (resp_apci, data) = self.inner.request(req_apci, &payload).await?;
+        let resp =
+            apci::decode_memory_response(resp_apci, &data).ok_or(MgmtError::MalformedResponse {
+                address: self.inner.target(),
+                reason: "expected A_Memory_Response with matching count",
+            })?;
         Ok(resp.data)
     }
 
@@ -124,7 +138,8 @@ impl<'a, C: BusConnection> DeviceConnection<'a, C> {
     ///
     /// Nothing in phase 2 calls this yet; it is here for the downloader.
     pub async fn restart(&mut self) -> Result<()> {
-        self.inner.send_data(apci::A_RESTART, &[0x00]).await
+        let (apci, payload) = apci::encode_restart(0);
+        self.inner.send_data(apci, &payload).await
     }
 
     /// Sends a clean `T_Disconnect`.

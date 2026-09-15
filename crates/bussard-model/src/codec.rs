@@ -308,8 +308,23 @@ fn decode_float16(hi: u8, lo: u8) -> f32 {
     (0.01_f32) * (mantissa as f32) * (1u32 << exponent) as f32
 }
 
+/// The representable range of DPT 9 (2-byte float): `0.01 * M * 2^E` with the
+/// mantissa `M` in `-2048..=2047` and the exponent `E` in `0..=15`, so the
+/// extremes are `0.01 * -2048 * 2^15 ≈ -671088.64` and
+/// `0.01 * 2047 * 2^15 ≈ 670760.96`. Computed rather than written as decimal
+/// literals so the constants are exactly the nearest `f32` to those extremes.
+const FLOAT16_MIN: f32 = 0.01 * -2048.0 * 32768.0;
+const FLOAT16_MAX: f32 = 0.01 * 2047.0 * 32768.0;
+
 /// Encodes a value into a KNX 2-byte float (DPT 9.x).
 fn encode_float16(value: f32) -> Result<[u8; 2], ()> {
+    // Reject non-finite (NaN/±Inf) and anything outside the representable range
+    // *before* any integer math: `(value * 100.0).round() as i32` otherwise
+    // saturates to `i32::MAX`/`i32::MIN` for huge inputs and the mantissa-
+    // halving loop below then overflows on `mantissa ± 1` (panic in debug).
+    if !value.is_finite() || !(FLOAT16_MIN..=FLOAT16_MAX).contains(&value) {
+        return Err(());
+    }
     // Representable range of DPT 9: mantissa in -2048..=2047, exponent 0..=15.
     let mut mantissa = (value * 100.0).round() as i32;
     let mut exponent = 0i32;
@@ -414,7 +429,18 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
             })
         }
         9 => {
-            let value = decode_float16(*payload.first()?, *payload.get(1)?);
+            let hi = *payload.first()?;
+            let lo = *payload.get(1)?;
+            // 0x7FFF is the DPT 9 "invalid data" sentinel (KNX spec): all sign,
+            // exponent and mantissa bits set. Decoding it as a number yields a
+            // meaningless ~670760.96, so instead fall back to `Raw` — the same
+            // honest "uninterpretable payload" representation the decoder already
+            // uses for unknown DPTs and size mismatches. The monitor renders it
+            // as the raw hex bytes rather than a bogus temperature.
+            if hi == 0x7F && lo == 0xFF {
+                return None;
+            }
+            let value = decode_float16(hi, lo);
             Some(TypedValue::Float {
                 value,
                 unit: float16_unit(dpt.sub),
@@ -672,6 +698,11 @@ pub fn parse_value(dpt: &Dpt, input: &str) -> Result<TypedValue, ParseValueError
             let unit = float32_unit(dpt.sub);
             let v = parse_float(raw, unit)
                 .ok_or_else(|| invalid("a decimal number (optionally with unit)"))?;
+            // Reject NaN/±Inf: they are valid IEEE bit patterns but not sensible
+            // values to write, and `encode` refuses them too.
+            if !v.is_finite() {
+                return Err(out_of_range("a finite decimal number"));
+            }
             Ok(TypedValue::Float { value: v, unit })
         }
         17 => {
@@ -793,12 +824,25 @@ fn strip_unit<'a>(input: &'a str, unit: Option<&str>) -> &'a str {
     input.strip_suffix('°').unwrap_or(input)
 }
 
-/// Case-insensitive `strip_suffix`.
+/// ASCII-case-insensitive `strip_suffix`.
+///
+/// Unit suffixes are always ASCII (`C`, `%`, `m/s`, `mA`, …), so comparing on
+/// raw bytes with ASCII case folding is sufficient — and, unlike the old
+/// `to_lowercase()`-then-slice approach, it can never split a multi-byte UTF-8
+/// character. That old version paniced on inputs like `"21.5\u{212A}"` (the
+/// Kelvin sign, whose lowercase `k` is one byte shorter than the three-byte
+/// original), because it sliced the *original* string by the *lowercased*
+/// length, landing mid-character.
 fn strip_suffix_ci<'a>(input: &'a str, suffix: &str) -> Option<&'a str> {
-    let il = input.to_lowercase();
-    let sl = suffix.to_lowercase();
-    if il.ends_with(&sl) {
-        Some(&input[..input.len() - suffix.len()])
+    let (ib, sb) = (input.as_bytes(), suffix.as_bytes());
+    if ib.len() < sb.len() {
+        return None;
+    }
+    let split = ib.len() - sb.len();
+    if ib[split..].eq_ignore_ascii_case(sb) {
+        // `split` is a valid char boundary: `suffix` is ASCII, so its bytes only
+        // match trailing ASCII bytes of `input`, which are always boundaries.
+        Some(&input[..split])
     } else {
         None
     }
@@ -847,6 +891,19 @@ pub fn encode(dpt: &Dpt, value: &TypedValue) -> Result<Vec<u8>, EncodeError> {
                 }
                 Ok(vec![(p * 255.0 / 100.0).round() as u8])
             }
+            // 5.003 angle: degrees 0..=360 map onto a single raw byte 0..=255,
+            // the inverse of the `b * 360 / 255` decode scaling. Encoding is
+            // therefore lossy (quantized to ~1.41°/step) but round-trips within
+            // one raw step.
+            (Some(3), TypedValue::Unsigned { value: v, .. }) => {
+                if *v > 360 {
+                    return Err(EncodeError::OutOfRange {
+                        dpt: dpt.to_string(),
+                        value: value.to_string(),
+                    });
+                }
+                Ok(vec![(*v as f32 * 255.0 / 360.0).round() as u8])
+            }
             (_, TypedValue::Unsigned { value: v, .. }) if *v <= 255 => Ok(vec![*v as u8]),
             _ => Err(mismatch()),
         },
@@ -892,7 +949,15 @@ pub fn encode(dpt: &Dpt, value: &TypedValue) -> Result<Vec<u8>, EncodeError> {
             _ => Err(mismatch()),
         },
         14 => match value {
-            TypedValue::Float { value: v, .. } => Ok(v.to_be_bytes().to_vec()),
+            // Reject non-finite (NaN/±Inf) on encode: a NaN/Inf write is almost
+            // always a typo'd input rather than an intended bus value, and it
+            // makes parse->encode->decode round-trips well-defined. Decode stays
+            // lenient (any 4 bytes are a valid IEEE float, including NaN/Inf).
+            TypedValue::Float { value: v, .. } if v.is_finite() => Ok(v.to_be_bytes().to_vec()),
+            TypedValue::Float { value: v, .. } => Err(EncodeError::OutOfRange {
+                dpt: dpt.to_string(),
+                value: v.to_string(),
+            }),
             _ => Err(mismatch()),
         },
         17 => match value {
@@ -1466,6 +1531,137 @@ mod tests {
         assert!(matches!(
             parse_value(&dpt("250.001"), "1"),
             Err(ParseValueError::Unsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn parse_9x_large_magnitude_is_out_of_range_not_panic() {
+        // Huge finite and infinite inputs must return a clean OutOfRange rather
+        // than overflowing inside encode_float16's range check.
+        for input in ["1e9", "inf", "-1e9", "21474836.48", "1e30", "nan"] {
+            assert!(
+                matches!(
+                    parse_value(&dpt("9.001"), input),
+                    Err(ParseValueError::OutOfRange { .. })
+                ),
+                "9.001 {input:?} should be OutOfRange"
+            );
+        }
+    }
+
+    #[test]
+    fn encode_float16_rejects_non_finite_and_out_of_range() {
+        assert!(encode_float16(f32::NAN).is_err());
+        assert!(encode_float16(f32::INFINITY).is_err());
+        assert!(encode_float16(f32::NEG_INFINITY).is_err());
+        assert!(encode_float16(FLOAT16_MAX * 2.0).is_err());
+        assert!(encode_float16(FLOAT16_MIN * 2.0).is_err());
+        // The extremes themselves are representable.
+        assert!(encode_float16(FLOAT16_MAX).is_ok());
+        assert!(encode_float16(FLOAT16_MIN).is_ok());
+    }
+
+    #[test]
+    fn dpt14_rejects_non_finite_on_parse_and_encode() {
+        for input in ["nan", "inf", "-inf"] {
+            assert!(
+                matches!(
+                    parse_value(&dpt("14.056"), input),
+                    Err(ParseValueError::OutOfRange { .. })
+                ),
+                "14.056 {input:?} should be OutOfRange"
+            );
+        }
+        // A directly-constructed NaN/Inf float is rejected by encode.
+        let nan = TypedValue::Float {
+            value: f32::NAN,
+            unit: None,
+        };
+        assert!(matches!(
+            encode(&dpt("14.056"), &nan),
+            Err(EncodeError::OutOfRange { .. })
+        ));
+        // Decode stays lenient: a NaN bit pattern still decodes to a Float.
+        assert!(matches!(
+            decode(&dpt("14.056"), &[0x7f, 0xc0, 0x00, 0x00]),
+            TypedValue::Float { .. }
+        ));
+    }
+
+    #[test]
+    fn dpt5003_angle_encode_scaling_and_roundtrip() {
+        // Angles above 255 now encode (previously Mismatch).
+        let v = parse_value(&dpt("5.003"), "360").unwrap();
+        assert_eq!(encode(&dpt("5.003"), &v).unwrap(), vec![255]);
+        assert_eq!(
+            encode(&dpt("5.003"), &parse_value(&dpt("5.003"), "0").unwrap()).unwrap(),
+            vec![0]
+        );
+        assert_eq!(
+            encode(&dpt("5.003"), &parse_value(&dpt("5.003"), "180").unwrap()).unwrap(),
+            vec![128]
+        );
+        // Out of range still rejected.
+        assert!(matches!(
+            encode(
+                &dpt("5.003"),
+                &TypedValue::Unsigned {
+                    value: 361,
+                    unit: Some("°")
+                }
+            ),
+            Err(EncodeError::OutOfRange { .. })
+        ));
+        // Round-trip within one raw step: decode(encode(v)) stays close, and
+        // encode(decode(x)) is stable.
+        for raw in [0u8, 1, 90, 128, 200, 255] {
+            if let TypedValue::Unsigned { value: deg, .. } = decode(&dpt("5.003"), &[raw]) {
+                let back = encode(
+                    &dpt("5.003"),
+                    &TypedValue::Unsigned {
+                        value: deg,
+                        unit: Some("°"),
+                    },
+                )
+                .unwrap();
+                assert!(
+                    (back[0] as i16 - raw as i16).abs() <= 1,
+                    "raw {raw} -> {deg}° -> {}",
+                    back[0]
+                );
+            } else {
+                panic!("expected unsigned angle");
+            }
+        }
+    }
+
+    #[test]
+    fn strip_suffix_ci_handles_non_ascii_input_without_panic() {
+        // U+212A KELVIN SIGN lowercases to a 1-byte 'k' (shorter than its 3-byte
+        // original), which used to make the old slice-by-lowercased-length code
+        // panic. It must simply not match the ASCII "°C" suffix now.
+        let kelvin = "21.5\u{212A}";
+        assert_eq!(strip_suffix_ci(kelvin, "C"), None);
+        assert_eq!(strip_suffix_ci(kelvin, "°C"), None);
+        // parse_value must not panic on it either.
+        assert!(parse_value(&dpt("9.001"), kelvin).is_err());
+        // Normal ASCII suffix stripping still works, case-insensitively.
+        assert_eq!(strip_suffix_ci("21.5c", "C"), Some("21.5"));
+        assert_eq!(strip_suffix_ci("1500W", "w"), Some("1500"));
+    }
+
+    #[test]
+    fn dpt9_invalid_sentinel_decodes_to_raw() {
+        // 0x7FFF is the DPT 9 "invalid data" sentinel: surface it as Raw, not a
+        // bogus ~670760 float.
+        assert_eq!(
+            decode(&dpt("9.001"), &[0x7F, 0xFF]),
+            TypedValue::Raw(vec![0x7F, 0xFF])
+        );
+        // A neighbouring value is still a normal float.
+        assert!(matches!(
+            decode(&dpt("9.001"), &[0x7F, 0xFE]),
+            TypedValue::Float { .. }
         ));
     }
 

@@ -308,6 +308,67 @@ async fn connect_rejected_status_is_error() {
     let _ = gw_task.await;
 }
 
+#[tokio::test]
+async fn dropping_tunnel_sends_disconnect_request() {
+    // Issue #31: dropping a `Tunnel` (without calling close) must still tear the
+    // connection down cleanly — the background task's command channel closes,
+    // which runs `do_close` and sends a DISCONNECT_REQUEST — so the gateway slot
+    // is released rather than leaked for its ~2-minute timeout.
+    let (addr, gw) = bind_mock().await;
+
+    let gw_task = tokio::spawn(async move {
+        // Handshake.
+        let (peer, service, _body) = recv_frame(&gw).await;
+        assert_eq!(service, ServiceType::ConnectRequest);
+        let resp = knxnet_frame(
+            ServiceType::ConnectResponse,
+            &connect_response_body(0x0C, &gw),
+        );
+        gw.send_to(&resp, peer).await.unwrap();
+
+        // The client is dropped by the test below; expect a DISCONNECT_REQUEST,
+        // answering any heartbeat that races it.
+        loop {
+            let mut buf = [0u8; 1024];
+            match tokio::time::timeout(Duration::from_secs(5), gw.recv_from(&mut buf)).await {
+                Ok(Ok((n, peer))) => {
+                    let Ok(parsed) = knxnet::parse(&buf[..n]) else {
+                        continue;
+                    };
+                    match parsed.service {
+                        ServiceType::DisconnectRequest => {
+                            let resp = knxnet::disconnect_response(0x0C, 0);
+                            let _ = gw.send_to(&resp, peer).await;
+                            return true;
+                        }
+                        ServiceType::ConnectionstateRequest => {
+                            let resp = knxnet::connectionstate_response(0x0C, 0);
+                            let _ = gw.send_to(&resp, peer).await;
+                        }
+                        _ => {}
+                    }
+                }
+                _ => return false,
+            }
+        }
+    });
+
+    let config = ConnectionConfig::tunnel(addr);
+    let conn = Transport::connect(&config).await.unwrap();
+    // Drop the connection without calling close(). The graceful DISCONNECT must
+    // still be sent by the detached background task.
+    drop(conn);
+
+    let saw_disconnect = tokio::time::timeout(Duration::from_secs(5), gw_task)
+        .await
+        .expect("gateway task should finish")
+        .unwrap();
+    assert!(
+        saw_disconnect,
+        "dropping a Tunnel must send a DISCONNECT_REQUEST (no slot leak)"
+    );
+}
+
 // --- Optional multicast loopback test, gated behind an env var ---
 
 #[tokio::test]

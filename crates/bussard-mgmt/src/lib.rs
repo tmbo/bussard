@@ -73,15 +73,20 @@ pub use tables::{DeviceTables, ResolvedLink, TableSource, TablesError, read_tabl
 /// - `0x07B0` → System B
 /// - `0x0705`, `0x0701` → System 7
 /// - `0x0300`, `0x0310`, `0x0311` → System 2
-/// - `0x0011`, `0x0012`, `0x0013` → System 1
+/// - `0x0010`–`0x0013`, `0x0020`/`0x0021`/`0x0025` → System 1 (BCU1 family)
 ///
-/// Unknown masks return `"System ?"`.
+/// The `0x002x` masks are the BCU1-family realisation type reported by some IP
+/// interfaces; a live scan found a Jung IP interface reporting `0021` (issue
+/// #30). Unknown masks return `"System ?"`.
 pub fn system_type(mask: u16) -> &'static str {
     match mask {
         0x07B0 => "System B",
         0x0705 | 0x0701 | 0x0700 => "System 7",
         0x0300 | 0x0310 | 0x0311 => "System 2",
-        0x0010..=0x0013 => "System 1",
+        // System 1 / BCU1 family: the classic 0x001x masks plus the 0x002x
+        // realisation type reported by BCU1-based IP interfaces (a live scan
+        // found a Jung IP interface reporting 0021 — issue #30).
+        0x0010..=0x0013 | 0x0020 | 0x0021 | 0x0025 => "System 1",
         _ => "System ?",
     }
 }
@@ -95,6 +100,10 @@ mod tests {
         assert_eq!(system_type(0x07B0), "System B");
         assert_eq!(system_type(0x0705), "System 7");
         assert_eq!(system_type(0x0012), "System 1");
+        // BCU1-family realisation type reported by a Jung IP interface (#30).
+        assert_eq!(system_type(0x0021), "System 1");
+        assert_eq!(system_type(0x0020), "System 1");
+        assert_eq!(system_type(0x0025), "System 1");
         assert_eq!(system_type(0x0300), "System 2");
         assert_eq!(system_type(0x1234), "System ?");
     }

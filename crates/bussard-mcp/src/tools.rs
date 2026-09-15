@@ -98,14 +98,16 @@ pub fn model_lookup(model: &Model, query: &str, limit: usize) -> Value {
     let mut groups = Vec::new();
     for (ga, group) in &model.groups.groups {
         if hit(&group.name) || hit(&ga.to_string()) {
+            // Check the limit *before* pushing, so `limit == 0` yields zero
+            // results rather than one (issue #39 off-by-one).
+            if groups.len() >= limit {
+                break;
+            }
             groups.push(json!({
                 "address": ga.to_string(),
                 "name": group.name,
                 "dpt": group.dpt.map(|d| d.to_string()),
             }));
-            if groups.len() >= limit {
-                break;
-            }
         }
     }
 
@@ -124,15 +126,15 @@ pub fn model_lookup(model: &Model, query: &str, limit: usize) -> Value {
             .and_then(|l| l.floor.clone())
             .unwrap_or_default();
         if hit(&dev.name) || hit(&ia.to_string()) || (!room.is_empty() && hit(&room)) {
+            if devices.len() >= limit {
+                break;
+            }
             devices.push(json!({
                 "ia": ia.to_string(),
                 "name": dev.name,
                 "floor": floor,
                 "room": room,
             }));
-            if devices.len() >= limit {
-                break;
-            }
         }
     }
 
@@ -143,6 +145,9 @@ pub fn model_lookup(model: &Model, query: &str, limit: usize) -> Value {
         for link in links {
             let obj_name = link.name.clone().unwrap_or_default();
             if hit(&obj_name) {
+                if objects.len() >= limit {
+                    break 'outer;
+                }
                 let mut linked: Vec<String> = Vec::new();
                 if let Some(send) = &link.send {
                     linked.push(send.to_string());
@@ -154,9 +159,6 @@ pub fn model_lookup(model: &Model, query: &str, limit: usize) -> Value {
                     "name": obj_name,
                     "linked_gas": linked,
                 }));
-                if objects.len() >= limit {
-                    break 'outer;
-                }
             }
         }
     }

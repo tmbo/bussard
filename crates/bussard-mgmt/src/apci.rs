@@ -16,6 +16,13 @@ pub const A_DEVICE_DESCRIPTOR_READ: u16 = 0x300;
 /// `A_DeviceDescriptor_Response`.
 pub const A_DEVICE_DESCRIPTOR_RESPONSE: u16 = 0x340;
 
+/// The 10-bit APCI selector mask for the services that embed request/response
+/// parameters in the **low 6 bits of the APCI** rather than in payload octets
+/// (`A_DeviceDescriptor_*`, `A_Memory_*`, `A_Restart`). Masking an observed APCI
+/// with this yields the bare service selector, so a response can be validated
+/// against the service it belongs to regardless of the low-bit parameter.
+pub const APCI_SELECTOR_MASK: u16 = 0x3C0;
+
 /// `A_PropertyValue_Read` — read a property of an interface object.
 pub const A_PROPERTY_VALUE_READ: u16 = 0x3D5;
 /// `A_PropertyValue_Response`.
@@ -154,13 +161,50 @@ pub fn decode_property_value_response(payload: &[u8]) -> Option<PropertyValueRes
     })
 }
 
-/// Encodes the `A_Memory_Read` payload: `[count] [addr_hi] [addr_lo]`.
+/// Encodes an `A_DeviceDescriptor_Read` request: the descriptor type lives in
+/// the **low 6 bits of the APCI** and the request carries **no** payload octet.
 ///
-/// `count` is clamped to [`MAX_MEMORY_READ_LEN`]; `addr` is the 16-bit memory
-/// address.
-pub fn encode_memory_read(addr: u16, count: u8) -> Vec<u8> {
+/// Returns the `(apci, payload)` pair to send. `descriptor_type` is masked to 6
+/// bits. A strict device (verified live against a Jung 23024, see the
+/// `tables` module docs) `T_Disconnect`s the over-long form that puts the type
+/// in a separate payload octet, so this centralised helper is the correct form.
+pub fn encode_device_descriptor_read(descriptor_type: u8) -> (u16, Vec<u8>) {
+    (
+        A_DEVICE_DESCRIPTOR_READ | u16::from(descriptor_type & 0x3f),
+        Vec::new(),
+    )
+}
+
+/// Encodes an `A_Restart` request. The restart variant (0 = basic restart) is
+/// carried in the **low 6 bits of the APCI** with an empty payload.
+pub fn encode_restart(variant: u8) -> (u16, Vec<u8>) {
+    (A_RESTART | u16::from(variant & 0x3f), Vec::new())
+}
+
+/// Encodes an `A_Memory_Read` request: the octet count lives in the **low 6
+/// bits of the APCI**, followed by exactly the two address octets.
+///
+/// Returns the `(apci, payload)` pair to send. `count` is clamped to
+/// [`MAX_MEMORY_READ_LEN`]. This is the strict, spec-correct framing; the older
+/// form that put the count in a leading payload octet is refused by strict
+/// System B devices.
+pub fn encode_memory_read(addr: u16, count: u8) -> (u16, Vec<u8>) {
     let count = count.min(MAX_MEMORY_READ_LEN) & 0x3f;
-    vec![count, (addr >> 8) as u8, (addr & 0xff) as u8]
+    (
+        A_MEMORY_READ | u16::from(count),
+        addr.to_be_bytes().to_vec(),
+    )
+}
+
+/// Encodes an `A_Memory_Response`: the octet count lives in the **low 6 bits of
+/// the APCI**, followed by the two address octets and then the data.
+///
+/// Returns the `(apci, payload)` pair. Used by device-side mocks and tests.
+pub fn encode_memory_response(addr: u16, data: &[u8]) -> (u16, Vec<u8>) {
+    let count = (data.len().min(usize::from(MAX_MEMORY_READ_LEN)) as u8) & 0x3f;
+    let mut payload = addr.to_be_bytes().to_vec();
+    payload.extend_from_slice(&data[..usize::from(count)]);
+    (A_MEMORY_RESPONSE | u16::from(count), payload)
 }
 
 /// The parsed header of an `A_Memory_Response`, plus its data octets.
@@ -174,19 +218,29 @@ pub struct MemoryResponse {
     pub data: Vec<u8>,
 }
 
-/// Decodes an `A_Memory_Response` payload: `[count] [addr_hi] [addr_lo] data…`.
+/// Decodes an `A_Memory_Response`, given the response APCI and its payload.
 ///
-/// Returns `None` if the payload is shorter than the 3-byte header.
-pub fn decode_memory_response(payload: &[u8]) -> Option<MemoryResponse> {
-    if payload.len() < 3 {
+/// The octet count lives in the **low 6 bits of `resp_apci`**; the payload is
+/// `[addr_hi] [addr_lo] data…`. Returns `None` if the APCI selector is not
+/// `A_Memory_Response`, the payload is shorter than the 2-byte address header,
+/// or the payload holds fewer data octets than the count advertises.
+pub fn decode_memory_response(resp_apci: u16, payload: &[u8]) -> Option<MemoryResponse> {
+    if resp_apci & APCI_SELECTOR_MASK != A_MEMORY_RESPONSE {
         return None;
     }
-    let count = payload[0] & 0x3f;
-    let addr = u16::from_be_bytes([payload[1], payload[2]]);
+    if payload.len() < 2 {
+        return None;
+    }
+    let count = (resp_apci & 0x3f) as u8;
+    let addr = u16::from_be_bytes([payload[0], payload[1]]);
+    let data = &payload[2..];
+    if data.len() < usize::from(count) {
+        return None;
+    }
     Some(MemoryResponse {
         count,
         addr,
-        data: payload[3..].to_vec(),
+        data: data[..usize::from(count)].to_vec(),
     })
 }
 
@@ -241,24 +295,50 @@ mod tests {
     }
 
     #[test]
-    fn memory_read_encodes_and_clamps() {
-        assert_eq!(encode_memory_read(0x0060, 4), vec![4, 0x00, 0x60]);
+    fn memory_read_encodes_count_in_apci_and_clamps() {
+        // Count lives in the APCI low bits; the payload is address-only.
+        let (apci, payload) = encode_memory_read(0x0060, 4);
+        assert_eq!(apci, A_MEMORY_READ | 4);
+        assert_eq!(payload, vec![0x00, 0x60]);
         // Over-long counts clamp to MAX_MEMORY_READ_LEN.
-        assert_eq!(encode_memory_read(0x0100, 200)[0], MAX_MEMORY_READ_LEN);
+        let (apci, _) = encode_memory_read(0x0100, 200);
+        assert_eq!((apci & 0x3f) as u8, MAX_MEMORY_READ_LEN);
     }
 
     #[test]
-    fn memory_response_roundtrips() {
-        let payload = vec![0x03, 0x00, 0x60, 0xAA, 0xBB, 0xCC];
-        let parsed = decode_memory_response(&payload).unwrap();
+    fn device_descriptor_read_has_empty_payload() {
+        let (apci, payload) = encode_device_descriptor_read(0);
+        assert_eq!(apci, A_DEVICE_DESCRIPTOR_READ);
+        assert!(payload.is_empty());
+    }
+
+    #[test]
+    fn restart_carries_variant_in_apci() {
+        let (apci, payload) = encode_restart(0);
+        assert_eq!(apci, A_RESTART);
+        assert!(payload.is_empty());
+    }
+
+    #[test]
+    fn memory_response_roundtrips_via_apci() {
+        // Response: count 3 in the APCI, payload = addr + data.
+        let (apci, payload) = encode_memory_response(0x0060, &[0xAA, 0xBB, 0xCC]);
+        assert_eq!(apci, A_MEMORY_RESPONSE | 3);
+        assert_eq!(payload, vec![0x00, 0x60, 0xAA, 0xBB, 0xCC]);
+        let parsed = decode_memory_response(apci, &payload).unwrap();
         assert_eq!(parsed.count, 3);
         assert_eq!(parsed.addr, 0x0060);
         assert_eq!(parsed.data, vec![0xAA, 0xBB, 0xCC]);
     }
 
     #[test]
-    fn memory_response_too_short_is_none() {
-        assert!(decode_memory_response(&[0x03, 0x00]).is_none());
+    fn memory_response_rejects_wrong_apci_or_short_payload() {
+        // Wrong selector.
+        assert!(decode_memory_response(A_PROPERTY_VALUE_RESPONSE, &[0x00, 0x60]).is_none());
+        // Too short for the address header.
+        assert!(decode_memory_response(A_MEMORY_RESPONSE | 1, &[0x00]).is_none());
+        // Count advertises more data than present.
+        assert!(decode_memory_response(A_MEMORY_RESPONSE | 3, &[0x00, 0x60, 0xAA]).is_none());
     }
 
     #[test]

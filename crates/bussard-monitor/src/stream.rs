@@ -17,9 +17,74 @@ use bussard_transport::cemi::CemiFrame;
 use bussard_transport::{
     BusConnection, ConnectionConfig, TimestampedFrame, Transport, TransportError,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::decode::DecodedTelegram;
+
+/// A cooperative cancellation signal for a running stream loop.
+///
+/// Create a [`CancelToken`] with [`CancelToken::new`], pass the paired
+/// [`CancelWatch`] into [`run_stream_with_outbound`], and call
+/// [`CancelToken::cancel`] to ask the loop to break out of its consume loop and
+/// **cleanly close** the live connection (sending DISCONNECT_REQUEST) before
+/// returning — rather than aborting the task and leaking the gateway's tunnel
+/// slot (issue #31).
+///
+/// Backed by a `tokio::sync::watch` channel, so it is dependency-free and can be
+/// observed from inside `tokio::select!` without racing.
+#[derive(Debug, Clone)]
+pub struct CancelToken {
+    tx: watch::Sender<bool>,
+}
+
+/// The receiving half of a [`CancelToken`], handed to the stream loop.
+#[derive(Debug, Clone)]
+pub struct CancelWatch {
+    rx: watch::Receiver<bool>,
+}
+
+impl CancelToken {
+    /// Creates a fresh, not-yet-cancelled token and its paired watch.
+    pub fn new() -> (CancelToken, CancelWatch) {
+        let (tx, rx) = watch::channel(false);
+        (CancelToken { tx }, CancelWatch { rx })
+    }
+
+    /// Signals cancellation. The stream loop breaks its consume loop and closes
+    /// the connection cleanly before returning `Ok(())`.
+    pub fn cancel(&self) {
+        // Ignore the error if all watchers are gone: nothing to cancel.
+        let _ = self.tx.send(true);
+    }
+}
+
+impl Default for CancelToken {
+    fn default() -> Self {
+        CancelToken::new().0
+    }
+}
+
+impl CancelWatch {
+    /// Whether cancellation has already been requested.
+    fn is_cancelled(&self) -> bool {
+        *self.rx.borrow()
+    }
+
+    /// Resolves as soon as cancellation is requested (or immediately if it has
+    /// already been requested). Suitable for use inside `tokio::select!`.
+    async fn cancelled(&mut self) {
+        if *self.rx.borrow() {
+            return;
+        }
+        // Wait for a change to `true`. If the sender is dropped, treat that as
+        // cancellation too (the owner is gone).
+        while self.rx.changed().await.is_ok() {
+            if *self.rx.borrow() {
+                return;
+            }
+        }
+    }
+}
 
 /// The initial reconnect backoff.
 const BACKOFF_START: Duration = Duration::from_secs(1);
@@ -85,6 +150,19 @@ pub async fn run_stream(
     run_stream_with_outbound(config, model, sink, None).await
 }
 
+/// Like [`run_stream`], but cancellable through a [`CancelWatch`].
+///
+/// On cancellation the loop breaks and cleanly closes any live connection
+/// (sending DISCONNECT_REQUEST on a tunnel) before returning `Ok(())`.
+pub async fn run_stream_cancellable(
+    config: &ConnectionConfig,
+    model: Option<&Model>,
+    sink: &mut dyn TelegramSink,
+    cancel: CancelWatch,
+) -> Result<(), StreamError> {
+    run_stream_inner(config, model, sink, None, Some(cancel)).await
+}
+
 /// Like [`run_stream`], but also drains an optional outbound channel, sending
 /// each queued [`CemiFrame`] onto the live connection.
 ///
@@ -102,12 +180,45 @@ pub async fn run_stream_with_outbound(
     config: &ConnectionConfig,
     model: Option<&Model>,
     sink: &mut dyn TelegramSink,
+    outbound: Option<mpsc::UnboundedReceiver<CemiFrame>>,
+) -> Result<(), StreamError> {
+    run_stream_inner(config, model, sink, outbound, None).await
+}
+
+/// Like [`run_stream_with_outbound`], but cancellable through a [`CancelWatch`].
+///
+/// This is the injection point one-shot commands (`bussard read`/`write`) and
+/// the MCP server use: they queue a frame on `outbound`, await the response, and
+/// then [`cancel`](CancelToken::cancel) so the connection is closed cleanly
+/// (releasing the gateway tunnel slot) instead of being aborted — issue #31.
+pub async fn run_stream_with_outbound_cancellable(
+    config: &ConnectionConfig,
+    model: Option<&Model>,
+    sink: &mut dyn TelegramSink,
+    outbound: Option<mpsc::UnboundedReceiver<CemiFrame>>,
+    cancel: CancelWatch,
+) -> Result<(), StreamError> {
+    run_stream_inner(config, model, sink, outbound, Some(cancel)).await
+}
+
+/// The shared implementation behind every `run_stream*` entry point.
+async fn run_stream_inner(
+    config: &ConnectionConfig,
+    model: Option<&Model>,
+    sink: &mut dyn TelegramSink,
     mut outbound: Option<mpsc::UnboundedReceiver<CemiFrame>>,
+    mut cancel: Option<CancelWatch>,
 ) -> Result<(), StreamError> {
     let mut backoff = BACKOFF_START;
     let mut first = true;
 
     loop {
+        // If cancellation was requested before/between connections, stop now so
+        // we never open a fresh tunnel just to close it.
+        if cancel.as_ref().is_some_and(CancelWatch::is_cancelled) {
+            return Ok(());
+        }
+
         match Transport::connect(config).await {
             Ok(conn) => {
                 // A successful connect resets the backoff schedule.
@@ -118,13 +229,22 @@ pub async fn run_stream_with_outbound(
                 }
                 first = false;
 
-                match consume(conn, model, sink, outbound.as_mut()).await {
+                match consume(conn, model, sink, outbound.as_mut(), cancel.as_mut()).await {
                     ConsumeOutcome::Stopped => return Ok(()),
+                    ConsumeOutcome::Cancelled => return Ok(()),
                     ConsumeOutcome::Dropped(err) => {
                         if sink.on_disconnect(&err, backoff).is_stop() {
                             return Ok(());
                         }
-                        tokio::time::sleep(backoff).await;
+                        // A cancel during the sleep should end promptly.
+                        if let Some(c) = cancel.as_mut() {
+                            tokio::select! {
+                                _ = tokio::time::sleep(backoff) => {}
+                                _ = c.cancelled() => return Ok(()),
+                            }
+                        } else {
+                            tokio::time::sleep(backoff).await;
+                        }
                         backoff = next_backoff(backoff);
                     }
                 }
@@ -134,7 +254,14 @@ pub async fn run_stream_with_outbound(
                 if sink.on_disconnect(&err, backoff).is_stop() {
                     return Ok(());
                 }
-                tokio::time::sleep(backoff).await;
+                if let Some(c) = cancel.as_mut() {
+                    tokio::select! {
+                        _ = tokio::time::sleep(backoff) => {}
+                        _ = c.cancelled() => return Ok(()),
+                    }
+                } else {
+                    tokio::time::sleep(backoff).await;
+                }
                 backoff = next_backoff(backoff);
             }
         }
@@ -145,18 +272,32 @@ pub async fn run_stream_with_outbound(
 enum ConsumeOutcome {
     /// The sink asked to stop.
     Stopped,
+    /// Cancellation was requested; the connection was closed cleanly.
+    Cancelled,
     /// The connection dropped with this error; caller should reconnect.
     Dropped(TransportError),
 }
 
-/// Receives and dispatches frames from a single live connection until it drops
-/// or the sink stops, while also forwarding any queued outbound frames onto it.
+/// Receives and dispatches frames from a single live connection until it drops,
+/// the sink stops, or cancellation is requested — while also forwarding any
+/// queued outbound frames onto it.
+///
+/// On cancellation the connection is **closed cleanly** (`conn.close().await`,
+/// which sends DISCONNECT_REQUEST on a tunnel) before returning, so the gateway
+/// releases its tunnel slot instead of holding it for its ~2-minute timeout.
 async fn consume(
     mut conn: Transport,
     model: Option<&Model>,
     sink: &mut dyn TelegramSink,
     mut outbound: Option<&mut mpsc::UnboundedReceiver<CemiFrame>>,
+    mut cancel: Option<&mut CancelWatch>,
 ) -> ConsumeOutcome {
+    // If cancellation was already requested before we got here, close and stop.
+    if cancel.as_deref().is_some_and(|c| c.is_cancelled()) {
+        let _ = conn.close().await;
+        return ConsumeOutcome::Cancelled;
+    }
+
     loop {
         // When no outbound channel is present, this collapses to a plain
         // `conn.recv().await` (the disabled branch is never polled), so the
@@ -164,6 +305,13 @@ async fn consume(
         let out_recv = async {
             match outbound.as_mut() {
                 Some(rx) => rx.recv().await,
+                None => std::future::pending().await,
+            }
+        };
+        // When no cancel watch is present, this branch never resolves.
+        let cancelled = async {
+            match cancel.as_mut() {
+                Some(c) => c.cancelled().await,
                 None => std::future::pending().await,
             }
         };
@@ -194,6 +342,12 @@ async fn consume(
                     outbound = None;
                 }
             },
+            _ = cancelled => {
+                // Cancellation requested: close the connection cleanly so the
+                // gateway releases the tunnel slot, then stop.
+                let _ = conn.close().await;
+                return ConsumeOutcome::Cancelled;
+            }
         }
     }
 }

@@ -80,23 +80,22 @@ fn small_model() -> Model {
 // Absurd limits on model_lookup.
 // ---------------------------------------------------------------------------
 
-/// Robustness observation (low severity): `model_lookup` with `limit == 0`
-/// returns ONE result per category, not zero. The limit is checked AFTER the
-/// push (`groups.push(...); if groups.len() >= limit { break }`), so the first
-/// match is always emitted regardless of the limit. A caller passing `limit: 0`
-/// via the MCP `knx_model_lookup` tool therefore gets one group, one device and
-/// one object rather than an empty result. Documented here; not a panic and not
-/// in-scope to fix. See `crates/bussard-mcp/src/tools.rs:106,133,158`.
+/// Regression (was issue #39 off-by-one): `model_lookup` with `limit == 0` used
+/// to return ONE result per category, not zero, because the limit was checked
+/// AFTER the push. It is now checked before the push, so `limit: 0` yields an
+/// empty result and `limit: n` yields at most `n`.
 #[test]
-fn model_lookup_limit_zero_off_by_one_returns_one_not_zero() {
+fn model_lookup_limit_zero_returns_zero() {
     let m = small_model();
     let v = model_lookup(&m, "group", 0);
-    // Current (quirky) behaviour: one result leaks through despite limit 0.
     assert_eq!(
         v["groups"].as_array().unwrap().len(),
-        1,
-        "limit==0 currently yields one result (post-push limit check)"
+        0,
+        "limit==0 must yield zero results"
     );
+    // And a non-zero limit still yields exactly that many.
+    let v1 = model_lookup(&m, "group", 1);
+    assert_eq!(v1["groups"].as_array().unwrap().len(), 1);
 }
 
 #[test]
