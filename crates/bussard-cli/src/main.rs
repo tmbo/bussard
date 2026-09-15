@@ -112,12 +112,29 @@ enum Command {
         #[arg(long)]
         routing: bool,
     },
-    /// Read a device's tables back over the bus and diff them against the model.
+    /// Read a device's tables back over the bus and diff them against the model,
+    /// or (with `--line`) sweep a whole line and synthesize a fresh model.
     Reconstruct {
-        /// The device to read, e.g. `1.1.4`.
-        #[arg(value_name = "ADDRESS")]
-        address: String,
+        /// The single device to read, e.g. `1.1.4` (mutually exclusive with
+        /// `--line`).
+        #[arg(value_name = "ADDRESS", required_unless_present = "line")]
+        address: Option<String>,
+        /// Sweep a whole line, e.g. `1.1`, and synthesize a fresh model from
+        /// every System B device's tables (requires `--out`).
+        #[arg(long, value_name = "LINE", conflicts_with = "address")]
+        line: Option<String>,
+        /// The first device number to probe in line mode (0–255).
+        #[arg(long, value_name = "N", default_value_t = 0, requires = "line")]
+        from: u8,
+        /// The last device number to probe in line mode (0–255).
+        #[arg(long, value_name = "N", default_value_t = 255, requires = "line")]
+        to: u8,
+        /// Line mode only: the fresh model directory to synthesize into. Must be
+        /// absent or empty — reconstruction never merges into an existing model.
+        #[arg(long, value_name = "DIR", requires = "line")]
+        out: Option<PathBuf>,
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// In line mode this only supplies connection defaults.
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// Emit JSON instead of the report format.
@@ -131,13 +148,28 @@ enum Command {
         routing: bool,
     },
     /// Import vendor product data (`.knxprod`): cache it and generate a model.
+    ///
+    /// Give a local `.knxprod` FILE, or `--order-number` to look the file up in
+    /// the pointer index and download it from the vendor, or `--list` to show
+    /// the index.
     ImportProduct {
-        /// The `.knxprod` file to import.
+        /// The `.knxprod` file to import (positional mode).
         #[arg(value_name = "FILE")]
-        file: PathBuf,
+        file: Option<PathBuf>,
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
+        /// Look the `.knxprod` up in the pointer index by order number and
+        /// download it from the vendor (with confirmation).
+        #[arg(long, value_name = "ORDER", conflicts_with = "file")]
+        order_number: Option<String>,
+        /// Skip the download confirmation prompt (assume yes). Only meaningful
+        /// with `--order-number`.
+        #[arg(long)]
+        yes_download: bool,
+        /// List the product-data pointer index and exit.
+        #[arg(long, conflicts_with_all = ["file", "order_number"])]
+        list: bool,
     },
     /// Guide a new device from programming mode into the model (assign +
     /// product data + links scaffolding).
@@ -386,17 +418,46 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
         ),
         Command::Reconstruct {
             address,
+            line,
+            from,
+            to,
+            out,
             dir,
             json,
             gateway,
             routing,
-        } => reconstruct_cmd::run(
-            &address,
+        } => {
+            let overrides = conn_cmd::ConnOverrides { gateway, routing };
+            match line {
+                Some(line) => reconstruct_cmd::run_line(
+                    &line,
+                    from,
+                    to,
+                    out.as_deref(),
+                    &dir,
+                    json,
+                    overrides,
+                ),
+                None => {
+                    // clap guarantees ADDRESS is present when --line is absent.
+                    let address = address.expect("clap requires ADDRESS without --line");
+                    reconstruct_cmd::run(&address, &dir, json, overrides)
+                }
+            }
+        }
+        Command::ImportProduct {
+            file,
+            dir,
+            order_number,
+            yes_download,
+            list,
+        } => import_product_cmd::run(
+            file.as_deref(),
             &dir,
-            json,
-            conn_cmd::ConnOverrides { gateway, routing },
+            order_number.as_deref(),
+            yes_download,
+            list,
         ),
-        Command::ImportProduct { file, dir } => import_product_cmd::run(&file, &dir),
         Command::Adopt {
             product,
             dir,
