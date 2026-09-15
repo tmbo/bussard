@@ -70,6 +70,9 @@ pub fn run(
     let runtime = tokio::runtime::Runtime::new()?;
     let read = runtime.block_on(async move {
         let (handle, _task) = Bus::connect(config);
+        if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
+            eprintln!("warning: bus not connected yet; management traffic may use the 0.0.255 fallback source");
+        }
         let source = ops::group_source(&handle);
         let lease = handle.lease().await.context("leasing the bus")?;
         let channel = LeaseChannel::new(lease);

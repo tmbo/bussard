@@ -20,7 +20,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow, bail};
-use bussard_bus::{Bus, BusHandle, BusState, ops};
+use bussard_bus::{Bus, BusHandle, ops};
 use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO, PID_SERIAL_NUMBER};
 use bussard_mgmt::{
     DeviceConnection, LeaseChannel, broadcast, manufacturers, system_type, write_individual_address,
@@ -61,7 +61,9 @@ pub fn run(
         let (handle, _task) = Bus::connect(config);
         // Wait for the actor to connect so the tunnel-assigned source address is
         // available (falling back to 0.0.255 on routing) — issue #30.
-        wait_connected(&handle).await;
+        handle
+            .wait_connected(std::time::Duration::from_secs(10))
+            .await;
         let source = ops::group_source(&handle);
         // Guard the assign flow with Ctrl-C: on interrupt, fall through to a
         // clean `handle.close()` so the gateway tunnel slot is released rather
@@ -76,16 +78,6 @@ pub fn run(
         let _ = handle.close().await;
         result
     })
-}
-
-/// Waits (up to ~10s) for the bus actor to report connected.
-async fn wait_connected(handle: &BusHandle) {
-    for _ in 0..1000 {
-        match handle.status() {
-            BusState::Connected | BusState::Closed => return,
-            _ => tokio::time::sleep(Duration::from_millis(10)).await,
-        }
-    }
 }
 
 /// Loads the model for an assign run.

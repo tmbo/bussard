@@ -307,6 +307,27 @@ impl BusHandle {
         self.shared.state()
     }
 
+    /// Waits until the actor reports [`BusState::Connected`] (or `Closed`),
+    /// up to `timeout`. Returns `true` when connected.
+    ///
+    /// Callers that derive the management source address from
+    /// [`assigned_individual_address`](Self::assigned_individual_address) MUST
+    /// wait first: the actor connects asynchronously, and reading the source
+    /// before the tunnel handshake completes silently yields the `0.0.255`
+    /// fallback — which real devices ignore for connection-oriented traffic
+    /// (issue #30's failure mode, as a startup race).
+    pub async fn wait_connected(&self, timeout: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            match self.status() {
+                BusState::Connected => return true,
+                BusState::Closed => return false,
+                _ if tokio::time::Instant::now() >= deadline => return false,
+                _ => tokio::time::sleep(Duration::from_millis(10)).await,
+            }
+        }
+    }
+
     /// Closes the connection cleanly, awaiting the transport `DISCONNECT`.
     ///
     /// This is the single close path: it never opens a fresh tunnel just to
