@@ -1,0 +1,12 @@
+[package]
+name = "bussard-ets"
+description = "Shared ETS-XML primitives: attributes, DPT/flag mapping, translations, containers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bussard-model = { path = "../bussard-model" }
+thiserror = { workspace = true }
