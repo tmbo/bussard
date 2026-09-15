@@ -564,6 +564,280 @@ fn cover_wires_position_5001_and_angle_5003() {
     assert!(!yaml.contains("position_address: 1/2/4"), "{yaml}");
 }
 
+// --- climate --------------------------------------------------------------
+
+use bussard_ha::entities::{Climate, Entity};
+
+/// Adds a climate room's group addresses to a builder (name-based; climate is
+/// correlated by room name, so no com-objects are required for these GAs).
+fn climate_room(mut b: ModelBuilder, room: &str, base: &str) -> ModelBuilder {
+    // base like "0/3/" so we can lay out a room at contiguous addresses.
+    let g = |b: ModelBuilder, off: u16, suffix: &str, d: &str| -> ModelBuilder {
+        b.group(&format!("{base}{off}"), &format!("{room} {suffix}"), d)
+    };
+    b = g(b, 0, "Isttemperatur", "9.001");
+    b = g(b, 1, "Solltemperatur Basis", "9.001");
+    b = g(b, 2, "Betriebsmodus Vorgabe", "20.102");
+    b = g(b, 3, "Betriebsmodus Zwang", "20.102");
+    b = g(b, 4, "Soll-Temperatur aktuell", "9.001");
+    b = g(b, 5, "Sollwertverschiebung", "9.002");
+    b = g(b, 6, "Stellgröße Heizen/Kühlen", "5.001");
+    b = g(b, 8, "Sollwertverschiebung Status", "9.002");
+    b
+}
+
+fn only_climate(model: &Model, ov: &Overrides) -> Vec<Climate> {
+    derive(model, ov)
+        .entities
+        .into_iter()
+        .filter_map(|e| match e {
+            Entity::Climate(c) => Some(c),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn climate_full_cluster_central_heating_mapping() {
+    // Central-heating installation: the operation mode (Betriebsmodus) is the
+    // control; temperature and valve are read-only telemetry. Setpoint shift and
+    // target temperature are deliberately NOT wired (no HA key that invites a
+    // temperature change).
+    let model = climate_room(
+        ModelBuilder::new("1.1.2", "Heizung", None),
+        "Büro UG",
+        "0/3/",
+    )
+    .build();
+    let cs = only_climate(&model, &Overrides::default());
+    assert_eq!(cs.len(), 1);
+    let c = &cs[0];
+    // The control.
+    assert_eq!(c.operation_mode_address, Some(ga("0/3/2")));
+    // Read-only telemetry.
+    assert_eq!(c.temperature_address, Some(ga("0/3/0")));
+    assert_eq!(c.command_value_state_address, Some(ga("0/3/6")));
+    // Deliberately unwired.
+    assert_eq!(c.setpoint_shift_address, None);
+    assert_eq!(c.setpoint_shift_state_address, None);
+    assert_eq!(c.setpoint_shift_mode, None);
+    assert_eq!(c.target_temperature_state_address, None);
+    let yaml = generate(&model, &Overrides::default()).unwrap();
+    assert!(yaml.contains("climate:"), "{yaml}");
+    assert!(
+        !yaml.contains("setpoint_shift"),
+        "no setpoint wiring: {yaml}"
+    );
+    assert!(
+        !yaml.contains("target_temperature"),
+        "no target temp: {yaml}"
+    );
+}
+
+#[test]
+fn climate_minimal_mode_only_anchors() {
+    // A room with only an operation-mode command still anchors a climate entity.
+    let model = ModelBuilder::new("1.1.2", "Heizung", None)
+        .group("0/3/2", "Büro UG Betriebsmodus Vorgabe", "20.102")
+        .build();
+    let cs = only_climate(&model, &Overrides::default());
+    assert_eq!(cs.len(), 1);
+    assert_eq!(cs[0].operation_mode_address, Some(ga("0/3/2")));
+    assert!(cs[0].temperature_address.is_none());
+}
+
+#[test]
+fn climate_setpoint_shift_alone_does_not_anchor() {
+    // Setpoint shift is not a control in a central-heating install, so a
+    // setpoint-shift GA alone (no operation mode) does NOT anchor a climate
+    // entity — it falls through to the sensor pass.
+    let model = ModelBuilder::new("1.1.2", "Heizung", None)
+        .group("0/3/5", "Büro UG Sollwertverschiebung", "9.002")
+        .object(1, "9.002", "CRT", None, Some("0/3/5"), &[])
+        .build();
+    assert!(only_climate(&model, &Overrides::default()).is_empty());
+    let yaml = generate(&model, &Overrides::default()).unwrap();
+    assert!(!yaml.contains("climate:"), "{yaml}");
+    // It became a plain 2-byte-float sensor instead.
+    assert!(yaml.contains("sensor:"), "{yaml}");
+}
+
+#[test]
+fn climate_lone_temperature_does_not_anchor() {
+    // A room with only a temperature GA (no mode, no shift) is NOT a climate
+    // entity; it falls through to the sensor pass.
+    let model = ModelBuilder::new("1.1.2", "Fühler", None)
+        .group("0/3/0", "Küche Isttemperatur", "9.001")
+        .object(1, "9.001", "CRT", None, Some("0/3/0"), &[])
+        .build();
+    assert!(only_climate(&model, &Overrides::default()).is_empty());
+    let yaml = generate(&model, &Overrides::default()).unwrap();
+    assert!(!yaml.contains("climate:"), "{yaml}");
+    // It became a temperature sensor instead.
+    assert!(yaml.contains("type: temperature"), "{yaml}");
+}
+
+#[test]
+fn climate_temperature_correlation_hit_and_miss() {
+    // Two rooms share one model. Room A has a mode command (anchors) and a
+    // temperature that correlates by name. Room B has only a temperature (no
+    // anchor) -> its temperature must NOT be pulled into room A.
+    let model = ModelBuilder::new("1.1.2", "Heizung", None)
+        .group("0/3/2", "Büro UG Betriebsmodus Vorgabe", "20.102")
+        .group("0/3/0", "Büro UG Isttemperatur", "9.001")
+        .group("0/3/20", "Garage Isttemperatur", "9.001")
+        .object(9, "9.001", "CRT", None, Some("0/3/20"), &[])
+        .build();
+    let cs = only_climate(&model, &Overrides::default());
+    assert_eq!(cs.len(), 1);
+    // Correlation hit: Büro UG temperature wired.
+    assert_eq!(cs[0].temperature_address, Some(ga("0/3/0")));
+    // Correlation miss: Garage temperature is a different room -> not wired here.
+    assert_ne!(cs[0].temperature_address, Some(ga("0/3/20")));
+    // And it survives as its own sensor.
+    let yaml = generate(&model, &Overrides::default()).unwrap();
+    assert!(yaml.contains("state_address: 0/3/20"), "{yaml}");
+}
+
+#[test]
+fn climate_zwang_recognised_unwired_and_noted() {
+    // The forced-mode (Zwang) GA is recognised but has no HA schema key: it is
+    // left unwired (still counted as unmapped dpt-20) and surfaced as a footer
+    // note.
+    let model = ModelBuilder::new("1.1.2", "Heizung", None)
+        .group("0/3/2", "Büro UG Betriebsmodus Vorgabe", "20.102")
+        .group("0/3/3", "Büro UG Betriebsmodus Zwang", "20.102")
+        .build();
+    let d = derive(&model, &Overrides::default());
+    // Zwang is not wired onto the climate entity.
+    let cs: Vec<_> = d
+        .entities
+        .iter()
+        .filter_map(|e| match e {
+            Entity::Climate(c) => Some(c),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(cs.len(), 1);
+    assert!(
+        !Entity::Climate(cs[0].clone())
+            .all_gas()
+            .contains(&ga("0/3/3"))
+    );
+    // Zwang remains unmapped (dpt 20) and a note is emitted.
+    assert_eq!(d.unmapped.get(&Some(20)).copied(), Some(1));
+    let yaml = generate(&model, &Overrides::default()).unwrap();
+    assert!(
+        yaml.contains("# note: climate 'Büro UG': forced-mode"),
+        "{yaml}"
+    );
+    assert!(yaml.contains("dpt 20: 1"), "{yaml}");
+}
+
+#[test]
+fn climate_claims_valve_before_percent_sensor() {
+    // The 5.001 valve GA is *sent* by a heating-actuator object, so without the
+    // climate pass it would become a `percent` sensor. Climate runs first and
+    // claims it — no percent sensor on that GA.
+    let model = ModelBuilder::new("1.1.2", "Heizaktor", None)
+        .group("0/3/2", "Büro UG Betriebsmodus Vorgabe", "20.102")
+        .group("0/3/6", "Büro UG Stellgröße Heizen/Kühlen", "5.001")
+        .object(21, "5.001", "CRT", None, Some("0/3/6"), &[])
+        .build();
+    let d = derive(&model, &Overrides::default());
+    // Valve is the climate command_value_state_address.
+    let c = d
+        .entities
+        .iter()
+        .find_map(|e| match e {
+            Entity::Climate(c) => Some(c),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(c.command_value_state_address, Some(ga("0/3/6")));
+    // No sensor on 0/3/6.
+    let has_percent_sensor = d
+        .entities
+        .iter()
+        .any(|e| matches!(e, Entity::Sensor(s) if s.state_address == ga("0/3/6")));
+    assert!(
+        !has_percent_sensor,
+        "valve must not also be a percent sensor"
+    );
+    let yaml = generate(&model, &Overrides::default()).unwrap();
+    assert!(!yaml.contains("type: percent"), "{yaml}");
+}
+
+#[test]
+fn climate_determinism_multiple_rooms() {
+    let model = climate_room(
+        climate_room(
+            ModelBuilder::new("1.1.2", "Heizung", None),
+            "Büro UG",
+            "0/3/",
+        ),
+        "Schlafen",
+        "1/4/",
+    )
+    .build();
+    let a = generate(&model, &Overrides::default()).unwrap();
+    let b = generate(&model, &Overrides::default()).unwrap();
+    assert_eq!(a, b, "climate output must be byte-identical across runs");
+    assert_eq!(only_climate(&model, &Overrides::default()).len(), 2);
+}
+
+#[test]
+fn climate_name_override_and_exclusion() {
+    // Name override applies (keyed by the anchor / operation_mode GA). Excluding
+    // the anchor GA drops the whole climate entity.
+    let model = climate_room(
+        ModelBuilder::new("1.1.2", "Heizung", None),
+        "Büro UG",
+        "0/3/",
+    )
+    .build();
+
+    let text = r#"
+entities:
+  "0/3/2":
+    name: "Office climate"
+"#;
+    let ov = Overrides::parse("ha.yaml", text).unwrap();
+    let cs = only_climate(&model, &ov);
+    assert_eq!(cs.len(), 1);
+    assert_eq!(cs[0].name, "Office climate");
+
+    // Excluding the anchor (operation-mode) GA removes the whole climate entity:
+    // the operation mode is the only anchor, so nothing is left to control.
+    let ov2 = Overrides::parse("ha.yaml", "global:\n  exclude:\n    - \"0/3/2\"\n").unwrap();
+    assert!(only_climate(&model, &ov2).is_empty());
+}
+
+#[test]
+fn climate_merge_wires_extra_state_ga() {
+    // A mode-only room; merge an external target-temperature-state GA. It fills
+    // the first free climate state slot (temperature) and drops from unmapped.
+    let model = ModelBuilder::new("1.1.2", "Heizung", None)
+        .group("0/3/2", "Büro UG Betriebsmodus Vorgabe", "20.102")
+        .group("0/3/99", "Büro UG Fühler extern", "9.001")
+        .build();
+    let text = r#"
+entities:
+  "0/3/2":
+    merge: ["0/3/99"]
+"#;
+    let ov = Overrides::parse("ha.yaml", text).unwrap();
+    let cs = only_climate(&model, &ov);
+    assert_eq!(cs.len(), 1);
+    assert_eq!(cs[0].temperature_address, Some(ga("0/3/99")));
+    let d = derive(&model, &ov);
+    assert_eq!(
+        d.unmapped.get(&Some(9)).copied().unwrap_or(0),
+        0,
+        "merged GA claimed"
+    );
+}
+
 #[test]
 fn status_only_object_is_not_a_switch() {
     // A 1.001 object that only transmits status (T, no W) must not become a
