@@ -654,16 +654,6 @@ fn derive_climate(
     }
 }
 
-/// The name of the GA `ga` from `groups.yaml`, if it has a non-empty one.
-fn entity_name_for(model: &Model, ga: GroupAddress) -> Option<String> {
-    model
-        .groups
-        .groups
-        .get(&ga)
-        .map(|g| g.name.clone())
-        .filter(|n| !n.trim().is_empty())
-}
-
 /// Whether a DPT has the given main number.
 fn is_main(dpt: Option<Dpt>, main: u16) -> bool {
     dpt.is_some_and(|d| d.main == main)
