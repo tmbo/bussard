@@ -223,6 +223,32 @@ struct DeviceState {
     /// `(object_index, pid)` → written value. Lets a test assert an
     /// `LdCtrlWriteProp` value actually landed on the device (issue #54).
     prop_writes: HashMap<(u8, u8), Vec<u8>>,
+    /// If set, the gateway drops the KNXnet/IP TUNNEL — not just the L4 session —
+    /// after this many TUNNELING_REQUESTs on the current KNXnet/IP connection: it
+    /// stops sending the TUNNELING_ACK for the tripping request, so the client's
+    /// `Transport` times out waiting for the ACK, the bus actor tears the tunnel
+    /// down and reconnects with a fresh CONNECT_REQUEST. Distinct from
+    /// `die_after_exchanges` (an L4 silence over a still-live tunnel): this
+    /// models KV dropping the underlying tunnel every ~500 frames (issue #52).
+    /// Reset per KNXnet/IP connection (each CONNECT_REQUEST).
+    drop_tunnel_after_frames: Option<u32>,
+    /// How many more tunnel drops to inject. Each drop decrements this; once `0`
+    /// the gateway ACKs normally forever, so the download can finally complete.
+    /// `None` in `drop_tunnel_after_frames` ignores this.
+    tunnel_drops_remaining: u32,
+    /// Memory TUNNELING_REQUESTs seen on the current KNXnet/IP connection, metered
+    /// against `drop_tunnel_after_frames`. Reset on every CONNECT_REQUEST.
+    tunnel_frames_this_connection: u32,
+    /// Once a tunnel drop trips on the current connection, this is set so ALL
+    /// further tunneling requests (including the client's retransmit of the very
+    /// frame that tripped the drop) are swallowed with no ACK — the client's
+    /// Transport must therefore time out and the actor must reconnect, rather than
+    /// the single-frame retransmit sneaking through. Cleared on each CONNECT_REQUEST.
+    tunnel_dead_this_connection: bool,
+    /// Count of KNXnet/IP CONNECT_REQUESTs the gateway answered — i.e. how many
+    /// times the tunnel was (re)established. A tunnel-drop test asserts this
+    /// reaches ≥2 (the actor reconnected the tunnel).
+    tunnel_connects: usize,
 }
 
 type Shared = Arc<Mutex<DeviceState>>;
@@ -570,6 +596,14 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
         };
         match parsed.service {
             ServiceType::ConnectRequest => {
+                {
+                    // A fresh KNXnet/IP tunnel: reset the per-connection tunnel-drop
+                    // frame counter and record the (re)connect.
+                    let mut s = state.lock().unwrap();
+                    s.tunnel_frames_this_connection = 0;
+                    s.tunnel_dead_this_connection = false;
+                    s.tunnel_connects += 1;
+                }
                 let resp = knxnet_frame(
                     ServiceType::ConnectResponse,
                     &connect_response_body(CHANNEL, &gw),
@@ -582,15 +616,61 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
                     .unwrap();
             }
             ServiceType::DisconnectRequest => {
+                // Answer the KNXnet/IP disconnect but KEEP SERVING: a client that
+                // drops and re-establishes the tunnel mid-test (a bus-actor
+                // reconnect after a tunnel drop, issue #52) tears down the old
+                // Transport — which sends this DISCONNECT_REQUEST — before opening a
+                // fresh one. If the gateway exited here, the actor's follow-up
+                // CONNECT_REQUEST would have nothing to answer it and the flash would
+                // hang. Every test aborts the gateway task explicitly at the end, so
+                // the gateway never needs to self-terminate.
                 gw.send_to(&knxnet::disconnect_response(CHANNEL, 0), from)
                     .await
                     .unwrap();
-                return;
             }
             ServiceType::TunnelingRequest => {
                 let Ok(tr) = knxnet::parse_tunneling_request(parsed.body) else {
                     continue;
                 };
+                // Tunnel-drop injection: if this frame trips the tunnel-drop budget,
+                // do NOT send the TUNNELING_ACK. The client's Transport then times
+                // out waiting for the ACK, the bus actor tears the tunnel down and
+                // reconnects — modelling KV dropping the underlying KNXnet/IP tunnel
+                // (issue #52), distinct from an L4 silence over a live tunnel. The
+                // budget is metered against MEMORY frames on the current connection
+                // (writes and their read-backs), so a drop always lands strictly
+                // inside the write — the discovery/authorize/load-control preamble
+                // gets through on every fresh tunnel, isolating the mid-write path.
+                {
+                    let mut s = state.lock().unwrap();
+                    // Once the tunnel is dead on this connection, swallow EVERY
+                    // further frame (including the client's retransmit of the frame
+                    // that tripped the drop) so the Transport really times out and
+                    // the actor reconnects — a single-frame drop would be defeated
+                    // by the transport's one retransmit sneaking through.
+                    if s.tunnel_dead_this_connection {
+                        continue;
+                    }
+                    let is_memory_frame = matches!(&tr.cemi.apdu, Apdu::Other { apci, .. }
+                        if (apci & APCI_SELECTOR == A_MEMORY_WRITE_SEL)
+                            || (apci & APCI_SELECTOR == A_MEMORY_READ_SEL));
+                    if is_memory_frame {
+                        s.tunnel_frames_this_connection += 1;
+                        if let Some(budget) = s.drop_tunnel_after_frames {
+                            if s.tunnel_drops_remaining > 0
+                                && s.tunnel_frames_this_connection > budget
+                            {
+                                s.tunnel_drops_remaining -= 1;
+                                s.tunnel_dead_this_connection = true;
+                                // Drop: swallow this and all further frames on this
+                                // connection with no ACK. The next CONNECT_REQUEST
+                                // resets the counters so the fresh tunnel's preamble
+                                // serves normally before the next drop.
+                                continue;
+                            }
+                        }
+                    }
+                }
                 gw.send_to(
                     &knxnet::tunneling_ack(tr.header.channel_id, tr.header.seq, 0),
                     from,
@@ -743,6 +823,11 @@ fn fresh_device(fault: Fault) -> Shared {
         authorizes_seen: 0,
         last_authorize_payload: Vec::new(),
         prop_writes: HashMap::new(),
+        drop_tunnel_after_frames: None,
+        tunnel_drops_remaining: 0,
+        tunnel_frames_this_connection: 0,
+        tunnel_dead_this_connection: false,
+        tunnel_connects: 0,
     }))
 }
 
@@ -1763,6 +1848,24 @@ impl Connector for MockConnector {
             .await
             .map_err(WriteError::Mgmt)
     }
+
+    /// The mock is driven by a real self-reconnecting [`Bus`] actor, so a tunnel
+    /// drop is recoverable: the flash can wait for the actor to reconnect.
+    fn can_reconnect(&self) -> bool {
+        true
+    }
+
+    /// Delegates to the bus actor's reconnect wait, mapping the outcome into the
+    /// download layer's [`bussard_download::ConnectorReconnect`].
+    async fn wait_reconnected(&self, timeout: Duration) -> bussard_download::ConnectorReconnect {
+        match self.handle.wait_reconnected(timeout).await {
+            bussard_bus::Reconnected::Connected => {
+                bussard_download::ConnectorReconnect::Reconnected
+            }
+            bussard_bus::Reconnected::TimedOut => bussard_download::ConnectorReconnect::TimedOut,
+            bussard_bus::Reconnected::Closed => bussard_download::ConnectorReconnect::Closed,
+        }
+    }
 }
 
 /// Brings up the mock gateway behind a real [`Bus`] actor and returns a handle,
@@ -2204,6 +2307,125 @@ async fn intra_write_resume_offset_has_no_gap_overlap_or_duplication() {
             "the write must not have overrun the segment"
         );
     }
+    let _ = handle.close().await;
+    gw_task.abort();
+}
+
+// ===========================================================================
+// TUNNEL-drop recovery tests (issue #52): the underlying KNXnet/IP tunnel — the
+// bus actor's Transport — drops mid-write (not just the L4 connection). The
+// actor reconnects the tunnel on its own with backoff; the windowed flash must
+// WAIT for that, re-lease, re-authorize, resume from the last-confirmed offset,
+// and complete — surviving a tunnel drop exactly like an L4 drop. A tunnel that
+// never recovers must fail cleanly after the no-progress bound.
+// ===========================================================================
+
+#[tokio::test]
+async fn windowed_flash_survives_a_tunnel_drop_and_resumes() {
+    // The gateway drops the KNXnet/IP TUNNEL (stops ACKing) once, partway through
+    // the write, so the bus actor's Transport dies and reconnects. This is NOT an
+    // L4 silence over a live tunnel (that is `die_after_exchanges`): here the
+    // whole tunnel goes down and the actor must re-establish it. The flash must
+    // wait for the actor, re-lease, resume from the last-confirmed offset, and
+    // complete to Loaded with byte-identical memory — reconnecting across a tunnel
+    // drop, NOT failing.
+    const N: usize = 60; // 5 write chunks
+    let state = fresh_device(Fault::None);
+    {
+        let mut s = state.lock().unwrap();
+        // Drop the tunnel once, after 3 MEMORY frames on a connection — strictly
+        // inside the write (a couple of chunks confirmed, then the tunnel dies).
+        // One drop, then the tunnel serves normally so the resumed write finishes.
+        s.drop_tunnel_after_frames = Some(3);
+        s.tunnel_drops_remaining = 1;
+    }
+    let (handle, gw_task) = setup_bus(Arc::clone(&state)).await;
+
+    let app = app_with_large_segment(N);
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+
+    // A generous planned window so the ONLY reconnect is the tunnel drop, not a
+    // planned L4 cycle — this isolates the tunnel-drop recovery path.
+    let options = FlashOptions {
+        reconnect_every: Some(100),
+        ..Default::default()
+    };
+    let mut session = FlashSession::open(window_connector(&handle)).await.unwrap();
+    let outcome = flash(&mut session, &plan, options, |_| {}).await.unwrap();
+    let _ = session.into_disconnect().await;
+
+    assert!(
+        outcome.ok(),
+        "the flash must survive the tunnel drop and verify: {outcome:?}"
+    );
+    assert_eq!(outcome.load_state, LoadState::Loaded);
+
+    {
+        let s = state.lock().unwrap();
+        // The tunnel was re-established at least once (the drop forced a fresh
+        // KNXnet/IP CONNECT_REQUEST from the actor).
+        assert!(
+            s.tunnel_connects >= 2,
+            "the actor must have reconnected the tunnel, got {} tunnel connect(s)",
+            s.tunnel_connects
+        );
+        // Byte-identical final memory: the whole source image landed at the base,
+        // proving the resume-from-offset after the tunnel drop wrote the right bytes.
+        let base = 0x4000u16;
+        let got: Vec<u8> = (0..N)
+            .map(|i| *s.memory.get(&base.wrapping_add(i as u16)).unwrap_or(&0))
+            .collect();
+        let want: Vec<u8> = (0..N).map(|i| (i & 0xFF) as u8).collect();
+        assert_eq!(
+            got, want,
+            "the resumed write across a tunnel drop must land byte-identical memory"
+        );
+    }
+    let _ = handle.close().await;
+    gw_task.abort();
+}
+
+#[tokio::test]
+async fn windowed_flash_gives_up_when_the_tunnel_never_recovers() {
+    // A tunnel that drops on EVERY connection, forever: each time the actor
+    // reconnects and the write resumes, the tunnel drops again before a single new
+    // chunk is confirmed. The flash must fold these tunnel-drop reconnects into the
+    // SAME no-progress bound as an L4 drop and give up after `max_window_retries`
+    // with a clear "bus did not recover" error — NOT loop forever.
+    const N: usize = 60;
+    let state = fresh_device(Fault::None);
+    {
+        let mut s = state.lock().unwrap();
+        // Drop at the very first MEMORY frame of every connection, unbounded:
+        // the first write is swallowed with no ACK, so no chunk is ever confirmed
+        // and no window makes forward progress. The preamble still gets through
+        // each time (metering is memory-frame-only), so the failure is squarely the
+        // tunnel-drop no-progress bound, not a preamble error.
+        s.drop_tunnel_after_frames = Some(0);
+        s.tunnel_drops_remaining = u32::MAX;
+    }
+    let (handle, gw_task) = setup_bus(Arc::clone(&state)).await;
+
+    let app = app_with_large_segment(N);
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+
+    let options = FlashOptions {
+        reconnect_every: Some(100),
+        max_window_retries: 3, // a small, explicit bound so the test is quick
+        ..Default::default()
+    };
+    let mut session = FlashSession::open(window_connector(&handle)).await.unwrap();
+    let err = flash(&mut session, &plan, options, |_| {})
+        .await
+        .expect_err("a tunnel that never recovers must fail after the bound");
+    let _ = session.into_disconnect().await;
+
+    // The give-up error names the bound and the "bus did not recover" cause.
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("bus did not recover") && rendered.contains("gave up"),
+        "expected a 'gave up ... bus did not recover' error, got: {rendered}"
+    );
     let _ = handle.close().await;
     gw_task.abort();
 }

@@ -492,6 +492,28 @@ impl bussard_download::Connector for LeaseConnector<'_> {
             .await
             .map_err(WriteError::Mgmt)
     }
+
+    /// The bus actor is a self-reconnecting transport, so a windowed flash can
+    /// wait out a tunnel drop and resume (issue #52).
+    fn can_reconnect(&self) -> bool {
+        true
+    }
+
+    /// Waits for the bus actor to re-establish a dropped KNXnet/IP tunnel, mapping
+    /// the actor's [`bussard_bus::Reconnected`] outcome to the download layer's
+    /// [`bussard_download::ConnectorReconnect`].
+    async fn wait_reconnected(
+        &self,
+        timeout: std::time::Duration,
+    ) -> bussard_download::ConnectorReconnect {
+        match self.handle.wait_reconnected(timeout).await {
+            bussard_bus::Reconnected::Connected => {
+                bussard_download::ConnectorReconnect::Reconnected
+            }
+            bussard_bus::Reconnected::TimedOut => bussard_download::ConnectorReconnect::TimedOut,
+            bussard_bus::Reconnected::Closed => bussard_download::ConnectorReconnect::Closed,
+        }
+    }
 }
 
 /// Runs the on-bus flash sequence with a progress line.
