@@ -117,7 +117,7 @@ const LE_UNLOAD: u8 = 4;
 const SUB_REL_SEGMENT: u8 = 0x0B;
 
 /// How the device misbehaves, if at all.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Fault {
     None,
     /// Enter load `Error` when the application object's `LoadCompleted` is written.
@@ -143,6 +143,11 @@ enum Fault {
     /// the link after the final restart. The flash must treat this silence as
     /// success (it verified BEFORE sending the restart), not as "device absent".
     SilentAfterBasicRestart,
+    /// Ignore `StartLoading` and stay `Unloaded` — a genuinely broken device that
+    /// never opens the object for writing. Unlike the lenient `Loaded` snap (which
+    /// the flash now tolerates), `Unloaded` means the load-control write was
+    /// dropped, so the flash must reject it with a rich `UnexpectedLoadState`.
+    IgnoresStartLoading,
 }
 
 /// The mutable mock-device state, shared with the gateway task.
@@ -573,10 +578,15 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
                 match event {
                     LE_START_LOADING => {
                         // A conformant device exposes LS_LOADING; KV snaps to
-                        // LS_LOADED (the LoadedAfterStartLoading fault).
+                        // LS_LOADED (the LoadedAfterStartLoading fault, now
+                        // tolerated); a broken device ignores StartLoading and
+                        // stays LS_UNLOADED (IgnoresStartLoading, still rejected).
                         if fault == Fault::LoadedAfterStartLoading {
                             s.app_load_state = LS_LOADED;
                             LS_LOADED
+                        } else if fault == Fault::IgnoresStartLoading {
+                            s.app_load_state = LS_UNLOADED;
+                            LS_UNLOADED
                         } else {
                             s.app_load_state = LS_LOADING;
                             LS_LOADING
@@ -1273,12 +1283,11 @@ async fn flash_aborts_on_memory_write_nak() {
 async fn flash_disconnects_even_when_it_fails_mid_procedure() {
     // Finding 3: after a failed flash the L4 session must be torn down, or the
     // device holds a stale connection and the next `reconstruct` reports it
-    // absent. Here the device snaps to Loaded on StartLoading (KV behaviour) with
-    // the tolerance flag OFF, so the FIRST allocate fails its Loading precondition
-    // — an application-level error that leaves the connection OPEN. The flash body
-    // returns Err, and the explicit `l4.disconnect()` must still emit a
-    // T_Disconnect that reaches the device.
-    let (mut bus, state, handle) = setup(Fault::LoadedAfterStartLoading).await;
+    // absent. Here the device ignores StartLoading and stays Unloaded, so the
+    // load-state check rejects it — an application-level error that leaves the
+    // connection OPEN. The flash body returns Err, and the explicit
+    // `l4.disconnect()` must still emit a T_Disconnect that reaches the device.
+    let (mut bus, state, handle) = setup(Fault::IgnoresStartLoading).await;
     let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
     let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
 
@@ -1289,7 +1298,7 @@ async fn flash_disconnects_even_when_it_fails_mid_procedure() {
         .await
         .unwrap();
     let mut session = authed_session(l4).await;
-    // Strict (default) options: the KV snap-to-Loaded trips the load-state check.
+    // The device never opens the object, so the load-state check fails.
     let err = flash(
         &mut session,
         &plan,
@@ -1297,7 +1306,7 @@ async fn flash_disconnects_even_when_it_fails_mid_procedure() {
         |_| {},
     )
     .await
-    .expect_err("a non-conformant load state must fail the flash");
+    .expect_err("a device that never opens the object must fail the flash");
     assert!(
         matches!(
             err,
@@ -1332,12 +1341,12 @@ async fn flash_disconnects_even_when_it_fails_mid_procedure() {
 }
 
 #[tokio::test]
-async fn flash_strict_load_state_error_names_object_and_table() {
-    // Finding 1: when the device snaps to Loaded after StartLoading and the
-    // tolerance flag is OFF, the flash fails with a RICH error — it names the
-    // targeted object's discovered interface-object type and the full discovered
-    // object table, so "object 3 did not reach Loading" becomes actionable.
-    let (mut bus, _state, handle) = setup(Fault::LoadedAfterStartLoading).await;
+async fn flash_unexpected_load_state_names_object_and_table() {
+    // When the device lands in a genuinely-wrong load state (here: it ignores
+    // StartLoading and stays Unloaded), the flash fails with a RICH error — it
+    // names the targeted object's discovered interface-object type and the full
+    // discovered object table, so "object 3 did not reach Loading" is actionable.
+    let (mut bus, _state, handle) = setup(Fault::IgnoresStartLoading).await;
     let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
     let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
 
@@ -1355,7 +1364,7 @@ async fn flash_strict_load_state_error_names_object_and_table() {
         |_| {},
     )
     .await
-    .expect_err("strict mode must reject the non-conformant load state");
+    .expect_err("an object that never opens must be rejected");
     let _ = session.into_disconnect().await;
 
     match &err {
@@ -1368,7 +1377,7 @@ async fn flash_strict_load_state_error_names_object_and_table() {
             // The app object is index 3 on the fresh device (device, address,
             // association, application-program).
             assert_eq!(*object_index, 3, "the app object is index 3");
-            assert_eq!(*actual, LoadState::Loaded);
+            assert_eq!(*actual, LoadState::Unloaded);
             // The context names the target object type (3 = application-program)
             // and carries the full discovered object table.
             assert_eq!(context.object_type, Some(OT_APPLICATION_PROGRAM));
@@ -1394,64 +1403,40 @@ async fn flash_strict_load_state_error_names_object_and_table() {
 }
 
 #[tokio::test]
-async fn flash_allocate_path_load_state_error_names_object_and_table() {
-    // Finding 2: the allocate path (AdditionalLoadControls) must carry the SAME
-    // rich LoadStateContext the StartLoading path got in 9a0668a. Here the device
-    // passes StartLoading (reaches Loading) but drops to Loaded on the allocation,
-    // so it is the ALLOCATE re-read that trips the strict check — and its error
-    // must still name the targeted object's type and the full discovered table.
-    let (mut bus, _state, handle) = setup(Fault::LoadedOnAllocate).await;
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+async fn flash_tolerates_snap_to_loaded() {
+    // KNX Virtual (and other lenient stacks) snap the object straight to Loaded
+    // instead of exposing the intermediate Loading state — either right after
+    // StartLoading or on the AdditionalLoadControls allocation. Both are open
+    // states, so the flash must proceed and reach Loaded (the image's real
+    // integrity is confirmed by the MCB CRC check, not by the load-state octet).
+    for fault in [Fault::LoadedAfterStartLoading, Fault::LoadedOnAllocate] {
+        let (mut bus, _state, handle) = setup(fault).await;
+        let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+        let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
 
-    let app = fabricated_app();
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+        let app = fabricated_app();
+        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source)
+        let l4 = Layer4Connection::connect(&mut bus, target, source)
+            .await
+            .unwrap();
+        let mut session = authed_session(l4).await;
+        let outcome = flash(
+            &mut session,
+            &plan,
+            bussard_download::FlashOptions::default(),
+            |_| {},
+        )
         .await
-        .unwrap();
-    let mut session = authed_session(l4).await;
-    let err = flash(
-        &mut session,
-        &plan,
-        bussard_download::FlashOptions::default(),
-        |_| {},
-    )
-    .await
-    .expect_err("the allocate re-read must trip the strict load-state check");
-    let _ = session.into_disconnect().await;
-
-    match &err {
-        bussard_mgmt::load::WriteError::UnexpectedLoadState {
-            object_index,
-            control,
-            context,
-            ..
-        } => {
-            // The failure came from the allocate path (AdditionalLoadControls),
-            // not StartLoading — proving finding-2's path is the one enriched.
-            assert_eq!(
-                *control,
-                bussard_mgmt::LoadControl::AdditionalLoadControls,
-                "the error must originate on the allocate path"
-            );
-            assert_eq!(*object_index, 3, "the app object is index 3");
-            // Same rich context as the StartLoading path: object type + table.
-            assert_eq!(context.object_type, Some(OT_APPLICATION_PROGRAM));
-            assert_eq!(
-                context.object_table,
-                vec![(0, 0), (1, 1), (2, 2), (3, 3)],
-                "the allocate-path error must fold in the discovered object table"
-            );
-        }
-        other => panic!("expected UnexpectedLoadState from the allocate path, got {other:?}"),
+        .unwrap_or_else(|e| panic!("snap-to-Loaded ({fault:?}) must still flash to Loaded: {e:?}"));
+        assert_eq!(
+            outcome.load_state,
+            LoadState::Loaded,
+            "the flash must reach Loaded despite the {fault:?} snap"
+        );
+        let _ = session.into_disconnect().await;
+        handle.abort();
     }
-    let rendered = err.to_string();
-    assert!(
-        rendered.contains("application-program") && rendered.contains("discovered object table"),
-        "the allocate-path message must render the rich context: {rendered}"
-    );
-    handle.abort();
 }
 
 #[tokio::test]

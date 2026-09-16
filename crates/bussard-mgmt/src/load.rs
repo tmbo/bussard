@@ -619,7 +619,18 @@ pub async fn write_load_control<Ch: L4Channel>(
         });
     }
     if let Some(expected) = control.expected_state() {
-        if state != expected {
+        // `StartLoading` opens the object for writing: a conformant device reports
+        // `Loading`, but some lenient stacks (notably KNX Virtual) snap straight to
+        // `Loaded`. Both leave the object open to receive the image, so accept
+        // either and rely on the final `LoadCompleted` + MCB CRC verify to confirm
+        // the content landed intact. A genuine failure still surfaces as `Error`
+        // (rejected above) or `Unloaded`. `LoadCompleted` stays strict — it must
+        // reach `Loaded`, which is the success signal.
+        let acceptable = match control {
+            LoadControl::StartLoading => matches!(state, LoadState::Loading | LoadState::Loaded),
+            _ => state == expected,
+        };
+        if !acceptable {
             return Err(WriteError::UnexpectedLoadState {
                 address,
                 object_index,
@@ -768,12 +779,14 @@ pub struct SegmentAllocation {
 /// `fill_byte` mirrors the relative structure's fill flag/byte: `Some(b)` asks
 /// the device to pre-fill the segment with `b`, `None` leaves it uninitialised.
 ///
-/// Load-state handling is strict: the object must report the conformant
-/// `Loading` state both as the allocation precondition and after the allocation
-/// write. A device that reports anything else (e.g. `Loaded`, meaning it did not
-/// honour the segment allocation) fails with [`WriteError::UnexpectedLoadState`]
-/// rather than silently proceeding — the guard that catches a device that cannot
-/// hold this application's segment before its memory is overrun.
+/// Load-state handling: the object must stay *open* — `Loading` on a conformant
+/// device, or `Loaded` on a lenient stack (KNX Virtual snaps straight to
+/// `Loaded`) — both as the allocation precondition and after the allocation
+/// write. Only `Unloaded` (the write was dropped) or `Error` (the device refused
+/// the allocation, e.g. out of memory) fail here; the image's actual integrity is
+/// confirmed downstream by the `LdCtrlLoadImageProp` MCB CRC check, so a device
+/// that cannot truly hold the segment is caught there rather than by guessing
+/// from the load-state octet.
 pub async fn allocate_segment<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     object_index: u8,
@@ -782,9 +795,11 @@ pub async fn allocate_segment<Ch: L4Channel>(
 ) -> Result<SegmentAllocation> {
     let address = l4.target();
 
-    // 1. The object must be Loading for the allocation to be accepted.
+    // 1. The object must be open (Loading, or Loaded on a lenient stack like KNX
+    //    Virtual) for the allocation to be accepted. Unloaded/Error mean the
+    //    object never opened.
     let state = read_load_state(l4, object_index).await?;
-    if state != LoadState::Loading {
+    if !matches!(state, LoadState::Loading | LoadState::Loaded) {
         return Err(WriteError::UnexpectedLoadState {
             address,
             object_index,
@@ -802,7 +817,10 @@ pub async fn allocate_segment<Ch: L4Channel>(
     let _ =
         property_write_request(l4, object_index, PID_LOAD_STATE_CONTROL, 1, 1, &structure).await?;
 
-    // 3. A refused allocation drops the object into Error.
+    // 3. A refused allocation drops the object into Error. Otherwise the object
+    //    stays open — Loading on a conformant device, or Loaded on a lenient stack
+    //    (KNX Virtual); either is fine, only Unloaded/Error indicate the write was
+    //    dropped or rejected.
     let state = read_load_state(l4, object_index).await?;
     if state == LoadState::Error {
         return Err(WriteError::LoadError {
@@ -810,7 +828,7 @@ pub async fn allocate_segment<Ch: L4Channel>(
             object_index,
         });
     }
-    if state != LoadState::Loading {
+    if !matches!(state, LoadState::Loading | LoadState::Loaded) {
         return Err(WriteError::UnexpectedLoadState {
             address,
             object_index,
