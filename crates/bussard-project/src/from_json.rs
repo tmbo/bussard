@@ -209,6 +209,8 @@ pub fn model_from_json(json: &str) -> Result<Model> {
             product,
             channels: BTreeMap::new(),
             parameters: BTreeMap::new(),
+            // The JSON (xknxproject) path carries no ModuleInstance base data.
+            module_bases: BTreeMap::new(),
             com_objects: BTreeMap::new(),
         };
         let file_stem = format!("{address}-{}", crate::build::slugify(&device.name));

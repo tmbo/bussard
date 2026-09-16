@@ -671,6 +671,7 @@ mod tests {
                 product: None,
                 channels: BTreeMap::new(),
                 parameters: BTreeMap::new(),
+                module_bases: BTreeMap::new(),
                 com_objects: objs.into_iter().collect(),
             },
             file_stem: stem.to_string(),
@@ -1004,6 +1005,7 @@ mod tests {
             }),
             channels: BTreeMap::new(),
             parameters,
+            module_bases: BTreeMap::new(),
             com_objects: BTreeMap::new(),
         };
         let mut devices = BTreeMap::new();

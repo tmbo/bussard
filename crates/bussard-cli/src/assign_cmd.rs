@@ -539,6 +539,7 @@ fn build_stub_device(address: IndividualAddress, v: &Verified) -> Device {
         product,
         channels: Default::default(),
         parameters: Default::default(),
+        module_bases: Default::default(),
         com_objects: Default::default(),
     }
 }
@@ -641,6 +642,7 @@ mod tests {
                         product: None,
                         channels: Default::default(),
                         parameters: Default::default(),
+                        module_bases: Default::default(),
                         com_objects: Default::default(),
                     },
                     file_stem: format!("{addr}-d"),
