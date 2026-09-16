@@ -6,10 +6,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
+use std::path::Path;
+
 use crate::address::GroupAddress;
 use crate::dpt::ApduSize;
 use crate::flags::Flags;
 use crate::loader::Model;
+use crate::param_model::{ParamKind, ProductModels, key_to_param_id};
 
 /// The severity of a [`Diagnostic`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -102,6 +105,175 @@ pub fn validate(model: &Model) -> Vec<Diagnostic> {
 
     diags.sort_by(|a, b| a.location.cmp(&b.location).then(a.code.cmp(b.code)));
     diags
+}
+
+/// Validates a model together with its on-disk directory, so device parameter
+/// values can be checked against the generated product models under
+/// `<dir>/models/`.
+///
+/// This runs every rule [`validate`] runs, plus the parameter rules (E016 /
+/// E017 / I017 / I018 — unknown key, bad value, redundant value, no model). The
+/// product models are read lazily and only here; a device whose application has
+/// no model file yields an info note rather than a hard error, since `models/`
+/// is local-only vendor-derived data that is frequently absent.
+pub fn validate_in_dir(model: &Model, dir: &Path) -> Vec<Diagnostic> {
+    let mut diags = Vec::new();
+
+    check_reserved_gas(model, &mut diags);
+    check_links(model, &mut diags);
+    check_ga_consistency(model, &mut diags);
+    check_orphans_and_unlinked(model, &mut diags);
+    check_protected_gas(model, &mut diags);
+
+    let models = ProductModels::load(dir);
+    check_parameters(model, &models, &mut diags);
+
+    diags.sort_by(|a, b| a.location.cmp(&b.location).then(a.code.cmp(b.code)));
+    diags
+}
+
+/// Parameter rules (issue #46), run only by [`validate_in_dir`] since they need
+/// the on-disk `models/`:
+///
+/// * **I018** — a device carries parameters but its application has no model
+///   file under `models/`, so its values cannot be checked (info).
+/// * **E016** — a parameter key names a parameter absent from the model (a typo
+///   or a stale key after a re-import that dropped the parameter).
+/// * **E017** — a value is not parseable for its type, is out of the declared
+///   range, or is not a declared enumeration member.
+/// * **I017** — a value equals the vendor default and is therefore redundant
+///   (the importer omits these, but a hand edit can reintroduce one).
+fn check_parameters(model: &Model, models: &ProductModels, diags: &mut Vec<Diagnostic>) {
+    for (ia, loaded) in &model.devices {
+        let dev = &loaded.device;
+        if dev.parameters.is_empty() {
+            continue;
+        }
+        let file = format!("devices/{}.yaml", loaded.file_stem);
+        let app_ref = dev
+            .product
+            .as_ref()
+            .and_then(|p| p.application_ref.as_deref());
+
+        // Locate the product model for this device's application.
+        let product_model = app_ref.and_then(|r| models.get(r));
+        let Some(product_model) = product_model else {
+            let reason = match app_ref {
+                Some(r) => format!("no model for {r}"),
+                None => "the device declares no product.application_ref".to_string(),
+            };
+            diags.push(Diagnostic::new(
+                "I018",
+                Severity::Info,
+                format!("{file} parameters"),
+                format!("parameters on {ia} not validated ({reason})"),
+            ));
+            continue;
+        };
+
+        for (key, value) in &dev.parameters {
+            let loc = format!("{file} parameters.{key:?}");
+
+            let Some(param_id) = key_to_param_id(key) else {
+                diags.push(Diagnostic::new(
+                    "E016",
+                    Severity::Error,
+                    loc,
+                    format!("parameter key {key:?} is malformed (expected `<name>@<ref-id>`)"),
+                ));
+                continue;
+            };
+
+            let Some(def) = product_model.parameters.get(&param_id) else {
+                diags.push(Diagnostic::new(
+                    "E016",
+                    Severity::Error,
+                    loc,
+                    format!(
+                        "unknown parameter {param_id:?} (from key {key:?}) — not in the model for {}",
+                        app_ref.unwrap_or("?")
+                    ),
+                ));
+                continue;
+            };
+
+            if let Some(reason) = value_error(&def.kind, value) {
+                diags.push(Diagnostic::new(
+                    "E017",
+                    Severity::Error,
+                    loc.clone(),
+                    reason,
+                ));
+                continue;
+            }
+
+            if def.default.as_deref() == Some(value.as_str()) {
+                diags.push(Diagnostic::new(
+                    "I017",
+                    Severity::Info,
+                    loc,
+                    format!("value {value:?} equals the vendor default (redundant)"),
+                ));
+            }
+        }
+    }
+}
+
+/// Checks a value against a parameter kind, returning an error message if it is
+/// unparseable, out of range, or not a declared enum member; `None` if valid.
+fn value_error(kind: &ParamKind, value: &str) -> Option<String> {
+    let v = value.trim();
+    match kind {
+        ParamKind::Int { min, max, signed } => {
+            let Ok(n) = v.parse::<i64>() else {
+                return Some(format!("value {value:?} is not an integer"));
+            };
+            if !*signed && n < 0 {
+                return Some(format!("value {n} is negative for an unsigned parameter"));
+            }
+            if let Some(lo) = min {
+                if n < *lo {
+                    return Some(format!("value {n} is below the minimum {lo}"));
+                }
+            }
+            if let Some(hi) = max {
+                if n > *hi {
+                    return Some(format!("value {n} is above the maximum {hi}"));
+                }
+            }
+            None
+        }
+        ParamKind::Enum { values } => match v.parse::<i64>() {
+            Ok(n) => {
+                if values.is_empty() || values.contains(&n) {
+                    None
+                } else {
+                    let list: Vec<String> = values.iter().map(|x| x.to_string()).collect();
+                    Some(format!(
+                        "value {n} is not a declared enum member (allowed: {})",
+                        list.join(", ")
+                    ))
+                }
+            }
+            Err(_) => Some(format!("enum value {value:?} is not an integer")),
+        },
+        ParamKind::Text { len } => match len {
+            Some(len) if value.len() > *len => Some(format!(
+                "text {value:?} is {} bytes but the field holds {len}",
+                value.len()
+            )),
+            _ => None,
+        },
+        ParamKind::Float => {
+            if v.parse::<f64>().is_ok() {
+                None
+            } else {
+                Some(format!("value {value:?} is not a number"))
+            }
+        }
+        // No declared constraints to check.
+        ParamKind::None | ParamKind::Other => None,
+    }
 }
 
 /// E012: invalid/reserved GA (`0/0/0`) that is referenced in the model.
@@ -498,6 +670,7 @@ mod tests {
                 location: None,
                 product: None,
                 channels: BTreeMap::new(),
+                parameters: BTreeMap::new(),
                 com_objects: objs.into_iter().collect(),
             },
             file_stem: stem.to_string(),
@@ -789,5 +962,174 @@ mod tests {
         let mut sorted = locs.clone();
         sorted.sort();
         assert_eq!(locs, sorted);
+    }
+
+    // ---- Parameter validation (issue #46) ----------------------------------
+
+    fn tmp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "bussard-validate-{tag}-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    const APP_REF: &str = "M-00FA_A-1";
+
+    /// A model with one device whose `parameters:` map is `params`, plus a
+    /// product identity pointing at `APP_REF`.
+    fn model_with_params(params: &[(&str, &str)]) -> Model {
+        let mut parameters = BTreeMap::new();
+        for (k, v) in params {
+            parameters.insert(k.to_string(), v.to_string());
+        }
+        let device = Device {
+            address: ia("1.1.4"),
+            name: "dev".to_string(),
+            description: None,
+            location: None,
+            product: Some(Product {
+                manufacturer: None,
+                manufacturer_ref: None,
+                order_number: None,
+                hardware_ref: None,
+                application_ref: Some(APP_REF.to_string()),
+                mask: None,
+            }),
+            channels: BTreeMap::new(),
+            parameters,
+            com_objects: BTreeMap::new(),
+        };
+        let mut devices = BTreeMap::new();
+        devices.insert(
+            ia("1.1.4"),
+            crate::loader::LoadedDevice {
+                device,
+                file_stem: "1.1.4-dev".to_string(),
+            },
+        );
+        Model {
+            config: BussardConfig::default(),
+            groups: Groups::default(),
+            links: Links {
+                links: BTreeMap::new(),
+            },
+            devices,
+        }
+    }
+
+    /// Writes `models/<APP_REF>.yaml` with an int (`MD-1_P-3`, 0..=3), an enum
+    /// (`P-9`, {0,7}) and a text (`P-20`, 6 bytes) parameter.
+    fn write_model(dir: &std::path::Path) {
+        let models = dir.join("models");
+        std::fs::create_dir_all(&models).unwrap();
+        let yaml = "\
+identity:
+  id: M-00FA_A-1
+parameters:
+  - id: M-00FA_A-1_MD-1_P-3
+    type: !int
+      min: 0
+      max: 3
+    default: '0'
+  - id: M-00FA_A-1_P-9
+    type: !enum
+      values:
+        - value: 0
+          text: Off
+        - value: 7
+          text: On
+    default: '0'
+  - id: M-00FA_A-1_P-20
+    type: !text
+      size: 48
+";
+        std::fs::write(models.join(format!("{APP_REF}.yaml")), yaml).unwrap();
+    }
+
+    fn codes_at<'a>(diags: &'a [Diagnostic], key_frag: &str) -> Vec<(&'a str, Severity)> {
+        diags
+            .iter()
+            .filter(|d| d.location.contains(key_frag))
+            .map(|d| (d.code, d.severity))
+            .collect()
+    }
+
+    #[test]
+    fn parameters_no_model_yields_info_i018() {
+        // No models/ directory: a device with parameters gets an I018 note.
+        let dir = tmp_dir("no-model");
+        let model = model_with_params(&[("windalarm@MD-1_M-3_MI-1_P-3_R-5", "1")]);
+        let diags = validate_in_dir(&model, &dir);
+        let i018: Vec<_> = diags.iter().filter(|d| d.code == "I018").collect();
+        assert_eq!(i018.len(), 1, "{diags:#?}");
+        assert_eq!(i018[0].severity, Severity::Info);
+        assert!(i018[0].message.contains("no model"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parameters_valid_values_are_clean() {
+        let dir = tmp_dir("clean");
+        write_model(&dir);
+        // In-range int, valid enum member, in-length text — all non-default.
+        let model = model_with_params(&[
+            ("windalarm@MD-1_M-3_MI-1_P-3_R-5", "2"),
+            ("mode@P-9_R-1", "7"),
+            ("label@P-20_R-1", "Hi"),
+        ]);
+        let diags = validate_in_dir(&model, &dir);
+        assert!(
+            diags.iter().all(|d| d.severity != Severity::Error),
+            "unexpected errors: {diags:#?}"
+        );
+        assert!(
+            !diags.iter().any(|d| d.code == "I017"),
+            "no redundant notes: {diags:#?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parameters_flag_unknown_out_of_range_enum_and_redundant() {
+        let dir = tmp_dir("bad");
+        write_model(&dir);
+        let model = model_with_params(&[
+            // E016: names a parameter absent from the model.
+            ("bogus@MD-9_M-1_MI-1_P-99_R-1", "1"),
+            // E017: int above the declared maximum (3).
+            ("windalarm@MD-1_M-3_MI-1_P-3_R-5", "9"),
+            // E017: value not a declared enum member.
+            ("mode@P-9_R-1", "3"),
+            // I017: equals the vendor default '0'.
+            ("redundant@MD-1_M-3_MI-1_P-3_R-8", "0"),
+        ]);
+        let diags = validate_in_dir(&model, &dir);
+
+        assert_eq!(codes_at(&diags, "bogus@")[0].0, "E016");
+        assert_eq!(codes_at(&diags, "windalarm@")[0], ("E017", Severity::Error));
+        assert_eq!(codes_at(&diags, "mode@")[0], ("E017", Severity::Error));
+        assert_eq!(codes_at(&diags, "redundant@")[0], ("I017", Severity::Info));
+        assert!(has_errors(&diags));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parameters_malformed_key_is_e016() {
+        let dir = tmp_dir("malformed");
+        write_model(&dir);
+        // Key with no `@`/ref suffix cannot resolve to a parameter id.
+        let model = model_with_params(&[("noatsign", "1")]);
+        let diags = validate_in_dir(&model, &dir);
+        let e016: Vec<_> = diags.iter().filter(|d| d.code == "E016").collect();
+        assert_eq!(e016.len(), 1, "{diags:#?}");
+        assert!(e016[0].message.contains("malformed"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

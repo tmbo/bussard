@@ -160,6 +160,57 @@ pub struct Device {
     /// Named channels.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub channels: BTreeMap<String, Channel>,
+    /// Per-device parameter values, keyed by a stable parameter **key** (see the
+    /// key-scheme note below), each mapped to its configured value string.
+    ///
+    /// This block sits in the hand-editable zone *above* the generated
+    /// `com_objects:` marker: it is user-owned like `links.yaml` names, but a
+    /// re-import **replaces** it wholesale with ETS truth (the emitted device
+    /// banner says so). Only values that differ from the vendor default are
+    /// stored, so the block is diff-friendly and small.
+    ///
+    /// # The key scheme (why it looks like this)
+    ///
+    /// A device's parameters come from its ETS `ParameterInstanceRef`s, each of
+    /// which carries a `Value` and a `RefId` pointing at an application-program
+    /// `ParameterRef`. The obvious human key — the parameter *Name* — is **not
+    /// unique**, for two independent reasons found in real data
+    /// (`home_test.knxproj`, the Jung 23024 with 2932 parameters):
+    ///
+    /// 1. **Module-instance repetition.** A channel module's memory-bearing
+    ///    parameter (e.g. the blind actuator's `_xJA_A12_Windalarm_1`,
+    ///    app-relative `MD-1_P-3`) is instantiated once per channel: it appears
+    ///    under 12 distinct module-instance selectors (`MD-1_M-1_MI-1` …
+    ///    `MD-1_M-13_MI-1`), each with its own memory offset and its own value.
+    ///    The Name alone collapses all twelve into one.
+    /// 2. **Multi-ref parameters.** A single parameter def can have many
+    ///    `ParameterRef`s with distinct values inside one instance (e.g. the
+    ///    display label `_RE_Bezeichnung`/`MD-2_P-15` had 12 refs `R-17`, `R-712`
+    ///    … each naming a different room). Only the `ParameterRef` id
+    ///    distinguishes them.
+    ///
+    /// The one handle that is unique-per-device *and* stable across re-imports is
+    /// therefore the **app-relative `ParameterRef` id, with the module-instance
+    /// selector preserved** — verified unique within every device block in the
+    /// real project (0 collisions across 1053 valued refs). To keep the key
+    /// human-scannable we prefix a slug of the parameter Name:
+    ///
+    /// ```text
+    /// <name-slug>@<app-relative-ref-id>
+    /// ```
+    ///
+    /// e.g. `windalarm-1@MD-1_M-3_MI-1_P-3_R-45` (a per-channel module parameter)
+    /// or `nachtabsenkung@P-1312_R-2140` (a plain parameter). The part after `@`
+    /// is the load-bearing, ETS-stable identity; the slug before it is a
+    /// human aid and is ignored when resolving. Stripping the `_M-<m>_MI-<n>`
+    /// selector and the `_R-<r>` suffix yields the application `Parameter` id
+    /// (`MD-1_P-3` / `P-1312`), which keys `models/<application_ref>.yaml` — so
+    /// both the flasher and the validator can resolve a key to its definition.
+    ///
+    /// Only memory-bearing parameters are stored: display-only parameters (no
+    /// `<Memory>`) never reach a download image, so emitting them would be noise.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub parameters: BTreeMap<String, String>,
     /// Generated com-object table, keyed by com-object number.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub com_objects: BTreeMap<u16, ComObject>,

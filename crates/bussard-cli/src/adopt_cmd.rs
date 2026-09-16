@@ -469,6 +469,7 @@ fn build_device(
         location: None,
         product,
         channels: Default::default(),
+        parameters: Default::default(),
         com_objects,
     }
 }
@@ -1145,6 +1146,7 @@ mod tests {
                         location: None,
                         product: None,
                         channels: Default::default(),
+                        parameters: Default::default(),
                         com_objects: Default::default(),
                     },
                     file_stem: format!("{addr}-d"),

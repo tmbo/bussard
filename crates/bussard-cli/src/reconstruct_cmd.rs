@@ -732,6 +732,7 @@ fn synthesize_model(found: &[LineDevice], overrides: &ConnOverrides, dir: &Path)
             location: None,
             product,
             channels: BTreeMap::new(),
+            parameters: BTreeMap::new(),
             com_objects,
         };
         devices.insert(
