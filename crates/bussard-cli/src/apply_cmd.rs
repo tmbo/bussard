@@ -103,9 +103,10 @@ pub fn run(
         Err(err) => return Err(anyhow::Error::new(err).context("reading device tables")),
     };
 
-    // The 07B0 gate is enforced by read_tables (UnsupportedMask above), but assert
-    // it here too as a belt-and-braces guard before any write.
-    if !bussard_mgmt::is_system_b(live.mask) {
+    // The System B gate is enforced by read_tables (UnsupportedMask above), but
+    // assert it here too as a belt-and-braces guard before any write. Routed
+    // through the central MaskProfile seam.
+    if !bussard_mgmt::MaskProfile::from_mask(live.mask).is_system_b() {
         eprintln!(
             "{target} reports mask {:04X} ({}) — refusing to write a non-System-B device",
             live.mask,

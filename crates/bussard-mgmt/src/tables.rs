@@ -226,7 +226,11 @@ pub type Result<T> = std::result::Result<T, TablesError>;
 pub async fn read_tables<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Result<DeviceTables> {
     let address = l4.target();
     let mask = device_descriptor(l4).await?;
-    if !crate::is_system_b(mask) {
+    // Route the mask gate through the central profile seam. Today only System B
+    // has a table reader; System 7 (issue #49) will branch here on
+    // `profile.uses_memory_mapped_tables()` / `profile.requires_authorize()`.
+    let profile = crate::MaskProfile::from_mask(mask);
+    if !profile.tables_supported() {
         return Err(TablesError::UnsupportedMask { address, mask });
     }
 
