@@ -67,6 +67,11 @@ const FREE_ACCESS_KEY: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
 const A_DEVICE_DESCRIPTOR_READ_SEL: u16 = 0x300;
 const A_DEVICE_DESCRIPTOR_RESPONSE: u16 = 0x340;
 const A_RESTART_SEL: u16 = 0x380;
+// A_Restart with the master-reset restart-type bit set, and its response.
+// De-mirrored from the KNX spec: master reset is A_Restart | 1, confirmed by an
+// A_Restart_Response (same APCI, response direction) carrying an error code.
+const A_RESTART_MASTER_RESET: u16 = 0x381;
+const A_RESTART_RESPONSE: u16 = 0x381;
 const APCI_SELECTOR: u16 = 0x3C0;
 
 const PID_OBJECT_TYPE: u8 = 1;
@@ -133,6 +138,11 @@ enum Fault {
     /// #50 finding-2 gap: the allocate path's error must carry the same discovered
     /// object context the StartLoading path got.
     LoadedOnAllocate,
+    /// Go silent on the current L4 connection immediately after a BASIC restart
+    /// (`A_Restart`, the terminal step): models the device rebooting and dropping
+    /// the link after the final restart. The flash must treat this silence as
+    /// success (it verified BEFORE sending the restart), not as "device absent".
+    SilentAfterBasicRestart,
 }
 
 /// The mutable mock-device state, shared with the gateway task.
@@ -249,6 +259,23 @@ struct DeviceState {
     /// times the tunnel was (re)established. A tunnel-drop test asserts this
     /// reaches ≥2 (the actor reconnected the tunnel).
     tunnel_connects: usize,
+    /// Count of master-reset `A_Restart` requests (APCI 0x381) seen, so the
+    /// master-reset test can assert the tool issued exactly one.
+    master_resets_seen: usize,
+    /// The `[erase_code, channel_number]` payload of the last master-reset
+    /// request, so the test can assert the tool encoded `EraseCode`/`ChannelNumber`
+    /// onto the wire.
+    last_master_reset_payload: Vec<u8>,
+    /// Set true once a master reset is accepted on the current L4 connection:
+    /// after answering the `A_Restart_Response` the device "reboots", so it goes
+    /// silent for the rest of THIS connection (all further numbered telegrams are
+    /// dropped with no ACK), modelling the real device dropping the link. A fresh
+    /// `T_Connect` clears it and the device serves normally again — this is the
+    /// spec-required single reconnect the tool must perform.
+    l4_dead_after_master_reset: bool,
+    /// Whether a basic restart (`A_Restart`, terminal step) has been seen — so the
+    /// terminal-restart-silence test can assert the restart was actually sent.
+    saw_basic_restart: bool,
 }
 
 type Shared = Arc<Mutex<DeviceState>>;
@@ -355,8 +382,27 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
         return Reaction::Answer(A_AUTHORIZE_RESPONSE, vec![s.grant_level]);
     }
 
-    // Restart: fire-and-forget, just ACK.
+    // Master-reset A_Restart (0x381): the device confirms with an
+    // A_Restart_Response (error code 0 = accepted, + 2-byte process time), then
+    // "reboots" — it goes silent for the rest of THIS connection so the tool must
+    // reconnect. A basic restart (0x380) is still fire-and-forget (just ACK).
+    if req_apci == A_RESTART_MASTER_RESET {
+        s.master_resets_seen += 1;
+        s.last_master_reset_payload = data.to_vec();
+        s.l4_dead_after_master_reset = true;
+        // error_code = 0x00, process_time = 0x0064 (100, a plausible reboot time).
+        return Reaction::Answer(A_RESTART_RESPONSE, vec![0x00, 0x00, 0x64]);
+    }
+    // Basic restart (0x380): fire-and-forget, just ACK. Under the
+    // SilentAfterBasicRestart fault the device then "reboots" and goes silent for
+    // the rest of THIS connection — so any read that follows the restart (e.g. a
+    // buggy verify-AFTER-restart) is dropped, but a verify done BEFORE the restart
+    // has already completed. Proves the terminal restart's silence is success.
     if req_apci & APCI_SELECTOR == A_RESTART_SEL {
+        s.saw_basic_restart = true;
+        if s.fault == Fault::SilentAfterBasicRestart {
+            s.l4_dead_after_master_reset = true;
+        }
         return Reaction::Ack;
     }
 
@@ -701,6 +747,9 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
                         // A fresh connection is a fresh authorization context: the
                         // session must re-authorize before any config write.
                         s.authorized = false;
+                        // A fresh connection after a master-reset reboot: the device
+                        // is alive again on the new link.
+                        s.l4_dead_after_master_reset = false;
                         if s.drop_loading_on_reconnect
                             && s.was_loading_at_disconnect
                             && s.app_load_state == LS_LOADING
@@ -722,6 +771,13 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
                         {
                             let mut s = state.lock().unwrap();
                             s.exchanges_this_connection += 1;
+                            // Master-reset reboot: once a master reset was accepted
+                            // on this connection, the device is rebooting and answers
+                            // nothing more until a fresh T_Connect. The tool must
+                            // reconnect to continue.
+                            if s.l4_dead_after_master_reset {
+                                continue;
+                            }
                             if let Some(budget) = s.die_after_exchanges {
                                 if s.exchanges_this_connection > budget {
                                     // No ACK, no response: the connection is dead
@@ -828,6 +884,10 @@ fn fresh_device(fault: Fault) -> Shared {
         tunnel_frames_this_connection: 0,
         tunnel_dead_this_connection: false,
         tunnel_connects: 0,
+        master_resets_seen: 0,
+        last_master_reset_payload: Vec::new(),
+        l4_dead_after_master_reset: false,
+        saw_basic_restart: false,
     }))
 }
 
@@ -958,6 +1018,37 @@ fn app_with_write_prop() -> ApplicationProgram {
       </Static>
      </ApplicationProgram></KNX>"#;
     parse_application_program("M-4_A-9", xml.as_bytes()).unwrap()
+}
+
+/// A single-application System B app whose procedure carries an
+/// `LdCtrlMasterReset` (EraseCode 4, ChannelNumber 0) mid-procedure, in the
+/// KNX-Virtual shape: allocate the segment, master-reset the device, then write
+/// the segment and complete the load. The master reset reboots the device and
+/// drops the L4 connection, so the download engine must reconnect and resume.
+fn app_with_master_reset() -> ApplicationProgram {
+    let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+     <ApplicationProgram Id="M-5_A-1" ApplicationNumber="1" ApplicationVersion="1"
+        MaskVersion="MV-07B0" Name="MasterReset" LoadProcedureStyle="ProductDefault">
+      <Static>
+       <Code>
+        <RelativeSegment Id="M-5_A-1_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment>
+       </Code>
+       <LoadProcedures>
+        <LoadProcedure>
+         <LdCtrlConnect />
+         <LdCtrlUnload LsmIdx="4" />
+         <LdCtrlLoad LsmIdx="4" />
+         <LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="6" />
+         <LdCtrlMasterReset EraseCode="4" ChannelNumber="0" />
+         <LdCtrlWriteRelMem AppliesTo="full" ObjIdx="0" Offset="0" Size="6" />
+         <LdCtrlLoadCompleted LsmIdx="4" />
+         <LdCtrlRestart />
+         <LdCtrlDisconnect />
+        </LoadProcedure>
+       </LoadProcedures>
+      </Static>
+     </ApplicationProgram></KNX>"#;
+    parse_application_program("M-5_A-1", xml.as_bytes()).unwrap()
 }
 
 async fn setup(fault: Fault) -> (Transport, Shared, tokio::task::JoinHandle<()>) {
@@ -1827,4 +1918,212 @@ async fn flash_surfaces_access_denied_on_a_nonzero_level() {
     }
     assert!(state.lock().unwrap().authorizes_seen >= 1);
     handle.abort();
+}
+
+// ===========================================================================
+// Master-reset (LdCtrlMasterReset) and terminal-restart-silence tests.
+//
+// A master reset is realised as an A_Restart with the master-reset bit set; the
+// device confirms with an A_Restart_Response, then reboots and drops the L4
+// connection. The download engine must reconnect ONCE, re-authorize, and resume
+// the remaining steps. These tests run over the real bus actor + a leasing
+// connector (like the CLI) so the Session can genuinely reconnect.
+// ===========================================================================
+
+/// A [`bussard_download::Connector`] that leases the bus actor to (re)open an L4
+/// connection — the same shape the CLI's `LeaseConnector` uses. Unlike the raw
+/// `Transport` the other tests borrow, this can be reconnected, which the
+/// master-reset step requires after the device reboots.
+struct LeaseConnector {
+    handle: bussard_bus::BusHandle,
+    target: bussard_model::IndividualAddress,
+    source: bussard_model::IndividualAddress,
+}
+
+impl bussard_download::Connector for LeaseConnector {
+    type Channel = bussard_mgmt::LeaseChannel;
+
+    async fn connect(
+        &mut self,
+    ) -> Result<Layer4Connection<bussard_mgmt::LeaseChannel>, bussard_mgmt::load::WriteError> {
+        let lease = self.handle.lease().await.map_err(|_| {
+            bussard_mgmt::load::WriteError::Mgmt(bussard_mgmt::MgmtError::Transport(
+                bussard_transport::TransportError::Closed,
+            ))
+        })?;
+        let channel = bussard_mgmt::LeaseChannel::new(lease);
+        Layer4Connection::connect(channel, self.target, self.source)
+            .await
+            .map_err(bussard_mgmt::load::WriteError::Mgmt)
+    }
+}
+
+/// Spins up the mock gateway and a bus actor over it, returning the actor handle
+/// and shared device state. The caller drives the flash through a leasing
+/// [`Session`] so it can reconnect.
+async fn setup_bus(fault: Fault) -> (bussard_bus::BusHandle, Shared, tokio::task::JoinHandle<()>) {
+    let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let port = sock.local_addr().unwrap().port();
+    let state = fresh_device(fault);
+    let addr: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let gw = tokio::spawn(run_gateway(sock, addr, Arc::clone(&state)));
+    let (handle, _actor) = bussard_bus::Bus::connect(ConnectionConfig::tunnel(
+        format!("127.0.0.1:{port}").parse().unwrap(),
+    ));
+    handle.wait_connected(Duration::from_secs(5)).await;
+    (handle, state, gw)
+}
+
+#[tokio::test]
+async fn flash_master_reset_reconnects_and_reaches_loaded() {
+    // The full acceptance case for LdCtrlMasterReset: the procedure master-resets
+    // the device mid-flash. The device confirms, reboots (goes silent on the L4
+    // connection), and the engine must reconnect, re-authorize, and resume — the
+    // segment write and load completion running on the fresh connection — to reach
+    // Loaded. Shorten the reboot wait so the test does not stall.
+    // SAFETY of env: this test binds its own socket/actor; the var only shortens a
+    // sleep and is read once per master-reset step.
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
+    }
+
+    let (handle, state, gw) = setup_bus(Fault::None).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source = bussard_bus::ops::group_source(&handle);
+
+    let app = app_with_master_reset();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+    // The plan lowers the master reset to a MasterReset step carrying the op's
+    // EraseCode/ChannelNumber.
+    let master_resets: Vec<&FlashStep> = plan
+        .steps
+        .iter()
+        .filter(|s| matches!(s, FlashStep::MasterReset { .. }))
+        .collect();
+    assert_eq!(
+        master_resets.len(),
+        1,
+        "the master reset lowers to one step"
+    );
+    assert!(matches!(
+        master_resets[0],
+        FlashStep::MasterReset {
+            erase_code: 4,
+            channel_number: 0
+        }
+    ));
+
+    let connector = LeaseConnector {
+        handle: handle.clone(),
+        target,
+        source,
+    };
+    let mut session = Session::open_with_key(connector, None).await.unwrap();
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .unwrap();
+    let _ = session.into_disconnect().await;
+
+    assert!(
+        outcome.ok(),
+        "a master-reset flash must reconnect, resume, and verify: {outcome:?}"
+    );
+    assert_eq!(outcome.load_state, LoadState::Loaded);
+
+    {
+        let s = state.lock().unwrap();
+        // The tool issued exactly one master reset, encoding EraseCode=4,
+        // ChannelNumber=0 onto the wire.
+        assert_eq!(
+            s.master_resets_seen, 1,
+            "exactly one master reset was issued"
+        );
+        assert_eq!(
+            s.last_master_reset_payload,
+            vec![0x04, 0x00],
+            "the master reset must carry [erase_code, channel_number]"
+        );
+        // The device reconnected: at least two L4 T_Connects (the original plus the
+        // post-reboot reconnect).
+        assert!(
+            s.connects >= 2,
+            "the engine must reconnect after the reboot (connects = {})",
+            s.connects
+        );
+        // The tool re-authorized on the fresh connection (one per connection window).
+        assert!(
+            s.authorizes_seen >= 2,
+            "the engine must re-authorize after the reconnect (authorizes = {})",
+            s.authorizes_seen
+        );
+        // The segment write, which ran AFTER the reconnect, landed on the device.
+        let code: Vec<u8> = (0x4000u16..0x4006)
+            .map(|a| *s.memory.get(&a).unwrap_or(&0))
+            .collect();
+        assert_eq!(
+            code,
+            vec![0, 1, 2, 3, 4, 5],
+            "the post-reset segment write must have completed on the fresh connection"
+        );
+    }
+
+    let _ = handle.close().await;
+    gw.abort();
+    unsafe {
+        std::env::remove_var("BUSSARD_FLASH_REBOOT_WAIT_MS");
+    }
+}
+
+#[tokio::test]
+async fn flash_final_restart_silence_is_success_not_failure() {
+    // The terminal LdCtrlRestart is the SUCCESSFUL last step: bussard sends
+    // A_Restart, the device reboots and goes silent, and that silence must be
+    // treated as success — NOT surfaced as "device absent". The mock goes silent
+    // on the current connection right after the basic restart; the flash must
+    // still return Ok with load_state == Loaded (verified BEFORE the restart).
+    let (handle, state, gw) = setup_bus(Fault::SilentAfterBasicRestart).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source = bussard_bus::ops::group_source(&handle);
+
+    let app = fabricated_app();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+    // The procedure ends with a Restart step.
+    assert!(
+        matches!(plan.steps.last(), Some(FlashStep::Restart)),
+        "the fabricated procedure ends with a restart"
+    );
+
+    let connector = LeaseConnector {
+        handle: handle.clone(),
+        target,
+        source,
+    };
+    let mut session = Session::open_with_key(connector, None).await.unwrap();
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .expect("the final-restart silence must be success, not a flash failure");
+    let _ = session.into_disconnect().await;
+
+    assert!(
+        outcome.ok(),
+        "the flash must verify before the terminal restart: {outcome:?}"
+    );
+    assert_eq!(outcome.load_state, LoadState::Loaded);
+    assert!(
+        state.lock().unwrap().saw_basic_restart,
+        "the restart was sent"
+    );
+
+    let _ = handle.close().await;
+    gw.abort();
 }

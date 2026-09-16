@@ -34,6 +34,10 @@ struct DeviceState {
     /// after it takes its new address — modelling a KNX Virtual device (which
     /// does not clear programming mode) or a stuck programming button.
     stay_in_programming: bool,
+    /// Set true once the tool writes `PID_PROGMODE = 0` on the device object,
+    /// so the test can assert bussard clears programming mode explicitly (as ETS
+    /// does) after the assignment.
+    progmode_write_seen: bool,
 }
 
 type Shared = Arc<Mutex<Vec<DeviceState>>>;
@@ -135,7 +139,14 @@ async fn handle(
                 TpciKind::NumberedData(client_seq) => {
                     let ack = CemiFrame::t_control(tool, dev.address, tpci::t_ack(client_seq));
                     push(gw, peer, gw_seq, &ack).await;
-                    if let Some((rapci, rdata)) = device_response(&dev, cemi) {
+                    // A property-value WRITE mutates device state (e.g. clearing
+                    // programming mode via PID_PROGMODE = 0) and is echoed back as a
+                    // confirming A_PropertyValue_Response. Handle it with mutable
+                    // access to the shared device before the read-only responder.
+                    let write_response = handle_property_write(devices, dest, cemi);
+                    if let Some((rapci, rdata)) =
+                        write_response.or_else(|| device_response(&dev, cemi))
+                    {
                         let seq = *dev_seq.get(&dev.address.raw()).unwrap_or(&0);
                         let resp = CemiFrame::t_data_connected(
                             tool,
@@ -186,6 +197,57 @@ fn device_response(dev: &DeviceState, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)
         }
         _ => None,
     }
+}
+
+/// Handles an `A_PropertyValue_Write` against the shared device state, echoing the
+/// stored value back in an `A_PropertyValue_Response` (the KNX confirm form).
+/// Returns `None` for any non-write telegram so the caller falls through to the
+/// read-only responder. Records a `PID_PROGMODE = 0` write on the device object so
+/// the test can assert bussard cleared programming mode, as ETS does.
+fn handle_property_write(
+    devices: &Shared,
+    dest: IndividualAddress,
+    cemi: &CemiFrame,
+) -> Option<(u16, Vec<u8>)> {
+    let (apci_val, data) = match (&cemi.tpci, &cemi.apdu) {
+        (Tpci::Other(_), Apdu::Other { apci, data }) => (*apci, data.clone()),
+        _ => return None,
+    };
+    if apci_val != apci::A_PROPERTY_VALUE_WRITE || data.len() < 4 {
+        return None;
+    }
+    // De-mirrored A_PropertyValue_Write header: [obj_index, pid, (count<<4)|start_hi, start_lo, value…].
+    let object_index = data[0];
+    let property_id = data[1];
+    let count = (data[2] >> 4) & 0x0f;
+    let start = (((data[2] & 0x0f) as u16) << 8) | data[3] as u16;
+    let value = data[4..].to_vec();
+
+    if object_index == apci::DEVICE_OBJECT_INDEX
+        && property_id == apci::PID_PROGMODE
+        && value.first() == Some(&0x00)
+    {
+        let mut devs = devices.lock().unwrap();
+        for d in devs.iter_mut() {
+            if d.address == dest {
+                d.progmode_write_seen = true;
+                // The device clears programming mode when told to (unless it is
+                // modelling a stuck one that ignores the write).
+                if !d.stay_in_programming {
+                    d.programming = false;
+                }
+            }
+        }
+    }
+    // Echo the stored value back as the confirming response.
+    let mut resp = vec![
+        object_index,
+        property_id,
+        (count << 4) | ((start >> 8) as u8 & 0x0f),
+        (start & 0xff) as u8,
+    ];
+    resp.extend_from_slice(&value);
+    Some((apci::A_PROPERTY_VALUE_RESPONSE, resp))
 }
 
 async fn run_gateway(gw: UdpSocket, devices: Shared) {
@@ -271,6 +333,7 @@ fn assign_writes_address_and_stub_file() {
         serial: [0x00, 0x01, 0x02, 0x03, 0x04, 0x05],
         order: b"MDT-JAL0410".to_vec(),
         stay_in_programming: false,
+        progmode_write_seen: false,
     }]));
     let handle = rt.spawn(run_gateway(gw, shared));
 
@@ -333,6 +396,84 @@ fn assign_writes_address_and_stub_file() {
 }
 
 #[test]
+fn assign_clears_programming_mode_like_ets() {
+    // After the address write + verify, bussard must explicitly clear programming
+    // mode by writing PID_PROGMODE = 0 on the device object (index 0), exactly as
+    // ETS does — not merely rely on the device auto-clearing. This asserts the
+    // write reached the device AND that assign reports it.
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (gw, port) = rt.block_on(async {
+        let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = sock.local_addr().unwrap().port();
+        (sock, port)
+    });
+
+    let shared: Shared = Arc::new(Mutex::new(vec![DeviceState {
+        address: "15.15.255".parse().unwrap(),
+        programming: true,
+        mask: 0x07B0,
+        manufacturer: 0x0083,
+        serial: [0x00, 0x01, 0x02, 0x03, 0x04, 0x05],
+        order: b"MDT-JAL0410".to_vec(),
+        stay_in_programming: false,
+        progmode_write_seen: false,
+    }]));
+    // Keep a handle to the shared state to inspect it after the run.
+    let observer = Arc::clone(&shared);
+    let handle = rt.spawn(run_gateway(gw, shared));
+
+    let tmp = std::env::temp_dir().join(format!("bussard-assign-clearprog-{}", std::process::id()));
+    let model_dir = tmp.join("knx");
+    write_model(&model_dir);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bussard"))
+        .args([
+            "assign",
+            "1.1.7",
+            "--dir",
+            model_dir.to_str().unwrap(),
+            "--gateway",
+            &format!("127.0.0.1:{port}"),
+        ])
+        .env("BUSSARD_ASSIGN_WAIT_MS", "200")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run bussard assign");
+
+    rt.block_on(async { handle.abort() });
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let success = output.status.success();
+    let progmode_write_seen = observer.lock().unwrap()[0].progmode_write_seen;
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    assert!(
+        success,
+        "assign should exit 0; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    // The explicit PID_PROGMODE = 0 write must have reached the device.
+    assert!(
+        progmode_write_seen,
+        "assign must write PID_PROGMODE = 0 to clear programming mode (ETS behaviour); \
+         stderr:\n{stderr}"
+    );
+    // assign reports that it cleared programming mode.
+    assert!(
+        stderr.contains("cleared programming mode on 1.1.7"),
+        "assign should report clearing programming mode; stderr:\n{stderr}"
+    );
+    // A conformant device that took the explicit clear does NOT trigger the
+    // persistence warning.
+    assert!(
+        !stderr.contains("still in programming mode"),
+        "a device that cleared must not warn; stderr:\n{stderr}"
+    );
+}
+
+#[test]
 fn assign_refuses_implicit_address_without_tty() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (gw, port) = rt.block_on(async {
@@ -348,6 +489,7 @@ fn assign_refuses_implicit_address_without_tty() {
         serial: [0x00, 0x01, 0x02, 0x03, 0x04, 0x05],
         order: b"MDT-JAL0410".to_vec(),
         stay_in_programming: false,
+        progmode_write_seen: false,
     }]));
     let handle = rt.spawn(run_gateway(gw, shared));
 
@@ -407,6 +549,7 @@ fn assign_warns_when_device_stays_in_programming_mode() {
         serial: [0x00, 0x01, 0x02, 0x03, 0x04, 0x05],
         order: b"MDT-JAL0410".to_vec(),
         stay_in_programming: true,
+        progmode_write_seen: false,
     }]));
     let handle = rt.spawn(run_gateway(gw, shared));
 

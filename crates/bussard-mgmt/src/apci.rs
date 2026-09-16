@@ -82,6 +82,29 @@ pub const A_MEMORY_WRITE: u16 = 0x280;
 /// `A_Restart` — restart the device.
 pub const A_RESTART: u16 = 0x380;
 
+/// `A_Restart` with the **master-reset** restart-type bit set (`A_Restart | 1`).
+///
+/// The 10-bit A_Restart APCI carries the restart type in its low bit: `0` (=
+/// [`A_RESTART`]) is a basic restart, `1` (this value) is a master reset. A
+/// master-reset request appends an `EraseCode` octet and a `ChannelNumber`
+/// octet; unlike a basic restart it is confirmed by an `A_Restart_Response`
+/// ([`A_RESTART_RESPONSE`]) before the device reboots. Clean-room encoding from
+/// the published KNX spec (A_Restart / DM_Restart: restart-type bit, erase code,
+/// channel number) and the XKNX MIT reference; verified against a real
+/// ETS→KNX-Virtual capture whose master reset carried `EraseCode=4 ChannelNumber=0`.
+pub const A_RESTART_MASTER_RESET: u16 = 0x381;
+
+/// `A_Restart_Response` — the device's answer to a master-reset `A_Restart`.
+///
+/// Shares the master-reset restart-type bit; the response direction is
+/// distinguished on the wire by the frame flow (the device is the source). The
+/// payload is an error-code octet followed by a 2-byte big-endian *process time*
+/// (the minimum time to wait before the device is reachable again). A zero error
+/// code means the master reset was accepted; a non-zero code is an error
+/// (`02` = access denied, `03` = unsupported erase code, `04` = invalid channel
+/// number, per the KNX spec).
+pub const A_RESTART_RESPONSE: u16 = 0x381;
+
 /// `A_IndividualAddress_Read` — broadcast: which device is in programming mode?
 pub const A_INDIVIDUAL_ADDRESS_READ: u16 = 0x100;
 /// `A_IndividualAddress_Response`.
@@ -110,6 +133,11 @@ pub const A_INDIVIDUAL_ADDRESS_SERIAL_WRITE: u16 = 0x3DE;
 
 /// The device object is always interface object index 0.
 pub const DEVICE_OBJECT_INDEX: u8 = 0;
+/// `PID_PROGMODE` — the device object's 1-byte programming-mode flag. Bit 0 is
+/// the programming-mode bit: writing `0x00` clears programming mode, exactly as
+/// ETS does after an individual-address assignment. Lives on the device object
+/// (index 0).
+pub const PID_PROGMODE: u8 = 54;
 /// `PID_SERIAL_NUMBER` — 6-byte KNX serial number.
 pub const PID_SERIAL_NUMBER: u8 = 11;
 /// `PID_MANUFACTURER_ID` — 2-byte KNX manufacturer id.
@@ -252,6 +280,29 @@ pub fn encode_device_descriptor_read(descriptor_type: u8) -> (u16, Vec<u8>) {
 /// carried in the **low 6 bits of the APCI** with an empty payload.
 pub fn encode_restart(variant: u8) -> (u16, Vec<u8>) {
     (A_RESTART | u16::from(variant & 0x3f), Vec::new())
+}
+
+/// Encodes a **master-reset** `A_Restart` request: APCI [`A_RESTART_MASTER_RESET`]
+/// with a 2-octet payload `[erase_code, channel_number]`.
+///
+/// This is the wire realisation of an `LdCtrlMasterReset` op. The device answers
+/// with an [`A_RESTART_RESPONSE`] (decode with [`decode_restart_response`]) and
+/// then reboots, dropping the connection. Clean-room from the published KNX spec
+/// and the XKNX MIT reference.
+pub fn encode_master_reset(erase_code: u8, channel_number: u8) -> (u16, Vec<u8>) {
+    (A_RESTART_MASTER_RESET, vec![erase_code, channel_number])
+}
+
+/// Decodes an `A_Restart_Response` payload into its error code.
+///
+/// The payload is `[error_code, process_time_hi, process_time_lo]`; only the
+/// error code gates success (`0` = accepted). A short payload (some devices omit
+/// the process-time octets) is tolerated: the first octet is the error code, and
+/// an empty payload is treated as error code `0` (accepted), since the device's
+/// mere act of answering the master reset is the acknowledgement. Returns the
+/// error-code octet.
+pub fn decode_restart_response(payload: &[u8]) -> u8 {
+    payload.first().copied().unwrap_or(0)
 }
 
 /// Encodes an `A_Authorize_Request` payload: a reserved `0x00` octet followed by
@@ -513,6 +564,27 @@ mod tests {
         let (apci, payload) = encode_restart(0);
         assert_eq!(apci, A_RESTART);
         assert!(payload.is_empty());
+    }
+
+    #[test]
+    fn master_reset_encodes_erase_code_and_channel() {
+        // The master-reset restart-type bit is the low bit of the A_Restart APCI;
+        // the payload is [erase_code, channel_number]. The KNX-Virtual capture
+        // carried EraseCode=4, ChannelNumber=0.
+        let (apci, payload) = encode_master_reset(4, 0);
+        assert_eq!(apci, A_RESTART_MASTER_RESET);
+        assert_eq!(apci, A_RESTART | 1);
+        assert_eq!(payload, vec![0x04, 0x00]);
+    }
+
+    #[test]
+    fn restart_response_error_code_is_the_first_octet() {
+        // [error_code, process_time_hi, process_time_lo]: zero = accepted.
+        assert_eq!(decode_restart_response(&[0x00, 0x00, 0x64]), 0);
+        // A non-zero error code is surfaced.
+        assert_eq!(decode_restart_response(&[0x04, 0x00, 0x00]), 4);
+        // An empty payload is treated as accepted (the device answered at all).
+        assert_eq!(decode_restart_response(&[]), 0);
     }
 
     #[test]
