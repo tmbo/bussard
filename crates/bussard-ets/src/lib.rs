@@ -29,6 +29,7 @@ pub mod dpt;
 pub mod error;
 pub mod flags;
 pub mod hardware;
+pub mod master;
 pub mod translation;
 pub mod zip_util;
 
@@ -42,5 +43,6 @@ pub use dpt::{dpt_from_object_size, parse_ets_dpt};
 pub use error::{EtsError, Result};
 pub use flags::{FlagSet, parse_flag_value};
 pub use hardware::{Hardware, ProductInfo, parse_hardware};
+pub use master::{MaskLoadProcedure, MasterTemplate, parse_master_template};
 pub use translation::TranslationCollector;
 pub use zip_util::{MAX_ENTRY_SIZE, read_capped, read_entry_opt};

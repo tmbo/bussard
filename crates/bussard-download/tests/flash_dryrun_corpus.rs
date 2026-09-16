@@ -85,6 +85,8 @@ fn dry_run_trace_of_real_vendor_procedures() {
             device_mask,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
         ) {
             Ok(plan) => {
                 planned += 1;

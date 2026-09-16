@@ -76,7 +76,7 @@ pub enum FlashStep {
     /// Drop a loadable object to `Unloaded` (`LdCtrlUnload`).
     Unload {
         /// The op's `LsmIdx`, resolved to a device object index at execute time
-        /// (see [`resolve_object_target`]). `None` (op carried no `LsmIdx`) or an
+        /// (see [`resolve_object_target_opt`]). `None` (op carried no `LsmIdx`) or an
         /// index the device does not expose falls back to the discovered
         /// application-program object — preserving the single-object behaviour a
         /// conformant ProductDefault procedure (thelsing) relies on.
@@ -207,13 +207,18 @@ pub struct ImageRef {
     pub len: usize,
 }
 
-/// Whether a memory image is the vendor code image or the computed parameters.
+/// Whether a memory image is the vendor code image, the computed parameters, or
+/// a computed loadable table (address / association / group-object).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageKind {
     /// The code segment's `<Data>` image (`AppliesTo=full`).
     Code,
     /// The computed parameter image (`AppliesTo=par`).
     Parameters,
+    /// A computed loadable table image (obj1 address table, obj2 association
+    /// table, or obj3 group-object table) streamed to a table object the master
+    /// template's `WriteRelMem` targets by index.
+    Table,
 }
 
 impl std::fmt::Display for ImageKind {
@@ -221,6 +226,7 @@ impl std::fmt::Display for ImageKind {
         match self {
             ImageKind::Code => write!(f, "code"),
             ImageKind::Parameters => write!(f, "parameters"),
+            ImageKind::Table => write!(f, "table"),
         }
     }
 }
@@ -340,6 +346,39 @@ pub enum PlanError {
         /// Why the op's shape cannot be executed.
         reason: String,
     },
+
+    /// A spliced master-template op programs a standard table object (obj1
+    /// address, obj2 association, obj3 group-object) but no table image was
+    /// supplied for it. Refused at pre-flight — writing the app segment (or
+    /// nothing) to a table object would leave the device misconfigured, so the
+    /// caller must supply the computed table image (from the model links) for
+    /// every table object the template writes.
+    #[error(
+        "load procedure step {step} programs table object {obj_idx} \
+         ({table}) but no table image was supplied for it — a merged flash must \
+         compute the address/association/group-object tables from the device's \
+         links; refusing rather than writing a wrong image to the table object"
+    )]
+    MissingTableImage {
+        /// The 1-based op index in the procedure.
+        step: usize,
+        /// The table object index (1/2/3).
+        obj_idx: u32,
+        /// A human name for the table object.
+        table: &'static str,
+    },
+}
+
+/// The standard System B table object indices a master template programs, and
+/// their human names. Used to refuse a spliced template that writes one of these
+/// objects without a supplied table image.
+fn table_object_name(idx: u32) -> Option<&'static str> {
+    match idx {
+        1 => Some("address table"),
+        2 => Some("association table"),
+        3 => Some("group-object table"),
+        _ => None,
+    }
 }
 
 /// The largest byte length or u32 component a single flash write step may carry.
@@ -406,6 +445,16 @@ pub struct FlashPlan {
     /// The computed parameter images (segment id → bytes), retained so a caller
     /// can inspect what parameter values the flash will write.
     pub param_images: BTreeMap<String, Vec<u8>>,
+    /// Whether the op sequence was spliced from a master template (a merged
+    /// multi-object download). When true, a load-control op naming an object
+    /// index the device does not expose (a template LSM5 op on a device without
+    /// obj5) is **skipped** at execute time rather than redirected onto the app
+    /// object — the master template targets objects that may not all exist on a
+    /// given device. When false (a self-contained single-object procedure), an
+    /// absent index falls back to the app object, preserving the conformant
+    /// thelsing ProductDefault shape (`LsmIdx=4` on a device whose app object
+    /// sits at a lower index).
+    spliced_from_template: bool,
 }
 
 impl FlashPlan {
@@ -495,14 +544,24 @@ pub enum Progress {
 pub struct FlashOutcome {
     /// The application-program object's final load state (must be `Loaded`).
     pub load_state: LoadState,
+    /// The final load state of every object the flash programmed (each object
+    /// that received a `LoadCompleted`, plus the application object). Every entry
+    /// must be `Loaded` for the flash to have verified — this catches a
+    /// multi-object flash where a table object silently failed to load.
+    pub object_states: Vec<(u8, LoadState)>,
     /// Whether the sampled read-backs of written memory matched what was written.
     pub spot_checks_match: bool,
 }
 
 impl FlashOutcome {
-    /// The flash verified: object `Loaded` and every spot check matched.
+    /// The flash verified: every programmed object reached `Loaded` and every
+    /// spot check matched.
     pub fn ok(&self) -> bool {
-        self.load_state == LoadState::Loaded && self.spot_checks_match
+        self.object_states
+            .iter()
+            .all(|(_, state)| *state == LoadState::Loaded)
+            && self.load_state == LoadState::Loaded
+            && self.spot_checks_match
     }
 }
 
@@ -708,12 +767,30 @@ pub fn select_application<'a>(
 ///
 /// `device` is the individual address (for error messages), `device_mask` the
 /// descriptor read live, `overrides` the parameter values.
+///
+/// `template_ops` is the master-template `Load` procedure for the device mask
+/// (from `knx_master.xml`), or `None` for a self-contained application whose own
+/// procedures already carry the whole download (the conformant thelsing
+/// ProductDefault shape). When present and the app is merged-style, the app's
+/// `<LoadProcedure MergeId="N">` blocks are spliced into the template at its
+/// `LdCtrlMerge` markers — the only way a merged app programs the table objects
+/// (obj1/obj2/obj3), whose load-control ops live in the master template.
+///
+/// `table_images` supplies the memory image for each table object the template
+/// writes, keyed by device object index: `1` = address table, `2` = association
+/// table, `3` = group-object table (each including its big-endian count word).
+/// A `WriteRelMem`/`RelSegment` naming one of these indices streams and sizes
+/// itself from the supplied bytes instead of the app's code segments; an index
+/// with no entry is left to the normal code/parameter resolution (obj4, the app
+/// segment). Empty for a single-object flash.
 pub fn plan_flash(
     app: &ApplicationProgram,
     device: &str,
     device_mask: u16,
     overrides: &BTreeMap<String, String>,
     base_offsets: &BTreeMap<String, u32>,
+    template_ops: Option<&[LoadOp]>,
+    table_images: &BTreeMap<u32, Vec<u8>>,
 ) -> std::result::Result<FlashPlan, PlanError> {
     // 1. System B gate.
     if !bussard_mgmt::is_system_b(device_mask) {
@@ -745,7 +822,7 @@ pub fn plan_flash(
     //    concatenated in MergeId order so the whole download lowers, not just the
     //    richest single block. A single-style app has one block, used as-is.
     //    Empty apps are refused.
-    let ops = assemble_ops(app);
+    let (ops, spliced_from_template) = assemble_ops(app, template_ops);
     if ops.is_empty() {
         return Err(PlanError::NoProcedure(app.id.clone()));
     }
@@ -796,6 +873,49 @@ pub fn plan_flash(
                 steps.push(FlashStep::MasterReset {
                     erase_code: erase_code.unwrap_or(1).min(u32::from(u8::MAX)) as u8,
                     channel_number: channel_number.unwrap_or(0).min(u32::from(u8::MAX)) as u8,
+                });
+            }
+
+            // A master-template merge marker that survived (no matching app
+            // block): a no-op. After splicing this should not appear, but a bare
+            // marker in an app procedure is tolerated rather than refused.
+            LoadOp::Merge { .. } => {}
+
+            // A spliced template allocates a standard table object (obj1/2/3) but
+            // no table image was supplied: refuse rather than allocate a
+            // placeholder-sized (or app-segment-sized) segment for it.
+            LoadOp::RelSegment {
+                lsm_idx: Some(idx), ..
+            } if spliced_from_template
+                && !table_images.contains_key(idx)
+                && table_object_name(*idx).is_some() =>
+            {
+                return Err(PlanError::MissingTableImage {
+                    step: step_no,
+                    obj_idx: *idx,
+                    table: table_object_name(*idx).unwrap_or("table"),
+                });
+            }
+
+            // A relative-segment allocation for a table object (obj1/obj2/obj3):
+            // its size is the supplied table image's length, not a code segment.
+            // The template carries a placeholder `Size` (2 or the 1 MiB
+            // sentinel); the real size is the computed table body.
+            LoadOp::RelSegment {
+                lsm_idx: Some(idx), ..
+            } if table_images.contains_key(idx) => {
+                let size = table_images[idx].len() as u32;
+                if u64::from(size) > MAX_WRITE_SPAN {
+                    return Err(PlanError::AddressOutOfRange {
+                        step: step_no,
+                        size: u64::from(size),
+                        end: u64::from(size),
+                        detail: format!("table object {idx} allocation size {size}"),
+                    });
+                }
+                steps.push(FlashStep::AllocateSegment {
+                    size,
+                    target: Some(*idx),
                 });
             }
 
@@ -876,6 +996,61 @@ pub fn plan_flash(
                         target: *lsm_idx,
                     });
                 }
+            }
+
+            // A spliced template writes a standard table object (obj1/2/3) but no
+            // table image was supplied: refuse rather than stream the app segment
+            // (or nothing) to a table object.
+            LoadOp::WriteRelMem {
+                obj_idx: Some(idx), ..
+            } if spliced_from_template
+                && !table_images.contains_key(idx)
+                && table_object_name(*idx).is_some() =>
+            {
+                return Err(PlanError::MissingTableImage {
+                    step: step_no,
+                    obj_idx: *idx,
+                    table: table_object_name(*idx).unwrap_or("table"),
+                });
+            }
+
+            // A relative-memory write into a table object (obj1/obj2/obj3):
+            // stream the supplied table image, not an app code/parameter image.
+            // The template carries a placeholder `Size` (the 1 MiB sentinel);
+            // the real length is the table body.
+            LoadOp::WriteRelMem {
+                offset,
+                obj_idx: Some(idx),
+                ..
+            } if table_images.contains_key(idx) => {
+                let bytes = table_images[idx].clone();
+                let len = bytes.len();
+                let offset = offset.unwrap_or(0);
+                let end = u64::from(offset).saturating_add(len as u64);
+                if len as u64 > MAX_WRITE_SPAN || u64::from(offset) > MAX_WRITE_SPAN || end > 0xFFFF
+                {
+                    return Err(PlanError::AddressOutOfRange {
+                        step: step_no,
+                        size: len as u64,
+                        end,
+                        detail: format!("table object {idx} relative offset {offset}"),
+                    });
+                }
+                // A synthetic, unique segment id so `FlashPlan.images` keys stay
+                // distinct from the app's real code segments.
+                let segment_id = format!("obj-table-{idx}");
+                images.insert(segment_id.clone(), bytes);
+                let image = ImageRef {
+                    segment_id,
+                    kind: ImageKind::Table,
+                    len,
+                };
+                last_written_image = Some(image.clone());
+                steps.push(FlashStep::WriteRelMem {
+                    offset,
+                    image,
+                    target: Some(*idx),
+                });
             }
 
             LoadOp::WriteRelMem {
@@ -1098,31 +1273,76 @@ pub fn plan_flash(
         steps,
         images,
         param_images,
+        spliced_from_template,
     })
 }
 
-/// Assembles the op sequence to execute from an app's load procedures.
+/// Assembles the op sequence to execute from an app's load procedures, splicing
+/// against the master template when one is supplied.
 ///
-/// A `MergedProcedure` app spreads one logical download across several
-/// `<LoadProcedure MergeId=…>` blocks that ETS splices into the master template
-/// at ordered merge points; at the app-local level the correct execution order is
-/// the blocks concatenated by ascending `MergeId` (e.g. allocate → write →
-/// image-prop). When every block carries a `MergeId`, they are concatenated in
-/// that order. A single-style app (one block, or blocks without a `MergeId`) has
-/// no merge ordering to honour, so the single richest non-empty block is used —
-/// preserving the previous behaviour for those apps.
-fn assemble_ops(app: &ApplicationProgram) -> Vec<LoadOp> {
+/// A `MergedProcedure` app carries only its own per-object `<LoadProcedure
+/// MergeId="N">` blocks (e.g. DA.tp: MergeId 2 = allocate the app segment +
+/// MasterReset, MergeId 4 = write it). The Unload/Load/allocate/write/complete
+/// ops for the **table** objects (obj1/obj2/obj3) live in `knx_master.xml`'s
+/// `Load` procedure for the device mask, which threads the app's blocks in at
+/// `<LdCtrlMerge MergeId="N"/>` markers. So, when `template_ops` is present and
+/// the app is merged-style, the assembled sequence is the template with each
+/// `Merge` marker replaced by its matching app block (an unmatched marker — ids
+/// the app supplies nothing for, e.g. 1/3/5/6/7 — is dropped). This is the only
+/// way a merged app programs all four objects the way ETS does.
+///
+/// Without a template (`None`), or for a self-contained app whose blocks are not
+/// all `MergeId`-tagged (the conformant thelsing ProductDefault shape), there is
+/// no splicing: the blocks are concatenated by ascending `MergeId`, or the
+/// single richest block is used — preserving the previous single-object
+/// behaviour exactly. This keeps the `virtual-device-flash` CI path green.
+fn assemble_ops(app: &ApplicationProgram, template_ops: Option<&[LoadOp]>) -> (Vec<LoadOp>, bool) {
     let non_empty: Vec<&LoadProcedure> = app
         .load_procedures
         .iter()
         .filter(|p| !p.ops.is_empty())
         .collect();
     if non_empty.is_empty() {
-        return Vec::new();
+        return (Vec::new(), false);
     }
-    // Merged style: every block is tagged with a MergeId. Concatenate all blocks
-    // in ascending MergeId order (numeric where the ids parse, else lexical).
-    if non_empty.iter().all(|p| p.merge_id.is_some()) && non_empty.len() > 1 {
+    let all_merged = non_empty.iter().all(|p| p.merge_id.is_some());
+
+    // Splice against the master template: only when a template is available AND
+    // the app is merged-style (every block is MergeId-tagged). This is the
+    // DA.tp / MV-07B0 case; anything else stays on the self-contained path.
+    if all_merged {
+        if let Some(template) = template_ops {
+            // App blocks keyed by parsed MergeId. A block whose id is not numeric
+            // cannot match a numeric `<LdCtrlMerge MergeId=N>` and is ignored.
+            let mut blocks: BTreeMap<u32, Vec<LoadOp>> = BTreeMap::new();
+            for p in &non_empty {
+                if let Some(id) = p.merge_id.as_deref().and_then(|m| m.parse::<u32>().ok()) {
+                    blocks.entry(id).or_default().extend(p.ops.clone());
+                }
+            }
+            let mut out = Vec::new();
+            for op in template {
+                match op {
+                    LoadOp::Merge { merge_id } => {
+                        if let Some(ops) = merge_id
+                            .as_deref()
+                            .and_then(|m| m.parse::<u32>().ok())
+                            .and_then(|id| blocks.get(&id))
+                        {
+                            out.extend(ops.iter().cloned());
+                        }
+                        // Unmatched or id-less marker: drop it.
+                    }
+                    other => out.push(other.clone()),
+                }
+            }
+            return (out, true);
+        }
+    }
+
+    // Self-contained: no template splice. Merged-style (all MergeId) → concat in
+    // ascending MergeId order; else the richest single block.
+    if all_merged && non_empty.len() > 1 {
         let mut blocks = non_empty.clone();
         blocks.sort_by(|a, b| {
             let key = |p: &&LoadProcedure| {
@@ -1134,14 +1354,19 @@ fn assemble_ops(app: &ApplicationProgram) -> Vec<LoadOp> {
             };
             key(a).cmp(&key(b))
         });
-        return blocks.into_iter().flat_map(|p| p.ops.clone()).collect();
+        return (
+            blocks.into_iter().flat_map(|p| p.ops.clone()).collect(),
+            false,
+        );
     }
-    // Single style: the richest block is the download proper.
-    non_empty
-        .into_iter()
-        .max_by_key(|p| p.ops.len())
-        .map(|p| p.ops.clone())
-        .unwrap_or_default()
+    (
+        non_empty
+            .into_iter()
+            .max_by_key(|p| p.ops.len())
+            .map(|p| p.ops.clone())
+            .unwrap_or_default(),
+        false,
+    )
 }
 
 /// Resolves which relative segment a `RelSegment` op allocates, preferring one
@@ -1312,17 +1537,43 @@ async fn discover_object_table<Ch: L4Channel>(
 /// `LsmIdx=4` on a device whose app object sits at index 3 and that has no object
 /// 4). This keeps a simple single-segment ProductDefault procedure targeting the
 /// one app object exactly as before.
-fn resolve_object_target(target: Option<u32>, object_table: &[(u8, u16)], app_obj: u8) -> u8 {
+/// Resolves an op's `LsmIdx`/`ObjIdx` to a device object index, returning `None`
+/// only when the step should be **skipped**.
+///
+/// `spliced` selects the two behaviours for an explicit, non-zero index the
+/// device does not expose:
+///
+/// - `spliced = true` (a master-template multi-object download): return `None`
+///   so the executor skips it. The `Load/all` template carries load-control ops
+///   for LSM5 (the PEI program) that a device without an obj5 does not have;
+///   redirecting those onto the app object would spuriously Unload / StartLoading
+///   / LoadCompleted it out of sequence.
+/// - `spliced = false` (a self-contained single-object procedure): fall back to
+///   the discovered app object — the conformant thelsing shape, whose `LsmIdx=4`
+///   ops address the app object even on a device whose app object sits at a
+///   lower index and has no object 4.
+///
+/// A `None`/`0` target always resolves to the app object (the thelsing
+/// `ObjIdx="0"` shape means "the app object", not "device object 0").
+fn resolve_object_target_opt(
+    target: Option<u32>,
+    object_table: &[(u8, u16)],
+    app_obj: u8,
+    spliced: bool,
+) -> Option<u8> {
     match target {
         Some(idx) if idx != 0 && idx <= u32::from(u8::MAX) => {
             let idx = idx as u8;
             if object_table.iter().any(|(i, _)| *i == idx) {
-                idx
+                Some(idx)
+            } else if spliced {
+                None
             } else {
-                app_obj
+                Some(app_obj)
             }
         }
-        _ => app_obj,
+        // None / 0: the app object (the conformant single-object shape).
+        _ => Some(app_obj),
     }
 }
 
@@ -1439,8 +1690,20 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
     let (app_obj, object_table) = discover_object_table(session.l4()).await?;
     let total = plan.steps.len();
 
-    // Segment base addresses, filled as RelSegment allocations return them.
+    // The base address of the most-recently allocated relative segment, used by
+    // the following `WriteRelMem` when it does not resolve a per-object base.
     let mut segment_base: Option<u32> = None;
+    // Per-object segment base addresses, keyed by device object index, filled as
+    // each `AllocateSegment` returns the object's `PID_TABLE_REFERENCE` base.
+    // The master-template sequence allocates every object (obj4/obj3/obj1/obj2)
+    // BEFORE writing any of them, so a single `segment_base` would be clobbered;
+    // each `WriteRelMem` looks its own object's base up here. Matches ETS reading
+    // PID7 per object before its write.
+    let mut segment_bases: BTreeMap<u8, u32> = BTreeMap::new();
+    // The set of object indices that received a `LoadCompleted`, in order, so the
+    // post-flash verify checks every programmed object reached `Loaded` — not
+    // only the app object (the verify_outcome bug fix).
+    let mut completed_objects: Vec<u8> = Vec::new();
     // The size of the most-recently allocated relative segment, remembered so a
     // `MasterReset` step (which reboots the device and, on KNX Virtual, wipes the
     // app object's load state back to `Unloaded` and drops the segment allocated
@@ -1464,11 +1727,27 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
         });
         match step {
             FlashStep::Unload { target } => {
-                let obj = resolve_object_target(*target, &object_table, app_obj);
+                // Skip a load-control op that names an object index the device
+                // does not expose (a template LSM5 op on a device without obj5).
+                let Some(obj) = resolve_object_target_opt(
+                    *target,
+                    &object_table,
+                    app_obj,
+                    plan.spliced_from_template,
+                ) else {
+                    continue;
+                };
                 write_load_control(session.l4(), obj, LoadControl::Unload).await?;
             }
             FlashStep::StartLoading { target } => {
-                let obj = resolve_object_target(*target, &object_table, app_obj);
+                let Some(obj) = resolve_object_target_opt(
+                    *target,
+                    &object_table,
+                    app_obj,
+                    plan.spliced_from_template,
+                ) else {
+                    continue;
+                };
                 start_loading(session.l4(), obj, &object_table).await?;
             }
             FlashStep::AllocateSegment { size, target } => {
@@ -1476,18 +1755,38 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                 // object the op names by index. On KNX Virtual this is the ObjIdx
                 // (e.g. obj4 → base 0x6000); allocate_segment reads that object's
                 // PID_TABLE_REFERENCE, so the base the following WriteRelMem uses is
-                // this object's own.
-                let obj = resolve_object_target(*target, &object_table, app_obj);
+                // this object's own. An index the device lacks is skipped.
+                let Some(obj) = resolve_object_target_opt(
+                    *target,
+                    &object_table,
+                    app_obj,
+                    plan.spliced_from_template,
+                ) else {
+                    continue;
+                };
                 let alloc = allocate_with_context(session.l4(), obj, *size, &object_table).await?;
                 segment_base = Some(alloc.address);
+                segment_bases.insert(obj, alloc.address);
                 last_alloc_size = Some(*size);
             }
             FlashStep::WriteRelMem {
                 offset,
                 image,
-                target: _,
+                target,
             } => {
-                let base = segment_base.unwrap_or(0);
+                // Prefer this object's own allocated base (the multi-object
+                // template allocates every object before writing any, so the
+                // shared `segment_base` may belong to a later allocation). Fall
+                // back to the most-recent allocation for the single-object shape.
+                let base = resolve_object_target_opt(
+                    *target,
+                    &object_table,
+                    app_obj,
+                    plan.spliced_from_template,
+                )
+                .and_then(|obj| segment_bases.get(&obj).copied())
+                .or(segment_base)
+                .unwrap_or(0);
                 // The device-supplied segment base plus the vendor offset must fit
                 // the 16-bit A_Memory space. A `u16` cast of the sum would silently
                 // wrap and stream the image to the wrong address; refuse instead.
@@ -1531,12 +1830,18 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                 prop_id,
                 value,
             } => {
-                // Write the property value to the named object index / PID and
-                // echo-validate it via the property-write primitive. Only
-                // value-carrying ops reach here (a bare WriteProp is not lowered),
-                // so this always performs a real, verified write. The object index
-                // and PID were bounded to u8 at plan time.
+                // A spliced template writes properties on obj4 and obj5 (the app
+                // id, PID 13). Skip a write to an object index the device does not
+                // expose (obj5 on a device without a PEI program), exactly like
+                // the load-control steps — otherwise the device NAKs the write to
+                // the absent object and fails the flash. A `u32::MAX`-bounded index
+                // is compared against the discovered table.
                 let _ = obj_type;
+                if plan.spliced_from_template
+                    && !object_table.iter().any(|(i, _)| u32::from(*i) == *obj_idx)
+                {
+                    continue;
+                }
                 write_property(
                     session.l4(),
                     (*obj_idx).min(u32::from(u8::MAX)) as u8,
@@ -1594,8 +1899,20 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                 }
             }
             FlashStep::LoadCompleted { target } => {
-                let obj = resolve_object_target(*target, &object_table, app_obj);
+                // Skip a completion for an object the device does not expose (a
+                // template LSM5 completion on a device without obj5).
+                let Some(obj) = resolve_object_target_opt(
+                    *target,
+                    &object_table,
+                    app_obj,
+                    plan.spliced_from_template,
+                ) else {
+                    continue;
+                };
                 write_load_control(session.l4(), obj, LoadControl::LoadCompleted).await?;
+                if !completed_objects.contains(&obj) {
+                    completed_objects.push(obj);
+                }
             }
             FlashStep::MasterReset {
                 erase_code,
@@ -1640,6 +1957,10 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                     let alloc =
                         allocate_with_context(session.l4(), app_obj, size, &object_table).await?;
                     segment_base = Some(alloc.address);
+                    // Update the per-object base too: the resumed `WriteRelMem`
+                    // for the app object prefers its per-object base, which must be
+                    // the freshly-returned one, not the dropped pre-reset value.
+                    segment_bases.insert(app_obj, alloc.address);
                 }
             }
             FlashStep::Restart => {
@@ -1648,7 +1969,10 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                 // NOT a failure. Verify the result FIRST (the device is still up
                 // and Loaded here), then fire-and-forget the restart. The device
                 // going silent afterwards must never be surfaced as a flash error.
-                verified = Some(verify_outcome(session.l4(), app_obj, &written_samples).await?);
+                verified = Some(
+                    verify_outcome(session.l4(), app_obj, &completed_objects, &written_samples)
+                        .await?,
+                );
                 let (apci, payload) = bussard_mgmt::apci::encode_restart(0);
                 let _ = session.l4().send_data(apci, &payload).await;
             }
@@ -1659,22 +1983,49 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
     // Restart), verify now over the still-open connection.
     match verified {
         Some(outcome) => Ok(outcome),
-        None => verify_outcome(session.l4(), app_obj, &written_samples).await,
+        None => verify_outcome(session.l4(), app_obj, &completed_objects, &written_samples).await,
     }
 }
 
-/// Verifies a completed flash over the open connection: re-reads the
-/// application-program object's load state and spot-checks a sample of each
+/// Verifies a completed flash over the open connection: re-reads the load state
+/// of **every object that was programmed** (each that received a
+/// `LoadCompleted`, plus the application object) and spot-checks a sample of each
 /// written segment against what was streamed.
+///
+/// Verifying every completed object — not just the type-discovered application
+/// object — is the divergence-#3 fix: a multi-object flash (obj1/obj2/obj3/obj4)
+/// must confirm the table objects reached `Loaded` too, or a device that
+/// silently failed to load a table would be reported as a success.
 ///
 /// Called with the device still up — either just before a terminal restart
 /// reboots it, or (for a procedure without a final restart) after the last step.
 async fn verify_outcome<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     app_obj: u8,
+    completed_objects: &[u8],
     written_samples: &[(u16, Vec<u8>)],
 ) -> Result<FlashOutcome, WriteError> {
+    // The application object's own state (kept as the headline `load_state`).
     let load_state = read_load_state(l4, app_obj).await?;
+
+    // Every programmed object's state: the completed set, plus the app object if
+    // the procedure did not itself complete it (a bare app segment write). Read
+    // each once, de-duplicated, preserving order for a deterministic report.
+    let mut object_states: Vec<(u8, LoadState)> = Vec::new();
+    let mut seen: Vec<u8> = Vec::new();
+    for &obj in completed_objects.iter().chain(std::iter::once(&app_obj)) {
+        if seen.contains(&obj) {
+            continue;
+        }
+        seen.push(obj);
+        let state = if obj == app_obj {
+            load_state
+        } else {
+            read_load_state(l4, obj).await?
+        };
+        object_states.push((obj, state));
+    }
+
     let mut spot_checks_match = true;
     for (addr, expected) in written_samples {
         let got = load::read_memory(l4, *addr, expected.len() as u8).await?;
@@ -1684,6 +2035,7 @@ async fn verify_outcome<Ch: L4Channel>(
     }
     Ok(FlashOutcome {
         load_state,
+        object_states,
         spot_checks_match,
     })
 }
@@ -1851,7 +2203,16 @@ mod tests {
     #[test]
     fn plan_lowers_supported_procedure() {
         let app = fabricated_app();
-        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+        let plan = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
         assert_eq!(plan.identity.mask_version, "07B0");
         // Connect/Disconnect are session-boundary no-ops; 8 device steps remain.
         assert_eq!(
@@ -1919,7 +2280,16 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-MR", xml.as_bytes()).unwrap();
-        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+        let plan = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
         // The master reset sits between the allocation and the write.
         let mr_pos = plan
             .steps
@@ -1969,7 +2339,16 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-MR2", xml.as_bytes()).unwrap();
-        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+        let plan = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
         assert!(plan.steps.iter().any(|s| matches!(
             s,
             FlashStep::MasterReset {
@@ -1982,7 +2361,16 @@ mod tests {
     #[test]
     fn plan_refuses_non_system_b() {
         let app = fabricated_app();
-        let err = plan_flash(&app, "1.1.4", 0x0705, &no_overrides(), &BTreeMap::new()).unwrap_err();
+        let err = plan_flash(
+            &app,
+            "1.1.4",
+            0x0705,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap_err();
         assert!(matches!(err, PlanError::NotSystemB { .. }), "{err:?}");
     }
 
@@ -1991,7 +2379,16 @@ mod tests {
         // App declares MV-07B0 but the device is a different System B medium
         // (0x57B0 IP): the exact-mask compare refuses it.
         let app = fabricated_app();
-        let err = plan_flash(&app, "1.1.4", 0x57B0, &no_overrides(), &BTreeMap::new()).unwrap_err();
+        let err = plan_flash(
+            &app,
+            "1.1.4",
+            0x57B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap_err();
         assert!(matches!(err, PlanError::MaskMismatch { .. }), "{err:?}");
     }
 
@@ -2012,7 +2409,16 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-2", xml.as_bytes()).unwrap();
-        let err = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap_err();
+        let err = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap_err();
         match err {
             PlanError::UnsupportedOp { op } => assert!(op.contains("TaskSegment"), "{op}"),
             other => panic!("expected UnsupportedOp, got {other:?}"),
@@ -2046,7 +2452,16 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-3", xml.as_bytes()).unwrap();
-        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+        let plan = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
 
         let image_props: Vec<&FlashStep> = plan
             .steps
@@ -2111,7 +2526,16 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-83_A-7", xml.as_bytes()).unwrap();
-        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+        let plan = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
 
         let allocs = plan
             .steps
@@ -2140,7 +2564,16 @@ mod tests {
         // deduped — the fabricated app allocates a 6-byte code segment and a
         // 1-byte parameter segment.
         let app = fabricated_app();
-        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+        let plan = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
         let allocs = plan
             .steps
             .iter()
@@ -2175,7 +2608,16 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-4", xml.as_bytes()).unwrap();
-        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+        let plan = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
 
         let compares: Vec<&FlashStep> = plan
             .steps
@@ -2221,7 +2663,16 @@ mod tests {
         let app = fabricated_app();
         let mut ov = BTreeMap::new();
         ov.insert("P-999_R-1".to_string(), "1".to_string());
-        let err = plan_flash(&app, "1.1.4", 0x07B0, &ov, &BTreeMap::new()).unwrap_err();
+        let err = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &ov,
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap_err();
         match err {
             PlanError::UnresolvableImage { reason, .. } => {
                 assert!(reason.contains("P-999"), "must name the key: {reason}");
@@ -2237,7 +2688,16 @@ mod tests {
         let app = fabricated_app();
         let mut ov = BTreeMap::new();
         ov.insert("P-0_R-1".to_string(), "99".to_string());
-        let plan = plan_flash(&app, "1.1.4", 0x07B0, &ov, &BTreeMap::new()).unwrap();
+        let plan = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &ov,
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
         assert_eq!(plan.param_images["M-1_A-1_RS-2"], vec![99]);
     }
 
@@ -2267,7 +2727,16 @@ mod tests {
     #[test]
     fn trace_renders_every_step() {
         let app = fabricated_app();
-        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+        let plan = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
         let lines = trace(&plan);
         assert_eq!(lines.len(), plan.steps.len());
         assert!(lines[0].contains("unload"));
@@ -2277,7 +2746,16 @@ mod tests {
     #[test]
     fn estimates_are_sane() {
         let app = fabricated_app();
-        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+        let plan = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
         // 7 bytes fit in one 12-octet chunk each write → 2 frames.
         assert_eq!(plan.estimated_write_frames(), 2);
         assert!(plan.estimated_duration().as_millis() >= 40);
@@ -2308,7 +2786,16 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-7", xml.as_bytes()).unwrap();
-        let err = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap_err();
+        let err = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap_err();
         match err {
             PlanError::AddressOutOfRange { end, .. } => {
                 assert!(end > 0xFFFF, "end {end} must exceed the 16-bit space");
@@ -2335,7 +2822,16 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-8", xml.as_bytes()).unwrap();
-        let err = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap_err();
+        let err = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap_err();
         assert!(
             matches!(err, PlanError::AddressOutOfRange { .. }),
             "expected AddressOutOfRange, got {err:?}"
@@ -2360,7 +2856,16 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-A", xml.as_bytes()).unwrap();
-        let err = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap_err();
+        let err = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap_err();
         assert!(
             matches!(err, PlanError::AddressOutOfRange { .. }),
             "expected AddressOutOfRange, got {err:?}"
@@ -2395,7 +2900,16 @@ mod tests {
         // A WriteProp carrying InlineData lowers to an executable WriteProp step
         // with the decoded value — a real write in the plan, not a skipped no-op.
         let app = app_with_write_prop("0102", "0", "204");
-        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+        let plan = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
         let write_props: Vec<&FlashStep> = plan
             .steps
             .iter()
@@ -2441,7 +2955,16 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-B", xml.as_bytes()).unwrap();
-        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+        let plan = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
         assert!(
             !plan
                 .steps
@@ -2458,7 +2981,16 @@ mod tests {
         // the property-write primitive addresses is refused at pre-flight rather
         // than dropped at execute time.
         let app = app_with_write_prop("01", "9999", "204");
-        let err = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap_err();
+        let err = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap_err();
         match err {
             PlanError::UnsupportedWriteProp { reason, .. } => {
                 assert!(reason.contains("object index"), "{reason}");
@@ -2472,24 +3004,66 @@ mod tests {
         // KNX-Virtual shape: obj0=device, obj1=address, obj2=association,
         // obj3=application-program (the type-discovered app object), obj4=app
         // segment. The app segment write names ObjIdx=4 → device object 4, NOT the
-        // type-discovered obj3 (the divergence-#2 fix).
+        // type-discovered obj3 (the divergence-#2 fix). Present indices resolve
+        // literally regardless of the splice mode.
         let table = vec![(0u8, 0u16), (1, 1), (2, 2), (3, 3), (4, 4)];
         let app_obj = 3; // discovered by type OT_APPLICATION_PROGRAM
-        assert_eq!(resolve_object_target(Some(4), &table, app_obj), 4);
-        assert_eq!(resolve_object_target(Some(1), &table, app_obj), 1);
+        assert_eq!(
+            resolve_object_target_opt(Some(4), &table, app_obj, false),
+            Some(4)
+        );
+        assert_eq!(
+            resolve_object_target_opt(Some(1), &table, app_obj, false),
+            Some(1)
+        );
+        assert_eq!(
+            resolve_object_target_opt(Some(4), &table, app_obj, true),
+            Some(4)
+        );
     }
 
     #[test]
-    fn resolve_object_target_falls_back_to_the_app_object() {
+    fn resolve_object_target_falls_back_to_the_app_object_when_not_spliced() {
         // A conformant thelsing device: only obj0..obj3, app object at index 3, and
         // the procedure writes with ObjIdx=0 / LsmIdx=4. Index 0 (device object) and
         // index 4 (absent) both fall back to the discovered app object, preserving
-        // the single-object ProductDefault behaviour.
+        // the single-object ProductDefault behaviour — but only for a
+        // non-spliced (self-contained) procedure.
         let table = vec![(0u8, 0u16), (1, 1), (2, 2), (3, 3)];
         let app_obj = 3;
-        assert_eq!(resolve_object_target(Some(0), &table, app_obj), app_obj);
-        assert_eq!(resolve_object_target(Some(4), &table, app_obj), app_obj);
-        assert_eq!(resolve_object_target(None, &table, app_obj), app_obj);
+        assert_eq!(
+            resolve_object_target_opt(Some(0), &table, app_obj, false),
+            Some(app_obj)
+        );
+        assert_eq!(
+            resolve_object_target_opt(Some(4), &table, app_obj, false),
+            Some(app_obj)
+        );
+        assert_eq!(
+            resolve_object_target_opt(None, &table, app_obj, false),
+            Some(app_obj)
+        );
+    }
+
+    #[test]
+    fn resolve_object_target_skips_absent_index_when_spliced() {
+        // A master-template multi-object download against a device without obj5:
+        // the template's LSM5 ops must be SKIPPED (None), not redirected onto the
+        // app object. A None/0 target still resolves to the app object.
+        let table = vec![(0u8, 0u16), (1, 1), (2, 2), (3, 3), (4, 4)];
+        let app_obj = 4;
+        assert_eq!(
+            resolve_object_target_opt(Some(5), &table, app_obj, true),
+            None
+        );
+        assert_eq!(
+            resolve_object_target_opt(Some(0), &table, app_obj, true),
+            Some(app_obj)
+        );
+        assert_eq!(
+            resolve_object_target_opt(None, &table, app_obj, true),
+            Some(app_obj)
+        );
     }
 
     #[test]
@@ -2515,7 +3089,16 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-DA", xml.as_bytes()).unwrap();
-        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+        let plan = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
         // The allocate targets LsmIdx=4; the write targets ObjIdx=4.
         assert!(plan.steps.iter().any(|s| matches!(
             s,
