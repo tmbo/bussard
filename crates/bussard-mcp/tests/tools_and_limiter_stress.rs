@@ -58,6 +58,7 @@ fn small_model() -> Model {
                 location: None,
                 product: None,
                 channels: BTreeMap::new(),
+                parameters: BTreeMap::new(),
                 com_objects: BTreeMap::new(),
             },
             file_stem: "1.1.4-dev".to_string(),

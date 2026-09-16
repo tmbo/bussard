@@ -8,13 +8,13 @@ use std::io::IsTerminal;
 use std::path::Path;
 use std::process::ExitCode;
 
-use bussard_model::{Diagnostic, Model, Severity, validate};
+use bussard_model::{Diagnostic, Model, Severity, validate_in_dir};
 use owo_colors::OwoColorize;
 
 /// Runs the validate command over the model in `dir`.
 pub fn run(dir: &Path, json: bool) -> anyhow::Result<ExitCode> {
     let model = Model::load(dir)?;
-    let diagnostics = validate(&model);
+    let diagnostics = validate_in_dir(&model, dir);
 
     if json {
         print_json(&diagnostics);

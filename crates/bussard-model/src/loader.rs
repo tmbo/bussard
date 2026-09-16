@@ -395,6 +395,11 @@ const DEVICE_HEADER: &str = "\
 #
 # `address:` is the device identity; the filename slug is cosmetic. The identity,
 # name, location, product and channel names above `com_objects:` are hand-editable.
+#
+# `parameters:` holds this device's configured parameter values, keyed
+# `<name>@<ref-id>` (only values that differ from the vendor default are stored).
+# It is yours to edit, but a re-import REPLACES it with ETS truth — like the
+# names in links.yaml, it is imported-but-user-owned, not merged.
 # Docs: https://github.com/tmbo/bussard/blob/main/docs/DESIGN.md#52-the-yaml-model
 ";
 
@@ -527,6 +532,7 @@ mod tests {
             location: None,
             product: None,
             channels: BTreeMap::new(),
+            parameters: BTreeMap::new(),
             com_objects,
         };
 
@@ -606,6 +612,11 @@ mod tests {
 #
 # `address:` is the device identity; the filename slug is cosmetic. The identity,
 # name, location, product and channel names above `com_objects:` are hand-editable.
+#
+# `parameters:` holds this device's configured parameter values, keyed
+# `<name>@<ref-id>` (only values that differ from the vendor default are stored).
+# It is yours to edit, but a re-import REPLACES it with ETS truth — like the
+# names in links.yaml, it is imported-but-user-owned, not merged.
 # Docs: https://github.com/tmbo/bussard/blob/main/docs/DESIGN.md#52-the-yaml-model
 address: 1.1.4
 name: Jalousieaktor Wohnen
@@ -622,6 +633,50 @@ com_objects:
         let reloaded = Model::load(&dir).unwrap();
         assert_eq!(model, reloaded);
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parameters_emit_above_generated_marker() {
+        // A device with a `parameters:` block: it must land in the user-owned
+        // zone, above the GENERATED com_objects marker, and round-trip on load.
+        use crate::schema::Device;
+        let dir = tmp_dir("params");
+        let mut model = small_model();
+        {
+            let loaded = model.devices.get_mut(&"1.1.4".parse().unwrap()).unwrap();
+            let dev: &mut Device = &mut loaded.device;
+            dev.parameters.insert(
+                "windalarm-1@MD-1_M-3_MI-1_P-3_R-45".to_string(),
+                "1".to_string(),
+            );
+            dev.parameters
+                .insert("nachtabsenkung@P-1312_R-2140".to_string(), "5".to_string());
+        }
+        model.save(&dir).unwrap();
+        let text = fs::read_to_string(dir.join("devices/1.1.4-jalousieaktor-wohnen.yaml")).unwrap();
+
+        let params_at = text
+            .find("\nparameters:\n")
+            .expect("parameters block present");
+        let marker_at = text.find(COM_OBJECTS_MARKER).expect("marker present");
+        assert!(
+            params_at < marker_at,
+            "parameters: must sit above the GENERATED marker:\n{text}"
+        );
+        // Keys are BTreeMap-sorted and values are stringy.
+        assert!(
+            text.contains("  nachtabsenkung@P-1312_R-2140: '5'"),
+            "{text}"
+        );
+        assert!(
+            text.contains("  windalarm-1@MD-1_M-3_MI-1_P-3_R-45: '1'"),
+            "{text}"
+        );
+
+        // Round-trips through load.
+        let reloaded = Model::load(&dir).unwrap();
+        assert_eq!(model, reloaded);
         let _ = fs::remove_dir_all(&dir);
     }
 
