@@ -127,6 +127,8 @@ pub enum TypedValue {
         /// Full year (the DPT stores 0–99 with a pivot at 90).
         year: u16,
     },
+    /// A combined date and time (DPT 19.001), the 8-octet KNX `DateTime`.
+    DateTime(DateTime),
     /// A text string (DPT 16.x), up to 14 characters.
     Text(String),
     /// A scene number (DPT 17.001), 0-based.
@@ -149,8 +151,86 @@ pub enum TypedValue {
         /// Blue channel.
         b: u8,
     },
+    /// An RGBW colour (DPT 251.600).
+    Rgbw(Rgbw),
     /// Fallback: the raw payload bytes as hex.
     Raw(Vec<u8>),
+}
+
+/// A combined date and time (DPT 19.001), the KNX 8-octet `DateTime`.
+///
+/// Per KNX 03/07/02 "Datapoint Types" (DPT 19.001 `DPT_DateTime`), the fields
+/// carry an absolute date and time plus a block of validity/quality flags. The
+/// individual `no_*` flags mark a component as "not present" (e.g. a device that
+/// only sends a date sets `no_time`). `fault` reports a clock fault;
+/// `working_day`/`no_working_day` encode the working-day state (both false =
+/// "not used"); `summer_time` marks daylight-saving; `quality` and `sync_source`
+/// come from the final octet's clock-quality bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DateTime {
+    /// Full year (the wire stores `year - 1900`, so `0..=255` → `1900..=2155`).
+    pub year: u16,
+    /// Month 1–12.
+    pub month: u8,
+    /// Day of month 1–31.
+    pub day: u8,
+    /// Day of week: 0 = any/no day, 1 = Monday … 7 = Sunday.
+    pub weekday: u8,
+    /// Hour 0–24 (24 with minutes/seconds 0 denotes end-of-day).
+    pub hour: u8,
+    /// Minute 0–59.
+    pub minute: u8,
+    /// Second 0–59.
+    pub second: u8,
+    /// Clock fault: the date/time is unreliable.
+    pub fault: bool,
+    /// Working-day flag (meaningful only when `no_working_day` is false).
+    pub working_day: bool,
+    /// Working-day field is not valid / not used.
+    pub no_working_day: bool,
+    /// The year field is not valid.
+    pub no_year: bool,
+    /// The date fields (month/day) are not valid.
+    pub no_date: bool,
+    /// The day-of-week field is not valid.
+    pub no_weekday: bool,
+    /// The time fields (hour/minute/second) are not valid.
+    pub no_time: bool,
+    /// Standard/summer time: `true` = summer time (DST) is in effect.
+    pub summer_time: bool,
+    /// Clock quality bit from the final octet: `true` = the clock is
+    /// synchronised to an external source.
+    pub quality: bool,
+    /// Synchronisation-source bit from the final octet (newer spec revisions):
+    /// `true` = the clock-synchronisation signal is reliable.
+    pub sync_source: bool,
+}
+
+/// An RGBW colour (DPT 251.600), four 8-bit channels plus per-channel validity.
+///
+/// Per KNX 03/07/02 (DPT 251.600 `DPT_Colour_RGBW`) the 6-octet payload carries
+/// red/green/blue/white bytes, a reserved octet, then a validity octet whose low
+/// nibble flags which channels are valid: bit 3 = red, bit 2 = green, bit 1 =
+/// blue, bit 0 = white. A channel whose valid bit is clear should be ignored by
+/// the receiver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rgbw {
+    /// Red channel.
+    pub r: u8,
+    /// Green channel.
+    pub g: u8,
+    /// Blue channel.
+    pub b: u8,
+    /// White channel.
+    pub w: u8,
+    /// Red channel is valid.
+    pub r_valid: bool,
+    /// Green channel is valid.
+    pub g_valid: bool,
+    /// Blue channel is valid.
+    pub b_valid: bool,
+    /// White channel is valid.
+    pub w_valid: bool,
 }
 
 /// HVAC operating mode (DPT 20.102).
@@ -180,6 +260,68 @@ impl fmt::Display for HvacMode {
             HvacMode::BuildingProtection => write!(f, "Building Protection"),
             HvacMode::Unknown(v) => write!(f, "Unknown({v})"),
         }
+    }
+}
+
+impl fmt::Display for DateTime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Render present components; omit ones flagged not-valid. This mirrors
+        // how `Time`/`Date` render and keeps a date-only or time-only telegram
+        // honest instead of printing zeroed fields as if they were real.
+        let day = match (self.no_weekday, self.weekday) {
+            (false, 1) => "Mon ",
+            (false, 2) => "Tue ",
+            (false, 3) => "Wed ",
+            (false, 4) => "Thu ",
+            (false, 5) => "Fri ",
+            (false, 6) => "Sat ",
+            (false, 7) => "Sun ",
+            _ => "",
+        };
+        if !self.no_date {
+            let year = if self.no_year {
+                "????".to_string()
+            } else {
+                format!("{:04}", self.year)
+            };
+            write!(f, "{year}-{:02}-{:02}", self.month, self.day)?;
+            if !self.no_time {
+                write!(f, " ")?;
+            }
+        }
+        if !self.no_time {
+            write!(
+                f,
+                "{day}{:02}:{:02}:{:02}",
+                self.hour, self.minute, self.second
+            )?;
+        }
+        if self.fault {
+            write!(f, " (fault)")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for Rgbw {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Show each channel, marking invalid ones with `--` rather than a bogus
+        // value so a partial update (only some channels valid) reads correctly.
+        let chan = |valid: bool, v: u8| -> String {
+            if valid {
+                format!("{v:02X}")
+            } else {
+                "--".to_string()
+            }
+        };
+        write!(
+            f,
+            "RGBW({},{},{},{})",
+            chan(self.r_valid, self.r),
+            chan(self.g_valid, self.g),
+            chan(self.b_valid, self.b),
+            chan(self.w_valid, self.w),
+        )
     }
 }
 
@@ -226,6 +368,7 @@ impl fmt::Display for TypedValue {
                 write!(f, "{day}{hour:02}:{minute:02}:{second:02}")
             }
             TypedValue::Date { day, month, year } => write!(f, "{year:04}-{month:02}-{day:02}"),
+            TypedValue::DateTime(dt) => write!(f, "{dt}"),
             TypedValue::Text(s) => write!(f, "{s:?}"),
             TypedValue::Scene(n) => write!(f, "scene {n}"),
             TypedValue::SceneControl { learn, scene } => {
@@ -237,6 +380,7 @@ impl fmt::Display for TypedValue {
             }
             TypedValue::HvacMode(m) => write!(f, "{m}"),
             TypedValue::Rgb { r, g, b } => write!(f, "#{r:02X}{g:02X}{b:02X}"),
+            TypedValue::Rgbw(c) => write!(f, "{c}"),
             TypedValue::Raw(bytes) => {
                 write!(f, "0x")?;
                 for b in bytes {
@@ -308,13 +452,23 @@ fn decode_float16(hi: u8, lo: u8) -> f32 {
     (0.01_f32) * (mantissa as f32) * (1u32 << exponent) as f32
 }
 
-/// The representable range of DPT 9 (2-byte float): `0.01 * M * 2^E` with the
-/// mantissa `M` in `-2048..=2047` and the exponent `E` in `0..=15`, so the
-/// extremes are `0.01 * -2048 * 2^15 ≈ -671088.64` and
-/// `0.01 * 2047 * 2^15 ≈ 670760.96`. Computed rather than written as decimal
-/// literals so the constants are exactly the nearest `f32` to those extremes.
+/// The valid value range of DPT 9 (2-byte float `F16`), per the KNX standard
+/// (03/07/02 "Datapoint Types", DPT 9 / KNX 2-octet float): the encoding is
+/// `0.01 * M * 2^E` with the mantissa `M` in `-2048..=2047` and the exponent `E`
+/// in `0..=15`. The published min/max are `-671088.64` (`M = -2048`, `E = 15`)
+/// and `670433.28` (`M = 2046`, `E = 15`).
+///
+/// Note the max uses `M = 2046`, **not** `M = 2047`: the top positive code point
+/// `M = 2047, E = 15` produces the raw pattern `0x7FFF`, which the standard
+/// reserves as the "invalid data" marker rather than a number. So the largest
+/// *valid* value is `0.01 * 2046 * 2^15 = 670433.28`, one mantissa step below
+/// the raw-encoding ceiling of `670760.96`. Clamping `FLOAT16_MAX` here (rather
+/// than at the raw ceiling) is what keeps a valid-looking input in
+/// `670433.29..=670760.96` from rounding up onto `0x7FFF` and silently becoming
+/// "invalid data" (issue #62). Computed rather than written as decimal literals
+/// so the constants are exactly the nearest `f32` to those extremes.
 const FLOAT16_MIN: f32 = 0.01 * -2048.0 * 32768.0;
-const FLOAT16_MAX: f32 = 0.01 * 2047.0 * 32768.0;
+const FLOAT16_MAX: f32 = 0.01 * 2046.0 * 32768.0;
 
 /// Encodes a value into a KNX 2-byte float (DPT 9.x).
 fn encode_float16(value: f32) -> Result<[u8; 2], ()> {
@@ -346,6 +500,13 @@ fn encode_float16(value: f32) -> Result<[u8; 2], ()> {
         (0u16, mantissa as u16)
     };
     let raw = sign | ((exponent as u16) << 11) | (mant_bits & 0x07ff);
+    // Defence in depth: 0x7FFF is the DPT 9 "invalid data" marker, never a value.
+    // The `FLOAT16_MAX` cap above (mantissa <= 2046) already makes this pattern
+    // unreachable for in-range inputs, but guard explicitly so a future change to
+    // the range logic can never emit a payload that decodes as "invalid".
+    if raw == 0x7FFF {
+        return Err(());
+    }
     Ok([(raw >> 8) as u8, (raw & 0xff) as u8])
 }
 
@@ -540,11 +701,70 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
             };
             Some(TypedValue::HvacMode(mode))
         }
+        19 => {
+            // DPT 19.001 DateTime: 8 octets. Layout per KNX 03/07/02:
+            //   0: year - 1900
+            //   1: bits 3-0 month (1-12)
+            //   2: bits 4-0 day (1-31)
+            //   3: bits 7-5 day-of-week (0..7), bits 4-0 hour (0-24)
+            //   4: bits 5-0 minute (0-59)
+            //   5: bits 5-0 second (0-59)
+            //   6: flags F WD NWD NY ND NDoW NT SUTI (bit7..bit0)
+            //   7: bit7 quality (clock sync), bit6 sync-source reliability
+            let b0 = *payload.first()?;
+            let b1 = *payload.get(1)?;
+            let b2 = *payload.get(2)?;
+            let b3 = *payload.get(3)?;
+            let b4 = *payload.get(4)?;
+            let b5 = *payload.get(5)?;
+            let flags = *payload.get(6)?;
+            let quality = *payload.get(7)?;
+            Some(TypedValue::DateTime(DateTime {
+                year: 1900 + b0 as u16,
+                month: b1 & 0x0f,
+                day: b2 & 0x1f,
+                weekday: (b3 >> 5) & 0x07,
+                hour: b3 & 0x1f,
+                minute: b4 & 0x3f,
+                second: b5 & 0x3f,
+                fault: (flags & 0x80) != 0,
+                working_day: (flags & 0x40) != 0,
+                no_working_day: (flags & 0x20) != 0,
+                no_year: (flags & 0x10) != 0,
+                no_date: (flags & 0x08) != 0,
+                no_weekday: (flags & 0x04) != 0,
+                no_time: (flags & 0x02) != 0,
+                summer_time: (flags & 0x01) != 0,
+                quality: (quality & 0x80) != 0,
+                sync_source: (quality & 0x40) != 0,
+            }))
+        }
         232 => Some(TypedValue::Rgb {
             r: *payload.first()?,
             g: *payload.get(1)?,
             b: *payload.get(2)?,
         }),
+        251 => {
+            // DPT 251.600 Colour RGBW: 6 octets — R, G, B, W, reserved, validity.
+            // The validity octet's low nibble flags valid channels:
+            //   bit3 = R, bit2 = G, bit1 = B, bit0 = W.
+            let r = *payload.first()?;
+            let g = *payload.get(1)?;
+            let b = *payload.get(2)?;
+            let w = *payload.get(3)?;
+            // payload[4] is reserved and ignored on decode.
+            let valid = *payload.get(5)?;
+            Some(TypedValue::Rgbw(Rgbw {
+                r,
+                g,
+                b,
+                w,
+                r_valid: (valid & 0x08) != 0,
+                g_valid: (valid & 0x04) != 0,
+                b_valid: (valid & 0x02) != 0,
+                w_valid: (valid & 0x01) != 0,
+            }))
+        }
         _ => None,
     }
 }
@@ -667,7 +887,7 @@ pub fn parse_value(dpt: &Dpt, input: &str) -> Result<TypedValue, ParseValueError
                 .ok_or_else(|| invalid("a decimal number (optionally with unit)"))?;
             // Confirm the value is representable by DPT 9's coarse encoding.
             if encode_float16(v).is_err() {
-                return Err(out_of_range("roughly -671088.64 .. 670760.96"));
+                return Err(out_of_range("roughly -671088.64 .. 670433.28"));
             }
             Ok(TypedValue::Float { value: v, unit })
         }
@@ -988,14 +1208,66 @@ pub fn encode(dpt: &Dpt, value: &TypedValue) -> Result<Vec<u8>, EncodeError> {
             }
             _ => Err(mismatch()),
         },
+        19 => match value {
+            TypedValue::DateTime(dt) => encode_datetime(dt).map_err(|()| EncodeError::OutOfRange {
+                dpt: dpt.to_string(),
+                value: value.to_string(),
+            }),
+            _ => Err(mismatch()),
+        },
         232 => match value {
             TypedValue::Rgb { r, g, b } => Ok(vec![*r, *g, *b]),
+            _ => Err(mismatch()),
+        },
+        251 => match value {
+            TypedValue::Rgbw(c) => {
+                let valid = (u8::from(c.r_valid) << 3)
+                    | (u8::from(c.g_valid) << 2)
+                    | (u8::from(c.b_valid) << 1)
+                    | u8::from(c.w_valid);
+                // Octet 4 is reserved and sent as 0.
+                Ok(vec![c.r, c.g, c.b, c.w, 0x00, valid])
+            }
             _ => Err(mismatch()),
         },
         _ => Err(EncodeError::Unsupported {
             dpt: dpt.to_string(),
         }),
     }
+}
+
+/// Encodes a [`DateTime`] into the 8-octet DPT 19.001 payload.
+///
+/// Rejects field values the wire cannot represent (year outside 1900..=2155,
+/// out-of-range month/day/hour/minute/second) so a malformed value never
+/// silently truncates into a different date.
+fn encode_datetime(dt: &DateTime) -> Result<Vec<u8>, ()> {
+    if !(1900..=2155).contains(&dt.year)
+        || dt.month > 12
+        || dt.day > 31
+        || dt.weekday > 7
+        || dt.hour > 24
+        || dt.minute > 59
+        || dt.second > 59
+    {
+        return Err(());
+    }
+    let b0 = (dt.year - 1900) as u8;
+    let b1 = dt.month & 0x0f;
+    let b2 = dt.day & 0x1f;
+    let b3 = ((dt.weekday & 0x07) << 5) | (dt.hour & 0x1f);
+    let b4 = dt.minute & 0x3f;
+    let b5 = dt.second & 0x3f;
+    let flags = (u8::from(dt.fault) << 7)
+        | (u8::from(dt.working_day) << 6)
+        | (u8::from(dt.no_working_day) << 5)
+        | (u8::from(dt.no_year) << 4)
+        | (u8::from(dt.no_date) << 3)
+        | (u8::from(dt.no_weekday) << 2)
+        | (u8::from(dt.no_time) << 1)
+        | u8::from(dt.summer_time);
+    let quality = (u8::from(dt.quality) << 7) | (u8::from(dt.sync_source) << 6);
+    Ok(vec![b0, b1, b2, b3, b4, b5, flags, quality])
 }
 
 #[cfg(test)]
@@ -1663,6 +1935,176 @@ mod tests {
             decode(&dpt("9.001"), &[0x7F, 0xFE]),
             TypedValue::Float { .. }
         ));
+    }
+
+    #[test]
+    fn dpt9_real_max_encodes_and_is_not_the_invalid_sentinel() {
+        // Per KNX 03/07/02, DPT 9's valid max is 670433.28 (M=2046, E=15). It
+        // must encode successfully and must NOT collide with the 0x7FFF
+        // "invalid data" marker.
+        let bytes = encode_float16(FLOAT16_MAX).expect("real max is representable");
+        assert_ne!(
+            bytes,
+            [0x7F, 0xFF],
+            "max must not encode to the invalid marker"
+        );
+        // Raw is M=2046, E=15, sign=0: (15<<11)|2046 = 0x7FFE.
+        assert_eq!(bytes, [0x7F, 0xFE]);
+        // Decoding it back yields ~670433.28.
+        let back = decode_float16(bytes[0], bytes[1]);
+        assert!((back - 670433.28).abs() <= 1.0, "got {back}");
+    }
+
+    #[test]
+    fn dpt9_between_real_max_and_raw_ceiling_is_out_of_range() {
+        // Values in the gap (670433.29 .. 670760.96) used to round up onto
+        // 0x7FFF (the invalid marker). They must now be rejected as OutOfRange
+        // rather than silently becoming "invalid data".
+        for v in [670450.0_f32, 670500.0, 670597.0, 670760.0] {
+            assert!(
+                encode_float16(v).is_err(),
+                "{v} sits above the real DPT 9 max and must be rejected"
+            );
+            assert!(
+                matches!(
+                    parse_value(&dpt("9.001"), &v.to_string()),
+                    Err(ParseValueError::OutOfRange { .. })
+                ),
+                "parse {v} should be OutOfRange"
+            );
+        }
+        // Just above the real max via the encode() surface too.
+        let v = TypedValue::Float {
+            value: 670500.0,
+            unit: Some("°C"),
+        };
+        assert!(matches!(
+            encode(&dpt("9.001"), &v),
+            Err(EncodeError::OutOfRange { .. })
+        ));
+    }
+
+    #[test]
+    fn dpt19_datetime_reference_vector() {
+        // Reference vector per KNX 03/07/02 DPT 19.001 layout:
+        // 2019-01-30 (Wed) 08:30:45, no flags, quality clear.
+        //   year 2019 -> 119 (0x77), month 1, day 30, weekday Wed=3,
+        //   hour 8 -> b3 = (3<<5)|8 = 0x68, min 30 (0x1E), sec 45 (0x2D).
+        let payload = [0x77, 0x01, 0x1E, 0x68, 0x1E, 0x2D, 0x00, 0x00];
+        let decoded = decode(&dpt("19.001"), &payload);
+        let dt = match decoded {
+            TypedValue::DateTime(dt) => dt,
+            other => panic!("expected DateTime, got {other:?}"),
+        };
+        assert_eq!(dt.year, 2019);
+        assert_eq!(dt.month, 1);
+        assert_eq!(dt.day, 30);
+        assert_eq!(dt.weekday, 3);
+        assert_eq!(dt.hour, 8);
+        assert_eq!(dt.minute, 30);
+        assert_eq!(dt.second, 45);
+        assert!(!dt.fault && !dt.no_time && !dt.no_date && !dt.summer_time);
+        // Round-trips byte-for-byte.
+        assert_eq!(encode(&dpt("19.001"), &decoded).unwrap(), payload);
+        // Display shows both date and time with the weekday.
+        assert_eq!(dt.to_string(), "2019-01-30 Wed 08:30:45");
+    }
+
+    #[test]
+    fn dpt19_datetime_flags_roundtrip() {
+        // Fault + summer time + working day set, quality + sync set.
+        let payload = [0x7D, 0x0C, 0x19, 0xB0, 0x3B, 0x3B, 0xC1, 0xC0];
+        let decoded = decode(&dpt("19.001"), &payload);
+        let dt = match decoded {
+            TypedValue::DateTime(dt) => dt,
+            other => panic!("expected DateTime, got {other:?}"),
+        };
+        assert!(dt.fault, "F bit");
+        assert!(dt.working_day, "WD bit");
+        assert!(dt.summer_time, "SUTI bit");
+        assert!(dt.quality, "quality bit");
+        assert!(dt.sync_source, "sync-source bit");
+        assert_eq!(dt.weekday, 5);
+        assert_eq!(dt.hour, 16);
+        assert_eq!(dt.year, 2025);
+        assert_eq!(dt.month, 12);
+        assert_eq!(dt.day, 25);
+        // Byte-exact round-trip.
+        assert_eq!(encode(&dpt("19.001"), &decoded).unwrap(), payload);
+    }
+
+    #[test]
+    fn dpt19_encode_rejects_out_of_range_fields() {
+        let bad = TypedValue::DateTime(DateTime {
+            year: 1899, // below 1900
+            month: 1,
+            day: 1,
+            weekday: 0,
+            hour: 0,
+            minute: 0,
+            second: 0,
+            fault: false,
+            working_day: false,
+            no_working_day: false,
+            no_year: false,
+            no_date: false,
+            no_weekday: false,
+            no_time: false,
+            summer_time: false,
+            quality: false,
+            sync_source: false,
+        });
+        assert!(matches!(
+            encode(&dpt("19.001"), &bad),
+            Err(EncodeError::OutOfRange { .. })
+        ));
+    }
+
+    #[test]
+    fn dpt19_short_payload_falls_back_to_raw() {
+        assert_eq!(
+            decode(&dpt("19.001"), &[0x77, 0x01, 0x1E]),
+            TypedValue::Raw(vec![0x77, 0x01, 0x1E])
+        );
+    }
+
+    #[test]
+    fn dpt251_rgbw_reference_vector() {
+        // R=0x11 G=0x22 B=0x33 W=0x44, reserved=0x00, validity=0x0F (all valid).
+        let payload = [0x11, 0x22, 0x33, 0x44, 0x00, 0x0F];
+        let decoded = decode(&dpt("251.600"), &payload);
+        let c = match decoded {
+            TypedValue::Rgbw(c) => c,
+            other => panic!("expected Rgbw, got {other:?}"),
+        };
+        assert_eq!((c.r, c.g, c.b, c.w), (0x11, 0x22, 0x33, 0x44));
+        assert!(c.r_valid && c.g_valid && c.b_valid && c.w_valid);
+        assert_eq!(encode(&dpt("251.600"), &decoded).unwrap(), payload);
+        assert_eq!(c.to_string(), "RGBW(11,22,33,44)");
+    }
+
+    #[test]
+    fn dpt251_rgbw_partial_validity() {
+        // Only red and white valid: validity nibble = bit3|bit0 = 0x09.
+        let payload = [0xFF, 0x00, 0x00, 0x80, 0x00, 0x09];
+        let decoded = decode(&dpt("251.600"), &payload);
+        let c = match decoded {
+            TypedValue::Rgbw(c) => c,
+            other => panic!("expected Rgbw, got {other:?}"),
+        };
+        assert!(c.r_valid && !c.g_valid && !c.b_valid && c.w_valid);
+        // Invalid channels render as `--`.
+        assert_eq!(c.to_string(), "RGBW(FF,--,--,80)");
+        // Round-trips byte-for-byte (reserved octet preserved as 0).
+        assert_eq!(encode(&dpt("251.600"), &decoded).unwrap(), payload);
+    }
+
+    #[test]
+    fn dpt251_short_payload_falls_back_to_raw() {
+        assert_eq!(
+            decode(&dpt("251.600"), &[0x11, 0x22, 0x33]),
+            TypedValue::Raw(vec![0x11, 0x22, 0x33])
+        );
     }
 
     #[test]

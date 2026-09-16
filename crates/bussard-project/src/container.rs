@@ -21,6 +21,9 @@ pub struct Container {
     archive: ZipArchive<File>,
     /// The decrypted (or plain) project `0.xml`, held in memory.
     project_xml: String,
+    /// The decrypted (or plain) `project.xml`, if present. It carries the
+    /// project name and group-address style; `0.xml` does not.
+    project_info_xml: Option<String>,
     /// The id of the project folder, e.g. `P-05E7`.
     #[allow(dead_code)]
     project_id: String,
@@ -42,12 +45,28 @@ impl Container {
         })?;
 
         let project_id = find_project_id(&archive, path)?;
-        let project_xml = read_project_xml(&mut archive, &project_id, password, path)?;
+        let project_xml =
+            read_inner_project_entry(&mut archive, &project_id, password, path, "0.xml", true)?
+                .ok_or(ImportError::MissingEntry {
+                    path: path.to_path_buf(),
+                    entry: "0.xml".to_string(),
+                })?;
+        // `project.xml` carries the name and group-address style. Older/leaner
+        // exports may omit it, so its absence is tolerated (None), not an error.
+        let project_info_xml = read_inner_project_entry(
+            &mut archive,
+            &project_id,
+            password,
+            path,
+            "project.xml",
+            false,
+        )?;
 
         Ok(Self {
             path: path.to_path_buf(),
             archive,
             project_xml,
+            project_info_xml,
             project_id,
         })
     }
@@ -55,6 +74,11 @@ impl Container {
     /// The project `0.xml` contents.
     pub fn project_xml(&self) -> &str {
         &self.project_xml
+    }
+
+    /// The `project.xml` contents, if the archive contained it.
+    pub fn project_info_xml(&self) -> Option<&str> {
+        self.project_info_xml.as_deref()
     }
 
     /// Reads `knx_master.xml` from the outer archive.
@@ -130,26 +154,37 @@ fn find_project_id<R: Read + Seek>(archive: &ZipArchive<R>, path: &Path) -> Resu
     })
 }
 
-/// Reads and returns the project `0.xml`, decrypting the inner archive if it is
-/// stored as `P-XXXX.zip`.
-fn read_project_xml(
+/// Reads a named project entry (`0.xml` or `project.xml`), decrypting the inner
+/// archive if it is stored as `P-XXXX.zip`.
+///
+/// `required` controls the "not found" behaviour: a required entry that is
+/// absent is an [`ImportError::MissingEntry`]; an optional one returns `None`.
+/// Note that if the whole project is delivered *encrypted* and no password is
+/// supplied, this errors [`ImportError::PasswordRequired`] even for optional
+/// entries (the inner archive cannot be opened at all).
+fn read_inner_project_entry(
     archive: &mut ZipArchive<File>,
     project_id: &str,
     password: Option<&str>,
     path: &Path,
-) -> Result<String> {
-    // Case 1: unencrypted `P-XXXX/0.xml` directly in the outer archive.
-    let direct = format!("{project_id}/0.xml");
+    entry: &str,
+    required: bool,
+) -> Result<Option<String>> {
+    // Case 1: unencrypted `P-XXXX/<entry>` directly in the outer archive.
+    let direct = format!("{project_id}/{entry}");
     if let Some(bytes) = read_entry_opt(archive, &direct)? {
-        return Ok(strip_bom(bytes));
+        return Ok(Some(strip_bom(bytes)));
     }
 
     // Case 2: inner archive `P-XXXX.zip`, possibly password-protected.
     let inner_name = format!("{project_id}.zip");
-    let inner_bytes = read_entry_opt(archive, &inner_name)?.ok_or(ImportError::MissingEntry {
-        path: path.to_path_buf(),
-        entry: inner_name.clone(),
-    })?;
+    let inner_bytes = match read_entry_opt(archive, &inner_name)? {
+        Some(b) => b,
+        None => {
+            // No inner archive and no direct entry: the entry is simply absent.
+            return missing_entry(required, path, entry);
+        }
+    };
 
     let cursor = std::io::Cursor::new(inner_bytes);
     let mut inner = ZipArchive::new(cursor).map_err(|source| ImportError::Zip {
@@ -157,17 +192,17 @@ fn read_project_xml(
         source,
     })?;
 
-    // Determine the index of `0.xml` inside the inner archive.
+    // Determine the index of `<entry>` inside the inner archive.
     let idx = (0..inner.len()).find(|&i| {
         inner
             .by_index_raw(i)
-            .map(|f| f.name() == "0.xml")
+            .map(|f| f.name() == entry)
             .unwrap_or(false)
     });
-    let idx = idx.ok_or(ImportError::MissingEntry {
-        path: PathBuf::from(&inner_name),
-        entry: "0.xml".to_string(),
-    })?;
+    let idx = match idx {
+        Some(i) => i,
+        None => return missing_entry(required, &PathBuf::from(&inner_name), entry),
+    };
 
     // Is the inner entry encrypted?
     let encrypted = inner
@@ -182,16 +217,28 @@ fn read_project_xml(
             .by_index_decrypt(idx, zip_pw.as_bytes())
             .map_err(|_| ImportError::WrongPassword)?;
         // Cap the decrypted stream too: a hostile inner archive is untrusted.
-        bussard_ets::read_capped(file, "0.xml").map_err(|_| ImportError::WrongPassword)?
+        bussard_ets::read_capped(file, entry).map_err(|_| ImportError::WrongPassword)?
     } else {
         let file = inner.by_index(idx).map_err(|source| ImportError::Zip {
             path: PathBuf::from(&inner_name),
             source,
         })?;
-        bussard_ets::read_capped(file, "0.xml")?
+        bussard_ets::read_capped(file, entry)?
     };
 
-    Ok(strip_bom(bytes))
+    Ok(Some(strip_bom(bytes)))
+}
+
+/// Helper: turn a missing entry into an error (if required) or `None`.
+fn missing_entry(required: bool, path: &Path, entry: &str) -> Result<Option<String>> {
+    if required {
+        Err(ImportError::MissingEntry {
+            path: path.to_path_buf(),
+            entry: entry.to_string(),
+        })
+    } else {
+        Ok(None)
+    }
 }
 
 /// Reads a named entry from an archive as raw bytes (capped, a zip-bomb guard),

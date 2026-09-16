@@ -229,3 +229,92 @@ fn unencrypted_project_xml_is_read_from_memory() {
     assert!(r.is_ok(), "plain-project container must not panic");
     let _ = std::fs::remove_file(&path);
 }
+
+/// Writes a minimal unencrypted `.knxproj` with `P-9999/0.xml` and
+/// `P-9999/project.xml` (direct outer-archive form), returning its path.
+fn write_plain_knxproj_with_project_xml(tag: &str, project_xml: &str) -> std::path::PathBuf {
+    let path = tmp_file(tag);
+    let f = std::fs::File::create(&path).unwrap();
+    let mut zw = ZipWriter::new(f);
+    let opts = SimpleFileOptions::default();
+    // A device-free topology so `build_model` needs no manufacturer resolution.
+    zw.start_file("P-9999/0.xml", opts).unwrap();
+    zw.write_all(b"<KNX><Project Id=\"P-9999\"/></KNX>")
+        .unwrap();
+    zw.start_file("P-9999/project.xml", opts).unwrap();
+    zw.write_all(project_xml.as_bytes()).unwrap();
+    zw.start_file("knx_master.xml", opts).unwrap();
+    zw.write_all(b"<KNX/>").unwrap();
+    zw.finish().unwrap();
+    path
+}
+
+#[test]
+fn three_level_project_xml_populates_name() {
+    // A fabricated project.xml (ThreeLevel) must import cleanly and carry the
+    // name onto the model (issue #62).
+    let path = write_plain_knxproj_with_project_xml(
+        "threelevel",
+        r#"<KNX><Project Id="P-9999"><ProjectInformation Name="Fab Home" GroupAddressStyle="ThreeLevel"/></Project></KNX>"#,
+    );
+    let model = import(&path, None).expect("three-level project imports");
+    assert_eq!(model.groups.project.as_deref(), Some("Fab Home"));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn two_level_project_xml_is_refused_with_clear_error() {
+    // A 2-level style must be refused (not silently mis-parsed) with an error
+    // that names the actual style (issue #62).
+    let path = write_plain_knxproj_with_project_xml(
+        "twolevel",
+        r#"<KNX><Project Id="P-9999"><ProjectInformation Name="TwoLvl" GroupAddressStyle="TwoLevel"/></Project></KNX>"#,
+    );
+    let err = import(&path, None).expect_err("two-level must be refused");
+    match &err {
+        ImportError::UnsupportedGroupAddressStyle { style } => {
+            assert_eq!(style, "TwoLevel");
+        }
+        other => panic!("expected UnsupportedGroupAddressStyle, got {other:?}"),
+    }
+    // The message should mention the actual style for the user.
+    assert!(
+        err.to_string().contains("TwoLevel"),
+        "error should name the style: {err}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn free_style_project_xml_is_refused() {
+    let path = write_plain_knxproj_with_project_xml(
+        "freestyle",
+        r#"<KNX><Project Id="P-9999"><ProjectInformation Name="F" GroupAddressStyle="Free"/></Project></KNX>"#,
+    );
+    assert!(matches!(
+        import(&path, None),
+        Err(ImportError::UnsupportedGroupAddressStyle { .. })
+    ));
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn missing_project_xml_is_tolerated() {
+    // Older exports may omit project.xml entirely; import must still succeed
+    // (name simply stays None), not error.
+    let path = tmp_file("noprojectxml");
+    {
+        let f = std::fs::File::create(&path).unwrap();
+        let mut zw = ZipWriter::new(f);
+        let opts = SimpleFileOptions::default();
+        zw.start_file("P-9999/0.xml", opts).unwrap();
+        zw.write_all(b"<KNX><Project Id=\"P-9999\"/></KNX>")
+            .unwrap();
+        zw.start_file("knx_master.xml", opts).unwrap();
+        zw.write_all(b"<KNX/>").unwrap();
+        zw.finish().unwrap();
+    }
+    let model = import(&path, None).expect("import without project.xml still works");
+    assert!(model.groups.project.is_none());
+    let _ = std::fs::remove_file(&path);
+}
