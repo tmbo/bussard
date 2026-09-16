@@ -130,20 +130,53 @@ Order-number matching is case- and whitespace-insensitive but preserves interior
 separators: `AKK-0216.03` and `akk-0216.03` match, but `AKK021603` does not, because `-`
 and `.` distinguish real KNX order numbers.
 
-### What is seeded, and the archive question
+### What is in the index
 
-The seed entries are MDT switch-actuator databases, verified by downloading them and
-computing the checksum:
+The index seeds a flashability corpus: ~26 bare `.knxprod` databases across five
+manufacturers and a range of device types, each verified by downloading it and
+computing the checksum. It exists both to help you fetch a device you scanned and to
+back the repeatable flashability sweep in `tests-support/product-corpus/` (see
+[below](#the-flashability-corpus)).
 
-- MDT AKK family (`AKK-0216.03`, `AKK-0416.03`, ...): a single bare `.knxprod` hosted
-  directly at mdt.de.
-- MDT AKS/AKI family (`AKS-0216.03`, `AKI-0416.04`, ...): likewise a single bare
-  `.knxprod`.
+Coverage by manufacturer:
+
+- **MDT** (`M-0083`): switch actuators (AKK, AKS/AKI), blind/shutter (JAL), dimming /
+  LED controller (AKD), heating (AKH), binary input (BE), glass push button (BE-GT),
+  weather station (SCN-WS), DALI gateway (SCN-DA64x), presence detector (SCN-x360). All
+  bare `.knxprod` files hosted directly at mdt.de.
+- **Zennio** (`M-0071`): push button (Flat 1), switch/multifunction actuators (MAXinBOX,
+  ALLinBOX), dimmer (DIMinBOX), binary input (BIN 44), fan-coil thermostat, presence
+  sensor (EyeZen), RGB LED controller (Lumento), A/C gateway (KLIC-DI). Hosted on
+  Zennio's CDN (`assets.zennio.com/application_program/`).
+- **Lingg & Janke** (`M-00E1`): switch, blind, binary-input and push-button KNX Secure
+  devices (mask `0021`). Hosted on the vendor's own domain; the URL path contains a
+  literal `&`, which the fetcher passes through verbatim.
+- **Theben** (`M-0048`) and **Elsner** (`M-00C9`): heating/dimming actuators and a
+  temperature/humidity sensor, hosted on `siblik.com` (an official distributor mirror
+  with stable static paths, since theben.de and elsner-elektronik.de themselves ship
+  only zips or gate downloads behind a shop/catalogue).
+
+Mixed masks are deliberate. One MDT switch-actuator `.knxprod` commonly bundles a 07B0
+(System B) app alongside several 0705 (System 7) ones, and the corpus spans 07B0, 0705,
+0701, 0021, 0020 and 0012 families on purpose so the flashability sweep shows real
+family coverage: only the 07B0 apps produce an executable flash plan today.
 
 The fetch path deliberately handles only bare `.knxprod` files: the index points at
 direct `.knxprod` downloads, and the fetched bytes are imported as-is. This keeps the
 download path simple and the checksum meaningful (it covers the exact file ETS would
 read).
+
+### The flashability corpus
+
+`tests-support/product-corpus/` turns the index into a repeatable "can bussard flash
+this today?" check. `fetch.sh` reads `corpus.txt` (one order number per index entry) and
+runs `bussard import-product --order-number … --yes-download` for each, downloading and
+checksum-verifying every file into a git-ignored `cache/`. The env-gated test
+`crates/bussard-download/tests/flash_corpus.rs` then dry-runs `plan_flash` over every
+application program in the cache and reports which lower to an executable plan, which are
+refused, and — for the refused System B apps — which load-procedure op blocked them. With
+`BUSSARD_PRODUCT_CORPUS` unset the test skips green, so CI never downloads vendor data.
+See `tests-support/product-corpus/README.md` for the clean-machine repro.
 
 Two vendor realities shaped that decision:
 
