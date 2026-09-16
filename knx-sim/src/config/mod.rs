@@ -1,0 +1,217 @@
+//! File-driven configuration of a virtual installation.
+//!
+//! A YAML config declares the tunnelling gateway endpoint and the devices on
+//! the bus. Loading it reads each device's `.knxprod` and builds a [`Bus`] with
+//! one [`Device`] per entry.
+//!
+//! ```yaml
+//! gateway:
+//!   host: "127.0.0.1"
+//!   port: 3671
+//! devices:
+//!   - address: "1.1.2"
+//!     knxprod: "tests/fixtures/KNX_Virtual_M-00FA.knxprod"
+//!     application: "M-00FA_A-2500-10-51CB"
+//!     initial_state: "unloaded"
+//! ```
+
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use serde::Deserialize;
+
+use crate::bus::Bus;
+use crate::bus::event::EventSink;
+use crate::device::{Device, LoadState};
+use crate::prod::read_knxprod;
+use crate::wire::IndividualAddress;
+
+/// The gateway (KNXnet/IP tunnelling endpoint) the simulator listens on.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GatewayConfig {
+    /// Bind host (e.g. `127.0.0.1`).
+    pub host: String,
+    /// Bind UDP port (e.g. `3671`).
+    pub port: u16,
+}
+
+/// The initial load state of a device's objects, as declared in config.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum InitialState {
+    /// Objects start Unloaded (a bare device awaiting a flash).
+    Unloaded,
+    /// Objects start Loaded (a previously-programmed device).
+    Loaded,
+}
+
+impl From<InitialState> for LoadState {
+    fn from(s: InitialState) -> Self {
+        match s {
+            InitialState::Unloaded => LoadState::Unloaded,
+            InitialState::Loaded => LoadState::Loaded,
+        }
+    }
+}
+
+/// One device entry in the config.
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeviceConfig {
+    /// The device's individual address (e.g. `1.1.2`).
+    pub address: String,
+    /// Path to the device's `.knxprod` product file.
+    pub knxprod: PathBuf,
+    /// The application-program id to select from the product (optional; the
+    /// first is used if omitted).
+    #[serde(default)]
+    pub application: Option<String>,
+    /// The initial load state (default: unloaded).
+    #[serde(default = "default_initial_state")]
+    pub initial_state: InitialState,
+}
+
+fn default_initial_state() -> InitialState {
+    InitialState::Unloaded
+}
+
+/// The whole installation config.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SimConfig {
+    /// The gateway endpoint.
+    pub gateway: GatewayConfig,
+    /// The devices on the bus.
+    pub devices: Vec<DeviceConfig>,
+}
+
+/// Errors from loading a config.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    /// I/O error reading the config or a product file.
+    #[error("io error reading {path}: {source}")]
+    Io {
+        /// The path involved.
+        path: String,
+        /// The underlying error.
+        source: std::io::Error,
+    },
+    /// The YAML did not parse.
+    #[error("yaml error: {0}")]
+    Yaml(#[from] serde_norway::Error),
+    /// A device address string was invalid.
+    #[error("bad device address {addr:?}: {reason}")]
+    BadAddress {
+        /// The offending address.
+        addr: String,
+        /// Why it was rejected.
+        reason: String,
+    },
+    /// A product file failed to read.
+    #[error("product error for {path}: {source}")]
+    Product {
+        /// The product path.
+        path: String,
+        /// The underlying error.
+        source: crate::prod::ProdError,
+    },
+}
+
+impl SimConfig {
+    /// Parse a config from a YAML string.
+    pub fn from_yaml(yaml: &str) -> Result<Self, ConfigError> {
+        Ok(serde_norway::from_str(yaml)?)
+    }
+
+    /// Load a config from a YAML file.
+    pub fn from_file(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
+        let path = path.as_ref();
+        let text = std::fs::read_to_string(path).map_err(|e| ConfigError::Io {
+            path: path.display().to_string(),
+            source: e,
+        })?;
+        Self::from_yaml(&text)
+    }
+
+    /// Build a [`Bus`] from this config, resolving product files relative to
+    /// `base_dir` (typically the config file's directory).
+    pub fn build_bus(
+        &self,
+        base_dir: &Path,
+        events: Arc<dyn EventSink>,
+    ) -> Result<Bus, ConfigError> {
+        let mut bus = Bus::new(events.clone());
+        for dc in &self.devices {
+            let address: IndividualAddress =
+                dc.address
+                    .parse()
+                    .map_err(|reason| ConfigError::BadAddress {
+                        addr: dc.address.clone(),
+                        reason,
+                    })?;
+            let prod_path = if dc.knxprod.is_absolute() {
+                dc.knxprod.clone()
+            } else {
+                base_dir.join(&dc.knxprod)
+            };
+            let product =
+                read_knxprod(&prod_path, dc.application.as_deref()).map_err(|source| {
+                    ConfigError::Product {
+                        path: prod_path.display().to_string(),
+                        source,
+                    }
+                })?;
+            let device =
+                Device::from_product(address, &product, dc.initial_state.into(), events.clone());
+            bus.add_device(device);
+        }
+        Ok(bus)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bus::event::RecordingSink;
+
+    #[test]
+    fn test_parse_config() -> Result<(), ConfigError> {
+        let yaml = r#"
+gateway:
+  host: "127.0.0.1"
+  port: 3671
+devices:
+  - address: "1.1.2"
+    knxprod: "tests/fixtures/KNX_Virtual_M-00FA.knxprod"
+    application: "M-00FA_A-2500-10-51CB"
+    initial_state: unloaded
+"#;
+        let cfg = SimConfig::from_yaml(yaml)?;
+        assert_eq!(cfg.gateway.port, 3671);
+        assert_eq!(cfg.devices.len(), 1);
+        assert_eq!(cfg.devices[0].initial_state, InitialState::Unloaded);
+        Ok(())
+    }
+
+    #[test]
+    fn test_build_bus_from_config() -> Result<(), ConfigError> {
+        if crate::testfixtures::da_tp_knxprod().is_none() {
+            eprintln!("SKIP: DA.tp fixture not present");
+            return Ok(());
+        }
+        let yaml = r#"
+gateway:
+  host: "127.0.0.1"
+  port: 3671
+devices:
+  - address: "1.1.2"
+    knxprod: "KNX_Virtual_M-00FA.knxprod"
+    application: "M-00FA_A-2500-10-51CB"
+    initial_state: loaded
+"#;
+        let cfg = SimConfig::from_yaml(yaml)?;
+        let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+        let sink = Arc::new(RecordingSink::new());
+        let bus = cfg.build_bus(&base, sink)?;
+        assert_eq!(bus.device_count(), 1);
+        Ok(())
+    }
+}

@@ -1,5 +1,9 @@
 [workspace]
 resolver = "2"
+# knx-sim is a standalone, independently-developed KNX device+bus simulator used
+# to cross-check bussard on the wire. It shares NO code with bussard and is a
+# separate Cargo project, so it is excluded from this workspace.
+exclude = ["knx-sim"]
 members = [
     "crates/bussard-model",
     "crates/bussard-project",
