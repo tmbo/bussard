@@ -228,6 +228,32 @@ jobs:
           echo $! | sudo tee /tmp/tcpdump.pid >/dev/null
           sleep 1  # let it bind before traffic starts
 
+      # Pre-flight: prove the device actually boots inside the namespace and
+      # joins the multicast group, before the Rust harness drives it. This
+      # isolates "device won't start / won't join" from "bussard can't reach it".
+      # We run it briefly, capture its output (line-buffered), and inspect the
+      # namespace's multicast memberships.
+      - name: Pre-flight the device in the namespace
+        run: |
+          BIN="$(cat target/virtual-device/binary-path.txt)"
+          workdir="$(mktemp -d)"
+          echo "pre-flight workdir: $workdir"
+          # Line-buffer so the startup banner reaches the log even though stdout
+          # is a file, not a tty.
+          sudo ip netns exec knxdev stdbuf -oL -eL "$BIN" >"$workdir/preflight.log" 2>&1 &
+          devpid=$!
+          sleep 4
+          echo "--- device preflight.log ---"
+          cat "$workdir/preflight.log" || true
+          echo "--- namespace multicast memberships (ip maddr) ---"
+          sudo ip netns exec knxdev ip maddr show || true
+          echo "--- namespace UDP sockets (ss -lun) ---"
+          sudo ip netns exec knxdev ss -lun || true
+          echo "--- is the device still alive? ---"
+          if sudo kill -0 "$devpid" 2>/dev/null; then echo "yes (pid $devpid)"; else echo "NO — it exited"; fi
+          sudo kill "$devpid" 2>/dev/null || true
+          sudo pkill -f knx-linux-ip 2>/dev/null || true
+
       - name: Run the interop ladder
         env:
           BUSSARD_VIRTUAL_DEVICE: "1"
@@ -237,7 +263,9 @@ jobs:
           echo "device binary: $BIN"
           # The device is spawned by the test through this wrapper, which drops it
           # into the netns created above. `sudo` is needed for `ip netns exec`.
-          export BUSSARD_VIRTUAL_DEVICE_WRAP="sudo ip netns exec knxdev"
+          # stdbuf keeps the device's stdout line-buffered so its banner reaches
+          # dev.log (readiness detection) even though stdout is a file.
+          export BUSSARD_VIRTUAL_DEVICE_WRAP="sudo ip netns exec knxdev stdbuf -oL -eL"
           BUSSARD_VIRTUAL_DEVICE_BIN="$BIN" \
             cargo test -p bussard-cli --test virtual_device -- --ignored --nocapture
 
