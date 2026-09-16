@@ -160,6 +160,8 @@ fn device_response(dev: &DeviceState, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)
         _ => return None,
     };
     match apci_val {
+        // Authorize (issue #52 finding #1): grant full access (level 0).
+        apci::A_AUTHORIZE_REQUEST => Some((apci::A_AUTHORIZE_RESPONSE, vec![0x00])),
         apci::A_DEVICE_DESCRIPTOR_READ => Some((
             apci::A_DEVICE_DESCRIPTOR_RESPONSE,
             dev.mask.to_be_bytes().to_vec(),

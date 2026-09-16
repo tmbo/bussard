@@ -408,6 +408,20 @@ pub struct FlashOptions {
     /// consulted when [`reconnect_every`](FlashOptions::reconnect_every) is set.
     /// `0` falls back to the crate default.
     pub max_window_retries: u32,
+
+    /// The access key presented with `A_Authorize_Request` after every
+    /// (re)connect (issue #52 finding #1).
+    ///
+    /// ETS authorizes a management session before any configuration access;
+    /// bussard does the same, so an unauthorized connection-oriented session is
+    /// no longer why a keyed device drops us. `None` means present the
+    /// [`FREE_ACCESS_KEY`](bussard_mgmt::apci::FREE_ACCESS_KEY) (the unkeyed /
+    /// full-access default — what the capture used); `Some(k)` presents the
+    /// project BCU key (the `--bcu-key <hex>` flag) for a keyed device. The policy
+    /// is tolerate-absence (a device that does not implement authorize continues)
+    /// and fail-on-denied (a non-zero granted level is a hard
+    /// [`MgmtError`](bussard_mgmt::MgmtError)`::AccessDenied`).
+    pub bcu_key: Option<u32>,
 }
 
 /// The default [`FlashOptions::max_window_retries`]: eight consecutive
@@ -521,6 +535,9 @@ impl<Ch: L4Channel> Session<SingleConnector<Ch>> {
             l4: Some(l4),
             retired_exchanges: 0,
             windows: 0,
+            // A pre-opened connection is authorized (or not) at its own connect
+            // site; the session does not re-authorize it (it cannot cycle anyway).
+            bcu_key: None,
         }
     }
 }
@@ -550,18 +567,64 @@ pub struct Session<C: Connector> {
     retired_exchanges: u32,
     /// How many times the connection has been cycled (windows beyond the first).
     windows: u32,
+    /// The access key presented with `A_Authorize_Request` after every
+    /// (re)connect (issue #52 finding #1). Every fresh connection is a fresh
+    /// authorization context — ETS re-authorizes on each new connection, and the
+    /// capture's per-connection `T_Connect` pattern matches — so the session
+    /// authorizes right after `open`, `cycle` and `reconnect_after_death`.
+    /// [`None`] presents the [`FREE_ACCESS_KEY`](bussard_mgmt::apci::FREE_ACCESS_KEY)
+    /// default (what the capture used); [`Some`] presents a project BCU key.
+    /// Policy: tolerate a device that does not implement authorize, fail on a
+    /// non-zero granted level (`MgmtError::AccessDenied`). `None` on a session
+    /// built from a pre-opened connection ([`from_connection`](Session::from_connection)),
+    /// which authorizes at its own connect site instead.
+    bcu_key: Option<u32>,
 }
 
 impl<C: Connector> Session<C> {
-    /// Opens the first connection and wraps it in a session.
-    pub async fn open(mut connector: C) -> Result<Session<C>, WriteError> {
-        let l4 = connector.connect().await?;
+    /// Opens the first connection and wraps it in a session, authorizing it with
+    /// the free-access key.
+    ///
+    /// Equivalent to [`open_with_key`](Session::open_with_key) with `None` — every
+    /// fresh connection presents
+    /// [`FREE_ACCESS_KEY`](bussard_mgmt::apci::FREE_ACCESS_KEY) right after connect
+    /// (issue #52 finding #1). A device that does not implement authorize is
+    /// tolerated; a non-zero granted level fails with `MgmtError::AccessDenied`.
+    pub async fn open(connector: C) -> Result<Session<C>, WriteError> {
+        Session::open_with_key(connector, None).await
+    }
+
+    /// Opens the first connection and authorizes it with `bcu_key` (or the
+    /// free-access key when `None`).
+    ///
+    /// The key is retained so every window boundary ([`cycle`](Session::cycle)) and
+    /// unexpected-death reconnect ([`reconnect_after_death`](Session::reconnect_after_death))
+    /// re-authorizes the fresh connection — a fresh connection is a fresh
+    /// authorization context, matching ETS's per-`T_Connect` re-authorize.
+    pub async fn open_with_key(
+        mut connector: C,
+        bcu_key: Option<u32>,
+    ) -> Result<Session<C>, WriteError> {
+        let mut l4 = connector.connect().await?;
+        Self::authorize(&mut l4, bcu_key).await?;
         Ok(Session {
             connector,
             l4: Some(l4),
             retired_exchanges: 0,
             windows: 0,
+            bcu_key,
         })
+    }
+
+    /// Presents the free-access-or-`bcu_key` authorization on a fresh connection,
+    /// applying the tolerate-absence / fail-on-denied policy.
+    async fn authorize(
+        l4: &mut Layer4Connection<C::Channel>,
+        bcu_key: Option<u32>,
+    ) -> Result<(), WriteError> {
+        let key = bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY);
+        l4.authorize_or_fail(key).await.map_err(WriteError::Mgmt)?;
+        Ok(())
     }
 
     /// The currently-open connection, for a step to drive.
@@ -610,8 +673,10 @@ impl<C: Connector> Session<C> {
             // dropped makes the T_Disconnect a no-op; the reconnect is what matters.
             let _ = old.disconnect().await;
         }
-        // Now that the old connection (and its lease) is gone, open a fresh one.
-        let fresh = self.connector.connect().await?;
+        // Now that the old connection (and its lease) is gone, open a fresh one and
+        // re-authorize it — a fresh connection is a fresh authorization context.
+        let mut fresh = self.connector.connect().await?;
+        Self::authorize(&mut fresh, self.bcu_key).await?;
         self.l4 = Some(fresh);
         self.windows = self.windows.saturating_add(1);
         Ok(())
@@ -634,7 +699,8 @@ impl<C: Connector> Session<C> {
             // before we reconnect.
             let _ = dead.disconnect().await;
         }
-        let fresh = self.connector.connect().await?;
+        let mut fresh = self.connector.connect().await?;
+        Self::authorize(&mut fresh, self.bcu_key).await?;
         self.l4 = Some(fresh);
         self.windows = self.windows.saturating_add(1);
         Ok(())

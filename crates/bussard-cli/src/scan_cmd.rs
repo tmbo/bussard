@@ -207,6 +207,16 @@ async fn probe(
         }
     };
 
+    // Authorize the session with the free-access key, exactly as ETS does right
+    // after the descriptor read (issue #52 finding #1). Done only for a present
+    // device (after the descriptor read succeeds), so an absent address is not
+    // charged an extra authorize timeout. Best-effort: a device that does not
+    // implement authorize is tolerated; a genuine access-denied is logged and the
+    // probe continues (scan reads are best-effort regardless).
+    if let Err(err) = dev.authorize(bussard_mgmt::apci::FREE_ACCESS_KEY).await {
+        tracing::debug!("{addr} authorize (free access) did not grant: {err}");
+    }
+
     // Best-effort property reads: any failure just leaves the field empty.
     let manufacturer_id = read_u16(&mut dev, PID_MANUFACTURER_ID).await;
     let serial = dev

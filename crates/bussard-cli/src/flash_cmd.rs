@@ -56,11 +56,20 @@ pub fn run(
     pace_ms: Option<u64>,
     reconnect_every: Option<u32>,
     max_window_retries: Option<u32>,
+    bcu_key: Option<&str>,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
     let target: IndividualAddress = address
         .parse()
         .with_context(|| format!("parsing device address {address:?}"))?;
+
+    // Parse the optional BCU access key (hex, e.g. `FFFFFFFF` or `0x11223344`).
+    // Unset means present the free-access key on every management connect — the
+    // capture used free access; keyed devices need the project BCU key here.
+    let bcu_key = match bcu_key {
+        Some(raw) => Some(parse_bcu_key(raw)?),
+        None => None,
+    };
 
     // Load the product data and pick the application program.
     let product_data = bussard_prod::read_knxprod(product)
@@ -127,7 +136,15 @@ pub fn run(
             let (connected, result) = match DeviceConnection::connect(channel, target, source).await
             {
                 Ok(mut dev) => {
-                    let r = dev.device_descriptor().await;
+                    // Authorize the read-only descriptor probe too (best-effort):
+                    // ETS authorizes every management session, so a keyed device
+                    // that would otherwise drop the descriptor read is unlocked
+                    // first. Tolerate a device that does not implement authorize.
+                    let key = bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY);
+                    let r = match dev.authorize(key).await {
+                        Ok(_) => dev.device_descriptor().await,
+                        Err(err) => Err(err),
+                    };
                     let _ = dev.disconnect().await;
                     (true, r)
                 }
@@ -180,6 +197,7 @@ pub fn run(
         reconnect_every,
         // 0 = the crate default (DEFAULT_MAX_WINDOW_RETRIES); the flag overrides it.
         max_window_retries: max_window_retries.unwrap_or(0),
+        bcu_key,
     };
     if let Some(n) = reconnect_every {
         eprintln!(
@@ -392,6 +410,24 @@ fn resolve_by_order_number<'a>(
     }
 }
 
+/// Parses a `--bcu-key` value: a 32-bit access key in hex, with or without a
+/// `0x` prefix (e.g. `FFFFFFFF`, `0x11223344`).
+///
+/// The key is presented with `A_Authorize_Request` on every management connect
+/// (issue #52 finding #1). A malformed value is a hard error rather than a
+/// silent fall back to free access, so a typo cannot flash a keyed device with
+/// the wrong (unprivileged) key and get a confusing access-denied later.
+fn parse_bcu_key(raw: &str) -> anyhow::Result<u32> {
+    let trimmed = raw.trim();
+    let hex = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+        .unwrap_or(trimmed);
+    u32::from_str_radix(hex, 16).with_context(|| {
+        format!("parsing --bcu-key {raw:?} as a 32-bit hex access key (e.g. FFFFFFFF)")
+    })
+}
+
 /// Turns a failed device-descriptor read into a helpful error.
 ///
 /// The KNX Virtual IP-medium devices (order `*.ip`, e.g. a binary output at
@@ -469,7 +505,9 @@ async fn execute(
         target,
         source,
     };
-    let mut session = bussard_download::Session::open(connector).await?;
+    // Authorize every (re)connect with the project BCU key (or free access when
+    // unset) — issue #52 finding #1. The session re-authorizes each fresh window.
+    let mut session = bussard_download::Session::open_with_key(connector, options.bcu_key).await?;
     // The session owns the open connection; from here the flash body runs and its
     // result is captured, then the session is disconnected unconditionally below —
     // regardless of whether the flash succeeded or failed mid-procedure. `flash`

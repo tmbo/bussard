@@ -58,6 +58,12 @@ const A_PROPERTY_VALUE_WRITE: u16 = 0x3D7;
 const A_MEMORY_READ_SEL: u16 = 0x200;
 const A_MEMORY_RESPONSE: u16 = 0x240;
 const A_MEMORY_WRITE_SEL: u16 = 0x280;
+// A_Authorize_Request/Response (issue #52 finding #1): ETS presents a key before
+// any configuration access. De-mirrored from the spec here so the mock models an
+// authorization gate — config writes are refused until an authorize is granted.
+const A_AUTHORIZE_REQUEST: u16 = 0x3D1;
+const A_AUTHORIZE_RESPONSE: u16 = 0x3D2;
+const FREE_ACCESS_KEY: [u8; 4] = [0xFF, 0xFF, 0xFF, 0xFF];
 const A_DEVICE_DESCRIPTOR_READ_SEL: u16 = 0x300;
 const A_DEVICE_DESCRIPTOR_RESPONSE: u16 = 0x340;
 const A_RESTART_SEL: u16 = 0x380;
@@ -193,6 +199,26 @@ struct DeviceState {
     /// Whether the object was in `Loading` at the last disconnect, so a reconnect
     /// can decide whether to apply `drop_loading_on_reconnect`.
     was_loading_at_disconnect: bool,
+    /// Whether the current connection has been authorized (issue #52 finding #1).
+    /// Reset to `false` on every `T_Connect` (a fresh connection is a fresh
+    /// authorization context), set `true` when an `A_Authorize_Request` is granted.
+    /// While `false`, config writes (property/memory writes) are REFUSED — this
+    /// reproduces the real device semantic and proves authorize is required.
+    authorized: bool,
+    /// The access level the device grants in its `A_Authorize_Response`. `0` (the
+    /// default) means full access; a non-zero value models a keyed device denying
+    /// the presented (free-access) key, so the tool surfaces `AccessDenied`.
+    grant_level: u8,
+    /// If set, the device does not answer `A_Authorize_Request` at all — modelling
+    /// an older/simpler device that does not implement authorize. The tool must
+    /// tolerate this and proceed (the gate is also open in this mode).
+    authorize_unsupported: bool,
+    /// Count of `A_Authorize_Request` frames seen, so a test can assert the tool
+    /// authorized on each connection window.
+    authorizes_seen: usize,
+    /// The payload of the last `A_Authorize_Request`, so a test can assert the tool
+    /// sent exactly `[00 FF FF FF FF]` (reserved octet + free-access key).
+    last_authorize_payload: Vec<u8>,
 }
 
 type Shared = Arc<Mutex<DeviceState>>;
@@ -275,6 +301,30 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
         return Reaction::Answer(A_DEVICE_DESCRIPTOR_RESPONSE, vec![0x07, 0xB0]);
     }
 
+    // Authorize request: reserved octet + 4-byte key. Grant `grant_level` and
+    // open the write gate on a level-0 grant. `authorize_unsupported` models a
+    // device that does not implement authorize: ACK but never answer, so the
+    // tool times out and tolerates it (and the gate is treated as open below).
+    if req_apci == A_AUTHORIZE_REQUEST {
+        s.authorizes_seen += 1;
+        s.last_authorize_payload = data.to_vec();
+        if s.authorize_unsupported {
+            // An older/simpler device that does not implement the authorize
+            // service: it does not answer an A_Authorize_Response. Model this as a
+            // benign non-authorize reply (a device-descriptor response) rather than
+            // a silent no-answer, so the connection is not torn down by the
+            // response timeout — the tool must recognise the non-authorize APCI as
+            // "authorize unsupported", tolerate it, and continue on the SAME live
+            // connection. The gate is treated as open for such a device.
+            s.authorized = true;
+            return Reaction::Answer(A_DEVICE_DESCRIPTOR_RESPONSE, vec![0x07, 0xB0]);
+        }
+        if s.grant_level == 0 {
+            s.authorized = true;
+        }
+        return Reaction::Answer(A_AUTHORIZE_RESPONSE, vec![s.grant_level]);
+    }
+
     // Restart: fire-and-forget, just ACK.
     if req_apci & APCI_SELECTOR == A_RESTART_SEL {
         return Reaction::Ack;
@@ -299,6 +349,12 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
 
     // Memory write: [addr_hi, addr_lo, data…], count in APCI low bits.
     if req_apci & APCI_SELECTOR == A_MEMORY_WRITE_SEL {
+        // Authorization gate: an unauthorized config write is REFUSED (this
+        // reproduces the real device semantic and proves authorize is required).
+        // A device that does not implement authorize never gates.
+        if !s.authorized && !s.authorize_unsupported {
+            return Reaction::Nak;
+        }
         if s.fault == Fault::NakMemoryWrite {
             return Reaction::Nak;
         }
@@ -396,6 +452,11 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
     }
 
     if req_apci == A_PROPERTY_VALUE_WRITE {
+        // Authorization gate: an unauthorized config write is REFUSED. A device
+        // that does not implement authorize never gates.
+        if !s.authorized && !s.authorize_unsupported {
+            return Reaction::Nak;
+        }
         let Some((oi, pid, _count, start)) = decode_prop_header(data) else {
             return Reaction::Nak;
         };
@@ -551,6 +612,9 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
                         s.connects += 1;
                         s.exchanges_this_connection = 0;
                         s.write_phase_exchanges = None;
+                        // A fresh connection is a fresh authorization context: the
+                        // session must re-authorize before any config write.
+                        s.authorized = false;
                         if s.drop_loading_on_reconnect
                             && s.was_loading_at_disconnect
                             && s.app_load_state == LS_LOADING
@@ -667,6 +731,11 @@ fn fresh_device(fault: Fault) -> Shared {
         memory_writes_seen: 0,
         drop_loading_on_reconnect: false,
         was_loading_at_disconnect: false,
+        authorized: false,
+        grant_level: 0,
+        authorize_unsupported: false,
+        authorizes_seen: 0,
+        last_authorize_payload: Vec::new(),
     }))
 }
 
@@ -850,6 +919,21 @@ fn no_overrides() -> BTreeMap<String, String> {
     BTreeMap::new()
 }
 
+/// Authorizes a freshly-connected [`Layer4Connection`] with the free-access key
+/// and wraps it in a single-connection [`Session`], exactly as the real flow does
+/// (issue #52 finding #1): the mock's authorization gate refuses config writes
+/// until a session authorizes, so every flash-over-a-fixed-connection test
+/// authorizes first. Asserts the authorize is granted (the mock defaults to
+/// level 0 / full access).
+async fn authed_session<Ch: bussard_mgmt::L4Channel>(
+    mut l4: Layer4Connection<Ch>,
+) -> Session<bussard_download::SingleConnector<Ch>> {
+    l4.authorize_or_fail(0xFFFF_FFFF)
+        .await
+        .expect("free-access authorize must be granted by the mock");
+    Session::from_connection(l4)
+}
+
 #[tokio::test]
 async fn flash_happy_path_loads_and_verifies() {
     let (mut bus, state, handle) = setup(Fault::None).await;
@@ -862,7 +946,7 @@ async fn flash_happy_path_loads_and_verifies() {
     let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
-    let mut session = Session::from_connection(l4);
+    let mut session = authed_session(l4).await;
     let outcome = flash(
         &mut session,
         &plan,
@@ -912,7 +996,7 @@ async fn flash_with_image_prop_loads_and_verifies_mcb() {
     let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
-    let mut session = Session::from_connection(l4);
+    let mut session = authed_session(l4).await;
     let outcome = flash(
         &mut session,
         &plan,
@@ -954,7 +1038,7 @@ async fn flash_image_prop_catches_corrupted_stored_image() {
     let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
-    let mut session = Session::from_connection(l4);
+    let mut session = authed_session(l4).await;
     let err = flash(
         &mut session,
         &plan,
@@ -987,7 +1071,7 @@ async fn flash_surfaces_load_error_on_completed() {
     let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
-    let mut session = Session::from_connection(l4);
+    let mut session = authed_session(l4).await;
     let err = flash(
         &mut session,
         &plan,
@@ -1017,7 +1101,7 @@ async fn flash_aborts_on_memory_write_nak() {
     let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
-    let mut session = Session::from_connection(l4);
+    let mut session = authed_session(l4).await;
     let err = flash(
         &mut session,
         &plan,
@@ -1054,7 +1138,7 @@ async fn flash_disconnects_even_when_it_fails_mid_procedure() {
     let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
-    let mut session = Session::from_connection(l4);
+    let mut session = authed_session(l4).await;
     // Strict (default) options: the KV snap-to-Loaded trips the load-state check.
     let err = flash(
         &mut session,
@@ -1113,7 +1197,7 @@ async fn flash_strict_load_state_error_names_object_and_table() {
     let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
-    let mut session = Session::from_connection(l4);
+    let mut session = authed_session(l4).await;
     let err = flash(
         &mut session,
         &plan,
@@ -1176,7 +1260,7 @@ async fn flash_allocate_path_load_state_error_names_object_and_table() {
     let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
-    let mut session = Session::from_connection(l4);
+    let mut session = authed_session(l4).await;
     let err = flash(
         &mut session,
         &plan,
@@ -1238,7 +1322,7 @@ async fn flash_batched_verify_loads_and_verifies() {
     let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
-    let mut session = Session::from_connection(l4);
+    let mut session = authed_session(l4).await;
     let outcome = flash(&mut session, &plan, options, |_| {}).await.unwrap();
     let _ = session.into_disconnect().await;
 
@@ -1272,7 +1356,7 @@ async fn flash_tolerance_flag_accepts_loaded_after_start_loading() {
     let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
-    let mut session = Session::from_connection(l4);
+    let mut session = authed_session(l4).await;
     let outcome = flash(&mut session, &plan, options, |_| {}).await.unwrap();
     let _ = session.into_disconnect().await;
 
@@ -1343,7 +1427,7 @@ async fn flash_applies_device_file_parameter_override() {
     let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
-    let mut session = Session::from_connection(l4);
+    let mut session = authed_session(l4).await;
     let outcome = flash(
         &mut session,
         &plan,
@@ -1396,7 +1480,7 @@ async fn flash_compare_prop_passes_when_property_matches() {
     let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
-    let mut session = Session::from_connection(l4);
+    let mut session = authed_session(l4).await;
     let outcome = flash(
         &mut session,
         &plan,
@@ -1436,7 +1520,7 @@ async fn flash_compare_prop_aborts_when_property_differs() {
     let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
-    let mut session = Session::from_connection(l4);
+    let mut session = authed_session(l4).await;
     let err = flash(
         &mut session,
         &plan,
@@ -1486,7 +1570,7 @@ async fn flash_compare_prop_mask_ignores_don_t_care_bytes() {
     let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
-    let mut session = Session::from_connection(l4);
+    let mut session = authed_session(l4).await;
     let outcome = flash(
         &mut session,
         &plan,
@@ -1521,7 +1605,7 @@ async fn flash_reports_progress_for_every_step() {
     let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
-    let mut session = Session::from_connection(l4);
+    let mut session = authed_session(l4).await;
     let outcome = flash(
         &mut session,
         &plan,
@@ -1642,8 +1726,12 @@ async fn windowed_flash_completes_across_multiple_windows() {
     let app = fabricated_app();
     let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
 
+    // reconnect_every well below the 10-exchange death budget. Each window now
+    // also spends one exchange on the free-access authorize (issue #52 finding
+    // #1) plus the discover/resume preamble, so a small window keeps every cycle
+    // comfortably ahead of the death point.
     let options = FlashOptions {
-        reconnect_every: Some(6),
+        reconnect_every: Some(4),
         ..Default::default()
     };
     let connector = window_connector(&handle);
@@ -2071,6 +2159,204 @@ async fn intra_write_batched_verify_windows_during_readback() {
         let want: Vec<u8> = (0..N).map(|i| (i & 0xFF) as u8).collect();
         assert_eq!(got, want);
     }
+    let _ = handle.close().await;
+    gw_task.abort();
+}
+
+// ===========================================================================
+// Authorization tests (issue #52 finding #1).
+//
+// ETS presents A_Authorize_Request (free-access key FF FF FF FF) as the first
+// operation after the descriptor read; the mock models an authorization GATE —
+// config writes are refused until a session authorizes. These prove bussard
+// authorizes on every management connection, sends the exact captured wire form,
+// re-authorizes each fresh window, tolerates a device without authorize, and
+// surfaces a real access-denied.
+// ===========================================================================
+
+#[tokio::test]
+async fn flash_sends_free_access_authorize_and_the_gate_opens() {
+    // A device with the authorization gate ON (the default fresh device): the
+    // flash must authorize with the free-access key before any write, or the
+    // gate refuses. Assert the flash completes AND the tool sent exactly the
+    // captured payload [00 FF FF FF FF].
+    let (mut bus, state, handle) = setup(Fault::None).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+
+    let app = fabricated_app();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+
+    let l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    let mut session = authed_session(l4).await;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .unwrap();
+    let _ = session.into_disconnect().await;
+
+    assert!(outcome.ok(), "authorized flash must verify: {outcome:?}");
+    let s = state.lock().unwrap();
+    assert!(s.authorizes_seen >= 1, "the tool must have authorized");
+    let mut want = vec![0x00];
+    want.extend_from_slice(&FREE_ACCESS_KEY);
+    assert_eq!(
+        s.last_authorize_payload, want,
+        "the authorize payload must be the reserved octet + free-access key"
+    );
+    assert!(s.authorized, "the gate must be open after the grant");
+    handle.abort();
+}
+
+#[tokio::test]
+async fn flash_without_authorize_is_refused_by_the_gate() {
+    // The regression that proves authorize is REQUIRED: wrap the raw connection
+    // in a session WITHOUT authorizing (Session::from_connection directly), so the
+    // first config write hits the closed gate and is NAKed.
+    let (mut bus, _state, handle) = setup(Fault::None).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+
+    let app = fabricated_app();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+
+    let l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    // Deliberately skip the authorize step.
+    let mut session = Session::from_connection(l4);
+    let err = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .expect_err("an unauthorized session must be refused by the gate");
+    let _ = session.into_disconnect().await;
+    assert!(
+        matches!(err, WriteError::Mgmt(bussard_mgmt::MgmtError::Nak { .. })),
+        "the closed gate NAKs the first config write, got {err:?}"
+    );
+    handle.abort();
+}
+
+#[tokio::test]
+async fn flash_tolerates_a_device_without_authorize() {
+    // An older/simpler device that does not implement authorize: it answers the
+    // request with a non-authorize APCI rather than an A_Authorize_Response. The
+    // tool must recognise that as "authorize unsupported", tolerate it (the gate
+    // is open for such a device), keep the live connection, and complete the flash.
+    let (mut bus, state, handle) = setup(Fault::None).await;
+    {
+        let mut s = state.lock().unwrap();
+        s.authorize_unsupported = true;
+    }
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+
+    let app = fabricated_app();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+
+    let l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    let mut session = authed_session(l4).await;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .unwrap();
+    let _ = session.into_disconnect().await;
+
+    assert!(
+        outcome.ok(),
+        "a device without authorize must be tolerated and flashed: {outcome:?}"
+    );
+    let s = state.lock().unwrap();
+    assert!(s.authorizes_seen >= 1, "the tool still attempted authorize");
+    handle.abort();
+}
+
+#[tokio::test]
+async fn flash_surfaces_access_denied_on_a_nonzero_level() {
+    // A keyed device that grants only a non-zero (insufficient) level for the
+    // presented free-access key: the tool must surface AccessDenied, not proceed.
+    let (mut bus, state, handle) = setup(Fault::None).await;
+    {
+        let mut s = state.lock().unwrap();
+        s.grant_level = 3; // deny full access
+    }
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+
+    let l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    // authorize_or_fail must map the non-zero grant to AccessDenied.
+    let err = {
+        let mut l4 = l4;
+        let e = l4
+            .authorize_or_fail(0xFFFF_FFFF)
+            .await
+            .expect_err("a non-zero grant must be access-denied");
+        let _ = l4.disconnect().await;
+        e
+    };
+    match err {
+        bussard_mgmt::MgmtError::AccessDenied { level, .. } => assert_eq!(level, 3),
+        other => panic!("expected AccessDenied, got {other:?}"),
+    }
+    assert!(state.lock().unwrap().authorizes_seen >= 1);
+    handle.abort();
+}
+
+#[tokio::test]
+async fn windowed_flash_reauthorizes_each_window() {
+    // A dropping peer forces multiple windows; the gate is ON, so every window
+    // must re-authorize or its writes would be refused. Assert both ≥2 windows
+    // AND ≥2 authorizes (one per connection) — a fresh connection is a fresh
+    // authorization context, matching ETS's per-T_Connect re-authorize.
+    let state = fresh_device(Fault::None);
+    {
+        let mut s = state.lock().unwrap();
+        s.die_after_exchanges = Some(10);
+    }
+    let (handle, gw_task) = setup_bus(Arc::clone(&state)).await;
+
+    let app = fabricated_app();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+
+    let options = FlashOptions {
+        reconnect_every: Some(4),
+        ..Default::default()
+    };
+    let mut session = FlashSession::open(window_connector(&handle)).await.unwrap();
+    let outcome = flash(&mut session, &plan, options, |_| {}).await.unwrap();
+    let _ = session.into_disconnect().await;
+
+    assert!(
+        outcome.ok(),
+        "windowed authorized flash must verify: {outcome:?}"
+    );
+    let (connects, authorizes_seen) = {
+        let s = state.lock().unwrap();
+        (s.connects, s.authorizes_seen)
+    };
+    assert!(connects >= 2, "expected ≥2 windows, got {connects}");
+    assert!(
+        authorizes_seen >= connects,
+        "each of the {connects} window(s) must re-authorize (saw {authorizes_seen})"
+    );
     let _ = handle.close().await;
     gw_task.abort();
 }

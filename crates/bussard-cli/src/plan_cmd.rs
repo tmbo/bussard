@@ -78,6 +78,11 @@ pub fn run(
         let channel = LeaseChannel::new(lease);
         let result = match Layer4Connection::connect(channel, target, source).await {
             Ok(mut l4) => {
+                // Authorize (free access) before reading, as ETS does (issue #52
+                // finding #1). Best-effort on this read-only plan pre-pass.
+                if let Err(err) = l4.authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY).await {
+                    tracing::debug!("{target} authorize (free access) did not grant: {err}");
+                }
                 let r = read_tables(&mut l4).await;
                 let _ = l4.disconnect().await;
                 r

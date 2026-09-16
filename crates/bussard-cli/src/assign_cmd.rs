@@ -442,6 +442,13 @@ async fn verify_assignment(
         }
     })?;
 
+    // Authorize the session (free access), as ETS does after the descriptor read
+    // (issue #52 finding #1). Best-effort here — the assignment was already
+    // verified by the descriptor read; the property reads below are informational.
+    if let Err(err) = dev.authorize(bussard_mgmt::apci::FREE_ACCESS_KEY).await {
+        tracing::debug!("{target} authorize (free access) did not grant: {err}");
+    }
+
     // Best-effort property reads: any failure just leaves the field empty.
     let manufacturer_id = match dev.read_device_property(PID_MANUFACTURER_ID).await {
         Ok(bytes) if bytes.len() >= 2 => Some(u16::from_be_bytes([bytes[0], bytes[1]])),

@@ -10,7 +10,7 @@
 use bussard_model::IndividualAddress;
 
 use crate::apci;
-use crate::connection::{L4Channel, Layer4Connection, Timeouts};
+use crate::connection::{AuthorizeOutcome, L4Channel, Layer4Connection, Timeouts};
 use crate::error::{MgmtError, Result, descriptor_response_reason, raw_response_detail};
 
 /// A management client bound to a single device over a connection-oriented
@@ -54,6 +54,20 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
     /// The device this connection targets.
     pub fn target(&self) -> IndividualAddress {
         self.inner.target()
+    }
+
+    /// Presents an access `key` with `A_Authorize_Request` and applies the
+    /// tolerate-absence / fail-on-denied policy (issue #52 finding #1).
+    ///
+    /// ETS authorizes a management session before any configuration access; this
+    /// is the typed-client entry point for that. Pass
+    /// [`apci::FREE_ACCESS_KEY`](crate::apci::FREE_ACCESS_KEY) for an unkeyed
+    /// device (the capture used free access) or the project BCU key for a keyed
+    /// one. Returns the [`AuthorizeOutcome`]: a level-0 grant or an
+    /// unsupported-authorize device both return `Ok` (the session continues); a
+    /// non-zero granted level fails with [`MgmtError::AccessDenied`].
+    pub async fn authorize(&mut self, key: u32) -> Result<AuthorizeOutcome> {
+        self.inner.authorize_or_fail(key).await
     }
 
     /// Reads the device descriptor (type 0): the 16-bit **mask version** that
