@@ -377,6 +377,21 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
         self.target
     }
 
+    /// How many numbered data telegrams (NDTs) this connection has sent and had
+    /// acknowledged since it was opened.
+    ///
+    /// This is the per-connection exchange budget the windowed-download engine
+    /// meters against: KNX Virtual drops the L4 connection after a varying number
+    /// of exchanges, so a download chunked to cycle the connection before the
+    /// budget is exhausted survives a fragile peer (issue #52). The counter
+    /// resets to 0 on every fresh [`connect`](Self::connect) (sequence numbers
+    /// reset on `T_Connect`), so each window starts a fresh count. A
+    /// request/response round-trip counts as one (only the telegram *we* send is
+    /// counted).
+    pub fn numbered_exchanges(&self) -> u32 {
+        self.numbered_exchanges
+    }
+
     // --- internals ---
 
     async fn close(&mut self) -> Result<()> {

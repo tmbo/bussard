@@ -164,6 +164,16 @@ enum Command {
         /// Emit JSON instead of the report format.
         #[arg(long)]
         json: bool,
+        /// L4 SOAK PROBE (hidden diagnostic): connect ONCE to ADDRESS and issue N
+        /// harmless descriptor reads on that single connection, reporting progress
+        /// every 10 and the exact exchange count reached plus the error when the
+        /// connection dies. This characterises a peer's per-connection exchange
+        /// budget empirically — KNX Virtual drops the L4 connection after a
+        /// varying number of exchanges (issue #52); this measures it so
+        /// `flash --reconnect-every` can be set comfortably below it. Read-only on
+        /// the bus. Requires ADDRESS; ignores `--line`/`--out`.
+        #[arg(long, value_name = "N", hide = true, conflicts_with = "line")]
+        l4_soak: Option<u32>,
         /// Override the gateway `host[:port]` for tunneling.
         #[arg(long, value_name = "HOST")]
         gateway: Option<String>,
@@ -252,6 +262,18 @@ enum Command {
         /// TP1-like rate.
         #[arg(long, value_name = "MS")]
         pace: Option<u64>,
+        /// Chunk the download across graceful connection windows: after ~N
+        /// numbered exchanges, gracefully T_Disconnect, reconnect (fresh sequence
+        /// window) and resume where the procedure left off. Off by default. Load
+        /// states are persistent object state (not connection state), so this
+        /// lands in the same device state as one unbroken run and is robust
+        /// against a peer that drops the connection after a varying number of
+        /// exchanges (e.g. KNX Virtual, issue #52). Window boundaries only land
+        /// between steps, never inside a write. Suggested N: comfortably below the
+        /// peer's per-connection budget (probe it with `reconstruct <ia>
+        /// --l4-soak <N>`); 15 is a safe starting point for KNX Virtual.
+        #[arg(long, value_name = "N")]
+        reconnect_every: Option<u32>,
         /// Override the gateway `host[:port]` for tunneling.
         #[arg(long, value_name = "HOST")]
         gateway: Option<String>,
@@ -478,12 +500,19 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             out,
             dir,
             json,
+            l4_soak,
             gateway,
             routing,
         } => {
             let overrides = conn_cmd::ConnOverrides { gateway, routing };
-            match line {
-                Some(line) => reconstruct_cmd::run_line(
+            match (line, l4_soak) {
+                (_, Some(exchanges)) => {
+                    // clap requires ADDRESS unless --line, and --l4-soak conflicts
+                    // with --line, so ADDRESS is present here.
+                    let address = address.expect("clap requires ADDRESS with --l4-soak");
+                    reconstruct_cmd::run_l4_soak(&address, exchanges, &dir, overrides)
+                }
+                (Some(line), None) => reconstruct_cmd::run_line(
                     &line,
                     from,
                     to,
@@ -492,7 +521,7 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
                     json,
                     overrides,
                 ),
-                None => {
+                (None, None) => {
                     // clap guarantees ADDRESS is present when --line is absent.
                     let address = address.expect("clap requires ADDRESS without --line");
                     reconstruct_cmd::run(&address, &dir, json, overrides)
@@ -532,6 +561,7 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             tolerate_nonconformant_load_states,
             verify,
             pace,
+            reconnect_every,
             gateway,
             routing,
         } => flash_cmd::run(
@@ -544,6 +574,7 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             tolerate_nonconformant_load_states,
             verify.into(),
             pace,
+            reconnect_every,
             conn_cmd::ConnOverrides { gateway, routing },
         ),
         Command::Plan {
