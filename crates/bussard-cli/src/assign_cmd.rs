@@ -164,13 +164,17 @@ async fn assign_flow(
     eprintln!("wrote {target}; verifying…");
 
     let verified = verify_assignment(handle, source, target).await?;
+    if verified.programming_mode_cleared {
+        eprintln!("cleared programming mode on {target} (PID_PROGMODE = 0), as ETS does.");
+    }
 
-    // 5a. Programming-mode persistence check. A conformant device clears
-    //     programming mode when it applies A_IndividualAddress_Write; KNX Virtual
-    //     devices do NOT, so the just-assigned device would be re-captured by the
-    //     next assign/adopt (it re-answers the programming-mode broadcast at its
-    //     new address). Re-run the broadcast once, briefly, and warn if `target`
-    //     still answers.
+    // 5a. Programming-mode persistence check (fallback). We already cleared
+    //     programming mode explicitly above (PID_PROGMODE = 0), exactly as ETS
+    //     does. This re-runs the programming-mode broadcast once, briefly, and
+    //     warns only if `target` STILL answers it — meaning neither the explicit
+    //     clear nor the device's own auto-clear took, so the next assign/adopt
+    //     would re-capture and re-address it. On a conformant device this is now a
+    //     no-op; the warning remains the backstop for a device that ignored both.
     warn_if_still_in_programming_mode(handle, source, target).await;
 
     // 6. Create the stub device file.
@@ -412,6 +416,11 @@ struct Verified {
     manufacturer_id: Option<u16>,
     serial: Option<Vec<u8>>,
     order: Option<String>,
+    /// Whether the explicit `PID_PROGMODE = 0` write to clear programming mode was
+    /// confirmed by the device (it echoed the stored `0x00`). `false` when the
+    /// write was not confirmed or the device refused it — the broadcast-based
+    /// persistence check then remains the fallback.
+    programming_mode_cleared: bool,
 }
 
 /// Verifies the write by connecting to `target` and reading its descriptor plus
@@ -476,12 +485,27 @@ async fn verify_assignment(
         .map(|v| clean_ascii(&v))
         .filter(|s| !s.is_empty());
 
+    // Explicitly clear programming mode, exactly as ETS does after assigning an
+    // address: write PID_PROGMODE = 0 on the device object over this same
+    // authorized connection. A conformant device also clears it on its own, but
+    // ETS does not rely on that, and neither do we. Best-effort: an unconfirmed or
+    // refused write is not fatal — the broadcast persistence check below remains
+    // the fallback that warns if the device is still in programming mode.
+    let programming_mode_cleared = match dev.clear_programming_mode().await {
+        Ok(cleared) => cleared,
+        Err(err) => {
+            tracing::debug!("{target} clear programming mode (PID_PROGMODE=0) failed: {err}");
+            false
+        }
+    };
+
     let _ = dev.disconnect().await;
     Ok(Verified {
         mask: Some(mask),
         manufacturer_id,
         serial,
         order,
+        programming_mode_cleared,
     })
 }
 
@@ -787,6 +811,7 @@ mod tests {
             manufacturer_id: Some(0x0083),
             serial: None,
             order: Some("MDT-JAL0410".to_string()),
+            ..Default::default()
         };
         let dev = build_stub_device("1.1.7".parse().unwrap(), &v);
         let product = dev.product.unwrap();

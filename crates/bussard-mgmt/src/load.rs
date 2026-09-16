@@ -304,6 +304,26 @@ pub enum WriteError {
         detail: String,
     },
 
+    /// A `LdCtrlMasterReset` was rejected: the device answered its
+    /// `A_Restart_Response` with a non-zero error code rather than accepting the
+    /// master reset. The reset did not happen, so the procedure cannot continue.
+    #[error(
+        "{address}: master reset (erase code {erase_code}, channel {channel_number}) was rejected \
+         — device returned error code {error_code} ({reason})"
+    )]
+    MasterResetRejected {
+        /// The device.
+        address: IndividualAddress,
+        /// The erase code presented.
+        erase_code: u8,
+        /// The channel number presented.
+        channel_number: u8,
+        /// The error code the device returned in its `A_Restart_Response`.
+        error_code: u8,
+        /// A human-readable interpretation of the error code.
+        reason: &'static str,
+    },
+
     /// An underlying management error (absent, NAK, disconnect, malformed).
     #[error(transparent)]
     Mgmt(#[from] MgmtError),
@@ -428,6 +448,83 @@ pub async fn read_load_state<Ch: L4Channel>(
         }));
     }
     Ok(LoadState::from_octet(resp.data[0]))
+}
+
+/// Interprets an `A_Restart_Response` error code into a human-readable reason,
+/// per the KNX spec master-reset error codes.
+fn master_reset_error_reason(code: u8) -> &'static str {
+    match code {
+        0 => "success",
+        2 => "access denied",
+        3 => "unsupported erase code",
+        4 => "invalid channel number",
+        _ => "device-defined error",
+    }
+}
+
+/// Performs a device **Master Reset** (`LdCtrlMasterReset`): sends a master-reset
+/// `A_Restart` request and confirms the device accepted it.
+///
+/// Unlike a basic restart (fire-and-forget), a master reset is confirmed by an
+/// `A_Restart_Response` carrying an error code before the device reboots and
+/// drops the connection (see [`crate::apci::encode_master_reset`]). This sends
+/// the request, then:
+///
+/// - If the device answers an `A_Restart_Response`
+///   ([`A_RESTART_RESPONSE`](crate::apci::A_RESTART_RESPONSE)), a **zero** error
+///   code is success and a **non-zero** code fails with
+///   [`WriteError::MasterResetRejected`].
+/// - If the device **acknowledges the request but then goes silent** (no
+///   response NDT, a mid-session silence, or a `T_Disconnect`) it has already
+///   begun rebooting — the expected outcome of an accepted master reset — so this
+///   returns `Ok(())`. The caller then waits out the reboot and reconnects.
+///
+/// A device that never even acknowledges the request (the very first send times
+/// out) surfaces the underlying [`MgmtError`], since that means the request never
+/// landed.
+///
+/// Clean-room: encoding and semantics from the published KNX spec (A_Restart /
+/// DM_Restart master reset) and the XKNX MIT reference; verified against a real
+/// ETS→KNX-Virtual capture.
+pub async fn master_reset<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    erase_code: u8,
+    channel_number: u8,
+) -> Result<()> {
+    let address = l4.target();
+    let (apci, payload) = crate::apci::encode_master_reset(erase_code, channel_number);
+    // Send the request as a numbered telegram and require the device's T_ACK: a
+    // request that is never acknowledged never landed, which is a real failure.
+    l4.send_data(apci, &payload).await?;
+    // Await the A_Restart_Response. The device answers, then reboots — but it may
+    // also reboot immediately and drop the link, so silence/disconnect after the
+    // acknowledged send is the *expected* accepted outcome, not a failure.
+    match l4.recv_response().await {
+        Ok((resp_apci, data)) => {
+            if resp_apci == crate::apci::A_RESTART_RESPONSE {
+                let error_code = crate::apci::decode_restart_response(&data);
+                if error_code != 0 {
+                    return Err(WriteError::MasterResetRejected {
+                        address,
+                        erase_code,
+                        channel_number,
+                        error_code,
+                        reason: master_reset_error_reason(error_code),
+                    });
+                }
+            }
+            // A zero error code, or any non-restart-response answer (the device
+            // simply rebooting): accepted.
+            Ok(())
+        }
+        // The device acknowledged the request, then went silent or dropped the
+        // connection: it is rebooting, which is exactly what an accepted master
+        // reset does. Treat as success; the caller reconnects.
+        Err(MgmtError::NoResponse { .. })
+        | Err(MgmtError::MidSessionSilence { .. })
+        | Err(MgmtError::Disconnected { .. }) => Ok(()),
+        Err(other) => Err(WriteError::Mgmt(other)),
+    }
 }
 
 /// Reads an interface-object property and compares it byte-for-byte against
