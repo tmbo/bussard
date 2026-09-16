@@ -171,16 +171,41 @@ impl VirtualDevice {
         })
     }
 
-    /// Waits until the device has printed its startup banner (`main() start.` in
-    /// thelsing's demo) to `dev.log`, or `timeout` elapses. Readiness by output
-    /// beats a blind sleep on slow CI runners. Returns whether the banner was
-    /// seen (a `false` is non-fatal: the ladder still runs and will surface a
-    /// clearer failure downstream, with the log uploaded as an artifact).
+    /// Waits until the device is actually ready to answer on the bus, or
+    /// `timeout` elapses. Returns whether readiness was observed (a `false` is
+    /// non-fatal: the ladder still runs and surfaces a clearer failure, with the
+    /// log uploaded as an artifact).
+    ///
+    /// The startup banner (`main() start.`) prints at the very top of thelsing's
+    /// `main()`, BEFORE `knx.start()` joins the multicast group and begins
+    /// receiving. Keying readiness on the banner alone races the group join: a
+    /// single broadcast read fired right after the banner can arrive before the
+    /// device has joined and is then simply missed (there is no retransmit). So
+    /// when `BUSSARD_VIRTUAL_DEVICE_READY_CMD` is set (CI sets it to a command
+    /// that checks the device's multicast membership, e.g. the group appears in
+    /// `ip netns exec knxdev ip maddr show`), we wait for THAT to succeed. Absent
+    /// the env var we fall back to the banner (fine for a fast local box).
     fn wait_ready(&self, timeout: Duration) -> bool {
         let log_path = self._workdir.path().join("dev.log");
+        let ready_cmd = std::env::var("BUSSARD_VIRTUAL_DEVICE_READY_CMD").ok();
         let start = Instant::now();
         while start.elapsed() < timeout {
-            if let Ok(f) = std::fs::File::open(&log_path) {
+            // Strongest signal: the readiness command reports the device has
+            // joined the group and is listening.
+            if let Some(cmd) = &ready_cmd {
+                let ok = Command::new("sh")
+                    .arg("-c")
+                    .arg(cmd)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false);
+                if ok {
+                    return true;
+                }
+            } else if let Ok(f) = std::fs::File::open(&log_path) {
+                // Fallback: the startup banner (no group-join guarantee).
                 for line in BufReader::new(f).lines().map_while(Result::ok) {
                     if line.contains("main() start.") || line.contains("FDSK:") {
                         return true;
@@ -254,12 +279,14 @@ fn ladder_against_thelsing_knx_linux_ip() {
     // blindly; then a short settle for the multicast join to take effect.
     if !device.wait_ready(Duration::from_secs(20)) {
         eprintln!(
-            "warning: virtual device did not print its startup banner within 20s; \
-             continuing (the ladder will surface a clearer failure and the log is dumped below)"
+            "warning: virtual device did not report ready within 20s; continuing \
+             (the ladder will surface a clearer failure and the log is dumped below)"
         );
         device.dump_log();
     }
-    std::thread::sleep(Duration::from_millis(1000));
+    // A short settle after the group join so the device's receive loop is
+    // servicing the socket before the first broadcast read.
+    std::thread::sleep(Duration::from_millis(1500));
 
     // --- Rung (a)+(b): assign finds the fresh device and writes its address ---
     // `assign <addr> --routing` is non-interactive-safe with an explicit address

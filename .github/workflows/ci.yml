@@ -309,8 +309,14 @@ jobs:
           # The device is spawned by the test through this wrapper, which drops it
           # into the netns created above. `sudo` is needed for `ip netns exec`.
           # stdbuf keeps the device's stdout line-buffered so its banner reaches
-          # dev.log (readiness detection) even though stdout is a file.
+          # dev.log even though stdout is a file.
           export BUSSARD_VIRTUAL_DEVICE_WRAP="sudo ip netns exec knxdev stdbuf -oL -eL"
+          # Readiness = the device has actually JOINED the routing group (not just
+          # printed its banner). This closes the join race: the banner prints
+          # before knx.start() joins the group, and the assign fires a single
+          # broadcast with no retransmit, so sending before the join silently
+          # misses. Wait until 224.0.23.12 appears in the namespace's memberships.
+          export BUSSARD_VIRTUAL_DEVICE_READY_CMD="sudo ip netns exec knxdev ip maddr show | grep -q 224.0.23.12"
           BUSSARD_VIRTUAL_DEVICE_BIN="$BIN" \
             cargo test -p bussard-cli --test virtual_device -- --ignored --nocapture
 
