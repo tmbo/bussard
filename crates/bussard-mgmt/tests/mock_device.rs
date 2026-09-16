@@ -55,6 +55,11 @@ enum Behavior {
         /// The payload octets to return with the wrong APCI.
         payload: Vec<u8>,
     },
+    /// Answers a descriptor read by **echoing the request**: the response APCI is
+    /// `A_DeviceDescriptor_Read` (0x0300) with an empty payload, not a `_Response`
+    /// (0x0340). Models the KNX Virtual IP interface, which does not implement
+    /// descriptor responses; the decoder must name the echo pattern (finding 2).
+    EchoesDescriptorRead,
 }
 
 /// One simulated device at an individual address.
@@ -252,6 +257,23 @@ async fn handle_device_frame(
                         tpci::ndt(seq),
                         apci::A_PROPERTY_VALUE_RESPONSE,
                         payload,
+                    );
+                    push_indication(gw, peer, gw_seq, &resp).await;
+                    dev_send_seq.insert(dev_ia.raw(), (seq + 1) & 0x0f);
+                }
+                Behavior::EchoesDescriptorRead => {
+                    // ACK, then echo the read: answer with the read's own APCI
+                    // (0x0300) and an empty payload, exactly as the KV IP
+                    // interface does. The decoder must recognise the echo.
+                    let ack = CemiFrame::t_control(source, dev_ia, tpci::t_ack(client_seq));
+                    push_indication(gw, peer, gw_seq, &ack).await;
+                    let seq = *dev_send_seq.get(&dev_ia.raw()).unwrap_or(&0);
+                    let resp = CemiFrame::t_data_connected(
+                        source,
+                        dev_ia,
+                        tpci::ndt(seq),
+                        apci::A_DEVICE_DESCRIPTOR_READ,
+                        &[],
                     );
                     push_indication(gw, peer, gw_seq, &resp).await;
                     dev_send_seq.insert(dev_ia.raw(), (seq + 1) & 0x0f);
@@ -590,6 +612,51 @@ async fn malformed_descriptor_error_carries_raw_hex() {
             assert!(
                 reason.contains("payload [00 0C 10 01 07 B0]"),
                 "reason should carry the raw payload hex: {reason}"
+            );
+        }
+        other => panic!("expected MalformedResponse, got {other:?}"),
+    }
+    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+}
+
+#[tokio::test]
+async fn descriptor_echo_is_named_in_the_error() {
+    // Finding 2: the KNX Virtual IP interface answers A_DeviceDescriptor_Read by
+    // echoing the read (APCI 0x0300) rather than a Response (0x0340). The decoder
+    // must name that echo pattern — not report a bare "unexpected response" — so
+    // the operator knows the device does not implement descriptor responses.
+    let (addr, gw) = bind_mock().await;
+    let devices = vec![MockDevice {
+        address: "1.0.255".parse().unwrap(),
+        behavior: Behavior::EchoesDescriptorRead,
+    }];
+    let gw_task = tokio::spawn(run_mock(gw, devices));
+
+    let mut bus = open_bus(addr).await;
+    let target: IndividualAddress = "1.0.255".parse().unwrap();
+    let source: IndividualAddress = "0.0.255".parse().unwrap();
+    let mut dev = DeviceConnection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+
+    let err = dev.device_descriptor().await.unwrap_err();
+    match err {
+        MgmtError::MalformedResponse { reason, .. } => {
+            assert!(
+                reason.contains("echoed the descriptor read instead of answering"),
+                "reason must name the echo pattern: {reason}"
+            );
+            assert!(
+                reason.contains("APCI 0x0300"),
+                "reason must name the echo APCI: {reason}"
+            );
+            assert!(
+                reason.contains("does not implement descriptor responses"),
+                "reason must state the consequence: {reason}"
+            );
+            assert!(
+                reason.contains("KNX Virtual IP"),
+                "reason must name where this is seen: {reason}"
             );
         }
         other => panic!("expected MalformedResponse, got {other:?}"),

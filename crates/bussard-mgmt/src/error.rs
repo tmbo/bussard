@@ -101,6 +101,35 @@ pub fn raw_response_detail(apci: u16, payload: &[u8]) -> String {
     format!("APCI {apci:#06X}, payload [{}]", bytes.join(" "))
 }
 
+/// Builds the `reason` for a device-descriptor read whose response was **not** a
+/// well-formed `A_DeviceDescriptor_Response` (wrong selector or a short answer).
+///
+/// Names one non-conformance specially: a device that answers the read by
+/// **echoing the request** — the response APCI is `A_DeviceDescriptor_Read`
+/// (`0x0300`) rather than a `_Response` (`0x0340`). That is not a legal response
+/// form; it means the device does not implement descriptor responses at all. The
+/// KNX Virtual IP interface does exactly this, so the error names the pattern
+/// (rather than a bare "unexpected response") to save a field engineer from
+/// chasing a phantom protocol bug. Any other malformed answer folds in the raw
+/// APCI + payload evidence via [`raw_response_detail`].
+pub fn descriptor_response_reason(resp_apci: u16, data: &[u8]) -> String {
+    // The echo: the peer answered the read with the read's own APCI (0x0300).
+    if resp_apci == crate::apci::A_DEVICE_DESCRIPTOR_READ {
+        return format!(
+            "the device echoed the descriptor read instead of answering (APCI 0x0300); this \
+             device does not implement descriptor responses (seen on the KNX Virtual IP \
+             interface). ({})",
+            raw_response_detail(resp_apci, data)
+        );
+    }
+    format!(
+        "expected A_DeviceDescriptor_Response but the response's descriptor type (low APCI \
+         bits) is {} ({})",
+        resp_apci & 0x3f,
+        raw_response_detail(resp_apci, data),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,5 +145,41 @@ mod tests {
     #[test]
     fn raw_response_detail_handles_empty_payload() {
         assert_eq!(raw_response_detail(0x0000, &[]), "APCI 0x0000, payload []");
+    }
+
+    #[test]
+    fn descriptor_reason_names_the_echo_pattern() {
+        // The KNX Virtual IP interface answers A_DeviceDescriptor_Read with an
+        // echo of the read (0x0300) rather than a Response (0x0340). The reason
+        // must name that pattern verbatim, not report a bare "unexpected type".
+        let reason = descriptor_response_reason(crate::apci::A_DEVICE_DESCRIPTOR_READ, &[]);
+        assert!(
+            reason.contains("echoed the descriptor read instead of answering"),
+            "must name the echo: {reason}"
+        );
+        assert!(
+            reason.contains("APCI 0x0300"),
+            "must name the APCI: {reason}"
+        );
+        assert!(
+            reason.contains("does not implement descriptor responses"),
+            "must state the consequence: {reason}"
+        );
+        assert!(
+            reason.contains("KNX Virtual IP"),
+            "must name where it is seen: {reason}"
+        );
+    }
+
+    #[test]
+    fn descriptor_reason_falls_through_for_other_wrong_apci() {
+        // A genuinely wrong service (not the echo) keeps the generic
+        // "descriptor type (low APCI bits)" form with raw evidence.
+        let reason = descriptor_response_reason(crate::apci::A_PROPERTY_VALUE_RESPONSE, &[0x01]);
+        assert!(
+            reason.contains("descriptor type (low APCI bits)"),
+            "generic form: {reason}"
+        );
+        assert!(!reason.contains("echoed"), "not the echo path: {reason}");
     }
 }

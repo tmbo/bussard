@@ -209,6 +209,12 @@ enum Command {
         /// Skip the interactive confirmation (dangerous; for scripts).
         #[arg(long)]
         yes: bool,
+        /// Accept a device that reports Loaded (instead of the conformant
+        /// Loading) right after StartLoading. Off by default so real-device
+        /// behaviour stays strict; intended for KNX Virtual, which snaps to
+        /// Loaded and would otherwise fail on the first allocation.
+        #[arg(long)]
+        tolerate_nonconformant_load_states: bool,
         /// Override the gateway `host[:port]` for tunneling.
         #[arg(long, value_name = "HOST")]
         gateway: Option<String>,
@@ -486,6 +492,7 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             order_number,
             dir,
             yes,
+            tolerate_nonconformant_load_states,
             gateway,
             routing,
         } => flash_cmd::run(
@@ -495,6 +502,7 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             order_number.as_deref(),
             &dir,
             yes,
+            tolerate_nonconformant_load_states,
             conn_cmd::ConnOverrides { gateway, routing },
         ),
         Command::Plan {

@@ -79,7 +79,13 @@ fn dry_run_trace_of_real_vendor_procedures() {
             jung_seen = true;
         }
 
-        match plan_flash(&app, "1.1.4", device_mask, &BTreeMap::new()) {
+        match plan_flash(
+            &app,
+            "1.1.4",
+            device_mask,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        ) {
             Ok(plan) => {
                 planned += 1;
                 if is_jung {
