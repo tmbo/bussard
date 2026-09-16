@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 
-use crate::attrs::{attrs_map, flagset_from, get};
+use crate::attrs::{Attrs, flagset_from, get};
 use crate::dpt::parse_ets_dpt;
 use crate::error::{EtsError, Result};
 use crate::flags::FlagSet;
@@ -624,6 +624,11 @@ pub fn parse_application_program(id: &str, xml: &[u8]) -> Result<ApplicationProg
     let mut seg_capture: Option<SegField> = None;
     let mut seg_buf = String::new();
 
+    // A single attribute buffer, reused for every element. Its heap allocations
+    // (the pair list and each key/value buffer) are recycled across the whole
+    // parse instead of being freed and reallocated per element (issue #58).
+    let mut attrs = Attrs::new();
+
     loop {
         let ev = reader.read_event().map_err(|source| EtsError::Xml {
             context: context.clone(),
@@ -644,8 +649,8 @@ pub fn parse_application_program(id: &str, xml: &[u8]) -> Result<ApplicationProg
                         seg_buf.clear();
                     }
                     b"RelativeSegment" | b"AbsoluteSegment" => {
-                        let m = attrs_map(&e, &context)?;
-                        cur_segment_id = get(&m, b"Id").map(str::to_string);
+                        attrs.parse_into(&e, &context)?;
+                        cur_segment_id = get(&attrs, b"Id").map(str::to_string);
                     }
                     _ => {}
                 }
@@ -654,6 +659,7 @@ pub fn parse_application_program(id: &str, xml: &[u8]) -> Result<ApplicationProg
                     &context,
                     &mut app,
                     &mut translations,
+                    &mut attrs,
                     &mut cur_pt_id,
                     &mut cur_pt_name,
                     &mut cur_pt_kind,
@@ -673,6 +679,7 @@ pub fn parse_application_program(id: &str, xml: &[u8]) -> Result<ApplicationProg
                     &context,
                     &mut app,
                     &mut translations,
+                    &mut attrs,
                     &mut cur_pt_kind,
                     &mut cur_lp,
                     &cur_param_id,
@@ -683,7 +690,7 @@ pub fn parse_application_program(id: &str, xml: &[u8]) -> Result<ApplicationProg
                     if let (Some(field), Some(seg_id)) =
                         (seg_capture.take(), cur_segment_id.as_deref())
                     {
-                        let bytes = decode_segment_base64(&seg_buf, &context, seg_id)?;
+                        let bytes = decode_segment_base64(&seg_buf, &context, seg_id, field)?;
                         if let Some(seg) = app.code_segments.get_mut(seg_id) {
                             match field {
                                 SegField::Data => seg.data = Some(bytes),
@@ -739,69 +746,71 @@ fn handle_start(
     context: &str,
     app: &mut ApplicationProgram,
     translations: &mut TranslationCollector,
+    attrs: &mut Attrs,
     cur_pt_id: &mut Option<String>,
     cur_pt_name: &mut Option<String>,
     cur_pt_kind: &mut Option<ParameterType>,
     cur_lp: &mut Option<LoadProcedure>,
     cur_param_id: &mut Option<String>,
 ) -> Result<()> {
-    let m = attrs_map(e, context)?;
+    attrs.parse_into(e, context)?;
+    let m = &*attrs;
     match e.local_name().as_ref() {
         b"KNX" => {
             // The XML schema version is declared as the default namespace on the
             // root element, e.g. `http://knx.org/xml/project/23`.
-            app.schema_version = get(&m, b"xmlns")
+            app.schema_version = get(m, b"xmlns")
                 .and_then(|ns| ns.rsplit('/').next())
                 .map(str::to_string);
         }
         b"ApplicationProgram" => {
-            app.application_number = get(&m, b"ApplicationNumber").and_then(|s| s.parse().ok());
-            app.application_version = get(&m, b"ApplicationVersion").and_then(|s| s.parse().ok());
-            app.version = get(&m, b"ApplicationVersion").map(str::to_string);
-            if let Some(mv) = get(&m, b"MaskVersion") {
+            app.application_number = get(m, b"ApplicationNumber").and_then(|s| s.parse().ok());
+            app.application_version = get(m, b"ApplicationVersion").and_then(|s| s.parse().ok());
+            app.version = get(m, b"ApplicationVersion").map(str::to_string);
+            if let Some(mv) = get(m, b"MaskVersion") {
                 app.mask_version = Some(mv.strip_prefix("MV-").unwrap_or(mv).to_string());
             }
-            app.name = get(&m, b"Name").map(str::to_string);
-            app.load_procedure_style = get(&m, b"LoadProcedureStyle").map(str::to_string);
+            app.name = get(m, b"Name").map(str::to_string);
+            app.load_procedure_style = get(m, b"LoadProcedureStyle").map(str::to_string);
         }
-        b"RelativeSegment" => insert_segment(app, &m, SegmentKind::Relative),
-        b"AbsoluteSegment" => insert_segment(app, &m, SegmentKind::Absolute),
-        b"Language" => translations.enter_language(get(&m, b"Identifier")),
-        b"TranslationElement" => translations.enter_element(get(&m, b"RefId")),
-        b"ComObject" => insert_com_object(app, &m),
-        b"ComObjectRef" => insert_com_object_ref(app, &m),
-        b"Channel" => insert_channel(app, &m),
-        b"Argument" => insert_argument(app, &m),
+        b"RelativeSegment" => insert_segment(app, m, SegmentKind::Relative),
+        b"AbsoluteSegment" => insert_segment(app, m, SegmentKind::Absolute),
+        b"Language" => translations.enter_language(get(m, b"Identifier")),
+        b"TranslationElement" => translations.enter_element(get(m, b"RefId")),
+        b"ComObject" => insert_com_object(app, m),
+        b"ComObjectRef" => insert_com_object_ref(app, m),
+        b"Channel" => insert_channel(app, m),
+        b"Argument" => insert_argument(app, m),
         b"ParameterType" => {
-            *cur_pt_id = get(&m, b"Id").map(str::to_string);
-            *cur_pt_name = get(&m, b"Name").map(str::to_string);
+            *cur_pt_id = get(m, b"Id").map(str::to_string);
+            *cur_pt_name = get(m, b"Name").map(str::to_string);
             *cur_pt_kind = None;
         }
         b"TypeRestriction" => {
             *cur_pt_kind = Some(ParameterType::Enum {
-                size_bits: get(&m, b"SizeInBit").and_then(|s| s.parse().ok()),
+                size_bits: get(m, b"SizeInBit").and_then(|s| s.parse().ok()),
                 values: Vec::new(),
             });
         }
         b"Parameter" => {
-            *cur_param_id = insert_parameter_start(app, &m);
+            *cur_param_id = insert_parameter_start(app, m);
         }
         b"LoadProcedure" => {
             *cur_lp = Some(LoadProcedure {
-                merge_id: get(&m, b"MergeId").map(str::to_string),
+                merge_id: get(m, b"MergeId").map(str::to_string),
                 ops: Vec::new(),
             });
         }
         // A control op with children (e.g. LdCtrlCompareProp wrapping data).
         name if name.starts_with(b"LdCtrl") => {
-            push_load_op(cur_lp, e, &m);
+            push_load_op(cur_lp, e, m);
         }
         _ => {}
     }
 
     // A `<Translation>` may appear as a Start with a nested value; capture attr.
     if e.local_name().as_ref() == b"Translation" {
-        translations.record(&m, &["Name", "Text"]);
+        translations.record(m, &["Name", "Text"]);
     }
     Ok(())
 }
@@ -813,51 +822,53 @@ fn handle_empty(
     context: &str,
     app: &mut ApplicationProgram,
     translations: &mut TranslationCollector,
+    attrs: &mut Attrs,
     cur_pt_kind: &mut Option<ParameterType>,
     cur_lp: &mut Option<LoadProcedure>,
     cur_param_id: &Option<String>,
 ) -> Result<()> {
-    let m = attrs_map(e, context)?;
+    attrs.parse_into(e, context)?;
+    let m = &*attrs;
     match e.local_name().as_ref() {
-        b"ComObject" => insert_com_object(app, &m),
-        b"ComObjectRef" => insert_com_object_ref(app, &m),
-        b"Channel" => insert_channel(app, &m),
-        b"Argument" => insert_argument(app, &m),
+        b"ComObject" => insert_com_object(app, m),
+        b"ComObjectRef" => insert_com_object_ref(app, m),
+        b"Channel" => insert_channel(app, m),
+        b"Argument" => insert_argument(app, m),
         b"Parameter" => {
             // A parameter with no <Memory> child.
-            insert_parameter_start(app, &m);
+            insert_parameter_start(app, m);
         }
-        b"ParameterRef" => insert_parameter_ref(app, &m),
-        b"Memory" => attach_memory(app, cur_param_id, &m),
-        b"TranslationElement" => translations.enter_element(get(&m, b"RefId")),
-        b"Translation" => translations.record(&m, &["Name", "Text"]),
+        b"ParameterRef" => insert_parameter_ref(app, m),
+        b"Memory" => attach_memory(app, cur_param_id, m),
+        b"TranslationElement" => translations.enter_element(get(m, b"RefId")),
+        b"Translation" => translations.record(m, &["Name", "Text"]),
         // Parameter-type shapes (all self-closing except TypeRestriction).
         b"TypeNumber" => {
             *cur_pt_kind = Some(ParameterType::Int {
-                size_bits: get(&m, b"SizeInBit").and_then(|s| s.parse().ok()),
-                min: get(&m, b"minInclusive").and_then(|s| s.parse().ok()),
-                max: get(&m, b"maxInclusive").and_then(|s| s.parse().ok()),
-                signed: get(&m, b"Type") == Some("signedInt"),
+                size_bits: get(m, b"SizeInBit").and_then(|s| s.parse().ok()),
+                min: get(m, b"minInclusive").and_then(|s| s.parse().ok()),
+                max: get(m, b"maxInclusive").and_then(|s| s.parse().ok()),
+                signed: get(m, b"Type") == Some("signedInt"),
             });
         }
         b"TypeText" => {
             *cur_pt_kind = Some(ParameterType::Text {
-                size_bits: get(&m, b"SizeInBit").and_then(|s| s.parse().ok()),
+                size_bits: get(m, b"SizeInBit").and_then(|s| s.parse().ok()),
             });
         }
         b"TypeFloat" => {
             *cur_pt_kind = Some(ParameterType::Float {
-                encoding: get(&m, b"Encoding").map(str::to_string),
-                min: get(&m, b"minInclusive").and_then(|s| s.parse().ok()),
-                max: get(&m, b"maxInclusive").and_then(|s| s.parse().ok()),
+                encoding: get(m, b"Encoding").map(str::to_string),
+                min: get(m, b"minInclusive").and_then(|s| s.parse().ok()),
+                max: get(m, b"maxInclusive").and_then(|s| s.parse().ok()),
             });
         }
         b"TypeNone" => *cur_pt_kind = Some(ParameterType::None),
         b"Enumeration" => {
             if let Some(ParameterType::Enum { values, .. }) = cur_pt_kind.as_mut() {
                 if let (Some(value), Some(text)) = (
-                    get(&m, b"Value").and_then(|s| s.parse::<i64>().ok()),
-                    get(&m, b"Text"),
+                    get(m, b"Value").and_then(|s| s.parse::<i64>().ok()),
+                    get(m, b"Text"),
                 ) {
                     values.push(EnumValue {
                         value,
@@ -866,18 +877,18 @@ fn handle_empty(
                 }
             }
         }
-        b"RelativeSegment" => insert_segment(app, &m, SegmentKind::Relative),
-        b"AbsoluteSegment" => insert_segment(app, &m, SegmentKind::Absolute),
+        b"RelativeSegment" => insert_segment(app, m, SegmentKind::Relative),
+        b"AbsoluteSegment" => insert_segment(app, m, SegmentKind::Absolute),
         name if name.starts_with(b"Type") => {
             // Other type shapes (TypeColor, TypeTime, TypePicture, TypeIPAddress…).
             let kind = String::from_utf8_lossy(name).into_owned();
             *cur_pt_kind = Some(ParameterType::Other {
                 kind,
-                size_bits: get(&m, b"SizeInBit").and_then(|s| s.parse().ok()),
+                size_bits: get(m, b"SizeInBit").and_then(|s| s.parse().ok()),
             });
         }
         name if name.starts_with(b"LdCtrl") => {
-            push_load_op(cur_lp, e, &m);
+            push_load_op(cur_lp, e, m);
         }
         _ => {}
     }
@@ -910,7 +921,7 @@ fn apply_translations(app: &mut ApplicationProgram, translations: &TranslationCo
     }
 }
 
-fn insert_com_object(app: &mut ApplicationProgram, m: &HashMap<Vec<u8>, String>) {
+fn insert_com_object(app: &mut ApplicationProgram, m: &Attrs) {
     let Some(id) = get(m, b"Id") else { return };
     let id = id.to_string();
     app.com_objects.insert(
@@ -929,7 +940,7 @@ fn insert_com_object(app: &mut ApplicationProgram, m: &HashMap<Vec<u8>, String>)
     );
 }
 
-fn insert_com_object_ref(app: &mut ApplicationProgram, m: &HashMap<Vec<u8>, String>) {
+fn insert_com_object_ref(app: &mut ApplicationProgram, m: &Attrs) {
     let (Some(id), Some(ref_id)) = (get(m, b"Id"), get(m, b"RefId")) else {
         return;
     };
@@ -950,7 +961,7 @@ fn insert_com_object_ref(app: &mut ApplicationProgram, m: &HashMap<Vec<u8>, Stri
 }
 
 /// Inserts a Dynamic-section `<Channel>` keyed by its app-relative id.
-fn insert_channel(app: &mut ApplicationProgram, m: &HashMap<Vec<u8>, String>) {
+fn insert_channel(app: &mut ApplicationProgram, m: &Attrs) {
     let Some(id) = get(m, b"Id") else { return };
     let Some(rel) = app_relative_id(id, &app.id) else {
         return;
@@ -969,7 +980,7 @@ fn insert_channel(app: &mut ApplicationProgram, m: &HashMap<Vec<u8>, String>) {
 }
 
 /// Records a module `<Argument>`'s name → app-relative id (first wins).
-fn insert_argument(app: &mut ApplicationProgram, m: &HashMap<Vec<u8>, String>) {
+fn insert_argument(app: &mut ApplicationProgram, m: &Attrs) {
     let (Some(id), Some(name)) = (get(m, b"Id"), get(m, b"Name")) else {
         return;
     };
@@ -982,10 +993,7 @@ fn insert_argument(app: &mut ApplicationProgram, m: &HashMap<Vec<u8>, String>) {
 
 /// Inserts a parameter, returning its id so the caller can attach a later
 /// `<Memory>` child to it.
-fn insert_parameter_start(
-    app: &mut ApplicationProgram,
-    m: &HashMap<Vec<u8>, String>,
-) -> Option<String> {
+fn insert_parameter_start(app: &mut ApplicationProgram, m: &Attrs) -> Option<String> {
     let id = get(m, b"Id")?.to_string();
     app.parameters.insert(
         id.clone(),
@@ -1002,11 +1010,7 @@ fn insert_parameter_start(
     Some(id)
 }
 
-fn attach_memory(
-    app: &mut ApplicationProgram,
-    cur_param_id: &Option<String>,
-    m: &HashMap<Vec<u8>, String>,
-) {
+fn attach_memory(app: &mut ApplicationProgram, cur_param_id: &Option<String>, m: &Attrs) {
     let Some(pid) = cur_param_id else {
         return;
     };
@@ -1020,7 +1024,7 @@ fn attach_memory(
     }
 }
 
-fn insert_parameter_ref(app: &mut ApplicationProgram, m: &HashMap<Vec<u8>, String>) {
+fn insert_parameter_ref(app: &mut ApplicationProgram, m: &Attrs) {
     let (Some(id), Some(ref_id)) = (get(m, b"Id"), get(m, b"RefId")) else {
         return;
     };
@@ -1036,7 +1040,7 @@ fn insert_parameter_ref(app: &mut ApplicationProgram, m: &HashMap<Vec<u8>, Strin
     );
 }
 
-fn insert_segment(app: &mut ApplicationProgram, m: &HashMap<Vec<u8>, String>, kind: SegmentKind) {
+fn insert_segment(app: &mut ApplicationProgram, m: &Attrs, kind: SegmentKind) {
     let Some(id) = get(m, b"Id") else { return };
     let id = id.to_string();
     let address_or_offset = match kind {
@@ -1068,18 +1072,36 @@ enum SegField {
     Mask,
 }
 
+impl SegField {
+    /// The XML element name of this field, for error messages.
+    fn as_str(self) -> &'static str {
+        match self {
+            SegField::Data => "Data",
+            SegField::Mask => "Mask",
+        }
+    }
+}
+
 /// Decodes a base64 segment payload (whitespace tolerated), erroring with the
-/// segment id in context so a corrupt file names the offending segment.
-fn decode_segment_base64(raw: &str, context: &str, seg_id: &str) -> Result<Vec<u8>> {
+/// segment id and field (`Data`/`Mask`) in context so a corrupt file names the
+/// offending segment and which child carried the bad payload.
+fn decode_segment_base64(
+    raw: &str,
+    context: &str,
+    seg_id: &str,
+    field: SegField,
+) -> Result<Vec<u8>> {
     use base64::Engine as _;
     // ETS emits the payload as a single unbroken base64 run, but tolerate stray
     // whitespace defensively rather than fail a whole file over it.
     let trimmed: String = raw.split_whitespace().collect();
     base64::engine::general_purpose::STANDARD
         .decode(trimmed.as_bytes())
-        .map_err(|e| EtsError::Malformed {
+        .map_err(|source| EtsError::SegmentDecode {
             context: context.to_string(),
-            reason: format!("code segment {seg_id}: invalid base64 payload: {e}"),
+            segment: seg_id.to_string(),
+            field: field.as_str(),
+            source,
         })
 }
 
@@ -1104,7 +1126,7 @@ fn decode_hex_bytes(s: &str) -> Option<Vec<u8>> {
 
 /// Parses one `LdCtrl*` element into a typed [`LoadOp`], appending to the
 /// current load procedure (if any).
-fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m: &HashMap<Vec<u8>, String>) {
+fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m: &Attrs) {
     let Some(lp) = cur_lp.as_mut() else {
         return;
     };
@@ -1182,10 +1204,10 @@ fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m: &HashMap<
 }
 
 /// Returns the attribute map as sorted `(key, value)` pairs for a stable `Raw`.
-fn ordered_attrs(m: &HashMap<Vec<u8>, String>) -> Vec<(String, String)> {
+fn ordered_attrs(m: &Attrs) -> Vec<(String, String)> {
     let mut pairs: Vec<(String, String)> = m
         .iter()
-        .map(|(k, v)| (String::from_utf8_lossy(k).into_owned(), v.clone()))
+        .map(|(k, v)| (String::from_utf8_lossy(k).into_owned(), v.to_string()))
         .collect();
     pairs.sort();
     pairs
@@ -1695,5 +1717,39 @@ mod tests {
                 .as_deref(),
             Some("M-1_A-1_MD-1_A-9")
         );
+    }
+
+    #[test]
+    fn invalid_segment_base64_reports_segment_decode() -> Result<()> {
+        // A corrupt `<Data>` payload must surface as the dedicated
+        // SegmentDecode variant, naming the segment and the `Data` field, not
+        // the vague stringly Malformed catch-all.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+          <ApplicationProgram Id="M-1_A-1" Name="x">
+            <Static><LoadProcedures>
+              <RelativeSegment Id="M-1_A-1_RS-4-1-0" Size="4" LoadStateMachine="4" Offset="0">
+                <Data>@@not base64@@</Data>
+              </RelativeSegment>
+            </LoadProcedures></Static>
+          </ApplicationProgram>
+        </KNX>"#;
+        let err =
+            parse_application_program_str("M-1_A-1", xml).expect_err("corrupt base64 must fail");
+        match err {
+            EtsError::SegmentDecode { segment, field, .. } => {
+                assert_eq!(segment, "M-1_A-1_RS-4-1-0");
+                assert_eq!(field, "Data");
+            }
+            other => panic!("expected SegmentDecode, got {other:?}"),
+        }
+        // The rendered message is actionable: it names the segment and field.
+        let rendered = parse_application_program_str("M-1_A-1", xml)
+            .expect_err("corrupt base64 must fail")
+            .to_string();
+        assert!(
+            rendered.contains("M-1_A-1_RS-4-1-0") && rendered.contains("Data"),
+            "message should name segment and field: {rendered}"
+        );
+        Ok(())
     }
 }

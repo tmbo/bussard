@@ -37,7 +37,7 @@ pub use application::{
     LoadProcedure, Memory, Parameter, ParameterRef, ParameterType, ParameterTypeDecl,
     ResolvedComObject, ResolvedParameter, SegmentKind, parse_application_program,
 };
-pub use attrs::{attr_value, attrs_map, flagset_from, get, strip_bom};
+pub use attrs::{Attrs, attr_value, attrs_map, flagset_from, get, strip_bom};
 pub use dpt::{dpt_from_object_size, parse_ets_dpt};
 pub use error::{EtsError, Result};
 pub use flags::{FlagSet, parse_flag_value};
