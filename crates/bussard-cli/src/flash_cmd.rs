@@ -160,9 +160,38 @@ pub fn run(
         }
     };
 
+    // The master-template `Load` procedure for this app's mask, if the archive
+    // shipped a `knx_master.xml`. A merged application (e.g. KNX Virtual DA.tp)
+    // only carries its own app-segment blocks; the load-control ops for the
+    // table objects (obj1/obj2/obj3) live in the template and are spliced in.
+    let template_ops = app
+        .mask_version
+        .as_deref()
+        .and_then(|mask| {
+            product_data
+                .master
+                .as_ref()
+                .and_then(|m| m.full_load_procedure(mask))
+        })
+        .map(|proc| proc.ops.clone());
+
+    // The computed table images (obj1 address, obj2 association, obj3
+    // group-object) this device requires, from its model links. A merged app's
+    // template writes these objects; a self-contained (thelsing) app's does not,
+    // so an empty map simply leaves the single-object flash untouched.
+    let table_images = build_table_images(model.as_ref(), target, app);
+
     // Pre-flight: build and validate the plan (System B gate, mask match,
     // unsupported-op refusal all happen here).
-    let plan = match plan_flash(app, address, device_mask, &overrides_map, &base_offsets) {
+    let plan = match plan_flash(
+        app,
+        address,
+        device_mask,
+        &overrides_map,
+        &base_offsets,
+        template_ops.as_deref(),
+        &table_images,
+    ) {
         Ok(plan) => plan,
         Err(err) => {
             eprintln!("cannot flash: {err}");
@@ -250,6 +279,58 @@ fn collect_parameter_overrides(
             }
         }
     }
+    out
+}
+
+/// Builds the loadable table images (obj1 address, obj2 association, obj3
+/// group-object) a merged flash writes, keyed by device object index (1/2/3).
+///
+/// obj1 and obj2 come from the device's model links via
+/// [`bussard_download::compute_tables`] (the same tables `bussard apply`
+/// downloads); obj3 is the best-effort group-object descriptor table built from
+/// the app's linked com-objects (its byte format is unverified — see
+/// [`bussard_download::compute::compute_group_object_table`]). Each image
+/// includes its big-endian element-count word.
+///
+/// Returns an empty map when the model is absent or the device has no links —
+/// which leaves a self-contained (thelsing) single-object flash untouched.
+fn build_table_images(
+    model: Option<&bussard_model::Model>,
+    target: IndividualAddress,
+    app: &ApplicationProgram,
+) -> BTreeMap<u32, Vec<u8>> {
+    use bussard_download::compute::{
+        compute_group_object_table, descriptors_for_linked_objects, table_image_with_count,
+    };
+
+    let mut out = BTreeMap::new();
+    let Some(model) = model else { return out };
+    let Some(links) = model.links.links.get(&target) else {
+        return out;
+    };
+    if links.is_empty() {
+        return out;
+    }
+
+    // obj1 (address table) + obj2 (association table) from the model links.
+    let desired = bussard_download::compute_tables(links);
+    out.insert(
+        1,
+        table_image_with_count(desired.address_count(), &desired.address_elements()),
+    );
+    out.insert(
+        2,
+        table_image_with_count(desired.association_count(), &desired.association_elements()),
+    );
+
+    // obj3 (group-object table) from the app's com-objects that are linked.
+    let linked: std::collections::BTreeSet<u16> = links.iter().map(|l| l.object).collect();
+    let com_objects = app.resolved_com_objects();
+    let descriptors = descriptors_for_linked_objects(&com_objects, &linked);
+    if let Some(obj3) = compute_group_object_table(&descriptors) {
+        out.insert(3, obj3);
+    }
+
     out
 }
 
