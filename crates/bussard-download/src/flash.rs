@@ -1371,6 +1371,14 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
 
     // Segment base addresses, filled as RelSegment allocations return them.
     let mut segment_base: Option<u32> = None;
+    // The size of the most-recently allocated relative segment, remembered so a
+    // `MasterReset` step (which reboots the device and, on KNX Virtual, wipes the
+    // app object's load state back to `Unloaded` and drops the segment allocated
+    // before it) can re-open the object and re-allocate the same-sized segment on
+    // the fresh connection — updating `segment_base` to the freshly-returned
+    // address — before the resumed `WriteRelMem` targets it. `None` until the
+    // first `AllocateSegment`.
+    let mut last_alloc_size: Option<u32> = None;
     // Track (address, sample_len) of writes for the post-flash spot check.
     let mut written_samples: Vec<(u16, Vec<u8>)> = Vec::new();
     // The verified outcome, captured just before a terminal restart reboots the
@@ -1395,6 +1403,7 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                 let alloc =
                     allocate_with_context(session.l4(), app_obj, *size, &object_table).await?;
                 segment_base = Some(alloc.address);
+                last_alloc_size = Some(*size);
             }
             FlashStep::WriteRelMem { offset, image } => {
                 let base = segment_base.unwrap_or(0);
@@ -1514,12 +1523,41 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                 // non-zero A_Restart_Response error code fails here). The device
                 // then reboots and drops the L4 connection — the SPEC-REQUIRED
                 // single reconnect: wait out the reboot, re-establish the
-                // connection and re-authorize, then resume the remaining steps.
-                // Memory writes are absolute/relative-addressed and stateless, so
-                // continuing the op list on the fresh connection is correct.
+                // connection and re-authorize.
                 master_reset(session.l4(), *erase_code, *channel_number).await?;
                 tokio::time::sleep(master_reset_reboot_wait()).await;
                 session.reconnect().await?;
+
+                // The master reset ERASES the app object's load state (back to
+                // `Unloaded`) and drops the segment allocated before it (erase
+                // code 4, KNX Virtual). A resumed `WriteRelMem` would then target
+                // the now-stale pre-reset `segment_base` while the object is
+                // `Unloaded`, which the device rejects (it drops the connection
+                // after the first chunk). ETS re-runs the load-control sequence
+                // AFTER the reset before writing (real ETS→KV capture): re-open
+                // the object, then re-establish its segment and read back the
+                // (possibly relocated) base. Mirror that here so the resumed write
+                // targets valid, open memory:
+                //
+                //   1. If the object is not still open (reset wiped it to
+                //      `Unloaded`), re-open it with `StartLoading`. A lenient stack
+                //      that kept it open needs no re-open, so only drive
+                //      `StartLoading` when it actually fell out of the loading
+                //      state.
+                //   2. If a segment was allocated before the reset, re-allocate the
+                //      same size and UPDATE `segment_base` to the freshly-returned
+                //      address — the reset dropped the old placement, so the base
+                //      the following `WriteRelMem` uses must come from this fresh
+                //      allocation, not the stale pre-reset value.
+                let state = read_load_state(session.l4(), app_obj).await?;
+                if !matches!(state, LoadState::Loading | LoadState::Loaded) {
+                    start_loading(session.l4(), app_obj, &object_table).await?;
+                }
+                if let Some(size) = last_alloc_size {
+                    let alloc =
+                        allocate_with_context(session.l4(), app_obj, size, &object_table).await?;
+                    segment_base = Some(alloc.address);
+                }
             }
             FlashStep::Restart => {
                 // The terminal restart is the SUCCESSFUL last step: after it the
