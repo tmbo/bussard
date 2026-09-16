@@ -55,6 +55,7 @@ pub mod device;
 pub mod error;
 pub mod load;
 pub mod manufacturers;
+pub mod profile;
 pub mod tables;
 
 pub use broadcast::{
@@ -72,6 +73,7 @@ pub use load::{
     mcb_entry, read_load_state, read_mcb_table, read_memory, write_load_control, write_memory,
     write_memory_verified, write_property, write_table,
 };
+pub use profile::{KnxMedium, MaskFamily, MaskProfile};
 pub use tables::{
     DeviceTables, ResolvedLink, TableSource, TablesError, discover_interface_objects, read_tables,
 };
@@ -83,8 +85,12 @@ pub use tables::{
 /// access - is shared (KNX standard 3/5/1, "System B" profile). bussard's table
 /// read/write path applies to the whole family: the same interface-object and
 /// loadable-table stack is defined for 07B0 and 57B0 alike.
+///
+/// This is a thin wrapper over [`MaskProfile::is_system_b`]; the profile is the
+/// canonical seam for mask-version-specific behaviour and new code should prefer
+/// it (see [`profile`]).
 pub fn is_system_b(mask: u16) -> bool {
-    mask & 0x0FFF == 0x07B0
+    MaskProfile::from_mask(mask).is_system_b()
 }
 
 /// Maps a device descriptor mask version to a human-readable KNX system type.
@@ -102,18 +108,18 @@ pub fn is_system_b(mask: u16) -> bool {
 /// The `0x002x` masks are the BCU1-family realisation type reported by some IP
 /// interfaces; a live scan found a Jung IP interface reporting `0021` (issue
 /// #30). Unknown masks return `"System ?"`.
+///
+/// The classification is delegated to [`MaskProfile`]; this wrapper only adds
+/// the medium suffix on System B masks (`"System B (IP)"` / `"System B (RF)"`)
+/// that some callers print. New code should prefer [`MaskProfile`] and format
+/// the medium via [`KnxMedium::label`] as needed.
 pub fn system_type(mask: u16) -> &'static str {
+    // Preserve the medium-annotated System B labels this function historically
+    // returned; every other family comes straight from the profile.
     match mask {
-        0x07B0 => "System B",
         0x57B0 => "System B (IP)",
         0x27B0 => "System B (RF)",
-        0x0705 | 0x0701 | 0x0700 => "System 7",
-        0x0300 | 0x0310 | 0x0311 => "System 2",
-        // System 1 / BCU1 family: the classic 0x001x masks plus the 0x002x
-        // realisation type reported by BCU1-based IP interfaces (a live scan
-        // found a Jung IP interface reporting 0021 — issue #30).
-        0x0010..=0x0013 | 0x0020 | 0x0021 | 0x0025 => "System 1",
-        _ => "System ?",
+        _ => MaskProfile::from_mask(mask).system_type(),
     }
 }
 

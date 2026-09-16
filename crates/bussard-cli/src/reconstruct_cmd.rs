@@ -29,7 +29,7 @@ use bussard_bus::{Bus, BusHandle, ops};
 use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO, PID_SERIAL_NUMBER};
 use bussard_mgmt::tables::{DeviceTables, TablesError, read_tables};
 use bussard_mgmt::{
-    DeviceConnection, L4Channel, Layer4Connection, LeaseChannel, Timeouts, is_system_b,
+    DeviceConnection, L4Channel, Layer4Connection, LeaseChannel, MaskProfile, Timeouts,
     manufacturers, system_type,
 };
 use bussard_model::schema::{
@@ -582,8 +582,10 @@ async fn probe_line(
         .filter(|s| !s.is_empty());
     let _ = dev.disconnect().await;
 
-    // System B → read tables over a fresh Layer 4 session; others → stub.
-    let (tables, skipped) = if is_system_b(mask) {
+    // System B → read tables over a fresh Layer 4 session; others → stub. The
+    // profile makes this medium-agnostic: 07B0 (TP1), 57B0 (KNX-IP) and 27B0
+    // (RF) are all read, not just TP1.
+    let (tables, skipped) = if MaskProfile::from_mask(mask).is_system_b() {
         match read_line_tables(handle, addr, source).await {
             Ok(t) => (Some(t), None),
             Err(err) => (None, Some(format!("System B table read failed: {err}"))),
