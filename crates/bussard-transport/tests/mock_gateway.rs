@@ -72,7 +72,7 @@ async fn connect_send_ack_disconnect() {
         // 3. Server pushes an indication (seq 0) to the client and expects an ACK.
         let ga: GroupAddress = "1/2/3".parse().unwrap();
         let ia: IndividualAddress = "1.1.10".parse().unwrap();
-        let ind = CemiFrame::group_write(ga, ia, &[0]);
+        let ind = CemiFrame::group_write_packed(ga, ia, &[0]);
         let hdr = knxnet::ConnectionHeader {
             channel_id: 0x07,
             seq: 0,
@@ -99,7 +99,7 @@ async fn connect_send_ack_disconnect() {
     // Send a GroupValueWrite; the mock ACKs.
     let ga: GroupAddress = "3/0/4".parse().unwrap();
     let ia: IndividualAddress = "1.1.255".parse().unwrap();
-    conn.send(CemiFrame::group_write(ga, ia, &[1]))
+    conn.send(CemiFrame::group_write_packed(ga, ia, &[1]))
         .await
         .unwrap();
 
@@ -154,7 +154,7 @@ async fn retransmit_on_ack_timeout() {
     let ga: GroupAddress = "3/0/4".parse().unwrap();
     let ia: IndividualAddress = "1.1.255".parse().unwrap();
     // This should succeed only after the retransmit is ACKed.
-    conn.send(CemiFrame::group_write(ga, ia, &[1]))
+    conn.send(CemiFrame::group_write_packed(ga, ia, &[1]))
         .await
         .unwrap();
 
@@ -183,7 +183,7 @@ async fn duplicate_incoming_sequence_is_dropped() {
                 channel_id: 0x0A,
                 seq: 0,
             },
-            &CemiFrame::group_write(ga, ia, &[0]),
+            &CemiFrame::group_write_packed(ga, ia, &[0]),
         );
         gw.send_to(&f0, peer).await.unwrap();
         let (_p, s, _b) = recv_frame(&gw).await; // client ACK seq 0
@@ -203,7 +203,7 @@ async fn duplicate_incoming_sequence_is_dropped() {
                 channel_id: 0x0A,
                 seq: 1,
             },
-            &CemiFrame::group_write(ga2, ia, &[1]),
+            &CemiFrame::group_write_packed(ga2, ia, &[1]),
         );
         gw.send_to(&f1, peer).await.unwrap();
         let (_p, s, _b) = recv_frame(&gw).await;
@@ -227,6 +227,146 @@ async fn duplicate_incoming_sequence_is_dropped() {
         .unwrap();
     assert_eq!(
         second.frame.group_destination().unwrap().to_string(),
+        "4/5/6"
+    );
+
+    gw_task.await.unwrap();
+    let _ = conn.close().await;
+}
+
+#[tokio::test]
+async fn out_of_window_sequence_is_silently_discarded_without_ack() {
+    // Issue #60 (C2): a TUNNELING_REQUEST whose sequence is out of window (neither
+    // the expected seq nor the exact seq-1 duplicate) must be SILENTLY DISCARDED —
+    // no ACK. ACKing a frame we then drop would wrongly tell the gateway we
+    // accepted it.
+    let (addr, gw) = bind_mock().await;
+
+    let gw_task = tokio::spawn(async move {
+        let (peer, _s, _b) = recv_frame(&gw).await;
+        let resp = knxnet_frame(
+            ServiceType::ConnectResponse,
+            &connect_response_body(0x0A, &gw),
+        );
+        gw.send_to(&resp, peer).await.unwrap();
+
+        let ga: GroupAddress = "1/2/3".parse().unwrap();
+        let ia: IndividualAddress = "1.1.10".parse().unwrap();
+
+        // Deliver seq 0 (expected) and collect its ACK — this fixes the window at
+        // "expecting seq 1 next".
+        let f0 = knxnet::tunneling_request(
+            knxnet::ConnectionHeader {
+                channel_id: 0x0A,
+                seq: 0,
+            },
+            &CemiFrame::group_write_packed(ga, ia, &[0]),
+        );
+        gw.send_to(&f0, peer).await.unwrap();
+        let (_p, s, _b) = recv_frame(&gw).await;
+        assert_eq!(s, ServiceType::TunnelingAck);
+
+        // Now send a far-out-of-window seq 5. It must be silently dropped: NO ACK.
+        let ga2: GroupAddress = "4/5/6".parse().unwrap();
+        let f5 = knxnet::tunneling_request(
+            knxnet::ConnectionHeader {
+                channel_id: 0x0A,
+                seq: 5,
+            },
+            &CemiFrame::group_write_packed(ga2, ia, &[1]),
+        );
+        gw.send_to(&f5, peer).await.unwrap();
+
+        // No ACK should arrive for the out-of-window frame.
+        let mut buf = [0u8; 1024];
+        let got = tokio::time::timeout(Duration::from_millis(400), gw.recv_from(&mut buf)).await;
+        assert!(
+            got.is_err(),
+            "out-of-window sequence must NOT be ACKed (got a datagram back)"
+        );
+    });
+
+    let config = ConnectionConfig::tunnel(addr);
+    let mut conn = Transport::connect(&config).await.unwrap();
+
+    // The expected frame is delivered.
+    let first = conn.recv().await.unwrap();
+    assert_eq!(
+        first.frame.group_destination().unwrap().to_string(),
+        "1/2/3"
+    );
+    // The out-of-window frame is never delivered.
+    let dropped = tokio::time::timeout(Duration::from_millis(500), conn.recv()).await;
+    assert!(
+        dropped.is_err(),
+        "out-of-window frame must not be delivered"
+    );
+
+    gw_task.await.unwrap();
+    let _ = conn.close().await;
+}
+
+#[tokio::test]
+async fn unknown_message_code_is_acked_then_ignored() {
+    // Issue #60 (C3): a cEMI carrying an unknown message code cannot be decoded,
+    // but the in-sequence frame must still be ACKed so the gateway advances (an
+    // un-ACKed frame would be retransmitted forever and stall the tunnel). The
+    // undecodable payload is simply not delivered.
+    let (addr, gw) = bind_mock().await;
+
+    let gw_task = tokio::spawn(async move {
+        let (peer, _s, _b) = recv_frame(&gw).await;
+        let resp = knxnet_frame(
+            ServiceType::ConnectResponse,
+            &connect_response_body(0x0A, &gw),
+        );
+        gw.send_to(&resp, peer).await.unwrap();
+
+        // Build a TUNNELING_REQUEST body by hand: connection header (len 4,
+        // channel, seq 0, reserved) + a cEMI with an UNKNOWN message code 0xFF and
+        // a minimal tail. `CemiFrame::decode` rejects the message code, so this is
+        // the C3 path.
+        let mut body = vec![0x04, 0x0A, 0x00, 0x00];
+        body.extend_from_slice(&[0xFF, 0x00]); // unknown message code + AI length 0
+        let req = knxnet_frame(ServiceType::TunnelingRequest, &body);
+        gw.send_to(&req, peer).await.unwrap();
+
+        // The client must still ACK seq 0 (so the gateway advances).
+        let (_p, s, ack_body) = recv_frame(&gw).await;
+        assert_eq!(
+            s,
+            ServiceType::TunnelingAck,
+            "unknown-code frame must be ACKed"
+        );
+        let (h, _st) = knxnet::parse_tunneling_ack(&ack_body).unwrap();
+        assert_eq!(h.seq, 0);
+
+        // Then a real in-sequence frame (seq 1) proves the window advanced.
+        let ga: GroupAddress = "4/5/6".parse().unwrap();
+        let ia: IndividualAddress = "1.1.10".parse().unwrap();
+        let f1 = knxnet::tunneling_request(
+            knxnet::ConnectionHeader {
+                channel_id: 0x0A,
+                seq: 1,
+            },
+            &CemiFrame::group_write_packed(ga, ia, &[1]),
+        );
+        gw.send_to(&f1, peer).await.unwrap();
+        let (_p, s, _b) = recv_frame(&gw).await;
+        assert_eq!(s, ServiceType::TunnelingAck);
+    });
+
+    let config = ConnectionConfig::tunnel(addr);
+    let mut conn = Transport::connect(&config).await.unwrap();
+
+    // The undecodable frame is not delivered; the next delivered frame is 4/5/6,
+    // proving the window advanced past the ACKed-but-ignored unknown frame.
+    let delivered = tokio::time::timeout(Duration::from_secs(2), conn.recv())
+        .await
+        .expect("the fresh in-sequence frame arrives")
+        .unwrap();
+    assert_eq!(
+        delivered.frame.group_destination().unwrap().to_string(),
         "4/5/6"
     );
 
@@ -286,7 +426,7 @@ async fn heartbeat_is_answered() {
     let mut conn = Transport::connect(&config).await.unwrap();
     let ga: GroupAddress = "3/0/4".parse().unwrap();
     let ia: IndividualAddress = "1.1.255".parse().unwrap();
-    conn.send(CemiFrame::group_write(ga, ia, &[1]))
+    conn.send(CemiFrame::group_write_packed(ga, ia, &[1]))
         .await
         .unwrap();
     conn.close().await.unwrap();
@@ -458,7 +598,9 @@ async fn routing_loopback() {
 
     let ga: GroupAddress = "7/0/1".parse().unwrap();
     let ia: IndividualAddress = "1.1.1".parse().unwrap();
-    a.send(CemiFrame::group_write(ga, ia, &[1])).await.unwrap();
+    a.send(CemiFrame::group_write_packed(ga, ia, &[1]))
+        .await
+        .unwrap();
 
     let stamped = tokio::time::timeout(Duration::from_secs(2), b.recv())
         .await

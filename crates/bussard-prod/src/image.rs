@@ -45,6 +45,16 @@ use bussard_ets::application::{ApplicationProgram, ParameterType};
 
 use crate::error::{ProdError, Result};
 
+/// The largest parameter-memory image bussard will ever build for a single
+/// segment when the segment declares no `Size`. A segment's image is a base
+/// image plus parameters placed by byte offset; both the offset and the payload
+/// length originate in untrusted vendor XML (a `<Memory Offset>` is a raw `u32`,
+/// so `0xFFFF_FFFF` would otherwise force a ~4 GiB `Vec` allocation at flash
+/// pre-flight). Real System B application segments are tens of KiB; 1 MiB is a
+/// generous ceiling that no legitimate segment reaches, so exceeding it is
+/// treated as corrupt/hostile input and refused rather than allocated.
+const MAX_SEGMENT_IMAGE: u64 = 1024 * 1024;
+
 /// Builds the per-segment parameter memory images for `app`, applying
 /// caller-supplied overrides keyed by **app-relative `ParameterRef` id** (the
 /// `#46` model-agent contract — see [`Device::parameters`]).
@@ -106,6 +116,39 @@ pub fn compute_parameter_image(
         }
     }
 
+    // Validate every segment's decoded `<Data>`/`<Mask>` against its declared
+    // `Size` before building any image. Both payloads are base64 decoded from
+    // vendor XML; a payload longer than the segment claims (or, when `Size` is
+    // absent, longer than the sane cap) means corrupt/hostile product data, and
+    // is refused rather than seeding an oversized base image.
+    let mut seg_ids: Vec<&String> = app.code_segments.keys().collect();
+    seg_ids.sort();
+    for seg_id in seg_ids {
+        let seg = &app.code_segments[seg_id];
+        let limit = match seg.size {
+            Some(sz) => u64::from(sz),
+            None => MAX_SEGMENT_IMAGE,
+        };
+        for (what, payload) in [("<Data>", &seg.data), ("<Mask>", &seg.mask)] {
+            if let Some(bytes) = payload {
+                if bytes.len() as u64 > limit {
+                    return Err(param_err(
+                        app,
+                        seg_id,
+                        &format!(
+                            "segment {what} is {} bytes but the segment declares Size {} \
+                             (refusing an over-sized segment image)",
+                            bytes.len(),
+                            seg.size.map(|s| s.to_string()).unwrap_or_else(|| format!(
+                                "absent, capped at {MAX_SEGMENT_IMAGE}"
+                            )),
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
     // Seed each targeted segment's image from its `<Data>` base (if any), else
     // empty; grow lazily as parameters are placed.
     let mut images: BTreeMap<String, Vec<u8>> = BTreeMap::new();
@@ -150,11 +193,20 @@ pub fn compute_parameter_image(
 
         let placement = encode_value(app, pname, ptype, value.as_deref())?;
 
+        let seg_size = app.code_segments.get(seg_id).and_then(|s| s.size);
         let image = images
             .entry(seg_id.to_string())
             .or_insert_with(|| base_image(app, seg_id));
 
-        place(image, offset as usize, bit_offset, &placement);
+        place_checked(
+            app,
+            pname,
+            image,
+            offset as usize,
+            bit_offset,
+            &placement,
+            seg_size,
+        )?;
     }
 
     // Second pass: apply the caller's explicit overrides, keyed by app-relative
@@ -202,7 +254,18 @@ pub fn compute_parameter_image(
                             ),
                         )
                     })?;
-                    declared + base
+                    // Both operands are untrusted vendor/project u32s; a wrapping
+                    // add would silently place the parameter at a bogus address.
+                    declared.checked_add(base).ok_or_else(|| {
+                        param_err(
+                            app,
+                            ref_id,
+                            &format!(
+                                "declared offset {declared} plus per-instance base {base} \
+                                 overflows a 32-bit segment offset"
+                            ),
+                        )
+                    })?
                 }
                 None => {
                     // A BaseOffset with no module-instance selector on the key:
@@ -228,11 +291,20 @@ pub fn compute_parameter_image(
 
         let placement = encode_value(app, pname, ptype, Some(raw_value))?;
 
+        let seg_size = app.code_segments.get(seg_id).and_then(|s| s.size);
         let image = images
             .entry(seg_id.to_string())
             .or_insert_with(|| base_image(app, seg_id));
 
-        place(image, offset as usize, bit_offset, &placement);
+        place_checked(
+            app,
+            pname,
+            image,
+            offset as usize,
+            bit_offset,
+            &placement,
+            seg_size,
+        )?;
     }
 
     Ok(images)
@@ -523,6 +595,55 @@ fn encode_int_bits(
         bits,
         value: unsigned,
     })
+}
+
+/// Bounds a placement before it grows an image, then delegates to [`place`].
+///
+/// The parameter's byte `offset` and its payload length both originate in
+/// untrusted vendor XML, so their sum (the image end this placement forces) is
+/// checked against the segment's declared `Size` when present, and against
+/// [`MAX_SEGMENT_IMAGE`] when it is absent. A parameter whose end runs past that
+/// bound is refused by name rather than resizing the image to an absurd length
+/// (guarding the `image.resize(offset + bytes.len(), 0)` allocation in `place`).
+fn place_checked(
+    app: &ApplicationProgram,
+    pname: &str,
+    image: &mut Vec<u8>,
+    offset: usize,
+    bit_offset: u8,
+    placement: &Placement,
+    seg_size: Option<u32>,
+) -> Result<()> {
+    // The exclusive byte end this placement writes up to (bit fields round up).
+    let end: u64 = match placement {
+        Placement::Empty => offset as u64,
+        Placement::Bytes(bytes) => (offset as u64).saturating_add(bytes.len() as u64),
+        Placement::Field { bits, .. } => {
+            let start_bit = (offset as u64)
+                .saturating_mul(8)
+                .saturating_add(u64::from(bit_offset));
+            start_bit.saturating_add(u64::from(*bits)).div_ceil(8)
+        }
+    };
+    let limit = match seg_size {
+        Some(sz) => u64::from(sz),
+        None => MAX_SEGMENT_IMAGE,
+    };
+    if end > limit {
+        return Err(param_err(
+            app,
+            pname,
+            &format!(
+                "places bytes ending at offset {end} but the segment {} — refusing to \
+                 grow the image past its bounds",
+                seg_size
+                    .map(|s| format!("declares Size {s}"))
+                    .unwrap_or_else(|| format!("declares no Size (capped at {MAX_SEGMENT_IMAGE})")),
+            ),
+        ));
+    }
+    place(image, offset, bit_offset, placement);
+    Ok(())
 }
 
 /// Places an encoded value into `image` at the byte offset (and bit offset for
@@ -1031,5 +1152,74 @@ mod tests {
         // No bytes placed -> empty image (segment had no base data).
         let img = compute_parameter_image(&app, &no_overrides(), &no_bases()).unwrap();
         assert!(img["M-1_A-1_RS-1"].is_empty());
+    }
+
+    // ---------------------------------------------------------------------
+    // Issue #53: bounds on parameter placement and segment payloads.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn parameter_offset_beyond_segment_size_errors_naming_it() {
+        // The `app_with` segment declares Size=64. A byte parameter placed at
+        // offset 100 ends at 101, past the segment; refuse and name the parameter
+        // rather than resizing the image to an arbitrary length.
+        let app = app_with(&[(
+            "toofar",
+            r#"<TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" />"#,
+            Some("1"),
+            100,
+            0,
+        )]);
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases()).unwrap_err();
+        match err {
+            ProdError::ParameterImage { parameter, reason } => {
+                assert_eq!(parameter, "toofar");
+                assert!(reason.contains("Size"), "reason names the bound: {reason}");
+            }
+            other => panic!("expected ParameterImage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn segment_data_longer_than_declared_size_errors() {
+        // A <Data> payload longer than the segment's declared Size is corrupt
+        // product data; refuse rather than seeding an over-sized base image.
+        // Size=2 but the base64 `AAECAw==` decodes to 4 bytes.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-1" Name="t"><Static>
+          <Code><RelativeSegment Id="M-1_A-1_RS-1" Size="2" LoadStateMachine="4" Offset="0"><Data>AAECAw==</Data></RelativeSegment></Code>
+          <ParameterTypes><ParameterType Id="M-1_A-1_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType></ParameterTypes>
+          <Parameters><Parameter Id="M-1_A-1_P-0" Name="x" ParameterType="M-1_A-1_PT-0" Value="1"><Memory CodeSegment="M-1_A-1_RS-1" Offset="0" BitOffset="0" /></Parameter></Parameters>
+         </Static></ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-1_A-1", xml.as_bytes()).unwrap();
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases()).unwrap_err();
+        match err {
+            ProdError::ParameterImage { reason, .. } => {
+                assert!(reason.contains("Size"), "reason names Size: {reason}");
+            }
+            other => panic!("expected ParameterImage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parameter_end_past_cap_errors_when_segment_declares_no_size() {
+        // With no declared Size, a parameter whose end exceeds the 1 MiB cap is
+        // refused — no allocation of that size ever happens (a huge offset from
+        // untrusted vendor XML would otherwise force a multi-MiB resize).
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-1" Name="t"><Static>
+          <Code><RelativeSegment Id="M-1_A-1_RS-1" LoadStateMachine="4" Offset="0" /></Code>
+          <ParameterTypes><ParameterType Id="M-1_A-1_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType></ParameterTypes>
+          <Parameters><Parameter Id="M-1_A-1_P-0" Name="huge" ParameterType="M-1_A-1_PT-0" Value="1"><Memory CodeSegment="M-1_A-1_RS-1" Offset="{}" BitOffset="0" /></Parameter></Parameters>
+         </Static></ApplicationProgram></KNX>"#,
+            MAX_SEGMENT_IMAGE + 10
+        );
+        let app = parse_application_program("M-1_A-1", xml.as_bytes()).unwrap();
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases()).unwrap_err();
+        assert!(
+            matches!(err, ProdError::ParameterImage { .. }),
+            "expected ParameterImage, got {err:?}"
+        );
     }
 }

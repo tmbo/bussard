@@ -22,8 +22,11 @@ pub struct ConnOverrides {
     pub routing: bool,
 }
 
-/// Loads the model from `dir` if it exists, warning and returning `None`
-/// otherwise (the monitor still runs with numeric addresses).
+/// Loads the model from `dir` for a **monitoring** command that may safely
+/// degrade to numeric addresses. An absent directory or a parse error both warn
+/// and return `None` (monitor still runs). Write and management commands must
+/// NOT use this: a model that is present but broken must be a hard error there,
+/// so they call [`load_model_required`] instead.
 pub fn load_model_optional(dir: &Path) -> Option<Model> {
     if !dir.exists() {
         tracing::warn!(
@@ -42,6 +45,40 @@ pub fn load_model_optional(dir: &Path) -> Option<Model> {
             None
         }
     }
+}
+
+/// Loads the model from `dir` for a **write or management** command, where a
+/// broken model must never silently disable a safety gate (issue #55).
+///
+/// Distinguishes two cases the monitoring loader collapses together:
+///
+/// * The model directory is **absent** — a fresh project. Returns `Ok(None)`;
+///   the caller proceeds unmodeled (a `write --dpt` still works, and there are
+///   no protected GAs to enforce because there is no `groups.yaml` yet).
+/// * The directory is **present but fails to parse** (malformed `groups.yaml`,
+///   schema violation, duplicate device address, I/O error). Returns `Err`, so
+///   the command aborts loudly rather than proceeding with `None` — which would
+///   fail the protected-GA gate *open* exactly when the config is broken.
+///
+/// An existing-but-empty project directory (no `groups.yaml` yet) loads to the
+/// default empty model via [`Model::load`], so it is `Ok(Some(empty))` — still
+/// a fresh project with nothing to protect.
+pub fn load_model_required(dir: &Path) -> anyhow::Result<Option<Model>> {
+    if !dir.exists() {
+        tracing::warn!(
+            "model directory {} not found; proceeding without a model (fresh project)",
+            dir.display()
+        );
+        return Ok(None);
+    }
+    Model::load(dir).map(Some).map_err(|err| {
+        anyhow!(
+            "failed to load model from {}: {err}. Refusing to run a write/management command \
+             against a broken model (a parse error must not silently bypass the protected-GA \
+             gate); fix the model files or pass an explicit path",
+            dir.display()
+        )
+    })
 }
 
 /// Resolves a [`ConnectionConfig`] from the model config plus overrides.
@@ -166,5 +203,61 @@ mod tests {
     fn tunnel_without_gateway_errors() {
         let err = resolve_config(None, &ConnOverrides::default()).unwrap_err();
         assert!(err.to_string().contains("no gateway"), "got {err}");
+    }
+
+    fn tmp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "bussard-conn-{tag}-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn load_model_required_absent_dir_is_ok_none() {
+        // A fresh project: the directory does not exist. Required-load returns
+        // Ok(None) so the caller may proceed unmodeled (issue #55).
+        let dir = tmp_dir("absent");
+        let out = load_model_required(&dir).unwrap();
+        assert!(out.is_none(), "absent dir must be Ok(None)");
+    }
+
+    #[test]
+    fn load_model_required_broken_model_is_hard_error() {
+        // A present-but-malformed groups.yaml must be a hard error, NOT a silent
+        // None that would fail the protected-GA gate open (issue #55).
+        let dir = tmp_dir("broken");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Duplicate keys make the YAML parse fail.
+        std::fs::write(
+            dir.join("groups.yaml"),
+            "groups:\n  \"1/0/0\":\n    name: a\n  \"1/0/0\":\n    name: b\n",
+        )
+        .unwrap();
+        let err = load_model_required(&dir).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("failed to load model"), "got {msg}");
+        assert!(
+            msg.contains("broken model") || msg.contains("protected"),
+            "got {msg}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_model_required_empty_dir_is_fresh_project() {
+        // An existing but empty project dir (no groups.yaml) loads to the default
+        // empty model — a fresh project with nothing to protect.
+        let dir = tmp_dir("empty");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = load_model_required(&dir).unwrap();
+        assert!(out.is_some(), "empty dir loads the default model");
+        assert!(out.unwrap().groups.groups.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

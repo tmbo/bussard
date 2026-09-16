@@ -318,7 +318,7 @@ fn decoded_pair(
 ) {
     let frame = bussard_transport::TimestampedFrame {
         received_at: ts,
-        frame: bussard_transport::cemi::CemiFrame::group_write(ga(dest), ia(src), &[1]),
+        frame: bussard_transport::cemi::CemiFrame::group_write_packed(ga(dest), ia(src), &[1]),
     };
     let decoded = bussard_monitor::DecodedTelegram::from_frame(&frame, None);
     (decoded, frame)

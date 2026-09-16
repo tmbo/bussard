@@ -591,9 +591,13 @@ async fn read_table_via_memory<Ch: L4Channel>(
     let mut offset: usize = 0;
     while offset < total {
         let want = (total - offset).min(usize::from(MAX_MEMORY_READ_LEN));
-        let addr = table_addr
+        // Compute the full read address in usize FIRST, then bound it to the
+        // 16-bit A_Memory_Read space — `offset` can reach hundreds of KiB, so
+        // truncating it to u16 before the checked_add would wrap past the guard.
+        let addr = usize::from(table_addr)
             .checked_add(2)
-            .and_then(|a| a.checked_add(offset as u16))
+            .and_then(|a| a.checked_add(offset))
+            .and_then(|a| u16::try_from(a).ok())
             .ok_or_else(|| TablesError::TableUnreadable {
                 address,
                 reason: format!("{what}: table extends past the 16-bit address space"),

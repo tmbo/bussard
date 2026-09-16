@@ -69,6 +69,18 @@ impl Dpt {
         Self { main, sub }
     }
 
+    /// Whether this DPT's value may be packed into the 6-bit "small" APDU form.
+    ///
+    /// The small form is legal ONLY for sub-byte DPTs — main 1 (1-bit), 2 (2-bit)
+    /// and 3 (4-bit) — whose whole value fits in the APCI's low 6 bits. A
+    /// byte-sized-or-larger DPT (5.x, 6.x, 17.x, 18.x, 20.x, …) MUST be sent as a
+    /// separate data octet even when its value happens to be `<= 0x3F`; packing it
+    /// emits a malformed telegram the device misreads (issue #59). A DPT whose
+    /// size bussard does not model is treated as NOT packable (send it whole).
+    pub fn is_packable(&self) -> bool {
+        matches!(self.expected_size(), Some(ApduSize::Bits(_)))
+    }
+
     /// The expected APDU payload size for known main types.
     ///
     /// Returns `None` for main types whose size bussard does not model.
@@ -213,5 +225,25 @@ mod tests {
             Some(ApduSize::Bytes(14))
         );
         assert_eq!("99".parse::<Dpt>().unwrap().expected_size(), None);
+    }
+
+    #[test]
+    fn packability_follows_dpt_width_not_value() {
+        // Only sub-byte DPTs (main 1/2/3) may pack into the 6-bit APDU (issue #59).
+        for dpt in ["1.001", "2.001", "3.007"] {
+            assert!(
+                dpt.parse::<Dpt>().unwrap().is_packable(),
+                "{dpt} is sub-byte and packable"
+            );
+        }
+        // Byte-sized-or-larger DPTs are never packable, even with small values.
+        for dpt in ["5.001", "6.010", "9.001", "17.001", "18.001", "20.102"] {
+            assert!(
+                !dpt.parse::<Dpt>().unwrap().is_packable(),
+                "{dpt} is byte-sized and must NOT pack"
+            );
+        }
+        // An unmodeled DPT is treated as not packable (send whole).
+        assert!(!"99".parse::<Dpt>().unwrap().is_packable());
     }
 }

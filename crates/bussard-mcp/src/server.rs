@@ -496,7 +496,17 @@ impl BussardMcp {
             .get(&ga)
             .map(|g| g.name.clone());
 
-        match ops::write_group(handle, ga, &payload, WriteOptions::default()).await {
+        // Pack only sub-byte DPTs into the 6-bit APDU; a byte-sized DPT with a
+        // small value must be sent whole (issue #59).
+        match ops::write_group(
+            handle,
+            ga,
+            &payload,
+            dpt.is_packable(),
+            WriteOptions::default(),
+        )
+        .await
+        {
             Ok(outcome) => ok(json!({
                 "ga": ga.to_string(),
                 "ok": true,
