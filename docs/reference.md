@@ -86,8 +86,6 @@ Read a device's tables back over the bus and diff them against the model, or (wi
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
 
-A hidden diagnostic, `--l4-soak <N>`, connects once to ADDRESS and issues N harmless descriptor reads on that single connection, reporting the exact exchange count reached when the peer drops it. It measures a peer's per-connection exchange budget so `flash --reconnect-every` can be set below it. Read-only on the bus.
-
 ### `bussard import-product [FILE]`
 
 Import vendor product data (`.knxprod`): cache it under `<dir>/vendor/` and generate one model file per application program under `<dir>/models/`. Three modes: a local file (positional), `--order-number` to look the file up in the pointer index and download it, or `--list` to show the index. Details in [product-data.md](product-data.md).
@@ -125,12 +123,7 @@ Flash an application program from vendor product data into a device (the ETS-fre
 | `--order-number <ORDER>` | | Select the application by hardware order number (e.g. `AKK-0216.03`), resolved through the product's hardware catalogue. Exactly one match is required. |
 | `--dir <DIR>` | `knx` | The model directory. |
 | `--yes` | off | Skip the interactive confirmation (dangerous; for scripts). |
-| `--verify <MODE>` | `per-chunk` | How memory writes are verified. `per-chunk` reads each 12-byte chunk back right after writing it (conservative; matches real devices). `batched` writes a whole segment first and reads it back once, roughly halving the memory round-trips, at the cost of catching a corrupt write only at the end-of-segment verify. |
-| `--pace <MS>` | none | Sleep N milliseconds between memory frames. Real gateways throttle to TP1 speed themselves; simulators (KNX Virtual) ACK at loopback speed and can wedge under the burst. 25-50 is a TP1-like rate. |
-| `--reconnect-every <N>` | off | Window the download: after ~N numbered exchanges, gracefully disconnect, reconnect, and resume where the procedure left off, including inside a long memory write. Robust against a peer that drops the L4 connection at a shallow depth (KNX Virtual drops as early as 7 exchanges; use 4-5 there). Probe a peer's budget with the hidden `reconstruct <ia> --l4-soak <N>`. |
-| `--max-window-retries <N>` | `8` | Consecutive window retries without forward progress to allow on an unexpected mid-write drop before giving up. Any newly confirmed byte resets the count. Only meaningful with `--reconnect-every`. |
 | `--bcu-key <HEX>` | free access | The device's BCU access key, in hex (`FFFFFFFF` or `0x11223344`), presented with A_Authorize on every management connect. Unset presents the free-access key (`FFFFFFFF`), correct for an unkeyed device; a keyed device needs its project key here or it denies access. |
-| `--tolerate-nonconformant-load-states` | off | Accept a device that reports Loaded (instead of the conformant Loading) right after StartLoading. Needed for KNX Virtual; off by default so real-device behaviour stays strict. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
 

@@ -30,7 +30,7 @@ use std::time::Duration;
 use tokio::net::UdpSocket;
 
 use bussard_mgmt::apci;
-use bussard_mgmt::load::{self, LoadControl, LoadState, VerifyMode, write_memory_verified};
+use bussard_mgmt::load::{self, LoadControl, LoadState};
 use bussard_mgmt::{
     DeviceConnection, Layer4Connection, MgmtError, SilenceKind, Timeouts, WriteError,
 };
@@ -580,7 +580,7 @@ async fn allocate_segment_round_trip_returns_device_address() {
     assert_eq!(state, LoadState::Loading);
 
     // Allocate a 320-octet segment, fill with 0x00.
-    let seg = load::allocate_segment(&mut l4, 1, 320, Some(0x00), false)
+    let seg = load::allocate_segment(&mut l4, 1, 320, Some(0x00))
         .await
         .unwrap();
     assert_eq!(seg.address, 0x4200, "the device-placed segment address");
@@ -612,7 +612,7 @@ async fn allocate_segment_in_wrong_state_is_refused() {
         .unwrap();
 
     // Allocating while Unloaded must be refused before any write.
-    let err = load::allocate_segment(&mut l4, 1, 128, None, false)
+    let err = load::allocate_segment(&mut l4, 1, 128, None)
         .await
         .unwrap_err();
     match err {
@@ -647,7 +647,7 @@ async fn allocate_segment_refusal_surfaces_load_error() {
         .await
         .unwrap();
 
-    let err = load::allocate_segment(&mut l4, 1, 0xFFFF_FFF0, None, false)
+    let err = load::allocate_segment(&mut l4, 1, 0xFFFF_FFF0, None)
         .await
         .unwrap_err();
     match err {
@@ -656,169 +656,6 @@ async fn allocate_segment_refusal_surfaces_load_error() {
     }
     let _ = l4.disconnect().await;
     let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
-}
-
-// --- Batched verify mode (#50, item 1) ----------------------------------
-
-#[tokio::test]
-async fn batched_verify_writes_all_then_verifies_round_trip() {
-    // Batched mode: write every chunk, then read the whole range back once and
-    // compare. A clean device round-trips exactly like per-chunk.
-    let (addr, gw) = bind_mock().await;
-    let target: IndividualAddress = "1.1.4".parse().unwrap();
-    let shared: Shared = Arc::new(Mutex::new(device()));
-    let gw_task = tokio::spawn(run_mock(gw, target, shared.clone()));
-
-    let mut bus = open_bus(addr).await;
-    let source: IndividualAddress = "0.0.255".parse().unwrap();
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
-
-    // 27 bytes = three 12/12/3 write chunks.
-    let payload: Vec<u8> = (0..27u8).map(|i| i.wrapping_mul(5)).collect();
-    write_memory_verified(&mut l4, 0x4000, &payload, VerifyMode::Batched, |_| {})
-        .await
-        .unwrap();
-    let _ = l4.disconnect().await;
-
-    {
-        let d = shared.lock().unwrap();
-        for (i, b) in payload.iter().enumerate() {
-            assert_eq!(
-                d.memory.get(&(0x4000 + i as u16)).copied(),
-                Some(*b),
-                "byte {i} must have landed"
-            );
-        }
-    }
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
-}
-
-#[tokio::test]
-async fn batched_verify_reports_first_mismatch_address_and_diff() {
-    // A cell mid-range reads back wrong. Batched verify (which reads the whole
-    // range back after writing) must still name the FIRST mismatching address and
-    // carry the expected/got diff — not merely the range start.
-    let (addr, gw) = bind_mock().await;
-    let target: IndividualAddress = "1.1.4".parse().unwrap();
-    let mut dev_state = device();
-    // Corrupt 0x4011 (offset 17): it falls in the SECOND read-back chunk
-    // (0x400C..0x4018), proving the first-mismatch search is not just chunk 0.
-    dev_state.corrupt_addr = Some(0x4011);
-    dev_state.corrupt_byte = 0xFF;
-    let shared: Shared = Arc::new(Mutex::new(dev_state));
-    let gw_task = tokio::spawn(run_mock(gw, target, shared.clone()));
-
-    let mut bus = open_bus(addr).await;
-    let source: IndividualAddress = "0.0.255".parse().unwrap();
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
-
-    // 20 bytes 0x00..0x14 across two write chunks; offset 17 = 0x11 is corrupt.
-    let payload: Vec<u8> = (0..20u8).collect();
-    let err = write_memory_verified(&mut l4, 0x4000, &payload, VerifyMode::Batched, |_| {})
-        .await
-        .unwrap_err();
-    let _ = l4.disconnect().await;
-
-    match err {
-        WriteError::Mgmt(MgmtError::MemoryVerifyFailed {
-            addr,
-            expected,
-            got,
-            ..
-        }) => {
-            assert_eq!(
-                addr, 0x4011,
-                "batched verify must name the FIRST mismatching address"
-            );
-            // The expected byte at 0x4011 is 17; the device returned 0xFF.
-            assert_eq!(expected.first().copied(), Some(17));
-            assert_eq!(got.first().copied(), Some(0xFF));
-        }
-        other => panic!("expected MemoryVerifyFailed, got {other:?}"),
-    }
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
-}
-
-#[tokio::test]
-async fn batched_verify_halves_numbered_messages_to_finish_writing() {
-    // The #50 discriminator, proven by counting: to write the SAME payload,
-    // batched mode sends half the numbered messages of per-chunk *by the time the
-    // last byte is written*, because it defers all verification.
-    //
-    // Per-chunk interleaves write,read,write,read,… so writing c chunks costs 2c
-    // numbered messages. Batched writes all c chunks first (c messages), then
-    // verifies. We model a mid-session wedge: the device goes silent after a
-    // budget of exactly c numbered telegrams. Under that budget batched finishes
-    // writing every byte; per-chunk only gets ~halfway — the stall lands at 2× the
-    // byte offset, exactly the A-vs-B signal the issue describes.
-    let payload: Vec<u8> = (0..(12u16 * 6)).map(|i| i as u8).collect(); // 72 bytes
-    let chunks = payload.len().div_ceil(12); // 6 write chunks
-
-    // --- Batched under an NDT budget of `chunks`: all writes complete. ---
-    let (baddr, bgw) = bind_mock().await;
-    let target: IndividualAddress = "1.1.4".parse().unwrap();
-    let mut bdev = device();
-    bdev.silent_after_ndt = Some(chunks); // wedge after `chunks` numbered telegrams
-    let bshared: Shared = Arc::new(Mutex::new(bdev));
-    let bgw_task = tokio::spawn(run_mock(bgw, target, bshared.clone()));
-    let mut bbus = open_bus(baddr).await;
-    let source: IndividualAddress = "0.0.255".parse().unwrap();
-    let mut bl4 = Layer4Connection::connect_with(&mut bbus, target, source, fast())
-        .await
-        .unwrap();
-    // The verify phase will hit the wedge and error; we only care that every WRITE
-    // landed within the budget.
-    let _ = write_memory_verified(&mut bl4, 0x4000, &payload, VerifyMode::Batched, |_| {}).await;
-    let _ = bl4.disconnect().await;
-    {
-        let d = bshared.lock().unwrap();
-        assert_eq!(
-            d.write_count, chunks,
-            "batched must complete all {chunks} write chunks within a {chunks}-message budget"
-        );
-        for (i, b) in payload.iter().enumerate() {
-            assert_eq!(
-                d.memory.get(&(0x4000 + i as u16)).copied(),
-                Some(*b),
-                "batched: byte {i} must be written before the wedge"
-            );
-        }
-    }
-    let _ = tokio::time::timeout(Duration::from_secs(1), bgw_task).await;
-
-    // --- Per-chunk under the SAME budget: only ~half the writes complete. ---
-    let (paddr, pgw) = bind_mock().await;
-    let mut pdev = device();
-    pdev.silent_after_ndt = Some(chunks);
-    let pshared: Shared = Arc::new(Mutex::new(pdev));
-    let pgw_task = tokio::spawn(run_mock(pgw, target, pshared.clone()));
-    let mut pbus = open_bus(paddr).await;
-    let mut pl4 = Layer4Connection::connect_with(&mut pbus, target, source, fast())
-        .await
-        .unwrap();
-    let _ = write_memory_verified(&mut pl4, 0x4000, &payload, VerifyMode::PerChunk, |_| {}).await;
-    let _ = pl4.disconnect().await;
-    {
-        let d = pshared.lock().unwrap();
-        // Per-chunk interleaves a read after each write, so within a `chunks`-message
-        // budget it completes only about half the writes (⌈chunks/2⌉).
-        assert!(
-            d.write_count <= chunks.div_ceil(2),
-            "per-chunk must have written at most half ({} of {chunks}) within the same budget, \
-             got {}",
-            chunks.div_ceil(2),
-            d.write_count
-        );
-        assert!(
-            d.write_count < chunks,
-            "per-chunk must NOT have finished writing within the budget batched finished in"
-        );
-    }
-    let _ = tokio::time::timeout(Duration::from_secs(1), pgw_task).await;
 }
 
 #[tokio::test]

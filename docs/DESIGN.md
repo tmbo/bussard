@@ -215,9 +215,11 @@ ETS-free application download from a `.knxprod` into a System B device: pre-flig
 verification. The parameter image is computed from vendor defaults plus the device file's
 `parameters:` overrides, with `module_bases:` resolving per-channel placement. Hardening
 shipped along the way: A_Authorize on every management connect (`flash --bcu-key` for
-keyed devices, free access otherwise, #52), selectable verify modes (per-chunk vs
-batched), `--pace` frame pacing, and windowed reconnect downloads (`--reconnect-every` /
-`--max-window-retries`) that survive peers with a shallow per-connection exchange budget.
+keyed devices, free access otherwise, #52), per-chunk read-back verification, and strict
+load-state checking that fails fast when a device does not honour a segment allocation.
+The download runs over a single management connection for its whole duration, exactly as
+ETS does; a genuinely dead connection fails cleanly, and re-running `flash` is safe
+because the download is idempotent.
 
 **The frontier.** System 7 (mask `0705`, plus `0701`/`0700`): parsed and classified, but
 not flashable; its segment-based procedures (`LdCtrlAbsSegment`, `LdCtrlWriteMem` to
@@ -245,18 +247,19 @@ variant).
 
 ### KNX Virtual notes
 
-KNX Virtual (Windows) is the other test peer, useful for discovery, assign, and flash,
-with caveats that shaped several flash flags:
+KNX Virtual (Windows) is useful for discovery and assign, but is not a faithful flash
+target and is not what `flash` is tuned for:
 
-- It reports `Loaded` immediately after StartLoading instead of the conformant
-  `Loading`; `flash --tolerate-nonconformant-load-states` accepts that without weakening
-  real-device checks.
-- It ACKs at loopback speed and can wedge under a full-rate memory burst (#50);
-  `flash --pace 25-50` throttles to a TP1-like rate, and `--verify batched` serves as
-  the stall discriminator.
-- It drops the L4 connection after a varying, sometimes very shallow number of exchanges
-  (as few as 7, #52). `reconstruct <ia> --l4-soak <N>` measures the budget empirically;
-  `flash --reconnect-every 4-5` windows the download below it.
+- It reports `Loaded` immediately after StartLoading instead of the conformant `Loading`,
+  and it wedges and drops the L4 connection when a too-large foreign vendor application is
+  written onto a device that cannot hold it. Earlier releases carried KV-specific flags
+  (`--tolerate-nonconformant-load-states`, `--pace`, `--verify batched`, windowed
+  `--reconnect-every` reconnect downloads) to work around this. Those were later proven to
+  be papering over an over-sized-application mistake, not a real protocol issue: real
+  KNXnet/IP gateways and real devices hold one stable connection for the whole download
+  and report conformant load states, exactly as ETS does. The workarounds were removed;
+  load-state handling is now strict, so a device that cannot hold an application fails
+  fast instead of being silently overrun.
 - Management reads need a loaded application, so `reconstruct` against a fresh KV device
   has nothing to read until after a first flash.
 

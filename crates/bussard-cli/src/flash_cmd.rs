@@ -51,11 +51,6 @@ pub fn run(
     order_number: Option<&str>,
     dir: &Path,
     yes: bool,
-    tolerate_nonconformant_load_states: bool,
-    verify: bussard_mgmt::VerifyMode,
-    pace_ms: Option<u64>,
-    reconnect_every: Option<u32>,
-    max_window_retries: Option<u32>,
     bcu_key: Option<&str>,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
@@ -192,46 +187,7 @@ pub fn run(
 
     // Phase B (write): execute the flash with a progress line.
     let plan_ref = &plan;
-    let options = bussard_download::FlashOptions {
-        tolerate_nonconformant_load_states,
-        verify,
-        pace: pace_ms.map(std::time::Duration::from_millis),
-        reconnect_every,
-        // 0 = the crate default (DEFAULT_MAX_WINDOW_RETRIES); the flag overrides it.
-        max_window_retries: max_window_retries.unwrap_or(0),
-        bcu_key,
-    };
-    if let Some(n) = reconnect_every {
-        eprintln!(
-            "note: --reconnect-every {n} — the download is chunked across graceful connection \
-             windows: after ~{n} numbered exchanges the L4 connection is cycled (T_Disconnect + \
-             reconnect), both between steps AND inside a long memory write (resuming at the current \
-             offset — memory writes are absolute-addressed and stateless). Load states are \
-             persistent object state, so this lands in the same device state as one unbroken run. \
-             It also auto-retries an unexpected mid-write connection drop, so the download completes \
-             against a peer (e.g. KNX Virtual) that drops the connection at any depth."
-        );
-    }
-    if let Some(ms) = pace_ms {
-        eprintln!(
-            "note: --pace {ms} — sleeping {ms}ms between memory frames. Real gateways              throttle to TP1 speed on their own; pacing keeps simulators (KNX Virtual)              from wedging under loopback-speed bursts."
-        );
-    }
-    if tolerate_nonconformant_load_states {
-        eprintln!(
-            "note: --tolerate-nonconformant-load-states is on — a device that reports Loaded \
-             (instead of Loading) after StartLoading will be accepted. Intended for KNX Virtual; \
-             leave off for real hardware."
-        );
-    }
-    if verify == bussard_mgmt::VerifyMode::Batched {
-        eprintln!(
-            "note: --verify batched — the whole segment is written before it is read back and \
-             verified once, roughly halving the flash's memory round-trips. A corrupt write is \
-             caught at the end-of-segment verify (the first mismatching address is reported), not \
-             at the offending chunk."
-        );
-    }
+    let options = bussard_download::FlashOptions { bcu_key };
     let outcome = runtime.block_on(async move {
         let (handle, _task) = Bus::connect(config);
         if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
@@ -258,42 +214,10 @@ pub fn run(
         }
         Err(err) => {
             eprintln!("\nERROR: flash failed: {err}");
-            // A mid-download connection death with no windowing set: name the flag
-            // that makes the download robust against a fragile peer, and the KV
-            // context. Do NOT auto-enable — the operator opts in.
-            if reconnect_every.is_none() && is_mid_download_disconnect(&err) {
-                eprintln!(
-                    "\nHINT: the connection dropped mid-download. Some peers — notably KNX Virtual \
-                     — drop the L4\n\
-                     connection at a varying (and sometimes very shallow) depth (issue #52). Retry\n\
-                     with `--reconnect-every <N>` to window the download across graceful connection\n\
-                     windows — it cycles between steps AND inside a long memory write, and auto-retries\n\
-                     an unexpected drop, resuming from the last-confirmed offset (so it lands in the\n\
-                     same state as one unbroken run). KV has been observed to drop as early as 7\n\
-                     exchanges, so pick a SMALL window like `--reconnect-every 4`. Probe the peer's\n\
-                     per-connection budget first with `bussard reconstruct {target} --l4-soak <N>`."
-                );
-            }
             recovery_notice(target);
             Ok(ExitCode::FAILURE)
         }
     }
-}
-
-/// Whether a flash error is a connection death that struck *mid-download* (after
-/// at least one exchange), as opposed to the device being absent from the start.
-///
-/// The L4 layer distinguishes these: a silence after the first acknowledged
-/// exchange surfaces as [`MgmtError::MidSessionSilence`]; a bare
-/// `Disconnected`/`NoResponse` can also strike mid-procedure once the flash body
-/// is under way. All three are cases where windowing would have helped.
-fn is_mid_download_disconnect(err: &WriteError) -> bool {
-    matches!(
-        err,
-        WriteError::Mgmt(MgmtError::MidSessionSilence { .. })
-            | WriteError::Mgmt(MgmtError::Disconnected { .. })
-            | WriteError::Mgmt(MgmtError::NoResponse { .. })
-    )
 }
 
 /// Collects the target device's parameter overrides from the model, re-keyed
@@ -464,12 +388,12 @@ fn product_display(product: &ProductData) -> String {
     }
 }
 
-/// Opens a fresh L4 connection to the flash target by leasing the bus.
+/// Opens the L4 connection to the flash target by leasing the bus.
 ///
-/// A windowed download ([`bussard_download::Session`]) calls this once per
-/// connection window: each call takes a fresh [`bussard_bus::BusLease`] and builds
-/// a [`LeaseChannel`] over it, so every window observes the bus without stealing
-/// frames from other subscribers, and starts with fresh L4 sequence counters.
+/// The download ([`bussard_download::Session`]) runs over this single connection
+/// for its whole duration, like ETS: the lease takes a [`bussard_bus::BusLease`]
+/// and builds a [`LeaseChannel`] over it, so the flash observes the bus without
+/// stealing frames from other subscribers.
 struct LeaseConnector<'a> {
     handle: &'a BusHandle,
     target: IndividualAddress,
@@ -492,28 +416,6 @@ impl bussard_download::Connector for LeaseConnector<'_> {
             .await
             .map_err(WriteError::Mgmt)
     }
-
-    /// The bus actor is a self-reconnecting transport, so a windowed flash can
-    /// wait out a tunnel drop and resume (issue #52).
-    fn can_reconnect(&self) -> bool {
-        true
-    }
-
-    /// Waits for the bus actor to re-establish a dropped KNXnet/IP tunnel, mapping
-    /// the actor's [`bussard_bus::Reconnected`] outcome to the download layer's
-    /// [`bussard_download::ConnectorReconnect`].
-    async fn wait_reconnected(
-        &self,
-        timeout: std::time::Duration,
-    ) -> bussard_download::ConnectorReconnect {
-        match self.handle.wait_reconnected(timeout).await {
-            bussard_bus::Reconnected::Connected => {
-                bussard_download::ConnectorReconnect::Reconnected
-            }
-            bussard_bus::Reconnected::TimedOut => bussard_download::ConnectorReconnect::TimedOut,
-            bussard_bus::Reconnected::Closed => bussard_download::ConnectorReconnect::Closed,
-        }
-    }
 }
 
 /// Runs the on-bus flash sequence with a progress line.
@@ -529,8 +431,8 @@ async fn execute(
         target,
         source,
     };
-    // Authorize every (re)connect with the project BCU key (or free access when
-    // unset) — issue #52 finding #1. The session re-authorizes each fresh window.
+    // Authorize the management connect with the project BCU key (or free access
+    // when unset) — issue #52 finding #1.
     let mut session = bussard_download::Session::open_with_key(connector, options.bcu_key).await?;
     // The session owns the open connection; from here the flash body runs and its
     // result is captured, then the session is disconnected unconditionally below —
@@ -539,8 +441,7 @@ async fn execute(
     // the disconnect, so a mid-flash WriteError can never skip the T_Disconnect that
     // releases the L4 session. (finding 3: a stuck session after a failed flash
     // traces to a skipped disconnect; keeping the disconnect on every arm is the
-    // guarantee.) With `--reconnect-every`, the session cycles the connection at
-    // window boundaries and this final disconnect closes whichever window is open.
+    // guarantee.)
     let result = flash(&mut session, plan, options, |p| match p {
         Progress::Step {
             index,
@@ -555,9 +456,6 @@ async fn execute(
             if written == total {
                 eprintln!();
             }
-        }
-        Progress::Reconnect { window, exchanges } => {
-            eprintln!("  — reconnecting (window {window}; {exchanges} exchange(s) so far) —");
         }
     })
     .await;
@@ -667,39 +565,6 @@ fn recovery_notice(target: IndividualAddress) {
 mod tests {
     use super::*;
     use bussard_prod::parse_application_program;
-
-    #[test]
-    fn mid_download_disconnect_is_detected_for_windowing_hint() {
-        let target: IndividualAddress = "1.1.4".parse().unwrap();
-        // A mid-session silence, a mid-procedure disconnect and a mid-procedure
-        // no-response all warrant the --reconnect-every hint.
-        assert!(is_mid_download_disconnect(&WriteError::Mgmt(
-            MgmtError::MidSessionSilence {
-                address: target,
-                kind: bussard_mgmt::SilenceKind::Disconnected,
-                exchanges: 20,
-                wraps: 1,
-            }
-        )));
-        assert!(is_mid_download_disconnect(&WriteError::Mgmt(
-            MgmtError::Disconnected { address: target }
-        )));
-        assert!(is_mid_download_disconnect(&WriteError::Mgmt(
-            MgmtError::NoResponse { address: target }
-        )));
-        // A load-state error is NOT a connection death — windowing would not help,
-        // so the hint must not fire.
-        assert!(!is_mid_download_disconnect(
-            &WriteError::UnexpectedLoadState {
-                address: target,
-                object_index: 3,
-                control: bussard_mgmt::LoadControl::StartLoading,
-                expected: bussard_mgmt::LoadState::Loading,
-                actual: bussard_mgmt::LoadState::Loaded,
-                context: bussard_mgmt::LoadStateContext::default(),
-            }
-        ));
-    }
 
     /// Builds a one-device model whose device at `addr` carries `params`.
     fn model_with_params(addr: &str, params: &[(&str, &str)]) -> bussard_model::Model {
