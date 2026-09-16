@@ -7,6 +7,11 @@
 *.knxprod
 bussard-initial.md
 
+# Product-corpus download cache: vendor .knxprod files (already covered by the
+# *.knxprod rule above) plus the models/*.yaml derived from them. Ignore the whole
+# cache dir so nothing downloaded or generated under it is ever committed.
+tests-support/product-corpus/cache/
+
 # Local KNX installation data
 knx/
 captures/
