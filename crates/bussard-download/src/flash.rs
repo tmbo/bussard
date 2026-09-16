@@ -29,6 +29,7 @@
 //! | `WriteRelMem{off,sz}`| [`write_memory`]`(base+off, image)`                 | `image` is the code segment `.data` (`AppliesTo=full`) or the computed parameter image (`AppliesTo=par`) |
 //! | `WriteMem{addr,sz}` | [`write_memory`]`(addr, image)`                      | absolute placement (an absolute segment's data) |
 //! | `WriteProp{ot,pid}` | [`write_property`]                                   | a property write, echo-validated |
+//! | `CompareProp{oi,pid}`| [`compare_property`]                                | reads the property and byte-compares it (under `Mask`) against the op's `InlineData`; a mismatch fails the flash |
 //! | `LoadImageProp{oi,pid}`| [`read_mcb_table`]                                | reads the object's `PID_MCB_TABLE` and checks the device CRC over the stored segment against the written image |
 //! | `Restart`           | `restart`                                            | last op; fire-and-forget |
 //!
@@ -60,8 +61,8 @@ use std::collections::BTreeMap;
 
 use bussard_mgmt::connection::{L4Channel, Layer4Connection};
 use bussard_mgmt::load::{
-    self, LoadControl, LoadState, WriteError, allocate_segment, read_load_state, read_mcb_table,
-    write_load_control, write_memory,
+    self, LoadControl, LoadState, WriteError, allocate_segment, compare_property, read_load_state,
+    read_mcb_table, write_load_control, write_memory,
 };
 use bussard_mgmt::tables::{OT_APPLICATION_PROGRAM, PID_OBJECT_TYPE};
 use bussard_prod::application::{ApplicationProgram, LoadOp, LoadProcedure, SegmentKind};
@@ -101,6 +102,23 @@ pub enum FlashStep {
         obj_type: u32,
         /// The property id.
         prop_id: u32,
+    },
+    /// Verify an interface-object property against expected data
+    /// (`LdCtrlCompareProp`) — the read-only precondition check that is the twin
+    /// of [`FlashStep::WriteProp`]. Reads the property and byte-compares it
+    /// (under the optional mask) against the op's `InlineData`; a mismatch fails
+    /// the flash. A `Range`-only compare (no `InlineData`) carries no `expected`
+    /// bytes and is a no-op confirm, kept so the procedure still lowers whole.
+    CompareProp {
+        /// The interface-object index (`ObjIdx`) whose property to read.
+        obj_idx: u32,
+        /// The property id (`PropId`) to compare.
+        prop_id: u32,
+        /// The expected property bytes (decoded `InlineData`), or `None` for a
+        /// `Range`-only op with no literal expectation to byte-compare.
+        expected: Option<Vec<u8>>,
+        /// The comparison mask (decoded `Mask`); `None` compares every byte.
+        mask: Option<Vec<u8>>,
     },
     /// Validate a loadable object's image via its memory-control-block table
     /// (`LdCtrlLoadImageProp`). After the object is `Loaded`, read its
@@ -220,7 +238,8 @@ pub enum PlanError {
         "load procedure contains the unsupported operation {op} — \
          `bussard flash` cannot execute it and refuses the procedure rather than \
          leaving the device partially flashed (supported: Unload/Load/LoadCompleted/\
-         RelSegment/WriteRelMem/WriteMem/WriteProp/Restart on a single-LSM System B device)"
+         RelSegment/WriteRelMem/WriteMem/WriteProp/CompareProp/LoadImageProp/Restart on a \
+         single-LSM System B device)"
     )]
     UnsupportedOp {
         /// A human description of the offending op.
@@ -435,12 +454,16 @@ pub fn plan_flash(
     }
 
     // Resolve the parameter images once, up front (used by AppliesTo=par writes).
-    let param_images = bussard_prod::compute_parameter_image(app, overrides).map_err(|e| {
-        PlanError::UnresolvableImage {
+    // `overrides` is keyed by app-relative ParameterRef id (the #46 contract);
+    // the caller re-keys the device file's `parameters:` block before calling.
+    // No per-instance base offsets are supplied here (they live in the project,
+    // not in the product data): a module-instance override therefore refuses at
+    // pre-flight rather than misplacing a byte — see `compute_parameter_image`.
+    let param_images = bussard_prod::compute_parameter_image(app, overrides, &BTreeMap::new())
+        .map_err(|e| PlanError::UnresolvableImage {
             step: 0,
             reason: format!("computing the parameter image: {e}"),
-        }
-    })?;
+        })?;
 
     // 4. Validate + lower each op into a FlashStep.
     let mut steps = Vec::new();
@@ -539,6 +562,30 @@ pub fn plan_flash(
             LoadOp::WriteProp { obj_type, prop_id } => {
                 let (obj_type, prop_id) = (obj_type.unwrap_or(0), prop_id.unwrap_or(0));
                 steps.push(FlashStep::WriteProp { obj_type, prop_id });
+            }
+
+            LoadOp::CompareProp {
+                obj_idx,
+                prop_id,
+                inline_data,
+                mask,
+                range,
+                ..
+            } => {
+                // A property-verify precondition. The expected bytes come from the
+                // op's own `InlineData` (resolved at parse time), so this lowers
+                // with no device access — a fully-executable read-and-compare.
+                // A `Range`-only op carries no literal bytes; keep it as a
+                // no-expectation confirm so the whole procedure still lowers
+                // rather than refusing (its numeric-range semantics are not
+                // needed to complete the download).
+                let _ = range;
+                steps.push(FlashStep::CompareProp {
+                    obj_idx: obj_idx.unwrap_or(0),
+                    prop_id: prop_id.unwrap_or(0),
+                    expected: inline_data.clone(),
+                    mask: mask.clone(),
+                });
             }
 
             LoadOp::LoadImageProp {
@@ -859,6 +906,28 @@ pub async fn flash<Ch: L4Channel, F: FnMut(Progress)>(
                 // op is recorded for the trace and skipped. (A future revision
                 // will carry the property value once bussard-prod exposes it.)
             }
+            FlashStep::CompareProp {
+                obj_idx,
+                prop_id,
+                expected,
+                mask,
+            } => {
+                // Read the named interface object's property and compare it
+                // against the vendor's expected data. A `Range`-only op has no
+                // literal expectation (`expected` is None) and is skipped. The op
+                // names the object by its own index (e.g. 0 = the device object),
+                // read directly — not the discovered app object.
+                if let Some(expected) = expected {
+                    compare_property(
+                        l4,
+                        (*obj_idx).min(u32::from(u8::MAX)) as u8,
+                        (*prop_id).min(u32::from(u8::MAX)) as u8,
+                        expected,
+                        mask.as_deref(),
+                    )
+                    .await?;
+                }
+            }
             FlashStep::LoadImageProp {
                 prop_id,
                 count,
@@ -962,6 +1031,18 @@ fn step_label(step: &FlashStep) -> String {
         FlashStep::WriteProp { obj_type, prop_id } => {
             format!("write property (object type {obj_type}, PID {prop_id})")
         }
+        FlashStep::CompareProp {
+            obj_idx,
+            prop_id,
+            expected,
+            ..
+        } => match expected {
+            Some(bytes) => format!(
+                "verify property (object {obj_idx}, PID {prop_id} == {} byte(s))",
+                bytes.len()
+            ),
+            None => format!("verify property (object {obj_idx}, PID {prop_id}, range — skipped)"),
+        },
         FlashStep::LoadImageProp {
             obj_idx,
             prop_id,
@@ -1173,6 +1254,98 @@ mod tests {
         ));
         // The trace names the verify step.
         assert!(trace(&plan).iter().any(|l| l.contains("verify image")));
+    }
+
+    #[test]
+    fn plan_lowers_compare_prop() {
+        // The MDT SCN-DA64x DALI-gateway shape: a CompareProp precondition (with
+        // InlineData + OnError child) before the download proper. It must lower to
+        // an executable CompareProp step carrying the expected bytes, not refuse.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-4" ApplicationNumber="8" ApplicationVersion="1"
+            MaskVersion="MV-07B0" Name="DALI" LoadProcedureStyle="MergedProcedure">
+          <Static>
+           <Code><RelativeSegment Id="M-1_A-4_RS-1" Size="4" LoadStateMachine="4" Offset="0"><Data>AAECAw==</Data></RelativeSegment></Code>
+           <LoadProcedures>
+            <LoadProcedure MergeId="1">
+             <LdCtrlUnload LsmIdx="4" />
+             <LdCtrlCompareProp InlineData="00000001620100000000" ObjIdx="0" PropId="78">
+              <OnError Cause="CompareMismatch" MessageRef="M-1_A-4_M-1" />
+             </LdCtrlCompareProp>
+             <LdCtrlCompareProp InlineData="00010000" Mask="00FF0000" ObjIdx="0" PropId="19" />
+             <LdCtrlLoad LsmIdx="4" />
+             <LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="4" />
+             <LdCtrlWriteRelMem AppliesTo="full" ObjIdx="0" Offset="0" Size="4" />
+             <LdCtrlLoadCompleted LsmIdx="4" />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-1_A-4", xml.as_bytes()).unwrap();
+        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides()).unwrap();
+
+        let compares: Vec<&FlashStep> = plan
+            .steps
+            .iter()
+            .filter(|s| matches!(s, FlashStep::CompareProp { .. }))
+            .collect();
+        assert_eq!(compares.len(), 2, "both CompareProp ops lower");
+        match compares[0] {
+            FlashStep::CompareProp {
+                obj_idx,
+                prop_id,
+                expected,
+                mask,
+            } => {
+                assert_eq!(*obj_idx, 0);
+                assert_eq!(*prop_id, 78);
+                assert_eq!(
+                    expected.as_deref(),
+                    Some([0x00, 0x00, 0x00, 0x01, 0x62, 0x01, 0x00, 0x00, 0x00, 0x00].as_slice())
+                );
+                assert!(mask.is_none());
+            }
+            other => panic!("expected CompareProp, got {other:?}"),
+        }
+        // The masked compare carries its mask.
+        assert!(matches!(
+            compares[1],
+            FlashStep::CompareProp {
+                mask: Some(_),
+                prop_id: 19,
+                ..
+            }
+        ));
+        // The trace names the verify-property step.
+        assert!(trace(&plan).iter().any(|l| l.contains("verify property")));
+    }
+
+    #[test]
+    fn plan_refuses_unknown_parameter_override_key() {
+        // A parameter override naming a ref-id this application does not define is
+        // a pre-flight refusal that names the offending key — the device is never
+        // touched with an unresolvable parameter image.
+        let app = fabricated_app();
+        let mut ov = BTreeMap::new();
+        ov.insert("P-999_R-1".to_string(), "1".to_string());
+        let err = plan_flash(&app, "1.1.4", 0x07B0, &ov).unwrap_err();
+        match err {
+            PlanError::UnresolvableImage { reason, .. } => {
+                assert!(reason.contains("P-999"), "must name the key: {reason}");
+            }
+            other => panic!("expected UnresolvableImage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_applies_parameter_override_to_image() {
+        // A valid ref-id override changes the computed parameter image the plan
+        // carries (proving the re-keyed override flows into plan_flash).
+        let app = fabricated_app();
+        let mut ov = BTreeMap::new();
+        ov.insert("P-0_R-1".to_string(), "99".to_string());
+        let plan = plan_flash(&app, "1.1.4", 0x07B0, &ov).unwrap();
+        assert_eq!(plan.param_images["M-1_A-1_RS-2"], vec![99]);
     }
 
     #[test]

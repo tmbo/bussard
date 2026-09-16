@@ -45,7 +45,11 @@ use bussard_ets::application::{ApplicationProgram, ParameterType};
 
 use crate::error::{ProdError, Result};
 
-/// Builds the per-segment parameter memory images for `app`.
+/// Builds the per-segment parameter memory images for `app`, applying
+/// caller-supplied overrides keyed by **app-relative `ParameterRef` id** (the
+/// `#46` model-agent contract — see [`Device::parameters`]).
+///
+/// [`Device::parameters`]: bussard_model::schema::Device::parameters
 ///
 /// For every parameter carrying a `<Memory>` location, the effective value is
 /// resolved through the override chain (lowest to highest precedence):
@@ -55,19 +59,39 @@ use crate::error::{ProdError, Result};
 /// 3. the value of the *first* `ParameterRef` pointing at the parameter that
 ///    carries a `Value` (refs are the per-channel instances; a single-instance
 ///    parameter has one ref),
-/// 4. `overrides[parameter name]`, the caller's explicit choice.
+/// 4. `overrides[ref-id]`, the caller's explicit choice, keyed by the
+///    app-relative `ParameterRef` id (e.g. `MD-1_M-3_MI-1_P-3_R-45` or
+///    `P-1312_R-2140`) — **not** the parameter name, which is provably
+///    non-unique (module repetition and multi-ref parameters).
 ///
 /// The resolved value is encoded MSB-first big-endian into the byte image keyed
 /// by the memory's `CodeSegment`. Returns a map from segment id to its image.
 ///
+/// # Module-instance offsets
+///
+/// A module parameter (id `MD-<d>_..._P-<p>`, whose `<Memory>` carries a
+/// [`BaseOffset`](bussard_ets::application::Memory::base_offset)) is instantiated
+/// once per channel; each instance places its value at
+/// `declared_offset + instance_base`, where `instance_base` is the module
+/// instance's value for the argument the `BaseOffset` names. That per-instance
+/// value lives in the **project** (`ModuleInstance` data), not in the
+/// application program, so a caller that knows it passes it in `base_offsets`,
+/// keyed by the module-instance selector (`MD-<d>_M-<m>_MI-<n>`). A module
+/// override whose selector is absent from `base_offsets` **cannot be placed**
+/// without guessing its address, so it is refused (see Errors) rather than
+/// written to the wrong byte. Plain (non-module) parameters ignore `base_offsets`
+/// entirely — their declared offset is absolute within the segment.
+///
 /// # Errors
 ///
-/// Returns [`ProdError::ParameterImage`] naming the offending parameter if a
-/// value cannot be parsed for its type, exceeds the field's declared width, or
-/// the parameter's memory location is incomplete.
+/// Returns [`ProdError::ParameterImage`] naming the offending parameter/key if a
+/// value cannot be parsed for its type, exceeds the field's declared width, its
+/// memory location is incomplete, or a module-instance override cannot be placed
+/// because its per-instance base offset was not supplied in `base_offsets`.
 pub fn compute_parameter_image(
     app: &ApplicationProgram,
     overrides: &BTreeMap<String, String>,
+    base_offsets: &BTreeMap<String, u32>,
 ) -> Result<BTreeMap<String, Vec<u8>>> {
     // Pre-index the first ParameterRef Value override per parameter id, in a
     // deterministic order (sorted by ref id) so a fixed ref wins reproducibly.
@@ -86,7 +110,10 @@ pub fn compute_parameter_image(
     // empty; grow lazily as parameters are placed.
     let mut images: BTreeMap<String, Vec<u8>> = BTreeMap::new();
 
-    // Deterministic parameter order: by parameter id.
+    // First, lay every parameter's default/ref value at its declared position
+    // (the vendor-default image). Module parameters are placed at their declared,
+    // non-instanced offset here — that seeds the base image; overrides then
+    // re-place per-instance below.
     let mut params: Vec<_> = app.parameters.values().collect();
     params.sort_by(|a, b| a.id.cmp(&b.id));
 
@@ -101,16 +128,15 @@ pub fn compute_parameter_image(
 
         let pname = param.name.as_deref().unwrap_or(&param.id);
 
-        // Resolve the effective value through the precedence chain.
-        let value: Option<String> = param
-            .name
-            .as_deref()
-            .and_then(|n| overrides.get(n))
-            .cloned()
-            .or_else(|| ref_value.get(param.id.as_str()).map(|s| s.to_string()))
+        // Resolve the effective *default* value (chain steps 1-3); explicit
+        // ref-id overrides (step 4) are applied in a second pass so a module
+        // parameter's default lands at its declared offset while each overridden
+        // instance lands at its own instance offset.
+        let value: Option<String> = ref_value
+            .get(param.id.as_str())
+            .map(|s| s.to_string())
             .or_else(|| param.default.clone());
 
-        // The parameter type governs width and encoding.
         let ptype = param
             .parameter_type
             .as_deref()
@@ -122,10 +148,86 @@ pub fn compute_parameter_image(
         };
         let bit_offset = mem.bit_offset.unwrap_or(0);
 
-        // Encode the value into bytes plus a bit-width for sub-byte placement.
         let placement = encode_value(app, pname, ptype, value.as_deref())?;
 
-        // Ensure the segment image exists and is large enough.
+        let image = images
+            .entry(seg_id.to_string())
+            .or_insert_with(|| base_image(app, seg_id));
+
+        place(image, offset as usize, bit_offset, &placement);
+    }
+
+    // Second pass: apply the caller's explicit overrides, keyed by app-relative
+    // ParameterRef id. Each key resolves to its application `Parameter` (dropping
+    // the module-instance selector and the `_R-<r>` suffix) and, for a module
+    // parameter, to the module-instance selector that picks its per-instance base
+    // offset.
+    for (ref_id, raw_value) in overrides {
+        let resolved = resolve_override_key(app, ref_id)?;
+        let param = resolved.param;
+        let pname = param.name.as_deref().unwrap_or(&param.id);
+
+        let Some(mem) = param.memory.as_ref() else {
+            // A display-only parameter (no <Memory>) never reaches an image; an
+            // override targeting one is a caller error worth surfacing.
+            return Err(param_err(
+                app,
+                ref_id,
+                "parameter has no <Memory> location, so it cannot be flashed",
+            ));
+        };
+        let Some(seg_id) = mem.code_segment.as_deref() else {
+            return Err(param_err(app, ref_id, "memory block names no CodeSegment"));
+        };
+        let Some(declared) = mem.offset else {
+            return Err(param_err(app, ref_id, "memory block is missing its Offset"));
+        };
+        let bit_offset = mem.bit_offset.unwrap_or(0);
+
+        // Resolve the effective byte offset. A module parameter's declared offset
+        // is instance-relative: add the per-instance base the caller supplied for
+        // this module-instance selector. Refuse rather than misplace when the
+        // base is needed but absent.
+        let offset = if mem.base_offset.is_some() {
+            match resolved.module_instance.as_deref() {
+                Some(selector) => {
+                    let base = base_offsets.get(selector).copied().ok_or_else(|| {
+                        param_err(
+                            app,
+                            ref_id,
+                            &format!(
+                                "is a module-instance parameter whose per-instance base offset \
+                                 (selector {selector}) was not supplied; cannot place it without \
+                                 guessing its address"
+                            ),
+                        )
+                    })?;
+                    declared + base
+                }
+                None => {
+                    // A BaseOffset with no module-instance selector on the key:
+                    // the parameter is module-relative but the override did not
+                    // name an instance, so its address is undetermined.
+                    return Err(param_err(
+                        app,
+                        ref_id,
+                        "is a module parameter but its key carries no _M-<m>_MI-<n> \
+                         instance selector; cannot determine its per-instance offset",
+                    ));
+                }
+            }
+        } else {
+            declared
+        };
+
+        let ptype = param
+            .parameter_type
+            .as_deref()
+            .and_then(|id| app.parameter_types.get(id))
+            .map(|d| &d.kind);
+
+        let placement = encode_value(app, pname, ptype, Some(raw_value))?;
+
         let image = images
             .entry(seg_id.to_string())
             .or_insert_with(|| base_image(app, seg_id));
@@ -134,6 +236,89 @@ pub fn compute_parameter_image(
     }
 
     Ok(images)
+}
+
+/// A resolved override key: the application `Parameter` it names and, for a
+/// module parameter, the module-instance selector (`MD-<d>_M-<m>_MI-<n>`) that
+/// picks its per-instance base offset.
+struct ResolvedOverride<'a> {
+    param: &'a bussard_ets::application::Parameter,
+    /// The `MD-<d>_M-<m>_MI-<n>` selector for a module parameter, else `None`.
+    module_instance: Option<String>,
+}
+
+/// Resolves an app-relative `ParameterRef` id (the part after `@` in a device
+/// parameter key) to its application `Parameter` and module-instance selector.
+///
+/// The ref id preserves the module-instance selector and ends in `_R-<r>`; the
+/// application parameter id is the ref id with the `_R-<r>` suffix and the
+/// `_M-<m>_MI-<n>` selector removed (mirroring the model's `key_to_param_id`).
+/// Both the app-relative id (e.g. `MD-1_P-3`) and the fully-qualified id
+/// (`<app>_MD-1_P-3`) are tried, so the map can be keyed either way.
+fn resolve_override_key<'a>(
+    app: &'a ApplicationProgram,
+    ref_id: &str,
+) -> Result<ResolvedOverride<'a>> {
+    // Strip the trailing `_R-<r>` ref suffix to get the parameter ref.
+    let param_ref = ref_id
+        .rsplit_once("_R-")
+        .map(|(head, _)| head)
+        .ok_or_else(|| {
+            param_err(
+                app,
+                ref_id,
+                "is not a valid parameter key (no _R-<r> ref suffix)",
+            )
+        })?;
+
+    // Strip a module-instance selector, if present, recording it.
+    let (param_rel, module_instance) = split_module_instance(param_ref);
+
+    // Look the parameter up by its full id (app-prefixed) or its app-relative id.
+    let full = format!("{}_{param_rel}", app.id);
+    let param = app
+        .parameters
+        .get(&full)
+        .or_else(|| app.parameters.get(param_rel.as_str()))
+        .ok_or_else(|| {
+            param_err(
+                app,
+                ref_id,
+                &format!("names parameter {param_rel}, which this application does not define"),
+            )
+        })?;
+
+    Ok(ResolvedOverride {
+        param,
+        module_instance,
+    })
+}
+
+/// Splits an app-relative parameter ref into `(param_rel, module_instance)`.
+///
+/// For a module ref `MD-<d>_M-<m>_MI-<n>_<param>` returns
+/// (`MD-<d>_<param>`, `Some("MD-<d>_M-<m>_MI-<n>")`); for a plain ref returns
+/// the ref unchanged and `None`. Mirrors the model's `strip_module_instance`.
+fn split_module_instance(param_ref: &str) -> (String, Option<String>) {
+    if !param_ref.starts_with("MD-") {
+        return (param_ref.to_string(), None);
+    }
+    let Some(m_pos) = param_ref.find("_M-") else {
+        return (param_ref.to_string(), None);
+    };
+    let module_def = &param_ref[..m_pos]; // "MD-1"
+    let after = &param_ref[m_pos + 1..]; // "M-3_MI-1_P-3"
+    let Some(mi_pos) = after.find("_MI-") else {
+        return (param_ref.to_string(), None);
+    };
+    let rest = &after[mi_pos + "_MI-".len()..]; // "1_P-3"
+    let Some(obj_pos) = rest.find('_') else {
+        return (param_ref.to_string(), None);
+    };
+    let instance = &rest[..obj_pos]; // "1"
+    let param_part = &rest[obj_pos + 1..]; // "P-3"
+    let selector = format!("{module_def}_{}_MI-{instance}", &after[..mi_pos]);
+    (format!("{module_def}_{param_part}"), Some(selector))
 }
 
 /// The base image for a segment: its decoded `<Data>` if present, else empty.
@@ -429,6 +614,10 @@ mod tests {
         BTreeMap::new()
     }
 
+    fn no_bases() -> BTreeMap<String, u32> {
+        BTreeMap::new()
+    }
+
     /// Builds a one-segment app whose parameters are described inline. `params`
     /// is a list of `(name, type_xml, value_attr, offset, bit_offset)`; the type
     /// xml is the `<Type…/>` element for a `<ParameterType>`.
@@ -460,7 +649,7 @@ mod tests {
     }
 
     fn image_of(app: &ApplicationProgram) -> Vec<u8> {
-        let m = compute_parameter_image(app, &no_overrides()).unwrap();
+        let m = compute_parameter_image(app, &no_overrides(), &no_bases()).unwrap();
         m.get("M-1_A-1_RS-1").cloned().unwrap_or_default()
     }
 
@@ -575,7 +764,7 @@ mod tests {
             0,
             0,
         )]);
-        let err = compute_parameter_image(&app, &no_overrides()).unwrap_err();
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases()).unwrap_err();
         assert!(err.to_string().contains("mode"), "{err}");
     }
 
@@ -596,7 +785,7 @@ mod tests {
             0,
             0,
         )]);
-        let err = compute_parameter_image(&app, &no_overrides()).unwrap_err();
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases()).unwrap_err();
         assert!(err.to_string().contains("label"), "{err}");
     }
 
@@ -622,7 +811,7 @@ mod tests {
             0,
             0,
         )]);
-        let err = compute_parameter_image(&app, &no_overrides()).unwrap_err();
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases()).unwrap_err();
         let s = err.to_string();
         assert!(s.contains("level"), "{s}");
         assert!(s.contains("fit") || s.contains("maximum"), "{s}");
@@ -637,7 +826,7 @@ mod tests {
             0,
             0,
         )]);
-        let err = compute_parameter_image(&app, &no_overrides()).unwrap_err();
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases()).unwrap_err();
         assert!(err.to_string().contains("minimum"), "{err}");
     }
 
@@ -671,14 +860,124 @@ mod tests {
         let app = parse_application_program("M-1_A-1", xml.as_bytes()).unwrap();
 
         // No override: ref Value 75 wins over default 50.
-        let img = compute_parameter_image(&app, &no_overrides()).unwrap();
+        let img = compute_parameter_image(&app, &no_overrides(), &no_bases()).unwrap();
         assert_eq!(img["M-1_A-1_RS-1"][0], 75);
 
-        // User override 90 beats the ref.
+        // User override 90 beats the ref. The override is keyed by the
+        // app-relative ParameterRef id (P-0_R-1), NOT the parameter name.
+        let mut ov = BTreeMap::new();
+        ov.insert("P-0_R-1".to_string(), "90".to_string());
+        let img = compute_parameter_image(&app, &ov, &no_bases()).unwrap();
+        assert_eq!(img["M-1_A-1_RS-1"][0], 90);
+
+        // The fully-qualified ref id (app-prefixed) resolves identically.
+        let mut ov = BTreeMap::new();
+        ov.insert("M-1_A-1_P-0_R-1".to_string(), "13".to_string());
+        let img = compute_parameter_image(&app, &ov, &no_bases()).unwrap();
+        assert_eq!(img["M-1_A-1_RS-1"][0], 13);
+    }
+
+    #[test]
+    fn override_by_name_no_longer_applies() {
+        // The old (broken) behaviour keyed overrides by parameter NAME. A name
+        // key must now be a no-op resolution failure — proving the contract flip
+        // to ref-id keying. A name is not a valid `..._R-<r>` ref id, so it is
+        // rejected with the key named.
+        let app = app_with(&[(
+            "thr",
+            r#"<TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" />"#,
+            Some("50"),
+            0,
+            0,
+        )]);
         let mut ov = BTreeMap::new();
         ov.insert("thr".to_string(), "90".to_string());
-        let img = compute_parameter_image(&app, &ov).unwrap();
-        assert_eq!(img["M-1_A-1_RS-1"][0], 90);
+        let err = compute_parameter_image(&app, &ov, &no_bases()).unwrap_err();
+        assert!(err.to_string().contains("thr"), "{err}");
+        assert!(err.to_string().contains("ref suffix"), "{err}");
+    }
+
+    #[test]
+    fn module_instances_land_at_distinct_offsets() {
+        // One module parameter (MD-1_P-3, declared Offset 1, BaseOffset naming
+        // MDA_P_Base) instantiated as two channels. Two overrides, keyed by their
+        // distinct module-instance ref ids, must land at distinct effective
+        // offsets = declared 1 + the per-instance base the caller supplies.
+        // Evidence-anchored: the Jung MD-1 bases 310 (M-1_MI-1) and 442 (M-3_MI-1)
+        // put P-3 at 311 and 443.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-0004_A-1" Name="Jung"><Static>
+          <Code><RelativeSegment Id="M-0004_A-1_RS-1" Size="512" LoadStateMachine="4" Offset="0" /></Code>
+          <ParameterTypes><ParameterType Id="M-0004_A-1_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType></ParameterTypes>
+          <Parameters>
+           <Parameter Id="M-0004_A-1_MD-1_P-3" Name="_VA_Label" ParameterType="M-0004_A-1_PT-0" Value="0">
+            <Memory CodeSegment="M-0004_A-1_RS-1" Offset="1" BitOffset="0" BaseOffset="M-0004_A-1_MD-1_A-1" />
+           </Parameter>
+          </Parameters>
+         </Static></ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-0004_A-1", xml.as_bytes()).unwrap();
+
+        let mut ov = BTreeMap::new();
+        ov.insert("MD-1_M-1_MI-1_P-3_R-45".to_string(), "17".to_string());
+        ov.insert("MD-1_M-3_MI-1_P-3_R-45".to_string(), "42".to_string());
+
+        let mut bases = BTreeMap::new();
+        bases.insert("MD-1_M-1_MI-1".to_string(), 310u32);
+        bases.insert("MD-1_M-3_MI-1".to_string(), 442u32);
+
+        let img = compute_parameter_image(&app, &ov, &bases).unwrap();
+        let seg = &img["M-0004_A-1_RS-1"];
+        // Instance 1 at 1 + 310 = 311 holds 17; instance 3 at 1 + 442 = 443 holds
+        // 42. The two values do NOT collide — the old name-keyed builder would
+        // have collapsed both onto the single declared offset 1.
+        assert_eq!(seg[311], 17, "instance M-1_MI-1 at offset 311");
+        assert_eq!(seg[443], 42, "instance M-3_MI-1 at offset 443");
+        // The declared offset 1 keeps the default (0), untouched by either.
+        assert_eq!(seg[1], 0);
+    }
+
+    #[test]
+    fn module_override_without_base_offset_is_refused() {
+        // A module-instance override whose per-instance base offset was not
+        // supplied cannot be placed; it must error (never misplace a byte),
+        // naming the offending key.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-0004_A-1" Name="Jung"><Static>
+          <Code><RelativeSegment Id="M-0004_A-1_RS-1" Size="512" LoadStateMachine="4" Offset="0" /></Code>
+          <ParameterTypes><ParameterType Id="M-0004_A-1_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType></ParameterTypes>
+          <Parameters>
+           <Parameter Id="M-0004_A-1_MD-1_P-3" Name="_VA_Label" ParameterType="M-0004_A-1_PT-0" Value="0">
+            <Memory CodeSegment="M-0004_A-1_RS-1" Offset="1" BitOffset="0" BaseOffset="M-0004_A-1_MD-1_A-1" />
+           </Parameter>
+          </Parameters>
+         </Static></ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-0004_A-1", xml.as_bytes()).unwrap();
+
+        let mut ov = BTreeMap::new();
+        ov.insert("MD-1_M-3_MI-1_P-3_R-45".to_string(), "42".to_string());
+
+        // No base offsets supplied: the module override cannot be placed.
+        let err = compute_parameter_image(&app, &ov, &no_bases()).unwrap_err();
+        let s = err.to_string();
+        assert!(s.contains("MD-1_M-3_MI-1_P-3_R-45"), "{s}");
+        assert!(s.contains("base offset") || s.contains("MI-1"), "{s}");
+    }
+
+    #[test]
+    fn unknown_ref_id_override_is_refused() {
+        // An override naming a parameter this application does not define is a
+        // pre-flight error naming the key.
+        let app = app_with(&[(
+            "thr",
+            r#"<TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" />"#,
+            Some("50"),
+            0,
+            0,
+        )]);
+        let mut ov = BTreeMap::new();
+        ov.insert("P-999_R-1".to_string(), "1".to_string());
+        let err = compute_parameter_image(&app, &ov, &no_bases()).unwrap_err();
+        assert!(err.to_string().contains("P-999"), "{err}");
     }
 
     #[test]
@@ -706,7 +1005,7 @@ mod tests {
           <Parameters><Parameter Id="M-1_A-1_P-0" Name="x" ParameterType="M-1_A-1_PT-0" Value="1"><Memory CodeSegment="M-1_A-1_RS-1" Offset="2" BitOffset="0" /></Parameter></Parameters>
          </Static></ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-1", xml.as_bytes()).unwrap();
-        let img = compute_parameter_image(&app, &no_overrides()).unwrap();
+        let img = compute_parameter_image(&app, &no_overrides(), &no_bases()).unwrap();
         // Byte 2 overwritten to 1; the rest keep the base image.
         assert_eq!(img["M-1_A-1_RS-1"], vec![0xAA, 0xBB, 0x01, 0xDD]);
     }
@@ -722,7 +1021,7 @@ mod tests {
           <Parameters><Parameter Id="M-1_A-1_P-0" Name="x" ParameterType="M-1_A-1_PT-0" Value="1"><Memory CodeSegment="M-1_A-1_RS-1" Offset="0" BitOffset="0" /></Parameter></Parameters>
          </Static></ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-1", xml.as_bytes()).unwrap();
-        let img = compute_parameter_image(&app, &no_overrides()).unwrap();
+        let img = compute_parameter_image(&app, &no_overrides(), &no_bases()).unwrap();
         assert_eq!(img["M-1_A-1_RS-1"][0], 0b0111_1111);
     }
 
@@ -730,7 +1029,7 @@ mod tests {
     fn type_none_occupies_no_memory() {
         let app = app_with(&[("marker", r#"<TypeNone />"#, None, 0, 0)]);
         // No bytes placed -> empty image (segment had no base data).
-        let img = compute_parameter_image(&app, &no_overrides()).unwrap();
+        let img = compute_parameter_image(&app, &no_overrides(), &no_bases()).unwrap();
         assert!(img["M-1_A-1_RS-1"].is_empty());
     }
 }

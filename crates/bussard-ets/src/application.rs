@@ -228,6 +228,18 @@ pub struct Memory {
     pub offset: Option<u32>,
     /// Bit offset within the byte.
     pub bit_offset: Option<u8>,
+    /// For a **module** parameter, the module-`<Argument>` id whose per-instance
+    /// value is *added* to [`offset`](Self::offset) to get that instance's
+    /// effective byte offset (the `BaseOffset` attribute, e.g.
+    /// `M-0004_A-1_MD-1_A-1` naming `MDA_P_Base`). This is the memory-offset
+    /// analogue of a com-object's `BaseNumber`: the same module parameter is
+    /// instantiated once per channel, and each instance places its value at
+    /// `declared_offset + instance_argument[base_offset]`. `None` for a plain
+    /// (non-module) parameter, whose declared offset is absolute within its
+    /// segment. The per-instance argument value is not carried here — it lives in
+    /// the project's `ModuleInstance` data — so this records only *that* a base is
+    /// needed and *which* argument supplies it.
+    pub base_offset: Option<String>,
 }
 
 /// A `<ParameterRef>`: a reference to a [`Parameter`] with optional overrides.
@@ -367,6 +379,37 @@ pub enum LoadOp {
         obj_type: Option<u32>,
         /// Property id.
         prop_id: Option<u32>,
+    },
+    /// `<LdCtrlCompareProp …>`: read an interface-object property and compare it
+    /// against expected data — the verify twin of [`LoadOp::WriteProp`]. The
+    /// procedure fails the flash if the device's stored property does not match.
+    ///
+    /// Real vendor shape (MDT SCN-DA64x DALI gateway, Theben, L&J):
+    /// `<LdCtrlCompareProp InlineData="00000001620100000000" [Mask="00010000"]
+    /// ObjIdx="0" PropId="78"><OnError Cause="CompareMismatch" …/></LdCtrlCompareProp>`.
+    /// The expected value is the hex `InlineData` attribute; an optional hex
+    /// `Mask` (same length) AND-masks both sides before comparing (`FF` = compare
+    /// this byte, `00` = ignore). Some elements express the expectation as a
+    /// numeric `Range` instead of `InlineData`; the `<OnError>` children carry only
+    /// diagnostic message refs and are not needed to execute the compare.
+    CompareProp {
+        /// The interface object index (`ObjIdx`), when addressed by index.
+        obj_idx: Option<u32>,
+        /// The object type (`ObjType`), when addressed by type instead of index.
+        obj_type: Option<u32>,
+        /// The property id (`PropId`) to read and compare.
+        prop_id: Option<u32>,
+        /// The expected property bytes, decoded from the hex `InlineData`
+        /// attribute. `None` when the op expresses its expectation as a `Range`
+        /// (or carried no `InlineData`).
+        inline_data: Option<Vec<u8>>,
+        /// The comparison mask, decoded from the hex `Mask` attribute (same length
+        /// as `inline_data`); each `0xFF` byte is compared, each `0x00` ignored.
+        /// `None` means compare every byte.
+        mask: Option<Vec<u8>>,
+        /// The raw `Range` attribute (e.g. `"[2216203124736,]"`), when the op
+        /// expresses its expectation as a numeric range rather than `InlineData`.
+        range: Option<String>,
     },
     /// `<LdCtrlLoadImageProp …>`: load-image property integrity check. After a
     /// loadable object's image is written and the object reaches `Loaded`, the
@@ -963,6 +1006,7 @@ fn attach_memory(
             code_segment: get(m, b"CodeSegment").map(str::to_string),
             offset: get(m, b"Offset").and_then(|s| s.parse().ok()),
             bit_offset: get(m, b"BitOffset").and_then(|s| s.parse().ok()),
+            base_offset: get(m, b"BaseOffset").map(str::to_string),
         });
     }
 }
@@ -1030,6 +1074,25 @@ fn decode_segment_base64(raw: &str, context: &str, seg_id: &str) -> Result<Vec<u
         })
 }
 
+/// Decodes an even-length hex byte string (as ETS writes `InlineData`/`Mask`,
+/// e.g. `"00000001620100000000"`) into bytes. Returns `None` on odd length or a
+/// non-hex digit, or for an empty string, so a malformed value falls back to
+/// leaving the field unset rather than mis-decoding.
+fn decode_hex_bytes(s: &str) -> Option<Vec<u8>> {
+    let s = s.trim();
+    if s.is_empty() || s.len() % 2 != 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(s.len() / 2);
+    let bytes = s.as_bytes();
+    for pair in bytes.chunks_exact(2) {
+        let hi = (pair[0] as char).to_digit(16)?;
+        let lo = (pair[1] as char).to_digit(16)?;
+        out.push((hi * 16 + lo) as u8);
+    }
+    Some(out)
+}
+
 /// Parses one `LdCtrl*` element into a typed [`LoadOp`], appending to the
 /// current load procedure (if any).
 fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m: &HashMap<Vec<u8>, String>) {
@@ -1083,6 +1146,14 @@ fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m: &HashMap<
         b"LdCtrlWriteProp" => LoadOp::WriteProp {
             obj_type: u(b"ObjType"),
             prop_id: u(b"PropId"),
+        },
+        b"LdCtrlCompareProp" => LoadOp::CompareProp {
+            obj_idx: u(b"ObjIdx"),
+            obj_type: u(b"ObjType"),
+            prop_id: u(b"PropId"),
+            inline_data: get(m, b"InlineData").and_then(decode_hex_bytes),
+            mask: get(m, b"Mask").and_then(decode_hex_bytes),
+            range: s(b"Range"),
         },
         b"LdCtrlLoadImageProp" => LoadOp::LoadImageProp {
             obj_idx: u(b"ObjIdx"),
@@ -1426,6 +1497,77 @@ mod tests {
     }
 
     #[test]
+    fn parses_compare_prop_variants() {
+        // The MDT SCN-DA64x DALI-gateway shape: InlineData (hex) + optional Mask,
+        // addressed by ObjIdx, with OnError children; a self-closing form; an
+        // ObjType-addressed form; and a Range-only form (no InlineData).
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-1" Name="x">
+          <LoadProcedures><LoadProcedure MergeId="7">
+           <LdCtrlCompareProp InlineData="00000001620100000000" ObjIdx="0" PropId="78">
+            <OnError Cause="CompareMismatch" MessageRef="M-1_A-1_M-1" />
+           </LdCtrlCompareProp>
+           <LdCtrlCompareProp InlineData="00010000" Mask="00FF0000" ObjIdx="0" PropId="19" />
+           <LdCtrlCompareProp InlineData="0004" ObjType="0" PropId="12" />
+           <LdCtrlCompareProp Range="[2216203124736,]" ObjIdx="0" PropId="201" />
+          </LoadProcedure></LoadProcedures>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program_str("M-1_A-1", xml).unwrap();
+        let ops = &app.load_procedures[0].ops;
+        // Element with children (OnError) parses to a typed CompareProp, not Raw.
+        match &ops[0] {
+            LoadOp::CompareProp {
+                obj_idx,
+                prop_id,
+                inline_data,
+                mask,
+                range,
+                ..
+            } => {
+                assert_eq!(*obj_idx, Some(0));
+                assert_eq!(*prop_id, Some(78));
+                assert_eq!(
+                    inline_data.as_deref(),
+                    Some([0x00, 0x00, 0x00, 0x01, 0x62, 0x01, 0x00, 0x00, 0x00, 0x00].as_slice())
+                );
+                assert!(mask.is_none());
+                assert!(range.is_none());
+            }
+            other => panic!("expected CompareProp, got {other:?}"),
+        }
+        // Self-closing with a Mask.
+        assert!(matches!(
+            &ops[1],
+            LoadOp::CompareProp {
+                inline_data: Some(d),
+                mask: Some(m),
+                prop_id: Some(19),
+                ..
+            } if d == &[0x00, 0x01, 0x00, 0x00] && m == &[0x00, 0xFF, 0x00, 0x00]
+        ));
+        // ObjType-addressed form.
+        assert!(matches!(
+            &ops[2],
+            LoadOp::CompareProp {
+                obj_idx: None,
+                obj_type: Some(0),
+                prop_id: Some(12),
+                ..
+            }
+        ));
+        // Range-only form: no InlineData bytes.
+        assert!(matches!(
+            &ops[3],
+            LoadOp::CompareProp {
+                inline_data: None,
+                range: Some(r),
+                prop_id: Some(201),
+                ..
+            } if r == "[2216203124736,]"
+        ));
+    }
+
+    #[test]
     fn en_us_translation_overrides_text() {
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
          <ApplicationProgram Id="M-1_A-1" Name="Deutsch">
@@ -1470,6 +1612,45 @@ mod tests {
     </Dynamic>
   </ApplicationProgram>
 </KNX>"#;
+
+    #[test]
+    fn parses_module_parameter_base_offset() {
+        // A module parameter's <Memory> carries a BaseOffset naming the argument
+        // whose per-instance value is added to the declared offset; a plain
+        // parameter has none.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-0004_A-1" MaskVersion="MV-07B0" Name="Jung"><Static>
+          <Parameters>
+           <Parameter Id="M-0004_A-1_MD-1_P-3" Name="_VA_Label" ParameterType="M-0004_A-1_PT-0" Value="1">
+            <Memory CodeSegment="M-0004_A-1_RS-1" Offset="1" BitOffset="0" BaseOffset="M-0004_A-1_MD-1_A-1" />
+           </Parameter>
+           <Parameter Id="M-0004_A-1_P-9" Name="plain" ParameterType="M-0004_A-1_PT-0" Value="0">
+            <Memory CodeSegment="M-0004_A-1_RS-1" Offset="5" BitOffset="0" />
+           </Parameter>
+          </Parameters>
+         </Static></ApplicationProgram></KNX>"#;
+        let app = parse_application_program_str("M-0004_A-1", xml).unwrap();
+        let m = app
+            .parameters
+            .get("M-0004_A-1_MD-1_P-3")
+            .unwrap()
+            .memory
+            .as_ref()
+            .unwrap();
+        assert_eq!(m.offset, Some(1));
+        assert_eq!(m.base_offset.as_deref(), Some("M-0004_A-1_MD-1_A-1"));
+        // The plain parameter has no BaseOffset.
+        assert!(
+            app.parameters
+                .get("M-0004_A-1_P-9")
+                .unwrap()
+                .memory
+                .as_ref()
+                .unwrap()
+                .base_offset
+                .is_none()
+        );
+    }
 
     #[test]
     fn parses_channels_and_arguments() {
