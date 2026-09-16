@@ -21,6 +21,9 @@ pub const MANUFACTURERS: &[(u16, &str)] = &[
     (0x0025, "Steinel"),
     (0x0028, "Theben"),
     (0x0069, "Helios"),
+    // 0x00FA is the KNX Association itself; KNX Virtual's simulated devices
+    // report it (observed live 2026-09-16).
+    (0x00FA, "KNX Association"),
     (0x0083, "MDT"),
 ];
 
