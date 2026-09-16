@@ -281,6 +281,22 @@ struct DeviceState {
     /// Whether a basic restart (`A_Restart`, terminal step) has been seen — so the
     /// terminal-restart-silence test can assert the restart was actually sent.
     saw_basic_restart: bool,
+    /// Model KNX Virtual's `EraseCode=4` master reset: erasing the app object's
+    /// load state (back to `Unloaded`) and dropping the segment allocated before
+    /// the reset. When set, accepting a master reset drops `app_load_state` to
+    /// `Unloaded`, forgets `last_segment_base` (the placement cursor already points
+    /// past the dropped segment, so the next allocation is placed at a fresh base
+    /// distinct from the stale pre-reset one), and marks the object erased. While it
+    /// is erased the device REFUSES `A_Memory_Write` (writing to an erased/closed
+    /// object) — so a tool that naively resumed writing to the stale pre-reset base
+    /// without re-opening + re-allocating would be NAKed. The tool must re-run the
+    /// load-control sequence (StartLoading + re-allocate) after the reconnect,
+    /// exactly as ETS does in the real KV capture.
+    wipe_app_on_master_reset: bool,
+    /// Set true while the app object has been erased by a master reset and not yet
+    /// re-opened, so the memory-write handler can refuse writes to the erased
+    /// object. Cleared when the object is re-opened (`StartLoading`).
+    app_erased_by_master_reset: bool,
 }
 
 type Shared = Arc<Mutex<DeviceState>>;
@@ -395,6 +411,21 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
         s.master_resets_seen += 1;
         s.last_master_reset_payload = data.to_vec();
         s.l4_dead_after_master_reset = true;
+        // KNX Virtual's EraseCode=4 reset erases the app object's load state and
+        // drops the segment allocated before it. Model that: the object falls back
+        // to Unloaded, the next allocation is placed at a FRESH base (so the tool
+        // must re-read PID_TABLE_REFERENCE rather than reuse the stale pre-reset
+        // base), and the erased object refuses memory writes until re-opened.
+        if s.wipe_app_on_master_reset {
+            s.app_load_state = LS_UNLOADED;
+            s.app_erased_by_master_reset = true;
+            // Drop the segment allocated before the reset. `next_segment_base`
+            // already points past it (the alloc advanced the cursor), so the
+            // re-allocation after the reconnect is placed at a fresh base distinct
+            // from the stale pre-reset one — the tool must re-read it.
+            s.last_segment_base = 0;
+            s.last_segment_size = 0;
+        }
         // error_code = 0x00, process_time = 0x0064 (100, a plausible reboot time).
         return Reaction::Answer(A_RESTART_RESPONSE, vec![0x00, 0x00, 0x64]);
     }
@@ -434,6 +465,13 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
         // reproduces the real device semantic and proves authorize is required).
         // A device that does not implement authorize never gates.
         if !s.authorized && !s.authorize_unsupported {
+            return Reaction::Nak;
+        }
+        // An app object erased by a master reset and not yet re-opened refuses
+        // memory writes (KNX Virtual rejects writes to an Unloaded/erased object).
+        // A tool that resumed writing to the stale pre-reset base without first
+        // re-opening (StartLoading) + re-allocating is NAKed here.
+        if s.app_erased_by_master_reset {
             return Reaction::Nak;
         }
         if s.fault == Fault::NakMemoryWrite {
@@ -577,6 +615,10 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
             let new_state = if is_app {
                 match event {
                     LE_START_LOADING => {
+                        // Re-opening the object clears a prior master-reset erase,
+                        // so memory writes to the freshly re-allocated segment are
+                        // accepted again.
+                        s.app_erased_by_master_reset = false;
                         // A conformant device exposes LS_LOADING; KV snaps to
                         // LS_LOADED (the LoadedAfterStartLoading fault, now
                         // tolerated); a broken device ignores StartLoading and
@@ -898,6 +940,8 @@ fn fresh_device(fault: Fault) -> Shared {
         last_master_reset_payload: Vec::new(),
         l4_dead_after_master_reset: false,
         saw_basic_restart: false,
+        wipe_app_on_master_reset: false,
+        app_erased_by_master_reset: false,
     }))
 }
 
@@ -1961,11 +2005,19 @@ async fn setup_bus(fault: Fault) -> (bussard_bus::BusHandle, Shared, tokio::task
 
 #[tokio::test]
 async fn flash_master_reset_reconnects_and_reaches_loaded() {
-    // The full acceptance case for LdCtrlMasterReset: the procedure master-resets
-    // the device mid-flash. The device confirms, reboots (goes silent on the L4
-    // connection), and the engine must reconnect, re-authorize, and resume — the
-    // segment write and load completion running on the fresh connection — to reach
-    // Loaded. Shorten the reboot wait so the test does not stall.
+    // The full acceptance case for LdCtrlMasterReset: the procedure allocates the
+    // segment, master-resets the device mid-flash, then writes the segment and
+    // completes the load. The device confirms the reset, reboots (goes silent on
+    // the L4 connection), and — modelling KNX Virtual's EraseCode=4 reset — ERASES
+    // the app object's load state (back to Unloaded) and DROPS the segment
+    // allocated before the reset (the mock's `wipe_app_on_master_reset`, enabled
+    // below). The engine must reconnect, re-authorize, RE-RUN the load-control
+    // sequence (StartLoading + re-allocate) so the segment is re-established at its
+    // fresh device-placed base, and only then resume the write — exactly as ETS
+    // does after the reset in the real KV capture. A tool that naively resumed
+    // writing to the stale pre-reset base while the object is Unloaded/erased would
+    // be NAKed by the device (regression asserted below via the erased-write gate).
+    // Shorten the reboot wait so the test does not stall.
     // SAFETY of env: this test binds its own socket/actor; the var only shortens a
     // sleep and is read once per master-reset step.
     unsafe {
@@ -1973,6 +2025,10 @@ async fn flash_master_reset_reconnects_and_reaches_loaded() {
     }
 
     let (handle, state, gw) = setup_bus(Fault::None).await;
+    // Model KV's EraseCode=4: the master reset wipes the app object to Unloaded and
+    // drops its segment, so the re-allocation after the reconnect must be placed at
+    // a FRESH base and the tool must re-read it (not reuse the stale pre-reset one).
+    state.lock().unwrap().wipe_app_on_master_reset = true;
     let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
     let source = bussard_bus::ops::group_source(&handle);
 
@@ -2046,14 +2102,38 @@ async fn flash_master_reset_reconnects_and_reaches_loaded() {
             "the engine must re-authorize after the reconnect (authorizes = {})",
             s.authorizes_seen
         );
-        // The segment write, which ran AFTER the reconnect, landed on the device.
-        let code: Vec<u8> = (0x4000u16..0x4006)
+        // The master reset erased the object, so the re-allocation after the
+        // reconnect is placed at a FRESH base (pre-reset base 0x4000 + dropped
+        // size 6 = 0x4006). The tool must have re-read that fresh base and written
+        // the code image there — proving it re-established the segment and updated
+        // `segment_base` rather than reusing the stale pre-reset value.
+        let fresh: Vec<u8> = (0x4006u16..0x400C)
             .map(|a| *s.memory.get(&a).unwrap_or(&0))
             .collect();
         assert_eq!(
-            code,
+            fresh,
             vec![0, 1, 2, 3, 4, 5],
-            "the post-reset segment write must have completed on the fresh connection"
+            "the post-reset segment write must land at the freshly re-allocated base 0x4006"
+        );
+        // REGRESSION: a naive resume that kept writing to the STALE pre-reset base
+        // (0x4000) is exactly the bug being fixed. The erased object refuses writes
+        // (the write gate NAKs while Unloaded), so no code image ever reaches the
+        // stale base — it stays untouched. Had the engine written there, the flash
+        // would have failed on the NAK; asserting the stale base is empty pins the
+        // fix to re-establishing the segment before the resumed write.
+        let stale: Vec<u8> = (0x4000u16..0x4006)
+            .map(|a| *s.memory.get(&a).unwrap_or(&0))
+            .collect();
+        assert_eq!(
+            stale,
+            vec![0, 0, 0, 0, 0, 0],
+            "the stale pre-reset base 0x4000 must never be written after the erase"
+        );
+        // The object was re-opened (StartLoading) after the reset, so the
+        // erased-write gate is cleared and the load reached Loaded.
+        assert!(
+            !s.app_erased_by_master_reset,
+            "the engine must re-open the erased object before resuming"
         );
     }
 
