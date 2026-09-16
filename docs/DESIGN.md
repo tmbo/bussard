@@ -9,7 +9,7 @@
 
 `bussard`: an open-source (MIT), cross-platform CLI for KNX. No GUI.
 
-The goal is to replace ETS for day-to-day work on an existing KNX installation:
+The goal is to use a configuration-first approach for managing KNX:
 
 - Configuration lives in YAML files in a git repo (group addresses, links, device
   parameters), so changes, including LLM-proposed ones, are reviewable diffs.
@@ -19,7 +19,7 @@ The goal is to replace ETS for day-to-day work on an existing KNX installation:
 - An MCP server exposes those read/write operations as tools.
 
 Non-goals: replacing ETS for certification, planning, or documentation. Supporting every
-KNX device ever made. Any graphical interface.
+KNX device ever made.
 
 ### Design goals (north star)
 
@@ -33,10 +33,10 @@ KNX device ever made. Any graphical interface.
 
 ### Why this is possible at all
 
-The `.knxprod` product-data format is already reverse engineered in public, the download
+The `.knxprod` product-data format is known to the public, the download
 procedure is described inside the product data itself (`LoadProcedures`), and open-source
-implementations exist for both ends of the problem, just not the middle. Nobody has built
-the ETS-side downloader. That's the contribution.
+implementations exist for both ends of the problem, just not for the
+the download side.
 
 ## 2. The layer cake
 
@@ -45,10 +45,10 @@ A KNX device's configuration is three separable things with very different diffi
 | Layer | What | Difficulty |
 |---|---|---|
 | (a) Individual address | `1.1.4` | Standardised management procedure. Trivial. |
-| (c) Links | group address table, association table, com-object table | Standardised loadable parts; on System B / mask 07B0+ property-based and writable through documented interface objects. Moderate. |
-| (b) Parameters | channel mode, runtime, wind-alarm behaviour, ... | Device-specific memory layout described only in the `.knxprod`. Hard. |
+| (b) Links | group address table, association table, com-object table | Standardised loadable parts; on System B / mask 07B0+ property-based and writable through documented interface objects. Moderate. |
+| (c) Parameters | channel mode, runtime, wind-alarm behaviour, ... | Device-specific memory layout described only in the `.knxprod`. Hard. |
 
-Most day-to-day changes are (c). bussard ships (a) + (c) first: that's real commissioning,
+Most day-to-day changes are (b). bussard ships (a) + (b) first: that's real commissioning,
 genuinely useful, and needs no reverse engineering of manufacturer memory layouts. `assign`
 does (a); `plan`/`apply` do (c) for System B devices. Which path links take (properties on
 System B vs. memory writes on older System 1/2) depends on the mask version each device
