@@ -8,22 +8,187 @@
 //! a `vendor/.gitignore` of `*` is planted to keep them out of git.
 
 use std::collections::BTreeMap;
+use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
 use bussard_prod::{
-    ApplicationProgram, LoadOp, LoadProcedure, ParameterType, ProductData, ResolvedComObject,
+    ApplicationProgram, DownloadConsent, LoadOp, LoadProcedure, ParameterType, ProductData,
+    ProductIndex, ResolvedComObject,
 };
 use serde::Serialize;
 
-/// Imports a `.knxprod`: caches it under `<dir>/vendor/` and generates a device
-/// model under `<dir>/models/` for each application program it contains.
-pub fn run(file: &Path, dir: &Path) -> anyhow::Result<ExitCode> {
+/// The committed pointer index, baked into the binary. Points order numbers at
+/// vendor-hosted `.knxprod` downloads (never the payloads themselves).
+const PRODUCT_INDEX_JSON: &str = include_str!("../../../data/product-index.json");
+
+/// Dispatches the three `import-product` modes:
+///
+/// * `--list`: print the pointer index and exit.
+/// * `--order-number`: look the file up in the index, confirm, download,
+///   verify, then run the normal import on the downloaded file.
+/// * positional FILE: run the normal import on a local `.knxprod`.
+pub fn run(
+    file: Option<&Path>,
+    dir: &Path,
+    order_number: Option<&str>,
+    yes_download: bool,
+    list: bool,
+) -> anyhow::Result<ExitCode> {
+    if list {
+        return run_list();
+    }
+    if let Some(order) = order_number {
+        return run_order_number(order, dir, yes_download);
+    }
+    match file {
+        Some(f) => run_file(f, dir),
+        None => bail!(
+            "nothing to import: give a .knxprod FILE, --order-number <ORDER> to \
+             download from the index, or --list to show the index"
+        ),
+    }
+}
+
+/// Prints the pointer index in a compact table.
+fn run_list() -> anyhow::Result<ExitCode> {
+    let index = load_index()?;
+    if index.entries.is_empty() {
+        println!("The product-data pointer index is empty.");
+        return Ok(ExitCode::SUCCESS);
+    }
+    println!(
+        "Product-data pointer index ({} entr{}):",
+        index.entries.len(),
+        if index.entries.len() == 1 { "y" } else { "ies" }
+    );
+    println!();
+    for e in &index.entries {
+        println!("{} — {}", e.manufacturer, e.name);
+        println!("  order numbers: {}", e.order_numbers.join(", "));
+        println!("  file: {} ({} bytes)", e.filename, e.size);
+        println!("  from: {}", e.url);
+        if let Some(notes) = &e.notes {
+            println!("  notes: {notes}");
+        }
+        println!();
+    }
+    println!("Import one with:  bussard import-product --order-number <ORDER> [--yes-download]");
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Looks an order number up in the index, confirms, downloads and verifies the
+/// `.knxprod`, then runs the normal import on the cached file.
+fn run_order_number(order: &str, dir: &Path, yes_download: bool) -> anyhow::Result<ExitCode> {
+    let index = load_index()?;
+    let entry = index.lookup(order).with_context(|| {
+        format!(
+            "no product-data entry for order number `{order}` in the index. \
+             Run `bussard import-product --list` to see what's available, or \
+             pass the .knxprod file directly if you already have it."
+        )
+    })?;
+
+    // Show what and where-from before any network access.
+    println!("Found in the product-data index:");
+    println!("  {} — {}", entry.manufacturer, entry.name);
+    println!("  order number: {order}");
+    println!("  download:     {}", entry.url);
+    println!("  file:         {} ({} bytes)", entry.filename, entry.size);
+    println!("  sha256:       {}", entry.sha256);
+    println!();
+    println!(
+        "This downloads copyrighted vendor product data over the network. It is \
+         cached locally under {}/vendor/ and never committed.",
+        dir.display()
+    );
+
+    if !confirm_download(yes_download)? {
+        println!("Aborted; nothing downloaded.");
+        return Ok(ExitCode::FAILURE);
+    }
+
+    println!("Downloading…");
+    let bytes = bussard_prod::fetch_entry(entry, DownloadConsent::granted())
+        .context("downloading product data")?;
+    println!("Downloaded and verified {} bytes.", bytes.len());
+
+    // Cache the download under <dir>/vendor/<filename>, then import from there.
+    let vendor_dir = dir.join("vendor");
+    ensure_vendor_dir(&vendor_dir)?;
+    let cached = vendor_dir.join(&entry.filename);
+    std::fs::write(&cached, &bytes).with_context(|| format!("writing {}", cached.display()))?;
+
+    import_from_file(
+        &cached,
+        dir,
+        DownloadNote::Downloaded(entry.filename.clone()),
+    )
+}
+
+/// Prompts for download confirmation on a TTY; requires `--yes-download`
+/// otherwise.
+fn confirm_download(yes_download: bool) -> anyhow::Result<bool> {
+    if yes_download {
+        return Ok(true);
+    }
+    if !std::io::stdin().is_terminal() {
+        bail!(
+            "refusing to download without confirmation: pass --yes-download to \
+             consent non-interactively"
+        );
+    }
+    print!("Download this file? [y/N] ");
+    std::io::stdout().flush().ok();
+    let mut line = String::new();
+    std::io::stdin()
+        .read_line(&mut line)
+        .context("reading confirmation")?;
+    let ans = line.trim().to_lowercase();
+    Ok(ans == "y" || ans == "yes")
+}
+
+/// Loads and parses the committed pointer index.
+fn load_index() -> anyhow::Result<ProductIndex> {
+    ProductIndex::from_json_str(PRODUCT_INDEX_JSON).context("parsing the product-data index")
+}
+
+/// Where a to-be-imported file came from, for the report line.
+enum DownloadNote {
+    /// A local positional file (copied into the vendor cache).
+    Local,
+    /// Downloaded from the index and already written to `vendor/` (verified
+    /// against the index checksum); carries the cached filename for the note.
+    Downloaded(String),
+}
+
+/// Runs the normal import on a local `.knxprod` file (positional mode).
+fn run_file(file: &Path, dir: &Path) -> anyhow::Result<ExitCode> {
     if !file.exists() {
         bail!("product file not found: {}", file.display());
     }
+    import_from_file(file, dir, DownloadNote::Local)
+}
 
+/// Ensures `<dir>/vendor/` exists with its self-protecting `.gitignore`.
+fn ensure_vendor_dir(vendor_dir: &Path) -> anyhow::Result<()> {
+    let created = !vendor_dir.exists();
+    std::fs::create_dir_all(vendor_dir)
+        .with_context(|| format!("creating {}", vendor_dir.display()))?;
+    if created {
+        std::fs::write(vendor_dir.join(".gitignore"), VENDOR_GITIGNORE)
+            .with_context(|| format!("writing {}", vendor_dir.join(".gitignore").display()))?;
+    }
+    Ok(())
+}
+
+/// Imports a `.knxprod`: caches it under `<dir>/vendor/` and generates a device
+/// model under `<dir>/models/` for each application program it contains.
+///
+/// For a downloaded file the source already lives under `vendor/`, so the cache
+/// step notes it in place rather than copying it onto itself.
+fn import_from_file(file: &Path, dir: &Path, note: DownloadNote) -> anyhow::Result<ExitCode> {
     let product = bussard_prod::read_knxprod(file)
         .with_context(|| format!("reading product data from {}", file.display()))?;
 
@@ -36,21 +201,26 @@ pub fn run(file: &Path, dir: &Path) -> anyhow::Result<ExitCode> {
 
     // Cache the source file verbatim under <dir>/vendor/.
     let vendor_dir = dir.join("vendor");
-    let vendor_created = !vendor_dir.exists();
-    std::fs::create_dir_all(&vendor_dir)
-        .with_context(|| format!("creating {}", vendor_dir.display()))?;
-    if vendor_created {
-        // Self-protecting: a fresh vendor/ ignores everything (copyrighted).
-        std::fs::write(vendor_dir.join(".gitignore"), VENDOR_GITIGNORE)
-            .with_context(|| format!("writing {}", vendor_dir.join(".gitignore").display()))?;
-    }
+    ensure_vendor_dir(&vendor_dir)?;
 
-    let original_name = file
-        .file_name()
-        .context("product file has no file name")?
-        .to_owned();
-    let vendor_target = vendor_dir.join(&original_name);
-    let cached_note = cache_vendor_file(file, &vendor_target)?;
+    let cached_note = match note {
+        // A downloaded file already lives under vendor/ (verified against the
+        // index checksum), so there is nothing to copy.
+        DownloadNote::Downloaded(filename) => {
+            format!(
+                "Cached vendor file (downloaded): {}",
+                vendor_dir.join(&filename).display()
+            )
+        }
+        DownloadNote::Local => {
+            let original_name = file
+                .file_name()
+                .context("product file has no file name")?
+                .to_owned();
+            let vendor_target = vendor_dir.join(&original_name);
+            cache_vendor_file(file, &vendor_target)?
+        }
+    };
 
     // Generate one model YAML per application program.
     let models_dir = dir.join("models");

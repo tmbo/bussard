@@ -11,12 +11,20 @@ rust-version.workspace = true
 bussard-model = { path = "../bussard-model" }
 bussard-ets = { path = "../bussard-ets" }
 serde = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 # ZIP support for the `.knxprod` container. No AES feature: unlike `.knxproj`,
 # the manufacturer folders inside a `.knxprod` are not password-protected, and
 # bussard never writes/signs these archives. MIT licensed.
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
+# SHA-256 for verifying downloaded product data against the index checksum.
+# Already in the workspace tree (bussard-project uses it for PBKDF2). MIT/Apache-2.0.
+sha2 = "0.10"
+# Sync HTTP client for vendor downloads. Chosen over reqwest: `ureq` is
+# blocking (no async runtime pulled into this crate), tiny, and uses rustls for
+# TLS with no OpenSSL system dependency. MIT OR Apache-2.0.
+ureq = { version = "2", default-features = false, features = ["tls"] }
 
 [dev-dependencies]
 tempfile = "3"
