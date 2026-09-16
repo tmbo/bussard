@@ -137,6 +137,9 @@ struct DeviceState {
     fault: Fault,
     /// Count of load-control writes seen (plan-only must be zero).
     control_writes: usize,
+    /// Stored interface-object property values a `LdCtrlCompareProp` reads back,
+    /// keyed by `(object_index, pid)`. Absent keys answer count 0 (not present).
+    compare_props: HashMap<(u8, u8), Vec<u8>>,
 }
 
 type Shared = Arc<Mutex<DeviceState>>;
@@ -317,6 +320,14 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
             return Reaction::Answer(
                 A_PROPERTY_VALUE_RESPONSE,
                 prop_response(oi, pid, 1, start, &entry),
+            );
+        }
+        // A stored property a LdCtrlCompareProp reads back, if configured.
+        if let Some(value) = s.compare_props.get(&(oi, pid)) {
+            let count = if value.is_empty() { 0 } else { 1 };
+            return Reaction::Answer(
+                A_PROPERTY_VALUE_RESPONSE,
+                prop_response(oi, pid, count, start, value),
             );
         }
         return Reaction::Answer(
@@ -516,6 +527,7 @@ fn fresh_device(fault: Fault) -> Shared {
         memory: HashMap::new(),
         fault,
         control_writes: 0,
+        compare_props: HashMap::new(),
     }))
 }
 
@@ -581,6 +593,42 @@ fn app_with_image_prop() -> ApplicationProgram {
       </Static>
      </ApplicationProgram></KNX>"#;
     parse_application_program("M-2_A-7", xml.as_bytes()).unwrap()
+}
+
+/// A single-application System B app in the MDT SCN-DA64x DALI-gateway shape: a
+/// `LdCtrlCompareProp` precondition (object 0, PID 78, expecting the 4-byte
+/// `AAECAw==`/`00 01 02 03`) verified before the download proper writes the
+/// segment. The compare gates the flash: only a device whose property matches
+/// proceeds. `mask`, when set, is emitted as the op's hex `Mask` attribute.
+fn app_with_compare_prop(mask: Option<&str>) -> ApplicationProgram {
+    let mask_attr = mask.map(|m| format!(" Mask=\"{m}\"")).unwrap_or_default();
+    let xml = format!(
+        r#"<KNX xmlns="http://knx.org/xml/project/23">
+     <ApplicationProgram Id="M-3_A-8" ApplicationNumber="8" ApplicationVersion="1"
+        MaskVersion="MV-07B0" Name="DALI" LoadProcedureStyle="MergedProcedure">
+      <Static>
+       <Code>
+        <RelativeSegment Id="M-3_A-8_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment>
+       </Code>
+       <LoadProcedures>
+        <LoadProcedure MergeId="1">
+         <LdCtrlConnect />
+         <LdCtrlUnload LsmIdx="4" />
+         <LdCtrlCompareProp InlineData="00010203"{mask_attr} ObjIdx="0" PropId="78">
+          <OnError Cause="CompareMismatch" MessageRef="M-3_A-8_M-1" />
+         </LdCtrlCompareProp>
+         <LdCtrlLoad LsmIdx="4" />
+         <LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="6" />
+         <LdCtrlWriteRelMem AppliesTo="full" ObjIdx="0" Offset="0" Size="6" />
+         <LdCtrlLoadCompleted LsmIdx="4" />
+         <LdCtrlRestart />
+         <LdCtrlDisconnect />
+        </LoadProcedure>
+       </LoadProcedures>
+      </Static>
+     </ApplicationProgram></KNX>"#
+    );
+    parse_application_program("M-3_A-8", xml.as_bytes()).unwrap()
 }
 
 async fn setup(fault: Fault) -> (Transport, Shared, tokio::task::JoinHandle<()>) {
@@ -769,6 +817,169 @@ async fn plan_only_touches_no_load_state() {
         s.control_writes, 0,
         "a plan-only pre-flight must not write any load-state control"
     );
+    handle.abort();
+}
+
+#[tokio::test]
+async fn flash_applies_device_file_parameter_override() {
+    // A device-file override (keyed by app-relative ParameterRef id) changes the
+    // parameter byte away from the vendor default 7. The overridden value must
+    // reach device memory AND be reflected in the segment the device CRCs — the
+    // MCB integrity check passing proves the OVERRIDDEN image (not the default)
+    // is what actually flowed onto the device.
+    let (mut bus, state, handle) = setup(Fault::None).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+
+    let app = fabricated_app();
+
+    // The default plan writes the parameter default (7).
+    let default_plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides()).unwrap();
+    assert_eq!(default_plan.param_images["M-1_A-1_RS-2"], vec![7]);
+
+    // The override plan (P-0_R-1 = 42) writes 42 instead — proving the override
+    // changed the computed image before any bus traffic.
+    let mut ov = BTreeMap::new();
+    ov.insert("P-0_R-1".to_string(), "42".to_string());
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &ov).unwrap();
+    assert_eq!(
+        plan.param_images["M-1_A-1_RS-2"],
+        vec![42],
+        "the override must change the computed parameter image"
+    );
+
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    let outcome = flash(&mut l4, &plan, |_| {}).await.unwrap();
+    let _ = l4.disconnect().await;
+
+    assert!(outcome.ok(), "override flash must verify: {outcome:?}");
+
+    // The overridden byte 42 (not the default 7) landed in device memory at the
+    // parameter segment base (0x4000 + 6 = 0x4006).
+    let s = state.lock().unwrap();
+    assert_eq!(
+        *s.memory.get(&0x4006).unwrap_or(&0),
+        42,
+        "the device stored the overridden value, not the default"
+    );
+    handle.abort();
+}
+
+#[tokio::test]
+async fn flash_compare_prop_passes_when_property_matches() {
+    // The device's object-0 PID-78 property holds exactly the bytes the
+    // LdCtrlCompareProp expects, so the precondition passes and the flash reaches
+    // Loaded.
+    let (mut bus, state, handle) = setup(Fault::None).await;
+    state
+        .lock()
+        .unwrap()
+        .compare_props
+        .insert((0, 78), vec![0x00, 0x01, 0x02, 0x03]);
+
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+
+    let app = app_with_compare_prop(None);
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides()).unwrap();
+    // The plan carries the CompareProp precondition.
+    assert_eq!(
+        plan.steps
+            .iter()
+            .filter(|s| matches!(s, FlashStep::CompareProp { .. }))
+            .count(),
+        1
+    );
+
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    let outcome = flash(&mut l4, &plan, |_| {}).await.unwrap();
+    let _ = l4.disconnect().await;
+
+    assert!(
+        outcome.ok(),
+        "matching compare must let the flash verify: {outcome:?}"
+    );
+    assert_eq!(outcome.load_state, LoadState::Loaded);
+    handle.abort();
+}
+
+#[tokio::test]
+async fn flash_compare_prop_aborts_when_property_differs() {
+    // The device's object-0 PID-78 property holds different bytes than the
+    // LdCtrlCompareProp expects: the precondition fails and the flash aborts with
+    // PropCompareMismatch — before the segment is written.
+    let (mut bus, state, handle) = setup(Fault::None).await;
+    state
+        .lock()
+        .unwrap()
+        .compare_props
+        .insert((0, 78), vec![0xDE, 0xAD, 0xBE, 0xEF]);
+
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+
+    let app = app_with_compare_prop(None);
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides()).unwrap();
+
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    let err = flash(&mut l4, &plan, |_| {})
+        .await
+        .expect_err("a compare mismatch must abort the flash");
+    let _ = l4.disconnect().await;
+
+    assert!(
+        matches!(
+            err,
+            bussard_mgmt::load::WriteError::PropCompareMismatch { .. }
+        ),
+        "expected PropCompareMismatch, got {err:?}"
+    );
+
+    // The abort happened before the download proper: the app object never reached
+    // Loaded and the segment was never written.
+    let s = state.lock().unwrap();
+    assert_ne!(
+        s.app_load_state, LS_LOADED,
+        "flash must not have completed the load"
+    );
+    handle.abort();
+}
+
+#[tokio::test]
+async fn flash_compare_prop_mask_ignores_don_t_care_bytes() {
+    // The compare expects 00 01 02 03 under mask FF 00 FF 00: the device holds
+    // 00 AA 02 BB, differing only in the masked-out (don't-care) positions, so
+    // the masked compare passes and the flash reaches Loaded.
+    let (mut bus, state, handle) = setup(Fault::None).await;
+    state
+        .lock()
+        .unwrap()
+        .compare_props
+        .insert((0, 78), vec![0x00, 0xAA, 0x02, 0xBB]);
+
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+
+    let app = app_with_compare_prop(Some("FF00FF00"));
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides()).unwrap();
+
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    let outcome = flash(&mut l4, &plan, |_| {}).await.unwrap();
+    let _ = l4.disconnect().await;
+
+    assert!(
+        outcome.ok(),
+        "a difference only in masked-out bytes must pass: {outcome:?}"
+    );
+    assert_eq!(outcome.load_state, LoadState::Loaded);
     handle.abort();
 }
 

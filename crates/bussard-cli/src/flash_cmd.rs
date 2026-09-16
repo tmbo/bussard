@@ -81,12 +81,14 @@ pub fn run(
         }
     };
 
-    // Parameter overrides could come from the model; for now, no overrides
-    // (parameter selection is a follow-up). The model is loaded only for the
-    // connection config.
+    // Parameter overrides come from the target device's `parameters:` block in
+    // the model (`devices/*.yaml`), re-keyed to the app-relative ParameterRef id
+    // the flash engine expects (the #46 contract: keys are `<slug>@<ref-id>`; the
+    // part after `@` is the ETS-stable identity). The model is also the source of
+    // the connection config.
     let model = load_model_optional(dir);
     let config = resolve_config(model.as_ref(), &overrides)?;
-    let overrides_map: BTreeMap<String, String> = BTreeMap::new();
+    let overrides_map = collect_parameter_overrides(model.as_ref(), target);
 
     // Phase A (read-only): read the device descriptor.
     let runtime = tokio::runtime::Runtime::new()?;
@@ -135,7 +137,7 @@ pub fn run(
         }
     };
 
-    print_plan(target, device_mask, &plan);
+    print_plan(target, device_mask, &plan, &overrides_map);
 
     // No backup is possible for a first flash — state it plainly.
     eprintln!(
@@ -184,6 +186,39 @@ pub fn run(
             Ok(ExitCode::FAILURE)
         }
     }
+}
+
+/// Collects the target device's parameter overrides from the model, re-keyed
+/// from the device-file `<slug>@<ref-id>` form to the bare app-relative
+/// `ParameterRef` id the flash engine consumes (the part after `@`).
+///
+/// The slug before `@` is a human aid and is dropped. A key with no `@` is
+/// malformed for this contract and skipped with a warning (rather than fed to the
+/// engine as a bogus ref id). Returns an empty map when the model is absent or
+/// the device has no `parameters:` block.
+fn collect_parameter_overrides(
+    model: Option<&bussard_model::Model>,
+    target: IndividualAddress,
+) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let Some(model) = model else { return out };
+    let Some(loaded) = model.devices.get(&target) else {
+        return out;
+    };
+    for (key, value) in &loaded.device.parameters {
+        match key.split_once('@') {
+            Some((_slug, ref_id)) if !ref_id.is_empty() => {
+                out.insert(ref_id.to_string(), value.clone());
+            }
+            _ => {
+                eprintln!(
+                    "warning: ignoring parameter key {key:?} on {target}: it has no \
+                     `<slug>@<ref-id>` form, so its ETS-stable identity is undetermined"
+                );
+            }
+        }
+    }
+    out
 }
 
 /// Resolves an application program from a hardware order number, requiring
@@ -334,9 +369,15 @@ async fn execute(
     result
 }
 
-/// Prints the pre-flight plan: application identity, mask compatibility, and the
-/// ordered step list with byte counts and time estimate.
-fn print_plan(target: IndividualAddress, device_mask: u16, plan: &FlashPlan) {
+/// Prints the pre-flight plan: application identity, mask compatibility, the
+/// applied parameter overrides, and the ordered step list with byte counts and
+/// time estimate.
+fn print_plan(
+    target: IndividualAddress,
+    device_mask: u16,
+    plan: &FlashPlan,
+    overrides: &BTreeMap<String, String>,
+) {
     println!("Flash plan for {target}");
     println!(
         "  application : {} {}",
@@ -353,6 +394,20 @@ fn print_plan(target: IndividualAddress, device_mask: u16, plan: &FlashPlan) {
         "  mask        : app {} vs device {device_mask:04X} — compatible",
         plan.identity.mask_version,
     );
+    // The parameter overrides that deviate from the vendor defaults, so the user
+    // confirms exactly what this flash changes. Keyed by the app-relative
+    // ParameterRef id (the #46 contract identity).
+    if overrides.is_empty() {
+        println!("  parameters  : none (flashing vendor defaults)");
+    } else {
+        println!(
+            "  parameters  : {} override(s) applied over vendor defaults:",
+            overrides.len()
+        );
+        for (key, value) in overrides {
+            println!("      {key} = {value}");
+        }
+    }
     println!(
         "  writes      : {} byte(s) across {} step(s), ~{} memory frame(s), est. {:.1}s on TP1",
         plan.total_write_bytes(),
@@ -416,6 +471,80 @@ fn recovery_notice(target: IndividualAddress) {
 mod tests {
     use super::*;
     use bussard_prod::parse_application_program;
+
+    /// Builds a one-device model whose device at `addr` carries `params`.
+    fn model_with_params(addr: &str, params: &[(&str, &str)]) -> bussard_model::Model {
+        use bussard_model::schema::Device;
+        let address: IndividualAddress = addr.parse().unwrap();
+        let device = Device {
+            address,
+            name: "test".to_string(),
+            description: None,
+            location: None,
+            product: None,
+            channels: Default::default(),
+            parameters: params
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            com_objects: Default::default(),
+        };
+        let mut devices = std::collections::BTreeMap::new();
+        devices.insert(
+            address,
+            bussard_model::loader::LoadedDevice {
+                device,
+                file_stem: "test".to_string(),
+            },
+        );
+        bussard_model::Model {
+            config: Default::default(),
+            groups: Default::default(),
+            links: Default::default(),
+            devices,
+        }
+    }
+
+    #[test]
+    fn parameter_overrides_are_rekeyed_to_ref_id() {
+        // A device file keys parameters `<slug>@<ref-id>`; collection drops the
+        // slug and keys by the ETS-stable ref id (the part after @).
+        let target: IndividualAddress = "1.1.4".parse().unwrap();
+        let model = model_with_params(
+            "1.1.4",
+            &[
+                ("windalarm-1@MD-1_M-3_MI-1_P-3_R-45", "1"),
+                ("nachtabsenkung@P-1312_R-2140", "18"),
+            ],
+        );
+        let out = collect_parameter_overrides(Some(&model), target);
+        assert_eq!(
+            out.get("MD-1_M-3_MI-1_P-3_R-45").map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(out.get("P-1312_R-2140").map(String::as_str), Some("18"));
+        // The human slug is gone from the key entirely.
+        assert!(!out.keys().any(|k| k.contains('@')));
+    }
+
+    #[test]
+    fn malformed_parameter_key_without_at_is_skipped() {
+        // A key with no `@` has no determinable ref-id identity; it is skipped
+        // rather than fed to the engine as a bogus ref id.
+        let target: IndividualAddress = "1.1.4".parse().unwrap();
+        let model = model_with_params("1.1.4", &[("bogus_no_at_sign", "5")]);
+        let out = collect_parameter_overrides(Some(&model), target);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn no_model_or_unknown_device_yields_no_overrides() {
+        let target: IndividualAddress = "1.1.4".parse().unwrap();
+        assert!(collect_parameter_overrides(None, target).is_empty());
+        // A model that has no device at the target address contributes nothing.
+        let model = model_with_params("1.1.9", &[("x@P-1_R-1", "1")]);
+        assert!(collect_parameter_overrides(Some(&model), target).is_empty());
+    }
 
     /// A minimal parseable single-segment System B application under id `id`.
     fn app(id: &str) -> ApplicationProgram {

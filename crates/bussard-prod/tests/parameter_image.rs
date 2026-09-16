@@ -87,7 +87,7 @@ fn segment_data_and_mask_round_trip_and_param_overlay() {
     );
 
     // compute_parameter_image lays the parameter over the base image.
-    let images = compute_parameter_image(app, &BTreeMap::new()).unwrap();
+    let images = compute_parameter_image(app, &BTreeMap::new(), &BTreeMap::new()).unwrap();
     let img = &images["M-00FA_A-0001-11-ABCD-O000A_RS-1"];
     assert_eq!(img, &vec![0xAA, 0xBB, 0x05, 0xDD]);
 }
@@ -158,7 +158,7 @@ fn real_knxproj_smoke() {
         // The Jung 23024 application (mask 26, id …A-20D7-26-…): its parameter
         // image must build with no overrides and no error.
         if id.contains("A-20D7-26-") {
-            let images = compute_parameter_image(&app, &BTreeMap::new()).unwrap();
+            let images = compute_parameter_image(&app, &BTreeMap::new(), &BTreeMap::new()).unwrap();
             let total: usize = images.values().map(Vec::len).sum();
             eprintln!(
                 "Jung 23024 ({id}): {} segment images, {total} total image bytes",
