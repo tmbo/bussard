@@ -1,0 +1,46 @@
+# Product-corpus order numbers, one per line.
+#
+# fetch.sh feeds each of these to `bussard import-product --order-number`, which
+# looks it up in data/product-index.json, downloads the vendor .knxprod, verifies
+# its size + SHA-256, and caches it under cache/. One order number per index
+# entry is enough — a single .knxprod usually serves a whole product family, so
+# fetching one member downloads the file that covers the rest.
+#
+# Blank lines and lines starting with '#' are ignored. Keep this list in step
+# with data/product-index.json (see README.md).
+
+# --- MDT (M-0083) ---
+AKK-01UP.03      # switch actuator (mixed 07B0/0705)
+AKS-01UP.03      # switch actuator (0705)
+JAL-0210.02      # blind/shutter actuator (0705)
+AKD-0224V.02     # dimming actuator / LED controller (0705)
+AKH-0400.03      # heating actuator (07B0 System B)
+BE-04000.02      # binary input (0705)
+BE-GT2Tx.02      # glass push button / room panel (0705)
+SCN-WS3HW.01     # weather station (0701)
+SCN-DA641.04     # DALI gateway (07B0 System B)
+SCN-P360D3.03    # presence detector (0705)
+
+# --- Zennio (M-0071) ---
+ZVI-F1           # capacitive push button (07B0 System B)
+ZIOMB16V3        # 16-channel switch actuator (07B0 System B)
+ZPR1612          # multifunction actuator (07B0 System B)
+ZDIDBDX1         # universal dimmer (07B0 System B)
+ZIOBIN44V2       # binary input (07B0 System B)
+ZCL4FC2PV2       # fan-coil thermostat (07B0 System B)
+ZPDEZTP          # presence/luminosity sensor (07B0 System B)
+ZN1DI-RGBX3      # RGB LED controller (0701)
+ZN1CL-KLIC-DI    # A/C gateway (0701)
+
+# --- Lingg & Janke (M-00E1), mask 0021 System 2 ---
+A6FX-SEC         # 6-fold switch actuator (KNX Secure)
+J4FX-SEC         # 4-fold blind actuator (KNX Secure)
+BE4FX-SEC        # 4-fold binary input (KNX Secure)
+TA8FXCT-SEC      # 8-fold push-button sensor (KNX Secure)
+
+# --- Theben (M-0048) ---
+4900270          # HMG 8 heating actuator (0021)
+4940275          # FIX2 dimmer (0701)
+
+# --- Elsner Elektronik (M-00C9) ---
+70370            # TH-B-UP temperature/humidity sensor (0701)

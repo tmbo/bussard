@@ -19,7 +19,7 @@
       "filename": "MDT_KP_AKK_03_Switch_Actuator_V23.knxprod",
       "application_ref": "M-0083_A-000D-23-5BFD",
       "redistributable": false,
-      "notes": "ETS5/6 database V2.3 (03/2024). One .knxprod bundles the whole AKK family. Verified by download 2026-09-16."
+      "notes": "Switch actuator. ETS5/6 database V2.3 (03/2024). One .knxprod bundles the whole AKK family; mixed masks (AKK-2416 is 07B0 System B, the rest 0705 System 7). Verified by download 2026-09-16."
     },
     {
       "manufacturer": "MDT",
@@ -42,7 +42,399 @@
       "size": 1002017,
       "filename": "MDT_KP_AKI_AKS_03_Switch_Actuator_V32d.knxprod",
       "redistributable": false,
-      "notes": "ETS5/6 database V3.2d (12/2022). One .knxprod bundles the AKS and AKI families. Verified by download 2026-09-16."
+      "notes": "Switch actuator. ETS5/6 database V3.2d (12/2022). One .knxprod bundles the AKS and AKI families. Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "JAL-0210.02",
+        "JAL-0410.02",
+        "JAL-0410D.02",
+        "JAL-0810.02",
+        "JAL-0810D.02",
+        "JAL-01UP.02"
+      ],
+      "name": "MDT Blind/Shutter Actuator JAL",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_JAL_02_Shutter_Actuator_V38b.knxprod",
+      "sha256": "af4b6543e02472388464276102665505c1c55b5d2aa158f911825ed2f086917a",
+      "size": 731869,
+      "filename": "MDT_KP_JAL_02_Shutter_Actuator_V38b.knxprod",
+      "application_ref": "M-0083_A-0028-38-B8C2",
+      "redistributable": false,
+      "notes": "Blind/shutter actuator. Database V3.8b. All four apps are 0705 (System 7). Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "AKD-0224V.02",
+        "AKD-0324V.02",
+        "AKD-0424V.02",
+        "AKD-0424R.02",
+        "AKD-0424R2.02"
+      ],
+      "name": "MDT Dimming Actuator / LED Controller AKD",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_AKD_02_LED_Controller_V28.knxprod",
+      "sha256": "5ea17921cb0f3060e239f730745db7face0af0a659d9251adb76b17c819bd23a",
+      "size": 1681549,
+      "filename": "MDT_KP_AKD_02_LED_Controller_V28.knxprod",
+      "application_ref": "M-0083_A-003D-28-ECCF",
+      "redistributable": false,
+      "notes": "Dimming actuator / RGBW LED controller (one database serves both). Database V2.8. All 0705 (System 7). Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "AKH-0400.03",
+        "AKH-0600.03",
+        "AKH-0800.03"
+      ],
+      "name": "MDT Heating Actuator AKH",
+      "url": "https://www.mdt.de/fileadmin/user_upload/MDT_KP_AKH_03_Heating_Actuator_V34.knxprod",
+      "sha256": "2e49a225ac89d0cf9d7425bb43803e1e1a325a6931cb914ed1a083bb3ab32b0a",
+      "size": 420174,
+      "filename": "MDT_KP_AKH_03_Heating_Actuator_V34.knxprod",
+      "application_ref": "M-0083_A-013B-34-09EC",
+      "redistributable": false,
+      "notes": "Heating actuator. Database V3.4. All three apps are 07B0 (System B) — flashable target. NOTE: hosted on the shorter /fileadmin/user_upload/ path (the /user_upload/user_upload/download/ variant 404s). Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "BE-04000.02",
+        "BE-04024.02",
+        "BE-04230.02",
+        "BE-08000.02",
+        "BE-08024.02",
+        "BE-08230.02",
+        "BE-16000.02",
+        "BE-16024.02",
+        "BE-16230.02",
+        "BE-32000.02"
+      ],
+      "name": "MDT Binary Input BE",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_BE_02_Binary_Input_V32a.knxprod",
+      "sha256": "51ebce4f5e8b3adb364be0f8681d5d91d08ab11e8608703eb8973baf3a5e1709",
+      "size": 393923,
+      "filename": "MDT_KP_BE_02_Binary_Input_V32a.knxprod",
+      "application_ref": "M-0083_A-00B3-32-723A",
+      "redistributable": false,
+      "notes": "Binary input (4/8/16/32-fold). Database V3.2a. All 0705 (System 7). Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "BE-GT2Tx.02",
+        "BE-GT20x.02",
+        "BE-TAS86Tx.02",
+        "BE-TAS86x.02"
+      ],
+      "name": "MDT Glass Push Button II Smart BE-GT",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_BE_02_Glass_Push_Button_II_Smart_V31.knxprod",
+      "sha256": "b5ea5653091bf95d3650216eafbc26c080b3d6c14924bc315c2dfdcfaa63530d",
+      "size": 900549,
+      "filename": "MDT_KP_BE_02_Glass_Push_Button_II_Smart_V31.knxprod",
+      "application_ref": "M-0083_A-018A-31-EEE8",
+      "redistributable": false,
+      "notes": "Glass push button / room panel (with color display). Database V3.1. Both apps 0705 (System 7). Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-WS3HW.01"
+      ],
+      "name": "MDT Weather Station SCN-WS",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_SCN_01_Weather_Station_V13a.knxprod",
+      "sha256": "f4ddba37b647e917658256965e8f9c4593ce2715ed28d51ed02aadaa37bbb9c5",
+      "size": 75643,
+      "filename": "MDT_KP_SCN_01_Weather_Station_V13a.knxprod",
+      "application_ref": "M-0083_A-004D-13-2B44",
+      "redistributable": false,
+      "notes": "Weather station. Database V1.3a. Single app, 0701 (System 7). Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-DA641.04",
+        "SCN-DA642.04"
+      ],
+      "name": "MDT DALI Control 64 Gateway SCN-DA64x",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/SCN-DA64x-04_MDT_KP_V40a.knxprod",
+      "sha256": "0cf819f5a9148bdfd5cd9c63d96e6c4eef273ec3593aec218cb7ebe04320b3cc",
+      "size": 254893,
+      "filename": "SCN-DA64x-04_MDT_KP_V40a.knxprod",
+      "application_ref": "M-0083_A-0155-40-4D9F-O00EF",
+      "redistributable": false,
+      "notes": "DALI gateway (lighting/dimming). Database V4.0a. Both apps 07B0 (System B) — flashable target. Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-P360D3.03",
+        "SCN-P360K3.03",
+        "SCN-P360D4.03",
+        "SCN-P360K4.03",
+        "SCN-P360L2.03",
+        "SCN-P360L3.03",
+        "SCN-P360E3.03",
+        "SCN-G360D3.03",
+        "SCN-G360K3.03"
+      ],
+      "name": "MDT Presence Detector SCN-x360",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/SCN-x360xx-03_MDT_KP_V44a.knxprod",
+      "sha256": "c612f5c3d1d874a9a885c343b19cdcaf15eba1ba826cc5e4379eb9d667938362",
+      "size": 861003,
+      "filename": "SCN-x360xx-03_MDT_KP_V44a.knxprod",
+      "application_ref": "M-0083_A-006C-44-494C",
+      "redistributable": false,
+      "notes": "Presence/motion detector. Database V4.4a. Eight apps, all 0705 (System 7). Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVI-F1"
+      ],
+      "name": "Zennio Flat 1 (capacitive push button)",
+      "url": "https://assets.zennio.com/application_program/Flat_1_1.4_EIFAItRS_Cert_ETS5.knxprod",
+      "sha256": "59ac3185ce725498109ed81f6cb9a03acb3041f09558cb56515b1516767765bd",
+      "size": 570604,
+      "filename": "Flat_1_1.4_EIFAItRS_Cert_ETS5.knxprod",
+      "application_ref": "M-0071_A-5711-14-9233",
+      "redistributable": false,
+      "notes": "Capacitive push button / touch panel. App V1.4, 07B0 (System B) — flashable target. Hosted on Zennio's CDN (assets.zennio.com/application_program/). Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOMB16V3"
+      ],
+      "name": "Zennio MAXinBOX 16 v3 (16-channel switch actuator)",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_16_v3_1.2_EIFAItRS_ETS5_CERT.knxprod",
+      "sha256": "d5567513852d66d9fbecf4e347735f483b1338216b558481b970cbf9c84443da",
+      "size": 2853506,
+      "filename": "MAXinBOX_16_v3_1.2_EIFAItRS_ETS5_CERT.knxprod",
+      "application_ref": "M-0071_A-4911-12-740E",
+      "redistributable": false,
+      "notes": "16-channel switch actuator. App V1.2, 07B0 (System B) — flashable target. Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZPR1612"
+      ],
+      "name": "Zennio ALLinBOX 1612 (multifunction actuator)",
+      "url": "https://assets.zennio.com/application_program/ALLinBOX_1612_1.0_EIFAItRS_ETS5.knxprod",
+      "sha256": "9d5609f2011f3c9bed6b698a221e12e6cfabab46f4784a1f7b71732b56f95277",
+      "size": 2601323,
+      "filename": "ALLinBOX_1612_1.0_EIFAItRS_ETS5.knxprod",
+      "application_ref": "M-0071_A-4A11-10-D638",
+      "redistributable": false,
+      "notes": "Multifunction actuator (switch/blind/dimming). App V1.0, 07B0 (System B) — flashable target. Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDIDBDX1"
+      ],
+      "name": "Zennio DIMinBOX DX1 (universal dimmer)",
+      "url": "https://assets.zennio.com/application_program/DIMinBOX_DX1_1.2_EIFAItRS_Cert_ETS5.knxprod",
+      "sha256": "a3c48169af61caeaec83c717feeb65773045e9ea7806d5b5ec475358f23a1be8",
+      "size": 526491,
+      "filename": "DIMinBOX_DX1_1.2_EIFAItRS_Cert_ETS5.knxprod",
+      "application_ref": "M-0071_A-3171-12-19F2",
+      "redistributable": false,
+      "notes": "Universal dimmer. App V1.2, 07B0 (System B) — flashable target. Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOBIN44V2"
+      ],
+      "name": "Zennio BIN 44 v2 (4-input binary input)",
+      "url": "https://assets.zennio.com/application_program/BIN_44_v2_1.0_EIFAItR_Cert.knxprod",
+      "sha256": "779fe6d2f865e8e682154cfbfd31e32a67bf216f59e8d5cb496f66a631598fba",
+      "size": 246479,
+      "filename": "BIN_44_v2_1.0_EIFAItR_Cert.knxprod",
+      "application_ref": "M-0071_A-4641-10-CC6E",
+      "redistributable": false,
+      "notes": "4-fold binary input. App V1.0, 07B0 (System B) — flashable target. Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL4FC2PV2"
+      ],
+      "name": "Zennio MAXinBOX FANCOIL 4CH2P v2 (fan-coil thermostat)",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_FANCOIL_4CH2P_v2_1.2_EIFAItRS_ETS5_CERT.knxprod",
+      "sha256": "69f9eb824e616dec3a52792d8fd6cf8696eb4b495204daa8425b0fb73284e19b",
+      "size": 2852975,
+      "filename": "MAXinBOX_FANCOIL_4CH2P_v2_1.2_EIFAItRS_ETS5_CERT.knxprod",
+      "application_ref": "M-0071_A-43C1-12-4D7D",
+      "redistributable": false,
+      "notes": "Fan-coil actuator / thermostat (heating/cooling). App V1.2, 07B0 (System B) — flashable target. Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZPDEZTP"
+      ],
+      "name": "Zennio EyeZen TP (presence/luminosity sensor)",
+      "url": "https://assets.zennio.com/application_program/EyeZen_TP_1.3_EIFAItR_ETS5_Cert.knxprod",
+      "sha256": "cdb897604dc0958ce44498f76e7b68247eed907983c6aa93b14ec075053d55d6",
+      "size": 510578,
+      "filename": "EyeZen_TP_1.3_EIFAItR_ETS5_Cert.knxprod",
+      "application_ref": "M-0071_A-44B1-13-98C1",
+      "redistributable": false,
+      "notes": "Presence / luminosity sensor. App V1.3, 07B0 (System B) — flashable target. Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZN1DI-RGBX3"
+      ],
+      "name": "Zennio Lumento X3 RGB (LED dimmer/controller)",
+      "url": "https://assets.zennio.com/application_program/Lumento_X3_RGB_1.2_EIFA.knxprod",
+      "sha256": "7ee2f25f9f9e022e6a38f6d5199f6080d81d37fa6c663b2a01ab115b992a59ff",
+      "size": 105938,
+      "filename": "Lumento_X3_RGB_1.2_EIFA.knxprod",
+      "application_ref": "M-0071_A-3211-12-F9D6",
+      "redistributable": false,
+      "notes": "RGB LED dimmer/controller. App V1.2, 0701 (System 7). Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZN1CL-KLIC-DI"
+      ],
+      "name": "Zennio KLIC-DI (A/C gateway)",
+      "url": "https://assets.zennio.com/application_program/KLIC_DI_SKY_1.14_EIFAItRS_CERT.knxprod",
+      "sha256": "b4091b576dbc79a8398fd70fd8c7cef15db8aff003233c87d8c6d6c04174dc70",
+      "size": 281392,
+      "filename": "KLIC_DI_SKY_1.14_EIFAItRS_CERT.knxprod",
+      "application_ref": "M-0071_A-1221-1E-EC8F",
+      "redistributable": false,
+      "notes": "Air-conditioning gateway (climate). App V1.14, 0701 (System 7). Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "A6FX-SEC"
+      ],
+      "name": "Lingg & Janke Switch Actuator 6-fold (KNX Secure)",
+      "url": "https://lingg-janke.de/datenbanken/L&J-a6fx-sec-en-de-30.knxprod",
+      "sha256": "daae120ce541f24cdcbebfc1c2235dd26736cf6f2707424c3e6642a0f4708c90",
+      "size": 130785,
+      "filename": "L&J-a6fx-sec-en-de-30.knxprod",
+      "application_ref": "M-00E1_A-2023-30-6FD8",
+      "redistributable": false,
+      "notes": "6-fold switch actuator (KNX Secure). Database V3.0, mask 0021 (System 2 / BCU family). Hosted on the vendor's own domain; the URL path contains a literal '&'. Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "J4FX-SEC"
+      ],
+      "name": "Lingg & Janke Blind Actuator 4-fold (KNX Secure)",
+      "url": "https://lingg-janke.de/datenbanken/L&J-j4fx-sec-en-de-30.knxprod",
+      "sha256": "273b2de60f56ef981b7e643cb224d285c0c1393fbcff1c2461530b6553be35be",
+      "size": 130667,
+      "filename": "L&J-j4fx-sec-en-de-30.knxprod",
+      "application_ref": "M-00E1_A-9004-30-3FAE",
+      "redistributable": false,
+      "notes": "4-fold blind/shutter actuator (KNX Secure). Database V3.0, mask 0021 (System 2 / BCU family). URL path contains a literal '&'. Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "BE4FX-SEC"
+      ],
+      "name": "Lingg & Janke Binary Input 4-fold (KNX Secure)",
+      "url": "https://lingg-janke.de/datenbanken/L&J-be4fx-sec-en-de-30.knxprod",
+      "sha256": "2a53e363ef39191324606e5e648de5d0f4dfd04640afb45bd0a17f36bd334223",
+      "size": 117068,
+      "filename": "L&J-be4fx-sec-en-de-30.knxprod",
+      "application_ref": "M-00E1_A-6011-30-C71C",
+      "redistributable": false,
+      "notes": "4-fold binary input (KNX Secure). Database V3.0, mask 0021 (System 2 / BCU family). URL path contains a literal '&'. Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "TA8FXCT-SEC"
+      ],
+      "name": "Lingg & Janke Push-button Sensor 8-fold (KNX Secure)",
+      "url": "https://lingg-janke.de/datenbanken/L&J-ta8fxct-sec-en-de-30.knxprod",
+      "sha256": "2b35dfbed5b281f48e412b8644f1aee499010c43ccd8ac29458f9c5be661f066",
+      "size": 190021,
+      "filename": "L&J-ta8fxct-sec-en-de-30.knxprod",
+      "application_ref": "M-00E1_A-E024-30-0403",
+      "redistributable": false,
+      "notes": "8-fold push-button sensor (KNX Secure). Database V3.0, mask 0021 (System 2 / BCU family). URL path contains a literal '&'. Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "Theben",
+      "manufacturer_id": "M-0048",
+      "order_numbers": [
+        "4900270"
+      ],
+      "name": "Theben HMG 8 (8-fold heating actuator)",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Theben/T4900/T4900270_HMG_8_8-fach_Heizungsaktor_V1.0.knxprod",
+      "sha256": "7c9ed8c0c3900e0ec916282f19b00c7001e8864fdacee007fcd3c8b4ccd24132",
+      "size": 84438,
+      "filename": "T4900270_HMG_8_8-fach_Heizungsaktor_V1.0.knxprod",
+      "application_ref": "M-0048_A-4914-10-150C",
+      "redistributable": false,
+      "notes": "8-fold heating actuator. Database V1.0, mask 0021 (System 2 / BCU family). Hosted on siblik.com (official Austrian Theben distributor mirror; theben.de itself ships only zips). Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "Theben",
+      "manufacturer_id": "M-0048",
+      "order_numbers": [
+        "4940275"
+      ],
+      "name": "Theben KNX FIX2 Dimmaktor",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Theben/T4940/T4940275_KNX_FIX2_Dimmaktor_V1.0_ETS4.knxprod",
+      "sha256": "c8b79f3eb0819e9209ea88ef6c5f1fcfd07ec190396e59fd313bab4d1be51420",
+      "size": 198400,
+      "filename": "T4940275_KNX_FIX2_Dimmaktor_V1.0_ETS4.knxprod",
+      "application_ref": "M-0048_A-4947-10-4918",
+      "redistributable": false,
+      "notes": "Dimming actuator. Database V1.0 (ETS4-era), mask 0701 (System 7). Hosted on siblik.com (distributor mirror). Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "Elsner Elektronik",
+      "manufacturer_id": "M-00C9",
+      "order_numbers": [
+        "70370"
+      ],
+      "name": "Elsner KNX TH-B-UP (temperature/humidity sensor)",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Elsner/ELS703/ELS70370_70374-76_KNX_TH-B-UP_V3.0.knxprod",
+      "sha256": "87558d9839156015b56812b9d56ffebecda96577a7ffc26e245e39cf3e792826",
+      "size": 347358,
+      "filename": "ELS70370_70374-76_KNX_TH-B-UP_V3.0.knxprod",
+      "application_ref": "M-00C9_A-1024-30-FCD2",
+      "redistributable": false,
+      "notes": "Temperature/humidity sensor (weather/climate). Database V3.0, mask 0701 (System 7). Hosted on siblik.com (distributor mirror; elsner-elektronik.de is shop/catalogue-gated). Verified by download 2026-09-16."
     }
   ]
 }
