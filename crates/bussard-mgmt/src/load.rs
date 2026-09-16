@@ -237,6 +237,25 @@ pub enum WriteError {
         object_index: u8,
     },
 
+    /// A `LdCtrlLoadImageProp` integrity check failed: the device's
+    /// `PID_MCB_TABLE` CRC over the segment it stored does not match the CRC the
+    /// tool computed over the bytes it wrote — the image did not land intact.
+    #[error(
+        "{address}: object {object_index} image integrity check failed — device \
+         PID_MCB_TABLE CRC is {device_crc:#06X} but the written image CRC is \
+         {expected_crc:#06X} (the segment was not stored intact)"
+    )]
+    ImagePropMismatch {
+        /// The device.
+        address: IndividualAddress,
+        /// The interface object index whose MCB was checked.
+        object_index: u8,
+        /// The CRC16-CCITT the tool computed over the bytes it wrote.
+        expected_crc: u16,
+        /// The CRC16-CCITT the device reported in its `PID_MCB_TABLE`.
+        device_crc: u16,
+    },
+
     /// An underlying management error (absent, NAK, disconnect, malformed).
     #[error(transparent)]
     Mgmt(#[from] MgmtError),
@@ -643,6 +662,201 @@ async fn read_table_reference<Ch: L4Channel>(
     ]))
 }
 
+// --- PID_MCB_TABLE (memory control block) + CRC16-CCITT -----------------------
+//
+// The `LdCtrlLoadImageProp` op of a modern download procedure integrity-checks a
+// freshly-written loadable segment: after the code+parameter image is streamed
+// into a loadable object and the object reaches `Loaded`, the object's
+// `PID_MCB_TABLE` property (PID 27) carries a *memory control block* describing
+// the segment, including a CRC16-CCITT the device computes over the segment's own
+// stored bytes. A tool validates its written image by reading that MCB and
+// comparing the device's CRC to a CRC it computes independently over the bytes it
+// sent — a mismatch means the image did not land intact.
+//
+// Evidence (thelsing/knx `table_object.cpp`, a permitted non-GPL device-side
+// behavioural reference — semantics only, no code copied): the System B device
+// registers `PID_MCB_TABLE` (27) as a **read-only, device-computed**
+// `PDT_GENERIC_08` (8-octet) property whose read callback, valid only while the
+// object is `LS_LOADED`, answers exactly:
+//
+// | octet | field           | value (thelsing)                                |
+// |-------|-----------------|-------------------------------------------------|
+// | 0..4  | segment size    | `pushInt(obj->_size)` — u32 **big-endian**      |
+// | 4     | CRC control     | `0x00` ("always valid")                         |
+// | 5     | access          | `0xFF` (read 4 bits + write 4 bits)             |
+// | 6..8  | CRC16-CCITT     | `pushWord(crc16Ccitt(obj->data(), size))` — BE |
+//
+// The CRC is CRC16-CCITT (thelsing `bits.cpp::crc16Ccitt`): width 16, polynomial
+// `0x1021`, initial value `0xFFFF`, input **not** reflected, output **not**
+// reflected, no final XOR; its documented check value for the ASCII string
+// `"123456789"` is `0xE5CC`.
+//
+// bussard mirrors this: `PID_MCB_TABLE` is read (not written) and the tool's own
+// [`mcb_entry`]/[`crc16_ccitt`] recompute the same 8 octets over the bytes it
+// wrote so [`read_mcb_table`] can confirm the device agrees.
+
+/// `PID_MCB_TABLE` (27) — a loadable object's memory-control-block table, an
+/// array of 8-octet entries each describing a segment (size, access, and a
+/// CRC16-CCITT the device computes over the segment's stored bytes). Read-only
+/// and device-computed on System B (thelsing `table_object.cpp`).
+pub const PID_MCB_TABLE: u8 = 27;
+
+/// The octet width of one `PID_MCB_TABLE` entry (`PDT_GENERIC_08`).
+pub const MCB_ENTRY_LEN: usize = 8;
+
+/// Computes a CRC16-CCITT over `data`, exactly as the KNX `PID_MCB_TABLE` uses it
+/// (thelsing `bits.cpp::crc16Ccitt`): width 16, polynomial `0x1021`, initial
+/// value `0xFFFF`, input and output **not** reflected, no final XOR.
+///
+/// The standard check value for the ASCII string `"123456789"` is `0xE5CC`.
+pub fn crc16_ccitt(data: &[u8]) -> u16 {
+    // Bit-at-a-time, appending 16 zero bits (the +2 octets), matching the
+    // reference's `8 * (length + 2)` loop and its `& 0x10000` reduction.
+    let mut result: u32 = 0xFFFF;
+    let total_bits = 8 * (data.len() + 2);
+    for i in 0..total_bits {
+        result <<= 1;
+        let next_bit = if (i / 8) < data.len() {
+            ((data[i / 8] >> (7 - (i % 8))) & 1) as u32
+        } else {
+            0
+        };
+        result |= next_bit;
+        if result & 0x1_0000 != 0 {
+            result ^= 0x1021;
+        }
+    }
+    (result & 0xFFFF) as u16
+}
+
+/// Builds the 8-octet `PID_MCB_TABLE` entry a device is expected to report for a
+/// segment holding exactly `segment_data`, per the thelsing System B layout:
+/// `[size:u32 BE][crc_control=0x00][access=0xFF][crc16:u16 BE]`.
+///
+/// `crc16` is [`crc16_ccitt`] over `segment_data`; `size` is `segment_data.len()`
+/// (the device reports the segment size it stored). Used to validate a
+/// `LdCtrlLoadImageProp` step: the tool computes this over the bytes it wrote and
+/// compares it to what [`read_mcb_table`] reads back.
+pub fn mcb_entry(segment_data: &[u8]) -> [u8; MCB_ENTRY_LEN] {
+    let size = segment_data.len() as u32;
+    let crc = crc16_ccitt(segment_data);
+    let mut v = [0u8; MCB_ENTRY_LEN];
+    v[0..4].copy_from_slice(&size.to_be_bytes());
+    v[4] = 0x00; // CRC control byte: always valid.
+    v[5] = 0xFF; // read/write access.
+    v[6..8].copy_from_slice(&crc.to_be_bytes());
+    v
+}
+
+/// A decoded `PID_MCB_TABLE` entry read from a loadable object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct McbEntry {
+    /// The segment size the device reports (octets), from entry octets `0..4`.
+    pub segment_size: u32,
+    /// The CRC control byte (octet 4); `0x00` means "always valid".
+    pub crc_control: u8,
+    /// The access byte (octet 5).
+    pub access: u8,
+    /// The CRC16-CCITT the device computed over the segment's stored bytes
+    /// (octets `6..8`, big-endian).
+    pub crc16: u16,
+}
+
+impl McbEntry {
+    /// Decodes an 8-octet entry, or `None` if the slice is too short.
+    pub fn decode(bytes: &[u8]) -> Option<McbEntry> {
+        if bytes.len() < MCB_ENTRY_LEN {
+            return None;
+        }
+        Some(McbEntry {
+            segment_size: u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            crc_control: bytes[4],
+            access: bytes[5],
+            crc16: u16::from_be_bytes([bytes[6], bytes[7]]),
+        })
+    }
+}
+
+/// Reads a loadable object's `PID_MCB_TABLE` and validates it against the image
+/// the tool wrote — the executable form of a `LdCtrlLoadImageProp` step.
+///
+/// After a loadable object reaches `Loaded`, its `PID_MCB_TABLE` element(s) carry
+/// the device's own CRC16-CCITT over the segment bytes it stored. This reads
+/// `count` element(s) from `start` and, when `expected` is `Some(bytes)`,
+/// confirms the first entry's [`McbEntry::crc16`] equals [`crc16_ccitt`] over
+/// `expected` (the bytes the tool streamed). A mismatch surfaces
+/// [`WriteError::ImagePropMismatch`]; a device that answers with no readable MCB
+/// entry surfaces [`WriteError::WriteNotConfirmed`]-style malformed responses.
+///
+/// The MCB property is device-computed and read-only on System B, so this never
+/// writes it — it reads and checks. `expected` is `None` for objects whose image
+/// the tool did not itself write (e.g. an object the procedure names but for
+/// which bussard streamed no segment); those entries are read but not
+/// CRC-checked, so the step still confirms the property is present.
+pub async fn read_mcb_table<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    object_index: u8,
+    start: u16,
+    count: u8,
+    expected: Option<&[u8]>,
+) -> Result<Vec<McbEntry>> {
+    let address = l4.target();
+    let payload =
+        apci::encode_property_value_read(object_index, PID_MCB_TABLE, count.max(1), start);
+    let (resp_apci, data) = l4.request(A_PROPERTY_VALUE_READ, &payload).await?;
+    if resp_apci != apci::A_PROPERTY_VALUE_RESPONSE {
+        return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
+            address,
+            reason: format!(
+                "expected A_PropertyValue_Response for PID_MCB_TABLE ({})",
+                raw_response_detail(resp_apci, &data)
+            ),
+        }));
+    }
+    let resp = apci::decode_property_value_response(&data).ok_or_else(|| {
+        WriteError::Mgmt(MgmtError::MalformedResponse {
+            address,
+            reason: format!(
+                "PID_MCB_TABLE response too short ({})",
+                raw_response_detail(resp_apci, &data)
+            ),
+        })
+    })?;
+    if resp.count == 0 || resp.data.len() < MCB_ENTRY_LEN {
+        return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
+            address,
+            reason: format!(
+                "object {object_index} did not answer a readable PID_MCB_TABLE entry ({})",
+                raw_response_detail(resp_apci, &data)
+            ),
+        }));
+    }
+    let entries: Vec<McbEntry> = resp
+        .data
+        .chunks_exact(MCB_ENTRY_LEN)
+        .filter_map(McbEntry::decode)
+        .collect();
+    let first = entries.first().ok_or_else(|| {
+        WriteError::Mgmt(MgmtError::MalformedResponse {
+            address,
+            reason: format!("object {object_index} PID_MCB_TABLE has no 8-octet entry"),
+        })
+    })?;
+
+    if let Some(image) = expected {
+        let want = crc16_ccitt(image);
+        if first.crc16 != want {
+            return Err(WriteError::ImagePropMismatch {
+                address,
+                object_index,
+                expected_crc: want,
+                device_crc: first.crc16,
+            });
+        }
+    }
+    Ok(entries)
+}
+
 /// How many table elements to write per `A_PropertyValue_Write`, sized so the
 /// request (4-octet header + data) fits the conservative 15-octet APDU every
 /// System B device supports. 4-octet association elements are the largest, so
@@ -858,5 +1072,42 @@ mod tests {
         assert_eq!(LoadState::Error.to_string(), "Error");
         assert_eq!(LoadControl::StartLoading.to_string(), "StartLoading");
         assert_eq!(LoadControl::LoadCompleted.to_string(), "LoadCompleted");
+    }
+
+    #[test]
+    fn crc16_ccitt_matches_the_standard_check_vector() {
+        // The documented CRC16-CCITT check value for "123456789" is 0xE5CC
+        // (thelsing `bits.cpp`, and the standard CRC-16/CCITT-FALSE vector).
+        assert_eq!(crc16_ccitt(b"123456789"), 0xE5CC);
+        // Init value FFFF, empty input: two appended zero bytes -> 0x1D0F is the
+        // well-known CRC-16/CCITT-FALSE result for the empty message.
+        assert_eq!(crc16_ccitt(b""), 0x1D0F);
+        // A single zero byte.
+        assert_eq!(crc16_ccitt(&[0x00]), 0xCC9C);
+    }
+
+    #[test]
+    fn mcb_entry_matches_thelsing_layout() {
+        // [size u32 BE][crc_ctrl=0x00][access=0xFF][crc16 u16 BE], 8 octets.
+        let data = b"123456789";
+        let e = mcb_entry(data);
+        assert_eq!(e.len(), MCB_ENTRY_LEN);
+        assert_eq!(&e[0..4], &(data.len() as u32).to_be_bytes()); // size = 9
+        assert_eq!(e[4], 0x00); // CRC control: always valid
+        assert_eq!(e[5], 0xFF); // access
+        assert_eq!(&e[6..8], &0xE5CCu16.to_be_bytes()); // CRC16-CCITT of "123456789"
+
+        // Round-trips through the decoder.
+        let dec = McbEntry::decode(&e).unwrap();
+        assert_eq!(dec.segment_size, 9);
+        assert_eq!(dec.crc_control, 0x00);
+        assert_eq!(dec.access, 0xFF);
+        assert_eq!(dec.crc16, 0xE5CC);
+    }
+
+    #[test]
+    fn mcb_decode_rejects_short_slices() {
+        assert!(McbEntry::decode(&[0u8; 7]).is_none());
+        assert!(McbEntry::decode(&[0u8; 8]).is_some());
     }
 }
