@@ -333,6 +333,25 @@ impl FlashPlan {
     }
 }
 
+/// Runtime options for [`flash`] that do not belong in the offline [`FlashPlan`].
+///
+/// Currently just the KNX-Virtual escape hatch. Defaults keep real-device
+/// behaviour strict.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FlashOptions {
+    /// Accept a device that reports [`bussard_mgmt::LoadState::Loaded`] rather
+    /// than the conformant `Loading` right after a `StartLoading`.
+    ///
+    /// A conformant System B device exposes the `Loading` intermediate state
+    /// after `StartLoading` (bussard's clean-room model of thelsing
+    /// `table_object.cpp`, and the KNX load-state machine). KNX Virtual 2.6.1 was
+    /// observed to snap straight to `Loaded`, tripping the strict check on the
+    /// very first allocate. This flag (off by default, surfaced as
+    /// `--tolerate-nonconformant-load-states`) lets the owner retry against KV
+    /// without weakening the guard on real hardware.
+    pub tolerate_nonconformant_load_states: bool,
+}
+
 /// A progress event emitted as [`flash`] executes, for the CLI to render.
 #[derive(Debug, Clone)]
 pub enum Progress {
@@ -417,6 +436,7 @@ pub fn plan_flash(
     device: &str,
     device_mask: u16,
     overrides: &BTreeMap<String, String>,
+    base_offsets: &BTreeMap<String, u32>,
 ) -> std::result::Result<FlashPlan, PlanError> {
     // 1. System B gate.
     if !bussard_mgmt::is_system_b(device_mask) {
@@ -459,7 +479,7 @@ pub fn plan_flash(
     // No per-instance base offsets are supplied here (they live in the project,
     // not in the product data): a module-instance override therefore refuses at
     // pre-flight rather than misplacing a byte — see `compute_parameter_image`.
-    let param_images = bussard_prod::compute_parameter_image(app, overrides, &BTreeMap::new())
+    let param_images = bussard_prod::compute_parameter_image(app, overrides, base_offsets)
         .map_err(|e| PlanError::UnresolvableImage {
             step: 0,
             reason: format!("computing the parameter image: {e}"),
@@ -499,6 +519,10 @@ pub fn plan_flash(
                 let size = size
                     .or_else(|| seg.as_ref().and_then(|(_, s)| *s))
                     .unwrap_or(0);
+                // The segment the PREVIOUS allocation bound, before this op
+                // updates the binding — the dedupe below must compare against
+                // this, not against its own freshly-written value.
+                let prev_rel_segment = last_rel_segment.clone();
                 if let Some((seg_id, _)) = &seg {
                     last_rel_segment = Some(seg_id.clone());
                     // Record the code image so total-byte accounting is correct.
@@ -506,7 +530,43 @@ pub fn plan_flash(
                         images.entry(seg_id.clone()).or_insert(data);
                     }
                 }
-                steps.push(FlashStep::AllocateSegment { size });
+
+                // Dedupe an identical consecutive allocation of the SAME segment.
+                //
+                // Evidence (MDT A-0007 / AKK-0216.03, corpus `M-0083_A-0007`): the
+                // vendor's `MergeId=2` block carries TWO `<LdCtrlRelSegment>` ops
+                // for one segment — `AppliesTo="full" LsmIdx=4 Size=1936` and
+                // `AppliesTo="par" LsmIdx=4 Size=1936` — differing only in
+                // AppliesTo/Mode. Both target the same LSM index and the same
+                // size, i.e. the same relative segment allocated twice; the single
+                // following `<LdCtrlWriteRelMem AppliesTo="full,par" Size=1936>`
+                // then writes the whole segment once.
+                //
+                // Per thelsing `table_object.cpp` (`allocTable` frees any prior
+                // backing store and re-allocates `size` octets) a second relative
+                // allocation on an already-`Loading` object is *legal* and lands in
+                // the same state — but it is redundant work, and re-issuing the
+                // 10-octet AdditionalLoadControls against an object that has just
+                // been (re)allocated is exactly the step KNX Virtual was observed
+                // to choke on. Emitting one allocation of the identical size
+                // reaches the same device state the vendor procedure intends (one
+                // 1936-octet segment for the combined full,par write), so we drop
+                // the immediately-repeated identical allocation. A *different* size
+                // or a *newly resolved* segment is never deduped.
+                // Duplicate = the immediately preceding step allocated the same
+                // size AND this op resolves to the same segment (or resolves no
+                // new segment at all). The DALI-gateway corpus app resolves its
+                // segment on BOTH ops of the repeated pair, so resolution alone
+                // must not defeat the dedupe; only a genuinely NEW segment does.
+                let same_segment = match &seg {
+                    None => true,
+                    Some((seg_id, _)) => prev_rel_segment.as_deref() == Some(seg_id.as_str()),
+                };
+                let is_duplicate = same_segment
+                    && matches!(steps.last(), Some(FlashStep::AllocateSegment { size: prev }) if *prev == size);
+                if !is_duplicate {
+                    steps.push(FlashStep::AllocateSegment { size });
+                }
             }
 
             LoadOp::WriteRelMem {
@@ -796,9 +856,26 @@ fn resolve_abs_image(
 /// `PID_OBJECT_TYPE` (as [`crate::apply::discover_table_objects`] does for the
 /// table objects). All `lsm`-bearing ops resolve to this single object on a
 /// single-application System B device.
+///
+/// Returns just the index for callers that need it; [`flash`] uses
+/// [`discover_object_table`] instead so it can fold the whole discovered table
+/// into a load-state error for diagnosis.
 pub async fn discover_application_object<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
 ) -> Result<u8, WriteError> {
+    let (index, _table) = discover_object_table(l4).await?;
+    Ok(index)
+}
+
+/// Discovers the application-program object index **and** the full interface-object
+/// table (`index → object type`), probing `PID_OBJECT_TYPE` from index 0 until the
+/// first empty read. The table is used to enrich a load-state error so a failure
+/// names not just "object N" but what every discovered object is.
+async fn discover_object_table<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+) -> Result<(u8, Vec<(u8, u16)>), WriteError> {
+    let mut table: Vec<(u8, u16)> = Vec::new();
+    let mut app_obj: Option<u8> = None;
     for index in 0..16u8 {
         let payload = bussard_mgmt::apci::encode_property_value_read(index, PID_OBJECT_TYPE, 1, 1);
         let (resp_apci, data) = l4
@@ -814,16 +891,77 @@ pub async fn discover_application_object<Ch: L4Channel>(
             break;
         }
         let ot = u16::from_be_bytes([resp.data[0], resp.data[1]]);
-        if ot == OT_APPLICATION_PROGRAM {
-            return Ok(index);
+        table.push((index, ot));
+        if ot == OT_APPLICATION_PROGRAM && app_obj.is_none() {
+            app_obj = Some(index);
         }
     }
-    Err(WriteError::Mgmt(
-        bussard_mgmt::MgmtError::MalformedResponse {
-            address: l4.target(),
-            reason: "device is missing the application-program interface object".to_string(),
-        },
-    ))
+    match app_obj {
+        Some(index) => Ok((index, table)),
+        None => Err(WriteError::Mgmt(
+            bussard_mgmt::MgmtError::MalformedResponse {
+                address: l4.target(),
+                reason: "device is missing the application-program interface object".to_string(),
+            },
+        )),
+    }
+}
+
+/// Drives a `StartLoading` on the application object, applying the tolerance
+/// policy and enriching a non-conformant load-state failure with discovery
+/// context.
+///
+/// A conformant device lands in `Loading`; [`write_load_control`] confirms that.
+/// When a device instead snaps to `Loaded` (the KNX Virtual behaviour):
+/// - with `tolerate_nonconformant_load_states` set, the `Loaded` is accepted and
+///   the flash proceeds (the subsequent allocate is likewise tolerant);
+/// - otherwise the strict [`WriteError::UnexpectedLoadState`] is re-emitted, now
+///   carrying the targeted object's discovered type and the full discovered
+///   object table so the failure is actionable rather than a bare "object N did
+///   not reach Loading".
+async fn start_loading<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    app_obj: u8,
+    object_table: &[(u8, u16)],
+    options: &FlashOptions,
+) -> Result<(), WriteError> {
+    match write_load_control(l4, app_obj, LoadControl::StartLoading).await {
+        Ok(_) => Ok(()),
+        Err(WriteError::UnexpectedLoadState {
+            actual: bussard_mgmt::LoadState::Loaded,
+            control: LoadControl::StartLoading,
+            ..
+        }) if options.tolerate_nonconformant_load_states => {
+            // KV snapped straight to Loaded; the owner opted to accept it.
+            Ok(())
+        }
+        Err(WriteError::UnexpectedLoadState {
+            address,
+            object_index,
+            control,
+            expected,
+            actual,
+            ..
+        }) => {
+            // Strict path: re-emit with the discovered object context folded in.
+            let context = bussard_mgmt::LoadStateContext {
+                object_type: object_table
+                    .iter()
+                    .find(|(idx, _)| *idx == object_index)
+                    .map(|(_, ot)| *ot),
+                object_table: object_table.to_vec(),
+            };
+            Err(WriteError::UnexpectedLoadState {
+                address,
+                object_index,
+                control,
+                expected,
+                actual,
+                context,
+            })
+        }
+        Err(other) => Err(other),
+    }
 }
 
 /// Executes a validated [`FlashPlan`] against the device over `l4`, reporting
@@ -842,9 +980,10 @@ pub async fn discover_application_object<Ch: L4Channel>(
 pub async fn flash<Ch: L4Channel, F: FnMut(Progress)>(
     l4: &mut Layer4Connection<Ch>,
     plan: &FlashPlan,
+    options: FlashOptions,
     mut progress: F,
 ) -> Result<FlashOutcome, WriteError> {
-    let app_obj = discover_application_object(l4).await?;
+    let (app_obj, object_table) = discover_object_table(l4).await?;
     let total = plan.steps.len();
 
     // Segment base addresses, filled as RelSegment allocations return them.
@@ -863,10 +1002,17 @@ pub async fn flash<Ch: L4Channel, F: FnMut(Progress)>(
                 write_load_control(l4, app_obj, LoadControl::Unload).await?;
             }
             FlashStep::StartLoading => {
-                write_load_control(l4, app_obj, LoadControl::StartLoading).await?;
+                start_loading(l4, app_obj, &object_table, &options).await?;
             }
             FlashStep::AllocateSegment { size } => {
-                let alloc = allocate_segment(l4, app_obj, *size, None).await?;
+                let alloc = allocate_segment(
+                    l4,
+                    app_obj,
+                    *size,
+                    None,
+                    options.tolerate_nonconformant_load_states,
+                )
+                .await?;
                 segment_base = Some(alloc.address);
             }
             FlashStep::WriteRelMem { offset, image } => {
@@ -1118,7 +1264,7 @@ mod tests {
     #[test]
     fn plan_lowers_supported_procedure() {
         let app = fabricated_app();
-        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides()).unwrap();
+        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
         assert_eq!(plan.identity.mask_version, "07B0");
         // Connect/Disconnect are session-boundary no-ops; 8 device steps remain.
         assert_eq!(
@@ -1157,7 +1303,7 @@ mod tests {
     #[test]
     fn plan_refuses_non_system_b() {
         let app = fabricated_app();
-        let err = plan_flash(&app, "1.1.4", 0x0705, &no_overrides()).unwrap_err();
+        let err = plan_flash(&app, "1.1.4", 0x0705, &no_overrides(), &BTreeMap::new()).unwrap_err();
         assert!(matches!(err, PlanError::NotSystemB { .. }), "{err:?}");
     }
 
@@ -1166,7 +1312,7 @@ mod tests {
         // App declares MV-07B0 but the device is a different System B medium
         // (0x57B0 IP): the exact-mask compare refuses it.
         let app = fabricated_app();
-        let err = plan_flash(&app, "1.1.4", 0x57B0, &no_overrides()).unwrap_err();
+        let err = plan_flash(&app, "1.1.4", 0x57B0, &no_overrides(), &BTreeMap::new()).unwrap_err();
         assert!(matches!(err, PlanError::MaskMismatch { .. }), "{err:?}");
     }
 
@@ -1187,7 +1333,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-2", xml.as_bytes()).unwrap();
-        let err = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides()).unwrap_err();
+        let err = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap_err();
         match err {
             PlanError::UnsupportedOp { op } => assert!(op.contains("TaskSegment"), "{op}"),
             other => panic!("expected UnsupportedOp, got {other:?}"),
@@ -1221,7 +1367,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-3", xml.as_bytes()).unwrap();
-        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides()).unwrap();
+        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
 
         let image_props: Vec<&FlashStep> = plan
             .steps
@@ -1257,6 +1403,74 @@ mod tests {
     }
 
     #[test]
+    fn plan_dedupes_identical_consecutive_allocations() {
+        // The real MDT A-0007 shape: the MergeId=2 block carries TWO
+        // <LdCtrlRelSegment> ops for one segment — AppliesTo="full" and
+        // AppliesTo="par", both LsmIdx=4 Size=6 — followed by a single combined
+        // full,par WriteRelMem. The two identical allocations of the same segment
+        // must collapse to ONE AllocateSegment step (the second is redundant and
+        // is the step KV chokes on), while the write still runs once.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-83_A-7" ApplicationNumber="7" ApplicationVersion="35"
+            MaskVersion="MV-07B0" Name="AKK" LoadProcedureStyle="MergedProcedure">
+          <Static>
+           <Code><RelativeSegment Id="M-83_A-7_RS-4" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment></Code>
+           <LoadProcedures>
+            <LoadProcedure MergeId="2">
+             <LdCtrlUnload LsmIdx="4" />
+             <LdCtrlLoad LsmIdx="4" />
+             <LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="6" Mode="1" Fill="0" />
+             <LdCtrlRelSegment AppliesTo="par" LsmIdx="4" Size="6" Mode="0" Fill="0" />
+            </LoadProcedure>
+            <LoadProcedure MergeId="4">
+             <LdCtrlWriteRelMem AppliesTo="full,par" ObjIdx="4" Offset="0" Size="6" Verify="true" />
+            </LoadProcedure>
+            <LoadProcedure MergeId="7">
+             <LdCtrlLoadCompleted LsmIdx="4" />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-83_A-7", xml.as_bytes()).unwrap();
+        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+
+        let allocs = plan
+            .steps
+            .iter()
+            .filter(|s| matches!(s, FlashStep::AllocateSegment { .. }))
+            .count();
+        assert_eq!(
+            allocs, 1,
+            "two identical consecutive allocations of the same segment must \
+             collapse to one, got steps {:?}",
+            plan.steps
+        );
+        // The single write still runs.
+        assert_eq!(
+            plan.steps
+                .iter()
+                .filter(|s| matches!(s, FlashStep::WriteRelMem { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn plan_keeps_distinct_allocations() {
+        // Two RelSegment ops for DIFFERENT segments (different sizes) must NOT be
+        // deduped — the fabricated app allocates a 6-byte code segment and a
+        // 1-byte parameter segment.
+        let app = fabricated_app();
+        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+        let allocs = plan
+            .steps
+            .iter()
+            .filter(|s| matches!(s, FlashStep::AllocateSegment { .. }))
+            .count();
+        assert_eq!(allocs, 2, "distinct segments keep distinct allocations");
+    }
+
+    #[test]
     fn plan_lowers_compare_prop() {
         // The MDT SCN-DA64x DALI-gateway shape: a CompareProp precondition (with
         // InlineData + OnError child) before the download proper. It must lower to
@@ -1282,7 +1496,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-4", xml.as_bytes()).unwrap();
-        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides()).unwrap();
+        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
 
         let compares: Vec<&FlashStep> = plan
             .steps
@@ -1328,7 +1542,7 @@ mod tests {
         let app = fabricated_app();
         let mut ov = BTreeMap::new();
         ov.insert("P-999_R-1".to_string(), "1".to_string());
-        let err = plan_flash(&app, "1.1.4", 0x07B0, &ov).unwrap_err();
+        let err = plan_flash(&app, "1.1.4", 0x07B0, &ov, &BTreeMap::new()).unwrap_err();
         match err {
             PlanError::UnresolvableImage { reason, .. } => {
                 assert!(reason.contains("P-999"), "must name the key: {reason}");
@@ -1344,7 +1558,7 @@ mod tests {
         let app = fabricated_app();
         let mut ov = BTreeMap::new();
         ov.insert("P-0_R-1".to_string(), "99".to_string());
-        let plan = plan_flash(&app, "1.1.4", 0x07B0, &ov).unwrap();
+        let plan = plan_flash(&app, "1.1.4", 0x07B0, &ov, &BTreeMap::new()).unwrap();
         assert_eq!(plan.param_images["M-1_A-1_RS-2"], vec![99]);
     }
 
@@ -1374,7 +1588,7 @@ mod tests {
     #[test]
     fn trace_renders_every_step() {
         let app = fabricated_app();
-        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides()).unwrap();
+        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
         let lines = trace(&plan);
         assert_eq!(lines.len(), plan.steps.len());
         assert!(lines[0].contains("unload"));
@@ -1384,7 +1598,7 @@ mod tests {
     #[test]
     fn estimates_are_sane() {
         let app = fabricated_app();
-        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides()).unwrap();
+        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
         // 7 bytes fit in one 12-octet chunk each write → 2 frames.
         assert_eq!(plan.estimated_write_frames(), 2);
         assert!(plan.estimated_duration().as_millis() >= 40);
