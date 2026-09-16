@@ -243,8 +243,16 @@ pub struct ParameterRef {
     pub access: Option<String>,
 }
 
-/// A code segment (`<RelativeSegment>` / `<AbsoluteSegment>`), metadata only —
-/// the binary payload is never carried into the model.
+/// A code segment (`<RelativeSegment>` / `<AbsoluteSegment>`).
+///
+/// Beyond the metadata, ETS may carry the segment's binary image inline as a
+/// base64 `<Data>` child (the bytes to download into device memory) and, for
+/// some segments, a base64 `<Mask>` child marking which bytes the image
+/// actually owns. bussard decodes both eagerly into owned `Vec<u8>`: segment
+/// images are bounded by the application's declared size (tens of KB at most),
+/// so holding them is cheap and lets the download engine and the parameter
+/// image builder read them directly. The binary never reaches the emitted YAML
+/// models; it is a download input only.
 #[derive(Debug, Clone)]
 pub struct CodeSegment {
     /// The full XML `Id`.
@@ -257,6 +265,12 @@ pub struct CodeSegment {
     pub address_or_offset: Option<u32>,
     /// `LoadStateMachine` index, for relative segments.
     pub load_state_machine: Option<u32>,
+    /// The decoded `<Data>` payload: the segment's base image bytes, if the
+    /// element carried one. `None` for a self-closing (metadata-only) segment.
+    pub data: Option<Vec<u8>>,
+    /// The decoded `<Mask>` payload, where present: a per-byte ownership mask
+    /// parallel to `data` (`0xFF` = this byte belongs to the segment image).
+    pub mask: Option<Vec<u8>>,
 }
 
 /// Which flavour of code segment.
@@ -523,6 +537,13 @@ pub fn parse_application_program(id: &str, xml: &str) -> Result<ApplicationProgr
     // The parameter whose <Memory> child we are waiting for.
     let mut cur_param_id: Option<String> = None;
 
+    // Streaming capture of a code segment's inline binary. When we enter a
+    // `<RelativeSegment>`/`<AbsoluteSegment>` with children we record its id;
+    // its `<Data>`/`<Mask>` children then feed base64 text into `seg_capture`.
+    let mut cur_segment_id: Option<String> = None;
+    let mut seg_capture: Option<SegField> = None;
+    let mut seg_buf = String::new();
+
     loop {
         let ev = reader.read_event().map_err(|source| EtsError::Xml {
             context: context.clone(),
@@ -531,6 +552,23 @@ pub fn parse_application_program(id: &str, xml: &str) -> Result<ApplicationProgr
         match ev {
             Event::Eof => break,
             Event::Start(e) => {
+                // A `<Data>`/`<Mask>` child of the current segment: begin
+                // buffering its base64 text.
+                match e.local_name().as_ref() {
+                    b"Data" if cur_segment_id.is_some() => {
+                        seg_capture = Some(SegField::Data);
+                        seg_buf.clear();
+                    }
+                    b"Mask" if cur_segment_id.is_some() => {
+                        seg_capture = Some(SegField::Mask);
+                        seg_buf.clear();
+                    }
+                    b"RelativeSegment" | b"AbsoluteSegment" => {
+                        let m = attrs_map(&e, &context)?;
+                        cur_segment_id = get(&m, b"Id").map(str::to_string);
+                    }
+                    _ => {}
+                }
                 handle_start(
                     &e,
                     &context,
@@ -542,6 +580,12 @@ pub fn parse_application_program(id: &str, xml: &str) -> Result<ApplicationProgr
                     &mut cur_lp,
                     &mut cur_param_id,
                 )?;
+            }
+            Event::Text(t) if seg_capture.is_some() => {
+                // Accumulate base64 text (segments can arrive across several
+                // text events); trim only when decoding.
+                let raw = t.into_inner();
+                seg_buf.push_str(&String::from_utf8_lossy(&raw));
             }
             Event::Empty(e) => {
                 handle_empty(
@@ -555,6 +599,21 @@ pub fn parse_application_program(id: &str, xml: &str) -> Result<ApplicationProgr
                 )?;
             }
             Event::End(e) => match e.local_name().as_ref() {
+                b"Data" | b"Mask" => {
+                    if let (Some(field), Some(seg_id)) =
+                        (seg_capture.take(), cur_segment_id.as_deref())
+                    {
+                        let bytes = decode_segment_base64(&seg_buf, &context, seg_id)?;
+                        if let Some(seg) = app.code_segments.get_mut(seg_id) {
+                            match field {
+                                SegField::Data => seg.data = Some(bytes),
+                                SegField::Mask => seg.mask = Some(bytes),
+                            }
+                        }
+                    }
+                    seg_buf.clear();
+                }
+                b"RelativeSegment" | b"AbsoluteSegment" => cur_segment_id = None,
                 b"Language" => translations.exit_language(),
                 b"TranslationElement" => translations.exit_element(),
                 b"Parameter" => cur_param_id = None,
@@ -904,8 +963,36 @@ fn insert_segment(app: &mut ApplicationProgram, m: &HashMap<Vec<u8>, String>, ki
             size: get(m, b"Size").and_then(|s| s.parse().ok()),
             address_or_offset,
             load_state_machine: get(m, b"LoadStateMachine").and_then(|s| s.parse().ok()),
+            // Filled later if a `<Data>`/`<Mask>` child follows; a self-closing
+            // segment stays metadata-only.
+            data: None,
+            mask: None,
         },
     );
+}
+
+/// Which inline binary child of a code segment is currently being buffered.
+#[derive(Debug, Clone, Copy)]
+enum SegField {
+    /// `<Data>`: the segment image bytes.
+    Data,
+    /// `<Mask>`: the per-byte ownership mask.
+    Mask,
+}
+
+/// Decodes a base64 segment payload (whitespace tolerated), erroring with the
+/// segment id in context so a corrupt file names the offending segment.
+fn decode_segment_base64(raw: &str, context: &str, seg_id: &str) -> Result<Vec<u8>> {
+    use base64::Engine as _;
+    // ETS emits the payload as a single unbroken base64 run, but tolerate stray
+    // whitespace defensively rather than fail a whole file over it.
+    let trimmed: String = raw.split_whitespace().collect();
+    base64::engine::general_purpose::STANDARD
+        .decode(trimmed.as_bytes())
+        .map_err(|e| EtsError::Malformed {
+            context: context.to_string(),
+            reason: format!("code segment {seg_id}: invalid base64 payload: {e}"),
+        })
 }
 
 /// Parses one `LdCtrl*` element into a typed [`LoadOp`], appending to the
@@ -1000,7 +1087,7 @@ mod tests {
   <ApplicationProgram Id="M-00FA_A-1" ApplicationNumber="7" ApplicationVersion="17" MaskVersion="MV-07B0" Name="Sample" LoadProcedureStyle="MergedProcedure">
    <Static>
     <Code>
-     <RelativeSegment Id="M-00FA_A-1_RS-4" Size="10" LoadStateMachine="4" Offset="0"><Data>AAA=</Data></RelativeSegment>
+     <RelativeSegment Id="M-00FA_A-1_RS-4" Size="10" LoadStateMachine="4" Offset="0"><Data>AAAAAAAAAAAAAA==</Data><Mask>////////////////</Mask></RelativeSegment>
      <AbsoluteSegment Id="M-00FA_A-1_AS-1" Size="256" Address="16384" />
     </Code>
     <ComObjectTable>
@@ -1172,7 +1259,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_code_segments_metadata_only() {
+    fn parses_code_segments_with_inline_data() {
         let app = sample();
         assert_eq!(app.code_segments.len(), 2);
         let rel = app.code_segments.get("M-00FA_A-1_RS-4").unwrap();
@@ -1180,9 +1267,16 @@ mod tests {
         assert_eq!(rel.size, Some(10));
         assert_eq!(rel.load_state_machine, Some(4));
         assert_eq!(rel.address_or_offset, Some(0));
+        // The `<Data>` base64 decodes to the segment's image bytes and the
+        // `<Mask>` to its parallel ownership mask.
+        assert_eq!(rel.data.as_deref(), Some([0u8; 10].as_slice()));
+        assert_eq!(rel.mask.as_deref(), Some([0xFFu8; 12].as_slice()));
+        // The self-closing absolute segment stays metadata-only.
         let abs = app.code_segments.get("M-00FA_A-1_AS-1").unwrap();
         assert_eq!(abs.kind, SegmentKind::Absolute);
         assert_eq!(abs.address_or_offset, Some(16384));
+        assert!(abs.data.is_none());
+        assert!(abs.mask.is_none());
     }
 
     #[test]

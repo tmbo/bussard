@@ -27,6 +27,7 @@ pub mod dpt_map;
 mod error;
 pub mod flag_map;
 pub mod hardware;
+pub mod image;
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -39,6 +40,7 @@ pub use application::{
 pub use container::AppEntry;
 pub use error::{ProdError, Result};
 pub use hardware::HardwareCatalog;
+pub use image::compute_parameter_image;
 
 /// The parsed contents of a `.knxprod`.
 #[derive(Debug, Default)]
