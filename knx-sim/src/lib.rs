@@ -21,5 +21,6 @@ pub mod config;
 pub mod device;
 pub mod net;
 pub mod prod;
+pub mod run;
 pub mod testfixtures;
 pub mod wire;
