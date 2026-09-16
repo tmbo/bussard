@@ -36,6 +36,44 @@ use tokio::time::{Instant, timeout};
 
 use crate::error::{MgmtError, Result, SilenceKind};
 
+/// The outcome of an `A_Authorize_Request` (issue #52 finding #1).
+///
+/// Authorization policy is **tolerate-absence, fail-on-denied**: a device that
+/// grants full access proceeds, a device that grants only limited access is a
+/// hard failure, and a device that does not implement authorize at all is
+/// tolerated (older/simpler devices never needed a key).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AuthorizeOutcome {
+    /// The device granted access at `level` (always `0` here — the full-access
+    /// level; any non-zero grant is [`AuthorizeOutcome::Denied`]).
+    Granted {
+        /// The granted access level (0 = full access).
+        level: u8,
+    },
+    /// The device answered but granted a **non-zero** access level: the presented
+    /// key does not unlock the access a management session needs. A real
+    /// access-denied — callers turn this into [`MgmtError::AccessDenied`].
+    Denied {
+        /// The non-zero level the device granted.
+        level: u8,
+    },
+    /// The device does not implement authorize: it did not answer, or answered
+    /// with a non-authorize APCI. Tolerated — the session continues unauthorized.
+    /// `detail` carries the raw evidence for a debug log.
+    Unsupported {
+        /// A human description of why the authorize was treated as unsupported
+        /// (no answer, or the raw APCI + payload of a non-authorize reply).
+        detail: String,
+    },
+}
+
+impl AuthorizeOutcome {
+    /// Whether the device implements authorize and granted full access.
+    pub fn granted(&self) -> bool {
+        matches!(self, AuthorizeOutcome::Granted { .. })
+    }
+}
+
 /// The two operations the layer-4 state machine needs from whatever carries its
 /// frames: an ACK-completed `send` and a `recv` of the next inbound frame.
 ///
@@ -365,6 +403,106 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
     pub async fn request(&mut self, apci: u16, data: &[u8]) -> Result<(u16, Vec<u8>)> {
         self.send_data(apci, data).await?;
         self.recv_response().await
+    }
+
+    /// Presents an access `key` with `A_Authorize_Request` and returns the
+    /// authorization outcome (issue #52 finding #1).
+    ///
+    /// A connection-oriented management session on a device that expects
+    /// authorization must present a key before any configuration read/write; ETS
+    /// does this as the first operation after the descriptor read. This sends the
+    /// request (payload `[0x00, key_be…]`, see
+    /// [`encode_authorize_request`](crate::apci::encode_authorize_request)),
+    /// awaits the response, validates the response APCI is
+    /// [`A_AUTHORIZE_RESPONSE`](crate::apci::A_AUTHORIZE_RESPONSE), and returns
+    /// the granted level.
+    ///
+    /// The policy is **tolerate-absence, fail-on-denied** (see
+    /// [`AuthorizeOutcome`]):
+    /// - a level-0 grant → [`AuthorizeOutcome::Granted`];
+    /// - a non-zero level → [`AuthorizeOutcome::Denied`] (a real access problem,
+    ///   surfaced by callers as [`MgmtError::AccessDenied`]);
+    /// - a device that does not answer at all, or answers with a non-authorize
+    ///   APCI (older/simpler devices that do not implement authorize) →
+    ///   [`AuthorizeOutcome::Unsupported`], carrying the raw response detail for a
+    ///   debug log. A `NoResponse` from the device (it never answered) is likewise
+    ///   folded to `Unsupported` rather than failing — an unkeyed device that does
+    ///   not implement authorize is expected and harmless.
+    ///
+    /// A **transport/connection** failure (the connection itself dropped, not the
+    /// device declining to answer) still surfaces as an `Err`, since that is not
+    /// an authorize outcome but a dead session.
+    pub async fn authorize(&mut self, key: u32) -> Result<AuthorizeOutcome> {
+        let payload = crate::apci::encode_authorize_request(key);
+        let (resp_apci, data) = match self
+            .request(crate::apci::A_AUTHORIZE_REQUEST, &payload)
+            .await
+        {
+            Ok(pair) => pair,
+            // The device never answered the authorize (no response NDT). This is
+            // the expected shape for a device that does not implement authorize;
+            // tolerate it. A genuine transport/disconnect death is surfaced.
+            Err(MgmtError::NoResponse { .. })
+            | Err(MgmtError::MidSessionSilence {
+                kind: SilenceKind::NoResponse,
+                ..
+            }) => {
+                return Ok(AuthorizeOutcome::Unsupported {
+                    detail: "device did not answer A_Authorize_Request".to_string(),
+                });
+            }
+            Err(other) => return Err(other),
+        };
+
+        if resp_apci != crate::apci::A_AUTHORIZE_RESPONSE {
+            // Answered with something that is not an authorize response: the
+            // device does not implement authorize. Tolerate, capturing the raw
+            // evidence for a debug log.
+            return Ok(AuthorizeOutcome::Unsupported {
+                detail: crate::error::raw_response_detail(resp_apci, &data),
+            });
+        }
+
+        match crate::apci::decode_authorize_response(&data) {
+            Some(0) => Ok(AuthorizeOutcome::Granted { level: 0 }),
+            Some(level) => Ok(AuthorizeOutcome::Denied { level }),
+            None => Ok(AuthorizeOutcome::Unsupported {
+                detail: format!(
+                    "A_Authorize_Response carried no level octet ({})",
+                    crate::error::raw_response_detail(resp_apci, &data)
+                ),
+            }),
+        }
+    }
+
+    /// Presents `key` with [`authorize`](Self::authorize) and applies the
+    /// **tolerate-absence, fail-on-denied** policy directly: a granted (level-0)
+    /// or unsupported authorize returns `Ok`, a non-zero level returns
+    /// [`MgmtError::AccessDenied`]. The `Unsupported` case is logged at debug.
+    ///
+    /// This is the one-call helper the management connect paths use so every
+    /// session authorizes with a uniform policy. It returns the
+    /// [`AuthorizeOutcome`] on success so a caller can still log which case
+    /// occurred (granted vs tolerated-absence).
+    pub async fn authorize_or_fail(&mut self, key: u32) -> Result<AuthorizeOutcome> {
+        let outcome = self.authorize(key).await?;
+        match &outcome {
+            AuthorizeOutcome::Granted { .. } => {}
+            AuthorizeOutcome::Denied { level } => {
+                return Err(MgmtError::AccessDenied {
+                    address: self.target,
+                    level: *level,
+                });
+            }
+            AuthorizeOutcome::Unsupported { detail } => {
+                tracing::debug!(
+                    target = %self.target,
+                    detail = %detail,
+                    "device does not implement A_Authorize; continuing unauthorized (older/simpler device)"
+                );
+            }
+        }
+        Ok(outcome)
     }
 
     /// Tears the connection down with `T_Disconnect` (best-effort).
@@ -758,5 +896,106 @@ mod tests {
         }
         // After 17 sends starting at 0, the next send seq is 17 mod 16 = 1.
         assert_eq!(l4.send_seq, 1);
+    }
+
+    #[tokio::test]
+    async fn authorize_free_access_grants_level_zero() {
+        // Script: ACK(0) for our authorize request, then A_Authorize_Response(0).
+        let inbox = vec![
+            control_from_dev(tpci::t_ack(0)),
+            ndt_from_dev(0, crate::apci::A_AUTHORIZE_RESPONSE, &[0x00]),
+        ];
+        let mut bus = ScriptedBus::new(inbox);
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool())
+            .await
+            .unwrap();
+        let outcome = l4.authorize(crate::apci::FREE_ACCESS_KEY).await.unwrap();
+        assert_eq!(outcome, AuthorizeOutcome::Granted { level: 0 });
+        // The tool sent the exact captured wire form [00 FF FF FF FF].
+        let sent_ndt = bus
+            .sent
+            .iter()
+            .find_map(|f| match (&f.tpci, &f.apdu) {
+                (Tpci::Other(_), Apdu::Other { apci, data })
+                    if *apci == crate::apci::A_AUTHORIZE_REQUEST =>
+                {
+                    Some(data.clone())
+                }
+                _ => None,
+            })
+            .expect("an A_Authorize_Request must have been sent");
+        assert_eq!(sent_ndt, vec![0x00, 0xFF, 0xFF, 0xFF, 0xFF]);
+    }
+
+    #[tokio::test]
+    async fn authorize_nonzero_level_is_denied() {
+        let inbox = vec![
+            control_from_dev(tpci::t_ack(0)),
+            ndt_from_dev(0, crate::apci::A_AUTHORIZE_RESPONSE, &[0x03]),
+        ];
+        let mut bus = ScriptedBus::new(inbox);
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool())
+            .await
+            .unwrap();
+        let outcome = l4.authorize(0x0011_2233).await.unwrap();
+        assert_eq!(outcome, AuthorizeOutcome::Denied { level: 3 });
+        // authorize_or_fail turns that into an explicit AccessDenied error.
+        let inbox = vec![
+            control_from_dev(tpci::t_ack(0)),
+            ndt_from_dev(0, crate::apci::A_AUTHORIZE_RESPONSE, &[0x03]),
+        ];
+        let mut bus = ScriptedBus::new(inbox);
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool())
+            .await
+            .unwrap();
+        let err = l4.authorize_or_fail(0x0011_2233).await.unwrap_err();
+        assert!(
+            matches!(err, MgmtError::AccessDenied { level: 3, .. }),
+            "got {err:?}"
+        );
+        assert!(
+            err.device_present(),
+            "access-denied means the device is present"
+        );
+    }
+
+    #[tokio::test]
+    async fn authorize_non_authorize_reply_is_unsupported_and_tolerated() {
+        // A device that answers with a non-authorize APCI (does not implement the
+        // service): the outcome is Unsupported and authorize_or_fail returns Ok
+        // (tolerate-and-continue), leaving the connection usable.
+        let inbox = vec![
+            control_from_dev(tpci::t_ack(0)),
+            ndt_from_dev(0, crate::apci::A_DEVICE_DESCRIPTOR_RESPONSE, &[0x07, 0xB0]),
+        ];
+        let mut bus = ScriptedBus::new(inbox);
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool())
+            .await
+            .unwrap();
+        let outcome = l4
+            .authorize_or_fail(crate::apci::FREE_ACCESS_KEY)
+            .await
+            .unwrap();
+        assert!(
+            matches!(outcome, AuthorizeOutcome::Unsupported { .. }),
+            "got {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn authorize_no_response_is_unsupported() {
+        // The device ACKs but never answers (empty inbox after the ACK forces the
+        // response timeout): a NoResponse folds to Unsupported (tolerated), not an
+        // error — an unkeyed device that does not implement authorize is expected.
+        let inbox = vec![control_from_dev(tpci::t_ack(0))];
+        let mut bus = ScriptedBus::new(inbox);
+        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast())
+            .await
+            .unwrap();
+        let outcome = l4.authorize(crate::apci::FREE_ACCESS_KEY).await.unwrap();
+        assert!(
+            matches!(outcome, AuthorizeOutcome::Unsupported { .. }),
+            "got {outcome:?}"
+        );
     }
 }
