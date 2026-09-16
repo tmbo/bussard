@@ -628,26 +628,35 @@ fn print_summary(
 // ---------------------------------------------------------------------------
 
 /// Loads the model for an adopt run (optional under an explicit address).
+///
+/// An **absent** model directory is a fresh project (with an explicit address we
+/// warn and continue); a directory **present but failing to parse** is a hard
+/// error either way — adopt is a management command and must never proceed
+/// against a broken model (issue #55).
 // DUP: mirrors `assign_cmd::load_model_for_assign`.
 fn load_model_for_adopt(dir: &Path, have_explicit_address: bool) -> anyhow::Result<Option<Model>> {
+    if !dir.exists() {
+        if have_explicit_address {
+            eprintln!(
+                "warning: model directory {} not found; continuing because an explicit address was given",
+                dir.display()
+            );
+            return Ok(None);
+        }
+        return Err(anyhow!(
+            "model directory {} not found\n\
+             adopt needs the model to allocate a free address; supply {ADOPT_ADDRESS_ENV} \
+             or run in a project directory",
+            dir.display()
+        ));
+    }
     match Model::load(dir) {
         Ok(model) => Ok(Some(model)),
-        Err(err) => {
-            if have_explicit_address {
-                eprintln!(
-                    "warning: could not load model from {} ({err}); continuing because an explicit address was given",
-                    dir.display()
-                );
-                Ok(None)
-            } else {
-                Err(anyhow!(
-                    "could not load model from {}: {err}\n\
-                     adopt needs the model to allocate a free address; supply {ADOPT_ADDRESS_ENV} \
-                     or run in a project directory",
-                    dir.display()
-                ))
-            }
-        }
+        Err(err) => Err(anyhow!(
+            "could not load model from {}: {err}\n\
+             refusing to run adopt against a model that failed to parse; fix the model files first",
+            dir.display()
+        )),
     }
 }
 

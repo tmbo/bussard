@@ -26,7 +26,7 @@ fn ia(s: &str) -> IndividualAddress {
 fn frame(dest: &str, at: SystemTime) -> TimestampedFrame {
     TimestampedFrame {
         received_at: at,
-        frame: CemiFrame::group_write(ga(dest), ia("1.1.30"), &[1]),
+        frame: CemiFrame::group_write_packed(ga(dest), ia("1.1.30"), &[1]),
     }
 }
 

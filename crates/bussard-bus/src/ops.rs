@@ -146,6 +146,7 @@ pub async fn write_group(
     handle: &BusHandle,
     ga: GroupAddress,
     payload: &[u8],
+    packed: bool,
     opts: WriteOptions,
 ) -> Result<WriteOutcome, BusError> {
     let source = group_source(handle);
@@ -153,8 +154,12 @@ pub async fn write_group(
     // Subscribe before sending so a fast confirmation cannot be missed.
     let mut sub = handle.subscribe();
 
+    // `packed` is a DPT property the caller derives from `Dpt::is_packable()`:
+    // only sub-byte DPTs (main 1/2/3) may use the 6-bit small APDU form. A
+    // byte-sized DPT with a small value must be sent as a separate data octet
+    // (issue #59), so the packing decision cannot be inferred from the byte here.
     let receipt = handle
-        .send(CemiFrame::group_write(ga, source, payload))
+        .send(CemiFrame::group_write(ga, source, payload, packed))
         .await?;
 
     let confirmed = if opts.confirm_timeout.is_zero() {

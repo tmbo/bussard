@@ -19,7 +19,7 @@ use bussard_mgmt::tables::{DeviceTables, TablesError, read_tables};
 use bussard_mgmt::{Layer4Connection, LeaseChannel, system_type};
 use bussard_model::{IndividualAddress, Model};
 
-use crate::conn_cmd::{ConnOverrides, load_model_optional, resolve_config};
+use crate::conn_cmd::{ConnOverrides, load_model_required, resolve_config};
 
 /// A serialisable `(object, GA)` pair for the JSON output.
 #[derive(Debug, serde::Serialize)]
@@ -56,7 +56,9 @@ pub fn run(
         .parse()
         .with_context(|| format!("parsing device address {address:?}"))?;
 
-    let Some(model) = load_model_optional(dir) else {
+    // A parse error is a hard failure here (surfaced with the file detail); an
+    // absent model still bails, since `plan` needs links.yaml.
+    let Some(model) = load_model_required(dir)? else {
         bail!(
             "`bussard plan` needs the model (links.yaml) to compute the desired tables; \
              none was loaded from {}",

@@ -267,6 +267,12 @@ fn classify(app: &bussard_prod::ApplicationProgram) -> Class {
                 reason: "SelectionError".to_string(),
             }
         }
+        Err(PlanError::AddressOutOfRange { .. }) => Class::Refused {
+            reason: "AddressOutOfRange".to_string(),
+        },
+        Err(PlanError::UnsupportedWriteProp { .. }) => Class::Refused {
+            reason: "UnsupportedWriteProp".to_string(),
+        },
     }
 }
 

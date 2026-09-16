@@ -368,7 +368,11 @@ mod tests {
     #[test]
     fn known_ga_with_dpt_resolves_everything() {
         let model = fixture_model();
-        let frame = stamped(CemiFrame::group_write(ga("3/2/0"), ia("1.1.30"), &[1]));
+        let frame = stamped(CemiFrame::group_write_packed(
+            ga("3/2/0"),
+            ia("1.1.30"),
+            &[1],
+        ));
         let d = DecodedTelegram::from_frame(&frame, Some(&model));
 
         assert_eq!(d.source, ia("1.1.30"));
@@ -391,7 +395,11 @@ mod tests {
     #[test]
     fn ga_without_dpt_is_raw_no_note() {
         let model = fixture_model();
-        let frame = stamped(CemiFrame::group_write(ga("3/2/1"), ia("1.1.30"), &[1]));
+        let frame = stamped(CemiFrame::group_write_packed(
+            ga("3/2/1"),
+            ia("1.1.30"),
+            &[1],
+        ));
         let d = DecodedTelegram::from_frame(&frame, Some(&model));
         assert_eq!(d.destination_name.as_deref(), Some("Nodpt"));
         assert_eq!(d.dpt, None);
@@ -402,7 +410,11 @@ mod tests {
     #[test]
     fn unknown_ga_degrades_to_numeric_and_raw() {
         let model = fixture_model();
-        let frame = stamped(CemiFrame::group_write(ga("7/7/7"), ia("2.2.2"), &[1]));
+        let frame = stamped(CemiFrame::group_write_packed(
+            ga("7/7/7"),
+            ia("2.2.2"),
+            &[1],
+        ));
         let d = DecodedTelegram::from_frame(&frame, Some(&model));
         assert_eq!(d.destination_name, None);
         assert_eq!(d.source_name, None);
@@ -413,7 +425,11 @@ mod tests {
 
     #[test]
     fn no_model_stays_numeric() {
-        let frame = stamped(CemiFrame::group_write(ga("3/2/0"), ia("1.1.30"), &[1]));
+        let frame = stamped(CemiFrame::group_write_packed(
+            ga("3/2/0"),
+            ia("1.1.30"),
+            &[1],
+        ));
         let d = DecodedTelegram::from_frame(&frame, None);
         assert_eq!(d.source_name, None);
         assert_eq!(d.destination_name, None);
@@ -443,7 +459,11 @@ mod tests {
     fn size_mismatch_produces_note_but_still_decodes() {
         let model = fixture_model();
         // 3/2/2 declares DPT 9.001 (2 bytes) but we send a single byte.
-        let frame = stamped(CemiFrame::group_write(ga("3/2/2"), ia("1.1.30"), &[0x05]));
+        let frame = stamped(CemiFrame::group_write_packed(
+            ga("3/2/2"),
+            ia("1.1.30"),
+            &[0x05],
+        ));
         let d = DecodedTelegram::from_frame(&frame, Some(&model));
         assert_eq!(d.dpt, Some("9.001".parse().unwrap()));
         let note = d.decode_note.expect("expected a size-mismatch note");
@@ -480,7 +500,11 @@ mod tests {
     #[test]
     fn response_is_classified_and_decoded() {
         let model = fixture_model();
-        let frame = stamped(CemiFrame::group_response(ga("3/2/0"), ia("1.1.30"), &[0]));
+        let frame = stamped(CemiFrame::group_response_packed(
+            ga("3/2/0"),
+            ia("1.1.30"),
+            &[0],
+        ));
         let d = DecodedTelegram::from_frame(&frame, Some(&model));
         assert_eq!(d.apci, ApciKind::Response);
         assert_eq!(

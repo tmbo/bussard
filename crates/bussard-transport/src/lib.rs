@@ -31,7 +31,9 @@
 //! // Write the 1-bit value `1` to group address 3/0/4.
 //! let ga: GroupAddress = "3/0/4".parse().unwrap();
 //! let ia: IndividualAddress = "1.1.255".parse().unwrap();
-//! conn.send(CemiFrame::group_write(ga, ia, &[1])).await?;
+//! // A 1-bit DPT packs into the 6-bit APDU; the write path uses the DPT-aware
+//! // `CemiFrame::group_write(.., dpt.is_packable())` so byte-sized DPTs don't.
+//! conn.send(CemiFrame::group_write_packed(ga, ia, &[1])).await?;
 //!
 //! // Observe the bus.
 //! let stamped = conn.recv().await?;

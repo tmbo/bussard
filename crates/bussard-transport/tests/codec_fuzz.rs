@@ -23,13 +23,13 @@ fn ia(s: &str) -> IndividualAddress {
 fn valid_cemi_frames() -> Vec<Vec<u8>> {
     let mut out = vec![
         // group write small
-        CemiFrame::group_write(ga("3/0/4"), ia("1.1.1"), &[1]).encode(),
+        CemiFrame::group_write_packed(ga("3/0/4"), ia("1.1.1"), &[1]).encode(),
         // group write large (2-byte)
-        CemiFrame::group_write(ga("3/0/4"), ia("1.1.1"), &[0x0C, 0x1A]).encode(),
+        CemiFrame::group_write_packed(ga("3/0/4"), ia("1.1.1"), &[0x0C, 0x1A]).encode(),
         // group read
         CemiFrame::group_read(ga("3/0/4"), ia("1.1.1")).encode(),
         // group response
-        CemiFrame::group_response(ga("3/0/4"), ia("1.1.1"), &[0x41]).encode(),
+        CemiFrame::group_response_packed(ga("3/0/4"), ia("1.1.1"), &[0x41]).encode(),
         // t_control (single-octet TPDU)
         CemiFrame::t_control(ia("1.1.4"), ia("0.0.255"), 0x80).encode(),
         // t_data_connected (management)
@@ -132,7 +132,7 @@ fn cemi_random_bytes_never_panic() {
 
 /// A spread of valid KNXnet/IP datagrams.
 fn valid_knxnet_frames() -> Vec<Vec<u8>> {
-    let cemi = CemiFrame::group_write(ga("3/0/4"), ia("1.1.1"), &[1]);
+    let cemi = CemiFrame::group_write_packed(ga("3/0/4"), ia("1.1.1"), &[1]);
     vec![
         knxnet::routing_indication(&cemi),
         knxnet::tunneling_request(
@@ -260,7 +260,7 @@ fn knxnet_search_response_short_device_info_does_not_panic() {
 #[test]
 fn knxnet_full_service_frames_roundtrip() {
     // Round-trip the parseable service frames.
-    let cemi = CemiFrame::group_write(ga("3/0/4"), ia("1.1.1"), &[1]);
+    let cemi = CemiFrame::group_write_packed(ga("3/0/4"), ia("1.1.1"), &[1]);
     let ri = knxnet::routing_indication(&cemi);
     let parsed = parse(&ri).unwrap();
     assert_eq!(parsed.service, ServiceType::RoutingIndication);
@@ -283,7 +283,7 @@ fn group_data_small_masks_to_six_bits() {
 #[test]
 fn cemi_destination_type_follows_control2_group_bit() {
     // group_write targets a group; t_control targets an individual.
-    let g = CemiFrame::group_write(ga("1/2/3"), ia("1.1.1"), &[1]);
+    let g = CemiFrame::group_write_packed(ga("1/2/3"), ia("1.1.1"), &[1]);
     assert!(matches!(g.destination, Destination::Group(_)));
     assert_eq!(g.message_code, MessageCode::LDataReq);
 

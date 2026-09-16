@@ -395,6 +395,21 @@ pub fn parse_tunneling_request(body: &[u8]) -> Result<TunnelingRequest> {
     Ok(TunnelingRequest { header, cemi })
 }
 
+/// Decodes only the connection header of a TUNNELING_REQUEST body, returning it
+/// alongside the raw (still-undecoded) cEMI bytes.
+///
+/// The tunnel receive loop needs the sequence number to decide whether to ACK a
+/// frame *before* it commits to decoding the cEMI — a cEMI carrying an unknown
+/// message code must still be ACKed so the gateway advances (issue #60), which
+/// [`parse_tunneling_request`] cannot express because it fails whole on a cEMI
+/// decode error.
+pub fn parse_tunneling_header(body: &[u8]) -> Result<(ConnectionHeader, &[u8])> {
+    let mut cur = Cursor::new(body);
+    let header = ConnectionHeader::decode(&mut cur)?;
+    let cemi_bytes = cur.take(cur.remaining(), "tunneling cEMI")?;
+    Ok((header, cemi_bytes))
+}
+
 /// Decodes a TUNNELING_ACK body: connection header with status in the last byte.
 pub fn parse_tunneling_ack(body: &[u8]) -> Result<(ConnectionHeader, u8)> {
     if body.len() < 4 {
@@ -623,7 +638,7 @@ mod tests {
     fn tunneling_request_carries_group_write() {
         let ga: GroupAddress = "3/0/4".parse().unwrap();
         let ia: IndividualAddress = "1.1.255".parse().unwrap();
-        let cemi = CemiFrame::group_write(ga, ia, &[1]);
+        let cemi = CemiFrame::group_write_packed(ga, ia, &[1]);
         let header = ConnectionHeader {
             channel_id: 0x15,
             seq: 0,
@@ -654,7 +669,7 @@ mod tests {
     fn routing_indication_roundtrip() {
         let ga: GroupAddress = "1/2/3".parse().unwrap();
         let ia: IndividualAddress = "1.1.1".parse().unwrap();
-        let cemi = CemiFrame::group_write(ga, ia, &[0]);
+        let cemi = CemiFrame::group_write_packed(ga, ia, &[0]);
         let f = routing_indication(&cemi);
         let parsed = parse(&f).unwrap();
         assert_eq!(parsed.service, ServiceType::RoutingIndication);
