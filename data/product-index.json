@@ -98,7 +98,7 @@
       "filename": "MDT_KP_AKH_03_Heating_Actuator_V34.knxprod",
       "application_ref": "M-0083_A-013B-34-09EC",
       "redistributable": false,
-      "notes": "Heating actuator. Database V3.4. All three apps are 07B0 (System B) — flashable target. NOTE: hosted on the shorter /fileadmin/user_upload/ path (the /user_upload/user_upload/download/ variant 404s). Verified by download 2026-09-16."
+      "notes": "Heating actuator. Database V3.4. All three apps are 07B0 (System B) \u2014 flashable target. NOTE: hosted on the shorter /fileadmin/user_upload/ path (the /user_upload/user_upload/download/ variant 404s). Verified by download 2026-09-16."
     },
     {
       "manufacturer": "MDT",
@@ -171,7 +171,7 @@
       "filename": "SCN-DA64x-04_MDT_KP_V40a.knxprod",
       "application_ref": "M-0083_A-0155-40-4D9F-O00EF",
       "redistributable": false,
-      "notes": "DALI gateway (lighting/dimming). Database V4.0a. Both apps 07B0 (System B) — flashable target. Verified by download 2026-09-16."
+      "notes": "DALI gateway (lighting/dimming). Database V4.0a. Both apps 07B0 (System B) \u2014 flashable target. Verified by download 2026-09-16."
     },
     {
       "manufacturer": "MDT",
@@ -209,7 +209,7 @@
       "filename": "Flat_1_1.4_EIFAItRS_Cert_ETS5.knxprod",
       "application_ref": "M-0071_A-5711-14-9233",
       "redistributable": false,
-      "notes": "Capacitive push button / touch panel. App V1.4, 07B0 (System B) — flashable target. Hosted on Zennio's CDN (assets.zennio.com/application_program/). Verified by download 2026-09-16."
+      "notes": "Capacitive push button / touch panel. App V1.4, 07B0 (System B) \u2014 flashable target. Hosted on Zennio's CDN (assets.zennio.com/application_program/). Verified by download 2026-09-16."
     },
     {
       "manufacturer": "Zennio",
@@ -224,7 +224,7 @@
       "filename": "MAXinBOX_16_v3_1.2_EIFAItRS_ETS5_CERT.knxprod",
       "application_ref": "M-0071_A-4911-12-740E",
       "redistributable": false,
-      "notes": "16-channel switch actuator. App V1.2, 07B0 (System B) — flashable target. Verified by download 2026-09-16."
+      "notes": "16-channel switch actuator. App V1.2, 07B0 (System B) \u2014 flashable target. Verified by download 2026-09-16."
     },
     {
       "manufacturer": "Zennio",
@@ -239,7 +239,7 @@
       "filename": "ALLinBOX_1612_1.0_EIFAItRS_ETS5.knxprod",
       "application_ref": "M-0071_A-4A11-10-D638",
       "redistributable": false,
-      "notes": "Multifunction actuator (switch/blind/dimming). App V1.0, 07B0 (System B) — flashable target. Verified by download 2026-09-16."
+      "notes": "Multifunction actuator (switch/blind/dimming). App V1.0, 07B0 (System B) \u2014 flashable target. Verified by download 2026-09-16."
     },
     {
       "manufacturer": "Zennio",
@@ -254,7 +254,7 @@
       "filename": "DIMinBOX_DX1_1.2_EIFAItRS_Cert_ETS5.knxprod",
       "application_ref": "M-0071_A-3171-12-19F2",
       "redistributable": false,
-      "notes": "Universal dimmer. App V1.2, 07B0 (System B) — flashable target. Verified by download 2026-09-16."
+      "notes": "Universal dimmer. App V1.2, 07B0 (System B) \u2014 flashable target. Verified by download 2026-09-16."
     },
     {
       "manufacturer": "Zennio",
@@ -269,7 +269,7 @@
       "filename": "BIN_44_v2_1.0_EIFAItR_Cert.knxprod",
       "application_ref": "M-0071_A-4641-10-CC6E",
       "redistributable": false,
-      "notes": "4-fold binary input. App V1.0, 07B0 (System B) — flashable target. Verified by download 2026-09-16."
+      "notes": "4-fold binary input. App V1.0, 07B0 (System B) \u2014 flashable target. Verified by download 2026-09-16."
     },
     {
       "manufacturer": "Zennio",
@@ -284,7 +284,7 @@
       "filename": "MAXinBOX_FANCOIL_4CH2P_v2_1.2_EIFAItRS_ETS5_CERT.knxprod",
       "application_ref": "M-0071_A-43C1-12-4D7D",
       "redistributable": false,
-      "notes": "Fan-coil actuator / thermostat (heating/cooling). App V1.2, 07B0 (System B) — flashable target. Verified by download 2026-09-16."
+      "notes": "Fan-coil actuator / thermostat (heating/cooling). App V1.2, 07B0 (System B) \u2014 flashable target. Verified by download 2026-09-16."
     },
     {
       "manufacturer": "Zennio",
@@ -299,7 +299,7 @@
       "filename": "EyeZen_TP_1.3_EIFAItR_ETS5_Cert.knxprod",
       "application_ref": "M-0071_A-44B1-13-98C1",
       "redistributable": false,
-      "notes": "Presence / luminosity sensor. App V1.3, 07B0 (System B) — flashable target. Verified by download 2026-09-16."
+      "notes": "Presence / luminosity sensor. App V1.3, 07B0 (System B) \u2014 flashable target. Verified by download 2026-09-16."
     },
     {
       "manufacturer": "Zennio",
@@ -435,6 +435,163 @@
       "application_ref": "M-00C9_A-1024-30-FCD2",
       "redistributable": false,
       "notes": "Temperature/humidity sensor (weather/climate). Database V3.0, mask 0701 (System 7). Hosted on siblik.com (distributor mirror; elsner-elektronik.de is shop/catalogue-gated). Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "AKU-02UP.03",
+        "AKU-0416.03",
+        "AKU-0616.03",
+        "AKU-0816.03",
+        "AKU-1616.03",
+        "AKU-2416.03",
+        "AKU-B2UP.03"
+      ],
+      "name": "MDT Universal Actuator AKU",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_AKU_03_Universal_Actuator_V41a.knxprod",
+      "sha256": "3f811d66288fcd91f0bd838f8d3e7f912b5a478e464548f23abf891b0a8c6f01",
+      "size": 1023586,
+      "filename": "MDT_KP_AKU_03_Universal_Actuator_V41a.knxprod",
+      "application_ref": "M-0083_A-00C0-41-AD85",
+      "redistributable": false,
+      "notes": "Universal (switch/blind mixed) actuator. Database V4.1a. All apps 07B0 (System B); a large multi-app System B file, good flash-planner coverage. Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-IP100.03"
+      ],
+      "name": "MDT IP Router Secure (SCN-IP100)",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/MDT_KP_SCN_03_IP_Router_Secure_V30.knxprod",
+      "sha256": "2ed1ff42d606ed803005f29bcbdebc25694af6e3dee28ba8a8e3ed665fb14cda",
+      "size": 100148,
+      "filename": "MDT_KP_SCN_03_IP_Router_Secure_V30.knxprod",
+      "application_ref": "M-0083_A-0139-30-C353-O0072",
+      "redistributable": false,
+      "notes": "KNX Secure IP router. Database V3.0, mask 091A (a coupler/secure mask family not otherwise in the corpus). Hosted at mdt-group.com (mdt.de 301-redirects there). Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "EZ-0320.01",
+        "EZ-0363.01"
+      ],
+      "name": "MDT Energy Meter EZ",
+      "url": "https://www.mdt.de/fileadmin/user_upload/MDT_KP_EZ_01_Energy_Meter_V11.knxprod",
+      "sha256": "d5b560c4dfa52a45f3da52220229d8dacc8e9e4cbcde3b3389dc022cdddc1703",
+      "size": 214860,
+      "filename": "MDT_KP_EZ_01_Energy_Meter_V11.knxprod",
+      "application_ref": "M-0083_A-0112-11-0C0A",
+      "redistributable": false,
+      "notes": "Energy meter (metering device type, new to the corpus). Database V1.1, mask 0705 (System 7). Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-LOG1.02"
+      ],
+      "name": "MDT Logic Module SCN-LOG1",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/MDT_KP_SCN_02_Logical_Module_V20.knxprod",
+      "sha256": "4f7a462448f512705903bd68dce43fb2a791475f05f0fd0eefbb17b71ede04db",
+      "size": 1795174,
+      "filename": "MDT_KP_SCN_02_Logical_Module_V20.knxprod",
+      "application_ref": "M-0083_A-004B-20-6141",
+      "redistributable": false,
+      "notes": "Logic module (large parameter set: many TypePicture/enum params, stresses the parameter parser). Database V2.0, mask 0705. Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIZ70V2"
+      ],
+      "name": "Zennio Z70 v2 (touch panel)",
+      "url": "https://assets.zennio.com/application_program/Z70_v2_4.0_EIFAItRUk_Cert.knxprod",
+      "sha256": "241117227cb5e80dc29a999a7f6cb85953a882d77ede44a4311a006c6f38ba7b",
+      "size": 1331667,
+      "filename": "Z70_v2_4.0_EIFAItRUk_Cert.knxprod",
+      "application_ref": "M-0071_A-5531-40-A703",
+      "redistributable": false,
+      "notes": "Capacitive touch panel. Database V4.0, mask 07B0 (System B). NOTE: this app REFUSES at flash pre-flight \u2014 an enum parameter's default value is not a declared member (UnresolvableImage). Kept as a deliberate regression pointer. Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDID64V3"
+      ],
+      "name": "Zennio DALI BOX Interface 64 v3",
+      "url": "https://assets.zennio.com/application_program/DALI_BOX_Interface_64_v3_2.0_EIAFItRUk.knxprod",
+      "sha256": "4d115ab682668e517dab5b9915aad79a4eb421465969e02519cf1d410698d3b8",
+      "size": 1531638,
+      "filename": "DALI_BOX_Interface_64_v3_2.0_EIAFItRUk.knxprod",
+      "application_ref": "M-0071_A-3351-20-2390",
+      "redistributable": false,
+      "notes": "DALI gateway (64 ballasts). Database V2.0, mask 07B0 (System B), flashes today. Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCLDAV2"
+      ],
+      "name": "Zennio KLIC-DA v2 (Daikin A/C gateway)",
+      "url": "https://assets.zennio.com/application_program/KLIC-DA_v2_1.1_EIFAItR.knxprod",
+      "sha256": "117475d82fbad9b96ce456a0ce85327184b2bd49faea8d88df12f6a202d0f33b",
+      "size": 574354,
+      "filename": "KLIC-DA_v2_1.1_EIFAItR.knxprod",
+      "application_ref": "M-0071_A-12E1-11-9C77",
+      "redistributable": false,
+      "notes": "Daikin air-conditioning gateway. Database V1.1, mask 07B0 (System B). Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "Steinel",
+      "manufacturer_id": "M-008E",
+      "order_numbers": [
+        "4007841056339"
+      ],
+      "name": "Steinel True Presence (presence detector)",
+      "url": "https://www.steinel.de/out/media/knxsoftware/135960_TruePresence_V1_0_DE_EN_NL.knxprod",
+      "sha256": "2d86253686616feca5f9fd5fcc875878dbcd42b127f594afbd20210f2a9ab32c",
+      "size": 85907,
+      "filename": "135960_TruePresence_V1_0_DE_EN_NL.knxprod",
+      "application_ref": "M-008E_A-7079-10-E9D7",
+      "redistributable": false,
+      "notes": "NEW VENDOR (Steinel, M-008E): true-presence radar detector. Database V1.0, mask 0705. Uses TypeTime parameters. Hosted bare at steinel.de/out/media/knxsoftware/. Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "EAE Technology",
+      "manufacturer_id": "M-011E",
+      "order_numbers": [
+        "48002"
+      ],
+      "name": "EAE SW108 Switch Actuator (8-fold)",
+      "url": "https://www.eaetechnology.com/upload/dosyalar/SW108_Switch_Actuator_v1.1-tr_en_de_es_fr_it.knxprod",
+      "sha256": "f70dc850efbe86a6c5f70154d397e03f8250ab8341822daa7ef9f82276d024a7",
+      "size": 188861,
+      "filename": "SW108_Switch_Actuator_v1.1-tr_en_de_es_fr_it.knxprod",
+      "application_ref": "M-011E_A-BB82-11-C0F3",
+      "redistributable": false,
+      "notes": "NEW VENDOR (EAE Technology, M-011E): 8-fold switch actuator. Database V1.1, mask 0705. Hosted bare at eaetechnology.com/upload/dosyalar/. Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "Theben",
+      "manufacturer_id": "M-0048",
+      "order_numbers": [
+        "1079210"
+      ],
+      "name": "Theben Sphinx 330 (motion detector)",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Theben/T1079/T1079210_Sphinx_330_Bewegungsmelder_V1.1.knxprod",
+      "sha256": "a8c3a7afb881177883ddd1dc4e7eb0663f10a1f504d66a50e8c72574987ed2b7",
+      "size": 49900,
+      "filename": "T1079210_Sphinx_330_Bewegungsmelder_V1.1.knxprod",
+      "application_ref": "M-0048_A-107C-11-FCE0",
+      "redistributable": false,
+      "notes": "Motion detector. Database V1.1, mask 0012 (System 2 / BCU2, an older mask family). Hosted on siblik.com (distributor mirror). Verified by download 2026-09-16."
     }
   ]
 }

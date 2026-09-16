@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FABRICATED fixture. Reproduces the exact shape that made the Zennio Z40 and
+     Z70 v2 panels REFUSE at pre-flight in the sweep: an enum parameter
+     (<TypeRestriction>) whose declared default Value is NOT one of the
+     enumeration's declared members. `compute_parameter_image` rejects it with
+     "value `N` is not a declared enumeration member", which surfaces from
+     plan_flash as `PlanError::UnresolvableImage: computing the parameter image`.
+
+     Real cause observed (shape only, no vendor content copied):
+       Z40  M-0071_A-51D1: param `...iconColor[0]`     default 3, enum has 0..2
+       Z70  M-0071_A-5531: param `...pageDistribution[1]` default 0, enum lacks 0
+
+     This is a genuine data-quality trap: the vendor's OWN default sits outside
+     its OWN enum, and bussard's strict membership check refuses the whole
+     download. Here the enum declares members {1,2} and the default is 3.
+
+     Intended tests (bussard-prod + bussard-download):
+       * `compute_parameter_image` returns an Err naming this parameter and the
+         non-member value (pin the message shape).
+       * `plan_flash` (mask 07B0) returns `PlanError::UnresolvableImage` whose
+         reason contains "not a declared enumeration member".
+       * A DECISION test for whether strict membership should hard-refuse a
+         flashable device or fall back to encoding the raw number with a warning
+         (see the sweep report: this refused 2 otherwise-executable panels). -->
+<KNX xmlns="http://knx.org/xml/project/20">
+ <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
+  <ApplicationProgram Id="M-00FA_A-0006-11-ABCD-O000A" ApplicationNumber="6" ApplicationVersion="11" MaskVersion="MV-07B0" Name="Enum Default Not A Member Fixture" LoadProcedureStyle="MergedProcedure">
+   <Static>
+    <Code>
+     <RelativeSegment Id="M-00FA_A-0006-11-ABCD-O000A_RS-4" Size="16" LoadStateMachine="4" />
+    </Code>
+    <ParameterTypes>
+     <ParameterType Id="M-00FA_A-0006-11-ABCD-O000A_PT-Mode" Name="Mode">
+      <TypeRestriction Base="Value" SizeInBit="8">
+       <Enumeration Text="Low" Value="1" Id="M-00FA_A-0006-11-ABCD-O000A_PT-Mode_EN-1" />
+       <Enumeration Text="High" Value="2" Id="M-00FA_A-0006-11-ABCD-O000A_PT-Mode_EN-2" />
+      </TypeRestriction>
+     </ParameterType>
+    </ParameterTypes>
+    <Parameters>
+     <!-- Default 3 is NOT a declared member (enum only has 1 and 2). -->
+     <Parameter Id="M-00FA_A-0006-11-ABCD-O000A_P-1" Name="Mode" Text="Mode" ParameterType="M-00FA_A-0006-11-ABCD-O000A_PT-Mode" Value="3">
+      <Memory CodeSegment="M-00FA_A-0006-11-ABCD-O000A_RS-4" Offset="0" BitOffset="0" />
+     </Parameter>
+    </Parameters>
+    <ComObjectTable>
+     <ComObject Id="M-00FA_A-0006-11-ABCD-O000A_O-0" Number="0" Text="Switch" ObjectSize="1 Bit" CommunicationFlag="Enabled" WriteFlag="Enabled" />
+    </ComObjectTable>
+    <ComObjectRefs>
+     <ComObjectRef Id="M-00FA_A-0006-11-ABCD-O000A_O-0_R-1" RefId="M-00FA_A-0006-11-ABCD-O000A_O-0" DatapointType="DPST-1-1" />
+    </ComObjectRefs>
+   </Static>
+   <LoadProcedures>
+    <LoadProcedure MergeId="4">
+     <LdCtrlConnect />
+     <LdCtrlUnload LsmIdx="4" />
+     <LdCtrlLoad LsmIdx="4" />
+     <LdCtrlRelSegment LsmIdx="4" Size="16" AppliesTo="full,par" />
+     <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="16" AppliesTo="par" />
+     <LdCtrlLoadCompleted LsmIdx="4" />
+     <LdCtrlRestart />
+     <LdCtrlDisconnect />
+    </LoadProcedure>
+   </LoadProcedures>
+  </ApplicationProgram>
+ </ApplicationPrograms></Manufacturer></ManufacturerData>
+</KNX>

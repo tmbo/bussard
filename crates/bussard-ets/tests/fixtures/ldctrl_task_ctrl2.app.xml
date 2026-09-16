@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FABRICATED fixture. Reproduces <LdCtrlTaskCtrl2> (task-control variant 2),
+     found on KNX-RF / coupler masks (2705/27B0) in the sweep. It is the sibling
+     of the already-typed LdCtrlTaskCtrl1. Fake attribute values. Parses as
+     LoadOp::Raw{name:"LdCtrlTaskCtrl2"}. -->
+<KNX xmlns="http://knx.org/xml/project/20">
+ <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
+  <ApplicationProgram Id="M-00FA_A-0003-11-ABCD-O000A" ApplicationNumber="3" ApplicationVersion="11" MaskVersion="MV-2705" Name="TaskCtrl2 Fixture" LoadProcedureStyle="ProductProcedure">
+   <Static>
+    <ComObjectTable>
+     <ComObject Id="M-00FA_A-0003-11-ABCD-O000A_O-0" Number="0" Text="Trigger" ObjectSize="1 Bit" CommunicationFlag="Enabled" WriteFlag="Enabled" />
+    </ComObjectTable>
+    <ComObjectRefs>
+     <ComObjectRef Id="M-00FA_A-0003-11-ABCD-O000A_O-0_R-1" RefId="M-00FA_A-0003-11-ABCD-O000A_O-0" DatapointType="DPST-1-1" />
+    </ComObjectRefs>
+   </Static>
+   <LoadProcedures>
+    <LoadProcedure>
+     <LdCtrlConnect />
+     <LdCtrlLoad LsmIdx="3" />
+     <LdCtrlTaskPtr LsmIdx="3" InitPtr="284" SavePtr="285" SerialPtr="0" />
+     <LdCtrlTaskCtrl2 LsmIdx="3" Callback="20609" Address="282" Seg0="208" Seg1="208" />
+     <LdCtrlLoadCompleted LsmIdx="3" />
+     <LdCtrlRestart />
+     <LdCtrlDisconnect />
+    </LoadProcedure>
+   </LoadProcedures>
+  </ApplicationProgram>
+ </ApplicationPrograms></Manufacturer></ManufacturerData>
+</KNX>
