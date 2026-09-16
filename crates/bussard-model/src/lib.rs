@@ -19,7 +19,9 @@ pub mod schema;
 pub mod validate;
 
 pub use address::{AddressParseError, GroupAddress, IndividualAddress};
-pub use codec::{EncodeError, HvacMode, ParseValueError, TypedValue, decode, encode, parse_value};
+pub use codec::{
+    DateTime, EncodeError, HvacMode, ParseValueError, Rgbw, TypedValue, decode, encode, parse_value,
+};
 pub use dpt::{ApduSize, Dpt, DptParseError};
 pub use flags::{Flags, FlagsParseError};
 pub use loader::{LoadError, LoadedDevice, Model, SaveError};

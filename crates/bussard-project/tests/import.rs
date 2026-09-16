@@ -158,6 +158,24 @@ fn oracle_matches() {
     oracle_devices_match();
     oracle_com_object_links_match();
     real_module_bases_match();
+    real_project_name_is_extracted();
+}
+
+/// The real project's name is read from `project.xml` and populated on the
+/// model (issue #62). Before this fix `project.xml` was never read, so
+/// `groups.project` was always `None`. The real `home_test.knxproj`'s
+/// `ProjectInformation@Name` is "Bocklisch / Alpha" with a `ThreeLevel`
+/// group-address style, so import must succeed and carry that name.
+fn real_project_name_is_extracted() {
+    let Some((model, _)) = load_real_and_oracle() else {
+        eprintln!("skipping real_project_name_is_extracted: fixtures/password not available");
+        return;
+    };
+    assert_eq!(
+        model.groups.project.as_deref(),
+        Some("Bocklisch / Alpha"),
+        "project name should be read from project.xml"
+    );
 }
 
 /// The per-module-instance memory base offsets (issue #48) resolve to the real

@@ -101,6 +101,99 @@ pub struct RawLocation {
     pub room: Option<String>,
 }
 
+/// The group-address numbering style declared in `project.xml`.
+///
+/// ETS projects address group values in one of three styles. bussard's
+/// [`GroupAddress`] model is fixed to the 3-level `main/middle/sub` layout, so
+/// only [`ThreeLevel`](GroupAddressStyle::ThreeLevel) can be imported without
+/// corrupting the addresses; the other two are detected so the importer can
+/// refuse with a clear message rather than silently mis-splitting raw addresses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupAddressStyle {
+    /// `main/middle/sub` (5/3/8 bits). The only style bussard imports today.
+    ThreeLevel,
+    /// `main/sub` (5/11 bits).
+    TwoLevel,
+    /// A single flat 16-bit number.
+    Free,
+}
+
+impl GroupAddressStyle {
+    /// Parses the `GroupAddressStyle` attribute value from `project.xml`.
+    ///
+    /// ETS writes `"ThreeLevel"`, `"TwoLevel"`, or `"Free"`. Unknown values map
+    /// to `None`.
+    pub fn from_attr(s: &str) -> Option<Self> {
+        match s {
+            "ThreeLevel" => Some(Self::ThreeLevel),
+            "TwoLevel" => Some(Self::TwoLevel),
+            "Free" => Some(Self::Free),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for GroupAddressStyle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            GroupAddressStyle::ThreeLevel => "ThreeLevel",
+            GroupAddressStyle::TwoLevel => "TwoLevel",
+            GroupAddressStyle::Free => "Free",
+        };
+        f.write_str(s)
+    }
+}
+
+/// The project metadata read from `project.xml`.
+///
+/// ETS stores the human project name and the group-address numbering style in a
+/// separate `project.xml` (the topology, group addresses and devices live in
+/// `0.xml`). This is parsed independently of [`parse_project`].
+#[derive(Debug, Clone, Default)]
+pub struct ProjectInfo {
+    /// The `ProjectInformation@Name`, if present and non-empty.
+    pub name: Option<String>,
+    /// The declared `GroupAddressStyle`, if present and recognised.
+    pub group_address_style: Option<GroupAddressStyle>,
+}
+
+/// Parses `project.xml` for the project name and group-address style.
+///
+/// The relevant element is `<Project><ProjectInformation Name="…"
+/// GroupAddressStyle="ThreeLevel" …/></Project>`. Only those two attributes are
+/// read; everything else is ignored. Returns an empty [`ProjectInfo`] if the
+/// element is absent.
+pub fn parse_project_info(xml: &str) -> Result<ProjectInfo> {
+    let context = "project project.xml";
+    let mut reader = Reader::from_str(xml);
+    reader.config_mut().trim_text(false);
+
+    let mut info = ProjectInfo::default();
+    loop {
+        let ev = reader.read_event().map_err(|source| ImportError::Xml {
+            context: context.to_string(),
+            source,
+        })?;
+        match ev {
+            Event::Eof => break,
+            // `ProjectInformation` may be a start tag (it can carry children like
+            // `HistoryEntries`) or, in leaner exports, an empty element.
+            Event::Start(e) | Event::Empty(e)
+                if e.local_name().as_ref() == b"ProjectInformation" =>
+            {
+                info.name = non_empty(attr(&e, b"Name", context)?.as_deref());
+                info.group_address_style = attr(&e, b"GroupAddressStyle", context)?
+                    .as_deref()
+                    .and_then(GroupAddressStyle::from_attr);
+                // The first ProjectInformation is authoritative; stop early.
+                break;
+            }
+            _ => {}
+        }
+    }
+    Ok(info)
+}
+
 /// The parsed project.
 #[derive(Debug, Clone, Default)]
 pub struct RawProject {
@@ -457,4 +550,76 @@ fn current_location(stack: &[(String, Option<String>)]) -> RawLocation {
         }
     }
     loc
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_project_info_extracts_name_and_three_level_style() {
+        // Fabricated project.xml mirroring the real ETS layout (no real data).
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<KNX xmlns="http://knx.org/xml/project/23">
+  <Project Id="P-0001">
+    <ProjectInformation Name="Test Home" GroupAddressStyle="ThreeLevel" Comment="x">
+      <HistoryEntries/>
+    </ProjectInformation>
+  </Project>
+</KNX>"#;
+        let info = parse_project_info(xml).unwrap();
+        assert_eq!(info.name.as_deref(), Some("Test Home"));
+        assert_eq!(
+            info.group_address_style,
+            Some(GroupAddressStyle::ThreeLevel)
+        );
+    }
+
+    #[test]
+    fn parse_project_info_detects_two_level_and_free_styles() {
+        for (attr, expect) in [
+            ("TwoLevel", GroupAddressStyle::TwoLevel),
+            ("Free", GroupAddressStyle::Free),
+        ] {
+            let xml = format!(
+                r#"<KNX><Project Id="P-1"><ProjectInformation Name="N" GroupAddressStyle="{attr}"/></Project></KNX>"#
+            );
+            let info = parse_project_info(&xml).unwrap();
+            assert_eq!(info.group_address_style, Some(expect), "style {attr}");
+        }
+    }
+
+    #[test]
+    fn parse_project_info_handles_empty_element_and_missing_fields() {
+        // Self-closing ProjectInformation with no GroupAddressStyle.
+        let xml = r#"<KNX><Project><ProjectInformation Name="Only Name"/></Project></KNX>"#;
+        let info = parse_project_info(xml).unwrap();
+        assert_eq!(info.name.as_deref(), Some("Only Name"));
+        assert_eq!(info.group_address_style, None);
+
+        // No ProjectInformation at all -> empty info.
+        let xml = r#"<KNX><Project Id="P-1"/></KNX>"#;
+        let info = parse_project_info(xml).unwrap();
+        assert!(info.name.is_none());
+        assert!(info.group_address_style.is_none());
+
+        // Empty Name is treated as absent.
+        let xml = r#"<KNX><ProjectInformation Name="" GroupAddressStyle="ThreeLevel"/></KNX>"#;
+        let info = parse_project_info(xml).unwrap();
+        assert!(info.name.is_none());
+        assert_eq!(
+            info.group_address_style,
+            Some(GroupAddressStyle::ThreeLevel)
+        );
+    }
+
+    #[test]
+    fn group_address_style_from_attr_rejects_unknown() {
+        assert_eq!(
+            GroupAddressStyle::from_attr("ThreeLevel"),
+            Some(GroupAddressStyle::ThreeLevel)
+        );
+        assert_eq!(GroupAddressStyle::from_attr("Nonsense"), None);
+        assert_eq!(GroupAddressStyle::ThreeLevel.to_string(), "ThreeLevel");
+    }
 }

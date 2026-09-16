@@ -45,7 +45,25 @@ use container::Container;
 /// [`ImportError::WrongPassword`] if the supplied password does not decrypt it.
 pub fn import(path: &Path, password: Option<&str>) -> Result<Model, ImportError> {
     let mut container = Container::open(path, password)?;
-    let raw = project::parse_project(container.project_xml())?;
+    let mut raw = project::parse_project(container.project_xml())?;
+
+    // `project.xml` carries the project name and the group-address style, which
+    // `0.xml` does not. Read it (when present) to populate the name and to
+    // refuse projects whose address style bussard cannot represent.
+    if let Some(info_xml) = container.project_info_xml() {
+        let info = project::parse_project_info(info_xml)?;
+        if let Some(style) = info.group_address_style {
+            if style != project::GroupAddressStyle::ThreeLevel {
+                return Err(ImportError::UnsupportedGroupAddressStyle {
+                    style: style.to_string(),
+                });
+            }
+        }
+        if raw.project_name.is_none() {
+            raw.project_name = info.name;
+        }
+    }
+
     let mut model = build::build_model(raw, &mut container)?;
     // Record provenance.
     if let Some(name) = path.file_name().and_then(|s| s.to_str()) {
