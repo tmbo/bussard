@@ -256,6 +256,31 @@ pub enum WriteError {
         device_crc: u16,
     },
 
+    /// A `LdCtrlCompareProp` verify failed: the device's stored interface-object
+    /// property does not match the expected data the vendor procedure declared
+    /// (after masking). The flash is aborted — the device is not in the state the
+    /// procedure requires (e.g. wrong firmware/hardware variant, or a resource the
+    /// application depends on is absent).
+    #[error(
+        "{address}: object {object_index}/PID {property_id} compare failed — expected \
+         {expected:02X?} but device holds {actual:02X?}{mask_note} (the application's \
+         LdCtrlCompareProp precondition is not met)"
+    )]
+    PropCompareMismatch {
+        /// The device.
+        address: IndividualAddress,
+        /// The interface object index whose property was compared.
+        object_index: u8,
+        /// The property id compared.
+        property_id: u8,
+        /// The expected bytes (from the op's `InlineData`).
+        expected: Vec<u8>,
+        /// The bytes the device actually returned (truncated to the expected len).
+        actual: Vec<u8>,
+        /// A human note naming the mask when one narrowed the comparison.
+        mask_note: String,
+    },
+
     /// An underlying management error (absent, NAK, disconnect, malformed).
     #[error(transparent)]
     Mgmt(#[from] MgmtError),
@@ -356,6 +381,80 @@ pub async fn read_load_state<Ch: L4Channel>(
         }));
     }
     Ok(LoadState::from_octet(resp.data[0]))
+}
+
+/// Reads an interface-object property and compares it byte-for-byte against
+/// `expected`, honouring an optional `mask` — the execution of a vendor
+/// `LdCtrlCompareProp` op (the verify twin of [`write_property`]).
+///
+/// Reads element 1 of `property_id` on `object_index` via `A_PropertyValue_Read`
+/// (the same primitive [`read_load_state`] and [`read_mcb_table`] use), then
+/// compares the first `expected.len()` returned octets against `expected`. When
+/// `mask` is `Some`, each position is compared only where the mask byte is
+/// non-zero (`0xFF` in ETS data = compare, `0x00` = ignore); a `mask` shorter
+/// than `expected` compares every remaining position. On any mismatch this
+/// returns [`WriteError::PropCompareMismatch`] with the expected and actual bytes
+/// in hex, so a failed precondition aborts the flash loudly with detail.
+///
+/// A device that answers a zero-count response, or fewer octets than `expected`,
+/// is a mismatch too (the precondition property is not readable / not present as
+/// declared). Reading the property itself failing surfaces the underlying
+/// [`MgmtError`].
+pub async fn compare_property<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    object_index: u8,
+    property_id: u8,
+    expected: &[u8],
+    mask: Option<&[u8]>,
+) -> Result<()> {
+    let address = l4.target();
+    let payload = apci::encode_property_value_read(object_index, property_id, 1, 1);
+    let (resp_apci, data) = l4.request(A_PROPERTY_VALUE_READ, &payload).await?;
+    if resp_apci != apci::A_PROPERTY_VALUE_RESPONSE {
+        return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
+            address,
+            reason: format!(
+                "expected A_PropertyValue_Response for a property compare ({})",
+                raw_response_detail(resp_apci, &data)
+            ),
+        }));
+    }
+    let resp = apci::decode_property_value_response(&data).ok_or_else(|| {
+        WriteError::Mgmt(MgmtError::MalformedResponse {
+            address,
+            reason: format!(
+                "property compare response too short ({})",
+                raw_response_detail(resp_apci, &data)
+            ),
+        })
+    })?;
+
+    let actual: Vec<u8> = resp.data.iter().take(expected.len()).copied().collect();
+    let mask_note = match mask {
+        Some(m) => format!(" (mask {m:02X?})"),
+        None => String::new(),
+    };
+
+    // A refused/short read cannot satisfy the compare: the declared precondition
+    // property is not present as the procedure expects.
+    let matches = resp.count != 0
+        && actual.len() == expected.len()
+        && expected.iter().zip(&actual).enumerate().all(|(i, (e, a))| {
+            let m = mask.and_then(|m| m.get(i)).copied().unwrap_or(0xFF);
+            (e & m) == (a & m)
+        });
+
+    if !matches {
+        return Err(WriteError::PropCompareMismatch {
+            address,
+            object_index,
+            property_id,
+            expected: expected.to_vec(),
+            actual,
+            mask_note,
+        });
+    }
+    Ok(())
 }
 
 /// Writes a single-octet load control to a loadable object and confirms the

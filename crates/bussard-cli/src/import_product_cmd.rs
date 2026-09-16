@@ -632,6 +632,30 @@ fn load_op_summary(op: &LoadOp) -> String {
                 opt(prop_id)
             )
         }
+        LoadOp::CompareProp {
+            obj_idx,
+            obj_type,
+            prop_id,
+            inline_data,
+            mask,
+            range,
+        } => {
+            let expected = match (inline_data, range) {
+                (Some(d), _) => format!("data={}", hex(d)),
+                (None, Some(r)) => format!("range={r}"),
+                (None, None) => "-".to_string(),
+            };
+            let mask = mask
+                .as_ref()
+                .map(|m| format!(" mask={}", hex(m)))
+                .unwrap_or_default();
+            format!(
+                "compare_prop obj_idx={} obj_type={} prop_id={} {expected}{mask}",
+                opt(obj_idx),
+                opt(obj_type),
+                opt(prop_id),
+            )
+        }
         LoadOp::LoadImageProp {
             obj_idx,
             obj_type,
@@ -651,6 +675,15 @@ fn load_op_summary(op: &LoadOp) -> String {
             format!("raw {name} [{}]", joined.join(" "))
         }
     }
+}
+
+/// Renders bytes as a lower-case hex string for a load-procedure trace line.
+fn hex(bytes: &[u8]) -> String {
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
 }
 
 fn opt<T: std::fmt::Display>(v: &Option<T>) -> String {
