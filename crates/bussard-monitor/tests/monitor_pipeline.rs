@@ -133,8 +133,8 @@ async fn monitor_decodes_three_pushed_frames() {
         // 2. Push three indications with distinct GAs and sources, ACKing our
         //    own header seq numbers and consuming the client's ACKs.
         let frames = [
-            CemiFrame::group_write(ga("3/2/0"), ia("1.1.30"), &[1]),
-            CemiFrame::group_write(ga("5/0/1"), ia("1.1.31"), &[0]),
+            CemiFrame::group_write_packed(ga("3/2/0"), ia("1.1.30"), &[1]),
+            CemiFrame::group_write_packed(ga("5/0/1"), ia("1.1.31"), &[0]),
             CemiFrame::group_read(ga("3/2/0"), ia("1.1.32")),
         ];
         for (seq, frame) in frames.into_iter().enumerate() {
@@ -240,7 +240,7 @@ async fn outbound_read_is_sent_and_response_flows_back() {
             channel_id: channel,
             seq: 0,
         };
-        let response = CemiFrame::group_response(ga("3/2/0"), ia("1.1.30"), &[1]);
+        let response = CemiFrame::group_response_packed(ga("3/2/0"), ia("1.1.30"), &[1]);
         let ind = knxnet::tunneling_request(hdr, &response);
         gw.send_to(&ind, peer).await.unwrap();
         // Consume the client's ACK.

@@ -366,42 +366,72 @@ impl TaskState {
         }
     }
 
-    /// Handles an inbound TUNNELING_REQUEST: ACK it, and deliver the cEMI unless
-    /// it is a duplicate of the previous sequence number.
+    /// Handles an inbound TUNNELING_REQUEST per the KNXnet/IP tunnelling ACK rules
+    /// (issue #60).
+    ///
+    /// The sequence number decides the ACK, and it is read *before* the cEMI is
+    /// decoded so an un-decodable-but-in-sequence frame is still ACKed:
+    ///
+    /// * **Expected seq** — ACK, advance the window, and deliver the cEMI. If the
+    ///   cEMI carries an unknown message code (fails to decode) the frame is still
+    ///   ACKed and the window still advances (C3): otherwise the gateway would
+    ///   retransmit forever and stall the tunnel. The undecodable payload is
+    ///   simply not delivered.
+    /// * **Exact previous seq (seq-1)** — a retransmitted duplicate: ACK it (so
+    ///   the gateway stops resending) but drop it without advancing.
+    /// * **Any other out-of-window seq** — SILENTLY DISCARD, no ACK (C2). ACKing
+    ///   a frame we then drop would wrongly tell the gateway we accepted it.
     async fn handle_tunneling_request(&mut self, body: &[u8]) {
-        let req = match knxnet::parse_tunneling_request(body) {
-            Ok(r) => r,
-            Err(_) => return,
+        // Read the connection header (sequence) without committing to a cEMI
+        // decode, so an unknown-message-code frame can still be ACKed.
+        let (header, cemi_bytes) = match knxnet::parse_tunneling_header(body) {
+            Ok(parts) => parts,
+            Err(_) => return, // a body too short even for the header: nothing to ACK
         };
-        let seq = req.header.seq;
-
-        // Always ACK with the received sequence number.
-        let ack = knxnet::tunneling_ack(self.channel_id, seq, 0);
-        let _ = self.socket.send(&ack).await;
+        let seq = header.seq;
 
         if self.first_incoming {
-            // Accept whatever the gateway starts at.
+            // Accept whatever the gateway starts at as the expected sequence.
             self.incoming_seq = seq;
             self.first_incoming = false;
         }
 
         if seq == self.incoming_seq {
-            // Expected frame: deliver and advance.
+            // Expected frame: ACK and advance the window regardless of whether the
+            // cEMI decodes (C3 — an unknown message code must not stall the tunnel).
+            let ack = knxnet::tunneling_ack(self.channel_id, seq, 0);
+            let _ = self.socket.send(&ack).await;
             self.incoming_seq = self.incoming_seq.wrapping_add(1);
-            let stamped = TimestampedFrame {
-                received_at: SystemTime::now(),
-                frame: req.cemi,
-            };
-            let _ = self.frames.send(Ok(stamped)).await;
+
+            match CemiFrame::decode(cemi_bytes) {
+                Ok(cemi) => {
+                    let stamped = TimestampedFrame {
+                        received_at: SystemTime::now(),
+                        frame: cemi,
+                    };
+                    let _ = self.frames.send(Ok(stamped)).await;
+                }
+                Err(err) => {
+                    // ACKed above; ignore the payload we cannot parse.
+                    tracing::debug!(
+                        seq,
+                        ?err,
+                        "ACKed in-sequence tunneling request with an undecodable cEMI; ignoring payload"
+                    );
+                }
+            }
         } else if seq == self.incoming_seq.wrapping_sub(1) {
-            // Duplicate of the last frame: ACK (already done) but drop.
-            tracing::debug!(seq, "dropping duplicate tunneling request");
+            // Exact duplicate of the last frame: ACK it (stop the retransmit) but
+            // drop without advancing.
+            let ack = knxnet::tunneling_ack(self.channel_id, seq, 0);
+            let _ = self.socket.send(&ack).await;
+            tracing::debug!(seq, "ACK-and-drop duplicate tunneling request");
         } else {
-            // Out-of-window sequence: ACK done; drop without advancing.
+            // Any other out-of-window sequence: silently discard, NO ACK (C2).
             tracing::warn!(
                 seq,
                 expected = self.incoming_seq,
-                "unexpected tunneling sequence; dropping"
+                "out-of-window tunneling sequence; silently discarding (no ACK)"
             );
         }
     }

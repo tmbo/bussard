@@ -27,7 +27,7 @@ use bussard_mgmt::{
 };
 use bussard_model::IndividualAddress;
 
-use crate::conn_cmd::{ConnOverrides, load_model_optional, resolve_config};
+use crate::conn_cmd::{ConnOverrides, load_model_required, resolve_config};
 
 /// Environment variable that overrides the per-attempt discovery timeout in
 /// milliseconds. Set only by the integration test to keep a full-line mock sweep
@@ -96,7 +96,8 @@ pub fn run(
             "invalid range: --from {from} is greater than --to {to}"
         ));
     }
-    let model = load_model_optional(dir);
+    // A management command: a present-but-broken model is a hard error.
+    let model = load_model_required(dir)?;
     let config = resolve_config(model.as_ref(), &overrides)?;
 
     // Up-front estimate (address count × per-address budget).

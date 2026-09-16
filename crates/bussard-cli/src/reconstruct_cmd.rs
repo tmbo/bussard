@@ -39,7 +39,7 @@ use bussard_model::schema::{
 use bussard_model::{Dpt, Flags, GroupAddress, IndividualAddress, LoadedDevice, Model};
 use bussard_transport::TransportKind;
 
-use crate::conn_cmd::{ConnOverrides, load_model_optional, resolve_config};
+use crate::conn_cmd::{ConnOverrides, load_model_optional, load_model_required, resolve_config};
 
 /// One (object, GA) pair in the diff.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
@@ -110,7 +110,8 @@ pub fn run(
     let target: IndividualAddress = address
         .parse()
         .with_context(|| format!("parsing device address {address:?}"))?;
-    let model = load_model_optional(dir);
+    // A management command: a present-but-broken model is a hard error.
+    let model = load_model_required(dir)?;
     let config = resolve_config(model.as_ref(), &overrides)?;
 
     let runtime = tokio::runtime::Runtime::new()?;
@@ -320,7 +321,7 @@ pub fn run_l4_soak(
     let target: IndividualAddress = address
         .parse()
         .with_context(|| format!("parsing device address {address:?}"))?;
-    let model = load_model_optional(dir);
+    let model = load_model_required(dir)?;
     let config = resolve_config(model.as_ref(), &overrides)?;
 
     eprintln!(
@@ -563,8 +564,9 @@ pub fn run_line(
     ensure_empty_out(out)?;
 
     // The model dir here only supplies connection defaults; the synthesized
-    // model is written to --out, never merged into it.
-    let model = load_model_optional(dir);
+    // model is written to --out, never merged into it. A present-but-broken
+    // model dir is still a hard error.
+    let model = load_model_required(dir)?;
     let config = resolve_config(model.as_ref(), &overrides)?;
 
     let count = to as u32 - from as u32 + 1;

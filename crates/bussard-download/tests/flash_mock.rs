@@ -219,6 +219,10 @@ struct DeviceState {
     /// The payload of the last `A_Authorize_Request`, so a test can assert the tool
     /// sent exactly `[00 FF FF FF FF]` (reserved octet + free-access key).
     last_authorize_payload: Vec<u8>,
+    /// Non-load-state property writes the device stored, keyed by
+    /// `(object_index, pid)` → written value. Lets a test assert an
+    /// `LdCtrlWriteProp` value actually landed on the device (issue #54).
+    prop_writes: HashMap<(u8, u8), Vec<u8>>,
 }
 
 type Shared = Arc<Mutex<DeviceState>>;
@@ -539,7 +543,9 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
             );
         }
 
-        // Any other property write: echo it (confirm).
+        // Any other property write (e.g. an LdCtrlWriteProp value): record it so a
+        // test can assert it landed, then echo it (confirm).
+        s.prop_writes.insert((oi, pid), value.to_vec());
         return Reaction::Answer(
             A_PROPERTY_VALUE_RESPONSE,
             prop_response(oi, pid, _count, start, value),
@@ -736,6 +742,7 @@ fn fresh_device(fault: Fault) -> Shared {
         authorize_unsupported: false,
         authorizes_seen: 0,
         last_authorize_payload: Vec::new(),
+        prop_writes: HashMap::new(),
     }))
 }
 
@@ -837,6 +844,35 @@ fn app_with_compare_prop(mask: Option<&str>) -> ApplicationProgram {
      </ApplicationProgram></KNX>"#
     );
     parse_application_program("M-3_A-8", xml.as_bytes()).unwrap()
+}
+
+/// A single-application System B app whose procedure carries a value-carrying
+/// `LdCtrlWriteProp` (object 0, PID 204, value `01 02`) after the segment write.
+/// Used to prove the value actually lands on the device (issue #54).
+fn app_with_write_prop() -> ApplicationProgram {
+    let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+     <ApplicationProgram Id="M-4_A-9" ApplicationNumber="9" ApplicationVersion="1"
+        MaskVersion="MV-07B0" Name="WriteProp" LoadProcedureStyle="ProductDefault">
+      <Static>
+       <Code>
+        <RelativeSegment Id="M-4_A-9_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment>
+       </Code>
+       <LoadProcedures>
+        <LoadProcedure>
+         <LdCtrlConnect />
+         <LdCtrlUnload LsmIdx="4" />
+         <LdCtrlLoad LsmIdx="4" />
+         <LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="6" />
+         <LdCtrlWriteRelMem AppliesTo="full" ObjIdx="0" Offset="0" Size="6" />
+         <LdCtrlWriteProp ObjIdx="0" ObjType="11" PropId="204" InlineData="0102" />
+         <LdCtrlLoadCompleted LsmIdx="4" />
+         <LdCtrlRestart />
+         <LdCtrlDisconnect />
+        </LoadProcedure>
+       </LoadProcedures>
+      </Static>
+     </ApplicationProgram></KNX>"#;
+    parse_application_program("M-4_A-9", xml.as_bytes()).unwrap()
 }
 
 /// Minimal standard-alphabet base64 encoder (no padding shortcuts elided), so
@@ -1496,6 +1532,58 @@ async fn flash_compare_prop_passes_when_property_matches() {
         "matching compare must let the flash verify: {outcome:?}"
     );
     assert_eq!(outcome.load_state, LoadState::Loaded);
+    handle.abort();
+}
+
+#[tokio::test]
+async fn flash_write_prop_value_lands_on_the_device() {
+    // Issue #54: a value-carrying LdCtrlWriteProp is executed as a real,
+    // echo-validated property write — the value must land on the device, not be
+    // silently dropped as a no-op.
+    let (mut bus, state, handle) = setup(Fault::None).await;
+
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+
+    let app = app_with_write_prop();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+    // The plan lists the WriteProp as a real write carrying the value.
+    let write_props: Vec<&FlashStep> = plan
+        .steps
+        .iter()
+        .filter(|s| matches!(s, FlashStep::WriteProp { .. }))
+        .collect();
+    assert_eq!(write_props.len(), 1, "the value-carrying WriteProp lowers");
+    match write_props[0] {
+        FlashStep::WriteProp { value, .. } => assert_eq!(value, &vec![0x01, 0x02]),
+        other => panic!("expected WriteProp, got {other:?}"),
+    }
+
+    let l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    let mut session = authed_session(l4).await;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .unwrap();
+    let _ = session.into_disconnect().await;
+
+    assert!(
+        outcome.ok(),
+        "flash with a WriteProp must succeed: {outcome:?}"
+    );
+    // The value landed on the mock device at object 0 / PID 204.
+    let stored = state.lock().unwrap().prop_writes.get(&(0, 204)).cloned();
+    assert_eq!(
+        stored,
+        Some(vec![0x01, 0x02]),
+        "the WriteProp value must have been written to the device"
+    );
     handle.abort();
 }
 

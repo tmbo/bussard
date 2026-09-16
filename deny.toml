@@ -30,6 +30,12 @@ allow = [
     "Unicode-3.0",
     "BSL-1.0",
     "Unlicense",
+    # ISC (OpenBSD's permissive license) enters via ureq -> rustls-webpki, used
+    # by the product-index fetch. Permissive, GPL-compatible, no attribution
+    # burden beyond BSD.
+    "ISC",
+    # CDLA-Permissive-2.0 (webpki-roots data): a permissive data license.
+    "CDLA-Permissive-2.0",
 ]
 # Fail if a crate ships no detectable license (better to find out explicitly
 # than to assume it is safe).

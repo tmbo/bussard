@@ -290,6 +290,23 @@ pub enum WriteError {
         mask_note: String,
     },
 
+    /// A write step's resolved target address does not fit the 16-bit A_Memory
+    /// address space. The device-supplied segment base plus the vendor offset (or
+    /// an absolute address) exceeded `0xFFFF`, which a `u16` cast would silently
+    /// truncate — streaming the image to the WRONG device memory. Aborted before
+    /// any octet is written.
+    #[error(
+        "{address}: write target address is out of range — {detail} exceeds the 16-bit A_Memory \
+         space (max {max:#06X}); aborting rather than truncating and writing to the wrong memory",
+        max = 0xFFFF_u32
+    )]
+    AddressOutOfRange {
+        /// The device.
+        address: IndividualAddress,
+        /// Which components put the address out of range (base+offset / address).
+        detail: String,
+    },
+
     /// An underlying management error (absent, NAK, disconnect, malformed).
     #[error(transparent)]
     Mgmt(#[from] MgmtError),

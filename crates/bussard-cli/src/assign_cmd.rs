@@ -85,28 +85,38 @@ pub fn run(
 /// Loads the model for an assign run.
 ///
 /// The model is required for implicit allocation (we need the device list to
-/// pick a free number and the dominant line). With an explicit address the model
-/// is optional: we warn and continue if it is missing so a brand-new project can
-/// still assign a first device.
+/// pick a free number and the dominant line). Two failure modes are kept
+/// distinct (issue #55): an **absent** model directory is a fresh project, so
+/// with an explicit address we warn and continue (a brand-new project can assign
+/// its first device); a directory that is **present but fails to parse** is a
+/// hard error either way — assign is a management command and must never proceed
+/// against a broken model, even with an explicit address.
 fn load_model_for_assign(dir: &Path, have_explicit_address: bool) -> anyhow::Result<Option<Model>> {
+    if !dir.exists() {
+        if have_explicit_address {
+            eprintln!(
+                "warning: model directory {} not found; continuing because an explicit address was given",
+                dir.display()
+            );
+            return Ok(None);
+        }
+        return Err(anyhow!(
+            "model directory {} not found\n\
+             assign needs the model to allocate a free address; pass an explicit address \
+             (e.g. `bussard assign 1.1.47`) to proceed without one",
+            dir.display()
+        ));
+    }
     match Model::load(dir) {
         Ok(model) => Ok(Some(model)),
-        Err(err) => {
-            if have_explicit_address {
-                eprintln!(
-                    "warning: could not load model from {} ({err}); continuing because an explicit address was given",
-                    dir.display()
-                );
-                Ok(None)
-            } else {
-                Err(anyhow!(
-                    "could not load model from {}: {err}\n\
-                     assign needs the model to allocate a free address; pass an explicit address \
-                     (e.g. `bussard assign 1.1.47`) to proceed without one",
-                    dir.display()
-                ))
-            }
-        }
+        // A present-but-broken model is a hard error regardless of an explicit
+        // address: never run a management command against a model that failed to
+        // parse.
+        Err(err) => Err(anyhow!(
+            "could not load model from {}: {err}\n\
+             refusing to run assign against a model that failed to parse; fix the model files first",
+            dir.display()
+        )),
     }
 }
 

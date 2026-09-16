@@ -19,7 +19,7 @@ use bussard_bus::ops::{self, WriteOptions};
 use bussard_bus::{Bus, BusError};
 use bussard_model::{Dpt, GroupAddress, Model, encode, parse_value};
 
-use crate::conn_cmd::{ConnOverrides, load_model_optional, resolve_config};
+use crate::conn_cmd::{ConnOverrides, load_model_required, resolve_config};
 
 /// Sends a `GroupValueWrite` to the bus.
 ///
@@ -38,7 +38,10 @@ pub fn run(
         .parse()
         .map_err(|_| anyhow!("invalid group address {ga_str:?}"))?;
 
-    let model = load_model_optional(dir);
+    // A write is a management command: a model that is present but fails to
+    // parse is a hard error (never fail the protected-GA gate open). An absent
+    // model directory is a fresh project — proceed unmodeled with `--dpt`.
+    let model = load_model_required(dir)?;
 
     // Resolve the DPT: --dpt wins, else the GA's dpt from groups.yaml.
     let dpt = resolve_dpt(dpt_override, model.as_ref(), ga)?;
@@ -68,7 +71,9 @@ pub fn run(
         if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
             eprintln!("warning: bus not connected yet; management traffic may use the 0.0.255 fallback source");
         }
-        let result = ops::write_group(&handle, ga, &payload, WriteOptions::default()).await;
+        let result =
+            ops::write_group(&handle, ga, &payload, dpt.is_packable(), WriteOptions::default())
+                .await;
         // Close the bus cleanly (release the gateway tunnel slot) — issue #31.
         let _ = handle.close().await;
         result

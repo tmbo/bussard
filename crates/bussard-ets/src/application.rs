@@ -373,12 +373,21 @@ pub enum LoadOp {
         /// Size in bytes.
         size: Option<u32>,
     },
-    /// `<LdCtrlWriteProp …>`: write an interface-object property.
+    /// `<LdCtrlWriteProp …>`: write an interface-object property. The value to
+    /// write is the hex `InlineData` attribute (same encoding as
+    /// [`LoadOp::CompareProp`]'s `InlineData`); a bare `LdCtrlWriteProp` with no
+    /// `InlineData` carries no value (the device seeds the property itself on
+    /// `LoadCompleted`).
     WriteProp {
-        /// Object type.
+        /// Object index (`ObjIdx`), when addressed by index.
+        obj_idx: Option<u32>,
+        /// Object type (`ObjType`), when addressed by type.
         obj_type: Option<u32>,
         /// Property id.
         prop_id: Option<u32>,
+        /// The value bytes to write, decoded from the hex `InlineData` attribute.
+        /// `None` for a bare op that carries no value.
+        inline_data: Option<Vec<u8>>,
     },
     /// `<LdCtrlCompareProp …>`: read an interface-object property and compare it
     /// against expected data — the verify twin of [`LoadOp::WriteProp`]. The
@@ -1144,8 +1153,10 @@ fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m: &HashMap<
             size: u(b"Size"),
         },
         b"LdCtrlWriteProp" => LoadOp::WriteProp {
+            obj_idx: u(b"ObjIdx"),
             obj_type: u(b"ObjType"),
             prop_id: u(b"PropId"),
+            inline_data: get(m, b"InlineData").and_then(decode_hex_bytes),
         },
         b"LdCtrlCompareProp" => LoadOp::CompareProp {
             obj_idx: u(b"ObjIdx"),
@@ -1435,7 +1446,8 @@ mod tests {
             ops[8],
             LoadOp::WriteProp {
                 obj_type: Some(11),
-                prop_id: Some(204)
+                prop_id: Some(204),
+                ..
             }
         ));
         assert!(matches!(ops[9], LoadOp::LoadCompleted { lsm_idx: Some(1) }));

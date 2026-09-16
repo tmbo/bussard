@@ -192,7 +192,7 @@ async fn read_group_sends_read_and_returns_value() {
                 channel_id: channel,
                 seq: 0,
             };
-            let response = CemiFrame::group_response(ga("3/2/0"), ia("1.1.30"), &[1]);
+            let response = CemiFrame::group_response_packed(ga("3/2/0"), ia("1.1.30"), &[1]);
             let ind = knxnet::tunneling_request(hdr, &response);
             gw.send_to(&ind, peer).await.unwrap();
             let _ = gw.recv_from(&mut buf).await; // client ACK
@@ -274,10 +274,10 @@ async fn read_group_skips_con_echo_and_returns_device_response() {
             read_echo.message_code = MessageCode::LDataCon;
             // 2. An adversarial con that a GA-only wait WOULD match: a
             //    GroupValueWrite con carrying the WRONG value (No Alarm = 0).
-            let mut write_echo = CemiFrame::group_write(ga("3/2/0"), ia("0.0.255"), &[0]);
+            let mut write_echo = CemiFrame::group_write_packed(ga("3/2/0"), ia("0.0.255"), &[0]);
             write_echo.message_code = MessageCode::LDataCon;
             // 3. The device's real answer: alarm = 1.
-            let response = CemiFrame::group_response(ga("3/2/0"), ia("1.1.30"), &[1]);
+            let response = CemiFrame::group_response_packed(ga("3/2/0"), ia("1.1.30"), &[1]);
 
             for (seq, frame) in [read_echo, write_echo, response].iter().enumerate() {
                 let hdr = knxnet::ConnectionHeader {
@@ -411,7 +411,7 @@ async fn wait_for_telegram_returns_pushed_write() {
             channel_id: channel,
             seq: 0,
         };
-        let write = CemiFrame::group_write(ga("3/2/0"), ia("1.1.30"), &[1]);
+        let write = CemiFrame::group_write_packed(ga("3/2/0"), ia("1.1.30"), &[1]);
         let ind = knxnet::tunneling_request(hdr, &write);
         gw.send_to(&ind, peer).await.unwrap();
         let _ = gw.recv_from(&mut buf).await; // client ACK

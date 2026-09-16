@@ -452,7 +452,7 @@ mod tests {
     fn frame(dest: &str, src: &str, at: SystemTime) -> TimestampedFrame {
         TimestampedFrame {
             received_at: at,
-            frame: CemiFrame::group_write(ga(dest), ia(src), &[1]),
+            frame: CemiFrame::group_write_packed(ga(dest), ia(src), &[1]),
         }
     }
 

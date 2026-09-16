@@ -63,7 +63,7 @@ use bussard_mgmt::MgmtError;
 use bussard_mgmt::connection::{L4Channel, Layer4Connection};
 use bussard_mgmt::load::{
     self, LoadControl, LoadState, WriteError, allocate_segment, compare_property, read_load_state,
-    read_mcb_table, write_load_control,
+    read_mcb_table, write_load_control, write_property,
 };
 use bussard_mgmt::tables::{OT_APPLICATION_PROGRAM, PID_OBJECT_TYPE};
 use bussard_prod::application::{ApplicationProgram, LoadOp, LoadProcedure, SegmentKind};
@@ -97,12 +97,20 @@ pub enum FlashStep {
         /// Which image this streams.
         image: ImageRef,
     },
-    /// Write an interface-object property (`LdCtrlWriteProp`).
+    /// Write an interface-object property (`LdCtrlWriteProp`). Carries the value
+    /// to write (from the op's `InlineData`) and the object index the write
+    /// targets, resolved at plan time. A value-less op is refused at plan time
+    /// (see [`PlanError::UnsupportedWriteProp`]) rather than lowering to a step
+    /// that would execute as a silent no-op.
     WriteProp {
-        /// The interface-object type whose object index the write targets.
+        /// The interface-object index (`ObjIdx`) the property write targets.
+        obj_idx: u32,
+        /// The interface-object type (`ObjType`), kept for the trace/label.
         obj_type: u32,
         /// The property id.
         prop_id: u32,
+        /// The value bytes to write (decoded `InlineData`), echo-validated.
+        value: Vec<u8>,
     },
     /// Verify an interface-object property against expected data
     /// (`LdCtrlCompareProp`) — the read-only precondition check that is the twin
@@ -257,7 +265,47 @@ pub enum PlanError {
         /// What could not be resolved.
         reason: String,
     },
+
+    /// A write step's target range exceeds the 16-bit A_Memory address space, or
+    /// one of its component u32s is absurdly large. Refused at pre-flight so the
+    /// device is never streamed a write at a truncated (wrong) address.
+    #[error(
+        "load procedure step {step} writes {size} octet(s) ending at {end} which exceeds the \
+         16-bit A_Memory address space (max {max:#06X}); {detail} — refusing to flash rather \
+         than truncating the address and writing to the wrong device memory",
+        max = 0xFFFF_u32
+    )]
+    AddressOutOfRange {
+        /// The 1-based op index in the procedure.
+        step: usize,
+        /// The write length in octets.
+        size: u64,
+        /// The exclusive end address the write would reach.
+        end: u64,
+        /// Which component (base/offset/address) drove it out of range.
+        detail: String,
+    },
+
+    /// A `WriteProp` op carries a value shape this engine cannot safely execute.
+    /// Refused at pre-flight rather than silently dropped so the device is never
+    /// left `Loaded`-but-misconfigured.
+    #[error(
+        "load procedure step {step} is an LdCtrlWriteProp this engine cannot execute: {reason} — \
+         refusing the procedure rather than reporting a skipped property write as done"
+    )]
+    UnsupportedWriteProp {
+        /// The 1-based op index in the procedure.
+        step: usize,
+        /// Why the op's shape cannot be executed.
+        reason: String,
+    },
 }
+
+/// The largest byte length or u32 component a single flash write step may carry.
+/// Real System B segments are tens of KiB; a value beyond this in the vendor XML
+/// (or a device-supplied base) is treated as corrupt input and refused at plan
+/// time rather than driving an allocation or an out-of-range address.
+const MAX_WRITE_SPAN: u64 = 1024 * 1024;
 
 /// Identity of the application being flashed, for the pre-flight display and the
 /// verify report.
@@ -919,6 +967,17 @@ pub fn plan_flash(
                 let size = size
                     .or_else(|| seg.as_ref().and_then(|(_, s)| *s))
                     .unwrap_or(0);
+                // The requested segment size drives the device allocation; an
+                // absurd vendor `Size` is corrupt input, refused before it can
+                // become a huge allocation request.
+                if u64::from(size) > MAX_WRITE_SPAN {
+                    return Err(PlanError::AddressOutOfRange {
+                        step: step_no,
+                        size: u64::from(size),
+                        end: u64::from(size),
+                        detail: format!("relative segment allocation size {size}"),
+                    });
+                }
                 // The segment the PREVIOUS allocation bound, before this op
                 // updates the binding — the dedupe below must compare against
                 // this, not against its own freshly-written value.
@@ -983,6 +1042,23 @@ pub fn plan_flash(
                     reason,
                 })?;
                 let len = bytes.len();
+                let offset = offset.unwrap_or(0);
+                // The segment base is device-supplied at execute time (>= 0), so a
+                // relative write already exceeds the 16-bit A_Memory space if
+                // offset+len does. Refuse here rather than truncate later. Also
+                // reject an absurd offset/len before any allocation.
+                let end = u64::from(offset).saturating_add(len as u64);
+                if len as u64 > MAX_WRITE_SPAN || u64::from(offset) > MAX_WRITE_SPAN || end > 0xFFFF
+                {
+                    return Err(PlanError::AddressOutOfRange {
+                        step: step_no,
+                        size: len as u64,
+                        end,
+                        detail: format!(
+                            "relative offset {offset} (segment base added at flash time)"
+                        ),
+                    });
+                }
                 images.insert(segment_id.clone(), bytes);
                 let image = ImageRef {
                     segment_id,
@@ -990,10 +1066,7 @@ pub fn plan_flash(
                     len,
                 };
                 last_written_image = Some(image.clone());
-                steps.push(FlashStep::WriteRelMem {
-                    offset: offset.unwrap_or(0),
-                    image,
-                });
+                steps.push(FlashStep::WriteRelMem { offset, image });
             }
 
             LoadOp::WriteMem { address, .. } => {
@@ -1006,6 +1079,18 @@ pub fn plan_flash(
                     }
                 })?;
                 let len = bytes.len();
+                let address = address.unwrap_or(0);
+                // Absolute write: the full [address, address+len) range must fit
+                // the 16-bit A_Memory space, checked before any allocation.
+                let end = u64::from(address).saturating_add(len as u64);
+                if len as u64 > MAX_WRITE_SPAN || end > 0xFFFF {
+                    return Err(PlanError::AddressOutOfRange {
+                        step: step_no,
+                        size: len as u64,
+                        end,
+                        detail: format!("absolute address {address:#06X}"),
+                    });
+                }
                 images.insert(segment_id.clone(), bytes);
                 let image = ImageRef {
                     segment_id,
@@ -1013,15 +1098,62 @@ pub fn plan_flash(
                     len,
                 };
                 last_written_image = Some(image.clone());
-                steps.push(FlashStep::WriteMem {
-                    address: address.unwrap_or(0),
-                    image,
-                });
+                steps.push(FlashStep::WriteMem { address, image });
             }
 
-            LoadOp::WriteProp { obj_type, prop_id } => {
-                let (obj_type, prop_id) = (obj_type.unwrap_or(0), prop_id.unwrap_or(0));
-                steps.push(FlashStep::WriteProp { obj_type, prop_id });
+            LoadOp::WriteProp {
+                obj_idx,
+                obj_type,
+                prop_id,
+                inline_data,
+            } => {
+                let obj_type = obj_type.unwrap_or(0);
+                let prop_id = prop_id.unwrap_or(0);
+                // The property write targets an object index. When the op names
+                // one directly (`ObjIdx`) use it; otherwise it is object 0 (the
+                // device object, as the observed vendor procedures write). The
+                // A_PropertyValue_Write primitive addresses by a u8 object index
+                // and u8 PID.
+                let obj_idx = obj_idx.unwrap_or(0);
+                match inline_data {
+                    Some(value) if !value.is_empty() => {
+                        // A value-carrying WriteProp must be executable to keep the
+                        // "only a fully-executable FlashPlan reaches flash" invariant.
+                        // Refuse a shape the write primitive cannot address rather
+                        // than dropping the value at execute time.
+                        if obj_idx > u32::from(u8::MAX) {
+                            return Err(PlanError::UnsupportedWriteProp {
+                                step: step_no,
+                                reason: format!(
+                                    "object index {obj_idx} exceeds the 8-bit object-index space \
+                                     the property-write primitive addresses"
+                                ),
+                            });
+                        }
+                        if prop_id > u32::from(u8::MAX) {
+                            return Err(PlanError::UnsupportedWriteProp {
+                                step: step_no,
+                                reason: format!(
+                                    "property id {prop_id} exceeds the 8-bit PID space the \
+                                     property-write primitive addresses"
+                                ),
+                            });
+                        }
+                        steps.push(FlashStep::WriteProp {
+                            obj_idx,
+                            obj_type,
+                            prop_id,
+                            value: value.clone(),
+                        });
+                    }
+                    _ => {
+                        // A bare LdCtrlWriteProp carries no value: the device seeds
+                        // the standard interface-object properties itself on
+                        // LoadCompleted, so there is genuinely nothing to write. It
+                        // is intentionally NOT lowered to a step, so it can never be
+                        // rendered in the plan/trace as an executed write.
+                    }
+                }
             }
 
             LoadOp::CompareProp {
@@ -1582,7 +1714,16 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
             }
             FlashStep::WriteRelMem { offset, image } => {
                 let base = segment_base.unwrap_or(0);
-                let addr = (base + offset) as u16;
+                // The device-supplied segment base plus the vendor offset must fit
+                // the 16-bit A_Memory space. A `u16` cast of the sum would silently
+                // wrap and stream the image to the wrong address; refuse instead.
+                let addr = base
+                    .checked_add(*offset)
+                    .and_then(|a| u16::try_from(a).ok())
+                    .ok_or_else(|| WriteError::AddressOutOfRange {
+                        address: session.l4().target(),
+                        detail: format!("segment base {base:#X} + offset {offset:#X}"),
+                    })?;
                 let bytes = plan
                     .images
                     .get(&image.segment_id)
@@ -1607,7 +1748,12 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                 }
             }
             FlashStep::WriteMem { address, image } => {
-                let addr = *address as u16;
+                // The absolute address must fit the 16-bit A_Memory space; a `u16`
+                // cast would silently truncate a too-large vendor address.
+                let addr = u16::try_from(*address).map_err(|_| WriteError::AddressOutOfRange {
+                    address: session.l4().target(),
+                    detail: format!("absolute address {address:#X}"),
+                })?;
                 let bytes = plan
                     .images
                     .get(&image.segment_id)
@@ -1628,17 +1774,28 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                     written_samples.push((addr, take_sample(&bytes)));
                 }
             }
-            FlashStep::WriteProp { obj_type, prop_id } => {
-                // Resolve the object index for this object type, then write the
-                // property. The value comes from the app's property image; for
-                // the first flash the standard interface-object properties are
-                // written by the device on LoadCompleted, so a bare WriteProp with
-                // no value is a confirm-only no-op here. A property write with a
-                // value is echo-validated by write_property.
-                let _ = (obj_type, prop_id);
-                // Nothing to write without a value payload in the typed op; the
-                // op is recorded for the trace and skipped. (A future revision
-                // will carry the property value once bussard-prod exposes it.)
+            FlashStep::WriteProp {
+                obj_idx,
+                obj_type,
+                prop_id,
+                value,
+            } => {
+                // Write the property value to the named object index / PID and
+                // echo-validate it via the property-write primitive. Only
+                // value-carrying ops reach here (a bare WriteProp is not lowered),
+                // so this always performs a real, verified write. The object index
+                // and PID were bounded to u8 at plan time.
+                let _ = obj_type;
+                write_property(
+                    session.l4(),
+                    (*obj_idx).min(u32::from(u8::MAX)) as u8,
+                    (*prop_id).min(u32::from(u8::MAX)) as u8,
+                    1,
+                    1,
+                    value,
+                    None,
+                )
+                .await?;
             }
             FlashStep::CompareProp {
                 obj_idx,
@@ -1788,8 +1945,16 @@ fn step_label(step: &FlashStep) -> String {
                 image.kind, image.len
             )
         }
-        FlashStep::WriteProp { obj_type, prop_id } => {
-            format!("write property (object type {obj_type}, PID {prop_id})")
+        FlashStep::WriteProp {
+            obj_idx,
+            obj_type,
+            prop_id,
+            value,
+        } => {
+            format!(
+                "write property (object {obj_idx}, type {obj_type}, PID {prop_id}, {} byte(s))",
+                value.len()
+            )
         }
         FlashStep::CompareProp {
             obj_idx,
@@ -2216,5 +2381,189 @@ mod tests {
         // 7 bytes fit in one 12-octet chunk each write → 2 frames.
         assert_eq!(plan.estimated_write_frames(), 2);
         assert!(plan.estimated_duration().as_millis() >= 40);
+    }
+
+    // ---------------------------------------------------------------------
+    // Issue #53: address-arithmetic bounds at plan pre-flight.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn plan_refuses_write_rel_mem_offset_past_16bit_space() {
+        // A WriteRelMem whose offset alone lands the write past 0xFFFF must be
+        // refused at plan time (the segment base is added at flash time and is
+        // >= 0, so the range already exceeds the 16-bit A_Memory space). This is
+        // rejected in the plan, before any allocation or write happens.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-7" MaskVersion="MV-07B0" Name="Overflow">
+          <Static>
+           <Code><RelativeSegment Id="M-1_A-7_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment></Code>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlLoad LsmIdx="4" />
+             <LdCtrlRelSegment LsmIdx="4" Size="6" AppliesTo="full" />
+             <LdCtrlWriteRelMem ObjIdx="0" Offset="65535" Size="6" AppliesTo="full" />
+             <LdCtrlLoadCompleted LsmIdx="4" />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-1_A-7", xml.as_bytes()).unwrap();
+        let err = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap_err();
+        match err {
+            PlanError::AddressOutOfRange { end, .. } => {
+                assert!(end > 0xFFFF, "end {end} must exceed the 16-bit space");
+            }
+            other => panic!("expected AddressOutOfRange, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn plan_refuses_write_mem_address_past_16bit_space() {
+        // An absolute WriteMem at an address past 0xFFFF is refused (a u16 cast
+        // would silently truncate and stream to the wrong memory).
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-8" MaskVersion="MV-07B0" Name="AbsOverflow">
+          <Static>
+           <Code><AbsoluteSegment Id="M-1_A-8_AS-1" Address="70000" Size="4"><Data>AAECAw==</Data></AbsoluteSegment></Code>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlLoad LsmIdx="0" />
+             <LdCtrlWriteMem Address="70000" Size="4" />
+             <LdCtrlLoadCompleted LsmIdx="0" />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-1_A-8", xml.as_bytes()).unwrap();
+        let err = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap_err();
+        assert!(
+            matches!(err, PlanError::AddressOutOfRange { .. }),
+            "expected AddressOutOfRange, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn plan_refuses_absurd_segment_allocation_size() {
+        // A RelSegment declaring a multi-gigabyte size is corrupt input; refuse
+        // it before it becomes a huge allocation request.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-A" MaskVersion="MV-07B0" Name="HugeAlloc">
+          <Static>
+           <Code><RelativeSegment Id="M-1_A-A_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment></Code>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlLoad LsmIdx="4" />
+             <LdCtrlRelSegment LsmIdx="4" Size="4000000000" AppliesTo="full" />
+             <LdCtrlLoadCompleted LsmIdx="4" />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-1_A-A", xml.as_bytes()).unwrap();
+        let err = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap_err();
+        assert!(
+            matches!(err, PlanError::AddressOutOfRange { .. }),
+            "expected AddressOutOfRange, got {err:?}"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Issue #54: LdCtrlWriteProp value parse, lowering and refusal.
+    // ---------------------------------------------------------------------
+
+    /// An app whose procedure carries a single value-carrying WriteProp.
+    fn app_with_write_prop(inline_data: &str, obj_idx: &str, prop_id: &str) -> ApplicationProgram {
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-W" MaskVersion="MV-07B0" Name="WriteProp">
+          <Static>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlLoad LsmIdx="0" />
+             <LdCtrlWriteProp ObjIdx="{obj_idx}" ObjType="11" PropId="{prop_id}" InlineData="{inline_data}" />
+             <LdCtrlLoadCompleted LsmIdx="0" />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#
+        );
+        parse_application_program("M-1_A-W", xml.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn plan_lowers_value_carrying_write_prop_as_real_write() {
+        // A WriteProp carrying InlineData lowers to an executable WriteProp step
+        // with the decoded value — a real write in the plan, not a skipped no-op.
+        let app = app_with_write_prop("0102", "0", "204");
+        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+        let write_props: Vec<&FlashStep> = plan
+            .steps
+            .iter()
+            .filter(|s| matches!(s, FlashStep::WriteProp { .. }))
+            .collect();
+        assert_eq!(write_props.len(), 1, "the value-carrying WriteProp lowers");
+        match write_props[0] {
+            FlashStep::WriteProp {
+                obj_idx,
+                prop_id,
+                value,
+                ..
+            } => {
+                assert_eq!(*obj_idx, 0);
+                assert_eq!(*prop_id, 204);
+                assert_eq!(value, &vec![0x01, 0x02]);
+            }
+            other => panic!("expected WriteProp, got {other:?}"),
+        }
+        // The trace renders it as a real property write, not "skipped".
+        let line = trace(&plan)
+            .into_iter()
+            .find(|l| l.contains("write property"))
+            .expect("a write-property line is rendered");
+        assert!(line.contains("2 byte"), "renders the value length: {line}");
+    }
+
+    #[test]
+    fn plan_skips_bare_write_prop_without_emitting_a_step() {
+        // A bare WriteProp (no InlineData) carries no value: the device seeds the
+        // property on LoadCompleted. It must NOT lower to a WriteProp step, so it
+        // can never be rendered as an executed write.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-B" MaskVersion="MV-07B0" Name="BareWriteProp">
+          <Static>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlLoad LsmIdx="0" />
+             <LdCtrlWriteProp ObjType="11" PropId="204" />
+             <LdCtrlLoadCompleted LsmIdx="0" />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-1_A-B", xml.as_bytes()).unwrap();
+        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+        assert!(
+            !plan
+                .steps
+                .iter()
+                .any(|s| matches!(s, FlashStep::WriteProp { .. })),
+            "a bare WriteProp must not lower to an executed step: {:?}",
+            plan.steps
+        );
+    }
+
+    #[test]
+    fn plan_refuses_write_prop_shape_it_cannot_execute() {
+        // A value-carrying WriteProp whose object index exceeds the 8-bit space
+        // the property-write primitive addresses is refused at pre-flight rather
+        // than dropped at execute time.
+        let app = app_with_write_prop("01", "9999", "204");
+        let err = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap_err();
+        match err {
+            PlanError::UnsupportedWriteProp { reason, .. } => {
+                assert!(reason.contains("object index"), "{reason}");
+            }
+            other => panic!("expected UnsupportedWriteProp, got {other:?}"),
+        }
     }
 }

@@ -123,8 +123,10 @@ async fn run_mock(
                             channel_id: CHANNEL,
                             seq: gw_seq,
                         };
-                        let ind =
-                            knxnet::tunneling_request(hdr, &CemiFrame::group_write(g, src, &[1]));
+                        let ind = knxnet::tunneling_request(
+                            hdr,
+                            &CemiFrame::group_write_packed(g, src, &[1]),
+                        );
                         gw.send_to(&ind, from).await.unwrap();
                         gw_seq = gw_seq.wrapping_add(1);
                         pushed = true;
@@ -165,7 +167,8 @@ async fn run_mock_push_after_connect(gw: UdpSocket, g: GroupAddress, src: Indivi
                     channel_id: CHANNEL,
                     seq: gw_seq,
                 };
-                let ind = knxnet::tunneling_request(hdr, &CemiFrame::group_write(g, src, &[1]));
+                let ind =
+                    knxnet::tunneling_request(hdr, &CemiFrame::group_write_packed(g, src, &[1]));
                 gw.send_to(&ind, from).await.unwrap();
                 gw_seq = gw_seq.wrapping_add(1);
             }
@@ -270,7 +273,11 @@ async fn send_receipt_resolves_on_ack() {
 
     let receipt = tokio::time::timeout(
         Duration::from_secs(3),
-        handle.send(CemiFrame::group_write(ga("3/0/4"), ia("1.1.255"), &[1])),
+        handle.send(CemiFrame::group_write_packed(
+            ga("3/0/4"),
+            ia("1.1.255"),
+            &[1],
+        )),
     )
     .await
     .expect("send returns in time");
@@ -294,7 +301,11 @@ async fn send_errors_on_ack_exhaustion() {
 
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        handle.send(CemiFrame::group_write(ga("3/0/4"), ia("1.1.255"), &[1])),
+        handle.send(CemiFrame::group_write_packed(
+            ga("3/0/4"),
+            ia("1.1.255"),
+            &[1],
+        )),
     )
     .await
     .expect("send returns after ACK exhaustion");
@@ -317,7 +328,11 @@ async fn staleness_cutoff_drops_queued_frame_while_reconnecting() {
     // The actor is Connecting/Reconnecting (never Connected).
     let result = tokio::time::timeout(
         Duration::from_secs(4),
-        handle.send(CemiFrame::group_write(ga("3/0/4"), ia("0.0.255"), &[1])),
+        handle.send(CemiFrame::group_write_packed(
+            ga("3/0/4"),
+            ia("0.0.255"),
+            &[1],
+        )),
     )
     .await
     .expect("send resolves within the staleness window");

@@ -625,11 +625,21 @@ fn load_op_summary(op: &LoadOp) -> String {
         LoadOp::WriteMem { address, size } => {
             format!("write_mem addr={} size={}", opt(address), opt(size))
         }
-        LoadOp::WriteProp { obj_type, prop_id } => {
+        LoadOp::WriteProp {
+            obj_idx,
+            obj_type,
+            prop_id,
+            inline_data,
+        } => {
+            let data = inline_data
+                .as_ref()
+                .map(|d| format!(" data={}", hex(d)))
+                .unwrap_or_default();
             format!(
-                "write_prop obj_type={} prop_id={}",
+                "write_prop obj_idx={} obj_type={} prop_id={}{data}",
+                opt(obj_idx),
                 opt(obj_type),
-                opt(prop_id)
+                opt(prop_id),
             )
         }
         LoadOp::CompareProp {

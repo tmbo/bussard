@@ -309,17 +309,25 @@ pub struct CemiFrame {
 }
 
 impl CemiFrame {
-    /// Builds an `L_Data.req` carrying a `GroupValueWrite` to a group address.
+    /// Builds an `L_Data.req` carrying a `GroupValueWrite` to a group address,
+    /// deciding the APDU form from the caller's DPT-derived `packed` intent.
     ///
-    /// If `payload` is a single byte ≤ `0x3f` it is packed into the small APDU
-    /// form; otherwise it is sent as separate data octets. Pass the exact DPT
-    /// bytes; the caller is responsible for encoding the value.
+    /// The 6-bit "small" APDU form is legal ONLY for sub-byte DPTs (main 1/2/3);
+    /// pass `packed = dpt.is_packable()`. A byte-sized-or-larger value whose byte
+    /// happens to be `<= 0x3F` (DPT 5.001 `50`, 20.102, 17.001) must go as a
+    /// separate data octet, so `packed = false` forces the large form regardless
+    /// of the byte value (issue #59). Pass the exact DPT bytes; the caller encodes
+    /// the value.
+    ///
+    /// See [`CemiFrame::group_write_packed`] for a byte-length-only shortcut used
+    /// by tests and internal 1-bit sends.
     pub fn group_write(
         destination: GroupAddress,
         source: IndividualAddress,
         payload: &[u8],
+        packed: bool,
     ) -> Self {
-        let data = small_or_large(payload);
+        let data = group_data(payload, packed);
         CemiFrame {
             message_code: MessageCode::LDataReq,
             additional_info: Vec::new(),
@@ -346,13 +354,16 @@ impl CemiFrame {
         }
     }
 
-    /// Builds an `L_Data.req` carrying a `GroupValueResponse` to a group address.
+    /// Builds an `L_Data.req` carrying a `GroupValueResponse` to a group address,
+    /// deciding the APDU form from the caller's DPT-derived `packed` intent (see
+    /// [`CemiFrame::group_write`] for the packing rule; issue #59).
     pub fn group_response(
         destination: GroupAddress,
         source: IndividualAddress,
         payload: &[u8],
+        packed: bool,
     ) -> Self {
-        let data = small_or_large(payload);
+        let data = group_data(payload, packed);
         CemiFrame {
             message_code: MessageCode::LDataReq,
             additional_info: Vec::new(),
@@ -363,6 +374,33 @@ impl CemiFrame {
             tpci: Tpci::DataGroup,
             apdu: Apdu::GroupValueResponse(data),
         }
+    }
+
+    /// Builds a `GroupValueWrite` choosing the APDU form by byte length alone (a
+    /// single byte `<= 0x3F` packs). Use this ONLY where the payload is a genuine
+    /// sub-byte DPT (e.g. a 1-bit switch) or in tests; the DPT-aware
+    /// [`CemiFrame::group_write`] is the correct entry point on the write path,
+    /// because a byte-sized DPT with a small value must NOT pack (issue #59).
+    pub fn group_write_packed(
+        destination: GroupAddress,
+        source: IndividualAddress,
+        payload: &[u8],
+    ) -> Self {
+        let packed = payload.len() == 1 && payload[0] <= 0x3f;
+        Self::group_write(destination, source, payload, packed)
+    }
+
+    /// Builds a `GroupValueResponse` choosing the APDU form by byte length alone
+    /// (a single byte `<= 0x3F` packs). The response twin of
+    /// [`CemiFrame::group_write_packed`]; use the DPT-aware
+    /// [`CemiFrame::group_response`] on any real response path (issue #59).
+    pub fn group_response_packed(
+        destination: GroupAddress,
+        source: IndividualAddress,
+        payload: &[u8],
+    ) -> Self {
+        let packed = payload.len() == 1 && payload[0] <= 0x3f;
+        Self::group_response(destination, source, payload, packed)
     }
 
     /// Decodes a cEMI L_Data frame from bytes.
@@ -549,9 +587,16 @@ impl CemiFrame {
     }
 }
 
-/// Classifies a raw payload into the packed-small or separate-large APDU form.
-fn small_or_large(payload: &[u8]) -> GroupData {
-    if payload.len() == 1 && payload[0] <= 0x3f {
+/// Builds the group-value APDU payload, honouring the caller's `packed` intent.
+///
+/// The small (6-bit) form is used only when the caller asks for it AND the
+/// payload physically fits (a single byte `<= 0x3F`). `packed` is a DPT property
+/// the caller supplies (`Dpt::is_packable()`): a byte-sized DPT passes
+/// `packed = false`, so its value is always emitted as a separate data octet even
+/// when it happens to be `<= 0x3F` (issue #59). A multi-byte payload is always
+/// large regardless of `packed`.
+fn group_data(payload: &[u8], packed: bool) -> GroupData {
+    if packed && payload.len() == 1 && payload[0] <= 0x3f {
         GroupData::Small(payload[0])
     } else {
         GroupData::Large(payload.to_vec())
@@ -784,7 +829,7 @@ mod tests {
 
     #[test]
     fn build_group_write_small() {
-        let frame = CemiFrame::group_write(ga("3/0/4"), ia("1.1.1"), &[1]);
+        let frame = CemiFrame::group_write_packed(ga("3/0/4"), ia("1.1.1"), &[1]);
         let bytes = frame.encode();
         // Last three bytes: NPDU len 1, APCI 0x00, 0x81.
         assert_eq!(&bytes[bytes.len() - 3..], &[0x01, 0x00, 0x81]);
@@ -917,7 +962,7 @@ mod tests {
     #[test]
     fn small_boundary_value_63_packs() {
         // Value 0x3f is the largest that fits in the packed small form.
-        let frame = CemiFrame::group_write(ga("1/1/1"), ia("1.1.1"), &[0x3f]);
+        let frame = CemiFrame::group_write_packed(ga("1/1/1"), ia("1.1.1"), &[0x3f]);
         assert_eq!(frame.apdu, Apdu::GroupValueWrite(GroupData::Small(0x3f)));
         let bytes = frame.encode();
         assert_eq!(&bytes[bytes.len() - 2..], &[0x00, 0x80 | 0x3f]);
@@ -1007,10 +1052,54 @@ mod tests {
     #[test]
     fn value_64_goes_large() {
         // 0x40 doesn't fit in 6 bits, so it becomes a separate data octet.
-        let frame = CemiFrame::group_write(ga("1/1/1"), ia("1.1.1"), &[0x40]);
+        let frame = CemiFrame::group_write_packed(ga("1/1/1"), ia("1.1.1"), &[0x40]);
         assert_eq!(
             frame.apdu,
             Apdu::GroupValueWrite(GroupData::Large(vec![0x40]))
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Issue #59: DPT-driven packing intent, not value-driven guessing.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn unpacked_intent_forces_large_even_for_small_byte() {
+        // A byte-sized DPT (e.g. 5.001 value 50 -> 0x32, or 20.102 value 2) whose
+        // byte is <= 0x3F must NOT be packed: with packed=false it is a separate
+        // data octet, and it round-trips as such.
+        for byte in [0x02u8, 0x05, 0x19, 0x32] {
+            let frame = CemiFrame::group_write(ga("3/0/4"), ia("1.1.1"), &[byte], false);
+            assert_eq!(
+                frame.apdu,
+                Apdu::GroupValueWrite(GroupData::Large(vec![byte])),
+                "byte {byte:#04X} with packed=false must be a separate data octet"
+            );
+            // Round-trips: still large, still the same byte.
+            let back = CemiFrame::decode(&frame.encode()).unwrap();
+            assert_eq!(
+                back.apdu,
+                Apdu::GroupValueWrite(GroupData::Large(vec![byte]))
+            );
+        }
+    }
+
+    #[test]
+    fn packed_intent_packs_sub_byte_value() {
+        // A sub-byte DPT (1.x On, 3.x step) with packed=true uses the small form.
+        let frame = CemiFrame::group_write(ga("3/0/4"), ia("1.1.1"), &[1], true);
+        assert_eq!(frame.apdu, Apdu::GroupValueWrite(GroupData::Small(1)));
+        let back = CemiFrame::decode(&frame.encode()).unwrap();
+        assert_eq!(back.apdu, Apdu::GroupValueWrite(GroupData::Small(1)));
+    }
+
+    #[test]
+    fn packed_intent_still_goes_large_for_multibyte() {
+        // Even packed=true cannot pack a 2-byte payload.
+        let frame = CemiFrame::group_write(ga("3/0/4"), ia("1.1.1"), &[0x0C, 0x1A], true);
+        assert_eq!(
+            frame.apdu,
+            Apdu::GroupValueWrite(GroupData::Large(vec![0x0C, 0x1A]))
         );
     }
 }

@@ -37,7 +37,7 @@ use bussard_mgmt::{DeviceConnection, Layer4Connection, LeaseChannel, MgmtError};
 use bussard_model::IndividualAddress;
 use bussard_prod::{ApplicationProgram, ProductData, normalize_order_number};
 
-use crate::conn_cmd::{ConnOverrides, load_model_optional, resolve_config};
+use crate::conn_cmd::{ConnOverrides, load_model_required, resolve_config};
 
 /// Flashes an application program from vendor product data into a device.
 ///
@@ -105,7 +105,9 @@ pub fn run(
     // the flash engine expects (the #46 contract: keys are `<slug>@<ref-id>`; the
     // part after `@` is the ETS-stable identity). The model is also the source of
     // the connection config.
-    let model = load_model_optional(dir);
+    // A flash is a management command: a present-but-broken model is a hard
+    // error (its parameter overrides drive what is written to the device).
+    let model = load_model_required(dir)?;
     let config = resolve_config(model.as_ref(), &overrides)?;
     let overrides_map = collect_parameter_overrides(model.as_ref(), target);
     // Module-instance base offsets persisted by the importer (issue #48): the
