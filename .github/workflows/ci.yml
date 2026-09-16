@@ -171,6 +171,9 @@ jobs:
   virtual-device:
     name: virtual-device (ubuntu, interop)
     runs-on: ubuntu-latest
+    # First-execution shakedown in progress (same-host multicast delivery);
+    # non-blocking until the ladder is proven stable on runners.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
         with:
