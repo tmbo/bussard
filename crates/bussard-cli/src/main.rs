@@ -378,13 +378,19 @@ fn main() -> ExitCode {
         .init();
 
     let cli = Cli::parse();
-    match run(cli.command) {
+    // Temporary speed telemetry: every invocation reports its wall time on
+    // stderr. Speed is a core project goal; this keeps regressions visible
+    // during development and will be removed (or demoted to --timing) later.
+    let started = std::time::Instant::now();
+    let code = match run(cli.command) {
         Ok(code) => code,
         Err(err) => {
             eprintln!("error: {err:#}");
             ExitCode::FAILURE
         }
-    }
+    };
+    eprintln!("took {:.2?}", started.elapsed());
+    code
 }
 
 /// Dispatches a subcommand, returning the process exit code on success.
