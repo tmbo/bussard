@@ -34,7 +34,7 @@ use bussard_transport::tpci::{self, TpciKind};
 use bussard_transport::{BusConnection, TimestampedFrame, TransportError};
 use tokio::time::{Instant, timeout};
 
-use crate::error::{MgmtError, Result};
+use crate::error::{MgmtError, Result, SilenceKind};
 
 /// The two operations the layer-4 state machine needs from whatever carries its
 /// frames: an ACK-completed `send` and a `recv` of the next inbound frame.
@@ -186,6 +186,13 @@ pub struct Layer4Connection<Ch: L4Channel> {
     timeouts: Timeouts,
     send_seq: u8,
     recv_seq: u8,
+    /// How many numbered data telegrams (NDTs) this session has sent and had
+    /// acknowledged. Used to fold protocol-unit progress into a mid-session
+    /// silence error (#50): a stall reported "after N numbered exchanges" is
+    /// measurable in messages, not just in bytes. Counts every acknowledged
+    /// `send_data`, so a request/response round-trip counts as one (the response
+    /// NDT the *device* sends is not a telegram we sent).
+    numbered_exchanges: u32,
     /// A response NDT the device folded in *before* its `T_ACK` (some stacks
     /// answer and acknowledge in one step). [`await_ack`](Self::await_ack)
     /// stashes its decoded `(apci, data)` here after ACKing it and advancing the
@@ -229,6 +236,7 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
             timeouts,
             send_seq: 0,
             recv_seq: 0,
+            numbered_exchanges: 0,
             pending_response: None,
             closed: false,
         })
@@ -255,6 +263,7 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
             match self.await_ack(seq).await {
                 AckOutcome::Acked => {
                     self.send_seq = (self.send_seq + 1) & 0x0f;
+                    self.numbered_exchanges = self.numbered_exchanges.saturating_add(1);
                     return Ok(());
                 }
                 AckOutcome::Nak => {
@@ -271,9 +280,7 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
                 }
                 AckOutcome::Disconnected => {
                     self.closed = true;
-                    return Err(MgmtError::Disconnected {
-                        address: self.target,
-                    });
+                    return Err(self.silence_error(SilenceKind::Disconnected));
                 }
                 AckOutcome::Timeout => {
                     if attempt >= self.timeouts.max_repetitions {
@@ -281,9 +288,7 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
                         // device is absent; after that, treat the silence as a
                         // dead connection to a device that stopped answering.
                         self.closed = true;
-                        return Err(MgmtError::NoResponse {
-                            address: self.target,
-                        });
+                        return Err(self.silence_error(SilenceKind::NoResponse));
                     }
                     attempt += 1;
                 }
@@ -304,25 +309,21 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
             return Ok(pending);
         }
         if self.closed {
-            return Err(MgmtError::Disconnected {
-                address: self.target,
-            });
+            return Err(self.silence_error(SilenceKind::Disconnected));
         }
         let deadline = Instant::now() + self.timeouts.response_timeout;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return Err(MgmtError::NoResponse {
-                    address: self.target,
-                });
+                self.closed = true;
+                return Err(self.silence_error(SilenceKind::NoResponse));
             }
             let stamped = match timeout(remaining, self.conn.recv()).await {
                 Ok(Ok(stamped)) => stamped,
                 Ok(Err(err)) => return Err(self.map_recv_error(err)),
                 Err(_elapsed) => {
-                    return Err(MgmtError::NoResponse {
-                        address: self.target,
-                    });
+                    self.closed = true;
+                    return Err(self.silence_error(SilenceKind::NoResponse));
                 }
             };
             let frame = stamped.frame;
@@ -335,9 +336,7 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
             match tpci::classify(frame.tpci_octet()) {
                 TpciKind::Disconnect => {
                     self.closed = true;
-                    return Err(MgmtError::Disconnected {
-                        address: self.target,
-                    });
+                    return Err(self.silence_error(SilenceKind::Disconnected));
                 }
                 TpciKind::NumberedData(seq) => {
                     if seq == self.recv_seq {
@@ -456,10 +455,38 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
         self.closed = true;
         match err {
             MgmtError::Transport(TransportError::Disconnected(_))
-            | MgmtError::Transport(TransportError::Closed) => MgmtError::Disconnected {
-                address: self.target,
-            },
+            | MgmtError::Transport(TransportError::Closed) => {
+                self.silence_error(SilenceKind::Disconnected)
+            }
             other => other,
+        }
+    }
+
+    /// Builds the silence error for a mid-session `NoResponse`/`Disconnected`.
+    ///
+    /// After at least one numbered exchange has completed on this connection, the
+    /// silence carries the exchange count and sequence-wrap count as
+    /// [`MgmtError::MidSessionSilence`], so a stall is measured in protocol units
+    /// (#50). Before any exchange (the very first send drawing no reaction), it
+    /// surfaces the bare [`MgmtError::NoResponse`]/[`MgmtError::Disconnected`] —
+    /// nothing had happened yet to count, and scanning an absent address must keep
+    /// seeing the plain "device absent" it matches on.
+    fn silence_error(&self, kind: SilenceKind) -> MgmtError {
+        if self.numbered_exchanges == 0 {
+            return match kind {
+                SilenceKind::NoResponse => MgmtError::NoResponse {
+                    address: self.target,
+                },
+                SilenceKind::Disconnected => MgmtError::Disconnected {
+                    address: self.target,
+                },
+            };
+        }
+        MgmtError::MidSessionSilence {
+            address: self.target,
+            kind,
+            exchanges: self.numbered_exchanges,
+            wraps: self.numbered_exchanges / 16,
         }
     }
 }

@@ -43,6 +43,30 @@ enum Format {
     Json,
 }
 
+/// How `bussard flash` verifies each memory write's read-back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+enum VerifyModeArg {
+    /// Read each 12-byte chunk back immediately after writing it (2 numbered
+    /// messages per chunk). The conservative real-device default: a dropped or
+    /// truncated chunk fails at that chunk, before more is streamed on top.
+    #[default]
+    PerChunk,
+    /// Write the whole segment first, then read it all back and verify once.
+    /// Roughly halves the flash's memory round-trips (and is the #50 KV stall
+    /// discriminator), at the cost of catching a corrupt write only at the
+    /// end-of-segment verify. The first mismatching address is still reported.
+    Batched,
+}
+
+impl From<VerifyModeArg> for bussard_mgmt::VerifyMode {
+    fn from(v: VerifyModeArg) -> Self {
+        match v {
+            VerifyModeArg::PerChunk => bussard_mgmt::VerifyMode::PerChunk,
+            VerifyModeArg::Batched => bussard_mgmt::VerifyMode::Batched,
+        }
+    }
+}
+
 /// The top-level subcommands.
 #[derive(Debug, Subcommand)]
 enum Command {
@@ -215,6 +239,13 @@ enum Command {
         /// Loaded and would otherwise fail on the first allocation.
         #[arg(long)]
         tolerate_nonconformant_load_states: bool,
+        /// How memory writes are verified. `per-chunk` (default) reads each
+        /// 12-byte chunk back right after writing it — conservative, the real-
+        /// device behaviour. `batched` writes the whole segment first and reads it
+        /// all back once, roughly halving the flash's memory round-trips (and
+        /// serving as the #50 KV stall discriminator).
+        #[arg(long, value_enum, default_value_t = VerifyModeArg::PerChunk)]
+        verify: VerifyModeArg,
         /// Override the gateway `host[:port]` for tunneling.
         #[arg(long, value_name = "HOST")]
         gateway: Option<String>,
@@ -493,6 +524,7 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             dir,
             yes,
             tolerate_nonconformant_load_states,
+            verify,
             gateway,
             routing,
         } => flash_cmd::run(
@@ -503,6 +535,7 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             &dir,
             yes,
             tolerate_nonconformant_load_states,
+            verify.into(),
             conn_cmd::ConnOverrides { gateway, routing },
         ),
         Command::Plan {

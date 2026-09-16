@@ -62,7 +62,7 @@ use std::collections::BTreeMap;
 use bussard_mgmt::connection::{L4Channel, Layer4Connection};
 use bussard_mgmt::load::{
     self, LoadControl, LoadState, WriteError, allocate_segment, compare_property, read_load_state,
-    read_mcb_table, write_load_control, write_memory,
+    read_mcb_table, write_load_control, write_memory_verified,
 };
 use bussard_mgmt::tables::{OT_APPLICATION_PROGRAM, PID_OBJECT_TYPE};
 use bussard_prod::application::{ApplicationProgram, LoadOp, LoadProcedure, SegmentKind};
@@ -350,6 +350,14 @@ pub struct FlashOptions {
     /// `--tolerate-nonconformant-load-states`) lets the owner retry against KV
     /// without weakening the guard on real hardware.
     pub tolerate_nonconformant_load_states: bool,
+
+    /// How memory writes verify their read-back — see
+    /// [`bussard_mgmt::VerifyMode`]. Default [`bussard_mgmt::VerifyMode::PerChunk`]
+    /// is the conservative real-device behaviour (each chunk confirmed before the
+    /// next). [`bussard_mgmt::VerifyMode::Batched`] writes the whole segment first
+    /// and verifies once, roughly halving the flash's memory round-trips (the
+    /// `--verify batched` flag) and doubling as the #50 KV stall discriminator.
+    pub verify: bussard_mgmt::VerifyMode,
 }
 
 /// A progress event emitted as [`flash`] executes, for the CLI to render.
@@ -964,6 +972,62 @@ async fn start_loading<Ch: L4Channel>(
     }
 }
 
+/// Allocates a relative segment, applying the tolerance policy and — like
+/// [`start_loading`] — enriching a non-conformant load-state failure with the
+/// discovered object context.
+///
+/// [`allocate_segment`] raises [`WriteError::UnexpectedLoadState`] with an empty
+/// context when the object is not `Loading` (its precondition, or the re-read
+/// after the `AdditionalLoadControls` write). That bare "object N did not reach
+/// Loading" is exactly as unactionable on the allocate path as it was on the
+/// StartLoading path fixed in 9a0668a — the KV transcript (#50) shows the
+/// allocate path still lacked it. This folds the targeted object's discovered
+/// interface-object type and the full discovered object table into any such
+/// failure so both paths render the same rich detail.
+async fn allocate_with_context<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    app_obj: u8,
+    size: u32,
+    object_table: &[(u8, u16)],
+    options: &FlashOptions,
+) -> Result<bussard_mgmt::SegmentAllocation, WriteError> {
+    match allocate_segment(
+        l4,
+        app_obj,
+        size,
+        None,
+        options.tolerate_nonconformant_load_states,
+    )
+    .await
+    {
+        Err(WriteError::UnexpectedLoadState {
+            address,
+            object_index,
+            control,
+            expected,
+            actual,
+            ..
+        }) => {
+            let context = bussard_mgmt::LoadStateContext {
+                object_type: object_table
+                    .iter()
+                    .find(|(idx, _)| *idx == object_index)
+                    .map(|(_, ot)| *ot),
+                object_table: object_table.to_vec(),
+            };
+            Err(WriteError::UnexpectedLoadState {
+                address,
+                object_index,
+                control,
+                expected,
+                actual,
+                context,
+            })
+        }
+        other => other,
+    }
+}
+
 /// Executes a validated [`FlashPlan`] against the device over `l4`, reporting
 /// progress through `progress`, then verifies the result.
 ///
@@ -1005,14 +1069,8 @@ pub async fn flash<Ch: L4Channel, F: FnMut(Progress)>(
                 start_loading(l4, app_obj, &object_table, &options).await?;
             }
             FlashStep::AllocateSegment { size } => {
-                let alloc = allocate_segment(
-                    l4,
-                    app_obj,
-                    *size,
-                    None,
-                    options.tolerate_nonconformant_load_states,
-                )
-                .await?;
+                let alloc =
+                    allocate_with_context(l4, app_obj, *size, &object_table, &options).await?;
                 segment_base = Some(alloc.address);
             }
             FlashStep::WriteRelMem { offset, image } => {
@@ -1023,7 +1081,7 @@ pub async fn flash<Ch: L4Channel, F: FnMut(Progress)>(
                     .get(&image.segment_id)
                     .cloned()
                     .unwrap_or_default();
-                write_with_progress(l4, addr, &bytes, &mut progress).await?;
+                write_with_progress(l4, addr, &bytes, options.verify, &mut progress).await?;
                 if let Some(sample) = bytes.first().map(|_| take_sample(&bytes)) {
                     written_samples.push((addr, sample));
                 }
@@ -1035,7 +1093,7 @@ pub async fn flash<Ch: L4Channel, F: FnMut(Progress)>(
                     .get(&image.segment_id)
                     .cloned()
                     .unwrap_or_default();
-                write_with_progress(l4, addr, &bytes, &mut progress).await?;
+                write_with_progress(l4, addr, &bytes, options.verify, &mut progress).await?;
                 if !bytes.is_empty() {
                     written_samples.push((addr, take_sample(&bytes)));
                 }
@@ -1124,31 +1182,25 @@ pub async fn flash<Ch: L4Channel, F: FnMut(Progress)>(
     })
 }
 
-/// Streams `bytes` to `addr`, emitting a byte-progress event per chunk.
+/// Streams `bytes` to `addr` under `verify`, emitting a byte-progress event as
+/// each write chunk is acknowledged.
+///
+/// Delegates to [`write_memory_verified`], which handles both the per-chunk
+/// (write-verify-write-verify) and batched (write-all-then-verify) disciplines;
+/// the progress callback fires per write chunk in both, so the byte counter
+/// advances identically for the user regardless of when verification happens.
 async fn write_with_progress<Ch: L4Channel, F: FnMut(Progress)>(
     l4: &mut Layer4Connection<Ch>,
     addr: u16,
     bytes: &[u8],
+    verify: bussard_mgmt::VerifyMode,
     progress: &mut F,
 ) -> Result<(), WriteError> {
-    let chunk = usize::from(bussard_mgmt::apci::MAX_MEMORY_WRITE_LEN);
-    let mut offset = 0usize;
-    while offset < bytes.len() {
-        let take = chunk.min(bytes.len() - offset);
-        let chunk_addr = addr.checked_add(offset as u16).ok_or(WriteError::Mgmt(
-            bussard_mgmt::MgmtError::MalformedResponse {
-                address: l4.target(),
-                reason: "memory write range exceeds the 16-bit address space".to_string(),
-            },
-        ))?;
-        write_memory(l4, chunk_addr, &bytes[offset..offset + take]).await?;
-        offset += take;
-        progress(Progress::Bytes {
-            written: offset,
-            total: bytes.len(),
-        });
-    }
-    Ok(())
+    let total = bytes.len();
+    write_memory_verified(l4, addr, bytes, verify, |written| {
+        progress(Progress::Bytes { written, total });
+    })
+    .await
 }
 
 /// The first up-to-4 octets of an image, used as the post-flash read-back sample.
