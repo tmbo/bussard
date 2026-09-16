@@ -341,6 +341,25 @@ jobs:
                   if len(data) >= 2 and (data[-2] & 0x03) == 0x01 and data[-1] == 0x40:
                       print(f"  >>> {label}: GOT A_IndividualAddress_Response"); got = True
               print(f"  result {label}: {'ANSWERED' if got else 'no reply'}")
+
+          # Characterize the WRITE path: is the device in prog mode at all? Send
+          # A_IndividualAddress_Write 1.1.47 (0x112F) as a normal broadcast, then
+          # listen for any subsequent multicast (device chatter) and re-probe the
+          # read. If the write lands, a later read to 1.1.47 or any device tx tells
+          # us prog mode worked even though the read discovery does not answer.
+          drain()
+          wr_cemi = bytes([0x11,0x00,0xB6,0xE0,0x00,0xFF,0x00,0x00,0x03,0x00,0xC0,0x11,0x2F])
+          wframe = bytes([0x06,0x10,0x05,0x30]) + struct.pack(">H", 6+len(wr_cemi)) + wr_cemi
+          tx.sendto(wframe, (group, port))
+          print("SENT IndividualAddress_Write 1.1.47:", wframe.hex())
+          deadline = time.time() + 3
+          while time.time() < deadline:
+              try:
+                  data, addr = rx.recvfrom(1024)
+              except BlockingIOError:
+                  time.sleep(0.05); continue
+              if data == wframe: continue
+              print(f"  post-write RECV from {addr}: {data.hex()}")
           print("done")
           PY
           python3 /tmp/knx_read.py || true
