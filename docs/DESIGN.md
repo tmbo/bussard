@@ -48,11 +48,14 @@ A KNX device's configuration is three separable things with very different diffi
 | (b) Links | group address table, association table, com-object table | Standardised loadable parts; on System B / mask 07B0+ property-based and writable through documented interface objects. Moderate. |
 | (c) Parameters | channel mode, runtime, wind-alarm behaviour, ... | Device-specific memory layout described only in the `.knxprod`. Hard. |
 
-Most day-to-day changes are (b). bussard ships (a) + (b) first: that's real commissioning,
-genuinely useful, and needs no reverse engineering of manufacturer memory layouts. `assign`
-does (a); `plan`/`apply` do (b) for System B devices. Which path links take (properties on
+Most day-to-day changes are (b), but all three layers are in scope: the goal is the
+entire installation lifecycle in YAML, from `init` to a running house. `assign` does (a);
+`plan`/`apply` do (b) for System B devices; for (c), `flash` already computes and streams
+the full parameter memory image from vendor data, and the model integration (a
+`parameters:` section in the device files, imported from the ETS project and validated
+against the product model, #46) is in progress. Which path links take (properties on
 System B vs. memory writes on older System 1/2) depends on the mask version each device
-reports; `bussard scan` reports this. Layer (c), parameters, is the phase-3 residue.
+reports; `bussard scan` reports this.
 
 ## 3. What's inside a `.knxprod`
 
