@@ -246,6 +246,12 @@ enum Command {
         /// serving as the #50 KV stall discriminator).
         #[arg(long, value_enum, default_value_t = VerifyModeArg::PerChunk)]
         verify: VerifyModeArg,
+        /// Sleep N milliseconds between memory frames. Real gateways throttle
+        /// the download to TP1 speed by themselves; simulators (KNX Virtual)
+        /// ACK at loopback speed and can wedge under the burst — 25-50 is a
+        /// TP1-like rate.
+        #[arg(long, value_name = "MS")]
+        pace: Option<u64>,
         /// Override the gateway `host[:port]` for tunneling.
         #[arg(long, value_name = "HOST")]
         gateway: Option<String>,
@@ -525,6 +531,7 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             yes,
             tolerate_nonconformant_load_states,
             verify,
+            pace,
             gateway,
             routing,
         } => flash_cmd::run(
@@ -536,6 +543,7 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             yes,
             tolerate_nonconformant_load_states,
             verify.into(),
+            pace,
             conn_cmd::ConnOverrides { gateway, routing },
         ),
         Command::Plan {
