@@ -671,26 +671,23 @@ pub struct SegmentAllocation {
 /// `fill_byte` mirrors the relative structure's fill flag/byte: `Some(b)` asks
 /// the device to pre-fill the segment with `b`, `None` leaves it uninitialised.
 ///
-/// `tolerate_nonconformant_load_states` relaxes precondition 1: when set, an
-/// object that reports [`LoadState::Loaded`] (rather than the conformant
-/// `Loading`) after a `StartLoading` is accepted and the allocation proceeds.
-/// This is the KNX-Virtual escape hatch — KV snaps straight to `Loaded` after
-/// `StartLoading` — and is off by default so real-device behaviour stays strict.
+/// Load-state handling is strict: the object must report the conformant
+/// `Loading` state both as the allocation precondition and after the allocation
+/// write. A device that reports anything else (e.g. `Loaded`, meaning it did not
+/// honour the segment allocation) fails with [`WriteError::UnexpectedLoadState`]
+/// rather than silently proceeding — the guard that catches a device that cannot
+/// hold this application's segment before its memory is overrun.
 pub async fn allocate_segment<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     object_index: u8,
     size: u32,
     fill_byte: Option<u8>,
-    tolerate_nonconformant_load_states: bool,
 ) -> Result<SegmentAllocation> {
     let address = l4.target();
 
-    // 1. The object must be Loading for the allocation to be accepted. Under the
-    //    tolerance flag a KV-style Loaded is also accepted (see the flag docs).
+    // 1. The object must be Loading for the allocation to be accepted.
     let state = read_load_state(l4, object_index).await?;
-    let precondition_ok = state == LoadState::Loading
-        || (tolerate_nonconformant_load_states && state == LoadState::Loaded);
-    if !precondition_ok {
+    if state != LoadState::Loading {
         return Err(WriteError::UnexpectedLoadState {
             address,
             object_index,
@@ -716,9 +713,7 @@ pub async fn allocate_segment<Ch: L4Channel>(
             object_index,
         });
     }
-    let still_ok = state == LoadState::Loading
-        || (tolerate_nonconformant_load_states && state == LoadState::Loaded);
-    if !still_ok {
+    if state != LoadState::Loading {
         return Err(WriteError::UnexpectedLoadState {
             address,
             object_index,
@@ -1031,195 +1026,87 @@ pub async fn read_memory<Ch: L4Channel>(
     Ok(resp.data)
 }
 
-/// How a memory write verifies what it wrote back against the device.
-///
-/// Both modes read every written octet back and compare — the difference is
-/// *when*, and how many numbered messages that costs on the wire:
-///
-/// - [`VerifyMode::PerChunk`] interleaves a read-back after **each**
-///   [`apci::MAX_MEMORY_WRITE_LEN`]-octet write, so a chunk is confirmed before
-///   the next is sent (2 numbered messages per chunk: the write, then the
-///   read-back). This is the conservative real-device default: a device that
-///   silently drops or truncates a chunk fails immediately, at that chunk, before
-///   more content is streamed on top.
-///
-/// - [`VerifyMode::Batched`] writes **all** chunks first, then reads the whole
-///   range back in maximal [`apci::MAX_MEMORY_READ_LEN`]-octet reads and compares
-///   once. For a payload of N write-chunks this sends N writes + ⌈len/read⌉
-///   read-backs instead of 2·N messages — roughly **halving the numbered-message
-///   (and TP1 round-trip) count** for equal read/write chunk sizes. The trade-off
-///   is later detection: a corrupt write is only caught at the end-of-segment
-///   verify, not at the offending chunk. Batched reports the **first**
-///   mismatching address so the divergence is still pinpointed.
-///
-/// Batched mode is also the #50 KV stall discriminator: halving the numbered
-/// messages moves an L4-sequence-wraparound stall to ~2× the byte offset, while a
-/// memory-boundary wedge stays put — but that is a diagnostic consequence of the
-/// message-count change, not its purpose. The flag is a real speed feature first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum VerifyMode {
-    /// Read each chunk back immediately after writing it (2 messages/chunk).
-    #[default]
-    PerChunk,
-    /// Write every chunk, then bulk-read the whole range back and compare once.
-    Batched,
-}
-
 /// Writes `data` to device memory starting at the 16-bit `addr`, in
-/// [`apci::MAX_MEMORY_WRITE_LEN`]-octet chunks, verifying by read-back per
-/// [`VerifyMode::PerChunk`]. Mirrors [`crate::device::DeviceConnection::write_memory`]
-/// but on a borrowed [`Layer4Connection`] so the download engine can write
-/// segment content on the very connection it drives the load machine over.
+/// [`apci::MAX_MEMORY_WRITE_LEN`]-octet chunks, verifying each chunk by
+/// read-back. Mirrors [`crate::device::DeviceConnection::write_memory`] but on a
+/// borrowed [`Layer4Connection`] so the download engine can write segment content
+/// on the very connection it drives the load machine over.
 ///
-/// For every chunk this sends `A_Memory_Write`, then reads the same address
-/// back and compares. A divergence fails with [`MgmtError::MemoryVerifyFailed`].
-/// An empty `data` is a no-op. This is [`write_memory_verified`] with the
-/// conservative default mode and no progress callback.
+/// For every chunk this sends `A_Memory_Write`, then reads the same address back
+/// and compares. A divergence fails with [`MgmtError::MemoryVerifyFailed`]. An
+/// empty `data` is a no-op. This is [`write_memory_verified`] with no progress
+/// callback.
 pub async fn write_memory<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     addr: u16,
     data: &[u8],
 ) -> Result<()> {
-    write_memory_verified(l4, addr, data, VerifyMode::PerChunk, |_| {}).await
+    write_memory_verified(l4, addr, data, |_| {}).await
 }
 
-/// Writes `data` to device memory at `addr` under the chosen [`VerifyMode`],
-/// invoking `on_written` with the cumulative octet count after each write chunk
-/// (for progress reporting).
+/// The number of times a single memory-write exchange (the write plus its
+/// read-back verify) is retried when it fails with a *transient* connection
+/// blip, before the error is surfaced.
 ///
-/// - [`VerifyMode::PerChunk`]: write a chunk, read it back, compare, repeat.
-/// - [`VerifyMode::Batched`]: write every chunk (reporting progress as each is
-///   acknowledged), then read the whole range back in maximal reads and compare;
-///   the first mismatching address surfaces as [`MgmtError::MemoryVerifyFailed`]
-///   with that address and the diverging octet(s).
+/// A real KNXnet/IP gateway holds one stable connection for the whole download
+/// exactly as ETS does; this small bounded retry only exists so a transient hiccup
+/// on a flaky Wi-Fi tunnel (a dropped ACK, a momentary silence) does not abort an
+/// otherwise-healthy flash. It is NOT connection cycling: the same connection is
+/// reused, and a device-level refusal (a verify mismatch, a load error) is never
+/// retried. If the connection genuinely dies, the flash fails after these attempts
+/// and re-running `bussard flash` is safe (the download is idempotent).
+const MAX_EXCHANGE_RETRIES: u32 = 3;
+
+/// Writes `data` to device memory at `addr`, verifying each
+/// [`apci::MAX_MEMORY_WRITE_LEN`]-octet chunk by read-back, invoking `on_written`
+/// with the cumulative octet count after each confirmed chunk (for progress
+/// reporting).
 ///
-/// An empty `data` is a no-op. Both modes verify every octet; see [`VerifyMode`]
-/// for the message-count / detection trade-off.
+/// Each chunk is written and immediately read back and compared, so a device that
+/// silently drops or truncates a chunk fails at that chunk, before more content is
+/// streamed on top — the conservative real-device behaviour. A transient
+/// connection blip on an individual chunk is retried up to [`MAX_EXCHANGE_RETRIES`]
+/// times on the same connection (see [`is_connection_death`]); a device-level
+/// refusal propagates immediately. An empty `data` is a no-op.
 pub async fn write_memory_verified<Ch: L4Channel, F: FnMut(usize)>(
     l4: &mut Layer4Connection<Ch>,
     addr: u16,
     data: &[u8],
-    mode: VerifyMode,
     mut on_written: F,
 ) -> Result<()> {
-    // A non-windowed write is just the windowed write over a `NoWindow` control
-    // with no reconnect budget and no pace: `write_memory_windowed` degrades to a
-    // single-connection, fail-fast write when `reconnect_every()` is `None`, so
-    // the two share one code path (no separate `write_memory_paced` copy).
-    let mut ctl = NoWindow::new(l4);
-    write_memory_windowed(&mut ctl, addr, data, mode, None, &mut on_written).await
+    if data.is_empty() {
+        return Ok(());
+    }
+    let write_chunk = usize::from(apci::MAX_MEMORY_WRITE_LEN);
+    let mut offset = 0usize;
+    while offset < data.len() {
+        let take = write_chunk.min(data.len() - offset);
+        let piece = &data[offset..offset + take];
+
+        // Write + verify this chunk, retrying a transient connection blip on the
+        // same connection a bounded number of times. A device-level refusal (a
+        // verify mismatch) is not retried — retrying would just fail again.
+        let mut attempt = 0u32;
+        loop {
+            match write_one_chunk(l4, addr, offset, piece).await {
+                Ok(()) => break,
+                Err(err) if is_connection_death(&err) && attempt < MAX_EXCHANGE_RETRIES => {
+                    attempt += 1;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+
+        offset += take;
+        on_written(offset);
+    }
+    Ok(())
 }
 
-// --- Intra-write windowing (issue #52) --------------------------------------
-//
-// A plain non-windowed write streams a whole segment on one borrowed
-// `Layer4Connection`. A single vendor "write parameters image" step can be ~162
-// memory frames, far more than a fragile peer's per-connection budget — KNX
-// Virtual was observed to drop the L4 link at random depths (7, 26, 110
-// exchanges). Windowing *between* procedure steps cannot save a write that is
-// itself longer than the budget: the drop lands mid-write.
-//
-// Memory writes are ABSOLUTE-addressed and per-frame stateless — the device
-// holds no write cursor — so cycling the connection between chunks (never
-// mid-frame) and resuming at the next offset on a fresh connection lands the
-// same bytes as one unbroken write. The object's `Loading` state is persistent
-// object state, so it survives the graceful `T_Disconnect`. This is the seam
-// that lets the write path itself cycle and auto-retry.
-
-/// The reconnect mechanism a windowed memory write drives, threaded into the
-/// write path so it can cycle the L4 connection *during* a single write.
-///
-/// The write path owns no connection of its own: it borrows the live one from
-/// [`l4`](WindowCtl::l4) before every chunk, so a [`cycle`](WindowCtl::cycle) or
-/// [`resume_after_death`](WindowCtl::resume_after_death) that swaps in a fresh
-/// connection is transparent — the next `l4()` returns the new one. The download
-/// engine (`bussard-download`) implements this over its `Session`; a plain,
-/// non-windowed write uses [`NoWindow`], whose `cycle`/`resume_after_death` are
-/// never reached because [`reconnect_every`](WindowCtl::reconnect_every) is
-/// `None`.
-#[allow(async_fn_in_trait)]
-pub trait WindowCtl {
-    /// The channel the current connection drives.
-    type Channel: L4Channel;
-
-    /// The currently-open connection, borrowed for the next chunk. A `cycle`
-    /// swaps in a fresh one, so this must be re-borrowed after every cycle.
-    fn l4(&mut self) -> &mut Layer4Connection<Self::Channel>;
-
-    /// Numbered exchanges on the *current* connection (resets each cycle) — the
-    /// budget the planned window boundary is metered against.
-    fn window_exchanges(&self) -> u32;
-
-    /// The planned window size in numbered exchanges, or `None` for a
-    /// non-windowed write (in which case `cycle`/`resume_after_death` are never
-    /// called and an unexpected death is *not* retried — today's fail-fast).
-    fn reconnect_every(&self) -> Option<u32>;
-
-    /// How many *consecutive* window-retries without forward progress to allow
-    /// on an unexpected mid-write death before giving up. Any newly-confirmed
-    /// byte resets the count. Only consulted when [`reconnect_every`] is `Some`.
-    fn max_window_retries(&self) -> u32;
-
-    /// Gracefully cycles the connection at a planned window boundary: disconnect
-    /// the current connection, open a fresh one, and re-verify it can resume
-    /// (target answers + object still `Loading`). Only ever called between
-    /// chunks, so it never splits a frame.
-    async fn cycle(&mut self) -> Result<()>;
-
-    /// Reconnects after an *unexpected* mid-write death (the current connection
-    /// dropped before the planned boundary): open a fresh connection and
-    /// re-verify it can resume, exactly as [`cycle`] does, but without a
-    /// preceding graceful disconnect (the peer already dropped).
-    async fn resume_after_death(&mut self) -> Result<()>;
-}
-
-/// A [`WindowCtl`] that never windows: it wraps one borrowed connection and
-/// reports no reconnect budget, so the windowed write path degrades to a plain
-/// single-connection write. Its `cycle`/`resume_after_death` are unreachable and
-/// return an error if ever called.
-pub struct NoWindow<'a, Ch: L4Channel> {
-    l4: &'a mut Layer4Connection<Ch>,
-}
-
-impl<'a, Ch: L4Channel> NoWindow<'a, Ch> {
-    /// Wraps a borrowed connection as a non-windowing control.
-    pub fn new(l4: &'a mut Layer4Connection<Ch>) -> Self {
-        NoWindow { l4 }
-    }
-}
-
-impl<Ch: L4Channel> WindowCtl for NoWindow<'_, Ch> {
-    type Channel = Ch;
-
-    fn l4(&mut self) -> &mut Layer4Connection<Ch> {
-        self.l4
-    }
-    fn window_exchanges(&self) -> u32 {
-        self.l4.numbered_exchanges()
-    }
-    fn reconnect_every(&self) -> Option<u32> {
-        None
-    }
-    fn max_window_retries(&self) -> u32 {
-        0
-    }
-    async fn cycle(&mut self) -> Result<()> {
-        Err(WriteError::Mgmt(MgmtError::MalformedResponse {
-            address: self.l4.target(),
-            reason: "windowed cycle requested on a non-windowing write path".to_string(),
-        }))
-    }
-    async fn resume_after_death(&mut self) -> Result<()> {
-        Err(WriteError::Mgmt(MgmtError::MalformedResponse {
-            address: self.l4.target(),
-            reason: "windowed resume requested on a non-windowing write path".to_string(),
-        }))
-    }
-}
-
-/// Whether an error is a connection death (as opposed to a device-level refusal
-/// like a verify mismatch or a NAK-turned-fatal) — the kind a window-retry can
-/// recover from by reconnecting and resuming.
+/// Whether an error is a transient connection blip (a mid-session silence, a
+/// dropped ACK, a momentary no-response) as opposed to a device-level refusal
+/// like a verify mismatch or a load error — the kind a bounded per-exchange retry
+/// can recover from on the same connection.
 fn is_connection_death(err: &WriteError) -> bool {
     matches!(
         err,
@@ -1229,295 +1116,26 @@ fn is_connection_death(err: &WriteError) -> bool {
     )
 }
 
-/// Writes `data` to device memory at `addr` under `mode`, cycling the L4
-/// connection through a [`WindowCtl`] both at planned window boundaries and on
-/// unexpected mid-write connection death, resuming at the current offset on the
-/// fresh connection.
-///
-/// This is the general memory-write path; [`write_memory_verified`] is the
-/// non-windowed convenience wrapper (a [`NoWindow`] control) over it. Where a
-/// plain write borrows one
-/// fixed connection, this borrows the *current* connection from `ctl` before
-/// every chunk, so a cycle that swaps the connection is transparent. Cycling and
-/// resuming only ever happen *between* chunks, never mid-frame, and always at the
-/// current write offset — memory writes are absolute-addressed and stateless, so
-/// resuming there lands the same bytes as one unbroken write.
-///
-/// Two windowing behaviours, both keyed off [`WindowCtl::reconnect_every`]:
-///
-/// - **Planned window**: before a chunk, when `window_exchanges() >=
-///   reconnect_every`, [`WindowCtl::cycle`] gracefully disconnects and reconnects
-///   (re-verifying the object is still `Loading`), then the same chunk is written
-///   on the fresh connection.
-/// - **Unexpected death**: if a chunk's write or read-back fails with a
-///   connection death (the peer dropped early, KV's random drop),
-///   [`WindowCtl::resume_after_death`] reconnects and the chunk is retried at the
-///   same offset. Up to [`WindowCtl::max_window_retries`] *consecutive* retries
-///   without forward progress are allowed; any newly-confirmed byte resets the
-///   counter. Exhausting the budget fails with the accumulated context ("gave up
-///   after N reconnects; last progress at offset X").
-///
-/// After a cycle (planned or death), the last-written chunk is re-verified by
-/// read-back before continuing (a cheap correctness guard against resuming at the
-/// wrong offset); a mismatch re-writes that chunk. Batched mode windows during
-/// both the write phase and the bulk read-back phase.
-///
-/// When `reconnect_every()` is `None` (a non-windowed write, e.g. via
-/// [`write_memory_verified`]), this behaves as a plain single-connection write:
-/// no cycling, and a connection death fails fast — so the
-/// `NoWindow`/`SingleConnector` paths keep today's semantics.
-pub async fn write_memory_windowed<W: WindowCtl, F: FnMut(usize)>(
-    ctl: &mut W,
-    addr: u16,
-    data: &[u8],
-    mode: VerifyMode,
-    pace: Option<std::time::Duration>,
-    on_written: &mut F,
-) -> Result<()> {
-    if data.is_empty() {
-        return Ok(());
-    }
-    let write_chunk = usize::from(apci::MAX_MEMORY_WRITE_LEN);
-    let windowed = ctl.reconnect_every().is_some();
-
-    // Phase 1: write every chunk, windowing between chunks.
-    let mut offset = 0usize;
-    // The offset of the last chunk actually confirmed on the wire, for the
-    // post-cycle last-chunk re-verify.
-    let mut last_confirmed_offset: Option<usize> = None;
-    // Consecutive window-retries since the last forward progress.
-    let mut retries: u32 = 0;
-    while offset < data.len() {
-        // Prepare (planned cycle, if due) then write one chunk. A connection death
-        // anywhere in here — the planned cycle's reconnect/recheck, the write, or
-        // the read-back — is the same recoverable event: reconnect and retry the
-        // same chunk. Wrapping the planned cycle too matters because the death can
-        // strike during the graceful cycle itself (the peer may drop between the
-        // T_Disconnect and the fresh window's recheck).
-        let take = write_chunk.min(data.len() - offset);
-        let piece = &data[offset..offset + take];
-
-        let step = write_chunk_windowed(
-            ctl,
-            addr,
-            data,
-            offset,
-            piece,
-            mode,
-            &mut last_confirmed_offset,
-        )
-        .await;
-
-        match step {
-            Ok(()) => {
-                offset += take;
-                last_confirmed_offset = Some(offset - take);
-                on_written(offset);
-                retries = 0;
-                if let Some(d) = pace {
-                    if offset < data.len() {
-                        tokio::time::sleep(d).await;
-                    }
-                }
-            }
-            Err(err) if windowed && is_connection_death(&err) => {
-                // Unexpected mid-write death (or a death during the planned cycle).
-                // `offset` has not advanced, so this is a no-progress retry — count
-                // it and give up past the bound rather than looping forever.
-                if retries >= ctl.max_window_retries() {
-                    return Err(gave_up_error(
-                        ctl.l4().target(),
-                        ctl.max_window_retries(),
-                        offset,
-                    ));
-                }
-                retries += 1;
-                ctl.resume_after_death().await?;
-                // Re-verify the last confirmed chunk landed before resuming, so a
-                // wrong-offset resume cannot corrupt the image.
-                reverify_last_chunk(ctl, addr, data, last_confirmed_offset).await?;
-                // Loop again without advancing `offset`: retry the same chunk.
-            }
-            Err(err) => return Err(err),
-        }
-    }
-
-    if mode == VerifyMode::PerChunk {
-        return Ok(());
-    }
-
-    // Phase 2 (batched only): read the whole range back in maximal reads and
-    // compare, windowing between reads and retrying an unexpected death.
-    let read_chunk = usize::from(apci::MAX_MEMORY_READ_LEN);
-    let mut roff = 0usize;
-    let mut retries: u32 = 0;
-    while roff < data.len() {
-        if let Some(n) = ctl.reconnect_every() {
-            if roff > 0 && ctl.window_exchanges() >= n {
-                // A read-phase cycle needs no last-chunk re-verify (reads do not
-                // mutate); just cycle and re-check the resume is safe.
-                ctl.cycle().await?;
-            }
-        }
-        let take = read_chunk.min(data.len() - roff);
-        let expected = &data[roff..roff + take];
-        match read_and_compare(ctl.l4(), addr, roff, expected, data).await {
-            Ok(()) => {
-                roff += take;
-                retries = 0;
-            }
-            Err(err) if windowed && is_connection_death(&err) => {
-                if retries >= ctl.max_window_retries() {
-                    return Err(gave_up_error(
-                        ctl.l4().target(),
-                        ctl.max_window_retries(),
-                        roff,
-                    ));
-                }
-                retries += 1;
-                ctl.resume_after_death().await?;
-            }
-            Err(err) => return Err(err),
-        }
-    }
-    Ok(())
-}
-
-/// Does a planned window cycle if the budget is spent, then writes one chunk —
-/// as a single unit so a connection death in *either* the cycle or the write is
-/// surfaced together and retried the same way by the caller.
-async fn write_chunk_windowed<W: WindowCtl>(
-    ctl: &mut W,
-    base: u16,
-    data: &[u8],
-    offset: usize,
-    piece: &[u8],
-    mode: VerifyMode,
-    last_confirmed_offset: &mut Option<usize>,
-) -> Result<()> {
-    // Planned window boundary: cycle before this chunk. Never on the very first
-    // chunk (nothing written yet to meter the window against).
-    if let Some(n) = ctl.reconnect_every() {
-        if offset > 0 && ctl.window_exchanges() >= n {
-            ctl.cycle().await?;
-            reverify_last_chunk(ctl, base, data, *last_confirmed_offset).await?;
-        }
-    }
-    write_one_chunk(ctl.l4(), base, offset, piece, mode).await
-}
-
-/// Writes one memory chunk at `base + offset`, verifying inline in per-chunk
-/// mode. Batched mode defers verification to phase 2.
+/// Writes one memory chunk at `base + offset` and verifies it by read-back.
 async fn write_one_chunk<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     base: u16,
     offset: usize,
     piece: &[u8],
-    mode: VerifyMode,
 ) -> Result<()> {
     let chunk_addr = chunk_address(l4, base, offset)?;
     let (req_apci, payload) = apci::encode_memory_write(chunk_addr, piece);
     l4.send_data(req_apci, &payload).await?;
-    if mode == VerifyMode::PerChunk {
-        let got = read_memory(l4, chunk_addr, piece.len() as u8).await?;
-        if got != piece {
-            return Err(WriteError::Mgmt(MgmtError::MemoryVerifyFailed {
-                address: l4.target(),
-                addr: chunk_addr,
-                expected: piece.to_vec(),
-                got,
-            }));
-        }
-    }
-    Ok(())
-}
-
-/// Reads one bulk-verify chunk at `base + roff` and compares it against
-/// `expected`, reporting the first mismatching address within the whole `data`.
-async fn read_and_compare<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-    base: u16,
-    roff: usize,
-    expected: &[u8],
-    data: &[u8],
-) -> Result<()> {
-    let chunk_addr = chunk_address(l4, base, roff)?;
-    let got = read_memory(l4, chunk_addr, expected.len() as u8).await?;
-    if got != expected {
-        let first = got
-            .iter()
-            .zip(expected)
-            .position(|(g, e)| g != e)
-            .unwrap_or(0);
-        let mismatch_addr = chunk_address(l4, base, roff + first)?;
+    let got = read_memory(l4, chunk_addr, piece.len() as u8).await?;
+    if got != piece {
         return Err(WriteError::Mgmt(MgmtError::MemoryVerifyFailed {
             address: l4.target(),
-            addr: mismatch_addr,
-            expected: data[roff + first..data.len().min(roff + expected.len())].to_vec(),
-            got: got[first..].to_vec(),
+            addr: chunk_addr,
+            expected: piece.to_vec(),
+            got,
         }));
     }
     Ok(())
-}
-
-/// The number of trailing octets of the last-written chunk to re-read after a
-/// cycle. Cheap paranoia: a short read confirms the resume offset is right.
-const RESUME_REVERIFY_LEN: usize = 12;
-
-/// After a cycle, re-reads up to [`RESUME_REVERIFY_LEN`] octets ending at the
-/// last-confirmed offset and, if they differ from the source image, re-writes
-/// that tail — so resuming at the wrong offset cannot silently corrupt the image.
-/// A `None` last-confirmed offset (cycle before any chunk landed) is a no-op.
-async fn reverify_last_chunk<W: WindowCtl>(
-    ctl: &mut W,
-    base: u16,
-    data: &[u8],
-    last_confirmed_offset: Option<usize>,
-) -> Result<()> {
-    let Some(end) = last_confirmed_offset else {
-        return Ok(());
-    };
-    // The chunk that ended at `end` started at `end` (offsets are chunk starts);
-    // re-read its trailing bytes up to the current confirmed frontier.
-    let frontier =
-        end + usize::from(apci::MAX_MEMORY_WRITE_LEN).min(data.len().saturating_sub(end));
-    let frontier = frontier.min(data.len());
-    let start = frontier.saturating_sub(RESUME_REVERIFY_LEN);
-    if start >= frontier {
-        return Ok(());
-    }
-    let expect = &data[start..frontier];
-    let l4 = ctl.l4();
-    let addr = chunk_address(l4, base, start)?;
-    let got = read_memory(l4, addr, expect.len() as u8).await?;
-    if got != expect {
-        // The last chunk did not land (or landed wrong): re-write it.
-        let (req_apci, payload) = apci::encode_memory_write(addr, expect);
-        l4.send_data(req_apci, &payload).await?;
-        let confirm = read_memory(l4, addr, expect.len() as u8).await?;
-        if confirm != expect {
-            return Err(WriteError::Mgmt(MgmtError::MemoryVerifyFailed {
-                address: l4.target(),
-                addr,
-                expected: expect.to_vec(),
-                got: confirm,
-            }));
-        }
-    }
-    Ok(())
-}
-
-/// The "gave up after N reconnects" error for an exhausted window-retry budget,
-/// naming the offset at which forward progress last stalled.
-fn gave_up_error(address: IndividualAddress, max_retries: u32, offset: usize) -> WriteError {
-    WriteError::Mgmt(MgmtError::MalformedResponse {
-        address,
-        reason: format!(
-            "gave up after {max_retries} consecutive reconnect(s) with no forward progress; \
-             last progress at offset {offset} — the peer keeps dropping the connection before \
-             any byte lands (a peer this fragile cannot complete the download even windowed)"
-        ),
-    })
 }
 
 /// Computes `base + offset` as a 16-bit device address, failing if it runs past
@@ -1615,8 +1233,8 @@ mod tests {
     }
 
     #[test]
-    fn connection_death_classified_for_window_retry() {
-        // The three connection-death shapes a window-retry can recover from.
+    fn connection_death_classified_for_exchange_retry() {
+        // The three transient-blip shapes a bounded per-exchange retry recovers from.
         let ia: IndividualAddress = "1.1.4".parse().unwrap();
         assert!(is_connection_death(&WriteError::Mgmt(
             MgmtError::Disconnected { address: ia }
@@ -1646,15 +1264,6 @@ mod tests {
             address: ia,
             object_index: 3,
         }));
-    }
-
-    #[test]
-    fn gave_up_error_names_the_bound_and_offset() {
-        let ia: IndividualAddress = "1.1.4".parse().unwrap();
-        let err = gave_up_error(ia, 8, 36);
-        let msg = err.to_string();
-        assert!(msg.contains("gave up after 8"), "{msg}");
-        assert!(msg.contains("offset 36"), "{msg}");
     }
 
     #[test]
@@ -1733,11 +1342,5 @@ mod tests {
     fn mcb_decode_rejects_short_slices() {
         assert!(McbEntry::decode(&[0u8; 7]).is_none());
         assert!(McbEntry::decode(&[0u8; 8]).is_some());
-    }
-
-    #[test]
-    fn verify_mode_default_is_per_chunk() {
-        // The conservative real-device behaviour is the default; batched is opt-in.
-        assert_eq!(VerifyMode::default(), VerifyMode::PerChunk);
     }
 }

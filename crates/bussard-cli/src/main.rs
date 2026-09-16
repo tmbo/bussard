@@ -43,30 +43,6 @@ enum Format {
     Json,
 }
 
-/// How `bussard flash` verifies each memory write's read-back.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
-enum VerifyModeArg {
-    /// Read each 12-byte chunk back immediately after writing it (2 numbered
-    /// messages per chunk). The conservative real-device default: a dropped or
-    /// truncated chunk fails at that chunk, before more is streamed on top.
-    #[default]
-    PerChunk,
-    /// Write the whole segment first, then read it all back and verify once.
-    /// Roughly halves the flash's memory round-trips (and is the #50 KV stall
-    /// discriminator), at the cost of catching a corrupt write only at the
-    /// end-of-segment verify. The first mismatching address is still reported.
-    Batched,
-}
-
-impl From<VerifyModeArg> for bussard_mgmt::VerifyMode {
-    fn from(v: VerifyModeArg) -> Self {
-        match v {
-            VerifyModeArg::PerChunk => bussard_mgmt::VerifyMode::PerChunk,
-            VerifyModeArg::Batched => bussard_mgmt::VerifyMode::Batched,
-        }
-    }
-}
-
 /// The top-level subcommands.
 #[derive(Debug, Subcommand)]
 enum Command {
@@ -164,16 +140,6 @@ enum Command {
         /// Emit JSON instead of the report format.
         #[arg(long)]
         json: bool,
-        /// L4 SOAK PROBE (hidden diagnostic): connect ONCE to ADDRESS and issue N
-        /// harmless descriptor reads on that single connection, reporting progress
-        /// every 10 and the exact exchange count reached plus the error when the
-        /// connection dies. This characterises a peer's per-connection exchange
-        /// budget empirically — KNX Virtual drops the L4 connection after a
-        /// varying number of exchanges (issue #52); this measures it so
-        /// `flash --reconnect-every` can be set comfortably below it. Read-only on
-        /// the bus. Requires ADDRESS; ignores `--line`/`--out`.
-        #[arg(long, value_name = "N", hide = true, conflicts_with = "line")]
-        l4_soak: Option<u32>,
         /// Override the gateway `host[:port]` for tunneling.
         #[arg(long, value_name = "HOST")]
         gateway: Option<String>,
@@ -243,48 +209,6 @@ enum Command {
         /// Skip the interactive confirmation (dangerous; for scripts).
         #[arg(long)]
         yes: bool,
-        /// Accept a device that reports Loaded (instead of the conformant
-        /// Loading) right after StartLoading. Off by default so real-device
-        /// behaviour stays strict; intended for KNX Virtual, which snaps to
-        /// Loaded and would otherwise fail on the first allocation.
-        #[arg(long)]
-        tolerate_nonconformant_load_states: bool,
-        /// How memory writes are verified. `per-chunk` (default) reads each
-        /// 12-byte chunk back right after writing it — conservative, the real-
-        /// device behaviour. `batched` writes the whole segment first and reads it
-        /// all back once, roughly halving the flash's memory round-trips (and
-        /// serving as the #50 KV stall discriminator).
-        #[arg(long, value_enum, default_value_t = VerifyModeArg::PerChunk)]
-        verify: VerifyModeArg,
-        /// Sleep N milliseconds between memory frames. Real gateways throttle
-        /// the download to TP1 speed by themselves; simulators (KNX Virtual)
-        /// ACK at loopback speed and can wedge under the burst — 25-50 is a
-        /// TP1-like rate.
-        #[arg(long, value_name = "MS")]
-        pace: Option<u64>,
-        /// Window the download across graceful connection windows: after ~N
-        /// numbered exchanges, gracefully T_Disconnect, reconnect (fresh sequence
-        /// window) and resume where the procedure left off. Off by default. Load
-        /// states are persistent object state (not connection state), so this
-        /// lands in the same device state as one unbroken run and is robust
-        /// against a peer that drops the connection at a varying (sometimes very
-        /// shallow) depth (e.g. KNX Virtual, issue #52). Cycling happens both
-        /// between steps AND inside a long memory write (resuming at the current
-        /// offset — writes are absolute-addressed and stateless), and an unexpected
-        /// mid-write drop is auto-retried from the last-confirmed offset. Suggested
-        /// N: comfortably below the peer's per-connection budget (probe it with
-        /// `reconstruct <ia> --l4-soak <N>`). KV drops as early as 7 exchanges, so
-        /// a SMALL window like 4-5 with the built-in retry is the safe choice.
-        #[arg(long, value_name = "N")]
-        reconnect_every: Option<u32>,
-        /// Consecutive window-retries without forward progress to allow on an
-        /// unexpected mid-write connection drop before giving up (default 8). Any
-        /// newly-confirmed byte resets the count, so a peer making progress between
-        /// drops retries indefinitely; a peer that never lands a byte fails after
-        /// this many tries instead of looping forever. Only meaningful with
-        /// --reconnect-every.
-        #[arg(long, value_name = "N")]
-        max_window_retries: Option<u32>,
         /// The device's BCU access key, in hex (e.g. `FFFFFFFF` or `0x11223344`),
         /// presented with A_Authorize on every management connect (issue #52).
         /// Unset presents the free-access key (FFFFFFFF) — correct for an unkeyed
@@ -518,19 +442,12 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             out,
             dir,
             json,
-            l4_soak,
             gateway,
             routing,
         } => {
             let overrides = conn_cmd::ConnOverrides { gateway, routing };
-            match (line, l4_soak) {
-                (_, Some(exchanges)) => {
-                    // clap requires ADDRESS unless --line, and --l4-soak conflicts
-                    // with --line, so ADDRESS is present here.
-                    let address = address.expect("clap requires ADDRESS with --l4-soak");
-                    reconstruct_cmd::run_l4_soak(&address, exchanges, &dir, overrides)
-                }
-                (Some(line), None) => reconstruct_cmd::run_line(
+            match line {
+                Some(line) => reconstruct_cmd::run_line(
                     &line,
                     from,
                     to,
@@ -539,7 +456,7 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
                     json,
                     overrides,
                 ),
-                (None, None) => {
+                None => {
                     // clap guarantees ADDRESS is present when --line is absent.
                     let address = address.expect("clap requires ADDRESS without --line");
                     reconstruct_cmd::run(&address, &dir, json, overrides)
@@ -576,11 +493,6 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             order_number,
             dir,
             yes,
-            tolerate_nonconformant_load_states,
-            verify,
-            pace,
-            reconnect_every,
-            max_window_retries,
             bcu_key,
             gateway,
             routing,
@@ -591,11 +503,6 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             order_number.as_deref(),
             &dir,
             yes,
-            tolerate_nonconformant_load_states,
-            verify.into(),
-            pace,
-            reconnect_every,
-            max_window_retries,
             bcu_key.as_deref(),
             conn_cmd::ConnOverrides { gateway, routing },
         ),
