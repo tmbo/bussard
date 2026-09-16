@@ -358,6 +358,11 @@ pub fn build_model(project: RawProject, container: &mut Container) -> Result<Mod
         // memory-bearing ones whose value differs from the vendor default.
         let parameters = resolve_parameters(raw_dev, &apps);
 
+        // Per-module-instance memory base offsets (issue #48): resolve each of
+        // the device's module instances' `BaseOffset` argument values so a module
+        // parameter override can be placed at `declared_offset + instance_base`.
+        let module_bases = resolve_module_bases(raw_dev, &apps);
+
         // Product identity (and the hardware name, used as a naming fallback).
         let (product, hardware_name) =
             build_product(raw_dev, primary_app, &manufacturers, &hw_cache);
@@ -380,6 +385,7 @@ pub fn build_model(project: RawProject, container: &mut Container) -> Result<Mod
             product,
             channels,
             parameters,
+            module_bases,
             com_objects,
         };
 
@@ -668,6 +674,82 @@ fn resolve_parameters(
         // not collide; the first write wins if a malformed file repeats one.
         out.entry(key).or_insert_with(|| value.clone());
         let _ = app; // app kept for symmetry / future per-app disambiguation.
+    }
+    out
+}
+
+/// Resolves a device's per-module-instance **memory base offsets** into the
+/// generated `module_bases:` map (issue #48).
+///
+/// A module parameter's `<Memory>` carries a `BaseOffset` naming a module
+/// `<Argument>` (e.g. `ParamOffsBase` → app-relative `MD-1_A-1`); each channel's
+/// instance places its value at `declared Offset + instance_base`, where
+/// `instance_base` is that argument's value for the channel. The per-instance
+/// argument values live in the project's `ModuleInstance` data; this reads them
+/// out and keys them by the module-instance selector (`MD-<d>_M-<m>_MI-<n>`) —
+/// exactly the key `bussard-prod`'s `compute_parameter_image` looks up in its
+/// `base_offsets`, and the key the parameter-key body reduces to once
+/// `_P-<p>_R-<r>` is stripped.
+///
+/// For each module instance, the base-offset argument is determined from the
+/// application program: the module def's parameters that carry a `BaseOffset` all
+/// name the same per-module argument (verified in real data — every `MD-1`
+/// parameter references `MD-1_A-1`), so the module-def → arg mapping is read once
+/// per app. An instance whose argument value is absent or non-numeric is skipped
+/// (nothing to place against), keeping the emitted map to real, resolvable bases.
+fn resolve_module_bases(
+    raw_dev: &RawDevice,
+    apps: &[&ApplicationProgram],
+) -> BTreeMap<String, u32> {
+    // Module-def prefix (e.g. `MD-1`) -> app-relative base-offset argument id
+    // (e.g. `MD-1_A-1`), read from each app's memory-bearing module parameters.
+    let base_arg_by_module = base_offset_args(apps);
+
+    let mut out = BTreeMap::new();
+    for (mi_id, args) in &raw_dev.module_instances {
+        // The module-def prefix of this instance (`MD-1_M-3_MI-1` -> `MD-1`).
+        let Some(module_def) = mi_id.split_once("_M-").map(|(head, _)| head) else {
+            continue;
+        };
+        let Some(arg_rel) = base_arg_by_module.get(module_def) else {
+            // This module def defines no BaseOffset-bearing parameter (nothing to
+            // place against an instance base), so no base is needed.
+            continue;
+        };
+        // The instance's value for that argument -> the base byte offset.
+        let Some(base) = args.get(arg_rel).and_then(|v| v.trim().parse::<u32>().ok()) else {
+            continue;
+        };
+        out.insert(mi_id.clone(), base);
+    }
+    out
+}
+
+/// Builds the module-def → app-relative base-offset argument id map for a device's
+/// application programs.
+///
+/// Scans every memory-bearing parameter carrying a `BaseOffset` and records, per
+/// module def (`MD-<d>`), the app-relative argument id its `BaseOffset` names
+/// (`<app>_MD-1_A-1` → `MD-1_A-1`). The first argument seen per module wins; in
+/// real data a module def's parameters all reference a single base-offset argument
+/// (`MD-1` → `MD-1_A-1`), matching the single-base-per-instance shape the flasher's
+/// `base_offsets` map (keyed only by module-instance selector) can represent.
+fn base_offset_args(apps: &[&ApplicationProgram]) -> BTreeMap<String, String> {
+    let mut out: BTreeMap<String, String> = BTreeMap::new();
+    for app in apps {
+        for param in app.parameters.values() {
+            let Some(base_ref) = param.memory.as_ref().and_then(|m| m.base_offset.as_deref())
+            else {
+                continue;
+            };
+            // App-relative argument id, e.g. `MD-1_A-1`.
+            let arg_rel = strip_app_prefix(base_ref);
+            let Some(module_def) = arg_rel.split_once("_A-").map(|(head, _)| head) else {
+                continue;
+            };
+            out.entry(module_def.to_string())
+                .or_insert_with(|| arg_rel.to_string());
+        }
     }
     out
 }
@@ -1034,5 +1116,120 @@ mod tests {
             "MD-1_A-2"
         );
         assert_eq!(strip_app_prefix("MD-1_A-2"), "MD-1_A-2");
+    }
+
+    // ---- issue #48: module-instance memory base offsets ------------------
+
+    /// An app whose module `MD-1` has one parameter carrying a `BaseOffset`
+    /// naming `MD-1_A-1`, plus a plain (non-module) parameter that must not
+    /// contribute any base. Mirrors the Jung 23024 shape.
+    fn app_with_base_offset() -> ApplicationProgram {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-0004_A-1" Name="Jung"><Static>
+          <ParameterTypes><ParameterType Id="M-0004_A-1_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType></ParameterTypes>
+          <Parameters>
+           <Parameter Id="M-0004_A-1_MD-1_P-3" Name="chanparam" ParameterType="M-0004_A-1_PT-0" Value="0">
+            <Memory CodeSegment="M-0004_A-1_RS-1" Offset="1" BitOffset="0" BaseOffset="M-0004_A-1_MD-1_A-1" />
+           </Parameter>
+           <Parameter Id="M-0004_A-1_P-9" Name="plain" ParameterType="M-0004_A-1_PT-0" Value="0">
+            <Memory CodeSegment="M-0004_A-1_RS-1" Offset="7" BitOffset="0" />
+           </Parameter>
+          </Parameters>
+         </Static></ApplicationProgram></KNX>"#;
+        parse_application_program("M-0004_A-1", xml.as_bytes()).unwrap()
+    }
+
+    fn raw_dev_with_module_instances(instances: &[(&str, &[(&str, &str)])]) -> RawDevice {
+        let mut module_instances: HashMap<String, HashMap<String, String>> = HashMap::new();
+        for (mi_id, args) in instances {
+            let map = args
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            module_instances.insert(mi_id.to_string(), map);
+        }
+        RawDevice {
+            id: "P-1_DI-1".to_string(),
+            address: "1.1.4".parse().unwrap(),
+            name: "dev".to_string(),
+            description: None,
+            product_ref_id: None,
+            hardware2program_ref_id: None,
+            com_objects: Vec::new(),
+            module_instances,
+            parameters: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn base_offset_args_maps_module_to_its_argument() {
+        let app = app_with_base_offset();
+        let map = base_offset_args(&[&app]);
+        assert_eq!(map.get("MD-1").map(String::as_str), Some("MD-1_A-1"));
+        // The plain parameter contributes no module entry.
+        assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn resolve_module_bases_reads_instance_values() {
+        // Two channels of MD-1 with distinct ParamOffsBase (MD-1_A-1) values, and
+        // an unrelated argument that must be ignored.
+        let app = app_with_base_offset();
+        let raw = raw_dev_with_module_instances(&[
+            ("MD-1_M-1_MI-1", &[("MD-1_A-1", "805"), ("MD-1_A-6", "1")]),
+            ("MD-1_M-3_MI-1", &[("MD-1_A-1", "1797"), ("MD-1_A-6", "3")]),
+        ]);
+        let bases = resolve_module_bases(&raw, &[&app]);
+        assert_eq!(bases.get("MD-1_M-1_MI-1").copied(), Some(805));
+        assert_eq!(bases.get("MD-1_M-3_MI-1").copied(), Some(1797));
+        assert_eq!(bases.len(), 2);
+    }
+
+    #[test]
+    fn resolve_module_bases_skips_absent_or_non_numeric() {
+        let app = app_with_base_offset();
+        let raw = raw_dev_with_module_instances(&[
+            // Missing the base argument entirely -> skipped.
+            ("MD-1_M-1_MI-1", &[("MD-1_A-6", "1")]),
+            // Non-numeric base value -> skipped (never guessed).
+            ("MD-1_M-2_MI-1", &[("MD-1_A-1", "n/a")]),
+            // Good one -> kept.
+            ("MD-1_M-3_MI-1", &[("MD-1_A-1", "1797")]),
+        ]);
+        let bases = resolve_module_bases(&raw, &[&app]);
+        assert_eq!(bases.keys().collect::<Vec<_>>(), vec!["MD-1_M-3_MI-1"]);
+    }
+
+    #[test]
+    fn resolve_module_bases_empty_without_base_offset_params() {
+        // An app with no BaseOffset-bearing parameter yields no bases even when the
+        // device has module instances.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-0004_A-1" Name="x"><Static>
+          <ParameterTypes><ParameterType Id="M-0004_A-1_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType></ParameterTypes>
+          <Parameters><Parameter Id="M-0004_A-1_P-1" Name="p" ParameterType="M-0004_A-1_PT-0" Value="0"><Memory CodeSegment="M-0004_A-1_RS-1" Offset="0" BitOffset="0" /></Parameter></Parameters>
+         </Static></ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-0004_A-1", xml.as_bytes()).unwrap();
+        let raw = raw_dev_with_module_instances(&[("MD-1_M-1_MI-1", &[("MD-1_A-1", "805")])]);
+        assert!(resolve_module_bases(&raw, &[&app]).is_empty());
+    }
+
+    #[test]
+    fn resolve_module_bases_is_deterministic() {
+        // Re-resolving the same inputs yields byte-identical maps (BTreeMap key
+        // order is stable), so a re-import is idempotent.
+        let app = app_with_base_offset();
+        let raw = raw_dev_with_module_instances(&[
+            ("MD-1_M-3_MI-1", &[("MD-1_A-1", "1797")]),
+            ("MD-1_M-1_MI-1", &[("MD-1_A-1", "805")]),
+            ("MD-1_M-2_MI-1", &[("MD-1_A-1", "1301")]),
+        ]);
+        let a = resolve_module_bases(&raw, &[&app]);
+        let b = resolve_module_bases(&raw, &[&app]);
+        assert_eq!(a, b);
+        assert_eq!(
+            a.keys().cloned().collect::<Vec<_>>(),
+            vec!["MD-1_M-1_MI-1", "MD-1_M-2_MI-1", "MD-1_M-3_MI-1"]
+        );
     }
 }

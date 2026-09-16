@@ -470,6 +470,7 @@ fn build_device(
         product,
         channels: Default::default(),
         parameters: Default::default(),
+        module_bases: Default::default(),
         com_objects,
     }
 }
@@ -1147,6 +1148,7 @@ mod tests {
                         product: None,
                         channels: Default::default(),
                         parameters: Default::default(),
+                        module_bases: Default::default(),
                         com_objects: Default::default(),
                     },
                     file_stem: format!("{addr}-d"),

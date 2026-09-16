@@ -157,6 +157,54 @@ fn oracle_matches() {
     oracle_group_addresses_match();
     oracle_devices_match();
     oracle_com_object_links_match();
+    real_module_bases_match();
+}
+
+/// The per-module-instance memory base offsets (issue #48) resolve to the real
+/// `ModuleInstance` `ParamOffsBase` argument values for the reference actuator
+/// (Jung 23024 at 1.1.4). These bases are the byte a channel's module parameters
+/// are placed relative to; the flasher adds a parameter's declared Offset to them.
+///
+/// Evidence (extracted from the real project's `ModuleInstance` arguments): the
+/// 12-channel MD-1 module steps its `ParamOffsBase` by 496 per channel — M-1 =
+/// 805, M-2 = 1301, M-3 = 1797, … M-12 = 6261 — and the map is keyed by the
+/// module-instance selector `MD-1_M-<m>_MI-1`, exactly what `compute_parameter_image`
+/// looks up in its `base_offsets` and what a parameter key reduces to once its
+/// `_P-<p>_R-<r>` suffix is stripped.
+fn real_module_bases_match() {
+    let Some((model, _)) = load_real_and_oracle() else {
+        eprintln!("skipping real_module_bases_match: fixtures/password not available");
+        return;
+    };
+    let ia: IndividualAddress = "1.1.4".parse().unwrap();
+    let dev = &model.devices.get(&ia).expect("device 1.1.4 present").device;
+
+    // The full 12-channel progression (start 805, step 496).
+    let expected: Vec<(String, u32)> = (1..=12)
+        .map(|m| (format!("MD-1_M-{m}_MI-1"), 805 + (m - 1) * 496))
+        .collect();
+    for (selector, base) in &expected {
+        assert_eq!(
+            dev.module_bases.get(selector).copied(),
+            Some(*base),
+            "module base for {selector}"
+        );
+    }
+    // The known anchors called out in issue #48's derivation notes.
+    assert_eq!(dev.module_bases["MD-1_M-1_MI-1"], 805);
+    assert_eq!(dev.module_bases["MD-1_M-3_MI-1"], 1797);
+    // Exactly the 12 module instances are keyed; no stray entries.
+    assert_eq!(dev.module_bases.len(), 12, "one base per module instance");
+
+    // Round-trip: the map survives a save/load byte-for-byte and remains keyed by
+    // the flasher's selector format.
+    let dir = tempfile::tempdir().unwrap();
+    model.save(dir.path()).unwrap();
+    let reloaded = bussard_model::Model::load(dir.path()).unwrap();
+    assert_eq!(
+        reloaded.devices[&ia].device.module_bases, dev.module_bases,
+        "module_bases round-trips through save/load"
+    );
 }
 
 fn oracle_group_addresses_match() {
