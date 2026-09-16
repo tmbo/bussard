@@ -441,18 +441,31 @@ fn write_device(path: &Path, device: &Device) -> Result<(), SaveError> {
     })
 }
 
-/// Inserts [`COM_OBJECTS_MARKER`] on the line immediately above the top-level
-/// `com_objects:` key, if present. A no-op when the device has no com-objects.
+/// Inserts [`COM_OBJECTS_MARKER`] on the line immediately above the **first**
+/// generated top-level key in a device file. The generated zone comprises
+/// `module_bases:` (emitted first, when non-empty) and `com_objects:`; the marker
+/// goes above whichever appears first so the whole generated block sits below it.
+/// A no-op when the device has neither key.
 fn inject_com_objects_marker(body: &str) -> String {
     let mut out = String::with_capacity(body.len() + COM_OBJECTS_MARKER.len());
+    let mut marker_emitted = false;
     for line in body.split_inclusive('\n') {
-        // The key is top-level (column 0), so match the exact line start.
-        if line == "com_objects:\n" || line.trim_end() == "com_objects:" {
+        // The keys are top-level (column 0), so match the exact line start. Only
+        // the first generated key gets the marker; the block below it is contiguous.
+        if !marker_emitted && is_generated_key_line(line) {
             out.push_str(COM_OBJECTS_MARKER);
+            marker_emitted = true;
         }
         out.push_str(line);
     }
     out
+}
+
+/// Whether `line` is a top-level generated device key (`module_bases:` or
+/// `com_objects:`) — the boundary above which the GENERATED marker is injected.
+fn is_generated_key_line(line: &str) -> bool {
+    let trimmed = line.trim_end();
+    trimmed == "module_bases:" || trimmed == "com_objects:"
 }
 
 #[cfg(test)]
@@ -533,6 +546,7 @@ mod tests {
             product: None,
             channels: BTreeMap::new(),
             parameters: BTreeMap::new(),
+            module_bases: BTreeMap::new(),
             com_objects,
         };
 
@@ -678,6 +692,50 @@ com_objects:
         let reloaded = Model::load(&dir).unwrap();
         assert_eq!(model, reloaded);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn module_bases_emit_inside_generated_zone() {
+        // A device with a `module_bases:` block (issue #48): it is generated data,
+        // so the GENERATED marker must sit *above* it (and thus above the whole
+        // generated block), and it must round-trip byte-idempotently.
+        use crate::schema::Device;
+        let dir = tmp_dir("module-bases");
+        let mut model = small_model();
+        {
+            let loaded = model.devices.get_mut(&"1.1.4".parse().unwrap()).unwrap();
+            let dev: &mut Device = &mut loaded.device;
+            dev.module_bases.insert("MD-1_M-1_MI-1".to_string(), 805);
+            dev.module_bases.insert("MD-1_M-3_MI-1".to_string(), 1797);
+        }
+        model.save(&dir).unwrap();
+        let text = fs::read_to_string(dir.join("devices/1.1.4-jalousieaktor-wohnen.yaml")).unwrap();
+
+        // The marker precedes module_bases:, which precedes com_objects:.
+        let marker_at = text.find(COM_OBJECTS_MARKER).expect("marker present");
+        let bases_at = text
+            .find("\nmodule_bases:\n")
+            .expect("module_bases block present");
+        let com_at = text.find("\ncom_objects:\n").expect("com_objects present");
+        assert!(
+            marker_at < bases_at && bases_at < com_at,
+            "GENERATED marker must sit above module_bases (and the whole generated \
+             block):\n{text}"
+        );
+        // Values render as bare integers keyed by the flasher's selector format.
+        assert!(text.contains("  MD-1_M-1_MI-1: 805"), "{text}");
+        assert!(text.contains("  MD-1_M-3_MI-1: 1797"), "{text}");
+
+        // Byte-idempotent re-save and round-trip through load.
+        let reloaded = Model::load(&dir).unwrap();
+        assert_eq!(model, reloaded);
+        let dir2 = tmp_dir("module-bases-2");
+        reloaded.save(&dir2).unwrap();
+        let text2 =
+            fs::read_to_string(dir2.join("devices/1.1.4-jalousieaktor-wohnen.yaml")).unwrap();
+        assert_eq!(text, text2, "re-save is byte-identical");
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&dir2);
     }
 
     #[test]

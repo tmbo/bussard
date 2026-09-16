@@ -462,6 +462,7 @@ mod tests {
                         product: None,
                         channels: BTreeMap::new(),
                         parameters: BTreeMap::new(),
+                        module_bases: Default::default(),
                         com_objects: BTreeMap::new(),
                     },
                     file_stem: a.to_string(),

@@ -211,6 +211,34 @@ pub struct Device {
     /// `<Memory>`) never reach a download image, so emitting them would be noise.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub parameters: BTreeMap<String, String>,
+    /// Per-module-instance memory **base offsets**, keyed by the module-instance
+    /// selector (`MD-<d>_M-<m>_MI-<n>`) and mapping to the byte the instance's
+    /// module parameters are placed *relative to*.
+    ///
+    /// This is a **generated** table, sitting in the regenerated zone below the
+    /// GENERATED marker alongside `com_objects:` (a re-import replaces it), and is
+    /// serialized only when non-empty so non-module devices stay diff-clean.
+    ///
+    /// # Why it exists
+    ///
+    /// A module parameter's effective memory offset is
+    /// `declared Offset + instance_base`, where `instance_base` is the value of
+    /// the module argument the parameter's `<Memory BaseOffset>` names. The same
+    /// module parameter is instantiated once per channel, so each channel's copy
+    /// lands at a different byte; the per-instance base VALUES live only in the
+    /// project's `ModuleInstance` arguments (not in the ApplicationProgram), so
+    /// without persisting them a module-parameter override cannot be placed and is
+    /// refused at pre-flight (issue #48). This map carries exactly those bases so
+    /// the flasher can resolve a per-channel address.
+    ///
+    /// The key is the same module-instance selector the parameter key preserves:
+    /// stripping `_P-<p>_R-<r>` from a `parameters:` key's ref-id body yields the
+    /// selector that indexes this map. It matches the
+    /// [`base_offsets`](../../../bussard_prod/image/fn.compute_parameter_image.html)
+    /// contract the parameter-image builder expects, verbatim. Non-module devices
+    /// have an empty map.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub module_bases: BTreeMap<String, u32>,
     /// Generated com-object table, keyed by com-object number.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub com_objects: BTreeMap<u16, ComObject>,

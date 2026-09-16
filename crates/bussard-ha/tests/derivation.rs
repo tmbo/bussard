@@ -52,6 +52,7 @@ impl ModelBuilder {
                 product: None,
                 channels: BTreeMap::new(),
                 parameters: BTreeMap::new(),
+                module_bases: Default::default(),
                 com_objects: BTreeMap::new(),
             },
             links: Vec::new(),
@@ -342,6 +343,7 @@ fn no_duplicate_entity_for_shared_command_ga() {
         product: None,
         channels: BTreeMap::new(),
         parameters: BTreeMap::new(),
+        module_bases: Default::default(),
         com_objects: {
             let mut m = BTreeMap::new();
             m.insert(
@@ -484,6 +486,7 @@ fn cover_requires_command_ga_not_a_button_sender() {
             product: None,
             channels: BTreeMap::new(),
             parameters: BTreeMap::new(),
+            module_bases: Default::default(),
             com_objects: {
                 let mut m = BTreeMap::new();
                 m.insert(
