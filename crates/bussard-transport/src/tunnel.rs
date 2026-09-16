@@ -268,6 +268,7 @@ impl TaskState {
 
     /// Sends a TUNNELING_REQUEST and awaits its ACK, retransmitting once.
     async fn do_send(&mut self, frame: &CemiFrame, buf: &mut [u8]) -> Result<()> {
+        crate::wire_trace::trace_frame(crate::wire_trace::Direction::Outbound, frame);
         let seq = self.outgoing_seq;
         let header = ConnectionHeader {
             channel_id: self.channel_id,
@@ -405,6 +406,7 @@ impl TaskState {
 
             match CemiFrame::decode(cemi_bytes) {
                 Ok(cemi) => {
+                    crate::wire_trace::trace_frame(crate::wire_trace::Direction::Inbound, &cemi);
                     let stamped = TimestampedFrame {
                         received_at: SystemTime::now(),
                         frame: cemi,

@@ -62,8 +62,9 @@ use std::collections::BTreeMap;
 use bussard_mgmt::MgmtError;
 use bussard_mgmt::connection::{L4Channel, Layer4Connection};
 use bussard_mgmt::load::{
-    self, LoadControl, LoadState, WriteError, allocate_segment, compare_property, master_reset,
-    read_load_state, read_mcb_table, write_load_control, write_property,
+    self, LoadControl, LoadState, WriteError, allocate_segment, compare_property,
+    master_reset_via_basic_restart, read_load_state, read_mcb_table, write_load_control,
+    write_property,
 };
 use bussard_mgmt::tables::{OT_APPLICATION_PROGRAM, PID_OBJECT_TYPE};
 use bussard_prod::application::{ApplicationProgram, LoadOp, LoadProcedure, SegmentKind};
@@ -72,16 +73,30 @@ use bussard_prod::application::{ApplicationProgram, LoadOp, LoadProcedure, Segme
 /// to execute in order. Each corresponds to one supported [`LoadOp`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FlashStep {
-    /// Drop the application-program object to `Unloaded` (`LdCtrlUnload`).
-    Unload,
-    /// Open the application-program object for writing (`LdCtrlLoad`).
-    StartLoading,
+    /// Drop a loadable object to `Unloaded` (`LdCtrlUnload`).
+    Unload {
+        /// The op's `LsmIdx`, resolved to a device object index at execute time
+        /// (see [`resolve_object_target`]). `None` (op carried no `LsmIdx`) or an
+        /// index the device does not expose falls back to the discovered
+        /// application-program object — preserving the single-object behaviour a
+        /// conformant ProductDefault procedure (thelsing) relies on.
+        target: Option<u32>,
+    },
+    /// Open a loadable object for writing (`LdCtrlLoad`).
+    StartLoading {
+        /// The op's `LsmIdx`, resolved like [`FlashStep::Unload::target`].
+        target: Option<u32>,
+    },
     /// Allocate a relative segment; the device places it (`LdCtrlRelSegment`).
     /// Carries the source of the image the following `WriteRelMem` streams and
     /// the byte count, resolved at plan time.
     AllocateSegment {
         /// Requested segment size in octets.
         size: u32,
+        /// The op's `LsmIdx`, resolved like [`FlashStep::Unload::target`]. The
+        /// allocation runs against — and reads `PID_TABLE_REFERENCE` (PID7,
+        /// the per-object base) from — this object.
+        target: Option<u32>,
     },
     /// Write a relative-memory image at `segment base + offset` (`LdCtrlWriteRelMem`).
     WriteRelMem {
@@ -89,6 +104,13 @@ pub enum FlashStep {
         offset: u32,
         /// Which image this streams and how many octets it is.
         image: ImageRef,
+        /// The op's `ObjIdx`, resolved to a device object index at execute time.
+        /// ETS→KNX-Virtual writes the app segment to `ObjIdx=4` (device object 4,
+        /// base `0x6000`) — **not** the type-discovered application-program object
+        /// (index 3, base `0x8000`). Resolving by this index, not by object type,
+        /// is the divergence-#2 fix. `ObjIdx=0` / an absent index falls back to the
+        /// discovered app object (the conformant thelsing shape).
+        target: Option<u32>,
     },
     /// Write an absolute-memory image at a fixed address (`LdCtrlWriteMem`).
     WriteMem {
@@ -149,7 +171,10 @@ pub enum FlashStep {
         image: Option<ImageRef>,
     },
     /// Persist and activate the load (`LdCtrlLoadCompleted`).
-    LoadCompleted,
+    LoadCompleted {
+        /// The op's `LsmIdx`, resolved like [`FlashStep::Unload::target`].
+        target: Option<u32>,
+    },
     /// Restart the device (`LdCtrlRestart`).
     Restart,
     /// Master-reset the device mid-procedure (`LdCtrlMasterReset`).
@@ -754,9 +779,11 @@ pub fn plan_flash(
             // whole procedure, so these carry no per-op device action.
             LoadOp::Connect | LoadOp::Disconnect => {}
 
-            LoadOp::Unload { .. } => steps.push(FlashStep::Unload),
-            LoadOp::Load { .. } => steps.push(FlashStep::StartLoading),
-            LoadOp::LoadCompleted { .. } => steps.push(FlashStep::LoadCompleted),
+            LoadOp::Unload { lsm_idx } => steps.push(FlashStep::Unload { target: *lsm_idx }),
+            LoadOp::Load { lsm_idx } => steps.push(FlashStep::StartLoading { target: *lsm_idx }),
+            LoadOp::LoadCompleted { lsm_idx } => {
+                steps.push(FlashStep::LoadCompleted { target: *lsm_idx })
+            }
             LoadOp::Restart => steps.push(FlashStep::Restart),
             LoadOp::MasterReset {
                 erase_code,
@@ -773,7 +800,10 @@ pub fn plan_flash(
             }
 
             LoadOp::RelSegment {
-                size, applies_to, ..
+                size,
+                applies_to,
+                lsm_idx,
+                ..
             } => {
                 // Bind this allocation to the segment whose code image we will
                 // stream. The op does not name the segment id directly; we pair
@@ -839,14 +869,20 @@ pub fn plan_flash(
                     Some((seg_id, _)) => prev_rel_segment.as_deref() == Some(seg_id.as_str()),
                 };
                 let is_duplicate = same_segment
-                    && matches!(steps.last(), Some(FlashStep::AllocateSegment { size: prev }) if *prev == size);
+                    && matches!(steps.last(), Some(FlashStep::AllocateSegment { size: prev, .. }) if *prev == size);
                 if !is_duplicate {
-                    steps.push(FlashStep::AllocateSegment { size });
+                    steps.push(FlashStep::AllocateSegment {
+                        size,
+                        target: *lsm_idx,
+                    });
                 }
             }
 
             LoadOp::WriteRelMem {
-                offset, applies_to, ..
+                offset,
+                applies_to,
+                obj_idx,
+                ..
             } => {
                 let (segment_id, kind, bytes) = resolve_write_image(
                     app,
@@ -883,7 +919,11 @@ pub fn plan_flash(
                     len,
                 };
                 last_written_image = Some(image.clone());
-                steps.push(FlashStep::WriteRelMem { offset, image });
+                steps.push(FlashStep::WriteRelMem {
+                    offset,
+                    image,
+                    target: *obj_idx,
+                });
             }
 
             LoadOp::WriteMem { address, .. } => {
@@ -1256,6 +1296,36 @@ async fn discover_object_table<Ch: L4Channel>(
     }
 }
 
+/// Resolves the op-carried `LsmIdx`/`ObjIdx` to the device interface-object index
+/// the step should act on, by **index**, not by object type — the divergence-#2 fix.
+///
+/// On KNX Virtual the load procedure's `LsmIdx`/`ObjIdx` **are** device object
+/// indices (the app segment is `ObjIdx=4` → device object 4 → base `0x6000`,
+/// while the object of *type* application-program is index 3 → base `0x8000`). So
+/// a valid, non-zero `target` that names an object the device actually exposes is
+/// used literally.
+///
+/// It falls back to the discovered application-program object (`app_obj`) when the
+/// op carried no index, named index 0 (the device object — the conformant
+/// thelsing `WriteRelMem ObjIdx="0"` shape, which means "the app object" not "the
+/// device object"), or named an index beyond the discovered object table (e.g. a
+/// `LsmIdx=4` on a device whose app object sits at index 3 and that has no object
+/// 4). This keeps a simple single-segment ProductDefault procedure targeting the
+/// one app object exactly as before.
+fn resolve_object_target(target: Option<u32>, object_table: &[(u8, u16)], app_obj: u8) -> u8 {
+    match target {
+        Some(idx) if idx != 0 && idx <= u32::from(u8::MAX) => {
+            let idx = idx as u8;
+            if object_table.iter().any(|(i, _)| *i == idx) {
+                idx
+            } else {
+                app_obj
+            }
+        }
+        _ => app_obj,
+    }
+}
+
 /// Drives a `StartLoading` on the application object, enriching a non-conformant
 /// load-state failure with discovery context.
 ///
@@ -1393,19 +1463,30 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
             label: step_label(step),
         });
         match step {
-            FlashStep::Unload => {
-                write_load_control(session.l4(), app_obj, LoadControl::Unload).await?;
+            FlashStep::Unload { target } => {
+                let obj = resolve_object_target(*target, &object_table, app_obj);
+                write_load_control(session.l4(), obj, LoadControl::Unload).await?;
             }
-            FlashStep::StartLoading => {
-                start_loading(session.l4(), app_obj, &object_table).await?;
+            FlashStep::StartLoading { target } => {
+                let obj = resolve_object_target(*target, &object_table, app_obj);
+                start_loading(session.l4(), obj, &object_table).await?;
             }
-            FlashStep::AllocateSegment { size } => {
-                let alloc =
-                    allocate_with_context(session.l4(), app_obj, *size, &object_table).await?;
+            FlashStep::AllocateSegment { size, target } => {
+                // Allocate against — and read PID7 (the per-object base) from — the
+                // object the op names by index. On KNX Virtual this is the ObjIdx
+                // (e.g. obj4 → base 0x6000); allocate_segment reads that object's
+                // PID_TABLE_REFERENCE, so the base the following WriteRelMem uses is
+                // this object's own.
+                let obj = resolve_object_target(*target, &object_table, app_obj);
+                let alloc = allocate_with_context(session.l4(), obj, *size, &object_table).await?;
                 segment_base = Some(alloc.address);
                 last_alloc_size = Some(*size);
             }
-            FlashStep::WriteRelMem { offset, image } => {
+            FlashStep::WriteRelMem {
+                offset,
+                image,
+                target: _,
+            } => {
                 let base = segment_base.unwrap_or(0);
                 // The device-supplied segment base plus the vendor offset must fit
                 // the 16-bit A_Memory space. A `u16` cast of the sum would silently
@@ -1512,19 +1593,21 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                         .await?;
                 }
             }
-            FlashStep::LoadCompleted => {
-                write_load_control(session.l4(), app_obj, LoadControl::LoadCompleted).await?;
+            FlashStep::LoadCompleted { target } => {
+                let obj = resolve_object_target(*target, &object_table, app_obj);
+                write_load_control(session.l4(), obj, LoadControl::LoadCompleted).await?;
             }
             FlashStep::MasterReset {
                 erase_code,
                 channel_number,
             } => {
-                // Send the master reset and confirm the device accepted it (a
-                // non-zero A_Restart_Response error code fails here). The device
-                // then reboots and drops the L4 connection — the SPEC-REQUIRED
-                // single reconnect: wait out the reboot, re-establish the
-                // connection and re-authorize.
-                master_reset(session.l4(), *erase_code, *channel_number).await?;
+                // Send the master reset as a BARE A_Restart (0x380), exactly as
+                // ETS→KNX-Virtual does on the wire for an LdCtrlMasterReset — NOT
+                // the confirmed master-reset A_Restart (0x381 + erase/channel).
+                // The device T_ACKs it at the transport layer and then reboots,
+                // dropping the L4 connection — the SPEC-REQUIRED single reconnect:
+                // wait out the reboot, re-establish the connection and re-authorize.
+                master_reset_via_basic_restart(session.l4(), *erase_code, *channel_number).await?;
                 tokio::time::sleep(master_reset_reboot_wait()).await;
                 session.reconnect().await?;
 
@@ -1625,16 +1708,35 @@ fn take_sample(bytes: &[u8]) -> Vec<u8> {
     bytes[..bytes.len().min(4)].to_vec()
 }
 
+/// A `" (LsmIdx/ObjIdx N)"` suffix for a step label, naming the object index the
+/// op targets, or empty when it targets the discovered application object.
+fn target_suffix(target: Option<u32>) -> String {
+    match target {
+        Some(idx) if idx != 0 => format!(" (obj {idx})"),
+        _ => " (app object)".to_string(),
+    }
+}
+
 /// A short human label for a step, for the progress line and the dry-run trace.
 fn step_label(step: &FlashStep) -> String {
     match step {
-        FlashStep::Unload => "unload application".to_string(),
-        FlashStep::StartLoading => "open application for loading".to_string(),
-        FlashStep::AllocateSegment { size } => format!("allocate segment ({size} bytes)"),
-        FlashStep::WriteRelMem { offset, image } => {
+        FlashStep::Unload { target } => format!("unload{}", target_suffix(*target)),
+        FlashStep::StartLoading { target } => {
+            format!("open for loading{}", target_suffix(*target))
+        }
+        FlashStep::AllocateSegment { size, target } => {
+            format!("allocate segment ({size} bytes){}", target_suffix(*target))
+        }
+        FlashStep::WriteRelMem {
+            offset,
+            image,
+            target,
+        } => {
             format!(
-                "write {} image ({} bytes) at segment+{offset}",
-                image.kind, image.len
+                "write {} image ({} bytes) at segment+{offset}{}",
+                image.kind,
+                image.len,
+                target_suffix(*target)
             )
         }
         FlashStep::WriteMem { address, image } => {
@@ -1678,7 +1780,9 @@ fn step_label(step: &FlashStep) -> String {
             ),
             None => format!("read image MCB (object {obj_idx}, PID {prop_id})"),
         },
-        FlashStep::LoadCompleted => "complete load".to_string(),
+        FlashStep::LoadCompleted { target } => {
+            format!("complete load{}", target_suffix(*target))
+        }
         FlashStep::Restart => "restart device".to_string(),
         FlashStep::MasterReset {
             erase_code,
@@ -1753,9 +1857,12 @@ mod tests {
         assert_eq!(
             plan.steps,
             vec![
-                FlashStep::Unload,
-                FlashStep::StartLoading,
-                FlashStep::AllocateSegment { size: 6 },
+                FlashStep::Unload { target: Some(4) },
+                FlashStep::StartLoading { target: Some(4) },
+                FlashStep::AllocateSegment {
+                    size: 6,
+                    target: Some(4),
+                },
                 FlashStep::WriteRelMem {
                     offset: 0,
                     image: ImageRef {
@@ -1763,8 +1870,12 @@ mod tests {
                         kind: ImageKind::Code,
                         len: 6,
                     },
+                    target: Some(0),
                 },
-                FlashStep::AllocateSegment { size: 1 },
+                FlashStep::AllocateSegment {
+                    size: 1,
+                    target: Some(4),
+                },
                 FlashStep::WriteRelMem {
                     offset: 0,
                     image: ImageRef {
@@ -1772,8 +1883,9 @@ mod tests {
                         kind: ImageKind::Parameters,
                         len: 1,
                     },
+                    target: Some(0),
                 },
-                FlashStep::LoadCompleted,
+                FlashStep::LoadCompleted { target: Some(4) },
                 FlashStep::Restart,
             ]
         );
@@ -2353,5 +2465,71 @@ mod tests {
             }
             other => panic!("expected UnsupportedWriteProp, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn resolve_object_target_uses_the_lsm_index_when_the_device_exposes_it() {
+        // KNX-Virtual shape: obj0=device, obj1=address, obj2=association,
+        // obj3=application-program (the type-discovered app object), obj4=app
+        // segment. The app segment write names ObjIdx=4 → device object 4, NOT the
+        // type-discovered obj3 (the divergence-#2 fix).
+        let table = vec![(0u8, 0u16), (1, 1), (2, 2), (3, 3), (4, 4)];
+        let app_obj = 3; // discovered by type OT_APPLICATION_PROGRAM
+        assert_eq!(resolve_object_target(Some(4), &table, app_obj), 4);
+        assert_eq!(resolve_object_target(Some(1), &table, app_obj), 1);
+    }
+
+    #[test]
+    fn resolve_object_target_falls_back_to_the_app_object() {
+        // A conformant thelsing device: only obj0..obj3, app object at index 3, and
+        // the procedure writes with ObjIdx=0 / LsmIdx=4. Index 0 (device object) and
+        // index 4 (absent) both fall back to the discovered app object, preserving
+        // the single-object ProductDefault behaviour.
+        let table = vec![(0u8, 0u16), (1, 1), (2, 2), (3, 3)];
+        let app_obj = 3;
+        assert_eq!(resolve_object_target(Some(0), &table, app_obj), app_obj);
+        assert_eq!(resolve_object_target(Some(4), &table, app_obj), app_obj);
+        assert_eq!(resolve_object_target(None, &table, app_obj), app_obj);
+    }
+
+    #[test]
+    fn plan_targets_the_obj_idx_of_the_write_not_the_type() {
+        // A DA.tp-shaped write: RelSegment LsmIdx=4, then WriteRelMem ObjIdx=4. The
+        // lowered steps carry those indices verbatim so the executor resolves the
+        // write to device object 4 (base 0x6000), not the type-discovered object.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-DA" MaskVersion="MV-07B0" Name="DA"
+            LoadProcedureStyle="ProductDefault">
+          <Static>
+           <Code><RelativeSegment Id="M-1_A-DA_RS-04" Size="256" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment></Code>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlUnload LsmIdx="4" />
+             <LdCtrlLoad LsmIdx="4" />
+             <LdCtrlRelSegment LsmIdx="4" Size="256" />
+             <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="256" />
+             <LdCtrlLoadCompleted LsmIdx="4" />
+             <LdCtrlRestart />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-1_A-DA", xml.as_bytes()).unwrap();
+        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+        // The allocate targets LsmIdx=4; the write targets ObjIdx=4.
+        assert!(plan.steps.iter().any(|s| matches!(
+            s,
+            FlashStep::AllocateSegment {
+                target: Some(4),
+                ..
+            }
+        )));
+        assert!(plan.steps.iter().any(|s| matches!(
+            s,
+            FlashStep::WriteRelMem {
+                target: Some(4),
+                ..
+            }
+        )));
     }
 }

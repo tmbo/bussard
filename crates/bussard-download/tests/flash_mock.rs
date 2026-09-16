@@ -297,6 +297,20 @@ struct DeviceState {
     /// re-opened, so the memory-write handler can refuse writes to the erased
     /// object. Cleared when the object is re-opened (`StartLoading`).
     app_erased_by_master_reset: bool,
+    /// Optional override for [`loadable_object_index`]: the object index the load
+    /// state / PID7 base / MCB are modelled on, when it must differ from the
+    /// type-discovered application-program object. Set by the LsmIdx-resolution
+    /// test to place the loadable object at the ObjIdx the DA.tp write names (e.g.
+    /// obj4), while the type-3 object sits at a different index. `None` = the
+    /// type-discovered app object (the default, every other test).
+    loadable_object_override: Option<u8>,
+    /// The object index of every `PID_TABLE_REFERENCE` (PID7) read, in order — the
+    /// per-object base reads. A test asserts the tool read PID7 on the LsmIdx-named
+    /// object before writing it.
+    pid7_reads: Vec<u8>,
+    /// The object index of every `PID_LOAD_STATE_CONTROL` write, in order — the
+    /// StartLoading / allocate / LoadCompleted targets.
+    load_control_targets: Vec<u8>,
 }
 
 type Shared = Arc<Mutex<DeviceState>>;
@@ -364,6 +378,18 @@ fn app_object_index(s: &DeviceState) -> Option<u8> {
         .map(|i| i as u8)
 }
 
+/// The index of the single loadable object the mock's load-state machine models.
+///
+/// Normally the type-discovered application-program object. A test that exercises
+/// the ETS→KNX-Virtual "write the app segment to a DIFFERENT object index than the
+/// type-discovered one" shape (the divergence-#2 fix) sets
+/// `loadable_object_override` so the load state / PID7 base / MCB are modelled on
+/// **that** object index (e.g. obj4), proving the tool resolved the write target by
+/// `LsmIdx`/`ObjIdx`, not by object type.
+fn loadable_object_index(s: &DeviceState) -> Option<u8> {
+    s.loadable_object_override.or_else(|| app_object_index(s))
+}
+
 enum Reaction {
     Answer(u16, Vec<u8>),
     /// No response (a bare T_ACK) — for A_Memory_Write, which is not answered.
@@ -429,14 +455,32 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
         // error_code = 0x00, process_time = 0x0064 (100, a plausible reboot time).
         return Reaction::Answer(A_RESTART_RESPONSE, vec![0x00, 0x00, 0x64]);
     }
-    // Basic restart (0x380): fire-and-forget, just ACK. Under the
-    // SilentAfterBasicRestart fault the device then "reboots" and goes silent for
-    // the rest of THIS connection — so any read that follows the restart (e.g. a
-    // buggy verify-AFTER-restart) is dropped, but a verify done BEFORE the restart
-    // has already completed. Proves the terminal restart's silence is success.
+    // Basic restart (bare A_Restart, 0x380, no payload). This is BOTH the terminal
+    // restart AND — matching ETS→KNX-Virtual — the mid-procedure master reset
+    // (bussard now realises LdCtrlMasterReset as a bare 0x380, not the confirmed
+    // 0x381). The device T_ACKs it (fire-and-forget, no A_Restart_Response) and, if
+    // this is the master reset, reboots.
+    //
+    // Distinguishing the two: when `wipe_app_on_master_reset` is set (the KV
+    // EraseCode=4 model the master-reset test enables) the FIRST bare restart is
+    // the master reset — it reboots (drops L4), wipes the app object, and is
+    // counted; any later bare restart is the terminal one (fire-and-forget). When
+    // the flag is unset, every bare restart is a plain terminal restart.
     if req_apci & APCI_SELECTOR == A_RESTART_SEL {
         s.saw_basic_restart = true;
-        if s.fault == Fault::SilentAfterBasicRestart {
+        let is_master_reset = s.wipe_app_on_master_reset && s.master_resets_seen == 0;
+        if is_master_reset {
+            s.master_resets_seen += 1;
+            s.last_master_reset_payload = data.to_vec();
+            // Reboot: the device goes silent on THIS connection; the tool reconnects.
+            s.l4_dead_after_master_reset = true;
+            // KV EraseCode=4: erase the app object and drop its segment (see
+            // `wipe_app_on_master_reset`).
+            s.app_load_state = LS_UNLOADED;
+            s.app_erased_by_master_reset = true;
+            s.last_segment_base = 0;
+            s.last_segment_size = 0;
+        } else if s.fault == Fault::SilentAfterBasicRestart {
             s.l4_dead_after_master_reset = true;
         }
         return Reaction::Ack;
@@ -511,7 +555,7 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
             };
         }
         if pid == PID_LOAD_STATE_CONTROL {
-            let st = if app_object_index(&s) == Some(oi) {
+            let st = if loadable_object_index(&s) == Some(oi) {
                 s.app_load_state
             } else {
                 LS_UNLOADED
@@ -522,6 +566,9 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
             );
         }
         if pid == PID_TABLE_REFERENCE {
+            // Record which object index the tool read the per-object base from, so a
+            // test can assert the PID7 base read targeted the LsmIdx-named object.
+            s.pid7_reads.push(oi);
             // Report the last-allocated segment base as a big-endian u32.
             let base = s.last_segment_base as u32;
             return Reaction::Answer(
@@ -535,7 +582,7 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
             // 8-octet PDT_GENERIC_08 entry
             // `[size u32 BE][crc_ctrl=0x00][access=0xFF][crc16 u16 BE]`, valid
             // only while Loaded. A wrong tool-side CRC must NOT match this.
-            if app_object_index(&s) != Some(oi) || s.app_load_state != LS_LOADED {
+            if loadable_object_index(&s) != Some(oi) || s.app_load_state != LS_LOADED {
                 return Reaction::Answer(
                     A_PROPERTY_VALUE_RESPONSE,
                     prop_response(oi, pid, 0, start, &[]),
@@ -583,8 +630,12 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
 
         if pid == PID_LOAD_STATE_CONTROL {
             s.control_writes += 1;
+            // Record which object index each load-control write targeted, so a test
+            // can assert the tool drove StartLoading/allocate/LoadCompleted against
+            // the LsmIdx-named object.
+            s.load_control_targets.push(oi);
             let event = value.first().copied().unwrap_or(0);
-            let is_app = app_object_index(&s) == Some(oi);
+            let is_app = loadable_object_index(&s) == Some(oi);
             let fault = s.fault;
 
             // A 10-octet AdditionalLoadControls write is a segment allocation.
@@ -942,6 +993,9 @@ fn fresh_device(fault: Fault) -> Shared {
         saw_basic_restart: false,
         wipe_app_on_master_reset: false,
         app_erased_by_master_reset: false,
+        loadable_object_override: None,
+        pid7_reads: Vec::new(),
+        load_control_targets: Vec::new(),
     }))
 }
 
@@ -1109,6 +1163,22 @@ async fn setup(fault: Fault) -> (Transport, Shared, tokio::task::JoinHandle<()>)
     let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let port = sock.local_addr().unwrap().port();
     let state = fresh_device(fault);
+    let addr: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let handle = tokio::spawn(run_gateway(sock, addr, Arc::clone(&state)));
+    let bus = Transport::connect(&ConnectionConfig::tunnel(
+        format!("127.0.0.1:{port}").parse().unwrap(),
+    ))
+    .await
+    .unwrap();
+    (bus, state, handle)
+}
+
+/// Like [`setup`] but installs a caller-provided device state, so a test can model
+/// a device whose object layout differs from the factory default (e.g. exposing an
+/// extra loadable object for the LsmIdx-resolution test).
+async fn setup_device(state: Shared) -> (Transport, Shared, tokio::task::JoinHandle<()>) {
+    let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let port = sock.local_addr().unwrap().port();
     let addr: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
     let handle = tokio::spawn(run_gateway(sock, addr, Arc::clone(&state)));
     let bus = Transport::connect(&ConnectionConfig::tunnel(
@@ -1492,8 +1562,9 @@ async fn plan_only_touches_no_load_state() {
     let app = fabricated_app();
     let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
     assert!(!plan.steps.is_empty());
-    // The first supported device step is the unload of the application object.
-    assert_eq!(plan.steps[0], FlashStep::Unload);
+    // The first supported device step is the unload of the application object
+    // (LsmIdx=4 in the fabricated app).
+    assert_eq!(plan.steps[0], FlashStep::Unload { target: Some(4) });
 
     let s = state.lock().unwrap();
     assert_eq!(
@@ -2078,16 +2149,22 @@ async fn flash_master_reset_reconnects_and_reaches_loaded() {
 
     {
         let s = state.lock().unwrap();
-        // The tool issued exactly one master reset, encoding EraseCode=4,
-        // ChannelNumber=0 onto the wire.
+        // The tool issued exactly one master reset, and it was a BARE A_Restart
+        // (0x380) with NO payload — exactly as ETS→KNX-Virtual sends it, NOT the
+        // confirmed master-reset A_Restart (0x381 + [erase_code, channel_number]).
         assert_eq!(
             s.master_resets_seen, 1,
             "exactly one master reset was issued"
         );
-        assert_eq!(
-            s.last_master_reset_payload,
-            vec![0x04, 0x00],
-            "the master reset must carry [erase_code, channel_number]"
+        assert!(
+            s.last_master_reset_payload.is_empty(),
+            "the master reset must be a bare A_Restart with no payload, got {:?}",
+            s.last_master_reset_payload
+        );
+        // The device did see the bare basic-restart APCI on the wire.
+        assert!(
+            s.saw_basic_restart,
+            "the master reset must be realised as a bare 0x380 A_Restart"
         );
         // The device reconnected: at least two L4 T_Connects (the original plus the
         // post-reboot reconnect).
@@ -2191,4 +2268,111 @@ async fn flash_final_restart_silence_is_success_not_failure() {
 
     let _ = handle.close().await;
     gw.abort();
+}
+
+/// The ETS→KNX-Virtual DA.tp shape: the application-program-TYPE object is at
+/// index 3 (base 0x8000) but ETS writes the app segment to object index 4 (base
+/// 0x6000), named by the procedure's `ObjIdx=4`/`LsmIdx=4`. This proves bussard
+/// resolves the write target by index, not by object type (the divergence-#2 fix):
+/// the load-control sequence, the PID7 base read, and the memory write all target
+/// object 4 — never the type-discovered object 3.
+#[tokio::test]
+async fn flash_targets_the_obj_idx_object_not_the_type_object() {
+    // Object table: obj0 device, obj1 address, obj2 association, obj3
+    // application-program (type 3 — what a type probe discovers), obj4 the app
+    // segment (type 4). Model the loadable state on obj4 (the ObjIdx the write
+    // names), so a tool that wrongly targeted the type-discovered obj3 would find
+    // it Unloaded and fail.
+    let state = fresh_device(Fault::None);
+    {
+        let mut s = state.lock().unwrap();
+        s.object_types = vec![
+            OT_DEVICE,
+            OT_ADDRESS_TABLE,
+            OT_ASSOCIATION_TABLE,
+            OT_APPLICATION_PROGRAM, // index 3, type 3 — the type-discovered object
+            4,                      // index 4, type 4 — the app segment ETS writes
+        ];
+        s.loadable_object_override = Some(4);
+    }
+    let (mut bus, state, handle) = setup_device(state).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+
+    // A DA.tp-shape procedure: allocate LsmIdx=4, write ObjIdx=4.
+    let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+     <ApplicationProgram Id="M-1_A-DA" MaskVersion="MV-07B0" Name="DA"
+        LoadProcedureStyle="ProductDefault">
+      <Static>
+       <Code><RelativeSegment Id="M-1_A-DA_RS-04" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment></Code>
+       <LoadProcedures>
+        <LoadProcedure>
+         <LdCtrlUnload LsmIdx="4" />
+         <LdCtrlLoad LsmIdx="4" />
+         <LdCtrlRelSegment LsmIdx="4" Size="6" AppliesTo="full" />
+         <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="6" AppliesTo="full" />
+         <LdCtrlLoadCompleted LsmIdx="4" />
+         <LdCtrlRestart />
+        </LoadProcedure>
+       </LoadProcedures>
+      </Static>
+     </ApplicationProgram></KNX>"#;
+    let app = parse_application_program("M-1_A-DA", xml.as_bytes()).unwrap();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+
+    let l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    let mut session = authed_session(l4).await;
+    // The flash routes every load-control write, the PID7 base read, and the memory
+    // write to object 4 (the ObjIdx). The final verify re-reads the
+    // type-discovered object's load state — which for this device is obj3 (Unloaded
+    // in this minimal single-loadable-object mock) — so `outcome.ok()` is not the
+    // signal here; the routing is. (A real KNX-Virtual loads all four objects, so
+    // its verify passes.) We assert the flash ran to completion and routed
+    // correctly.
+    let _ = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .unwrap();
+    let _ = session.into_disconnect().await;
+
+    let s = state.lock().unwrap();
+    // Every load-control write (Unload, StartLoading, LoadCompleted, and the
+    // allocate) targeted object 4 — never the type-discovered object 3.
+    assert!(
+        !s.load_control_targets.is_empty(),
+        "the flash drove load-control writes"
+    );
+    assert!(
+        s.load_control_targets.iter().all(|&oi| oi == 4),
+        "all load-control writes must target object 4 (the ObjIdx), got {:?}",
+        s.load_control_targets
+    );
+    assert!(
+        !s.load_control_targets.contains(&3),
+        "no load-control write may target the type-discovered object 3"
+    );
+    // The per-object PID7 base read targeted object 4 (the base for its write).
+    assert!(
+        s.pid7_reads.contains(&4),
+        "the tool must read PID7 (the base) from object 4, got {:?}",
+        s.pid7_reads
+    );
+    // The app segment image landed at object 4's segment base (0x4000, the mock's
+    // first allocation base), proving the write used obj4's PID7 base.
+    let code: Vec<u8> = (0x4000u16..0x4006)
+        .map(|a| *s.memory.get(&a).unwrap_or(&0))
+        .collect();
+    assert_eq!(
+        code,
+        vec![0, 1, 2, 3, 4, 5],
+        "the app image landed at obj4's base"
+    );
+
+    handle.abort();
 }
