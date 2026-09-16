@@ -478,6 +478,29 @@ pub struct FlashOptions {
 /// fails promptly instead of looping forever.
 pub const DEFAULT_MAX_WINDOW_RETRIES: u32 = 8;
 
+/// How long a windowed flash waits for the bus actor to re-establish a dropped
+/// KNXnet/IP tunnel before counting one no-progress window-retry. Matches the
+/// actor's maximum reconnect backoff, so a single wait spans at most one full
+/// backoff cycle; a tunnel that is merely flaky comes back well within it, while
+/// a permanently-dead one is folded into the `max_window_retries` bound after a
+/// bounded number of these waits.
+pub const TUNNEL_RECONNECT_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Whether a connection error is a *tunnel-level* drop — the shared transport
+/// under the bus actor died — as opposed to an ordinary L4-session drop.
+///
+/// A tunnel drop surfaces through the lease channel as
+/// [`MgmtError::Transport`](bussard_mgmt::MgmtError::Transport): every
+/// `BusError` (a stale queue-drop, a gone actor, a transport socket error) maps
+/// to it. An L4-session drop instead surfaces as `MidSessionSilence` /
+/// `NoResponse` / `Disconnected` (the device or gateway went silent on an
+/// otherwise-live tunnel) and is already ridden out by the L4 window-retry in
+/// `bussard-mgmt`. Only the tunnel drop needs the flash to *wait* for the actor
+/// to reconnect before it can re-lease — this is that discriminator.
+fn is_tunnel_drop(err: &WriteError) -> bool {
+    matches!(err, WriteError::Mgmt(MgmtError::Transport(_)))
+}
+
 /// A progress event emitted as [`flash`] executes, for the CLI to render.
 #[derive(Debug, Clone)]
 pub enum Progress {
@@ -541,6 +564,52 @@ pub trait Connector {
 
     /// Opens a fresh connection to the flash target.
     async fn connect(&mut self) -> Result<Layer4Connection<Self::Channel>, WriteError>;
+
+    /// Whether this connector is backed by a self-reconnecting transport it can
+    /// *wait on* after a tunnel drop (via [`wait_reconnected`](Connector::wait_reconnected)).
+    ///
+    /// Only such a connector can ride out a tunnel drop; a fixed single connection
+    /// or a raw mock cannot, so a tunnel drop there stays a hard, fail-fast error.
+    /// Default: `false`.
+    fn can_reconnect(&self) -> bool {
+        false
+    }
+
+    /// Waits (bounded) for the leased transport to come back after a tunnel
+    /// drop, so a subsequent [`connect`](Connector::connect) can succeed.
+    ///
+    /// Called by a windowed flash when a mid-write connection error is a
+    /// *tunnel* drop rather than an L4 drop: the flash blocks here for the bus
+    /// actor to re-establish the tunnel, then re-leases and resumes from the
+    /// last-confirmed offset. The outcome tells the flash whether to resume
+    /// ([`ConnectorReconnect::Reconnected`]), give up because the transport is
+    /// gone for good ([`ConnectorReconnect::Closed`]), or count a bounded
+    /// no-progress retry and try again ([`ConnectorReconnect::TimedOut`]).
+    ///
+    /// Default: [`ConnectorReconnect::Unsupported`] — a connector with no
+    /// reconnecting transport to wait on. The flash treats that exactly like
+    /// today's fail-fast (a tunnel drop it cannot wait out is a hard error).
+    async fn wait_reconnected(&self, _timeout: std::time::Duration) -> ConnectorReconnect {
+        ConnectorReconnect::Unsupported
+    }
+}
+
+/// The outcome of [`Connector::wait_reconnected`]: how a wait for the leased
+/// transport to recover from a tunnel drop ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectorReconnect {
+    /// The transport came back; a fresh [`connect`](Connector::connect) can now
+    /// succeed, so the flash re-leases and resumes.
+    Reconnected,
+    /// The bounded wait expired while the transport was still down (but its owner
+    /// has not given up). Counts as one no-progress window-retry.
+    TimedOut,
+    /// The transport is gone for good (the owning actor shut down); the flash
+    /// gives up rather than waiting forever.
+    Closed,
+    /// This connector has no reconnecting transport to wait on (e.g. a single
+    /// fixed connection). The flash cannot wait a tunnel drop out and fails.
+    Unsupported,
 }
 
 /// A [`Connector`] that hands back one already-open connection and then refuses.
@@ -752,6 +821,86 @@ impl<C: Connector> Session<C> {
         self.l4 = Some(fresh);
         self.windows = self.windows.saturating_add(1);
         Ok(())
+    }
+
+    /// Whether this session's connector can wait out and recover from a tunnel
+    /// drop (it leases a self-reconnecting transport). A session that cannot must
+    /// surface a tunnel drop as a hard error rather than waiting forever.
+    pub fn can_recover_tunnel(&self) -> bool {
+        self.connector.can_reconnect()
+    }
+
+    /// Whether the session currently holds a live L4 connection. `false` only
+    /// after a [`discard_connection`](Session::discard_connection) or a
+    /// [`wait_and_reconnect_tunnel`](Session::wait_and_reconnect_tunnel) that did
+    /// not reconnect (the tunnel is still down), where the caller must wait again
+    /// rather than drive a step over an absent connection.
+    pub fn has_connection(&self) -> bool {
+        self.l4.is_some()
+    }
+
+    /// Drops the current (dead) L4 connection after a tunnel drop, folding its
+    /// exchange count into the running total and best-effort disconnecting it to
+    /// release the lease — so the actor's reconnect is not blocked on it. After
+    /// this the session holds no connection; the caller must
+    /// [`wait_and_reconnect_tunnel`](Session::wait_and_reconnect_tunnel) before
+    /// resuming. Idempotent: a no-op when no connection is held.
+    pub async fn discard_connection(&mut self) {
+        if let Some(dead) = self.l4.take() {
+            self.retired_exchanges = self
+                .retired_exchanges
+                .saturating_add(dead.numbered_exchanges());
+            let _ = dead.disconnect().await;
+        }
+    }
+
+    /// Recovers from an *unexpected TUNNEL drop*: the shared transport under the
+    /// connector died, so — unlike [`reconnect_after_death`](Session::reconnect_after_death),
+    /// which reconnects a fresh L4 window over a *live* tunnel — this first waits
+    /// (bounded) for the connector's transport to come back before re-leasing.
+    ///
+    /// The dead L4 connection is dropped first (releasing its lease so the actor's
+    /// reconnect is not blocked on it), then [`Connector::wait_reconnected`] blocks
+    /// for the tunnel; on success a fresh connection is opened and re-authorized,
+    /// exactly as a normal death-reconnect. The `Reconnected`/`TimedOut`/`Closed`
+    /// outcome is surfaced so the caller can fold a permanently-dead tunnel into
+    /// its no-progress bound rather than looping forever.
+    ///
+    /// Returns the [`ConnectorReconnect`] describing why the wait ended. On
+    /// [`ConnectorReconnect::Reconnected`] a fresh connection is now held; on any
+    /// other outcome the session holds no connection and the caller must not
+    /// resume.
+    pub async fn wait_and_reconnect_tunnel(
+        &mut self,
+        timeout: std::time::Duration,
+    ) -> ConnectorReconnect {
+        if let Some(dead) = self.l4.take() {
+            self.retired_exchanges = self
+                .retired_exchanges
+                .saturating_add(dead.numbered_exchanges());
+            // Drop the dead connection (and its lease) before the actor reconnects;
+            // a T_Disconnect over a down tunnel is a best-effort no-op.
+            let _ = dead.disconnect().await;
+        }
+        let outcome = self.connector.wait_reconnected(timeout).await;
+        if outcome != ConnectorReconnect::Reconnected {
+            return outcome;
+        }
+        // The tunnel is back: open a fresh window and re-authorize it, exactly as
+        // a normal death-reconnect. A connect that still fails (a race with a
+        // second drop) is surfaced as TimedOut so the caller counts it as a
+        // no-progress retry rather than crashing the resume.
+        match self.connector.connect().await {
+            Ok(mut fresh) => {
+                if Self::authorize(&mut fresh, self.bcu_key).await.is_err() {
+                    return ConnectorReconnect::TimedOut;
+                }
+                self.l4 = Some(fresh);
+                self.windows = self.windows.saturating_add(1);
+                ConnectorReconnect::Reconnected
+            }
+            Err(_) => ConnectorReconnect::TimedOut,
+        }
     }
 
     /// Consumes the session and gracefully disconnects the open connection.
@@ -1673,21 +1822,17 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
             let due = i > 0 && session.window_exchanges() >= n;
             let is_restart = matches!(step, FlashStep::Restart);
             if due && !is_restart {
-                session.cycle().await?;
-                progress(Progress::Reconnect {
-                    window: session.windows(),
-                    exchanges: session.total_exchanges(),
-                });
-                // Resume-safety: the fresh connection must reach the same device,
-                // and — while inside the loading window — the in-progress object
-                // must still be Loading before we write more into it (KV drops
-                // Loading on some reconnects → clear error).
-                resume_recheck(
-                    session.l4(),
+                // A between-steps graceful cycle. A TUNNEL drop during the cycle
+                // (the actor's transport died between the T_Disconnect and the
+                // fresh window) is recoverable exactly like a mid-write one: wait
+                // for the actor to reconnect and re-check, rather than failing.
+                cycle_recovering_tunnel(
+                    session,
                     app_obj,
                     &object_table,
                     &options,
                     loading_active,
+                    &mut progress,
                 )
                 .await?;
             }
@@ -1731,8 +1876,10 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                     .unwrap_or_default();
                 // The write path itself windows: it cycles the connection at the
                 // planned boundary AND auto-retries an unexpected mid-write death,
-                // resuming at the current offset on the fresh connection.
-                write_windowed_with_progress(
+                // resuming at the current offset on the fresh connection. A TUNNEL
+                // drop (transport under the actor died) is caught one level up and
+                // ridden out by waiting for the actor to reconnect, then resuming.
+                write_windowed_recovering_tunnel(
                     session,
                     app_obj,
                     &object_table,
@@ -1759,7 +1906,7 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                     .get(&image.segment_id)
                     .cloned()
                     .unwrap_or_default();
-                write_windowed_with_progress(
+                write_windowed_recovering_tunnel(
                     session,
                     app_obj,
                     &object_table,
@@ -1920,6 +2067,263 @@ async fn write_windowed_with_progress<C: Connector, F: FnMut(Progress)>(
         &mut on_written,
     )
     .await
+}
+
+/// Streams `bytes` to `addr` through the session with the intra-write L4
+/// windowing of [`write_windowed_with_progress`], **plus** recovery from a
+/// TUNNEL drop: if the write dies because the shared transport under the bus
+/// actor went down (a [`is_tunnel_drop`] error, which the L4 window-retry in
+/// `bussard-mgmt` does *not* ride out — its transport is assumed live), this
+/// waits for the actor to re-establish the tunnel, re-leases, re-authorizes,
+/// re-checks the object is still `Loading`, and resumes the write from the
+/// last-confirmed offset.
+///
+/// A tunnel drop is folded into the SAME no-progress bound as an L4 drop: each
+/// tunnel-drop reconnect that lands no new byte counts against
+/// `max_window_retries`; any newly-confirmed byte resets the counter. A tunnel
+/// that never comes back (the actor closed, or the bounded wait keeps expiring)
+/// therefore fails cleanly with a "bus did not recover" error rather than
+/// looping forever. A connector with no reconnecting transport
+/// ([`ConnectorReconnect::Unsupported`]) keeps today's fail-fast: the tunnel
+/// drop is surfaced unchanged.
+///
+/// Resuming from the confirmed offset is byte-identical: memory writes are
+/// absolute-addressed and stateless, so `write(addr + off, &bytes[off..])` lands
+/// exactly what an unbroken write would. The confirmed offset is tracked from
+/// the byte-progress the inner write reports (its `written` count is the
+/// cumulative confirmed offset), and the inner write's progress is re-based by
+/// that offset so the CLI's byte line stays monotonic across a resume.
+#[allow(clippy::too_many_arguments)]
+async fn write_windowed_recovering_tunnel<C: Connector, F: FnMut(Progress)>(
+    session: &mut Session<C>,
+    app_obj: u8,
+    object_table: &[(u8, u16)],
+    options: &FlashOptions,
+    reconnect_every: Option<u32>,
+    addr: u16,
+    bytes: &[u8],
+    progress: &mut F,
+) -> Result<(), WriteError> {
+    let total = bytes.len();
+    let target = session.l4().target();
+    // The highest cumulative offset the device has confirmed, shared with the
+    // progress closure so a partial inner write advances it before it returns the
+    // tunnel-drop error. Resuming here re-writes nothing already confirmed.
+    let confirmed = std::cell::Cell::new(0usize);
+    // Consecutive tunnel-drop reconnects since the last forward progress, bounded
+    // by the same budget as the L4 no-progress retry.
+    let mut retries: u32 = 0;
+    let max_retries = if options.max_window_retries == 0 {
+        DEFAULT_MAX_WINDOW_RETRIES
+    } else {
+        options.max_window_retries
+    };
+
+    loop {
+        // If the session holds no live connection — the state right after a tunnel
+        // drop discards the dead one, or after a wait that timed out while the actor
+        // was still backing off — wait for the actor to re-establish the tunnel,
+        // then resume. This is the SINGLE place tunnel-drop retries are counted: a
+        // wait that does not reconnect is one no-progress retry against the bound;
+        // any newly-confirmed byte in the write below resets the count.
+        if !session.has_connection() {
+            if retries >= max_retries {
+                return Err(bus_did_not_recover_error(
+                    target,
+                    max_retries,
+                    confirmed.get(),
+                ));
+            }
+            retries += 1;
+            match session
+                .wait_and_reconnect_tunnel(TUNNEL_RECONNECT_WAIT)
+                .await
+            {
+                ConnectorReconnect::Reconnected => {
+                    progress(Progress::Reconnect {
+                        window: session.windows(),
+                        exchanges: session.total_exchanges(),
+                    });
+                    // The fresh connection must reach the same device and — inside
+                    // the loading window during a memory write — the object must
+                    // still be Loading before we resume.
+                    resume_recheck(session.l4(), app_obj, object_table, options, true).await?;
+                }
+                // Still backing off: loop and wait again (counting the retry).
+                ConnectorReconnect::TimedOut => continue,
+                ConnectorReconnect::Closed | ConnectorReconnect::Unsupported => {
+                    return Err(bus_did_not_recover_error(
+                        target,
+                        max_retries,
+                        confirmed.get(),
+                    ));
+                }
+            }
+        }
+
+        // Address and slice of the remaining, unconfirmed tail. On the first pass
+        // `confirmed == 0`, so this is the whole segment.
+        let start = confirmed.get();
+        let sub_addr = addr.wrapping_add(start as u16);
+        let tail = &bytes[start..];
+        // Re-base the inner byte-progress by the confirmed prefix so the CLI's
+        // `written/total` line stays monotonic across a resume, and record the new
+        // cumulative confirmed offset so a resume knows where to pick up.
+        let mut on_progress = |p: Progress| {
+            if let Progress::Bytes { written, .. } = p {
+                let cumulative = start + written;
+                confirmed.set(cumulative);
+                progress(Progress::Bytes {
+                    written: cumulative,
+                    total,
+                });
+            } else {
+                progress(p);
+            }
+        };
+
+        let result = write_windowed_with_progress(
+            session,
+            app_obj,
+            object_table,
+            options,
+            reconnect_every,
+            sub_addr,
+            tail,
+            &mut on_progress,
+        )
+        .await;
+
+        match result {
+            Ok(()) => return Ok(()),
+            Err(err) if is_tunnel_drop(&err) && session.can_recover_tunnel() => {
+                // The tunnel dropped mid-write. Everything the inner write already
+                // confirmed on the wire is durable device memory (absolute-
+                // addressed, persistent), and `confirmed` reflects exactly that, so
+                // the resumed tail lands byte-identically. A pass that landed any new
+                // byte is forward progress: reset the no-progress bound. Discard the
+                // dead connection so the loop top waits for the actor and resumes.
+                if confirmed.get() > start {
+                    retries = 0;
+                }
+                session.discard_connection().await;
+                // Loop: the top waits for the tunnel and resumes the tail.
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+/// The "the bus did not recover" give-up error for a windowed flash whose tunnel
+/// dropped and never came back within the no-progress bound. Names the bound and
+/// the last-confirmed offset so the operator can see exactly how far the download
+/// got before the bus was declared dead.
+fn bus_did_not_recover_error(
+    target: bussard_model::IndividualAddress,
+    max_retries: u32,
+    offset: usize,
+) -> WriteError {
+    WriteError::Mgmt(MgmtError::MalformedResponse {
+        address: target,
+        reason: format!(
+            "gave up after {max_retries} reconnect(s); last progress at offset {offset}; \
+             bus did not recover (the KNXnet/IP tunnel dropped and was not re-established)"
+        ),
+    })
+}
+
+/// Performs a between-steps graceful window cycle, recovering from a TUNNEL drop
+/// the same way the write path does: a graceful [`Session::cycle`] whose fresh
+/// connect / re-authorize / resume-recheck fails because the actor's transport
+/// went down waits for the actor to reconnect (via
+/// [`Session::wait_and_reconnect_tunnel`]) and retries, bounded by
+/// `max_window_retries`. An L4-level cycle failure (device silent on a live
+/// tunnel) is surfaced unchanged — the cycle already opened a fresh L4 window, so
+/// there is nothing to wait out.
+async fn cycle_recovering_tunnel<C: Connector, F: FnMut(Progress)>(
+    session: &mut Session<C>,
+    app_obj: u8,
+    object_table: &[(u8, u16)],
+    options: &FlashOptions,
+    loading_active: bool,
+    progress: &mut F,
+) -> Result<(), WriteError> {
+    let target = session.l4().target();
+    let max_retries = if options.max_window_retries == 0 {
+        DEFAULT_MAX_WINDOW_RETRIES
+    } else {
+        options.max_window_retries
+    };
+    let mut retries: u32 = 0;
+    // First attempt: the ordinary graceful cycle + resume-recheck.
+    let mut attempt = async_cycle_once(
+        session,
+        app_obj,
+        object_table,
+        options,
+        loading_active,
+        progress,
+    )
+    .await;
+    loop {
+        match attempt {
+            Ok(()) => return Ok(()),
+            Err(err) if is_tunnel_drop(&err) && session.can_recover_tunnel() => {
+                if retries >= max_retries {
+                    return Err(bus_did_not_recover_error(target, max_retries, 0));
+                }
+                retries += 1;
+                match session
+                    .wait_and_reconnect_tunnel(TUNNEL_RECONNECT_WAIT)
+                    .await
+                {
+                    ConnectorReconnect::Reconnected => {
+                        progress(Progress::Reconnect {
+                            window: session.windows(),
+                            exchanges: session.total_exchanges(),
+                        });
+                        // The fresh connection is already open; just re-check it can
+                        // resume, then continue the flash.
+                        return resume_recheck(
+                            session.l4(),
+                            app_obj,
+                            object_table,
+                            options,
+                            loading_active,
+                        )
+                        .await;
+                    }
+                    ConnectorReconnect::Closed | ConnectorReconnect::Unsupported => {
+                        return Err(bus_did_not_recover_error(target, max_retries, 0));
+                    }
+                    ConnectorReconnect::TimedOut => {
+                        // Still backing off; counted as a no-progress retry. Loop to
+                        // wait again (or give up once the bound is spent).
+                        attempt = Err(err);
+                    }
+                }
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+/// One graceful cycle + progress + resume-recheck, as a helper so
+/// [`cycle_recovering_tunnel`] can retry it.
+async fn async_cycle_once<C: Connector, F: FnMut(Progress)>(
+    session: &mut Session<C>,
+    app_obj: u8,
+    object_table: &[(u8, u16)],
+    options: &FlashOptions,
+    loading_active: bool,
+    progress: &mut F,
+) -> Result<(), WriteError> {
+    session.cycle().await?;
+    progress(Progress::Reconnect {
+        window: session.windows(),
+        exchanges: session.total_exchanges(),
+    });
+    resume_recheck(session.l4(), app_obj, object_table, options, loading_active).await
 }
 
 /// The first up-to-4 octets of an image, used as the post-flash read-back sample.

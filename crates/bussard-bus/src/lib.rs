@@ -123,6 +123,20 @@ impl BusState {
     }
 }
 
+/// The outcome of [`BusHandle::wait_reconnected`]: how a wait for the actor to
+/// re-establish a dropped tunnel ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reconnected {
+    /// The tunnel came back: the actor reached [`BusState::Connected`].
+    Connected,
+    /// The bounded wait expired while the actor was still backing off — the
+    /// tunnel is still down, but the actor has not given up.
+    TimedOut,
+    /// The actor shut down for good ([`BusState::Closed`] or every handle gone);
+    /// the tunnel will never come back on this handle.
+    Closed,
+}
+
 /// Errors surfaced by [`BusHandle`] operations.
 #[derive(Debug, thiserror::Error)]
 pub enum BusError {
@@ -315,6 +329,50 @@ impl BusHandle {
     /// The current connection status.
     pub fn status(&self) -> BusState {
         self.shared.state()
+    }
+
+    /// Whether the underlying KNXnet/IP tunnel is currently *down* — the actor is
+    /// [`Connecting`](BusState::Connecting) (before the first connect) or
+    /// [`Reconnecting`](BusState::Reconnecting) (dropped, backing off). A cheap
+    /// synchronous read.
+    ///
+    /// This is the discriminator a connection-oriented client (e.g. a windowed
+    /// flash) uses to tell a *tunnel* drop — the shared `Transport` under the
+    /// actor died and is being re-established with backoff — from an L4-session
+    /// drop, whose `Transport` is fine. A tunnel drop makes every in-flight
+    /// [`lease`](Self::lease)-backed send/recv fail transiently until the actor
+    /// reconnects; the client should [`wait_connected`](Self::wait_connected)
+    /// rather than treat it as a hard failure.
+    pub fn is_tunnel_down(&self) -> bool {
+        matches!(self.status(), BusState::Connecting | BusState::Reconnecting)
+    }
+
+    /// Waits for the actor to (re)establish the tunnel after a drop, up to
+    /// `timeout`, and reports *why* the wait ended.
+    ///
+    /// The connection-oriented recovery twin of [`wait_connected`](Self::wait_connected):
+    /// where that returns a bare `bool`, this distinguishes a tunnel that came
+    /// back ([`Reconnected::Connected`]) from one that will never come back
+    /// ([`Reconnected::Closed`], the actor shut down) and from a bounded wait that
+    /// expired while the actor was still backing off ([`Reconnected::TimedOut`]).
+    /// A windowed flash uses that distinction to resume on `Connected`, and to
+    /// fail cleanly (rather than loop) on `Closed`/`TimedOut`.
+    pub async fn wait_reconnected(&self, timeout: Duration) -> Reconnected {
+        let mut rx = self.shared.state_tx.subscribe();
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            match BusState::from_u8(*rx.borrow_and_update()) {
+                BusState::Connected => return Reconnected::Connected,
+                BusState::Closed => return Reconnected::Closed,
+                _ => {}
+            }
+            match tokio::time::timeout_at(deadline, rx.changed()).await {
+                Ok(Ok(())) => continue,
+                // A dropped sender means the actor is gone: treat as closed.
+                Ok(Err(_)) => return Reconnected::Closed,
+                Err(_) => return Reconnected::TimedOut,
+            }
+        }
     }
 
     /// Waits until the actor reports [`BusState::Connected`] (or `Closed`),
