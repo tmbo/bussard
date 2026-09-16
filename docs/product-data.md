@@ -136,7 +136,7 @@ The index seeds a flashability corpus: ~26 bare `.knxprod` databases across five
 manufacturers and a range of device types, each verified by downloading it and
 computing the checksum. It exists both to help you fetch a device you scanned and to
 back the repeatable flashability sweep in `tests-support/product-corpus/` (see
-[below](#the-flashability-corpus)).
+[the corpus findings in DESIGN.md](DESIGN.md#the-flashability-corpus-and-sweep-findings)).
 
 Coverage by manufacturer:
 
@@ -166,88 +166,13 @@ direct `.knxprod` downloads, and the fetched bytes are imported as-is. This keep
 download path simple and the checksum meaningful (it covers the exact file ETS would
 read).
 
-### The flashability corpus
+### Testing against the corpus
 
-`tests-support/product-corpus/` turns the index into a repeatable "can bussard flash
-this today?" check. `fetch.sh` reads `corpus.txt` (one order number per index entry) and
-runs `bussard import-product --order-number … --yes-download` for each, downloading and
-checksum-verifying every file into a git-ignored `cache/`. The env-gated test
-`crates/bussard-download/tests/flash_corpus.rs` then dry-runs `plan_flash` over every
-application program in the cache and reports which lower to an executable plan, which are
-refused, and — for the refused System B apps — which load-procedure op blocked them. With
-`BUSSARD_PRODUCT_CORPUS` unset the test skips green, so CI never downloads vendor data.
-See `tests-support/product-corpus/README.md` for the clean-machine repro.
-
-Two vendor realities shaped that decision:
-
-- MDT hosts bare `.knxprod` files directly on each product page. Perfect for the index;
-  no archive handling needed.
-- OpenKNX publishes GitHub releases with stable URLs, which would be ideal
-  redistributable seeds, but their release `.zip` bundles do not contain a built
-  `.knxprod`. They ship the raw ETS `data/*.xml` plus a `Build-knxprod.ps1` that runs
-  OpenKNXproducer to assemble the `.knxprod` on your machine. So there is no bare
-  `.knxprod` to point at, and bussard does not run their build step. If OpenKNX later
-  attaches built `.knxprod` assets to releases, they can be added as
-  `redistributable: true` entries.
-
-If a future vendor only offers a zip-of-`.knxprod`, the honest options are to
-extract-on-fetch (with the inner filename recorded in the entry) or to skip it; for now
-every seeded entry is a direct `.knxprod`, so no archive extraction code exists.
-
-### The broad sweep (220-file corpus)
-
-The committed index stays small and curated, but a wider one-off sweep read a much
-larger corpus through the same library code to map what the product-data pipeline and
-flash engine handle today. It pulled **220 `.knxprod` files across 8 manufacturers**
-(MDT, Zennio, Theben, Elsner, Lingg & Janke, plus three vendors not previously covered:
-Steinel, EAE Technology, Arcus-EDS) and ran `read_knxprod` + a dry-run `plan_flash` on
-every application program at its own mask. The full pointer list (URL, SHA-256, size,
-vendor) lives in `tests-support/product-corpus/sweep-manifest.json`; like the index it
-holds pointers only, never vendor bytes. The sweep script may unzip a zip-of-`.knxprod`
-locally (that is how the Arcus-EDS gateways and a few Zennio panels were read), which the
-committed index deliberately still does not do.
-
-Headline numbers: **384 application programs, 83 executable, 4 refused, 0 parse failures.**
-`read_knxprod` parsed every one of the 220 files without error, over schema versions
-`/11`, `/13`, `/14`, `/20`, `/21`, `/23` and 13 distinct mask families (the seed corpus
-had 6): the sweep added `0011`/`0012`/`0020` (BCU1/BCU2), `0025`, and the KNX-RF and
-coupler families `0912`, `091A`, `2705`, `27B0`, `2920`. Only the 82 System B (`07B0`)
-apps are flash candidates, and 78 of those lower to an executable plan.
-
-**What blocks a flash today.** Only four System B apps refused, for two distinct reasons:
-
-- **`LdCtrlCompareRelMem` (2 apps)** — a masked, inverted relative-memory verify op the
-  parser keeps as `LoadOp::Raw` and the planner refuses. Real shape (MDT BE-GTSx6Tx, MDT
-  JTA blind push button): `<LdCtrlCompareRelMem InlineData="FF" Mask="FF" Invert="true"
-  ObjIdx=… Offset=… Size=…>`. This is the top roadmap op: it is a read-and-compare, so it
-  is executable once typed, and it sits inside otherwise-complete procedures.
-- **Enum default not a declared member (2 apps)** — the Zennio Z40 and Z70 v2 panels
-  declare a parameter whose own default `Value` is not one of its enumeration's members,
-  so `compute_parameter_image` refuses the whole download (`UnresolvableImage`). The
-  strict membership check has real user cost here: it blocks two otherwise fully
-  executable panels over a vendor data-quality quirk.
-
-**Other unhandled load ops** the sweep surfaced (all kept as `LoadOp::Raw`, none yet
-blocking an executable procedure but present in the wild): `LdCtrlTaskCtrl2`,
-`LdCtrlTaskPtr`, `LdCtrlDeclarePropDesc`, `LdCtrlDelay`, `LdCtrlCompareMem`. Load-op use
-splits cleanly by mask family: System B (`07B0`) procedures are property-and-MCB based
-(`LdCtrlRelSegment`, `WriteRelMem`, `LoadImageProp`, `CompareProp`), while System 7/2
-(`0705`/`0701`/`0021`) procedures are segment based (`AbsSegment`, `WriteMem`), and the
-RF/coupler masks are where the `TaskCtrl2`/`TaskPtr`/`DeclarePropDesc` ops appear.
-
-**Parameter-type coverage.** The four encodable shapes dominate (Int, Enum, Text, Float).
-Six type elements fall through to `ParameterType::Other` and are preserved by name but not
-encoded beyond a byte-multiple fallback: `TypeColor` (RGB colour), `TypeTime`,
-`TypeIPAddress`, `TypePicture` (icon references), `TypeRawData` (raw blobs, up to ~150 KB
-in Zennio panels), and stray `TypeRestriction`. None is silently dropped.
-
-Each new construct has a fabricated regression fixture (fake data reproducing the
-structural shape, never vendor content) under `crates/bussard-ets/tests/fixtures/`
-(the `LdCtrl*` ops and the `Other` parameter types) and
-`crates/bussard-prod/tests/fixtures/` (the enum-default-not-a-member image blocker); see
-those directories' `README.md` for the intended test per fixture. The sweep is a
-point-in-time study, not a CI job: it is not re-run automatically, and the committed
-flashability corpus (`corpus.txt` + `flash_corpus.rs`) remains the ongoing check.
+The index also backs a repeatable flashability check and a wider one-off 220-file sweep
+(384 application programs, 0 parse failures; only System B apps produce an executable
+flash plan today, since System 7 and older masks are parsed but not yet flashable). The
+corpus mechanics, sweep findings, and per-op refusal analysis are maintainer material:
+see [the corpus findings in DESIGN.md](DESIGN.md#the-flashability-corpus-and-sweep-findings).
 
 ## The model file format
 

@@ -86,6 +86,8 @@ Read a device's tables back over the bus and diff them against the model, or (wi
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
 
+A hidden diagnostic, `--l4-soak <N>`, connects once to ADDRESS and issues N harmless descriptor reads on that single connection, reporting the exact exchange count reached when the peer drops it. It measures a peer's per-connection exchange budget so `flash --reconnect-every` can be set below it. Read-only on the bus.
+
 ### `bussard import-product [FILE]`
 
 Import vendor product data (`.knxprod`): cache it under `<dir>/vendor/` and generate one model file per application program under `<dir>/models/`. Three modes: a local file (positional), `--order-number` to look the file up in the pointer index and download it, or `--list` to show the index. Details in [product-data.md](product-data.md).
@@ -113,19 +115,28 @@ Guide a new device from programming mode into the model: product data, address a
 
 ### `bussard flash --product <FILE> <ADDRESS>`
 
-Flash an application program from vendor product data into a device (the first, ETS-free application download). Pre-flight plan first; refuses before any write on a non-`07B0` mask, a mask mismatch, or an unsupported load-procedure operation. No backup exists for a first flash; recovery is re-running `flash`.
+Flash an application program from vendor product data into a device (the ETS-free application download). Pre-flight plan first; refuses before any write on a non-`07B0` mask, a mask mismatch, or an unsupported load-procedure operation. The parameter memory image is computed from the vendor defaults plus the device file's `parameters:` overrides, so a flash also carries parameter changes. No backup exists for a flash; recovery is re-running `flash`.
 
 | Flag / arg | Default | Meaning |
 |---|---|---|
 | `<ADDRESS>` | | The device to program, e.g. `1.0.10`. |
 | `--product <FILE>` | required | The vendor `.knxprod` containing the application program. |
-| `--application <REF>` | sole/matching application | The application program id. |
+| `--application <REF>` | sole/matching application | The application program id. Mutually exclusive with `--order-number`. |
+| `--order-number <ORDER>` | | Select the application by hardware order number (e.g. `AKK-0216.03`), resolved through the product's hardware catalogue. Exactly one match is required. |
 | `--dir <DIR>` | `knx` | The model directory. |
 | `--yes` | off | Skip the interactive confirmation (dangerous; for scripts). |
+| `--verify <MODE>` | `per-chunk` | How memory writes are verified. `per-chunk` reads each 12-byte chunk back right after writing it (conservative; matches real devices). `batched` writes a whole segment first and reads it back once, roughly halving the memory round-trips, at the cost of catching a corrupt write only at the end-of-segment verify. |
+| `--pace <MS>` | none | Sleep N milliseconds between memory frames. Real gateways throttle to TP1 speed themselves; simulators (KNX Virtual) ACK at loopback speed and can wedge under the burst. 25-50 is a TP1-like rate. |
+| `--reconnect-every <N>` | off | Window the download: after ~N numbered exchanges, gracefully disconnect, reconnect, and resume where the procedure left off, including inside a long memory write. Robust against a peer that drops the L4 connection at a shallow depth (KNX Virtual drops as early as 7 exchanges; use 4-5 there). Probe a peer's budget with the hidden `reconstruct <ia> --l4-soak <N>`. |
+| `--max-window-retries <N>` | `8` | Consecutive window retries without forward progress to allow on an unexpected mid-write drop before giving up. Any newly confirmed byte resets the count. Only meaningful with `--reconnect-every`. |
+| `--bcu-key <HEX>` | free access | The device's BCU access key, in hex (`FFFFFFFF` or `0x11223344`), presented with A_Authorize on every management connect. Unset presents the free-access key (`FFFFFFFF`), correct for an unkeyed device; a keyed device needs its project key here or it denies access. |
+| `--tolerate-nonconformant-load-states` | off | Accept a device that reports Loaded (instead of the conformant Loading) right after StartLoading. Needed for KNX Virtual; off by default so real-device behaviour stays strict. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
 
-Supported load-procedure operations: `Unload`, `Load`, `LoadCompleted`, `RelSegment`, `WriteRelMem`, `WriteMem`, `WriteProp`, `Restart` on a single-LSM System B device. Procedures containing `LdCtrlAbsSegment`, `LdCtrlTaskSegment`, `LdCtrlTaskCtrl1`, or vendor ops like `LdCtrlLoadImageProp` are refused whole.
+Supported load-procedure operations: `Unload`, `Load`, `LoadCompleted`, `RelSegment`, `WriteRelMem`, `WriteMem`, `WriteProp`, `CompareProp`, `LoadImageProp`, `Restart` on a single-LSM System B device. Procedures containing `LdCtrlAbsSegment`, `LdCtrlTaskSegment`, `LdCtrlTaskCtrl1`, or unrecognized ops (e.g. `LdCtrlCompareRelMem`) are refused whole, before any write. After writing, `flash` verifies the application reads back as `Loaded` and spot-checks written segments byte-for-byte.
+
+Only `flash` takes `--bcu-key`; `plan`, `apply` and `reconstruct` always authorize with the free-access key, so a device with a BCU key set denies them.
 
 ### `bussard plan <ADDRESS>`
 
@@ -186,7 +197,7 @@ Capture telegrams to a SQLite database (see [the capture database](#the-capture-
 
 ### `bussard read <GA>`
 
-Read a group value from the bus: send a GroupValueRead, print the typed response. Exits non-zero on timeout.
+Read a group value from the bus: send a GroupValueRead, print the typed response. Exits non-zero when no response arrives within 3 seconds.
 
 | Flag / arg | Default | Meaning |
 |---|---|---|
@@ -239,6 +250,8 @@ Run the MCP server over stdio (see [the MCP server](#the-mcp-server)).
 | `BUSSARD_ADOPT_ADDRESS` | The target address for `adopt`, for driving the wizard from a script or test (together with `--product`). |
 | `BUSSARD_ASSIGN_WAIT_MS` | Test knob: shrinks the programming-mode wait budget of `assign` and `adopt`. Unset in normal use. |
 | `BUSSARD_SCAN_DISCOVERY_MS` | Test knob: shrinks the per-address probe timeout of `scan` and `reconstruct --line`. Unset in normal use. |
+
+Test-harness variables (`BUSSARD_VIRTUAL_DEVICE*`, `BUSSARD_TEST_MULTICAST`, `BUSSARD_PRODUCT_CORPUS`) gate the integration test suites, never the CLI; they are documented in the `tests-support/` READMEs.
 
 ## The model directory
 
@@ -324,7 +337,7 @@ links:
 
 ### `devices/*.yaml`
 
-`address:` is the device identity; the filename slug is cosmetic. Everything above the `com_objects:` marker is hand-editable; `com_objects:` is regenerated on re-import.
+`address:` is the device identity; the filename slug is cosmetic (but must start with the address, E002). Everything above the `GENERATED` marker is hand-editable; `module_bases:` and `com_objects:` below it are regenerated on re-import.
 
 ```yaml
 address: "1.1.4"
@@ -337,7 +350,11 @@ product:
   mask: "07B0"
 channels:
   A: { name: "Raffstore Wohnen Süd 1" }
+parameters:
+  "windalarm-1@MD-1_M-3_MI-1_P-3_R-45": "1"
 # --- GENERATED: regenerated on re-import; hand edits here are lost. ---
+module_bases:
+  MD-1_M-3_MI-1: 1797
 com_objects:
   12: { dpt: "1.008", flags: "CW", channel: "A" }
 ```
@@ -355,6 +372,8 @@ com_objects:
 | `product.application_ref` | string, optional | Application-program id; matches a `models/*.yaml` identity. |
 | `product.mask` | string, optional | Mask version, e.g. `"07B0"`; decides property- vs memory-based links. |
 | `channels.<key>.name` | string | Human channel label. The block is emitted only when real labels are known. |
+| `parameters.<key>` | map string → string, optional | Parameter values that differ from the vendor default, keyed `<name-slug>@<ref-id>` (the ref id disambiguates repeated module-instance parameters). Imported from the ETS project and replaced wholesale on re-import; hand-editable between imports. Validated against the product model in `models/` (E016/E017); `flash` writes them into parameter memory. |
+| `module_bases.<ref>` | map string → number, generated | Per-module-instance memory base offsets from the ETS project. A module parameter's effective offset is its declared offset plus the instance base; `flash` needs this to place per-channel parameters. Do not edit. |
 | `com_objects.<n>.dpt` | string, optional | Datapoint type. |
 | `com_objects.<n>.size` | string, optional | Declared size like `"1 bit"`; serialized only when there is no DPT (otherwise the size follows from the DPT). |
 | `com_objects.<n>.flags` | string | Compact `CRWTUI` flag string. W = accepts writes (a command input), T = transmits (a status output). |
@@ -374,7 +393,7 @@ One file per application program, generated by `import-product` and never hand-e
 | Code | Rule | Severity |
 |---|---|---|
 | E001 | link references a GA not defined in `groups.yaml` | error |
-| E002 | duplicate individual address | error |
+| E002 | device file name does not start with its `address:` | error |
 | E003 | link references a com object the device doesn't have | error |
 | E004 | conflicting object/DPT sizes on one GA | error |
 | W005 | same size but different DPT subtypes on one GA | warning |
@@ -384,7 +403,14 @@ One file per application program, generated by `import-product` and never hand-e
 | I009 | orphaned com object (T or W, never linked) | info |
 | I010 | GA defined but never linked | info |
 | W011 | GA without a DPT (monitor can't decode it) | warning |
-| E012 | invalid GA (out of bounds, or 0/0/0) | error |
+| E012 | reserved GA `0/0/0` defined in `groups.yaml` | error |
+| E013 | link for a device that has no device file | error |
+| E014 | the same object linked more than once on one device | error |
+| I015 | GA marked `protected: true` (listed so a reviewer sees the guarded set) | info |
+| E016 | parameter key malformed (no `@`) or not in the product model | error |
+| E017 | parameter value invalid (unparseable, out of range, not an enum member) | error |
+| I017 | parameter value equals the vendor default (redundant) | info |
+| I018 | device has `parameters:` but no product model in `models/` to validate against | info |
 
 ## Telegram JSON contract
 
@@ -432,7 +458,7 @@ CREATE INDEX idx_telegrams_dest_ts ON telegrams (destination, ts_utc);
 | Read (default) | none | May send GroupValueReads, rate-limited. |
 | Write | `--allow-writes` | Adds `knx_write_group`. |
 
-Bus operations share one rate limiter (minimum 250 ms between operations). A GA marked `protected: true` is hard-refused by `knx_write_group` with no MCP override; the LLM must ask a human, who can run `bussard write ... --force` from the CLI. Programming and download (`plan`, `apply`, `flash`) are CLI-only and not exposed over MCP.
+Bus operations share one rate limiter (minimum 250 ms between operations, at most two in flight). A GA marked `protected: true` is hard-refused by `knx_write_group` with no MCP override; the LLM must ask a human, who can run `bussard write ... --force` from the CLI. Programming and download (`plan`, `apply`, `flash`) are CLI-only and not exposed over MCP.
 
 ### Tools
 
