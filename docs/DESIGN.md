@@ -50,9 +50,9 @@ A KNX device's configuration is three separable things with very different diffi
 
 Most day-to-day changes are (b). bussard ships (a) + (b) first: that's real commissioning,
 genuinely useful, and needs no reverse engineering of manufacturer memory layouts. `assign`
-does (a); `plan`/`apply` do (c) for System B devices. Which path links take (properties on
+does (a); `plan`/`apply` do (b) for System B devices. Which path links take (properties on
 System B vs. memory writes on older System 1/2) depends on the mask version each device
-reports; `bussard scan` reports this. Layer (b), parameters, is the phase-3 residue.
+reports; `bussard scan` reports this. Layer (c), parameters, is the phase-3 residue.
 
 ## 3. What's inside a `.knxprod`
 
