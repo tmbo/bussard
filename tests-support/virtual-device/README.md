@@ -15,6 +15,74 @@ code here are bussard's own. This is ordinary "two independent programs talking
 over the wire" interop, the same relationship bussard has with any real KNX
 device on a bus.
 
+## CI shakedown findings (2026-09, `ci/virtual-device-shakedown`)
+
+The first live run of the `virtual-device` CI job failed at rung (a): assign
+found no device in programming mode. Two independent root causes were found and
+one is a hard interop wall. The job stays `continue-on-error` because the
+management ladder cannot go green against this pinned device over routing.
+
+### 1. Same-host multicast delivery (FIXED)
+
+thelsing's `src/linux_platform.cpp` hard-codes `IP_MULTICAST_LOOP = 0` on its one
+multicast socket (`loop = 0; setsockopt(..., IP_MULTICAST_LOOP, ...)`). On Linux
+that flag is a property of the *sending* socket and governs whether a multicast
+datagram is delivered to group members **on the same host**. With it off, the
+device's routing replies never reach a bussard process sharing the host, so
+prog-mode discovery times out.
+
+Fix (harness-side, unmodified pinned binary): run the device in its own network
+namespace joined to the root namespace by a veth pair (`netns-setup.sh`). Its
+multicast now egresses a real link and arrives at bussard as ordinary *inbound*
+traffic, where `IP_MULTICAST_LOOP` no longer applies. bussard stays in the root
+namespace on `10.213.0.1` (veth-host), reached via a `224.0.23.12/32` route; the
+device runs under `ip netns exec knxdev`. A bidirectional multicast probe and the
+in-namespace packet capture confirm the group crosses the veth both ways. This
+fix is correct and necessary and should be kept.
+
+### 2. The device is never in programming mode (INTEROP WALL)
+
+With the multicast path fixed, bussard's broadcast `A_IndividualAddress_Read`
+physically reaches the device (confirmed in the in-namespace pcap) but the device
+never replies. Root cause, from the pinned source:
+
+- `src/knx/device_object.h` defaults `_ownAddress = 0xFFFF` (15.15.255), **not
+  0**. So the demo's `main.cpp` guard `if (knx.individualAddress() == 0)
+  knx.progMode(true)` never fires — a factory-fresh device does **not** enter
+  programming mode. thelsing's `individualAddressReadIndication` only answers in
+  programming mode, so the read is silently ignored. This is correct behaviour
+  for a device booted at 15.15.255; the harness premise that a fresh device
+  auto-enters prog mode does not hold for this commit.
+
+A bussard-independent raw-KNX probe (`knx_probe.py`) establishes, on the same
+socket:
+
+- the device IS reachable **connection-oriented** at 15.15.255: it answers
+  `T_Connect` and `A_PropertyValue_Read`/`Write`, including a write of
+  `PID_PROG_MODE` (device object 0, property 54) which reads back as `0x01`;
+- yet **even with programming mode confirmed on**, the device still does not
+  answer the broadcast `A_IndividualAddress_Read` over routing (both the normal
+  and system-broadcast forms were tried, with `L_Data.req` and `L_Data.ind`).
+
+So rung (a) — programming-mode broadcast discovery — cannot be driven against
+this pinned `knx-linux-ip` over KNXnet/IP routing. A pivot to tunnelling would
+not help: the same `frameReceived` path handles both, and the device would still
+need to be in prog mode and answer the same read. The realistic routes to a green
+management ladder are:
+
+1. add a bussard capability to place a device into programming mode via a
+   connection-oriented `PID_PROG_MODE` write to its current address (15.15.255),
+   then re-architect `assign` around it — this is outside the harness and out of
+   scope for the shakedown; or
+2. seed the device with a valid `flash.bin` whose stored individual address is 0
+   (so the demo auto-enters prog mode), which requires reproducing thelsing's
+   exact flash serialization for this commit; or
+3. drive `knx-linux-tp` (which reports the `07B0` mask bussard's later rungs
+   want) over a real/virtual TP-UART instead of routing multicast.
+
+Until one of those lands, the job is kept non-blocking and the diagnostic probe
+plus packet captures are uploaded as artifacts on every run.
+
 ## Platform: Linux only
 
 thelsing's `src/linux_platform.cpp` is wrapped top to bottom in `#ifdef __linux__`

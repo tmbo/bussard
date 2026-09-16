@@ -234,191 +234,30 @@ jobs:
           echo $! | sudo tee /tmp/tcpdump-netns.pid >/dev/null
           sleep 1  # let them bind before traffic starts
 
-      # Probe: prove multicast physically crosses the veth in BOTH directions,
-      # independent of bussard/device, so we know the plumbing carries the KNX
-      # routing group. A listener joins 224.0.23.12:3671 on one side; a sender on
-      # the other fires a datagram. We test root->dev and dev->root.
-      - name: Probe veth multicast (both directions)
-        run: |
-          cat > /tmp/mcast_probe.py <<'PY'
-          import socket, struct, sys, time
-          role, iface_ip, group, port = sys.argv[1], sys.argv[2], "224.0.23.12", 3671
-          if role == "listen":
-              s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-              s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-              s.bind(("", port))
-              mreq = struct.pack("4s4s", socket.inet_aton(group), socket.inet_aton(iface_ip))
-              s.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-              s.settimeout(6)
-              try:
-                  data, addr = s.recvfrom(1024)
-                  print(f"LISTEN-OK received {data!r} from {addr}")
-              except socket.timeout:
-                  print("LISTEN-TIMEOUT no packet received"); sys.exit(1)
-          else:
-              s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-              s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton(iface_ip))
-              s.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
-              for _ in range(10):
-                  s.sendto(b"PROBE", (group, port)); time.sleep(0.3)
-              print("SEND-DONE")
-          PY
-          echo "=== root -> dev ==="
-          sudo ip netns exec knxdev python3 /tmp/mcast_probe.py listen 10.213.0.2 &
-          lpid=$!; sleep 1
-          python3 /tmp/mcast_probe.py send 10.213.0.1 || true
-          wait $lpid; echo "root->dev exit: $?"
-          echo "=== dev -> root ==="
-          python3 /tmp/mcast_probe.py listen 10.213.0.1 &
-          lpid=$!; sleep 1
-          sudo ip netns exec knxdev python3 /tmp/mcast_probe.py send 10.213.0.2 || true
-          wait $lpid; echo "dev->root exit: $?"
-
-      # Decisive protocol repro, independent of bussard: boot the device in the
-      # namespace, then from the root ns send the EXACT KNXnet/IP ROUTING
-      # A_IndividualAddress_Read frame bussard emits, and listen for the device's
-      # A_IndividualAddress_Response. This tells us whether thelsing answers the
-      # broadcast read at all, separating "device won't answer the protocol" from
-      # "bussard-specific frame problem". Both the request and the expected
-      # response are pure KNXnet/IP routing (service 0x0530), cEMI L_Data.
-      - name: Protocol repro (raw KNX read to the device)
+      # Permanent interop diagnostic (bussard-independent). Boots the device in
+      # the namespace and, from a plain socket in the root ns, exercises the KNX
+      # management protocol directly. It establishes three facts that scope any
+      # ladder failure precisely:
+      #   1. veth multicast carries the routing group both directions;
+      #   2. the device is reachable CONNECTION-ORIENTED at its default address
+      #      15.15.255 and answers property reads/writes (incl. PID_PROG_MODE);
+      #   3. whether the device answers the BROADCAST A_IndividualAddress_Read
+      #      that `bussard assign` relies on (rung a) — the known interop wall:
+      #      this pinned thelsing knx-linux-ip does NOT, even with programming
+      #      mode confirmed on (see tests-support/virtual-device/README.md).
+      # This is a probe, never a gate — it always exits 0.
+      - name: Interop protocol diagnostic (raw KNX)
         run: |
           BIN="$(cat target/virtual-device/binary-path.txt)"
           workdir="$(mktemp -d)"
           sudo ip netns exec knxdev stdbuf -oL -eL "$BIN" >"$workdir/repro-dev.log" 2>&1 &
-          # Wait for the device to join the group.
           for i in $(seq 1 50); do
             sudo ip netns exec knxdev ip maddr show | grep -q 224.0.23.12 && break
             sleep 0.2
           done
           sleep 1
-          cat > /tmp/knx_read.py <<'PY'
-          import socket, struct, sys, time
-          group, port = "224.0.23.12", 3671
-          rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-          rx.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-          rx.bind(("", port))
-          mreq = struct.pack("4s4s", socket.inet_aton(group), socket.inet_aton("10.213.0.1"))
-          rx.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-          rx.setblocking(False)
-          tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
-          tx.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton("10.213.0.1"))
-          tx.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
-
-          def cemi(msgcode, ctrl1):
-              # ai_len 0, ctrl1, ctrl2 0xE0, src 0.0.255, dst 0x0000, npdu_len 1, A_IndAddr_Read 0x0001
-              return bytes([msgcode,0x00,ctrl1,0xE0,0x00,0xFF,0x00,0x00,0x01,0x00,0x01])
-          def wrap(c):
-              return bytes([0x06,0x10,0x05,0x30]) + struct.pack(">H", 6+len(c)) + c
-
-          # Variants: (label, msgcode, ctrl1). ctrl1 0xB6 = Broadcast(bit4=1);
-          # 0xA6 = SysBroadcast(bit4=0). msgcode 0x11=L_Data.req, 0x29=L_Data.ind.
-          variants = [
-              ("req+broadcast(0xB6)", 0x11, 0xB6),
-              ("ind+broadcast(0xB6)", 0x29, 0xB6),
-              ("req+sysbcast(0xA6)",  0x11, 0xA6),
-              ("ind+sysbcast(0xA6)",  0x29, 0xA6),
-          ]
-          def drain():
-              try:
-                  while True: rx.recvfrom(1024)
-              except BlockingIOError:
-                  pass
-          for label, mc, c1 in variants:
-              drain()
-              frame = wrap(cemi(mc, c1))
-              tx.sendto(frame, (group, port))
-              print(f"SENT {label}: {frame.hex()}")
-              deadline = time.time() + 2.5; got = False
-              while time.time() < deadline:
-                  try:
-                      data, addr = rx.recvfrom(1024)
-                  except BlockingIOError:
-                      time.sleep(0.05); continue
-                  if data == frame:
-                      continue
-                  print(f"  RECV from {addr}: {data.hex()}")
-                  if len(data) >= 2 and (data[-2] & 0x03) == 0x01 and data[-1] == 0x40:
-                      print(f"  >>> {label}: GOT A_IndividualAddress_Response"); got = True
-              print(f"  result {label}: {'ANSWERED' if got else 'no reply'}")
-
-          # ROOT CAUSE hypothesis test: this pinned thelsing device defaults its
-          # individual address to 0xFFFF (15.15.255), so main.cpp's
-          # `if (individualAddress()==0) progMode(true)` never fires -> it is NOT
-          # in programming mode, and the prog-mode read is correctly ignored.
-          # Prove the fix path: connect to 15.15.255 and write PID_PROG_MODE=1
-          # (device object 0, property 54), then re-issue the broadcast read and
-          # check for an A_IndividualAddress_Response.
-          def send_to(dst, tpdu):
-              # ctrl1 0xBC (point-to-point, normal prio, not broadcast), ctrl2 0x60
-              # (individual dst, hop 6). npdu_len = TPDU octets after the len byte
-              # minus 1 (KNX convention: length excludes the TPCI octet).
-              body = bytes([0x11,0x00,0xBC,0x60,0x00,0xFF]) + struct.pack(">H", dst) + bytes([len(tpdu)-1]) + tpdu
-              frame = bytes([0x06,0x10,0x05,0x30]) + struct.pack(">H", 6+len(body)) + body
-              tx.sendto(frame, (group, port))
-              return frame
-          def recv_from(dst, want_secs=1.5):
-              # Collect frames whose cEMI source == dst (the device) for want_secs.
-              out = []
-              deadline = time.time() + want_secs
-              while time.time() < deadline:
-                  try:
-                      data, _ = rx.recvfrom(1024)
-                  except BlockingIOError:
-                      time.sleep(0.02); continue
-                  # cEMI src is bytes 10-11 of the datagram (6 hdr + 4 into cEMI).
-                  if len(data) >= 12 and struct.unpack(">H", data[10:12])[0] == dst:
-                      out.append(data)
-              return out
-          DST = 0xFFFF  # 15.15.255, the device's default address
-          drain()
-          # T_Connect (control PDU, TPCI 0x80).
-          send_to(DST, bytes([0x80]))
-          time.sleep(0.2)
-          # A_PropertyValue_Write seq0: TPCI numbered-data 0x40 | apci_hi; obj 0,
-          # PID 54 (PROG_MODE), (count=1<<12 | start=1), value 0x01.
-          apci = 0x3D7
-          pw = bytes([0x40 | ((apci>>8)&0x03), apci&0xFF, 0x00, 54]) + struct.pack(">H",(1<<12)|1) + bytes([0x01])
-          send_to(DST, pw)
-          # ACK whatever the device sends on the connection (its numbered response),
-          # then send our own T_ACK seq0 (TPCI 0xC2) so the connection stays healthy.
-          for f in recv_from(DST, 1.0):
-              print("  CO recv:", f.hex())
-          send_to(DST, bytes([0xC2]))  # T_ACK seq0 for the device's response
-          time.sleep(0.3)
-          # Read PROG_MODE back (seq1) to CONFIRM it is now 1, staying connected.
-          rd = bytes([0x40 | (1<<2) | ((0x3D5>>8)&0x03), 0x3D5&0xFF, 0x00, 54]) + struct.pack(">H",(1<<12)|1)
-          send_to(DST, rd)
-          for f in recv_from(DST, 1.0):
-              print("  progmode-read resp:", f.hex())
-          send_to(DST, bytes([0xC6]))  # T_ACK seq1
-          time.sleep(0.2)
-          # Broadcast read WITHOUT disconnecting first (some stacks drop prog mode
-          # on T_Disconnect). Dump EVERY frame the device (src 0xFFFF) emits so we
-          # do not miss a differently-shaped reply. Also try both the normal and
-          # system-broadcast forms of the read.
-          for label, c1 in [("bcast", 0xB6), ("sysbcast", 0xA6)]:
-              drain()
-              rframe = wrap(cemi(0x11, c1))
-              tx.sendto(rframe, (group, port))
-              print(f"SENT prog-mode read ({label})")
-              deadline = time.time() + 2.5
-              while time.time() < deadline:
-                  try:
-                      data, addr = rx.recvfrom(1024)
-                  except BlockingIOError:
-                      time.sleep(0.03); continue
-                  if data == rframe: continue
-                  src = struct.unpack(">H", data[10:12])[0] if len(data) >= 12 else -1
-                  print(f"  RECV src={src:#06x}: {data.hex()}")
-                  if len(data) >= 2 and (data[-2] & 0x03) == 0x01 and data[-1] == 0x40:
-                      print("  >>> GOT A_IndividualAddress_Response!")
-          # Clean disconnect at the very end.
-          send_to(DST, bytes([0x81]))
-          print("done")
-          PY
-          python3 /tmp/knx_read.py || true
-          echo "--- repro device log ---"; cat "$workdir/repro-dev.log" || true
+          python3 tests-support/virtual-device/knx_probe.py || true
+          echo "--- device log ---"; cat "$workdir/repro-dev.log" || true
           sudo pkill -f knx-linux-ip 2>/dev/null || true
           sleep 1
 
