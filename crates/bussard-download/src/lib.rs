@@ -26,7 +26,8 @@ pub use apply::{
 };
 pub use compute::{DesiredTables, compute_tables};
 pub use flash::{
-    AppIdentity, FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, ImageRef, PlanError,
-    Progress, discover_application_object, flash, plan_flash, select_application, trace,
+    AppIdentity, Connector, FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, ImageRef,
+    PlanError, Progress, Session, SingleConnector, discover_application_object, flash, plan_flash,
+    select_application, trace,
 };
 pub use plan::{LoadStep, ObjectGa, PlanReport, plan};
