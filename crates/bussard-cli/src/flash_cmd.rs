@@ -51,6 +51,7 @@ pub fn run(
     dir: &Path,
     yes: bool,
     tolerate_nonconformant_load_states: bool,
+    verify: bussard_mgmt::VerifyMode,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
     let target: IndividualAddress = address
@@ -170,12 +171,21 @@ pub fn run(
     let plan_ref = &plan;
     let options = bussard_download::FlashOptions {
         tolerate_nonconformant_load_states,
+        verify,
     };
     if tolerate_nonconformant_load_states {
         eprintln!(
             "note: --tolerate-nonconformant-load-states is on — a device that reports Loaded \
              (instead of Loading) after StartLoading will be accepted. Intended for KNX Virtual; \
              leave off for real hardware."
+        );
+    }
+    if verify == bussard_mgmt::VerifyMode::Batched {
+        eprintln!(
+            "note: --verify batched — the whole segment is written before it is read back and \
+             verified once, roughly halving the flash's memory round-trips. A corrupt write is \
+             caught at the end-of-segment verify (the first mismatching address is reported), not \
+             at the offending chunk."
         );
     }
     let outcome = runtime.block_on(async move {

@@ -1130,49 +1130,160 @@ pub async fn read_memory<Ch: L4Channel>(
     Ok(resp.data)
 }
 
+/// How a memory write verifies what it wrote back against the device.
+///
+/// Both modes read every written octet back and compare — the difference is
+/// *when*, and how many numbered messages that costs on the wire:
+///
+/// - [`VerifyMode::PerChunk`] interleaves a read-back after **each**
+///   [`apci::MAX_MEMORY_WRITE_LEN`]-octet write, so a chunk is confirmed before
+///   the next is sent (2 numbered messages per chunk: the write, then the
+///   read-back). This is the conservative real-device default: a device that
+///   silently drops or truncates a chunk fails immediately, at that chunk, before
+///   more content is streamed on top.
+///
+/// - [`VerifyMode::Batched`] writes **all** chunks first, then reads the whole
+///   range back in maximal [`apci::MAX_MEMORY_READ_LEN`]-octet reads and compares
+///   once. For a payload of N write-chunks this sends N writes + ⌈len/read⌉
+///   read-backs instead of 2·N messages — roughly **halving the numbered-message
+///   (and TP1 round-trip) count** for equal read/write chunk sizes. The trade-off
+///   is later detection: a corrupt write is only caught at the end-of-segment
+///   verify, not at the offending chunk. Batched reports the **first**
+///   mismatching address so the divergence is still pinpointed.
+///
+/// Batched mode is also the #50 KV stall discriminator: halving the numbered
+/// messages moves an L4-sequence-wraparound stall to ~2× the byte offset, while a
+/// memory-boundary wedge stays put — but that is a diagnostic consequence of the
+/// message-count change, not its purpose. The flag is a real speed feature first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum VerifyMode {
+    /// Read each chunk back immediately after writing it (2 messages/chunk).
+    #[default]
+    PerChunk,
+    /// Write every chunk, then bulk-read the whole range back and compare once.
+    Batched,
+}
+
 /// Writes `data` to device memory starting at the 16-bit `addr`, in
-/// [`apci::MAX_MEMORY_WRITE_LEN`]-octet chunks, **verifying each chunk by
-/// read-back**. Mirrors [`crate::device::DeviceConnection::write_memory`] but on
-/// a borrowed [`Layer4Connection`] so the download engine can write segment
-/// content on the very connection it drives the load machine over.
+/// [`apci::MAX_MEMORY_WRITE_LEN`]-octet chunks, verifying by read-back per
+/// [`VerifyMode::PerChunk`]. Mirrors [`crate::device::DeviceConnection::write_memory`]
+/// but on a borrowed [`Layer4Connection`] so the download engine can write
+/// segment content on the very connection it drives the load machine over.
 ///
 /// For every chunk this sends `A_Memory_Write`, then reads the same address
 /// back and compares. A divergence fails with [`MgmtError::MemoryVerifyFailed`].
-/// An empty `data` is a no-op.
+/// An empty `data` is a no-op. This is [`write_memory_verified`] with the
+/// conservative default mode and no progress callback.
 pub async fn write_memory<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     addr: u16,
     data: &[u8],
 ) -> Result<()> {
-    let chunk = usize::from(apci::MAX_MEMORY_WRITE_LEN);
+    write_memory_verified(l4, addr, data, VerifyMode::PerChunk, |_| {}).await
+}
+
+/// Writes `data` to device memory at `addr` under the chosen [`VerifyMode`],
+/// invoking `on_written` with the cumulative octet count after each write chunk
+/// (for progress reporting).
+///
+/// - [`VerifyMode::PerChunk`]: write a chunk, read it back, compare, repeat.
+/// - [`VerifyMode::Batched`]: write every chunk (reporting progress as each is
+///   acknowledged), then read the whole range back in maximal reads and compare;
+///   the first mismatching address surfaces as [`MgmtError::MemoryVerifyFailed`]
+///   with that address and the diverging octet(s).
+///
+/// An empty `data` is a no-op. Both modes verify every octet; see [`VerifyMode`]
+/// for the message-count / detection trade-off.
+pub async fn write_memory_verified<Ch: L4Channel, F: FnMut(usize)>(
+    l4: &mut Layer4Connection<Ch>,
+    addr: u16,
+    data: &[u8],
+    mode: VerifyMode,
+    mut on_written: F,
+) -> Result<()> {
+    if data.is_empty() {
+        return Ok(());
+    }
+    let write_chunk = usize::from(apci::MAX_MEMORY_WRITE_LEN);
+
+    // Phase 1: write every chunk. In per-chunk mode each is verified inline; in
+    // batched mode verification is deferred to phase 2.
     let mut offset = 0usize;
     while offset < data.len() {
-        let take = chunk.min(data.len() - offset);
+        let take = write_chunk.min(data.len() - offset);
         let piece = &data[offset..offset + take];
-        let chunk_addr = addr.checked_add(offset as u16).ok_or(WriteError::Mgmt(
-            MgmtError::MalformedResponse {
-                address: l4.target(),
-                reason: "memory write range exceeds the 16-bit address space".to_string(),
-            },
-        ))?;
+        let chunk_addr = chunk_address(l4, addr, offset)?;
 
         let (req_apci, payload) = apci::encode_memory_write(chunk_addr, piece);
         // A_Memory_Write is acknowledged (T_ACK) but not answered; the read-back
         // is the confirmation.
         l4.send_data(req_apci, &payload).await?;
 
-        let got = read_memory(l4, chunk_addr, take as u8).await?;
-        if got != piece {
-            return Err(WriteError::Mgmt(MgmtError::MemoryVerifyFailed {
-                address: l4.target(),
-                addr: chunk_addr,
-                expected: piece.to_vec(),
-                got,
-            }));
+        if mode == VerifyMode::PerChunk {
+            let got = read_memory(l4, chunk_addr, take as u8).await?;
+            if got != piece {
+                return Err(WriteError::Mgmt(MgmtError::MemoryVerifyFailed {
+                    address: l4.target(),
+                    addr: chunk_addr,
+                    expected: piece.to_vec(),
+                    got,
+                }));
+            }
         }
         offset += take;
+        on_written(offset);
+    }
+
+    if mode == VerifyMode::PerChunk {
+        return Ok(());
+    }
+
+    // Phase 2 (batched only): read the whole range back in maximal reads and
+    // compare against what we wrote, reporting the FIRST mismatching address.
+    let read_chunk = usize::from(apci::MAX_MEMORY_READ_LEN);
+    let mut roff = 0usize;
+    while roff < data.len() {
+        let take = read_chunk.min(data.len() - roff);
+        let expected = &data[roff..roff + take];
+        let chunk_addr = chunk_address(l4, addr, roff)?;
+        let got = read_memory(l4, chunk_addr, take as u8).await?;
+        if got != expected {
+            // Find the first diverging octet within this read chunk so the error
+            // names the exact first mismatching address, not just the chunk start.
+            let first = got
+                .iter()
+                .zip(expected)
+                .position(|(g, e)| g != e)
+                .unwrap_or(0);
+            let mismatch_addr = chunk_address(l4, addr, roff + first)?;
+            return Err(WriteError::Mgmt(MgmtError::MemoryVerifyFailed {
+                address: l4.target(),
+                addr: mismatch_addr,
+                expected: data[roff + first..data.len().min(roff + take)].to_vec(),
+                got: got[first..].to_vec(),
+            }));
+        }
+        roff += take;
     }
     Ok(())
+}
+
+/// Computes `base + offset` as a 16-bit device address, failing if it runs past
+/// the 16-bit address space (a programming error, not a device fault).
+fn chunk_address<Ch: L4Channel>(
+    l4: &Layer4Connection<Ch>,
+    base: u16,
+    offset: usize,
+) -> Result<u16> {
+    u16::try_from(offset)
+        .ok()
+        .and_then(|off| base.checked_add(off))
+        .ok_or_else(|| {
+            WriteError::Mgmt(MgmtError::MalformedResponse {
+                address: l4.target(),
+                reason: "memory write range exceeds the 16-bit address space".to_string(),
+            })
+        })
 }
 
 #[cfg(test)]
@@ -1324,5 +1435,11 @@ mod tests {
     fn mcb_decode_rejects_short_slices() {
         assert!(McbEntry::decode(&[0u8; 7]).is_none());
         assert!(McbEntry::decode(&[0u8; 8]).is_some());
+    }
+
+    #[test]
+    fn verify_mode_default_is_per_chunk() {
+        // The conservative real-device behaviour is the default; batched is opt-in.
+        assert_eq!(VerifyMode::default(), VerifyMode::PerChunk);
     }
 }

@@ -74,18 +74,74 @@ pub enum MgmtError {
         got: Vec<u8>,
     },
 
+    /// A `NoResponse`/`Disconnected` that struck **mid-session**, after at least
+    /// one numbered exchange had already completed on this connection. It folds
+    /// the exchange count and sequence-wrap count into the message so a stall is
+    /// measured in protocol units (numbered messages), not just in bytes.
+    ///
+    /// This is the additive form of [`MgmtError::NoResponse`] /
+    /// [`MgmtError::Disconnected`]: the first send on a connection that draws no
+    /// reaction still surfaces the bare absent/disconnected error (nothing had
+    /// happened yet to count); only a silence *after* progress carries this
+    /// context. `kind` names which of the two underlying conditions occurred so
+    /// [`MgmtError::device_present`] and callers keep the present/absent
+    /// distinction. See #50: the next KV run measures the stall point in messages.
+    #[error(
+        "{kind} from {address} after {exchanges} numbered exchange(s) \
+         (sequence wrapped {wraps} time(s))"
+    )]
+    MidSessionSilence {
+        /// The device whose session went silent.
+        address: IndividualAddress,
+        /// Which underlying condition struck: `no response (device absent)` or
+        /// `connection was disconnected`.
+        kind: SilenceKind,
+        /// How many numbered data telegrams (NDTs) had been acknowledged on this
+        /// connection before the silence.
+        exchanges: u32,
+        /// How many times the 4-bit send sequence wrapped (0..15 → 0) over those
+        /// exchanges — `exchanges / 16`.
+        wraps: u32,
+    },
+
     /// An underlying transport error (socket, gateway, framing).
     #[error(transparent)]
     Transport(#[from] TransportError),
 }
 
+/// Which silence struck mid-session, for [`MgmtError::MidSessionSilence`]. Keeps
+/// the absent-vs-present distinction the bare errors carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SilenceKind {
+    /// The device stopped answering entirely (an absent-style `NoResponse`).
+    NoResponse,
+    /// The device disconnected or the connection dropped (`Disconnected`).
+    Disconnected,
+}
+
+impl std::fmt::Display for SilenceKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SilenceKind::NoResponse => write!(f, "no response (device absent)"),
+            SilenceKind::Disconnected => write!(f, "connection was disconnected"),
+        }
+    }
+}
+
 impl MgmtError {
     /// Whether this error indicates the device is **present** (as opposed to
     /// simply absent). A NAK, disconnect, malformed response or failed memory
-    /// verify all mean a device answered in some way; only
-    /// [`MgmtError::NoResponse`] means absent.
+    /// verify all mean a device answered in some way; only a `NoResponse` (bare
+    /// or the mid-session `NoResponse`-kind silence) means absent.
     pub fn device_present(&self) -> bool {
-        !matches!(self, MgmtError::NoResponse { .. })
+        !matches!(
+            self,
+            MgmtError::NoResponse { .. }
+                | MgmtError::MidSessionSilence {
+                    kind: SilenceKind::NoResponse,
+                    ..
+                }
+        )
     }
 }
 
@@ -169,6 +225,36 @@ mod tests {
             reason.contains("KNX Virtual IP"),
             "must name where it is seen: {reason}"
         );
+    }
+
+    #[test]
+    fn mid_session_silence_renders_exchange_and_wrap_counts() {
+        // The #50 counter: a mid-session silence names the numbered-exchange count
+        // and how many times the 4-bit sequence wrapped, in protocol units.
+        let addr: IndividualAddress = "1.1.4".parse().unwrap();
+        let err = MgmtError::MidSessionSilence {
+            address: addr,
+            kind: SilenceKind::NoResponse,
+            exchanges: 35,
+            wraps: 2,
+        };
+        assert_eq!(
+            err.to_string(),
+            "no response (device absent) from 1.1.4 after 35 numbered exchange(s) \
+             (sequence wrapped 2 time(s))"
+        );
+        // A no-response-kind silence keeps the device-absent classification.
+        assert!(!err.device_present());
+
+        // A disconnected-kind silence means the device is present.
+        let disc = MgmtError::MidSessionSilence {
+            address: addr,
+            kind: SilenceKind::Disconnected,
+            exchanges: 4,
+            wraps: 0,
+        };
+        assert!(disc.device_present());
+        assert!(disc.to_string().contains("connection was disconnected"));
     }
 
     #[test]
