@@ -62,8 +62,8 @@ use std::collections::BTreeMap;
 use bussard_mgmt::MgmtError;
 use bussard_mgmt::connection::{L4Channel, Layer4Connection};
 use bussard_mgmt::load::{
-    self, LoadControl, LoadState, WriteError, allocate_segment, compare_property, read_load_state,
-    read_mcb_table, write_load_control, write_property,
+    self, LoadControl, LoadState, WriteError, allocate_segment, compare_property, master_reset,
+    read_load_state, read_mcb_table, write_load_control, write_property,
 };
 use bussard_mgmt::tables::{OT_APPLICATION_PROGRAM, PID_OBJECT_TYPE};
 use bussard_prod::application::{ApplicationProgram, LoadOp, LoadProcedure, SegmentKind};
@@ -152,6 +152,22 @@ pub enum FlashStep {
     LoadCompleted,
     /// Restart the device (`LdCtrlRestart`).
     Restart,
+    /// Master-reset the device mid-procedure (`LdCtrlMasterReset`).
+    ///
+    /// Sends a master-reset `A_Restart`, waits for the device to reboot and come
+    /// back, re-establishes the L4 connection, re-authorizes it, and resumes the
+    /// remaining steps. This is the single spec-required reconnect-after-restart
+    /// a master reset entails; memory writes are absolute/relative-addressed and
+    /// stateless, so resuming is just continuing the op list on the fresh
+    /// connection.
+    MasterReset {
+        /// The erase code from the op's `EraseCode` attribute (defaulting to `1`,
+        /// "Confirmed Restart", when absent).
+        erase_code: u8,
+        /// The channel number from the op's `ChannelNumber` attribute (`0` = the
+        /// whole device).
+        channel_number: u8,
+    },
 }
 
 /// The origin of the bytes a memory-write step streams, resolved at plan time so
@@ -306,6 +322,28 @@ pub enum PlanError {
 /// (or a device-supplied base) is treated as corrupt input and refused at plan
 /// time rather than driving an allocation or an out-of-range address.
 const MAX_WRITE_SPAN: u64 = 1024 * 1024;
+
+/// How long to wait for a device to come back after a master-reset `A_Restart`
+/// before attempting to reconnect. A real ETS→KNX-Virtual capture showed ~6.5s of
+/// silence while the device rebooted; this is deliberately generous so a slower
+/// real device still comes back in time. The wait is a single bounded sleep — not
+/// a poll loop — because the device is unreachable while it reboots.
+const MASTER_RESET_REBOOT_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Environment variable that overrides [`MASTER_RESET_REBOOT_WAIT`] with a
+/// millisecond value. Set by the mock-device master-reset test so the reboot wait
+/// does not stall the test; unset in normal use, so the full generous wait
+/// applies. Behaviour is otherwise unchanged.
+const REBOOT_WAIT_MS_ENV: &str = "BUSSARD_FLASH_REBOOT_WAIT_MS";
+
+/// The master-reset reboot wait, honouring [`REBOOT_WAIT_MS_ENV`] for tests.
+fn master_reset_reboot_wait() -> std::time::Duration {
+    std::env::var(REBOOT_WAIT_MS_ENV)
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(std::time::Duration::from_millis)
+        .unwrap_or(MASTER_RESET_REBOOT_WAIT)
+}
 
 /// Identity of the application being flashed, for the pre-flight display and the
 /// verify report.
@@ -486,7 +524,11 @@ impl<Ch: L4Channel> Session<SingleConnector<Ch>> {
     /// The returned session flashes over exactly this connection. This is the
     /// drop-in for callers and tests that open the connection themselves.
     pub fn from_connection(l4: Layer4Connection<Ch>) -> Session<SingleConnector<Ch>> {
-        Session { l4: Some(l4) }
+        Session {
+            l4: Some(l4),
+            connector: None,
+            bcu_key: None,
+        }
     }
 }
 
@@ -497,11 +539,27 @@ impl<Ch: L4Channel> Session<SingleConnector<Ch>> {
 /// duration; the engine borrows `session.l4()` for each step. `apply`/`reconstruct`
 /// keep borrowing a plain `Layer4Connection` and are untouched.
 ///
+/// The session also retains the [`Connector`] it was opened from and the
+/// authorization key, so it can re-establish the connection **once** after a
+/// spec-required device restart (an `LdCtrlMasterReset`): the device reboots and
+/// drops the L4 link, and the procedure must continue on a fresh, re-authorized
+/// connection. This is the single reconnect-after-restart the KNX spec mandates
+/// for a master reset — not general connection cycling.
+///
 /// The type parameter `C` names the [`Connector`] the session was opened from, so
 /// the connection's channel type stays nameable without boxing.
 pub struct Session<C: Connector> {
     /// The open connection the download runs over.
     l4: Option<Layer4Connection<C::Channel>>,
+    /// The connector the session was opened from, retained so a master-reset
+    /// step can re-open the connection after the device reboots. `None` for a
+    /// session built from an already-open connection ([`Session::from_connection`]),
+    /// which cannot reconnect on its own.
+    connector: Option<C>,
+    /// The authorization key to re-present on a reconnect (the free-access key
+    /// when `None`), so the resumed connection is authorized exactly as the
+    /// original was.
+    bcu_key: Option<u32>,
 }
 
 impl<C: Connector> Session<C> {
@@ -525,7 +583,11 @@ impl<C: Connector> Session<C> {
     ) -> Result<Session<C>, WriteError> {
         let mut l4 = connector.connect().await?;
         Self::authorize(&mut l4, bcu_key).await?;
-        Ok(Session { l4: Some(l4) })
+        Ok(Session {
+            l4: Some(l4),
+            connector: Some(connector),
+            bcu_key,
+        })
     }
 
     /// Presents the free-access-or-`bcu_key` authorization on the connection,
@@ -544,6 +606,31 @@ impl<C: Connector> Session<C> {
         self.l4
             .as_mut()
             .expect("session always holds its open connection")
+    }
+
+    /// Re-establishes the L4 connection after a device restart, re-authorizing it.
+    ///
+    /// Used only by the master-reset step: the device rebooted and dropped the
+    /// connection, so the old `Layer4Connection` is dead. This drops it, opens a
+    /// fresh connection via the retained [`Connector`], and re-presents the same
+    /// authorization the original connection used, so the remaining procedure
+    /// steps continue transparently. A session built from an already-open
+    /// connection ([`Session::from_connection`]) has no connector to reconnect
+    /// with and fails with [`MgmtError::Transport`]`(Closed)`.
+    async fn reconnect(&mut self) -> Result<(), WriteError> {
+        // Drop the dead connection outright (do NOT try to T_Disconnect — the
+        // device is mid-reboot and will not answer).
+        self.l4 = None;
+        let connector =
+            self.connector
+                .as_mut()
+                .ok_or(WriteError::Mgmt(bussard_mgmt::MgmtError::Transport(
+                    bussard_transport::TransportError::Closed,
+                )))?;
+        let mut l4 = connector.connect().await?;
+        Self::authorize(&mut l4, self.bcu_key).await?;
+        self.l4 = Some(l4);
+        Ok(())
     }
 
     /// Consumes the session and gracefully disconnects the open connection.
@@ -671,6 +758,19 @@ pub fn plan_flash(
             LoadOp::Load { .. } => steps.push(FlashStep::StartLoading),
             LoadOp::LoadCompleted { .. } => steps.push(FlashStep::LoadCompleted),
             LoadOp::Restart => steps.push(FlashStep::Restart),
+            LoadOp::MasterReset {
+                erase_code,
+                channel_number,
+            } => {
+                // The EraseCode/ChannelNumber are single octets on the wire; a
+                // value beyond a u8 is corrupt vendor input. Default the erase
+                // code to 1 ("Confirmed Restart") and the channel to 0 (the whole
+                // device) when the attribute is absent, and clamp to u8.
+                steps.push(FlashStep::MasterReset {
+                    erase_code: erase_code.unwrap_or(1).min(u32::from(u8::MAX)) as u8,
+                    channel_number: channel_number.unwrap_or(0).min(u32::from(u8::MAX)) as u8,
+                });
+            }
 
             LoadOp::RelSegment {
                 size, applies_to, ..
@@ -1273,6 +1373,10 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
     let mut segment_base: Option<u32> = None;
     // Track (address, sample_len) of writes for the post-flash spot check.
     let mut written_samples: Vec<(u16, Vec<u8>)> = Vec::new();
+    // The verified outcome, captured just before a terminal restart reboots the
+    // device (after which it is unreachable and cannot be verified). `None` until
+    // then; the post-loop verify runs only if it is still `None`.
+    let mut verified: Option<FlashOutcome> = None;
 
     for (i, step) in plan.steps.iter().enumerate() {
         progress(Progress::Step {
@@ -1402,26 +1506,61 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
             FlashStep::LoadCompleted => {
                 write_load_control(session.l4(), app_obj, LoadControl::LoadCompleted).await?;
             }
+            FlashStep::MasterReset {
+                erase_code,
+                channel_number,
+            } => {
+                // Send the master reset and confirm the device accepted it (a
+                // non-zero A_Restart_Response error code fails here). The device
+                // then reboots and drops the L4 connection — the SPEC-REQUIRED
+                // single reconnect: wait out the reboot, re-establish the
+                // connection and re-authorize, then resume the remaining steps.
+                // Memory writes are absolute/relative-addressed and stateless, so
+                // continuing the op list on the fresh connection is correct.
+                master_reset(session.l4(), *erase_code, *channel_number).await?;
+                tokio::time::sleep(master_reset_reboot_wait()).await;
+                session.reconnect().await?;
+            }
             FlashStep::Restart => {
-                // Fire-and-forget restart on the raw connection.
+                // The terminal restart is the SUCCESSFUL last step: after it the
+                // device reboots and goes silent, which is the expected outcome —
+                // NOT a failure. Verify the result FIRST (the device is still up
+                // and Loaded here), then fire-and-forget the restart. The device
+                // going silent afterwards must never be surfaced as a flash error.
+                verified = Some(verify_outcome(session.l4(), app_obj, &written_samples).await?);
                 let (apci, payload) = bussard_mgmt::apci::encode_restart(0);
                 let _ = session.l4().send_data(apci, &payload).await;
             }
         }
     }
 
-    // Verify: re-read the application-program object's load state and spot-check
-    // a sample of each written segment over the same connection.
-    let l4 = session.l4();
+    // If no terminal restart captured the outcome (a procedure with no final
+    // Restart), verify now over the still-open connection.
+    match verified {
+        Some(outcome) => Ok(outcome),
+        None => verify_outcome(session.l4(), app_obj, &written_samples).await,
+    }
+}
+
+/// Verifies a completed flash over the open connection: re-reads the
+/// application-program object's load state and spot-checks a sample of each
+/// written segment against what was streamed.
+///
+/// Called with the device still up — either just before a terminal restart
+/// reboots it, or (for a procedure without a final restart) after the last step.
+async fn verify_outcome<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    app_obj: u8,
+    written_samples: &[(u16, Vec<u8>)],
+) -> Result<FlashOutcome, WriteError> {
     let load_state = read_load_state(l4, app_obj).await?;
     let mut spot_checks_match = true;
-    for (addr, expected) in &written_samples {
+    for (addr, expected) in written_samples {
         let got = load::read_memory(l4, *addr, expected.len() as u8).await?;
         if &got != expected {
             spot_checks_match = false;
         }
     }
-
     Ok(FlashOutcome {
         load_state,
         spot_checks_match,
@@ -1503,6 +1642,12 @@ fn step_label(step: &FlashStep) -> String {
         },
         FlashStep::LoadCompleted => "complete load".to_string(),
         FlashStep::Restart => "restart device".to_string(),
+        FlashStep::MasterReset {
+            erase_code,
+            channel_number,
+        } => format!(
+            "master reset (erase code {erase_code}, channel {channel_number}) — reconnect and resume"
+        ),
     }
 }
 
@@ -1598,6 +1743,90 @@ mod tests {
         assert_eq!(plan.total_write_bytes(), 7);
         // The parameter image reflects the default 7.
         assert_eq!(plan.param_images["M-1_A-1_RS-2"], vec![7]);
+    }
+
+    #[test]
+    fn plan_lowers_master_reset() {
+        // An LdCtrlMasterReset mid-procedure (KNX-Virtual shape) lowers to a
+        // MasterReset step carrying the op's EraseCode/ChannelNumber, between the
+        // allocate and the write. It is NOT refused as an unsupported op.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-MR" MaskVersion="MV-07B0" Name="MR"
+            LoadProcedureStyle="ProductDefault">
+          <Static>
+           <Code><RelativeSegment Id="M-1_A-MR_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment></Code>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlUnload LsmIdx="4" />
+             <LdCtrlLoad LsmIdx="4" />
+             <LdCtrlRelSegment LsmIdx="4" Size="6" AppliesTo="full" />
+             <LdCtrlMasterReset EraseCode="4" ChannelNumber="0" />
+             <LdCtrlWriteRelMem ObjIdx="0" Offset="0" Size="6" AppliesTo="full" />
+             <LdCtrlLoadCompleted LsmIdx="4" />
+             <LdCtrlRestart />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-1_A-MR", xml.as_bytes()).unwrap();
+        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+        // The master reset sits between the allocation and the write.
+        let mr_pos = plan
+            .steps
+            .iter()
+            .position(|s| matches!(s, FlashStep::MasterReset { .. }))
+            .expect("the master reset lowers to a step");
+        assert!(matches!(
+            plan.steps[mr_pos],
+            FlashStep::MasterReset {
+                erase_code: 4,
+                channel_number: 0
+            }
+        ));
+        let alloc_pos = plan
+            .steps
+            .iter()
+            .position(|s| matches!(s, FlashStep::AllocateSegment { .. }))
+            .unwrap();
+        let write_pos = plan
+            .steps
+            .iter()
+            .position(|s| matches!(s, FlashStep::WriteRelMem { .. }))
+            .unwrap();
+        assert!(
+            alloc_pos < mr_pos && mr_pos < write_pos,
+            "steps {:?}",
+            plan.steps
+        );
+        // The trace names the reconnect-and-resume master-reset step.
+        assert!(trace(&plan).iter().any(|l| l.contains("master reset")));
+    }
+
+    #[test]
+    fn plan_defaults_master_reset_erase_code() {
+        // An LdCtrlMasterReset with no attributes defaults EraseCode to 1
+        // ("Confirmed Restart") and ChannelNumber to 0.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-MR2" MaskVersion="MV-07B0" Name="MR2">
+          <Static>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlLoad LsmIdx="4" />
+             <LdCtrlMasterReset />
+             <LdCtrlLoadCompleted LsmIdx="4" />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-1_A-MR2", xml.as_bytes()).unwrap();
+        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+        assert!(plan.steps.iter().any(|s| matches!(
+            s,
+            FlashStep::MasterReset {
+                erase_code: 1,
+                channel_number: 0
+            }
+        )));
     }
 
     #[test]

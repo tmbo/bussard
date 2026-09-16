@@ -306,6 +306,22 @@ pub enum LoadOp {
     Disconnect,
     /// `<LdCtrlRestart>`.
     Restart,
+    /// `<LdCtrlMasterReset EraseCode=… ChannelNumber=…>`: a device Master Reset,
+    /// realised on the wire as an `A_Restart` request with the master-reset
+    /// restart-type bit set. Unlike a basic `Restart` (fire-and-forget), the
+    /// device answers with an `A_Restart_Response` (error code + minimum
+    /// process time) and then restarts, dropping the connection. KNX Virtual's
+    /// own apps use this mid-procedure (`RelSegment → MasterReset →
+    /// WriteRelMem`), so the download engine reconnects and resumes after it.
+    MasterReset {
+        /// The erase code (`EraseCode`): what the master reset clears. `1` =
+        /// Confirmed Restart, `4` = the value KNX Virtual's apps carry. Encoded
+        /// verbatim into the `A_Restart` request.
+        erase_code: Option<u32>,
+        /// The channel number (`ChannelNumber`) the erase applies to (`0` for
+        /// the whole device in every observed procedure).
+        channel_number: Option<u32>,
+    },
     /// `<LdCtrlUnload LsmIdx=…>`.
     Unload {
         /// Load-state-machine index.
@@ -1136,6 +1152,10 @@ fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m: &Attrs) {
         b"LdCtrlConnect" => LoadOp::Connect,
         b"LdCtrlDisconnect" => LoadOp::Disconnect,
         b"LdCtrlRestart" => LoadOp::Restart,
+        b"LdCtrlMasterReset" => LoadOp::MasterReset {
+            erase_code: u(b"EraseCode"),
+            channel_number: u(b"ChannelNumber"),
+        },
         b"LdCtrlUnload" => LoadOp::Unload {
             lsm_idx: u(b"LsmIdx"),
         },
@@ -1528,6 +1548,31 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn parses_master_reset() {
+        // The KNX Virtual shape: an LdCtrlMasterReset carrying EraseCode and
+        // ChannelNumber, mid-procedure between a RelSegment and a WriteRelMem.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-1" Name="x">
+          <LoadProcedures><LoadProcedure MergeId="1">
+           <LdCtrlRelSegment LsmIdx="4" Size="6" AppliesTo="full" />
+           <LdCtrlMasterReset EraseCode="4" ChannelNumber="0" />
+           <LdCtrlWriteRelMem ObjIdx="0" Offset="0" Size="6" AppliesTo="full" />
+          </LoadProcedure></LoadProcedures>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program_str("M-1_A-1", xml).unwrap();
+        let ops = &app.load_procedures[0].ops;
+        assert!(matches!(ops[0], LoadOp::RelSegment { .. }));
+        assert!(matches!(
+            ops[1],
+            LoadOp::MasterReset {
+                erase_code: Some(4),
+                channel_number: Some(0),
+            }
+        ));
+        assert!(matches!(ops[2], LoadOp::WriteRelMem { .. }));
     }
 
     #[test]
