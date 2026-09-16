@@ -106,8 +106,73 @@ with an explanation and a non-zero exit, and the integration test self-skips.
   pre-seed a saved `flash.bin` with `--seed` for table tests. The Rust test
   spawns the binary directly and does not need this wrapper, but it documents the
   boot contract and is handy for manual runs.
-- The integration test lives at
+- The management-ladder integration test lives at
   `crates/bussard-cli/tests/virtual_device.rs`.
+- The **flash oracle** integration test lives at
+  `crates/bussard-cli/tests/virtual_device_flash.rs`, with its synthetic
+  `.knxprod` source under `knxprod/` (see "The flash oracle" below).
+
+## The flash oracle (`bussard flash` end-to-end)
+
+The management ladder above stops at rung (a) because a factory-fresh thelsing
+device boots at 15.15.255 and never enters programming mode, so `assign`'s
+broadcast discovery finds nothing. `bussard flash` sidesteps that wall entirely:
+it needs no programming-mode discovery, only a connection-oriented management
+session to a **known** address — and `knx_probe.py` already proved the device is
+reachable connection-oriented at its default 15.15.255. So the flash oracle
+flashes the device **at 15.15.255 directly** and drives its ApplicationProgram
+object Unloaded -> Loading -> Loaded.
+
+Run it (Linux):
+
+```sh
+BIN=$(tests-support/virtual-device/build.sh)
+BUSSARD_VIRTUAL_DEVICE=1 BUSSARD_TEST_MULTICAST=1 BUSSARD_VIRTUAL_DEVICE_BIN=$BIN \
+  cargo test -p bussard-cli --test virtual_device_flash -- --ignored --nocapture
+```
+
+The exact command the test runs (plain flags — no windowing, pacing, or
+tolerate-flags):
+
+```sh
+bussard flash 15.15.255 --product <built.knxprod> --dir <empty> --yes \
+  --bcu-key FFFFFFFF --routing
+```
+
+### The synthetic `.knxprod`
+
+`knxprod/M-00FA/M-00FA_A-0001.xml` is bussard's OWN hand-authored product XML
+(MIT), not vendor data and not derived from any thelsing source. It declares:
+
+- `MaskVersion="MV-57B0"` — bussard's flash pre-flight gates on `is_system_b`
+  (true for the whole `x7B0` family, so 57B0 passes) **and** an exact
+  app-mask == device-mask compare, so the app must declare 57B0 to be accepted
+  against this device. (This is why the ladder's `reconstruct` rung (d) refused
+  57B0 but flash accepts it: flash matches the app's own declared mask, it does
+  not gate on the TP-only `07B0`.)
+- a 6-byte relative code segment and a single `ProductDefault` load procedure
+  that lowers to exactly: Unload / StartLoading / **relative** segment allocation
+  (`LdCtrlRelSegment`) / WriteRelMem / LoadCompleted / Restart.
+
+The harness zips this XML into a `.knxprod` at run time with the `zip` CLI, so
+git carries readable XML rather than a binary blob.
+
+### Why this reaches Loaded (device-side facts)
+
+From the pinned thelsing source (public headers/behaviour only, nothing linked
+or vendored): the `Bau57B0` stack exposes the **ApplicationProgram interface
+object at index 4** (object type 3), so bussard's dynamic
+`PID_OBJECT_TYPE`-probe discovery finds it. That object is a dynamic
+`TableObject`, whose load-state machine takes `Unloaded --StartLoading-->
+Loading --LoadCompleted--> Loaded` **unconditionally** — no prior segment
+allocation is required to reach Loaded, and `LoadCompleted` has no path to
+`Error`. Memory writes are accepted and read back for any in-range address with
+no access-control gate, and `A_Authorize` always grants level 0 (so
+`--bcu-key FFFFFFFF` is harmless). One caveat the fixture respects: the device
+accepts only the **relative** `AdditionalLoadControls` sub-command (`0x0B`,
+which `bussard-mgmt`'s `allocate_segment` uses) and pushes the object to `Error`
+on an **absolute** segment (`0x0A`) — so the procedure uses `LdCtrlRelSegment`,
+never `LdCtrlAbsSegment`.
 
 ## Which binary, and the mask consequence
 
