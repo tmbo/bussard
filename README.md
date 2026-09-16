@@ -1,6 +1,6 @@
 # 🪽 bussard
 
-A buzzard circles the field and sees everything move. `bussard` does that for a KNX building: an open-source CLI that programs, watches, and decodes the bus. Built for LLMs to be able to manage your KNX configuration.
+A buzzard circles the field and sees everything move. `bussard` does that for a KNX building: an open-source CLI that programs, watches, and decodes the bus. Built so an LLM can manage your KNX configuration with you.
 
 All the configuration for your KNX setup is stored in YAML files, ready for your chat agent to modify them, creating reviewable diffs. `bussard` pushes the changes to the devices over your KNXnet/IP gateway. ETS stays in the drawer for the things only ETS can do (certification, planning, the odd exotic device).
 
@@ -50,6 +50,7 @@ Found gateway: KNX IP Interface (192.168.1.74:3671, IA 1.1.250)
 Created a fresh KNX model in knx.
 $ bussard adopt --product actuator.knxprod    # press the programming button
 adopted 15.15.255 → 1.1.5
+$ bussard flash 1.1.5 --product actuator.knxprod   # ETS-free application download
 ```
 
 From there you can explore all the functionality of bussard:
@@ -80,8 +81,8 @@ Package managers (Homebrew, winget, `curl | sh`) are planned.
 
 ## Safety
 
-- A GA marked `protected: true` (wind alarm or central functions) is refused: the CLI needs `--force`. An LLM connecting to bussard over MCP has no override at all and can not modify protected GAs.
-- Every device write is plan-before-apply: bussard will read the live state and show the diff. After a confirmation and a back up changes are executed and verified.
+- A GA marked `protected: true` (wind alarm or central functions) is refused: the CLI needs `--force`. An LLM connecting to bussard over MCP has no override at all and cannot modify protected GAs.
+- Every device write is plan-before-apply: bussard reads the live state, shows the diff, asks for confirmation, backs up, writes, and verifies.
 - The MCP server has three tiers: passive (never transmits), read (default, rate-limited), write (opt-in via `--allow-writes`).
 
 ## Documentation

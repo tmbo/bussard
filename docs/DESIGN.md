@@ -35,8 +35,7 @@ KNX device ever made.
 
 The `.knxprod` product-data format is known to the public, the download
 procedure is described inside the product data itself (`LoadProcedures`), and open-source
-implementations exist for both ends of the problem, just not for the
-the download side.
+implementations exist for both ends of the problem, just not for the download side.
 
 ## 2. The layer cake
 
@@ -50,12 +49,13 @@ A KNX device's configuration is three separable things with very different diffi
 
 Most day-to-day changes are (b), but all three layers are in scope: the goal is the
 entire installation lifecycle in YAML, from `init` to a running house. `assign` does (a);
-`plan`/`apply` do (b) for System B devices; for (c), `flash` already computes and streams
-the full parameter memory image from vendor data, and the model integration (a
-`parameters:` section in the device files, imported from the ETS project and validated
-against the product model, #46) is in progress. Which path links take (properties on
-System B vs. memory writes on older System 1/2) depends on the mask version each device
-reports; `bussard scan` reports this.
+`plan`/`apply` do (b) for System B devices. For (c), the loop is closed on System B:
+device files carry a `parameters:` section (imported from the ETS project, validated
+against the product model, #46), and `flash` computes the parameter memory image from
+vendor defaults plus those overrides and streams it, using per-module-instance base
+offsets (`module_bases:`, #48) to place per-channel parameters. Which path links take
+(properties on System B vs. memory writes on older System 1/2) depends on the mask
+version each device reports; `bussard scan` reports this.
 
 ## 3. What's inside a `.knxprod`
 
@@ -151,6 +151,11 @@ keeps only the design decisions behind the schema.
   exists.
 - `protected: true` on a GA is the safety gate: the CLI requires `--force`, MCP refuses
   outright.
+- Device `parameters:` store only values that differ from the vendor default (diff-
+  friendly), keyed `<name-slug>@<ref-id>` because a name alone is ambiguous across
+  module instances. They sit in the hand-editable zone but are replaced with ETS truth
+  on re-import; the generated zone below the marker (`module_bases:`, `com_objects:`)
+  is never hand-edited.
 
 The loop is deliberately Terraform-shaped: `import → validate → plan → apply`, with
 `plan` producing a reviewable diff. That's what makes the LLM workflow safe: the model
@@ -204,14 +209,24 @@ back and diff, plus a `--line` sweep that synthesizes a fresh ETS-less model). T
 downloader itself shipped as `plan` (read-only table diff) and `apply` (backup, write,
 verify) for System B devices. The workflows are documented in [howto.md](howto.md).
 
-**Phase 3, parameters and application download. Engine shipped.** `flash` does the first
-ETS-free application download from a `.knxprod` into a factory-fresh System B device:
-pre-flight plan (mask gate and unsupported-op refusal before any write), progress,
-`Loaded` + spot-check verification. Known gap: load procedures using `LdCtrlAbsSegment`
-(absolute segments), `LdCtrlTaskSegment`/`LdCtrlTaskCtrl1`, or vendor ops like
-`LdCtrlLoadImageProp` are refused at pre-flight rather than executed; those remain
-ETS-only and are a documented follow-up. Per-parameter memory placement (the hard,
-device-specific allocator) is next, validated byte-wise against ETS dumps.
+**Phase 3, parameters and application download. Shipped for System B.** `flash` does the
+ETS-free application download from a `.knxprod` into a System B device: pre-flight plan
+(mask gate and unsupported-op refusal before any write), progress, `Loaded` + spot-check
+verification. The parameter image is computed from vendor defaults plus the device file's
+`parameters:` overrides, with `module_bases:` resolving per-channel placement. Hardening
+shipped along the way: A_Authorize on every management connect (`flash --bcu-key` for
+keyed devices, free access otherwise, #52), selectable verify modes (per-chunk vs
+batched), `--pace` frame pacing, and windowed reconnect downloads (`--reconnect-every` /
+`--max-window-retries`) that survive peers with a shallow per-connection exchange budget.
+
+**The frontier.** System 7 (mask `0705`, plus `0701`/`0700`): parsed and classified, but
+not flashable; its segment-based procedures (`LdCtrlAbsSegment`, `LdCtrlWriteMem` to
+absolute segments) are refused at pre-flight. `57B0` (KNXnet/IP System B) is likewise
+refused; the gates require exactly `07B0`. `LdCtrlTaskSegment`/`LdCtrlTaskCtrl1` and
+unrecognized ops (notably `LdCtrlCompareRelMem`, a read-and-compare that blocks two
+otherwise-executable MDT apps) are refused whole; `LdCtrlCompareRelMem` is the top
+roadmap op. These remain ETS-only until implemented and validated byte-wise against ETS
+dumps.
 
 ### The interop wall
 
@@ -224,10 +239,26 @@ gate on `07B0` (TP System B). There is no stock thelsing binary that both speaks
 multicast and reports `07B0`, so the table-level rungs cannot be reached over routing
 without either relaxing the mask gate to also accept `57B0` (they share the same
 `BauSystemBDevice` table stack), a modified thelsing variant, or driving `knx-linux-tp`
-over a TP-UART. KNX Virtual (Windows) works for discovery and assign, but management
-reads need a loaded application. The full table cycle against a foreign peer is therefore
-still pending; validating it needs a `07B0`-reporting device (a spare TP actuator, or a
-TP-UART variant).
+over a TP-UART. The full table cycle against a foreign peer is therefore still pending;
+validating it needs a `07B0`-reporting device (a spare TP actuator, or a TP-UART
+variant).
+
+### KNX Virtual notes
+
+KNX Virtual (Windows) is the other test peer, useful for discovery, assign, and flash,
+with caveats that shaped several flash flags:
+
+- It reports `Loaded` immediately after StartLoading instead of the conformant
+  `Loading`; `flash --tolerate-nonconformant-load-states` accepts that without weakening
+  real-device checks.
+- It ACKs at loopback speed and can wedge under a full-rate memory burst (#50);
+  `flash --pace 25-50` throttles to a TP1-like rate, and `--verify batched` serves as
+  the stall discriminator.
+- It drops the L4 connection after a varying, sometimes very shallow number of exchanges
+  (as few as 7, #52). `reconstruct <ia> --l4-soak <N>` measures the budget empirically;
+  `flash --reconnect-every 4-5` windows the download below it.
+- Management reads need a loaded application, so `reconstruct` against a fresh KV device
+  has nothing to read until after a first flash.
 
 ### Verification strategy (phase 2 onward)
 
@@ -238,6 +269,63 @@ TP-UART variant).
 
 This turns "did I understand the allocator?" into a failing test. Additionally, run an
 independent implementation (Calimero) against the same device and diff the frames.
+
+### The flashability corpus and sweep findings
+
+`tests-support/product-corpus/` turns the product-data pointer index into a repeatable
+"can bussard flash this today?" check. `fetch.sh` reads `corpus.txt` (one order number
+per index entry) and runs `bussard import-product --order-number … --yes-download` for
+each, downloading and checksum-verifying every file into a git-ignored `cache/`. The
+env-gated test `crates/bussard-download/tests/flash_corpus.rs` then dry-runs `plan_flash`
+over every application program in the cache and reports which lower to an executable
+plan, which are refused, and, for the refused System B apps, which load-procedure op
+blocked them. With `BUSSARD_PRODUCT_CORPUS` unset the test skips green, so CI never
+downloads vendor data. See `tests-support/product-corpus/README.md` for the
+clean-machine repro.
+
+A wider one-off sweep read a much larger corpus through the same library code: 220
+`.knxprod` files across 8 manufacturers (MDT, Zennio, Theben, Elsner, Lingg & Janke,
+Steinel, EAE Technology, Arcus-EDS). The full pointer list (URL, SHA-256, size, vendor)
+lives in `tests-support/product-corpus/sweep-manifest.json`; like the index it holds
+pointers only, never vendor bytes. The sweep script may unzip a zip-of-`.knxprod`
+locally, which the committed index deliberately does not.
+
+Headline numbers: 384 application programs, 83 executable, 4 refused, 0 parse failures.
+`read_knxprod` parsed every one of the 220 files without error, over schema versions
+`/11`, `/13`, `/14`, `/20`, `/21`, `/23` and 13 distinct mask families, including
+BCU1/BCU2, KNX-RF and coupler masks. Only the 82 System B (`07B0`) apps are flash
+candidates, and 78 of those lower to an executable plan.
+
+What blocked the four refusals:
+
+- **`LdCtrlCompareRelMem` (2 apps).** A masked, inverted relative-memory verify op the
+  parser keeps as `LoadOp::Raw` and the planner refuses (MDT BE-GTSx6Tx, MDT JTA blind
+  push button). The top roadmap op: it is a read-and-compare sitting inside
+  otherwise-complete procedures.
+- **Enum default not a declared member (2 apps).** The Zennio Z40 and Z70 v2 panels
+  declare a parameter whose own default `Value` is not one of its enumeration's members,
+  so `compute_parameter_image` refuses the whole download (`UnresolvableImage`). The
+  strict membership check has real user cost here: it blocks two otherwise fully
+  executable panels over a vendor data-quality quirk.
+
+Other unhandled load ops the sweep surfaced (all kept as `LoadOp::Raw`, none yet blocking
+an executable procedure): `LdCtrlTaskCtrl2`, `LdCtrlTaskPtr`, `LdCtrlDeclarePropDesc`,
+`LdCtrlDelay`, `LdCtrlCompareMem`. Load-op use splits cleanly by mask family: System B
+(`07B0`) procedures are property-and-MCB based (`RelSegment`, `WriteRelMem`,
+`LoadImageProp`, `CompareProp`), System 7/2 (`0705`/`0701`/`0021`) procedures are segment
+based (`AbsSegment`, `WriteMem`), and the RF/coupler masks are where the
+`TaskCtrl2`/`TaskPtr`/`DeclarePropDesc` ops appear.
+
+Parameter-type coverage: the four encodable shapes dominate (Int, Enum, Text, Float).
+Six type elements fall through to `ParameterType::Other` and are preserved by name but
+encoded only as a byte-multiple fallback: `TypeColor`, `TypeTime`, `TypeIPAddress`,
+`TypePicture`, `TypeRawData`, and stray `TypeRestriction`. None is silently dropped.
+
+Each new construct has a fabricated regression fixture (fake data reproducing the
+structural shape, never vendor content) under `crates/bussard-ets/tests/fixtures/` and
+`crates/bussard-prod/tests/fixtures/`; see those directories' `README.md` for the
+intended test per fixture. The sweep is a point-in-time study, not a CI job; the
+committed corpus (`corpus.txt` + `flash_corpus.rs`) is the ongoing check.
 
 ## 7. Performance
 

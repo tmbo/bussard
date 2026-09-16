@@ -171,6 +171,19 @@ flash verified: application program M-0083_A-000D-23-5BFD is Loaded on 1.1.5
 
 The safety story is the pre-flight plan: `flash` refuses before any write when the device is not System B, the application's mask does not match, or the load procedure contains an operation it cannot execute (see [the supported-operations list](reference.md#bussard-flash---product-file-address)). Unlike `apply` there is no backup, because a fresh device has no prior application to save; recovery from a failed flash is re-running it, or falling back to ETS. After writing, `flash` verifies the application reads back as `Loaded` and spot-checks the written segments byte-for-byte.
 
+Two special cases. A device with a BCU access key set needs `--bcu-key <HEX>`; without it bussard presents the free-access key, which is correct for an unkeyed device. And a simulator needs gentler handling than real hardware: against KNX Virtual, run `flash` with `--tolerate-nonconformant-load-states --pace 25 --reconnect-every 4` to cover its nonconformant load states, loopback-speed ACKs, and shallow per-connection budget ([flag details](reference.md#bussard-flash---product-file-address)).
+
+## ... change a device parameter?
+
+Device parameters (channel modes, run times, alarm behaviour) live in the device file's `parameters:` block, imported from the ETS project. Only values that differ from the vendor default are stored, keyed `<name-slug>@<ref-id>`:
+
+```yaml
+parameters:
+  "windalarm-1@MD-1_M-3_MI-1_P-3_R-45": "1"
+```
+
+Edit the value, then validate: with the device's product model generated (`import-product`), `validate` checks that the key exists and the value is in range (E016/E017). The new value reaches the device via `flash`, which recomputes the full parameter memory image from the vendor defaults plus your overrides. One caveat: a `.knxproj` re-import replaces the whole `parameters:` block with ETS truth, so make the change in ETS too if you still re-import.
+
 ## ... let Claude debug the bus?
 
 Register the MCP server once:
