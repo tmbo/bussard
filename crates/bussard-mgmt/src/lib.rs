@@ -11,8 +11,10 @@
 //!
 //! It is written from scratch under the crate's MIT license from the published
 //! KNX transport- and application-layer specification structure (EN 50090 / the
-//! KNX standard), with thelsing/knx (C++, device side) as a behavioural
-//! reference for what the peer expects. No GPL KNX stacks were used.
+//! KNX standard 3/3/x and 3/5/x), the Wireshark KNXnet/IP dissector's public
+//! field definitions, and behaviour verified live against real devices (see the
+//! module-level notes for the specific captures). No GPL KNX source was consulted
+//! or copied.
 //!
 //! # The two failure modes that matter
 //!
@@ -71,15 +73,17 @@ pub use load::{
     read_memory, write_load_control, write_memory, write_memory_verified, write_memory_windowed,
     write_property, write_table,
 };
-pub use tables::{DeviceTables, ResolvedLink, TableSource, TablesError, read_tables};
+pub use tables::{
+    DeviceTables, ResolvedLink, TableSource, TablesError, discover_interface_objects, read_tables,
+};
 
 /// Whether a mask version belongs to the System B family (`x7B0`).
 ///
 /// The medium lives in the high bits (07 = TP1, 27 = RF, 57 = KNX-IP) while
 /// the management stack - interface objects, loadable tables, property
-/// access - is shared. bussard's table read/write path applies to the whole
-/// family (established against thelsing's BauSystemB, which serves the same
-/// stack under 07B0 and 57B0).
+/// access - is shared (KNX standard 3/5/1, "System B" profile). bussard's table
+/// read/write path applies to the whole family: the same interface-object and
+/// loadable-table stack is defined for 07B0 and 57B0 alike.
 pub fn is_system_b(mask: u16) -> bool {
     mask & 0x0FFF == 0x07B0
 }

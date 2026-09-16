@@ -10,7 +10,9 @@
 use bussard_model::IndividualAddress;
 
 use crate::apci;
-use crate::connection::{AuthorizeOutcome, L4Channel, Layer4Connection, Timeouts};
+use crate::connection::{
+    AuthorizeOutcome, L4Channel, Layer4Connection, Timeouts, property_request,
+};
 use crate::error::{MgmtError, Result, descriptor_response_reason, raw_response_detail};
 
 /// A management client bound to a single device over a connection-oriented
@@ -108,29 +110,8 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
         start: u16,
         count: u8,
     ) -> Result<Vec<u8>> {
-        let payload = apci::encode_property_value_read(object_index, property_id, count, start);
-        let (resp_apci, data) = self
-            .inner
-            .request(apci::A_PROPERTY_VALUE_READ, &payload)
-            .await?;
-        if resp_apci != apci::A_PROPERTY_VALUE_RESPONSE {
-            return Err(MgmtError::MalformedResponse {
-                address: self.inner.target(),
-                reason: format!(
-                    "expected A_PropertyValue_Response ({})",
-                    raw_response_detail(resp_apci, &data)
-                ),
-            });
-        }
-        let resp = apci::decode_property_value_response(&data).ok_or_else(|| {
-            MgmtError::MalformedResponse {
-                address: self.inner.target(),
-                reason: format!(
-                    "property value response too short ({})",
-                    raw_response_detail(resp_apci, &data)
-                ),
-            }
-        })?;
+        let resp =
+            property_request(&mut self.inner, object_index, property_id, start, count).await?;
         if resp.count == 0 {
             return Ok(Vec::new());
         }

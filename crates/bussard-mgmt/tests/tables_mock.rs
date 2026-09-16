@@ -433,7 +433,7 @@ async fn falls_back_to_memory_when_pid_table_is_unreadable() {
     let (addr, gw) = bind_mock().await;
     let target: IndividualAddress = "1.1.9".parse().unwrap();
 
-    // Tables live only in memory; PID_TABLE is not served (like thelsing/knx).
+    // Tables live only in memory; PID_TABLE is not served by this mock.
     let mut dev = TableDevice {
         mask: 0x07B0,
         object_types: vec![OT_DEVICE, OT_ADDRESS_TABLE, OT_ASSOCIATION_TABLE],
