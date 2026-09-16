@@ -353,6 +353,11 @@ pub fn build_model(project: RawProject, container: &mut Container) -> Result<Mod
             links.insert(raw_dev.address, dev_links);
         }
 
+        // Per-device parameter values (issue #46): resolve each configured
+        // ParameterInstanceRef to its stable key + value, keeping only the
+        // memory-bearing ones whose value differs from the vendor default.
+        let parameters = resolve_parameters(raw_dev, &apps);
+
         // Product identity (and the hardware name, used as a naming fallback).
         let (product, hardware_name) =
             build_product(raw_dev, primary_app, &manufacturers, &hw_cache);
@@ -374,6 +379,7 @@ pub fn build_model(project: RawProject, container: &mut Container) -> Result<Mod
             location,
             product,
             channels,
+            parameters,
             com_objects,
         };
 
@@ -604,6 +610,105 @@ fn resolve_com_object(
         reference: ci.ref_id.clone(),
         link_suffixes: ci.links.clone(),
     })
+}
+
+/// Resolves a device's configured `ParameterInstanceRef`s into the per-device
+/// `parameters:` map (issue #46).
+///
+/// For each `(ref_id, value)` the ref is resolved against the device's
+/// application programs to its `ParameterRef` → `Parameter`, which supplies the
+/// vendor default (the resolved ref/parameter `Value`), the display name (for
+/// the human key prefix) and the memory location. A value is emitted only when:
+///
+/// * the parameter is **memory-bearing** (a display-only parameter never reaches
+///   a download image, so storing it would be noise), and
+/// * the configured value **differs from the vendor default** (diff-friendly:
+///   only real deltas land in the file).
+///
+/// The key is `<name-slug>@<app-relative-ref-id>`, where the app-relative ref id
+/// preserves the module-instance selector (`MD-2_M-20_MI-1_P-15_R-17`), the
+/// unique+stable handle; the slug is a human aid. See the `parameters:` field
+/// rustdoc on [`bussard_model::schema::Device`] for the full rationale.
+fn resolve_parameters(
+    raw_dev: &RawDevice,
+    apps: &[&ApplicationProgram],
+) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    for (ref_id, value) in &raw_dev.parameters {
+        // App-relative ref id, module-instance selector preserved (the key body).
+        let Some(app_rel) = app_relative_param_ref(ref_id, apps) else {
+            continue;
+        };
+        // The app-model ref id has the `_M-<m>_MI-<n>` selector removed; the
+        // app model keys `parameter_refs` by the *full* (app-prefixed) id.
+        let (model_ref_rel, _mi) = normalize_ref(&app_rel);
+
+        // Resolve against whichever app defines the ref.
+        let Some((app, resolved)) = apps.iter().find_map(|app| {
+            let full = format!("{}_{model_ref_rel}", app.id);
+            app.resolved_parameter(&full).map(|r| (*app, r))
+        }) else {
+            continue;
+        };
+
+        // Only memory-bearing parameters flash; skip display-only ones.
+        if resolved.param.memory.is_none() {
+            continue;
+        }
+
+        // Diff against the vendor default (ref Value override, else param Value).
+        let vendor_default = resolved.value().unwrap_or("");
+        if value == vendor_default {
+            continue;
+        }
+
+        let name = resolved.param.name.as_deref().unwrap_or("");
+        let key = format!("{}@{app_rel}", param_name_slug(name));
+        // Determinism: an app-relative ref id is unique per device, so keys do
+        // not collide; the first write wins if a malformed file repeats one.
+        out.entry(key).or_insert_with(|| value.clone());
+        let _ = app; // app kept for symmetry / future per-app disambiguation.
+    }
+    out
+}
+
+/// Strips the application-program prefix from a fully-qualified
+/// `ParameterInstanceRef` `RefId`, returning the app-relative remainder (with
+/// the module-instance selector preserved). Tries each of the device's apps so
+/// the correct prefix is removed; falls back to the last `_A-…`-anchored split
+/// when no app matches (defensive — should not happen for real data).
+fn app_relative_param_ref(ref_id: &str, apps: &[&ApplicationProgram]) -> Option<String> {
+    for app in apps {
+        if let Some(rest) = ref_id
+            .strip_prefix(app.id.as_str())
+            .and_then(|r| r.strip_prefix('_'))
+        {
+            return Some(rest.to_string());
+        }
+    }
+    None
+}
+
+/// A short, filesystem/diff-friendly slug of a parameter `Name` for the human
+/// prefix of a parameter key. Lowercases, keeps ASCII alphanumerics, collapses
+/// every other run to a single `-`, trims leading manufacturer prefixes like
+/// `_va_`/`_re_`, and caps the length so keys stay scannable. Empty names slug
+/// to `param`.
+fn param_name_slug(name: &str) -> String {
+    let base = crate::build::slugify(name);
+    // Drop a leading manufacturer scope token (e.g. "va-", "re-", "ha-", "xja-")
+    // left by names like `_VA_Verhalten…`; keep it only if nothing else remains.
+    let trimmed = match base.split_once('-') {
+        Some((head, rest)) if head.len() <= 4 && !rest.is_empty() => rest,
+        _ => base.as_str(),
+    };
+    let capped: String = trimmed.chars().take(40).collect();
+    let capped = capped.trim_matches('-').to_string();
+    if capped.is_empty() {
+        "param".to_string()
+    } else {
+        capped
+    }
 }
 
 /// Normalizes a com-object instance `RefId` into the ref id relative to the

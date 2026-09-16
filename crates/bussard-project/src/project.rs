@@ -83,6 +83,13 @@ pub struct RawDevice {
     /// Module instances on this device, keyed by module-instance id
     /// (e.g. `MD-1_M-6_MI-1`); the value maps argument ref id → value.
     pub module_instances: HashMap<String, HashMap<String, String>>,
+    /// Parameter instance references on this device: `(RefId, Value)` in
+    /// document order. The `RefId` is a fully-qualified `ParameterRef` id (with
+    /// the module-instance selector preserved for module parameters); the
+    /// `Value` is the configured value. Only instances that carry a `Value` are
+    /// recorded — an absent `Value` means the ref/type default applies and there
+    /// is nothing to store.
+    pub parameters: Vec<(String, String)>,
 }
 
 /// A device's location within the building.
@@ -184,6 +191,8 @@ pub fn parse_project(xml: &str) -> Result<RawProject> {
     let mut current_device: Option<RawDevice> = None;
     // Whether we're inside a ComObjectInstanceRefs block of the current device.
     let mut in_com_object_refs = false;
+    // Whether we're inside a ParameterInstanceRefs block of the current device.
+    let mut in_parameter_refs = false;
     // The id of the module instance whose `<Arguments>` we are currently reading.
     let mut current_module_instance: Option<String> = None;
 
@@ -232,6 +241,9 @@ pub fn parse_project(xml: &str) -> Result<RawProject> {
                     b"ComObjectInstanceRefs" => {
                         in_com_object_refs = true;
                     }
+                    b"ParameterInstanceRefs" => {
+                        in_parameter_refs = true;
+                    }
                     b"ModuleInstance" => {
                         if let (Some(dev), Some(id)) =
                             (current_device.as_mut(), attr(&e, b"Id", context)?)
@@ -260,6 +272,17 @@ pub fn parse_project(xml: &str) -> Result<RawProject> {
                             if let Some(dev) = current_device.as_mut() {
                                 if let Some(ci) = parse_com_object_instance(&e, context)? {
                                     dev.com_objects.push(ci);
+                                }
+                            }
+                        }
+                    }
+                    b"ParameterInstanceRef" => {
+                        if in_parameter_refs {
+                            if let Some(dev) = current_device.as_mut() {
+                                if let (Some(ref_id), Some(value)) =
+                                    (attr(&e, b"RefId", context)?, attr(&e, b"Value", context)?)
+                                {
+                                    dev.parameters.push((ref_id, value));
                                 }
                             }
                         }
@@ -306,6 +329,9 @@ pub fn parse_project(xml: &str) -> Result<RawProject> {
                 }
                 b"ComObjectInstanceRefs" => {
                     in_com_object_refs = false;
+                }
+                b"ParameterInstanceRefs" => {
+                    in_parameter_refs = false;
                 }
                 b"ModuleInstance" => {
                     current_module_instance = None;
@@ -361,6 +387,7 @@ fn parse_device_start(
         hardware2program_ref_id: non_empty(get(&m, b"Hardware2ProgramRefId")),
         com_objects: Vec::new(),
         module_instances: HashMap::new(),
+        parameters: Vec::new(),
     }))
 }
 

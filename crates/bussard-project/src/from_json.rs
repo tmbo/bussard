@@ -208,6 +208,7 @@ pub fn model_from_json(json: &str) -> Result<Model> {
             location: None,
             product,
             channels: BTreeMap::new(),
+            parameters: BTreeMap::new(),
             com_objects: BTreeMap::new(),
         };
         let file_stem = format!("{address}-{}", crate::build::slugify(&device.name));
