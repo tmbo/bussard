@@ -52,6 +52,7 @@ pub fn run(
     yes: bool,
     tolerate_nonconformant_load_states: bool,
     verify: bussard_mgmt::VerifyMode,
+    pace_ms: Option<u64>,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
     let target: IndividualAddress = address
@@ -172,7 +173,13 @@ pub fn run(
     let options = bussard_download::FlashOptions {
         tolerate_nonconformant_load_states,
         verify,
+        pace: pace_ms.map(std::time::Duration::from_millis),
     };
+    if let Some(ms) = pace_ms {
+        eprintln!(
+            "note: --pace {ms} — sleeping {ms}ms between memory frames. Real gateways              throttle to TP1 speed on their own; pacing keeps simulators (KNX Virtual)              from wedging under loopback-speed bursts."
+        );
+    }
     if tolerate_nonconformant_load_states {
         eprintln!(
             "note: --tolerate-nonconformant-load-states is on — a device that reports Loaded \
