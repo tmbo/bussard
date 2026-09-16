@@ -307,8 +307,45 @@ impl Device {
                     service: "APDU".into(),
                     detail: "too short".into(),
                 })?;
-                self.handle_apdu(cemi, &apdu)
+                let tool = cemi.source;
+                let mut reaction = self.handle_apdu(cemi, &apdu)?;
+                // Transport-ACK a numbered data telegram whose application handler
+                // produced no response of its own. A real device T_ACKs every
+                // numbered telegram at the transport layer; for verbs that also
+                // send an application-layer response (property read/write,
+                // authorize, master-reset response) the tool treats that response
+                // as the acknowledgement, but a response-less numbered verb
+                // (A_MemoryWrite, a bare A_Restart) leaves the tool waiting for the
+                // transport T_ACK — without it the tool retransmits until it times
+                // out. Emitting the T_ACK here (only when there is no other
+                // response) keeps the single-response verbs' behaviour unchanged
+                // while unblocking the response-less ones.
+                if reaction.responses.is_empty() {
+                    if let Tpci::DataConnected(seq) = tpci {
+                        reaction.responses.push(self.t_ack(tool, seq));
+                    }
+                }
+                Ok(reaction)
             }
+        }
+    }
+
+    /// Build a transport-layer `T_ACK(seq)` frame back toward `to`.
+    ///
+    /// A real device T_ACKs every numbered data telegram at the transport layer,
+    /// including an `A_Restart` — which, unlike a property/memory verb, carries no
+    /// application-layer response. The management tool waits for that T_ACK before
+    /// it considers the restart delivered (see bussard's
+    /// `master_reset_via_basic_restart`), so the simulator must emit it before it
+    /// reboots and drops the connection, or the tool retransmits into the void.
+    fn t_ack(&self, to: IndividualAddress, seq: u8) -> CemiLData {
+        CemiLData {
+            message_code: MessageCode::LDataInd,
+            ctrl1: 0xbc,
+            ctrl2: 0x60,
+            source: self.address,
+            dest: to.raw(),
+            tpdu: vec![Tpci::ack_byte(seq)],
         }
     }
 

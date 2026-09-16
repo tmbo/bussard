@@ -381,6 +381,62 @@ fn table_object_name(idx: u32) -> Option<&'static str> {
     }
 }
 
+/// `PID_PROGRAM_VERSION` (PID 13) — the application object's app-id / run-state
+/// property. The master template writes it with an all-zero placeholder that the
+/// flash replaces with the synthesized [`app_program_version`] value.
+const PID_PROGRAM_VERSION: u32 = 13;
+
+/// The 5-octet placeholder the master template ships for the PID-13 write; ETS
+/// (and this engine) overwrite it with the real application id.
+const APP_ID_PLACEHOLDER: [u8; 5] = [0, 0, 0, 0, 0];
+
+/// Extracts the 2-octet KNX manufacturer id from an application-program id.
+///
+/// Application ids begin with the manufacturer prefix `M-XXXX` (four hex
+/// digits), e.g. `M-00FA_A-2500-10-51CB` → `0x00FA`. Returns `None` when the id
+/// does not start with a parseable `M-XXXX` prefix.
+fn manufacturer_from_app_id(id: &str) -> Option<u16> {
+    let hex = id.strip_prefix("M-")?.get(..4)?;
+    u16::from_str_radix(hex, 16).ok()
+}
+
+/// Synthesizes the app object's `PID_PROGRAM_VERSION` (app-id) value for an
+/// application, or `None` when the identity is too incomplete to build one.
+///
+/// Needs the manufacturer (from the id prefix), the application number, and the
+/// application version; any missing piece yields `None`, leaving a placeholder
+/// PID-13 write untouched rather than writing a partly-zero id.
+fn app_program_version_value(app: &ApplicationProgram) -> Option<[u8; 5]> {
+    let manufacturer = manufacturer_from_app_id(&app.id)?;
+    let application_number = app.application_number?;
+    let application_version = app.application_version?;
+    Some(crate::compute::app_program_version(
+        manufacturer,
+        application_number as u16,
+        application_version as u8,
+    ))
+}
+
+/// Replaces the master template's all-zero PID-13 placeholder with the
+/// synthesized app-id, leaving every other property write (and any non-zero
+/// PID-13 value) unchanged.
+///
+/// Substitutes only when the op targets `PID_PROGRAM_VERSION`, an app-id value is
+/// available, and the op's inline data is the exact 5-octet zero placeholder — so
+/// a template that already carries a concrete PID-13 value is honoured verbatim.
+fn maybe_substitute_app_id(
+    prop_id: u32,
+    inline_data: Option<&[u8]>,
+    app_id_value: Option<&[u8; 5]>,
+) -> Option<Vec<u8>> {
+    if prop_id == PID_PROGRAM_VERSION && inline_data == Some(&APP_ID_PLACEHOLDER[..]) {
+        if let Some(app_id) = app_id_value {
+            return Some(app_id.to_vec());
+        }
+    }
+    inline_data.map(<[u8]>::to_vec)
+}
+
 /// The largest byte length or u32 component a single flash write step may carry.
 /// Real System B segments are tens of KiB; a value beyond this in the vendor XML
 /// (or a device-supplied base) is treated as corrupt input and refused at plan
@@ -839,6 +895,13 @@ pub fn plan_flash(
             reason: format!("computing the parameter image: {e}"),
         })?;
 
+    // The 5-octet application-program-version (app-id / run-state) value ETS
+    // writes to the app object's PID 13 on LoadCompleted, synthesized from the
+    // app's manufacturer + number + version. `None` when the identity is
+    // incomplete (no application number/version), in which case a placeholder
+    // PID-13 write is left as-is. Computed once, applied in the WriteProp branch.
+    let app_id_value: Option<[u8; 5]> = app_program_version_value(app);
+
     // 4. Validate + lower each op into a FlashStep.
     let mut steps = Vec::new();
     let mut images: BTreeMap<String, Vec<u8>> = BTreeMap::new();
@@ -1147,7 +1210,20 @@ pub fn plan_flash(
                 // A_PropertyValue_Write primitive addresses by a u8 object index
                 // and u8 PID.
                 let obj_idx = obj_idx.unwrap_or(0);
-                match inline_data {
+                // The master template carries a placeholder
+                // `LdCtrlWriteProp ObjIdx=4 PropId=13 InlineData="0000000000"`
+                // for the application object's PID_PROGRAM_VERSION (the app-id /
+                // run-state). ETS replaces the zeros with the real 5-octet app id
+                // (manufacturer + application number + version); a device left
+                // with zeros does not record which program it runs. Substitute the
+                // synthesized value here (see `app_id_value`) so the flash writes
+                // the same bytes ETS does. Only the all-zero placeholder of the
+                // right width is substituted — a template that already carries a
+                // concrete value is written verbatim.
+                let inline_data =
+                    maybe_substitute_app_id(prop_id, inline_data.as_deref(), app_id_value.as_ref());
+
+                match &inline_data {
                     Some(value) if !value.is_empty() => {
                         // A value-carrying WriteProp must be executable to keep the
                         // "only a fully-executable FlashPlan reaches flash" invariant.
@@ -1712,6 +1788,14 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
     // address — before the resumed `WriteRelMem` targets it. `None` until the
     // first `AllocateSegment`.
     let mut last_alloc_size: Option<u32> = None;
+    // The object index the most-recent `AllocateSegment` targeted, so a
+    // `MasterReset` re-opens and re-allocates *that* object (the one whose segment
+    // the reset dropped) rather than the type-discovered application object. On
+    // KNX Virtual DA.tp the app segment is obj4 (allocated right before the reset)
+    // while the type-discovered app object is obj3 — re-opening obj3 here would
+    // double-`StartLoading` it (the template re-opens obj3 itself after the reset)
+    // and drive it to `Error`. `None` until the first `AllocateSegment`.
+    let mut last_alloc_target: Option<u8> = None;
     // Track (address, sample_len) of writes for the post-flash spot check.
     let mut written_samples: Vec<(u16, Vec<u8>)> = Vec::new();
     // The verified outcome, captured just before a terminal restart reboots the
@@ -1768,6 +1852,7 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                 segment_base = Some(alloc.address);
                 segment_bases.insert(obj, alloc.address);
                 last_alloc_size = Some(*size);
+                last_alloc_target = Some(obj);
             }
             FlashStep::WriteRelMem {
                 offset,
@@ -1949,18 +2034,29 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                 //      address — the reset dropped the old placement, so the base
                 //      the following `WriteRelMem` uses must come from this fresh
                 //      allocation, not the stale pre-reset value.
-                let state = read_load_state(session.l4(), app_obj).await?;
+                //
+                // Re-open the object whose segment the reset dropped — the one the
+                // most-recent `AllocateSegment` targeted (`last_alloc_target`), not
+                // the type-discovered application object. On KNX Virtual DA.tp the
+                // reset sits right after obj4's allocate, so obj4 is what must be
+                // re-opened; the type-discovered app object is obj3, which the
+                // spliced template re-opens itself later — re-opening it here too
+                // would double-`StartLoading` it into `Error`. Fall back to
+                // `app_obj` for a self-contained procedure that allocated nothing
+                // through a distinct index.
+                let reset_obj = last_alloc_target.unwrap_or(app_obj);
+                let state = read_load_state(session.l4(), reset_obj).await?;
                 if !matches!(state, LoadState::Loading | LoadState::Loaded) {
-                    start_loading(session.l4(), app_obj, &object_table).await?;
+                    start_loading(session.l4(), reset_obj, &object_table).await?;
                 }
                 if let Some(size) = last_alloc_size {
                     let alloc =
-                        allocate_with_context(session.l4(), app_obj, size, &object_table).await?;
+                        allocate_with_context(session.l4(), reset_obj, size, &object_table).await?;
                     segment_base = Some(alloc.address);
-                    // Update the per-object base too: the resumed `WriteRelMem`
-                    // for the app object prefers its per-object base, which must be
-                    // the freshly-returned one, not the dropped pre-reset value.
-                    segment_bases.insert(app_obj, alloc.address);
+                    // Update the per-object base too: the resumed `WriteRelMem` for
+                    // this object prefers its per-object base, which must be the
+                    // freshly-returned one, not the dropped pre-reset value.
+                    segment_bases.insert(reset_obj, alloc.address);
                 }
             }
             FlashStep::Restart => {
@@ -3114,5 +3210,57 @@ mod tests {
                 ..
             }
         )));
+    }
+
+    #[test]
+    fn test_manufacturer_from_app_id_parses_prefix() {
+        assert_eq!(
+            manufacturer_from_app_id("M-00FA_A-2500-10-51CB"),
+            Some(0x00FA)
+        );
+        assert_eq!(manufacturer_from_app_id("M-0083_A-0007"), Some(0x0083));
+        assert_eq!(manufacturer_from_app_id("not-a-manufacturer-id"), None);
+        assert_eq!(manufacturer_from_app_id("M-XZ"), None);
+    }
+
+    #[test]
+    fn test_app_program_version_value_synthesizes_da_tp_id() {
+        // A DA.tp-shaped app: M-00FA, ApplicationNumber 9472 (0x2500), version
+        // 16 (0x10). ETS wrote `00 fa 25 00 10` to obj4 PID 13.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-00FA_A-2500-10-51CB" ApplicationNumber="9472"
+            ApplicationVersion="16" MaskVersion="MV-07B0" Name="Dimming"
+            LoadProcedureStyle="MergedProcedure"><Static /></ApplicationProgram></KNX>"#;
+        let app =
+            parse_application_program("M-00FA_A-2500-10-51CB", xml.as_bytes()).expect("parse");
+        assert_eq!(
+            app_program_version_value(&app),
+            Some([0x00, 0xFA, 0x25, 0x00, 0x10])
+        );
+    }
+
+    #[test]
+    fn test_maybe_substitute_app_id_replaces_only_the_placeholder() {
+        let app_id = [0x00u8, 0xFA, 0x25, 0x00, 0x10];
+        // PID 13 + the all-zero placeholder → substituted with the app id.
+        assert_eq!(
+            maybe_substitute_app_id(13, Some(&[0, 0, 0, 0, 0]), Some(&app_id)),
+            Some(app_id.to_vec())
+        );
+        // PID 13 but a concrete (non-placeholder) value → left verbatim.
+        assert_eq!(
+            maybe_substitute_app_id(13, Some(&[1, 2, 3, 4, 5]), Some(&app_id)),
+            Some(vec![1, 2, 3, 4, 5])
+        );
+        // A different PID → never substituted, even for a zero value.
+        assert_eq!(
+            maybe_substitute_app_id(5, Some(&[0, 0, 0, 0, 0]), Some(&app_id)),
+            Some(vec![0, 0, 0, 0, 0])
+        );
+        // No app id available → placeholder left as-is (a partly-zero id is worse).
+        assert_eq!(
+            maybe_substitute_app_id(13, Some(&[0, 0, 0, 0, 0]), None),
+            Some(vec![0, 0, 0, 0, 0])
+        );
     }
 }
