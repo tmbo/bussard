@@ -38,7 +38,10 @@ fn dry_run_trace_of_real_vendor_procedures() {
 
     let mut planned = 0usize;
     let mut refused = 0usize;
+    let mut with_image_prop = 0usize;
     let mut jung_seen = false;
+    let mut jung_plan_write_bytes: Option<usize> = None;
+    let mut jung_image_prop_steps = 0usize;
 
     for entry in &app_entries {
         let mut f = zip.by_name(entry).unwrap();
@@ -67,6 +70,10 @@ fn dry_run_trace_of_real_vendor_procedures() {
             continue;
         };
 
+        if xml.contains("LdCtrlLoadImageProp") {
+            with_image_prop += 1;
+        }
+
         let is_jung = id.contains("A-20D7-26-");
         if is_jung {
             jung_seen = true;
@@ -76,6 +83,12 @@ fn dry_run_trace_of_real_vendor_procedures() {
             Ok(plan) => {
                 planned += 1;
                 if is_jung {
+                    jung_plan_write_bytes = Some(plan.total_write_bytes());
+                    jung_image_prop_steps = plan
+                        .steps
+                        .iter()
+                        .filter(|s| matches!(s, bussard_download::FlashStep::LoadImageProp { .. }))
+                        .count();
                     eprintln!(
                         "\nJung 23024 ({id}): DRY-RUN plan — {} step(s), {} write byte(s), \
                          ~{} frame(s), est. {:.1}s",
@@ -102,8 +115,9 @@ fn dry_run_trace_of_real_vendor_procedures() {
     }
 
     eprintln!(
-        "\ndry-run: {} application program(s) scanned; {planned} produced an executable plan, \
-         {refused} refused at pre-flight (unsupported ops / unresolvable images)",
+        "\ndry-run: {} application program(s) scanned; {with_image_prop} carry LdCtrlLoadImageProp; \
+         {planned} produced an executable plan, {refused} refused at pre-flight \
+         (unsupported ops / unresolvable images)",
         app_entries.len()
     );
 
@@ -111,8 +125,20 @@ fn dry_run_trace_of_real_vendor_procedures() {
         jung_seen,
         "Jung 23024 application not found in home_test.knxproj"
     );
-    // Either the Jung app plans cleanly or is refused with a clear reason — both
-    // prove the interpreter digested the real procedure without panicking.
+    // With LoadImageProp now executable, the Jung 23024 MergedProcedure lowers to
+    // a COMPLETE plan: its MergeId blocks (allocate → write → image-prop) are
+    // concatenated, so it both writes its segment and runs the MCB integrity
+    // checks. This is the headline result of the LoadImageProp work — the Jung
+    // 23024 (and the same-shape MDT A-0007) go from refused to fully executable.
+    assert_eq!(
+        jung_image_prop_steps, 4,
+        "the Jung 23024 must lower its four LdCtrlLoadImageProp MCB checks"
+    );
+    assert_eq!(
+        jung_plan_write_bytes,
+        Some(19155),
+        "the Jung 23024 must stream its 19155-octet segment image in the same plan"
+    );
     assert!(
         planned + refused > 0,
         "expected at least one System B app to be planned or explicitly refused"

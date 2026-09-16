@@ -368,6 +368,27 @@ pub enum LoadOp {
         /// Property id.
         prop_id: Option<u32>,
     },
+    /// `<LdCtrlLoadImageProp …>`: load-image property integrity check. After a
+    /// loadable object's image is written and the object reaches `Loaded`, the
+    /// tool reads the object's `PropId` (27 = `PID_MCB_TABLE`) memory control
+    /// block and validates the device-computed CRC over the segment against the
+    /// image the tool wrote. Carries the target object index (`ObjIdx`) or, for
+    /// system objects, an object type + occurrence.
+    LoadImageProp {
+        /// The interface object index (`ObjIdx`), when the op targets an object
+        /// by index (the common case: `ObjIdx=1..4`).
+        obj_idx: Option<u32>,
+        /// The object type (`ObjType`), when the op targets a system object by
+        /// type + occurrence instead of by index.
+        obj_type: Option<u32>,
+        /// The occurrence of that object type (`Occurrence`), 1-based.
+        occurrence: Option<u32>,
+        /// The property id (`PropId`); 27 = `PID_MCB_TABLE` in every observed
+        /// vendor procedure.
+        prop_id: Option<u32>,
+        /// How many MCB array elements to read (`Count`), defaulting to 1.
+        count: Option<u32>,
+    },
     /// Any other `LdCtrl*` element, preserved by name and attribute list.
     Raw {
         /// The element's local name (e.g. `"LdCtrlLoadImageProp"`).
@@ -1063,6 +1084,13 @@ fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m: &HashMap<
             obj_type: u(b"ObjType"),
             prop_id: u(b"PropId"),
         },
+        b"LdCtrlLoadImageProp" => LoadOp::LoadImageProp {
+            obj_idx: u(b"ObjIdx"),
+            obj_type: u(b"ObjType"),
+            occurrence: u(b"Occurrence"),
+            prop_id: u(b"PropId"),
+            count: u(b"Count"),
+        },
         other => LoadOp::Raw {
             name: String::from_utf8_lossy(other).into_owned(),
             attrs: ordered_attrs(m),
@@ -1342,14 +1370,59 @@ mod tests {
         assert!(matches!(ops[9], LoadOp::LoadCompleted { lsm_idx: Some(1) }));
         assert!(matches!(ops[10], LoadOp::Restart));
         assert!(matches!(ops[11], LoadOp::Disconnect));
-        // Unknown LdCtrl* is preserved verbatim as Raw.
-        match &ops[12] {
-            LoadOp::Raw { name, attrs } => {
-                assert_eq!(name, "LdCtrlLoadImageProp");
-                assert!(attrs.iter().any(|(k, v)| k == "PropId" && v == "27"));
+        // LdCtrlLoadImageProp is a typed op carrying its target object + PropId.
+        assert!(matches!(
+            ops[12],
+            LoadOp::LoadImageProp {
+                obj_idx: Some(5),
+                prop_id: Some(27),
+                count: None,
+                ..
             }
-            other => panic!("expected Raw, got {other:?}"),
-        }
+        ));
+    }
+
+    #[test]
+    fn parses_load_image_prop_variants() {
+        // Both the ObjIdx form (MDT A-0007, Jung 23024) and the ObjType +
+        // Occurrence system-object form, plus a Count attribute.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-1" Name="x">
+          <LoadProcedures><LoadProcedure MergeId="7">
+           <LdCtrlLoadImageProp ObjIdx="1" PropId="27" />
+           <LdCtrlLoadImageProp ObjIdx="4" PropId="27" Count="2" />
+           <LdCtrlLoadImageProp ObjType="6" Occurrence="1" PropId="27" />
+          </LoadProcedure></LoadProcedures>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program_str("M-1_A-1", xml).unwrap();
+        let ops = &app.load_procedures[0].ops;
+        assert!(matches!(
+            ops[0],
+            LoadOp::LoadImageProp {
+                obj_idx: Some(1),
+                prop_id: Some(27),
+                count: None,
+                ..
+            }
+        ));
+        assert!(matches!(
+            ops[1],
+            LoadOp::LoadImageProp {
+                obj_idx: Some(4),
+                count: Some(2),
+                ..
+            }
+        ));
+        assert!(matches!(
+            ops[2],
+            LoadOp::LoadImageProp {
+                obj_idx: None,
+                obj_type: Some(6),
+                occurrence: Some(1),
+                prop_id: Some(27),
+                ..
+            }
+        ));
     }
 
     #[test]
