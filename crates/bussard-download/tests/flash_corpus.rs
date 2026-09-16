@@ -204,8 +204,8 @@ fn corpus_never_emits_duplicate_consecutive_allocations() {
             // No two consecutive AllocateSegment steps of the same size.
             for pair in plan.steps.windows(2) {
                 if let (
-                    FlashStep::AllocateSegment { size: a },
-                    FlashStep::AllocateSegment { size: b },
+                    FlashStep::AllocateSegment { size: a, .. },
+                    FlashStep::AllocateSegment { size: b, .. },
                 ) = (&pair[0], &pair[1])
                 {
                     assert_ne!(

@@ -55,6 +55,7 @@ pub mod knxnet;
 mod router;
 pub mod tpci;
 mod tunnel;
+pub mod wire_trace;
 
 pub use config::{ConnectionConfig, TransportKind};
 pub use conn::{BusConnection, TimestampedFrame};

@@ -527,6 +527,43 @@ pub async fn master_reset<Ch: L4Channel>(
     }
 }
 
+/// Realises an `LdCtrlMasterReset` op the way ETS→KNX-Virtual does on the wire:
+/// as a **bare `A_Restart`** (APCI [`A_RESTART`](crate::apci::A_RESTART) = `0x380`,
+/// no payload), not the confirmed master-reset `A_Restart` (`0x381` + erase/channel).
+///
+/// The ETS→KNX-Virtual DA.tp capture shows the mid-procedure master reset sent as
+/// `4f 80` — a numbered `A_Restart` with an empty APDU. The device T_ACKs it at
+/// the transport layer and then simply reboots; it sends **no** application-layer
+/// `A_Restart_Response`. So this sends the bare restart as a numbered telegram
+/// (requiring the transport ACK, since a request that never lands is a real
+/// failure) and treats the following silence / disconnect / mid-session drop as
+/// the expected accepted outcome — the device is rebooting. The `erase_code` and
+/// `channel_number` from the op are accepted for the trace/label but are **not**
+/// on the wire in this realisation (a bare `A_Restart` carries no operands); they
+/// are logged for diagnosis only.
+///
+/// Clean-room: encoding and semantics from the published KNX spec (A_Restart) and
+/// verified against the real ETS→KNX-Virtual capture (bare `0x380`).
+pub async fn master_reset_via_basic_restart<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    _erase_code: u8,
+    _channel_number: u8,
+) -> Result<()> {
+    let (apci, payload) = crate::apci::encode_restart(0);
+    // Numbered send: the device must T_ACK it, or the restart never landed.
+    l4.send_data(apci, &payload).await?;
+    // A bare A_Restart is not application-confirmed: the device reboots and goes
+    // silent (or drops the link). Any of these is the expected accepted outcome;
+    // a stack that does answer an A_Restart_Response is tolerated too.
+    match l4.recv_response().await {
+        Ok(_) => Ok(()),
+        Err(MgmtError::NoResponse { .. })
+        | Err(MgmtError::MidSessionSilence { .. })
+        | Err(MgmtError::Disconnected { .. }) => Ok(()),
+        Err(other) => Err(WriteError::Mgmt(other)),
+    }
+}
+
 /// Reads an interface-object property and compares it byte-for-byte against
 /// `expected`, honouring an optional `mask` — the execution of a vendor
 /// `LdCtrlCompareProp` op (the verify twin of [`write_property`]).
