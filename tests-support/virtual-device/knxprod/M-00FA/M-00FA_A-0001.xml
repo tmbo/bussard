@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Synthetic bussard test application program for the thelsing knx-linux-ip
+  virtual device. This is bussard's OWN work (MIT), hand-authored to the public
+  KNX product-XML schema; it contains no vendor/manufacturer data and nothing
+  derived from thelsing/knx source. It exists only so `bussard flash` has a real
+  .knxprod to download into the external interop device.
+
+  Key facts for the interop harness:
+  - MaskVersion MV-57B0: the knx-linux-ip demo reports mask 0x57B0 (KNXnet/IP
+    System B). bussard's flash pre-flight gates on `is_system_b(mask)` (true for
+    the whole x7B0 family) and then an exact app-mask==device-mask compare, so
+    the app MUST declare 57B0 to be accepted against this device.
+  - LoadProcedureStyle ProductDefault (single procedure block).
+  - One tiny relative code segment (6 bytes) written into the application
+    program object, then LoadCompleted. This is the minimal shape that drives the
+    device-side load-state machine Unloaded -> Loading -> Loaded through the exact
+    op set bussard's flash interpreter executes:
+      Connect / Unload / Load(StartLoading) / RelSegment(alloc) /
+      WriteRelMem / LoadCompleted / Restart / Disconnect.
+-->
+<KNX xmlns="http://knx.org/xml/project/23">
+  <ManufacturerData>
+    <Manufacturer RefId="M-00FA">
+      <ApplicationPrograms>
+        <ApplicationProgram Id="M-00FA_A-0001" ApplicationNumber="1"
+            ApplicationVersion="1" MaskVersion="MV-57B0"
+            Name="bussard interop test app"
+            LoadProcedureStyle="ProductDefault">
+          <Static>
+            <Code>
+              <RelativeSegment Id="M-00FA_A-0001_RS-1" Size="6"
+                  LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment>
+            </Code>
+            <LoadProcedures>
+              <LoadProcedure>
+                <LdCtrlConnect />
+                <LdCtrlUnload LsmIdx="4" />
+                <LdCtrlLoad LsmIdx="4" />
+                <LdCtrlRelSegment LsmIdx="4" Size="6" AppliesTo="full" />
+                <LdCtrlWriteRelMem ObjIdx="0" Offset="0" Size="6" AppliesTo="full" />
+                <LdCtrlLoadCompleted LsmIdx="4" />
+                <LdCtrlRestart />
+                <LdCtrlDisconnect />
+              </LoadProcedure>
+            </LoadProcedures>
+          </Static>
+        </ApplicationProgram>
+      </ApplicationPrograms>
+    </Manufacturer>
+  </ManufacturerData>
+</KNX>
