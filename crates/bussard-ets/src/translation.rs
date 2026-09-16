@@ -22,7 +22,7 @@
 
 use std::collections::HashMap;
 
-use crate::attrs::get;
+use crate::attrs::{Attrs, get};
 
 /// Collects en-US translations while streaming an ETS XML file.
 ///
@@ -67,7 +67,7 @@ impl TranslationCollector {
     /// language is en-US and it targets one of `wanted_attrs`.
     ///
     /// `m` is the parsed attribute map of the `<Translation>` tag.
-    pub fn record(&mut self, m: &HashMap<Vec<u8>, String>, wanted_attrs: &[&str]) {
+    pub fn record(&mut self, m: &Attrs, wanted_attrs: &[&str]) {
         if self.cur_lang.as_deref() != Some("en-US") {
             return;
         }
