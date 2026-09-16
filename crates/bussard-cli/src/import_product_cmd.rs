@@ -574,6 +574,14 @@ fn load_op_summary(op: &LoadOp) -> String {
         LoadOp::Connect => "connect".to_string(),
         LoadOp::Disconnect => "disconnect".to_string(),
         LoadOp::Restart => "restart".to_string(),
+        LoadOp::MasterReset {
+            erase_code,
+            channel_number,
+        } => format!(
+            "master_reset erase_code={} channel={}",
+            opt(erase_code),
+            opt(channel_number)
+        ),
         LoadOp::Unload { lsm_idx } => format!("unload lsm={}", opt(lsm_idx)),
         LoadOp::Load { lsm_idx } => format!("load lsm={}", opt(lsm_idx)),
         LoadOp::LoadCompleted { lsm_idx } => format!("load_completed lsm={}", opt(lsm_idx)),
