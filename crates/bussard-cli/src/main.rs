@@ -2,10 +2,12 @@
 //!
 //! Each subcommand lives in its own `*_cmd` module and is dispatched from `main`.
 
+mod adopt_cmd;
 mod apply_cmd;
 mod assign_cmd;
 mod capture_cmd;
 mod conn_cmd;
+mod flash_cmd;
 mod ha_config_cmd;
 mod import_cmd;
 mod import_product_cmd;
@@ -136,6 +138,46 @@ enum Command {
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
+    },
+    /// Guide a new device from programming mode into the model (assign +
+    /// product data + links scaffolding).
+    Adopt {
+        /// The vendor `.knxprod` for the new device (else the cached model is used).
+        #[arg(long, value_name = "FILE")]
+        product: Option<PathBuf>,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Override the gateway `host[:port]` for tunneling.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Force KNXnet/IP routing (multicast) transport.
+        #[arg(long)]
+        routing: bool,
+    },
+    /// Flash an application program from vendor product data into a device.
+    Flash {
+        /// The device to program, e.g. `1.0.10`.
+        #[arg(value_name = "ADDRESS")]
+        address: String,
+        /// The vendor `.knxprod` containing the application program.
+        #[arg(long, value_name = "FILE")]
+        product: PathBuf,
+        /// The application program id (default: sole/matching application).
+        #[arg(long, value_name = "REF")]
+        application: Option<String>,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Skip the interactive confirmation (dangerous; for scripts).
+        #[arg(long)]
+        yes: bool,
+        /// Override the gateway `host[:port]` for tunneling.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Force KNXnet/IP routing (multicast) transport.
+        #[arg(long)]
+        routing: bool,
     },
     /// Read a device's live tables and show what `apply` would change.
     Plan {
@@ -355,6 +397,32 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             conn_cmd::ConnOverrides { gateway, routing },
         ),
         Command::ImportProduct { file, dir } => import_product_cmd::run(&file, &dir),
+        Command::Adopt {
+            product,
+            dir,
+            gateway,
+            routing,
+        } => adopt_cmd::run(
+            product.as_deref(),
+            &dir,
+            conn_cmd::ConnOverrides { gateway, routing },
+        ),
+        Command::Flash {
+            address,
+            product,
+            application,
+            dir,
+            yes,
+            gateway,
+            routing,
+        } => flash_cmd::run(
+            &address,
+            &product,
+            application.as_deref(),
+            &dir,
+            yes,
+            conn_cmd::ConnOverrides { gateway, routing },
+        ),
         Command::Plan {
             address,
             dir,
