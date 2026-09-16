@@ -121,6 +121,12 @@ enum Fault {
     /// intermediate `Loading` state — the KNX Virtual 2.6.1 behaviour that the
     /// strict load-state check trips on (finding 1).
     LoadedAfterStartLoading,
+    /// Expose `Loading` after `StartLoading` (so `start_loading` passes), but drop
+    /// to `Loaded` when the `AdditionalLoadControls` allocation is written — so the
+    /// allocate path's own load-state re-read trips the strict check. Exercises the
+    /// #50 finding-2 gap: the allocate path's error must carry the same discovered
+    /// object context the StartLoading path got.
+    LoadedOnAllocate,
 }
 
 /// The mutable mock-device state, shared with the gateway task.
@@ -369,7 +375,12 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
                 s.last_segment_base = base;
                 s.last_segment_size = size;
                 s.next_segment_base = base.wrapping_add(size.max(1) as u16);
-                // Stays in Loading; echo the resulting state.
+                // Normally stays in Loading; the LoadedOnAllocate fault drops to
+                // Loaded here, so the allocate's own re-read trips the strict check.
+                if fault == Fault::LoadedOnAllocate && is_app {
+                    s.app_load_state = LS_LOADED;
+                }
+                // Echo the resulting state.
                 return Reaction::Answer(
                     A_PROPERTY_VALUE_RESPONSE,
                     prop_response(oi, pid, 1, start, &[s.app_load_state]),
@@ -973,6 +984,98 @@ async fn flash_strict_load_state_error_names_object_and_table() {
 }
 
 #[tokio::test]
+async fn flash_allocate_path_load_state_error_names_object_and_table() {
+    // Finding 2: the allocate path (AdditionalLoadControls) must carry the SAME
+    // rich LoadStateContext the StartLoading path got in 9a0668a. Here the device
+    // passes StartLoading (reaches Loading) but drops to Loaded on the allocation,
+    // so it is the ALLOCATE re-read that trips the strict check — and its error
+    // must still name the targeted object's type and the full discovered table.
+    let (mut bus, _state, handle) = setup(Fault::LoadedOnAllocate).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+
+    let app = fabricated_app();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    let err = flash(
+        &mut l4,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .expect_err("the allocate re-read must trip the strict load-state check");
+    let _ = l4.disconnect().await;
+
+    match &err {
+        bussard_mgmt::load::WriteError::UnexpectedLoadState {
+            object_index,
+            control,
+            context,
+            ..
+        } => {
+            // The failure came from the allocate path (AdditionalLoadControls),
+            // not StartLoading — proving finding-2's path is the one enriched.
+            assert_eq!(
+                *control,
+                bussard_mgmt::LoadControl::AdditionalLoadControls,
+                "the error must originate on the allocate path"
+            );
+            assert_eq!(*object_index, 3, "the app object is index 3");
+            // Same rich context as the StartLoading path: object type + table.
+            assert_eq!(context.object_type, Some(OT_APPLICATION_PROGRAM));
+            assert_eq!(
+                context.object_table,
+                vec![(0, 0), (1, 1), (2, 2), (3, 3)],
+                "the allocate-path error must fold in the discovered object table"
+            );
+        }
+        other => panic!("expected UnexpectedLoadState from the allocate path, got {other:?}"),
+    }
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("application-program") && rendered.contains("discovered object table"),
+        "the allocate-path message must render the rich context: {rendered}"
+    );
+    handle.abort();
+}
+
+#[tokio::test]
+async fn flash_batched_verify_loads_and_verifies() {
+    // Item 1: a full flash under --verify batched still reaches Loaded with every
+    // byte landed. Batched writes the whole segment before verifying it once.
+    let (mut bus, state, handle) = setup(Fault::None).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+
+    let app = fabricated_app();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+
+    let options = bussard_download::FlashOptions {
+        verify: bussard_mgmt::VerifyMode::Batched,
+        ..Default::default()
+    };
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    let outcome = flash(&mut l4, &plan, options, |_| {}).await.unwrap();
+    let _ = l4.disconnect().await;
+
+    assert!(outcome.ok(), "batched flash must verify: {outcome:?}");
+    assert_eq!(outcome.load_state, LoadState::Loaded);
+    let s = state.lock().unwrap();
+    let code: Vec<u8> = (0x4000u16..0x4006)
+        .map(|a| *s.memory.get(&a).unwrap_or(&0))
+        .collect();
+    assert_eq!(code, vec![0, 1, 2, 3, 4, 5]);
+    assert_eq!(*s.memory.get(&0x4006).unwrap_or(&0), 7);
+    handle.abort();
+}
+
+#[tokio::test]
 async fn flash_tolerance_flag_accepts_loaded_after_start_loading() {
     // Finding 1: with --tolerate-nonconformant-load-states the same KV device
     // (snaps to Loaded after StartLoading) flashes through to Loaded. Only the
@@ -986,6 +1089,7 @@ async fn flash_tolerance_flag_accepts_loaded_after_start_loading() {
 
     let options = bussard_download::FlashOptions {
         tolerate_nonconformant_load_states: true,
+        ..Default::default()
     };
     let mut l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
