@@ -1,8 +1,8 @@
-# bussard
+# 🪽 bussard
 
-A buzzard circles the field and sees everything move. `bussard` does that for a KNX house: an open-source CLI that watches, decodes, and programs the bus. No GUI, ever.
+A buzzard circles the field and sees everything move. `bussard` does that for a KNX building: an open-source CLI that programs, watches, and decodes the bus. Build for LLMs to be able to manage your KNX configuration.
 
-Your KNX configuration becomes YAML in a git repo: group addresses, links, devices. Changes are reviewable diffs, an LLM can propose them, and `bussard` pushes them to the devices over your KNXnet/IP gateway. ETS stays in the drawer for the things only ETS can do (certification, planning, the odd exotic device).
+All you the configuration for your KNX setup is stored in YAML files. Ready for you chat agent to modify them creating reviewable diffs. `bussard` pushes the changes to the devices over your KNXnet/IP gateway. ETS stays in the drawer for the things only ETS can do (certification, planning, the odd exotic device).
 
 ![How bussard fits together](docs/assets/overview.svg)
 
@@ -27,18 +27,6 @@ Your KNX configuration becomes YAML in a git repo: group addresses, links, devic
 ```
 
 </details>
-
-## What you need
-
-A KNXnet/IP gateway (tunneling or routing). That is it. Optional but nice: your ETS project export (`.knxproj`) for an instantly named model, and vendor product data (`.knxprod`, free downloads from manufacturer sites) for commissioning new devices.
-
-## Install
-
-```console
-$ cargo install --path crates/bussard-cli
-```
-
-Prebuilt binaries (Homebrew, winget, `curl | sh`) are planned.
 
 ## Quickstart
 
@@ -75,10 +63,20 @@ $ bussard ha-config --out ha.yaml    # Home Assistant config from the same model
 $ claude mcp add knx -- bussard mcp --dir knx    # let Claude debug your bus
 ```
 
+## Install
+
+You will need a KNXnet/IP gateway (tunneling or routing). Optional but nice: your ETS project export (`.knxproj`) for an instantly named model, and also optionally vendor product data (`.knxprod`, free downloads from manufacturer sites) for commissioning new devices.
+
+```console
+$ cargo install --path crates/bussard-cli
+```
+
+Prebuilt binaries (Homebrew, winget, `curl | sh`) are planned.
+
 ## Safety
 
-- A GA marked `protected: true` (wind alarm, central functions) is refused: the CLI needs `--force`, MCP has no override at all.
-- Every device write is plan-before-apply: read the live state, show the diff, confirm on a terminal, back up, verify.
+- A GA marked `protected: true` (wind alarm or central functions) is refused: the CLI needs `--force`. An LLM connecting to bussard over MCP has no override at all and can not modify protected GAs.
+- Every device write is plan-before-apply: bussard will read the live state and show the diff. After a confirmation and a back up changes are executed and verified.
 - The MCP server has three tiers: passive (never transmits), read (default, rate-limited), write (opt-in via `--allow-writes`).
 
 ## Documentation
@@ -91,7 +89,7 @@ $ claude mcp add knx -- bussard mcp --dir knx    # let Claude debug your bus
 
 ## Legal notes
 
-Never commit `.knxproj` or `.knxprod` files: the application XML is the manufacturer's copyrighted work. Users supply their own product files, free from manufacturer sites or the MyKNX catalogue ([details](docs/product-data.md)). `bussard` is an independent project, not affiliated with or certified by the KNX Association. KNX is a registered trademark of the KNX Association.
+Never commit `.knxproj` or `.knxprod` files: the application XML is the manufacturer's copyrighted work. You supply your own product files, free from manufacturer sites or the MyKNX catalogue ([details](docs/product-data.md)). `bussard` is an independent project, not affiliated with or certified by the KNX Association. KNX is a registered trademark of the KNX Association.
 
 ## License
 
