@@ -57,6 +57,10 @@ owo-colors = "4"
 # base64: decodes ETS code-segment <Data>/<Mask> payloads (the application
 # binary image) into bytes. All MIT/Apache-2.0.
 base64 = "0.22"
+# rayon: data-parallel iterators. Used to parse the distinct referenced
+# ApplicationProgram XML files in parallel during `.knxproj` import (the parse
+# dominates import wall time). MIT OR Apache-2.0.
+rayon = "1"
 
 # ---------------------------------------------------------------------------
 # Build profiles tuned for test iteration speed.

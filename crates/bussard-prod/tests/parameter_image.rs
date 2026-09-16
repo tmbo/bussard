@@ -142,7 +142,7 @@ fn real_knxproj_smoke() {
             .unwrap()
             .strip_suffix(".xml")
             .unwrap();
-        let app = bussard_prod::parse_application_program(id, &xml).unwrap();
+        let app = bussard_prod::parse_application_program(id, xml.as_bytes()).unwrap();
 
         let seg_bytes: usize = app
             .code_segments

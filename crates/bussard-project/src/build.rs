@@ -239,8 +239,20 @@ pub fn build_model(project: RawProject, container: &mut Container) -> Result<Mod
 
     // Cache of parsed application programs (by app id) and per-manufacturer
     // parsed `Hardware.xml` (by manufacturer id).
-    let mut app_cache: HashMap<String, ApplicationProgram> = HashMap::new();
     let mut hw_cache: HashMap<String, Hardware> = HashMap::new();
+
+    // Phase 1: resolve each device's ordered application-program ids (this also
+    // fills `hw_cache`, which requires `&mut container`), remembering them so the
+    // device loop below does not resolve them a second time.
+    let mut app_ids_by_device: Vec<Vec<String>> = Vec::with_capacity(project.devices.len());
+    for raw_dev in &project.devices {
+        app_ids_by_device.push(app_ids_for(raw_dev, container, &mut hw_cache)?);
+    }
+
+    // The distinct referenced application-program ids, in first-seen order (kept
+    // only for a stable serial read; the cache is a keyed lookup so emission
+    // order downstream is independent of it).
+    let app_cache = parse_applications(container, &project.devices, &app_ids_by_device)?;
 
     // Accumulate: links per device, com_objects per device, and (GA -> inferred
     // DPT) from linked com-objects for GAs lacking an explicit DPT.
@@ -248,17 +260,7 @@ pub fn build_model(project: RawProject, container: &mut Container) -> Result<Mod
     let mut devices: BTreeMap<IndividualAddress, LoadedDevice> = BTreeMap::new();
     let mut inferred_ga_dpt: HashMap<GroupAddress, Dpt> = HashMap::new();
 
-    for raw_dev in &project.devices {
-        // The ordered application-program ids for this device (usually one; a
-        // multi-application device lists several, the first being primary).
-        let app_ids = app_ids_for(raw_dev, container, &mut hw_cache)?;
-        for app_id in &app_ids {
-            if !app_cache.contains_key(app_id) {
-                let xml = container.application_xml(app_id, &raw_dev.address.to_string())?;
-                let app = parse_application_program(app_id, &xml)?;
-                app_cache.insert(app_id.clone(), app);
-            }
-        }
+    for (raw_dev, app_ids) in project.devices.iter().zip(&app_ids_by_device) {
         let apps: Vec<&ApplicationProgram> =
             app_ids.iter().filter_map(|id| app_cache.get(id)).collect();
         let primary_app = apps.first().copied();
@@ -426,6 +428,61 @@ pub fn build_model(project: RawProject, container: &mut Container) -> Result<Mod
 /// list (first = primary) gives the app ids. When `Hardware.xml` is unavailable
 /// we fall back to the `HP-…` → `A-…` shorthand, which is correct for
 /// single-application devices.
+/// Reads and parses every distinct referenced application-program XML.
+///
+/// The parse of these (up to ~28 MB) manufacturer files dominates import wall
+/// time, so it is data-parallel: the raw entries are inflated *serially* from
+/// the shared `ZipArchive` (inflate is a small fraction of the cost, and reading
+/// serially sidesteps `&mut` aliasing on the archive), then the CPU-bound parses
+/// run across a rayon pool into the returned cache.
+///
+/// Determinism: the returned map is a keyed lookup, so downstream emission order
+/// is unchanged regardless of parse completion order. On a parse error the
+/// lowest app-id error wins (results are sorted by id before the first error is
+/// reported), so the surfaced failure is stable across runs and thread counts.
+fn parse_applications(
+    container: &mut Container,
+    devices: &[RawDevice],
+    app_ids_by_device: &[Vec<String>],
+) -> Result<HashMap<String, ApplicationProgram>> {
+    use rayon::prelude::*;
+
+    // The distinct referenced app ids, each paired with a device address for
+    // error context (any referencing device suffices; first-seen is stable).
+    let mut raw: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut seen: HashMap<&str, ()> = HashMap::new();
+    for (raw_dev, app_ids) in devices.iter().zip(app_ids_by_device) {
+        for app_id in app_ids {
+            if seen.insert(app_id.as_str(), ()).is_none() {
+                // Serial read from the shared archive (inflate only).
+                let bytes = container.application_raw(app_id, &raw_dev.address.to_string())?;
+                raw.push((app_id.clone(), bytes));
+            }
+        }
+    }
+
+    // Parallel parse. Each result carries its app id so a failure can be
+    // attributed deterministically (lowest id wins). The closure yields the
+    // parser's own `EtsError` result; it converts to `ImportError` via `?` at
+    // the unwrap below.
+    let mut parsed: Vec<(String, bussard_ets::Result<ApplicationProgram>)> = raw
+        .into_par_iter()
+        .map(|(id, bytes)| {
+            let app = parse_application_program(&id, &bytes);
+            (id, app)
+        })
+        .collect();
+
+    // First error wins deterministically: sort by app id, then surface the
+    // first Err (if any) before assembling the cache.
+    parsed.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut cache: HashMap<String, ApplicationProgram> = HashMap::with_capacity(parsed.len());
+    for (id, result) in parsed {
+        cache.insert(id, result?);
+    }
+    Ok(cache)
+}
+
 fn app_ids_for(
     raw_dev: &RawDevice,
     container: &mut Container,

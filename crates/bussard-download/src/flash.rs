@@ -888,7 +888,7 @@ mod tests {
            </LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#;
-        parse_application_program("M-1_A-1", xml).unwrap()
+        parse_application_program("M-1_A-1", xml.as_bytes()).unwrap()
     }
 
     fn no_overrides() -> BTreeMap<String, String> {
@@ -966,7 +966,7 @@ mod tests {
            </LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-1_A-2", xml).unwrap();
+        let app = parse_application_program("M-1_A-2", xml.as_bytes()).unwrap();
         let err = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides()).unwrap_err();
         match err {
             PlanError::UnsupportedOp { op } => assert!(op.contains("LoadImageProp"), "{op}"),

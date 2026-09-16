@@ -106,7 +106,9 @@ pub fn read_knxprod(path: &Path) -> Result<ProductData> {
     let mut applications = Vec::with_capacity(entries.len());
     for entry in &entries {
         let xml = container.read_to_string(&entry.entry)?;
-        let app = parse_application_program(&entry.application_id, &xml)?;
+        // parse_application_program now takes &[u8] (skips an eager whole-file
+        // UTF-8 validation); behavior here is identical.
+        let app = parse_application_program(&entry.application_id, xml.as_bytes())?;
         applications.push(app);
     }
     applications.sort_by(|a, b| a.id.cmp(&b.id));

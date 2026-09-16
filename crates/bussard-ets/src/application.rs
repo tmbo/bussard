@@ -508,13 +508,20 @@ impl ResolvedParameter<'_> {
 // Parsing
 // ---------------------------------------------------------------------------
 
-/// Parses an ApplicationProgram XML string.
+/// Parses an ApplicationProgram XML from raw UTF-8 bytes.
+///
+/// Taking `&[u8]` lets callers hand the raw (inflated) container entry straight
+/// to the parser: `quick-xml` reads UTF-8 out of the byte stream event by event,
+/// so we skip an eager whole-file `String` validation of a file that reaches
+/// ~28 MB. A leading UTF-8 BOM is stripped here on the bytes.
 ///
 /// `id` is the application-program id (used for error context and as the
 /// returned id).
-pub fn parse_application_program(id: &str, xml: &str) -> Result<ApplicationProgram> {
+pub fn parse_application_program(id: &str, xml: &[u8]) -> Result<ApplicationProgram> {
     let context = format!("application program {id}");
-    let mut reader = Reader::from_str(xml);
+    // Strip a leading UTF-8 BOM on the bytes so the reader starts on `<`.
+    let xml = xml.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(xml);
+    let mut reader = Reader::from_reader(xml);
     reader.config_mut().trim_text(false);
 
     let mut app = ApplicationProgram {
@@ -643,6 +650,13 @@ pub fn parse_application_program(id: &str, xml: &str) -> Result<ApplicationProgr
 
     apply_translations(&mut app, &translations);
     Ok(app)
+}
+
+/// Convenience wrapper over [`parse_application_program`] for `&str` callers
+/// (chiefly tests). Production callers hand raw bytes to the byte API to avoid
+/// an eager UTF-8 validation of a multi-megabyte file.
+pub fn parse_application_program_str(id: &str, xml: &str) -> Result<ApplicationProgram> {
+    parse_application_program(id, xml.as_bytes())
 }
 
 /// Handles a `Start` event (elements that have children).
@@ -1138,7 +1152,7 @@ mod tests {
 </KNX>"#;
 
     fn sample() -> ApplicationProgram {
-        parse_application_program("M-00FA_A-1", SAMPLE).unwrap()
+        parse_application_program_str("M-00FA_A-1", SAMPLE).unwrap()
     }
 
     #[test]
@@ -1358,7 +1372,7 @@ mod tests {
           </Language></Languages>
          </ApplicationProgram>
         </KNX>"#;
-        let app = parse_application_program("M-1_A-1", xml).unwrap();
+        let app = parse_application_program_str("M-1_A-1", xml).unwrap();
         assert_eq!(app.name.as_deref(), Some("English"));
         assert_eq!(
             app.com_objects.get("M-1_A-1_O-0").unwrap().text.as_deref(),
@@ -1386,7 +1400,7 @@ mod tests {
 
     #[test]
     fn parses_channels_and_arguments() {
-        let app = parse_application_program("M-0004_A-1", MODULE_SAMPLE).unwrap();
+        let app = parse_application_program_str("M-0004_A-1", MODULE_SAMPLE).unwrap();
         let ch = app.channel("MD-1_CH-13").expect("channel def");
         assert_eq!(ch.name.as_deref(), Some("Relaisausgänge"));
         assert_eq!(
@@ -1406,7 +1420,7 @@ mod tests {
             </ComObjectTable></Static>
           </ApplicationProgram>
         </KNX>"#;
-        let app = parse_application_program("M-1_A-1", xml).unwrap();
+        let app = parse_application_program_str("M-1_A-1", xml).unwrap();
         assert_eq!(
             app.com_objects
                 .get("M-1_A-1_MD-1_O-2")

@@ -433,7 +433,7 @@ mod tests {
               </Static>
              </ApplicationProgram></KNX>"#
         );
-        parse_application_program(id, &xml).unwrap()
+        parse_application_program(id, xml.as_bytes()).unwrap()
     }
 
     /// Builds a [`ProductData`] from `(order_number, [app_ref…])` rows and the

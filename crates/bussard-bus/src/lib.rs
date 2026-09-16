@@ -50,7 +50,7 @@ use bussard_transport::cemi::{CemiFrame, MessageCode};
 use bussard_transport::{
     BusConnection, ConnectionConfig, TimestampedFrame, Transport, TransportError,
 };
-use tokio::sync::{Semaphore, broadcast, mpsc, oneshot};
+use tokio::sync::{Semaphore, broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 /// How long a frame may sit queued (waiting for a live connection) before the
@@ -175,11 +175,19 @@ struct Shared {
     state: AtomicU8,
     /// The tunnel-assigned individual address (raw), or 0 if none / routing.
     assigned_ia: AtomicU16,
+    /// Notified on every state transition so waiters wake immediately instead of
+    /// polling. Carries the new [`BusState`] as a `u8`; the atomic above stays
+    /// the source of truth for cheap synchronous reads.
+    state_tx: watch::Sender<u8>,
 }
 
 impl Shared {
     fn set_state(&self, state: BusState) {
         self.state.store(state.as_u8(), Ordering::Relaxed);
+        // Wake any `wait_connected` waiters. `send` never fails here: `Shared`
+        // owns the sender for its whole lifetime, so a receiver can always be
+        // borrowed from it, and `send` errors only when all receivers are gone.
+        let _ = self.state_tx.send(state.as_u8());
     }
 
     fn state(&self) -> BusState {
@@ -201,9 +209,11 @@ impl Bus {
     pub fn connect(config: ConnectionConfig) -> (BusHandle, JoinHandle<()>) {
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
         let (frame_tx, _frame_rx) = broadcast::channel(BROADCAST_DEPTH);
+        let (state_tx, _state_rx) = watch::channel(BusState::Connecting.as_u8());
         let shared = Arc::new(Shared {
             state: AtomicU8::new(BusState::Connecting.as_u8()),
             assigned_ia: AtomicU16::new(0),
+            state_tx,
         });
 
         let actor = Actor {
@@ -317,13 +327,23 @@ impl BusHandle {
     /// fallback — which real devices ignore for connection-oriented traffic
     /// (issue #30's failure mode, as a startup race).
     pub async fn wait_connected(&self, timeout: Duration) -> bool {
+        // Subscribe before the first status read so no transition can slip
+        // through between the check and the await (the actor may set the state
+        // concurrently). `borrow_and_update` on a fresh receiver marks the
+        // current value seen; `changed()` then wakes only on a *new* transition.
+        let mut rx = self.shared.state_tx.subscribe();
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
-            match self.status() {
+            match BusState::from_u8(*rx.borrow_and_update()) {
                 BusState::Connected => return true,
                 BusState::Closed => return false,
-                _ if tokio::time::Instant::now() >= deadline => return false,
-                _ => tokio::time::sleep(Duration::from_millis(10)).await,
+                _ => {}
+            }
+            // Await the next transition, bounded by the deadline. A timeout or a
+            // dropped sender (actor gone) both end the wait as not-connected.
+            match tokio::time::timeout_at(deadline, rx.changed()).await {
+                Ok(Ok(())) => continue,
+                Ok(Err(_)) | Err(_) => return false,
             }
         }
     }
