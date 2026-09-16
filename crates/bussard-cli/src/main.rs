@@ -285,6 +285,13 @@ enum Command {
         /// --reconnect-every.
         #[arg(long, value_name = "N")]
         max_window_retries: Option<u32>,
+        /// The device's BCU access key, in hex (e.g. `FFFFFFFF` or `0x11223344`),
+        /// presented with A_Authorize on every management connect (issue #52).
+        /// Unset presents the free-access key (FFFFFFFF) — correct for an unkeyed
+        /// device (ETS uses free access by default). A keyed device needs its
+        /// project key here or it will deny access.
+        #[arg(long, value_name = "HEX")]
+        bcu_key: Option<String>,
         /// Override the gateway `host[:port]` for tunneling.
         #[arg(long, value_name = "HOST")]
         gateway: Option<String>,
@@ -574,6 +581,7 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             pace,
             reconnect_every,
             max_window_retries,
+            bcu_key,
             gateway,
             routing,
         } => flash_cmd::run(
@@ -588,6 +596,7 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             pace,
             reconnect_every,
             max_window_retries,
+            bcu_key.as_deref(),
             conn_cmd::ConnOverrides { gateway, routing },
         ),
         Command::Plan {

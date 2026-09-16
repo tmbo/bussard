@@ -104,6 +104,22 @@ pub enum MgmtError {
         wraps: u32,
     },
 
+    /// An `A_Authorize_Request` was answered, but the device granted a
+    /// **non-zero** access level: the key presented does not unlock the access
+    /// the management session needs. Distinct from a device that does not
+    /// implement authorize at all (that is tolerated and continues) — a granted
+    /// level is a real, explicit access-denied that must fail loudly.
+    #[error(
+        "{address} denied access: A_Authorize granted level {level} (0 = full access) for the \
+         presented key — the device is keyed and needs its BCU key (pass --bcu-key <hex>)"
+    )]
+    AccessDenied {
+        /// The device that granted limited access.
+        address: IndividualAddress,
+        /// The non-zero access level the device granted.
+        level: u8,
+    },
+
     /// An underlying transport error (socket, gateway, framing).
     #[error(transparent)]
     Transport(#[from] TransportError),

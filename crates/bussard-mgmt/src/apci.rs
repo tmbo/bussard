@@ -23,6 +23,33 @@ pub const A_DEVICE_DESCRIPTOR_RESPONSE: u16 = 0x340;
 /// against the service it belongs to regardless of the low-bit parameter.
 pub const APCI_SELECTOR_MASK: u16 = 0x3C0;
 
+/// `A_Authorize_Request` — present an access key to unlock a management session.
+///
+/// A connection-oriented management session on a device that expects
+/// authorization must present a key before any configuration read/write; ETS
+/// sends this as the **first** operation after the device-descriptor read (a
+/// RawCap of a real ETS download to KNX Virtual, issue #52 finding #1, decoded
+/// 409 frames: `A_Authorize_Request` with the free-access key `FF FF FF FF`
+/// precedes every configuration access). The payload is a reserved `0x00` octet
+/// followed by the 4-byte key, big-endian — see [`encode_authorize_request`].
+pub const A_AUTHORIZE_REQUEST: u16 = 0x3D1;
+/// `A_Authorize_Response` — the device's answer to [`A_AUTHORIZE_REQUEST`],
+/// carrying a single granted access-level octet (0 = highest). Decoded by
+/// [`decode_authorize_response`].
+pub const A_AUTHORIZE_RESPONSE: u16 = 0x3D2;
+/// `A_Key_Write` — set the access key for a level (constant for completeness;
+/// bussard does not implement key management, only free-access authorization).
+pub const A_KEY_WRITE: u16 = 0x3D3;
+/// `A_Key_Response` — the device's answer to [`A_KEY_WRITE`] (constant only, no
+/// implementation).
+pub const A_KEY_RESPONSE: u16 = 0x3D4;
+
+/// The free-access key `FF FF FF FF`: the "no key required / highest available
+/// access" key ETS presents to an unkeyed device. bussard authorizes every
+/// management connection with this by default; a project that set a BCU key uses
+/// `--bcu-key` to pass the real key instead.
+pub const FREE_ACCESS_KEY: u32 = 0xFFFF_FFFF;
+
 /// `A_PropertyValue_Read` — read a property of an interface object.
 pub const A_PROPERTY_VALUE_READ: u16 = 0x3D5;
 /// `A_PropertyValue_Response`.
@@ -226,6 +253,32 @@ pub fn encode_restart(variant: u8) -> (u16, Vec<u8>) {
     (A_RESTART | u16::from(variant & 0x3f), Vec::new())
 }
 
+/// Encodes an `A_Authorize_Request` payload: a reserved `0x00` octet followed by
+/// the 4-byte `key`, big-endian.
+///
+/// The wire form is exactly the 5 octets `[00, key_be…]` — verified against a
+/// RawCap of an ETS download to KNX Virtual (issue #52 finding #1), where the
+/// free-access request decoded to `[00 ff ff ff ff]`. The request APCI is
+/// [`A_AUTHORIZE_REQUEST`]; the caller sends `(A_AUTHORIZE_REQUEST, payload)`.
+/// Pass [`FREE_ACCESS_KEY`] for an unkeyed device.
+pub fn encode_authorize_request(key: u32) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(5);
+    payload.push(0x00); // reserved
+    payload.extend_from_slice(&key.to_be_bytes());
+    payload
+}
+
+/// Decodes an `A_Authorize_Response` payload into the granted access **level**
+/// octet.
+///
+/// The response carries a single level octet (`0` = highest access; a non-zero
+/// level means the key granted only limited access). Returns `None` if the
+/// payload is empty. The captured free-access response was `[00]` (level 0). The
+/// caller validates the response APCI is [`A_AUTHORIZE_RESPONSE`] separately.
+pub fn decode_authorize_response(payload: &[u8]) -> Option<u8> {
+    payload.first().copied()
+}
+
 /// Encodes an `A_Memory_Read` request: the octet count lives in the **low 6
 /// bits of the APCI**, followed by exactly the two address octets.
 ///
@@ -422,6 +475,29 @@ mod tests {
         // Over-long counts clamp to MAX_MEMORY_READ_LEN.
         let (apci, _) = encode_memory_read(0x0100, 200);
         assert_eq!((apci & 0x3f) as u8, MAX_MEMORY_READ_LEN);
+    }
+
+    #[test]
+    fn authorize_request_is_reserved_byte_then_key_be() {
+        // Free-access request: the captured wire form is [00 FF FF FF FF].
+        let payload = encode_authorize_request(FREE_ACCESS_KEY);
+        assert_eq!(payload, vec![0x00, 0xFF, 0xFF, 0xFF, 0xFF]);
+        assert_eq!(FREE_ACCESS_KEY, 0xFFFF_FFFF);
+        // A concrete keyed value encodes big-endian after the reserved octet.
+        let keyed = encode_authorize_request(0x0011_2233);
+        assert_eq!(keyed, vec![0x00, 0x00, 0x11, 0x22, 0x33]);
+    }
+
+    #[test]
+    fn authorize_response_decodes_level_octet() {
+        // The captured free-access response was [00] = granted level 0.
+        assert_eq!(decode_authorize_response(&[0x00]), Some(0));
+        // A non-zero level (insufficient access) decodes to that level.
+        assert_eq!(decode_authorize_response(&[0x03]), Some(3));
+        // A trailing tail is ignored; only the first octet is the level.
+        assert_eq!(decode_authorize_response(&[0x00, 0xAA]), Some(0));
+        // An empty payload is not a level.
+        assert_eq!(decode_authorize_response(&[]), None);
     }
 
     #[test]

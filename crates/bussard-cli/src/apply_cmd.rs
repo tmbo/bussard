@@ -70,6 +70,13 @@ pub fn run(
             let channel = LeaseChannel::new(lease);
             let result = match Layer4Connection::connect(channel, target, source).await {
                 Ok(mut l4) => {
+                    // Authorize (free access) before reading, as ETS does (issue
+                    // #52 finding #1). Best-effort on this read-only pre-pass.
+                    if let Err(err) =
+                        l4.authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY).await
+                    {
+                        tracing::debug!("{target} authorize (free access) did not grant: {err}");
+                    }
                     let r = read_tables(&mut l4).await;
                     let _ = l4.disconnect().await;
                     r
@@ -170,6 +177,14 @@ async fn execute(
     desired: &DesiredTables,
 ) -> Result<VerifyOutcome, bussard_mgmt::load::WriteError> {
     let mut l4 = Layer4Connection::connect(channel, target, source)
+        .await
+        .map_err(bussard_mgmt::load::WriteError::Mgmt)?;
+    // Authorize the write session with the free-access key before any table
+    // write, exactly as ETS does (issue #52 finding #1). This is the mutating
+    // path, so fail loudly on an explicit access-denied (a keyed device needs its
+    // BCU key) rather than proceeding into writes that the device would drop; a
+    // device that does not implement authorize is tolerated and continues.
+    l4.authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY)
         .await
         .map_err(bussard_mgmt::load::WriteError::Mgmt)?;
     let objects = discover_table_objects(&mut l4).await?;

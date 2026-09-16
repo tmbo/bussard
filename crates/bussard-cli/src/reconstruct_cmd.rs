@@ -129,6 +129,12 @@ pub fn run(
         let channel = LeaseChannel::new(lease);
         let table_result = match Layer4Connection::connect(channel, target, source).await {
             Ok(mut l4) => {
+                // Authorize the session (free access) as ETS does before any
+                // configuration access (issue #52 finding #1). Best-effort for a
+                // read: tolerate a device without authorize; log an access-denied.
+                if let Err(err) = l4.authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY).await {
+                    tracing::debug!("{target} authorize (free access) did not grant: {err}");
+                }
                 let result = read_tables(&mut l4).await;
                 let _ = l4.disconnect().await;
                 result
@@ -395,13 +401,26 @@ async fn soak_connection(
             };
         }
     };
+    // Authorize first, as a real management session does (issue #52 finding #1),
+    // so the soak measures the per-connection budget of an *authorized* session —
+    // the state that matters for the download drop this fixes. Best-effort: a
+    // device without authorize is tolerated and the soak proceeds.
+    if let Err(err) = l4
+        .authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY)
+        .await
+    {
+        tracing::debug!("{target} soak authorize (free access) did not grant: {err}");
+    }
     let (req_apci, payload) = bussard_mgmt::apci::encode_device_descriptor_read(0);
+    // The authorize consumed one numbered exchange; report only the descriptor
+    // reads the soak was asked to drive, so `--l4-soak N` reports N on success.
+    let base_exchanges = l4.numbered_exchanges();
     let mut completed = 0u32;
     let mut error = None;
     for i in 1..=exchanges {
         match l4.request(req_apci, &payload).await {
             Ok(_) => {
-                completed = l4.numbered_exchanges();
+                completed = l4.numbered_exchanges().saturating_sub(base_exchanges);
                 if i % 10 == 0 {
                     eprintln!("  {completed} exchange(s) ok…");
                     let _ = std::io::stderr().flush();
@@ -409,8 +428,9 @@ async fn soak_connection(
             }
             Err(err) => {
                 // Record how many the connection actually acknowledged before it
-                // died (the L4 counter is the ground truth).
-                completed = l4.numbered_exchanges();
+                // died (the L4 counter is the ground truth), excluding the
+                // authorize preamble.
+                completed = l4.numbered_exchanges().saturating_sub(base_exchanges);
                 error = Some(err.to_string());
                 break;
             }
@@ -737,6 +757,13 @@ async fn read_line_tables(
     let mut l4 = Layer4Connection::connect(channel, addr, source)
         .await
         .map_err(|e| anyhow!("{e}"))?;
+    // Authorize (free access) before reading, as ETS does (issue #52 finding #1).
+    if let Err(err) = l4
+        .authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY)
+        .await
+    {
+        tracing::debug!("{addr} authorize (free access) did not grant: {err}");
+    }
     let result = read_tables(&mut l4).await;
     let _ = l4.disconnect().await;
     result.map_err(|e| anyhow!("{e}"))

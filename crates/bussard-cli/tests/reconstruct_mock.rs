@@ -97,6 +97,10 @@ fn device_response(dev: &TableDevice, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)
         _ => return None,
     };
     match req_apci {
+        // Authorize (issue #52 finding #1): ETS presents a key before any
+        // configuration access, so bussard authorizes every management connect.
+        // Grant full access (level 0) for the free-access key.
+        apci::A_AUTHORIZE_REQUEST => Some((apci::A_AUTHORIZE_RESPONSE, vec![0x00])),
         // Strict, like a real device: the descriptor type lives in the low 6
         // APCI bits and the request carries no payload octet.
         apci::A_DEVICE_DESCRIPTOR_READ if data.is_empty() => Some((
