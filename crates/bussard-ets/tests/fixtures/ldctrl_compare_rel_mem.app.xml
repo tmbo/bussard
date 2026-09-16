@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FABRICATED fixture. Reproduces the structural shape of an
+     <LdCtrlCompareRelMem> load-procedure op (a relative-memory verify) that the
+     sweep found in MDT BE-GTSx6Tx and MDT JTA blind push button (both mask
+     07B0). All ids, offsets and data are fake. No vendor content is copied.
+     The parser keeps this op as LoadOp::Raw (unknown), and plan_flash refuses
+     any procedure carrying a Raw op — so a full download procedure that ends
+     with this op reproduces the observed PlanError::UnsupportedOp refusal. -->
+<KNX xmlns="http://knx.org/xml/project/23">
+ <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
+  <ApplicationProgram Id="M-00FA_A-0001-11-ABCD-O000A" ApplicationNumber="1" ApplicationVersion="11" MaskVersion="MV-07B0" Name="CompareRelMem Fixture" LoadProcedureStyle="MergedProcedure">
+   <Static>
+    <Code>
+     <RelativeSegment Id="M-00FA_A-0001-11-ABCD-O000A_RS-4" Size="1936" LoadStateMachine="4" />
+    </Code>
+    <ComObjectTable>
+     <ComObject Id="M-00FA_A-0001-11-ABCD-O000A_O-0" Number="0" Text="Switch" ObjectSize="1 Bit" CommunicationFlag="Enabled" WriteFlag="Enabled" />
+    </ComObjectTable>
+    <ComObjectRefs>
+     <ComObjectRef Id="M-00FA_A-0001-11-ABCD-O000A_O-0_R-1" RefId="M-00FA_A-0001-11-ABCD-O000A_O-0" DatapointType="DPST-1-1" />
+    </ComObjectRefs>
+   </Static>
+   <LoadProcedures>
+    <LoadProcedure MergeId="4">
+     <LdCtrlConnect />
+     <LdCtrlUnload LsmIdx="4" />
+     <LdCtrlLoad LsmIdx="4" />
+     <LdCtrlRelSegment LsmIdx="4" Size="1936" AppliesTo="full,par" />
+     <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="1936" AppliesTo="full,par" />
+     <LdCtrlLoadCompleted LsmIdx="4" />
+     <!-- The new, unhandled op: a masked, inverted relative-memory compare. -->
+     <LdCtrlCompareRelMem InlineData="FF" Mask="FF" Invert="true" ObjIdx="4" Offset="1234" Size="1" />
+     <LdCtrlRestart />
+     <LdCtrlDisconnect />
+    </LoadProcedure>
+   </LoadProcedures>
+  </ApplicationProgram>
+ </ApplicationPrograms></Manufacturer></ManufacturerData>
+</KNX>

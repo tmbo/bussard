@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FABRICATED fixture. Reproduces <LdCtrlCompareMem> — an absolute-memory
+     verify op (the absolute twin of LdCtrlCompareRelMem), found on System-7
+     apps in the sweep. Fake ids/addresses/data. Parses as LoadOp::Raw. -->
+<KNX xmlns="http://knx.org/xml/project/20">
+ <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
+  <ApplicationProgram Id="M-00FA_A-0002-11-ABCD-O000A" ApplicationNumber="2" ApplicationVersion="11" MaskVersion="MV-0705" Name="CompareMem Fixture" LoadProcedureStyle="ProductProcedure">
+   <Static>
+    <ComObjectTable>
+     <ComObject Id="M-00FA_A-0002-11-ABCD-O000A_O-0" Number="0" Text="Value" ObjectSize="1 Byte" CommunicationFlag="Enabled" ReadFlag="Enabled" />
+    </ComObjectTable>
+    <ComObjectRefs>
+     <ComObjectRef Id="M-00FA_A-0002-11-ABCD-O000A_O-0_R-1" RefId="M-00FA_A-0002-11-ABCD-O000A_O-0" DatapointType="DPST-5-1" />
+    </ComObjectRefs>
+   </Static>
+   <LoadProcedures>
+    <LoadProcedure>
+     <LdCtrlConnect />
+     <LdCtrlCompareMem Address="269" Size="1" InlineData="FF" />
+     <LdCtrlRestart />
+     <LdCtrlDisconnect />
+    </LoadProcedure>
+   </LoadProcedures>
+  </ApplicationProgram>
+ </ApplicationPrograms></Manufacturer></ManufacturerData>
+</KNX>
