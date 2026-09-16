@@ -39,6 +39,10 @@ use bussard_prod::{ApplicationProgram, ProductData, normalize_order_number};
 use crate::conn_cmd::{ConnOverrides, load_model_optional, resolve_config};
 
 /// Flashes an application program from vendor product data into a device.
+///
+/// The argument list mirrors the `flash` subcommand's flags 1:1; bundling them
+/// would only obscure that mapping, so the clippy arity lint is allowed here.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     address: &str,
     product: &Path,
@@ -46,6 +50,7 @@ pub fn run(
     order_number: Option<&str>,
     dir: &Path,
     yes: bool,
+    tolerate_nonconformant_load_states: bool,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
     let target: IndividualAddress = address
@@ -89,6 +94,15 @@ pub fn run(
     let model = load_model_optional(dir);
     let config = resolve_config(model.as_ref(), &overrides)?;
     let overrides_map = collect_parameter_overrides(model.as_ref(), target);
+    // Module-instance base offsets persisted by the importer (issue #48): the
+    // keys are module-instance selectors, byte-identical to what
+    // compute_parameter_image expects, so per-channel parameter overrides place
+    // at their real per-instance offsets.
+    let base_offsets = model
+        .as_ref()
+        .and_then(|m| m.devices.get(&target))
+        .map(|d| d.device.module_bases.clone())
+        .unwrap_or_default();
 
     // Phase A (read-only): read the device descriptor.
     let runtime = tokio::runtime::Runtime::new()?;
@@ -129,7 +143,7 @@ pub fn run(
 
     // Pre-flight: build and validate the plan (System B gate, mask match,
     // unsupported-op refusal all happen here).
-    let plan = match plan_flash(app, address, device_mask, &overrides_map) {
+    let plan = match plan_flash(app, address, device_mask, &overrides_map, &base_offsets) {
         Ok(plan) => plan,
         Err(err) => {
             eprintln!("cannot flash: {err}");
@@ -154,6 +168,16 @@ pub fn run(
 
     // Phase B (write): execute the flash with a progress line.
     let plan_ref = &plan;
+    let options = bussard_download::FlashOptions {
+        tolerate_nonconformant_load_states,
+    };
+    if tolerate_nonconformant_load_states {
+        eprintln!(
+            "note: --tolerate-nonconformant-load-states is on — a device that reports Loaded \
+             (instead of Loading) after StartLoading will be accepted. Intended for KNX Virtual; \
+             leave off for real hardware."
+        );
+    }
     let outcome = runtime.block_on(async move {
         let (handle, _task) = Bus::connect(config);
         if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
@@ -162,7 +186,7 @@ pub fn run(
         let source = ops::group_source(&handle);
         let lease = handle.lease().await.context("leasing the bus")?;
         let channel = LeaseChannel::new(lease);
-        let result = execute(channel, target, source, plan_ref).await;
+        let result = execute(channel, target, source, plan_ref, options).await;
         let _ = handle.close().await;
         anyhow::Ok(result)
     })?;
@@ -344,11 +368,19 @@ async fn execute(
     target: IndividualAddress,
     source: IndividualAddress,
     plan: &FlashPlan,
+    options: bussard_download::FlashOptions,
 ) -> Result<bussard_download::FlashOutcome, bussard_mgmt::load::WriteError> {
     let mut l4 = Layer4Connection::connect(channel, target, source)
         .await
         .map_err(bussard_mgmt::load::WriteError::Mgmt)?;
-    let result = flash(&mut l4, plan, |p| match p {
+    // The connection is opened; from here the flash body runs and its result is
+    // captured, then `l4.disconnect()` runs unconditionally below — regardless of
+    // whether the flash succeeded or failed mid-procedure. `flash` borrows `l4`
+    // (never consumes it), and there is no `?` between here and the disconnect, so
+    // a mid-flash WriteError can never skip the T_Disconnect that releases the L4
+    // session. (finding 3: a stuck session after a failed flash traces to a
+    // skipped disconnect; keeping the disconnect on every arm is the guarantee.)
+    let result = flash(&mut l4, plan, options, |p| match p {
         Progress::Step {
             index,
             total,
@@ -487,6 +519,7 @@ mod tests {
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
+            module_bases: Default::default(),
             com_objects: Default::default(),
         };
         let mut devices = std::collections::BTreeMap::new();
