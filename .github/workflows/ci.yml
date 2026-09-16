@@ -342,24 +342,51 @@ jobs:
                       print(f"  >>> {label}: GOT A_IndividualAddress_Response"); got = True
               print(f"  result {label}: {'ANSWERED' if got else 'no reply'}")
 
-          # Characterize the WRITE path: is the device in prog mode at all? Send
-          # A_IndividualAddress_Write 1.1.47 (0x112F) as a normal broadcast, then
-          # listen for any subsequent multicast (device chatter) and re-probe the
-          # read. If the write lands, a later read to 1.1.47 or any device tx tells
-          # us prog mode worked even though the read discovery does not answer.
+          # ROOT CAUSE hypothesis test: this pinned thelsing device defaults its
+          # individual address to 0xFFFF (15.15.255), so main.cpp's
+          # `if (individualAddress()==0) progMode(true)` never fires -> it is NOT
+          # in programming mode, and the prog-mode read is correctly ignored.
+          # Prove the fix path: connect to 15.15.255 and write PID_PROG_MODE=1
+          # (device object 0, property 54), then re-issue the broadcast read and
+          # check for an A_IndividualAddress_Response.
+          def send_cemi_to(dst, tpci_apci_bytes, npdu_extra=b""):
+              # ctrl1 0xBC (point-to-point, not broadcast, normal prio), ctrl2 0xE0
+              # (individual dst, hop 6). npdu_len counts TPDU octets after the len.
+              tpdu = tpci_apci_bytes + npdu_extra
+              body = bytes([0x11,0x00,0xBC,0x60,0x00,0xFF]) + struct.pack(">H", dst) + bytes([len(tpdu)-1]) + tpdu
+              frame = bytes([0x06,0x10,0x05,0x30]) + struct.pack(">H", 6+len(body)) + body
+              tx.sendto(frame, (group, port))
+              return frame
+          DST = (15<<12)|(15<<8)|255  # 15.15.255 = 0xFFFF
           drain()
-          wr_cemi = bytes([0x11,0x00,0xB6,0xE0,0x00,0xFF,0x00,0x00,0x03,0x00,0xC0,0x11,0x2F])
-          wframe = bytes([0x06,0x10,0x05,0x30]) + struct.pack(">H", 6+len(wr_cemi)) + wr_cemi
-          tx.sendto(wframe, (group, port))
-          print("SENT IndividualAddress_Write 1.1.47:", wframe.hex())
-          deadline = time.time() + 3
+          # T_Connect (control, TPCI 0x80)
+          send_cemi_to(DST, bytes([0x80]))
+          time.sleep(0.3)
+          # A_PropertyValue_Write, seq 0 (TPCI 0x42): obj 0, PID 54, count1|start1, val 01.
+          # APCI 0x3D7 packed into two octets over TPCI: hi=(0x3D7>>8)|0x42? -> build
+          # the 2 apci octets as 0x03,0xD7 combined with TPCI in first byte.
+          apci = 0x3D7
+          b0 = 0x42 | ((apci >> 8) & 0x03)          # TPCI numbered data seq0 + apci hi
+          b1 = apci & 0xFF
+          pw = bytes([b0, b1, 0x00, 54]) + struct.pack(">H", (1<<12)|1) + bytes([0x01])
+          send_cemi_to(DST, pw)
+          time.sleep(0.5)
+          # Now re-broadcast the read and look for a response.
+          drain()
+          rframe = wrap(cemi(0x11, 0xB6))
+          tx.sendto(rframe, (group, port))
+          print("SENT prog-mode-set + read")
+          deadline = time.time() + 3; answered = False
           while time.time() < deadline:
               try:
                   data, addr = rx.recvfrom(1024)
               except BlockingIOError:
                   time.sleep(0.05); continue
-              if data == wframe: continue
-              print(f"  post-write RECV from {addr}: {data.hex()}")
+              if data == rframe: continue
+              print(f"  RECV from {addr}: {data.hex()}")
+              if len(data) >= 2 and (data[-2] & 0x03) == 0x01 and data[-1] == 0x40:
+                  print("  >>> GOT A_IndividualAddress_Response after PROG_MODE=1!"); answered = True
+          print(f"  prog-mode-set result: {'ANSWERED' if answered else 'still no reply'}")
           print("done")
           PY
           python3 /tmp/knx_read.py || true
