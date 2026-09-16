@@ -52,7 +52,7 @@ $ bussard adopt --product actuator.knxprod    # press the programming button
 adopted 15.15.255 → 1.1.5
 ```
 
-From there, the payoff:
+From there you can explore all the funcationality of bussard:
 
 ```console
 $ bussard read 4/1/11                # 21.4 °C (9.001)
