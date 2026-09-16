@@ -81,6 +81,19 @@ pub enum ImportError {
         message: String,
     },
 
+    /// The project uses a group-address style bussard cannot import. bussard's
+    /// address model is fixed to the 3-level `main/middle/sub` layout; a
+    /// 2-level or free-style project would have its raw addresses mis-split, so
+    /// import is refused rather than silently corrupting the data.
+    #[error(
+        "project uses GroupAddressStyle `{style}`, but bussard only imports ThreeLevel projects; \
+         re-export the project from ETS with a 3-level group-address style"
+    )]
+    UnsupportedGroupAddressStyle {
+        /// The actual style declared in `project.xml`.
+        style: String,
+    },
+
     /// Failed to build the model from parsed data.
     #[error("building model: {0}")]
     Model(String),

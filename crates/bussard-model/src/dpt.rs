@@ -103,8 +103,10 @@ impl Dpt {
             16 => ApduSize::Bytes(14),
             17 => ApduSize::Bytes(1),
             18 => ApduSize::Bytes(1),
+            19 => ApduSize::Bytes(8),
             20 => ApduSize::Bytes(1),
             232 => ApduSize::Bytes(3),
+            251 => ApduSize::Bytes(6),
             _ => return None,
         })
     }
