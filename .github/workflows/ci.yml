@@ -295,35 +295,52 @@ jobs:
           cat > /tmp/knx_read.py <<'PY'
           import socket, struct, sys, time
           group, port = "224.0.23.12", 3671
-          # KNXnet/IP header (6) + service ROUTING_INDICATION 0x0530 + total len,
-          # then cEMI: msg L_Data.req 0x11, ai_len 0, ctrl1 0xB6, ctrl2 0xE0,
-          # src 0.0.255 (0x00FF), dst 0x0000, npdu_len 1, TPDU 0x00 0x01 (A_IndAddr_Read).
-          cemi = bytes([0x11,0x00,0xB6,0xE0,0x00,0xFF,0x00,0x00,0x01,0x00,0x01])
-          hdr  = bytes([0x06,0x10,0x05,0x30]) + struct.pack(">H", 6+len(cemi))
-          frame = hdr + cemi
           rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
           rx.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
           rx.bind(("", port))
           mreq = struct.pack("4s4s", socket.inet_aton(group), socket.inet_aton("10.213.0.1"))
           rx.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)
-          rx.settimeout(5)
+          rx.setblocking(False)
           tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
           tx.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_IF, socket.inet_aton("10.213.0.1"))
           tx.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
-          tx.sendto(frame, (group, port))
-          print("SENT read:", frame.hex())
-          deadline = time.time() + 5
-          while time.time() < deadline:
+
+          def cemi(msgcode, ctrl1):
+              # ai_len 0, ctrl1, ctrl2 0xE0, src 0.0.255, dst 0x0000, npdu_len 1, A_IndAddr_Read 0x0001
+              return bytes([msgcode,0x00,ctrl1,0xE0,0x00,0xFF,0x00,0x00,0x01,0x00,0x01])
+          def wrap(c):
+              return bytes([0x06,0x10,0x05,0x30]) + struct.pack(">H", 6+len(c)) + c
+
+          # Variants: (label, msgcode, ctrl1). ctrl1 0xB6 = Broadcast(bit4=1);
+          # 0xA6 = SysBroadcast(bit4=0). msgcode 0x11=L_Data.req, 0x29=L_Data.ind.
+          variants = [
+              ("req+broadcast(0xB6)", 0x11, 0xB6),
+              ("ind+broadcast(0xB6)", 0x29, 0xB6),
+              ("req+sysbcast(0xA6)",  0x11, 0xA6),
+              ("ind+sysbcast(0xA6)",  0x29, 0xA6),
+          ]
+          def drain():
               try:
-                  data, addr = rx.recvfrom(1024)
-              except socket.timeout:
-                  break
-              if data == frame:
-                  continue  # our own echo (loop)
-              print(f"RECV from {addr}: {data.hex()}")
-              # A_IndividualAddress_Response has APCI 0x0140 in the last two APDU bytes.
-              if len(data) >= 2 and data[-2:] and (data[-2] & 0x03) == 0x01 and data[-1] == 0x40:
-                  print("GOT A_IndividualAddress_Response — device answers the read!")
+                  while True: rx.recvfrom(1024)
+              except BlockingIOError:
+                  pass
+          for label, mc, c1 in variants:
+              drain()
+              frame = wrap(cemi(mc, c1))
+              tx.sendto(frame, (group, port))
+              print(f"SENT {label}: {frame.hex()}")
+              deadline = time.time() + 2.5; got = False
+              while time.time() < deadline:
+                  try:
+                      data, addr = rx.recvfrom(1024)
+                  except BlockingIOError:
+                      time.sleep(0.05); continue
+                  if data == frame:
+                      continue
+                  print(f"  RECV from {addr}: {data.hex()}")
+                  if len(data) >= 2 and (data[-2] & 0x03) == 0x01 and data[-1] == 0x40:
+                      print(f"  >>> {label}: GOT A_IndividualAddress_Response"); got = True
+              print(f"  result {label}: {'ANSWERED' if got else 'no reply'}")
           print("done")
           PY
           python3 /tmp/knx_read.py || true
