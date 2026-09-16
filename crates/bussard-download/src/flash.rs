@@ -62,7 +62,7 @@ use std::collections::BTreeMap;
 use bussard_mgmt::connection::{L4Channel, Layer4Connection};
 use bussard_mgmt::load::{
     self, LoadControl, LoadState, WriteError, allocate_segment, compare_property, read_load_state,
-    read_mcb_table, write_load_control, write_memory_verified,
+    read_mcb_table, write_load_control, write_memory_paced,
 };
 use bussard_mgmt::tables::{OT_APPLICATION_PROGRAM, PID_OBJECT_TYPE};
 use bussard_prod::application::{ApplicationProgram, LoadOp, LoadProcedure, SegmentKind};
@@ -358,6 +358,13 @@ pub struct FlashOptions {
     /// and verifies once, roughly halving the flash's memory round-trips (the
     /// `--verify batched` flag) and doubling as the #50 KV stall discriminator.
     pub verify: bussard_mgmt::VerifyMode,
+
+    /// Optional inter-frame pace for memory writes (`--pace <ms>`). Real
+    /// gateways throttle the tool to TP1 speed by ACK flow control; simulators
+    /// like KNX Virtual ACK at loopback speed and were observed to wedge under
+    /// the unpaced burst (#50). Pacing to TP1-like rates (25-50 ms) keeps such
+    /// peers alive; unnecessary but harmless on real hardware.
+    pub pace: Option<std::time::Duration>,
 }
 
 /// A progress event emitted as [`flash`] executes, for the CLI to render.
@@ -1081,7 +1088,15 @@ pub async fn flash<Ch: L4Channel, F: FnMut(Progress)>(
                     .get(&image.segment_id)
                     .cloned()
                     .unwrap_or_default();
-                write_with_progress(l4, addr, &bytes, options.verify, &mut progress).await?;
+                write_with_progress(
+                    l4,
+                    addr,
+                    &bytes,
+                    options.verify,
+                    options.pace,
+                    &mut progress,
+                )
+                .await?;
                 if let Some(sample) = bytes.first().map(|_| take_sample(&bytes)) {
                     written_samples.push((addr, sample));
                 }
@@ -1093,7 +1108,15 @@ pub async fn flash<Ch: L4Channel, F: FnMut(Progress)>(
                     .get(&image.segment_id)
                     .cloned()
                     .unwrap_or_default();
-                write_with_progress(l4, addr, &bytes, options.verify, &mut progress).await?;
+                write_with_progress(
+                    l4,
+                    addr,
+                    &bytes,
+                    options.verify,
+                    options.pace,
+                    &mut progress,
+                )
+                .await?;
                 if !bytes.is_empty() {
                     written_samples.push((addr, take_sample(&bytes)));
                 }
@@ -1194,13 +1217,14 @@ async fn write_with_progress<Ch: L4Channel, F: FnMut(Progress)>(
     addr: u16,
     bytes: &[u8],
     verify: bussard_mgmt::VerifyMode,
+    pace: Option<std::time::Duration>,
     progress: &mut F,
 ) -> Result<(), WriteError> {
     let total = bytes.len();
-    write_memory_verified(l4, addr, bytes, verify, |written| {
+    let mut on_written = |written| {
         progress(Progress::Bytes { written, total });
-    })
-    .await
+    };
+    write_memory_paced(l4, addr, bytes, verify, pace, &mut on_written).await
 }
 
 /// The first up-to-4 octets of an image, used as the post-flash read-back sample.

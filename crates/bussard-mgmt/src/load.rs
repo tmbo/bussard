@@ -1201,6 +1201,26 @@ pub async fn write_memory_verified<Ch: L4Channel, F: FnMut(usize)>(
     mode: VerifyMode,
     mut on_written: F,
 ) -> Result<()> {
+    write_memory_paced(l4, addr, data, mode, None, &mut on_written).await
+}
+
+/// [`write_memory_verified`] with an optional inter-frame pace.
+///
+/// `pace` sleeps between successive memory frames. A real KNXnet/IP gateway
+/// throttles the tool naturally (its TP1 side runs at ~25-50 ms/frame and its
+/// tunnel ACK is the flow control); simulators like KNX Virtual ACK instantly
+/// with no bus behind, so an unpaced download hits them at loopback speed and
+/// was observed to wedge KV mid-download (#50: interface stopped tunnel-ACKing
+/// under the burst). Pacing to TP1-like rates keeps such peers alive; on real
+/// hardware it is unnecessary (the gateway paces) but harmless.
+pub async fn write_memory_paced<Ch: L4Channel, F: FnMut(usize)>(
+    l4: &mut Layer4Connection<Ch>,
+    addr: u16,
+    data: &[u8],
+    mode: VerifyMode,
+    pace: Option<std::time::Duration>,
+    on_written: &mut F,
+) -> Result<()> {
     if data.is_empty() {
         return Ok(());
     }
@@ -1232,6 +1252,11 @@ pub async fn write_memory_verified<Ch: L4Channel, F: FnMut(usize)>(
         }
         offset += take;
         on_written(offset);
+        if let Some(d) = pace {
+            if offset < data.len() {
+                tokio::time::sleep(d).await;
+            }
+        }
     }
 
     if mode == VerifyMode::PerChunk {
