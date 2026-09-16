@@ -16,56 +16,50 @@
 //!
 //! # On-device layout (evidence)
 //!
-//! The layouts implemented here follow the KNX interface-object property
-//! semantics (EN 50090 / KNX standard 3/4/1 + 3/5/1) as realised by the
-//! System B (mask 07B0) device-side implementation in thelsing/knx (a
-//! permitted, non-GPL behavioural reference — layout facts only, no code was
-//! copied). Evidence per file:
+//! The layouts implemented here follow the published KNX interface-object
+//! property semantics (EN 50090 / KNX standard 3/4/1 "Interface Objects" +
+//! 3/5/1 "Resources"), cross-checked against live captures from a real System B
+//! (mask 07B0) device. Only published-spec layout facts and observed wire
+//! behaviour inform this module. Evidence:
 //!
-//! - **Property arrays**: reading a property with `start = 0, count = 1`
-//!   returns the current number of elements as a big-endian `u16`; the
-//!   elements themselves are 1-based, read from `start = 1` upward (thelsing
-//!   `data_property.cpp`: `read()` answers `start == 0` with the element
-//!   count, then `start -= 1` indexes the storage).
-//! - **Group address table** (object type 1): a big-endian `u16` array whose
-//!   word 0 is the **entry count** — *not* the device's own individual address
-//!   (that convention belongs to older realisation types; thelsing
-//!   `address_table_object.cpp` `entryCount()` reads word 0, and
-//!   `getGroupAddress(tsap)` reads word `tsap`, so **TSAPs are 1-based** and
-//!   TSAP 1 is the first GA).
-//! - **Association table** (object type 2): word 0 is the entry count; each
-//!   entry is 4 octets, big-endian **TSAP first, then ASAP** (thelsing
-//!   `association_table_object.cpp`: `getTSAP(idx)` = word `2·idx+1`,
-//!   `getASAP(idx)` = word `2·idx+2`). TSAP indexes the group address table
-//!   (1-based, as above); ASAP indexes the group object table, also 1-based
-//!   (thelsing `group_object_table_object.cpp`: `get(asap)` returns
-//!   `_groupObjects[asap - 1]`, and `initGroupObjects()` numbers ASAPs
-//!   `1..=count`).
+//! - **Property arrays** (KNX 3/4/1, `A_PropertyValue_Read` semantics): reading
+//!   a property with `start = 0, count = 1` returns the current number of
+//!   elements as a big-endian `u16`; the elements themselves are 1-based, read
+//!   from `start = 1` upward.
+//! - **Group address table** (object type 1, KNX 3/5/1 "Address Table Object"):
+//!   a big-endian `u16` array whose word 0 is the **entry count** — *not* the
+//!   device's own individual address (that convention belongs to older
+//!   realisation types). Word `tsap` holds the GA, so **TSAPs are 1-based** and
+//!   TSAP 1 is the first GA.
+//! - **Association table** (object type 2, KNX 3/5/1 "Association Table
+//!   Object"): word 0 is the entry count; each entry is 4 octets, big-endian
+//!   **TSAP first, then ASAP** (entry `idx` occupies words `2·idx+1` and
+//!   `2·idx+2`). TSAP indexes the group address table (1-based, as above); ASAP
+//!   indexes the group object table, also 1-based.
 //! - **ASAP → com-object number**: the ASAP **is** the ETS com-object number
 //!   (`object = asap`, no offset). Verified live against a Jung 23024 actuator
 //!   (mask 07B0) whose `links.yaml` is an ETS-import ground truth: the read
 //!   ASAPs 20, 21, 22, 38, … align GA-for-GA with the model's object numbers,
-//!   while an `asap - 1` mapping shifts every single pair off by one.
-//!   (thelsing's `get(asap)` → `_groupObjects[asap - 1]` is that stack's
-//!   internal 1-based array storage, not the ETS numbering domain.)
-//! - **`PID_TABLE` vs memory**: `PID_TABLE` is the *global* PID **23**
-//!   (thelsing `property.h`; PID 52 is `PID_KNX_INDIVIDUAL_ADDRESS` of the IP
-//!   parameter object, not a table PID). In thelsing, loadable table content
-//!   is primarily served through **memory**: element 1 of
-//!   `PID_TABLE_REFERENCE` (7) answers the table's memory address
-//!   (`table_object.cpp` returns `_memory.toRelative(_data)`, the same address
-//!   domain `A_Memory_Read` serves) and the table blob starts with the
-//!   big-endian `u16` entry count followed by the entries. Reading `PID_TABLE`
-//!   as a property array is attempted first (standard semantics, some stacks
-//!   expose it); a device that does not (thelsing's group object table
-//!   registers no `PID_TABLE` at all) falls back to the memory path, and
-//!   [`DeviceTables::sources`] reports which path worked.
-//! - **Group object table** (object type 9): word 0 is the entry count; word
-//!   `asap` is a packed big-endian `u16` descriptor (low byte = DPT size code,
-//!   high bits = comm/read/write/transmit/update flags — thelsing
-//!   `group_object.cpp`). Only the count is read here; the per-entry decode
-//!   (and with it the send/listen distinction) is out of scope, so the table
-//!   is skipped gracefully when unreadable.
+//!   while an `asap - 1` mapping shifts every single pair off by one. (A device
+//!   stack's internal 1-based array storage is a private implementation detail,
+//!   not the ETS numbering domain the wire exposes.)
+//! - **`PID_TABLE` vs memory**: `PID_TABLE` is the *global* PID **23** (KNX
+//!   3/5/1 global property table; PID 52 is `PID_KNX_INDIVIDUAL_ADDRESS` of the
+//!   IP parameter object, not a table PID). Loadable table content is primarily
+//!   served through **memory**: element 1 of `PID_TABLE_REFERENCE` (7) answers
+//!   the table's memory address (the same address domain `A_Memory_Read`
+//!   serves) and the table blob starts with the big-endian `u16` entry count
+//!   followed by the entries. Reading `PID_TABLE` as a property array is
+//!   attempted first (standard semantics, some stacks expose it); a device that
+//!   does not expose it (e.g. one whose group object table registers no
+//!   `PID_TABLE`) falls back to the memory path, and [`DeviceTables::sources`]
+//!   reports which path worked.
+//! - **Group object table** (object type 9, KNX 3/5/1): word 0 is the entry
+//!   count; word `asap` is a packed big-endian `u16` descriptor (low byte = DPT
+//!   size code, high bits = comm/read/write/transmit/update flags). Only the
+//!   count is read here; the per-entry decode (and with it the send/listen
+//!   distinction) is out of scope, so the table is skipped gracefully when
+//!   unreadable.
 //!
 //! # Wire encodings (why this module drives [`Layer4Connection`] directly)
 //!
@@ -82,18 +76,20 @@
 //!   by exactly two address octets; the response echoes the count in its APCI
 //!   low bits followed by address + data octets.
 //!
-//! [`DeviceConnection`](crate::DeviceConnection) currently encodes both with a
-//! separate leading payload octet, which strict devices refuse, so this module
-//! sends its own correctly-encoded requests through the public
-//! [`Layer4Connection::request`].
+//! Both encodings are produced by the shared [`apci::encode_device_descriptor_read`]
+//! and [`apci::encode_memory_read`] helpers — the same ones
+//! [`DeviceConnection`](crate::DeviceConnection) uses — so the two paths agree on
+//! the wire form. This module drives a borrowed [`Layer4Connection`] directly
+//! (rather than a [`DeviceConnection`](crate::DeviceConnection)) because
+//! `read_tables` operates on the caller's live connection.
 //!
 //! Everything here is **read-only** on the bus and preserves the crate's
 //! absent-vs-refusing distinction: transport-level failures surface as
 //! [`MgmtError`]; a device that answers but does not expose a readable table
 //! surfaces as [`TablesError::TableUnreadable`].
 
-use crate::apci::{self, A_PROPERTY_VALUE_READ, MAX_MEMORY_READ_LEN};
-use crate::connection::{L4Channel, Layer4Connection};
+use crate::apci::{self, MAX_MEMORY_READ_LEN};
+use crate::connection::{L4Channel, Layer4Connection, property_request};
 use crate::error::{MgmtError, descriptor_response_reason, raw_response_detail};
 use bussard_model::{GroupAddress, IndividualAddress};
 
@@ -107,8 +103,8 @@ pub const PID_OBJECT_TYPE: u8 = 1;
 pub const PID_TABLE_REFERENCE: u8 = 7;
 /// `PID_TABLE` (23) — the loadable table exposed as a property array.
 ///
-/// 23 is the global "Table" PID (thelsing `property.h`); it is **not** 52,
-/// which is `PID_KNX_INDIVIDUAL_ADDRESS` of the IP parameter object.
+/// 23 is the global "Table" PID (KNX 3/5/1 global property definitions); it is
+/// **not** 52, which is `PID_KNX_INDIVIDUAL_ADDRESS` of the IP parameter object.
 pub const PID_TABLE: u8 = 23;
 
 /// The 10-bit APCI selector mask for services that embed data in the low 6
@@ -130,7 +126,12 @@ pub const OT_APPLICATION_PROGRAM: u16 = 3;
 pub const OT_GROUP_OBJECT_TABLE: u16 = 9;
 
 /// How many object indexes discovery probes before giving up.
-const MAX_OBJECT_INDEX: u8 = 12;
+///
+/// The sweep runs `0..MAX_OBJECT_INDEX`. This must cover the application-program
+/// object, which on some System B devices sits at index 12–15 (past the address
+/// / association / group-object tables), so a budget of 16 is required — a
+/// tighter 0..12 budget silently misses those devices' app object.
+const MAX_OBJECT_INDEX: u8 = 16;
 
 /// How many value octets we ask for per `A_PropertyValue_Read`, sized so the
 /// response (4-octet header + data) fits the conservative 15-octet APDU every
@@ -355,26 +356,7 @@ async fn read_property<Ch: L4Channel>(
     start: u16,
     count: u8,
 ) -> Result<Vec<u8>> {
-    let payload = apci::encode_property_value_read(object_index, property_id, count, start);
-    let (resp_apci, data) = l4.request(A_PROPERTY_VALUE_READ, &payload).await?;
-    if resp_apci != apci::A_PROPERTY_VALUE_RESPONSE {
-        return Err(TablesError::Mgmt(MgmtError::MalformedResponse {
-            address: l4.target(),
-            reason: format!(
-                "unexpected property value response APCI ({})",
-                raw_response_detail(resp_apci, &data)
-            ),
-        }));
-    }
-    let resp = apci::decode_property_value_response(&data).ok_or_else(|| {
-        TablesError::Mgmt(MgmtError::MalformedResponse {
-            address: l4.target(),
-            reason: format!(
-                "property value response too short ({})",
-                raw_response_detail(resp_apci, &data)
-            ),
-        })
-    })?;
+    let resp = property_request(l4, object_index, property_id, start, count).await?;
     if resp.count == 0 {
         return Ok(Vec::new());
     }
@@ -406,36 +388,61 @@ async fn read_memory<Ch: L4Channel>(
 
 // --- Discovery and table assembly ---
 
-/// Probes object indexes 0.. for `PID_OBJECT_TYPE`, returning the
-/// object-index → object-type map (as a vec indexed by object index).
+/// Probes interface-object indexes `0..16` for `PID_OBJECT_TYPE`, returning the
+/// discovered `(object index, object type)` pairs in index order.
 ///
-/// Interface objects are contiguously indexed, so the first index whose
-/// `PID_OBJECT_TYPE` read comes back empty ends discovery.
-async fn discover_objects<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Result<Vec<u16>> {
-    let mut types = Vec::new();
+/// This is the single, canonical interface-object discovery for the management
+/// layer. Interface objects are contiguously indexed, so the sweep ends at the
+/// first index whose `PID_OBJECT_TYPE` read comes back empty (zero elements) or
+/// is answered with a non-property service — both mean "no object here". The
+/// range spans a full `0..16` so a device whose application-program object sits
+/// at index 12–15 is still found (a tighter budget silently misses it).
+///
+/// Only a genuine transport failure propagates as an error; an empty/short/
+/// off-service *terminating* read is the normal end-of-list signal and simply
+/// stops the sweep. An empty result (nothing readable even at index 0) is
+/// distinguished by the caller.
+///
+/// This is the seam the read side (`read_tables`) and the download engine's
+/// apply / flash paths share, so all three probe the same correct range and
+/// terminate identically.
+pub async fn discover_interface_objects<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+) -> Result<Vec<(u8, u16)>> {
+    let mut objects = Vec::new();
     for index in 0..MAX_OBJECT_INDEX {
         let data = read_property(l4, index, PID_OBJECT_TYPE, 1, 1).await?;
         if data.len() < 2 {
             break;
         }
-        types.push(u16::from_be_bytes([data[0], data[1]]));
+        objects.push((index, u16::from_be_bytes([data[0], data[1]])));
     }
-    if types.is_empty() {
+    Ok(objects)
+}
+
+/// Discovers the interface objects and fails if none is readable at all.
+///
+/// Wraps [`discover_interface_objects`] with the read side's requirement that at
+/// least one object be present (an empty sweep means the device did not answer
+/// `PID_OBJECT_TYPE` even at index 0).
+async fn discover_objects<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Result<Vec<(u8, u16)>> {
+    let objects = discover_interface_objects(l4).await?;
+    if objects.is_empty() {
         return Err(TablesError::TableUnreadable {
             address: l4.target(),
             reason: "no interface objects discoverable (PID_OBJECT_TYPE unreadable at index 0)"
                 .to_string(),
         });
     }
-    Ok(types)
+    Ok(objects)
 }
 
 /// The object index of the first object with the given type, if any.
-fn find_object(types: &[u16], object_type: u16) -> Option<u8> {
-    types
+fn find_object(objects: &[(u8, u16)], object_type: u16) -> Option<u8> {
+    objects
         .iter()
-        .position(|&t| t == object_type)
-        .map(|i| i as u8)
+        .find(|&&(_, t)| t == object_type)
+        .map(|&(index, _)| index)
 }
 
 /// Best-effort element count of the group object table, trying the property
@@ -622,16 +629,16 @@ mod tests {
 
     #[test]
     fn find_object_returns_first_index_of_type() {
-        let types = vec![
-            OT_DEVICE,
-            OT_ADDRESS_TABLE,
-            OT_ASSOCIATION_TABLE,
-            OT_APPLICATION_PROGRAM,
-            OT_GROUP_OBJECT_TABLE,
+        let objects = vec![
+            (0u8, OT_DEVICE),
+            (1, OT_ADDRESS_TABLE),
+            (2, OT_ASSOCIATION_TABLE),
+            (3, OT_APPLICATION_PROGRAM),
+            (4, OT_GROUP_OBJECT_TABLE),
         ];
-        assert_eq!(find_object(&types, OT_ADDRESS_TABLE), Some(1));
-        assert_eq!(find_object(&types, OT_GROUP_OBJECT_TABLE), Some(4));
-        assert_eq!(find_object(&types, 7), None);
+        assert_eq!(find_object(&objects, OT_ADDRESS_TABLE), Some(1));
+        assert_eq!(find_object(&objects, OT_GROUP_OBJECT_TABLE), Some(4));
+        assert_eq!(find_object(&objects, 7), None);
     }
 
     #[test]

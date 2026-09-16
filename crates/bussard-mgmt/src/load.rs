@@ -13,26 +13,23 @@
 //!
 //! Loadable interface objects (address table, association table, group object
 //! table, application program) each carry a `PID_LOAD_STATE_CONTROL` property
-//! (PID **5**). The machine, its states and its control events follow the KNX
-//! interface-object property definitions (EN 50090 / KNX standard 3/5/1 §
-//! "Load State Machine") as realised by the System B device-side implementation
-//! in thelsing/knx (a permitted, non-GPL behavioural reference — semantics only,
-//! no code copied):
+//! (PID **5**). The machine, its states and its control events follow the
+//! published KNX interface-object property definitions (EN 50090 / KNX standard
+//! 3/5/1 § "Load State Machine" and 3/5/2 "Management Procedures"):
 //!
 //! - **Reading** `PID_LOAD_STATE_CONTROL` (start 1, count 1) returns a **single
-//!   octet**, the current [`LoadState`] (thelsing `table_object.cpp`: the
-//!   property read answers `data[0] = _state`).
+//!   octet**, the current [`LoadState`].
 //! - **Writing** `PID_LOAD_STATE_CONTROL` (start 1, count 1) takes a **single
-//!   octet**, a [`LoadControl`] event, and drives the transition (thelsing
-//!   `table_object.cpp`: the property write invokes `loadEvent(data)` with the
-//!   event in `data[0]`). The device then answers an `A_PropertyValue_Response`
-//!   echoing the property's octet, which after a control write is the *resulting
-//!   load state*, not the control value written — so a load-control write is
-//!   validated against the expected next state, not against the value sent.
-//! - **Transitions** (thelsing `table_object.cpp` `loadEvent*` handlers):
+//!   octet**, a [`LoadControl`] event, and drives the transition. The device
+//!   then answers an `A_PropertyValue_Response` echoing the property's octet,
+//!   which after a control write is the *resulting load state*, not the control
+//!   value written — so a load-control write is validated against the expected
+//!   next state, not against the value sent.
+//! - **Transitions** (KNX 3/5/1 load-state machine):
 //!   - `Unloaded --StartLoading--> Loading`
 //!   - `Loaded   --StartLoading--> Loading`
-//!   - `Loading  --LoadCompleted--> Loaded` (persists the table: `saveMemory()`)
+//!   - `Loading  --LoadCompleted--> Loaded` (persists the table to non-volatile
+//!     memory)
 //!   - `Loading  --Unload--> Unloaded`
 //!   - `Loaded   --Unload--> Unloaded`
 //!   - `Error    --Unload--> Unloaded`
@@ -49,8 +46,8 @@
 //! actuator, the bussard use case — the plain single-octet `StartLoading` /
 //! `LoadCompleted` controls are sufficient: `StartLoading` opens the object for
 //! writing, the `PID_TABLE` element writes replace its content in place, and
-//! `LoadCompleted` persists it. thelsing's `loadEventLoading` handles a bare
-//! `LoadCompleted` without requiring a preceding `AdditionalLoadControls`
+//! `LoadCompleted` persists it. Per KNX 3/5/2, a bare `LoadCompleted` completes
+//! an in-place re-fill without a preceding `AdditionalLoadControls`
 //! (`AdditionalLoadControls` is only consulted to *grow* backing memory). This
 //! module therefore emits only single-octet controls; growing a table beyond its
 //! current backing store is out of scope and documented as a limitation.
@@ -61,8 +58,8 @@
 //! ever driven by `bussard apply`, which first shows a plan, takes confirmation,
 //! and writes a backup — see `bussard-download`.
 
-use crate::apci::{self, A_PROPERTY_VALUE_READ, A_PROPERTY_VALUE_WRITE};
-use crate::connection::{L4Channel, Layer4Connection};
+use crate::apci::{self};
+use crate::connection::{L4Channel, Layer4Connection, property_request, property_write_request};
 use crate::error::{MgmtError, raw_response_detail};
 use crate::tables::{PID_TABLE, PID_TABLE_REFERENCE};
 use bussard_model::IndividualAddress;
@@ -75,8 +72,8 @@ pub const PID_LOAD_STATE_CONTROL: u8 = 5;
 /// The load state of a loadable interface object, as read from
 /// `PID_LOAD_STATE_CONTROL`.
 ///
-/// Encoding per the KNX load-state machine (thelsing `table_object.cpp` reads
-/// `_state` back as the property octet): `Unloaded=0, Loaded=1, Loading=2,
+/// Encoding per the KNX load-state machine (3/5/1); the current state is read
+/// back as the `PID_LOAD_STATE_CONTROL` octet: `Unloaded=0, Loaded=1, Loading=2,
 /// Error=3`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadState {
@@ -397,26 +394,7 @@ pub async fn write_property<Ch: L4Channel>(
     value: &[u8],
     expected_echo: Option<&[u8]>,
 ) -> Result<Vec<u8>> {
-    let payload = apci::encode_property_value_write(object_index, property_id, count, start, value);
-    let (resp_apci, data) = l4.request(A_PROPERTY_VALUE_WRITE, &payload).await?;
-    if resp_apci != apci::A_PROPERTY_VALUE_RESPONSE {
-        return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
-            address: l4.target(),
-            reason: format!(
-                "expected A_PropertyValue_Response to a property write ({})",
-                raw_response_detail(resp_apci, &data)
-            ),
-        }));
-    }
-    let resp = apci::decode_property_value_response(&data).ok_or_else(|| {
-        WriteError::Mgmt(MgmtError::MalformedResponse {
-            address: l4.target(),
-            reason: format!(
-                "property value response too short ({})",
-                raw_response_detail(resp_apci, &data)
-            ),
-        })
-    })?;
+    let resp = property_write_request(l4, object_index, property_id, count, start, value).await?;
     let echoed = resp.data;
     let want = expected_echo.unwrap_or(value);
     // A zero-count response means the device refused the write outright.
@@ -438,32 +416,14 @@ pub async fn read_load_state<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     object_index: u8,
 ) -> Result<LoadState> {
-    let payload = apci::encode_property_value_read(object_index, PID_LOAD_STATE_CONTROL, 1, 1);
-    let (resp_apci, data) = l4.request(A_PROPERTY_VALUE_READ, &payload).await?;
-    if resp_apci != apci::A_PROPERTY_VALUE_RESPONSE {
-        return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
-            address: l4.target(),
-            reason: format!(
-                "expected A_PropertyValue_Response for the load state ({})",
-                raw_response_detail(resp_apci, &data)
-            ),
-        }));
-    }
-    let resp = apci::decode_property_value_response(&data).ok_or_else(|| {
-        WriteError::Mgmt(MgmtError::MalformedResponse {
-            address: l4.target(),
-            reason: format!(
-                "load state response too short ({})",
-                raw_response_detail(resp_apci, &data)
-            ),
-        })
-    })?;
+    let resp = property_request(l4, object_index, PID_LOAD_STATE_CONTROL, 1, 1).await?;
     if resp.count == 0 || resp.data.is_empty() {
         return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
             address: l4.target(),
             reason: format!(
-                "load state property is not readable ({})",
-                raw_response_detail(resp_apci, &data)
+                "load state property is not readable (object {object_index}, count {}, {} octet(s))",
+                resp.count,
+                resp.data.len()
             ),
         }));
     }
@@ -495,26 +455,7 @@ pub async fn compare_property<Ch: L4Channel>(
     mask: Option<&[u8]>,
 ) -> Result<()> {
     let address = l4.target();
-    let payload = apci::encode_property_value_read(object_index, property_id, 1, 1);
-    let (resp_apci, data) = l4.request(A_PROPERTY_VALUE_READ, &payload).await?;
-    if resp_apci != apci::A_PROPERTY_VALUE_RESPONSE {
-        return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
-            address,
-            reason: format!(
-                "expected A_PropertyValue_Response for a property compare ({})",
-                raw_response_detail(resp_apci, &data)
-            ),
-        }));
-    }
-    let resp = apci::decode_property_value_response(&data).ok_or_else(|| {
-        WriteError::Mgmt(MgmtError::MalformedResponse {
-            address,
-            reason: format!(
-                "property compare response too short ({})",
-                raw_response_detail(resp_apci, &data)
-            ),
-        })
-    })?;
+    let resp = property_request(l4, object_index, property_id, 1, 1).await?;
 
     let actual: Vec<u8> = resp.data.iter().take(expected.len()).copied().collect();
     let mask_note = match mask {
@@ -562,25 +503,16 @@ pub async fn write_load_control<Ch: L4Channel>(
     // Some devices echo the resulting state; some echo nothing meaningful. Write
     // without a strict echo compare, then read the state back to validate — the
     // read-back is the reliable confirmation across stacks.
-    let payload = apci::encode_property_value_write(
+    // Decode is best-effort here; the authoritative state comes from a fresh read.
+    let _ = property_write_request(
+        l4,
         object_index,
         PID_LOAD_STATE_CONTROL,
         1,
         1,
         &control_octet,
-    );
-    let (resp_apci, data) = l4.request(A_PROPERTY_VALUE_WRITE, &payload).await?;
-    if resp_apci != apci::A_PROPERTY_VALUE_RESPONSE {
-        return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
-            address,
-            reason: format!(
-                "expected A_PropertyValue_Response to a load-control write ({})",
-                raw_response_detail(resp_apci, &data)
-            ),
-        }));
-    }
-    // Decode is best-effort here; the authoritative state comes from a fresh read.
-    let _ = apci::decode_property_value_response(&data);
+    )
+    .await?;
 
     let state = read_load_state(l4, object_index).await?;
     if state == LoadState::Error {
@@ -609,14 +541,12 @@ pub async fn write_load_control<Ch: L4Channel>(
 /// The `AdditionalLoadControls` sub-command for a **relative** (device-placed)
 /// segment allocation — "Data Relative Allocation".
 ///
-/// Evidence: thelsing/knx `table_object.cpp` `additionalLoadControls(data)`
-/// refuses any sub-command but this one (`if (data[1] != 0x0B) { LS_ERROR;
-/// E_INVALID_OPCODE }`), then reads a big-endian `u32` size from `data[2..6]`, a
-/// fill flag from `data[6]` and a fill byte from `data[7]`. This is the KNX
-/// standard's `LdCtrlRelSegment` service (KNX 3/5/2 "Management Procedures"): the
-/// tool asks the device to allocate a backing segment of a given size and the
-/// device chooses the address, which is read back afterwards via
-/// [`PID_TABLE_REFERENCE`].
+/// This is the KNX standard's `LdCtrlRelSegment` service (KNX 3/5/2 "Management
+/// Procedures", `AdditionalLoadControls` sub-command `0x0B`): the tool asks the
+/// device to allocate a backing segment of a given size and the device chooses
+/// the address, which is read back afterwards via [`PID_TABLE_REFERENCE`]. The
+/// structure carries a big-endian `u32` size at `data[2..6]`, a fill flag at
+/// `data[6]` and a fill byte at `data[7]` (see [`encode_rel_segment`]).
 pub const LD_CTRL_REL_SEGMENT: u8 = 0x0B;
 
 /// The `AdditionalLoadControls` sub-command for an **absolute** (tool-placed)
@@ -624,27 +554,27 @@ pub const LD_CTRL_REL_SEGMENT: u8 = 0x0B;
 /// segment's absolute memory address, size, access/mem-type flags and a checksum
 /// control.
 ///
-/// **Uncertain / unverified against a device.** thelsing's System B path
-/// implements only the relative form (`0x0B`); its `additionalLoadControls`
-/// rejects everything else outright. The absolute layout below follows the ETS
-/// `LdCtrlAbsSegment` element (`LsmIdx, SegType, Address, Size, Access, MemType,
-/// SegFlags`) but no non-GPL device-side decoder was available to pin the exact
-/// octet order, so [`encode_abs_segment`] is provided for the downloader to build
-/// on and is flagged as needing live confirmation. Prefer [`allocate_segment`]
-/// (relative) wherever the device places the segment itself.
+/// **Uncertain / unverified against a device.** Common System B devices
+/// implement only the relative form (`0x0B`) and reject other
+/// `AdditionalLoadControls` sub-commands outright. The absolute layout below
+/// follows the published ETS `LdCtrlAbsSegment` element (`LsmIdx, SegType,
+/// Address, Size, Access, MemType, SegFlags`), but the exact octet order has not
+/// been pinned against a live device, so [`encode_abs_segment`] is provided for
+/// the downloader to build on and is flagged as needing live confirmation.
+/// Prefer [`allocate_segment`] (relative) wherever the device places the segment
+/// itself.
 pub const LD_CTRL_ABS_SEGMENT: u8 = 0x01;
 
 /// The fill flag `data[6]` of a relative allocation: `0x01` fills the freshly
-/// allocated segment with the fill byte, `0x00` leaves it untouched (thelsing:
-/// `bool doFill = data[6] == 0x1`).
+/// allocated segment with the fill byte, `0x00` leaves it untouched (KNX 3/5/2
+/// `LdCtrlRelSegment`).
 const LD_CTRL_FILL: u8 = 0x01;
 
 /// Encodes the 10-octet `AdditionalLoadControls` property value for a
 /// **relative** segment allocation (`LdCtrlRelSegment`), written to
 /// `PID_LOAD_STATE_CONTROL` while the object is in [`LoadState::Loading`].
 ///
-/// Layout (all evidence from thelsing `table_object.cpp::additionalLoadControls`,
-/// KNX `LdCtrlRelSegment`):
+/// Layout (KNX 3/5/2 `LdCtrlRelSegment`):
 ///
 /// | octet | field                | value                                    |
 /// |-------|----------------------|------------------------------------------|
@@ -656,7 +586,7 @@ const LD_CTRL_FILL: u8 = 0x01;
 /// | 8..10 | reserved (`0x00`)    | pads the structure to the standard 10    |
 ///
 /// The property value is exactly 10 octets. Octets 8–9 are reserved zero in the
-/// relative form (thelsing reads only `data[0..8]`); they keep the structure at
+/// relative form (only `data[0..8]` is significant); they keep the structure at
 /// the standard `AdditionalLoadControls` width so a stricter device that expects
 /// the full 10-octet write still accepts it.
 pub fn encode_rel_segment(size: u32, fill_byte: Option<u8>) -> [u8; 10] {
@@ -718,26 +648,25 @@ pub struct SegmentAllocation {
 /// **relative** `AdditionalLoadControls` write, and returns the device-reported
 /// segment start address.
 ///
-/// Preconditions and sequence (evidence: thelsing `table_object.cpp`):
+/// Preconditions and sequence (KNX 3/5/2 `LdCtrlRelSegment`):
 ///
-/// 1. The object must already be in [`LoadState::Loading`] — thelsing only
-///    dispatches `AdditionalLoadControls` from `loadEventLoading`; in any other
+/// 1. The object must already be in [`LoadState::Loading`] — the standard only
+///    dispatches `AdditionalLoadControls` from the loading state; in any other
 ///    state the 10-octet write is ignored (`Unloaded`/`Loaded`) or errors, so
 ///    this checks the state first and fails with
 ///    [`WriteError::UnexpectedLoadState`] rather than issuing a write that the
 ///    device silently drops.
 /// 2. Writes the 10-octet [`encode_rel_segment`] structure to
-///    `PID_LOAD_STATE_CONTROL`. `allocTable` frees any prior backing store and
-///    allocates `size` octets, optionally filled; on failure the object goes to
-///    [`LoadState::Error`] (`E_MAX_TABLE_LENGTH_EXEEDED`).
+///    `PID_LOAD_STATE_CONTROL`. The device frees any prior backing store and
+///    allocates `size` octets, optionally filled; on failure (e.g. maximum table
+///    length exceeded) the object goes to [`LoadState::Error`].
 /// 3. Re-reads the load state: `Error` means the device **refused** the
 ///    allocation (out of memory / too large) → [`WriteError::LoadError`]; still
 ///    `Loading` means success.
 /// 4. Reads `PID_TABLE_REFERENCE` element 1 — a big-endian `u32` — which after a
-///    successful allocation is `_memory.toRelative(_data)`, the segment's start
-///    address (thelsing returns `0` while `Unloaded`). That address is where the
-///    caller writes the table content with
-///    [`crate::device::DeviceConnection::write_memory`].
+///    successful allocation is the segment's start address (a device reports `0`
+///    while `Unloaded`). That address is where the caller writes the table
+///    content with [`crate::device::DeviceConnection::write_memory`].
 ///
 /// `fill_byte` mirrors the relative structure's fill flag/byte: `Some(b)` asks
 /// the device to pre-fill the segment with `b`, `None` leaves it uninitialised.
@@ -776,19 +705,8 @@ pub async fn allocate_segment<Ch: L4Channel>(
     //    resulting load state (best-effort); the authoritative check is the
     //    fresh read-back below, matching `write_load_control`'s discipline.
     let structure = encode_rel_segment(size, fill_byte);
-    let payload =
-        apci::encode_property_value_write(object_index, PID_LOAD_STATE_CONTROL, 1, 1, &structure);
-    let (resp_apci, data) = l4.request(A_PROPERTY_VALUE_WRITE, &payload).await?;
-    if resp_apci != apci::A_PROPERTY_VALUE_RESPONSE {
-        return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
-            address,
-            reason: format!(
-                "expected A_PropertyValue_Response to an AdditionalLoadControls write ({})",
-                raw_response_detail(resp_apci, &data)
-            ),
-        }));
-    }
-    let _ = apci::decode_property_value_response(&data);
+    let _ =
+        property_write_request(l4, object_index, PID_LOAD_STATE_CONTROL, 1, 1, &structure).await?;
 
     // 3. A refused allocation drops the object into Error.
     let state = read_load_state(l4, object_index).await?;
@@ -820,38 +738,20 @@ pub async fn allocate_segment<Ch: L4Channel>(
 }
 
 /// Reads `PID_TABLE_REFERENCE` element 1 of a loadable object as a big-endian
-/// `u32` — the segment's backing memory address (thelsing `table_object.cpp`
-/// `tableReference()`; `0` while the object is `Unloaded`).
+/// `u32` — the segment's backing memory address (KNX 3/5/1; a device reports `0`
+/// while the object is `Unloaded`).
 async fn read_table_reference<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     object_index: u8,
 ) -> Result<u32> {
-    let payload = apci::encode_property_value_read(object_index, PID_TABLE_REFERENCE, 1, 1);
-    let (resp_apci, data) = l4.request(A_PROPERTY_VALUE_READ, &payload).await?;
-    if resp_apci != apci::A_PROPERTY_VALUE_RESPONSE {
-        return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
-            address: l4.target(),
-            reason: format!(
-                "expected A_PropertyValue_Response for PID_TABLE_REFERENCE ({})",
-                raw_response_detail(resp_apci, &data)
-            ),
-        }));
-    }
-    let resp = apci::decode_property_value_response(&data).ok_or_else(|| {
-        WriteError::Mgmt(MgmtError::MalformedResponse {
-            address: l4.target(),
-            reason: format!(
-                "table reference response too short ({})",
-                raw_response_detail(resp_apci, &data)
-            ),
-        })
-    })?;
+    let resp = property_request(l4, object_index, PID_TABLE_REFERENCE, 1, 1).await?;
     if resp.count == 0 || resp.data.len() < 4 {
         return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
             address: l4.target(),
             reason: format!(
-                "table reference is not a readable u32 ({})",
-                raw_response_detail(resp_apci, &data)
+                "table reference is not a readable u32 (object {object_index}, count {}, {} octet(s))",
+                resp.count,
+                resp.data.len()
             ),
         }));
     }
@@ -863,34 +763,34 @@ async fn read_table_reference<Ch: L4Channel>(
     ]))
 }
 
-// --- PID_MCB_TABLE (memory control block) + CRC16-CCITT -----------------------
+// --- PID_MCB_TABLE (memory control block) + CRC-16/AUG-CCITT ------------------
 //
 // The `LdCtrlLoadImageProp` op of a modern download procedure integrity-checks a
 // freshly-written loadable segment: after the code+parameter image is streamed
 // into a loadable object and the object reaches `Loaded`, the object's
 // `PID_MCB_TABLE` property (PID 27) carries a *memory control block* describing
-// the segment, including a CRC16-CCITT the device computes over the segment's own
-// stored bytes. A tool validates its written image by reading that MCB and
-// comparing the device's CRC to a CRC it computes independently over the bytes it
-// sent — a mismatch means the image did not land intact.
+// the segment, including a CRC the device computes over the segment's own stored
+// bytes. A tool validates its written image by reading that MCB and comparing the
+// device's CRC to a CRC it computes independently over the bytes it sent — a
+// mismatch means the image did not land intact.
 //
-// Evidence (thelsing/knx `table_object.cpp`, a permitted non-GPL device-side
-// behavioural reference — semantics only, no code copied): the System B device
-// registers `PID_MCB_TABLE` (27) as a **read-only, device-computed**
-// `PDT_GENERIC_08` (8-octet) property whose read callback, valid only while the
-// object is `LS_LOADED`, answers exactly:
+// Reference: KNX 3/5/2 "Management Procedures" (`LdCtrlLoadImageProp`) and 3/5/1
+// (interface-object property definitions). The System B `PID_MCB_TABLE` (27) is a
+// **read-only, device-computed** `PDT_GENERIC_08` (8-octet) property, readable
+// while the object is `Loaded`, laid out as:
 //
-// | octet | field           | value (thelsing)                                |
+// | octet | field           | value                                           |
 // |-------|-----------------|-------------------------------------------------|
-// | 0..4  | segment size    | `pushInt(obj->_size)` — u32 **big-endian**      |
+// | 0..4  | segment size    | u32 **big-endian**                              |
 // | 4     | CRC control     | `0x00` ("always valid")                         |
 // | 5     | access          | `0xFF` (read 4 bits + write 4 bits)             |
-// | 6..8  | CRC16-CCITT     | `pushWord(crc16Ccitt(obj->data(), size))` — BE |
+// | 6..8  | CRC             | CRC-16/AUG-CCITT over the segment bytes — BE    |
 //
-// The CRC is CRC16-CCITT (thelsing `bits.cpp::crc16Ccitt`): width 16, polynomial
-// `0x1021`, initial value `0xFFFF`, input **not** reflected, output **not**
-// reflected, no final XOR; its documented check value for the ASCII string
-// `"123456789"` is `0xE5CC`.
+// The CRC is **CRC-16/AUG-CCITT** (the message is augmented with 16 zero bits
+// before reduction): width 16, polynomial `0x1021`, initial value `0xFFFF`, input
+// **not** reflected, output **not** reflected, no final XOR. Its catalogued check
+// value for the ASCII string `"123456789"` is `0xE5CC` (distinct from
+// CRC-16/CCITT-FALSE, which does not augment and checks to `0x29B1`).
 //
 // bussard mirrors this: `PID_MCB_TABLE` is read (not written) and the tool's own
 // [`mcb_entry`]/[`crc16_ccitt`] recompute the same 8 octets over the bytes it
@@ -898,21 +798,24 @@ async fn read_table_reference<Ch: L4Channel>(
 
 /// `PID_MCB_TABLE` (27) — a loadable object's memory-control-block table, an
 /// array of 8-octet entries each describing a segment (size, access, and a
-/// CRC16-CCITT the device computes over the segment's stored bytes). Read-only
-/// and device-computed on System B (thelsing `table_object.cpp`).
+/// CRC-16/AUG-CCITT the device computes over the segment's stored bytes).
+/// Read-only and device-computed on System B (KNX 3/5/1).
 pub const PID_MCB_TABLE: u8 = 27;
 
 /// The octet width of one `PID_MCB_TABLE` entry (`PDT_GENERIC_08`).
 pub const MCB_ENTRY_LEN: usize = 8;
 
-/// Computes a CRC16-CCITT over `data`, exactly as the KNX `PID_MCB_TABLE` uses it
-/// (thelsing `bits.cpp::crc16Ccitt`): width 16, polynomial `0x1021`, initial
-/// value `0xFFFF`, input and output **not** reflected, no final XOR.
+/// Computes the CRC the KNX `PID_MCB_TABLE` uses — **CRC-16/AUG-CCITT**: width
+/// 16, polynomial `0x1021`, initial value `0xFFFF`, input and output **not**
+/// reflected, no final XOR, with the message augmented by 16 zero bits before
+/// reduction.
 ///
-/// The standard check value for the ASCII string `"123456789"` is `0xE5CC`.
+/// The catalogued check value for the ASCII string `"123456789"` is `0xE5CC`.
+/// (The function is named `crc16_ccitt` for its `0x1021`/`0xFFFF` CCITT lineage;
+/// the augmentation makes it the AUG-CCITT variant, not CCITT-FALSE.)
 pub fn crc16_ccitt(data: &[u8]) -> u16 {
-    // Bit-at-a-time, appending 16 zero bits (the +2 octets), matching the
-    // reference's `8 * (length + 2)` loop and its `& 0x10000` reduction.
+    // Bit-at-a-time, appending 16 zero bits (the +2 octets) — the augmentation
+    // that defines CRC-16/AUG-CCITT — with the usual `& 0x10000` reduction.
     let mut result: u32 = 0xFFFF;
     let total_bits = 8 * (data.len() + 2);
     for i in 0..total_bits {
@@ -931,7 +834,7 @@ pub fn crc16_ccitt(data: &[u8]) -> u16 {
 }
 
 /// Builds the 8-octet `PID_MCB_TABLE` entry a device is expected to report for a
-/// segment holding exactly `segment_data`, per the thelsing System B layout:
+/// segment holding exactly `segment_data`, per the System B layout (KNX 3/5/1):
 /// `[size:u32 BE][crc_control=0x00][access=0xFF][crc16:u16 BE]`.
 ///
 /// `crc16` is [`crc16_ccitt`] over `segment_data`; `size` is `segment_data.len()`
@@ -1002,33 +905,14 @@ pub async fn read_mcb_table<Ch: L4Channel>(
     expected: Option<&[u8]>,
 ) -> Result<Vec<McbEntry>> {
     let address = l4.target();
-    let payload =
-        apci::encode_property_value_read(object_index, PID_MCB_TABLE, count.max(1), start);
-    let (resp_apci, data) = l4.request(A_PROPERTY_VALUE_READ, &payload).await?;
-    if resp_apci != apci::A_PROPERTY_VALUE_RESPONSE {
-        return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
-            address,
-            reason: format!(
-                "expected A_PropertyValue_Response for PID_MCB_TABLE ({})",
-                raw_response_detail(resp_apci, &data)
-            ),
-        }));
-    }
-    let resp = apci::decode_property_value_response(&data).ok_or_else(|| {
-        WriteError::Mgmt(MgmtError::MalformedResponse {
-            address,
-            reason: format!(
-                "PID_MCB_TABLE response too short ({})",
-                raw_response_detail(resp_apci, &data)
-            ),
-        })
-    })?;
+    let resp = property_request(l4, object_index, PID_MCB_TABLE, start, count.max(1)).await?;
     if resp.count == 0 || resp.data.len() < MCB_ENTRY_LEN {
         return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
             address,
             reason: format!(
-                "object {object_index} did not answer a readable PID_MCB_TABLE entry ({})",
-                raw_response_detail(resp_apci, &data)
+                "object {object_index} did not answer a readable PID_MCB_TABLE entry (count {}, {} octet(s))",
+                resp.count,
+                resp.data.len()
             ),
         }));
     }
@@ -1218,101 +1102,17 @@ pub async fn write_memory_verified<Ch: L4Channel, F: FnMut(usize)>(
     mode: VerifyMode,
     mut on_written: F,
 ) -> Result<()> {
-    write_memory_paced(l4, addr, data, mode, None, &mut on_written).await
-}
-
-/// [`write_memory_verified`] with an optional inter-frame pace.
-///
-/// `pace` sleeps between successive memory frames. A real KNXnet/IP gateway
-/// throttles the tool naturally (its TP1 side runs at ~25-50 ms/frame and its
-/// tunnel ACK is the flow control); simulators like KNX Virtual ACK instantly
-/// with no bus behind, so an unpaced download hits them at loopback speed and
-/// was observed to wedge KV mid-download (#50: interface stopped tunnel-ACKing
-/// under the burst). Pacing to TP1-like rates keeps such peers alive; on real
-/// hardware it is unnecessary (the gateway paces) but harmless.
-pub async fn write_memory_paced<Ch: L4Channel, F: FnMut(usize)>(
-    l4: &mut Layer4Connection<Ch>,
-    addr: u16,
-    data: &[u8],
-    mode: VerifyMode,
-    pace: Option<std::time::Duration>,
-    on_written: &mut F,
-) -> Result<()> {
-    if data.is_empty() {
-        return Ok(());
-    }
-    let write_chunk = usize::from(apci::MAX_MEMORY_WRITE_LEN);
-
-    // Phase 1: write every chunk. In per-chunk mode each is verified inline; in
-    // batched mode verification is deferred to phase 2.
-    let mut offset = 0usize;
-    while offset < data.len() {
-        let take = write_chunk.min(data.len() - offset);
-        let piece = &data[offset..offset + take];
-        let chunk_addr = chunk_address(l4, addr, offset)?;
-
-        let (req_apci, payload) = apci::encode_memory_write(chunk_addr, piece);
-        // A_Memory_Write is acknowledged (T_ACK) but not answered; the read-back
-        // is the confirmation.
-        l4.send_data(req_apci, &payload).await?;
-
-        if mode == VerifyMode::PerChunk {
-            let got = read_memory(l4, chunk_addr, take as u8).await?;
-            if got != piece {
-                return Err(WriteError::Mgmt(MgmtError::MemoryVerifyFailed {
-                    address: l4.target(),
-                    addr: chunk_addr,
-                    expected: piece.to_vec(),
-                    got,
-                }));
-            }
-        }
-        offset += take;
-        on_written(offset);
-        if let Some(d) = pace {
-            if offset < data.len() {
-                tokio::time::sleep(d).await;
-            }
-        }
-    }
-
-    if mode == VerifyMode::PerChunk {
-        return Ok(());
-    }
-
-    // Phase 2 (batched only): read the whole range back in maximal reads and
-    // compare against what we wrote, reporting the FIRST mismatching address.
-    let read_chunk = usize::from(apci::MAX_MEMORY_READ_LEN);
-    let mut roff = 0usize;
-    while roff < data.len() {
-        let take = read_chunk.min(data.len() - roff);
-        let expected = &data[roff..roff + take];
-        let chunk_addr = chunk_address(l4, addr, roff)?;
-        let got = read_memory(l4, chunk_addr, take as u8).await?;
-        if got != expected {
-            // Find the first diverging octet within this read chunk so the error
-            // names the exact first mismatching address, not just the chunk start.
-            let first = got
-                .iter()
-                .zip(expected)
-                .position(|(g, e)| g != e)
-                .unwrap_or(0);
-            let mismatch_addr = chunk_address(l4, addr, roff + first)?;
-            return Err(WriteError::Mgmt(MgmtError::MemoryVerifyFailed {
-                address: l4.target(),
-                addr: mismatch_addr,
-                expected: data[roff + first..data.len().min(roff + take)].to_vec(),
-                got: got[first..].to_vec(),
-            }));
-        }
-        roff += take;
-    }
-    Ok(())
+    // A non-windowed write is just the windowed write over a `NoWindow` control
+    // with no reconnect budget and no pace: `write_memory_windowed` degrades to a
+    // single-connection, fail-fast write when `reconnect_every()` is `None`, so
+    // the two share one code path (no separate `write_memory_paced` copy).
+    let mut ctl = NoWindow::new(l4);
+    write_memory_windowed(&mut ctl, addr, data, mode, None, &mut on_written).await
 }
 
 // --- Intra-write windowing (issue #52) --------------------------------------
 //
-// A plain `write_memory_paced` streams a whole segment on one borrowed
+// A plain non-windowed write streams a whole segment on one borrowed
 // `Layer4Connection`. A single vendor "write parameters image" step can be ~162
 // memory frames, far more than a fragile peer's per-connection budget — KNX
 // Virtual was observed to drop the L4 link at random depths (7, 26, 110
@@ -1434,7 +1234,9 @@ fn is_connection_death(err: &WriteError) -> bool {
 /// unexpected mid-write connection death, resuming at the current offset on the
 /// fresh connection.
 ///
-/// This is the windowed twin of [`write_memory_paced`]. Where that borrows one
+/// This is the general memory-write path; [`write_memory_verified`] is the
+/// non-windowed convenience wrapper (a [`NoWindow`] control) over it. Where a
+/// plain write borrows one
 /// fixed connection, this borrows the *current* connection from `ctl` before
 /// every chunk, so a cycle that swaps the connection is transparent. Cycling and
 /// resuming only ever happen *between* chunks, never mid-frame, and always at the
@@ -1460,9 +1262,10 @@ fn is_connection_death(err: &WriteError) -> bool {
 /// wrong offset); a mismatch re-writes that chunk. Batched mode windows during
 /// both the write phase and the bulk read-back phase.
 ///
-/// When `reconnect_every()` is `None` (a non-windowed write), this behaves
-/// exactly like [`write_memory_paced`]: no cycling, and a connection death fails
-/// fast — so the `NoWindow`/`SingleConnector` paths keep today's semantics.
+/// When `reconnect_every()` is `None` (a non-windowed write, e.g. via
+/// [`write_memory_verified`]), this behaves as a plain single-connection write:
+/// no cycling, and a connection death fails fast — so the
+/// `NoWindow`/`SingleConnector` paths keep today's semantics.
 pub async fn write_memory_windowed<W: WindowCtl, F: FnMut(usize)>(
     ctl: &mut W,
     addr: u16,
@@ -1782,8 +1585,9 @@ mod tests {
     }
 
     #[test]
-    fn rel_segment_structure_matches_thelsing_offsets() {
-        // event=3, sub=0x0B, size u32 BE, fill flag + byte, reserved tail.
+    fn rel_segment_structure_matches_spec_offsets() {
+        // event=3, sub=0x0B, size u32 BE, fill flag + byte, reserved tail
+        // (KNX 3/5/2 LdCtrlRelSegment).
         let v = encode_rel_segment(0x0000_0140, Some(0xEE));
         assert_eq!(v.len(), 10);
         assert_eq!(v[0], LoadControl::AdditionalLoadControls.octet());
@@ -1894,26 +1698,28 @@ mod tests {
 
     #[test]
     fn crc16_ccitt_matches_the_standard_check_vector() {
-        // The documented CRC16-CCITT check value for "123456789" is 0xE5CC
-        // (thelsing `bits.cpp`, and the standard CRC-16/CCITT-FALSE vector).
+        // The catalogued CRC-16/AUG-CCITT check value for "123456789" is 0xE5CC
+        // (the augmented CCITT variant the KNX MCB uses; CCITT-FALSE would be
+        // 0x29B1).
         assert_eq!(crc16_ccitt(b"123456789"), 0xE5CC);
-        // Init value FFFF, empty input: two appended zero bytes -> 0x1D0F is the
-        // well-known CRC-16/CCITT-FALSE result for the empty message.
+        // Init value FFFF, empty input (only the two augmenting zero bytes are
+        // reduced) -> 0x1D0F.
         assert_eq!(crc16_ccitt(b""), 0x1D0F);
         // A single zero byte.
         assert_eq!(crc16_ccitt(&[0x00]), 0xCC9C);
     }
 
     #[test]
-    fn mcb_entry_matches_thelsing_layout() {
-        // [size u32 BE][crc_ctrl=0x00][access=0xFF][crc16 u16 BE], 8 octets.
+    fn mcb_entry_matches_spec_layout() {
+        // [size u32 BE][crc_ctrl=0x00][access=0xFF][crc16 u16 BE], 8 octets
+        // (KNX 3/5/1 System B PID_MCB_TABLE).
         let data = b"123456789";
         let e = mcb_entry(data);
         assert_eq!(e.len(), MCB_ENTRY_LEN);
         assert_eq!(&e[0..4], &(data.len() as u32).to_be_bytes()); // size = 9
         assert_eq!(e[4], 0x00); // CRC control: always valid
         assert_eq!(e[5], 0xFF); // access
-        assert_eq!(&e[6..8], &0xE5CCu16.to_be_bytes()); // CRC16-CCITT of "123456789"
+        assert_eq!(&e[6..8], &0xE5CCu16.to_be_bytes()); // CRC-16/AUG-CCITT of "123456789"
 
         // Round-trips through the decoder.
         let dec = McbEntry::decode(&e).unwrap();

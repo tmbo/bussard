@@ -60,7 +60,7 @@ struct WriteDevice {
     /// allocation (scripted).
     allocated_addr: u32,
     /// Whether the object has been allocated (drives PID_TABLE_REFERENCE: 0
-    /// before allocation, `allocated_addr` after — mirrors thelsing).
+    /// before allocation, `allocated_addr` after).
     allocated: bool,
     // --- failure scripts ---
     /// If set, the Nth (0-based) `A_Memory_Write` telegram is NAKed instead of

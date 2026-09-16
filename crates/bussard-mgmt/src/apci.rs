@@ -8,8 +8,9 @@
 //! service.
 //!
 //! The wire structure follows the published KNX application-layer specification
-//! (EN 50090 / the KNX standard); thelsing/knx (C++, permitted device-side
-//! reference) describes what the peer expects. No GPL sources were consulted.
+//! (EN 50090 / the KNX standard 3/3/7 "Application Layer") and the Wireshark
+//! KNX/KNXnet-IP dissector's public field definitions, cross-checked against
+//! live captures from real devices. No GPL source was consulted or copied.
 
 /// `A_DeviceDescriptor_Read` — request the device's descriptor (mask version).
 pub const A_DEVICE_DESCRIPTOR_READ: u16 = 0x300;

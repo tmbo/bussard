@@ -579,25 +579,32 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
                 TpciKind::Ack(acked) if acked == seq => return AckOutcome::Acked,
                 TpciKind::Nak(_) => return AckOutcome::Nak,
                 TpciKind::Disconnect => return AckOutcome::Disconnected,
-                TpciKind::NumberedData(nseq) => {
+                TpciKind::NumberedData(nseq) if nseq == self.recv_seq => {
                     // The device answered before we saw its ACK (some stacks fold
-                    // the ACK into the response). Acknowledge the data so it does
-                    // not retransmit, stash the APDU as the pending response and
-                    // advance the receive sequence, and treat our send as
-                    // acknowledged. Without stashing, the folded answer would be
+                    // the ACK into the response). Only a NDT at the *expected*
+                    // receive sequence is causal: it is the device's fresh answer,
+                    // which implicitly confirms our request landed. Acknowledge the
+                    // data so it does not retransmit, stash the APDU as the pending
+                    // response and advance the receive sequence, and treat our send
+                    // as acknowledged. Without stashing, the folded answer would be
                     // dropped and `recv_response` would wait forever for a second
                     // NDT that never comes (permanent desync).
-                    if nseq == self.recv_seq {
-                        let _ = self.send_control(tpci::t_ack(nseq)).await;
-                        self.recv_seq = (self.recv_seq + 1) & 0x0f;
-                        self.pending_response = Some(extract_apdu(&frame));
-                    } else {
-                        // A duplicate/out-of-window folded NDT: ACK expected-1 and
-                        // drop it, per the style-1 procedure.
-                        let ack_seq = self.recv_seq.wrapping_sub(1) & 0x0f;
-                        let _ = self.send_control(tpci::t_ack(ack_seq)).await;
-                    }
+                    let _ = self.send_control(tpci::t_ack(nseq)).await;
+                    self.recv_seq = (self.recv_seq + 1) & 0x0f;
+                    self.pending_response = Some(extract_apdu(&frame));
                     return AckOutcome::Acked;
+                }
+                TpciKind::NumberedData(_) => {
+                    // A duplicate / out-of-window folded NDT: this is a
+                    // *re-delivery* of a previous response (our earlier T_ACK for it
+                    // was lost, so the device retransmitted), NOT confirmation that
+                    // our current request landed (#58). ACK expected-1 to quiet the
+                    // retransmit, then KEEP WAITING for our real T_ACK — returning
+                    // `Acked` here would falsely advance our send sequence off a
+                    // stale frame and desync the connection.
+                    let ack_seq = self.recv_seq.wrapping_sub(1) & 0x0f;
+                    let _ = self.send_control(tpci::t_ack(ack_seq)).await;
+                    continue;
                 }
                 _ => continue,
             }
@@ -662,6 +669,78 @@ fn extract_apdu(frame: &CemiFrame) -> (u16, Vec<u8>) {
         (Tpci::Other(_) | Tpci::DataGroup, Apdu::Other { apci, data }) => (*apci, data.clone()),
         _ => (0, Vec::new()),
     }
+}
+
+/// Sends an `A_PropertyValue_Read` and returns the decoded
+/// [`PropertyValueResponse`](crate::apci::PropertyValueResponse), validating the
+/// response service and the 4-octet header.
+///
+/// This is the shared request/validate/decode seam every property read in the
+/// crate (`device.rs`, `tables.rs`, and the five load-side reads) collapses onto:
+/// it encodes the read, sends it, checks the answer is an
+/// `A_PropertyValue_Response`, and decodes the header. Callers apply their own
+/// `count == 0` / short-data policy to the returned struct, and map the
+/// [`MgmtError`] into their own error type via `#[from]`.
+pub(crate) async fn property_request<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    object_index: u8,
+    property_id: u8,
+    start: u16,
+    count: u8,
+) -> Result<crate::apci::PropertyValueResponse> {
+    let payload = crate::apci::encode_property_value_read(object_index, property_id, count, start);
+    let (resp_apci, data) = l4
+        .request(crate::apci::A_PROPERTY_VALUE_READ, &payload)
+        .await?;
+    decode_property_response(l4.target(), resp_apci, &data)
+}
+
+/// Sends an `A_PropertyValue_Write` and returns the decoded response the device
+/// echoes back, validating the response service and the 4-octet header.
+///
+/// The write twin of [`property_request`]: the shared encode/send/validate/decode
+/// seam for every property write in the crate. Callers compare the echoed
+/// [`PropertyValueResponse::data`](crate::apci::PropertyValueResponse) against
+/// what they wrote (the KNX application layer echoes the *stored* value).
+pub(crate) async fn property_write_request<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    object_index: u8,
+    property_id: u8,
+    count: u8,
+    start: u16,
+    value: &[u8],
+) -> Result<crate::apci::PropertyValueResponse> {
+    let payload =
+        crate::apci::encode_property_value_write(object_index, property_id, count, start, value);
+    let (resp_apci, data) = l4
+        .request(crate::apci::A_PROPERTY_VALUE_WRITE, &payload)
+        .await?;
+    decode_property_response(l4.target(), resp_apci, &data)
+}
+
+/// Validates that `(resp_apci, data)` is a well-formed `A_PropertyValue_Response`
+/// and decodes it, shared by [`property_request`] and [`property_write_request`].
+fn decode_property_response(
+    address: IndividualAddress,
+    resp_apci: u16,
+    data: &[u8],
+) -> Result<crate::apci::PropertyValueResponse> {
+    if resp_apci != crate::apci::A_PROPERTY_VALUE_RESPONSE {
+        return Err(MgmtError::MalformedResponse {
+            address,
+            reason: format!(
+                "expected A_PropertyValue_Response ({})",
+                crate::error::raw_response_detail(resp_apci, data)
+            ),
+        });
+    }
+    crate::apci::decode_property_value_response(data).ok_or_else(|| MgmtError::MalformedResponse {
+        address,
+        reason: format!(
+            "property value response too short ({})",
+            crate::error::raw_response_detail(resp_apci, data)
+        ),
+    })
 }
 
 #[cfg(test)]
@@ -852,6 +931,54 @@ mod tests {
             })
             .collect();
         assert_eq!(acks, vec![0], "the folded response NDT(0) was acknowledged");
+    }
+
+    #[tokio::test]
+    async fn folded_wrong_seq_ndt_is_not_our_ack() {
+        // #58: while awaiting the T_ACK for our seq-0 request, a WRONG-sequence
+        // NDT arrives first — a re-delivery of a previous response (our earlier
+        // T_ACK for it was lost, so the device retransmitted it). It is NOT our
+        // ack: await_ack must ACK it with expected-1 and KEEP WAITING. The real
+        // T_ACK(0) then arrives, followed by the fresh response NDT(0).
+        let inbox = vec![
+            // Stale duplicate at the wrong seq (recv_seq is 0, so 5 is off-window).
+            ndt_from_dev(5, 0x340, &[0xAA]),
+            // Our real T_ACK arrives only now.
+            control_from_dev(tpci::t_ack(0)),
+            // Then the fresh response for this request.
+            ndt_from_dev(0, 0x340, &[0x07, 0xB0]),
+        ];
+        let mut bus = ScriptedBus::new(inbox);
+        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast())
+            .await
+            .unwrap();
+        let (apci, data) = l4.request(0x300, &[0x00]).await.unwrap();
+        // The stale duplicate was not mistaken for the response; the real answer
+        // was delivered.
+        assert_eq!(apci, 0x340);
+        assert_eq!(data, vec![0x07, 0xB0]);
+        // recv_seq advanced exactly once (only the real NDT(0) was delivered; the
+        // stale wrong-seq frame did not advance it).
+        assert_eq!(l4.recv_seq, 1);
+        // The send sequence advanced exactly once: the request was acknowledged by
+        // the real T_ACK(0), not by the stale duplicate.
+        assert_eq!(l4.send_seq, 1);
+        drop(l4);
+        // ACKs sent: expected-1 (15) for the stale duplicate while awaiting, then 0
+        // for the delivered real response.
+        let acks: Vec<u8> = bus
+            .sent
+            .iter()
+            .filter_map(|f| match tpci::classify(f.tpci_octet()) {
+                TpciKind::Ack(s) => Some(s),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            acks,
+            vec![15, 0],
+            "stale duplicate ACKed with expected-1, then the real response with 0"
+        );
     }
 
     #[tokio::test]
