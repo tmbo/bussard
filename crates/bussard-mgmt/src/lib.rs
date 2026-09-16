@@ -65,10 +65,11 @@ pub use device::DeviceConnection;
 pub use error::{MgmtError, Result, SilenceKind};
 pub use load::{
     LD_CTRL_ABS_SEGMENT, LD_CTRL_REL_SEGMENT, LoadControl, LoadState, LoadStateContext,
-    MCB_ENTRY_LEN, McbEntry, PID_LOAD_STATE_CONTROL, PID_MCB_TABLE, SegmentAllocation, VerifyMode,
-    WriteError, allocate_segment, compare_property, crc16_ccitt, encode_abs_segment,
-    encode_rel_segment, mcb_entry, read_load_state, read_mcb_table, read_memory,
-    write_load_control, write_memory, write_memory_verified, write_property, write_table,
+    MCB_ENTRY_LEN, McbEntry, NoWindow, PID_LOAD_STATE_CONTROL, PID_MCB_TABLE, SegmentAllocation,
+    VerifyMode, WindowCtl, WriteError, allocate_segment, compare_property, crc16_ccitt,
+    encode_abs_segment, encode_rel_segment, mcb_entry, read_load_state, read_mcb_table,
+    read_memory, write_load_control, write_memory, write_memory_verified, write_memory_windowed,
+    write_property, write_table,
 };
 pub use tables::{DeviceTables, ResolvedLink, TableSource, TablesError, read_tables};
 
