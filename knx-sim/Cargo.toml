@@ -1,0 +1,42 @@
+# An empty [workspace] table makes knx-sim its own workspace root, so it is
+# fully standalone and cleanly extractable to its own repo. The bussard root
+# Cargo.toml also lists it under `exclude`, but this table is what actually
+# detaches it (bussard lives at a parent path).
+[workspace]
+
+[package]
+name = "knx-sim"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+description = "An independent, strict KNX device + bus simulator for cross-checking flashing tools on the wire."
+authors = ["Tom Bocklisch"]
+repository = "https://github.com/tmbo/bussard"
+
+[dependencies]
+# ZIP reader for the .knxprod container (a plain, unencrypted ZIP unlike the
+# .knxproj). MIT OR Apache-2.0.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+# Streaming XML pull-parser for the product-data XML. MIT.
+quick-xml = "0.36"
+# base64 decoder for the RelativeSegment <Data> application image. MIT/Apache-2.0.
+base64 = "0.22"
+# Config-file (de)serialization. MIT/Apache-2.0.
+serde = { version = "1", features = ["derive"] }
+serde_norway = "0.9"
+# Structured error types. MIT/Apache-2.0.
+thiserror = "2"
+# Structured logging of the observable event stream. MIT/Apache-2.0.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Binary entrypoint error plumbing. MIT/Apache-2.0.
+anyhow = "1"
+
+[lib]
+name = "knx_sim"
+path = "src/lib.rs"
+
+[[bin]]
+name = "knx-sim"
+path = "src/main.rs"
