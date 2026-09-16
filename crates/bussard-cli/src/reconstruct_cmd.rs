@@ -293,6 +293,134 @@ fn print_text(report: &Report) {
 }
 
 // ===========================================================================
+// L4 soak probe: `bussard reconstruct <ia> --l4-soak <N>` (hidden diagnostic)
+//
+// Connects ONCE and issues N harmless A_DeviceDescriptor_Read exchanges on that
+// single L4 connection, reporting progress every 10 and, on death, the exact
+// number of exchanges reached and the error. This measures a peer's
+// per-connection exchange budget empirically — KNX Virtual drops the L4
+// connection after a varying number of exchanges (issue #52) — so
+// `flash --reconnect-every` can be set comfortably below it. Read-only on the
+// bus (only descriptor reads).
+// ===========================================================================
+
+/// Runs `bussard reconstruct <ia> --l4-soak <N>`.
+pub fn run_l4_soak(
+    address: &str,
+    exchanges: u32,
+    dir: &Path,
+    overrides: ConnOverrides,
+) -> anyhow::Result<ExitCode> {
+    let target: IndividualAddress = address
+        .parse()
+        .with_context(|| format!("parsing device address {address:?}"))?;
+    let model = load_model_optional(dir);
+    let config = resolve_config(model.as_ref(), &overrides)?;
+
+    eprintln!(
+        "L4 soak probe: {target} — issuing up to {exchanges} descriptor read(s) on ONE connection.\n\
+         This measures the peer's per-connection exchange budget (issue #52). Read-only."
+    );
+
+    let runtime = tokio::runtime::Runtime::new()?;
+    let outcome = runtime.block_on(async move {
+        let (handle, _task) = Bus::connect(config);
+        if !handle
+            .wait_connected(std::time::Duration::from_secs(10))
+            .await
+        {
+            eprintln!(
+                "warning: bus not connected yet; management traffic may use the 0.0.255 fallback source"
+            );
+        }
+        let source = ops::group_source(&handle);
+        let lease = handle.lease().await.context("leasing the bus")?;
+        let channel = LeaseChannel::new(lease);
+        let outcome = soak_connection(channel, target, source, exchanges).await;
+        let _ = handle.close().await;
+        anyhow::Ok(outcome)
+    })?;
+
+    match &outcome.error {
+        None => {
+            println!(
+                "\nL4 soak complete: {target} sustained all {} exchange(s) on ONE connection.",
+                outcome.completed
+            );
+            println!(
+                "  Suggested `flash --reconnect-every`: comfortably below {} (e.g. {}).",
+                outcome.completed,
+                (outcome.completed / 2).max(1)
+            );
+            Ok(ExitCode::SUCCESS)
+        }
+        Some(err) => {
+            println!(
+                "\nL4 soak: {target} died after {} exchange(s) on ONE connection.",
+                outcome.completed
+            );
+            println!("  error at death: {err}");
+            println!(
+                "  Suggested `flash --reconnect-every`: comfortably below {} (e.g. {}).",
+                outcome.completed.max(1),
+                (outcome.completed / 2).max(1)
+            );
+            // A death is the informative result of the probe, not a tool failure.
+            Ok(ExitCode::SUCCESS)
+        }
+    }
+}
+
+/// The result of a soak run: how many descriptor exchanges completed on the one
+/// connection, and the error that ended it (if any).
+struct SoakOutcome {
+    completed: u32,
+    error: Option<String>,
+}
+
+/// Drives `exchanges` descriptor reads on a single [`Layer4Connection`], printing
+/// progress every 10, and returns how far it got.
+async fn soak_connection(
+    channel: LeaseChannel,
+    target: IndividualAddress,
+    source: IndividualAddress,
+    exchanges: u32,
+) -> SoakOutcome {
+    let mut l4 = match Layer4Connection::connect(channel, target, source).await {
+        Ok(l4) => l4,
+        Err(err) => {
+            return SoakOutcome {
+                completed: 0,
+                error: Some(format!("could not open the connection: {err}")),
+            };
+        }
+    };
+    let (req_apci, payload) = bussard_mgmt::apci::encode_device_descriptor_read(0);
+    let mut completed = 0u32;
+    let mut error = None;
+    for i in 1..=exchanges {
+        match l4.request(req_apci, &payload).await {
+            Ok(_) => {
+                completed = l4.numbered_exchanges();
+                if i % 10 == 0 {
+                    eprintln!("  {completed} exchange(s) ok…");
+                    let _ = std::io::stderr().flush();
+                }
+            }
+            Err(err) => {
+                // Record how many the connection actually acknowledged before it
+                // died (the L4 counter is the ground truth).
+                completed = l4.numbered_exchanges();
+                error = Some(err.to_string());
+                break;
+            }
+        }
+    }
+    let _ = l4.disconnect().await;
+    SoakOutcome { completed, error }
+}
+
+// ===========================================================================
 // Line mode: `bussard reconstruct --line 1.1 --out <fresh-dir>`
 //
 // Sweeps a whole line like `bussard scan` (short discovery timeouts, one

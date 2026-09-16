@@ -39,7 +39,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bussard_download::{FlashStep, flash, plan_flash};
+use bussard_download::{FlashStep, Session, flash, plan_flash};
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_mgmt::load::LoadState;
 use bussard_prod::application::{ApplicationProgram, parse_application_program};
@@ -154,6 +154,29 @@ struct DeviceState {
     /// Stored interface-object property values a `LdCtrlCompareProp` reads back,
     /// keyed by `(object_index, pid)`. Absent keys answer count 0 (not present).
     compare_props: HashMap<(u8, u8), Vec<u8>>,
+    /// Count of `T_Connect` control frames received from the tool — i.e. how many
+    /// connection windows the download opened. The windowed-reconnect tests assert
+    /// this reaches ≥2 (the download completed across multiple windows).
+    connects: usize,
+    /// Numbered data telegrams seen on the CURRENT connection. Reset to 0 on every
+    /// `T_Connect` (a fresh sequence window). When `die_after_exchanges` is set and
+    /// this reaches it, the device stops answering for the rest of this connection
+    /// — modelling KNX Virtual dropping the L4 connection after a varying number of
+    /// exchanges (issue #52). A fresh `T_Connect` clears it and the device answers
+    /// again from its persistent object state.
+    exchanges_this_connection: u32,
+    /// If set, the device goes silent after this many numbered exchanges on one
+    /// connection (a mid-download connection death). A windowed download that
+    /// cycles below this budget survives it; a non-windowed one dies.
+    die_after_exchanges: Option<u32>,
+    /// If set, the device drops the application object out of `Loading` (back to
+    /// `Unloaded`) the first time it is reconnected mid-download — modelling a peer
+    /// that does not persist the intermediate state across a graceful window. The
+    /// resume-safety load-state re-check must catch this.
+    drop_loading_on_reconnect: bool,
+    /// Whether the object was in `Loading` at the last disconnect, so a reconnect
+    /// can decide whether to apply `drop_loading_on_reconnect`.
+    was_loading_at_disconnect: bool,
 }
 
 type Shared = Arc<Mutex<DeviceState>>;
@@ -496,13 +519,44 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
                 }
                 let tool = cemi.source;
                 match tpci::classify(cemi.tpci_octet()) {
-                    TpciKind::Connect => dev_seq = 0,
+                    TpciKind::Connect => {
+                        dev_seq = 0;
+                        // A fresh connection window: reset the per-connection
+                        // exchange budget and, if configured, drop the app object
+                        // out of Loading to model a peer that does not persist the
+                        // intermediate state across a graceful window.
+                        let mut s = state.lock().unwrap();
+                        s.connects += 1;
+                        s.exchanges_this_connection = 0;
+                        if s.drop_loading_on_reconnect
+                            && s.was_loading_at_disconnect
+                            && s.app_load_state == LS_LOADING
+                        {
+                            s.app_load_state = LS_UNLOADED;
+                        }
+                    }
                     TpciKind::Disconnect => {
                         // Record the tool's clean teardown so a test can assert
                         // the L4 session was released even after a failed flash.
-                        state.lock().unwrap().disconnects += 1;
+                        let mut s = state.lock().unwrap();
+                        s.disconnects += 1;
+                        s.was_loading_at_disconnect = s.app_load_state == LS_LOADING;
                     }
                     TpciKind::NumberedData(client_seq) => {
+                        // Per-connection death budget: once this connection has run
+                        // its allotted exchanges, the device goes silent for the
+                        // rest of the connection (KV drops the L4 link, issue #52).
+                        {
+                            let mut s = state.lock().unwrap();
+                            s.exchanges_this_connection += 1;
+                            if let Some(budget) = s.die_after_exchanges {
+                                if s.exchanges_this_connection > budget {
+                                    // No ACK, no response: the connection is dead
+                                    // until a fresh T_Connect resets the budget.
+                                    continue;
+                                }
+                            }
+                        }
                         let (req_apci, payload) = match (&cemi.tpci, &cemi.apdu) {
                             (Tpci::Other(_), Apdu::Other { apci, data }) => (*apci, data.clone()),
                             _ => continue,
@@ -560,6 +614,11 @@ fn fresh_device(fault: Fault) -> Shared {
         control_writes: 0,
         disconnects: 0,
         compare_props: HashMap::new(),
+        connects: 0,
+        exchanges_this_connection: 0,
+        die_after_exchanges: None,
+        drop_loading_on_reconnect: false,
+        was_loading_at_disconnect: false,
     }))
 }
 
@@ -690,18 +749,19 @@ async fn flash_happy_path_loads_and_verifies() {
     let app = fabricated_app();
     let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
 
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+    let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
+    let mut session = Session::from_connection(l4);
     let outcome = flash(
-        &mut l4,
+        &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         |_| {},
     )
     .await
     .unwrap();
-    let _ = l4.disconnect().await;
+    let _ = session.into_disconnect().await;
 
     assert!(outcome.ok(), "flash must verify: {outcome:?}");
     assert_eq!(outcome.load_state, LoadState::Loaded);
@@ -739,18 +799,19 @@ async fn flash_with_image_prop_loads_and_verifies_mcb() {
         .count();
     assert_eq!(checks, 4);
 
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+    let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
+    let mut session = Session::from_connection(l4);
     let outcome = flash(
-        &mut l4,
+        &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         |_| {},
     )
     .await
     .unwrap();
-    let _ = l4.disconnect().await;
+    let _ = session.into_disconnect().await;
 
     assert!(
         outcome.ok(),
@@ -780,18 +841,19 @@ async fn flash_image_prop_catches_corrupted_stored_image() {
     let app = app_with_image_prop();
     let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
 
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+    let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
+    let mut session = Session::from_connection(l4);
     let err = flash(
-        &mut l4,
+        &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         |_| {},
     )
     .await
     .expect_err("a corrupted stored image must fail the MCB integrity check");
-    let _ = l4.disconnect().await;
+    let _ = session.into_disconnect().await;
 
     assert!(
         matches!(
@@ -812,18 +874,19 @@ async fn flash_surfaces_load_error_on_completed() {
     let app = fabricated_app();
     let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
 
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+    let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
+    let mut session = Session::from_connection(l4);
     let err = flash(
-        &mut l4,
+        &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         |_| {},
     )
     .await
     .expect_err("a load Error on completion must surface");
-    let _ = l4.disconnect().await;
+    let _ = session.into_disconnect().await;
 
     assert!(
         matches!(err, bussard_mgmt::load::WriteError::LoadError { .. }),
@@ -841,18 +904,19 @@ async fn flash_aborts_on_memory_write_nak() {
     let app = fabricated_app();
     let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
 
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+    let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
+    let mut session = Session::from_connection(l4);
     let err = flash(
-        &mut l4,
+        &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         |_| {},
     )
     .await
     .expect_err("a memory-write NAK mid-flash must abort");
-    let _ = l4.disconnect().await;
+    let _ = session.into_disconnect().await;
 
     assert!(
         matches!(err, bussard_mgmt::load::WriteError::Mgmt(_)),
@@ -877,12 +941,13 @@ async fn flash_disconnects_even_when_it_fails_mid_procedure() {
     let app = fabricated_app();
     let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
 
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+    let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
+    let mut session = Session::from_connection(l4);
     // Strict (default) options: the KV snap-to-Loaded trips the load-state check.
     let err = flash(
-        &mut l4,
+        &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         |_| {},
@@ -904,7 +969,7 @@ async fn flash_disconnects_even_when_it_fails_mid_procedure() {
     );
 
     // The disconnect-on-error guarantee: this must reach the device.
-    let _ = l4.disconnect().await;
+    let _ = session.into_disconnect().await;
 
     // Poll briefly for the async gateway to record the T_Disconnect.
     let mut saw = false;
@@ -935,18 +1000,19 @@ async fn flash_strict_load_state_error_names_object_and_table() {
     let app = fabricated_app();
     let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
 
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+    let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
+    let mut session = Session::from_connection(l4);
     let err = flash(
-        &mut l4,
+        &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         |_| {},
     )
     .await
     .expect_err("strict mode must reject the non-conformant load state");
-    let _ = l4.disconnect().await;
+    let _ = session.into_disconnect().await;
 
     match &err {
         bussard_mgmt::load::WriteError::UnexpectedLoadState {
@@ -997,18 +1063,19 @@ async fn flash_allocate_path_load_state_error_names_object_and_table() {
     let app = fabricated_app();
     let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
 
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+    let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
+    let mut session = Session::from_connection(l4);
     let err = flash(
-        &mut l4,
+        &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         |_| {},
     )
     .await
     .expect_err("the allocate re-read must trip the strict load-state check");
-    let _ = l4.disconnect().await;
+    let _ = session.into_disconnect().await;
 
     match &err {
         bussard_mgmt::load::WriteError::UnexpectedLoadState {
@@ -1058,11 +1125,12 @@ async fn flash_batched_verify_loads_and_verifies() {
         verify: bussard_mgmt::VerifyMode::Batched,
         ..Default::default()
     };
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+    let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
-    let outcome = flash(&mut l4, &plan, options, |_| {}).await.unwrap();
-    let _ = l4.disconnect().await;
+    let mut session = Session::from_connection(l4);
+    let outcome = flash(&mut session, &plan, options, |_| {}).await.unwrap();
+    let _ = session.into_disconnect().await;
 
     assert!(outcome.ok(), "batched flash must verify: {outcome:?}");
     assert_eq!(outcome.load_state, LoadState::Loaded);
@@ -1091,11 +1159,12 @@ async fn flash_tolerance_flag_accepts_loaded_after_start_loading() {
         tolerate_nonconformant_load_states: true,
         ..Default::default()
     };
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+    let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
-    let outcome = flash(&mut l4, &plan, options, |_| {}).await.unwrap();
-    let _ = l4.disconnect().await;
+    let mut session = Session::from_connection(l4);
+    let outcome = flash(&mut session, &plan, options, |_| {}).await.unwrap();
+    let _ = session.into_disconnect().await;
 
     assert!(
         outcome.ok(),
@@ -1161,18 +1230,19 @@ async fn flash_applies_device_file_parameter_override() {
         "the override must change the computed parameter image"
     );
 
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+    let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
+    let mut session = Session::from_connection(l4);
     let outcome = flash(
-        &mut l4,
+        &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         |_| {},
     )
     .await
     .unwrap();
-    let _ = l4.disconnect().await;
+    let _ = session.into_disconnect().await;
 
     assert!(outcome.ok(), "override flash must verify: {outcome:?}");
 
@@ -1213,18 +1283,19 @@ async fn flash_compare_prop_passes_when_property_matches() {
         1
     );
 
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+    let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
+    let mut session = Session::from_connection(l4);
     let outcome = flash(
-        &mut l4,
+        &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         |_| {},
     )
     .await
     .unwrap();
-    let _ = l4.disconnect().await;
+    let _ = session.into_disconnect().await;
 
     assert!(
         outcome.ok(),
@@ -1252,18 +1323,19 @@ async fn flash_compare_prop_aborts_when_property_differs() {
     let app = app_with_compare_prop(None);
     let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
 
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+    let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
+    let mut session = Session::from_connection(l4);
     let err = flash(
-        &mut l4,
+        &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         |_| {},
     )
     .await
     .expect_err("a compare mismatch must abort the flash");
-    let _ = l4.disconnect().await;
+    let _ = session.into_disconnect().await;
 
     assert!(
         matches!(
@@ -1301,18 +1373,19 @@ async fn flash_compare_prop_mask_ignores_don_t_care_bytes() {
     let app = app_with_compare_prop(Some("FF00FF00"));
     let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
 
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+    let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
+    let mut session = Session::from_connection(l4);
     let outcome = flash(
-        &mut l4,
+        &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         |_| {},
     )
     .await
     .unwrap();
-    let _ = l4.disconnect().await;
+    let _ = session.into_disconnect().await;
 
     assert!(
         outcome.ok(),
@@ -1335,11 +1408,12 @@ async fn flash_reports_progress_for_every_step() {
     let steps_seen = Arc::new(Mutex::new(0usize));
     let seen = Arc::clone(&steps_seen);
 
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+    let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
+    let mut session = Session::from_connection(l4);
     let outcome = flash(
-        &mut l4,
+        &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         move |p| {
@@ -1350,7 +1424,7 @@ async fn flash_reports_progress_for_every_step() {
     )
     .await
     .unwrap();
-    let _ = l4.disconnect().await;
+    let _ = session.into_disconnect().await;
 
     assert!(outcome.ok());
     assert_eq!(
@@ -1359,4 +1433,246 @@ async fn flash_reports_progress_for_every_step() {
         "one Step event per step"
     );
     handle.abort();
+}
+
+// ===========================================================================
+// Windowed-reconnect download tests (issue #52).
+//
+// A scripted peer drops the L4 connection after K numbered exchanges. Without
+// windowing the flash dies mid-download; with `--reconnect-every < K` the engine
+// cycles the connection at step boundaries and resumes from the device's
+// persistent load state, completing to Loaded across multiple windows. The mock
+// counts T_Connects so the tests can assert ≥2 windows were used.
+// ===========================================================================
+
+use bussard_bus::{Bus, BusHandle};
+use bussard_download::{Connector, FlashOptions, Session as FlashSession};
+use bussard_mgmt::LeaseChannel;
+use bussard_mgmt::load::WriteError;
+
+/// A [`Connector`] over the mock bus: each `connect()` takes a fresh lease and
+/// opens a new L4 connection to the target, exactly as the CLI does per window.
+struct MockConnector {
+    handle: BusHandle,
+    target: bussard_model::IndividualAddress,
+    source: bussard_model::IndividualAddress,
+}
+
+impl Connector for MockConnector {
+    type Channel = LeaseChannel;
+
+    async fn connect(&mut self) -> Result<Layer4Connection<LeaseChannel>, WriteError> {
+        let lease = self.handle.lease().await.map_err(|_| {
+            WriteError::Mgmt(bussard_mgmt::MgmtError::Transport(
+                bussard_transport::TransportError::Closed,
+            ))
+        })?;
+        let channel = LeaseChannel::new(lease);
+        Layer4Connection::connect(channel, self.target, self.source)
+            .await
+            .map_err(WriteError::Mgmt)
+    }
+}
+
+/// Brings up the mock gateway behind a real [`Bus`] actor and returns a handle,
+/// the shared device state, and the gateway task.
+async fn setup_bus(state: Shared) -> (BusHandle, tokio::task::JoinHandle<()>) {
+    let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let port = sock.local_addr().unwrap().port();
+    let addr: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let gw_task = tokio::spawn(run_gateway(sock, addr, state));
+    let (handle, actor) = Bus::connect(ConnectionConfig::tunnel(
+        format!("127.0.0.1:{port}").parse().unwrap(),
+    ));
+    // Wait for the actor to connect.
+    for _ in 0..300 {
+        if handle.status() == bussard_bus::BusState::Connected {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // The actor task keeps running once spawned; dropping its JoinHandle does not
+    // abort it (tokio semantics), so the bus stays live for the lifetime of the
+    // handle.
+    drop(actor);
+    (handle, gw_task)
+}
+
+fn window_connector(handle: &BusHandle) -> MockConnector {
+    MockConnector {
+        handle: handle.clone(),
+        target: "1.1.4".parse().unwrap(),
+        source: "0.0.255".parse().unwrap(),
+    }
+}
+
+#[tokio::test]
+async fn windowed_flash_completes_across_multiple_windows() {
+    // A peer that drops the L4 connection after 4 numbered exchanges. The
+    // fabricated flash runs many more than 4 exchanges, so a non-windowed flash
+    // would die. With --reconnect-every 3 (< 4) the engine cycles the connection
+    // before the budget is spent and resumes from the persistent load state,
+    // completing to Loaded across several windows with byte-identical memory.
+    let state = fresh_device(Fault::None);
+    {
+        let mut s = state.lock().unwrap();
+        s.die_after_exchanges = Some(10);
+    }
+    let (handle, gw_task) = setup_bus(Arc::clone(&state)).await;
+
+    let app = fabricated_app();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+
+    let options = FlashOptions {
+        reconnect_every: Some(6),
+        ..Default::default()
+    };
+    let connector = window_connector(&handle);
+    let mut session = FlashSession::open(connector).await.unwrap();
+    let outcome = flash(&mut session, &plan, options, |_| {}).await.unwrap();
+    let _ = session.into_disconnect().await;
+
+    assert!(
+        outcome.ok(),
+        "the windowed flash must complete to Loaded and verify: {outcome:?}"
+    );
+    assert_eq!(outcome.load_state, LoadState::Loaded);
+
+    {
+        let s = state.lock().unwrap();
+        // The download used multiple connection windows.
+        assert!(
+            s.connects >= 2,
+            "the download must have opened ≥2 connection windows, got {}",
+            s.connects
+        );
+        // Byte-identical final memory: code image + parameter default landed.
+        let code: Vec<u8> = (0x4000u16..0x4006)
+            .map(|a| *s.memory.get(&a).unwrap_or(&0))
+            .collect();
+        assert_eq!(code, vec![0, 1, 2, 3, 4, 5]);
+        assert_eq!(*s.memory.get(&0x4006).unwrap_or(&0), 7);
+    }
+
+    let _ = handle.close().await;
+    gw_task.abort();
+}
+
+#[tokio::test]
+async fn non_windowed_flash_dies_on_a_dropping_peer() {
+    // The same dropping peer, but WITHOUT --reconnect-every: the flash must die
+    // mid-download with a mid-session silence / disconnect error (the CLI turns
+    // this into the --reconnect-every hint).
+    let state = fresh_device(Fault::None);
+    {
+        let mut s = state.lock().unwrap();
+        s.die_after_exchanges = Some(10);
+    }
+    let (handle, gw_task) = setup_bus(Arc::clone(&state)).await;
+
+    let app = fabricated_app();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+
+    // A tight response budget so the dead connection fails fast rather than
+    // waiting the full 3s KNX default on the silent peer.
+    let connector = window_connector(&handle);
+    let mut session = FlashSession::open(connector).await.unwrap();
+    let err = flash(&mut session, &plan, FlashOptions::default(), |_| {})
+        .await
+        .expect_err("a dropping peer must kill a non-windowed flash");
+    let _ = session.into_disconnect().await;
+
+    // Mid-download silence: the L4 layer reports MidSessionSilence (an exchange
+    // count > 0), surfaced through WriteError::Mgmt.
+    assert!(
+        matches!(
+            err,
+            WriteError::Mgmt(bussard_mgmt::MgmtError::MidSessionSilence { .. })
+                | WriteError::Mgmt(bussard_mgmt::MgmtError::NoResponse { .. })
+                | WriteError::Mgmt(bussard_mgmt::MgmtError::Disconnected { .. })
+        ),
+        "expected a mid-download silence/disconnect, got {err:?}"
+    );
+
+    let _ = handle.close().await;
+    gw_task.abort();
+}
+
+#[tokio::test]
+async fn windowed_flash_rejects_lost_loading_state_on_resume() {
+    // A peer that drops the app object out of Loading when it is reconnected
+    // mid-download. The resume-safety re-check must catch it and fail with a clear
+    // UnexpectedLoadState rather than blindly writing into an object that is no
+    // longer open for loading. Budget of 4 forces a reconnect early in the flash.
+    let state = fresh_device(Fault::None);
+    {
+        let mut s = state.lock().unwrap();
+        s.die_after_exchanges = Some(10);
+        s.drop_loading_on_reconnect = true;
+    }
+    let (handle, gw_task) = setup_bus(Arc::clone(&state)).await;
+
+    let app = fabricated_app();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+
+    let options = FlashOptions {
+        reconnect_every: Some(6),
+        ..Default::default()
+    };
+    let connector = window_connector(&handle);
+    let mut session = FlashSession::open(connector).await.unwrap();
+    let err = flash(&mut session, &plan, options, |_| {})
+        .await
+        .expect_err("a peer that loses Loading on resume must fail the re-check");
+    let _ = session.into_disconnect().await;
+
+    assert!(
+        matches!(err, WriteError::UnexpectedLoadState { .. }),
+        "expected an UnexpectedLoadState from the resume re-check, got {err:?}"
+    );
+
+    let _ = handle.close().await;
+    gw_task.abort();
+}
+
+#[tokio::test]
+async fn windowed_flash_never_splits_a_chunk() {
+    // A window boundary must only ever land between steps, never inside a single
+    // write. With a large single-segment image and a small reconnect budget, the
+    // engine still lands every byte contiguously (a split chunk would corrupt the
+    // segment and fail the spot check). We use a peer that does NOT drop, so the
+    // only thing exercised is the boundary placement.
+    let state = fresh_device(Fault::None);
+    let (handle, gw_task) = setup_bus(Arc::clone(&state)).await;
+
+    let app = fabricated_app();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+
+    // Reconnect after every single exchange: the most aggressive cycling, which
+    // would split a write if boundaries were not step-aligned.
+    let options = FlashOptions {
+        reconnect_every: Some(1),
+        ..Default::default()
+    };
+    let connector = window_connector(&handle);
+    let mut session = FlashSession::open(connector).await.unwrap();
+    let outcome = flash(&mut session, &plan, options, |_| {}).await.unwrap();
+    let _ = session.into_disconnect().await;
+
+    assert!(
+        outcome.ok(),
+        "aggressive per-exchange cycling must still verify byte-identically: {outcome:?}"
+    );
+    {
+        let s = state.lock().unwrap();
+        assert!(s.connects >= 2, "cycling must have opened multiple windows");
+        let code: Vec<u8> = (0x4000u16..0x4006)
+            .map(|a| *s.memory.get(&a).unwrap_or(&0))
+            .collect();
+        assert_eq!(code, vec![0, 1, 2, 3, 4, 5], "no chunk was split");
+        assert_eq!(*s.memory.get(&0x4006).unwrap_or(&0), 7);
+    }
+
+    let _ = handle.close().await;
+    gw_task.abort();
 }

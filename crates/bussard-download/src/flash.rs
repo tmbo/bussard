@@ -59,6 +59,7 @@
 
 use std::collections::BTreeMap;
 
+use bussard_mgmt::MgmtError;
 use bussard_mgmt::connection::{L4Channel, Layer4Connection};
 use bussard_mgmt::load::{
     self, LoadControl, LoadState, WriteError, allocate_segment, compare_property, read_load_state,
@@ -365,6 +366,24 @@ pub struct FlashOptions {
     /// the unpaced burst (#50). Pacing to TP1-like rates (25-50 ms) keeps such
     /// peers alive; unnecessary but harmless on real hardware.
     pub pace: Option<std::time::Duration>,
+
+    /// Chunk the download across multiple graceful connection windows: after
+    /// roughly every N numbered exchanges, gracefully `T_Disconnect`,
+    /// re-establish a fresh L4 connection to the same target (a fresh sequence
+    /// window), and resume where the procedure left off (`--reconnect-every <N>`,
+    /// off by default).
+    ///
+    /// KNX Virtual drops the L4 connection after a varying number of exchanges
+    /// (20-53+ across runs, issue #52). Load states are persistent *object* state,
+    /// not connection state — they change only via load controls — so a download
+    /// split across several graceful windows lands in the same device state as one
+    /// unbroken run, and is spec-legal (vendor procedures themselves carry
+    /// Connect/Disconnect ops). Window boundaries only ever land *between* steps,
+    /// never inside a single write/verify, so a chunk is never split. After each
+    /// reconnect the engine re-verifies the target still answers (a descriptor
+    /// read) and — cheap paranoia — that the in-progress object is still `Loading`
+    /// before resuming writes (honouring the tolerance flag).
+    pub reconnect_every: Option<u32>,
 }
 
 /// A progress event emitted as [`flash`] executes, for the CLI to render.
@@ -386,6 +405,15 @@ pub enum Progress {
         /// Total octets in the current step.
         total: usize,
     },
+    /// A windowed download crossed a connection-window boundary: the L4
+    /// connection was gracefully cycled and the procedure resumed.
+    Reconnect {
+        /// The window just opened (1 = the second connection, after the first
+        /// window closed).
+        window: u32,
+        /// Total numbered exchanges across every window up to the cycle.
+        exchanges: u32,
+    },
 }
 
 /// The result of a completed flash: the final load state and whether the
@@ -402,6 +430,169 @@ impl FlashOutcome {
     /// The flash verified: object `Loaded` and every spot check matched.
     pub fn ok(&self) -> bool {
         self.load_state == LoadState::Loaded && self.spot_checks_match
+    }
+}
+
+/// Opens a fresh [`Layer4Connection`] to the flash target on demand.
+///
+/// A [`Session`] uses this to (re)establish the L4 connection at each window
+/// boundary of a windowed download: every call must hand back a *new* connection
+/// to the same device with fresh sequence counters (a `T_Connect` resets them).
+/// The CLI's implementation leases the bus and builds a `LeaseChannel` per call;
+/// tests script one directly. Kept as an async trait (rather than a bare closure)
+/// so the returned connection's channel type `Ch` is named and the future is
+/// nameable without boxing.
+#[allow(async_fn_in_trait)]
+pub trait Connector {
+    /// The channel the produced connection drives.
+    type Channel: L4Channel;
+
+    /// Opens a fresh connection to the flash target.
+    async fn connect(&mut self) -> Result<Layer4Connection<Self::Channel>, WriteError>;
+}
+
+/// A [`Connector`] that hands back one already-open connection and then refuses.
+///
+/// This adapts a plain [`Layer4Connection`] into a [`Session`] for a
+/// non-windowed flash (`--reconnect-every` off): the session opens with the given
+/// connection, and any attempt to [`cycle`](Session::cycle) it — which only
+/// happens when windowing is enabled — fails, since there is no factory to open a
+/// fresh window. Used by callers and tests that flash over a single connection.
+pub struct SingleConnector<Ch: L4Channel> {
+    l4: Option<Layer4Connection<Ch>>,
+    target: bussard_model::IndividualAddress,
+}
+
+impl<Ch: L4Channel> Connector for SingleConnector<Ch> {
+    type Channel = Ch;
+
+    async fn connect(&mut self) -> Result<Layer4Connection<Ch>, WriteError> {
+        self.l4.take().ok_or_else(|| {
+            WriteError::Mgmt(MgmtError::MalformedResponse {
+                address: self.target,
+                reason: "windowed reconnect needs a reconnectable session, but this flash was \
+                         opened over a single fixed connection (no --reconnect-every)"
+                    .to_string(),
+            })
+        })
+    }
+}
+
+impl<Ch: L4Channel> Session<SingleConnector<Ch>> {
+    /// Wraps one already-open [`Layer4Connection`] as a non-reconnectable session.
+    ///
+    /// The returned session flashes over exactly this connection; it cannot
+    /// `cycle`, so it is only valid for a run with `reconnect_every` unset. This
+    /// is the drop-in for callers and tests that flash over a single connection.
+    pub fn from_connection(l4: Layer4Connection<Ch>) -> Session<SingleConnector<Ch>> {
+        let target = l4.target();
+        Session {
+            connector: SingleConnector { l4: None, target },
+            l4: Some(l4),
+            retired_exchanges: 0,
+            windows: 0,
+        }
+    }
+}
+
+/// A reconnectable L4 session to the flash target: it owns a [`Connector`] and the
+/// currently-open [`Layer4Connection`], and can [`cycle`](Session::cycle) itself —
+/// gracefully `T_Disconnect` the current connection and open a fresh one — between
+/// procedure steps.
+///
+/// This is the seam that lets [`flash`] window a download across several graceful
+/// connection windows (issue #52) while the per-step device logic stays unchanged:
+/// the engine borrows `session.l4()` for each step exactly as it borrowed a single
+/// `Layer4Connection` before, and asks the session to `cycle()` only at safe step
+/// boundaries. `apply`/`reconstruct` keep borrowing a plain `Layer4Connection` and
+/// are untouched.
+pub struct Session<C: Connector> {
+    connector: C,
+    /// The currently-open connection. `Some` for the whole lifetime of a healthy
+    /// session; briefly `None` only *inside* [`cycle`](Session::cycle), between
+    /// releasing the old connection and opening the fresh one (so the old lease is
+    /// dropped before the new one is requested).
+    l4: Option<Layer4Connection<C::Channel>>,
+    /// Numbered exchanges completed on connections *before* the current one, so
+    /// [`total_exchanges`](Session::total_exchanges) reports the whole download's
+    /// count across every window (each `cycle` folds the closing connection's
+    /// count in here before it is dropped).
+    retired_exchanges: u32,
+    /// How many times the connection has been cycled (windows beyond the first).
+    windows: u32,
+}
+
+impl<C: Connector> Session<C> {
+    /// Opens the first connection and wraps it in a session.
+    pub async fn open(mut connector: C) -> Result<Session<C>, WriteError> {
+        let l4 = connector.connect().await?;
+        Ok(Session {
+            connector,
+            l4: Some(l4),
+            retired_exchanges: 0,
+            windows: 0,
+        })
+    }
+
+    /// The currently-open connection, for a step to drive.
+    ///
+    /// Panics only if called while a `cycle` is mid-flight, which never happens:
+    /// `cycle` holds `&mut self` exclusively and always restores the connection
+    /// before returning (or propagates an error and the session is abandoned).
+    pub fn l4(&mut self) -> &mut Layer4Connection<C::Channel> {
+        self.l4
+            .as_mut()
+            .expect("session connection is only absent inside cycle()")
+    }
+
+    /// Numbered exchanges on the *current* connection (resets each `cycle`).
+    pub fn window_exchanges(&self) -> u32 {
+        self.l4.as_ref().map_or(0, |l4| l4.numbered_exchanges())
+    }
+
+    /// Numbered exchanges across every window of this download so far.
+    pub fn total_exchanges(&self) -> u32 {
+        self.retired_exchanges
+            .saturating_add(self.window_exchanges())
+    }
+
+    /// How many additional windows have been opened (0 before the first cycle).
+    pub fn windows(&self) -> u32 {
+        self.windows
+    }
+
+    /// Gracefully tears down the current connection and opens a fresh one to the
+    /// same target — a new sequence window. Only ever called at a safe step
+    /// boundary, so it never splits a write/verify.
+    ///
+    /// The old connection is disconnected **and dropped first**, then the fresh
+    /// one is opened. That order matters: a bus-lease channel holds an exclusive
+    /// lease, and opening the fresh connection before releasing the old one would
+    /// deadlock waiting for a second lease. The retired connection's exchange count
+    /// is folded into the running total before it is dropped.
+    pub async fn cycle(&mut self) -> Result<(), WriteError> {
+        if let Some(old) = self.l4.take() {
+            self.retired_exchanges = self
+                .retired_exchanges
+                .saturating_add(old.numbered_exchanges());
+            // Disconnect + drop, releasing any exclusive channel resource (e.g. a
+            // bus lease) before we reconnect. A fragile peer that has already
+            // dropped makes the T_Disconnect a no-op; the reconnect is what matters.
+            let _ = old.disconnect().await;
+        }
+        // Now that the old connection (and its lease) is gone, open a fresh one.
+        let fresh = self.connector.connect().await?;
+        self.l4 = Some(fresh);
+        self.windows = self.windows.saturating_add(1);
+        Ok(())
+    }
+
+    /// Consumes the session and gracefully disconnects the open connection.
+    pub async fn into_disconnect(self) -> bussard_mgmt::Result<()> {
+        match self.l4 {
+            Some(l4) => l4.disconnect().await,
+            None => Ok(()),
+        }
     }
 }
 
@@ -1035,8 +1226,81 @@ async fn allocate_with_context<Ch: L4Channel>(
     }
 }
 
-/// Executes a validated [`FlashPlan`] against the device over `l4`, reporting
-/// progress through `progress`, then verifies the result.
+/// After a windowed reconnect, confirms the fresh connection can resume the
+/// download safely: the target still answers a cheap read, and the in-progress
+/// application object is still `Loading` (its load state is persistent object
+/// state that survives a graceful `T_Disconnect`, so a fresh window must find it
+/// exactly where the previous window left it).
+///
+/// The load-state paranoia only applies when the download is inside the loading
+/// window — after `StartLoading` and before `LoadCompleted` — signalled by
+/// `require_loading`. A cycle that lands *before* `StartLoading` (e.g. right after
+/// `Unload`, when the object is legitimately `Unloaded`) only checks liveness, not
+/// the load state.
+///
+/// When `require_loading` is set, a device that has dropped out of `Loading` on
+/// reconnect (KV was observed to drop the intermediate state on some reconnects)
+/// fails here with a clear [`WriteError::UnexpectedLoadState`] carrying the
+/// discovered object context — rather than silently writing into an object that is
+/// no longer open for loading. The `tolerate_nonconformant_load_states` flag is
+/// honoured: a peer that reports `Loaded` after `StartLoading` (KV's non-conformant
+/// snap) is also accepted here, since with tolerance on that *is* the in-progress
+/// state.
+async fn resume_recheck<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    app_obj: u8,
+    object_table: &[(u8, u16)],
+    options: &FlashOptions,
+    require_loading: bool,
+) -> Result<(), WriteError> {
+    // 1. Cheap liveness: a descriptor read proves the fresh connection reached
+    //    the same device before we resume writing into it.
+    let (req_apci, payload) = bussard_mgmt::apci::encode_device_descriptor_read(0);
+    let (resp_apci, data) = l4.request(req_apci, &payload).await?;
+    if resp_apci & bussard_mgmt::apci::APCI_SELECTOR_MASK
+        != bussard_mgmt::apci::A_DEVICE_DESCRIPTOR_RESPONSE
+    {
+        return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
+            address: l4.target(),
+            reason: format!(
+                "device did not answer a descriptor read on the reconnected window \
+                 (got APCI {resp_apci:#06X}, {} payload octet(s)) — cannot safely resume",
+                data.len()
+            ),
+        }));
+    }
+
+    // 2. Load-state paranoia: only while inside the loading window. The object we
+    //    are mid-download on must still be Loading. With tolerance on, a Loaded
+    //    snap is also acceptable.
+    if !require_loading {
+        return Ok(());
+    }
+    let state = read_load_state(l4, app_obj).await?;
+    let acceptable = state == LoadState::Loading
+        || (options.tolerate_nonconformant_load_states && state == LoadState::Loaded);
+    if !acceptable {
+        let context = bussard_mgmt::LoadStateContext {
+            object_type: object_table
+                .iter()
+                .find(|(idx, _)| *idx == app_obj)
+                .map(|(_, ot)| *ot),
+            object_table: object_table.to_vec(),
+        };
+        return Err(WriteError::UnexpectedLoadState {
+            address: l4.target(),
+            object_index: app_obj,
+            control: LoadControl::StartLoading,
+            expected: LoadState::Loading,
+            actual: state,
+            context,
+        });
+    }
+    Ok(())
+}
+
+/// Executes a validated [`FlashPlan`] against the device over the session's
+/// connection, reporting progress through `progress`, then verifies the result.
 ///
 /// The application-program object index is discovered live; the plan's steps run
 /// in order, streaming the plan's resolved images into device memory (each write
@@ -1048,13 +1312,13 @@ async fn allocate_with_context<Ch: L4Channel>(
 /// This is the only function here that mutates the device, and only ever runs
 /// from `bussard flash` after the plan is shown, confirmed, and the factory-fresh
 /// assumption stated.
-pub async fn flash<Ch: L4Channel, F: FnMut(Progress)>(
-    l4: &mut Layer4Connection<Ch>,
+pub async fn flash<C: Connector, F: FnMut(Progress)>(
+    session: &mut Session<C>,
     plan: &FlashPlan,
     options: FlashOptions,
     mut progress: F,
 ) -> Result<FlashOutcome, WriteError> {
-    let (app_obj, object_table) = discover_object_table(l4).await?;
+    let (app_obj, object_table) = discover_object_table(session.l4()).await?;
     let total = plan.steps.len();
 
     // Segment base addresses, filled as RelSegment allocations return them.
@@ -1062,7 +1326,48 @@ pub async fn flash<Ch: L4Channel, F: FnMut(Progress)>(
     // Track (address, sample_len) of writes for the post-flash spot check.
     let mut written_samples: Vec<(u16, Vec<u8>)> = Vec::new();
 
+    // Windowing: the exchange count on the current connection at which the last
+    // window opened (0 for the first window). When `--reconnect-every N` is set
+    // and the current window has run N exchanges, cycle the connection *between*
+    // steps — never inside a write/verify. Cycling is followed by a resume
+    // re-check (target answers + object still Loading).
+    let reconnect_every = options.reconnect_every.filter(|&n| n > 0);
+    // Whether the download is inside the loading window — after StartLoading has
+    // run and before LoadCompleted. Only then must a reconnect re-check that the
+    // object is still Loading; a cycle before StartLoading (e.g. right after
+    // Unload) legitimately finds it Unloaded.
+    let mut loading_active = false;
+
     for (i, step) in plan.steps.iter().enumerate() {
+        // Window boundary check — runs only *between* steps, so a cycle can never
+        // split a single write/verify frame. Skip a cycle right before a Restart
+        // (fire-and-forget on the current connection; a fresh window would just be
+        // torn down) and never before the very first step (nothing done yet).
+        if let Some(n) = reconnect_every {
+            let due = i > 0 && session.window_exchanges() >= n;
+            let is_restart = matches!(step, FlashStep::Restart);
+            if due && !is_restart {
+                session.cycle().await?;
+                progress(Progress::Reconnect {
+                    window: session.windows(),
+                    exchanges: session.total_exchanges(),
+                });
+                // Resume-safety: the fresh connection must reach the same device,
+                // and — while inside the loading window — the in-progress object
+                // must still be Loading before we write more into it (KV drops
+                // Loading on some reconnects → clear error).
+                resume_recheck(
+                    session.l4(),
+                    app_obj,
+                    &object_table,
+                    &options,
+                    loading_active,
+                )
+                .await?;
+            }
+        }
+
+        let l4 = session.l4();
         progress(Progress::Step {
             index: i + 1,
             total,
@@ -1074,6 +1379,7 @@ pub async fn flash<Ch: L4Channel, F: FnMut(Progress)>(
             }
             FlashStep::StartLoading => {
                 start_loading(l4, app_obj, &object_table, &options).await?;
+                loading_active = true;
             }
             FlashStep::AllocateSegment { size } => {
                 let alloc =
@@ -1179,6 +1485,7 @@ pub async fn flash<Ch: L4Channel, F: FnMut(Progress)>(
             }
             FlashStep::LoadCompleted => {
                 write_load_control(l4, app_obj, LoadControl::LoadCompleted).await?;
+                loading_active = false;
             }
             FlashStep::Restart => {
                 // Fire-and-forget restart on the raw connection.
@@ -1189,7 +1496,9 @@ pub async fn flash<Ch: L4Channel, F: FnMut(Progress)>(
     }
 
     // Verify: re-read the application-program object's load state and spot-check
-    // a sample of each written segment.
+    // a sample of each written segment. Uses whatever connection the session
+    // currently holds (a windowed download may have cycled it several times).
+    let l4 = session.l4();
     let load_state = read_load_state(l4, app_obj).await?;
     let mut spot_checks_match = true;
     for (addr, expected) in &written_samples {
