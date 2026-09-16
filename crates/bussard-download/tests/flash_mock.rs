@@ -169,6 +169,22 @@ struct DeviceState {
     /// connection (a mid-download connection death). A windowed download that
     /// cycles below this budget survives it; a non-windowed one dies.
     die_after_exchanges: Option<u32>,
+    /// If set, the device goes silent after this many numbered exchanges *counted
+    /// only once the first `A_Memory_Write` of the connection has been seen* — a
+    /// death that lands strictly INSIDE a memory write, not during the discovery /
+    /// load-control preamble or the resume re-check. Models KV's random mid-write
+    /// drop (issue #52). With a budget too small to confirm even one new chunk
+    /// (a write plus its read-back), no forward progress is ever made, so the
+    /// window-retry bound is exercised.
+    die_after_write_exchanges: Option<u32>,
+    /// Exchanges seen since the first memory write on the current connection
+    /// (`None` until that first write), the counter `die_after_write_exchanges`
+    /// meters against. Reset on every `T_Connect`.
+    write_phase_exchanges: Option<u32>,
+    /// Total `A_Memory_Write` frames the device has stored across the whole
+    /// download, so a test can assert the write was actually driven to completion
+    /// (every source byte written at least once) across all the windows.
+    memory_writes_seen: usize,
     /// If set, the device drops the application object out of `Loading` (back to
     /// `Unloaded`) the first time it is reconnected mid-download — modelling a peer
     /// that does not persist the intermediate state across a graceful window. The
@@ -292,6 +308,12 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
         let addr = u16::from_be_bytes([data[0], data[1]]);
         for (i, b) in data[2..].iter().enumerate() {
             s.memory.insert(addr.wrapping_add(i as u16), *b);
+        }
+        s.memory_writes_seen += 1;
+        // Arm the write-phase death counter on the first memory write of the
+        // connection (it only meters exchanges once the write is under way).
+        if s.write_phase_exchanges.is_none() {
+            s.write_phase_exchanges = Some(0);
         }
         // A_Memory_Write is acknowledged (T_ACK) but not answered.
         return Reaction::Ack;
@@ -528,6 +550,7 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
                         let mut s = state.lock().unwrap();
                         s.connects += 1;
                         s.exchanges_this_connection = 0;
+                        s.write_phase_exchanges = None;
                         if s.drop_loading_on_reconnect
                             && s.was_loading_at_disconnect
                             && s.app_load_state == LS_LOADING
@@ -554,6 +577,28 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
                                     // No ACK, no response: the connection is dead
                                     // until a fresh T_Connect resets the budget.
                                     continue;
+                                }
+                            }
+                            // Write-phase death: once the write is under way (the
+                            // first memory write of the connection armed the
+                            // counter), meter only MEMORY frames (writes and their
+                            // read-backs) against the write-phase budget and go
+                            // silent past it — a death strictly INSIDE the memory
+                            // write (KV's random mid-write drop), leaving the
+                            // post-write property steps (LoadCompleted, verify)
+                            // untouched so this fault models exactly a mid-write
+                            // drop and nothing else.
+                            let is_memory_frame = matches!(&cemi.apdu, Apdu::Other { apci, .. }
+                                if (apci & APCI_SELECTOR == A_MEMORY_WRITE_SEL)
+                                    || (apci & APCI_SELECTOR == A_MEMORY_READ_SEL));
+                            if let (Some(budget), Some(seen)) =
+                                (s.die_after_write_exchanges, s.write_phase_exchanges)
+                            {
+                                if is_memory_frame {
+                                    if seen >= budget {
+                                        continue;
+                                    }
+                                    s.write_phase_exchanges = Some(seen + 1);
                                 }
                             }
                         }
@@ -617,6 +662,9 @@ fn fresh_device(fault: Fault) -> Shared {
         connects: 0,
         exchanges_this_connection: 0,
         die_after_exchanges: None,
+        die_after_write_exchanges: None,
+        write_phase_exchanges: None,
+        memory_writes_seen: 0,
         drop_loading_on_reconnect: false,
         was_loading_at_disconnect: false,
     }))
@@ -720,6 +768,68 @@ fn app_with_compare_prop(mask: Option<&str>) -> ApplicationProgram {
      </ApplicationProgram></KNX>"#
     );
     parse_application_program("M-3_A-8", xml.as_bytes()).unwrap()
+}
+
+/// Minimal standard-alphabet base64 encoder (no padding shortcuts elided), so
+/// the large-segment test app can embed arbitrary `<Data>` without pulling the
+/// `base64` crate into this test's dependencies.
+fn base64_encode(data: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPHABET[((n >> 18) & 0x3F) as usize] as char);
+        out.push(ALPHABET[((n >> 12) & 0x3F) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[((n >> 6) & 0x3F) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[(n & 0x3F) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// A single-application System B app whose one relative segment is `n` bytes,
+/// so its `WriteRelMem` step spans `ceil(n/12)` memory-write chunks. Used to
+/// exercise intra-write windowing: a peer that drops every K exchanges (K < the
+/// chunk count) forces the write itself to cycle the connection mid-write. The
+/// segment data is `0,1,2,…` truncated to a byte, so the final memory can be
+/// asserted byte-for-byte against the source image.
+fn app_with_large_segment(n: usize) -> ApplicationProgram {
+    let data: Vec<u8> = (0..n).map(|i| (i & 0xFF) as u8).collect();
+    let b64 = base64_encode(&data);
+    let xml = format!(
+        r#"<KNX xmlns="http://knx.org/xml/project/23">
+     <ApplicationProgram Id="M-9_A-1" ApplicationNumber="1" ApplicationVersion="1"
+        MaskVersion="MV-07B0" Name="Big" LoadProcedureStyle="ProductDefault">
+      <Static>
+       <Code>
+        <RelativeSegment Id="M-9_A-1_RS-1" Size="{n}" LoadStateMachine="4" Offset="0"><Data>{b64}</Data></RelativeSegment>
+       </Code>
+       <LoadProcedures>
+        <LoadProcedure>
+         <LdCtrlConnect />
+         <LdCtrlUnload LsmIdx="4" />
+         <LdCtrlLoad LsmIdx="4" />
+         <LdCtrlRelSegment LsmIdx="4" Size="{n}" AppliesTo="full" />
+         <LdCtrlWriteRelMem ObjIdx="0" Offset="0" Size="{n}" AppliesTo="full" />
+         <LdCtrlLoadCompleted LsmIdx="4" />
+         <LdCtrlRestart />
+         <LdCtrlDisconnect />
+        </LoadProcedure>
+       </LoadProcedures>
+      </Static>
+     </ApplicationProgram></KNX>"#
+    );
+    parse_application_program("M-9_A-1", xml.as_bytes()).unwrap()
 }
 
 async fn setup(fault: Fault) -> (Transport, Shared, tokio::task::JoinHandle<()>) {
@@ -1468,7 +1578,16 @@ impl Connector for MockConnector {
             ))
         })?;
         let channel = LeaseChannel::new(lease);
-        Layer4Connection::connect(channel, self.target, self.source)
+        // A tight timeout budget so a dropped connection fails in ~150ms rather
+        // than waiting the full 3s KNX default on the silent peer — the windowing
+        // tests drop the connection many times, so the default would make them
+        // minutes long. The state-machine logic is identical either way.
+        let timeouts = bussard_mgmt::Timeouts {
+            ack_timeout: Duration::from_millis(150),
+            max_repetitions: 1,
+            response_timeout: Duration::from_millis(150),
+        };
+        Layer4Connection::connect_with(channel, self.target, self.source, timeouts)
             .await
             .map_err(WriteError::Mgmt)
     }
@@ -1673,6 +1792,285 @@ async fn windowed_flash_never_splits_a_chunk() {
         assert_eq!(*s.memory.get(&0x4006).unwrap_or(&0), 7);
     }
 
+    let _ = handle.close().await;
+    gw_task.abort();
+}
+
+// ===========================================================================
+// Intra-write windowing tests (issue #52, mid-write): the write of a single
+// segment is longer than the peer's per-connection budget, so the WRITE ITSELF
+// must cycle the L4 connection mid-write and resume at the current offset, and
+// must auto-retry a peer that drops UNEXPECTEDLY before the planned boundary.
+// ===========================================================================
+
+#[tokio::test]
+async fn intra_write_windowing_cycles_mid_write_and_completes() {
+    // A 60-byte segment = 5 memory-write chunks (12 octets each). Each chunk is a
+    // write + a read-back = 2 numbered exchanges, so the write phase alone runs
+    // ~10 exchanges. The peer drops every 10 exchanges on a connection; with
+    // --reconnect-every 4 (< the chunk count in exchanges) the WRITE must cycle
+    // the connection mid-write, resume at the current offset, and complete to
+    // Loaded with byte-identical memory. A between-steps-only windowing (the old
+    // behaviour) could not save this: the single write step exceeds the budget.
+    const N: usize = 60;
+    let state = fresh_device(Fault::None);
+    {
+        let mut s = state.lock().unwrap();
+        s.die_after_exchanges = Some(10);
+    }
+    let (handle, gw_task) = setup_bus(Arc::clone(&state)).await;
+
+    let app = app_with_large_segment(N);
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+
+    let options = FlashOptions {
+        reconnect_every: Some(4),
+        ..Default::default()
+    };
+    let mut session = FlashSession::open(window_connector(&handle)).await.unwrap();
+    let outcome = flash(&mut session, &plan, options, |_| {}).await.unwrap();
+    let _ = session.into_disconnect().await;
+
+    assert!(
+        outcome.ok(),
+        "the mid-write windowed flash must complete to Loaded: {outcome:?}"
+    );
+    assert_eq!(outcome.load_state, LoadState::Loaded);
+
+    {
+        let s = state.lock().unwrap();
+        // The write must have cycled several times: 60 bytes over a budget-4
+        // window needs many connections. ceil(chunks*perchunk / K) ~= ceil(10/4)
+        // = 3 extra windows at minimum on the write alone, plus the preamble.
+        assert!(
+            s.connects >= 3,
+            "the write must have cycled across several windows, got {}",
+            s.connects
+        );
+        // Byte-identical final memory: the whole source image landed at the base.
+        let base = 0x4000u16;
+        let got: Vec<u8> = (0..N)
+            .map(|i| *s.memory.get(&base.wrapping_add(i as u16)).unwrap_or(&0))
+            .collect();
+        let want: Vec<u8> = (0..N).map(|i| (i & 0xFF) as u8).collect();
+        assert_eq!(
+            got, want,
+            "the mid-write cycles must land byte-identical memory"
+        );
+    }
+    let _ = handle.close().await;
+    gw_task.abort();
+}
+
+#[tokio::test]
+async fn intra_write_retries_an_unexpected_early_drop() {
+    // The peer drops UNEXPECTEDLY 3 exchanges into the write phase — well before
+    // the planned window boundary of 12. The window-retry must catch the death,
+    // reconnect, re-verify, and resume from the last-confirmed offset, ultimately
+    // completing the download. Forward progress (some bytes land each connection)
+    // keeps the retry counter from ever exhausting.
+    const N: usize = 60;
+    let state = fresh_device(Fault::None);
+    {
+        let mut s = state.lock().unwrap();
+        // Die 3 exchanges into the write phase on every connection: enough to land
+        // at least one chunk (write+readback = 2 exchanges) before the drop, so
+        // each window makes forward progress and the retry counter resets.
+        s.die_after_write_exchanges = Some(3);
+    }
+    let (handle, gw_task) = setup_bus(Arc::clone(&state)).await;
+
+    let app = app_with_large_segment(N);
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+
+    // A LARGE planned window (12) so the death is strictly an UNEXPECTED early
+    // drop, exercising the auto-retry path rather than the planned-boundary cycle.
+    let options = FlashOptions {
+        reconnect_every: Some(12),
+        ..Default::default()
+    };
+    let mut session = FlashSession::open(window_connector(&handle)).await.unwrap();
+    let outcome = flash(&mut session, &plan, options, |_| {}).await.unwrap();
+    let _ = session.into_disconnect().await;
+
+    assert!(
+        outcome.ok(),
+        "an unexpected early drop must be retried to completion: {outcome:?}"
+    );
+    assert_eq!(outcome.load_state, LoadState::Loaded);
+
+    {
+        let s = state.lock().unwrap();
+        // Forward progress across several connections (the write could not finish
+        // on one 3-exchange window).
+        assert!(
+            s.connects >= 3,
+            "the early drops forced multiple windows, got {}",
+            s.connects
+        );
+        let base = 0x4000u16;
+        let got: Vec<u8> = (0..N)
+            .map(|i| *s.memory.get(&base.wrapping_add(i as u16)).unwrap_or(&0))
+            .collect();
+        let want: Vec<u8> = (0..N).map(|i| (i & 0xFF) as u8).collect();
+        assert_eq!(
+            got, want,
+            "the resumed write must land byte-identical memory"
+        );
+    }
+    let _ = handle.close().await;
+    gw_task.abort();
+}
+
+#[tokio::test]
+async fn intra_write_gives_up_after_max_window_retries_without_progress() {
+    // A peer so fragile that NO forward progress is ever confirmed: it goes silent
+    // after the very first memory write of every connection, so the write's
+    // read-back always times out and no chunk is ever confirmed. The window-retry
+    // must give up after `max_window_retries` consecutive no-progress reconnects
+    // with a clear "gave up ... at offset X" error — NOT loop forever.
+    const N: usize = 60;
+    let state = fresh_device(Fault::None);
+    {
+        let mut s = state.lock().unwrap();
+        // Budget 0: the first memory write is ACK'd (it arms the counter) but the
+        // connection goes silent immediately after, so the read-back that would
+        // confirm the chunk never returns — no forward progress, ever.
+        s.die_after_write_exchanges = Some(0);
+    }
+    let (handle, gw_task) = setup_bus(Arc::clone(&state)).await;
+
+    let app = app_with_large_segment(N);
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+
+    let options = FlashOptions {
+        reconnect_every: Some(6),
+        max_window_retries: 3, // a small, explicit bound so the test is quick
+        ..Default::default()
+    };
+    let mut session = FlashSession::open(window_connector(&handle)).await.unwrap();
+    let err = flash(&mut session, &plan, options, |_| {})
+        .await
+        .expect_err("a peer that never lands a byte must be given up on, not looped");
+    let _ = session.into_disconnect().await;
+
+    // The give-up error names the bound and the stalled offset (surfaced as a
+    // Mgmt/MalformedResponse carrying the "gave up ... offset" reason).
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("gave up") && rendered.contains("offset"),
+        "expected a 'gave up ... at offset X' error, got: {rendered}"
+    );
+
+    {
+        let s = state.lock().unwrap();
+        // It really did retry the bounded number of times (several connections),
+        // then stopped — it did not spin forever.
+        assert!(
+            s.connects >= 3 && s.connects <= 12,
+            "must retry a bounded number of windows then give up, got {}",
+            s.connects
+        );
+    }
+    let _ = handle.close().await;
+    gw_task.abort();
+}
+
+#[tokio::test]
+async fn intra_write_resume_offset_has_no_gap_overlap_or_duplication() {
+    // Resume-offset correctness: with a mix of planned cycles AND unexpected
+    // early drops during the write, the final memory must equal the source image
+    // EXACTLY — no gap (a skipped chunk), overlap, or duplicated write landing
+    // the wrong bytes. The source image is all-distinct-per-position (i & 0xFF
+    // over 200 bytes wraps, but each 12-byte window is locally checkable and the
+    // whole is compared byte-for-byte), so any offset error corrupts it.
+    const N: usize = 144; // 12 chunks
+    let state = fresh_device(Fault::None);
+    {
+        let mut s = state.lock().unwrap();
+        // Drop 5 exchanges into every write phase: lands ~2 chunks then dies, so
+        // the write resumes many times at many different offsets.
+        s.die_after_write_exchanges = Some(5);
+    }
+    let (handle, gw_task) = setup_bus(Arc::clone(&state)).await;
+
+    let app = app_with_large_segment(N);
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+
+    let options = FlashOptions {
+        reconnect_every: Some(4), // small window: planned cycles too
+        ..Default::default()
+    };
+    let mut session = FlashSession::open(window_connector(&handle)).await.unwrap();
+    let outcome = flash(&mut session, &plan, options, |_| {}).await.unwrap();
+    let _ = session.into_disconnect().await;
+
+    assert!(
+        outcome.ok(),
+        "the many-resume flash must complete: {outcome:?}"
+    );
+
+    {
+        let s = state.lock().unwrap();
+        let base = 0x4000u16;
+        let got: Vec<u8> = (0..N)
+            .map(|i| *s.memory.get(&base.wrapping_add(i as u16)).unwrap_or(&0))
+            .collect();
+        let want: Vec<u8> = (0..N).map(|i| (i & 0xFF) as u8).collect();
+        assert_eq!(
+            got, want,
+            "resuming across many cycles must land the source image with no \
+             gap/overlap/duplication"
+        );
+        // A memory address one past the segment must be untouched (no overrun).
+        assert!(
+            !s.memory.contains_key(&base.wrapping_add(N as u16)),
+            "the write must not have overrun the segment"
+        );
+    }
+    let _ = handle.close().await;
+    gw_task.abort();
+}
+
+#[tokio::test]
+async fn intra_write_batched_verify_windows_during_readback() {
+    // Batched verify writes the whole segment, then bulk-reads it back. Both the
+    // write phase AND the read-back phase must window. A peer that drops every 8
+    // exchanges across the whole download, with --reconnect-every 3, must still
+    // complete: the bulk read-back phase cycles the connection too.
+    const N: usize = 96; // 8 write chunks + 8 read chunks
+    let state = fresh_device(Fault::None);
+    {
+        let mut s = state.lock().unwrap();
+        s.die_after_exchanges = Some(8);
+    }
+    let (handle, gw_task) = setup_bus(Arc::clone(&state)).await;
+
+    let app = app_with_large_segment(N);
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+
+    let options = FlashOptions {
+        reconnect_every: Some(3),
+        verify: bussard_mgmt::VerifyMode::Batched,
+        ..Default::default()
+    };
+    let mut session = FlashSession::open(window_connector(&handle)).await.unwrap();
+    let outcome = flash(&mut session, &plan, options, |_| {}).await.unwrap();
+    let _ = session.into_disconnect().await;
+
+    assert!(
+        outcome.ok(),
+        "batched verify must window both the write and the read-back: {outcome:?}"
+    );
+    {
+        let s = state.lock().unwrap();
+        let base = 0x4000u16;
+        let got: Vec<u8> = (0..N)
+            .map(|i| *s.memory.get(&base.wrapping_add(i as u16)).unwrap_or(&0))
+            .collect();
+        let want: Vec<u8> = (0..N).map(|i| (i & 0xFF) as u8).collect();
+        assert_eq!(got, want);
+    }
     let _ = handle.close().await;
     gw_task.abort();
 }

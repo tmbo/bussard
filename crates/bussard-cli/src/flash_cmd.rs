@@ -55,6 +55,7 @@ pub fn run(
     verify: bussard_mgmt::VerifyMode,
     pace_ms: Option<u64>,
     reconnect_every: Option<u32>,
+    max_window_retries: Option<u32>,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
     let target: IndividualAddress = address
@@ -177,15 +178,18 @@ pub fn run(
         verify,
         pace: pace_ms.map(std::time::Duration::from_millis),
         reconnect_every,
+        // 0 = the crate default (DEFAULT_MAX_WINDOW_RETRIES); the flag overrides it.
+        max_window_retries: max_window_retries.unwrap_or(0),
     };
     if let Some(n) = reconnect_every {
         eprintln!(
             "note: --reconnect-every {n} — the download is chunked across graceful connection \
              windows: after ~{n} numbered exchanges the L4 connection is cycled (T_Disconnect + \
-             reconnect) and the procedure resumes. Load states are persistent object state, so \
-             this lands in the same device state as one unbroken run; it makes the download robust \
-             against a peer (e.g. KNX Virtual) that drops the connection after a varying number of \
-             exchanges."
+             reconnect), both between steps AND inside a long memory write (resuming at the current \
+             offset — memory writes are absolute-addressed and stateless). Load states are \
+             persistent object state, so this lands in the same device state as one unbroken run. \
+             It also auto-retries an unexpected mid-write connection drop, so the download completes \
+             against a peer (e.g. KNX Virtual) that drops the connection at any depth."
         );
     }
     if let Some(ms) = pace_ms {
@@ -241,12 +245,13 @@ pub fn run(
                 eprintln!(
                     "\nHINT: the connection dropped mid-download. Some peers — notably KNX Virtual \
                      — drop the L4\n\
-                     connection after a varying number of exchanges (issue #52). Retry with\n\
-                     `--reconnect-every <N>` to chunk the download across graceful connection windows\n\
-                     (it resumes from the device's persistent load state, so it lands in the same\n\
-                     state as one unbroken run). Probe the peer's per-connection budget first with\n\
-                     `bussard reconstruct {target} --l4-soak <N>`, then set --reconnect-every well\n\
-                     below it (15 is a safe starting point for KNX Virtual)."
+                     connection at a varying (and sometimes very shallow) depth (issue #52). Retry\n\
+                     with `--reconnect-every <N>` to window the download across graceful connection\n\
+                     windows — it cycles between steps AND inside a long memory write, and auto-retries\n\
+                     an unexpected drop, resuming from the last-confirmed offset (so it lands in the\n\
+                     same state as one unbroken run). KV has been observed to drop as early as 7\n\
+                     exchanges, so pick a SMALL window like `--reconnect-every 4`. Probe the peer's\n\
+                     per-connection budget first with `bussard reconstruct {target} --l4-soak <N>`."
                 );
             }
             recovery_notice(target);

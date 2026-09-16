@@ -63,7 +63,7 @@ use bussard_mgmt::MgmtError;
 use bussard_mgmt::connection::{L4Channel, Layer4Connection};
 use bussard_mgmt::load::{
     self, LoadControl, LoadState, WriteError, allocate_segment, compare_property, read_load_state,
-    read_mcb_table, write_load_control, write_memory_paced,
+    read_mcb_table, write_load_control,
 };
 use bussard_mgmt::tables::{OT_APPLICATION_PROGRAM, PID_OBJECT_TYPE};
 use bussard_prod::application::{ApplicationProgram, LoadOp, LoadProcedure, SegmentKind};
@@ -374,17 +374,47 @@ pub struct FlashOptions {
     /// off by default).
     ///
     /// KNX Virtual drops the L4 connection after a varying number of exchanges
-    /// (20-53+ across runs, issue #52). Load states are persistent *object* state,
-    /// not connection state — they change only via load controls — so a download
-    /// split across several graceful windows lands in the same device state as one
-    /// unbroken run, and is spec-legal (vendor procedures themselves carry
-    /// Connect/Disconnect ops). Window boundaries only ever land *between* steps,
-    /// never inside a single write/verify, so a chunk is never split. After each
-    /// reconnect the engine re-verifies the target still answers (a descriptor
-    /// read) and — cheap paranoia — that the in-progress object is still `Loading`
-    /// before resuming writes (honouring the tolerance flag).
+    /// (7-200+ across runs, no deterministic wall, issue #52). Load states are
+    /// persistent *object* state, not connection state — they change only via load
+    /// controls — so a download split across several graceful windows lands in the
+    /// same device state as one unbroken run, and is spec-legal (vendor procedures
+    /// themselves carry Connect/Disconnect ops).
+    ///
+    /// Windowing runs at two granularities. **Between steps**: after the current
+    /// window's exchange budget is spent, the engine cycles at the next step
+    /// boundary. **Inside a memory write**: a single vendor "write image" step can
+    /// be far more frames than the budget, so the write path itself cycles between
+    /// chunks (never mid-frame) and resumes at the current offset on the fresh
+    /// connection — memory writes are absolute-addressed and stateless, so this
+    /// lands the same bytes. After each reconnect the engine re-verifies the target
+    /// still answers (a descriptor read) and — cheap paranoia — that the in-progress
+    /// object is still `Loading` (honouring the tolerance flag), and re-reads the
+    /// last-written chunk before continuing.
+    ///
+    /// Setting this also arms **window-retry on unexpected death**: if the peer
+    /// drops *before* the planned boundary (KV's random early drop), the write path
+    /// reconnects and resumes from the last-confirmed offset rather than failing,
+    /// bounded by [`max_window_retries`](FlashOptions::max_window_retries)
+    /// consecutive no-progress retries. A bare run without this flag keeps today's
+    /// fail-fast + `--reconnect-every` hint behaviour.
     pub reconnect_every: Option<u32>,
+
+    /// How many *consecutive* window-retries without forward progress to allow on
+    /// an unexpected mid-write connection death before giving up (default
+    /// [`DEFAULT_MAX_WINDOW_RETRIES`]). Any newly-confirmed byte resets the count,
+    /// so a peer that makes progress between drops can be retried indefinitely; a
+    /// peer that drops every time before a single byte lands fails after this many
+    /// tries with a "gave up at offset X" error rather than looping forever. Only
+    /// consulted when [`reconnect_every`](FlashOptions::reconnect_every) is set.
+    /// `0` falls back to the crate default.
+    pub max_window_retries: u32,
 }
+
+/// The default [`FlashOptions::max_window_retries`]: eight consecutive
+/// no-progress reconnects. Generous enough to ride out a burst of early drops on
+/// a very fragile peer, bounded enough that a peer which can never land a byte
+/// fails promptly instead of looping forever.
+pub const DEFAULT_MAX_WINDOW_RETRIES: u32 = 8;
 
 /// A progress event emitted as [`flash`] executes, for the CLI to render.
 #[derive(Debug, Clone)]
@@ -587,12 +617,110 @@ impl<C: Connector> Session<C> {
         Ok(())
     }
 
+    /// Reconnects after an *unexpected* connection death: the current connection
+    /// already dropped, so this opens a fresh one directly (no graceful
+    /// disconnect first, unlike [`cycle`](Session::cycle)) and folds the dead
+    /// connection's exchange count into the running total.
+    ///
+    /// Used by the intra-write window-retry: when a memory write dies before the
+    /// planned window boundary, the write path reconnects here and resumes.
+    pub async fn reconnect_after_death(&mut self) -> Result<(), WriteError> {
+        if let Some(dead) = self.l4.take() {
+            self.retired_exchanges = self
+                .retired_exchanges
+                .saturating_add(dead.numbered_exchanges());
+            // The peer already dropped; a T_Disconnect is a best-effort no-op but
+            // still releases any exclusive channel resource (e.g. the bus lease)
+            // before we reconnect.
+            let _ = dead.disconnect().await;
+        }
+        let fresh = self.connector.connect().await?;
+        self.l4 = Some(fresh);
+        self.windows = self.windows.saturating_add(1);
+        Ok(())
+    }
+
     /// Consumes the session and gracefully disconnects the open connection.
     pub async fn into_disconnect(self) -> bussard_mgmt::Result<()> {
         match self.l4 {
             Some(l4) => l4.disconnect().await,
             None => Ok(()),
         }
+    }
+}
+
+/// A [`bussard_mgmt::WindowCtl`] over a live [`Session`] that lets a memory write
+/// cycle the L4 connection *during* the write (issue #52).
+///
+/// It borrows the session and carries the resume context ([`resume_recheck`]
+/// needs the app object index, the discovered object table, and the flash
+/// options) so a cycle — planned or after an unexpected death — reconnects **and**
+/// re-verifies the fresh connection can safely resume (target answers + the
+/// in-progress object is still `Loading`) before the write continues. This is the
+/// seam that threads reconnect into `write_memory`: `flash` builds one of these
+/// around the session for each windowed `Write{Rel}Mem` step.
+struct SessionWindow<'a, C: Connector> {
+    session: &'a mut Session<C>,
+    app_obj: u8,
+    object_table: &'a [(u8, u16)],
+    options: &'a FlashOptions,
+    /// The planned window size, or `None` for a non-windowed write.
+    reconnect_every: Option<u32>,
+    /// A sink for the [`Progress::Reconnect`] events the cycles emit, so the CLI
+    /// renders a reconnect line for an intra-write cycle exactly as for a
+    /// between-steps one.
+    on_reconnect: &'a mut dyn FnMut(u32, u32),
+}
+
+impl<C: Connector> bussard_mgmt::WindowCtl for SessionWindow<'_, C> {
+    type Channel = C::Channel;
+
+    fn l4(&mut self) -> &mut Layer4Connection<C::Channel> {
+        self.session.l4()
+    }
+
+    fn window_exchanges(&self) -> u32 {
+        self.session.window_exchanges()
+    }
+
+    fn reconnect_every(&self) -> Option<u32> {
+        self.reconnect_every
+    }
+
+    fn max_window_retries(&self) -> u32 {
+        let n = self.options.max_window_retries;
+        if n == 0 {
+            DEFAULT_MAX_WINDOW_RETRIES
+        } else {
+            n
+        }
+    }
+
+    async fn cycle(&mut self) -> Result<(), WriteError> {
+        self.session.cycle().await?;
+        (self.on_reconnect)(self.session.windows(), self.session.total_exchanges());
+        // A write only ever cycles inside the loading window, so require Loading.
+        resume_recheck(
+            self.session.l4(),
+            self.app_obj,
+            self.object_table,
+            self.options,
+            true,
+        )
+        .await
+    }
+
+    async fn resume_after_death(&mut self) -> Result<(), WriteError> {
+        self.session.reconnect_after_death().await?;
+        (self.on_reconnect)(self.session.windows(), self.session.total_exchanges());
+        resume_recheck(
+            self.session.l4(),
+            self.app_obj,
+            self.object_table,
+            self.options,
+            true,
+        )
+        .await
     }
 }
 
@@ -1367,7 +1495,6 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
             }
         }
 
-        let l4 = session.l4();
         progress(Progress::Step {
             index: i + 1,
             total,
@@ -1375,15 +1502,16 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
         });
         match step {
             FlashStep::Unload => {
-                write_load_control(l4, app_obj, LoadControl::Unload).await?;
+                write_load_control(session.l4(), app_obj, LoadControl::Unload).await?;
             }
             FlashStep::StartLoading => {
-                start_loading(l4, app_obj, &object_table, &options).await?;
+                start_loading(session.l4(), app_obj, &object_table, &options).await?;
                 loading_active = true;
             }
             FlashStep::AllocateSegment { size } => {
                 let alloc =
-                    allocate_with_context(l4, app_obj, *size, &object_table, &options).await?;
+                    allocate_with_context(session.l4(), app_obj, *size, &object_table, &options)
+                        .await?;
                 segment_base = Some(alloc.address);
             }
             FlashStep::WriteRelMem { offset, image } => {
@@ -1394,12 +1522,17 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                     .get(&image.segment_id)
                     .cloned()
                     .unwrap_or_default();
-                write_with_progress(
-                    l4,
+                // The write path itself windows: it cycles the connection at the
+                // planned boundary AND auto-retries an unexpected mid-write death,
+                // resuming at the current offset on the fresh connection.
+                write_windowed_with_progress(
+                    session,
+                    app_obj,
+                    &object_table,
+                    &options,
+                    reconnect_every,
                     addr,
                     &bytes,
-                    options.verify,
-                    options.pace,
                     &mut progress,
                 )
                 .await?;
@@ -1414,12 +1547,14 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                     .get(&image.segment_id)
                     .cloned()
                     .unwrap_or_default();
-                write_with_progress(
-                    l4,
+                write_windowed_with_progress(
+                    session,
+                    app_obj,
+                    &object_table,
+                    &options,
+                    reconnect_every,
                     addr,
                     &bytes,
-                    options.verify,
-                    options.pace,
                     &mut progress,
                 )
                 .await?;
@@ -1452,7 +1587,7 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                 // read directly — not the discovered app object.
                 if let Some(expected) = expected {
                     compare_property(
-                        l4,
+                        session.l4(),
                         (*obj_idx).min(u32::from(u8::MAX)) as u8,
                         (*prop_id).min(u32::from(u8::MAX)) as u8,
                         expected,
@@ -1480,17 +1615,18 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                         .as_ref()
                         .and_then(|img| plan.images.get(&img.segment_id))
                         .map(Vec::as_slice);
-                    read_mcb_table(l4, app_obj, 1, (*count).min(255) as u8, expected).await?;
+                    read_mcb_table(session.l4(), app_obj, 1, (*count).min(255) as u8, expected)
+                        .await?;
                 }
             }
             FlashStep::LoadCompleted => {
-                write_load_control(l4, app_obj, LoadControl::LoadCompleted).await?;
+                write_load_control(session.l4(), app_obj, LoadControl::LoadCompleted).await?;
                 loading_active = false;
             }
             FlashStep::Restart => {
                 // Fire-and-forget restart on the raw connection.
                 let (apci, payload) = bussard_mgmt::apci::encode_restart(0);
-                let _ = l4.send_data(apci, &payload).await;
+                let _ = session.l4().send_data(apci, &payload).await;
             }
         }
     }
@@ -1514,26 +1650,53 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
     })
 }
 
-/// Streams `bytes` to `addr` under `verify`, emitting a byte-progress event as
-/// each write chunk is acknowledged.
+/// Streams `bytes` to `addr` through the session, windowing the write itself:
+/// it cycles the L4 connection at the planned boundary and auto-retries an
+/// unexpected mid-write death, resuming at the current offset on the fresh
+/// connection (issue #52). Emits a byte-progress event per write chunk and a
+/// [`Progress::Reconnect`] per intra-write cycle.
 ///
-/// Delegates to [`write_memory_verified`], which handles both the per-chunk
-/// (write-verify-write-verify) and batched (write-all-then-verify) disciplines;
-/// the progress callback fires per write chunk in both, so the byte counter
-/// advances identically for the user regardless of when verification happens.
-async fn write_with_progress<Ch: L4Channel, F: FnMut(Progress)>(
-    l4: &mut Layer4Connection<Ch>,
+/// The single `progress` callback is shared between the byte-progress and
+/// reconnect closures via a [`RefCell`], so each borrows it only at call time —
+/// the windowed write holds one closure (byte progress) and the [`SessionWindow`]
+/// holds the other (reconnect) simultaneously, which a plain `&mut` capture would
+/// forbid.
+#[allow(clippy::too_many_arguments)]
+async fn write_windowed_with_progress<C: Connector, F: FnMut(Progress)>(
+    session: &mut Session<C>,
+    app_obj: u8,
+    object_table: &[(u8, u16)],
+    options: &FlashOptions,
+    reconnect_every: Option<u32>,
     addr: u16,
     bytes: &[u8],
-    verify: bussard_mgmt::VerifyMode,
-    pace: Option<std::time::Duration>,
     progress: &mut F,
 ) -> Result<(), WriteError> {
     let total = bytes.len();
-    let mut on_written = |written| {
-        progress(Progress::Bytes { written, total });
+    let progress = std::cell::RefCell::new(progress);
+    let mut on_reconnect = |window, exchanges| {
+        (progress.borrow_mut())(Progress::Reconnect { window, exchanges });
     };
-    write_memory_paced(l4, addr, bytes, verify, pace, &mut on_written).await
+    let mut window = SessionWindow {
+        session,
+        app_obj,
+        object_table,
+        options,
+        reconnect_every,
+        on_reconnect: &mut on_reconnect,
+    };
+    let mut on_written = |written| {
+        (progress.borrow_mut())(Progress::Bytes { written, total });
+    };
+    bussard_mgmt::write_memory_windowed(
+        &mut window,
+        addr,
+        bytes,
+        options.verify,
+        options.pace,
+        &mut on_written,
+    )
+    .await
 }
 
 /// The first up-to-4 octets of an image, used as the post-flash read-back sample.

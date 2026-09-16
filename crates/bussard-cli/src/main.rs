@@ -262,18 +262,29 @@ enum Command {
         /// TP1-like rate.
         #[arg(long, value_name = "MS")]
         pace: Option<u64>,
-        /// Chunk the download across graceful connection windows: after ~N
+        /// Window the download across graceful connection windows: after ~N
         /// numbered exchanges, gracefully T_Disconnect, reconnect (fresh sequence
         /// window) and resume where the procedure left off. Off by default. Load
         /// states are persistent object state (not connection state), so this
         /// lands in the same device state as one unbroken run and is robust
-        /// against a peer that drops the connection after a varying number of
-        /// exchanges (e.g. KNX Virtual, issue #52). Window boundaries only land
-        /// between steps, never inside a write. Suggested N: comfortably below the
-        /// peer's per-connection budget (probe it with `reconstruct <ia>
-        /// --l4-soak <N>`); 15 is a safe starting point for KNX Virtual.
+        /// against a peer that drops the connection at a varying (sometimes very
+        /// shallow) depth (e.g. KNX Virtual, issue #52). Cycling happens both
+        /// between steps AND inside a long memory write (resuming at the current
+        /// offset — writes are absolute-addressed and stateless), and an unexpected
+        /// mid-write drop is auto-retried from the last-confirmed offset. Suggested
+        /// N: comfortably below the peer's per-connection budget (probe it with
+        /// `reconstruct <ia> --l4-soak <N>`). KV drops as early as 7 exchanges, so
+        /// a SMALL window like 4-5 with the built-in retry is the safe choice.
         #[arg(long, value_name = "N")]
         reconnect_every: Option<u32>,
+        /// Consecutive window-retries without forward progress to allow on an
+        /// unexpected mid-write connection drop before giving up (default 8). Any
+        /// newly-confirmed byte resets the count, so a peer making progress between
+        /// drops retries indefinitely; a peer that never lands a byte fails after
+        /// this many tries instead of looping forever. Only meaningful with
+        /// --reconnect-every.
+        #[arg(long, value_name = "N")]
+        max_window_retries: Option<u32>,
         /// Override the gateway `host[:port]` for tunneling.
         #[arg(long, value_name = "HOST")]
         gateway: Option<String>,
@@ -562,6 +573,7 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             verify,
             pace,
             reconnect_every,
+            max_window_retries,
             gateway,
             routing,
         } => flash_cmd::run(
@@ -575,6 +587,7 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             verify.into(),
             pace,
             reconnect_every,
+            max_window_retries,
             conn_cmd::ConnOverrides { gateway, routing },
         ),
         Command::Plan {
