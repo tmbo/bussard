@@ -11,7 +11,7 @@ use bussard_model::IndividualAddress;
 
 use crate::apci;
 use crate::connection::{L4Channel, Layer4Connection, Timeouts};
-use crate::error::{MgmtError, Result};
+use crate::error::{MgmtError, Result, raw_response_detail};
 
 /// A management client bound to a single device over a connection-oriented
 /// session.
@@ -69,12 +69,20 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
         if resp_apci & apci::APCI_SELECTOR_MASK != apci::A_DEVICE_DESCRIPTOR_RESPONSE {
             return Err(MgmtError::MalformedResponse {
                 address: self.inner.target(),
-                reason: "expected A_DeviceDescriptor_Response",
+                reason: format!(
+                    "expected A_DeviceDescriptor_Response but the response's descriptor type \
+                     (low APCI bits) is {} ({})",
+                    resp_apci & 0x3f,
+                    raw_response_detail(resp_apci, &data),
+                ),
             });
         }
-        apci::decode_device_descriptor_response(&data).ok_or(MgmtError::MalformedResponse {
+        apci::decode_device_descriptor_response(&data).ok_or_else(|| MgmtError::MalformedResponse {
             address: self.inner.target(),
-            reason: "device descriptor response too short",
+            reason: format!(
+                "device descriptor response too short ({})",
+                raw_response_detail(resp_apci, &data)
+            ),
         })
     }
 
@@ -99,14 +107,21 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
         if resp_apci != apci::A_PROPERTY_VALUE_RESPONSE {
             return Err(MgmtError::MalformedResponse {
                 address: self.inner.target(),
-                reason: "expected A_PropertyValue_Response",
+                reason: format!(
+                    "expected A_PropertyValue_Response ({})",
+                    raw_response_detail(resp_apci, &data)
+                ),
             });
         }
-        let resp =
-            apci::decode_property_value_response(&data).ok_or(MgmtError::MalformedResponse {
+        let resp = apci::decode_property_value_response(&data).ok_or_else(|| {
+            MgmtError::MalformedResponse {
                 address: self.inner.target(),
-                reason: "property value response too short",
-            })?;
+                reason: format!(
+                    "property value response too short ({})",
+                    raw_response_detail(resp_apci, &data)
+                ),
+            }
+        })?;
         if resp.count == 0 {
             return Ok(Vec::new());
         }
@@ -127,11 +142,15 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
     pub async fn read_memory(&mut self, addr: u16, len: u8) -> Result<Vec<u8>> {
         let (req_apci, payload) = apci::encode_memory_read(addr, len);
         let (resp_apci, data) = self.inner.request(req_apci, &payload).await?;
-        let resp =
-            apci::decode_memory_response(resp_apci, &data).ok_or(MgmtError::MalformedResponse {
+        let resp = apci::decode_memory_response(resp_apci, &data).ok_or_else(|| {
+            MgmtError::MalformedResponse {
                 address: self.inner.target(),
-                reason: "expected A_Memory_Response with matching count",
-            })?;
+                reason: format!(
+                    "expected A_Memory_Response with matching count ({})",
+                    raw_response_detail(resp_apci, &data)
+                ),
+            }
+        })?;
         Ok(resp.data)
     }
 
@@ -170,7 +189,7 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
                 addr.checked_add(offset as u16)
                     .ok_or(MgmtError::MalformedResponse {
                         address: self.inner.target(),
-                        reason: "memory write range exceeds the 16-bit address space",
+                        reason: "memory write range exceeds the 16-bit address space".to_string(),
                     })?;
 
             let (req_apci, payload) = apci::encode_memory_write(chunk_addr, piece);

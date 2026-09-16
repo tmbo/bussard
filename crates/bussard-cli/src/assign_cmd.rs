@@ -155,6 +155,14 @@ async fn assign_flow(
 
     let verified = verify_assignment(handle, source, target).await?;
 
+    // 5a. Programming-mode persistence check. A conformant device clears
+    //     programming mode when it applies A_IndividualAddress_Write; KNX Virtual
+    //     devices do NOT, so the just-assigned device would be re-captured by the
+    //     next assign/adopt (it re-answers the programming-mode broadcast at its
+    //     new address). Re-run the broadcast once, briefly, and warn if `target`
+    //     still answers.
+    warn_if_still_in_programming_mode(handle, source, target).await;
+
     // 6. Create the stub device file.
     let device = build_stub_device(target, &verified);
     let path = write_stub_device_file(model, dir, device)?;
@@ -418,10 +426,20 @@ async fn verify_assignment(
         })?;
 
     let mask = dev.device_descriptor().await.map_err(|err| {
-        anyhow!(
-            "wrote {target} and connected, but the device did not answer a descriptor read \
-             ({err}); the assignment is unverified"
-        )
+        if matches!(err, bussard_mgmt::MgmtError::Disconnected { .. }) {
+            anyhow!(
+                "wrote {target} and connected, but the device disconnected on the first read: \
+                 typical for devices whose management is gated on a loaded application or a \
+                 different medium profile (e.g. KNX Virtual IP-medium `*.ip` devices, which \
+                 disconnect on descriptor reads while their `*.tp` siblings answer). The address \
+                 was written but could not be verified."
+            )
+        } else {
+            anyhow!(
+                "wrote {target} and connected, but the device did not answer a descriptor read \
+                 ({err}); the assignment is unverified"
+            )
+        }
     })?;
 
     // Best-effort property reads: any failure just leaves the field empty.
@@ -448,6 +466,48 @@ async fn verify_assignment(
         serial,
         order,
     })
+}
+
+/// Re-runs the programming-mode broadcast once, briefly, after a successful
+/// write+verify and warns if the just-assigned `target` still answers it.
+///
+/// A device that applied `A_IndividualAddress_Write` normally leaves programming
+/// mode; if it still answers, the next `assign`/`adopt` would re-capture and
+/// re-address it. On KNX Virtual this is expected (the emulation does not clear
+/// programming mode) and the fix is to toggle it off in the GUI; on real hardware
+/// it usually means a stuck programming button.
+///
+/// Best-effort and non-fatal: any bus error while re-checking is swallowed (the
+/// assignment already succeeded), so this never turns a good write into a
+/// failure.
+async fn warn_if_still_in_programming_mode(
+    handle: &BusHandle,
+    source: IndividualAddress,
+    target: IndividualAddress,
+) {
+    // A short window: the device answers instantly if at all, and we do not want
+    // to stall the command tail. Honour the same test override the wait loop uses.
+    let window = collection_window();
+    let Ok(lease) = handle.lease().await else {
+        return;
+    };
+    let channel = LeaseChannel::new(lease);
+    let found = match broadcast::devices_in_programming_mode_within(channel, source, window).await {
+        Ok(found) => found,
+        Err(_) => return,
+    };
+    if found.contains(&target) {
+        eprintln!();
+        eprintln!(
+            "warning: {target} is still in programming mode after the assignment. A conformant \
+             device leaves programming mode when it takes its new address; this one did not, so \
+             the next `assign`/`adopt` would re-capture and re-address it."
+        );
+        eprintln!(
+            "  - on KNX Virtual: toggle programming mode off for this device in the GUI.\n  \
+             - on real hardware: this usually means a stuck programming button — release it."
+        );
+    }
 }
 
 /// Builds the stub [`Device`] from the verified read-back. Fields that could not

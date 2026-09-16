@@ -42,12 +42,17 @@ pub enum MgmtError {
 
     /// A management response could not be parsed (too short, unexpected APCI).
     /// The device answered but not in the shape we expected.
+    ///
+    /// `reason` is an owned `String` rather than a `&'static str` so decoders
+    /// can fold the raw response evidence (APCI + payload bytes, hex) into the
+    /// message — see [`raw_response_detail`]. That evidence lets a KNX Virtual
+    /// / field run capture a malformed descriptor without a packet sniffer.
     #[error("malformed response from {address}: {reason}")]
     MalformedResponse {
         /// The address that answered.
         address: IndividualAddress,
         /// What was wrong with the response.
-        reason: &'static str,
+        reason: String,
     },
 
     /// A memory write-back verification failed: after writing a chunk, an
@@ -81,5 +86,35 @@ impl MgmtError {
     /// [`MgmtError::NoResponse`] means absent.
     pub fn device_present(&self) -> bool {
         !matches!(self, MgmtError::NoResponse { .. })
+    }
+}
+
+/// Formats the raw response evidence for a [`MgmtError::MalformedResponse`]
+/// reason: the response APCI and its payload octets in hex.
+///
+/// A malformed management response is only actionable if the exact bytes are
+/// visible. Folding them into the error text means a KNX Virtual or field run
+/// captures the evidence in its own output — no packet sniffer needed. The
+/// format is stable and greppable: `APCI 0x0340, payload [07 B0]`.
+pub fn raw_response_detail(apci: u16, payload: &[u8]) -> String {
+    let bytes: Vec<String> = payload.iter().map(|b| format!("{b:02X}")).collect();
+    format!("APCI {apci:#06X}, payload [{}]", bytes.join(" "))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_response_detail_is_greppable_hex() {
+        assert_eq!(
+            raw_response_detail(0x0340, &[0x07, 0xB0]),
+            "APCI 0x0340, payload [07 B0]"
+        );
+    }
+
+    #[test]
+    fn raw_response_detail_handles_empty_payload() {
+        assert_eq!(raw_response_detail(0x0000, &[]), "APCI 0x0000, payload []");
     }
 }

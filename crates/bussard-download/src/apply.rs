@@ -126,7 +126,7 @@ pub async fn discover_table_objects<Ch: L4Channel>(
         _ => Err(WriteError::Mgmt(
             bussard_mgmt::MgmtError::MalformedResponse {
                 address: l4.target(),
-                reason: "device is missing the address or association table object",
+                reason: "device is missing the address or association table object".to_string(),
             },
         )),
     }
@@ -200,10 +200,10 @@ fn map_tables_err(e: bussard_mgmt::tables::TablesError) -> bussard_mgmt::MgmtErr
     match e {
         TablesError::Mgmt(m) => m,
         other => bussard_mgmt::MgmtError::MalformedResponse {
-            // Preserve the message via a leak-free static-ish reason; the detail
-            // is logged by the caller. Keep the address for context.
+            // Fold the underlying tables-error detail into the reason so the
+            // caller's message carries it. Keep the address for context.
             address: address_of(&other),
-            reason: "verification read-back failed",
+            reason: format!("verification read-back failed: {other}"),
         },
     }
 }

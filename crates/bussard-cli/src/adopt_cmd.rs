@@ -380,6 +380,11 @@ async fn adopt_flow(
     eprintln!("wrote {target}; verifying…");
     let verified = verify_assignment(handle, source, target).await?;
 
+    // Programming-mode persistence check: warn if the just-assigned device still
+    // answers the programming-mode broadcast (KNX Virtual does not clear it; a
+    // real device with a stuck button would not either). See the helper docs.
+    warn_if_still_in_programming_mode(handle, source, target).await;
+
     // Cross-check the read-back order number against the product's order numbers.
     let mut mismatch = false;
     if let (Some(sel), Some(read_order)) = (selected, verified.order.as_deref()) {
@@ -864,10 +869,20 @@ async fn verify_assignment(
         })?;
 
     let mask = dev.device_descriptor().await.map_err(|err| {
-        anyhow!(
-            "wrote {target} and connected, but the device did not answer a descriptor read \
-             ({err}); the assignment is unverified"
-        )
+        if matches!(err, bussard_mgmt::MgmtError::Disconnected { .. }) {
+            anyhow!(
+                "wrote {target} and connected, but the device disconnected on the first read: \
+                 typical for devices whose management is gated on a loaded application or a \
+                 different medium profile (e.g. KNX Virtual IP-medium `*.ip` devices, which \
+                 disconnect on descriptor reads while their `*.tp` siblings answer). The address \
+                 was written but could not be verified."
+            )
+        } else {
+            anyhow!(
+                "wrote {target} and connected, but the device did not answer a descriptor read \
+                 ({err}); the assignment is unverified"
+            )
+        }
     })?;
 
     let manufacturer_id = match dev.read_device_property(PID_MANUFACTURER_ID).await {
@@ -893,6 +908,42 @@ async fn verify_assignment(
         serial,
         order,
     })
+}
+
+/// Re-runs the programming-mode broadcast once, briefly, after write+verify and
+/// warns if the just-assigned `target` still answers it.
+// DUP: mirrors `assign_cmd::warn_if_still_in_programming_mode`.
+///
+/// A conformant device leaves programming mode when it applies its new address;
+/// KNX Virtual devices do not, so the just-adopted device would be re-captured by
+/// the next `assign`/`adopt`. On real hardware a persisting programming mode
+/// usually means a stuck button. Best-effort and non-fatal.
+async fn warn_if_still_in_programming_mode(
+    handle: &BusHandle,
+    source: IndividualAddress,
+    target: IndividualAddress,
+) {
+    let window = collection_window();
+    let Ok(lease) = handle.lease().await else {
+        return;
+    };
+    let channel = LeaseChannel::new(lease);
+    let found = match broadcast::devices_in_programming_mode_within(channel, source, window).await {
+        Ok(found) => found,
+        Err(_) => return,
+    };
+    if found.contains(&target) {
+        eprintln!();
+        eprintln!(
+            "warning: {target} is still in programming mode after the assignment. A conformant \
+             device leaves programming mode when it takes its new address; this one did not, so \
+             the next `assign`/`adopt` would re-capture and re-address it."
+        );
+        eprintln!(
+            "  - on KNX Virtual: toggle programming mode off for this device in the GUI.\n  \
+             - on real hardware: this usually means a stuck programming button — release it."
+        );
+    }
 }
 
 /// Writes the device file (inserting into the model, saving without pruning).

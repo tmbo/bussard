@@ -47,6 +47,14 @@ enum Behavior {
         /// The mask version reported by the device descriptor read.
         mask: u16,
     },
+    /// Answers a descriptor read with the **wrong APCI** (an A_PropertyValue
+    /// response selector carrying `payload` octets), so the descriptor decoder
+    /// rejects it. Models the KNX Virtual IP/TP interface finding: the decoder
+    /// must reject-with-hex so the raw frame is captured.
+    WrongDescriptorApci {
+        /// The payload octets to return with the wrong APCI.
+        payload: Vec<u8>,
+    },
 }
 
 /// One simulated device at an individual address.
@@ -228,6 +236,22 @@ async fn handle_device_frame(
                         tpci::ndt(seq),
                         apci::A_DEVICE_DESCRIPTOR_RESPONSE,
                         &mask.to_be_bytes(),
+                    );
+                    push_indication(gw, peer, gw_seq, &resp).await;
+                    dev_send_seq.insert(dev_ia.raw(), (seq + 1) & 0x0f);
+                }
+                Behavior::WrongDescriptorApci { payload } => {
+                    // ACK, then answer with a deliberately wrong APCI (a property
+                    // response selector) so the descriptor decoder rejects it.
+                    let ack = CemiFrame::t_control(source, dev_ia, tpci::t_ack(client_seq));
+                    push_indication(gw, peer, gw_seq, &ack).await;
+                    let seq = *dev_send_seq.get(&dev_ia.raw()).unwrap_or(&0);
+                    let resp = CemiFrame::t_data_connected(
+                        source,
+                        dev_ia,
+                        tpci::ndt(seq),
+                        apci::A_PROPERTY_VALUE_RESPONSE,
+                        payload,
                     );
                     push_indication(gw, peer, gw_seq, &resp).await;
                     dev_send_seq.insert(dev_ia.raw(), (seq + 1) & 0x0f);
@@ -530,6 +554,46 @@ async fn nak_device_is_present_but_refuses() {
     let err = dev.device_descriptor().await.unwrap_err();
     assert!(matches!(err, MgmtError::Nak { .. }), "got {err:?}");
     assert!(err.device_present(), "a NAK means the device is present");
+    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+}
+
+#[tokio::test]
+async fn malformed_descriptor_error_carries_raw_hex() {
+    // A device that answers a descriptor read with the wrong APCI + payload must
+    // surface a MalformedResponse whose reason includes the raw APCI and payload
+    // bytes (hex) — the KNX Virtual interface finding: the frame is captured in
+    // the error text so no packet sniffer is needed.
+    let (addr, gw) = bind_mock().await;
+    let devices = vec![MockDevice {
+        address: "1.0.255".parse().unwrap(),
+        behavior: Behavior::WrongDescriptorApci {
+            payload: vec![0x00, 0x0C, 0x10, 0x01, 0x07, 0xB0],
+        },
+    }];
+    let gw_task = tokio::spawn(run_mock(gw, devices));
+
+    let mut bus = open_bus(addr).await;
+    let target: IndividualAddress = "1.0.255".parse().unwrap();
+    let source: IndividualAddress = "0.0.255".parse().unwrap();
+    let mut dev = DeviceConnection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+
+    let err = dev.device_descriptor().await.unwrap_err();
+    match err {
+        MgmtError::MalformedResponse { reason, .. } => {
+            // The A_PropertyValue_Response selector is 0x03D6.
+            assert!(
+                reason.contains("APCI 0x03D6"),
+                "reason should carry the raw APCI: {reason}"
+            );
+            assert!(
+                reason.contains("payload [00 0C 10 01 07 B0]"),
+                "reason should carry the raw payload hex: {reason}"
+            );
+        }
+        other => panic!("expected MalformedResponse, got {other:?}"),
+    }
     let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
 }
 

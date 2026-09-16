@@ -30,6 +30,10 @@ struct DeviceState {
     manufacturer: u16,
     serial: [u8; 6],
     order: Vec<u8>,
+    /// When true, the device keeps answering the programming-mode broadcast even
+    /// after it takes its new address — modelling a KNX Virtual device (which
+    /// does not clear programming mode) or a stuck programming button.
+    stay_in_programming: bool,
 }
 
 type Shared = Arc<Mutex<Vec<DeviceState>>>;
@@ -103,7 +107,9 @@ async fn handle(
                     for d in devs.iter_mut() {
                         if d.programming {
                             d.address = new_addr;
-                            d.programming = false;
+                            // A conformant device leaves programming mode here;
+                            // a KNX-Virtual-style device keeps answering.
+                            d.programming = d.stay_in_programming;
                         }
                     }
                 }
@@ -262,6 +268,7 @@ fn assign_writes_address_and_stub_file() {
         manufacturer: 0x0083,
         serial: [0x00, 0x01, 0x02, 0x03, 0x04, 0x05],
         order: b"MDT-JAL0410".to_vec(),
+        stay_in_programming: false,
     }]));
     let handle = rt.spawn(run_gateway(gw, shared));
 
@@ -309,6 +316,11 @@ fn assign_writes_address_and_stub_file() {
         stdout.contains("assigned 15.15.255 → 1.1.7"),
         "expected old→new line; stdout:\n{stdout}"
     );
+    // The device cleared programming mode, so no persistence warning.
+    assert!(
+        !stderr.contains("still in programming mode"),
+        "a device that cleared programming mode must NOT warn; stderr:\n{stderr}"
+    );
 
     let body = stub_body.expect("stub device file should exist");
     assert!(body.contains("address: 1.1.7"), "stub body:\n{body}");
@@ -333,6 +345,7 @@ fn assign_refuses_implicit_address_without_tty() {
         manufacturer: 0x0083,
         serial: [0x00, 0x01, 0x02, 0x03, 0x04, 0x05],
         order: b"MDT-JAL0410".to_vec(),
+        stay_in_programming: false,
     }]));
     let handle = rt.spawn(run_gateway(gw, shared));
 
@@ -370,5 +383,75 @@ fn assign_refuses_implicit_address_without_tty() {
     assert!(
         stderr.contains("refusing to assign") || stderr.contains("without a terminal"),
         "expected a safety refusal; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn assign_warns_when_device_stays_in_programming_mode() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (gw, port) = rt.block_on(async {
+        let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = sock.local_addr().unwrap().port();
+        (sock, port)
+    });
+
+    // A KNX-Virtual-style device: it takes the new address but keeps answering
+    // the programming-mode broadcast (never clears programming mode).
+    let shared: Shared = Arc::new(Mutex::new(vec![DeviceState {
+        address: "15.15.255".parse().unwrap(),
+        programming: true,
+        mask: 0x07B0,
+        manufacturer: 0x0083,
+        serial: [0x00, 0x01, 0x02, 0x03, 0x04, 0x05],
+        order: b"MDT-JAL0410".to_vec(),
+        stay_in_programming: true,
+    }]));
+    let handle = rt.spawn(run_gateway(gw, shared));
+
+    let tmp = std::env::temp_dir().join(format!("bussard-assign-progmode-{}", std::process::id()));
+    let model_dir = tmp.join("knx");
+    write_model(&model_dir);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bussard"))
+        .args([
+            "assign",
+            "1.1.7",
+            "--dir",
+            model_dir.to_str().unwrap(),
+            "--gateway",
+            &format!("127.0.0.1:{port}"),
+        ])
+        .env("BUSSARD_ASSIGN_WAIT_MS", "200")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run bussard assign");
+
+    rt.block_on(async { handle.abort() });
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let success = output.status.success();
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    // The assignment still succeeds — the warning is advisory, not fatal.
+    assert!(
+        success,
+        "assign should still exit 0; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("assigned 15.15.255 → 1.1.7"),
+        "expected old→new line; stdout:\n{stdout}"
+    );
+    // The persistence warning must fire, naming the address and the KNX Virtual
+    // guidance.
+    assert!(
+        stderr.contains("1.1.7 is still in programming mode"),
+        "expected a programming-mode persistence warning; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("KNX Virtual"),
+        "warning should point at the KNX Virtual GUI toggle; stderr:\n{stderr}"
     );
 }

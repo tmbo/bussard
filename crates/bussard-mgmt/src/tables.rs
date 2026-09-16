@@ -94,7 +94,7 @@
 
 use crate::apci::{self, A_PROPERTY_VALUE_READ, MAX_MEMORY_READ_LEN};
 use crate::connection::{L4Channel, Layer4Connection};
-use crate::error::MgmtError;
+use crate::error::{MgmtError, raw_response_detail};
 use bussard_model::{GroupAddress, IndividualAddress};
 
 // --- Identifiers not (yet) in `apci.rs` ---
@@ -327,10 +327,22 @@ pub async fn read_tables<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Result
 async fn device_descriptor<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Result<u16> {
     let (req_apci, payload) = apci::encode_device_descriptor_read(0);
     let (resp_apci, data) = l4.request(req_apci, &payload).await?;
+    // Accept any A_DeviceDescriptor_Response of >= 2 octets. The descriptor type
+    // rides in the response's low APCI bits (echoing the requested type 0); a
+    // type-2 response is longer, and some interfaces (observed on the KNX Virtual
+    // IP/TP interface) answer type 0 with **extra** trailing payload. Both are
+    // legal: the mask version is the leading big-endian word, so we read the
+    // first two octets and ignore any tail. We do NOT loosen the selector check —
+    // a wrong service, or a short (< 2 octet) answer, is still rejected, now with
+    // the raw APCI + payload bytes so the frame is captured without a sniffer.
     if resp_apci & APCI_SELECTOR_MASK != APCI_DEVICE_DESCRIPTOR_RESPONSE || data.len() < 2 {
         return Err(TablesError::Mgmt(MgmtError::MalformedResponse {
             address: l4.target(),
-            reason: "unexpected device descriptor response",
+            reason: format!(
+                "unexpected device descriptor response: descriptor type (low APCI bits) {} ({})",
+                resp_apci & 0x3f,
+                raw_response_detail(resp_apci, &data),
+            ),
         }));
     }
     Ok(u16::from_be_bytes([data[0], data[1]]))
@@ -352,15 +364,21 @@ async fn read_property<Ch: L4Channel>(
     if resp_apci != apci::A_PROPERTY_VALUE_RESPONSE {
         return Err(TablesError::Mgmt(MgmtError::MalformedResponse {
             address: l4.target(),
-            reason: "unexpected property value response APCI",
+            reason: format!(
+                "unexpected property value response APCI ({})",
+                raw_response_detail(resp_apci, &data)
+            ),
         }));
     }
-    let resp = apci::decode_property_value_response(&data).ok_or(TablesError::Mgmt(
-        MgmtError::MalformedResponse {
+    let resp = apci::decode_property_value_response(&data).ok_or_else(|| {
+        TablesError::Mgmt(MgmtError::MalformedResponse {
             address: l4.target(),
-            reason: "property value response too short",
-        },
-    ))?;
+            reason: format!(
+                "property value response too short ({})",
+                raw_response_detail(resp_apci, &data)
+            ),
+        })
+    })?;
     if resp.count == 0 {
         return Ok(Vec::new());
     }
@@ -378,12 +396,15 @@ async fn read_memory<Ch: L4Channel>(
 ) -> Result<Vec<u8>> {
     let (req_apci, payload) = apci::encode_memory_read(addr, len);
     let (resp_apci, data) = l4.request(req_apci, &payload).await?;
-    let resp = apci::decode_memory_response(resp_apci, &data).ok_or(TablesError::Mgmt(
-        MgmtError::MalformedResponse {
+    let resp = apci::decode_memory_response(resp_apci, &data).ok_or_else(|| {
+        TablesError::Mgmt(MgmtError::MalformedResponse {
             address: l4.target(),
-            reason: "unexpected memory response",
-        },
-    ))?;
+            reason: format!(
+                "unexpected memory response ({})",
+                raw_response_detail(resp_apci, &data)
+            ),
+        })
+    })?;
     Ok(resp.data)
 }
 

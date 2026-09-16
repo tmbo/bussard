@@ -196,8 +196,13 @@ enum Command {
         #[arg(long, value_name = "FILE")]
         product: PathBuf,
         /// The application program id (default: sole/matching application).
-        #[arg(long, value_name = "REF")]
+        #[arg(long, value_name = "REF", conflicts_with = "order_number")]
         application: Option<String>,
+        /// Select the application program by hardware order number (e.g.
+        /// `AKK-0216.03`) instead of a raw application ref. Resolved through the
+        /// product's hardware catalogue; exactly one match is required.
+        #[arg(long, value_name = "ORDER")]
+        order_number: Option<String>,
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
@@ -478,6 +483,7 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             address,
             product,
             application,
+            order_number,
             dir,
             yes,
             gateway,
@@ -486,6 +492,7 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             &address,
             &product,
             application.as_deref(),
+            order_number.as_deref(),
             &dir,
             yes,
             conn_cmd::ConnOverrides { gateway, routing },
