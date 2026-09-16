@@ -94,7 +94,7 @@
 
 use crate::apci::{self, A_PROPERTY_VALUE_READ, MAX_MEMORY_READ_LEN};
 use crate::connection::{L4Channel, Layer4Connection};
-use crate::error::{MgmtError, raw_response_detail};
+use crate::error::{MgmtError, descriptor_response_reason, raw_response_detail};
 use bussard_model::{GroupAddress, IndividualAddress};
 
 // --- Identifiers not (yet) in `apci.rs` ---
@@ -338,11 +338,7 @@ async fn device_descriptor<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Resu
     if resp_apci & APCI_SELECTOR_MASK != APCI_DEVICE_DESCRIPTOR_RESPONSE || data.len() < 2 {
         return Err(TablesError::Mgmt(MgmtError::MalformedResponse {
             address: l4.target(),
-            reason: format!(
-                "unexpected device descriptor response: descriptor type (low APCI bits) {} ({})",
-                resp_apci & 0x3f,
-                raw_response_detail(resp_apci, &data),
-            ),
+            reason: descriptor_response_reason(resp_apci, &data),
         }));
     }
     Ok(u16::from_be_bytes([data[0], data[1]]))

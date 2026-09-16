@@ -557,7 +557,7 @@ async fn allocate_segment_round_trip_returns_device_address() {
     assert_eq!(state, LoadState::Loading);
 
     // Allocate a 320-octet segment, fill with 0x00.
-    let seg = load::allocate_segment(&mut l4, 1, 320, Some(0x00))
+    let seg = load::allocate_segment(&mut l4, 1, 320, Some(0x00), false)
         .await
         .unwrap();
     assert_eq!(seg.address, 0x4200, "the device-placed segment address");
@@ -589,7 +589,7 @@ async fn allocate_segment_in_wrong_state_is_refused() {
         .unwrap();
 
     // Allocating while Unloaded must be refused before any write.
-    let err = load::allocate_segment(&mut l4, 1, 128, None)
+    let err = load::allocate_segment(&mut l4, 1, 128, None, false)
         .await
         .unwrap_err();
     match err {
@@ -624,7 +624,7 @@ async fn allocate_segment_refusal_surfaces_load_error() {
         .await
         .unwrap();
 
-    let err = load::allocate_segment(&mut l4, 1, 0xFFFF_FFF0, None)
+    let err = load::allocate_segment(&mut l4, 1, 0xFFFF_FFF0, None, false)
         .await
         .unwrap_err();
     match err {

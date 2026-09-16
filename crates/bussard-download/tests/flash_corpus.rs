@@ -33,7 +33,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use bussard_download::{PlanError, plan_flash};
+use bussard_download::{FlashStep, PlanError, plan_flash};
 
 /// The minimum number of applications across the corpus that must lower to an
 /// executable plan. The seeded corpus yields 12 (all the Zennio 07B0 devices,
@@ -158,6 +158,71 @@ fn corpus_flashability_sweep() {
     );
 }
 
+/// Finding 1b regression guard, run against the real corpus when present.
+///
+/// The MDT AKK switch actuator (A-0007) declares TWO identical `LdCtrlRelSegment`
+/// ops for its single 1936-octet segment (`AppliesTo="full"` and `="par"`, both
+/// `LsmIdx=4 Size=1936`) inside one MergeId block. The lowering must dedupe the
+/// identical consecutive allocation, so no plan in the corpus ever emits two
+/// back-to-back `AllocateSegment` steps of the same size. (Re-allocation on an
+/// already-Loading object is legal per thelsing `table_object.cpp`'s `allocTable`,
+/// which frees and re-allocates — but the second allocation is redundant and is
+/// the step KNX Virtual was observed to choke on, so we drop it.)
+///
+/// Env-gated exactly like the sweep: absent corpus skips cleanly (CI never holds
+/// copyrighted vendor data), so this is a local/opt-in regression check.
+#[test]
+fn corpus_never_emits_duplicate_consecutive_allocations() {
+    let Some(dir) = std::env::var_os("BUSSARD_PRODUCT_CORPUS") else {
+        eprintln!("BUSSARD_PRODUCT_CORPUS unset; skipping the duplicate-allocation guard.");
+        return;
+    };
+    let dir = PathBuf::from(dir);
+    let files = knxprod_files(&dir);
+    if files.is_empty() {
+        eprintln!("corpus empty; skipping the duplicate-allocation guard.");
+        return;
+    }
+
+    let mut checked_plans = 0usize;
+    for file in &files {
+        let Ok(product) = bussard_prod::read_knxprod(file) else {
+            continue;
+        };
+        for app in &product.applications {
+            let Some(mask_str) = app.mask_version.as_deref() else {
+                continue;
+            };
+            let Ok(mask) = u16::from_str_radix(mask_str.trim(), 16) else {
+                continue;
+            };
+            let Ok(plan) = plan_flash(app, "1.1.1", mask, &BTreeMap::new(), &BTreeMap::new())
+            else {
+                continue;
+            };
+            checked_plans += 1;
+            // No two consecutive AllocateSegment steps of the same size.
+            for pair in plan.steps.windows(2) {
+                if let (
+                    FlashStep::AllocateSegment { size: a },
+                    FlashStep::AllocateSegment { size: b },
+                ) = (&pair[0], &pair[1])
+                {
+                    assert_ne!(
+                        a,
+                        b,
+                        "app {} in {} lowered two identical consecutive allocations \
+                         ({a} bytes) — the dedupe regressed",
+                        app.id,
+                        file.display()
+                    );
+                }
+            }
+        }
+    }
+    eprintln!("duplicate-allocation guard checked {checked_plans} executable plan(s).");
+}
+
 /// Classifies one application by attempting a dry-run plan against its own mask.
 fn classify(app: &bussard_prod::ApplicationProgram) -> Class {
     // Plan against the app's OWN declared mask so the System B gate and the mask
@@ -171,7 +236,13 @@ fn classify(app: &bussard_prod::ApplicationProgram) -> Class {
         return Class::NotSystemB;
     };
 
-    match plan_flash(app, "1.1.1", device_mask, &BTreeMap::new()) {
+    match plan_flash(
+        app,
+        "1.1.1",
+        device_mask,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    ) {
         Ok(_plan) => Class::Executable,
         Err(PlanError::NotSystemB { .. }) => Class::NotSystemB,
         Err(PlanError::UnsupportedOp { op }) => Class::Refused {

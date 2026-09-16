@@ -208,9 +208,15 @@ pub enum WriteError {
     },
 
     /// A load-control write did not leave the object in the expected state.
+    ///
+    /// `context` carries optional discovery detail the caller (the flash engine)
+    /// folds in: the targeted object's discovered interface-object type and the
+    /// full discovered object table. It is appended to the message when present so
+    /// a bare "object 3 did not reach Loading" becomes actionable — see
+    /// [`LoadStateContext`].
     #[error(
         "{address}: object {object_index} did not reach {expected} after {control} \
-         (device reports {actual})"
+         (device reports {actual}){context}"
     )]
     UnexpectedLoadState {
         /// The device.
@@ -223,6 +229,9 @@ pub enum WriteError {
         expected: LoadState,
         /// The state the device actually reports.
         actual: LoadState,
+        /// Discovery context (object type + discovered object table), or the
+        /// empty default when the primitive was driven without it.
+        context: LoadStateContext,
     },
 
     /// The object went into `Error` during a load — recover with `Unload`/ETS.
@@ -284,6 +293,67 @@ pub enum WriteError {
     /// An underlying management error (absent, NAK, disconnect, malformed).
     #[error(transparent)]
     Mgmt(#[from] MgmtError),
+}
+
+/// Discovery context attached to an [`WriteError::UnexpectedLoadState`] so a
+/// load-state mismatch names *which* object was targeted and what the device's
+/// interface-object table actually looks like.
+///
+/// A bare "object 3 did not reach Loading" is nearly useless in the field: the
+/// index alone does not say what object 3 *is*, nor whether the discovery even
+/// found the object type it should have. This carries the discovered object
+/// type of the targeted index (when it was read) and the full discovered object
+/// table (`index → object type`), rendered as a `; ...` suffix on the error.
+/// The empty [`Default`] renders nothing, so primitives that are driven without
+/// discovery context (the table-apply path) keep their original message.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LoadStateContext {
+    /// The discovered interface-object type at the targeted index, if it was
+    /// read during discovery (`None` when the index was out of the discovered
+    /// range or discovery did not run).
+    pub object_type: Option<u16>,
+    /// The full discovered object table as `(index, object_type)` pairs, in
+    /// index order. Empty when no discovery ran.
+    pub object_table: Vec<(u8, u16)>,
+}
+
+impl std::fmt::Display for LoadStateContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.object_type.is_none() && self.object_table.is_empty() {
+            return Ok(());
+        }
+        write!(f, " — ")?;
+        match self.object_type {
+            Some(ot) => write!(
+                f,
+                "target object has interface-object type {ot} ({})",
+                object_type_name(ot)
+            )?,
+            None => write!(f, "target object type was not discovered")?,
+        }
+        if !self.object_table.is_empty() {
+            let table: Vec<String> = self
+                .object_table
+                .iter()
+                .map(|(idx, ot)| format!("{idx}:{ot}({})", object_type_name(*ot)))
+                .collect();
+            write!(f, "; discovered object table [{}]", table.join(", "))?;
+        }
+        Ok(())
+    }
+}
+
+/// A short human name for a standard KNX interface-object type, for the
+/// discovered-object-table rendering. Unknown types render as `"?"`.
+fn object_type_name(ot: u16) -> &'static str {
+    match ot {
+        0 => "device",
+        1 => "address-table",
+        2 => "association-table",
+        3 => "application-program",
+        4 => "interface-program",
+        _ => "?",
+    }
 }
 
 /// Result alias for the write side.
@@ -510,6 +580,7 @@ pub async fn write_load_control<Ch: L4Channel>(
                 control,
                 expected,
                 actual: state,
+                context: LoadStateContext::default(),
             });
         }
     }
@@ -653,23 +724,34 @@ pub struct SegmentAllocation {
 ///
 /// `fill_byte` mirrors the relative structure's fill flag/byte: `Some(b)` asks
 /// the device to pre-fill the segment with `b`, `None` leaves it uninitialised.
+///
+/// `tolerate_nonconformant_load_states` relaxes precondition 1: when set, an
+/// object that reports [`LoadState::Loaded`] (rather than the conformant
+/// `Loading`) after a `StartLoading` is accepted and the allocation proceeds.
+/// This is the KNX-Virtual escape hatch — KV snaps straight to `Loaded` after
+/// `StartLoading` — and is off by default so real-device behaviour stays strict.
 pub async fn allocate_segment<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     object_index: u8,
     size: u32,
     fill_byte: Option<u8>,
+    tolerate_nonconformant_load_states: bool,
 ) -> Result<SegmentAllocation> {
     let address = l4.target();
 
-    // 1. The object must be Loading for the allocation to be accepted.
+    // 1. The object must be Loading for the allocation to be accepted. Under the
+    //    tolerance flag a KV-style Loaded is also accepted (see the flag docs).
     let state = read_load_state(l4, object_index).await?;
-    if state != LoadState::Loading {
+    let precondition_ok = state == LoadState::Loading
+        || (tolerate_nonconformant_load_states && state == LoadState::Loaded);
+    if !precondition_ok {
         return Err(WriteError::UnexpectedLoadState {
             address,
             object_index,
             control: LoadControl::AdditionalLoadControls,
             expected: LoadState::Loading,
             actual: state,
+            context: LoadStateContext::default(),
         });
     }
 
@@ -699,13 +781,16 @@ pub async fn allocate_segment<Ch: L4Channel>(
             object_index,
         });
     }
-    if state != LoadState::Loading {
+    let still_ok = state == LoadState::Loading
+        || (tolerate_nonconformant_load_states && state == LoadState::Loaded);
+    if !still_ok {
         return Err(WriteError::UnexpectedLoadState {
             address,
             object_index,
             control: LoadControl::AdditionalLoadControls,
             expected: LoadState::Loading,
             actual: state,
+            context: LoadStateContext::default(),
         });
     }
 
@@ -1171,6 +1256,37 @@ mod tests {
         assert_eq!(LoadState::Error.to_string(), "Error");
         assert_eq!(LoadControl::StartLoading.to_string(), "StartLoading");
         assert_eq!(LoadControl::LoadCompleted.to_string(), "LoadCompleted");
+    }
+
+    #[test]
+    fn empty_load_state_context_renders_nothing() {
+        // The table-apply path drives write_load_control without discovery, so an
+        // empty context must not alter the original message.
+        assert_eq!(LoadStateContext::default().to_string(), "");
+    }
+
+    #[test]
+    fn unexpected_load_state_folds_in_discovered_context() {
+        // The finding-1 rich error: a load-state failure names the targeted
+        // object's type and the full discovered object table.
+        let err = WriteError::UnexpectedLoadState {
+            address: "1.0.1".parse().unwrap(),
+            object_index: 3,
+            control: LoadControl::StartLoading,
+            expected: LoadState::Loading,
+            actual: LoadState::Loaded,
+            context: LoadStateContext {
+                object_type: Some(3),
+                object_table: vec![(0, 0), (1, 1), (2, 2), (3, 3)],
+            },
+        };
+        assert_eq!(
+            err.to_string(),
+            "1.0.1: object 3 did not reach Loading after StartLoading (device reports Loaded) \
+             — target object has interface-object type 3 (application-program); discovered \
+             object table [0:0(device), 1:1(address-table), 2:2(association-table), \
+             3:3(application-program)]"
+        );
     }
 
     #[test]

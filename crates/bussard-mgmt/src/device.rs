@@ -11,7 +11,7 @@ use bussard_model::IndividualAddress;
 
 use crate::apci;
 use crate::connection::{L4Channel, Layer4Connection, Timeouts};
-use crate::error::{MgmtError, Result, raw_response_detail};
+use crate::error::{MgmtError, Result, descriptor_response_reason, raw_response_detail};
 
 /// A management client bound to a single device over a connection-oriented
 /// session.
@@ -69,12 +69,7 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
         if resp_apci & apci::APCI_SELECTOR_MASK != apci::A_DEVICE_DESCRIPTOR_RESPONSE {
             return Err(MgmtError::MalformedResponse {
                 address: self.inner.target(),
-                reason: format!(
-                    "expected A_DeviceDescriptor_Response but the response's descriptor type \
-                     (low APCI bits) is {} ({})",
-                    resp_apci & 0x3f,
-                    raw_response_detail(resp_apci, &data),
-                ),
+                reason: descriptor_response_reason(resp_apci, &data),
             });
         }
         apci::decode_device_descriptor_response(&data).ok_or_else(|| MgmtError::MalformedResponse {

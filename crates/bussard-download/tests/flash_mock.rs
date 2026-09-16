@@ -117,6 +117,10 @@ enum Fault {
     /// the device holds differs from what the tool sent: the device's own MCB
     /// CRC will then diverge from the tool's, and `LoadImageProp` must catch it.
     CorruptStoredImage,
+    /// Snap straight to `Loaded` on `StartLoading` instead of exposing the
+    /// intermediate `Loading` state — the KNX Virtual 2.6.1 behaviour that the
+    /// strict load-state check trips on (finding 1).
+    LoadedAfterStartLoading,
 }
 
 /// The mutable mock-device state, shared with the gateway task.
@@ -137,6 +141,10 @@ struct DeviceState {
     fault: Fault,
     /// Count of load-control writes seen (plan-only must be zero).
     control_writes: usize,
+    /// Count of `T_Disconnect` control frames received from the tool. The
+    /// disconnect-on-error guarantee (finding 3) asserts this reaches ≥1 even
+    /// when the flash fails mid-procedure.
+    disconnects: usize,
     /// Stored interface-object property values a `LdCtrlCompareProp` reads back,
     /// keyed by `(object_index, pid)`. Absent keys answer count 0 (not present).
     compare_props: HashMap<(u8, u8), Vec<u8>>,
@@ -371,8 +379,15 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
             let new_state = if is_app {
                 match event {
                     LE_START_LOADING => {
-                        s.app_load_state = LS_LOADING;
-                        LS_LOADING
+                        // A conformant device exposes LS_LOADING; KV snaps to
+                        // LS_LOADED (the LoadedAfterStartLoading fault).
+                        if fault == Fault::LoadedAfterStartLoading {
+                            s.app_load_state = LS_LOADED;
+                            LS_LOADED
+                        } else {
+                            s.app_load_state = LS_LOADING;
+                            LS_LOADING
+                        }
                     }
                     LE_LOAD_COMPLETED => {
                         if fault == Fault::ErrorOnLoadCompleted {
@@ -471,6 +486,11 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
                 let tool = cemi.source;
                 match tpci::classify(cemi.tpci_octet()) {
                     TpciKind::Connect => dev_seq = 0,
+                    TpciKind::Disconnect => {
+                        // Record the tool's clean teardown so a test can assert
+                        // the L4 session was released even after a failed flash.
+                        state.lock().unwrap().disconnects += 1;
+                    }
                     TpciKind::NumberedData(client_seq) => {
                         let (req_apci, payload) = match (&cemi.tpci, &cemi.apdu) {
                             (Tpci::Other(_), Apdu::Other { apci, data }) => (*apci, data.clone()),
@@ -527,6 +547,7 @@ fn fresh_device(fault: Fault) -> Shared {
         memory: HashMap::new(),
         fault,
         control_writes: 0,
+        disconnects: 0,
         compare_props: HashMap::new(),
     }))
 }
@@ -656,12 +677,19 @@ async fn flash_happy_path_loads_and_verifies() {
     let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
 
     let app = fabricated_app();
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides()).unwrap();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
 
     let mut l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
-    let outcome = flash(&mut l4, &plan, |_| {}).await.unwrap();
+    let outcome = flash(
+        &mut l4,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .unwrap();
     let _ = l4.disconnect().await;
 
     assert!(outcome.ok(), "flash must verify: {outcome:?}");
@@ -691,7 +719,7 @@ async fn flash_with_image_prop_loads_and_verifies_mcb() {
     let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
 
     let app = app_with_image_prop();
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides()).unwrap();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
     // The plan carries the four MCB checks.
     let checks = plan
         .steps
@@ -703,7 +731,14 @@ async fn flash_with_image_prop_loads_and_verifies_mcb() {
     let mut l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
-    let outcome = flash(&mut l4, &plan, |_| {}).await.unwrap();
+    let outcome = flash(
+        &mut l4,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .unwrap();
     let _ = l4.disconnect().await;
 
     assert!(
@@ -732,14 +767,19 @@ async fn flash_image_prop_catches_corrupted_stored_image() {
     let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
 
     let app = app_with_image_prop();
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides()).unwrap();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
 
     let mut l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
-    let err = flash(&mut l4, &plan, |_| {})
-        .await
-        .expect_err("a corrupted stored image must fail the MCB integrity check");
+    let err = flash(
+        &mut l4,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .expect_err("a corrupted stored image must fail the MCB integrity check");
     let _ = l4.disconnect().await;
 
     assert!(
@@ -759,14 +799,19 @@ async fn flash_surfaces_load_error_on_completed() {
     let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
 
     let app = fabricated_app();
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides()).unwrap();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
 
     let mut l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
-    let err = flash(&mut l4, &plan, |_| {})
-        .await
-        .expect_err("a load Error on completion must surface");
+    let err = flash(
+        &mut l4,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .expect_err("a load Error on completion must surface");
     let _ = l4.disconnect().await;
 
     assert!(
@@ -783,14 +828,19 @@ async fn flash_aborts_on_memory_write_nak() {
     let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
 
     let app = fabricated_app();
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides()).unwrap();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
 
     let mut l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
-    let err = flash(&mut l4, &plan, |_| {})
-        .await
-        .expect_err("a memory-write NAK mid-flash must abort");
+    let err = flash(
+        &mut l4,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .expect_err("a memory-write NAK mid-flash must abort");
     let _ = l4.disconnect().await;
 
     assert!(
@@ -801,13 +851,171 @@ async fn flash_aborts_on_memory_write_nak() {
 }
 
 #[tokio::test]
+async fn flash_disconnects_even_when_it_fails_mid_procedure() {
+    // Finding 3: after a failed flash the L4 session must be torn down, or the
+    // device holds a stale connection and the next `reconstruct` reports it
+    // absent. Here the device snaps to Loaded on StartLoading (KV behaviour) with
+    // the tolerance flag OFF, so the FIRST allocate fails its Loading precondition
+    // — an application-level error that leaves the connection OPEN. The flash body
+    // returns Err, and the explicit `l4.disconnect()` must still emit a
+    // T_Disconnect that reaches the device.
+    let (mut bus, state, handle) = setup(Fault::LoadedAfterStartLoading).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+
+    let app = fabricated_app();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    // Strict (default) options: the KV snap-to-Loaded trips the load-state check.
+    let err = flash(
+        &mut l4,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .expect_err("a non-conformant load state must fail the flash");
+    assert!(
+        matches!(
+            err,
+            bussard_mgmt::load::WriteError::UnexpectedLoadState { .. }
+        ),
+        "expected UnexpectedLoadState, got {err:?}"
+    );
+    // Before the disconnect the device saw none; the connection is still open.
+    assert_eq!(
+        state.lock().unwrap().disconnects,
+        0,
+        "the failed flash must not have disconnected on its own yet"
+    );
+
+    // The disconnect-on-error guarantee: this must reach the device.
+    let _ = l4.disconnect().await;
+
+    // Poll briefly for the async gateway to record the T_Disconnect.
+    let mut saw = false;
+    for _ in 0..50 {
+        if state.lock().unwrap().disconnects >= 1 {
+            saw = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        saw,
+        "a failed flash must still emit T_Disconnect to release the L4 session"
+    );
+    handle.abort();
+}
+
+#[tokio::test]
+async fn flash_strict_load_state_error_names_object_and_table() {
+    // Finding 1: when the device snaps to Loaded after StartLoading and the
+    // tolerance flag is OFF, the flash fails with a RICH error — it names the
+    // targeted object's discovered interface-object type and the full discovered
+    // object table, so "object 3 did not reach Loading" becomes actionable.
+    let (mut bus, _state, handle) = setup(Fault::LoadedAfterStartLoading).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+
+    let app = fabricated_app();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    let err = flash(
+        &mut l4,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .expect_err("strict mode must reject the non-conformant load state");
+    let _ = l4.disconnect().await;
+
+    match &err {
+        bussard_mgmt::load::WriteError::UnexpectedLoadState {
+            object_index,
+            actual,
+            context,
+            ..
+        } => {
+            // The app object is index 3 on the fresh device (device, address,
+            // association, application-program).
+            assert_eq!(*object_index, 3, "the app object is index 3");
+            assert_eq!(*actual, LoadState::Loaded);
+            // The context names the target object type (3 = application-program)
+            // and carries the full discovered object table.
+            assert_eq!(context.object_type, Some(OT_APPLICATION_PROGRAM));
+            assert_eq!(
+                context.object_table,
+                vec![(0, 0), (1, 1), (2, 2), (3, 3)],
+                "the discovered object table must be folded in"
+            );
+        }
+        other => panic!("expected UnexpectedLoadState, got {other:?}"),
+    }
+    // The rendered message must name the object type and the discovered table.
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("application-program"),
+        "message must name the object type: {rendered}"
+    );
+    assert!(
+        rendered.contains("discovered object table"),
+        "message must include the discovered object table: {rendered}"
+    );
+    handle.abort();
+}
+
+#[tokio::test]
+async fn flash_tolerance_flag_accepts_loaded_after_start_loading() {
+    // Finding 1: with --tolerate-nonconformant-load-states the same KV device
+    // (snaps to Loaded after StartLoading) flashes through to Loaded. Only the
+    // subsequent operations succeeding makes this acceptable, and they do.
+    let (mut bus, state, handle) = setup(Fault::LoadedAfterStartLoading).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+
+    let app = fabricated_app();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+
+    let options = bussard_download::FlashOptions {
+        tolerate_nonconformant_load_states: true,
+    };
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    let outcome = flash(&mut l4, &plan, options, |_| {}).await.unwrap();
+    let _ = l4.disconnect().await;
+
+    assert!(
+        outcome.ok(),
+        "the tolerance flag must let a KV-style device flash through: {outcome:?}"
+    );
+    assert_eq!(outcome.load_state, LoadState::Loaded);
+
+    // The code image still landed at the first segment base.
+    let s = state.lock().unwrap();
+    let code: Vec<u8> = (0x4000u16..0x4006)
+        .map(|a| *s.memory.get(&a).unwrap_or(&0))
+        .collect();
+    assert_eq!(code, vec![0, 1, 2, 3, 4, 5]);
+    handle.abort();
+}
+
+#[tokio::test]
 async fn plan_only_touches_no_load_state() {
     let (_bus, state, handle) = setup(Fault::None).await;
 
     // Building a plan is a pure, offline operation: it must never write a load
     // control (or anything) to the device.
     let app = fabricated_app();
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides()).unwrap();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
     assert!(!plan.steps.is_empty());
     // The first supported device step is the unload of the application object.
     assert_eq!(plan.steps[0], FlashStep::Unload);
@@ -834,14 +1042,15 @@ async fn flash_applies_device_file_parameter_override() {
     let app = fabricated_app();
 
     // The default plan writes the parameter default (7).
-    let default_plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides()).unwrap();
+    let default_plan =
+        plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
     assert_eq!(default_plan.param_images["M-1_A-1_RS-2"], vec![7]);
 
     // The override plan (P-0_R-1 = 42) writes 42 instead — proving the override
     // changed the computed image before any bus traffic.
     let mut ov = BTreeMap::new();
     ov.insert("P-0_R-1".to_string(), "42".to_string());
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &ov).unwrap();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &ov, &BTreeMap::new()).unwrap();
     assert_eq!(
         plan.param_images["M-1_A-1_RS-2"],
         vec![42],
@@ -851,7 +1060,14 @@ async fn flash_applies_device_file_parameter_override() {
     let mut l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
-    let outcome = flash(&mut l4, &plan, |_| {}).await.unwrap();
+    let outcome = flash(
+        &mut l4,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .unwrap();
     let _ = l4.disconnect().await;
 
     assert!(outcome.ok(), "override flash must verify: {outcome:?}");
@@ -883,7 +1099,7 @@ async fn flash_compare_prop_passes_when_property_matches() {
     let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
 
     let app = app_with_compare_prop(None);
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides()).unwrap();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
     // The plan carries the CompareProp precondition.
     assert_eq!(
         plan.steps
@@ -896,7 +1112,14 @@ async fn flash_compare_prop_passes_when_property_matches() {
     let mut l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
-    let outcome = flash(&mut l4, &plan, |_| {}).await.unwrap();
+    let outcome = flash(
+        &mut l4,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .unwrap();
     let _ = l4.disconnect().await;
 
     assert!(
@@ -923,14 +1146,19 @@ async fn flash_compare_prop_aborts_when_property_differs() {
     let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
 
     let app = app_with_compare_prop(None);
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides()).unwrap();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
 
     let mut l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
-    let err = flash(&mut l4, &plan, |_| {})
-        .await
-        .expect_err("a compare mismatch must abort the flash");
+    let err = flash(
+        &mut l4,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .expect_err("a compare mismatch must abort the flash");
     let _ = l4.disconnect().await;
 
     assert!(
@@ -967,12 +1195,19 @@ async fn flash_compare_prop_mask_ignores_don_t_care_bytes() {
     let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
 
     let app = app_with_compare_prop(Some("FF00FF00"));
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides()).unwrap();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
 
     let mut l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
-    let outcome = flash(&mut l4, &plan, |_| {}).await.unwrap();
+    let outcome = flash(
+        &mut l4,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .unwrap();
     let _ = l4.disconnect().await;
 
     assert!(
@@ -990,7 +1225,7 @@ async fn flash_reports_progress_for_every_step() {
     let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
 
     let app = fabricated_app();
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides()).unwrap();
+    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
     let total = plan.steps.len();
 
     let steps_seen = Arc::new(Mutex::new(0usize));
@@ -999,11 +1234,16 @@ async fn flash_reports_progress_for_every_step() {
     let mut l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
         .unwrap();
-    let outcome = flash(&mut l4, &plan, move |p| {
-        if let bussard_download::Progress::Step { .. } = p {
-            *seen.lock().unwrap() += 1;
-        }
-    })
+    let outcome = flash(
+        &mut l4,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        move |p| {
+            if let bussard_download::Progress::Step { .. } = p {
+                *seen.lock().unwrap() += 1;
+            }
+        },
+    )
     .await
     .unwrap();
     let _ = l4.disconnect().await;
