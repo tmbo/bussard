@@ -668,6 +668,82 @@ pub async fn write_table<Ch: L4Channel>(
     Ok(())
 }
 
+// --- Memory read/write on a Layer4Connection --------------------------------
+//
+// [`crate::device::DeviceConnection`] exposes `read_memory`/`write_memory`, but
+// it owns its own `Layer4Connection`. The download engine drives the load
+// machine (`write_load_control`, `allocate_segment`, `write_property`) directly
+// against a borrowed `Layer4Connection` — the same channel it must write segment
+// content into. These two helpers give it the memory primitives on that same
+// connection, with the identical read-back verification discipline as
+// `DeviceConnection::write_memory` (evidence: `device.rs`, which reads each
+// chunk back and compares because `A_Memory_Write` has no mandatory response).
+
+/// Reads `len` octets of device memory starting at `addr` over a borrowed
+/// [`Layer4Connection`]. `len` is clamped to [`apci::MAX_MEMORY_READ_LEN`] per
+/// telegram — callers loop for larger ranges. Mirrors
+/// [`crate::device::DeviceConnection::read_memory`].
+pub async fn read_memory<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    addr: u16,
+    len: u8,
+) -> Result<Vec<u8>> {
+    let (req_apci, payload) = apci::encode_memory_read(addr, len);
+    let (resp_apci, data) = l4.request(req_apci, &payload).await?;
+    let resp = apci::decode_memory_response(resp_apci, &data).ok_or(WriteError::Mgmt(
+        MgmtError::MalformedResponse {
+            address: l4.target(),
+            reason: "expected A_Memory_Response with matching count",
+        },
+    ))?;
+    Ok(resp.data)
+}
+
+/// Writes `data` to device memory starting at the 16-bit `addr`, in
+/// [`apci::MAX_MEMORY_WRITE_LEN`]-octet chunks, **verifying each chunk by
+/// read-back**. Mirrors [`crate::device::DeviceConnection::write_memory`] but on
+/// a borrowed [`Layer4Connection`] so the download engine can write segment
+/// content on the very connection it drives the load machine over.
+///
+/// For every chunk this sends `A_Memory_Write`, then reads the same address
+/// back and compares. A divergence fails with [`MgmtError::MemoryVerifyFailed`].
+/// An empty `data` is a no-op.
+pub async fn write_memory<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    addr: u16,
+    data: &[u8],
+) -> Result<()> {
+    let chunk = usize::from(apci::MAX_MEMORY_WRITE_LEN);
+    let mut offset = 0usize;
+    while offset < data.len() {
+        let take = chunk.min(data.len() - offset);
+        let piece = &data[offset..offset + take];
+        let chunk_addr = addr.checked_add(offset as u16).ok_or(WriteError::Mgmt(
+            MgmtError::MalformedResponse {
+                address: l4.target(),
+                reason: "memory write range exceeds the 16-bit address space",
+            },
+        ))?;
+
+        let (req_apci, payload) = apci::encode_memory_write(chunk_addr, piece);
+        // A_Memory_Write is acknowledged (T_ACK) but not answered; the read-back
+        // is the confirmation.
+        l4.send_data(req_apci, &payload).await?;
+
+        let got = read_memory(l4, chunk_addr, take as u8).await?;
+        if got != piece {
+            return Err(WriteError::Mgmt(MgmtError::MemoryVerifyFailed {
+                address: l4.target(),
+                addr: chunk_addr,
+                expected: piece.to_vec(),
+                got,
+            }));
+        }
+        offset += take;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

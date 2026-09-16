@@ -9,6 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 bussard-model = { workspace = true }
+bussard-prod = { path = "../bussard-prod" }
 bussard-mgmt = { path = "../bussard-mgmt" }
 bussard-bus = { workspace = true }
 bussard-transport = { workspace = true }
@@ -18,3 +19,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+# For the env-gated dry-run trace test that reads the developer's local
+# `home_test.knxproj` (a plain-zip container). Not committed data; the test skips
+# when absent, so CI is unaffected. Matches bussard-prod's dev-dependency.
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
