@@ -2,7 +2,9 @@
 
 This guide takes you from an empty directory to a live, decoded KNX bus, then connects
 Claude to it over MCP. It covers install, the two ways to build a model (import an ETS
-project, or start from scratch), reading and writing group values, and safety.
+project, or start from scratch), reading and writing group values, and safety. For
+commissioning devices onto the bus (adopt, plan/apply, flash), see
+[commissioning.md](commissioning.md).
 
 ## Install
 
@@ -202,22 +204,17 @@ a presence detector and want it to trigger the hall light:
 
 > "I added a Präsenzmelder in the Flur, it should switch the Flur light."
 
-Today, bussard does the diagnosis half of that conversation. Claude can scan recent
-telegrams to find the detector's group address (`knx_recent_telegrams`, and
-`knx_wait_for_telegram` for a "press it now" loop), read the current light state
-(`knx_read_group`), check the model (`knx_validate`), and propose the YAML edit. On the
-CLI, `bussard scan` finds the device on the line and `bussard import-product` generates
-its com-object and parameter model from the vendor `.knxprod` (see
-[product-data.md](product-data.md)).
+bussard does the diagnosis half of that conversation. Claude can scan recent telegrams to
+find the detector's group address (`knx_recent_telegrams`, and `knx_wait_for_telegram`
+for a "press it now" loop), read the current light state (`knx_read_group`), check the
+model (`knx_validate`), and propose the YAML edit.
 
-Commissioning helpers exist too: `bussard assign` gives the device in programming mode
-its individual address (explicit, or the next free one on the line), and
-`bussard reconstruct 1.1.4` reads a System B device's group-address and association
-tables back over the bus and diffs them against `links.yaml`. Still open:
-`bussard adopt`, the guided new-device flow
-([#26](https://github.com/tmbo/bussard/issues/26)), and the configuration downloader.
-Device writes will go through a Terraform-shaped `plan → apply`: the LLM edits YAML, you
-approve a diff, the tool pushes it to the bus.
+The commissioning half is a Terraform-shaped `plan → apply`. `bussard adopt` walks a new
+device from programming mode into the model, `bussard plan` shows the diff between the
+model's `links.yaml` and the device's live tables, and `bussard apply` writes it (backup,
+confirm, verify). `bussard flash` does the first ETS-free application download for a
+factory-fresh device. The whole lifecycle is documented in
+[commissioning.md](commissioning.md).
 
 ## What goes in git
 

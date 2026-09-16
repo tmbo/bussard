@@ -47,10 +47,11 @@ A KNX device's configuration is three separable things with very different diffi
 | (c) Links | group address table, association table, com-object table | Standardised loadable parts; on System B / mask 07B0+ property-based and writable through documented interface objects. Moderate. |
 | (b) Parameters | channel mode, runtime, wind-alarm behaviour, … | Device-specific memory layout described only in the `.knxprod`. Hard. |
 
-Most day-to-day changes are (c). bussard builds (a) + (c) first: that's real
-commissioning, genuinely useful, and needs no reverse engineering of manufacturer memory
-layouts. Which path links take (properties on System B vs. memory writes on older
-System 1/2) depends on the mask version each device reports; `bussard scan` reports this.
+Most day-to-day changes are (c). bussard ships (a) + (c) first: that's real commissioning,
+genuinely useful, and needs no reverse engineering of manufacturer memory layouts. `assign`
+does (a); `plan`/`apply` do (c) for System B devices. Which path links take (properties on
+System B vs. memory writes on older System 1/2) depends on the mask version each device
+reports; `bussard scan` reports this. Layer (b), parameters, is the phase-3 residue.
 
 ## 3. What's inside a `.knxprod`
 
@@ -107,20 +108,25 @@ vendor files.
 ```
 crates/
   bussard-model/      # GA/IA/DPT/flags types, DPT codecs, YAML schema, loader, validation
+  bussard-ets/        # shared ETS-XML primitives: streaming parsers, DPT/flag helpers, zip guard
   bussard-project/    # .knxproj import: AES zip + PBKDF2, streaming XML → model
-  bussard-transport/  # trait BusConnection; Tunnel + Router impls; cEMI codec
-  bussard-monitor/    # decode pipeline, SQLite capture, formatters
-  bussard-mgmt/       # layer-4 connection-oriented transport, management procedures (scan)
   bussard-prod/       # .knxprod reading (import-product)
+  bussard-transport/  # trait BusConnection; Tunnel + Router impls; cEMI codec
+  bussard-bus/        # bus-service actor: one Transport owner, frame subscriptions, L4 leases
+  bussard-monitor/    # decode pipeline, SQLite capture, formatters
+  bussard-mgmt/       # layer-4 connection-oriented transport, management procedures, table read
+  bussard-download/   # LoadProcedure interpreter, table/memory image builder, plan/apply/flash
   bussard-ha/         # Home Assistant config generation (ha-config)
   bussard-mcp/        # MCP stdio server
   bussard-cli/        # clap binary
 ```
 
-Reserved for the downloader phase: `bussard-download` (LoadProcedure interpreter, memory
-image builder, differential download). The separation that matters most: `bussard-mgmt`
-is fiddly and protocol-correct, heavily tested against real devices; `bussard-download`
-is pure-ish computation (YAML + product data → byte image), unit-testable without a bus.
+The separation that matters most: `bussard-mgmt` is fiddly and protocol-correct, heavily
+tested against real devices; `bussard-download` is pure-ish computation (YAML + product
+data → byte image), unit-testable without a bus. `bussard-bus` owns the single transport
+connection and hands out exclusive layer-4 leases so a management session and live group
+traffic share one gateway tunnel slot. `bussard-ets` factors the streaming-XML primitives
+shared by the `.knxproj` and `.knxprod` importers.
 
 ### 5.2 The YAML model (the user's KNX-as-code repo)
 
@@ -268,9 +274,10 @@ read-only. It hard-refuses any GA marked `protected: true`; there is no override
 That stance is deliberate: the LLM must ask a human, who can then run
 `bussard write … --force` from the CLI. Its tool description states the consequences
 plainly for LLM callers (it writes to the physical bus, actuators move, protected GAs are
-refused, prefer asking the human when uncertain). Programming/download tools remain out of
-scope and, when they land, go through the plan/approve mechanism with the same denylist
-for safety-critical objects (wind alarm, central functions).
+refused, prefer asking the human when uncertain). Programming and download (`plan`,
+`apply`, `flash`) stay CLI-only and out of the MCP surface: they run through a
+plan/confirm/backup/verify ladder a human drives, with the same denylist for
+safety-critical objects (wind alarm, central functions).
 
 ## 6. Roadmap
 
@@ -282,15 +289,35 @@ decode. Read-only MCP. This alone delivers LLM-assisted debugging.
 MCP write tool, and Home Assistant KNX config generation from the same YAML: one source
 of truth.
 
-**Phase 2, links. In progress.** Shipped: `scan` (device discovery with
-mask/manufacturer/order report), `import-product` (`.knxprod` reading, see
-[product-data.md](product-data.md)), `assign` (programming-mode address assignment), and
-`reconstruct` (read a System B device's tables back, diff against the model). Still
-open: writing address/association/com-object tables for one device family, the first
-real downloader work. Tested on a spare actuator, never first on a live bus.
+**Phase 2, links. Shipped.** `scan` (device discovery with mask/manufacturer/order
+report), `import-product` (`.knxprod` reading with an order-number pointer index, see
+[product-data.md](product-data.md)), `assign` (programming-mode address assignment),
+`adopt` (the guided new-device wizard), and `reconstruct` (read a System B device's tables
+back and diff, plus a `--line` sweep that synthesizes a fresh ETS-less model). The link
+downloader itself shipped as `plan` (read-only table diff) and `apply` (backup, write,
+verify) for System B devices. The whole flow is documented in
+[commissioning.md](commissioning.md).
 
-**Phase 3, parameters.** One application program at a time, validated byte-wise against
-ETS dumps.
+**Phase 3, parameters and application download. Engine shipped.** `flash` does the first
+ETS-free application download from a `.knxprod` into a factory-fresh System B device:
+pre-flight plan (mask gate and unsupported-op refusal before any write), progress,
+`Loaded` + spot-check verification. Known gap: load procedures using `LdCtrlAbsSegment`
+(absolute segments), `LdCtrlTaskSegment`/`LdCtrlTaskCtrl1`, or vendor ops like
+`LdCtrlLoadImageProp` are refused at pre-flight rather than executed; those remain
+ETS-only and are a documented follow-up. Per-parameter memory placement (the hard,
+device-specific allocator) is next, validated byte-wise against ETS dumps.
+
+### The interop wall
+
+The management stack is validated against thelsing/knx as an independent foreign peer (see
+[`tests-support/virtual-device/README.md`](../tests-support/virtual-device/README.md)):
+`assign` and `scan` clear it. But the only thelsing binary that speaks KNXnet/IP routing
+multicast reports mask `57B0` (KNXnet/IP System B), while `reconstruct`/`apply`/`flash`
+gate on `07B0` (TP System B). There is no stock thelsing binary that both speaks IP
+multicast and reports `07B0`, so the table-level rungs cannot be reached over routing
+without either relaxing the mask gate to also accept `57B0` (they share the same
+`BauSystemBDevice` table stack), a modified thelsing variant, or driving `knx-linux-tp`
+over a TP-UART. The full table cycle against a foreign peer is therefore still pending.
 
 ### Verification strategy (phase 2 onward)
 
@@ -319,8 +346,10 @@ the everyday win is a group-address change in ~2 seconds instead of a minute.
 - **Bus flooding.** Rate-limit writes; an agent in a retry loop must not brown out TP1.
 - **MCP safety.** Read-only by default; writes only through an approved plan; denylist
   for safety-critical objects.
-- **Failed download leaves a device unloaded.** Recovery path is ETS; keep a fresh
-  `.knxproj` backup before every `apply`.
+- **Failed download leaves a device unloaded.** `apply` writes a pre-state table backup
+  under `captures/backups/` before any write; a re-apply is idempotent. `flash` has no
+  backup (a factory-fresh device has no prior application to save), so recovery there is a
+  re-flash or an ETS download. Keep a fresh `.knxproj` backup as the last resort.
 
 ## 9. The hard residue
 

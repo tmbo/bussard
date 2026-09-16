@@ -22,15 +22,16 @@ contains "bus") aims to replace ETS for day-to-day work on an existing KNX insta
  └──────────────────┬───────────────────┘
                     │ decode / encode
      monitor · capture · read · write · mcp
-                    │
+                    │  plan · apply · flash (downloader)
          KNXnet/IP gateway ↔ KNX bus
 ```
 
 **Status: early development.** The read-only workflow (import, validate, monitor,
-capture, MCP), runtime writes (read, write, ha-config), and the commissioning helpers
-(scan, assign, reconstruct, import-product) work today. The device downloader (the
-plan/apply half) is not built yet. See
-[docs/getting-started.md](docs/getting-started.md) and the
+capture, MCP), runtime writes (read, write, ha-config), the commissioning helpers
+(scan, assign, adopt, reconstruct, import-product), and the ETS-free downloader
+(plan/apply for link tables, flash for the first application download) work today. See
+[docs/commissioning.md](docs/commissioning.md) for the device lifecycle,
+[docs/getting-started.md](docs/getting-started.md) to get running, and the
 [milestones](https://github.com/tmbo/bussard/milestones).
 
 ## Design goals
@@ -57,10 +58,11 @@ cargo install --path crates/bussard-cli
 Two ways in. With an ETS project, `bussard import project.knxproj` populates the model,
 then `bussard validate` and `bussard monitor` give you a live, decoded bus. Without one,
 `bussard init` discovers your gateway and writes an empty model to watch with
-`bussard monitor`.
+`bussard monitor`, and `bussard adopt` walks a new device into it.
 
-See [docs/getting-started.md](docs/getting-started.md) for the full walkthrough,
-including the MCP setup for LLM-assisted debugging.
+See [docs/getting-started.md](docs/getting-started.md) for the full walkthrough
+(including the MCP setup for LLM-assisted debugging) and
+[docs/commissioning.md](docs/commissioning.md) for the device lifecycle.
 
 ## CLI surface
 
@@ -74,10 +76,16 @@ bussard monitor [--filter EXPR]         # live bus, decoded against the model
 bussard capture --to bus.db             # persistent telegram store (SQLite)
 bussard read 3/2/0                      # group value read
 bussard write 3/0/4 down [--force]      # group value write
-bussard scan 1.1                        # find devices on a line, diff against the model
+bussard scan 1.1 [--from N --to N]      # find devices on a line, diff against the model
 bussard assign [1.1.47]                 # address the device in programming mode
-bussard reconstruct 1.1.4               # read device tables back, diff vs the model
+bussard adopt [--product dev.knxprod]   # guided new-device wizard
+bussard reconstruct 1.1.4               # read one device's tables back, diff vs the model
+bussard reconstruct --line 1.1 --out d  # sweep a line, synthesize a fresh ETS-less model
 bussard import-product dev.knxprod      # cache vendor data, generate a device model
+bussard import-product --order-number X # look up + download a .knxprod by order number
+bussard plan 1.1.4                      # diff live link tables vs links.yaml (read-only)
+bussard apply 1.1.4 [--yes]             # download the link tables (backup, write, verify)
+bussard flash 1.0.10 --product dev.knxprod  # first application download (no ETS)
 bussard ha-config [--out FILE]          # generate the Home Assistant KNX config
 bussard mcp [--passive|--allow-writes]  # serve MCP over stdio
 ```
@@ -85,15 +93,16 @@ bussard mcp [--passive|--allow-writes]  # serve MCP over stdio
 ## Documentation
 
 - [docs/getting-started.md](docs/getting-started.md): install, import, monitor, MCP. Start here.
+- [docs/commissioning.md](docs/commissioning.md): the device lifecycle — adopt, import-product, plan/apply, flash, reconstruct.
 - [docs/DESIGN.md](docs/DESIGN.md): architecture, feasibility, YAML model reference, roadmap.
 - [docs/ha-config.md](docs/ha-config.md): Home Assistant config generation.
 - [docs/product-data.md](docs/product-data.md): vendor `.knxprod` files and generated models.
 
 ## Workspace layout
 
-Crates in use: `bussard-model`, `bussard-project`, `bussard-transport`, `bussard-monitor`,
-`bussard-mgmt`, `bussard-prod`, `bussard-ha`, `bussard-mcp`, `bussard-cli`. Reserved for
-the downloader phase: `bussard-download`. See
+Crates in use: `bussard-model`, `bussard-project`, `bussard-transport`, `bussard-bus`,
+`bussard-monitor`, `bussard-mgmt`, `bussard-prod`, `bussard-ets`, `bussard-download`,
+`bussard-ha`, `bussard-mcp`, `bussard-cli`. See
 [docs/DESIGN.md](docs/DESIGN.md) for what each crate does.
 
 ## Legal notes
