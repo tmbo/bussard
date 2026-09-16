@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FABRICATED fixture. One <ParameterType> of each non-int/enum/text/float/none
+     shape the sweep found across the corpus. All parse to
+     ParameterType::Other{kind, size_bits}, and none must be silently dropped.
+     Real-world sources (shape only, no content copied):
+       TypeColor Space="RGB"                         (MDT AKR-IO, glass panels)
+       TypeTime SizeInBit Unit minInclusive UIHint   (Steinel presence sensors)
+       TypeIPAddress AddressType                      (Zennio KIPI IP interface)
+       TypePicture RefId                              (MDT icons in panels)
+       TypeRawData MaxSize                            (Zennio Z40/Z70 panels) -->
+<KNX xmlns="http://knx.org/xml/project/20">
+ <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
+  <ApplicationProgram Id="M-00FA_A-0005-11-ABCD-O000A" ApplicationNumber="5" ApplicationVersion="11" MaskVersion="MV-0705" Name="Other ParameterTypes Fixture" LoadProcedureStyle="ProductProcedure">
+   <Static>
+    <ParameterTypes>
+     <ParameterType Id="M-00FA_A-0005-11-ABCD-O000A_PT-Color" Name="RGBColor">
+      <TypeColor Space="RGB" />
+     </ParameterType>
+     <ParameterType Id="M-00FA_A-0005-11-ABCD-O000A_PT-Time" Name="Duration">
+      <TypeTime SizeInBit="16" Unit="Seconds" minInclusive="10" maxInclusive="65535" UIHint="Duration_hhmmss" />
+     </ParameterType>
+     <ParameterType Id="M-00FA_A-0005-11-ABCD-O000A_PT-Ip" Name="HostIp">
+      <TypeIPAddress AddressType="HostAddress" />
+     </ParameterType>
+     <ParameterType Id="M-00FA_A-0005-11-ABCD-O000A_PT-Pic" Name="Icon">
+      <TypePicture RefId="M-00FA_BG--fake.icon.PNG" />
+     </ParameterType>
+     <ParameterType Id="M-00FA_A-0005-11-ABCD-O000A_PT-Raw" Name="Blob">
+      <TypeRawData MaxSize="64" />
+     </ParameterType>
+    </ParameterTypes>
+    <Parameters>
+     <Parameter Id="M-00FA_A-0005-11-ABCD-O000A_P-1" Name="Colour" Text="Colour" ParameterType="M-00FA_A-0005-11-ABCD-O000A_PT-Color" Value="0">
+      <Memory CodeSegment="M-00FA_A-0005-11-ABCD-O000A_RS-4" Offset="0" BitOffset="0" />
+     </Parameter>
+     <Parameter Id="M-00FA_A-0005-11-ABCD-O000A_P-2" Name="OnTime" Text="On time" ParameterType="M-00FA_A-0005-11-ABCD-O000A_PT-Time" Value="30">
+      <Memory CodeSegment="M-00FA_A-0005-11-ABCD-O000A_RS-4" Offset="4" BitOffset="0" />
+     </Parameter>
+     <Parameter Id="M-00FA_A-0005-11-ABCD-O000A_P-3" Name="Ip" Text="IP" ParameterType="M-00FA_A-0005-11-ABCD-O000A_PT-Ip" Value="0">
+      <Memory CodeSegment="M-00FA_A-0005-11-ABCD-O000A_RS-4" Offset="8" BitOffset="0" />
+     </Parameter>
+    </Parameters>
+    <ComObjectTable>
+     <ComObject Id="M-00FA_A-0005-11-ABCD-O000A_O-0" Number="0" Text="Switch" ObjectSize="1 Bit" CommunicationFlag="Enabled" WriteFlag="Enabled" />
+    </ComObjectTable>
+    <ComObjectRefs>
+     <ComObjectRef Id="M-00FA_A-0005-11-ABCD-O000A_O-0_R-1" RefId="M-00FA_A-0005-11-ABCD-O000A_O-0" DatapointType="DPST-1-1" />
+    </ComObjectRefs>
+   </Static>
+  </ApplicationProgram>
+ </ApplicationPrograms></Manufacturer></ManufacturerData>
+</KNX>
