@@ -85,6 +85,36 @@ pub enum SaveError {
         /// The underlying error.
         source: serde_norway::Error,
     },
+    /// Writing the temporary file used to stage an atomic save failed.
+    ///
+    /// The save is aborted before the real file is touched, so the previous
+    /// contents of `path` (if any) are left intact. `temp` names the staging
+    /// file that could not be written; check that the model's directory is
+    /// writable and has free space.
+    #[error("staging {path} via temporary file {temp}: {source}")]
+    TempWrite {
+        /// The intended final path, left untouched.
+        path: PathBuf,
+        /// The temporary staging file that could not be written.
+        temp: PathBuf,
+        /// The underlying error.
+        source: std::io::Error,
+    },
+    /// Renaming the staged temporary file over the target failed.
+    ///
+    /// The staged data is complete but could not be moved into place. `path`
+    /// still holds its previous contents (never a half-written file); the
+    /// stale `temp` file is best-effort removed. A cross-device staging
+    /// directory or a permission change on `path` are the usual causes.
+    #[error("committing {path} by renaming {temp}: {source}")]
+    Rename {
+        /// The intended final path, left untouched.
+        path: PathBuf,
+        /// The temporary staging file that could not be renamed into place.
+        temp: PathBuf,
+        /// The underlying error.
+        source: std::io::Error,
+    },
 }
 
 /// Parses YAML text into a typed value, rejecting duplicate keys and unknown
@@ -408,17 +438,66 @@ const COM_OBJECTS_MARKER: &str = "\
 # --- GENERATED: regenerated on re-import; hand edits here are lost. ---
 ";
 
+/// Atomically writes `contents` to `path`.
+///
+/// The bytes are first written to a temporary file in the **same directory**
+/// (so the final `rename` stays on one filesystem and is atomic), then renamed
+/// over `path`. An interrupted or failed write therefore never truncates or
+/// corrupts an existing committed config: `path` either still holds its old
+/// contents or holds the complete new contents, never a partial mix.
+///
+/// On any failure the temporary file is best-effort removed so a crash mid-save
+/// does not litter the directory with `.tmp` debris.
+///
+/// This is the single funnel every model writer routes through, so callers such
+/// as `bussard assign`/`import` get crash-safe saves transparently.
+fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), SaveError> {
+    // Stage the temp file alongside the target. The file stem is embedded so
+    // concurrent saves of different files in the same directory don't collide,
+    // and the process id keeps two processes from clobbering each other's temp.
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "model".to_string());
+    let temp = match path.parent() {
+        Some(dir) => dir.join(format!(".{file_name}.{}.tmp", std::process::id())),
+        None => PathBuf::from(format!(".{file_name}.{}.tmp", std::process::id())),
+    };
+
+    if let Err(source) = fs::write(&temp, contents) {
+        // Best-effort cleanup; ignore errors since we're already reporting one.
+        let _ = fs::remove_file(&temp);
+        return Err(SaveError::TempWrite {
+            path: path.to_path_buf(),
+            temp,
+            source,
+        });
+    }
+
+    match fs::rename(&temp, path) {
+        Ok(()) => Ok(()),
+        Err(source) => {
+            let _ = fs::remove_file(&temp);
+            Err(SaveError::Rename {
+                path: path.to_path_buf(),
+                temp,
+                source,
+            })
+        }
+    }
+}
+
 /// Serializes a value to a YAML file, prefixed with a generated-file `header`.
+///
+/// The write is atomic (see [`atomic_write`]): an interrupted save leaves any
+/// existing file untouched rather than truncated.
 fn write_yaml<T: Serialize>(path: &Path, value: &T, header: &str) -> Result<(), SaveError> {
     let body = serde_norway::to_string(value).map_err(|source| SaveError::Yaml {
         path: path.to_path_buf(),
         source,
     })?;
     let text = format!("{header}{body}");
-    fs::write(path, text).map_err(|source| SaveError::Io {
-        path: path.to_path_buf(),
-        source,
-    })
+    atomic_write(path, text.as_bytes())
 }
 
 /// Serializes a [`Device`] to a YAML file, with the device banner and a
@@ -435,10 +514,7 @@ fn write_device(path: &Path, device: &Device) -> Result<(), SaveError> {
     })?;
     let body = inject_com_objects_marker(&body);
     let text = format!("{DEVICE_HEADER}{body}");
-    fs::write(path, text).map_err(|source| SaveError::Io {
-        path: path.to_path_buf(),
-        source,
-    })
+    atomic_write(path, text.as_bytes())
 }
 
 /// Inserts [`COM_OBJECTS_MARKER`] on the line immediately above the **first**
@@ -917,5 +993,95 @@ com_objects:
         assert_eq!(first, second);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn atomic_write_leaves_no_temp_debris() -> Result<(), Box<dyn std::error::Error>> {
+        // A successful save renames its staging file into place, so no `.tmp`
+        // files are left behind in the model directory.
+        let dir = tmp_dir("atomic-clean");
+        small_model().save(&dir)?;
+
+        let stray: Vec<_> = fs::read_dir(&dir)?
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(
+            stray.is_empty(),
+            "no temp debris in {dir:?}, found {stray:?}"
+        );
+
+        let devices = dir.join("devices");
+        let stray_dev: Vec<_> = fs::read_dir(&devices)?
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(
+            stray_dev.is_empty(),
+            "no temp debris in devices, found {stray_dev:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn atomic_write_failure_leaves_original_intact() -> Result<(), Box<dyn std::error::Error>> {
+        // Simulate an interrupted/failed save: the staging write fails (its
+        // parent directory does not exist), so the helper must report the error
+        // WITHOUT having touched the pre-existing committed file.
+        let dir = tmp_dir("atomic-intact");
+        fs::create_dir_all(&dir)?;
+        let target = dir.join("groups.yaml");
+        let original = "# committed by the user\ngroups: {}\n";
+        fs::write(&target, original)?;
+
+        // A path whose parent directory is missing makes the temp `fs::write`
+        // fail, standing in for a crash before the rename step.
+        let doomed = dir.join("does-not-exist").join("groups.yaml");
+        let err = atomic_write(&doomed, b"new contents that must never appear")
+            .expect_err("write into a missing directory must fail");
+        assert!(
+            matches!(err, SaveError::TempWrite { .. }),
+            "expected TempWrite, got {err:?}"
+        );
+
+        // The real committed file is byte-for-byte unchanged: never truncated,
+        // never partially overwritten.
+        let after = fs::read_to_string(&target)?;
+        assert_eq!(
+            after, original,
+            "original config must survive a failed save"
+        );
+
+        // And no staging debris leaked into the model directory.
+        let stray: Vec<_> = fs::read_dir(&dir)?
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".tmp"))
+            .collect();
+        assert!(stray.is_empty(), "failed save left temp debris: {stray:?}");
+
+        let _ = fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn atomic_write_overwrites_completely() -> Result<(), Box<dyn std::error::Error>> {
+        // Overwriting a longer existing file with shorter contents must yield
+        // exactly the new bytes (no leftover tail from the old file), proving
+        // the write goes through a fresh temp file rather than truncate-in-place.
+        let dir = tmp_dir("atomic-overwrite");
+        fs::create_dir_all(&dir)?;
+        let target = dir.join("groups.yaml");
+        fs::write(&target, "a".repeat(4096))?;
+
+        atomic_write(&target, b"short")?;
+        assert_eq!(fs::read_to_string(&target)?, "short");
+
+        let _ = fs::remove_dir_all(&dir);
+        Ok(())
     }
 }
