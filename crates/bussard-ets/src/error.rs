@@ -54,9 +54,29 @@ pub enum EtsError {
         cap: u64,
     },
 
-    /// The XML was syntactically valid but semantically malformed: a payload
-    /// bussard expected to decode (e.g. a code segment's base64 `<Data>`) could
-    /// not be interpreted.
+    /// A code segment's inline binary image (`<Data>` or `<Mask>`) is not valid
+    /// base64. The segment binary is the firmware/config bytes bussard would
+    /// download to the device, so a corrupt payload is a hard failure naming the
+    /// exact segment rather than a vague file-level error.
+    #[error(
+        "parsing {context}: code segment `{segment}` has an invalid base64 {field} payload: {source}"
+    )]
+    SegmentDecode {
+        /// Human description of what was being parsed.
+        context: String,
+        /// The offending segment id (e.g. `RS-4-1-0`).
+        segment: String,
+        /// Which child carried the bad payload: `"Data"` or `"Mask"`.
+        field: &'static str,
+        /// The underlying base64 decode error.
+        source: base64::DecodeError,
+    },
+
+    /// The XML was syntactically valid but semantically malformed in a way that
+    /// does not fit a more specific variant: a payload bussard expected to
+    /// decode or a cross-reference it expected to resolve could not be
+    /// interpreted. Prefer a dedicated variant (e.g. [`EtsError::SegmentDecode`])
+    /// when the failure kind is known.
     #[error("parsing {context}: {reason}")]
     Malformed {
         /// Human description of what was being parsed.
