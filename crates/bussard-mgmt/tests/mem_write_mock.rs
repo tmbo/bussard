@@ -18,7 +18,7 @@
 //! - failure scripts: a write that NAKs mid-chunk, a memory cell that reads back
 //!   wrong (verify mismatch), and an allocation refusal (device goes to Error).
 //!
-//! Tests exercise: chunking boundaries (12-byte max, odd tails), verify failure
+//! Tests exercise: chunking boundaries (63-byte max, odd tails), verify failure
 //! surfacing address + diff, allocation round-trip, and wrong-state allocation
 //! refusal.
 
@@ -442,8 +442,9 @@ async fn write_memory_chunks_and_verifies_round_trip() {
         .await
         .unwrap();
 
-    // 27 bytes forces three chunks: 12 + 12 + an odd 3-byte tail.
-    let payload: Vec<u8> = (0..27u8).map(|i| i.wrapping_mul(7)).collect();
+    // 135 bytes forces three chunks at the 63-octet chunk size: 63 + 63 + an odd
+    // 9-byte tail.
+    let payload: Vec<u8> = (0..135u16).map(|i| (i as u8).wrapping_mul(7)).collect();
     dev.write_memory(0x4000, &payload).await.unwrap();
     dev.disconnect().await.unwrap();
 
@@ -457,10 +458,10 @@ async fn write_memory_chunks_and_verifies_round_trip() {
                 "byte {i} mismatched in device memory"
             );
         }
-        // Exactly three write telegrams (12/12/3).
+        // Exactly three write telegrams (63/63/9).
         assert_eq!(
             d.write_count, 3,
-            "27 bytes = three A_Memory_Write telegrams"
+            "135 bytes = three A_Memory_Write telegrams at a 63-octet chunk size"
         );
     }
     let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
@@ -479,16 +480,16 @@ async fn write_memory_exact_single_chunk_boundary() {
         .await
         .unwrap();
 
-    // Exactly 12 bytes: one full chunk, no tail.
-    let payload: Vec<u8> = (0..12u8).collect();
+    // Exactly 63 bytes: one full chunk at the 63-octet chunk size, no tail.
+    let payload: Vec<u8> = (0..63u8).collect();
     dev.write_memory(0x5000, &payload).await.unwrap();
     dev.disconnect().await.unwrap();
 
     {
         let d = shared.lock().unwrap();
-        assert_eq!(d.write_count, 1, "12 bytes is a single A_Memory_Write");
+        assert_eq!(d.write_count, 1, "63 bytes is a single A_Memory_Write");
         assert_eq!(d.memory.get(&0x5000).copied(), Some(0));
-        assert_eq!(d.memory.get(&0x500B).copied(), Some(11));
+        assert_eq!(d.memory.get(&0x503E).copied(), Some(62));
     }
     let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
 }
@@ -550,8 +551,8 @@ async fn write_memory_nak_mid_chunk_fails() {
         .await
         .unwrap();
 
-    // 24 bytes = two 12-byte chunks; the second write NAKs.
-    let payload: Vec<u8> = (0..24u8).collect();
+    // 126 bytes = two 63-byte chunks; the second write NAKs.
+    let payload: Vec<u8> = (0..126u16).map(|i| i as u8).collect();
     let err = dev.write_memory(0x4000, &payload).await.unwrap_err();
     assert!(
         matches!(err, MgmtError::Nak { .. }),
