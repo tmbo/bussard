@@ -370,44 +370,6 @@ fn reconstruct_reports_inventory_and_diff() {
 }
 
 #[test]
-fn reconstruct_l4_soak_probes_the_exchange_budget() {
-    // The hidden `--l4-soak N` diagnostic connects ONCE and issues N descriptor
-    // reads on that single connection, reporting the exchange count and a suggested
-    // `flash --reconnect-every`. The scripted device answers indefinitely, so all N
-    // exchanges succeed and the probe reports that budget.
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let (gw, port) = rt.block_on(async {
-        let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let port = sock.local_addr().unwrap().port();
-        (sock, port)
-    });
-    let handle = rt.spawn(run_gateway(gw, scripted_device("1.1.4", 0x07B0)));
-
-    let tmp = std::env::temp_dir().join(format!("bussard-l4soak-test-{}", std::process::id()));
-    let model_dir = tmp.join("knx");
-    write_model(&model_dir);
-
-    let output = run_reconstruct(port, &model_dir, &["--l4-soak", "12"]);
-    rt.block_on(async { handle.abort() });
-    let _ = std::fs::remove_dir_all(&tmp);
-
-    assert!(
-        output.status.success(),
-        "the soak probe should exit 0; stderr:\n{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("sustained all 12 exchange(s)"),
-        "the probe must report the exchange count reached: {stdout}"
-    );
-    assert!(
-        stdout.contains("--reconnect-every"),
-        "the probe must suggest a --reconnect-every value: {stdout}"
-    );
-}
-
-#[test]
 fn reconstruct_refuses_non_system_b_masks() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (gw, port) = rt.block_on(async {
