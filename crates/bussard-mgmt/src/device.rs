@@ -12,6 +12,7 @@ use bussard_model::IndividualAddress;
 use crate::apci;
 use crate::connection::{
     AuthorizeOutcome, L4Channel, Layer4Connection, Timeouts, property_request,
+    property_write_request,
 };
 use crate::error::{MgmtError, Result, descriptor_response_reason, raw_response_detail};
 
@@ -122,6 +123,53 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
     pub async fn read_device_property(&mut self, property_id: u8) -> Result<Vec<u8>> {
         self.read_property(apci::DEVICE_OBJECT_INDEX, property_id, 1, 1)
             .await
+    }
+
+    /// Writes `value` to `count` element(s) of a property starting at element
+    /// `start` of the interface object at `object_index`, returning the octets the
+    /// device echoes back (the KNX application layer echoes the *stored* value).
+    ///
+    /// Sends `A_PropertyValue_Write` and returns the response payload. A response
+    /// with `count == 0` means the device refused the write; that surfaces as an
+    /// empty `Vec` for the caller to check against what it wrote.
+    pub async fn write_property(
+        &mut self,
+        object_index: u8,
+        property_id: u8,
+        start: u16,
+        count: u8,
+        value: &[u8],
+    ) -> Result<Vec<u8>> {
+        let resp = property_write_request(
+            &mut self.inner,
+            object_index,
+            property_id,
+            count,
+            start,
+            value,
+        )
+        .await?;
+        if resp.count == 0 {
+            return Ok(Vec::new());
+        }
+        Ok(resp.data)
+    }
+
+    /// Clears the device's programming mode by writing `PID_PROGMODE = 0` on the
+    /// device object (index 0), exactly as ETS does after an individual-address
+    /// assignment.
+    ///
+    /// A conformant device leaves programming mode on its own when it takes a new
+    /// address, but ETS clears it explicitly and so does bussard: this writes a
+    /// single `0x00` octet to element 1 of [`PID_PROGMODE`](apci::PID_PROGMODE) on
+    /// the device object. Returns whether the write was confirmed (the device
+    /// echoed the stored `0x00`); an unconfirmed write is not an error here (the
+    /// caller falls back to the broadcast-based persistence check).
+    pub async fn clear_programming_mode(&mut self) -> Result<bool> {
+        let echoed = self
+            .write_property(apci::DEVICE_OBJECT_INDEX, apci::PID_PROGMODE, 1, 1, &[0x00])
+            .await?;
+        Ok(echoed.first() == Some(&0x00))
     }
 
     /// Reads `len` octets of device memory starting at `addr`.
