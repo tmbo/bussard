@@ -712,6 +712,111 @@
       "application_ref": "M-0004_A-7066-11-94AD-O000A",
       "redistributable": false,
       "notes": "HOUSE DEVICE. Binary input REG: 2116 REG (6-fold, app A-7066) and 2128 REG (12-fold, app A-7068), both mask 0705 (System 7). ETS4/5 database (2016-06). Direct file behind the product page's database link (https://application.jung.de/downloads/download/61737/de). Verified by download 2026-09-17."
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIO-IB20"
+      ],
+      "name": "Zennio inBOX 20 (compact multifunction actuator)",
+      "url": "https://assets.zennio.com/application_program/inBOX_20_1_0_EIFAItRS.knxprod",
+      "sha256": "25fe137be9de6e8ef6f9422f2357c23b6b8b3c791390b6272e88fb01edc43b3c",
+      "size": 505535,
+      "filename": "inBOX_20_1_0_EIFAItRS.knxprod",
+      "application_ref": "M-0071_A-4721-10-9FF2",
+      "redistributable": false,
+      "notes": "Compact flush-mount multifunction actuator. App V1.0, 07B0 (System B) — flashable target. Verified by download 2026-09-17."
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIO-IB24"
+      ],
+      "name": "Zennio inBOX 24 (compact multifunction actuator)",
+      "url": "https://assets.zennio.com/application_program/inBOX_24_1_0_EIFAItRS.knxprod",
+      "sha256": "fcbeed77e9e40b09f26ffb3d777c1ab06198f255209b90e4d3a1fae1484e0014",
+      "size": 826795,
+      "filename": "inBOX_24_1_0_EIFAItRS.knxprod",
+      "application_ref": "M-0071_A-4711-10-9835",
+      "redistributable": false,
+      "notes": "Compact flush-mount multifunction actuator (larger channel count). App V1.0, 07B0 (System B) — flashable target. Verified by download 2026-09-17."
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDI-DLB4"
+      ],
+      "name": "Zennio DALIBOX Broadcast 4CH (DALI gateway)",
+      "url": "https://assets.zennio.com/application_program/DALIBOX_Broadcast_4CH_1.0_EIFAItRSP.knxprod",
+      "sha256": "29f8c7c71583e476a5211a61219673a6591d07a117b3c1b6ac4a4cdc99a35efc",
+      "size": 371445,
+      "filename": "DALIBOX_Broadcast_4CH_1.0_EIFAItRSP.knxprod",
+      "application_ref": "M-0071_A-3331-10-2F1F",
+      "redistributable": false,
+      "notes": "4-channel DALI broadcast gateway (lighting). App V1.0, 07B0 (System B) — flashable target. Verified by download 2026-09-17."
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDI-IBD"
+      ],
+      "name": "Zennio inBOX DIM (compact dimmer)",
+      "url": "https://assets.zennio.com/application_program/inBOX_DIM_1_1_EIFAItRS_ETS5.knxprod",
+      "sha256": "ca30d0cdd3bff69fbc9198a5dda30bb6506cd99870f8990f7e04c1b2804e03e4",
+      "size": 730221,
+      "filename": "inBOX_DIM_1_1_EIFAItRS_ETS5.knxprod",
+      "application_ref": "M-0071_A-3151-11-8B77",
+      "redistributable": false,
+      "notes": "Compact flush-mount universal dimmer. App V1.1, 07B0 (System B) — flashable target. Verified by download 2026-09-17."
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVI-FD"
+      ],
+      "name": "Zennio Flat Display (capacitive touch panel)",
+      "url": "https://assets.zennio.com/application_program/Flat_Display_1.0_EIFAItRS_ETS5.knxprod",
+      "sha256": "c3ca091311a1d6fd83e22c1b156e97e8fa3edbbb8b716d935782c939bab6c762",
+      "size": 751903,
+      "filename": "Flat_Display_1.0_EIFAItRS_ETS5.knxprod",
+      "application_ref": "M-0071_A-5251-10-C3E8",
+      "redistributable": false,
+      "notes": "Capacitive touch display panel. App V1.0, 07B0 (System B) — flashable target. Verified by download 2026-09-17."
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIIWACDV3"
+      ],
+      "name": "Zennio IWAC Display v3 (in-wall audio/climate panel)",
+      "url": "https://assets.zennio.com/application_program/IWAC_Display_v3_2.0_EIFAItRS_Cert_ETS5.knxprod",
+      "sha256": "e8ff4b3893914d452da27462f588ade328955214167733d836ea52b37e2f9f68",
+      "size": 381537,
+      "filename": "IWAC_Display_v3_2.0_EIFAItRS_Cert_ETS5.knxprod",
+      "application_ref": "M-0071_A-5641-20-4D93",
+      "redistributable": false,
+      "notes": "In-wall accessory / display controller (v3). App V2.0, 07B0 (System B) — flashable target. Verified by download 2026-09-17."
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZSY-IP-INT"
+      ],
+      "name": "Zennio KNX-IP Interface",
+      "url": "https://assets.zennio.com/application_program/KNX_IP_Interface_1_0_EIFAItPRS_CERT.knxprod",
+      "sha256": "d710df9a5928fdc11ba3056b22bb96faa78927efd7dbe722258bccbcb8364b1c",
+      "size": 46229,
+      "filename": "KNX_IP_Interface_1_0_EIFAItPRS_CERT.knxprod",
+      "application_ref": "M-0071_A-6321-11-5D5D-O0072",
+      "redistributable": false,
+      "notes": "KNX-IP interface. App V1.1 (filename says 1_0), mask 0012 (System 2 / BCU2) — an older mask family, distinct from the other Zennio System B apps. Verified by download 2026-09-17."
     }
   ]
 }
