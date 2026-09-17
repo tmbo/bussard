@@ -11,8 +11,8 @@ mod lsm;
 mod memory;
 
 pub use interface_object::{
-    InterfaceObject, PID_LOAD_STATE_CONTROL, PID_PROGMODE, PID_RUN_STATE_CONTROL,
-    PID_TABLE_REFERENCE, Property,
+    InterfaceObject, PID_LOAD_STATE_CONTROL, PID_OBJECT_TYPE, PID_PROGMODE, PID_RUN_STATE_CONTROL,
+    PID_TABLE_REFERENCE, Property, iot,
 };
 pub use lsm::{LoadEvent, LoadState, LoadStateMachine};
 pub use memory::{Memory, MemoryError, Segment};
@@ -120,6 +120,29 @@ fn default_base_for(lsm_index: u8) -> u16 {
     }
 }
 
+/// The interface-object type (IOT) reported via `PID_OBJECT_TYPE` for a given
+/// interface-object index on a System B device.
+///
+/// A management tool discovers the interface-object table by probing
+/// `A_PropertyValue_Read(objIdx, PID 1)` for each index and reading back the
+/// IOT. On the calibration target (KNX-Virtual, mask 07B0) the observed layout
+/// is index n → IOT n for the first five objects:
+/// `[0:device, 1:address-table, 2:association-table, 3:application-program,
+/// 4:interface-program]` (spec Resources 03.05.01 §4.1; ref
+/// `knx-device-spec-references.md` §4.1). Indices beyond that fall back to the
+/// index value itself, which is what a linearly-numbered System B table yields.
+fn object_type_for(object_index: u8) -> u16 {
+    match object_index {
+        0 => iot::DEVICE,
+        1 => iot::ADDRESS_TABLE,
+        2 => iot::ASSOCIATION_TABLE,
+        3 => iot::APPLICATION_PROGRAM,
+        4 => iot::INTERFACE_PROGRAM,
+        5 => iot::KNX_OBJECT_ASSOCIATION_TABLE,
+        other => other as u16,
+    }
+}
+
 impl Device {
     /// Build a device at `address` from parsed product data, with an initial
     /// load state applied to every loadable object.
@@ -145,6 +168,13 @@ impl Device {
         //   PID 0x4E (78) PID_HARDWARE_TYPE              → 00 00 00 00 00 54
         //   PID 0x36 (54) PID_PROGMODE                   → 00 (writable)
         let mut device_object = InterfaceObject::new();
+        // PID_OBJECT_TYPE (PID 1) reports this object's interface-object type.
+        // The device object is IOT 0. A tool discovers the object table by
+        // reading PID 1 on each index, so every object must answer it.
+        device_object.set_property(
+            PID_OBJECT_TYPE,
+            Property::read_only(object_type_for(0).to_be_bytes().to_vec()),
+        );
         device_object.set_property(PID_PROGMODE, Property::writable(vec![0x00]));
         device_object.set_property(
             0x0B,
@@ -183,6 +213,12 @@ impl Device {
         for obj in &all_objects {
             let base = default_base_for(obj.lsm_index);
             let mut io = InterfaceObject::new();
+            // PID_OBJECT_TYPE (PID 1) reports this object's interface-object
+            // type so a tool can discover the object table by index.
+            io.set_property(
+                PID_OBJECT_TYPE,
+                Property::read_only(object_type_for(obj.lsm_index).to_be_bytes().to_vec()),
+            );
             io.set_property(
                 PID_LOAD_STATE_CONTROL,
                 Property::writable(vec![initial_state.to_byte()]),
@@ -367,25 +403,53 @@ impl Device {
         apdu: &Apdu,
     ) -> Result<DeviceReaction, DeviceError> {
         let (object, pid, count, start, _) = Self::property_header(apdu)?;
-        let value = self
-            .objects
-            .get(&object)
-            .and_then(|o| o.property(pid))
-            .map(|p| p.value.clone())
-            .ok_or(DeviceError::NoProperty { object, pid })?;
-        // Response echoes obj/pid/count/start then the value.
-        let mut data = vec![
-            object,
-            pid,
-            (count << 4) | ((start >> 8) as u8 & 0x0F),
-            (start & 0xFF) as u8,
-        ];
-        data.extend_from_slice(&value);
-        let resp = self.respond(tool, 0x3D6, &data);
-        Ok(DeviceReaction {
-            responses: vec![resp],
-            did_master_reset: false,
-        })
+        // PID_LOAD_STATE_CONTROL read-back returns the LIVE load state as a
+        // single octet (the 10-octet load-event value is write-only). The state
+        // lives in the load-state machine, not the seeded property, so a read
+        // must reflect the current LSM state — otherwise a tool that reads PID 5
+        // to verify a StartLoading/LoadCompleted sees a stale value and stalls.
+        // (Spec Resources 03.05.01 §4.23.2; ref `knx-device-spec-references.md`
+        // §2.1/§2.3.)
+        let value = if pid == PID_LOAD_STATE_CONTROL {
+            self.load_state(object).map(|s| vec![s.to_byte()])
+        } else {
+            self.objects
+                .get(&object)
+                .and_then(|o| o.property(pid))
+                .map(|p| p.value.clone())
+        };
+        match value {
+            Some(value) => {
+                // Response echoes obj/pid/count/start then the value.
+                let mut data = vec![
+                    object,
+                    pid,
+                    (count << 4) | ((start >> 8) as u8 & 0x0F),
+                    (start & 0xFF) as u8,
+                ];
+                data.extend_from_slice(&value);
+                let resp = self.respond(tool, 0x3D6, &data);
+                Ok(DeviceReaction {
+                    responses: vec![resp],
+                    did_master_reset: false,
+                })
+            }
+            // Unknown object or PID: the spec-mandated error signal for a
+            // property read is an A_PropertyValue_Response that echoes the
+            // header with nr_of_elem = 0 and no data (KNX App-Layer 03.03.07
+            // §3.4.4.2; ref `knx-device-spec-references.md` §4.4). This is what
+            // lets a tool distinguish "no such object/property" (e.g. the end
+            // of the interface-object table while probing PID_OBJECT_TYPE) from
+            // a dropped telegram, so it must be a real response, not silence.
+            None => Ok(DeviceReaction {
+                responses: vec![self.respond(
+                    tool,
+                    0x3D6,
+                    &[object, pid, (start >> 8) as u8 & 0x0F, (start & 0xFF) as u8],
+                )],
+                did_master_reset: false,
+            }),
+        }
     }
 
     fn on_property_write(
@@ -698,6 +762,68 @@ mod tests {
         Ok(())
     }
 
+    /// Extract the value bytes from a single A_PropertyValue_Response reaction:
+    /// the payload after the 4-byte obj/pid/(count|start_hi)/start_lo header.
+    fn prop_response_value(reaction: &DeviceReaction) -> Vec<u8> {
+        let resp = &reaction.responses[0];
+        // TPDU: [tpci][apci_lo][obj][pid][count|start_hi][start_lo][value...].
+        resp.tpdu[6..].to_vec()
+    }
+
+    #[test]
+    fn test_object_type_discovery_returns_iot_per_index() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // A tool discovers the interface-object table by reading PID_OBJECT_TYPE
+        // (PID 1) on each object index. The device must report each object's
+        // IOT: [0:device, 1:address-table, 2:association-table,
+        // 3:application-program, 4:interface-program]. This is the exact
+        // KNX-Virtual layout the flash driver expects.
+        let Some(mut dev) = da_tp_device()? else {
+            return Ok(());
+        };
+        connect(&mut dev)?;
+        let expected: [(u8, u16); 5] = [
+            (0, iot::DEVICE),
+            (1, iot::ADDRESS_TABLE),
+            (2, iot::ASSOCIATION_TABLE),
+            (3, iot::APPLICATION_PROGRAM),
+            (4, iot::INTERFACE_PROGRAM),
+        ];
+        for (object, want) in expected {
+            // A_PropertyValue_Read obj/pid=1/count=1/start=1.
+            let r = dev.handle_cemi(&data(&dev, 0x3D5, &[object, 0x01, 0x10, 0x01]))?;
+            let value = prop_response_value(&r);
+            assert_eq!(
+                value,
+                want.to_be_bytes(),
+                "object {object} reported wrong interface-object type"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_property_read_unknown_object_returns_error_signal()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Reading PID_OBJECT_TYPE past the end of the object table must return
+        // the spec error signal: an A_PropertyValue_Response echoing the header
+        // with nr_of_elem = 0 and no value (not silence), so a probing tool can
+        // detect the table end rather than time out.
+        let Some(mut dev) = da_tp_device()? else {
+            return Ok(());
+        };
+        connect(&mut dev)?;
+        // Object 6 does not exist on the DA.tp device.
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[0x06, 0x01, 0x10, 0x01]))?;
+        assert_eq!(r.responses.len(), 1, "must respond, not drop");
+        let resp = &r.responses[0];
+        // TPDU: [tpci][d6][obj=06][pid=01][count|start_hi][start_lo]; count = 0.
+        let count = resp.tpdu[4] >> 4;
+        assert_eq!(count, 0, "unknown property must report nr_of_elem = 0");
+        assert_eq!(resp.tpdu.len(), 6, "error signal carries no value bytes");
+        Ok(())
+    }
+
     #[test]
     fn test_authorize_unlocks() -> Result<(), Box<dyn std::error::Error>> {
         let Some(mut dev) = da_tp_device()? else {
@@ -736,6 +862,52 @@ mod tests {
         // LoadCompleted
         dev.handle_cemi(&data(&dev, 0x3D7, &[0x04, 0x05, 0x10, 0x01, 0x02]))?;
         assert_eq!(dev.load_state(4), Some(LoadState::Loaded));
+        Ok(())
+    }
+
+    #[test]
+    fn test_load_state_read_reflects_live_lsm_state() -> Result<(), Box<dyn std::error::Error>> {
+        // A wire read of PID_LOAD_STATE_CONTROL must return the LIVE load state
+        // (1 octet), tracking the LSM as it transitions — not a value seeded at
+        // construction. A tool verifies StartLoading/LoadCompleted by reading
+        // PID 5 back, so a stale answer would stall it. Start Unloaded to make
+        // the transitions observable.
+        let Some(fixture) = crate::testfixtures::da_tp_knxprod() else {
+            return Ok(());
+        };
+        let pd = read_knxprod_bytes(&fixture, Some("M-00FA_A-2500-10-51CB"))?;
+        let mut dev = Device::from_product(
+            IndividualAddress::new(1, 1, 2),
+            &pd,
+            LoadState::Unloaded,
+            std::sync::Arc::new(RecordingSink::new()),
+        );
+        connect(&mut dev)?;
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+
+        // Reads the single load-state octet from a PID 5 read response.
+        let read_state = |dev: &mut Device| -> Result<u8, Box<dyn std::error::Error>> {
+            let r = dev.handle_cemi(&data(dev, 0x3D5, &[0x04, 0x05, 0x10, 0x01]))?;
+            // TPDU: [tpci][d6][obj][pid][count|start_hi][start_lo][state].
+            let state = *r.responses[0]
+                .tpdu
+                .last()
+                .ok_or("empty load-state response")?;
+            Ok(state)
+        };
+
+        assert_eq!(read_state(&mut dev)?, LoadState::Unloaded.to_byte());
+        dev.handle_cemi(&data(&dev, 0x3D7, &[0x04, 0x05, 0x10, 0x01, 0x01]))?; // StartLoading
+        assert_eq!(read_state(&mut dev)?, LoadState::Loading.to_byte());
+        dev.handle_cemi(&data(
+            &dev,
+            0x3D7,
+            &[0x04, 0x05, 0x10, 0x01, 0x03, 0x0b, 0x00, 0x00, 0x01, 0x00],
+        ))?; // Alloc 256
+        assert_eq!(read_state(&mut dev)?, LoadState::Loading.to_byte());
+        dev.handle_cemi(&data(&dev, 0x280 | 4, &[0x60, 0x00, 5, 5, 0xff, 0xff]))?; // mem write
+        dev.handle_cemi(&data(&dev, 0x3D7, &[0x04, 0x05, 0x10, 0x01, 0x02]))?; // LoadCompleted
+        assert_eq!(read_state(&mut dev)?, LoadState::Loaded.to_byte());
         Ok(())
     }
 
