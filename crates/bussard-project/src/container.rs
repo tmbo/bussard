@@ -13,7 +13,8 @@ use std::path::{Path, PathBuf};
 use zip::ZipArchive;
 
 use crate::error::{ImportError, Result};
-use crate::password::derive_zip_password;
+use crate::password::archive_password;
+use crate::version::{SchemaVersion, detect_schema_version};
 
 /// An opened `.knxproj` container.
 pub struct Container {
@@ -27,6 +28,9 @@ pub struct Container {
     /// The id of the project folder, e.g. `P-05E7`.
     #[allow(dead_code)]
     project_id: String,
+    /// The detected ETS schema version, which selects the com-object link
+    /// encoding downstream in [`crate::project`].
+    schema: SchemaVersion,
 }
 
 impl Container {
@@ -44,21 +48,45 @@ impl Container {
             source,
         })?;
 
+        // Detect the ETS schema version from `knx_master.xml` (always in the
+        // unencrypted outer archive). This selects the password scheme for the
+        // inner archive and the com-object link encoding. If it can't be read,
+        // fall back to the ETS 6 assumption bussard has always used.
+        let schema = match read_entry_opt(&mut archive, "knx_master.xml")? {
+            Some(bytes) => detect_schema_version(&strip_bom(bytes))?.unwrap_or_default(),
+            None => SchemaVersion::default(),
+        };
+
         let project_id = find_project_id(&archive, path)?;
-        let project_xml =
-            read_inner_project_entry(&mut archive, &project_id, password, path, "0.xml", true)?
-                .ok_or(ImportError::MissingEntry {
-                    path: path.to_path_buf(),
-                    entry: "0.xml".to_string(),
-                })?;
-        // `project.xml` carries the name and group-address style. Older/leaner
+        let project_xml = read_inner_project_entry(
+            &mut archive,
+            &project_id,
+            password,
+            path,
+            &["0.xml"],
+            schema,
+            true,
+        )?
+        .ok_or(ImportError::MissingEntry {
+            path: path.to_path_buf(),
+            entry: "0.xml".to_string(),
+        })?;
+        // `project.xml` carries the name and group-address style. ETS 4 names it
+        // `Project.xml` (capital P); ETS 5/6 use lowercase. Try the version's
+        // preferred name first, then the other casing as a fallback. Older/leaner
         // exports may omit it, so its absence is tolerated (None), not an error.
+        let info_names: &[&str] = if schema.project_info_filename() == "Project.xml" {
+            &["Project.xml", "project.xml"]
+        } else {
+            &["project.xml", "Project.xml"]
+        };
         let project_info_xml = read_inner_project_entry(
             &mut archive,
             &project_id,
             password,
             path,
-            "project.xml",
+            info_names,
+            schema,
             false,
         )?;
 
@@ -68,7 +96,13 @@ impl Container {
             project_xml,
             project_info_xml,
             project_id,
+            schema,
         })
+    }
+
+    /// The detected ETS schema version of this project.
+    pub fn schema(&self) -> SchemaVersion {
+        self.schema
     }
 
     /// The project `0.xml` contents.
@@ -135,16 +169,13 @@ fn find_project_id<R: Read + Seek>(archive: &ZipArchive<R>, path: &Path) -> Resu
             }
         }
     }
-    // Unencrypted form: `P-XXXX/0.xml`.
+    // Unencrypted form: `P-XXXX/0.xml` (or `project.xml`/`Project.xml` for ETS 4).
     for name in archive.file_names() {
-        if let Some(prefix) = name.strip_suffix("/0.xml") {
-            if prefix.starts_with("P-") {
-                return Ok(prefix.to_string());
-            }
-        }
-        if let Some(prefix) = name.strip_suffix("/project.xml") {
-            if prefix.starts_with("P-") {
-                return Ok(prefix.to_string());
+        for suffix in ["/0.xml", "/project.xml", "/Project.xml"] {
+            if let Some(prefix) = name.strip_suffix(suffix) {
+                if prefix.starts_with("P-") {
+                    return Ok(prefix.to_string());
+                }
             }
         }
     }
@@ -154,8 +185,12 @@ fn find_project_id<R: Read + Seek>(archive: &ZipArchive<R>, path: &Path) -> Resu
     })
 }
 
-/// Reads a named project entry (`0.xml` or `project.xml`), decrypting the inner
-/// archive if it is stored as `P-XXXX.zip`.
+/// Reads a project entry (e.g. `0.xml`, or `project.xml`/`Project.xml`),
+/// decrypting the inner archive if it is stored as `P-XXXX.zip`.
+///
+/// `entries` lists acceptable filenames in preference order (used to try both
+/// `project.xml` casings across ETS versions); the first one found is returned.
+/// `schema` selects the archive-password scheme (ETS 6 PBKDF2 vs ETS 4/5 raw).
 ///
 /// `required` controls the "not found" behaviour: a required entry that is
 /// absent is an [`ImportError::MissingEntry`]; an optional one returns `None`.
@@ -167,13 +202,16 @@ fn read_inner_project_entry(
     project_id: &str,
     password: Option<&str>,
     path: &Path,
-    entry: &str,
+    entries: &[&str],
+    schema: SchemaVersion,
     required: bool,
 ) -> Result<Option<String>> {
     // Case 1: unencrypted `P-XXXX/<entry>` directly in the outer archive.
-    let direct = format!("{project_id}/{entry}");
-    if let Some(bytes) = read_entry_opt(archive, &direct)? {
-        return Ok(Some(strip_bom(bytes)));
+    for entry in entries {
+        let direct = format!("{project_id}/{entry}");
+        if let Some(bytes) = read_entry_opt(archive, &direct)? {
+            return Ok(Some(strip_bom(bytes)));
+        }
     }
 
     // Case 2: inner archive `P-XXXX.zip`, possibly password-protected.
@@ -182,7 +220,7 @@ fn read_inner_project_entry(
         Some(b) => b,
         None => {
             // No inner archive and no direct entry: the entry is simply absent.
-            return missing_entry(required, path, entry);
+            return missing_entry(required, path, entries[0]);
         }
     };
 
@@ -192,16 +230,14 @@ fn read_inner_project_entry(
         source,
     })?;
 
-    // Determine the index of `<entry>` inside the inner archive.
-    let idx = (0..inner.len()).find(|&i| {
-        inner
-            .by_index_raw(i)
-            .map(|f| f.name() == entry)
-            .unwrap_or(false)
+    // Determine the index of the first acceptable entry inside the inner archive.
+    let found = (0..inner.len()).find_map(|i| {
+        let name = inner.by_index_raw(i).ok().map(|f| f.name().to_string())?;
+        entries.iter().any(|e| *e == name).then_some((i, name))
     });
-    let idx = match idx {
-        Some(i) => i,
-        None => return missing_entry(required, &PathBuf::from(&inner_name), entry),
+    let (idx, entry) = match found {
+        Some(v) => v,
+        None => return missing_entry(required, &PathBuf::from(&inner_name), entries[0]),
     };
 
     // Is the inner entry encrypted?
@@ -212,18 +248,20 @@ fn read_inner_project_entry(
 
     let bytes = if encrypted {
         let pw = password.ok_or(ImportError::PasswordRequired)?;
-        let zip_pw = derive_zip_password(pw);
+        // ETS 6 derives a WinZip-AES password; ETS 4/5 use the raw password with
+        // traditional ZipCrypto. `by_index_decrypt` handles both cipher kinds.
+        let zip_pw = archive_password(pw, schema);
         let file = inner
-            .by_index_decrypt(idx, zip_pw.as_bytes())
+            .by_index_decrypt(idx, &zip_pw)
             .map_err(|_| ImportError::WrongPassword)?;
         // Cap the decrypted stream too: a hostile inner archive is untrusted.
-        bussard_ets::read_capped(file, entry).map_err(|_| ImportError::WrongPassword)?
+        bussard_ets::read_capped(file, &entry).map_err(|_| ImportError::WrongPassword)?
     } else {
         let file = inner.by_index(idx).map_err(|source| ImportError::Zip {
             path: PathBuf::from(&inner_name),
             source,
         })?;
-        bussard_ets::read_capped(file, entry)?
+        bussard_ets::read_capped(file, &entry)?
     };
 
     Ok(Some(strip_bom(bytes)))

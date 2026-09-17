@@ -262,6 +262,7 @@ dependencies = [
 name = "bussard-model"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "bitflags",
  "serde",
  "serde_norway",
@@ -306,6 +307,7 @@ dependencies = [
 name = "bussard-project"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "base64 0.22.1",
  "bussard-ets",
  "bussard-model",
