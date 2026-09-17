@@ -133,14 +133,19 @@ fn apci_style(apci: ApciKind) -> Style {
     }
 }
 
-/// A single JSON Lines record for a telegram, with stable field names.
+/// A single JSON [`Value`](serde_json::Value) for a telegram, with stable field
+/// names.
 ///
 /// Fields: `ts_utc` (RFC3339 UTC — matches the SQLite capture column),
 /// `source`, `source_name`, `destination`, `destination_name`, `dest_type`
 /// (`group`|`individual`), `apci`, `payload` (hex), `value` (display string),
 /// `dpt`, `object_name` (the sending com-object's informational name), `note`.
 /// Absent fields are `null` so the schema is uniform.
-pub fn json_line(t: &DecodedTelegram) -> String {
+///
+/// This is the shared projection: [`json_line`] serializes it to one JSON Lines
+/// record, and the viz server extends it with a `seq` field before streaming.
+/// Keep the field set here identical between both callers.
+pub fn json_value(t: &DecodedTelegram) -> serde_json::Value {
     let dest_type = match t.destination {
         DestinationRef::Group(_) => "group",
         DestinationRef::Individual(_) => "individual",
@@ -151,7 +156,7 @@ pub fn json_line(t: &DecodedTelegram) -> String {
         let _ = write!(payload_hex, "{b:02x}");
     }
 
-    let record = json!({
+    json!({
         "ts_utc": format_rfc3339(t.timestamp),
         "source": t.source.to_string(),
         "source_name": t.source_name,
@@ -164,9 +169,17 @@ pub fn json_line(t: &DecodedTelegram) -> String {
         "dpt": t.dpt.map(|d| d.to_string()),
         "object_name": t.object_name,
         "note": t.decode_note,
-    });
+    })
+}
+
+/// A single JSON Lines record for a telegram, with stable field names.
+///
+/// A thin wrapper over [`json_value`] that serializes it to a one-line string.
+/// The field set is documented on [`json_value`]; this is what LLM tooling
+/// consumes.
+pub fn json_line(t: &DecodedTelegram) -> String {
     // serde_json::Value serialization is infallible for a well-formed value.
-    record.to_string()
+    json_value(t).to_string()
 }
 
 #[cfg(test)]
@@ -255,6 +268,40 @@ mod tests {
         assert_eq!(v["dpt"], "1.005");
         assert_eq!(v["object_name"], "Windalarm 1");
         assert_eq!(v["note"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn json_value_field_set_is_exact() {
+        // The viz server extends this object with `seq`; if the field set drifts,
+        // the frontend contract and the JSON Lines schema both break. Pin it.
+        let v = json_value(&sample());
+        let obj = v.as_object().expect("json_value is an object");
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "apci",
+                "dest_type",
+                "destination",
+                "destination_name",
+                "dpt",
+                "note",
+                "object_name",
+                "payload",
+                "source",
+                "source_name",
+                "ts_utc",
+                "value",
+            ]
+        );
+    }
+
+    #[test]
+    fn json_line_matches_json_value() {
+        // The line form must be exactly the serialized value form.
+        let t = sample();
+        assert_eq!(json_line(&t), json_value(&t).to_string());
     }
 
     #[test]

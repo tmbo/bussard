@@ -23,6 +23,9 @@ bussard-mcp = { workspace = true }
 bussard-mgmt = { path = "../bussard-mgmt" }
 bussard-download = { path = "../bussard-download" }
 bussard-ha = { path = "../bussard-ha" }
+bussard-viz = { workspace = true }
+# axum: drives the `bussard viz` HTTP server (serve + graceful shutdown). MIT.
+axum = { workspace = true }
 clap = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
