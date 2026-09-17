@@ -13,10 +13,11 @@
 //! # The op → primitive mapping (evidence)
 //!
 //! Each [`LoadOp`] maps to one management primitive. The mapping is derived from
-//! the KNX load-state machine and the System B device-side realisation in
-//! thelsing/knx (`bau_systemB.cpp`, `table_object.cpp`,
-//! `application_program_object.cpp` — a permitted, non-GPL behavioural reference;
-//! semantics only, no code copied):
+//! the published KNX standard: the load-state machine and interface-object
+//! property definitions in KNX Spec 3/5/1 (management interface-object
+//! properties) and the download/management procedures in KNX Spec 3/5/2
+//! (Management Procedures), with the transport framing from KNX Spec 3/3/4
+//! (Transport Layer) and 3/3/7 (Application Layer):
 //!
 //! | `LoadOp`            | primitive                                            | notes |
 //! |---------------------|------------------------------------------------------|-------|
@@ -30,6 +31,7 @@
 //! | `WriteMem{addr,sz}` | [`write_memory`]`(addr, image)`                      | absolute placement (an absolute segment's data) |
 //! | `WriteProp{ot,pid}` | [`write_property`]                                   | a property write, echo-validated |
 //! | `CompareProp{oi,pid}`| [`compare_property`]                                | reads the property and byte-compares it (under `Mask`) against the op's `InlineData`; a mismatch fails the flash |
+//! | `CompareRelMem{oi,off}`| [`compare_rel_mem`]                              | reads relative memory at `base+off` and byte-compares it (under `Mask`, optionally `Invert`ed) against the op's `InlineData`; a mismatch fails the flash |
 //! | `LoadImageProp{oi,pid}`| [`read_mcb_table`]                                | reads the object's `PID_MCB_TABLE` and checks the device CRC over the stored segment against the written image |
 //! | `Restart`           | `restart`                                            | last op; fire-and-forget |
 //!
@@ -62,9 +64,9 @@ use std::collections::BTreeMap;
 use bussard_mgmt::MgmtError;
 use bussard_mgmt::connection::{L4Channel, Layer4Connection};
 use bussard_mgmt::load::{
-    self, LoadControl, LoadState, WriteError, allocate_segment, compare_property,
+    self, LoadControl, LoadState, WriteError, allocate_segment, compare_property, compare_rel_mem,
     is_connection_death, master_reset_via_basic_restart, read_load_state, read_mcb_table,
-    write_load_control, write_property,
+    read_table_reference, write_load_control, write_property,
 };
 use bussard_mgmt::tables::{OT_APPLICATION_PROGRAM, PID_OBJECT_TYPE};
 use bussard_prod::application::{ApplicationProgram, LoadOp, LoadProcedure, SegmentKind};
@@ -150,6 +152,32 @@ pub enum FlashStep {
         expected: Option<Vec<u8>>,
         /// The comparison mask (decoded `Mask`); `None` compares every byte.
         mask: Option<Vec<u8>>,
+    },
+    /// Verify relative (segment-relative) memory against expected data
+    /// (`LdCtrlCompareRelMem`) — the read-only precondition check that is the
+    /// memory twin of [`FlashStep::CompareProp`] and the verify counterpart of
+    /// [`FlashStep::WriteRelMem`]. Reads `expected.len()` octets at the target
+    /// object's `segment base + offset` and byte-compares them (under the optional
+    /// mask, with the sense inverted when `invert` is set) against the op's
+    /// `InlineData`; a failing compare fails the flash. An op with no `InlineData`
+    /// carries no `expected` bytes and is a no-op confirm, kept so the procedure
+    /// still lowers whole.
+    CompareRelMem {
+        /// The op's `ObjIdx`, resolved to a device object index at execute time —
+        /// the object whose `PID_TABLE_REFERENCE` supplies the read base, exactly
+        /// as [`FlashStep::WriteRelMem::target`] resolves its write base.
+        target: Option<u32>,
+        /// The byte offset within the object's segment (`Offset`); the read starts
+        /// at `segment base + offset`.
+        offset: u32,
+        /// The expected memory bytes (decoded `InlineData`), or `None` for an op
+        /// with no literal expectation to byte-compare.
+        expected: Option<Vec<u8>>,
+        /// The comparison mask (decoded `Mask`); `None` compares every byte.
+        mask: Option<Vec<u8>>,
+        /// Whether the comparison sense is inverted (`Invert="true"`): the device
+        /// memory must *differ* from `expected` under the mask when set.
+        invert: bool,
     },
     /// Validate a loadable object's image via its memory-control-block table
     /// (`LdCtrlLoadImageProp`). After the object is `Loaded`, read its
@@ -294,8 +322,8 @@ pub enum PlanError {
         "load procedure contains the unsupported operation {op} — \
          `bussard flash` cannot execute it and refuses the procedure rather than \
          leaving the device partially flashed (supported: Unload/Load/LoadCompleted/\
-         RelSegment/WriteRelMem/WriteMem/WriteProp/CompareProp/LoadImageProp/Restart on a \
-         single-LSM System B device)"
+         RelSegment/WriteRelMem/WriteMem/WriteProp/CompareProp/CompareRelMem/LoadImageProp/Restart \
+         on a single-LSM System B device)"
     )]
     UnsupportedOp {
         /// A human description of the offending op.
@@ -1197,10 +1225,12 @@ pub fn plan_flash(
                 // following `<LdCtrlWriteRelMem AppliesTo="full,par" Size=1936>`
                 // then writes the whole segment once.
                 //
-                // Per thelsing `table_object.cpp` (`allocTable` frees any prior
-                // backing store and re-allocates `size` octets) a second relative
-                // allocation on an already-`Loading` object is *legal* and lands in
-                // the same state — but it is redundant work, and re-issuing the
+                // Per the KNX load-state machine (KNX Spec 3/5/2 Management
+                // Procedures, `LdCtrlRelSegment`), a relative-segment allocation
+                // frees any prior backing store and re-allocates `size` octets, so a
+                // second relative allocation on an already-`Loading` object is
+                // *legal* and lands in the same state — but it is redundant work,
+                // and re-issuing the
                 // 10-octet AdditionalLoadControls against an object that has just
                 // been (re)allocated is exactly the step KNX Virtual was observed
                 // to choke on. Emitting one allocation of the identical size
@@ -1451,6 +1481,51 @@ pub fn plan_flash(
                     prop_id: prop_id.unwrap_or(0),
                     expected: inline_data.clone(),
                     mask: mask.clone(),
+                });
+            }
+
+            LoadOp::CompareRelMem {
+                obj_idx,
+                offset,
+                size,
+                inline_data,
+                mask,
+                invert,
+            } => {
+                // A relative-memory verify precondition — the memory twin of
+                // CompareProp. The expected bytes come from the op's own
+                // `InlineData` (resolved at parse time), so this lowers with no
+                // device access; the read base is resolved from the object's
+                // PID_TABLE_REFERENCE at execute time. An op carrying no
+                // `InlineData` (only a `Size`/`Range`-style expectation) keeps a
+                // `None` expectation — a no-op confirm — so the whole procedure
+                // still lowers rather than refusing.
+                let offset = offset.unwrap_or(0);
+                // The read span (offset + the compared length) must fit the 16-bit
+                // A_Memory space once the device-supplied base (>= 0) is added.
+                // Refuse here rather than truncate at execute time. Use the
+                // InlineData length when present, else the declared `Size`.
+                let read_len = inline_data
+                    .as_ref()
+                    .map(|d| d.len() as u64)
+                    .unwrap_or_else(|| u64::from(size.unwrap_or(0)));
+                let end = u64::from(offset).saturating_add(read_len);
+                if read_len > MAX_WRITE_SPAN || u64::from(offset) > MAX_WRITE_SPAN || end > 0xFFFF {
+                    return Err(PlanError::AddressOutOfRange {
+                        step: step_no,
+                        size: read_len,
+                        end,
+                        detail: format!(
+                            "relative compare offset {offset} (segment base added at flash time)"
+                        ),
+                    });
+                }
+                steps.push(FlashStep::CompareRelMem {
+                    target: *obj_idx,
+                    offset,
+                    expected: inline_data.clone(),
+                    mask: mask.clone(),
+                    invert: *invert,
                 });
             }
 
@@ -2354,6 +2429,58 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                             .await?;
                         }
                     }
+                    FlashStep::CompareRelMem {
+                        target,
+                        offset,
+                        expected,
+                        mask,
+                        invert,
+                    } => {
+                        // Read this object's relative memory and compare it against the
+                        // vendor's expected data — the memory twin of CompareProp. An op
+                        // with no literal expectation (`expected` is None) is skipped.
+                        if let Some(expected) = expected {
+                            // Resolve the object index the op names. A `spliced`
+                            // template naming an index the device lacks is skipped
+                            // (nothing to compare against).
+                            let Some(obj) = resolve_object_target_opt(
+                                *target,
+                                &object_table,
+                                app_obj,
+                                plan.spliced_from_template,
+                            ) else {
+                                return Ok(());
+                            };
+                            // The read base is this object's segment address. Prefer the
+                            // base allocated earlier in this procedure; otherwise read the
+                            // object's PID_TABLE_REFERENCE fresh (a compare against an
+                            // object this procedure did not itself allocate). Both u32
+                            // bases must fit the 16-bit A_Memory space; `compare_rel_mem`
+                            // refuses rather than truncates if base + offset does not.
+                            let base = match segment_bases.get(&obj).copied().or(segment_base) {
+                                Some(b) => b,
+                                None => read_table_reference(session.l4(), obj).await?,
+                            };
+                            let base =
+                                u16::try_from(base).map_err(|_| WriteError::AddressOutOfRange {
+                                    address: session.l4().target(),
+                                    detail: format!(
+                                        "object {obj} segment base {base:#X} exceeds the 16-bit \
+                                         A_Memory space"
+                                    ),
+                                })?;
+                            compare_rel_mem(
+                                session.l4(),
+                                obj,
+                                base,
+                                *offset,
+                                expected,
+                                mask.as_deref(),
+                                *invert,
+                            )
+                            .await?;
+                        }
+                    }
                     FlashStep::LoadImageProp {
                         prop_id,
                         count,
@@ -2806,6 +2933,24 @@ fn step_label(step: &FlashStep) -> String {
                 bytes.len()
             ),
             None => format!("verify property (object {obj_idx}, PID {prop_id}, range — skipped)"),
+        },
+        FlashStep::CompareRelMem {
+            target,
+            offset,
+            expected,
+            invert,
+            ..
+        } => match expected {
+            Some(bytes) => format!(
+                "verify relative memory (segment+{offset}{} {} {} byte(s))",
+                target_suffix(*target),
+                if *invert { "!=" } else { "==" },
+                bytes.len()
+            ),
+            None => format!(
+                "verify relative memory (segment+{offset}{}, no data — skipped)",
+                target_suffix(*target)
+            ),
         },
         FlashStep::LoadImageProp {
             obj_idx,

@@ -256,9 +256,10 @@ pub struct GroupObjectDescriptor {
 /// The layout was reverse-engineered from an ETS→KNX-Virtual capture of the
 /// DA.tp device (whose 148-byte obj3 image this reproduces byte-for-byte — see
 /// [`compute_group_object_table`]'s golden test) and cross-checked against the
-/// device-side bit positions a real System B stack decodes (thelsing/knx
-/// `group_object.cpp`, a permitted non-GPL behavioural reference — bit positions
-/// only, no code copied):
+/// published com-object flag and priority bit positions in the KNX standard
+/// (KNX Spec 3/5/1 interface-object properties and the group-object descriptor of
+/// 3/7/2 Datapoint Types) and the KNX Association's ETS group-object
+/// documentation:
 ///
 /// - **low byte (bits 0-7)** = the DPT size code (`0` = 1 bit … `7` = 1 byte …).
 /// - **bits 8-9** = the 2-bit priority field.
