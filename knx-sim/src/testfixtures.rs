@@ -25,6 +25,47 @@ pub fn da_tp_knxprod() -> Option<Vec<u8>> {
     std::fs::read(da_tp_knxprod_path()).ok()
 }
 
+/// A synthetic MDT-canonical System 7 product (`M-0083_A-000E`, mask 0705),
+/// built in memory so the System 7 conformance tests need no vendor fixture.
+///
+/// It carries the three loadable objects (address = 1, association = 2,
+/// application = 3) and mask `MV-0705`; the load procedure is not needed by the
+/// sim (the sim is the device side, driven by raw TPDUs), so it is left empty.
+/// The application number (14) seeds the object-0 PID 78 preflight value the
+/// canonical MDT sequence compares against.
+pub fn synthetic_mdt_sys7_product() -> crate::prod::ProductData {
+    use crate::prod::{LoadableObject, ProductData};
+    let objects = vec![
+        LoadableObject {
+            lsm_index: 1,
+            name: "address table".into(),
+            max_size: None,
+            image: Vec::new(),
+        },
+        LoadableObject {
+            lsm_index: 2,
+            name: "association table".into(),
+            max_size: None,
+            image: Vec::new(),
+        },
+        LoadableObject {
+            lsm_index: 3,
+            name: "application".into(),
+            max_size: None,
+            image: Vec::new(),
+        },
+    ];
+    ProductData {
+        application_id: "M-0083_A-000E-23-2274".into(),
+        application_number: 14,
+        application_version: 35,
+        mask_version: "MV-0705".into(),
+        objects,
+        load_procedures: Vec::new(),
+        segments: Vec::new(),
+    }
+}
+
 /// Skip the current test (return early) if the DA.tp fixture is absent, printing
 /// a note. Use as: `let bytes = match knx_sim::testfixtures::da_tp_knxprod() { ... }`.
 #[macro_export]
