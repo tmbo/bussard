@@ -75,6 +75,13 @@ axum = "0.8"
 # `Stream` for axum's SSE responder (the `sync` feature wraps broadcast/watch).
 # MIT.
 tokio-stream = { version = "0.1", features = ["sync"] }
+# zip: reads `.knxprod`/`.knxproj` container entries (deflate only, no AES here —
+# encrypted `.knxproj` inner archives are handled inside bussard-project). Shared
+# by bussard-ets and bussard-prod. MIT licensed.
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
+# quick-xml: streaming XML (never builds a DOM) so 20+ MB application-program
+# files parse with bounded memory. MIT licensed.
+quick-xml = "0.41"
 
 # ---------------------------------------------------------------------------
 # Build profiles tuned for test iteration speed.

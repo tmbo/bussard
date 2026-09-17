@@ -146,6 +146,65 @@ pub const PID_MANUFACTURER_ID: u8 = 12;
 pub const PID_ORDER_INFO: u8 = 15;
 /// `PID_HARDWARE_TYPE` — 6-byte hardware type identifier.
 pub const PID_HARDWARE_TYPE: u8 = 78;
+/// `PID_MAX_APDU_LENGTH` — the largest APDU (NPDU length) the device accepts, as
+/// a big-endian octet count on the device object (index 0). ETS reads this once
+/// per session and scales its `A_Memory_Write`/`A_Memory_Read` and property
+/// chunks to it; bussard does the same (issue #58). A device that does not expose
+/// it is treated as the conservative standard-frame floor.
+pub const PID_MAX_APDU_LENGTH: u8 = 56;
+
+/// The fixed APDU overhead of an `A_Memory_Write`/`A_Memory_Read` telegram, in
+/// octets, on top of the memory data: the 2-octet APCI plus the 2-octet address.
+/// The on-wire NPDU length is `MEMORY_APDU_OVERHEAD + data_len`, so the largest
+/// data run that fits a device advertising `max_apdu` NPDU octets is
+/// `max_apdu - MEMORY_APDU_OVERHEAD` (see [`memory_chunk_for_apdu`]).
+const MEMORY_APDU_OVERHEAD: u8 = 3;
+
+/// The conservative memory-chunk cap (octets) used when the device's
+/// `PID_MAX_APDU_LENGTH` is unknown or unreadable: 12 data octets keeps the
+/// `A_Memory_Write`/`A_Memory_Read` telegram inside a KNX **standard** (short)
+/// frame (NPDU length `3 + 12 = 15`, the 4-bit LG ceiling), which every device
+/// accepts. Real hardware whose max APDU is 15 MUST get this — a 63-octet chunk
+/// would force an extended frame such a device may reject.
+pub const CONSERVATIVE_MEMORY_CHUNK: u8 = 12;
+
+/// The conservative property-read data cap (octets) used when the device's
+/// `PID_MAX_APDU_LENGTH` is unknown: 8 value octets plus the 4-octet
+/// `A_PropertyValue_Response` header fits the 15-octet standard-frame APDU every
+/// System B device supports.
+pub const CONSERVATIVE_PROPERTY_READ_OCTETS: u8 = 8;
+
+/// The fixed APDU overhead of an `A_PropertyValue_Response`, in octets, on top of
+/// the value data: the 2-octet APCI plus the 4-octet property header
+/// (object index, PID, count/start-hi, start-lo).
+const PROPERTY_RESPONSE_OVERHEAD: u8 = 6;
+
+/// The memory data-octet cap for a device advertising `max_apdu` NPDU octets.
+///
+/// Returns `min(max_apdu - MEMORY_APDU_OVERHEAD, MAX_MEMORY_WRITE_LEN)`, and
+/// never less than 1. A device advertising the standard-frame floor (15) yields
+/// 12 — a standard frame; a capable device (e.g. KNX Virtual's 66) yields the
+/// 63-octet ceiling. Callers pass the value the device reported via
+/// [`PID_MAX_APDU_LENGTH`]; when that read fails they use
+/// [`CONSERVATIVE_MEMORY_CHUNK`] instead.
+pub fn memory_chunk_for_apdu(max_apdu: u16) -> u8 {
+    let usable = max_apdu.saturating_sub(u16::from(MEMORY_APDU_OVERHEAD));
+    let capped = usable.min(u16::from(MAX_MEMORY_WRITE_LEN));
+    (capped as u8).max(1)
+}
+
+/// The property-read value-octet cap for a device advertising `max_apdu` NPDU
+/// octets: `max_apdu - PROPERTY_RESPONSE_OVERHEAD`, at least 1. A device at the
+/// standard-frame floor (15) yields 9; capable devices scale up, so fewer
+/// `A_PropertyValue_Read` round-trips read a large table.
+pub fn property_read_octets_for_apdu(max_apdu: u16) -> u8 {
+    let usable = max_apdu.saturating_sub(u16::from(PROPERTY_RESPONSE_OVERHEAD));
+    // Clamp to a sane ceiling: the response count field is a 4-bit element count
+    // at the property layer, but the octet budget here is bounded by the extended
+    // frame anyway; 63 is a safe, generous cap mirroring the memory ceiling.
+    let capped = usable.min(u16::from(MAX_MEMORY_READ_LEN));
+    (capped as u8).max(1)
+}
 
 /// The maximum number of data octets a single `A_Memory_Read` / `A_Memory_Write`
 /// may carry.
@@ -680,5 +739,33 @@ mod tests {
             decode_device_descriptor_response(&[0x07, 0xB0, 0x00, 0x11, 0x22]),
             Some(0x07B0)
         );
+    }
+
+    #[test]
+    fn memory_chunk_scales_with_max_apdu() {
+        // KNX Virtual advertises 66 → the 63-octet ceiling.
+        assert_eq!(memory_chunk_for_apdu(66), MAX_MEMORY_WRITE_LEN);
+        assert_eq!(memory_chunk_for_apdu(66), 63);
+        // A device at the standard-frame floor (15) → 12 data octets, which keeps
+        // the telegram a standard frame (NPDU 3 + 12 = 15). This is the correctness
+        // case: such a device must NOT be handed a 63-octet extended-frame chunk.
+        assert_eq!(memory_chunk_for_apdu(15), 12);
+        assert_eq!(memory_chunk_for_apdu(15), CONSERVATIVE_MEMORY_CHUNK);
+        // A large advertised value is still capped at the 6-bit APCI ceiling.
+        assert_eq!(memory_chunk_for_apdu(255), MAX_MEMORY_WRITE_LEN);
+        // A pathologically small value never underflows below 1.
+        assert_eq!(memory_chunk_for_apdu(0), 1);
+        assert_eq!(memory_chunk_for_apdu(3), 1);
+    }
+
+    #[test]
+    fn property_read_octets_scales_with_max_apdu() {
+        // 66 → 60 value octets (66 - 6 header), capped at 63.
+        assert_eq!(property_read_octets_for_apdu(66), 60);
+        // Standard-frame floor 15 → 9 octets.
+        assert_eq!(property_read_octets_for_apdu(15), 9);
+        // Never underflows.
+        assert_eq!(property_read_octets_for_apdu(0), 1);
+        assert_eq!(property_read_octets_for_apdu(6), 1);
     }
 }

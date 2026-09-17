@@ -242,6 +242,13 @@ pub struct Layer4Connection<Ch: L4Channel> {
     /// receive sequence; [`recv_response`](Self::recv_response) drains this
     /// first so the folded answer is not lost.
     pending_response: Option<(u16, Vec<u8>)>,
+    /// The device's advertised `PID_MAX_APDU_LENGTH` (NPDU octet budget), read
+    /// once and cached for the life of this connection. `None` until
+    /// [`negotiate_max_apdu`](Self::negotiate_max_apdu) runs; once negotiated it
+    /// scales the memory-write/read and property-read chunk sizes (issue #58).
+    /// A device that does not expose the property leaves this `None`, and the
+    /// chunk accessors fall back to the conservative standard-frame caps.
+    max_apdu: Option<u16>,
     /// Set once the peer disconnects or a protocol error occurs, so a stale
     /// `disconnect()` is a no-op.
     closed: bool,
@@ -282,6 +289,7 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
             last_send_apci: 0,
             numbered_exchanges: 0,
             pending_response: None,
+            max_apdu: None,
             closed: false,
         })
     }
@@ -594,6 +602,122 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
     /// counted).
     pub fn numbered_exchanges(&self) -> u32 {
         self.numbered_exchanges
+    }
+
+    /// Reads and caches the device's `PID_MAX_APDU_LENGTH` once, returning the
+    /// negotiated NPDU-octet budget used to scale memory and property chunks.
+    ///
+    /// The first call issues an `A_PropertyValue_Read` for
+    /// [`PID_MAX_APDU_LENGTH`](crate::apci::PID_MAX_APDU_LENGTH) on the device
+    /// object; later calls return the cached value without a round-trip. If the
+    /// property is absent or unreadable (an older/simpler device, a short answer),
+    /// the connection stays conservative: the accessors fall back to the
+    /// standard-frame caps, and this returns `None`. A **connection/transport**
+    /// death still propagates as `Err` (that is a dead session, not a missing
+    /// property).
+    ///
+    /// Scaling to the reported value is a correctness matter, not just speed: a
+    /// device advertising a max APDU of 15 must receive ≤12-octet memory chunks in
+    /// **standard** frames, which a 63-octet chunk (an extended frame) would
+    /// violate (issue #58).
+    pub async fn negotiate_max_apdu(&mut self) -> Result<Option<u16>> {
+        if let Some(v) = self.max_apdu {
+            return Ok(Some(v));
+        }
+        let resp = match crate::connection::property_request(
+            self,
+            crate::apci::DEVICE_OBJECT_INDEX,
+            crate::apci::PID_MAX_APDU_LENGTH,
+            1,
+            1,
+        )
+        .await
+        {
+            Ok(resp) => resp,
+            // A device-level absence (no such property, a malformed/short answer,
+            // or the device not answering the read) is tolerated: keep the
+            // conservative defaults. A genuine transport death propagates.
+            Err(MgmtError::MalformedResponse { .. })
+            | Err(MgmtError::NoResponse { .. })
+            | Err(MgmtError::MidSessionSilence {
+                kind: SilenceKind::NoResponse,
+                ..
+            }) => {
+                tracing::debug!(
+                    target = %self.target,
+                    "PID_MAX_APDU_LENGTH not readable; using conservative chunk sizes"
+                );
+                return Ok(None);
+            }
+            Err(other) => return Err(other),
+        };
+        // The value is a big-endian octet count (1 or 2 octets on real devices).
+        let value = match resp.data.as_slice() {
+            [] => None,
+            [b] => Some(u16::from(*b)),
+            [hi, lo, ..] => Some(u16::from_be_bytes([*hi, *lo])),
+        };
+        match value {
+            Some(v) if v != 0 => {
+                self.max_apdu = Some(v);
+                tracing::debug!(
+                    target = %self.target,
+                    max_apdu = v,
+                    "negotiated PID_MAX_APDU_LENGTH; scaling chunk sizes"
+                );
+                Ok(Some(v))
+            }
+            _ => {
+                tracing::debug!(
+                    target = %self.target,
+                    "PID_MAX_APDU_LENGTH read empty/zero; using conservative chunk sizes"
+                );
+                Ok(None)
+            }
+        }
+    }
+
+    /// The negotiated `A_Memory_Write`/`A_Memory_Read` data-octet cap for this
+    /// connection: scaled from `PID_MAX_APDU_LENGTH` when
+    /// [`negotiate_max_apdu`](Self::negotiate_max_apdu) found it, else the
+    /// conservative [`CONSERVATIVE_MEMORY_CHUNK`](crate::apci::CONSERVATIVE_MEMORY_CHUNK)
+    /// standard-frame floor.
+    pub fn max_memory_chunk(&self) -> u8 {
+        match self.max_apdu {
+            Some(v) => crate::apci::memory_chunk_for_apdu(v),
+            None => crate::apci::CONSERVATIVE_MEMORY_CHUNK,
+        }
+    }
+
+    /// The negotiated `A_PropertyValue_Read` value-octet cap for this connection:
+    /// scaled from `PID_MAX_APDU_LENGTH` when negotiated, else the conservative
+    /// [`CONSERVATIVE_PROPERTY_READ_OCTETS`](crate::apci::CONSERVATIVE_PROPERTY_READ_OCTETS).
+    pub fn max_property_read_octets(&self) -> u8 {
+        match self.max_apdu {
+            Some(v) => crate::apci::property_read_octets_for_apdu(v),
+            None => crate::apci::CONSERVATIVE_PROPERTY_READ_OCTETS,
+        }
+    }
+
+    /// Seeds the cached `PID_MAX_APDU_LENGTH` without a round-trip.
+    ///
+    /// `PID_MAX_APDU_LENGTH` is device-stable, so a caller that negotiated it on
+    /// an earlier connection to the same device (e.g. the flash session across L4
+    /// cycles) can reapply it to a fresh connection with this setter instead of
+    /// spending another numbered exchange re-reading it — which matters when the
+    /// per-connection exchange budget is tight (issue #58). A `None`/zero value is
+    /// ignored so the conservative defaults stay in effect.
+    pub fn set_max_apdu(&mut self, max_apdu: Option<u16>) {
+        if let Some(v) = max_apdu {
+            if v != 0 {
+                self.max_apdu = Some(v);
+            }
+        }
+    }
+
+    /// The cached `PID_MAX_APDU_LENGTH`, if it has been negotiated or seeded.
+    pub fn max_apdu(&self) -> Option<u16> {
+        self.max_apdu
     }
 
     // --- internals ---

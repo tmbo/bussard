@@ -35,6 +35,10 @@ enum Behavior {
         serial: Vec<u8>,
         order: Vec<u8>,
         memory: HashMap<u16, Vec<u8>>,
+        /// The device's advertised `PID_MAX_APDU_LENGTH`. `Some(v)` answers the
+        /// property with `v`; `None` returns an empty answer (models a device
+        /// that does not expose it, exercising the conservative fallback).
+        max_apdu: Option<u16>,
     },
     /// Accepts the connection but `T_NAK`s the first numbered data telegram.
     Nak,
@@ -60,6 +64,17 @@ enum Behavior {
     /// (0x0340). Models the KNX Virtual IP interface, which does not implement
     /// descriptor responses; the decoder must name the echo pattern (finding 2).
     EchoesDescriptorRead,
+    /// Answers descriptor reads normally, but on the **second and later** request
+    /// first **retransmits the PREVIOUS response** at its old (now one-behind)
+    /// send sequence — as a device does when it never saw our `T_ACK` for the
+    /// prior answer — before ACKing and answering the fresh request at the correct
+    /// sequence. The client's `await_ack` must NOT treat the re-delivered previous
+    /// response as evidence its new request landed; it must ACK expected-1 and
+    /// keep waiting, then consume the fresh response in sequence (issue #57).
+    RetransmitsPreviousResponse {
+        /// The mask version reported by every descriptor read.
+        mask: u16,
+    },
 }
 
 /// One simulated device at an individual address.
@@ -113,6 +128,9 @@ async fn run_mock(gw: UdpSocket, devices: Vec<MockDevice>) {
     let mut gw_seq: u8 = 0;
     // Per-device KNX send sequence (for the response NDTs the device emits).
     let mut dev_send_seq: HashMap<u16, u8> = HashMap::new();
+    // Per-device count of numbered requests seen (drives the retransmit-previous
+    // behaviour, which fires only from the second request on).
+    let mut dev_req_count: HashMap<u16, u32> = HashMap::new();
 
     loop {
         let mut buf = [0u8; 1024];
@@ -163,6 +181,7 @@ async fn run_mock(gw: UdpSocket, devices: Vec<MockDevice>) {
                     &tr.cemi,
                     &mut gw_seq,
                     &mut dev_send_seq,
+                    &mut dev_req_count,
                 )
                 .await;
             }
@@ -199,6 +218,7 @@ async fn handle_device_frame(
     cemi: &CemiFrame,
     gw_seq: &mut u8,
     dev_send_seq: &mut HashMap<u16, u8>,
+    dev_req_count: &mut HashMap<u16, u32>,
 ) {
     let dest = match cemi.destination {
         Destination::Individual(ia) => ia,
@@ -278,6 +298,48 @@ async fn handle_device_frame(
                     push_indication(gw, peer, gw_seq, &resp).await;
                     dev_send_seq.insert(dev_ia.raw(), (seq + 1) & 0x0f);
                 }
+                Behavior::RetransmitsPreviousResponse { mask } => {
+                    // The client just sent request N (at client_seq). On N >= 2,
+                    // first replay the PREVIOUS response at its old (one-behind)
+                    // send sequence — modelling a device that never saw our T_ACK
+                    // for the prior answer and retransmits it — then ACK and answer
+                    // the fresh request at the correct sequence.
+                    let count = dev_req_count.entry(dev_ia.raw()).or_insert(0);
+                    *count += 1;
+                    let is_repeat = *count >= 2;
+
+                    if is_repeat {
+                        // The current send seq points at the NEXT (fresh) response;
+                        // the previous response used seq-1. Replay it there.
+                        let cur = *dev_send_seq.get(&dev_ia.raw()).unwrap_or(&0);
+                        let prev_seq = cur.wrapping_sub(1) & 0x0f;
+                        let replay = CemiFrame::t_data_connected(
+                            source,
+                            dev_ia,
+                            tpci::ndt(prev_seq),
+                            apci::A_DEVICE_DESCRIPTOR_RESPONSE,
+                            &mask.to_be_bytes(),
+                        );
+                        push_indication(gw, peer, gw_seq, &replay).await;
+                        // A brief pause so the client processes the stale replay
+                        // (ACK expected-1, keep waiting) before the real answer.
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+
+                    // ACK the fresh request, then answer it at the correct seq.
+                    let ack = CemiFrame::t_control(source, dev_ia, tpci::t_ack(client_seq));
+                    push_indication(gw, peer, gw_seq, &ack).await;
+                    let seq = *dev_send_seq.get(&dev_ia.raw()).unwrap_or(&0);
+                    let resp = CemiFrame::t_data_connected(
+                        source,
+                        dev_ia,
+                        tpci::ndt(seq),
+                        apci::A_DEVICE_DESCRIPTOR_RESPONSE,
+                        &mask.to_be_bytes(),
+                    );
+                    push_indication(gw, peer, gw_seq, &resp).await;
+                    dev_send_seq.insert(dev_ia.raw(), (seq + 1) & 0x0f);
+                }
                 Behavior::Responds { .. } => {
                     // 1. ACK the client's request NDT.
                     let ack = CemiFrame::t_control(source, dev_ia, tpci::t_ack(client_seq));
@@ -311,6 +373,7 @@ fn device_response(behavior: &Behavior, cemi: &CemiFrame) -> Option<(u16, Vec<u8
         serial,
         order,
         memory,
+        max_apdu,
     } = behavior
     else {
         return None;
@@ -358,6 +421,10 @@ fn device_response(behavior: &Behavior, cemi: &CemiFrame) -> Option<(u16, Vec<u8
                 apci::PID_MANUFACTURER_ID => manufacturer.to_be_bytes().to_vec(),
                 apci::PID_SERIAL_NUMBER => serial.clone(),
                 apci::PID_ORDER_INFO => order.clone(),
+                apci::PID_MAX_APDU_LENGTH => match max_apdu {
+                    Some(v) => v.to_be_bytes().to_vec(),
+                    None => Vec::new(),
+                },
                 _ => Vec::new(),
             };
             let count = if value.is_empty() { 0 } else { 1 };
@@ -374,8 +441,19 @@ fn device_response(behavior: &Behavior, cemi: &CemiFrame) -> Option<(u16, Vec<u8
     }
 }
 
-/// A fully-responsive device fixture.
+/// A fully-responsive device fixture that does not expose `PID_MAX_APDU_LENGTH`.
 fn responder(addr: &str, mask: u16, manufacturer: u16) -> MockDevice {
+    responder_with_apdu(addr, mask, manufacturer, None)
+}
+
+/// A fully-responsive device fixture advertising `max_apdu` as its
+/// `PID_MAX_APDU_LENGTH` (`None` = property absent).
+fn responder_with_apdu(
+    addr: &str,
+    mask: u16,
+    manufacturer: u16,
+    max_apdu: Option<u16>,
+) -> MockDevice {
     let mut memory = HashMap::new();
     memory.insert(0x0060u16, vec![0xDE, 0xAD, 0xBE, 0xEF]);
     MockDevice {
@@ -386,6 +464,7 @@ fn responder(addr: &str, mask: u16, manufacturer: u16) -> MockDevice {
             serial: vec![0x00, 0x01, 0x02, 0x03, 0x04, 0x05],
             order: b"MDT-JAL0410".to_vec(),
             memory,
+            max_apdu,
         },
     }
 }
@@ -492,6 +571,93 @@ async fn device_descriptor_property_and_memory() {
 
     let mem = dev.read_memory(0x0060, 4).await.unwrap();
     assert_eq!(mem, vec![0xDE, 0xAD, 0xBE, 0xEF]);
+
+    dev.disconnect().await.unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+}
+
+#[tokio::test]
+async fn max_apdu_negotiation_scales_memory_chunk() {
+    use bussard_mgmt::Layer4Connection;
+
+    // A device advertising a large max APDU (KNX Virtual's 66) scales to the
+    // 63-octet memory ceiling; a device at the standard-frame floor (15) is capped
+    // to 12-octet chunks (standard frames); a device without the property falls
+    // back to the conservative 12 (issue #58).
+    let (addr, gw) = bind_mock().await;
+    let devices = vec![
+        responder_with_apdu("1.1.10", 0x07B0, 0x0083, Some(66)),
+        responder_with_apdu("1.1.11", 0x07B0, 0x0083, Some(15)),
+        responder_with_apdu("1.1.12", 0x07B0, 0x0083, None),
+    ];
+    let gw_task = tokio::spawn(run_mock(gw, devices));
+
+    let mut bus = open_bus(addr).await;
+    let source: IndividualAddress = "0.0.255".parse().unwrap();
+
+    for (target_str, expected_chunk, expect_negotiated) in [
+        ("1.1.10", 63u8, true),
+        ("1.1.11", 12u8, true),
+        ("1.1.12", 12u8, false),
+    ] {
+        let target: IndividualAddress = target_str.parse().unwrap();
+        let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+            .await
+            .unwrap();
+        // Before negotiation the conservative default applies.
+        assert_eq!(
+            l4.max_memory_chunk(),
+            12,
+            "{target_str}: pre-negotiation must be conservative"
+        );
+        let negotiated = l4.negotiate_max_apdu().await.unwrap();
+        assert_eq!(
+            negotiated.is_some(),
+            expect_negotiated,
+            "{target_str}: negotiation presence mismatch"
+        );
+        assert_eq!(
+            l4.max_memory_chunk(),
+            expected_chunk,
+            "{target_str}: memory chunk must scale to the advertised APDU"
+        );
+        l4.disconnect().await.unwrap();
+    }
+
+    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+}
+
+#[tokio::test]
+async fn retransmitted_previous_response_does_not_desync() {
+    // A device retransmits the PREVIOUS response (its old, one-behind send seq)
+    // before answering each new request — as it does when our earlier T_ACK was
+    // lost. await_ack must NOT treat that stale/out-of-window NDT as the ack of
+    // the new request (which would advance send_seq off stale evidence and
+    // desync). It must ACK expected-1, keep waiting, then consume the fresh
+    // response. Several requests in a row must all decode correctly (#57).
+    let (addr, gw) = bind_mock().await;
+    let devices = vec![MockDevice {
+        address: "1.1.7".parse().unwrap(),
+        behavior: Behavior::RetransmitsPreviousResponse { mask: 0x07B0 },
+    }];
+    let gw_task = tokio::spawn(run_mock(gw, devices));
+
+    let mut bus = open_bus(addr).await;
+    let target: IndividualAddress = "1.1.7".parse().unwrap();
+    let source: IndividualAddress = "0.0.255".parse().unwrap();
+    let mut dev = DeviceConnection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+
+    // The first read is clean; every subsequent read is preceded by a replayed
+    // previous response. All must yield the correct mask and stay in sync.
+    for i in 0..6 {
+        let mask = dev
+            .device_descriptor()
+            .await
+            .unwrap_or_else(|e| panic!("read {i} failed: {e}"));
+        assert_eq!(mask, 0x07B0, "read {i} must decode the fresh response");
+    }
 
     dev.disconnect().await.unwrap();
     let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
