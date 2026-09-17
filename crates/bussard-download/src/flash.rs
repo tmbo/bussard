@@ -63,8 +63,8 @@ use bussard_mgmt::MgmtError;
 use bussard_mgmt::connection::{L4Channel, Layer4Connection};
 use bussard_mgmt::load::{
     self, LoadControl, LoadState, WriteError, allocate_segment, compare_property,
-    master_reset_via_basic_restart, read_load_state, read_mcb_table, write_load_control,
-    write_property,
+    is_connection_death, master_reset_via_basic_restart, read_load_state, read_mcb_table,
+    write_load_control, write_property,
 };
 use bussard_mgmt::tables::{OT_APPLICATION_PROGRAM, PID_OBJECT_TYPE};
 use bussard_prod::application::{ApplicationProgram, LoadOp, LoadProcedure, SegmentKind};
@@ -476,14 +476,18 @@ fn master_reset_reboot_wait() -> std::time::Duration {
 /// connection periodically within a download (its capture shows repeated
 /// T_Disconnect/T_Connect cycles at 2–65-exchange intervals) to stay well clear.
 ///
-/// 20 is deliberately well under the observed ~35 so a cycle always lands with
-/// headroom: the check runs *before* each step, and a single step (a chunked
+/// 10 is deliberately well under the observed drop point (16–35, historically as
+/// low as ~7 on the live KV DA.tp) so a proactive cycle usually lands before the
+/// device drops: the check runs *before* each step, and a single step (a chunked
 /// memory write) can add several exchanges, so the effective peak before a cycle
-/// is `THRESHOLD` + one step's exchanges — still comfortably below the budget.
-/// Only sessions that [`can_reconnect`](Session::can_reconnect) cycle; a
-/// single-connection session ([`Session::from_connection`], mocks) keeps the
-/// one-connection path.
-const RECONNECT_EXCHANGE_THRESHOLD: u32 = 20;
+/// is `THRESHOLD` + one step's exchanges. The threshold is intentionally
+/// conservative rather than tuned to the mean because the drop is
+/// non-deterministic; whatever it misses is caught by resume-on-drop (see
+/// [`flash`]), which reconnects and re-runs the step when the connection dies
+/// unexpectedly mid-flow. Only sessions that
+/// [`can_reconnect`](Session::can_reconnect) cycle; a single-connection session
+/// ([`Session::from_connection`], mocks) keeps the one-connection path.
+const RECONNECT_EXCHANGE_THRESHOLD: u32 = 10;
 
 /// Environment variable that overrides [`RECONNECT_EXCHANGE_THRESHOLD`] with a
 /// numeric value. Set by the flash-mock periodic-reconnect test so it can drive
@@ -500,6 +504,26 @@ fn reconnect_exchange_threshold() -> u32 {
         .and_then(|s| s.trim().parse::<u32>().ok())
         .unwrap_or(RECONNECT_EXCHANGE_THRESHOLD)
 }
+
+/// How many times a single flash step is retried after an *unexpected* mid-flow
+/// connection death before the flash gives up on it.
+///
+/// This is the resume-on-drop bound (see [`flash`]). A connection-oriented device
+/// (KNX Virtual DA.tp) drops the L4 connection at a non-deterministic exchange
+/// count that no fixed proactive threshold can reliably stay under; when a step
+/// fails with a connection-death error and the session can reconnect, the engine
+/// cycles the L4 connection and re-runs the step. Load state and allocated
+/// segments are persistent device state that survive the drop, so re-running the
+/// step on the fresh connection is safe (memory writes are absolute/relative
+/// addressed; a re-issued StartLoading/allocate on an already-open object is
+/// idempotent enough).
+///
+/// The bound is *per step*, but **any forward progress resets it** (each step that
+/// completes starts the next step with a full budget): a healthy flash that simply
+/// needs a reconnect every few steps is unbounded, while a genuinely dead device
+/// that never completes a single step fails cleanly after this many reconnect
+/// attempts rather than looping forever.
+const MAX_RESUME_RECONNECTS: u32 = 5;
 
 /// Identity of the application being flashed, for the pre-flight display and the
 /// verify report.
@@ -1754,6 +1778,75 @@ async fn discover_object_table<Ch: L4Channel>(
     }
 }
 
+/// Discovers the object table like [`discover_object_table`], but **resumable at
+/// probe granularity** over the session so it survives a connection death mid-walk.
+///
+/// It probes `PID_OBJECT_TYPE` at each interface-object index in turn; on an
+/// unexpected connection death it reconnects and continues from the next
+/// unprobed index (object types are stable device state, so the indices already
+/// read stay valid). This matters on a device whose per-connection exchange budget
+/// is smaller than the number of objects: a single-shot discovery could never
+/// finish in one window, but accumulating one probe of forward progress per window
+/// does. Bounded by [`MAX_RESUME_RECONNECTS`] *reconnects without any new probe*, so
+/// a device that answers nothing still fails cleanly; every successful probe resets
+/// the bound.
+async fn discover_object_table_resumable<C: Connector>(
+    session: &mut Session<C>,
+) -> Result<(u8, Vec<(u8, u16)>), WriteError> {
+    let mut table: Vec<(u8, u16)> = Vec::new();
+    let mut app_obj: Option<u8> = None;
+    let mut index: u8 = 0;
+    let mut stalled_reconnects = 0u32;
+    while index < 16u8 {
+        let payload = bussard_mgmt::apci::encode_property_value_read(index, PID_OBJECT_TYPE, 1, 1);
+        match session
+            .l4()
+            .request(bussard_mgmt::apci::A_PROPERTY_VALUE_READ, &payload)
+            .await
+            .map_err(WriteError::Mgmt)
+        {
+            Ok((resp_apci, data)) => {
+                stalled_reconnects = 0;
+                if resp_apci != bussard_mgmt::apci::A_PROPERTY_VALUE_RESPONSE {
+                    break;
+                }
+                let Some(resp) = bussard_mgmt::apci::decode_property_value_response(&data) else {
+                    break;
+                };
+                if resp.count == 0 || resp.data.len() < 2 {
+                    break;
+                }
+                let ot = u16::from_be_bytes([resp.data[0], resp.data[1]]);
+                table.push((index, ot));
+                if ot == OT_APPLICATION_PROGRAM && app_obj.is_none() {
+                    app_obj = Some(index);
+                }
+                index += 1;
+            }
+            // Unexpected connection death mid-walk: reconnect and RETRY this same
+            // index (no progress was made on it). Bounded by consecutive stalls so a
+            // genuinely dead device fails cleanly.
+            Err(e)
+                if resumable_death(&e, session) && stalled_reconnects < MAX_RESUME_RECONNECTS =>
+            {
+                stalled_reconnects += 1;
+                session.reconnect().await?;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    let target = session.l4().target();
+    match app_obj {
+        Some(index) => Ok((index, table)),
+        None => Err(WriteError::Mgmt(
+            bussard_mgmt::MgmtError::MalformedResponse {
+                address: target,
+                reason: "device is missing the application-program interface object".to_string(),
+            },
+        )),
+    }
+}
+
 /// Resolves the op-carried `LsmIdx`/`ObjIdx` to the device interface-object index
 /// the step should act on, by **index**, not by object type — the divergence-#2 fix.
 ///
@@ -1900,6 +1993,92 @@ async fn allocate_with_context<Ch: L4Channel>(
     }
 }
 
+/// Retries a resumable flash primitive over the session across an *unexpected*
+/// connection death, reconnecting and re-running it.
+///
+/// This is a `macro_rules!` (not a generic higher-order fn) because the retried
+/// primitives borrow `session.l4()` for the duration of their future, a lifetime a
+/// single closure type cannot express without boxing. It expands to a bounded
+/// reconnect loop around the given expression, which it re-evaluates after each
+/// reconnect — so the primitive must be idempotent (load state and allocated
+/// segments are persistent device state, so re-issuing StartLoading / allocate /
+/// LoadCompleted / a state read is safe). Bounded by [`MAX_RESUME_RECONNECTS`]
+/// consecutive reconnects; each success is forward progress. A session that cannot
+/// reconnect surfaces the death unchanged (the mock single-connection path).
+///
+/// Making each *primitive* resumable — rather than only whole steps — is what lets
+/// a flash survive a per-connection exchange budget *smaller than a single step's
+/// exchange count*: the step's constituent writes/reads each make forward progress
+/// across windows, where a whole-step replay would straddle the same budget
+/// boundary forever.
+macro_rules! resume {
+    ($session:expr, $op:expr) => {{
+        let mut reconnects = 0u32;
+        loop {
+            match $op {
+                Ok(value) => break Ok(value),
+                Err(e) if resumable_death(&e, $session) && reconnects < MAX_RESUME_RECONNECTS => {
+                    reconnects += 1;
+                    $session.reconnect().await?;
+                }
+                Err(e) => break Err(e),
+            }
+        }
+    }};
+}
+
+/// Session-aware, resume-on-drop [`write_load_control`].
+async fn write_load_control_resumable<C: Connector>(
+    session: &mut Session<C>,
+    obj: u8,
+    control: LoadControl,
+) -> Result<LoadState, WriteError> {
+    resume!(
+        session,
+        write_load_control(session.l4(), obj, control).await
+    )
+}
+
+/// Session-aware, resume-on-drop [`start_loading`].
+async fn start_loading_resumable<C: Connector>(
+    session: &mut Session<C>,
+    obj: u8,
+    object_table: &[(u8, u16)],
+) -> Result<(), WriteError> {
+    resume!(
+        session,
+        start_loading(session.l4(), obj, object_table).await
+    )
+}
+
+/// Session-aware, resume-on-drop [`allocate_with_context`].
+async fn allocate_with_context_resumable<C: Connector>(
+    session: &mut Session<C>,
+    obj: u8,
+    size: u32,
+    object_table: &[(u8, u16)],
+) -> Result<bussard_mgmt::SegmentAllocation, WriteError> {
+    resume!(
+        session,
+        allocate_with_context(session.l4(), obj, size, object_table).await
+    )
+}
+
+/// Whether an error from a resumable flash operation is an *unexpected* connection
+/// death this session can recover from by reconnecting: a connection-death (see
+/// [`is_connection_death`]) on a session that [`can_reconnect`](Session::can_reconnect).
+///
+/// This is the shared predicate behind resume-on-drop: the initial discovery probe,
+/// each plan step, and the final verify each retry on it (bounded by
+/// [`MAX_RESUME_RECONNECTS`]). It is a free function rather than a generic
+/// retry-a-closure helper because the retried operations borrow the session's
+/// connection mutably for the duration of their future, which a single closure type
+/// cannot express without boxing; each call site owns its own small retry loop
+/// instead.
+fn resumable_death<C: Connector>(err: &WriteError, session: &Session<C>) -> bool {
+    is_connection_death(err) && session.can_reconnect()
+}
+
 /// Executes a validated [`FlashPlan`] against the device over the session's
 /// connection, reporting progress through `progress`, then verifies the result.
 ///
@@ -1922,7 +2101,14 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
     // `options.bcu_key` was consumed at connect time (the session was opened with
     // it); only `verify_after_restart` is read below, in the terminal-restart arm.
     let verify_after_restart = options.verify_after_restart;
-    let (app_obj, object_table) = discover_object_table(session.l4()).await?;
+    // The initial object-type discovery is itself several numbered exchanges — more
+    // than a very tight per-connection budget allows in one window — so on such a
+    // device the drop lands here, before the first step. Discovery resumes at
+    // **probe granularity**: it walks object indices, and on a connection death it
+    // reconnects and CONTINUES from the next index, keeping the indices already
+    // probed. Whole-operation replay alone could not recover a discovery that needs
+    // more exchanges than the budget; per-probe forward progress can.
+    let (app_obj, object_table) = discover_object_table_resumable(session).await?;
     let total = plan.steps.len();
 
     // The base address of the most-recently allocated relative segment, used by
@@ -1995,321 +2181,443 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
             total,
             label: step_label(step),
         });
-        match step {
-            FlashStep::Unload { target } => {
-                // Skip a load-control op that names an object index the device
-                // does not expose (a template LSM5 op on a device without obj5).
-                let Some(obj) = resolve_object_target_opt(
-                    *target,
-                    &object_table,
-                    app_obj,
-                    plan.spliced_from_template,
-                ) else {
-                    continue;
-                };
-                write_load_control(session.l4(), obj, LoadControl::Unload).await?;
-            }
-            FlashStep::StartLoading { target } => {
-                let Some(obj) = resolve_object_target_opt(
-                    *target,
-                    &object_table,
-                    app_obj,
-                    plan.spliced_from_template,
-                ) else {
-                    continue;
-                };
-                start_loading(session.l4(), obj, &object_table).await?;
-            }
-            FlashStep::AllocateSegment { size, target } => {
-                // Allocate against — and read PID7 (the per-object base) from — the
-                // object the op names by index. On KNX Virtual this is the ObjIdx
-                // (e.g. obj4 → base 0x6000); allocate_segment reads that object's
-                // PID_TABLE_REFERENCE, so the base the following WriteRelMem uses is
-                // this object's own. An index the device lacks is skipped.
-                let Some(obj) = resolve_object_target_opt(
-                    *target,
-                    &object_table,
-                    app_obj,
-                    plan.spliced_from_template,
-                ) else {
-                    continue;
-                };
-                let alloc = allocate_with_context(session.l4(), obj, *size, &object_table).await?;
-                segment_base = Some(alloc.address);
-                segment_bases.insert(obj, alloc.address);
-                last_alloc_size = Some(*size);
-                last_alloc_target = Some(obj);
-            }
-            FlashStep::WriteRelMem {
-                offset,
-                image,
-                target,
-            } => {
-                // Prefer this object's own allocated base (the multi-object
-                // template allocates every object before writing any, so the
-                // shared `segment_base` may belong to a later allocation). Fall
-                // back to the most-recent allocation for the single-object shape.
-                let base = resolve_object_target_opt(
-                    *target,
-                    &object_table,
-                    app_obj,
-                    plan.spliced_from_template,
-                )
-                .and_then(|obj| segment_bases.get(&obj).copied())
-                .or(segment_base)
-                .unwrap_or(0);
-                // The device-supplied segment base plus the vendor offset must fit
-                // the 16-bit A_Memory space. A `u16` cast of the sum would silently
-                // wrap and stream the image to the wrong address; refuse instead.
-                let addr = base
-                    .checked_add(*offset)
-                    .and_then(|a| u16::try_from(a).ok())
-                    .ok_or_else(|| WriteError::AddressOutOfRange {
-                        address: session.l4().target(),
-                        detail: format!("segment base {base:#X} + offset {offset:#X}"),
-                    })?;
-                let bytes = plan
-                    .images
-                    .get(&image.segment_id)
-                    .cloned()
-                    .unwrap_or_default();
-                write_image(session.l4(), addr, &bytes, &mut progress).await?;
-                if let Some(sample) = bytes.first().map(|_| take_sample(&bytes)) {
-                    written_samples.push((addr, sample));
-                }
-            }
-            FlashStep::WriteMem { address, image } => {
-                // The absolute address must fit the 16-bit A_Memory space; a `u16`
-                // cast would silently truncate a too-large vendor address.
-                let addr = u16::try_from(*address).map_err(|_| WriteError::AddressOutOfRange {
-                    address: session.l4().target(),
-                    detail: format!("absolute address {address:#X}"),
-                })?;
-                let bytes = plan
-                    .images
-                    .get(&image.segment_id)
-                    .cloned()
-                    .unwrap_or_default();
-                write_image(session.l4(), addr, &bytes, &mut progress).await?;
-                if !bytes.is_empty() {
-                    written_samples.push((addr, take_sample(&bytes)));
-                }
-            }
-            FlashStep::WriteProp {
-                obj_idx,
-                obj_type,
-                prop_id,
-                value,
-            } => {
-                // A spliced template writes properties on obj4 and obj5 (the app
-                // id, PID 13). Skip a write to an object index the device does not
-                // expose (obj5 on a device without a PEI program), exactly like
-                // the load-control steps — otherwise the device NAKs the write to
-                // the absent object and fails the flash. A `u32::MAX`-bounded index
-                // is compared against the discovered table.
-                let _ = obj_type;
-                if plan.spliced_from_template
-                    && !object_table.iter().any(|(i, _)| u32::from(*i) == *obj_idx)
-                {
-                    continue;
-                }
-                write_property(
-                    session.l4(),
-                    (*obj_idx).min(u32::from(u8::MAX)) as u8,
-                    (*prop_id).min(u32::from(u8::MAX)) as u8,
-                    1,
-                    1,
-                    value,
-                    None,
-                )
-                .await?;
-            }
-            FlashStep::CompareProp {
-                obj_idx,
-                prop_id,
-                expected,
-                mask,
-            } => {
-                // Read the named interface object's property and compare it
-                // against the vendor's expected data. A `Range`-only op has no
-                // literal expectation (`expected` is None) and is skipped. The op
-                // names the object by its own index (e.g. 0 = the device object),
-                // read directly — not the discovered app object.
-                if let Some(expected) = expected {
-                    compare_property(
-                        session.l4(),
-                        (*obj_idx).min(u32::from(u8::MAX)) as u8,
-                        (*prop_id).min(u32::from(u8::MAX)) as u8,
-                        expected,
-                        mask.as_deref(),
-                    )
-                    .await?;
-                }
-            }
-            FlashStep::LoadImageProp {
-                prop_id,
-                count,
-                image,
-                ..
-            } => {
-                // Read the loaded object's PID_MCB_TABLE and, where we wrote the
-                // object's image, validate the device's CRC over the stored
-                // segment against the bytes we streamed. The op names a vendor
-                // object index in the app's own numbering; the image bussard
-                // wrote lives on the single application-program object it
-                // discovered and loaded, so the MCB check targets `app_obj`.
-                // `read_mcb_table` compares the device's CRC16-CCITT to the CRC
-                // over `expected`; a mismatch surfaces `ImagePropMismatch`.
-                if *prop_id == u32::from(bussard_mgmt::PID_MCB_TABLE) {
-                    let expected = image
-                        .as_ref()
-                        .and_then(|img| plan.images.get(&img.segment_id))
-                        .map(Vec::as_slice);
-                    read_mcb_table(session.l4(), app_obj, 1, (*count).min(255) as u8, expected)
-                        .await?;
-                }
-            }
-            FlashStep::LoadCompleted { target } => {
-                // Skip a completion for an object the device does not expose (a
-                // template LSM5 completion on a device without obj5).
-                let Some(obj) = resolve_object_target_opt(
-                    *target,
-                    &object_table,
-                    app_obj,
-                    plan.spliced_from_template,
-                ) else {
-                    continue;
-                };
-                write_load_control(session.l4(), obj, LoadControl::LoadCompleted).await?;
-                if !completed_objects.contains(&obj) {
-                    completed_objects.push(obj);
-                }
-            }
-            FlashStep::MasterReset {
-                erase_code,
-                channel_number,
-            } => {
-                // Send the master reset as a BARE A_Restart (0x380), exactly as
-                // ETS→KNX-Virtual does on the wire for an LdCtrlMasterReset — NOT
-                // the confirmed master-reset A_Restart (0x381 + erase/channel).
-                // The device T_ACKs it at the transport layer and then reboots,
-                // dropping the L4 connection — the SPEC-REQUIRED single reconnect:
-                // wait out the reboot, re-establish the connection and re-authorize.
-                master_reset_via_basic_restart(session.l4(), *erase_code, *channel_number).await?;
-                tokio::time::sleep(master_reset_reboot_wait()).await;
-                session.reconnect().await?;
 
-                // The master reset ERASES the app object's load state (back to
-                // `Unloaded`) and drops the segment allocated before it (erase
-                // code 4, KNX Virtual). A resumed `WriteRelMem` would then target
-                // the now-stale pre-reset `segment_base` while the object is
-                // `Unloaded`, which the device rejects (it drops the connection
-                // after the first chunk). ETS re-runs the load-control sequence
-                // AFTER the reset before writing (real ETS→KV capture): re-open
-                // the object, then re-establish its segment and read back the
-                // (possibly relocated) base. Mirror that here so the resumed write
-                // targets valid, open memory:
-                //
-                //   1. If the object is not still open (reset wiped it to
-                //      `Unloaded`), re-open it with `StartLoading`. A lenient stack
-                //      that kept it open needs no re-open, so only drive
-                //      `StartLoading` when it actually fell out of the loading
-                //      state.
-                //   2. If a segment was allocated before the reset, re-allocate the
-                //      same size and UPDATE `segment_base` to the freshly-returned
-                //      address — the reset dropped the old placement, so the base
-                //      the following `WriteRelMem` uses must come from this fresh
-                //      allocation, not the stale pre-reset value.
-                //
-                // Re-open the object whose segment the reset dropped — the one the
-                // most-recent `AllocateSegment` targeted (`last_alloc_target`), not
-                // the type-discovered application object. On KNX Virtual DA.tp the
-                // reset sits right after obj4's allocate, so obj4 is what must be
-                // re-opened; the type-discovered app object is obj3, which the
-                // spliced template re-opens itself later — re-opening it here too
-                // would double-`StartLoading` it into `Error`. Fall back to
-                // `app_obj` for a self-contained procedure that allocated nothing
-                // through a distinct index.
-                let reset_obj = last_alloc_target.unwrap_or(app_obj);
-                let state = read_load_state(session.l4(), reset_obj).await?;
-                if !matches!(state, LoadState::Loading | LoadState::Loaded) {
-                    start_loading(session.l4(), reset_obj, &object_table).await?;
-                }
-                if let Some(size) = last_alloc_size {
-                    let alloc =
-                        allocate_with_context(session.l4(), reset_obj, size, &object_table).await?;
-                    segment_base = Some(alloc.address);
-                    // Update the per-object base too: the resumed `WriteRelMem` for
-                    // this object prefers its per-object base, which must be the
-                    // freshly-returned one, not the dropped pre-reset value.
-                    segment_bases.insert(reset_obj, alloc.address);
-                }
-            }
-            FlashStep::Restart => {
-                // The terminal restart reboots the device, and the flash is only a
-                // real success if the load *persists* across that reboot. KNX
-                // Virtual reports a transient `Loaded` while the device is still up,
-                // then reverts the application object to `Unloaded` after the restart
-                // when the written image is content-incomplete. Verifying *before*
-                // the restart therefore reads that transient `Loaded` and reports a
-                // non-persisting flash as a success — the false-positive this fixes.
-                //
-                // So, when the session can re-open its own connection, verify AFTER
-                // the restart: fire the restart, wait out the reboot, reconnect and
-                // re-authorize, then re-read the load state. Success is reported only
-                // if the application object is *genuinely* `Loaded` once the device
-                // is back; a load that did not persist now fails loudly.
-                //
-                // A session built from an already-open connection
-                // ([`Session::from_connection`], used by the mock-device tests) has
-                // no connector to reconnect with, and the mock does not reboot — so
-                // fall back to verifying over the still-open connection before the
-                // restart, preserving those tests' behaviour.
-                let (apci, payload) = bussard_mgmt::apci::encode_restart(0);
-                if verify_after_restart && session.can_reconnect() {
-                    let _ = session.l4().send_data_unacked(apci, &payload).await;
-                    // The device is unreachable while it reboots; wait it out (a
-                    // single bounded sleep, not a poll loop), then re-establish the
-                    // authorized connection.
-                    tokio::time::sleep(master_reset_reboot_wait()).await;
-                    session.reconnect().await?;
-                    // Re-discover the application object on the fresh connection: the
-                    // object index is stable across the reboot, but the L4 connection
-                    // is new, so probe it again rather than trusting the pre-restart
-                    // handle.
-                    let (post_app_obj, _post_table) = discover_object_table(session.l4()).await?;
-                    verified = Some(
-                        verify_outcome(
-                            session.l4(),
-                            post_app_obj,
-                            &completed_objects,
-                            &written_samples,
+        // Resume-on-drop: run the step, and if it dies from an *unexpected* mid-flow
+        // connection death (the device dropped the L4 connection at a
+        // non-deterministic exchange count — see [`is_connection_death`]) and the
+        // session can reconnect, cycle the L4 connection and re-run the whole step.
+        // Load state and allocated segments are persistent device state that survive
+        // the drop, so re-running the step on the fresh connection is safe: memory
+        // writes are absolute/relative-addressed, and a re-issued StartLoading /
+        // allocate on an already-open object lands in the same state. Bounded by
+        // [`MAX_RESUME_RECONNECTS`] per step so a genuinely dead device that never
+        // makes progress fails cleanly instead of looping forever; any step that
+        // completes starts the next with a full budget (forward progress resets it).
+        //
+        // `MasterReset` and the terminal `Restart` reboot the device and reconnect
+        // themselves, so they are excluded from resume-on-drop — their own silence
+        // is expected, not a death to recover from.
+        let mut resume_reconnects = 0u32;
+        'resume: loop {
+            let step_result: Result<(), WriteError> = async {
+                match step {
+                    FlashStep::Unload { target } => {
+                        // Skip a load-control op that names an object index the device
+                        // does not expose (a template LSM5 op on a device without obj5).
+                        let Some(obj) = resolve_object_target_opt(
+                            *target,
+                            &object_table,
+                            app_obj,
+                            plan.spliced_from_template,
+                        ) else {
+                            return Ok(());
+                        };
+                        write_load_control_resumable(session, obj, LoadControl::Unload).await?;
+                    }
+                    FlashStep::StartLoading { target } => {
+                        let Some(obj) = resolve_object_target_opt(
+                            *target,
+                            &object_table,
+                            app_obj,
+                            plan.spliced_from_template,
+                        ) else {
+                            return Ok(());
+                        };
+                        start_loading_resumable(session, obj, &object_table).await?;
+                    }
+                    FlashStep::AllocateSegment { size, target } => {
+                        // Allocate against — and read PID7 (the per-object base) from — the
+                        // object the op names by index. On KNX Virtual this is the ObjIdx
+                        // (e.g. obj4 → base 0x6000); allocate_segment reads that object's
+                        // PID_TABLE_REFERENCE, so the base the following WriteRelMem uses is
+                        // this object's own. An index the device lacks is skipped.
+                        let Some(obj) = resolve_object_target_opt(
+                            *target,
+                            &object_table,
+                            app_obj,
+                            plan.spliced_from_template,
+                        ) else {
+                            return Ok(());
+                        };
+                        let alloc =
+                            allocate_with_context_resumable(session, obj, *size, &object_table)
+                                .await?;
+                        segment_base = Some(alloc.address);
+                        segment_bases.insert(obj, alloc.address);
+                        last_alloc_size = Some(*size);
+                        last_alloc_target = Some(obj);
+                    }
+                    FlashStep::WriteRelMem {
+                        offset,
+                        image,
+                        target,
+                    } => {
+                        // Prefer this object's own allocated base (the multi-object
+                        // template allocates every object before writing any, so the
+                        // shared `segment_base` may belong to a later allocation). Fall
+                        // back to the most-recent allocation for the single-object shape.
+                        let base = resolve_object_target_opt(
+                            *target,
+                            &object_table,
+                            app_obj,
+                            plan.spliced_from_template,
                         )
-                        .await?,
-                    );
-                } else {
-                    // No connector to reconnect with: verify over the still-open
-                    // connection, then fire-and-forget the restart.
-                    verified = Some(
-                        verify_outcome(session.l4(), app_obj, &completed_objects, &written_samples)
-                            .await?,
-                    );
-                    let _ = session.l4().send_data_unacked(apci, &payload).await;
+                        .and_then(|obj| segment_bases.get(&obj).copied())
+                        .or(segment_base)
+                        .unwrap_or(0);
+                        // The device-supplied segment base plus the vendor offset must fit
+                        // the 16-bit A_Memory space. A `u16` cast of the sum would silently
+                        // wrap and stream the image to the wrong address; refuse instead.
+                        let addr = base
+                            .checked_add(*offset)
+                            .and_then(|a| u16::try_from(a).ok())
+                            .ok_or_else(|| WriteError::AddressOutOfRange {
+                                address: session.l4().target(),
+                                detail: format!("segment base {base:#X} + offset {offset:#X}"),
+                            })?;
+                        let bytes = plan
+                            .images
+                            .get(&image.segment_id)
+                            .cloned()
+                            .unwrap_or_default();
+                        write_image(session, addr, &bytes, &mut progress).await?;
+                        if let Some(sample) = bytes.first().map(|_| take_sample(&bytes)) {
+                            written_samples.push((addr, sample));
+                        }
+                    }
+                    FlashStep::WriteMem { address, image } => {
+                        // The absolute address must fit the 16-bit A_Memory space; a `u16`
+                        // cast would silently truncate a too-large vendor address.
+                        let addr =
+                            u16::try_from(*address).map_err(|_| WriteError::AddressOutOfRange {
+                                address: session.l4().target(),
+                                detail: format!("absolute address {address:#X}"),
+                            })?;
+                        let bytes = plan
+                            .images
+                            .get(&image.segment_id)
+                            .cloned()
+                            .unwrap_or_default();
+                        write_image(session, addr, &bytes, &mut progress).await?;
+                        if !bytes.is_empty() {
+                            written_samples.push((addr, take_sample(&bytes)));
+                        }
+                    }
+                    FlashStep::WriteProp {
+                        obj_idx,
+                        obj_type,
+                        prop_id,
+                        value,
+                    } => {
+                        // A spliced template writes properties on obj4 and obj5 (the app
+                        // id, PID 13). Skip a write to an object index the device does not
+                        // expose (obj5 on a device without a PEI program), exactly like
+                        // the load-control steps — otherwise the device NAKs the write to
+                        // the absent object and fails the flash. A `u32::MAX`-bounded index
+                        // is compared against the discovered table.
+                        let _ = obj_type;
+                        if plan.spliced_from_template
+                            && !object_table.iter().any(|(i, _)| u32::from(*i) == *obj_idx)
+                        {
+                            return Ok(());
+                        }
+                        write_property(
+                            session.l4(),
+                            (*obj_idx).min(u32::from(u8::MAX)) as u8,
+                            (*prop_id).min(u32::from(u8::MAX)) as u8,
+                            1,
+                            1,
+                            value,
+                            None,
+                        )
+                        .await?;
+                    }
+                    FlashStep::CompareProp {
+                        obj_idx,
+                        prop_id,
+                        expected,
+                        mask,
+                    } => {
+                        // Read the named interface object's property and compare it
+                        // against the vendor's expected data. A `Range`-only op has no
+                        // literal expectation (`expected` is None) and is skipped. The op
+                        // names the object by its own index (e.g. 0 = the device object),
+                        // read directly — not the discovered app object.
+                        if let Some(expected) = expected {
+                            compare_property(
+                                session.l4(),
+                                (*obj_idx).min(u32::from(u8::MAX)) as u8,
+                                (*prop_id).min(u32::from(u8::MAX)) as u8,
+                                expected,
+                                mask.as_deref(),
+                            )
+                            .await?;
+                        }
+                    }
+                    FlashStep::LoadImageProp {
+                        prop_id,
+                        count,
+                        image,
+                        ..
+                    } => {
+                        // Read the loaded object's PID_MCB_TABLE and, where we wrote the
+                        // object's image, validate the device's CRC over the stored
+                        // segment against the bytes we streamed. The op names a vendor
+                        // object index in the app's own numbering; the image bussard
+                        // wrote lives on the single application-program object it
+                        // discovered and loaded, so the MCB check targets `app_obj`.
+                        // `read_mcb_table` compares the device's CRC16-CCITT to the CRC
+                        // over `expected`; a mismatch surfaces `ImagePropMismatch`.
+                        if *prop_id == u32::from(bussard_mgmt::PID_MCB_TABLE) {
+                            let expected = image
+                                .as_ref()
+                                .and_then(|img| plan.images.get(&img.segment_id))
+                                .map(Vec::as_slice);
+                            read_mcb_table(
+                                session.l4(),
+                                app_obj,
+                                1,
+                                (*count).min(255) as u8,
+                                expected,
+                            )
+                            .await?;
+                        }
+                    }
+                    FlashStep::LoadCompleted { target } => {
+                        // Skip a completion for an object the device does not expose (a
+                        // template LSM5 completion on a device without obj5).
+                        let Some(obj) = resolve_object_target_opt(
+                            *target,
+                            &object_table,
+                            app_obj,
+                            plan.spliced_from_template,
+                        ) else {
+                            return Ok(());
+                        };
+                        write_load_control_resumable(session, obj, LoadControl::LoadCompleted)
+                            .await?;
+                        if !completed_objects.contains(&obj) {
+                            completed_objects.push(obj);
+                        }
+                    }
+                    FlashStep::MasterReset {
+                        erase_code,
+                        channel_number,
+                    } => {
+                        // Send the master reset as a BARE A_Restart (0x380), exactly as
+                        // ETS→KNX-Virtual does on the wire for an LdCtrlMasterReset — NOT
+                        // the confirmed master-reset A_Restart (0x381 + erase/channel).
+                        // The device T_ACKs it at the transport layer and then reboots,
+                        // dropping the L4 connection — the SPEC-REQUIRED single reconnect:
+                        // wait out the reboot, re-establish the connection and re-authorize.
+                        master_reset_via_basic_restart(session.l4(), *erase_code, *channel_number)
+                            .await?;
+                        tokio::time::sleep(master_reset_reboot_wait()).await;
+                        session.reconnect().await?;
+
+                        // The master reset ERASES the app object's load state (back to
+                        // `Unloaded`) and drops the segment allocated before it (erase
+                        // code 4, KNX Virtual). A resumed `WriteRelMem` would then target
+                        // the now-stale pre-reset `segment_base` while the object is
+                        // `Unloaded`, which the device rejects (it drops the connection
+                        // after the first chunk). ETS re-runs the load-control sequence
+                        // AFTER the reset before writing (real ETS→KV capture): re-open
+                        // the object, then re-establish its segment and read back the
+                        // (possibly relocated) base. Mirror that here so the resumed write
+                        // targets valid, open memory:
+                        //
+                        //   1. If the object is not still open (reset wiped it to
+                        //      `Unloaded`), re-open it with `StartLoading`. A lenient stack
+                        //      that kept it open needs no re-open, so only drive
+                        //      `StartLoading` when it actually fell out of the loading
+                        //      state.
+                        //   2. If a segment was allocated before the reset, re-allocate the
+                        //      same size and UPDATE `segment_base` to the freshly-returned
+                        //      address — the reset dropped the old placement, so the base
+                        //      the following `WriteRelMem` uses must come from this fresh
+                        //      allocation, not the stale pre-reset value.
+                        //
+                        // Re-open the object whose segment the reset dropped — the one the
+                        // most-recent `AllocateSegment` targeted (`last_alloc_target`), not
+                        // the type-discovered application object. On KNX Virtual DA.tp the
+                        // reset sits right after obj4's allocate, so obj4 is what must be
+                        // re-opened; the type-discovered app object is obj3, which the
+                        // spliced template re-opens itself later — re-opening it here too
+                        // would double-`StartLoading` it into `Error`. Fall back to
+                        // `app_obj` for a self-contained procedure that allocated nothing
+                        // through a distinct index.
+                        let reset_obj = last_alloc_target.unwrap_or(app_obj);
+                        // Re-establish the object on the fresh post-reboot connection,
+                        // resume-on-drop at block granularity: this whole re-open +
+                        // re-allocate is several exchanges and can itself outrun a tight
+                        // per-connection budget, but the MasterReset step is excluded from
+                        // the outer step-retry (it reconnects itself). Each sub-primitive is
+                        // therefore individually resume-on-drop (per-primitive forward
+                        // progress), so the re-establishment survives a budget smaller than
+                        // its total exchange count. Re-reading the load state and re-issuing
+                        // StartLoading / allocate are idempotent.
+                        let state = read_load_state_resumable(session, reset_obj).await?;
+                        if !matches!(state, LoadState::Loading | LoadState::Loaded) {
+                            start_loading_resumable(session, reset_obj, &object_table).await?;
+                        }
+                        if let Some(size) = last_alloc_size {
+                            let alloc = allocate_with_context_resumable(
+                                session,
+                                reset_obj,
+                                size,
+                                &object_table,
+                            )
+                            .await?;
+                            segment_base = Some(alloc.address);
+                            // Update the per-object base too: the resumed `WriteRelMem` for
+                            // this object prefers its per-object base, which must be the
+                            // freshly-returned one, not the dropped pre-reset value.
+                            segment_bases.insert(reset_obj, alloc.address);
+                        }
+                    }
+                    FlashStep::Restart => {
+                        // The terminal restart reboots the device, and the flash is only a
+                        // real success if the load *persists* across that reboot. KNX
+                        // Virtual reports a transient `Loaded` while the device is still up,
+                        // then reverts the application object to `Unloaded` after the restart
+                        // when the written image is content-incomplete. Verifying *before*
+                        // the restart therefore reads that transient `Loaded` and reports a
+                        // non-persisting flash as a success — the false-positive this fixes.
+                        //
+                        // So, when the session can re-open its own connection, verify AFTER
+                        // the restart: fire the restart, wait out the reboot, reconnect and
+                        // re-authorize, then re-read the load state. Success is reported only
+                        // if the application object is *genuinely* `Loaded` once the device
+                        // is back; a load that did not persist now fails loudly.
+                        //
+                        // A session built from an already-open connection
+                        // ([`Session::from_connection`], used by the mock-device tests) has
+                        // no connector to reconnect with, and the mock does not reboot — so
+                        // fall back to verifying over the still-open connection before the
+                        // restart, preserving those tests' behaviour.
+                        let (apci, payload) = bussard_mgmt::apci::encode_restart(0);
+                        if verify_after_restart && session.can_reconnect() {
+                            let _ = session.l4().send_data_unacked(apci, &payload).await;
+                            // The device is unreachable while it reboots; wait it out (a
+                            // single bounded sleep, not a poll loop), then re-establish the
+                            // authorized connection.
+                            tokio::time::sleep(master_reset_reboot_wait()).await;
+                            session.reconnect().await?;
+                            // Re-discover the application object on the fresh connection: the
+                            // object index is stable across the reboot, but the L4 connection
+                            // is new, so probe it again rather than trusting the pre-restart
+                            // handle. Resumable so a tight-budget device survives the re-probe.
+                            let (post_app_obj, _post_table) =
+                                discover_object_table_resumable(session).await?;
+                            verified = Some(
+                                verify_outcome(
+                                    session,
+                                    post_app_obj,
+                                    &completed_objects,
+                                    &written_samples,
+                                )
+                                .await?,
+                            );
+                        } else {
+                            // No connector to reconnect with: verify over the still-open
+                            // connection, then fire-and-forget the restart.
+                            verified = Some(
+                                verify_outcome(
+                                    session,
+                                    app_obj,
+                                    &completed_objects,
+                                    &written_samples,
+                                )
+                                .await?,
+                            );
+                            let _ = session.l4().send_data_unacked(apci, &payload).await;
+                        }
+                    }
                 }
+                Ok(())
+            }
+            .await;
+
+            match step_result {
+                Ok(()) => break 'resume,
+                // An unexpected mid-flow connection death on a resumable step: cycle the
+                // L4 connection and re-run the step, up to the per-step bound. This
+                // composes with the proactive `cycle_l4` above (which reduces how often
+                // we get here) and the per-write `MAX_EXCHANGE_RETRIES` inside
+                // `write_memory_verified` (which absorbs a single-chunk blip on the same
+                // connection); resume-on-drop is the outer net that reconnects a *dead*
+                // connection and replays the whole step.
+                Err(e)
+                    if resumable_death(&e, session)
+                        && !self_reconnecting_step
+                        && resume_reconnects < MAX_RESUME_RECONNECTS =>
+                {
+                    resume_reconnects += 1;
+                    // The old connection is dead (the device stopped answering); re-open
+                    // a fresh one and re-authorize, then replay the step. `reconnect`
+                    // drops the dead connection outright rather than trying a graceful
+                    // T_Disconnect the dead peer would not answer.
+                    session.reconnect().await?;
+                }
+                Err(e) => return Err(e),
             }
         }
     }
 
     // If no terminal restart captured the outcome (a procedure with no final
-    // Restart), verify now over the still-open connection.
+    // Restart), verify now over the still-open connection. `verify_outcome` is
+    // internally resume-on-drop (each read reconnects and retries), so a connection
+    // death here — after all the writes landed — is recovered rather than reported
+    // as a flash failure.
     match verified {
         Some(outcome) => Ok(outcome),
-        None => verify_outcome(session.l4(), app_obj, &completed_objects, &written_samples).await,
+        None => verify_outcome(session, app_obj, &completed_objects, &written_samples).await,
     }
 }
 
-/// Verifies a completed flash over the open connection: re-reads the load state
-/// of **every object that was programmed** (each that received a
+/// Reads one object's load state, **resuming at read granularity** over the
+/// session across an unexpected connection death: on a connection-death it
+/// reconnects and re-reads (the load state is persistent, so the read is
+/// idempotent). Bounded by [`MAX_RESUME_RECONNECTS`] consecutive reconnects.
+async fn read_load_state_resumable<C: Connector>(
+    session: &mut Session<C>,
+    obj: u8,
+) -> Result<LoadState, WriteError> {
+    let mut reconnects = 0u32;
+    loop {
+        match read_load_state(session.l4(), obj).await {
+            Ok(state) => return Ok(state),
+            Err(e) if resumable_death(&e, session) && reconnects < MAX_RESUME_RECONNECTS => {
+                reconnects += 1;
+                session.reconnect().await?;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Reads `len` octets at `addr`, resuming at read granularity over the session
+/// across an unexpected connection death (like [`read_load_state_resumable`]).
+async fn read_memory_resumable<C: Connector>(
+    session: &mut Session<C>,
+    addr: u16,
+    len: u8,
+) -> Result<Vec<u8>, WriteError> {
+    let mut reconnects = 0u32;
+    loop {
+        match load::read_memory(session.l4(), addr, len).await {
+            Ok(got) => return Ok(got),
+            Err(e) if resumable_death(&e, session) && reconnects < MAX_RESUME_RECONNECTS => {
+                reconnects += 1;
+                session.reconnect().await?;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Verifies a completed flash over the session's connection: re-reads the load
+/// state of **every object that was programmed** (each that received a
 /// `LoadCompleted`, plus the application object) and spot-checks a sample of each
 /// written segment against what was streamed.
 ///
@@ -2318,16 +2626,21 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
 /// must confirm the table objects reached `Loaded` too, or a device that
 /// silently failed to load a table would be reported as a success.
 ///
+/// Every read is individually resume-on-drop (see [`read_load_state_resumable`] /
+/// [`read_memory_resumable`]): the verify is many exchanges — more than a tight
+/// per-connection budget allows in one window — so a whole-verify replay could
+/// never finish; per-read forward progress can, and every read is idempotent.
+///
 /// Called with the device still up — either just before a terminal restart
 /// reboots it, or (for a procedure without a final restart) after the last step.
-async fn verify_outcome<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
+async fn verify_outcome<C: Connector>(
+    session: &mut Session<C>,
     app_obj: u8,
     completed_objects: &[u8],
     written_samples: &[(u16, Vec<u8>)],
 ) -> Result<FlashOutcome, WriteError> {
     // The application object's own state (kept as the headline `load_state`).
-    let load_state = read_load_state(l4, app_obj).await?;
+    let load_state = read_load_state_resumable(session, app_obj).await?;
 
     // Every programmed object's state: the completed set, plus the app object if
     // the procedure did not itself complete it (a bare app segment write). Read
@@ -2342,14 +2655,14 @@ async fn verify_outcome<Ch: L4Channel>(
         let state = if obj == app_obj {
             load_state
         } else {
-            read_load_state(l4, obj).await?
+            read_load_state_resumable(session, obj).await?
         };
         object_states.push((obj, state));
     }
 
     let mut spot_checks_match = true;
     for (addr, expected) in written_samples {
-        let got = load::read_memory(l4, *addr, expected.len() as u8).await?;
+        let got = read_memory_resumable(session, *addr, expected.len() as u8).await?;
         if &got != expected {
             spot_checks_match = false;
         }
@@ -2361,19 +2674,72 @@ async fn verify_outcome<Ch: L4Channel>(
     })
 }
 
-/// Streams `bytes` to `addr` over the connection, emitting a byte-progress event
-/// per confirmed write chunk. Each chunk is read-back-verified; a transient
-/// connection blip on an individual exchange is retried a bounded number of times
-/// on the same connection by [`bussard_mgmt::write_memory_verified`].
-async fn write_image<Ch: L4Channel, F: FnMut(Progress)>(
-    l4: &mut Layer4Connection<Ch>,
+/// Streams `bytes` to `addr` over the session's connection, emitting a
+/// byte-progress event per confirmed chunk, and **resuming at chunk granularity**
+/// across an unexpected connection death.
+///
+/// The write is chunked by [`bussard_mgmt::write_memory_verified`], which retries a
+/// single-chunk blip on the same connection. When the whole connection dies mid-way
+/// (the device dropped it), this reconnects and continues streaming from the last
+/// **confirmed** offset rather than restarting the image — essential on a device
+/// whose per-connection exchange budget is smaller than the whole image (a
+/// whole-image replay would drop at the same offset forever and never finish). The
+/// confirmed offset is tracked from the `on_written` cumulative callback, so no byte
+/// is re-sent unnecessarily and none is skipped. Bounded by [`MAX_RESUME_RECONNECTS`]
+/// consecutive reconnects that make no further progress; each confirmed chunk resets
+/// the bound. A session that cannot reconnect (mocks, `from_connection`) surfaces the
+/// death unchanged, exactly as before.
+async fn write_image<C: Connector, F: FnMut(Progress)>(
+    session: &mut Session<C>,
     addr: u16,
     bytes: &[u8],
     progress: &mut F,
 ) -> Result<(), WriteError> {
     let total = bytes.len();
-    let mut on_written = |written| progress(Progress::Bytes { written, total });
-    bussard_mgmt::write_memory_verified(l4, addr, bytes, &mut on_written).await
+    // Bytes confirmed written so far (cumulative), so a resume continues from here.
+    let mut confirmed = 0usize;
+    let mut stalled_reconnects = 0u32;
+    loop {
+        // Stream the remaining tail from the last confirmed offset. `on_written`
+        // reports the offset *within this call*; add the already-confirmed base to
+        // get the cumulative image offset (for the progress event and the resume
+        // cursor). `made_progress` distinguishes a death that advanced the cursor
+        // (reset the stall bound) from one that did not.
+        let base = confirmed;
+        let mut call_confirmed = confirmed;
+        let mut on_written = |written_in_call: usize| {
+            call_confirmed = base + written_in_call;
+            progress(Progress::Bytes {
+                written: call_confirmed,
+                total,
+            });
+        };
+        let tail_addr = addr.saturating_add(confirmed as u16);
+        let result = bussard_mgmt::write_memory_verified(
+            session.l4(),
+            tail_addr,
+            &bytes[confirmed..],
+            &mut on_written,
+        )
+        .await;
+        let made_progress = call_confirmed > confirmed;
+        confirmed = call_confirmed;
+        match result {
+            Ok(()) => return Ok(()),
+            Err(e)
+                if resumable_death(&e, session)
+                    && (made_progress || stalled_reconnects < MAX_RESUME_RECONNECTS) =>
+            {
+                if made_progress {
+                    stalled_reconnects = 0;
+                } else {
+                    stalled_reconnects += 1;
+                }
+                session.reconnect().await?;
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 /// The first up-to-4 octets of an image, used as the post-flash read-back sample.
