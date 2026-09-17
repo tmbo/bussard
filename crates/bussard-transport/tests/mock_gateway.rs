@@ -307,6 +307,85 @@ async fn out_of_window_sequence_is_silently_discarded_without_ack() {
 }
 
 #[tokio::test]
+async fn retransmit_two_behind_is_acked_and_dropped_then_resyncs() {
+    // Issue #58: a gateway retransmitting a frame *two* behind the expected
+    // sequence (its ACK-timeout resend after several of our ACKs were lost) must
+    // be ACKed-and-dropped, not silently discarded. The old one-frame window
+    // dropped it silently, so the gateway kept retransmitting and the tunnel
+    // desynced. After ACK-and-drop the next in-order frame is still delivered.
+    let (addr, gw) = bind_mock().await;
+
+    let gw_task = tokio::spawn(async move {
+        let (peer, _s, _b) = recv_frame(&gw).await;
+        let resp = knxnet_frame(
+            ServiceType::ConnectResponse,
+            &connect_response_body(0x0A, &gw),
+        );
+        gw.send_to(&resp, peer).await.unwrap();
+
+        let ia: IndividualAddress = "1.1.10".parse().unwrap();
+        let send = |seq: u8, ga: GroupAddress, val: u8| {
+            knxnet::tunneling_request(
+                knxnet::ConnectionHeader {
+                    channel_id: 0x0A,
+                    seq,
+                },
+                &CemiFrame::group_write_packed(ga, ia, &[val]),
+            )
+        };
+
+        // Deliver seq 0, 1, 2 in order (expected advances to 3), collecting ACKs.
+        for (seq, ga) in [(0u8, "1/2/3"), (1, "1/2/4"), (2, "1/2/5")] {
+            gw.send_to(&send(seq, ga.parse().unwrap(), seq), peer)
+                .await
+                .unwrap();
+            let (_p, s, _b) = recv_frame(&gw).await;
+            assert_eq!(s, ServiceType::TunnelingAck);
+        }
+
+        // Now retransmit seq 1 — two behind the expected seq 3. It must be ACKed
+        // (its own seq) and dropped, NOT silently discarded.
+        gw.send_to(&send(1, "1/2/4".parse().unwrap(), 1), peer)
+            .await
+            .unwrap();
+        let (_p, s, body) = recv_frame(&gw).await;
+        assert_eq!(s, ServiceType::TunnelingAck, "2-behind retransmit is ACKed");
+        let (h, _st) = knxnet::parse_tunneling_ack(&body).unwrap();
+        assert_eq!(h.seq, 1, "duplicate is ACKed with its own seq");
+
+        // A fresh seq 3 proves the window never desynced.
+        gw.send_to(&send(3, "12/3/45".parse().unwrap(), 3), peer)
+            .await
+            .unwrap();
+        let (_p, s, _b) = recv_frame(&gw).await;
+        assert_eq!(s, ServiceType::TunnelingAck);
+    });
+
+    let config = ConnectionConfig::tunnel(addr);
+    let mut conn = Transport::connect(&config).await.unwrap();
+
+    // The three in-order frames are delivered.
+    for expect in ["1/2/3", "1/2/4", "1/2/5"] {
+        let f = tokio::time::timeout(Duration::from_secs(2), conn.recv())
+            .await
+            .expect("in-order frame delivered")
+            .unwrap();
+        assert_eq!(f.frame.group_destination().unwrap().to_string(), expect);
+    }
+
+    // The 2-behind retransmit is NOT re-delivered; the next delivered frame is the
+    // fresh 12/3/45.
+    let next = tokio::time::timeout(Duration::from_secs(2), conn.recv())
+        .await
+        .expect("fresh frame after the retransmit")
+        .unwrap();
+    assert_eq!(next.frame.group_destination().unwrap().to_string(), "12/3/45");
+
+    gw_task.await.unwrap();
+    let _ = conn.close().await;
+}
+
+#[tokio::test]
 async fn unknown_message_code_is_acked_then_ignored() {
     // Issue #60 (C3): a cEMI carrying an unknown message code cannot be decoded,
     // but the in-sequence frame must still be ACKed so the gateway advances (an
