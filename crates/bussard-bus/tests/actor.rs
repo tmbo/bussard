@@ -263,6 +263,43 @@ async fn wait_connected_times_out_without_gateway() {
 }
 
 #[tokio::test]
+async fn state_changes_observes_connecting_to_connected() {
+    // The public `state_changes` watch must surface every transition. A fresh
+    // receiver holds the current state (Connecting at startup); once the mock
+    // completes the handshake it must observe Connected.
+    let (addr, gw) = bind_mock().await;
+    let gw_task = tokio::spawn(run_mock(gw, AckPolicy::Ack, None));
+
+    let (handle, _task) = Bus::connect(ConnectionConfig::tunnel(addr));
+    let mut states = handle.state_changes();
+
+    // The initial value is Connecting (the actor has not connected yet).
+    assert_eq!(*states.borrow_and_update(), BusState::Connecting);
+
+    // Drive the watch until it reports Connected, bounded so a hang fails fast.
+    let connected = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if *states.borrow_and_update() == BusState::Connected {
+                return true;
+            }
+            if states.changed().await.is_err() {
+                return false; // actor gone
+            }
+        }
+    })
+    .await
+    .expect("state_changes reaches Connected in time");
+    assert!(
+        connected,
+        "state_changes must observe Connecting -> Connected"
+    );
+    assert_eq!(handle.status(), BusState::Connected);
+
+    let _ = handle.close().await;
+    let _ = gw_task.await;
+}
+
+#[tokio::test]
 async fn send_receipt_resolves_on_ack() {
     let (addr, gw) = bind_mock().await;
     let gw_task = tokio::spawn(run_mock(gw, AckPolicy::Ack, None));
