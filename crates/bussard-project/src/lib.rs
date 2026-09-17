@@ -28,6 +28,7 @@ mod knx_master;
 mod manufacturer;
 mod password;
 mod project;
+mod version;
 
 use std::path::Path;
 
@@ -45,7 +46,13 @@ use container::Container;
 /// [`ImportError::WrongPassword`] if the supplied password does not decrypt it.
 pub fn import(path: &Path, password: Option<&str>) -> Result<Model, ImportError> {
     let mut container = Container::open(path, password)?;
-    let mut raw = project::parse_project(container.project_xml())?;
+    let schema = container.schema();
+    tracing::info!(
+        schema_version = schema.version(),
+        family = ?schema.family(),
+        "detected ETS schema version"
+    );
+    let mut raw = project::parse_project(container.project_xml(), schema)?;
 
     // `project.xml` carries the project name and the group-address style, which
     // `0.xml` does not. Read it (when present) to populate the name and to
