@@ -1,0 +1,14 @@
+address: 1.0.3
+name: Switch Hallway
+description: MDT AKI/AKS switch actuator, hallway light
+product:
+  manufacturer_ref: M-0083
+  application_ref: M-0083_A-0004-32-A137
+  mask: 07B0
+com_objects:
+  1:
+    dpt: '1.001'
+    flags: CW
+  8:
+    dpt: '1.011'
+    flags: CRT

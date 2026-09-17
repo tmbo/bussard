@@ -1,0 +1,3 @@
+# Vendor product data is copyrighted and never committed. run.sh regenerates
+# this directory from the product corpus / the KNX-Virtual fixture.
+/products/
