@@ -509,6 +509,42 @@ pub enum LoadOp {
         /// expresses its expectation as a numeric range rather than `InlineData`.
         range: Option<String>,
     },
+    /// `<LdCtrlCompareRelMem …>`: read relative (segment-relative) memory and
+    /// compare it against expected data — the memory twin of
+    /// [`LoadOp::CompareProp`] and the verify counterpart of
+    /// [`LoadOp::WriteRelMem`]. The procedure fails the flash if the device's
+    /// stored memory does not match.
+    ///
+    /// Real vendor shape (MDT BE-GTSx6Tx and MDT JTA blind push button, both mask
+    /// 07B0): `<LdCtrlCompareRelMem InlineData="FF" [Mask="FF"] [Invert="true"]
+    /// ObjIdx="4" Offset="1234" Size="1" />`. The expected value is the hex
+    /// `InlineData` attribute; an optional hex `Mask` (same length) AND-masks both
+    /// sides before comparing (`FF` = compare this byte, `00` = ignore). `Invert`,
+    /// when true, inverts the sense of the comparison (the read must *differ* from
+    /// the expected bytes under the mask). The read address is
+    /// `segment base + Offset`, where the segment base is the `ObjIdx` object's
+    /// `PID_TABLE_REFERENCE`, resolved at flash time exactly as
+    /// [`LoadOp::WriteRelMem`] resolves its write base.
+    CompareRelMem {
+        /// The interface object index (`ObjIdx`) whose segment base is read from
+        /// `PID_TABLE_REFERENCE`; the compare reads `base + offset`.
+        obj_idx: Option<u32>,
+        /// The byte offset within the object's segment (`Offset`).
+        offset: Option<u32>,
+        /// The number of octets to read and compare (`Size`).
+        size: Option<u32>,
+        /// The expected memory bytes, decoded from the hex `InlineData` attribute.
+        /// `None` when the op carried no `InlineData`.
+        inline_data: Option<Vec<u8>>,
+        /// The comparison mask, decoded from the hex `Mask` attribute (same length
+        /// as `inline_data`); each `0xFF` byte is compared, each `0x00` ignored.
+        /// `None` means compare every byte.
+        mask: Option<Vec<u8>>,
+        /// Whether the comparison sense is inverted (`Invert="true"`): when set,
+        /// the device memory must *differ* from `inline_data` under the mask for
+        /// the check to pass. `false` (the default) requires an exact match.
+        invert: bool,
+    },
     /// `<LdCtrlLoadImageProp …>`: load-image property integrity check. After a
     /// loadable object's image is written and the object reaches `Loaded`, the
     /// tool reads the object's `PropId` (27 = `PID_MCB_TABLE`) memory control
@@ -1428,6 +1464,19 @@ pub(crate) fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m
             inline_data: get(m, b"InlineData").and_then(decode_hex_bytes),
             mask: get(m, b"Mask").and_then(decode_hex_bytes),
             range: s(b"Range"),
+        },
+        b"LdCtrlCompareRelMem" => LoadOp::CompareRelMem {
+            obj_idx: u(b"ObjIdx"),
+            offset: u(b"Offset"),
+            size: u(b"Size"),
+            inline_data: get(m, b"InlineData").and_then(decode_hex_bytes),
+            mask: get(m, b"Mask").and_then(decode_hex_bytes),
+            // `Invert` is an ETS boolean attribute; only an explicit "true"
+            // (case-insensitive) or "1" inverts the sense, everything else (absent,
+            // "false", "0") keeps the default exact-match comparison.
+            invert: get(m, b"Invert")
+                .map(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "true" | "1"))
+                .unwrap_or(false),
         },
         b"LdCtrlLoadImageProp" => LoadOp::LoadImageProp {
             obj_idx: u(b"ObjIdx"),
