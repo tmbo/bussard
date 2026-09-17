@@ -66,7 +66,7 @@ use bussard_mgmt::connection::{L4Channel, Layer4Connection};
 use bussard_mgmt::load::{
     self, LoadControl, LoadState, WriteError, allocate_segment, compare_property, compare_rel_mem,
     is_connection_death, master_reset_via_basic_restart, read_load_state, read_mcb_table,
-    read_table_reference, write_load_control, write_property,
+    read_memory, read_table_reference, write_load_control, write_property,
 };
 use bussard_mgmt::tables::{OT_APPLICATION_PROGRAM, PID_OBJECT_TYPE};
 use bussard_prod::application::{ApplicationProgram, LoadOp, LoadProcedure, SegmentKind};
@@ -220,6 +220,82 @@ pub enum FlashStep {
         /// The channel number from the op's `ChannelNumber` attribute (`0` = the
         /// whole device).
         channel_number: u8,
+    },
+
+    // --- System 7 (mask 0705 / 0701) steps -----------------------------------
+    //
+    // System 7 is memory-mapped and absolute-addressed (`[system7-spec §2/§3]`):
+    // the LSM index names a load-state machine (a memory region), NOT a device
+    // object, so these steps carry the raw `lsm` index and are driven through the
+    // [`bussard_mgmt::LsmAccess`] seam (memory-mapped 12-octet record by default,
+    // property-based alternative) rather than System B's `PID_LOAD_STATE_CONTROL`
+    // property on a resolved object index. Kept distinct from the System B steps
+    // above so B semantics are never overloaded.
+    /// Tear down System 7 load-state machine `lsm` to `Unloaded`
+    /// (`LdCtrlUnload`, `[system7-spec §3]`).
+    Sys7Unload {
+        /// The 1-based LSM index (a memory-mapped load-state machine).
+        lsm: u32,
+    },
+    /// Open System 7 load-state machine `lsm` for loading (`LdCtrlLoad`).
+    Sys7StartLoading {
+        /// The 1-based LSM index.
+        lsm: u32,
+    },
+    /// Allocate an absolute segment on `lsm` at `address` and, when the segment
+    /// carries `<Data>`, stream that image to `address` in 12-octet chunks
+    /// (`LdCtrlAbsSegment`, `[system7-spec §4.2]`). A data-less segment (e.g. the
+    /// `0x0700` RAM region) is an allocate-only record — no memory write.
+    Sys7AbsSegment {
+        /// The 1-based LSM index the segment belongs to.
+        lsm: u32,
+        /// The absolute 16-bit memory address the segment is placed at.
+        address: u32,
+        /// The declared segment size in octets (the allocation length).
+        size: u32,
+        /// The memory type for the allocation (`3` = EEPROM, `2` = RAM), from the
+        /// mask profile.
+        mem_type: u8,
+        /// The segment image to stream, when the segment carries `<Data>`; `None`
+        /// for an allocate-only record.
+        image: Option<ImageRef>,
+    },
+    /// Finalize System 7 load-state machine `lsm` with a task/segment descriptor
+    /// pointing at `address` (`LdCtrlTaskSegment`, `[system7-spec §4.3]`), issued
+    /// immediately before `Sys7LoadCompleted`.
+    Sys7TaskSegment {
+        /// The 1-based LSM index.
+        lsm: u32,
+        /// The segment base address the task descriptor points at.
+        address: u32,
+        /// The LSM's total loaded span (the task descriptor's length field).
+        span: u32,
+    },
+    /// Write a task-control-table entry `count` times on `lsm` (`LdCtrlTaskCtrl1`,
+    /// `[system7-spec §4.4]`) — the Theben/Steinel/Elsner second-phase op.
+    Sys7TaskCtrl1 {
+        /// The 1-based LSM index.
+        lsm: u32,
+        /// The task-control-table address.
+        address: u32,
+        /// The repeat count.
+        count: u32,
+    },
+    /// Persist and activate System 7 load-state machine `lsm` → `Loaded`
+    /// (`LdCtrlLoadCompleted`).
+    Sys7LoadCompleted {
+        /// The 1-based LSM index.
+        lsm: u32,
+    },
+    /// Verify an absolute-memory range against expected inline data
+    /// (`LdCtrlCompareMem`, `[system7-spec §4.5]`) — the Zennio second-phase op.
+    /// Reads `expected.len()` octets at `address` and byte-compares; a mismatch
+    /// fails the flash. No LSM interaction.
+    Sys7CompareMem {
+        /// The absolute address to read.
+        address: u32,
+        /// The expected bytes (the op's `InlineData`).
+        expected: Vec<u8>,
     },
 }
 
@@ -599,9 +675,33 @@ pub struct FlashPlan {
     /// thelsing ProductDefault shape (`LsmIdx=4` on a device whose app object
     /// sits at a lower index).
     spliced_from_template: bool,
+    /// The System 7 execution context when this is a System 7 (mask 0705/0701)
+    /// plan, or `None` for a System B plan. Carries the data-driven mask profile
+    /// (LSM realisation, authorize level, mem-types) and the per-segment `<Mask>`
+    /// payloads the executor honours on masked writes (`[system7-spec §5]`).
+    sys7: Option<Sys7Context>,
+}
+
+/// The System 7 execution context attached to a [`FlashPlan`] for a mask
+/// 0705/0701 download (`[system7-spec §2.4/§5]`).
+#[derive(Debug, Clone)]
+pub struct Sys7Context {
+    /// The data-driven mask profile: LSM realisation (memory-mapped vs property),
+    /// authorize level, and the EEPROM/RAM mem-types for segment allocation.
+    pub profile: bussard_mgmt::Sys7Profile,
+    /// Per-segment `<Mask>` payloads (segment id → mask bytes), where a segment
+    /// declares one (only the `0x4000` table region does in the corpus). A `0xFF`
+    /// mask byte means "this byte belongs to the image, write it"; any other value
+    /// means "device-owned, leave untouched" (`[system7-spec §4.2]`).
+    pub segment_masks: BTreeMap<String, Vec<u8>>,
 }
 
 impl FlashPlan {
+    /// Whether this is a System 7 (mask 0705/0701) plan.
+    pub fn is_sys7(&self) -> bool {
+        self.sys7.is_some()
+    }
+
     /// Total octets written to device memory across all memory-write steps.
     pub fn total_write_bytes(&self) -> usize {
         self.steps
@@ -610,6 +710,9 @@ impl FlashPlan {
                 FlashStep::WriteRelMem { image, .. } | FlashStep::WriteMem { image, .. } => {
                     image.len
                 }
+                FlashStep::Sys7AbsSegment {
+                    image: Some(image), ..
+                } => image.len,
                 _ => 0,
             })
             .sum()
@@ -626,6 +729,9 @@ impl FlashPlan {
                 FlashStep::WriteRelMem { image, .. } | FlashStep::WriteMem { image, .. } => {
                     image.len.div_ceil(chunk)
                 }
+                FlashStep::Sys7AbsSegment {
+                    image: Some(image), ..
+                } => image.len.div_ceil(chunk),
                 _ => 0,
             })
             .sum()
@@ -1086,8 +1192,11 @@ pub fn plan_flash(
     template_ops: Option<&[LoadOp]>,
     table_images: &BTreeMap<u32, Vec<u8>>,
 ) -> std::result::Result<FlashPlan, PlanError> {
-    // 1. System B gate.
-    if !bussard_mgmt::is_system_b(device_mask) {
+    // 1. Family gate. System B and System 7 (mask 0705/0701, issue #49) are the
+    //    two supported families; every other mask refuses cleanly. System 7 is
+    //    dispatched to its own lowering below (after the shared mask-match check).
+    let profile = bussard_mgmt::MaskProfile::from_mask(device_mask);
+    if !profile.is_system_b() && !profile.is_system_7() {
         return Err(PlanError::NotSystemB {
             device: device.to_string(),
             device_mask,
@@ -1107,6 +1216,22 @@ pub fn plan_flash(
             device_mask,
             app_mask,
         });
+    }
+
+    // System 7 has its own memory-mapped, absolute-addressed lowering: the LSM
+    // events, AbsSegment allocation + streaming, TaskSegment finalize, and the
+    // obj0/PID78 preflight all differ from System B, so it is a separate path
+    // rather than a branchy overload of the System B lowering below.
+    if profile.is_system_7() {
+        return plan_flash_sys7(
+            app,
+            device,
+            device_mask,
+            overrides,
+            base_offsets,
+            profile,
+            None,
+        );
     }
 
     // 3. Assemble the op sequence to execute. A `MergedProcedure` app splits one
@@ -1676,7 +1801,384 @@ pub fn plan_flash(
         images,
         param_images,
         spliced_from_template,
+        sys7: None,
     })
+}
+
+/// Lowers a System 7 (mask 0705 / 0701) application into an executable
+/// [`FlashPlan`] (`[system7-spec §3/§4]`).
+///
+/// System 7 is memory-mapped and absolute-addressed: the download is a sequence
+/// of absolute-segment allocations + streams driven by three parallel load-state
+/// machines, with no `PID_TABLE_REFERENCE` resolution and no relative segments.
+/// The op → step mapping:
+///
+/// | `LoadOp`                | `FlashStep`                                    |
+/// |-------------------------|------------------------------------------------|
+/// | `Unload{lsm}`           | [`FlashStep::Sys7Unload`]                       |
+/// | `Load{lsm}`             | [`FlashStep::Sys7StartLoading`]                 |
+/// | `AbsSegment{lsm,a,sz}`  | [`FlashStep::Sys7AbsSegment`] (alloc + stream)  |
+/// | `TaskSegment{lsm,a}`    | [`FlashStep::Sys7TaskSegment`]                  |
+/// | `TaskCtrl1{lsm,a,c}`    | [`FlashStep::Sys7TaskCtrl1`]                    |
+/// | `LoadCompleted{lsm}`    | [`FlashStep::Sys7LoadCompleted`]                |
+/// | `CompareProp{0,78,d}`   | [`FlashStep::CompareProp`] (obj0/PID78 preflight)|
+/// | `CompareMem{a,d,sz}` (Raw)| [`FlashStep::Sys7CompareMem`]                 |
+/// | `LoadImageProp{oi,pid}` | [`FlashStep::LoadImageProp`] (Jung A-A011 MCB)  |
+/// | `Restart`               | [`FlashStep::Restart`]                          |
+///
+/// The mask profile ([`bussard_mgmt::Sys7Profile`]) supplies the LSM realisation,
+/// authorize level and mem-types; absent `HawkConfigurationData`, the
+/// corpus-default profile drives blind (`[system7-spec §2.4]`).
+fn plan_flash_sys7(
+    app: &ApplicationProgram,
+    _device: &str,
+    device_mask: u16,
+    overrides: &BTreeMap<String, String>,
+    base_offsets: &BTreeMap<String, u32>,
+    profile: bussard_mgmt::MaskProfile,
+    hawk: Option<&bussard_prod::HawkConfig>,
+) -> std::result::Result<FlashPlan, PlanError> {
+    let app_mask = app
+        .mask_version
+        .clone()
+        .ok_or_else(|| PlanError::MissingAppMask(app.id.clone()))?;
+
+    // System 7 apps carry their whole download in their own load procedures
+    // (ProductProcedure style — no master-template splice; `[corpus 49/49]`).
+    let (ops, _spliced) = assemble_ops(app, None);
+    if ops.is_empty() {
+        return Err(PlanError::NoProcedure(app.id.clone()));
+    }
+
+    // Resolve parameter images up front (the 0x4400 param segments carry <Data>
+    // already, but a module-based app may still compute per-instance images).
+    let param_images = bussard_prod::compute_parameter_image(app, overrides, base_offsets)
+        .map_err(|e| PlanError::UnresolvableImage {
+            step: 0,
+            reason: format!("computing the parameter image: {e}"),
+        })?;
+
+    // The data-driven mask profile: from `HawkConfigurationData` when the import
+    // path supplied one, else the corpus-default fallback (`[system7-spec §2.4]`).
+    let s7_profile = hawk
+        .and_then(sys7_profile_from_hawk)
+        .or_else(|| profile.sys7_default_profile())
+        .unwrap_or_else(bussard_mgmt::Sys7Profile::corpus_default);
+
+    // Index the app's absolute code segments by address so each AbsSegment op can
+    // find its <Data>/<Mask> payload. System 7 segments are all absolute.
+    let mut seg_by_addr: BTreeMap<u32, &bussard_prod::CodeSegment> = BTreeMap::new();
+    for seg in app.code_segments.values() {
+        if seg.kind == SegmentKind::Absolute
+            && let Some(addr) = seg.address_or_offset
+        {
+            seg_by_addr.insert(addr, seg);
+        }
+    }
+
+    let mut steps: Vec<FlashStep> = Vec::new();
+    let mut images: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let mut segment_masks: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    // Track, per LSM, the highest (address + size) seen so a TaskSegment's span
+    // can be the LSM's total loaded extent from its base.
+    let mut lsm_span_end: BTreeMap<u32, u32> = BTreeMap::new();
+    let mut lsm_span_base: BTreeMap<u32, u32> = BTreeMap::new();
+
+    for (i, op) in ops.iter().enumerate() {
+        let step_no = i + 1;
+        match op {
+            LoadOp::Connect | LoadOp::Disconnect => {}
+            LoadOp::Restart => steps.push(FlashStep::Restart),
+            LoadOp::Unload { lsm_idx } => steps.push(FlashStep::Sys7Unload {
+                lsm: lsm_idx.unwrap_or(0),
+            }),
+            LoadOp::Load { lsm_idx } => steps.push(FlashStep::Sys7StartLoading {
+                lsm: lsm_idx.unwrap_or(0),
+            }),
+            LoadOp::LoadCompleted { lsm_idx } => steps.push(FlashStep::Sys7LoadCompleted {
+                lsm: lsm_idx.unwrap_or(0),
+            }),
+            LoadOp::AbsSegment {
+                lsm_idx,
+                address,
+                size,
+            } => {
+                let lsm = lsm_idx.unwrap_or(0);
+                let addr = address.ok_or_else(|| PlanError::UnresolvableImage {
+                    step: step_no,
+                    reason: "LdCtrlAbsSegment has no Address".to_string(),
+                })?;
+                let size = size.unwrap_or(0);
+                // Track the LSM's loaded extent for the TaskSegment span.
+                lsm_span_base
+                    .entry(lsm)
+                    .and_modify(|b| *b = (*b).min(addr))
+                    .or_insert(addr);
+                lsm_span_end
+                    .entry(lsm)
+                    .and_modify(|e| *e = (*e).max(addr + size))
+                    .or_insert(addr + size);
+                // Bind the segment's <Data>/<Mask>. A segment with no <Data> is an
+                // allocate-only record (e.g. the 0x0700 RAM region) — no stream.
+                let image = seg_by_addr.get(&addr).and_then(|seg| {
+                    seg.data.as_ref().map(|data| {
+                        images.insert(seg.id.clone(), data.clone());
+                        if let Some(mask) = &seg.mask {
+                            segment_masks.insert(seg.id.clone(), mask.clone());
+                        }
+                        ImageRef {
+                            segment_id: seg.id.clone(),
+                            kind: ImageKind::Code,
+                            len: data.len(),
+                        }
+                    })
+                });
+                steps.push(FlashStep::Sys7AbsSegment {
+                    lsm,
+                    address: addr,
+                    size,
+                    mem_type: mem_type_for_addr(addr, &s7_profile),
+                    image,
+                });
+            }
+            LoadOp::TaskSegment { lsm_idx, address } => {
+                let lsm = lsm_idx.unwrap_or(0);
+                let addr = address.ok_or_else(|| PlanError::UnresolvableImage {
+                    step: step_no,
+                    reason: "LdCtrlTaskSegment has no Address".to_string(),
+                })?;
+                let base = lsm_span_base.get(&lsm).copied().unwrap_or(addr);
+                let end = lsm_span_end.get(&lsm).copied().unwrap_or(addr);
+                let span = end.saturating_sub(base);
+                steps.push(FlashStep::Sys7TaskSegment {
+                    lsm,
+                    address: addr,
+                    span,
+                });
+            }
+            LoadOp::TaskCtrl1 {
+                lsm_idx,
+                address,
+                count,
+            } => {
+                let lsm = lsm_idx.unwrap_or(0);
+                let addr = address.ok_or_else(|| PlanError::UnresolvableImage {
+                    step: step_no,
+                    reason: "LdCtrlTaskCtrl1 has no Address".to_string(),
+                })?;
+                steps.push(FlashStep::Sys7TaskCtrl1 {
+                    lsm,
+                    address: addr,
+                    count: count.unwrap_or(1),
+                });
+            }
+            LoadOp::CompareProp {
+                obj_idx,
+                prop_id,
+                inline_data,
+                mask,
+                ..
+            } => {
+                // The obj0/PID78 preflight (44/49 MDT apps). Reuses the System B
+                // CompareProp step: an interface-object property read + compare,
+                // which is identical on System 7 (`[system7-spec §4.6]`).
+                steps.push(FlashStep::CompareProp {
+                    obj_idx: obj_idx.unwrap_or(0),
+                    prop_id: prop_id.unwrap_or(0),
+                    expected: inline_data.clone(),
+                    mask: mask.clone(),
+                });
+            }
+            LoadOp::LoadImageProp {
+                obj_idx,
+                prop_id,
+                count,
+                ..
+            } => {
+                // Jung M-0004_A-A011 requires per-object MCB verification via
+                // LoadImageProp PID 27 (`[system7-spec §2 amendment]`). Reuses the
+                // System B LoadImageProp step (an MCB-table read + CRC compare).
+                steps.push(FlashStep::LoadImageProp {
+                    obj_idx: obj_idx.unwrap_or(0),
+                    prop_id: prop_id.unwrap_or(bussard_mgmt::PID_MCB_TABLE.into()),
+                    count: count.unwrap_or(1).max(1),
+                    // System 7 read-back verify is the baseline; the MCB check is a
+                    // read-only confirm against the device's own CRC, so no
+                    // tool-side image is bound here.
+                    image: None,
+                });
+            }
+            LoadOp::Raw { name, attrs } if name == "LdCtrlCompareMem" => {
+                let (address, expected) =
+                    parse_compare_mem(attrs).ok_or_else(|| PlanError::UnresolvableImage {
+                        step: step_no,
+                        reason: "LdCtrlCompareMem missing Address or InlineData".to_string(),
+                    })?;
+                steps.push(FlashStep::Sys7CompareMem { address, expected });
+            }
+            // System 7 never carries these (`[corpus §2]`); a Raw op we do not
+            // recognise refuses cleanly rather than silently skipping.
+            other => {
+                return Err(PlanError::UnsupportedOp {
+                    op: sys7_op_label(other),
+                });
+            }
+        }
+    }
+
+    Ok(FlashPlan {
+        identity: AppIdentity {
+            id: app.id.clone(),
+            name: app.name.clone(),
+            application_number: app.application_number,
+            application_version: app.application_version,
+            mask_version: app_mask,
+        },
+        device_mask,
+        steps,
+        images,
+        param_images,
+        spliced_from_template: false,
+        sys7: Some(Sys7Context {
+            profile: s7_profile,
+            segment_masks,
+        }),
+    })
+}
+
+/// Plans a System 7 flash using a `.knxprod`'s parsed `HawkConfigurationData` to
+/// resolve the LSM realisation and addresses, falling back to the corpus default
+/// when the block is absent (`[system7-spec §2.4]`).
+///
+/// This is the data-driven entry the CLI uses when it has the master template's
+/// Hawk config for the device mask; [`plan_flash`] itself (which does not receive
+/// the full template) uses the corpus default. Refuses a non-System-7 mask with
+/// [`PlanError::NotSystemB`].
+pub fn plan_flash_sys7_with_hawk(
+    app: &ApplicationProgram,
+    device: &str,
+    device_mask: u16,
+    overrides: &BTreeMap<String, String>,
+    base_offsets: &BTreeMap<String, u32>,
+    hawk: Option<&bussard_prod::HawkConfig>,
+) -> std::result::Result<FlashPlan, PlanError> {
+    let profile = bussard_mgmt::MaskProfile::from_mask(device_mask);
+    if !profile.is_system_7() {
+        return Err(PlanError::NotSystemB {
+            device: device.to_string(),
+            device_mask,
+            system: bussard_mgmt::system_type(device_mask),
+        });
+    }
+    let app_mask = app
+        .mask_version
+        .clone()
+        .ok_or_else(|| PlanError::MissingAppMask(app.id.clone()))?;
+    if u16::from_str_radix(app_mask.trim(), 16).ok() != Some(device_mask) {
+        return Err(PlanError::MaskMismatch {
+            device: device.to_string(),
+            device_mask,
+            app_mask,
+        });
+    }
+    plan_flash_sys7(
+        app,
+        device,
+        device_mask,
+        overrides,
+        base_offsets,
+        profile,
+        hawk,
+    )
+}
+
+/// Derives a [`bussard_mgmt::Sys7Profile`] from a mask's parsed
+/// `HawkConfigurationData` (`[system7-spec §2.4/§5]`).
+///
+/// Reads the `GroupAddressTableLoadControl` (the memory-mapped LSM control
+/// address + record length) and `GroupAddressTableLoadStatus` (the status base)
+/// resources. A `Flavour="LoadControl_M112"` LoadControl selects
+/// [`bussard_mgmt::LsmRealisation::MemoryMapped`] with the resolved addresses;
+/// absent that, `None` (the caller falls back to the corpus default). The Jung
+/// MV-0705 block resolves to exactly the corpus default (control `0x0104`, status
+/// `0xB6EA`), confirming the spec §5 defaults.
+pub fn sys7_profile_from_hawk(
+    hawk: &bussard_prod::HawkConfig,
+) -> Option<bussard_mgmt::Sys7Profile> {
+    let control = hawk.resource("GroupAddressTableLoadControl")?;
+    // Only the memory-mapped M112 LoadControl is data-driven here; a property
+    // realisation would carry a SystemProperty address space instead.
+    let control_addr = match (control.address_space.as_deref(), control.start_address) {
+        (Some("StandardMemory"), Some(addr)) => u16::try_from(addr).ok()?,
+        _ => return None,
+    };
+    let status_addr = hawk
+        .resource("GroupAddressTableLoadStatus")
+        .and_then(|s| s.start_address)
+        .and_then(|a| u16::try_from(a).ok())
+        .unwrap_or(0xB6EA);
+    let mut profile = bussard_mgmt::Sys7Profile::corpus_default();
+    profile.lsm = bussard_mgmt::LsmRealisation::MemoryMapped {
+        control_addr,
+        status_addr,
+    };
+    Some(profile)
+}
+
+/// The mem-type for a System 7 absolute-segment allocation at `addr`: RAM (`2`)
+/// for the low-RAM working region (`0x0700`/`0x0730` ≤ addr < `0x4000`), EEPROM
+/// (`3`) for the table/param regions (`[system7-spec §4.2]`).
+fn mem_type_for_addr(addr: u32, profile: &bussard_mgmt::Sys7Profile) -> u8 {
+    if addr < 0x4000 {
+        profile.ram_mem_type
+    } else {
+        profile.eeprom_mem_type
+    }
+}
+
+/// A human label for a System 7 op that this engine cannot lower.
+fn sys7_op_label(op: &LoadOp) -> String {
+    match op {
+        LoadOp::Raw { name, .. } => name.clone(),
+        LoadOp::WriteMem { .. } => "LdCtrlWriteMem (not in the System 7 corpus)".to_string(),
+        LoadOp::RelSegment { .. } => {
+            "LdCtrlRelSegment (System 7 is absolute-addressed)".to_string()
+        }
+        LoadOp::WriteRelMem { .. } => {
+            "LdCtrlWriteRelMem (System 7 is absolute-addressed)".to_string()
+        }
+        LoadOp::WriteProp { .. } => "LdCtrlWriteProp (not in the System 7 corpus)".to_string(),
+        LoadOp::MasterReset { .. } => "LdCtrlMasterReset (not in the System 7 corpus)".to_string(),
+        other => format!("{other:?}"),
+    }
+}
+
+/// Parses an `LdCtrlCompareMem` raw op's `Address` and `InlineData` attributes
+/// (`[system7-spec §4.5]`). Returns `(address, expected_bytes)`.
+fn parse_compare_mem(attrs: &[(String, String)]) -> Option<(u32, Vec<u8>)> {
+    let mut address: Option<u32> = None;
+    let mut inline: Option<Vec<u8>> = None;
+    for (k, v) in attrs {
+        match k.as_str() {
+            "Address" => address = v.trim().parse().ok(),
+            "InlineData" => inline = decode_hex(v),
+            _ => {}
+        }
+    }
+    Some((address?, inline?))
+}
+
+/// Decodes an even-length hex string (e.g. an `InlineData` attribute) into bytes;
+/// `None` on odd length or a non-hex digit.
+fn decode_hex(s: &str) -> Option<Vec<u8>> {
+    let s = s.trim();
+    if s.len() % 2 != 0 {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect()
 }
 
 /// Assembles the op sequence to execute from an app's load procedures, splicing
@@ -2258,6 +2760,11 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
     options: FlashOptions,
     mut progress: F,
 ) -> Result<FlashOutcome, WriteError> {
+    // System 7 has its own memory-mapped, absolute-addressed executor: the LSM
+    // control, absolute streaming and read-back verify all differ from System B.
+    if plan.sys7.is_some() {
+        return flash_sys7(session, plan, options, progress).await;
+    }
     // `options.bcu_key` was consumed at connect time (the session was opened with
     // it); only `verify_after_restart` is read below, in the terminal-restart arm.
     let verify_after_restart = options.verify_after_restart;
@@ -2761,6 +3268,15 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                             let _ = session.l4().send_data_unacked(apci, &payload).await;
                         }
                     }
+                    // System 7 steps are executed by `flash_sys7` (dispatched at the
+                    // top of `flash`); a System B plan never carries them.
+                    FlashStep::Sys7Unload { .. }
+                    | FlashStep::Sys7StartLoading { .. }
+                    | FlashStep::Sys7AbsSegment { .. }
+                    | FlashStep::Sys7TaskSegment { .. }
+                    | FlashStep::Sys7TaskCtrl1 { .. }
+                    | FlashStep::Sys7LoadCompleted { .. }
+                    | FlashStep::Sys7CompareMem { .. } => {}
                 }
                 Ok(())
             }
@@ -2801,6 +3317,354 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
         Some(outcome) => Ok(outcome),
         None => verify_outcome(session, app_obj, &completed_objects, &written_samples).await,
     }
+}
+
+/// Executes a validated **System 7** [`FlashPlan`] (`[system7-spec §3/§4]`).
+///
+/// System 7 is memory-mapped and absolute-addressed: it drives the three parallel
+/// load-state machines through the [`bussard_mgmt::LsmAccess`] seam (memory-mapped
+/// 12-octet record by default), allocates each absolute segment and streams its
+/// `<Data>` to the segment's fixed address in 12-octet chunks (honouring the
+/// `0x4000` region's per-byte `<Mask>`), finalizes each LSM with a TaskSegment,
+/// and verifies by read-back compare. The obj0/PID78 preflight, `LdCtrlCompareMem`
+/// and per-object `LdCtrlLoadImageProp` MCB checks reuse the System B primitives.
+///
+/// The session was already authorized at connect time (System 7 requires
+/// `A_Authorize` before memory access; the free-access key is presented by
+/// [`Session::open`]). It shares the same resume-on-drop and proactive-L4-cycling
+/// discipline as [`flash`] via the session, but has its own step loop because the
+/// LSM control and absolute streaming differ from System B.
+async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
+    session: &mut Session<C>,
+    plan: &FlashPlan,
+    _options: FlashOptions,
+    mut progress: F,
+) -> Result<FlashOutcome, WriteError> {
+    let ctx = plan
+        .sys7
+        .as_ref()
+        .expect("flash_sys7 called on a non-System-7 plan");
+    let lsm = bussard_mgmt::lsm_access_from_profile(&ctx.profile);
+    let total = plan.steps.len();
+    // Read-back spot-check samples of the segment writes (address, first octets).
+    let mut written_samples: Vec<(u16, Vec<u8>)> = Vec::new();
+    // The LSMs that reached LoadCompleted, in order, for the post-flash verify.
+    let mut completed_lsms: Vec<u32> = Vec::new();
+
+    // The proactive-reconnect exchange threshold (0 = disabled), read once — the
+    // same ETS-pattern L4 cycling the System B path uses.
+    let reconnect_threshold = reconnect_exchange_threshold();
+
+    for (i, step) in plan.steps.iter().enumerate() {
+        // Proactive periodic L4 reconnection between steps (never mid memory
+        // write). The LSM states and allocated segments are persistent device
+        // state, so they survive a graceful cycle. The terminal Restart reboots
+        // the device itself, so it is excluded.
+        let self_reconnecting = matches!(step, FlashStep::Restart);
+        if reconnect_threshold > 0
+            && session.can_reconnect()
+            && !self_reconnecting
+            && session.numbered_exchanges() >= reconnect_threshold
+        {
+            session.cycle_l4().await?;
+        }
+        progress(Progress::Step {
+            index: i + 1,
+            total,
+            label: step_label(step),
+        });
+
+        // Resume-on-drop: run the step, and if it dies from an unexpected mid-flow
+        // connection death and the session can reconnect, cycle the connection and
+        // re-run the whole step. LSM state and allocated segments are persistent
+        // device state that survive the drop, and every System 7 memory write is
+        // absolute-addressed and idempotent, so replaying the step is safe. The
+        // terminal Restart reboots the device and is excluded (its silence is
+        // expected). Bounded by MAX_RESUME_RECONNECTS per step.
+        let mut resume_reconnects = 0u32;
+        'resume: loop {
+            let step_result: Result<(), WriteError> = async {
+        match step {
+            FlashStep::Sys7Unload { lsm: idx } => {
+                lsm.drive(session.l4(), lsm_octet(*idx), LoadControl::Unload)
+                    .await?;
+            }
+            FlashStep::Sys7StartLoading { lsm: idx } => {
+                lsm.drive(session.l4(), lsm_octet(*idx), LoadControl::StartLoading)
+                    .await?;
+            }
+            FlashStep::Sys7AbsSegment {
+                lsm: idx,
+                address,
+                size,
+                mem_type,
+                image,
+            } => {
+                // 1. Allocate the absolute segment on the LSM. `access`/`mem_attr`
+                //    default to 0 per the corpus-default profile (S7-CAL markers in
+                //    `bussard_mgmt::sys7`).
+                let event = bussard_mgmt::encode_alloc_segment(
+                    bussard_mgmt::sys7::S7_SUB_ALLOC_DATA,
+                    (*address & 0xFFFF) as u16,
+                    (*size & 0xFFFF) as u16,
+                    0x00,
+                    *mem_type,
+                    0x00,
+                );
+                lsm.send_control(session.l4(), lsm_octet(*idx), &event)
+                    .await?;
+                // 2. Stream the segment's <Data>, if any, to its absolute address.
+                //    A data-less segment (0x0700 RAM region) is allocate-only.
+                if let Some(img) = image {
+                    let bytes = plan
+                        .images
+                        .get(&img.segment_id)
+                        .expect("System 7 segment image resolved at plan time");
+                    let addr =
+                        u16::try_from(*address).map_err(|_| WriteError::AddressOutOfRange {
+                            address: session.l4().target(),
+                            detail: format!(
+                                "System 7 segment address {address:#X} exceeds the 16-bit \
+                                 A_Memory space"
+                            ),
+                        })?;
+                    let mask = ctx.segment_masks.get(&img.segment_id);
+                    write_sys7_segment(
+                        session,
+                        addr,
+                        bytes,
+                        mask.map(Vec::as_slice),
+                        &mut progress,
+                    )
+                    .await?;
+                    // Spot-check only unmasked segments: a masked segment leaves
+                    // device-owned bytes untouched, so the image's leading octets
+                    // do not equal the device's memory. The owned bytes were
+                    // already read-back-verified per-chunk during the write.
+                    if mask.is_none() {
+                        written_samples.push((addr, take_sample(bytes)));
+                    }
+                }
+            }
+            FlashStep::Sys7TaskSegment {
+                lsm: idx,
+                address,
+                span,
+            } => {
+                let event = bussard_mgmt::encode_task_segment(
+                    (*address & 0xFFFF) as u16,
+                    (*span & 0xFFFF) as u16,
+                );
+                lsm.send_control(session.l4(), lsm_octet(*idx), &event)
+                    .await?;
+            }
+            FlashStep::Sys7TaskCtrl1 {
+                lsm: idx,
+                address,
+                count,
+            } => {
+                let event = bussard_mgmt::encode_task_ctrl1(
+                    (*address & 0xFFFF) as u16,
+                    (*count).min(u8::MAX.into()) as u8,
+                );
+                lsm.send_control(session.l4(), lsm_octet(*idx), &event)
+                    .await?;
+            }
+            FlashStep::Sys7LoadCompleted { lsm: idx } => {
+                lsm.drive(session.l4(), lsm_octet(*idx), LoadControl::LoadCompleted)
+                    .await?;
+                completed_lsms.push(*idx);
+            }
+            FlashStep::Sys7CompareMem { address, expected } => {
+                let addr = u16::try_from(*address).map_err(|_| WriteError::AddressOutOfRange {
+                    address: session.l4().target(),
+                    detail: format!(
+                        "LdCtrlCompareMem address {address:#X} exceeds the 16-bit A_Memory space"
+                    ),
+                })?;
+                let got = read_sys7_memory(session, addr, expected.len()).await?;
+                if &got != expected {
+                    return Err(WriteError::Mgmt(
+                        bussard_mgmt::MgmtError::MemoryVerifyFailed {
+                            address: session.l4().target(),
+                            addr,
+                            expected: expected.clone(),
+                            got,
+                        },
+                    ));
+                }
+            }
+            FlashStep::CompareProp {
+                obj_idx,
+                prop_id,
+                expected,
+                mask,
+            } => {
+                // The obj0/PID78 preflight and any other property compare: identical
+                // to System B (an interface-object property read + compare).
+                if let Some(expected) = expected {
+                    compare_property(
+                        session.l4(),
+                        (*obj_idx).min(u8::MAX.into()) as u8,
+                        (*prop_id).min(u8::MAX.into()) as u8,
+                        expected,
+                        mask.as_deref(),
+                    )
+                    .await?;
+                }
+            }
+            FlashStep::LoadImageProp {
+                obj_idx,
+                prop_id,
+                count,
+                ..
+            } => {
+                // Jung A-A011 per-object MCB verification (`[system7-spec §2
+                // amendment]`): read the object's PID_MCB_TABLE. Read-back compare is
+                // the baseline verify, so a read-only MCB confirm here (no tool-side
+                // CRC) simply asserts the object serves a readable MCB entry.
+                if *prop_id == u32::from(bussard_mgmt::PID_MCB_TABLE) {
+                    read_mcb_table(
+                        session.l4(),
+                        (*obj_idx).min(u8::MAX.into()) as u8,
+                        1,
+                        (*count).max(1).min(u8::MAX.into()) as u8,
+                        None,
+                    )
+                    .await?;
+                }
+            }
+            FlashStep::Restart => {
+                // Fire-and-forget the basic restart (System 7 ends every procedure
+                // with one, `[corpus 47/49]`). Verification happens before the
+                // restart (below, after the loop) since a System 7 device does not
+                // re-expose a memory-mapped LSM status the way System B re-reads a
+                // property; the read-back spot checks already ran per-segment.
+                let (apci, payload) = bussard_mgmt::apci::encode_restart(0);
+                let _ = session.l4().send_data_unacked(apci, &payload).await;
+            }
+            // System B steps never appear in a System 7 plan.
+            other => {
+                return Err(WriteError::Mgmt(
+                    bussard_mgmt::MgmtError::MalformedResponse {
+                        address: session.l4().target(),
+                        reason: format!("System 7 executor met a non-System-7 step: {other:?}"),
+                    },
+                ));
+            }
+        }
+        Ok(())
+            }
+            .await;
+
+            match step_result {
+                Ok(()) => break 'resume,
+                Err(e)
+                    if resumable_death(&e, session)
+                        && !self_reconnecting
+                        && resume_reconnects < MAX_RESUME_RECONNECTS =>
+                {
+                    resume_reconnects += 1;
+                    session.reconnect().await?;
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    // System 7 verify: the LSMs that completed report `Loaded`, and every
+    // per-segment read-back spot check matched. Read the LSM states back through
+    // the same access seam.
+    let mut object_states: Vec<(u8, LoadState)> = Vec::new();
+    let mut all_loaded = true;
+    for idx in &completed_lsms {
+        let state = lsm.read_state(session.l4(), lsm_octet(*idx)).await?;
+        if state != LoadState::Loaded {
+            all_loaded = false;
+        }
+        object_states.push((lsm_octet(*idx), state));
+    }
+    // Spot-check the written segments (best-effort: after a restart the device may
+    // be rebooting, so a read failure is not treated as a mismatch here — the
+    // per-chunk read-back during the write already verified each byte).
+    let mut spot_checks_match = true;
+    for (addr, expected) in &written_samples {
+        match read_sys7_memory(session, *addr, expected.len()).await {
+            Ok(got) if &got != expected => spot_checks_match = false,
+            _ => {}
+        }
+    }
+
+    Ok(FlashOutcome {
+        load_state: if all_loaded {
+            LoadState::Loaded
+        } else {
+            LoadState::Other(0xFF)
+        },
+        object_states,
+        spot_checks_match,
+    })
+}
+
+/// Clamps an LSM index to the `u8` the `LsmAccess` seam uses (LSM indices are
+/// small: 1, 2, 3, occasionally 5).
+fn lsm_octet(lsm: u32) -> u8 {
+    lsm.min(u8::MAX.into()) as u8
+}
+
+/// Reads `len` octets of System 7 device memory at `addr`, looping over the
+/// device's max-chunk cap. Used by the `CompareMem` op and the post-flash spot
+/// checks.
+async fn read_sys7_memory<C: Connector>(
+    session: &mut Session<C>,
+    addr: u16,
+    len: usize,
+) -> Result<Vec<u8>, WriteError> {
+    let mut out = Vec::with_capacity(len);
+    let chunk = usize::from(session.l4().max_memory_chunk());
+    let mut offset = 0usize;
+    while offset < len {
+        let take = chunk.min(len - offset);
+        let piece_addr = addr.saturating_add(offset as u16);
+        let piece = read_memory(session.l4(), piece_addr, take as u8).await?;
+        out.extend_from_slice(&piece);
+        offset += take;
+    }
+    Ok(out)
+}
+
+/// Streams a System 7 segment image to `addr`, honouring an optional per-byte
+/// `<Mask>` (`[system7-spec §4.2]`): a `0xFF` mask byte means the byte belongs to
+/// the image and is written; any other value marks a device-owned byte the write
+/// must leave untouched. Owned bytes are streamed in maximal contiguous runs
+/// (still read-back-verified in 12-octet chunks by [`write_image`]). With no mask,
+/// the whole image is streamed.
+async fn write_sys7_segment<C: Connector, F: FnMut(Progress)>(
+    session: &mut Session<C>,
+    addr: u16,
+    bytes: &[u8],
+    mask: Option<&[u8]>,
+    progress: &mut F,
+) -> Result<(), WriteError> {
+    let Some(mask) = mask else {
+        return write_image(session, addr, bytes, progress).await;
+    };
+    // Walk the mask, writing each maximal run of owned (0xFF) bytes at its address.
+    let mut i = 0usize;
+    while i < bytes.len() {
+        let owned = mask.get(i).copied() == Some(0xFF);
+        if !owned {
+            i += 1;
+            continue;
+        }
+        let run_start = i;
+        while i < bytes.len() && mask.get(i).copied() == Some(0xFF) {
+            i += 1;
+        }
+        let run_addr = addr.saturating_add(run_start as u16);
+        write_image(session, run_addr, &bytes[run_start..i], progress).await?;
+    }
+    Ok(())
 }
 
 /// Reads one object's load state, **resuming at read granularity** over the
@@ -3075,6 +3939,34 @@ fn step_label(step: &FlashStep) -> String {
         } => format!(
             "master reset (erase code {erase_code}, channel {channel_number}) — reconnect and resume"
         ),
+        FlashStep::Sys7Unload { lsm } => format!("[S7] unload LSM {lsm}"),
+        FlashStep::Sys7StartLoading { lsm } => format!("[S7] open LSM {lsm} for loading"),
+        FlashStep::Sys7AbsSegment {
+            lsm,
+            address,
+            size,
+            image,
+            ..
+        } => match image {
+            Some(img) => format!(
+                "[S7] alloc + stream segment ({} bytes) to {address:#06X} on LSM {lsm}",
+                img.len
+            ),
+            None => format!("[S7] alloc segment ({size} bytes) at {address:#06X} on LSM {lsm}"),
+        },
+        FlashStep::Sys7TaskSegment { lsm, address, span } => {
+            format!("[S7] finalize LSM {lsm} task segment at {address:#06X} (span {span})")
+        }
+        FlashStep::Sys7TaskCtrl1 {
+            lsm,
+            address,
+            count,
+        } => format!("[S7] task control 1 at {address:#06X} x{count} on LSM {lsm}"),
+        FlashStep::Sys7LoadCompleted { lsm } => format!("[S7] complete load of LSM {lsm}"),
+        FlashStep::Sys7CompareMem { address, expected } => format!(
+            "[S7] verify memory at {address:#06X} == {} byte(s)",
+            expected.len()
+        ),
     }
 }
 
@@ -3131,6 +4023,296 @@ mod tests {
 
     fn no_overrides() -> BTreeMap<String, String> {
         BTreeMap::new()
+    }
+
+    /// A fabricated System 7 (mask 0705) app in the MDT canonical LSM 1/2/3 shape
+    /// (`[system7-spec §3]`): obj0/PID78 preflight, three LSMs, an AbsSegment with
+    /// a per-byte `<Mask>` on LSM 1, an allocate-only RAM segment on LSM 3, a
+    /// TaskSegment per LSM, a restart.
+    fn fabricated_sys7_app() -> ApplicationProgram {
+        // Segment images (base64): AS-1 = 4 bytes of table data at 0x4000 (mask
+        // FF FF 00 FF -> byte 2 is device-owned); AS-3 = 2 bytes of param at
+        // 0x4400; AS-2 (0x0700) is allocate-only (no <Data>).
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-83_A-E" ApplicationNumber="14" ApplicationVersion="35"
+            MaskVersion="MV-0705" Name="FabS7" LoadProcedureStyle="ProductProcedure">
+          <Static>
+           <Code>
+            <AbsoluteSegment Id="M-83_A-E_AS-1" Size="4" Address="16384"><Data>AAECAw==</Data><Mask>//8A/w==</Mask></AbsoluteSegment>
+            <AbsoluteSegment Id="M-83_A-E_AS-2" Size="8" Address="1792" />
+            <AbsoluteSegment Id="M-83_A-E_AS-3" Size="2" Address="17408"><Data>BAU=</Data></AbsoluteSegment>
+           </Code>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlConnect />
+             <LdCtrlCompareProp ObjIdx="0" PropId="78" InlineData="00000000031200000000" />
+             <LdCtrlUnload LsmIdx="1" />
+             <LdCtrlUnload LsmIdx="2" />
+             <LdCtrlUnload LsmIdx="3" />
+             <LdCtrlLoad LsmIdx="1" />
+             <LdCtrlAbsSegment LsmIdx="1" Address="16384" Size="4" />
+             <LdCtrlTaskSegment LsmIdx="1" Address="16384" />
+             <LdCtrlLoadCompleted LsmIdx="1" />
+             <LdCtrlLoad LsmIdx="3" />
+             <LdCtrlAbsSegment LsmIdx="3" Address="1792" Size="8" />
+             <LdCtrlAbsSegment LsmIdx="3" Address="17408" Size="2" />
+             <LdCtrlTaskSegment LsmIdx="3" Address="17408" />
+             <LdCtrlLoadCompleted LsmIdx="3" />
+             <LdCtrlRestart />
+             <LdCtrlDisconnect />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        parse_application_program("M-83_A-E", xml.as_bytes()).unwrap()
+    }
+
+    #[test]
+    fn plan_lowers_system_7() {
+        let app = fabricated_sys7_app();
+        let plan = plan_flash(
+            &app,
+            "1.1.99",
+            0x0705,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .expect("a System 7 plan");
+        assert!(plan.is_sys7(), "should be a System 7 plan");
+
+        // The obj0/PID78 preflight lowers to a CompareProp.
+        assert!(
+            matches!(
+                plan.steps.first(),
+                Some(FlashStep::CompareProp {
+                    obj_idx: 0,
+                    prop_id: 78,
+                    expected: Some(_),
+                    ..
+                })
+            ),
+            "first step is the obj0/PID78 preflight, got {:?}",
+            plan.steps.first()
+        );
+
+        // Three unloads, one per LSM.
+        let unloads: Vec<u32> = plan
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                FlashStep::Sys7Unload { lsm } => Some(*lsm),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(unloads, vec![1, 2, 3]);
+
+        // The 0x4000 AbsSegment carries an image AND a mask (streamed under mask).
+        let s7 = plan.sys7.as_ref().unwrap();
+        let table_seg = plan
+            .steps
+            .iter()
+            .find_map(|s| match s {
+                FlashStep::Sys7AbsSegment {
+                    address: 16384,
+                    image: Some(img),
+                    mem_type,
+                    ..
+                } => Some((img.clone(), *mem_type)),
+                _ => None,
+            })
+            .expect("the 0x4000 AbsSegment with an image");
+        assert_eq!(table_seg.1, 3, "0x4000 is EEPROM (mem_type 3)");
+        assert!(
+            s7.segment_masks.contains_key(&table_seg.0.segment_id),
+            "the 0x4000 segment carries a <Mask>"
+        );
+
+        // The 0x0700 RAM region is allocate-only (no image) and RAM mem-type.
+        let ram_seg = plan
+            .steps
+            .iter()
+            .find_map(|s| match s {
+                FlashStep::Sys7AbsSegment {
+                    address: 1792,
+                    image,
+                    mem_type,
+                    ..
+                } => Some((image.is_none(), *mem_type)),
+                _ => None,
+            })
+            .expect("the 0x0700 AbsSegment");
+        assert!(ram_seg.0, "0x0700 is allocate-only (no <Data>)");
+        assert_eq!(ram_seg.1, 2, "0x0700 is RAM (mem_type 2)");
+
+        // TaskSegment finalizes LSM 1 and LSM 3; the last step is the restart.
+        assert!(plan.steps.iter().any(|s| matches!(
+            s,
+            FlashStep::Sys7TaskSegment {
+                lsm: 1,
+                address: 16384,
+                ..
+            }
+        )));
+        assert!(matches!(plan.steps.last(), Some(FlashStep::Restart)));
+    }
+
+    #[test]
+    fn plan_lowers_system_7_task_ctrl1_and_post_restart_lsm5() {
+        // The Theben FIX2 shape (§4.4/§4.7): a TaskCtrl1 on LSM 3, then a restart
+        // followed by a post-restart TaskSegment + Load on LSM 5.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-48_A-4947" ApplicationNumber="18759" ApplicationVersion="16"
+            MaskVersion="MV-0701" Name="FIX2" LoadProcedureStyle="ProductProcedure">
+          <Static>
+           <Code>
+            <AbsoluteSegment Id="M-48_A-4947_AS-1" Size="4" Address="16384"><Data>AAECAw==</Data></AbsoluteSegment>
+           </Code>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlConnect />
+             <LdCtrlUnload LsmIdx="3" />
+             <LdCtrlLoad LsmIdx="3" />
+             <LdCtrlAbsSegment LsmIdx="3" Address="16384" Size="4" />
+             <LdCtrlTaskSegment LsmIdx="3" Address="18486" />
+             <LdCtrlTaskCtrl1 LsmIdx="3" Address="18425" Count="1" />
+             <LdCtrlLoadCompleted LsmIdx="3" />
+             <LdCtrlRestart />
+             <LdCtrlTaskSegment LsmIdx="5" Address="17406" />
+             <LdCtrlLoad LsmIdx="5" />
+             <LdCtrlDisconnect />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-48_A-4947", xml.as_bytes()).unwrap();
+        let plan = plan_flash(
+            &app,
+            "1.1.99",
+            0x0701,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .expect("a System 7 plan");
+
+        // The TaskCtrl1 lowers to its own step.
+        assert!(plan.steps.iter().any(|s| matches!(
+            s,
+            FlashStep::Sys7TaskCtrl1 {
+                lsm: 3,
+                address: 18425,
+                count: 1
+            }
+        )));
+        // A post-restart LSM-5 TaskSegment + Load appears after the Restart.
+        let restart_pos = plan
+            .steps
+            .iter()
+            .position(|s| matches!(s, FlashStep::Restart))
+            .expect("a restart");
+        assert!(
+            plan.steps[restart_pos + 1..]
+                .iter()
+                .any(|s| matches!(s, FlashStep::Sys7TaskSegment { lsm: 5, .. }))
+        );
+        assert!(
+            plan.steps[restart_pos + 1..]
+                .iter()
+                .any(|s| matches!(s, FlashStep::Sys7StartLoading { lsm: 5 }))
+        );
+    }
+
+    #[test]
+    fn plan_lowers_system_7_compare_mem() {
+        // The Zennio LUMENTO shape (§4.5): a raw LdCtrlCompareMem before the LSMs.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-71_A-3211" ApplicationNumber="12817" ApplicationVersion="18"
+            MaskVersion="MV-0701" Name="LUMENTO" LoadProcedureStyle="ProductProcedure">
+          <Static>
+           <Code>
+            <AbsoluteSegment Id="M-71_A-3211_AS-1" Size="2" Address="16384"><Data>AAE=</Data></AbsoluteSegment>
+           </Code>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlConnect />
+             <LdCtrlCompareMem Address="46609" InlineData="3210" Size="2" />
+             <LdCtrlUnload LsmIdx="1" />
+             <LdCtrlLoad LsmIdx="1" />
+             <LdCtrlAbsSegment LsmIdx="1" Address="16384" Size="2" />
+             <LdCtrlLoadCompleted LsmIdx="1" />
+             <LdCtrlDisconnect />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-71_A-3211", xml.as_bytes()).unwrap();
+        let plan = plan_flash(
+            &app,
+            "1.1.99",
+            0x0701,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .expect("a System 7 plan");
+        assert!(plan.steps.iter().any(|s| matches!(
+            s,
+            FlashStep::Sys7CompareMem { address: 46609, expected } if expected == &[0x32, 0x10]
+        )));
+    }
+
+    #[test]
+    fn sys7_profile_from_hawk_resolves_memory_mapped_addresses() {
+        use bussard_prod::{HawkConfig, HawkResource};
+        let mut resources = std::collections::HashMap::new();
+        resources.insert(
+            "GroupAddressTableLoadControl".to_string(),
+            HawkResource {
+                name: "GroupAddressTableLoadControl".to_string(),
+                address_space: Some("StandardMemory".to_string()),
+                start_address: Some(260), // 0x0104
+                length: Some(12),
+                flavour: Some("LoadControl_M112".to_string()),
+            },
+        );
+        resources.insert(
+            "GroupAddressTableLoadStatus".to_string(),
+            HawkResource {
+                name: "GroupAddressTableLoadStatus".to_string(),
+                address_space: Some("StandardMemory".to_string()),
+                start_address: Some(46826), // 0xB6EA
+                length: Some(1),
+                flavour: Some("LoadControl_M112".to_string()),
+            },
+        );
+        let hawk = HawkConfig { resources };
+        let profile = sys7_profile_from_hawk(&hawk).expect("a resolved profile");
+        assert_eq!(
+            profile.lsm,
+            bussard_mgmt::LsmRealisation::MemoryMapped {
+                control_addr: 0x0104,
+                status_addr: 0xB6EA,
+            }
+        );
+        // The Jung MV-0705 Hawk block resolves to exactly the corpus default.
+        assert_eq!(profile, bussard_mgmt::Sys7Profile::corpus_default());
+
+        // plan_flash_sys7_with_hawk lowers the same app with the Hawk profile.
+        let app = fabricated_sys7_app();
+        let plan = plan_flash_sys7_with_hawk(
+            &app,
+            "1.1.99",
+            0x0705,
+            &no_overrides(),
+            &BTreeMap::new(),
+            Some(&hawk),
+        )
+        .expect("a System 7 plan");
+        assert!(plan.is_sys7());
     }
 
     #[test]
@@ -3358,11 +4540,14 @@ mod tests {
 
     #[test]
     fn plan_refuses_non_system_b() {
+        // System 2 (0x0300): neither System B nor System 7, refused at the gate.
+        // (System 7 masks 0705/0701 are now supported — issue #49 — so they no
+        // longer hit this gate; see `plan_lowers_system_7`.)
         let app = fabricated_app();
         let err = plan_flash(
             &app,
             "1.1.4",
-            0x0705,
+            0x0300,
             &no_overrides(),
             &BTreeMap::new(),
             None,
