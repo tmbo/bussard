@@ -504,6 +504,19 @@ impl Actor {
 
     /// Consumes one live connection: fans inbound frames out to subscribers and
     /// services commands, until the connection drops or the actor is closed.
+    ///
+    /// A `Send` awaits its ACK **inline**. This is deliberate: a connection-oriented
+    /// (L4) session driven over a [`BusLease`] issues strict request→response
+    /// exchanges on this one connection, and the device's `T_ACK` and response
+    /// arrive as inbound frames the session reads back through its own
+    /// subscription. Draining `conn.recv()` concurrently with the send (e.g. by
+    /// spawning it) reorders those inbound frames relative to the send's
+    /// completion and desynchronises the L4 sequence under connection cycling —
+    /// observed as intermittent "device absent" mid-flash. Inbound frames buffer
+    /// briefly in the tunnel task's own channel while a send's ACK is outstanding
+    /// (it keeps ACKing incoming requests), so nothing is lost; the only cost is a
+    /// short delivery-latency bump for concurrent subscribers during an L4 send,
+    /// which the lease already serialises against.
     async fn consume(&mut self, mut conn: Transport) -> ActorOutcome {
         loop {
             tokio::select! {
@@ -529,9 +542,9 @@ impl Actor {
                             let _ = reply.send(Err(BusError::Stale));
                             continue;
                         }
-                        // Await the ACK inline. Inbound frames buffer briefly in
-                        // the tunnel task's own channel meanwhile (it keeps
-                        // ACKing incoming requests), so nothing is lost.
+                        // Await the ACK inline (see the method doc for why this must
+                        // not be spawned). Inbound frames buffer briefly in the
+                        // tunnel task's own channel meanwhile, so nothing is lost.
                         let result = conn.send(*frame).await;
                         match result {
                             Ok(()) => {
