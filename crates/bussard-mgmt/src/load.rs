@@ -558,18 +558,12 @@ pub async fn master_reset_via_basic_restart<Ch: L4Channel>(
     _channel_number: u8,
 ) -> Result<()> {
     let (apci, payload) = crate::apci::encode_restart(0);
-    // Numbered send: the device must T_ACK it, or the restart never landed.
-    l4.send_data(apci, &payload).await?;
-    // A bare A_Restart is not application-confirmed: the device reboots and goes
-    // silent (or drops the link). Any of these is the expected accepted outcome;
-    // a stack that does answer an A_Restart_Response is tolerated too.
-    match l4.recv_response().await {
-        Ok(_) => Ok(()),
-        Err(MgmtError::NoResponse { .. })
-        | Err(MgmtError::MidSessionSilence { .. })
-        | Err(MgmtError::Disconnected { .. }) => Ok(()),
-        Err(other) => Err(WriteError::Mgmt(other)),
-    }
+    // Fire-and-forget: a device reboots on A_Restart and never T_ACKs it (it
+    // drops the L4 link immediately), so send without awaiting the ACK — waiting
+    // would retransmit and spuriously report the device absent. The caller waits
+    // out the reboot and reconnects.
+    l4.send_data_unacked(apci, &payload).await?;
+    Ok(())
 }
 
 /// Reads an interface-object property and compares it byte-for-byte against

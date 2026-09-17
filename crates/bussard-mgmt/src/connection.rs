@@ -334,6 +334,29 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
         }
     }
 
+    /// Sends a management request as a numbered data telegram **without** waiting
+    /// for the device's `T_ACK`.
+    ///
+    /// A device restart (`A_Restart`) is fire-and-forget: the device reboots on
+    /// receipt and drops the L4 link immediately, so it never sends the `T_ACK`.
+    /// [`send_data`](Self::send_data) would retransmit and eventually report the
+    /// device absent; this sends the telegram once and returns. The caller waits
+    /// out the reboot and re-establishes the connection.
+    pub async fn send_data_unacked(&mut self, apci: u16, data: &[u8]) -> Result<()> {
+        if self.closed {
+            return Err(MgmtError::Disconnected {
+                address: self.target,
+            });
+        }
+        let seq = self.send_seq;
+        let tpci_octet = tpci::ndt(seq);
+        let frame = CemiFrame::t_data_connected(self.target, self.source, tpci_octet, apci, data);
+        self.conn.send(frame).await?;
+        self.send_seq = (self.send_seq + 1) & 0x0f;
+        self.numbered_exchanges = self.numbered_exchanges.saturating_add(1);
+        Ok(())
+    }
+
     /// Waits for the device's response telegram (an incoming NDT), acknowledges
     /// it, and returns its decoded APDU.
     ///

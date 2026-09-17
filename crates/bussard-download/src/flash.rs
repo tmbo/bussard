@@ -2092,7 +2092,7 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                         .await?,
                 );
                 let (apci, payload) = bussard_mgmt::apci::encode_restart(0);
-                let _ = session.l4().send_data(apci, &payload).await;
+                let _ = session.l4().send_data_unacked(apci, &payload).await;
             }
         }
     }
