@@ -268,6 +268,63 @@ pub fn compute_parameter_image(
         }
     }
 
+    // Union pass: a `<Union>` overlays several member parameters onto one shared
+    // memory region. All members share the same bytes, so ETS writes only the
+    // member marked `DefaultUnionParameter` (or the first member when none is
+    // marked) — writing every member would let an arbitrary one win. Each member
+    // carries a union-relative Offset/BitOffset; lay the chosen member's default
+    // at `union_base + member_offset`, reusing the same bit-packing as parameters
+    // so a union sub-byte field composes correctly over the base image.
+    for union in &app.unions {
+        let Some(mem) = union.memory.as_ref() else {
+            continue;
+        };
+        let Some(seg_id) = mem.code_segment.as_deref() else {
+            continue;
+        };
+        let Some(base_offset) = mem.offset else {
+            continue;
+        };
+
+        // The default union member: the one flagged, else the first declared.
+        let Some(member) = union
+            .members
+            .iter()
+            .find(|mm| mm.is_default)
+            .or_else(|| union.members.first())
+        else {
+            continue;
+        };
+
+        let Some(param) = app.parameters.get(&member.parameter) else {
+            continue;
+        };
+        let pname = param.name.as_deref().unwrap_or(&param.id);
+
+        // The member's default value (a ref override may also target it).
+        let value: Option<String> = ref_value
+            .get(param.id.as_str())
+            .map(|s| s.to_string())
+            .or_else(|| param.default.clone());
+        let ptype = param
+            .parameter_type
+            .as_deref()
+            .and_then(|id| app.parameter_types.get(id))
+            .map(|d| &d.kind);
+        let placement = encode_value(app, pname, ptype, value.as_deref())?;
+
+        // Member offsets are relative to the union base; a missing member Offset
+        // means "at the base".
+        let offset = base_offset as usize + member.offset.unwrap_or(0) as usize;
+        let bit_offset = member.bit_offset.unwrap_or(0);
+        let seg_size = app.code_segments.get(seg_id).and_then(|s| s.size);
+
+        let image = images
+            .entry(seg_id.to_string())
+            .or_insert_with(|| base_image(app, seg_id));
+        place_checked(app, pname, image, offset, bit_offset, &placement, seg_size)?;
+    }
+
     // Second pass: apply the caller's explicit overrides, keyed by app-relative
     // ParameterRef id. Each key resolves to its application `Parameter` (dropping
     // the module-instance selector and the `_R-<r>` suffix) and, for a module
