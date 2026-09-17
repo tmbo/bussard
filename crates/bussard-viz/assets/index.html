@@ -33,6 +33,14 @@
       <div class="bus-status">
         <span id="bus-status-dot" class="status-dot" data-state="offline"></span>
         <span id="bus-status-label" class="status-label">offline</span>
+        <button
+          id="reload-btn"
+          class="reload-btn"
+          type="button"
+          title="Reload the model from disk (POST /api/reload)"
+          aria-label="Reload model"
+        >⟳</button>
+        <span id="reload-error" class="reload-error" role="alert" hidden></span>
       </div>
     </div>
   </header>

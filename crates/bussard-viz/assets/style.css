@@ -151,6 +151,38 @@ body {
 .status-dot[data-state="disconnected"] { background: var(--bad); }
 .status-label { color: var(--text-dim); font-size: 12px; text-transform: capitalize; }
 
+.reload-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+.reload-btn:hover:not(:disabled) { color: var(--text); border-color: var(--text-faint); }
+.reload-btn:disabled { opacity: 0.5; cursor: default; }
+.reload-btn.reloading { animation: reload-spin 0.8s linear infinite; }
+@keyframes reload-spin { to { transform: rotate(360deg); } }
+.reload-error {
+  max-width: 320px;
+  padding: 3px 8px;
+  background: var(--bg-inset);
+  border: 1px solid var(--bad);
+  border-radius: 6px;
+  color: var(--bad);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* --- main panes ----------------------------------------------------------- */
 
 #app-main {

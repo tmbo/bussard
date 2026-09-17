@@ -24,6 +24,7 @@
 //! | GET | `/api/state` | bus status + last value per GA |
 //! | GET | `/api/traffic` | the SSE telegram/bus/gap stream |
 //! | POST | `/api/group-write` | encode + send a `GroupValueWrite` |
+//! | POST | `/api/reload` | reload the model from disk and swap it atomically |
 
 pub mod api;
 pub mod assets;
@@ -34,7 +35,6 @@ pub mod traffic;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::{Path, State};
@@ -45,7 +45,7 @@ use bussard_bus::Bus;
 use bussard_model::Model;
 use bussard_transport::ConnectionConfig;
 
-use crate::state::{AppState, BusStatus};
+use crate::state::{AppState, BusStatus, ModelHandle};
 use crate::traffic::TrafficHub;
 
 /// Configuration for the viz server.
@@ -97,6 +97,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/state", get(api::get_state))
         .route("/api/traffic", get(api::get_traffic))
         .route("/api/group-write", post(api::post_group_write))
+        .route("/api/reload", post(api::post_reload))
         .with_state(state)
 }
 
@@ -132,8 +133,7 @@ pub fn build_state(
         dir: config.dir.display().to_string(),
         source,
     })?;
-    let model = Arc::new(model);
-    let model_json = Arc::new(project::project_model(&model));
+    let model = ModelHandle::new(model);
     let hub = TrafficHub::new();
 
     let (bus, handle) = match &config.connection {
@@ -141,7 +141,8 @@ pub fn build_state(
             let (handle, _task) = Bus::connect(conn.clone());
             let bus = BusStatus::connected(conn.transport.clone(), handle.clone());
             // Spawn the feeder: it fills the hub from the live bus and emits
-            // `bus` events on state changes.
+            // `bus` events on state changes. It resolves names through the
+            // `ModelHandle`, so a reload swap is reflected on the next telegram.
             tokio::spawn(traffic::feed(
                 hub.clone(),
                 handle.clone(),
@@ -155,7 +156,7 @@ pub fn build_state(
 
     let state = AppState {
         model,
-        model_json,
+        dir: config.dir.clone(),
         hub,
         bus,
     };
@@ -198,7 +199,7 @@ mod tests {
 
     /// A minimal empty-model state for router tests.
     fn empty_state() -> AppState {
-        let model = Arc::new(Model {
+        let model = Model {
             config: BussardConfig::default(),
             groups: Groups {
                 project: None,
@@ -210,11 +211,10 @@ mod tests {
                 links: BTreeMap::new(),
             },
             devices: BTreeMap::new(),
-        });
-        let model_json = Arc::new(project::project_model(&model));
+        };
         AppState {
-            model,
-            model_json,
+            model: ModelHandle::new(model),
+            dir: std::path::PathBuf::from("."),
             hub: TrafficHub::new(),
             bus: BusStatus::none(),
         }
@@ -229,7 +229,8 @@ mod tests {
     #[test]
     fn test_empty_model_projection_shape() {
         let state = empty_state();
-        let v: &Value = state.model_json.as_ref();
+        let snapshot = state.model.current();
+        let v: &Value = snapshot.json.as_ref();
         assert_eq!(v["stats"]["devices"], 0);
         assert_eq!(v["stats"]["groups"], 0);
         assert!(v["devices"].as_array().expect("devices").is_empty());
@@ -341,7 +342,7 @@ mod tests {
                 protected,
             },
         );
-        let model = Arc::new(Model {
+        let model = Model {
             config: BussardConfig::default(),
             groups: Groups {
                 project: None,
@@ -353,11 +354,10 @@ mod tests {
                 links: BTreeMap::new(),
             },
             devices: BTreeMap::new(),
-        });
-        let model_json = Arc::new(project::project_model(&model));
+        };
         AppState {
-            model,
-            model_json,
+            model: ModelHandle::new(model),
+            dir: std::path::PathBuf::from("."),
             hub: TrafficHub::new(),
             bus: BusStatus::none(),
         }
@@ -617,5 +617,174 @@ mod tests {
             collected.contains("id:2"),
             "second telegram has id 2: {raw}"
         );
+    }
+
+    // --- POST /api/reload ----------------------------------------------------
+
+    use std::io::Write as _;
+    use std::path::Path;
+
+    /// Builds an AppState whose model is loaded from an on-disk directory, so a
+    /// reload re-reads that same directory (empty dirs load fine).
+    fn state_from_dir(dir: &Path) -> AppState {
+        let model = Model::load(dir).expect("model loads from dir");
+        AppState {
+            model: ModelHandle::new(model),
+            dir: dir.to_path_buf(),
+            hub: TrafficHub::new(),
+            bus: BusStatus::none(),
+        }
+    }
+
+    /// Writes a valid one-group `groups.yaml` into `dir`.
+    fn write_valid_groups(dir: &Path) {
+        let mut f = std::fs::File::create(dir.join("groups.yaml")).expect("create groups.yaml");
+        // A single declared group with a DPT and a name.
+        writeln!(
+            f,
+            "groups:\n  3/0/4:\n    name: Jalousie\n    dpt: \"1.008\""
+        )
+        .expect("write groups.yaml");
+    }
+
+    /// A POST request with no body to `uri`.
+    fn empty_post(uri: &str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .body(Body::empty())
+            .expect("request")
+    }
+
+    #[tokio::test]
+    async fn test_reload_success_200_shape_and_version() -> Result<(), Box<dyn std::error::Error>> {
+        // Start from an empty dir (version 1, zero groups), then add a group on
+        // disk and reload: the swap must report the new stats and version 2.
+        let tmp = tempfile::tempdir()?;
+        let state = state_from_dir(tmp.path());
+        assert_eq!(state.model.current().version, 1);
+        assert_eq!(state.model.current().json["stats"]["groups"], 0);
+
+        write_valid_groups(tmp.path());
+
+        let handle = state.model.clone();
+        let (status, body) = call(state, empty_post("/api/reload")).await;
+        assert_eq!(status, StatusCode::OK);
+        let v = json(&body);
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["model_version"], 2);
+        assert_eq!(v["stats"]["groups"], 1);
+
+        // The swap is visible through the shared handle.
+        assert_eq!(handle.current().version, 2);
+        assert_eq!(handle.current().json["stats"]["groups"], 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_reload_broken_yaml_422_keeps_old_model() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // Load a good one-group model, then corrupt groups.yaml on disk and
+        // reload: the response is 422 model_invalid and the old model survives.
+        let tmp = tempfile::tempdir()?;
+        write_valid_groups(tmp.path());
+        let state = state_from_dir(tmp.path());
+        assert_eq!(state.model.current().version, 1);
+        assert_eq!(state.model.current().json["stats"]["groups"], 1);
+
+        // Corrupt the file: not valid YAML for the Groups schema.
+        std::fs::write(tmp.path().join("groups.yaml"), b": : not yaml : :\n")?;
+
+        let handle = state.model.clone();
+        let (status, body) = call(state, empty_post("/api/reload")).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(json(&body)["error"]["code"], "model_invalid");
+        assert!(
+            json(&body)["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("groups.yaml"),
+            "the rich LoadError names the offending file: {}",
+            String::from_utf8_lossy(&body)
+        );
+
+        // The good model is untouched: still version 1, still one group.
+        assert_eq!(handle.current().version, 1);
+        assert_eq!(handle.current().json["stats"]["groups"], 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_reload_emits_model_sse_event() -> Result<(), Box<dyn std::error::Error>> {
+        // A successful reload publishes a `model` event on the hub carrying the
+        // new model_version and stats. Subscribe first, then reload.
+        use crate::traffic::HubEvent;
+
+        let tmp = tempfile::tempdir()?;
+        let state = state_from_dir(tmp.path());
+        let mut rx = state.hub.subscribe();
+        write_valid_groups(tmp.path());
+
+        let (status, _) = call(state, empty_post("/api/reload")).await;
+        assert_eq!(status, StatusCode::OK);
+
+        // Drain until the model event arrives (nothing else is published here).
+        let mut found = None;
+        while let Ok(ev) = rx.try_recv() {
+            if let HubEvent::Model(v) = ev {
+                found = Some(v);
+                break;
+            }
+        }
+        let v = found.ok_or("no model event published")?;
+        assert_eq!(v["model_version"], 2);
+        assert_eq!(v["stats"]["groups"], 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_sse_model_event_framing() -> Result<(), Box<dyn std::error::Error>> {
+        // A `model` HubEvent frames on the SSE stream as `event: model` with a
+        // JSON data line carrying model_version + stats. The model event is a
+        // live broadcast (not backlogged), so publish it AFTER the handler has
+        // subscribed: open the stream first, then publish on the shared hub.
+        let state = empty_state();
+        let hub = state.hub.clone();
+
+        let resp = router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/traffic?backlog=50")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("responds");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // The handler has subscribed by the time the response is produced; the
+        // model event now lands in the live tail.
+        hub.publish_model(serde_json::json!({"model_version": 7, "stats": {"groups": 2}}));
+
+        let mut body = resp.into_body().into_data_stream();
+        let mut raw = String::new();
+        use futures_util::StreamExt as _;
+        while let Some(chunk) = body.next().await {
+            let bytes = chunk.expect("chunk");
+            raw.push_str(&String::from_utf8_lossy(&bytes));
+            if raw.contains("model_version") {
+                break;
+            }
+        }
+        let collected = raw.replace(": ", ":");
+        assert!(
+            collected.contains("event:model"),
+            "SSE has a model event: {raw}"
+        );
+        assert!(
+            raw.contains("\"model_version\":7"),
+            "model event carries model_version: {raw}"
+        );
+        Ok(())
     }
 }

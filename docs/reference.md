@@ -499,14 +499,21 @@ The website is driven by a small JSON/SSE API on the same listen address.
 | Endpoint | Returns |
 |---|---|
 | `GET /` | The website shell. `GET /assets/{file}` serves the embedded JS/CSS modules. |
-| `GET /api/model` | The precomputed model projection (devices, groups, ranges, links, senders/listeners). Immutable for the process lifetime. |
+| `GET /api/model` | The precomputed model projection (devices, groups, ranges, links, senders/listeners). Rebuilt in place by `POST /api/reload`. |
 | `GET /api/state` | `{bus: {state, transport, connected}, seq, values}`, where `values` is the last value, payload, DPT, and source per GA. |
-| `GET /api/traffic` | Server-Sent Events. `event: bus` (connection state, always sent first), `event: telegram` (`id:` is the seq, `data:` is the [telegram JSON](#telegram-json-contract) plus `seq`), `event: gap` (the subscriber fell behind and should re-snapshot). `?backlog=N` (default 50) replays recent telegrams; a reconnect with `Last-Event-ID` resumes with no duplicates and no gaps. |
+| `GET /api/traffic` | Server-Sent Events. `event: bus` (connection state, always sent first), `event: telegram` (`id:` is the seq, `data:` is the [telegram JSON](#telegram-json-contract) plus `seq`), `event: model` (the model was reloaded, `data:` is `{model_version, stats}`, so the page refetches `/api/model`), `event: gap` (the subscriber fell behind and should re-snapshot). `?backlog=N` (default 50) replays recent telegrams; a reconnect with `Last-Event-ID` resumes with no duplicates and no gaps. |
 | `POST /api/group-write` | `{address, value?, payload?, dpt?, force?}`. Encodes and sends a GroupValueWrite; returns `200` with an echo of what was written. |
+| `POST /api/reload` | Reloads the model from disk and swaps it in atomically. Returns `200` with `{model_version, stats}` on success, or `422` `model_invalid` (keeping the old model) when the model on disk is broken. |
 
 `POST /api/group-write` takes exactly one of `value` or `payload`. `value` is a human string encoded through the same `parse_value` + `encode` stack as `bussard write` (`dpt` overrides the GA's modelled DPT). `payload` is raw bytes as hex (even length, upper- or lowercase, for example `"0b64"`) sent verbatim, for exotic DPTs with no string grammar. When a DPT is known for a `payload` write (from the model or `dpt`), the decoded byte length is checked against the DPT's expected size: a sub-byte (packable) DPT takes exactly one byte with value `<= 0x3f` and is sent packed into the 6-bit APDU exactly as the `value` path would; a byte-sized DPT takes that many whole octets. When no DPT is known anywhere, the raw write is still allowed but sent unpacked as a full data octet, because a lone 1-byte payload `<= 0x3f` is ambiguous between the packed 1-bit form and a byte-sized value and the full octet is the form every device reads correctly.
 
 The write policy matches `bussard write`: `400` for a bad address, an un-encodable value, bad hex, both or neither of `value`/`payload`, or a payload whose length does not match a known DPT; `403` for a `protected` GA without `force` (which applies to raw writes identically); `422` when no DPT can be resolved for a `value` write (supply `dpt`); and `503` when the bus is unavailable. The success echo carries `payload` (the hex bytes sent) and sets `value` to `null` for raw writes. Errors are `{"error": {"code", "message"}}`.
+
+### Reloading the model
+
+The `knx/` YAML is meant to be edited by hand and by LLMs; `POST /api/reload` picks up those edits without restarting the server. It re-runs `Model::load` on the model directory and swaps the shared model plus its precomputed `/api/model` projection in one atomic move, bumping a `model_version` counter (the initial model is version 1). The reload button in the page header (next to the bus status dot) calls it and surfaces any error inline.
+
+The load-failure semantics are the point: a broken model never replaces a good one. On success the endpoint returns `200` with `{ok, model_version, stats}` (`stats` is `{devices, groups, links}`) and emits a `model` event on the SSE stream carrying `{model_version, stats}`, so every connected page refetches `/api/model` and rebuilds its views. On a load error it returns `422` `{"error": {"code": "model_invalid", "message": <the LoadError, naming the offending file>}}` and keeps serving the previous model unchanged, with no swap and no SSE event. The protected-GA write gate and the live decoder both read the current model, so a reload's newly protected GAs are enforced and its renamed addresses resolve on the very next write and telegram.
 
 ### Degraded and offline modes
 
