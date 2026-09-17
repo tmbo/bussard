@@ -33,7 +33,7 @@ use bussard_download::{
     FlashPlan, FlashStep, Progress, flash, plan_flash, select_application, trace,
 };
 use bussard_mgmt::load::WriteError;
-use bussard_mgmt::{DeviceConnection, Layer4Connection, LeaseChannel, MgmtError};
+use bussard_mgmt::{DeviceConnection, Layer4Connection, LeaseChannel, MgmtError, Timeouts};
 use bussard_model::IndividualAddress;
 use bussard_prod::{ApplicationProgram, ProductData, normalize_order_number};
 
@@ -575,6 +575,28 @@ struct LeaseConnector<'a> {
     source: IndividualAddress,
 }
 
+/// Environment variable that overrides the flash's per-attempt L4 ACK/response
+/// timeout (in milliseconds). Unset in normal use, so the standard 3 s budget
+/// applies. It exists so a stress run against a device that drops the L4
+/// connection extremely frequently (the local sim's tiny `KNX_SIM_L4_BUDGET`, or a
+/// pathologically flaky tunnel) detects each drop in milliseconds instead of the
+/// full 3 s ACK-retransmit wait — resume-on-drop then reconnects promptly. It does
+/// not change what the flash does, only how long it waits before treating a silent
+/// peer as a dropped connection.
+const FLASH_L4_TIMEOUT_MS_ENV: &str = "BUSSARD_FLASH_L4_TIMEOUT_MS";
+
+/// The L4 timeout budget for a flash connection, honouring [`FLASH_L4_TIMEOUT_MS_ENV`].
+fn flash_l4_timeouts() -> Option<Timeouts> {
+    std::env::var(FLASH_L4_TIMEOUT_MS_ENV)
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map(|ms| Timeouts {
+            ack_timeout: std::time::Duration::from_millis(ms),
+            max_repetitions: 1,
+            response_timeout: std::time::Duration::from_millis(ms),
+        })
+}
+
 impl bussard_download::Connector for LeaseConnector<'_> {
     type Channel = LeaseChannel;
 
@@ -587,9 +609,11 @@ impl bussard_download::Connector for LeaseConnector<'_> {
             ))
         })?;
         let channel = LeaseChannel::new(lease);
-        Layer4Connection::connect(channel, self.target, self.source)
-            .await
-            .map_err(WriteError::Mgmt)
+        match flash_l4_timeouts() {
+            Some(t) => Layer4Connection::connect_with(channel, self.target, self.source, t).await,
+            None => Layer4Connection::connect(channel, self.target, self.source).await,
+        }
+        .map_err(WriteError::Mgmt)
     }
 }
 
