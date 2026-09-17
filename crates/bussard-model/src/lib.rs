@@ -14,6 +14,7 @@ pub mod codec;
 pub mod dpt;
 pub mod flags;
 pub mod loader;
+pub mod merge;
 pub mod param_model;
 pub mod schema;
 pub mod validate;
@@ -25,5 +26,6 @@ pub use codec::{
 pub use dpt::{ApduSize, Dpt, DptParseError};
 pub use flags::{Flags, FlagsParseError};
 pub use loader::{LoadError, LoadedDevice, Model, SaveError};
+pub use merge::{Conflict, MergeReport, merge};
 pub use param_model::{ParamDef, ParamKind, ProductModel, ProductModels};
 pub use validate::{Diagnostic, Severity, has_errors, validate, validate_in_dir};

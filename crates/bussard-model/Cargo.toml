@@ -14,3 +14,6 @@ serde_norway = { workspace = true }
 serde_path_to_error = { workspace = true }
 thiserror = { workspace = true }
 bitflags = { workspace = true }
+
+[dev-dependencies]
+anyhow = { workspace = true }
