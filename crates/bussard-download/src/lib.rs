@@ -25,9 +25,9 @@ pub use apply::{
     TableObjectIndexes, VerifyOutcome, apply_tables, discover_table_objects, read_states,
 };
 pub use compute::{
-    DesiredTables, GroupObjectDescriptor, Priority, app_program_version,
+    ChannelConfig, DesiredTables, GroupObjectDescriptor, Priority, app_program_version,
     compute_group_object_table, compute_tables, descriptors_for_linked_objects,
-    size_code_from_object_size, table_image_with_count,
+    expand_group_object_descriptors, size_code_from_object_size, table_image_with_count,
 };
 pub use flash::{
     AppIdentity, Connector, FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, ImageRef,

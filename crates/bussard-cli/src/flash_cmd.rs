@@ -216,7 +216,14 @@ pub fn run(
 
     // Phase B (write): execute the flash with a progress line.
     let plan_ref = &plan;
-    let options = bussard_download::FlashOptions { bcu_key };
+    // Verify the flash *after* the terminal restart: a real device (KNX Virtual)
+    // only holds the load if it survives the reboot, so bussard reconnects and
+    // re-reads the load state once the device is back rather than trusting the
+    // transient `Loaded` it reports before rebooting.
+    let options = bussard_download::FlashOptions {
+        bcu_key,
+        verify_after_restart: true,
+    };
     let outcome = runtime.block_on(async move {
         let (handle, _task) = Bus::connect(config);
         if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
@@ -288,17 +295,20 @@ fn collect_parameter_overrides(
 /// obj1 and obj2 come from the device's model links via
 /// [`bussard_download::compute_tables`] (the same tables `bussard apply`
 /// downloads); obj3 is the System B group-object descriptor table built from the
-/// app's linked com-objects (its byte layout is verified byte-for-byte against
-/// the ETS→KNX-Virtual DA.tp capture — see
+/// app's com-objects (its byte layout is verified byte-for-byte against the
+/// ETS→KNX-Virtual DA.tp capture — see
 /// [`bussard_download::compute::compute_group_object_table`]). Each image
 /// includes its big-endian element-count word.
 ///
-/// obj3 here lists only the device's **linked** com-objects: it reproduces ETS's
-/// per-object descriptor bytes exactly, but ETS additionally emits zero-comm
-/// entries for every com-object the app instantiates on other channels — those
-/// unlinked instances live only in a full `.knxproj` (the product data has no
-/// channel expansion), so a links-only model yields a link-scoped obj3 rather
-/// than the full instantiated table.
+/// For a **module-based** application (the DA.tp shape), obj3 is
+/// **channel-expanded**: the module's com-objects are instantiated once per
+/// `<Module>` channel via
+/// [`bussard_download::expand_group_object_descriptors`], so the table carries
+/// every per-channel com-object instance ETS emits (73 entries for DA.tp), not
+/// just the 7 module base objects. Each channel's Communication flag is set when
+/// any of its com-objects is linked in the model, matching ETS (which registers a
+/// linked instance with Communication set and an unlinked one with it cleared).
+/// A non-module application keeps the flat per-com-object table.
 ///
 /// Returns an empty map when the model is absent or the device has no links —
 /// which leaves a self-contained (thelsing) single-object flash untouched.
@@ -337,36 +347,85 @@ fn build_table_images(
         table_image_with_count(desired.association_count(), &desired.association_elements()),
     );
 
-    // obj3 (group-object table). With links, ETS registers a descriptor for each
-    // linked com-object (Communication set). On a bare flash (no links), we still
-    // emit a well-formed table for every com-object the application defines, with
-    // Communication cleared — the descriptor bytes ETS writes for an unlinked
-    // instance. This is a link-scoped / template-scoped table: the product data
-    // has no channel expansion, so it lists the app's declared com-objects, not
-    // every per-channel instance a full `.knxproj` would.
-    let com_objects = app.resolved_com_objects();
-    let obj3 = if links.is_empty() {
-        let descriptors: Vec<GroupObjectDescriptor> = com_objects
-            .iter()
-            .map(|c| GroupObjectDescriptor {
-                asap: c.number(),
-                // Communication cleared: an unlinked com-object on a bare flash.
-                flags: c.flags() - bussard_model::Flags::COMMUNICATION,
-                size_code: size_code_from_object_size(c.object_size()),
-                priority: Priority::default(),
-            })
-            .collect();
+    // obj3 (group-object table).
+    let linked: std::collections::BTreeSet<u16> = links.iter().map(|l| l.object).collect();
+    let obj3 = if !app.module_instances.is_empty() && app.channel_membership.is_some() {
+        // Module-based application: instantiate the com-objects across channels.
+        // Each channel is linked when any of the com-objects it carries appears
+        // in the model links; `<choose>` selectors fall back to their parameter
+        // defaults (the vendor-default channel objects on a bare flash).
+        let descriptors = build_module_obj3_descriptors(app, &linked);
         compute_group_object_table(&descriptors)
     } else {
-        let linked: std::collections::BTreeSet<u16> = links.iter().map(|l| l.object).collect();
-        let descriptors = descriptors_for_linked_objects(&com_objects, &linked);
-        compute_group_object_table(&descriptors)
+        // Non-module application: a flat per-com-object table. With links, ETS
+        // registers a descriptor for each linked com-object (Communication set);
+        // on a bare flash it emits every declared com-object with Communication
+        // cleared.
+        let com_objects = app.resolved_com_objects();
+        if links.is_empty() {
+            let descriptors: Vec<GroupObjectDescriptor> = com_objects
+                .iter()
+                .map(|c| GroupObjectDescriptor {
+                    asap: c.number(),
+                    // Communication cleared: an unlinked com-object on a bare flash.
+                    flags: c.flags() - bussard_model::Flags::COMMUNICATION,
+                    size_code: size_code_from_object_size(c.object_size()),
+                    priority: Priority::default(),
+                })
+                .collect();
+            compute_group_object_table(&descriptors)
+        } else {
+            let descriptors = descriptors_for_linked_objects(&com_objects, &linked);
+            compute_group_object_table(&descriptors)
+        }
     };
     if let Some(obj3) = obj3 {
         out.insert(3, obj3);
     }
 
     out
+}
+
+/// Builds the channel-expanded obj3 descriptors for a module-based application,
+/// marking each channel linked when any of its instantiated com-objects is bound
+/// to a group address in the model.
+///
+/// The channel's `<choose>` selectors use the parameters' declared defaults (the
+/// vendor-default per-channel object set), which is what a bare flash of an
+/// unconfigured device programs. Each channel's ASAPs are discovered by expanding
+/// that channel alone; a channel is linked when any of those ASAPs is in
+/// `linked`, and the full table is then expanded with those per-channel flags.
+fn build_module_obj3_descriptors(
+    app: &ApplicationProgram,
+    linked: &std::collections::BTreeSet<u16>,
+) -> Vec<bussard_download::compute::GroupObjectDescriptor> {
+    use bussard_download::compute::{ChannelConfig, expand_group_object_descriptors};
+
+    let channel_count = app.module_instances.len();
+    let mut configs = vec![ChannelConfig::default(); channel_count];
+    for (idx, config) in configs.iter_mut().enumerate() {
+        // Expand this one channel alone (others contribute no descriptors only if
+        // they too are default, but their ASAPs never collide — bases differ), so
+        // its descriptors are exactly this channel's ASAPs.
+        let mut solo = vec![ChannelConfig::default(); channel_count];
+        // Give the other channels an out-of-band selector so they stay default;
+        // the per-instance argObj bases already keep ASAP ranges disjoint, so we
+        // can filter this channel's ASAPs by expanding only it.
+        for (other_idx, other) in solo.iter_mut().enumerate() {
+            other.linked = other_idx == idx;
+        }
+        let descs = expand_group_object_descriptors(app, &solo);
+        // This channel's ASAPs are those whose descriptor has Communication set
+        // (only this channel was marked linked).
+        let channel_asaps: std::collections::BTreeSet<u16> = descs
+            .iter()
+            .filter(|d| d.flags.contains(bussard_model::Flags::COMMUNICATION))
+            .map(|d| d.asap)
+            .collect();
+        config.linked = channel_asaps.iter().any(|a| linked.contains(a));
+    }
+
+    expand_group_object_descriptors(app, &configs)
 }
 
 /// Resolves an application program from a hardware order number, requiring
