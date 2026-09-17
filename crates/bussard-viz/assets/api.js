@@ -25,6 +25,34 @@ export async function fetchState() {
 }
 
 /**
+ * Ask the server to reload the model from disk (POST /api/reload).
+ *
+ * On success resolves to `{model_version, stats}`. On a broken model the server
+ * keeps the old one and returns 422; this rejects with an Error carrying the
+ * rich LoadError `.message`, plus `.code` (e.g. "model_invalid") and `.status`.
+ *
+ * @returns {Promise<{model_version:number, stats:Object}>}
+ */
+export async function reloadModel() {
+  const res = await fetch("/api/reload", {
+    method: "POST",
+    headers: { Accept: "application/json" },
+  });
+  if (res.ok) return res.json();
+  let payload = null;
+  try {
+    payload = await res.json();
+  } catch {
+    // Non-JSON error body; fall through with a generic message.
+  }
+  const info = (payload && payload.error) || {};
+  const err = new Error(info.message || `reload failed (${res.status})`);
+  err.code = info.code || null;
+  err.status = res.status;
+  throw err;
+}
+
+/**
  * Send a group write for testing (T1). Resolves to the echoed telegram info
  * on success; rejects with an Error carrying `.code` and `.status` on failure.
  *
@@ -73,7 +101,7 @@ export async function groupWrite(address, value, opts = {}) {
  *
  * @param {(telegram:Object)=>void} onTelegram — called per new telegram row.
  * @param {(status:Object)=>void} onStatus — called on bus state changes.
- * @param {{backlog?:number, onGap?:(info:Object)=>void}} [opts]
+ * @param {{backlog?:number, onGap?:(info:Object)=>void, onModel?:(info:Object)=>void}} [opts]
  * @returns {{close:()=>void, source:EventSource}}
  */
 export function connectTraffic(onTelegram, onStatus, opts = {}) {
@@ -104,6 +132,18 @@ export function connectTraffic(onTelegram, onStatus, opts = {}) {
       return;
     }
     onStatus(msg);
+  });
+
+  source.addEventListener("model", (ev) => {
+    if (opts.onModel) {
+      let msg = {};
+      try {
+        msg = JSON.parse(ev.data);
+      } catch {
+        // Malformed model event; still signal a reload with an empty payload.
+      }
+      opts.onModel(msg);
+    }
   });
 
   source.addEventListener("gap", (ev) => {

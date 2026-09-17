@@ -15,13 +15,13 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex, RwLock};
 
 use bussard_bus::{BusHandle, BusState};
-use bussard_model::{GroupAddress, Model};
+use bussard_model::GroupAddress;
 use bussard_monitor::decode::{ApciKind, DestinationRef};
 use bussard_monitor::{DecodedTelegram, json_value};
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
 
-use crate::state::BusStatus;
+use crate::state::{BusStatus, ModelHandle};
 
 /// The depth of the SSE broadcast channel. A subscriber that falls this far
 /// behind receives a `gap` event and must reconcile via a fresh snapshot.
@@ -46,6 +46,9 @@ pub enum HubEvent {
     },
     /// A bus connection-state change (also emitted once at subscribe time).
     Bus(Value),
+    /// A model reload: the model was swapped, so connected pages should refetch
+    /// `/api/model`. Carries `{ "model_version": N, "stats": { … } }`.
+    Model(Value),
     /// A broadcast-lag signal: the subscriber missed `count` events.
     Gap {
         /// How many broadcast messages were skipped.
@@ -177,6 +180,12 @@ impl TrafficHub {
         let _ = self.inner.tx.send(HubEvent::Bus(status));
     }
 
+    /// Broadcasts a model-reload event (no seq; not backlogged) so connected
+    /// pages refetch `/api/model`. `data` is `{ "model_version", "stats" }`.
+    pub fn publish_model(&self, data: Value) {
+        let _ = self.inner.tx.send(HubEvent::Model(data));
+    }
+
     /// Returns the backlog entries with `seq > after`, up to `limit` of the most
     /// recent, oldest-first, along with the current maximum seq.
     ///
@@ -264,7 +273,11 @@ impl TrafficHub {
 /// This runs only when a bus is configured (the caller does not spawn it in
 /// model-only mode). The `bus` event on SSE connect is emitted independently by
 /// the SSE handler, so it does not depend on this task ever having run.
-pub async fn feed(hub: TrafficHub, handle: BusHandle, model: Arc<Model>, status: BusStatus) {
+///
+/// Name resolution reads the model through the [`ModelHandle`] on each frame, so
+/// a `POST /api/reload` swap is reflected in the very next decoded telegram
+/// without restarting the feeder.
+pub async fn feed(hub: TrafficHub, handle: BusHandle, model: ModelHandle, status: BusStatus) {
     let mut sub = handle.subscribe();
     let mut states = handle.state_changes();
     // Mark the state present at startup as already seen: the SSE handler emits
@@ -277,8 +290,13 @@ pub async fn feed(hub: TrafficHub, handle: BusHandle, model: Arc<Model>, status:
             inbound = sub.recv() => {
                 match inbound {
                     Some(frame) => {
-                        let decoded =
-                            DecodedTelegram::from_frame(&frame.frame, Some(model.as_ref()));
+                        // Read the current model per frame so a reload swap is
+                        // picked up immediately for name resolution.
+                        let snapshot = model.current();
+                        let decoded = DecodedTelegram::from_frame(
+                            &frame.frame,
+                            Some(snapshot.model.as_ref()),
+                        );
                         hub.publish(&decoded);
                     }
                     // The actor shut down; stop feeding.
@@ -483,13 +501,14 @@ mod tests {
         use std::net::{Ipv4Addr, SocketAddrV4};
 
         use bussard_bus::Bus;
+        use bussard_model::Model;
         use bussard_transport::ConnectionConfig;
 
-        use crate::state::BusStatus;
+        use crate::state::{BusStatus, ModelHandle};
 
         // An empty model directory loads fine (every file is optional).
         let tmp = tempfile::tempdir()?;
-        let model = Arc::new(Model::load(tmp.path())?);
+        let model = ModelHandle::new(Model::load(tmp.path())?);
 
         // A dead gateway on loopback: the actor tries once, fails, and moves
         // Connecting -> Reconnecting. ALWAYS 127.0.0.1 in tests.
