@@ -302,6 +302,42 @@ pub struct Memory {
     pub base_offset: Option<String>,
 }
 
+/// A `<Union>` block: several parameters overlaying the same memory region.
+///
+/// A union declares one base location (its child `<Memory>`) and a `SizeInBit`
+/// width, then lists member `<Parameter>`s whose `Offset`/`BitOffset` are
+/// **relative within the union block** (not segment offsets). All members share
+/// the same underlying bytes; ETS writes the value of the member marked
+/// `DefaultUnionParameter` (falling back to the first member when none is
+/// marked). See [`UnionMember`] and `bussard_prod`'s image computation, which
+/// lays the default member down at `union_base + member_offset`.
+#[derive(Debug, Clone, Default)]
+pub struct Union {
+    /// The union's `SizeInBit` (the size of the shared region), if declared.
+    pub size_bits: Option<u32>,
+    /// The base memory location (the union's single `<Memory>` child). Member
+    /// offsets are added to this location's `offset`.
+    pub memory: Option<Memory>,
+    /// The member parameters overlaying the region, in document order.
+    pub members: Vec<UnionMember>,
+}
+
+/// One member of a [`Union`]: a parameter plus its position within the block.
+#[derive(Debug, Clone, Default)]
+pub struct UnionMember {
+    /// The member parameter's full XML `Id` (also present in
+    /// [`ApplicationProgram::parameters`], so its type/default resolve normally).
+    pub parameter: String,
+    /// Byte offset **relative to the union base**, from the member's `Offset`.
+    pub offset: Option<u32>,
+    /// Bit offset within the byte, from the member's `BitOffset`.
+    pub bit_offset: Option<u8>,
+    /// Whether this member is the union's `DefaultUnionParameter` (the value ETS
+    /// lays into the shared memory). `true` for `DefaultUnionParameter="1"` or
+    /// `"true"`.
+    pub is_default: bool,
+}
+
 /// A `<ParameterRef>`: a reference to a [`Parameter`] with optional overrides.
 #[derive(Debug, Clone, Default)]
 pub struct ParameterRef {
@@ -577,6 +613,10 @@ pub struct ApplicationProgram {
     pub parameter_types: HashMap<String, ParameterTypeDecl>,
     /// Parameters, keyed by full `Id`.
     pub parameters: HashMap<String, Parameter>,
+    /// `<Union>` blocks, in document order. Each overlays several member
+    /// parameters onto one shared memory region; empty for an application with
+    /// no unions.
+    pub unions: Vec<Union>,
     /// Parameter refs, keyed by full `Id`.
     pub parameter_refs: HashMap<String, ParameterRef>,
     /// Code segments, keyed by full `Id`.
@@ -714,6 +754,11 @@ pub fn parse_application_program(id: &str, xml: &[u8]) -> Result<ApplicationProg
     // The parameter whose <Memory> child we are waiting for.
     let mut cur_param_id: Option<String> = None;
 
+    // The `<Union>` currently being built. Its single `<Memory>` child gives the
+    // shared base location; member `<Parameter>`s that follow carry union-relative
+    // `Offset`/`BitOffset` attributes.
+    let mut cur_union: Option<Union> = None;
+
     // Streaming capture of a code segment's inline binary. When we enter a
     // `<RelativeSegment>`/`<AbsoluteSegment>` with children we record its id;
     // its `<Data>`/`<Mask>` children then feed base64 text into `seg_capture`.
@@ -765,6 +810,7 @@ pub fn parse_application_program(id: &str, xml: &[u8]) -> Result<ApplicationProg
                     &mut cur_pt_kind,
                     &mut cur_lp,
                     &mut cur_param_id,
+                    &mut cur_union,
                     &mut dyn_state,
                 )?;
             }
@@ -784,6 +830,7 @@ pub fn parse_application_program(id: &str, xml: &[u8]) -> Result<ApplicationProg
                     &mut cur_pt_kind,
                     &mut cur_lp,
                     &cur_param_id,
+                    &mut cur_union,
                     &mut dyn_state,
                 )?;
             }
@@ -806,6 +853,12 @@ pub fn parse_application_program(id: &str, xml: &[u8]) -> Result<ApplicationProg
                 b"Language" => translations.exit_language(),
                 b"TranslationElement" => translations.exit_element(),
                 b"Parameter" => cur_param_id = None,
+                b"Union" => {
+                    // Close a union: record its base location and members.
+                    if let Some(union) = cur_union.take() {
+                        app.unions.push(union);
+                    }
+                }
                 b"ParameterType" => {
                     if let (Some(pt_id), kind) = (cur_pt_id.take(), cur_pt_kind.take()) {
                         app.parameter_types.insert(
@@ -889,6 +942,7 @@ fn handle_start(
     cur_pt_kind: &mut Option<ParameterType>,
     cur_lp: &mut Option<LoadProcedure>,
     cur_param_id: &mut Option<String>,
+    cur_union: &mut Option<Union>,
     dyn_state: &mut DynamicState,
 ) -> Result<()> {
     attrs.parse_into(e, context)?;
@@ -932,6 +986,20 @@ fn handle_start(
         }
         b"Parameter" => {
             *cur_param_id = insert_parameter_start(app, m);
+            // A `<Parameter>` directly inside a `<Union>` is a member: record its
+            // union-relative Offset/BitOffset and default flag.
+            if let (Some(union), Some(pid)) = (cur_union.as_mut(), cur_param_id.as_ref()) {
+                union.members.push(union_member(pid, m));
+            }
+        }
+        b"Union" => {
+            // Begin a `<Union SizeInBit=..>`; its `<Memory>` child and member
+            // `<Parameter>`s follow.
+            *cur_union = Some(Union {
+                size_bits: get(m, b"SizeInBit").and_then(|s| s.parse().ok()),
+                memory: None,
+                members: Vec::new(),
+            });
         }
         b"LoadProcedure" => {
             *cur_lp = Some(LoadProcedure {
@@ -1002,6 +1070,7 @@ fn handle_empty(
     cur_pt_kind: &mut Option<ParameterType>,
     cur_lp: &mut Option<LoadProcedure>,
     cur_param_id: &Option<String>,
+    cur_union: &mut Option<Union>,
     dyn_state: &mut DynamicState,
 ) -> Result<()> {
     attrs.parse_into(e, context)?;
@@ -1044,10 +1113,29 @@ fn handle_empty(
         }
         b"Parameter" => {
             // A parameter with no <Memory> child.
-            insert_parameter_start(app, m);
+            let pid = insert_parameter_start(app, m);
+            // A self-closing member `<Parameter>` inside a `<Union>`.
+            if let (Some(union), Some(pid)) = (cur_union.as_mut(), pid.as_ref()) {
+                union.members.push(union_member(pid, m));
+            }
         }
         b"ParameterRef" => insert_parameter_ref(app, m),
-        b"Memory" => attach_memory(app, cur_param_id, m),
+        b"Memory" => {
+            // A union's single `<Memory>` child sets its base location; it always
+            // precedes the member `<Parameter>`s, so route it there while the
+            // union has no base yet. Otherwise it belongs to the open parameter.
+            match cur_union.as_mut() {
+                Some(union) if union.memory.is_none() => {
+                    union.memory = Some(Memory {
+                        code_segment: get(m, b"CodeSegment").map(str::to_string),
+                        offset: get(m, b"Offset").and_then(|s| s.parse().ok()),
+                        bit_offset: get(m, b"BitOffset").and_then(|s| s.parse().ok()),
+                        base_offset: get(m, b"BaseOffset").map(str::to_string),
+                    });
+                }
+                _ => attach_memory(app, cur_param_id, m),
+            }
+        }
         b"TranslationElement" => translations.enter_element(get(m, b"RefId")),
         b"Translation" => translations.record(m, &["Name", "Text"]),
         // Parameter-type shapes (all self-closing except TypeRestriction).
@@ -1216,6 +1304,22 @@ fn insert_parameter_start(app: &mut ApplicationProgram, m: &Attrs) -> Option<Str
         },
     );
     Some(id)
+}
+
+/// Builds a [`UnionMember`] from a member `<Parameter>`'s own attributes.
+///
+/// Union members carry their position as direct `Offset`/`BitOffset` attributes
+/// (relative to the union base), not as a `<Memory>` child. The
+/// `DefaultUnionParameter` flag (spelled `"1"` or `"true"` in the wild) marks the
+/// member whose default value ETS lays into the shared region.
+fn union_member(pid: &str, m: &Attrs) -> UnionMember {
+    let is_default = matches!(get(m, b"DefaultUnionParameter"), Some("1" | "true"));
+    UnionMember {
+        parameter: pid.to_string(),
+        offset: get(m, b"Offset").and_then(|s| s.parse().ok()),
+        bit_offset: get(m, b"BitOffset").and_then(|s| s.parse().ok()),
+        is_default,
+    }
 }
 
 fn attach_memory(app: &mut ApplicationProgram, cur_param_id: &Option<String>, m: &Attrs) {
@@ -1950,6 +2054,64 @@ mod tests {
                 .base_offset
                 .is_none()
         );
+    }
+
+    #[test]
+    fn parses_union_block_members_and_default() {
+        // A `<Union>` (shape taken from the Zennio FIX2 dimmer): one base
+        // `<Memory>` then member `<Parameter>`s carrying union-relative
+        // Offset/BitOffset. The `DefaultUnionParameter="1"` member is the default.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-1" MaskVersion="MV-07B0" Name="x"><Static>
+          <Union SizeInBit="8">
+           <Memory CodeSegment="M-1_A-1_RS-1" Offset="56" BitOffset="0" />
+           <Parameter Id="M-1_A-1_UP-1" Name="a" DefaultUnionParameter="1" ParameterType="M-1_A-1_PT-0" Value="75" Offset="0" BitOffset="0" />
+           <Parameter Id="M-1_A-1_UP-2" Name="b" DefaultUnionParameter="0" ParameterType="M-1_A-1_PT-0" Value="1" Offset="0" BitOffset="0" />
+           <Parameter Id="M-1_A-1_UP-3" Name="c" ParameterType="M-1_A-1_PT-0" Value="9" Offset="1" BitOffset="1" />
+          </Union>
+         </Static></ApplicationProgram></KNX>"#;
+        let app = parse_application_program_str("M-1_A-1", xml).unwrap();
+        assert_eq!(app.unions.len(), 1);
+        let u = &app.unions[0];
+        assert_eq!(u.size_bits, Some(8));
+        let mem = u.memory.as_ref().expect("union base memory");
+        assert_eq!(mem.code_segment.as_deref(), Some("M-1_A-1_RS-1"));
+        assert_eq!(mem.offset, Some(56));
+        // Three members captured with their union-relative positions.
+        assert_eq!(u.members.len(), 3);
+        assert_eq!(u.members[0].parameter, "M-1_A-1_UP-1");
+        assert!(u.members[0].is_default);
+        assert_eq!(u.members[0].offset, Some(0));
+        assert!(!u.members[1].is_default);
+        assert_eq!(u.members[2].offset, Some(1));
+        assert_eq!(u.members[2].bit_offset, Some(1));
+        // The member parameters are also present in the normal parameter map
+        // (so their type/default resolve during image computation).
+        assert_eq!(
+            app.parameters
+                .get("M-1_A-1_UP-1")
+                .unwrap()
+                .default
+                .as_deref(),
+            Some("75")
+        );
+    }
+
+    #[test]
+    fn parses_union_default_true_spelling() {
+        // ETS files spell the default flag as `"1"` or `"true"`; both must count.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-1" MaskVersion="MV-07B0" Name="x"><Static>
+          <Union SizeInBit="8">
+           <Memory CodeSegment="M-1_A-1_RS-1" Offset="10" BitOffset="0" />
+           <Parameter Id="M-1_A-1_UP-1" Name="a" ParameterType="M-1_A-1_PT-0" Value="0" Offset="0" BitOffset="0" />
+           <Parameter Id="M-1_A-1_UP-2" Name="b" DefaultUnionParameter="true" ParameterType="M-1_A-1_PT-0" Value="7" Offset="0" BitOffset="0" />
+          </Union>
+         </Static></ApplicationProgram></KNX>"#;
+        let app = parse_application_program_str("M-1_A-1", xml).unwrap();
+        let u = &app.unions[0];
+        assert!(!u.members[0].is_default);
+        assert!(u.members[1].is_default, "\"true\" counts as default");
     }
 
     #[test]
