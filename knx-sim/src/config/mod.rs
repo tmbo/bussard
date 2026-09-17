@@ -54,6 +54,33 @@ impl From<InitialState> for LoadState {
     }
 }
 
+/// How a System 7 device realises its load-state machines, as declared in
+/// config. Selects the device side the simulator presents so a tool can be
+/// conformance-tested against either realisation. Default: memory-mapped.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum LsmAccessConfig {
+    /// 12-octet record over `A_Memory_Write` to the LSM control address, status
+    /// polled via `A_Memory_Read` (the default).
+    Memory,
+    /// Load events over `PID_LOAD_STATE_CONTROL` (PID 5) via
+    /// `A_PropertyValue_Write/Read`.
+    Property,
+}
+
+impl From<LsmAccessConfig> for crate::device::LsmAccess {
+    fn from(c: LsmAccessConfig) -> Self {
+        match c {
+            LsmAccessConfig::Memory => crate::device::LsmAccess::MemoryMapped,
+            LsmAccessConfig::Property => crate::device::LsmAccess::Property,
+        }
+    }
+}
+
+fn default_lsm_access() -> LsmAccessConfig {
+    LsmAccessConfig::Memory
+}
+
 /// One device entry in the config.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DeviceConfig {
@@ -68,6 +95,21 @@ pub struct DeviceConfig {
     /// The initial load state (default: unloaded).
     #[serde(default = "default_initial_state")]
     pub initial_state: InitialState,
+    /// Override the device's mask (e.g. `"0705"`, `"MV-07B0"`). When omitted the
+    /// mask comes from the product's `MaskVersion`. Selects the System B vs
+    /// System 7 device model.
+    #[serde(default)]
+    pub mask: Option<String>,
+    /// For a System 7 device, how its load-state machines are realised on the
+    /// wire (default: memory-mapped). Ignored for System B.
+    #[serde(default = "default_lsm_access")]
+    pub lsm_access: LsmAccessConfig,
+    /// For a System 7 device, the BCU key (as a hex or decimal `u32`) required
+    /// for memory access. Omit for free access (the default): any key unlocks.
+    /// When set, memory/load writes before a successful `A_Authorize` with the
+    /// matching key are refused.
+    #[serde(default)]
+    pub bcu_key: Option<String>,
     /// The device's per-connection numbered-exchange budget: after this many
     /// accepted NDTs on one L4 connection the device drops the connection,
     /// modelling a real connection-oriented device's per-connection resource
@@ -177,6 +219,24 @@ pub enum ConfigError {
         /// The underlying encoding error.
         source: crate::wire::dpt::DptError,
     },
+    /// A device option (mask override, bcu_key, unmodelled mask) was invalid.
+    #[error("device {device}: {reason}")]
+    BadDeviceOption {
+        /// The device address.
+        device: String,
+        /// Why the option was rejected.
+        reason: String,
+    },
+}
+
+/// Parse a `bcu_key` config string (hex `0x...` or decimal) into a `u32`.
+fn parse_bcu_key(s: &str) -> Option<u32> {
+    let s = s.trim();
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u32::from_str_radix(hex, 16).ok()
+    } else {
+        s.parse::<u32>().ok()
+    }
 }
 
 impl SimConfig {
@@ -223,9 +283,34 @@ impl SimConfig {
                         source,
                     }
                 })?;
-            let device =
-                Device::from_product(address, &product, dc.initial_state.into(), events.clone())
-                    .with_l4_exchange_budget(effective_l4_budget(dc.l4_exchange_budget));
+            let bcu_key = match &dc.bcu_key {
+                Some(s) => Some(
+                    parse_bcu_key(s).ok_or_else(|| ConfigError::BadDeviceOption {
+                        device: dc.address.clone(),
+                        reason: format!(
+                            "bad bcu_key {s:?}: expected a u32 (hex `0x..` or decimal)"
+                        ),
+                    })?,
+                ),
+                None => None,
+            };
+            let overrides = crate::device::ProfileOverrides {
+                mask: dc.mask.clone(),
+                lsm_access: dc.lsm_access.into(),
+                bcu_key,
+            };
+            let device = Device::from_product_with_overrides(
+                address,
+                &product,
+                dc.initial_state.into(),
+                overrides,
+                events.clone(),
+            )
+            .map_err(|reason| ConfigError::BadDeviceOption {
+                device: dc.address.clone(),
+                reason,
+            })?
+            .with_l4_exchange_budget(effective_l4_budget(dc.l4_exchange_budget));
             bus.add_device(device);
         }
         bus.set_stimulus(self.build_stimulus()?);

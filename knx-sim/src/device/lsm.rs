@@ -191,6 +191,151 @@ pub struct TransitionError {
     pub event: LoadEvent,
 }
 
+/// A System 7 load-state machine for one of the three parallel LSMs.
+///
+/// It mirrors [`LoadStateMachine`] but applies the System 7 event model (spec
+/// `docs/system7-spec.md` §4.1): `Unloaded --StartLoading--> Loading
+/// --(AbsSegment alloc / TaskSegment)*--> Loading --LoadCompleted--> Loaded`.
+/// A `TaskSegment` must be accepted in `Loading` (it commits the segment
+/// descriptor) and is a precondition for the following `LoadCompleted`; the
+/// device enforces that precondition. Any illegal event moves the LSM to
+/// `Error` (state 3), which fails the flash.
+#[derive(Debug, Clone)]
+pub struct Sys7LoadStateMachine {
+    state: LoadState,
+    /// Whether a task-segment descriptor has been committed since the last
+    /// `StartLoading`. `LoadCompleted` requires this.
+    task_committed: bool,
+}
+
+impl Default for Sys7LoadStateMachine {
+    fn default() -> Self {
+        Self {
+            state: LoadState::Unloaded,
+            task_committed: false,
+        }
+    }
+}
+
+/// The kind of transition a System 7 LSM step performed, so the device can wire
+/// side effects (segment allocation, memory writes) to the right event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Sys7Step {
+    /// The LSM changed to this state (StartLoading / LoadCompleted / Unload).
+    State(LoadState),
+    /// An absolute segment was allocated; the caller wires it into memory.
+    Alloc {
+        /// Start address.
+        start: u16,
+        /// Length in bytes.
+        length: u16,
+        /// Alloc subtype (0x00 Data / 0x01 Stack / 0x02 Task).
+        subtype: u8,
+    },
+    /// A task-segment descriptor was committed (precondition for LoadCompleted).
+    TaskCommitted {
+        /// The segment base the descriptor points at.
+        address: u16,
+    },
+    /// A no-op event (NoOperation) — accepted, no state change.
+    NoOp,
+}
+
+/// A System 7 LSM transition was rejected.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum Sys7TransitionError {
+    /// An event was illegal in the current state.
+    #[error("illegal System 7 load event {event:?} from {from:?}")]
+    Illegal {
+        /// The state the LSM was in.
+        from: LoadState,
+        /// The rejected event.
+        event: crate::device::sys7_lsm::Sys7Event,
+    },
+    /// `LoadCompleted` was issued without a committed task-segment descriptor.
+    #[error("LoadCompleted before a TaskSegment descriptor was committed")]
+    MissingTaskSegment,
+}
+
+impl Sys7LoadStateMachine {
+    /// Create an LSM in the given initial state.
+    pub fn new(initial: LoadState) -> Self {
+        Self {
+            state: initial,
+            task_committed: false,
+        }
+    }
+
+    /// The current load state.
+    pub fn state(&self) -> LoadState {
+        self.state
+    }
+
+    /// Apply a System 7 load event, enforcing the ordering rules. On success
+    /// returns the [`Sys7Step`] describing what happened (for wiring side
+    /// effects); on a rule violation moves to `Error` and returns the reason.
+    pub fn apply(
+        &mut self,
+        event: crate::device::sys7_lsm::Sys7Event,
+    ) -> Result<Sys7Step, Sys7TransitionError> {
+        use crate::device::sys7_lsm::Sys7Event as E;
+        match (self.state, event) {
+            (_, E::NoOperation) => Ok(Sys7Step::NoOp),
+            // Unload is always accepted and returns to Unloaded.
+            (_, E::Unload) => {
+                self.state = LoadState::Unloaded;
+                self.task_committed = false;
+                Ok(Sys7Step::State(LoadState::Unloaded))
+            }
+            // StartLoading from Unloaded or Loaded (re-flash) enters Loading.
+            (LoadState::Unloaded | LoadState::Loaded, E::StartLoading) => {
+                self.state = LoadState::Loading;
+                self.task_committed = false;
+                Ok(Sys7Step::State(LoadState::Loading))
+            }
+            // Absolute-segment allocation is only valid while Loading. A
+            // subtype-0x02 (Task) record also commits the task descriptor.
+            (
+                LoadState::Loading,
+                E::AllocAbsSegment {
+                    start,
+                    length,
+                    subtype,
+                },
+            ) => {
+                if subtype == 0x02 {
+                    self.task_committed = true;
+                }
+                Ok(Sys7Step::Alloc {
+                    start,
+                    length,
+                    subtype,
+                })
+            }
+            // TaskSegment commits the descriptor; only valid while Loading.
+            (LoadState::Loading, E::TaskSegment { address }) => {
+                self.task_committed = true;
+                Ok(Sys7Step::TaskCommitted { address })
+            }
+            // LoadCompleted finalises to Loaded, but only after a committed task
+            // descriptor (spec §4.3 precondition).
+            (LoadState::Loading, E::LoadCompleted) => {
+                if !self.task_committed {
+                    self.state = LoadState::Error;
+                    return Err(Sys7TransitionError::MissingTaskSegment);
+                }
+                self.state = LoadState::Loaded;
+                Ok(Sys7Step::State(LoadState::Loaded))
+            }
+            // Anything else is illegal.
+            (from, event) => {
+                self.state = LoadState::Error;
+                Err(Sys7TransitionError::Illegal { from, event })
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,5 +386,99 @@ mod tests {
         let mut lsm = LoadStateMachine::default();
         assert!(lsm.apply(LoadEvent::AllocRelSegment { size: 256 }).is_err());
         assert_eq!(lsm.state(), LoadState::Error);
+    }
+
+    mod sys7 {
+        use super::super::{Sys7LoadStateMachine, Sys7Step, Sys7TransitionError};
+        use crate::device::LoadState;
+        use crate::device::sys7_lsm::Sys7Event as E;
+
+        #[test]
+        fn test_sys7_happy_path_reaches_loaded() {
+            let mut lsm = Sys7LoadStateMachine::default();
+            assert_eq!(
+                lsm.apply(E::StartLoading),
+                Ok(Sys7Step::State(LoadState::Loading))
+            );
+            assert_eq!(
+                lsm.apply(E::AllocAbsSegment {
+                    start: 0x4000,
+                    length: 513,
+                    subtype: 0x00,
+                }),
+                Ok(Sys7Step::Alloc {
+                    start: 0x4000,
+                    length: 513,
+                    subtype: 0x00,
+                })
+            );
+            assert_eq!(
+                lsm.apply(E::TaskSegment { address: 0x4000 }),
+                Ok(Sys7Step::TaskCommitted { address: 0x4000 })
+            );
+            assert_eq!(
+                lsm.apply(E::LoadCompleted),
+                Ok(Sys7Step::State(LoadState::Loaded))
+            );
+            assert_eq!(lsm.state(), LoadState::Loaded);
+        }
+
+        #[test]
+        fn test_sys7_load_completed_without_task_segment_errors() {
+            let mut lsm = Sys7LoadStateMachine::default();
+            lsm.apply(E::StartLoading).expect("start");
+            lsm.apply(E::AllocAbsSegment {
+                start: 0x4000,
+                length: 8,
+                subtype: 0x00,
+            })
+            .expect("alloc");
+            assert_eq!(
+                lsm.apply(E::LoadCompleted),
+                Err(Sys7TransitionError::MissingTaskSegment)
+            );
+            assert_eq!(lsm.state(), LoadState::Error);
+        }
+
+        #[test]
+        fn test_sys7_alloc_before_start_errors() {
+            let mut lsm = Sys7LoadStateMachine::default();
+            assert!(matches!(
+                lsm.apply(E::AllocAbsSegment {
+                    start: 0x4000,
+                    length: 8,
+                    subtype: 0x00,
+                }),
+                Err(Sys7TransitionError::Illegal { .. })
+            ));
+            assert_eq!(lsm.state(), LoadState::Error);
+        }
+
+        #[test]
+        fn test_sys7_unload_from_any_state() {
+            let mut lsm = Sys7LoadStateMachine::new(LoadState::Loaded);
+            assert_eq!(
+                lsm.apply(E::Unload),
+                Ok(Sys7Step::State(LoadState::Unloaded))
+            );
+        }
+
+        #[test]
+        fn test_sys7_task_subtype_alloc_commits_descriptor() {
+            // A subtype-0x02 (Task) allocation also commits the task descriptor,
+            // so LoadCompleted may follow without a separate TaskSegment.
+            let mut lsm = Sys7LoadStateMachine::default();
+            lsm.apply(E::StartLoading).expect("start");
+            lsm.apply(E::AllocAbsSegment {
+                start: 0x4400,
+                length: 92,
+                subtype: 0x02,
+            })
+            .expect("task alloc");
+            assert_eq!(
+                lsm.apply(E::LoadCompleted),
+                Ok(Sys7Step::State(LoadState::Loaded))
+            );
+        }
     }
 }
