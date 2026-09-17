@@ -3262,12 +3262,39 @@ async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
     // The LSMs that reached LoadCompleted, in order, for the post-flash verify.
     let mut completed_lsms: Vec<u32> = Vec::new();
 
+    // The proactive-reconnect exchange threshold (0 = disabled), read once — the
+    // same ETS-pattern L4 cycling the System B path uses.
+    let reconnect_threshold = reconnect_exchange_threshold();
+
     for (i, step) in plan.steps.iter().enumerate() {
+        // Proactive periodic L4 reconnection between steps (never mid memory
+        // write). The LSM states and allocated segments are persistent device
+        // state, so they survive a graceful cycle. The terminal Restart reboots
+        // the device itself, so it is excluded.
+        let self_reconnecting = matches!(step, FlashStep::Restart);
+        if reconnect_threshold > 0
+            && session.can_reconnect()
+            && !self_reconnecting
+            && session.numbered_exchanges() >= reconnect_threshold
+        {
+            session.cycle_l4().await?;
+        }
         progress(Progress::Step {
             index: i + 1,
             total,
             label: step_label(step),
         });
+
+        // Resume-on-drop: run the step, and if it dies from an unexpected mid-flow
+        // connection death and the session can reconnect, cycle the connection and
+        // re-run the whole step. LSM state and allocated segments are persistent
+        // device state that survive the drop, and every System 7 memory write is
+        // absolute-addressed and idempotent, so replaying the step is safe. The
+        // terminal Restart reboots the device and is excluded (its silence is
+        // expected). Bounded by MAX_RESUME_RECONNECTS per step.
+        let mut resume_reconnects = 0u32;
+        'resume: loop {
+            let step_result: Result<(), WriteError> = async {
         match step {
             FlashStep::Sys7Unload { lsm: idx } => {
                 lsm.drive(session.l4(), lsm_octet(*idx), LoadControl::Unload)
@@ -3321,7 +3348,13 @@ async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                         &mut progress,
                     )
                     .await?;
-                    written_samples.push((addr, take_sample(bytes)));
+                    // Spot-check only unmasked segments: a masked segment leaves
+                    // device-owned bytes untouched, so the image's leading octets
+                    // do not equal the device's memory. The owned bytes were
+                    // already read-back-verified per-chunk during the write.
+                    if mask.is_none() {
+                        written_samples.push((addr, take_sample(bytes)));
+                    }
                 }
             }
             FlashStep::Sys7TaskSegment {
@@ -3429,6 +3462,23 @@ async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                         reason: format!("System 7 executor met a non-System-7 step: {other:?}"),
                     },
                 ));
+            }
+        }
+        Ok(())
+            }
+            .await;
+
+            match step_result {
+                Ok(()) => break 'resume,
+                Err(e)
+                    if resumable_death(&e, session)
+                        && !self_reconnecting
+                        && resume_reconnects < MAX_RESUME_RECONNECTS =>
+                {
+                    resume_reconnects += 1;
+                    session.reconnect().await?;
+                }
+                Err(e) => return Err(e),
             }
         }
     }
