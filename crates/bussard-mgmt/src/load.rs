@@ -1257,11 +1257,20 @@ pub async fn write_memory_verified<Ch: L4Channel, F: FnMut(usize)>(
     Ok(())
 }
 
-/// Whether an error is a transient connection blip (a mid-session silence, a
-/// dropped ACK, a momentary no-response) as opposed to a device-level refusal
-/// like a verify mismatch or a load error — the kind a bounded per-exchange retry
-/// can recover from on the same connection.
-fn is_connection_death(err: &WriteError) -> bool {
+/// Whether an error is a connection-death — a mid-session silence, a dropped ACK,
+/// or a momentary no-response (the "device absent"/"disconnected" family) — as
+/// opposed to a device-level refusal like a verify mismatch or a load error.
+///
+/// Two callers use this. [`write_memory_verified`] retries such a blip a bounded
+/// number of times **on the same connection** (a transient hiccup on a flaky Wi-Fi
+/// tunnel). The flash engine (`bussard-download`) uses it, when a whole step fails
+/// this way, to **cycle the L4 connection and re-run the step**: a
+/// connection-oriented device (KNX Virtual) drops the L4 link at a
+/// non-deterministic exchange count, but the object's load state and allocated
+/// segments are persistent device state that survive the drop, so reconnecting and
+/// resuming recovers it. A device-level refusal is never a connection-death, so
+/// neither caller retries one.
+pub fn is_connection_death(err: &WriteError) -> bool {
     matches!(
         err,
         WriteError::Mgmt(MgmtError::MidSessionSilence { .. })

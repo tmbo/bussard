@@ -1308,6 +1308,17 @@ fn no_overrides() -> BTreeMap<String, String> {
     BTreeMap::new()
 }
 
+/// A tiny L4 timeout budget for the resume-on-drop tests: a modelled mid-write
+/// silence (the device dropped the connection) is then detected in ~50 ms instead
+/// of the default 3 s, so the bounded-retry give-up path resolves quickly.
+fn fast_timeouts() -> bussard_mgmt::Timeouts {
+    bussard_mgmt::Timeouts {
+        ack_timeout: Duration::from_millis(50),
+        max_repetitions: 1,
+        response_timeout: Duration::from_millis(50),
+    }
+}
+
 /// Authorizes a freshly-connected [`Layer4Connection`] with the free-access key
 /// and wraps it in a single-connection [`Session`], exactly as the real flow does
 /// (issue #52 finding #1): the mock's authorization gate refuses config writes
@@ -2323,6 +2334,11 @@ struct LeaseConnector {
     handle: bussard_bus::BusHandle,
     target: bussard_model::IndividualAddress,
     source: bussard_model::IndividualAddress,
+    /// The L4 timeout budget each opened connection uses. `None` keeps the default
+    /// (3 s response/ACK); the resume-on-drop tests set a tiny budget so a modelled
+    /// mid-write silence is detected in milliseconds rather than seconds, keeping
+    /// the bounded-retry give-up test fast.
+    timeouts: Option<bussard_mgmt::Timeouts>,
 }
 
 impl bussard_download::Connector for LeaseConnector {
@@ -2337,9 +2353,11 @@ impl bussard_download::Connector for LeaseConnector {
             ))
         })?;
         let channel = bussard_mgmt::LeaseChannel::new(lease);
-        Layer4Connection::connect(channel, self.target, self.source)
-            .await
-            .map_err(bussard_mgmt::load::WriteError::Mgmt)
+        match self.timeouts {
+            Some(t) => Layer4Connection::connect_with(channel, self.target, self.source, t).await,
+            None => Layer4Connection::connect(channel, self.target, self.source).await,
+        }
+        .map_err(bussard_mgmt::load::WriteError::Mgmt)
     }
 }
 
@@ -2423,6 +2441,7 @@ async fn flash_master_reset_reconnects_and_reaches_loaded() {
         handle: handle.clone(),
         target,
         source,
+        timeouts: None,
     };
     let mut session = Session::open_with_key(connector, None).await.unwrap();
     let outcome = flash(
@@ -2528,12 +2547,16 @@ async fn flash_cycles_l4_connection_before_the_exchange_budget_and_reaches_loade
     // seamlessly.
     //
     // This test proves both halves:
-    //   1. WITHOUT proactive cycling (threshold 0 = disabled), a device with a low
-    //      per-connection exchange budget drops the connection mid-flash and the
-    //      flash fails "device absent".
+    //   1. Even WITHOUT proactive cycling (threshold 0 = disabled), resume-on-drop
+    //      alone recovers: a device with a low per-connection exchange budget drops
+    //      the connection mid-flash, and the engine reconnects and replays the
+    //      dropped step until the flash reaches `Loaded` (the second safety net —
+    //      each step is small enough to finish inside one budget window). This is
+    //      the resilience that makes the non-deterministic live-KV drop survivable.
     //   2. WITH proactive cycling at a low threshold, the flash cycles the
-    //      connection before the budget every time and reaches `Loaded` — and the
-    //      device saw several T_Connects (the periodic reconnects).
+    //      connection *before* the budget every time and reaches `Loaded` — and the
+    //      device saw several T_Connects (the periodic reconnects) with graceful
+    //      T_Disconnects (a clean cycle, not a drop-and-resume).
     //
     // SAFETY of env: nextest runs each test in its own process, so these
     // process-global vars are isolated to this test; they only tune a sleep and
@@ -2550,7 +2573,7 @@ async fn flash_cycles_l4_connection_before_the_exchange_budget_and_reaches_loade
 
     let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
 
-    // --- 1. Without the fix: the low budget kills the single-connection flash. ---
+    // --- 1. Proactive cycling OFF: resume-on-drop alone still reaches Loaded. ---
     unsafe {
         std::env::set_var("BUSSARD_FLASH_RECONNECT_EXCHANGES", "0");
     }
@@ -2573,20 +2596,32 @@ async fn flash_cycles_l4_connection_before_the_exchange_budget_and_reaches_loade
             handle: handle.clone(),
             target,
             source,
+            timeouts: None,
         };
         let mut session = Session::open_with_key(connector, None).await.unwrap();
-        let result = flash(
+        let outcome = flash(
             &mut session,
             &plan,
             bussard_download::FlashOptions::default(),
             |_| {},
         )
-        .await;
+        .await
+        .expect("resume-on-drop alone must recover the dropped connection and finish the flash");
         let _ = session.into_disconnect().await;
         assert!(
-            result.is_err(),
-            "without proactive cycling the low L4 budget must drop the flash: {result:?}"
+            outcome.ok(),
+            "the resumed flash must verify as Loaded: {outcome:?}"
         );
+        {
+            let s = state.lock().unwrap();
+            // The single-connection budget was exceeded at least once, so the engine
+            // must have reconnected (resume-on-drop) to finish — several T_Connects.
+            assert!(
+                s.connects >= 2,
+                "resume-on-drop must reconnect the dropped connection (connects = {})",
+                s.connects
+            );
+        }
         let _ = handle.close().await;
         gw.abort();
     }
@@ -2614,6 +2649,7 @@ async fn flash_cycles_l4_connection_before_the_exchange_budget_and_reaches_loade
             handle: handle.clone(),
             target,
             source,
+            timeouts: None,
         };
         let mut session = Session::open_with_key(connector, None).await.unwrap();
         let outcome = flash(
@@ -2663,6 +2699,221 @@ async fn flash_cycles_l4_connection_before_the_exchange_budget_and_reaches_loade
     }
 }
 
+/// A single-application System B app whose code segment is 256 bytes of 0xFF, so
+/// its `WriteRelMem` spans several `A_Memory_Write` chunks (63 octets each) — big
+/// enough that a low per-connection exchange budget drops the connection *strictly
+/// inside* the write, exercising resume-on-drop of a partially-written segment.
+fn fabricated_app_big() -> ApplicationProgram {
+    let data = base64_ff_256();
+    let xml = format!(
+        r#"<KNX xmlns="http://knx.org/xml/project/23">
+     <ApplicationProgram Id="M-9_A-1" ApplicationNumber="1" ApplicationVersion="1"
+        MaskVersion="MV-07B0" Name="Big" LoadProcedureStyle="ProductDefault">
+      <Static>
+       <Code>
+        <RelativeSegment Id="M-9_A-1_RS-1" Size="256" LoadStateMachine="4" Offset="0"><Data>{data}</Data></RelativeSegment>
+       </Code>
+       <LoadProcedures>
+        <LoadProcedure>
+         <LdCtrlConnect />
+         <LdCtrlUnload LsmIdx="4" />
+         <LdCtrlLoad LsmIdx="4" />
+         <LdCtrlRelSegment LsmIdx="4" Size="256" AppliesTo="full" />
+         <LdCtrlWriteRelMem ObjIdx="0" Offset="0" Size="256" AppliesTo="full" />
+         <LdCtrlLoadCompleted LsmIdx="4" />
+         <LdCtrlRestart />
+         <LdCtrlDisconnect />
+        </LoadProcedure>
+       </LoadProcedures>
+      </Static>
+     </ApplicationProgram></KNX>"#
+    );
+    parse_application_program("M-9_A-1", xml.as_bytes()).unwrap()
+}
+
+#[tokio::test]
+async fn flash_resumes_when_connection_drops_inside_a_write() {
+    // Resume-on-drop, the live-KV reliability fix: KNX Virtual drops the
+    // connection-oriented L4 connection at a NON-DETERMINISTIC exchange count, so no
+    // fixed proactive threshold is reliable. When a step dies from that unexpected
+    // mid-flow connection death, the engine must reconnect, re-authorize, and REPLAY
+    // the step — load state and allocated segments are persistent device state that
+    // survive the drop, so re-running the step is safe.
+    //
+    // Here proactive cycling is DISABLED (threshold 0) so ONLY resume-on-drop can
+    // save the flash. The app's 256-byte segment is written across several chunks;
+    // a low per-connection budget drops the connection strictly INSIDE that write.
+    // The engine reconnects and replays the write on a fresh, budget-reset window
+    // (whose whole allowance covers the single remaining write step), completing the
+    // 256 bytes across windows and reaching Loaded.
+    //
+    // SAFETY of env: nextest isolates process-global vars per test; these only tune
+    // a sleep and disable proactive cycling, read once per step.
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
+        std::env::set_var("BUSSARD_FLASH_RECONNECT_EXCHANGES", "0");
+    }
+
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let (handle, state, gw) = setup_bus(Fault::None).await;
+    // Budget above the discovery+authorize+load-control preamble but low enough that
+    // the multi-chunk write trips it — the drop lands inside the write. On the fresh
+    // window the preamble is not re-run (only the write step replays), so the budget
+    // comfortably covers finishing the segment.
+    state.lock().unwrap().die_after_exchanges = Some(10);
+    let source = bussard_bus::ops::group_source(&handle);
+    let app = fabricated_app_big();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let connector = LeaseConnector {
+        handle: handle.clone(),
+        target,
+        source,
+        timeouts: Some(fast_timeouts()),
+    };
+    let mut session = Session::open_with_key(connector, None).await.unwrap();
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .expect("resume-on-drop must recover the mid-write connection death and finish");
+    let _ = session.into_disconnect().await;
+
+    assert!(
+        outcome.ok(),
+        "the resumed flash must verify as Loaded: {outcome:?}"
+    );
+    assert_eq!(outcome.load_state, LoadState::Loaded);
+    {
+        let s = state.lock().unwrap();
+        // The connection was dropped mid-flash, so the engine reconnected at least
+        // once to resume (several T_Connects).
+        assert!(
+            s.connects >= 2,
+            "resume-on-drop must reconnect after the mid-write drop (connects = {})",
+            s.connects
+        );
+        // The whole 256-byte segment landed at the segment base despite the drop.
+        let full: Vec<u8> = (0x4000u16..0x4000 + 256)
+            .map(|a| *s.memory.get(&a).unwrap_or(&0))
+            .collect();
+        assert_eq!(
+            full,
+            vec![0xFFu8; 256],
+            "every byte of the segment must be written across the resumed windows"
+        );
+    }
+    let _ = handle.close().await;
+    gw.abort();
+
+    unsafe {
+        std::env::remove_var("BUSSARD_FLASH_RECONNECT_EXCHANGES");
+        std::env::remove_var("BUSSARD_FLASH_REBOOT_WAIT_MS");
+    }
+}
+
+#[tokio::test]
+async fn flash_gives_up_cleanly_when_a_device_never_makes_progress() {
+    // The bound on resume-on-drop: a genuinely dead device that answers NOTHING —
+    // it drops every numbered exchange on every window, so not one probe, write, or
+    // read ever confirms — must fail cleanly after the retry budget, never loop
+    // forever. (Resume-on-drop makes forward progress at primitive/chunk
+    // granularity, so a device that lets even one exchange through is recoverable;
+    // only a device that makes ZERO progress hits the give-up bound.)
+    //
+    // `die_after_exchanges = 0` drops the FIRST numbered exchange on every
+    // connection — the device is effectively silent. Discovery's first probe dies;
+    // resume-on-drop reconnects and re-probes; it dies again at the same point with
+    // no forward progress. After the bound of consecutive fruitless reconnects the
+    // flash surfaces the connection-death error rather than spinning.
+    //
+    // SAFETY of env: nextest isolates these process-global vars; they only tune a
+    // sleep and disable proactive cycling, read once per step.
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
+        std::env::set_var("BUSSARD_FLASH_RECONNECT_EXCHANGES", "0");
+    }
+
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let (handle, state, gw) = setup_bus(Fault::None).await;
+    // Drop every numbered exchange (budget 0): the device answers nothing, so no
+    // operation can make any forward progress on any window.
+    state.lock().unwrap().die_after_exchanges = Some(0);
+    let source = bussard_bus::ops::group_source(&handle);
+    let app = fabricated_app_big();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let connector = LeaseConnector {
+        handle: handle.clone(),
+        target,
+        source,
+        timeouts: Some(fast_timeouts()),
+    };
+    let mut session = Session::open_with_key(connector, None).await.unwrap();
+    // Bound the wall-clock so a regression that loops forever fails the test loudly
+    // rather than hanging: the give-up must happen within a handful of reconnects.
+    let result = tokio::time::timeout(
+        Duration::from_secs(20),
+        flash(
+            &mut session,
+            &plan,
+            bussard_download::FlashOptions::default(),
+            |_| {},
+        ),
+    )
+    .await
+    .expect("resume-on-drop must give up (not hang) when the device never makes progress");
+    let _ = session.into_disconnect().await;
+
+    assert!(
+        result.is_err(),
+        "a device that never makes progress must fail the flash, got {result:?}"
+    );
+    {
+        let s = state.lock().unwrap();
+        // It DID retry (reconnected) before giving up — resume-on-drop was exercised,
+        // it just could not make progress — but the number of reconnects is bounded,
+        // proving no infinite loop.
+        assert!(
+            s.connects >= 2,
+            "the engine must have retried at least once before giving up (connects = {})",
+            s.connects
+        );
+        assert!(
+            s.connects <= 8,
+            "resume-on-drop must be BOUNDED — a stuck device may not reconnect forever \
+             (connects = {})",
+            s.connects
+        );
+    }
+    let _ = handle.close().await;
+    gw.abort();
+
+    unsafe {
+        std::env::remove_var("BUSSARD_FLASH_RECONNECT_EXCHANGES");
+        std::env::remove_var("BUSSARD_FLASH_REBOOT_WAIT_MS");
+    }
+}
+
 #[tokio::test]
 async fn flash_final_restart_silence_is_success_not_failure() {
     // The terminal LdCtrlRestart is the SUCCESSFUL last step: bussard sends
@@ -2695,6 +2946,7 @@ async fn flash_final_restart_silence_is_success_not_failure() {
         handle: handle.clone(),
         target,
         source,
+        timeouts: None,
     };
     let mut session = Session::open_with_key(connector, None).await.unwrap();
     let outcome = flash(
@@ -2754,6 +3006,7 @@ async fn flash_verifies_after_terminal_restart_when_it_can_reconnect() {
         handle: handle.clone(),
         target,
         source,
+        timeouts: None,
     };
     let mut session = Session::open_with_key(connector, None).await.unwrap();
     let outcome = flash(
@@ -2828,6 +3081,7 @@ async fn flash_fails_when_load_does_not_persist_across_the_restart() {
         handle: handle.clone(),
         target,
         source,
+        timeouts: None,
     };
     let mut session = Session::open_with_key(connector, None).await.unwrap();
     let outcome = flash(
@@ -3165,6 +3419,7 @@ async fn flash_da_tp_programs_all_four_objects() {
         handle: handle.clone(),
         target,
         source,
+        timeouts: None,
     };
     let mut session = Session::open_with_key(connector, None).await.unwrap();
     let outcome = flash(
