@@ -166,9 +166,7 @@ impl Default for SchemaVersion {
 /// * `Err(UnsupportedSchemaVersion)` when a namespace *is* present but names a
 ///   version below the earliest bussard reads (< 11), so the user gets a clear
 ///   diagnostic instead of a silent mis-parse.
-pub fn detect_schema_version(
-    knx_master_xml: &str,
-) -> Result<Option<SchemaVersion>, ImportError> {
+pub fn detect_schema_version(knx_master_xml: &str) -> Result<Option<SchemaVersion>, ImportError> {
     // Look at the document head only; the root element and its xmlns are always
     // near the top. Scanning line by line avoids depending on a specific parser.
     for line in knx_master_xml.lines().take(4) {
@@ -280,13 +278,17 @@ mod tests {
     fn test_detect_schema_version_from_master() {
         let ets6 = r#"<?xml version="1.0" encoding="utf-8"?>
 <KNX xmlns="http://knx.org/xml/project/21"><MasterData/></KNX>"#;
-        let v = detect_schema_version(ets6).unwrap().expect("version present");
+        let v = detect_schema_version(ets6)
+            .unwrap()
+            .expect("version present");
         assert_eq!(v.version(), 21);
         assert_eq!(v.family(), EtsFamily::Ets6);
 
         // ETS 4.1 style: xmlns on the very first line.
         let ets4 = r#"<KNX xmlns="http://knx.org/xml/project/11"><MasterData/></KNX>"#;
-        let v = detect_schema_version(ets4).unwrap().expect("version present");
+        let v = detect_schema_version(ets4)
+            .unwrap()
+            .expect("version present");
         assert_eq!(v.family(), EtsFamily::Ets4);
     }
 
