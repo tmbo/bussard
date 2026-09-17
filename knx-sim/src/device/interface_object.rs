@@ -41,6 +41,12 @@ pub const PID_OBJECT_TYPE: u8 = 1;
 pub const PID_LOAD_STATE_CONTROL: u8 = 5;
 /// `PID_TABLE_REFERENCE` — the segment base address of a table object.
 pub const PID_TABLE_REFERENCE: u8 = 7;
+/// `PID_MCB_TABLE` (27) — a loadable object's memory-control-block table. On
+/// System B it is a device-computed, read-only array of 8-octet entries, each an
+/// integrity block over a stored segment (size + a CRC the device computes). A
+/// modern download's `LdCtrlLoadImageProp` step reads it back to verify the
+/// written image.
+pub const PID_MCB_TABLE: u8 = 27;
 /// Run-state / app-id finalize property written near the end of a flash.
 pub const PID_RUN_STATE_CONTROL: u8 = 0x0D;
 /// `PID_PROGMODE` — the programming-mode flag on the device object.
@@ -64,6 +70,10 @@ pub mod iot {
     pub const INTERFACE_PROGRAM: u16 = 4;
     /// KNX-object association table object.
     pub const KNX_OBJECT_ASSOCIATION_TABLE: u16 = 5;
+    /// Group object (com-object) table object. On System B the loadable
+    /// com-object table is a distinct interface object of this type (not the
+    /// application-program object).
+    pub const GROUP_OBJECT_TABLE: u16 = 9;
 }
 
 /// One property: raw value bytes plus a read-only flag.

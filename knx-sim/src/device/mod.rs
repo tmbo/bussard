@@ -6,15 +6,19 @@
 //! [`Device::handle_apdu`], which returns the response APDU(s) to send back and
 //! records observations on the event stream.
 
+mod group_comm;
 mod interface_object;
 mod lsm;
+mod mcb;
 mod memory;
 
+pub use group_comm::{ComObject, GroupComm, flag};
 pub use interface_object::{
-    InterfaceObject, PID_LOAD_STATE_CONTROL, PID_OBJECT_TYPE, PID_PROGMODE, PID_RUN_STATE_CONTROL,
-    PID_TABLE_REFERENCE, Property, iot,
+    InterfaceObject, PID_LOAD_STATE_CONTROL, PID_MCB_TABLE, PID_OBJECT_TYPE, PID_PROGMODE,
+    PID_RUN_STATE_CONTROL, PID_TABLE_REFERENCE, Property, iot,
 };
 pub use lsm::{LoadEvent, LoadState, LoadStateMachine};
+pub use mcb::{MCB_ENTRY_LEN, crc16_aug_ccitt, mcb_entry};
 pub use memory::{Memory, MemoryError, Segment};
 
 use std::collections::BTreeMap;
@@ -22,7 +26,7 @@ use std::collections::BTreeMap;
 use crate::bus::event::{Event, EventSink};
 use crate::prod::{LoadableObject, ProductData};
 use crate::wire::apdu::{Apci, Apdu};
-use crate::wire::{CemiLData, IndividualAddress, MessageCode, Tpci};
+use crate::wire::{CemiLData, GroupAddress, IndividualAddress, MessageCode, Tpci};
 
 /// How a device reacted to one inbound telegram.
 #[derive(Debug, Default)]
@@ -121,7 +125,32 @@ pub struct Device {
     /// Numbered exchanges accepted on the **current** L4 connection, reset to 0
     /// on every `T_Connect`. Metered against [`Device::l4_exchange_budget`].
     l4_exchanges: u32,
+    /// The runtime group-communication routing, reconstructed from the device's
+    /// own flashed tables once every loadable object reaches `Loaded`. `None`
+    /// while the device is not fully loaded (an unloaded device is silent on the
+    /// group side). Rebuilt after each successful download.
+    group_comm: Option<group_comm::GroupComm>,
     events: std::sync::Arc<dyn EventSink>,
+}
+
+/// Parse the 16-bit manufacturer id from an application id of the form
+/// `M-XXXX_A-...` (the KNX product identifier). Returns `None` if the leading
+/// token is not `M-<4 hex digits>`.
+fn manufacturer_id_from_app(application_id: &str) -> Option<u16> {
+    let hex = application_id.strip_prefix("M-")?.get(0..4)?;
+    u16::from_str_radix(hex, 16).ok()
+}
+
+/// A 10-octet `PID_ORDER_INFO` value derived from the product's manufacturer
+/// reference (`M-XXXX`) — a short, product-specific stand-in so a scan does not
+/// report every device with the same order string. ASCII, right-padded with
+/// zero octets to a fixed 10-octet width.
+fn order_info_bytes(application_id: &str) -> Vec<u8> {
+    let mref = application_id.split('_').next().unwrap_or(application_id);
+    let mut v = mref.as_bytes().to_vec();
+    v.truncate(10);
+    v.resize(10, 0x00);
+    v
 }
 
 /// Deterministic segment bases matching the ETS→KNX-Virtual capture for the
@@ -142,20 +171,29 @@ fn default_base_for(lsm_index: u8) -> u16 {
 ///
 /// A management tool discovers the interface-object table by probing
 /// `A_PropertyValue_Read(objIdx, PID 1)` for each index and reading back the
-/// IOT. On the calibration target (KNX-Virtual, mask 07B0) the observed layout
-/// is index n → IOT n for the first five objects:
-/// `[0:device, 1:address-table, 2:association-table, 3:application-program,
-/// 4:interface-program]` (spec Resources 03.05.01 §4.1; ref
-/// `knx-device-spec-references.md` §4.1). Indices beyond that fall back to the
-/// index value itself, which is what a linearly-numbered System B table yields.
+/// IOT, then reads each object's segment base via `PID_TABLE_REFERENCE`. Crucially
+/// the object that reports the **application-program** type (3) is the one that
+/// owns the application code segment, and the **group-object (com-object) table**
+/// is a distinct interface object of type **9** (spec Resources 03.05.01 §4.1;
+/// ref `knx-device-spec-references.md` §4.1 — Application Program = 3, Group
+/// Object Table = 9).
+///
+/// This simulator keys each loadable object by its load-state-machine (segment)
+/// index, and assigns the DA.tp capture's segment bases (obj4 = application code
+/// at 0x6000, obj3 = com-object table at 0x8000, obj1/obj2 the address /
+/// association tables). So the object holding the application code (LSM index 4)
+/// reports `APPLICATION_PROGRAM`, and the object holding the com-object table
+/// (LSM index 3) reports `GROUP_OBJECT_TABLE`. A tool that verifies a segment via
+/// `PID_MCB_TABLE` reads it on the object that owns that segment, so this
+/// alignment is what makes a modern download's image-integrity check land on the
+/// right object.
 fn object_type_for(object_index: u8) -> u16 {
     match object_index {
         0 => iot::DEVICE,
         1 => iot::ADDRESS_TABLE,
         2 => iot::ASSOCIATION_TABLE,
-        3 => iot::APPLICATION_PROGRAM,
-        4 => iot::INTERFACE_PROGRAM,
-        5 => iot::KNX_OBJECT_ASSOCIATION_TABLE,
+        3 => iot::GROUP_OBJECT_TABLE,
+        4 => iot::APPLICATION_PROGRAM,
         other => other as u16,
     }
 }
@@ -197,13 +235,19 @@ impl Device {
             0x0B,
             Property::read_only(vec![0x00, 0xfa, 0x00, 0x25, 0x00, 0x00]),
         );
-        device_object.set_property(0x0C, Property::read_only(vec![0x00, 0xfa]));
+        // PID_MANUFACTURER_ID (0x0C): derive the 16-bit manufacturer id from the
+        // product's `M-XXXX_...` application id so a scan reports the real vendor
+        // (e.g. M-0083 → 0x0083) rather than a hardcoded one. Falls back to the
+        // DA.tp value when the id is not in that form.
+        let mfr = manufacturer_id_from_app(&product.application_id).unwrap_or(0x00fa);
+        device_object.set_property(0x0C, Property::read_only(mfr.to_be_bytes().to_vec()));
         device_object.set_property(0x0E, Property::writable(vec![0x04]));
+        // PID_ORDER_INFO (0x0F): the leading manufacturer-ref string, padded — a
+        // stand-in order string so a scan shows something product-specific rather
+        // than every device reading back "DA.tp".
         device_object.set_property(
             0x0F,
-            Property::read_only(vec![
-                0x20, 0x44, 0x41, 0x2e, 0x74, 0x70, 0x00, 0x00, 0x00, 0x00,
-            ]),
+            Property::read_only(order_info_bytes(&product.application_id)),
         );
         device_object.set_property(0x19, Property::read_only(vec![0x48, 0x00]));
         device_object.set_property(0x38, Property::read_only(vec![0x00, 0x42]));
@@ -262,7 +306,7 @@ impl Device {
             );
         }
 
-        Self {
+        let mut device = Self {
             address,
             objects,
             loadables,
@@ -273,8 +317,16 @@ impl Device {
             rx_seq: 0,
             l4_exchange_budget: None,
             l4_exchanges: 0,
+            group_comm: None,
             events,
-        }
+        };
+        // A device constructed already `Loaded` (a previously-programmed device)
+        // should come alive immediately from whatever tables its memory holds.
+        // Freshly constructed memory is empty, so this is a no-op unless a test
+        // pre-seeds it, but it keeps the invariant "Loaded ⇒ routing built".
+        // The real path is `refresh_group_comm` after a download's LoadCompleted.
+        device.refresh_group_comm();
+        device
     }
 
     /// Sets the device's per-connection numbered-exchange budget (builder-style).
@@ -301,6 +353,140 @@ impl Device {
     /// Read-only view of device memory (for tests/observability).
     pub fn memory(&self) -> &Memory {
         &self.memory
+    }
+
+    /// The reconstructed runtime group-communication routing, if the device is
+    /// loaded and linked (for tests/observability).
+    pub fn group_comm(&self) -> Option<&group_comm::GroupComm> {
+        self.group_comm.as_ref()
+    }
+
+    /// The segment base a loadable object reports via `PID_TABLE_REFERENCE`.
+    fn base_of(&self, lsm_index: u8) -> Option<u16> {
+        self.loadables.get(&lsm_index).map(|o| o.base)
+    }
+
+    /// The 8-octet `PID_MCB_TABLE` entry this object would report: an integrity
+    /// block over the bytes currently stored in the object's allocated segment.
+    ///
+    /// Returns `None` if the object has no allocated segment (nothing written),
+    /// which a tool reads as "no MCB entry" — but after a load the segment exists,
+    /// so a verify step gets a real CRC over exactly the bytes the download wrote.
+    fn mcb_entry_for(&self, object: u8) -> Option<Vec<u8>> {
+        // The MCB covers the bytes the tool actually streamed (the loaded image),
+        // which may be shorter than the allocated segment — a tool that writes a
+        // compact table into a larger allocation must still verify against just
+        // those bytes. Use the written span, not the full allocation.
+        let bytes = self.memory.written_span(object)?;
+        Some(mcb::mcb_entry(&bytes).to_vec())
+    }
+
+    /// Rebuild the runtime routing from the device's flashed tables, but only
+    /// when the address (obj1), association (obj2) and com-object (obj3) table
+    /// objects have all reached `Loaded`. A device that is not fully loaded stays
+    /// silent on the group side (`group_comm` becomes `None`).
+    ///
+    /// This reads obj1/obj2/obj3 straight back out of the device's own memory —
+    /// the exact bytes the download wrote — so the routing is self-describing and
+    /// a mistake in the written tables shows up as wrong bus behaviour.
+    fn refresh_group_comm(&mut self) {
+        let tables_loaded = [1u8, 2, 3]
+            .iter()
+            .all(|&i| self.load_state(i) == Some(LoadState::Loaded));
+        if !tables_loaded {
+            self.group_comm = None;
+            return;
+        }
+        let (Some(addr_base), Some(assoc_base), Some(comobj_base)) =
+            (self.base_of(1), self.base_of(2), self.base_of(3))
+        else {
+            self.group_comm = None;
+            return;
+        };
+        let gc =
+            group_comm::GroupComm::from_tables(&self.memory, addr_base, assoc_base, comobj_base);
+        self.group_comm = if gc.is_empty() { None } else { Some(gc) };
+    }
+
+    /// Handle an inbound **group** telegram addressed to `ga`, updating the
+    /// device's com-objects and producing any response the device must send.
+    ///
+    /// Returns the response telegrams (an `A_GroupValue_Response` when the device
+    /// holds the Read flag on the read GA). A device that is not loaded, not
+    /// linked, or not associated with `ga` returns nothing — exactly as a real
+    /// device silently ignores group traffic it does not subscribe to.
+    pub fn handle_group(&mut self, apci: Apci, ga: GroupAddress, payload: &[u8]) -> Vec<CemiLData> {
+        let Some(gc) = self.group_comm.as_mut() else {
+            return Vec::new();
+        };
+        match apci {
+            Apci::GroupValueWrite => {
+                let updated = gc.on_group_write(ga, payload);
+                for asap in updated {
+                    self.emit(Event::GroupObjectUpdated {
+                        device: self.address,
+                        object: asap,
+                        ga: ga.raw(),
+                    });
+                }
+                Vec::new()
+            }
+            Apci::GroupValueRead => match gc.on_group_read(ga) {
+                Some(value) => vec![self.group_telegram(Apci::GroupValueResponse, ga, &value)],
+                None => Vec::new(),
+            },
+            // A device ignores responses/writes it did not solicit beyond the
+            // write handling above; other services never reach the group path.
+            _ => Vec::new(),
+        }
+    }
+
+    /// Build an outgoing group telegram (`L_Data.ind`) from this device: an
+    /// `A_GroupValue_Write`/`_Response` to `ga` carrying `payload`.
+    ///
+    /// A sub-byte payload (a single octet `<= 0x3F`) is packed into the APCI low
+    /// bits (the "small" APDU form), matching how a real device and the tool
+    /// encode a 1-bit DPT; anything else rides as separate data octets.
+    pub fn group_telegram(&self, apci: Apci, ga: GroupAddress, payload: &[u8]) -> CemiLData {
+        let apci10 = apci.to_u10();
+        let packable = payload.len() == 1 && payload[0] <= 0x3F;
+        let tpdu = if packable {
+            // Small form: TPCI DataGroup (0x00) + APCI high bits; second octet is
+            // APCI low bits with the 6-bit value packed in.
+            vec![
+                (apci10 >> 8) as u8 & 0x03,
+                ((apci10 & 0xC0) as u8) | (payload[0] & 0x3F),
+            ]
+        } else {
+            let mut t = vec![(apci10 >> 8) as u8 & 0x03, (apci10 & 0xFF) as u8];
+            t.extend_from_slice(payload);
+            t
+        };
+        CemiLData {
+            message_code: MessageCode::LDataInd,
+            ctrl1: 0xbc,
+            ctrl2: 0xe0, // group destination (bit 7) + hop count 6
+            source: self.address,
+            dest: ga.raw(),
+            tpdu,
+        }
+    }
+
+    /// Whether the device may transmit on `object`, and if so its sending GA:
+    /// used by scripted stimulus to address a periodic transmit.
+    pub fn stimulus_send_ga(&self, object: u16) -> Option<GroupAddress> {
+        self.group_comm.as_ref().and_then(|gc| gc.send_ga(object))
+    }
+
+    /// Seed a transmitting com-object's value and build the group telegram that
+    /// pushes it onto the bus, or `None` if the object cannot transmit (not
+    /// loaded, not linked, or lacks the Transmit flag). Used by stimulus.
+    pub fn emit_stimulus(&mut self, object: u16, payload: &[u8]) -> Option<CemiLData> {
+        let ga = self.stimulus_send_ga(object)?;
+        if let Some(gc) = self.group_comm.as_mut() {
+            gc.set_value(object, payload);
+        }
+        Some(self.group_telegram(Apci::GroupValueWrite, ga, payload))
     }
 
     fn emit(&self, event: Event) {
@@ -558,6 +744,13 @@ impl Device {
         // §2.1/§2.3.)
         let value = if pid == PID_LOAD_STATE_CONTROL {
             self.load_state(object).map(|s| vec![s.to_byte()])
+        } else if pid == PID_MCB_TABLE {
+            // PID_MCB_TABLE (27) is device-computed: answer with the 8-octet
+            // memory-control-block entry (size + CRC-16/AUG-CCITT) over the bytes
+            // this object currently holds in its allocated segment. A tool's
+            // LdCtrlLoadImageProp verify step reads this back and compares the CRC
+            // to the image it streamed, so it must reflect the real stored bytes.
+            self.mcb_entry_for(object)
         } else {
             self.objects
                 .get(&object)
@@ -688,6 +881,13 @@ impl Device {
             object,
             state: new_state.to_byte(),
         });
+        // Reaching Loaded on a table object may complete the device's group
+        // configuration: reconstruct its runtime routing from the freshly-written
+        // tables (a no-op until obj1/2/3 are all Loaded). A LoadCompleted that
+        // does not finish the set leaves the device silent.
+        if new_state == LoadState::Loaded {
+            self.refresh_group_comm();
+        }
         // The write response reports the resulting load state as the value.
         let mut data = vec![
             object,
@@ -934,8 +1134,12 @@ mod tests {
         // A tool discovers the interface-object table by reading PID_OBJECT_TYPE
         // (PID 1) on each object index. The device must report each object's
         // IOT: [0:device, 1:address-table, 2:association-table,
-        // 3:application-program, 4:interface-program]. This is the exact
-        // KNX-Virtual layout the flash driver expects.
+        // 3:group-object-table, 4:application-program]. The object that owns the
+        // application code segment (LSM index 4 at base 0x6000) is the
+        // application-program object (type 3), and the com-object table (LSM index
+        // 3 at 0x8000) is the group-object-table object (type 9) — so a tool's
+        // MCB image-integrity read lands on the object that actually holds each
+        // segment.
         let Some(mut dev) = da_tp_device()? else {
             return Ok(());
         };
@@ -944,8 +1148,8 @@ mod tests {
             (0, iot::DEVICE),
             (1, iot::ADDRESS_TABLE),
             (2, iot::ASSOCIATION_TABLE),
-            (3, iot::APPLICATION_PROGRAM),
-            (4, iot::INTERFACE_PROGRAM),
+            (3, iot::GROUP_OBJECT_TABLE),
+            (4, iot::APPLICATION_PROGRAM),
         ];
         for (object, want) in expected {
             // A_PropertyValue_Read obj/pid=1/count=1/start=1.
