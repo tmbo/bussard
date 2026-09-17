@@ -24,11 +24,39 @@ use crate::knxnet::{self, ServiceType};
 
 /// A KNXnet/IP routing (multicast) connection.
 pub struct Router {
-    socket: UdpSocket,
+    /// The multicast socket. Wrapped in an `Arc` so a cheap [`RouterSender`] can
+    /// share it for fire-and-forget sends while the actor keeps receiving.
+    socket: Arc<UdpSocket>,
     group: SocketAddrV4,
     /// Instant (as millis since an epoch) until which sending is paused because
     /// of a ROUTING_BUSY. Shared so it survives across `send`/`recv` calls.
     pause_until: Arc<PauseClock>,
+}
+
+/// A cheap, cloneable send-only handle for a [`Router`].
+///
+/// It shares the router's multicast socket and ROUTING_BUSY pause clock, so a
+/// send issued through it honours the same back-off the receiving half observes.
+/// This lets the bus actor spawn a send without giving up its `&mut` borrow of
+/// the receiving `Router` (issue #57).
+pub struct RouterSender {
+    socket: Arc<UdpSocket>,
+    group: SocketAddrV4,
+    pause_until: Arc<PauseClock>,
+}
+
+impl RouterSender {
+    /// Waits out any ROUTING_BUSY-imposed pause, then sends `frame` on the group.
+    pub async fn send(&self, frame: CemiFrame) -> Result<()> {
+        let wait = self.pause_until.remaining();
+        if !wait.is_zero() {
+            tokio::time::sleep(wait).await;
+        }
+        let datagram = knxnet::routing_indication(&frame);
+        let target = SocketAddr::from(self.group);
+        self.socket.send_to(&datagram, target).await?;
+        Ok(())
+    }
 }
 
 /// A monotonic pause deadline stored as milliseconds since process start.
@@ -83,10 +111,20 @@ impl Router {
         let socket = Self::bind_multicast(*group.ip(), group.port(), interface)?;
         let socket = UdpSocket::from_std(socket)?;
         Ok(Router {
-            socket,
+            socket: Arc::new(socket),
             group,
             pause_until: Arc::new(PauseClock::new()),
         })
+    }
+
+    /// Returns a cheap, cloneable send-only handle sharing this router's socket
+    /// and pause clock.
+    pub fn sender(&self) -> RouterSender {
+        RouterSender {
+            socket: Arc::clone(&self.socket),
+            group: self.group,
+            pause_until: Arc::clone(&self.pause_until),
+        }
     }
 
     /// Builds a UDP socket bound for multicast reception with the appropriate

@@ -504,10 +504,27 @@ impl Actor {
 
     /// Consumes one live connection: fans inbound frames out to subscribers and
     /// services commands, until the connection drops or the actor is closed.
+    ///
+    /// A `Send` is dispatched onto a spawned task via a cheap
+    /// [`TransportSender`](bussard_transport::TransportSender) so `conn.recv()`
+    /// keeps being polled while the send awaits its (up to ~2 s) tunnel ACK.
+    /// Without this, subscriber delivery stalled for the whole ACK window while
+    /// the inline `conn.send().await` held the select (issue #57). Only one send
+    /// is ever in flight at a time — while a send is outstanding the command
+    /// channel is not polled, preserving the "sends serialize" invariant.
     async fn consume(&mut self, mut conn: Transport) -> ActorOutcome {
+        // The outcome of a spawned send: its transport result plus the reply
+        // channel to answer the originating handle on the actor thread.
+        type SendResult = (
+            Result<(), TransportError>,
+            oneshot::Sender<Result<SendReceipt, BusError>>,
+        );
+        let mut in_flight: Option<tokio::task::JoinHandle<SendResult>> = None;
+
         loop {
             tokio::select! {
-                // An inbound frame from the bus.
+                // An inbound frame from the bus. Polled unconditionally, so it
+                // keeps draining even while a send is outstanding.
                 received = conn.recv() => match received {
                     Ok(stamped) => {
                         let message_code = stamped.frame.message_code;
@@ -520,8 +537,29 @@ impl Actor {
                     Err(_err) => return ActorOutcome::Dropped,
                 },
 
-                // A command from a handle.
-                cmd = self.commands.recv() => match cmd {
+                // The in-flight send finished. Only armed when a send is running,
+                // so the branch is inert otherwise.
+                joined = async { in_flight.as_mut().unwrap().await }, if in_flight.is_some() => {
+                    in_flight = None;
+                    match joined {
+                        Ok((Ok(()), reply)) => {
+                            let _ = reply.send(Ok(SendReceipt::new()));
+                        }
+                        Ok((Err(err), reply)) => {
+                            let _ = reply.send(Err(BusError::Transport(err)));
+                            // A send error is a connection problem: reconnect.
+                            return ActorOutcome::Dropped;
+                        }
+                        Err(_join_err) => {
+                            // The send task panicked; treat as a dropped connection.
+                            return ActorOutcome::Dropped;
+                        }
+                    }
+                },
+
+                // A command from a handle. Not polled while a send is in flight,
+                // so at most one send runs at a time and ordering is preserved.
+                cmd = self.commands.recv(), if in_flight.is_none() => match cmd {
                     Some(Command::Send { frame, queued_at, reply }) => {
                         // Connected here, so the only staleness is a very old
                         // queued frame; still enforce the cutoff.
@@ -529,20 +567,14 @@ impl Actor {
                             let _ = reply.send(Err(BusError::Stale));
                             continue;
                         }
-                        // Await the ACK inline. Inbound frames buffer briefly in
-                        // the tunnel task's own channel meanwhile (it keeps
-                        // ACKing incoming requests), so nothing is lost.
-                        let result = conn.send(*frame).await;
-                        match result {
-                            Ok(()) => {
-                                let _ = reply.send(Ok(SendReceipt::new()));
-                            }
-                            Err(err) => {
-                                let _ = reply.send(Err(BusError::Transport(err)));
-                                // A send error is a connection problem: reconnect.
-                                return ActorOutcome::Dropped;
-                            }
-                        }
+                        // Spawn the send so its (slow) ACK wait does not block the
+                        // recv arm above. The sender shares the transport's
+                        // channel, so the ACK is still awaited normally.
+                        let sender = conn.sender();
+                        in_flight = Some(tokio::spawn(async move {
+                            let result = sender.send(*frame).await;
+                            (result, reply)
+                        }));
                     }
                     Some(Command::Close { reply }) => {
                         let _ = conn.close().await;
