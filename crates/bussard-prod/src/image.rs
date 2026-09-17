@@ -153,10 +153,22 @@ pub fn compute_parameter_image(
     // empty; grow lazily as parameters are placed.
     let mut images: BTreeMap<String, Vec<u8>> = BTreeMap::new();
 
+    // The set of application `Parameter` ids a channel's parameter block
+    // references (via `<ParameterRefRef>`), for a module-based application. ETS
+    // only writes a module parameter that a channel actually references; a module
+    // parameter with a `<Memory>` that no channel references (e.g. a `color`
+    // parameter on the DA.tp app) is never written to the image. `None` for a
+    // non-module application, where every parameter is placed as before.
+    let referenced_module_params: Option<std::collections::BTreeSet<String>> =
+        module_referenced_params(app);
+
     // First, lay every parameter's default/ref value at its declared position
-    // (the vendor-default image). Module parameters are placed at their declared,
-    // non-instanced offset here — that seeds the base image; overrides then
-    // re-place per-instance below.
+    // (the vendor-default image). A **module** parameter (its `<Memory>` carries a
+    // `BaseOffset`) is instantiated once per `<Module>` channel, so each instance
+    // is placed at `declared_offset + instance[base_offset]` — the full
+    // channel-expanded default image ETS downloads. A module parameter no channel
+    // references is skipped entirely. Non-module parameters are placed once at
+    // their declared offset; overrides then re-place per-instance below.
     let mut params: Vec<_> = app.parameters.values().collect();
     params.sort_by(|a, b| a.id.cmp(&b.id));
 
@@ -194,19 +206,66 @@ pub fn compute_parameter_image(
         let placement = encode_value(app, pname, ptype, value.as_deref())?;
 
         let seg_size = app.code_segments.get(seg_id).and_then(|s| s.size);
+
+        // The per-instance byte offsets this parameter's default occupies. For a
+        // module parameter that a channel references, one offset per module
+        // instance (`declared + instance[base_offset]`); for a plain parameter,
+        // just its declared offset.
+        let instance_offsets: Vec<usize> = match (
+            mem.base_offset.as_deref(),
+            referenced_module_params.as_ref(),
+        ) {
+            (Some(base_arg), Some(referenced)) => {
+                // A module parameter: skip it entirely if no channel references it
+                // (ETS never writes it), else place one instance per channel.
+                if !referenced.contains(&param.id) {
+                    continue;
+                }
+                let rel_arg = base_arg
+                    .strip_prefix(&format!("{}_", app.id))
+                    .unwrap_or(base_arg);
+                let mut offsets = Vec::new();
+                for instance in &app.module_instances {
+                    let base = instance.arg_values.get(rel_arg).copied().unwrap_or(0);
+                    let effective = i64::from(offset).checked_add(base).and_then(|v| {
+                        if v >= 0 {
+                            usize::try_from(v).ok()
+                        } else {
+                            None
+                        }
+                    });
+                    let Some(effective) = effective else {
+                        return Err(param_err(
+                            app,
+                            pname,
+                            "module-instance base offset places the parameter at an \
+                             out-of-range address",
+                        ));
+                    };
+                    offsets.push(effective);
+                }
+                offsets
+            }
+            // A plain parameter, or a module parameter in a non-module app: place
+            // once at the declared offset.
+            _ => vec![offset as usize],
+        };
+
         let image = images
             .entry(seg_id.to_string())
             .or_insert_with(|| base_image(app, seg_id));
 
-        place_checked(
-            app,
-            pname,
-            image,
-            offset as usize,
-            bit_offset,
-            &placement,
-            seg_size,
-        )?;
+        for inst_offset in instance_offsets {
+            place_checked(
+                app,
+                pname,
+                image,
+                inst_offset,
+                bit_offset,
+                &placement,
+                seg_size,
+            )?;
+        }
     }
 
     // Second pass: apply the caller's explicit overrides, keyed by app-relative
@@ -308,6 +367,36 @@ pub fn compute_parameter_image(
     }
 
     Ok(images)
+}
+
+/// The set of application `Parameter` ids a module application's channel
+/// parameter block references, or `None` when the application is not
+/// module-based (no module instances or no captured channel membership).
+///
+/// A module application instantiates its parameters once per `<Module>` channel;
+/// its channel `<ParameterBlock>` lists which parameter refs each channel shows
+/// (`<ParameterRefRef>`). ETS only writes the parameters a channel references, so
+/// this set drives which module parameters
+/// [`compute_parameter_image`] expands across instances (a module parameter
+/// absent from it — e.g. a `color` parameter with a `<Memory>` no channel
+/// references — is never written). The referenced ids are resolved from the
+/// membership's parameter-ref ids (app-relative) through
+/// [`ApplicationProgram::parameter_refs`] to the underlying `Parameter` id.
+fn module_referenced_params(
+    app: &ApplicationProgram,
+) -> Option<std::collections::BTreeSet<String>> {
+    if app.module_instances.is_empty() {
+        return None;
+    }
+    let membership = app.channel_membership.as_ref()?;
+    let mut out = std::collections::BTreeSet::new();
+    for rel_ref_id in &membership.parameter_refs {
+        let full_ref = format!("{}_{rel_ref_id}", app.id);
+        if let Some(pref) = app.parameter_refs.get(&full_ref) {
+            out.insert(pref.ref_id.clone());
+        }
+    }
+    Some(out)
 }
 
 /// A resolved override key: the application `Parameter` it names and, for a
@@ -1221,5 +1310,145 @@ mod tests {
             matches!(err, ProdError::ParameterImage { .. }),
             "expected ParameterImage, got {err:?}"
         );
+    }
+
+    /// A self-contained ApplicationProgram XML reproducing the DA.tp module
+    /// parameter structure: a 256-byte `<Data>`-of-0xFF segment; three module
+    /// parameters (speed off0 default5, steps off1 default4, color off2 default1),
+    /// all with `BaseOffset=argPar`; 8 module instances (argPar 0,16,…,112); and a
+    /// channel parameter block that references only speed and steps (not color).
+    fn da_tp_param_app() -> ApplicationProgram {
+        // base64 of 256 bytes of 0xFF (the segment's `<Data>` base image).
+        let ff256 = concat!(
+            "////////////////////////////////////////////////////////////////////////////////",
+            "////////////////////////////////////////////////////////////////////////////////",
+            "////////////////////////////////////////////////////////////////////////////////",
+            "////////////////////////////////////////////////////////////////////////////////",
+            "/////////////////////w==",
+        );
+        let bases = [
+            (1, 0),
+            (2, 16),
+            (3, 32),
+            (4, 48),
+            (5, 64),
+            (6, 80),
+            (7, 96),
+            (8, 112),
+        ];
+        let mut modules = String::new();
+        for (ch, par) in bases {
+            modules.push_str(&format!(
+                r#"<Module Id="APP_MD-1_M-{ch}" RefId="APP_MD-1">
+                     <Arguments>
+                       <NumericArg RefId="APP_MD-1_A-1" Value="{ch}" />
+                       <NumericArg RefId="APP_MD-1_A-3" Value="{par}" />
+                     </Arguments>
+                   </Module>"#
+            ));
+        }
+        let enum8 = |name: &str| {
+            format!(
+                "<ParameterType Id=\"APP_PT-{name}\" Name=\"{name}\">\
+                 <TypeRestriction Base=\"Value\" SizeInBit=\"8\">\
+                 <Enumeration Text=\"a\" Value=\"1\" />\
+                 <Enumeration Text=\"b\" Value=\"4\" />\
+                 <Enumeration Text=\"c\" Value=\"5\" /></TypeRestriction></ParameterType>"
+            )
+        };
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/23">
+             <ApplicationProgram Id="APP" ApplicationNumber="9472" ApplicationVersion="16"
+                MaskVersion="MV-07B0" Name="Dimming" LoadProcedureStyle="MergedProcedure">
+              <Static>
+               <Code><RelativeSegment Id="APP_RS-04" Size="256" LoadStateMachine="4" Offset="0"><Data>{ff256}</Data></RelativeSegment></Code>
+               <ParameterTypes>{speed_ty}{steps_ty}{color_ty}</ParameterTypes>
+               <Parameters>
+                <Parameter Id="APP_MD-1_P-1" Name="speed" ParameterType="APP_PT-speed" Value="5"><Memory CodeSegment="APP_RS-04" Offset="0" BitOffset="0" BaseOffset="APP_MD-1_A-3" /></Parameter>
+                <Parameter Id="APP_MD-1_P-2" Name="steps" ParameterType="APP_PT-steps" Value="4"><Memory CodeSegment="APP_RS-04" Offset="1" BitOffset="0" BaseOffset="APP_MD-1_A-3" /></Parameter>
+                <Parameter Id="APP_MD-1_P-3" Name="color" ParameterType="APP_PT-color" Value="1"><Memory CodeSegment="APP_RS-04" Offset="2" BitOffset="0" BaseOffset="APP_MD-1_A-3" /></Parameter>
+               </Parameters>
+               <ParameterRefs>
+                <ParameterRef Id="APP_MD-1_P-1_R-1" RefId="APP_MD-1_P-1" />
+                <ParameterRef Id="APP_MD-1_P-2_R-2" RefId="APP_MD-1_P-2" />
+               </ParameterRefs>
+              </Static>
+              <Dynamic>
+               <Channel Id="APP_MD-1_CH-argCH" Number="argCH">
+                <ParameterBlock Id="APP_MD-1_PB-1" Name="config">
+                 <ParameterRefRef RefId="APP_MD-1_P-1_R-1" />
+                 <ParameterRefRef RefId="APP_MD-1_P-2_R-2" />
+                </ParameterBlock>
+               </Channel>
+               {modules}
+              </Dynamic>
+             </ApplicationProgram></KNX>"#,
+            speed_ty = enum8("speed"),
+            steps_ty = enum8("steps"),
+            color_ty = enum8("color"),
+        );
+        parse_application_program("APP", xml.as_bytes()).expect("da_tp param app parses")
+    }
+
+    /// The default parameter image for the DA.tp module app: a 256-byte 0xFF base
+    /// with speed=5 and steps=4 written per channel at `argPar+0`/`argPar+1`.
+    /// `color` is never written (no channel references it), so its byte stays
+    /// 0xFF.
+    ///
+    /// This is the *pure product-default* image. The real ETS→KNX-Virtual capture
+    /// differs only in channel 1's `steps` byte (offset 1 = `05` instead of `04`),
+    /// which is that live **project**'s "16 steps" override — project data, not
+    /// product data. See [`obj4_matches_ets_capture_with_ch1_override`].
+    #[test]
+    fn obj4_default_expansion_writes_speed_and_steps_per_channel() {
+        let app = da_tp_param_app();
+        let images = compute_parameter_image(&app, &no_overrides(), &no_bases()).unwrap();
+        let image = images.get("APP_RS-04").expect("segment image present");
+        assert_eq!(image.len(), 256);
+
+        // Every non-0xFF byte and its value.
+        let non_ff: Vec<(usize, u8)> = image
+            .iter()
+            .enumerate()
+            .filter(|&(_, &b)| b != 0xFF)
+            .map(|(i, &b)| (i, b))
+            .collect();
+        let expected: Vec<(usize, u8)> = (0..8)
+            .flat_map(|ch| {
+                let par = ch * 16;
+                [(par, 5u8), (par + 1, 4u8)]
+            })
+            .collect();
+        assert_eq!(non_ff, expected);
+    }
+
+    /// With channel 1's `steps` overridden to 5 ("16 steps"), the image matches
+    /// ETS's exact 256-byte obj4 capture byte-for-byte: `05 05` on channel 1 and
+    /// `05 04` on channels 2-8, everything else 0xFF.
+    #[test]
+    fn obj4_matches_ets_capture_with_ch1_override() {
+        let app = da_tp_param_app();
+
+        // The channel-1 `steps` override (project "16 steps" = enum value 5),
+        // keyed by app-relative ParameterRef id with the module-instance selector
+        // the override contract expects. The per-instance base offset for channel
+        // 1 is argPar=0.
+        let mut overrides = BTreeMap::new();
+        overrides.insert("MD-1_M-1_MI-1_P-2_R-2".to_string(), "5".to_string());
+        let mut base_offsets = BTreeMap::new();
+        base_offsets.insert("MD-1_M-1_MI-1".to_string(), 0u32);
+
+        let images = compute_parameter_image(&app, &overrides, &base_offsets).unwrap();
+        let image = images.get("APP_RS-04").expect("segment image present");
+
+        // Reconstruct ETS's exact 256-byte obj4: 0xFF base, ch1 = 05 05, ch2-8 =
+        // 05 04, at argPar bases 0,16,…,112.
+        let mut ets = vec![0xFFu8; 256];
+        for ch in 0..8 {
+            let par = ch * 16;
+            ets[par] = 0x05; // speed = 5 (default) everywhere
+            ets[par + 1] = if ch == 0 { 0x05 } else { 0x04 }; // steps: ch1=5, else 4
+        }
+        assert_eq!(image, &ets);
     }
 }

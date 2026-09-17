@@ -143,6 +143,13 @@ enum Fault {
     /// the link after the final restart. The flash must treat this silence as
     /// success (it verified BEFORE sending the restart), not as "device absent".
     SilentAfterBasicRestart,
+    /// Revert the application object to `Unloaded` after the terminal basic
+    /// restart, exposing that state on the *next* (post-reboot) connection —
+    /// models KNX Virtual discarding a content-incomplete load on reboot: the
+    /// device reports a transient `Loaded` before the restart, then comes back up
+    /// `Unloaded`. A post-restart verify must catch this and fail the flash; a
+    /// pre-restart verify would wrongly report success.
+    UnloadedAfterBasicRestart,
     /// Ignore `StartLoading` and stay `Unloaded` — a genuinely broken device that
     /// never opens the object for writing. Unlike the lenient `Loaded` snap (which
     /// the flash now tolerates), `Unloaded` means the load-control write was
@@ -299,6 +306,11 @@ struct DeviceState {
     /// Whether a basic restart (`A_Restart`, terminal step) has been seen — so the
     /// terminal-restart-silence test can assert the restart was actually sent.
     saw_basic_restart: bool,
+    /// Set when a terminal basic restart is seen under
+    /// [`Fault::UnloadedAfterBasicRestart`], so the next `T_Connect` (the
+    /// post-reboot reconnect) reverts `app_load_state` to `Unloaded` — modelling a
+    /// device that discards a content-incomplete load on reboot.
+    revert_app_on_next_connect: bool,
     /// Model KNX Virtual's `EraseCode=4` master reset: erasing the app object's
     /// load state (back to `Unloaded`) and dropping the segment allocated before
     /// the reset. When set, accepting a master reset drops `app_load_state` to
@@ -508,6 +520,12 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
             }
         } else if s.fault == Fault::SilentAfterBasicRestart {
             s.l4_dead_after_master_reset = true;
+        } else if s.fault == Fault::UnloadedAfterBasicRestart {
+            // The device reboots (goes silent on this link) and, on the next
+            // connection, will report the app object as Unloaded — the load did
+            // not persist across the reboot.
+            s.l4_dead_after_master_reset = true;
+            s.revert_app_on_next_connect = true;
         }
         return Reaction::Ack;
     }
@@ -932,6 +950,19 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
                         // A fresh connection after a master-reset reboot: the device
                         // is alive again on the new link.
                         s.l4_dead_after_master_reset = false;
+                        // A device that discarded a content-incomplete load on
+                        // reboot (Fault::UnloadedAfterBasicRestart) comes back up
+                        // with the app object Unloaded — the post-restart verify
+                        // must observe this and fail the flash.
+                        if s.revert_app_on_next_connect {
+                            s.revert_app_on_next_connect = false;
+                            s.app_load_state = LS_UNLOADED;
+                            if s.multi_object {
+                                if let Some(app) = app_object_index(&s) {
+                                    s.object_load_states.insert(app, LS_UNLOADED);
+                                }
+                            }
+                        }
                         if s.drop_loading_on_reconnect
                             && s.was_loading_at_disconnect
                             && s.app_load_state == LS_LOADING
@@ -1074,6 +1105,7 @@ fn fresh_device(fault: Fault) -> Shared {
         last_master_reset_payload: Vec::new(),
         l4_dead_after_master_reset: false,
         saw_basic_restart: false,
+        revert_app_on_next_connect: false,
         wipe_app_on_master_reset: false,
         app_erased_by_master_reset: false,
         loadable_object_override: None,
@@ -2537,6 +2569,153 @@ async fn flash_final_restart_silence_is_success_not_failure() {
         "the restart was sent"
     );
 
+    let _ = handle.close().await;
+    gw.abort();
+}
+
+#[tokio::test]
+async fn flash_verifies_after_terminal_restart_when_it_can_reconnect() {
+    // With `verify_after_restart` set (the real `bussard flash`), the terminal
+    // restart is fired, the reboot is waited out, the connection is re-opened and
+    // re-authorized, and the load state is re-read on the FRESH connection. A
+    // device whose load survives the reboot must still verify as `Loaded`.
+    // Shorten the reboot wait so the test does not stall.
+    // SAFETY of env: this test binds its own socket/actor; the var only shortens a
+    // sleep and is read once per restart step.
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
+    }
+
+    let (handle, state, gw) = setup_bus(Fault::SilentAfterBasicRestart).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source = bussard_bus::ops::group_source(&handle);
+
+    let app = fabricated_app();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+
+    let connector = LeaseConnector {
+        handle: handle.clone(),
+        target,
+        source,
+    };
+    let mut session = Session::open_with_key(connector, None).await.unwrap();
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions {
+            bcu_key: None,
+            verify_after_restart: true,
+        },
+        |_| {},
+    )
+    .await
+    .expect("a persisting flash must verify after the restart");
+    let _ = session.into_disconnect().await;
+
+    assert!(
+        outcome.ok(),
+        "the load persisted across the reboot, so the post-restart verify must pass: {outcome:?}"
+    );
+    assert_eq!(outcome.load_state, LoadState::Loaded);
+    {
+        let s = state.lock().unwrap();
+        assert!(s.saw_basic_restart, "the terminal restart was sent");
+        // The tool opened at least two connection windows: the flash proper, then
+        // the post-reboot reconnect for the verify.
+        assert!(
+            s.connects >= 2,
+            "the tool must reconnect after the restart to verify (connects={})",
+            s.connects
+        );
+    }
+
+    // SAFETY: same justification as the set above; clean up so other tests are
+    // unaffected.
+    unsafe {
+        std::env::remove_var("BUSSARD_FLASH_REBOOT_WAIT_MS");
+    }
+    let _ = handle.close().await;
+    gw.abort();
+}
+
+#[tokio::test]
+async fn flash_fails_when_load_does_not_persist_across_the_restart() {
+    // The false-positive this fixes: KNX Virtual reports a transient `Loaded`
+    // before the terminal restart, then comes back up `Unloaded` when the written
+    // image is content-incomplete. A pre-restart verify would report success; the
+    // post-restart verify (this path) re-reads the load state after the reboot and
+    // must FAIL the flash because the app object is `Unloaded`.
+    // SAFETY of env: this test binds its own socket/actor; the var only shortens a
+    // sleep and is read once per restart step.
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
+    }
+
+    let (handle, state, gw) = setup_bus(Fault::UnloadedAfterBasicRestart).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source = bussard_bus::ops::group_source(&handle);
+
+    let app = fabricated_app();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+
+    let connector = LeaseConnector {
+        handle: handle.clone(),
+        target,
+        source,
+    };
+    let mut session = Session::open_with_key(connector, None).await.unwrap();
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions {
+            bcu_key: None,
+            verify_after_restart: true,
+        },
+        |_| {},
+    )
+    .await
+    .expect("the flash executes; the non-persisting load is caught by the verify, not an error");
+    let _ = session.into_disconnect().await;
+
+    // The load did NOT persist: the post-restart verify read `Unloaded`, so the
+    // outcome must NOT be `ok()` — a non-persisting flash is never reported as a
+    // success.
+    assert!(
+        !outcome.ok(),
+        "a load that reverted to Unloaded after the restart must fail verification: {outcome:?}"
+    );
+    assert_eq!(
+        outcome.load_state,
+        LoadState::Unloaded,
+        "the post-restart re-read must observe the reverted (non-persisting) state"
+    );
+    assert!(
+        state.lock().unwrap().saw_basic_restart,
+        "the terminal restart was sent"
+    );
+
+    // SAFETY: same justification as the set above.
+    unsafe {
+        std::env::remove_var("BUSSARD_FLASH_REBOOT_WAIT_MS");
+    }
     let _ = handle.close().await;
     gw.abort();
 }
