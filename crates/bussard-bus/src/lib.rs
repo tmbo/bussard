@@ -176,18 +176,19 @@ struct Shared {
     /// The tunnel-assigned individual address (raw), or 0 if none / routing.
     assigned_ia: AtomicU16,
     /// Notified on every state transition so waiters wake immediately instead of
-    /// polling. Carries the new [`BusState`] as a `u8`; the atomic above stays
-    /// the source of truth for cheap synchronous reads.
-    state_tx: watch::Sender<u8>,
+    /// polling. Carries the new [`BusState`]; the atomic above stays the source
+    /// of truth for cheap synchronous reads.
+    state_tx: watch::Sender<BusState>,
 }
 
 impl Shared {
     fn set_state(&self, state: BusState) {
         self.state.store(state.as_u8(), Ordering::Relaxed);
-        // Wake any `wait_connected` waiters. `send` never fails here: `Shared`
-        // owns the sender for its whole lifetime, so a receiver can always be
-        // borrowed from it, and `send` errors only when all receivers are gone.
-        let _ = self.state_tx.send(state.as_u8());
+        // Wake any `wait_connected`/`state_changes` waiters. `send` never fails
+        // here: `Shared` owns the sender for its whole lifetime, so a receiver
+        // can always be borrowed from it, and `send` errors only when all
+        // receivers are gone.
+        let _ = self.state_tx.send(state);
     }
 
     fn state(&self) -> BusState {
@@ -209,7 +210,7 @@ impl Bus {
     pub fn connect(config: ConnectionConfig) -> (BusHandle, JoinHandle<()>) {
         let (cmd_tx, cmd_rx) = mpsc::channel(32);
         let (frame_tx, _frame_rx) = broadcast::channel(BROADCAST_DEPTH);
-        let (state_tx, _state_rx) = watch::channel(BusState::Connecting.as_u8());
+        let (state_tx, _state_rx) = watch::channel(BusState::Connecting);
         let shared = Arc::new(Shared {
             state: AtomicU8::new(BusState::Connecting.as_u8()),
             assigned_ia: AtomicU16::new(0),
@@ -317,6 +318,34 @@ impl BusHandle {
         self.shared.state()
     }
 
+    /// A [`watch::Receiver`] that observes every [`BusState`] transition.
+    ///
+    /// The receiver starts already holding the *current* state (marked unseen),
+    /// so a caller can read it with `borrow_and_update()` and then await the next
+    /// change with `changed()`. This is the event-driven alternative to polling
+    /// [`status`](Self::status): a UI or feeder wakes only when the connection
+    /// state actually changes, rather than on a timer.
+    ///
+    /// `changed()` returns `Err` once the actor has shut down and dropped its
+    /// sender; the last value borrowed before that error is still valid.
+    ///
+    /// ```no_run
+    /// # async fn demo(handle: bussard_bus::BusHandle) {
+    /// let mut states = handle.state_changes();
+    /// // Observe the current state, then react to each transition.
+    /// loop {
+    ///     let state = *states.borrow_and_update();
+    ///     println!("bus is now {}", state.tag());
+    ///     if states.changed().await.is_err() {
+    ///         break; // actor gone
+    ///     }
+    /// }
+    /// # }
+    /// ```
+    pub fn state_changes(&self) -> watch::Receiver<BusState> {
+        self.shared.state_tx.subscribe()
+    }
+
     /// Waits until the actor reports [`BusState::Connected`] (or `Closed`),
     /// up to `timeout`. Returns `true` when connected.
     ///
@@ -334,7 +363,7 @@ impl BusHandle {
         let mut rx = self.shared.state_tx.subscribe();
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
-            match BusState::from_u8(*rx.borrow_and_update()) {
+            match *rx.borrow_and_update() {
                 BusState::Connected => return true,
                 BusState::Closed => return false,
                 _ => {}
