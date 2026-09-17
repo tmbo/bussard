@@ -275,8 +275,9 @@ class Inspector {
    * Build the DPT-specific send widget for a GA. Value strings match
    * `parse_value` in bussard-model/src/codec.rs exactly. Protected GAs render
    * disabled behind a "force" arming checkbox. Every widget carries a raw
-   * value field fallback (free-form string + optional DPT override), because
-   * the server encodes with `parse_value` and has no raw-hex path.
+   * payload fallback (free-form hex bytes + optional DPT override) that posts
+   * `payload` to the extended group-write endpoint, so exotic DPTs without a
+   * string grammar can still be sent verbatim.
    * @param {Object} g - group record.
    * @returns {HTMLElement}
    */
@@ -309,13 +310,24 @@ class Inspector {
       if (g.protected && !armed.value) return;
       this._send(g, value, { dpt: dptOverride, force: g.protected && armed.value }, status);
     };
+    // A raw-payload send() closure: bytes go verbatim as hex via the extended
+    // endpoint. `label` is what to show in the optimistic status line.
+    const sendRaw = (payloadHex, dptOverride, label) => {
+      if (g.protected && !armed.value) return;
+      this._send(
+        g,
+        label,
+        { dpt: dptOverride, force: g.protected && armed.value, payload: payloadHex },
+        status,
+      );
+    };
 
     const controls = el("div", "send-controls");
-    this._populateControls(controls, g, send);
+    this._populateControls(controls, g, send, sendRaw);
     wrap.appendChild(controls);
 
-    // Raw value fallback (free-form value string + optional DPT override).
-    wrap.appendChild(this._rawFallback(g, send));
+    // Raw payload fallback (free-form hex bytes + optional DPT override).
+    wrap.appendChild(this._rawFallback(g, sendRaw));
 
     wrap.appendChild(status);
     if (g.protected) this._setControlsDisabled(controls, true);
@@ -330,14 +342,15 @@ class Inspector {
 
   /**
    * Fill the controls container for a GA based on its DPT main/sub number.
-   * Only value strings accepted by `parse_value` are emitted; DPTs the encoder
-   * cannot parse from a string (1.017, 1.100, 3.007, 10/11/19) route through a
-   * pragmatic override or the raw field.
+   * Value strings accepted by `parse_value` use the `send` path; DPTs the
+   * encoder cannot parse from a string (1.017 trigger, 3.007 dimming, 10/11/19)
+   * use `sendRaw` to post raw payload bytes, or fall back to the raw field.
    * @param {HTMLElement} controls
    * @param {Object} g
    * @param {(value:string, dptOverride?:string)=>void} send
+   * @param {(payloadHex:string, dptOverride?:string, label?:string)=>void} sendRaw
    */
-  _populateControls(controls, g, send) {
+  _populateControls(controls, g, send, sendRaw) {
     const dpt = g.dpt || "";
     const [mainStr, subStr] = dpt.split(".");
     const main = parseInt(mainStr, 10);
@@ -345,15 +358,14 @@ class Inspector {
 
     // DPT 1.x - booleans with subtype-specific labels.
     if (main === 1) {
-      this._boolControls(controls, dpt, sub, send);
+      this._boolControls(controls, dpt, sub, send, sendRaw);
       return;
     }
     // DPT 3.007 - dimming control (brighter/darker + step). parse_value cannot
-    // encode DPT 3 from a string, so these route through the raw field with a
-    // hint; expose quick presets that fill it.
+    // encode DPT 3 from a string, so expose quick raw-payload presets: the
+    // 4-bit control code goes as a single byte via the raw endpoint.
     if (main === 3) {
-      const hint = el("p", "widget-hint", "DPT 3 control cannot be sent as a value; use the raw field with an explicit --dpt on the bus, or send a step below via 3.007.");
-      controls.appendChild(hint);
+      this._dimStepControls(controls, dpt || "3.007", sendRaw);
       return;
     }
     // DPT 5.001 - percent slider + synced number.
@@ -391,14 +403,14 @@ class Inspector {
       this._numberControl(controls, send, { min: 0, max: 63, step: 1, label: "scene" });
       return;
     }
-    // DPT 10/11/19 (time/date/datetime) and anything else: raw field only.
+    // DPT 10/11/19 (time/date/datetime) and anything else: raw payload only.
     const hint = el("p", "widget-hint", dpt
-      ? `No structured widget for DPT ${dpt}; use the raw value field below.`
-      : "This GA has no DPT; set one via --dpt in the raw field below.");
+      ? `No structured widget for DPT ${dpt}; use the raw payload field below.`
+      : "This GA has no DPT; send raw payload bytes (optionally set a dpt) below.");
     controls.appendChild(hint);
   }
 
-  _boolControls(controls, dpt, sub, send) {
+  _boolControls(controls, dpt, sub, send, sendRaw) {
     // Subtype label pairs that parse_value accepts (codec.rs bool parsing).
     // [falseLabel, falseValue, trueLabel, trueValue]
     const pairs = {
@@ -407,13 +419,15 @@ class Inspector {
       "009": ["Open", "open", "Close", "close"],
       "010": ["Stop", "stop", "Start", "start"],
     };
-    // 1.017 trigger, 1.100 heat/cool: parse_value has no words; send via 1.001.
+    // 1.017 trigger has no parse_value grammar. Send a proper 1-bit raw payload
+    // tagged as 1.017 (byte 0x01, packed identically to a 1.001 "on" on the
+    // wire) instead of masquerading as 1.001.
     if (dpt === "1.017") {
       const trig = el("button", "send-btn primary", "Trigger");
       trig.type = "button";
-      trig.addEventListener("click", () => send("on", "1.001"));
+      trig.addEventListener("click", () => sendRaw("01", "1.017", "trigger"));
       controls.appendChild(trig);
-      controls.appendChild(el("span", "widget-hint", "sent as 1.001 “on”"));
+      controls.appendChild(el("span", "widget-hint", "1-bit trigger (raw 0x01, DPT 1.017)"));
       return;
     }
     const pair = pairs[sub];
@@ -426,6 +440,30 @@ class Inspector {
       controls.appendChild(this._sendButton("On", () => send("on"), "primary"));
       controls.appendChild(this._sendButton("Off", () => send("off"), ""));
     }
+  }
+
+  /**
+   * DPT 3.007 dimming-control presets. The 4-bit value is direction (bit 3:
+   * 1 = brighter, 0 = darker) plus a 3-bit step code (0 = break/stop). Each
+   * preset sends the single byte as a raw payload tagged with the DPT.
+   * @param {HTMLElement} controls
+   * @param {string} dpt
+   * @param {(payloadHex:string, dptOverride?:string, label?:string)=>void} sendRaw
+   */
+  _dimStepControls(controls, dpt, sendRaw) {
+    const row = el("div", "slider-row");
+    // step 1 = full step; 0x09 = brighter/step-1, 0x01 = darker/step-1.
+    const presets = [
+      ["Brighter", 0x09],
+      ["Darker", 0x01],
+      ["Break", 0x00],
+    ];
+    for (const [label, byte] of presets) {
+      const hex = byte.toString(16).padStart(2, "0");
+      row.appendChild(this._sendButton(label, () => sendRaw(hex, dpt, `${label} (0x${hex})`), label === "Brighter" ? "primary" : ""));
+    }
+    controls.appendChild(row);
+    controls.appendChild(el("span", "widget-hint", "4-bit dimming control (raw byte, DPT 3.007)"));
   }
 
   _percentControls(controls, send) {
@@ -491,29 +529,29 @@ class Inspector {
     controls.appendChild(row);
   }
 
-  _rawFallback(g, send) {
+  _rawFallback(g, sendRaw) {
     const details = el("details", "raw-fallback");
-    const summary = el("summary", null, "Raw value");
+    const summary = el("summary", null, "Raw payload");
     details.appendChild(summary);
     const row = el("div", "slider-row");
     const val = el("input");
     val.type = "text";
     val.className = "raw-input mono";
-    val.placeholder = "value (e.g. on, 75%, 21.5)";
+    val.placeholder = "hex bytes (e.g. 0b64)";
     const dptIn = el("input");
     dptIn.type = "text";
     dptIn.className = "raw-dpt mono";
-    dptIn.placeholder = "--dpt (optional)";
+    dptIn.placeholder = "dpt (optional)";
     dptIn.size = 10;
     const btn = this._sendButton("Send raw", () => {
-      const v = val.value.trim();
-      if (!v) return;
-      send(v, dptIn.value.trim() || undefined);
+      const hex = val.value.trim().replace(/\s+/g, "");
+      if (!hex) return;
+      sendRaw(hex, dptIn.value.trim() || undefined, `raw ${hex}`);
     }, "");
     val.addEventListener("keydown", (ev) => { if (ev.key === "Enter") btn.click(); });
     row.append(val, dptIn, btn);
     details.appendChild(row);
-    details.appendChild(el("p", "widget-hint", "Sent verbatim through the encoder (no raw hex; server uses parse_value)."));
+    details.appendChild(el("p", "widget-hint", "Raw payload bytes sent verbatim. Validated against the DPT size when one is known; with no DPT, sent unpacked as a full octet."));
     return details;
   }
 
