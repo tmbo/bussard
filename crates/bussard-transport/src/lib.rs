@@ -61,8 +61,8 @@ pub use config::{ConnectionConfig, TransportKind};
 pub use conn::{BusConnection, TimestampedFrame};
 pub use discovery::{discover, discover_all, local_ipv4_interfaces};
 pub use error::{Result, TransportError};
-pub use router::{Router, RouterSender};
-pub use tunnel::{Tunnel, TunnelSender};
+pub use router::Router;
+pub use tunnel::Tunnel;
 
 use crate::cemi::CemiFrame;
 
@@ -97,42 +97,6 @@ impl Transport {
         match self {
             Transport::Tunnel(t) => t.assigned_individual_address().filter(|&ia| ia != 0),
             Transport::Router(_) => None,
-        }
-    }
-
-    /// Returns a cheap, cloneable send-only handle for this connection.
-    ///
-    /// The handle can be moved into a spawned task to issue a send while the
-    /// owning [`Transport`] keeps being polled for inbound frames, so subscriber
-    /// delivery never stalls behind a slow send (issue #57). For a tunnel the
-    /// send still awaits the gateway ACK; for a router it is fire-and-forget.
-    pub fn sender(&self) -> TransportSender {
-        match self {
-            Transport::Tunnel(t) => TransportSender::Tunnel(t.sender()),
-            Transport::Router(r) => TransportSender::Router(r.sender()),
-        }
-    }
-}
-
-/// A cheap, cloneable send-only handle for a [`Transport`].
-///
-/// Obtained from [`Transport::sender`]. It shares the underlying transport's
-/// channel/socket, so a send issued through it behaves exactly like
-/// [`BusConnection::send`] on the owning transport.
-pub enum TransportSender {
-    /// A tunnel send handle (queues onto the tunnel task, awaits the ACK).
-    Tunnel(TunnelSender),
-    /// A router send handle (fire-and-forget onto the multicast group).
-    Router(RouterSender),
-}
-
-impl TransportSender {
-    /// Sends `frame`, awaiting the gateway ACK for a tunnel or returning once the
-    /// datagram is on the wire for a router.
-    pub async fn send(&self, frame: CemiFrame) -> Result<()> {
-        match self {
-            TransportSender::Tunnel(t) => t.send(frame).await,
-            TransportSender::Router(r) => r.send(frame).await,
         }
     }
 }

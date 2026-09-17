@@ -61,29 +61,6 @@ pub struct Tunnel {
     assigned_ia: Option<u16>,
 }
 
-/// A cheap, cloneable send-only handle for a [`Tunnel`].
-///
-/// It holds a clone of the tunnel's command channel to the background task; a
-/// send issued through it is queued and ACK-awaited exactly like [`Tunnel::send`].
-pub struct TunnelSender {
-    commands: mpsc::Sender<Command>,
-}
-
-impl TunnelSender {
-    /// Queues `frame` for transmission and awaits its TUNNELING_ACK (or error).
-    pub async fn send(&self, frame: CemiFrame) -> Result<()> {
-        let (reply, rx) = oneshot::channel();
-        self.commands
-            .send(Command::Send {
-                frame: Box::new(frame),
-                reply,
-            })
-            .await
-            .map_err(|_| TransportError::Closed)?;
-        rx.await.map_err(|_| TransportError::Closed)?
-    }
-}
-
 impl Tunnel {
     /// Opens a tunneling connection to the gateway named in `config`.
     ///
@@ -148,19 +125,6 @@ impl Tunnel {
     /// The individual address assigned to this tunnel by the gateway, if any.
     pub fn assigned_individual_address(&self) -> Option<u16> {
         self.assigned_ia
-    }
-
-    /// Returns a cheap, cloneable send-only handle for this tunnel.
-    ///
-    /// The handle shares the tunnel's command channel to the background task, so
-    /// a send issued through it still awaits the gateway's TUNNELING_ACK (with
-    /// retransmit) exactly as [`Tunnel::send`] does. It lets the bus actor spawn
-    /// a send without giving up its `&mut` borrow of the receiving half, so
-    /// inbound frames keep flowing while a slow ACK is outstanding (issue #57).
-    pub fn sender(&self) -> TunnelSender {
-        TunnelSender {
-            commands: self.commands.clone(),
-        }
     }
 
     /// Runs the CONNECT / CONNECT_RESPONSE handshake, returning the channel id
