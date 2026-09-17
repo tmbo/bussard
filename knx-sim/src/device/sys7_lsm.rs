@@ -88,7 +88,7 @@ impl Sys7Event {
                 match sub {
                     // Alloc absolute Data/Stack/Task segment (spec §4.1 table).
                     // Layout after [0x03][sub]: [start:2][length:2][access][mem_type][mem_attr].
-                    0x00 | 0x01 | 0x02 => {
+                    0x00..=0x02 => {
                         if record.len() < 6 {
                             return Err(Sys7EventError::TooShort(sub));
                         }

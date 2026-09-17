@@ -18,25 +18,18 @@
 /// The two variants are the two device-side realisations the spec (section 5)
 /// requires the sim to implement, selectable per device so a tool can be
 /// conformance-tested against either without a second simulator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LsmAccess {
     /// Load events are written as a 12-octet record to the LSM control address
     /// via `A_Memory_Write`, and the state is polled at the status address via
     /// `A_Memory_Read`. This is the corpus / first-party default for real 0705
-    /// silicon.
+    /// silicon, and thus the default (spec section 5).
+    #[default]
     MemoryMapped,
     /// Load events are written to `PID_LOAD_STATE_CONTROL` (PID 5) via
     /// `A_PropertyValue_Write`, and the state is read back via
     /// `A_PropertyValue_Read`. Standards-defensible; built but not the default.
     Property,
-}
-
-impl Default for LsmAccess {
-    fn default() -> Self {
-        // Default: MemoryMapped — what both the corpus and the first-party
-        // evidence show for the actual 0705 devices (spec section 5).
-        LsmAccess::MemoryMapped
-    }
 }
 
 /// The memory-mapped LSM realisation constants (spec section 5).
