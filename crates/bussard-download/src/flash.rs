@@ -571,6 +571,29 @@ pub struct FlashOptions {
     /// and fail-on-denied (a non-zero granted level is a hard
     /// [`MgmtError`](bussard_mgmt::MgmtError)`::AccessDenied`).
     pub bcu_key: Option<u32>,
+
+    /// Whether to verify the flash *after* the terminal restart rather than
+    /// before it.
+    ///
+    /// A device only truly holds a flash if the load survives the reboot the
+    /// terminal `LdCtrlRestart` triggers. KNX Virtual reports a transient
+    /// `Loaded` while the device is still up and then reverts the application
+    /// object to `Unloaded` after the restart when the written image is
+    /// content-incomplete — so verifying before the restart reports a
+    /// non-persisting flash as a success (a false positive).
+    ///
+    /// When `true` (the real `bussard flash`), the terminal restart is fired,
+    /// the reboot is waited out, the connection is re-opened and re-authorized,
+    /// and the load state is re-read on the fresh connection — success is
+    /// reported only if the object is *genuinely* `Loaded` afterwards. It
+    /// requires a session that [`can_reconnect`](Session::can_reconnect); a
+    /// session built from a single already-open connection ignores it and
+    /// verifies before the restart regardless.
+    ///
+    /// When `false` (the default, used by the mock-device tests whose devices
+    /// do not reboot-and-return), the load state is read over the still-open
+    /// connection before the restart, as before.
+    pub verify_after_restart: bool,
 }
 
 /// A progress event emitted as [`flash`] executes, for the CLI to render.
@@ -748,9 +771,22 @@ impl<C: Connector> Session<C> {
             .expect("session always holds its open connection")
     }
 
+    /// Whether this session can re-open its connection after a device restart.
+    ///
+    /// True when the session was opened from a [`Connector`] it can call again
+    /// ([`Session::open`]/[`open_with_key`](Session::open_with_key)); false when it
+    /// wraps a single already-open connection ([`Session::from_connection`]), which
+    /// has no way to reconnect. The terminal-restart verify uses this to decide
+    /// whether to re-read the load state *after* the reboot (a real device) or
+    /// *before* it (a mock with no reconnect).
+    pub fn can_reconnect(&self) -> bool {
+        self.connector.is_some()
+    }
+
     /// Re-establishes the L4 connection after a device restart, re-authorizing it.
     ///
-    /// Used only by the master-reset step: the device rebooted and dropped the
+    /// Used by the master-reset step and the terminal-restart verify: the device
+    /// rebooted and dropped the
     /// connection, so the old `Layer4Connection` is dead. This drops it, opens a
     /// fresh connection via the retained [`Connector`], and re-presents the same
     /// authorization the original connection used, so the remaining procedure
@@ -1517,14 +1553,29 @@ fn resolve_write_image(
         .map(|a| a.split(',').any(|t| t.trim().eq_ignore_ascii_case("par")))
         .unwrap_or(false);
 
+    // A segment that any parameter targets has a computed parameter image, and
+    // that image already *is* the segment's full content: `compute_parameter_image`
+    // seeds it from the segment's `<Data>` base and lays the parameter values over
+    // it. So whenever a non-empty parameter image exists for this segment, stream
+    // it — even for an `AppliesTo="full"` or attribute-less `WriteRelMem`.
+    //
+    // Evidence (KNX Virtual DA.tp, M-00FA_A-2500-10-51CB): the app-segment write is
+    // `<LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="256">` with NO `AppliesTo`,
+    // yet ETS writes the *computed* parameter image (`05 05 ff … 05 04 …`), not the
+    // raw 256×0xFF `<Data>` base. Resolving the code `<Data>` here would stream the
+    // all-0xFF base and the load would be content-incomplete (the device discards
+    // it on restart). A segment that no parameter targets has no `param_images`
+    // entry, so a pure code segment still streams its `<Data>` below — this only
+    // changes parameter-bearing segments.
+    if let Some(bytes) = param_images.get(&seg_id).filter(|b| !b.is_empty()) {
+        return Ok((seg_id, ImageKind::Parameters, bytes.clone()));
+    }
+
     if wants_params {
-        // A non-empty parameter image is the intended content; but a combined
-        // `full,par` write whose segment carries no parameters (or a pure `par`
-        // write with none) still owns the segment's code `<Data>`. Fall back to
-        // that so the streamed image is never spuriously empty.
-        if let Some(bytes) = param_images.get(&seg_id).filter(|b| !b.is_empty()) {
-            return Ok((seg_id, ImageKind::Parameters, bytes.clone()));
-        }
+        // The write wanted parameters but this segment carries none: a combined
+        // `full,par` write (or a pure `par` write with no params) still owns the
+        // segment's code `<Data>`. Fall back to that so the streamed image is never
+        // spuriously empty.
         if let Some(data) = app.code_segments.get(&seg_id).and_then(|s| s.data.clone()) {
             return Ok((seg_id, ImageKind::Code, data));
         }
@@ -1784,7 +1835,9 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
     options: FlashOptions,
     mut progress: F,
 ) -> Result<FlashOutcome, WriteError> {
-    let _ = options;
+    // `options.bcu_key` was consumed at connect time (the session was opened with
+    // it); only `verify_after_restart` is read below, in the terminal-restart arm.
+    let verify_after_restart = options.verify_after_restart;
     let (app_obj, object_table) = discover_object_table(session.l4()).await?;
     let total = plan.steps.len();
 
@@ -2082,17 +2135,56 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                 }
             }
             FlashStep::Restart => {
-                // The terminal restart is the SUCCESSFUL last step: after it the
-                // device reboots and goes silent, which is the expected outcome —
-                // NOT a failure. Verify the result FIRST (the device is still up
-                // and Loaded here), then fire-and-forget the restart. The device
-                // going silent afterwards must never be surfaced as a flash error.
-                verified = Some(
-                    verify_outcome(session.l4(), app_obj, &completed_objects, &written_samples)
-                        .await?,
-                );
+                // The terminal restart reboots the device, and the flash is only a
+                // real success if the load *persists* across that reboot. KNX
+                // Virtual reports a transient `Loaded` while the device is still up,
+                // then reverts the application object to `Unloaded` after the restart
+                // when the written image is content-incomplete. Verifying *before*
+                // the restart therefore reads that transient `Loaded` and reports a
+                // non-persisting flash as a success — the false-positive this fixes.
+                //
+                // So, when the session can re-open its own connection, verify AFTER
+                // the restart: fire the restart, wait out the reboot, reconnect and
+                // re-authorize, then re-read the load state. Success is reported only
+                // if the application object is *genuinely* `Loaded` once the device
+                // is back; a load that did not persist now fails loudly.
+                //
+                // A session built from an already-open connection
+                // ([`Session::from_connection`], used by the mock-device tests) has
+                // no connector to reconnect with, and the mock does not reboot — so
+                // fall back to verifying over the still-open connection before the
+                // restart, preserving those tests' behaviour.
                 let (apci, payload) = bussard_mgmt::apci::encode_restart(0);
-                let _ = session.l4().send_data_unacked(apci, &payload).await;
+                if verify_after_restart && session.can_reconnect() {
+                    let _ = session.l4().send_data_unacked(apci, &payload).await;
+                    // The device is unreachable while it reboots; wait it out (a
+                    // single bounded sleep, not a poll loop), then re-establish the
+                    // authorized connection.
+                    tokio::time::sleep(master_reset_reboot_wait()).await;
+                    session.reconnect().await?;
+                    // Re-discover the application object on the fresh connection: the
+                    // object index is stable across the reboot, but the L4 connection
+                    // is new, so probe it again rather than trusting the pre-restart
+                    // handle.
+                    let (post_app_obj, _post_table) = discover_object_table(session.l4()).await?;
+                    verified = Some(
+                        verify_outcome(
+                            session.l4(),
+                            post_app_obj,
+                            &completed_objects,
+                            &written_samples,
+                        )
+                        .await?,
+                    );
+                } else {
+                    // No connector to reconnect with: verify over the still-open
+                    // connection, then fire-and-forget the restart.
+                    verified = Some(
+                        verify_outcome(session.l4(), app_obj, &completed_objects, &written_samples)
+                            .await?,
+                    );
+                    let _ = session.l4().send_data_unacked(apci, &payload).await;
+                }
             }
         }
     }
@@ -2372,6 +2464,71 @@ mod tests {
         assert_eq!(plan.total_write_bytes(), 7);
         // The parameter image reflects the default 7.
         assert_eq!(plan.param_images["M-1_A-1_RS-2"], vec![7]);
+    }
+
+    #[test]
+    fn write_rel_mem_without_applies_to_streams_the_parameter_image() {
+        // The KNX-Virtual DA.tp shape: a single 256-byte relative segment whose
+        // `<Data>` base is all 0xFF, a parameter placing a non-0xFF value into it,
+        // and an app-segment `LdCtrlWriteRelMem` with NO `AppliesTo`. ETS writes the
+        // *computed* parameter image (base + parameters), not the raw 0xFF `<Data>`.
+        // The lowered write must therefore resolve to the parameter image, or the
+        // device is streamed a content-incomplete all-0xFF image and discards the
+        // load on restart.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-P" ApplicationNumber="1" ApplicationVersion="1"
+            MaskVersion="MV-07B0" Name="Par" LoadProcedureStyle="ProductDefault">
+          <Static>
+           <Code>
+            <RelativeSegment Id="M-1_A-P_RS-04" Size="4" LoadStateMachine="4" Offset="0"><Data>/////w==</Data></RelativeSegment>
+           </Code>
+           <ParameterTypes><ParameterType Id="M-1_A-P_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType></ParameterTypes>
+           <Parameters><Parameter Id="M-1_A-P_P-0" Name="speed" ParameterType="M-1_A-P_PT-0" Value="5"><Memory CodeSegment="M-1_A-P_RS-04" Offset="0" BitOffset="0" /></Parameter></Parameters>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlUnload LsmIdx="4" />
+             <LdCtrlLoad LsmIdx="4" />
+             <LdCtrlRelSegment LsmIdx="4" Size="4" />
+             <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="4" />
+             <LdCtrlLoadCompleted LsmIdx="4" />
+             <LdCtrlRestart />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-1_A-P", xml.as_bytes()).unwrap();
+        let plan = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        // The (only) relative-memory write must stream the PARAMETER image.
+        let write = plan
+            .steps
+            .iter()
+            .find_map(|s| match s {
+                FlashStep::WriteRelMem { image, .. } => Some(image),
+                _ => None,
+            })
+            .expect("the procedure lowers a WriteRelMem");
+        assert_eq!(
+            write.kind,
+            ImageKind::Parameters,
+            "an attribute-less WriteRelMem into a parameter-bearing segment must stream \
+             the computed parameter image, not the raw <Data> base"
+        );
+        // The computed image is the 0xFF base with the parameter's default (5) laid
+        // over byte 0 — NOT the raw all-0xFF <Data>.
+        assert_eq!(
+            plan.param_images["M-1_A-P_RS-04"],
+            vec![5, 0xFF, 0xFF, 0xFF]
+        );
     }
 
     #[test]

@@ -383,6 +383,142 @@ pub fn descriptors_for_linked_objects(
         .collect()
 }
 
+/// The per-channel configuration a module-based application needs to expand its
+/// com-objects into device group-object-table descriptors.
+///
+/// A module application instantiates its com-objects once per channel (one
+/// [`ModuleInstance`](bussard_prod::ModuleInstance)); which conditional
+/// com-objects a channel carries, and whether the channel's objects are linked
+/// (Communication enabled), is project data — not present in the product XML.
+/// A caller supplies one `ChannelConfig` per module instance, in the same order
+/// as [`ApplicationProgram::module_instances`](bussard_prod::ApplicationProgram),
+/// to drive [`expand_group_object_descriptors`].
+#[derive(Debug, Clone, Default)]
+pub struct ChannelConfig {
+    /// The effective value of each parameter-ref that gates a `<choose>` group,
+    /// keyed by app-relative `ParameterRef` id (e.g. the feedback/alarm selector).
+    /// A `<choose>` whose parameter is absent here falls back to that parameter's
+    /// declared default, so a bare/default channel needs no entries.
+    pub choose_values: BTreeMap<String, i64>,
+    /// Whether this channel's com-objects are linked to a group address, which
+    /// sets the Communication flag on their descriptors. ETS clears Communication
+    /// on an unlinked com-object instance.
+    pub linked: bool,
+}
+
+/// Expands a module-based application's com-objects into group-object-table
+/// descriptors, one channel per [`ModuleInstance`](bussard_prod::ModuleInstance).
+///
+/// For each module instance (channel), this instantiates the com-object refs the
+/// channel's [`ChannelMembership`](bussard_prod::ChannelMembership) includes —
+/// the unconditional refs plus the `<choose>` branches whose gating parameter
+/// takes the configured (or defaulted) value — and emits one descriptor per
+/// instance at ASAP `base.number + instance[argObj]`, where `argObj` is the
+/// module `<Argument>` the base com-object's `BaseNumber` names. The descriptor's
+/// size comes from the com-object's `ObjectSize`; its flags are the com-object's
+/// base flags with Communication forced on or off by
+/// [`ChannelConfig::linked`] (ETS registers a group-object entry for every
+/// instantiated com-object, with Communication reflecting whether it is linked).
+///
+/// This reproduces the DA.tp reference device's 148-byte obj3 image byte-for-byte
+/// when driven with the capture's project config (channel 1 feedback=3 + linked,
+/// channels 2-8 default + unlinked) — see the golden test.
+///
+/// Returns an empty vec when the application declares no module instances or no
+/// channel membership (a non-module application), so a caller can fall back to
+/// its non-expanded path.
+pub fn expand_group_object_descriptors(
+    app: &bussard_prod::ApplicationProgram,
+    channel_configs: &[ChannelConfig],
+) -> Vec<GroupObjectDescriptor> {
+    use bussard_model::Flags;
+
+    let Some(membership) = app.channel_membership.as_ref() else {
+        return Vec::new();
+    };
+
+    let mut descriptors = Vec::new();
+    for (instance, config) in app.module_instances.iter().zip(channel_configs) {
+        // The com-object-ref ids this channel instantiates: the unconditional
+        // ones, plus each `<choose>` branch whose gating parameter matches.
+        let mut ref_ids: Vec<&str> = membership
+            .unconditional
+            .iter()
+            .map(String::as_str)
+            .collect();
+        for group in &membership.conditional {
+            let selected = config
+                .choose_values
+                .get(&group.param_ref_id)
+                .copied()
+                .or_else(|| default_param_ref_value(app, &group.param_ref_id))
+                .unwrap_or(0);
+            for (when, members) in &group.branches {
+                if *when == selected {
+                    ref_ids.extend(members.iter().map(String::as_str));
+                }
+            }
+        }
+
+        for ref_rel_id in ref_ids {
+            let Some((base, cref)) = app.resolve(ref_rel_id) else {
+                continue;
+            };
+            // ASAP = base number + the module instance's argObj value (the
+            // argument the base com-object's BaseNumber names). The `BaseNumber`
+            // is stored as a full XML id; the instance's arg values are keyed by
+            // the app-relative argument id, so strip the app prefix to match.
+            let base_number = base
+                .base_number_ref
+                .as_deref()
+                .map(|arg| arg.strip_prefix(&format!("{}_", app.id)).unwrap_or(arg))
+                .and_then(|arg| instance.arg_values.get(arg).copied())
+                .unwrap_or(0);
+            let Some(asap) = u16::try_from(i64::from(base.number) + base_number)
+                .ok()
+                .filter(|&a| a != 0)
+            else {
+                continue;
+            };
+
+            // Base flags (ref merged onto base), with Communication set to match
+            // whether the channel is linked.
+            let mut flags = base.flags.merge(cref.flags).to_flags();
+            if config.linked {
+                flags |= Flags::COMMUNICATION;
+            } else {
+                flags -= Flags::COMMUNICATION;
+            }
+            let size_code = size_code_from_object_size(
+                cref.object_size.as_deref().or(base.object_size.as_deref()),
+            );
+            descriptors.push(GroupObjectDescriptor {
+                asap,
+                flags,
+                size_code,
+                priority: Priority::default(),
+            });
+        }
+    }
+    descriptors
+}
+
+/// The declared default value of a parameter a `<choose>` gates, by its
+/// `ParameterRef` id, as an `i64` — the fallback when a caller supplies no
+/// explicit channel value for that selector.
+fn default_param_ref_value(
+    app: &bussard_prod::ApplicationProgram,
+    param_ref_id: &str,
+) -> Option<i64> {
+    let full = format!("{}_{param_ref_id}", app.id);
+    let pref = app.parameter_refs.get(&full)?;
+    let param = app.parameters.get(&pref.ref_id)?;
+    pref.value
+        .as_deref()
+        .or(param.default.as_deref())
+        .and_then(|s| s.parse::<i64>().ok())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -593,6 +729,180 @@ mod tests {
         ];
         assert_eq!(table.len(), 148);
         assert_eq!(table, ets);
+    }
+
+    /// The exact 148 bytes ETS wrote to obj3 @0x8000 for the DA.tp device (count
+    /// word 0x0049 = 73, then 73 big-endian descriptor words).
+    const ETS_DA_TP_OBJ3: &[u8] = &[
+        0x00, 0x49, 0x17, 0x00, 0x17, 0x03, 0x17, 0x07, 0x47, 0x00, 0x47, 0x07, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x13, 0x00, 0x13, 0x03, 0x13, 0x07, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x13, 0x00, 0x13,
+        0x03, 0x13, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x13, 0x00, 0x13, 0x03, 0x13, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x13, 0x00, 0x13, 0x03, 0x13, 0x07, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x13, 0x00, 0x13,
+        0x03, 0x13, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x13, 0x00, 0x13, 0x03, 0x13, 0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x13, 0x00, 0x13, 0x03, 0x13, 0x07,
+    ];
+
+    /// A self-contained ApplicationProgram XML reproducing the DA.tp module
+    /// structure: 7 base module com-objects (O-2-0..O-2-6) plus refs, 8 module
+    /// instances (argObj 1,11,…,71), and the channel parameter block membership
+    /// (three unconditional control objects plus feedback/alarm `<choose>`
+    /// groups). It is deliberately minimal — only what the obj3 expansion reads —
+    /// so the golden test needs no committed `.knxprod` fixture.
+    fn da_tp_module_app() -> bussard_prod::ApplicationProgram {
+        // 8 module instances with argCH/argObj/argPar, matching the capture.
+        let bases = [
+            (1, 1, 0),
+            (2, 11, 16),
+            (3, 21, 32),
+            (4, 31, 48),
+            (5, 41, 64),
+            (6, 51, 80),
+            (7, 61, 96),
+            (8, 71, 112),
+        ];
+        let mut modules = String::new();
+        for (ch, obj, par) in bases {
+            modules.push_str(&format!(
+                r#"<Module Id="APP_MD-1_M-{ch}" RefId="APP_MD-1">
+                     <Arguments>
+                       <NumericArg RefId="APP_MD-1_A-1" Value="{ch}" />
+                       <NumericArg RefId="APP_MD-1_A-2" Value="{obj}" />
+                       <NumericArg RefId="APP_MD-1_A-3" Value="{par}" />
+                     </Arguments>
+                   </Module>"#
+            ));
+        }
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/23">
+             <ApplicationProgram Id="APP" ApplicationNumber="9472" ApplicationVersion="16"
+                MaskVersion="MV-07B0" Name="Dimming" LoadProcedureStyle="MergedProcedure">
+              <Static>
+               <ComObjects>
+                <ComObject Id="APP_MD-1_O-2-0" Number="0" FunctionText="OnOff" ObjectSize="1 Bit" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Disabled" ReadFlag="Disabled" BaseNumber="APP_MD-1_A-2" />
+                <ComObject Id="APP_MD-1_O-2-1" Number="1" FunctionText="Dimming Control" ObjectSize="4 Bit" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Disabled" ReadFlag="Disabled" BaseNumber="APP_MD-1_A-2" />
+                <ComObject Id="APP_MD-1_O-2-2" Number="2" FunctionText="Dimming Value" ObjectSize="1 Byte" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Disabled" ReadFlag="Disabled" BaseNumber="APP_MD-1_A-2" />
+                <ComObject Id="APP_MD-1_O-2-3" Number="3" FunctionText="Info OnOff" ObjectSize="1 Bit" WriteFlag="Disabled" CommunicationFlag="Enabled" TransmitFlag="Enabled" ReadFlag="Disabled" BaseNumber="APP_MD-1_A-2" />
+                <ComObject Id="APP_MD-1_O-2-4" Number="4" FunctionText="Info Dimming Value" ObjectSize="1 Byte" WriteFlag="Disabled" CommunicationFlag="Enabled" TransmitFlag="Enabled" ReadFlag="Disabled" BaseNumber="APP_MD-1_A-2" />
+                <ComObject Id="APP_MD-1_O-2-5" Number="5" FunctionText="Intrusion Alarm" ObjectSize="1 Bit" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Disabled" ReadFlag="Disabled" BaseNumber="APP_MD-1_A-2" />
+                <ComObject Id="APP_MD-1_O-2-6" Number="6" FunctionText="Fire Alarm" ObjectSize="1 Bit" WriteFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Disabled" ReadFlag="Disabled" BaseNumber="APP_MD-1_A-2" />
+               </ComObjects>
+               <ComObjectRefs>
+                <ComObjectRef Id="APP_MD-1_O-2-0_R-1" RefId="APP_MD-1_O-2-0" />
+                <ComObjectRef Id="APP_MD-1_O-2-1_R-2" RefId="APP_MD-1_O-2-1" />
+                <ComObjectRef Id="APP_MD-1_O-2-2_R-3" RefId="APP_MD-1_O-2-2" />
+                <ComObjectRef Id="APP_MD-1_O-2-3_R-4" RefId="APP_MD-1_O-2-3" />
+                <ComObjectRef Id="APP_MD-1_O-2-4_R-5" RefId="APP_MD-1_O-2-4" />
+                <ComObjectRef Id="APP_MD-1_O-2-5_R-6" RefId="APP_MD-1_O-2-5" />
+                <ComObjectRef Id="APP_MD-1_O-2-6_R-7" RefId="APP_MD-1_O-2-6" />
+               </ComObjectRefs>
+               <Parameters>
+                <Parameter Id="APP_MD-1_P-4" Name="feedback" Value="0" />
+                <Parameter Id="APP_MD-1_P-5" Name="alarm" Value="0" />
+               </Parameters>
+               <ParameterRefs>
+                <ParameterRef Id="APP_MD-1_P-4_R-4" RefId="APP_MD-1_P-4" />
+                <ParameterRef Id="APP_MD-1_P-5_R-5" RefId="APP_MD-1_P-5" />
+               </ParameterRefs>
+              </Static>
+              <Dynamic>
+               <ChannelIndependentBlock>
+                <Channel Id="APP_MD-1_CH-argCH" Number="argCH">
+                 <ParameterBlock Id="APP_MD-1_PB-1" Name="config">
+                  <ParameterRefRef RefId="APP_MD-1_P-4_R-4" />
+                  <ParameterRefRef RefId="APP_MD-1_P-5_R-5" />
+                  <ComObjectRefRef RefId="APP_MD-1_O-2-0_R-1" />
+                  <ComObjectRefRef RefId="APP_MD-1_O-2-1_R-2" />
+                  <ComObjectRefRef RefId="APP_MD-1_O-2-2_R-3" />
+                  <choose ParamRefId="APP_MD-1_P-4_R-4">
+                   <when test="1"><ComObjectRefRef RefId="APP_MD-1_O-2-3_R-4" /></when>
+                   <when test="2"><ComObjectRefRef RefId="APP_MD-1_O-2-4_R-5" /></when>
+                   <when test="3">
+                    <ComObjectRefRef RefId="APP_MD-1_O-2-3_R-4" />
+                    <ComObjectRefRef RefId="APP_MD-1_O-2-4_R-5" />
+                   </when>
+                  </choose>
+                  <choose ParamRefId="APP_MD-1_P-5_R-5">
+                   <when test="1"><ComObjectRefRef RefId="APP_MD-1_O-2-5_R-6" /></when>
+                   <when test="2"><ComObjectRefRef RefId="APP_MD-1_O-2-6_R-7" /></when>
+                   <when test="3">
+                    <ComObjectRefRef RefId="APP_MD-1_O-2-5_R-6" />
+                    <ComObjectRefRef RefId="APP_MD-1_O-2-6_R-7" />
+                   </when>
+                  </choose>
+                 </ParameterBlock>
+                </Channel>
+               </ChannelIndependentBlock>
+               {modules}
+              </Dynamic>
+             </ApplicationProgram></KNX>"#
+        );
+        bussard_prod::parse_application_program("APP", xml.as_bytes())
+            .expect("the fabricated DA.tp module app parses")
+    }
+
+    /// The parser captures the module instances and channel membership from the
+    /// DA.tp module structure.
+    #[test]
+    fn test_parse_da_tp_module_structure() {
+        let app = da_tp_module_app();
+        assert_eq!(app.module_instances.len(), 8);
+        // Instance 1 (channel 1): argObj=1, argPar=0.
+        assert_eq!(app.module_instances[0].arg_values.get("MD-1_A-2"), Some(&1));
+        assert_eq!(app.module_instances[0].arg_values.get("MD-1_A-3"), Some(&0));
+        // Instance 8 (channel 8): argObj=71, argPar=112.
+        assert_eq!(
+            app.module_instances[7].arg_values.get("MD-1_A-2"),
+            Some(&71)
+        );
+        assert_eq!(
+            app.module_instances[7].arg_values.get("MD-1_A-3"),
+            Some(&112)
+        );
+        let mem = app
+            .channel_membership
+            .as_ref()
+            .expect("membership captured");
+        // Three unconditional control objects.
+        assert_eq!(mem.unconditional.len(), 3);
+        // Two conditional groups (feedback, alarm), each with 3 branches.
+        assert_eq!(mem.conditional.len(), 2);
+        assert_eq!(mem.conditional[0].branches.len(), 3);
+        // The feedback group's `when=3` selects both info objects.
+        let (_, w3) = mem.conditional[0]
+            .branches
+            .iter()
+            .find(|(v, _)| *v == 3)
+            .expect("feedback when=3");
+        assert_eq!(w3.len(), 2);
+        // Two referenced parameters (feedback, alarm) — color is not referenced.
+        assert_eq!(mem.parameter_refs.len(), 2);
+    }
+
+    /// The obj3 expansion, driven from the parsed DA.tp module structure with the
+    /// capture's project config (channel 1: feedback=3 + linked; channels 2-8:
+    /// default feedback=0 + unlinked), reproduces ETS's 148-byte obj3 image
+    /// byte-for-byte.
+    #[test]
+    fn test_expand_group_object_descriptors_matches_ets_da_tp() {
+        let app = da_tp_module_app();
+
+        let mut configs = vec![ChannelConfig::default(); 8];
+        // Channel 1: feedback = "Info OnOff + Info Dimming" (3), and linked.
+        configs[0].linked = true;
+        configs[0]
+            .choose_values
+            .insert("MD-1_P-4_R-4".to_string(), 3);
+        // Channels 2-8: keep defaults (feedback=0 -> no info objects) and
+        // unlinked (Communication cleared).
+
+        let descriptors = expand_group_object_descriptors(&app, &configs);
+        let table = compute_group_object_table(&descriptors).expect("descriptors present");
+        assert_eq!(table.len(), 148);
+        assert_eq!(table, ETS_DA_TP_OBJ3);
     }
 
     #[test]

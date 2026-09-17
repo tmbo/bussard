@@ -82,6 +82,66 @@ pub struct ChannelDef {
     pub text: Option<String>,
 }
 
+/// One `<Module>` instantiation from the Dynamic section: a set of the module
+/// definition's argument values.
+///
+/// A module-based application defines its com-objects and parameters once (in a
+/// `<ModuleDef>`), then instantiates them once per channel with a `<Module>`
+/// element carrying `<NumericArg RefId=… Value=…>` children. Each `RefId` is a
+/// module `<Argument>` id (e.g. `MD-1_A-2` = `argObj`, the com-object base
+/// number; `MD-1_A-3` = `argPar`, the parameter memory base offset). A
+/// com-object's effective ASAP is `base.number + arg_values[base_number_ref]`,
+/// and a module parameter's effective byte offset is
+/// `declared_offset + arg_values[base_offset]`.
+///
+/// The argument values are keyed by the **app-relative argument id** (with the
+/// program-id prefix stripped, e.g. `MD-1_A-2`), the same key
+/// [`ComObject::base_number_ref`] and [`Memory::base_offset`] carry.
+#[derive(Debug, Clone, Default)]
+pub struct ModuleInstance {
+    /// The module definition id this instance instantiates (its `RefId`,
+    /// app-relative, e.g. `MD-1`).
+    pub module_def: String,
+    /// The instance's `<NumericArg>` values, keyed by app-relative argument id.
+    pub arg_values: HashMap<String, i64>,
+}
+
+/// One channel `<ParameterBlock>`'s com-object membership, captured from the
+/// module definition's Dynamic section.
+///
+/// A module template has a single channel/parameter-block that lists which of
+/// the module's com-object refs are instantiated on every channel, plus
+/// conditional groups (`<choose ParamRefId><when test>`) whose members appear
+/// only when the named parameter takes the `when` value. The captured ids are
+/// **com-object-ref ids** (a `ComObjectRefRef`'s `RefId`), which resolve to a
+/// [`ComObjectRef`] and thence its base [`ComObject`].
+#[derive(Debug, Clone, Default)]
+pub struct ChannelMembership {
+    /// Com-object-ref ids always present on every channel (the unconditional
+    /// `<ComObjectRefRef>`s directly under the parameter block).
+    pub unconditional: Vec<String>,
+    /// Conditional groups: a group is included on a channel only when the
+    /// parameter it names (`param_ref_id`, a `ParameterRef` id) takes the
+    /// group's `when` value.
+    pub conditional: Vec<ConditionalGroup>,
+    /// Parameter-ref ids referenced by this channel's parameter block
+    /// (`<ParameterRefRef>`). A module parameter whose ref is not listed here is
+    /// present in the module definition but not shown/written on the channel
+    /// (e.g. a `color` parameter with a `<Memory>` that ETS never writes because
+    /// no channel references it).
+    pub parameter_refs: Vec<String>,
+}
+
+/// One `<choose>/<when>` conditional group inside a [`ChannelMembership`].
+#[derive(Debug, Clone, Default)]
+pub struct ConditionalGroup {
+    /// The `ParameterRef` id (`ParamRefId`) whose value selects a `when` branch.
+    pub param_ref_id: String,
+    /// Each `(when-value, com-object-ref ids)` branch. The branch whose value
+    /// equals the parameter's effective value contributes its members.
+    pub branches: Vec<(i64, Vec<String>)>,
+}
+
 /// A resolved com-object: a ref merged onto its base.
 #[derive(Debug, Clone)]
 pub struct ResolvedComObject<'a> {
@@ -530,6 +590,14 @@ pub struct ApplicationProgram {
     /// `ArgBeschriftung` → `MD-1_A-3`), used to resolve `{{Arg…}}` placeholders
     /// in channel and com-object texts against a module instance's values.
     pub argument_ids: HashMap<String, String>,
+    /// Dynamic-section `<Module>` instantiations, in document order. Each is one
+    /// channel's set of argument values; empty for a non-module application.
+    pub module_instances: Vec<ModuleInstance>,
+    /// Per-channel com-object membership captured from the module definition's
+    /// Dynamic `<ParameterBlock>` (which com-object refs each channel
+    /// instantiates, unconditionally or under a `<choose>`). `None` for an
+    /// application with no module channel membership to expand.
+    pub channel_membership: Option<ChannelMembership>,
 }
 
 impl ApplicationProgram {
@@ -653,6 +721,9 @@ pub fn parse_application_program(id: &str, xml: &[u8]) -> Result<ApplicationProg
     let mut seg_capture: Option<SegField> = None;
     let mut seg_buf = String::new();
 
+    // Dynamic-section module-instance / channel-membership accumulation state.
+    let mut dyn_state = DynamicState::default();
+
     // A single attribute buffer, reused for every element. Its heap allocations
     // (the pair list and each key/value buffer) are recycled across the whole
     // parse instead of being freed and reallocated per element (issue #58).
@@ -694,6 +765,7 @@ pub fn parse_application_program(id: &str, xml: &[u8]) -> Result<ApplicationProg
                     &mut cur_pt_kind,
                     &mut cur_lp,
                     &mut cur_param_id,
+                    &mut dyn_state,
                 )?;
             }
             Event::Text(t) if seg_capture.is_some() => {
@@ -712,6 +784,7 @@ pub fn parse_application_program(id: &str, xml: &[u8]) -> Result<ApplicationProg
                     &mut cur_pt_kind,
                     &mut cur_lp,
                     &cur_param_id,
+                    &mut dyn_state,
                 )?;
             }
             Event::End(e) => match e.local_name().as_ref() {
@@ -751,6 +824,41 @@ pub fn parse_application_program(id: &str, xml: &[u8]) -> Result<ApplicationProg
                         app.load_procedures.push(lp);
                     }
                 }
+                b"when" => {
+                    // Close the current `<when>` branch: attach its collected
+                    // com-object-ref ids to the open `<choose>` group.
+                    if let (Some(value), Some(choose)) =
+                        (dyn_state.cur_when.take(), dyn_state.cur_choose.as_mut())
+                    {
+                        let refs = std::mem::take(&mut dyn_state.cur_when_refs);
+                        choose.branches.push((value, refs));
+                    }
+                }
+                b"choose" => {
+                    // Close the current `<choose>`: attach it to the membership.
+                    if let (Some(choose), Some(mem)) = (
+                        dyn_state.cur_choose.take(),
+                        dyn_state.cur_membership.as_mut(),
+                    ) {
+                        mem.conditional.push(choose);
+                    }
+                }
+                b"ParameterBlock" => {
+                    // Close the channel parameter block: capture its membership
+                    // once (a module template has a single channel/block).
+                    if let Some(mem) = dyn_state.cur_membership.take() {
+                        if !dyn_state.membership_captured {
+                            app.channel_membership = Some(mem);
+                            dyn_state.membership_captured = true;
+                        }
+                    }
+                }
+                b"Module" => {
+                    // Close a module instance: record its accumulated arg values.
+                    if let Some(module) = dyn_state.cur_module.take() {
+                        app.module_instances.push(module);
+                    }
+                }
                 _ => {}
             },
             _ => {}
@@ -781,6 +889,7 @@ fn handle_start(
     cur_pt_kind: &mut Option<ParameterType>,
     cur_lp: &mut Option<LoadProcedure>,
     cur_param_id: &mut Option<String>,
+    dyn_state: &mut DynamicState,
 ) -> Result<()> {
     attrs.parse_into(e, context)?;
     let m = &*attrs;
@@ -830,6 +939,44 @@ fn handle_start(
                 ops: Vec::new(),
             });
         }
+        b"Module" => {
+            // Begin accumulating a `<Module>` instance's argument values.
+            dyn_state.cur_module = Some(ModuleInstance {
+                module_def: get(m, b"RefId")
+                    .and_then(|id| app_relative_id(id, &app.id))
+                    .map(str::to_string)
+                    .unwrap_or_default(),
+                arg_values: HashMap::new(),
+            });
+        }
+        b"ParameterBlock" => {
+            // Begin accumulating a channel parameter block's membership (only the
+            // first is retained). A block inside `<Module>`/`<Channel>` describes
+            // per-channel com-object membership.
+            if !dyn_state.membership_captured {
+                dyn_state.cur_membership = Some(ChannelMembership::default());
+            }
+        }
+        b"choose" => {
+            // Begin a `<choose ParamRefId=…>` conditional group.
+            if dyn_state.cur_membership.is_some() {
+                dyn_state.cur_choose = Some(ConditionalGroup {
+                    param_ref_id: get(m, b"ParamRefId")
+                        .and_then(|id| app_relative_id(id, &app.id))
+                        .map(str::to_string)
+                        .unwrap_or_default(),
+                    branches: Vec::new(),
+                });
+            }
+        }
+        b"when" => {
+            // Begin a `<when test=…>` branch; its `<ComObjectRefRef>`s collect
+            // into `cur_when_refs` until the branch closes.
+            if dyn_state.cur_choose.is_some() {
+                dyn_state.cur_when = get(m, b"test").and_then(|s| s.parse::<i64>().ok());
+                dyn_state.cur_when_refs.clear();
+            }
+        }
         // A control op with children (e.g. LdCtrlCompareProp wrapping data).
         name if name.starts_with(b"LdCtrl") => {
             push_load_op(cur_lp, e, m);
@@ -855,6 +1002,7 @@ fn handle_empty(
     cur_pt_kind: &mut Option<ParameterType>,
     cur_lp: &mut Option<LoadProcedure>,
     cur_param_id: &Option<String>,
+    dyn_state: &mut DynamicState,
 ) -> Result<()> {
     attrs.parse_into(e, context)?;
     let m = &*attrs;
@@ -863,6 +1011,37 @@ fn handle_empty(
         b"ComObjectRef" => insert_com_object_ref(app, m),
         b"Channel" => insert_channel(app, m),
         b"Argument" => insert_argument(app, m),
+        b"NumericArg" => {
+            // A `<NumericArg RefId=arg-id Value=n>` of the current `<Module>`.
+            if let Some(module) = dyn_state.cur_module.as_mut() {
+                if let (Some(arg_id), Some(value)) = (
+                    get(m, b"RefId").and_then(|id| app_relative_id(id, &app.id)),
+                    get(m, b"Value").and_then(|s| s.parse::<i64>().ok()),
+                ) {
+                    module.arg_values.insert(arg_id.to_string(), value);
+                }
+            }
+        }
+        b"ComObjectRefRef" => {
+            // A channel's com-object membership entry. Inside a `<when>` it joins
+            // that branch; directly under the parameter block it is unconditional.
+            if let Some(ref_id) = get(m, b"RefId").and_then(|id| app_relative_id(id, &app.id)) {
+                if dyn_state.cur_when.is_some() {
+                    dyn_state.cur_when_refs.push(ref_id.to_string());
+                } else if let Some(mem) = dyn_state.cur_membership.as_mut() {
+                    mem.unconditional.push(ref_id.to_string());
+                }
+            }
+        }
+        b"ParameterRefRef" => {
+            // A channel's referenced parameter (drives which module params ETS
+            // writes for the channel).
+            if let Some(mem) = dyn_state.cur_membership.as_mut() {
+                if let Some(ref_id) = get(m, b"RefId").and_then(|id| app_relative_id(id, &app.id)) {
+                    mem.parameter_refs.push(ref_id.to_string());
+                }
+            }
+        }
         b"Parameter" => {
             // A parameter with no <Memory> child.
             insert_parameter_start(app, m);
@@ -1090,6 +1269,32 @@ fn insert_segment(app: &mut ApplicationProgram, m: &Attrs, kind: SegmentKind) {
             mask: None,
         },
     );
+}
+
+/// Mutable state for parsing the Dynamic section's module instances and channel
+/// membership across streaming events.
+///
+/// The parser accumulates a `<Module>`'s `<NumericArg>`s until the module
+/// closes, and a channel `<ParameterBlock>`'s `<ComObjectRefRef>`s /
+/// `<ParameterRefRef>`s / `<choose>` branches until the block closes. Keeping
+/// this in one struct avoids threading a handful of extra parameters through the
+/// already-wide `handle_start`/`handle_empty` signatures.
+#[derive(Debug, Default)]
+struct DynamicState {
+    /// The `<Module>` instance being accumulated (its arg values), if inside one.
+    cur_module: Option<ModuleInstance>,
+    /// The channel `<ParameterBlock>` membership being accumulated, if inside one.
+    cur_membership: Option<ChannelMembership>,
+    /// The `<choose>` group being accumulated, if inside one.
+    cur_choose: Option<ConditionalGroup>,
+    /// The `<when test=…>` value whose `<ComObjectRefRef>`s we are collecting,
+    /// if inside a `<when>` branch.
+    cur_when: Option<i64>,
+    /// The com-object-ref ids collected for the current `<when>` branch.
+    cur_when_refs: Vec<String>,
+    /// Whether the application already captured a channel membership (only the
+    /// first module channel is captured — a module template has one channel).
+    membership_captured: bool,
 }
 
 /// Which inline binary child of a code segment is currently being buffered.
