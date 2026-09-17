@@ -243,8 +243,10 @@ async fn run_mock_delay_ack_with_push(
                         channel_id: CHANNEL,
                         seq: 0,
                     };
-                    let ind =
-                        knxnet::tunneling_request(hdr, &CemiFrame::group_write_packed(g, src, &[1]));
+                    let ind = knxnet::tunneling_request(
+                        hdr,
+                        &CemiFrame::group_write_packed(g, src, &[1]),
+                    );
                     gw.send_to(&ind, from).await.unwrap();
                     tokio::time::sleep(ack_delay).await;
                 }
@@ -311,7 +313,10 @@ async fn inbound_delivered_while_send_ack_is_blocked() {
         .await
         .expect("send task joins")
         .expect("send task did not panic");
-    assert!(receipt.is_ok(), "the stalled send still succeeds: {receipt:?}");
+    assert!(
+        receipt.is_ok(),
+        "the stalled send still succeeds: {receipt:?}"
+    );
 
     let _ = handle.close().await;
     let _ = gw_task.await;

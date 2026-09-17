@@ -823,6 +823,10 @@ impl<C: Connector> Session<C> {
         let mut l4 = connector.connect().await?;
         let mut authorize_outcomes = BTreeMap::new();
         Self::authorize(&mut l4, bcu_key, &mut authorize_outcomes).await?;
+        // Read PID_MAX_APDU_LENGTH once so memory/property chunks scale to the
+        // device (issue #58). Best-effort: a failure leaves the conservative
+        // standard-frame caps and never aborts the open.
+        let _ = l4.negotiate_max_apdu().await;
         Ok(Session {
             l4: Some(l4),
             connector: Some(connector),
@@ -906,6 +910,9 @@ impl<C: Connector> Session<C> {
                 )))?;
         let mut l4 = connector.connect().await?;
         Self::authorize(&mut l4, self.bcu_key, &mut self.authorize_outcomes).await?;
+        // Re-negotiate the max APDU on the fresh connection (best-effort — a fresh
+        // Layer4Connection starts with no cached value; issue #58).
+        let _ = l4.negotiate_max_apdu().await;
         self.l4 = Some(l4);
         Ok(())
     }
@@ -946,6 +953,9 @@ impl<C: Connector> Session<C> {
                 )))?;
         let mut l4 = connector.connect().await?;
         Self::authorize(&mut l4, self.bcu_key, &mut self.authorize_outcomes).await?;
+        // Re-negotiate the max APDU on the fresh connection (best-effort — a fresh
+        // Layer4Connection starts with no cached value; issue #58).
+        let _ = l4.negotiate_max_apdu().await;
         self.l4 = Some(l4);
         Ok(())
     }
