@@ -21,7 +21,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{Stream, StreamExt};
 
 use crate::error::ApiError;
-use crate::state::AppState;
+use crate::state::{AppState, ModelSnapshot};
 use crate::traffic::HubEvent;
 
 /// The default number of backlog telegrams replayed to a fresh SSE subscriber.
@@ -29,10 +29,11 @@ const DEFAULT_BACKLOG: usize = 50;
 
 /// `GET /api/model` — the precomputed model projection.
 ///
-/// The model is immutable for the process lifetime, so this simply clones the
-/// cached projection built at startup.
+/// Clones the current snapshot's cached projection. `POST /api/reload` can swap
+/// the snapshot underneath, so this reads through the [`ModelHandle`] every call
+/// rather than capturing an `Arc` once.
 pub async fn get_model(State(state): State<AppState>) -> Json<Value> {
-    Json(state.model_json.as_ref().clone())
+    Json(state.model.current().json.as_ref().clone())
 }
 
 /// `GET /api/state` — the bus status, current seq, and last value per GA.
@@ -119,6 +120,7 @@ fn to_sse(event: HubEvent) -> Event {
             .id(seq.to_string())
             .data(data.to_string()),
         HubEvent::Bus(status) => Event::default().event("bus").data(status.to_string()),
+        HubEvent::Model(data) => Event::default().event("model").data(data.to_string()),
         HubEvent::Gap { count } => Event::default()
             .event("gap")
             .data(json!({ "count": count }).to_string()),
@@ -179,7 +181,10 @@ pub async fn post_group_write(
         .parse()
         .map_err(|_| ApiError::BadRequest(format!("invalid group address {:?}", req.address)))?;
 
-    let model = state.model.as_ref();
+    // Read the CURRENT model snapshot so a reload's protected-GA changes and
+    // DPT edits are enforced immediately on the very next write.
+    let snapshot = state.model.current();
+    let model = snapshot.model.as_ref();
 
     // Exactly one of value / payload.
     match (&req.value, &req.payload) {
@@ -192,6 +197,42 @@ pub async fn post_group_write(
             "provide exactly one of value or payload".to_string(),
         )),
     }
+}
+
+/// `POST /api/reload` — reload the model from disk and swap it atomically.
+///
+/// Re-runs `Model::load` on the server's model directory. On success it builds a
+/// fresh [`ModelSnapshot`] (with the next `model_version`), swaps it into the
+/// shared [`ModelHandle`](crate::state::ModelHandle) in one move, emits a `model`
+/// SSE event so connected pages refetch `/api/model`, and returns `200` with the
+/// new `{model_version, stats}`.
+///
+/// Load-failure semantics are the whole point of issue #65: a broken model must
+/// NEVER replace a good one. On a [`LoadError`](bussard_model::LoadError) it
+/// returns `422` with `{"error":{"code":"model_invalid","message":<display>}}`
+/// and keeps serving the previous model unchanged (no swap, no SSE event).
+pub async fn post_reload(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    // Re-read the model directory. A failure leaves the current snapshot intact.
+    let model = Model::load(&state.dir)
+        .map_err(|e| ApiError::ModelInvalid(format!("model reload failed: {e}")))?;
+
+    // Build the next snapshot at version = current + 1, then swap it in. The
+    // read + increment is not a CAS, but reloads are user-initiated and rare
+    // (one clicked button); a monotonic bump is all the contract requires.
+    let next_version = state.model.current().version + 1;
+    let snapshot = ModelSnapshot::new(model, next_version);
+    let stats = snapshot.json.get("stats").cloned().unwrap_or(Value::Null);
+    state.model.swap(std::sync::Arc::new(snapshot));
+
+    // Tell connected pages to refetch /api/model.
+    let event = json!({ "model_version": next_version, "stats": stats });
+    state.hub.publish_model(event.clone());
+
+    Ok(Json(json!({
+        "ok": true,
+        "model_version": next_version,
+        "stats": stats,
+    })))
 }
 
 /// The `value` write path: resolve a DPT, encode the human value, send it.
