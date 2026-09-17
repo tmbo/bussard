@@ -40,3 +40,6 @@ path = "src/lib.rs"
 [[bin]]
 name = "knx-sim"
 path = "src/main.rs"
+
+# `serve` (src/bin/serve.rs) is an alias entrypoint used by the local flash
+# loop (`serve <config>`); both binaries share the logic in `run`.
