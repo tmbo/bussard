@@ -4,46 +4,80 @@
 // header status dot, and global search, wires keyboard shortcuts, and opens
 // the traffic stream. Wave-2 modules (topology/inspector/log) are imported
 // defensively so this page still boots while they are placeholders.
+//
+// The model can be reloaded without a page refresh (issue #65). A `model` SSE
+// event, or the header reload button, triggers a rebuild: the model is
+// refetched, a fresh store is built, and the view modules are re-initialized
+// against it. The long-lived wiring (search, keyboard, header status, tabs,
+// traffic stream) reads the live store/tree/wave2 through a shared `app`
+// context, so it survives a rebuild without being re-registered. The log buffer
+// is preserved across a reload (telegrams are model-independent); only its store
+// reference is repointed so new rows resolve names and suspicious marks against
+// the new model.
 
 import { Store } from "./store.js";
-import { fetchModel, fetchState, connectTraffic } from "./api.js";
+import { fetchModel, fetchState, connectTraffic, reloadModel } from "./api.js";
 import { GaTree } from "./gatree.js";
 
 const SEARCH_DEBOUNCE_MS = 100;
 
+// The shared, mutable app context. Long-lived wiring closes over this object
+// and always reads the current store/tree/wave2, so a reload can swap them in
+// place without re-registering listeners.
+const app = { store: null, tree: null, wave2: null };
+
 /** Boot the application. */
 async function boot() {
   const model = await loadModel();
-  const store = new Store(model);
+  buildViews(model);
 
   // Debug escape hatch (the single permitted global).
-  window.__debug = { store, model };
+  window.__debug = { get store() { return app.store; }, get tree() { return app.tree; } };
+
+  // Long-lived wiring: registered once, reads the live app context.
+  initSearch();
+  initHeaderStatus();
+  initKeyboard();
+  initTabs();
+  initReloadButton();
+
+  // Load the initial state snapshot (last values + bus status).
+  try {
+    const state = await fetchState();
+    applyState(app.store, state);
+  } catch {
+    // No live server (standalone dev). Leave defaults in place.
+  }
+
+  // Open the live stream once; telegrams route to the live app context, and a
+  // `model` event triggers a rebuild.
+  connectTrafficStream();
+  window.__debug.wave2 = app.wave2;
+}
+
+/**
+ * Build (or rebuild) the store and the view modules from a model payload.
+ *
+ * On the first call it constructs everything. On a reload it constructs a fresh
+ * store and re-initializes the view modules that render model-derived DOM
+ * (topology, inspector, GA tree), while preserving the existing log instance
+ * (its scrollback is model-independent) and repointing it at the new store.
+ * @param {Object} model — parsed /api/model payload.
+ */
+function buildViews(model) {
+  const store = new Store(model);
+  app.store = store;
 
   renderStats(store);
   renderProblems(store);
 
   const treeRoot = document.getElementById("ga-tree");
-  const tree = new GaTree(treeRoot, store);
+  app.tree = new GaTree(treeRoot, store);
 
-  initSearch(store, tree);
-  initHeaderStatus(store);
-  initKeyboard(store);
-  initTabs(store);
-
-  // Load the initial state snapshot (last values + bus status).
-  try {
-    const state = await fetchState();
-    applyState(store, state);
-  } catch {
-    // No live server (standalone dev). Leave defaults in place.
-  }
-
-  // Open the live stream; route telegrams to the store + wave-2 log module.
-  const wave2 = await loadWave2(store, tree);
-  connectTrafficStream(store, tree, wave2);
-
-  window.__debug.tree = tree;
-  window.__debug.wave2 = wave2;
+  // Wave-2 modules render into their own containers (which they clear on init),
+  // so a fresh init replaces their DOM. The log keeps its buffer across reloads.
+  const previousLog = app.wave2 && app.wave2.log;
+  app.wave2 = loadWave2Sync(store, app.tree, previousLog);
 }
 
 /**
@@ -97,7 +131,7 @@ function applyState(store, state) {
 
 // --- search ---------------------------------------------------------------
 
-function initSearch(store, tree) {
+function initSearch() {
   const input = document.getElementById("search-input");
   const dropdown = document.getElementById("search-results");
   if (!input || !dropdown) return;
@@ -105,10 +139,10 @@ function initSearch(store, tree) {
   let timer = null;
   const run = () => {
     const q = input.value;
-    const results = store.search(q, 8);
-    renderSearchResults(dropdown, results, store, tree, input);
+    const results = app.store.search(q, 8);
+    renderSearchResults(dropdown, results, input);
     document.body.classList.toggle("query-active", !!q.trim());
-    store.setFilter(q); // keeps a query-active dim state consistent
+    app.store.setFilter(q); // keeps a query-active dim state consistent
   };
 
   input.addEventListener("input", () => {
@@ -130,7 +164,7 @@ function initSearch(store, tree) {
   });
 }
 
-function renderSearchResults(dropdown, results, store, tree, input) {
+function renderSearchResults(dropdown, results, input) {
   dropdown.textContent = "";
   const total = results.devices.length + results.groups.length;
   if (total === 0) {
@@ -156,8 +190,8 @@ function renderSearchResults(dropdown, results, store, tree, input) {
       sub.textContent = e.sub;
       item.append(label, sub);
       item.addEventListener("click", () => {
-        store.select(e.kind, e.id);
-        if (e.kind === "ga") tree.expandTo(e.id);
+        app.store.select(e.kind, e.id);
+        if (e.kind === "ga") app.tree.expandTo(e.id);
         dropdown.hidden = true;
         input.blur();
       });
@@ -171,7 +205,7 @@ function renderSearchResults(dropdown, results, store, tree, input) {
 
 // --- header status ---------------------------------------------------------
 
-function initHeaderStatus(store) {
+function initHeaderStatus() {
   const dot = document.getElementById("bus-status-dot");
   const label = document.getElementById("bus-status-label");
   const apply = (status) => {
@@ -180,13 +214,54 @@ function initHeaderStatus(store) {
     }
     if (label) label.textContent = status.connected ? "connected" : status.state || "offline";
   };
-  apply(store.busStatus);
-  store.on("bus-status", apply);
+  // The store instance changes on reload, but the bus status is re-applied from
+  // the live stream, so a subscription on the current store is refreshed each
+  // rebuild via the shared apply below.
+  app._applyBusStatus = apply;
+  apply(app.store.busStatus);
+  subscribeBusStatus();
+}
+
+// Re-subscribe the header apply to the current store (called on each rebuild).
+function subscribeBusStatus() {
+  if (app._applyBusStatus) app.store.on("bus-status", app._applyBusStatus);
+}
+
+// --- reload button ---------------------------------------------------------
+
+function initReloadButton() {
+  const btn = document.getElementById("reload-btn");
+  const errEl = document.getElementById("reload-error");
+  if (!btn) return;
+  btn.addEventListener("click", async () => {
+    if (btn.disabled) return;
+    btn.disabled = true;
+    btn.classList.add("reloading");
+    if (errEl) {
+      errEl.hidden = true;
+      errEl.textContent = "";
+    }
+    try {
+      // The server swaps the model and emits a `model` SSE event; the stream
+      // handler rebuilds the views. Trigger a rebuild here too, so a standalone
+      // page (or a missed event) still refreshes.
+      await reloadModel();
+      await rebuildFromServer();
+    } catch (err) {
+      if (errEl) {
+        errEl.textContent = err && err.message ? err.message : "reload failed";
+        errEl.hidden = false;
+      }
+    } finally {
+      btn.disabled = false;
+      btn.classList.remove("reloading");
+    }
+  });
 }
 
 // --- tabs ------------------------------------------------------------------
 
-function initTabs(store) {
+function initTabs() {
   const tabs = document.querySelectorAll(".tab");
   const bodies = {
     groups: document.getElementById("tab-groups"),
@@ -203,15 +278,23 @@ function initTabs(store) {
     }
   };
   tabs.forEach((t) => t.addEventListener("click", () => show(t.dataset.tab)));
-  // Selecting anything jumps to the Inspector tab (wave-2 fills the panel).
-  store.on("selection", (sel) => {
-    if (sel.kind) show("inspector");
-  });
+  // Selecting anything jumps to the Inspector tab (wave-2 fills the panel). The
+  // subscription is refreshed on each rebuild via subscribeTabs().
+  app._showTab = show;
+  subscribeTabs();
+}
+
+function subscribeTabs() {
+  if (app._showTab) {
+    app.store.on("selection", (sel) => {
+      if (sel.kind) app._showTab("inspector");
+    });
+  }
 }
 
 // --- keyboard --------------------------------------------------------------
 
-function initKeyboard(store) {
+function initKeyboard() {
   document.addEventListener("keydown", (ev) => {
     const inField =
       ev.target &&
@@ -221,19 +304,21 @@ function initKeyboard(store) {
       const input = document.getElementById("search-input");
       if (input) input.focus();
     } else if (ev.key === "Escape") {
-      store.deselect();
+      app.store.deselect();
       const input = document.getElementById("search-input");
       if (input && document.activeElement === input) input.blur();
     } else if (ev.key === "p" && !inField) {
-      store.setPaused();
+      app.store.setPaused();
     }
   });
 }
 
 // --- traffic ----------------------------------------------------------------
 
-function connectTrafficStream(store, tree, wave2) {
+function connectTrafficStream() {
   const onTelegram = (t) => {
+    const store = app.store;
+    const wave2 = app.wave2;
     if (t.destination) {
       store.setValue(t.destination, {
         value: t.value,
@@ -252,50 +337,112 @@ function connectTrafficStream(store, tree, wave2) {
     }
   };
   const onStatus = (s) => {
-    store.setBusStatus({ state: s.state, connected: s.connected, transport: s.transport });
+    app.store.setBusStatus({ state: s.state, connected: s.connected, transport: s.transport });
+  };
+  const onModel = () => {
+    // The server swapped the model; refetch and rebuild the views.
+    rebuildFromServer();
   };
   try {
     if (typeof EventSource !== "undefined") {
-      connectTraffic(onTelegram, onStatus, { backlog: 50 });
+      connectTraffic(onTelegram, onStatus, { backlog: 50, onModel });
     }
   } catch {
     // No live stream available (standalone dev); page stays static.
   }
 }
 
+/**
+ * Refetch the model and rebuild the views. Idempotent and safe to call from
+ * both the SSE `model` handler and the reload button. Preserves the bus status
+ * (re-applied from the live stream) and the log scrollback.
+ * @returns {Promise<void>}
+ */
+async function rebuildFromServer() {
+  const model = await loadModel();
+  const previousBus = app.store ? app.store.busStatus : null;
+  buildViews(model);
+  // Re-attach the long-lived subscriptions that live on the store instance.
+  subscribeBusStatus();
+  subscribeTabs();
+  // Carry the last-known bus status onto the fresh store's header.
+  if (previousBus) app.store.setBusStatus(previousBus);
+  window.__debug.wave2 = app.wave2;
+}
+
 // --- defensive wave-2 imports ----------------------------------------------
 
+// Cache the wave-2 module namespaces after the first dynamic import so a rebuild
+// can re-init synchronously without another await.
+const wave2Modules = { topology: null, inspector: null, log: null, loaded: false };
+
 /**
- * Dynamically import the wave-2 modules. Missing modules or missing init
+ * Dynamically import the wave-2 modules once. Missing modules or missing init
  * exports are tolerated so the wave-1 page boots against placeholders.
- * @param {Store} store
- * @param {GaTree} tree
- * @returns {Promise<{topology:?Object, inspector:?Object, log:?Object}>}
+ * @returns {Promise<void>}
  */
-async function loadWave2(store, tree) {
-  const out = { topology: null, inspector: null, log: null };
-  const tryInit = async (name, path, container) => {
+async function preloadWave2() {
+  if (wave2Modules.loaded) return;
+  const tryLoad = async (name, path) => {
     try {
       const mod = await import(path);
-      if (mod && typeof mod.init === "function") {
-        out[name] = mod.init(store, { tree, container });
-      }
+      if (mod && typeof mod.init === "function") wave2Modules[name] = mod;
     } catch {
       // Placeholder or absent module; skip silently.
     }
   };
   await Promise.all([
-    tryInit("topology", "./topology.js", document.getElementById("topology")),
-    tryInit("inspector", "./inspector.js", document.getElementById("inspector-panel")),
-    tryInit("log", "./log.js", document.getElementById("log-body")),
+    tryLoad("topology", "./topology.js"),
+    tryLoad("inspector", "./inspector.js"),
+    tryLoad("log", "./log.js"),
   ]);
+  wave2Modules.loaded = true;
+}
+
+/**
+ * Initialize the wave-2 modules against a store. Topology and inspector are
+ * always re-initialized (they render model-derived DOM into containers they
+ * clear). The log is preserved across reloads: an existing instance is
+ * repointed at the new store rather than rebuilt, so its scrollback survives.
+ * @param {Store} store
+ * @param {GaTree} tree
+ * @param {?Object} previousLog — the log instance from before a reload, if any.
+ * @returns {{topology:?Object, inspector:?Object, log:?Object}}
+ */
+function loadWave2Sync(store, tree, previousLog) {
+  const out = { topology: null, inspector: null, log: null };
+  const init = (name, container) => {
+    const mod = wave2Modules[name];
+    if (mod && typeof mod.init === "function") {
+      try {
+        return mod.init(store, { tree, container });
+      } catch {
+        return null;
+      }
+    }
+    return null;
+  };
+  out.topology = init("topology", document.getElementById("topology"));
+  out.inspector = init("inspector", document.getElementById("inspector-panel"));
+  if (previousLog) {
+    // Preserve the log buffer across a reload; only repoint it at the new store
+    // so new rows resolve suspicious marks and selection against the new model.
+    previousLog.store = store;
+    out.log = previousLog;
+  } else {
+    out.log = init("log", document.getElementById("log-body"));
+  }
   return out;
 }
 
 if (typeof document !== "undefined") {
+  const start = async () => {
+    await preloadWave2();
+    await boot();
+  };
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", boot);
+    document.addEventListener("DOMContentLoaded", start);
   } else {
-    boot();
+    start();
   }
 }
