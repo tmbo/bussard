@@ -19,7 +19,7 @@
 
 use std::sync::Arc;
 
-use knx_sim::bus::event::{Event, RecordingSink};
+use knx_sim::bus::event::{Direction, Event, RecordingSink};
 use knx_sim::bus::{Bus, StimulusJob};
 use knx_sim::device::{Device, LoadState, flag};
 use knx_sim::prod::read_knxprod_bytes;
@@ -328,6 +328,75 @@ fn test_group_write_updates_listener_and_emits_event() -> Result<(), Box<dyn std
         )
     });
     assert!(updated, "a group write should update the listening object");
+    Ok(())
+}
+
+#[test]
+fn test_group_write_from_tool_is_echoed_as_confirmation() -> Result<(), Box<dyn std::error::Error>>
+{
+    let sink = Arc::new(RecordingSink::new());
+    let Some(dev) = da_tp_unloaded(sink.clone()) else {
+        eprintln!("SKIP: DA.tp fixture not present");
+        return Ok(());
+    };
+    let addr = dev.address();
+    let mut bus = Bus::new(sink.clone());
+    bus.add_device(dev);
+    flash_two_object_device(&mut bus, addr)?;
+
+    // A group write to 1/0/1 (a GA no device transmits on) is echoed back to the
+    // tool as an L_Data.con so a monitor/viz sharing the tunnel sees its own
+    // write, even though no device replies (issue #64).
+    let write = group_telegram(Apci::GroupValueWrite, GroupAddress(0x0801), &[0x01]);
+    let out = bus.deliver_from_tool(&write);
+    assert_eq!(out.len(), 1, "the write must be echoed exactly once");
+    let echo = &out[0];
+    assert_eq!(
+        echo.message_code,
+        MessageCode::LDataCon,
+        "the echo is a local confirmation"
+    );
+    assert_eq!(echo.dest_group(), GroupAddress(0x0801));
+    assert_eq!(echo.source, write.source, "the echo preserves the sender");
+    let apci10 = ((echo.tpdu[0] as u16 & 0x03) << 8) | echo.tpdu[1] as u16;
+    assert_eq!(Apci::from_u10(apci10), Apci::GroupValueWrite);
+    assert_eq!((apci10 & 0x3f) as u8, 0x01, "the echo carries the value 1");
+
+    // The echo is also published ToTool on the observable stream (what an HTML
+    // viz renders), tagged as an L_Data.con.
+    let echoed_on_stream = sink.events().into_iter().any(|e| {
+        matches!(
+            e,
+            Event::Telegram { direction: Direction::ToTool, cemi, .. }
+                if CemiLData::decode(&cemi).map(|c| c.message_code) == Ok(MessageCode::LDataCon)
+        )
+    });
+    assert!(
+        echoed_on_stream,
+        "the confirmation is emitted on the stream"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_group_read_from_tool_is_not_echoed() -> Result<(), Box<dyn std::error::Error>> {
+    let sink = Arc::new(RecordingSink::new());
+    let Some(dev) = da_tp_unloaded(sink.clone()) else {
+        eprintln!("SKIP: DA.tp fixture not present");
+        return Ok(());
+    };
+    let addr = dev.address();
+    let mut bus = Bus::new(sink);
+    bus.add_device(dev);
+    flash_two_object_device(&mut bus, addr)?;
+
+    // A read carries no value to log and is answered by a device Response, so it
+    // is not echoed as a confirmation. A read of an unlistened GA is fully silent.
+    let read = group_telegram(Apci::GroupValueRead, GroupAddress(0x0999), &[]);
+    assert!(
+        bus.deliver_from_tool(&read).is_empty(),
+        "an unanswered read draws nothing, not even an echo"
+    );
     Ok(())
 }
 

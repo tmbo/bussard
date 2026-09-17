@@ -107,7 +107,11 @@ impl KnxnetIpServer {
     /// connected tunnel client. A send failure (the client went away) is
     /// non-fatal: a real gateway does not crash because a datagram could not be
     /// delivered — it forgets the peer and keeps serving.
-    fn pump_stimulus(&mut self) {
+    ///
+    /// [`serve`](Self::serve) calls this on every loop iteration; it is also
+    /// public so a test harness driving the server via [`serve_n`](Self::serve_n)
+    /// can advance the stimulus deterministically.
+    pub fn pump_stimulus(&mut self) {
         let Some(peer) = self.peer else {
             return;
         };
