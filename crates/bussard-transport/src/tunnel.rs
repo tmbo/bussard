@@ -32,6 +32,15 @@ use crate::conn::{BusConnection, TimestampedFrame};
 use crate::error::{Result, TransportError};
 use crate::knxnet::{self, ConnectionHeader, Hpai, ServiceType};
 
+/// How many sequence numbers *behind* the expected inbound sequence are still
+/// treated as a retransmitted duplicate (ACK-and-drop) rather than silently
+/// discarded. One frame is not enough: a gateway can retransmit a frame two or a
+/// few behind after several of our ACKs were lost, and silently dropping those
+/// leaves the gateway retransmitting forever with no chance to resync (issue
+/// #58). The window is kept small so a genuinely fresh (ahead) sequence is never
+/// mistaken for a duplicate.
+const DUP_ACK_WINDOW: u8 = 8;
+
 /// Command sent from a [`Tunnel`] handle to its background task.
 enum Command {
     /// Send a cEMI frame; reply once ACKed (or on error).
@@ -397,6 +406,11 @@ impl TaskState {
             self.first_incoming = false;
         }
 
+        // How far `seq` is *behind* the expected sequence, modulo the 8-bit space
+        // (0 means it is the expected frame). A small window of behind values are
+        // treated as retransmitted duplicates.
+        let behind = self.incoming_seq.wrapping_sub(seq);
+
         if seq == self.incoming_seq {
             // Expected frame: ACK and advance the window regardless of whether the
             // cEMI decodes (C3 — an unknown message code must not stall the tunnel).
@@ -422,14 +436,27 @@ impl TaskState {
                     );
                 }
             }
-        } else if seq == self.incoming_seq.wrapping_sub(1) {
-            // Exact duplicate of the last frame: ACK it (stop the retransmit) but
-            // drop without advancing.
+        } else if (1..=DUP_ACK_WINDOW).contains(&behind) {
+            // A recently-seen sequence, up to `DUP_ACK_WINDOW` frames behind the
+            // one we expect next: a retransmitted duplicate we already accepted.
+            // ACK it with its OWN sequence (so the gateway stops resending) but do
+            // NOT advance and do NOT re-deliver. The window is wider than one frame
+            // because a gateway can retransmit a frame two (or a few) behind after
+            // several of our ACKs were lost; the old one-frame window silently
+            // discarded those, so the gateway retransmitted forever and its next
+            // in-order frame — which we would have accepted — never got a chance to
+            // resync `incoming_seq` (issue #58).
             let ack = knxnet::tunneling_ack(self.channel_id, seq, 0);
             let _ = self.socket.send(&ack).await;
-            tracing::debug!(seq, "ACK-and-drop duplicate tunneling request");
+            tracing::debug!(
+                seq,
+                behind,
+                "ACK-and-drop duplicate (behind) tunneling request"
+            );
         } else {
-            // Any other out-of-window sequence: silently discard, NO ACK (C2).
+            // Ahead of the window, or too far behind to be a plausible retransmit:
+            // silently discard, NO ACK (C2). ACKing a frame we then drop would
+            // wrongly tell the gateway we accepted it.
             tracing::warn!(
                 seq,
                 expected = self.incoming_seq,

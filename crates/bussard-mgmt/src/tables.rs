@@ -88,7 +88,7 @@
 //! [`MgmtError`]; a device that answers but does not expose a readable table
 //! surfaces as [`TablesError::TableUnreadable`].
 
-use crate::apci::{self, MAX_MEMORY_READ_LEN};
+use crate::apci;
 use crate::connection::{L4Channel, Layer4Connection, property_request};
 use crate::error::{MgmtError, descriptor_response_reason, raw_response_detail};
 use bussard_model::{GroupAddress, IndividualAddress};
@@ -132,11 +132,6 @@ pub const OT_GROUP_OBJECT_TABLE: u16 = 9;
 /// / association / group-object tables), so a budget of 16 is required — a
 /// tighter 0..12 budget silently misses those devices' app object.
 const MAX_OBJECT_INDEX: u8 = 16;
-
-/// How many value octets we ask for per `A_PropertyValue_Read`, sized so the
-/// response (4-octet header + data) fits the conservative 15-octet APDU every
-/// System B device supports.
-const MAX_PROPERTY_READ_OCTETS: usize = 8;
 
 /// Which read path produced a table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -534,7 +529,12 @@ async fn read_table_via_property<Ch: L4Channel>(
         return Ok(None);
     };
     let count = usize::from(count);
-    let chunk_elems = (MAX_PROPERTY_READ_OCTETS / elem_size).max(1);
+    // Scale the per-read element count to the device's negotiated max APDU (issue
+    // #58): a capable device reads more elements per round-trip, fewer round-trips
+    // for a large table. Falls back to the conservative octet budget when
+    // `PID_MAX_APDU_LENGTH` was never negotiated or was unreadable.
+    let read_octets = usize::from(l4.max_property_read_octets());
+    let chunk_elems = (read_octets / elem_size).max(1);
 
     let mut bytes = Vec::with_capacity(count * elem_size);
     let mut next: usize = 1; // property array elements are 1-based
@@ -600,8 +600,11 @@ async fn read_table_via_memory<Ch: L4Channel>(
     let total = count * elem_size;
     let mut bytes = Vec::with_capacity(total);
     let mut offset: usize = 0;
+    // Scale the read to the device's negotiated max APDU (issue #58); falls back
+    // to the conservative standard-frame cap when it was never negotiated.
+    let read_chunk = usize::from(l4.max_memory_chunk());
     while offset < total {
-        let want = (total - offset).min(usize::from(MAX_MEMORY_READ_LEN));
+        let want = (total - offset).min(read_chunk);
         // Compute the full read address in usize FIRST, then bound it to the
         // 16-bit A_Memory_Read space — `offset` can reach hundreds of KiB, so
         // truncating it to u16 before the checked_add would wrap past the guard.

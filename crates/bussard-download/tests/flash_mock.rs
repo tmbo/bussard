@@ -2699,6 +2699,87 @@ async fn flash_cycles_l4_connection_before_the_exchange_budget_and_reaches_loade
     }
 }
 
+#[tokio::test]
+async fn authorize_is_cached_and_not_repeated_on_a_device_without_authorize() {
+    // A device that does not implement authorize answers the request with silence,
+    // so each reconnect/cycle window burns a full RESPONSE_TIMEOUT re-presenting a
+    // key it will never answer. The session caches the first Unsupported outcome
+    // and skips the re-authorize on later windows (issue #58): with proactive
+    // cycling forcing several fresh connections, the device must see exactly ONE
+    // A_Authorize_Request even though it connected multiple times.
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
+    }
+    const BUDGET: u32 = 12;
+    const THRESHOLD: u32 = 5;
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_RECONNECT_EXCHANGES", THRESHOLD.to_string());
+    }
+
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+
+    let (handle, state, gw) = setup_bus(Fault::None).await;
+    {
+        let mut s = state.lock().unwrap();
+        s.authorize_unsupported = true;
+        s.die_after_exchanges = Some(BUDGET);
+    }
+    let source = bussard_bus::ops::group_source(&handle);
+    let app = fabricated_app();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let connector = LeaseConnector {
+        handle: handle.clone(),
+        target,
+        source,
+        timeouts: None,
+    };
+    let mut session = Session::open_with_key(connector, None).await.unwrap();
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .expect("a device without authorize must still flash while cycling connections");
+    let _ = session.into_disconnect().await;
+    assert!(outcome.ok(), "the cycled flash must verify: {outcome:?}");
+
+    {
+        let s = state.lock().unwrap();
+        // Several fresh connections were opened (initial + proactive cycles).
+        assert!(
+            s.connects >= 2,
+            "the flash must have cycled the connection (connects = {})",
+            s.connects
+        );
+        // ...yet the device was asked to authorize exactly ONCE: the cached
+        // Unsupported outcome suppressed the wasted re-authorize on every later
+        // window. This is the whole point of the cache.
+        assert_eq!(
+            s.authorizes_seen, 1,
+            "a device without authorize must be asked exactly once ({} connects, {} authorizes)",
+            s.connects, s.authorizes_seen
+        );
+    }
+    let _ = handle.close().await;
+    gw.abort();
+
+    unsafe {
+        std::env::remove_var("BUSSARD_FLASH_RECONNECT_EXCHANGES");
+        std::env::remove_var("BUSSARD_FLASH_REBOOT_WAIT_MS");
+    }
+}
+
 /// A single-application System B app whose code segment is 256 bytes of 0xFF, so
 /// its `WriteRelMem` spans several `A_Memory_Write` chunks (63 octets each) — big
 /// enough that a low per-connection exchange budget drops the connection *strictly

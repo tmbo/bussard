@@ -779,6 +779,8 @@ impl<Ch: L4Channel> Session<SingleConnector<Ch>> {
             l4: Some(l4),
             connector: None,
             bcu_key: None,
+            authorize_outcomes: BTreeMap::new(),
+            max_apdu: None,
         }
     }
 }
@@ -811,6 +813,30 @@ pub struct Session<C: Connector> {
     /// when `None`), so the resumed connection is authorized exactly as the
     /// original was.
     bcu_key: Option<u32>,
+    /// The first successful [`AuthorizeOutcome`] observed per target device
+    /// (keyed by its raw individual address), cached for the life of the session.
+    ///
+    /// Only an [`Unsupported`](bussard_mgmt::AuthorizeOutcome::Unsupported)
+    /// outcome causes a later re-authorize to be *skipped*: such a device does
+    /// not implement authorize and answers the request with silence — a full
+    /// `RESPONSE_TIMEOUT` burned on every reconnect/cycle window (issue #58).
+    /// Once we know a target is unsupported we stop paying that wait.
+    ///
+    /// A [`Granted`](bussard_mgmt::AuthorizeOutcome::Granted) outcome is cached
+    /// for observability but does NOT skip re-authorize: authorization is
+    /// per-connection state that a `T_Disconnect`/reboot clears, so a device with
+    /// a real write gate must re-present the key on every fresh connection. A
+    /// `Denied` never reaches the cache — it fails the open before insertion.
+    authorize_outcomes: BTreeMap<u16, bussard_mgmt::AuthorizeOutcome>,
+    /// The device's `PID_MAX_APDU_LENGTH`, negotiated once on the first connection
+    /// and re-seeded (not re-read) onto every later window's connection.
+    ///
+    /// The value is device-stable, so re-reading it each window would only burn a
+    /// numbered exchange against the tight per-connection budget and shift where a
+    /// mid-step drop lands (issue #58). Caching it at the session level keeps every
+    /// window's exchange sequence identical to an un-negotiated flash after the
+    /// first, while still scaling chunks to the device.
+    max_apdu: Option<u16>,
 }
 
 impl<C: Connector> Session<C> {
@@ -833,22 +859,54 @@ impl<C: Connector> Session<C> {
         bcu_key: Option<u32>,
     ) -> Result<Session<C>, WriteError> {
         let mut l4 = connector.connect().await?;
-        Self::authorize(&mut l4, bcu_key).await?;
+        let mut authorize_outcomes = BTreeMap::new();
+        Self::authorize(&mut l4, bcu_key, &mut authorize_outcomes).await?;
+        // Read PID_MAX_APDU_LENGTH once so memory/property chunks scale to the
+        // device (issue #58). Best-effort: a failure leaves the conservative
+        // standard-frame caps and never aborts the open. Cached at the session
+        // level and re-seeded (not re-read) on later windows so it costs exactly
+        // one exchange for the whole flash.
+        let max_apdu = l4.negotiate_max_apdu().await.ok().flatten();
         Ok(Session {
             l4: Some(l4),
             connector: Some(connector),
             bcu_key,
+            authorize_outcomes,
+            max_apdu,
         })
     }
 
     /// Presents the free-access-or-`bcu_key` authorization on the connection,
-    /// applying the tolerate-absence / fail-on-denied policy.
+    /// applying the tolerate-absence / fail-on-denied policy, consulting and
+    /// populating the per-target [`authorize_outcomes`](Session::authorize_outcomes)
+    /// cache.
+    ///
+    /// If a previous window on this target already found the device does not
+    /// implement authorize ([`Unsupported`](bussard_mgmt::AuthorizeOutcome::Unsupported)),
+    /// the request is skipped entirely — it would only burn another
+    /// `RESPONSE_TIMEOUT` waiting for an answer the device never sends (issue
+    /// #58). Otherwise the real authorize is presented (a `Granted` gate is
+    /// per-connection and must be re-opened on every fresh connection), and the
+    /// outcome recorded for the next window's decision.
     async fn authorize(
         l4: &mut Layer4Connection<C::Channel>,
         bcu_key: Option<u32>,
+        cache: &mut BTreeMap<u16, bussard_mgmt::AuthorizeOutcome>,
     ) -> Result<(), WriteError> {
+        let target = l4.target().raw();
+        if let Some(bussard_mgmt::AuthorizeOutcome::Unsupported { .. }) = cache.get(&target) {
+            // This device does not implement authorize (seen in an earlier
+            // window): re-presenting the key only stalls a full RESPONSE_TIMEOUT
+            // on a device that will not answer. Skip it (issue #58).
+            tracing::debug!(
+                target = %l4.target(),
+                "device previously found not to implement authorize; skipping re-authorize"
+            );
+            return Ok(());
+        }
         let key = bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY);
-        l4.authorize_or_fail(key).await.map_err(WriteError::Mgmt)?;
+        let outcome = l4.authorize_or_fail(key).await.map_err(WriteError::Mgmt)?;
+        cache.insert(target, outcome);
         Ok(())
     }
 
@@ -892,7 +950,11 @@ impl<C: Connector> Session<C> {
                     bussard_transport::TransportError::Closed,
                 )))?;
         let mut l4 = connector.connect().await?;
-        Self::authorize(&mut l4, self.bcu_key).await?;
+        Self::authorize(&mut l4, self.bcu_key, &mut self.authorize_outcomes).await?;
+        // Re-seed the device-stable max APDU onto the fresh connection without a
+        // round-trip, so scaling persists across the cycle without spending an
+        // exchange against the tight per-connection budget (issue #58).
+        l4.set_max_apdu(self.max_apdu);
         self.l4 = Some(l4);
         Ok(())
     }
@@ -932,7 +994,11 @@ impl<C: Connector> Session<C> {
                     bussard_transport::TransportError::Closed,
                 )))?;
         let mut l4 = connector.connect().await?;
-        Self::authorize(&mut l4, self.bcu_key).await?;
+        Self::authorize(&mut l4, self.bcu_key, &mut self.authorize_outcomes).await?;
+        // Re-seed the device-stable max APDU onto the fresh connection without a
+        // round-trip, so scaling persists across the cycle without spending an
+        // exchange against the tight per-connection budget (issue #58).
+        l4.set_max_apdu(self.max_apdu);
         self.l4 = Some(l4);
         Ok(())
     }
