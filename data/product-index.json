@@ -3715,6 +3715,276 @@
       "redistributable": false,
       "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-6024-21-0C89 (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
       "application_ref": "M-00E1_A-6024-21-0C89"
+    },
+    {
+      "manufacturer": "B.E.G. Brück Electronic",
+      "manufacturer_id": "M-00C8",
+      "order_numbers": [
+        "92430AT"
+      ],
+      "name": "BEG_DIM_HKL_AT_V4.0",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/BEG/BEG92430_KNX_PD2_Dim_AP_V4.0_ETS4.knxprod",
+      "sha256": "7e0f56cbcb59c2917728c3be68646c3ee018693959a4977a30f015ac8fa66a69",
+      "size": 62220,
+      "filename": "BEG92430_KNX_PD2_Dim_AP_V4.0_ETS4.knxprod",
+      "redistributable": false,
+      "notes": "B.E.G. Brück Electronic product database. Masks: 0705. 1 application program(s). App refs: M-00C8_A-2720-40-090B-O00C5 (0705). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-00C8_A-2720-40-090B-O00C5"
+    },
+    {
+      "manufacturer": "B.E.G. Brück Electronic",
+      "manufacturer_id": "M-00C8",
+      "order_numbers": [
+        "92430"
+      ],
+      "name": "BEG_DIM_HKL_V3.0",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/BEG/BEG92430_KNX_PD_Dim_AP_V3.0_ETS4.knxprod",
+      "sha256": "bb274b9246c848ab6ada0138c91beaecf109534744d5ef1b7527a4f2ff5a8803",
+      "size": 65768,
+      "filename": "BEG92430_KNX_PD_Dim_AP_V3.0_ETS4.knxprod",
+      "redistributable": false,
+      "notes": "B.E.G. Brück Electronic product database. Masks: 0025. 1 application program(s). App refs: M-00C8_A-2628-30-1583-O00C5 (0025). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-00C8_A-2628-30-1583-O00C5"
+    },
+    {
+      "manufacturer": "B.E.G. Brück Electronic",
+      "manufacturer_id": "M-00C8",
+      "order_numbers": [
+        "92431AT"
+      ],
+      "name": "BEG_DIM_HKL_AT_V4.0",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/BEG/BEG92431_KNX_PD2_Dim_De_V4.0_ETS4.knxprod",
+      "sha256": "d679b3384096a4ebfe3d5bb1f30a2cdf1eca3e5bb714aa57f421c43a6d29c45d",
+      "size": 62217,
+      "filename": "BEG92431_KNX_PD2_Dim_De_V4.0_ETS4.knxprod",
+      "redistributable": false,
+      "notes": "B.E.G. Brück Electronic product database. Masks: 0705. 1 application program(s). App refs: M-00C8_A-2720-40-090B-O00C5 (0705). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-00C8_A-2720-40-090B-O00C5"
+    },
+    {
+      "manufacturer": "B.E.G. Brück Electronic",
+      "manufacturer_id": "M-00C8",
+      "order_numbers": [
+        "92433AT"
+      ],
+      "name": "BEG_DIM_HKL_AT_V4.0",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/BEG/BEG92433_KNX_PD4_Dim_AP_V4.0_ETS4.knxprod",
+      "sha256": "0501d3a57646f781137bfbe18290f329b7bdfff876d51b90ba7b88d22175d8d6",
+      "size": 62189,
+      "filename": "BEG92433_KNX_PD4_Dim_AP_V4.0_ETS4.knxprod",
+      "redistributable": false,
+      "notes": "B.E.G. Brück Electronic product database. Masks: 0705. 1 application program(s). App refs: M-00C8_A-2720-40-090B-O00C5 (0705). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-00C8_A-2720-40-090B-O00C5"
+    },
+    {
+      "manufacturer": "B.E.G. Brück Electronic",
+      "manufacturer_id": "M-00C8",
+      "order_numbers": [
+        "92434AT"
+      ],
+      "name": "BEG_DIM_HKL_AT_V4.0",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/BEG/BEG92434_KNX_PD4_Dim_UP_V4.0_ETS4.knxprod",
+      "sha256": "7cf4ad84cbad42a359ace24423aec80aa326d66bad8ee614ba999e59fb0adab1",
+      "size": 62192,
+      "filename": "BEG92434_KNX_PD4_Dim_UP_V4.0_ETS4.knxprod",
+      "redistributable": false,
+      "notes": "B.E.G. Brück Electronic product database. Masks: 0705. 1 application program(s). App refs: M-00C8_A-2720-40-090B-O00C5 (0705). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-00C8_A-2720-40-090B-O00C5"
+    },
+    {
+      "manufacturer": "B.E.G. Brück Electronic",
+      "manufacturer_id": "M-00C8",
+      "order_numbers": [
+        "92436AT"
+      ],
+      "name": "BEG_DIM_HKL_AT_V4.0",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/BEG/BEG92436_KNX_Dim_Indor_V4.0_ETS4.knxprod",
+      "sha256": "5ea069f18f576ff743eac726369fbb2dbc7c0c2098d7f5f9785a516e52e043c9",
+      "size": 62196,
+      "filename": "BEG92436_KNX_Dim_Indor_V4.0_ETS4.knxprod",
+      "redistributable": false,
+      "notes": "B.E.G. Brück Electronic product database. Masks: 0705. 1 application program(s). App refs: M-00C8_A-2720-40-090B-O00C5 (0705). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-00C8_A-2720-40-090B-O00C5"
+    },
+    {
+      "manufacturer": "B.E.G. Brück Electronic",
+      "manufacturer_id": "M-00C8",
+      "order_numbers": [
+        "92437AT"
+      ],
+      "name": "BEG_DIM_HKL_AT_V4.0",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/BEG/BEG92437_KNX_PD9_Dim_V4.0_ETS4.knxprod",
+      "sha256": "1b3572086c04ad1b29deac0dc7b6f0893c09718d243b8c5ba2c3f9c41a793115",
+      "size": 62173,
+      "filename": "BEG92437_KNX_PD9_Dim_V4.0_ETS4.knxprod",
+      "redistributable": false,
+      "notes": "B.E.G. Brück Electronic product database. Masks: 0705. 1 application program(s). App refs: M-00C8_A-2720-40-090B-O00C5 (0705). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-00C8_A-2720-40-090B-O00C5"
+    },
+    {
+      "manufacturer": "B.E.G. Brück Electronic",
+      "manufacturer_id": "M-00C8",
+      "order_numbers": [
+        "92446"
+      ],
+      "name": "BEG_SWI_HKL_V3.1",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/BEG/BEG92446_KNX_PD2_SWI_AP_V3.1_ETS4.knxprod",
+      "sha256": "7e53e9b4df082182656a768fe8e821de5c52335dbb1d3f4d6830a1c1005eec51",
+      "size": 55288,
+      "filename": "BEG92446_KNX_PD2_SWI_AP_V3.1_ETS4.knxprod",
+      "redistributable": false,
+      "notes": "B.E.G. Brück Electronic product database. Masks: 0025. 1 application program(s). App refs: M-00C8_A-2638-31-23E4-O00C5 (0025). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-00C8_A-2638-31-23E4-O00C5"
+    },
+    {
+      "manufacturer": "B.E.G. Brück Electronic",
+      "manufacturer_id": "M-00C8",
+      "order_numbers": [
+        "92447"
+      ],
+      "name": "BEG_SWI_HKL_V3.1",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/BEG/BEG92447_KNX_PD2_SWI_DE_V3.1_ETS4.knxprod",
+      "sha256": "3f2df2f74b6d7318aa88ce4e0cbc1031f7bf32388441aea6e99ecb7860c1fee2",
+      "size": 55433,
+      "filename": "BEG92447_KNX_PD2_SWI_DE_V3.1_ETS4.knxprod",
+      "redistributable": false,
+      "notes": "B.E.G. Brück Electronic product database. Masks: 0025. 1 application program(s). App refs: M-00C8_A-2638-31-23E4-O00C5 (0025). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-00C8_A-2638-31-23E4-O00C5"
+    },
+    {
+      "manufacturer": "B.E.G. Brück Electronic",
+      "manufacturer_id": "M-00C8",
+      "order_numbers": [
+        "92449"
+      ],
+      "name": "BEG_SWI_HKL_V3.1",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/BEG/BEG92449_KNX_PD4_SWI_AP_V3.1_ETS4.knxprod",
+      "sha256": "6a96c96008d678f2cf7ca56f67011f257f59c7fafee90b0ac37c1a51d671d035",
+      "size": 55430,
+      "filename": "BEG92449_KNX_PD4_SWI_AP_V3.1_ETS4.knxprod",
+      "redistributable": false,
+      "notes": "B.E.G. Brück Electronic product database. Masks: 0025. 1 application program(s). App refs: M-00C8_A-2638-31-23E4-O00C5 (0025). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-00C8_A-2638-31-23E4-O00C5"
+    },
+    {
+      "manufacturer": "B.E.G. Brück Electronic",
+      "manufacturer_id": "M-00C8",
+      "order_numbers": [
+        "92450"
+      ],
+      "name": "BEG_SWI_HKL_V3.1",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/BEG/BEG92450_KNX_PD4_SWI_DE_V3.1_ETS4.knxprod",
+      "sha256": "deb12d36c03d25215f50be707b075982c07e4e1a99a280c07407d9ed6a395d7c",
+      "size": 55431,
+      "filename": "BEG92450_KNX_PD4_SWI_DE_V3.1_ETS4.knxprod",
+      "redistributable": false,
+      "notes": "B.E.G. Brück Electronic product database. Masks: 0025. 1 application program(s). App refs: M-00C8_A-2638-31-23E4-O00C5 (0025). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-00C8_A-2638-31-23E4-O00C5"
+    },
+    {
+      "manufacturer": "B.E.G. Brück Electronic",
+      "manufacturer_id": "M-00C8",
+      "order_numbers": [
+        "92451"
+      ],
+      "name": "BEG_SWI_HKL_V3.1",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/BEG/BEG92451_KNX_PD4_SWI_UP_V3.1_ETS4.knxprod",
+      "sha256": "14fadbd4b9ab3353d9c4aa7ee4fbf6eb07d7adc267c11f0098a2835a0e44c1ae",
+      "size": 55441,
+      "filename": "BEG92451_KNX_PD4_SWI_UP_V3.1_ETS4.knxprod",
+      "redistributable": false,
+      "notes": "B.E.G. Brück Electronic product database. Masks: 0025. 1 application program(s). App refs: M-00C8_A-2638-31-23E4-O00C5 (0025). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-00C8_A-2638-31-23E4-O00C5"
+    },
+    {
+      "manufacturer": "B.E.G. Brück Electronic",
+      "manufacturer_id": "M-00C8",
+      "order_numbers": [
+        "92452"
+      ],
+      "name": "BEG_SWI_HKL_V3.1",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/BEG/BEG92452_KNX_PD9_SWI_V3.1_ETS4.knxprod",
+      "sha256": "6a8f51647f4d22954414b52383dda44eabe712acfe8deca78e08531600b009c0",
+      "size": 55428,
+      "filename": "BEG92452_KNX_PD9_SWI_V3.1_ETS4.knxprod",
+      "redistributable": false,
+      "notes": "B.E.G. Brück Electronic product database. Masks: 0025. 1 application program(s). App refs: M-00C8_A-2638-31-23E4-O00C5 (0025). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-00C8_A-2638-31-23E4-O00C5"
+    },
+    {
+      "manufacturer": "B.E.G. Brück Electronic",
+      "manufacturer_id": "M-00C8",
+      "order_numbers": [
+        "92453"
+      ],
+      "name": "BEG_SWI_HKL_V3.1",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/BEG/BEG92453_KNX_Indor_SWI_V3.1_ETS4.knxprod",
+      "sha256": "5c835186b41739638c2cc8ff6459bf715bbbd22e2633c6552088dd97e7ce2fe8",
+      "size": 55429,
+      "filename": "BEG92453_KNX_Indor_SWI_V3.1_ETS4.knxprod",
+      "redistributable": false,
+      "notes": "B.E.G. Brück Electronic product database. Masks: 0025. 1 application program(s). App refs: M-00C8_A-2638-31-23E4-O00C5 (0025). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-00C8_A-2638-31-23E4-O00C5"
+    },
+    {
+      "manufacturer": "B.E.G. Brück Electronic",
+      "manufacturer_id": "M-00C8",
+      "order_numbers": [
+        "92454AT"
+      ],
+      "name": "BEG_DIM_HKL_AT_V4.0",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/BEG/BEG92454_KNX_PD4_DIM_GH_AP_V4.0_ETS4.knxprod",
+      "sha256": "9c467473064dd01e098a1151913965c2f5887577eb30b91aefa04184f4933f9a",
+      "size": 62194,
+      "filename": "BEG92454_KNX_PD4_DIM_GH_AP_V4.0_ETS4.knxprod",
+      "redistributable": false,
+      "notes": "B.E.G. Brück Electronic product database. Masks: 0705. 1 application program(s). App refs: M-00C8_A-2720-40-090B-O00C5 (0705). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-00C8_A-2720-40-090B-O00C5"
+    },
+    {
+      "manufacturer": "B.E.G. Brück Electronic",
+      "manufacturer_id": "M-00C8",
+      "order_numbers": [
+        "92456AT"
+      ],
+      "name": "BEG_DIM_HKL_AT_V4.0",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/BEG/BEG92456_KNX_PD4_DIM_AP_K_UP_V4.0_ETS4.knxprod",
+      "sha256": "7dfa875d38cc70dffda70ec32465adf5c92c51e201ec97d6a0c30476161ef011",
+      "size": 62200,
+      "filename": "BEG92456_KNX_PD4_DIM_AP_K_UP_V4.0_ETS4.knxprod",
+      "redistributable": false,
+      "notes": "B.E.G. Brück Electronic product database. Masks: 0705. 1 application program(s). App refs: M-00C8_A-2720-40-090B-O00C5 (0705). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-00C8_A-2720-40-090B-O00C5"
+    },
+    {
+      "manufacturer": "B.E.G. Brück Electronic",
+      "manufacturer_id": "M-00C8",
+      "order_numbers": [
+        "92461AT"
+      ],
+      "name": "BEG_DIM_HKL_AT_V4.0",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/BEG/BEG92461_KNX_PD4_DIM_K_DE_V4.0_ETS4.knxprod",
+      "sha256": "23a6a588afd844af25b002fa216f9ce289aa551fdf1ecdc375e3195838232d3f",
+      "size": 62198,
+      "filename": "BEG92461_KNX_PD4_DIM_K_DE_V4.0_ETS4.knxprod",
+      "redistributable": false,
+      "notes": "B.E.G. Brück Electronic product database. Masks: 0705. 1 application program(s). App refs: M-00C8_A-2720-40-090B-O00C5 (0705). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-00C8_A-2720-40-090B-O00C5"
+    },
+    {
+      "manufacturer": "B.E.G. Brück Electronic",
+      "manufacturer_id": "M-00C8",
+      "order_numbers": [
+        "97052/3AT"
+      ],
+      "name": "BEG_DIM_HKL_AT_V4.0",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/BEG/BEG97052_BEG97053_KNX_RC_Plus_Next_V4.0_ETS4.knxprod",
+      "sha256": "3ed849fb7d31c56f3f4675ad3b75f173f95d6e5d8b335fe93f2ed95078fe134c",
+      "size": 62192,
+      "filename": "BEG97052_BEG97053_KNX_RC_Plus_Next_V4.0_ETS4.knxprod",
+      "redistributable": false,
+      "notes": "B.E.G. Brück Electronic product database. Masks: 0705. 1 application program(s). App refs: M-00C8_A-2720-40-090B-O00C5 (0705). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-00C8_A-2720-40-090B-O00C5"
     }
   ]
 }
