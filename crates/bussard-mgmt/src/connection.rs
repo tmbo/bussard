@@ -334,6 +334,19 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
         }
     }
 
+    /// Discards any stashed folded response.
+    ///
+    /// A memory write has no real application response — only the `T_ACK`, and, on
+    /// a **verify-mode** device (KNX Virtual and some System B stacks), an
+    /// unsolicited `A_Memory_Response` echoing the stored octets. [`await_ack`]
+    /// folds that echo in as a pending response; left there, it would satisfy the
+    /// NEXT request's [`recv_response`](Self::recv_response) (e.g. a following
+    /// `A_PropertyValue_Read`) with the wrong APDU. A write-only caller calls this
+    /// right after the write so the echo is dropped rather than mis-correlated.
+    pub fn discard_pending_response(&mut self) {
+        self.pending_response = None;
+    }
+
     /// Sends a management request as a numbered data telegram **without** waiting
     /// for the device's `T_ACK`.
     ///
