@@ -20,6 +20,7 @@ use quick_xml::events::{BytesStart, Event};
 use crate::dpt_map::parse_ets_dpt;
 use crate::error::{ImportError, Result};
 use crate::flag_map::{FlagSet, parse_flag_value};
+use crate::version::SchemaVersion;
 use bussard_model::{Dpt, GroupAddress, IndividualAddress};
 
 /// A group address as read from the project file.
@@ -263,10 +264,21 @@ fn ga_suffix(id: &str) -> String {
 }
 
 /// Parses the project `0.xml`.
-pub fn parse_project(xml: &str) -> Result<RawProject> {
+///
+/// `schema` selects the com-object link encoding: ETS 5.7 and ETS 6 (schema
+/// ≥ 20) carry the linked group addresses in a space-separated `Links`
+/// attribute on `ComObjectInstanceRef`; ETS 4 and ETS 5≤5.6 (schema < 20) carry
+/// them instead in `Connectors/Send` and `Connectors/Receive` child elements,
+/// each with a `GroupAddressRefId` of the `<projectId>_<gaId>` form.
+pub fn parse_project(xml: &str, schema: SchemaVersion) -> Result<RawProject> {
     let context = "project 0.xml";
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(false);
+
+    let uses_links_attr = schema.uses_links_attribute();
+    // The com-object instance currently being assembled from `Connectors`
+    // children (ETS 4/5 form only); its `Send` GA leads its `Receive` GAs.
+    let mut current_com_object: Option<RawComObjectInstance> = None;
 
     let mut project = RawProject::default();
 
@@ -334,6 +346,13 @@ pub fn parse_project(xml: &str) -> Result<RawProject> {
                     b"ComObjectInstanceRefs" => {
                         in_com_object_refs = true;
                     }
+                    // ETS 4/5 form: `ComObjectInstanceRef` is a *start* tag whose
+                    // `Connectors/Send`+`Receive` children hold the links. Begin
+                    // assembling it; links accrue from the child elements below,
+                    // and the End handler pushes it onto the device.
+                    b"ComObjectInstanceRef" if in_com_object_refs && !uses_links_attr => {
+                        current_com_object = parse_com_object_instance(&e, context)?;
+                    }
                     b"ParameterInstanceRefs" => {
                         in_parameter_refs = true;
                     }
@@ -362,9 +381,24 @@ pub fn parse_project(xml: &str) -> Result<RawProject> {
                     }
                     b"ComObjectInstanceRef" => {
                         if in_com_object_refs {
+                            // ETS 5.7/6 form: a self-closing element carrying the
+                            // space-separated `Links` attribute directly.
                             if let Some(dev) = current_device.as_mut() {
                                 if let Some(ci) = parse_com_object_instance(&e, context)? {
                                     dev.com_objects.push(ci);
+                                }
+                            }
+                        }
+                    }
+                    // ETS 4/5 link children: `Send` leads, `Receive` follows.
+                    b"Send" | b"Receive" if current_com_object.is_some() => {
+                        if let Some(suffix) = connector_ga_suffix(&e, context)? {
+                            if let Some(ci) = current_com_object.as_mut() {
+                                // `Send` is the primary/sending GA: keep it first.
+                                if e.local_name().as_ref() == b"Send" {
+                                    ci.links.insert(0, suffix);
+                                } else {
+                                    ci.links.push(suffix);
                                 }
                             }
                         }
@@ -418,6 +452,15 @@ pub fn parse_project(xml: &str) -> Result<RawProject> {
                 b"DeviceInstance" => {
                     if let Some(dev) = current_device.take() {
                         project.devices.push(dev);
+                    }
+                }
+                // ETS 4/5 form: close the instance assembled from `Connectors`
+                // children and attach it to the current device.
+                b"ComObjectInstanceRef" => {
+                    if let (Some(dev), Some(ci)) =
+                        (current_device.as_mut(), current_com_object.take())
+                    {
+                        dev.com_objects.push(ci);
                     }
                 }
                 b"ComObjectInstanceRefs" => {
@@ -539,6 +582,15 @@ fn parse_com_object_instance(
     }))
 }
 
+/// Extracts the `GA-N` suffix from a `Send`/`Receive` connector element's
+/// `GroupAddressRefId` (ETS 4/5 form), whose value is `<projectId>_<gaId>`.
+///
+/// Returns `None` if the attribute is absent (a connector with no linked GA).
+fn connector_ga_suffix(e: &BytesStart, context: &str) -> Result<Option<String>> {
+    Ok(attr(e, b"GroupAddressRefId", context)?
+        .map(|id| id.rsplit('_').next().unwrap_or(&id).to_string()))
+}
+
 /// Computes the nearest floor/room from the current space stack.
 fn current_location(stack: &[(String, Option<String>)]) -> RawLocation {
     let mut loc = RawLocation::default();
@@ -611,6 +663,91 @@ mod tests {
             info.group_address_style,
             Some(GroupAddressStyle::ThreeLevel)
         );
+    }
+
+    #[test]
+    fn test_parse_project_ets6_links_attribute() {
+        // ETS 5.7/6 form (schema >= 20): links in a space-separated `Links`
+        // attribute on a self-closing ComObjectInstanceRef. Synthetic data.
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<KNX xmlns="http://knx.org/xml/project/23">
+  <Project Id="P-0001">
+    <Installations><Installation>
+      <Topology>
+        <Area Address="1"><Line Address="1">
+          <DeviceInstance Id="P-0001-0_DI-1" Address="4" Name="Switch">
+            <ComObjectInstanceRefs>
+              <ComObjectInstanceRef RefId="O-1_R-1" Links="P-0001_GA-10 P-0001_GA-11"/>
+            </ComObjectInstanceRefs>
+          </DeviceInstance>
+        </Line></Area>
+      </Topology>
+    </Installation></Installations>
+  </Project>
+</KNX>"#;
+        let schema = SchemaVersion::from_version(23).unwrap();
+        let project = parse_project(xml, schema).unwrap();
+        let dev = &project.devices[0];
+        assert_eq!(dev.com_objects.len(), 1);
+        assert_eq!(dev.com_objects[0].links, vec!["GA-10", "GA-11"]);
+    }
+
+    #[test]
+    fn test_parse_project_ets4_connectors_links() {
+        // ETS 4/5 form (schema < 20): links in Connectors/Send + Receive child
+        // elements, each with a `<projectId>_<gaId>` GroupAddressRefId.
+        // Synthetic hand-written data (no vendored fixtures).
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<KNX xmlns="http://knx.org/xml/project/11">
+  <Project Id="P-0001">
+    <Installations><Installation>
+      <Topology>
+        <Area Address="1"><Line Address="1">
+          <DeviceInstance Id="P-0001-0_DI-1" Address="4" Name="Switch">
+            <ComObjectInstanceRefs>
+              <ComObjectInstanceRef RefId="O-1_R-1" CommunicationFlag="Enabled" TransmitFlag="Enabled">
+                <Connectors>
+                  <Send GroupAddressRefId="P-0001_GA-10"/>
+                  <Receive GroupAddressRefId="P-0001_GA-11"/>
+                  <Receive GroupAddressRefId="P-0001_GA-12"/>
+                </Connectors>
+              </ComObjectInstanceRef>
+            </ComObjectInstanceRefs>
+          </DeviceInstance>
+        </Line></Area>
+      </Topology>
+    </Installation></Installations>
+  </Project>
+</KNX>"#;
+        let schema = SchemaVersion::from_version(11).unwrap();
+        let project = parse_project(xml, schema).unwrap();
+        let dev = &project.devices[0];
+        assert_eq!(dev.com_objects.len(), 1);
+        // Send GA leads; the two Receive GAs follow, in order.
+        assert_eq!(dev.com_objects[0].links, vec!["GA-10", "GA-11", "GA-12"]);
+        assert_eq!(dev.com_objects[0].ref_id, "O-1_R-1");
+    }
+
+    #[test]
+    fn test_parse_project_ets4_receive_only_com_object() {
+        // A listen-only object in ETS 4/5 form: no Send, only Receive children.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/14">
+  <Project Id="P-0001"><Installations><Installation><Topology>
+    <Area Address="1"><Line Address="1">
+      <DeviceInstance Id="P-0001-0_DI-1" Address="4" Name="Sensor">
+        <ComObjectInstanceRefs>
+          <ComObjectInstanceRef RefId="O-2_R-1">
+            <Connectors><Receive GroupAddressRefId="P-0001_GA-20"/></Connectors>
+          </ComObjectInstanceRef>
+        </ComObjectInstanceRefs>
+      </DeviceInstance>
+    </Line></Area>
+  </Topology></Installation></Installations></Project>
+</KNX>"#;
+        let schema = SchemaVersion::from_version(14).unwrap();
+        let project = parse_project(xml, schema).unwrap();
+        let dev = &project.devices[0];
+        assert_eq!(dev.com_objects[0].links, vec!["GA-20"]);
     }
 
     #[test]
