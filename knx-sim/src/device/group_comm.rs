@@ -182,6 +182,21 @@ impl GroupComm {
         &self.objects
     }
 
+    /// Mutable access to the com-object map, for a builder (e.g. the System 7
+    /// table parser) that populates it object-by-object.
+    pub fn objects_mut(&mut self) -> &mut BTreeMap<u16, ComObject> {
+        &mut self.objects
+    }
+
+    /// Record that group address `ga` routes to com-object `asap` in the reverse
+    /// index. Idempotent per (ga, asap). Used by an external builder.
+    pub fn index_ga(&mut self, ga: u16, asap: u16) {
+        let entry = self.by_ga.entry(ga).or_default();
+        if !entry.contains(&asap) {
+            entry.push(asap);
+        }
+    }
+
     /// The com-object for an ASAP, if present.
     pub fn object(&self, asap: u16) -> Option<&ComObject> {
         self.objects.get(&asap)
