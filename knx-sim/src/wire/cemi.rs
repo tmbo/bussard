@@ -107,6 +107,21 @@ impl CemiLData {
         self.ctrl2 & 0x80 != 0
     }
 
+    /// True if this is a **standard** (short) L_Data frame — `ctrl1` bit 7 set.
+    ///
+    /// A real device accepts both standard and extended L_Data frames. In cEMI
+    /// the two share an identical field layout (the NPDU length is always a full
+    /// octet), so decode is the same either way and the only observable
+    /// difference is this frame-type bit. ETS sends its 63-octet `A_Memory_Write`
+    /// telegrams as **extended** frames (bit 7 clear); bussard now does the same
+    /// for any APDU whose NPDU length exceeds 15. The sim therefore does not need
+    /// to special-case them, but a device that mis-set the length field for the
+    /// frame type would be a bug, so this accessor lets callers/tests assert the
+    /// frame type they expect.
+    pub fn is_standard_frame(&self) -> bool {
+        self.ctrl1 & 0x80 != 0
+    }
+
     /// The destination as an individual address (meaningful when not group).
     pub fn dest_individual(&self) -> IndividualAddress {
         IndividualAddress(self.dest)
@@ -216,6 +231,45 @@ mod tests {
         let bytes = frame.encode();
         let back = CemiLData::decode(&bytes)?;
         assert_eq!(frame, back);
+        Ok(())
+    }
+
+    #[test]
+    fn test_decode_extended_frame_large_memory_write() -> Result<(), CemiError> {
+        // A 63-octet A_Memory_Write in an EXTENDED L_Data frame, exactly as ETS
+        // (and now bussard) send it: ctrl1 bit 7 clear (0x3c vs a standard 0xbc),
+        // NPDU length 66 (a full octet, > 15), TPDU = TPCI/APCI(2) + addr(2) + 63
+        // data. A real device accepts this, so the sim must decode it.
+        let addr: u16 = 0x6000;
+        let n: u8 = 63;
+        let apci10: u16 = 0x280 | (n as u16); // A_MemoryWrite | count
+        let mut tpdu = vec![
+            0x40 | ((apci10 >> 8) as u8 & 0x03), // NDT seq 0 + APCI high bits
+            (apci10 & 0xff) as u8,
+        ];
+        tpdu.extend_from_slice(&addr.to_be_bytes());
+        tpdu.resize(tpdu.len() + n as usize, 0xff);
+        let npdu_len = (tpdu.len() - 1) as u8;
+        assert_eq!(npdu_len, 66);
+
+        let mut frame = vec![
+            0x11, // L_Data.req
+            0x00, // AI len 0
+            0x3c, // ctrl1: extended (bit 7 clear), normal prio, ack req
+            0x60, // ctrl2: individual dest, hop 6
+            0x00, 0x00, // src 0.0.0
+        ];
+        frame.extend_from_slice(&0x1102u16.to_be_bytes()); // dst 1.1.2
+        frame.push(npdu_len);
+        frame.extend_from_slice(&tpdu);
+
+        let c = CemiLData::decode(&frame)?;
+        assert!(!c.is_standard_frame(), "must decode as an extended frame");
+        assert_eq!(c.dest, 0x1102);
+        assert_eq!(c.tpdu.len(), 2 + 2 + 63);
+        assert_eq!(c.tpdu, tpdu);
+        // Round-trips byte-for-byte.
+        assert_eq!(c.encode(), frame);
         Ok(())
     }
 

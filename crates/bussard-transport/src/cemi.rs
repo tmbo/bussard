@@ -282,6 +282,14 @@ const APCI_GROUP_WRITE: u16 = 0x080;
 // each other and from extended/management APCIs.
 const APCI_GROUP_MASK: u16 = 0x03c0;
 
+/// The largest NPDU length that fits a KNX **standard** (short) L_Data frame.
+///
+/// The standard-frame length field (LG) is 4 bits, so it can encode 0..=15 NPDU
+/// octets. An APDU whose NPDU length exceeds this must be sent in an EXTENDED
+/// (long) frame, where the length is a full octet. [`CemiFrame::encode`] selects
+/// the frame type from this threshold.
+const MAX_STANDARD_NPDU_LEN: usize = 15;
+
 /// A decoded cEMI L_Data frame.
 ///
 /// Construct outgoing frames with the [`CemiFrame::group_write`] /
@@ -457,6 +465,22 @@ impl CemiFrame {
         out.extend_from_slice(&dst_raw.to_be_bytes());
 
         let (tpdu, npdu_len) = encode_tpdu(&self.tpci, &self.apdu);
+        // Frame-type selection (CTL1 bit 7): a KNX standard (short) frame carries
+        // an NPDU length that fits the 4-bit LG field (0..=15). An APDU longer than
+        // that MUST go in an EXTENDED (long) frame — exactly what ETS does for the
+        // 63-octet A_Memory_Write telegrams. bussard builds every management frame
+        // with `Control1::default()` (standard), so we override the frame-type bit
+        // here based on the encoded NPDU length: > 15 octets forces extended,
+        // anything shorter stays standard. This keeps short group/control traffic
+        // untouched while letting large memory writes ride an extended frame the
+        // way a real device expects (the connection-oriented L4 budget was
+        // exhausted by 12-byte chunks; larger extended writes fix it).
+        let mut control1 = self.control1;
+        control1.standard_frame = npdu_len <= MAX_STANDARD_NPDU_LEN;
+        // CTL1 was pushed above with the pre-override value; rewrite it in place at
+        // its known offset (msgcode + AI-len byte + AI-bytes).
+        let ctl1_offset = 2 + self.additional_info.len();
+        out[ctl1_offset] = control1.to_byte();
         out.push(npdu_len as u8);
         out.extend_from_slice(&tpdu);
         out
@@ -1091,6 +1115,92 @@ mod tests {
         assert_eq!(frame.apdu, Apdu::GroupValueWrite(GroupData::Small(1)));
         let back = CemiFrame::decode(&frame.encode()).unwrap();
         assert_eq!(back.apdu, Apdu::GroupValueWrite(GroupData::Small(1)));
+    }
+
+    // ---------------------------------------------------------------------
+    // Extended vs standard frame selection: a long management APDU must ride an
+    // EXTENDED (long) L_Data frame; short frames stay standard.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn long_apdu_encodes_as_extended_frame() {
+        // A 63-octet A_Memory_Write (APCI 0x280 | 63) to 0x6000: the TPDU is
+        // 2 APCI octets + 2 address octets + 63 data octets = 67, so NPDU len = 66
+        // — far beyond the 15-octet standard-frame ceiling. It must encode with the
+        // frame-type bit clear (extended).
+        let data = vec![0xFFu8; 63];
+        let apci = 0x280 | 63;
+        let mut payload = vec![0x60, 0x00];
+        payload.extend_from_slice(&data);
+        let frame =
+            CemiFrame::t_data_connected(ia("1.1.4"), ia("0.0.255"), tpci_ndt(0), apci, &payload);
+        let bytes = frame.encode();
+        // CTL1 is at offset 2 (msgcode, AI-len=0, then CTL1).
+        let ctl1 = bytes[2];
+        assert_eq!(
+            ctl1 & 0x80,
+            0x00,
+            "long APDU must clear the frame-type bit (extended)"
+        );
+        // The NPDU length octet is 66.
+        let back = CemiFrame::decode(&bytes).unwrap();
+        assert!(
+            !back.control1.standard_frame,
+            "decoded frame must report extended"
+        );
+        // Round-trips byte-for-byte.
+        assert_eq!(back.encode(), bytes);
+        match back.apdu {
+            Apdu::Other {
+                apci: a,
+                data: ref d,
+            } => {
+                assert_eq!(a, apci);
+                assert_eq!(d.len(), 2 + 63);
+            }
+            other => panic!("expected Apdu::Other, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn short_apdu_stays_standard_frame() {
+        // A 12-octet A_Memory_Write: TPDU is 2 + 2 + 12 = 16, NPDU len = 15 — the
+        // largest that still fits a standard frame. The frame-type bit stays set.
+        let data = vec![0xAAu8; 12];
+        let apci = 0x280 | 12;
+        let mut payload = vec![0x60, 0x00];
+        payload.extend_from_slice(&data);
+        let frame =
+            CemiFrame::t_data_connected(ia("1.1.4"), ia("0.0.255"), tpci_ndt(0), apci, &payload);
+        let bytes = frame.encode();
+        assert_eq!(bytes[2] & 0x80, 0x80, "NPDU len 15 stays standard");
+        // One octet more (NPDU len 16) crosses into extended.
+        let mut payload2 = vec![0x60, 0x00];
+        payload2.extend_from_slice(&[0xAAu8; 13]);
+        let frame2 = CemiFrame::t_data_connected(
+            ia("1.1.4"),
+            ia("0.0.255"),
+            tpci_ndt(0),
+            0x280 | 13,
+            &payload2,
+        );
+        assert_eq!(
+            frame2.encode()[2] & 0x80,
+            0x00,
+            "NPDU len 16 must become extended"
+        );
+    }
+
+    #[test]
+    fn group_write_stays_standard() {
+        // A small group write is always well within the standard ceiling.
+        let frame = CemiFrame::group_write_packed(ga("3/0/4"), ia("1.1.1"), &[1]);
+        assert_eq!(frame.encode()[2] & 0x80, 0x80);
+    }
+
+    /// Local NDT TPCI helper for the extended-frame tests (bits 5-2 = seq).
+    fn tpci_ndt(seq: u8) -> u8 {
+        0x40 | ((seq & 0x0f) << 2)
     }
 
     #[test]

@@ -1049,6 +1049,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recv_sequence_wraps_around_at_fifteen() {
+        // Drive 18 request/response round-trips so the RECEIVE sequence wraps past
+        // 15 back through 0 and 1. Each device response NDT carries the expected
+        // receive sequence; the tool must ACK it, deliver it, and advance recv_seq
+        // mod 16 correctly across the wrap. Script, per round-trip: T_ACK(send_seq)
+        // then the response NDT at the matching recv_seq.
+        let mut inbox = Vec::new();
+        for i in 0..18u8 {
+            inbox.push(control_from_dev(tpci::t_ack(i & 0x0f)));
+            inbox.push(ndt_from_dev(i & 0x0f, 0x340, &[0x07, 0xB0]));
+        }
+        let mut bus = ScriptedBus::new(inbox);
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool())
+            .await
+            .unwrap();
+        for _ in 0..18 {
+            let (apci, _data) = l4.request(0x300, &[0x00]).await.unwrap();
+            assert_eq!(apci, 0x340);
+        }
+        // After 18 delivered responses starting at 0, recv_seq is 18 mod 16 = 2,
+        // and send_seq likewise (18 sends).
+        assert_eq!(l4.recv_seq, 2);
+        assert_eq!(l4.send_seq, 2);
+        // Every response NDT was acknowledged at its own (wrapping) sequence.
+        let acks: Vec<u8> = bus
+            .sent
+            .iter()
+            .filter_map(|f| match tpci::classify(f.tpci_octet()) {
+                TpciKind::Ack(s) => Some(s),
+                _ => None,
+            })
+            .collect();
+        let expected: Vec<u8> = (0..18u8).map(|i| i & 0x0f).collect();
+        assert_eq!(acks, expected, "each response ACKed at its wrapping seq");
+    }
+
+    #[tokio::test]
+    async fn device_retransmit_across_wrap_is_reacked_not_redelivered() {
+        // Near a wrap boundary: the device re-delivers a response whose T_ACK it
+        // missed (a retransmit at the previous, off-window sequence). recv_response
+        // must ACK it with expected-1 and drop it, then deliver the fresh response
+        // at the expected sequence — without double-delivering. Set recv_seq to 15
+        // by walking there, then script a stale NDT(14) before the real NDT(15).
+        let mut inbox = Vec::new();
+        // Walk recv_seq from 0 to 15 via 15 round-trips.
+        for i in 0..15u8 {
+            inbox.push(control_from_dev(tpci::t_ack(i)));
+            inbox.push(ndt_from_dev(i, 0x340, &[i]));
+        }
+        // 16th round-trip: ACK(15), then a STALE retransmit at seq 14 (off-window),
+        // then the fresh response at the expected seq 15.
+        inbox.push(control_from_dev(tpci::t_ack(15)));
+        inbox.push(ndt_from_dev(14, 0x340, &[0xAA])); // stale duplicate
+        inbox.push(ndt_from_dev(15, 0x340, &[0xBB])); // the real answer
+        let mut bus = ScriptedBus::new(inbox);
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool())
+            .await
+            .unwrap();
+        for _ in 0..15 {
+            l4.request(0x300, &[0x00]).await.unwrap();
+        }
+        assert_eq!(l4.recv_seq, 15);
+        // The 16th delivers the FRESH answer (0xBB), not the stale duplicate.
+        let (_apci, data) = l4.request(0x300, &[0x00]).await.unwrap();
+        assert_eq!(
+            data,
+            vec![0xBB],
+            "the stale retransmit must not be delivered"
+        );
+        assert_eq!(
+            l4.recv_seq, 0,
+            "recv_seq wrapped 15 -> 0 after the real NDT"
+        );
+    }
+
+    #[tokio::test]
     async fn authorize_free_access_grants_level_zero() {
         // Script: ACK(0) for our authorize request, then A_Authorize_Response(0).
         let inbox = vec![
