@@ -110,6 +110,17 @@ pub struct Device {
     /// re-acknowledges (without reprocessing) a retransmit of the one it just
     /// ACKed, and ignores anything else. See [`Device::handle_cemi`].
     rx_seq: u8,
+    /// The device's per-connection numbered-exchange budget: after this many
+    /// accepted NDTs on **one** L4 connection, the device drops the connection
+    /// (stops answering, as a real connection-oriented device does when its
+    /// per-connection resource budget is exhausted). `None` = unlimited (the
+    /// default, so existing tests and captures are unaffected). Reset per
+    /// connection on `T_Connect`. Modelled after the KNX Virtual DA.tp device,
+    /// which drops a long-held L4 connection after ~35 exchanges.
+    l4_exchange_budget: Option<u32>,
+    /// Numbered exchanges accepted on the **current** L4 connection, reset to 0
+    /// on every `T_Connect`. Metered against [`Device::l4_exchange_budget`].
+    l4_exchanges: u32,
     events: std::sync::Arc<dyn EventSink>,
 }
 
@@ -260,8 +271,21 @@ impl Device {
             connected: false,
             tx_seq: 0,
             rx_seq: 0,
+            l4_exchange_budget: None,
+            l4_exchanges: 0,
             events,
         }
+    }
+
+    /// Sets the device's per-connection numbered-exchange budget (builder-style).
+    ///
+    /// After `budget` accepted NDTs on one L4 connection the device drops the
+    /// connection — stops answering — modelling a real connection-oriented
+    /// device's per-connection resource limit (KNX Virtual drops at ~35). `None`
+    /// leaves it unlimited (the default). See [`Device::l4_exchange_budget`].
+    pub fn with_l4_exchange_budget(mut self, budget: Option<u32>) -> Self {
+        self.l4_exchange_budget = budget;
+        self
     }
 
     /// The device's individual address.
@@ -298,6 +322,10 @@ impl Device {
                 // A fresh transport connection resets both sequence counters to 0
                 // (KNX style-1 rationalised: T_Connect restarts the numbering).
                 self.rx_seq = 0;
+                // A fresh connection also resets the per-connection exchange
+                // budget: each L4 connection gets its own allowance, so a tool
+                // that periodically reconnects (as ETS does) never exhausts it.
+                self.l4_exchanges = 0;
                 // Authorization is NOT reset on connect. In the ETS capture the
                 // tool authorizes once (Phase A) and, after the pre-flash basic
                 // restart + reconnect (Phase C), issues PID5/memory writes with
@@ -372,6 +400,30 @@ impl Device {
                 ),
             });
             return Ok(DeviceReaction::default());
+        }
+
+        // Per-connection exchange budget: a real connection-oriented device drops
+        // a long-held L4 connection after a bounded number of numbered exchanges
+        // (KNX Virtual DA.tp drops at ~35). This expected-sequence NDT is one such
+        // exchange; if accepting it would exceed the budget, the device drops the
+        // connection instead — it stops answering entirely (silence), exactly as
+        // the real device does, so the tool sees "device absent" unless it cycled
+        // the connection in time. Reset per connection on T_Connect. `None` =
+        // unlimited (the default), leaving existing behaviour unchanged.
+        if let Some(budget) = self.l4_exchange_budget {
+            if self.l4_exchanges >= budget {
+                self.connected = false;
+                self.emit(Event::Telegram {
+                    direction: crate::bus::event::Direction::ToBus,
+                    cemi: cemi.encode(),
+                    summary: format!(
+                        "DROPPED by {}: L4 exchange budget {budget} exhausted; connection dropped",
+                        self.address
+                    ),
+                });
+                return Ok(DeviceReaction::default());
+            }
+            self.l4_exchanges += 1;
         }
 
         // Expected sequence: parse, process, advance, acknowledge.
@@ -1093,6 +1145,94 @@ mod tests {
             );
         }
         assert_eq!(dev.rx_seq, 2, "18 accepted NDTs wrap rx_seq to 2");
+        Ok(())
+    }
+
+    #[test]
+    fn test_l4_exchange_budget_drops_connection_after_budget()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A device with a per-connection exchange budget drops the connection —
+        // stops answering — once that many numbered exchanges have been accepted on
+        // one connection, modelling a real connection-oriented device's
+        // per-connection resource limit (KNX Virtual drops at ~35). Set a low
+        // budget (3) and drive descriptor reads: the first 3 are answered, the 4th
+        // and beyond draw no response and the device is no longer connected.
+        let Some(dev) = da_tp_device()? else {
+            return Ok(());
+        };
+        let mut dev = dev.with_l4_exchange_budget(Some(3));
+        connect(&mut dev)?;
+        for i in 0..3u16 {
+            let r = dev.handle_cemi(&data(&dev, 0x300, &[]))?;
+            assert_eq!(
+                r.responses.len(),
+                1,
+                "exchange {i} is within budget and must be answered"
+            );
+        }
+        // The 4th exchange exceeds the budget: the device drops the connection.
+        let r = dev.handle_cemi(&data(&dev, 0x300, &[]))?;
+        assert!(
+            r.responses.is_empty(),
+            "the over-budget exchange must draw no response (connection dropped)"
+        );
+        assert!(
+            !dev.connected,
+            "exceeding the budget drops the L4 connection"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_l4_exchange_budget_resets_on_reconnect() -> Result<(), Box<dyn std::error::Error>> {
+        // The per-connection budget is per CONNECTION: a fresh T_Connect resets it,
+        // so a tool that reconnects before exhausting the budget keeps being
+        // served. Drive the budget to exhaustion, then reconnect and confirm the
+        // device answers again — the persistent object state is unchanged.
+        let Some(dev) = da_tp_device()? else {
+            return Ok(());
+        };
+        let mut dev = dev.with_l4_exchange_budget(Some(2));
+        connect(&mut dev)?;
+        for _ in 0..2u16 {
+            let r = dev.handle_cemi(&data(&dev, 0x300, &[]))?;
+            assert_eq!(r.responses.len(), 1);
+        }
+        // Over budget: dropped.
+        assert!(
+            dev.handle_cemi(&data(&dev, 0x300, &[]))?
+                .responses
+                .is_empty()
+        );
+        // Reconnect: a fresh window resets the budget and the device serves again.
+        connect(&mut dev)?;
+        let r = dev.handle_cemi(&data(&dev, 0x300, &[]))?;
+        assert_eq!(
+            r.responses.len(),
+            1,
+            "a fresh connection resets the budget and the device answers again"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_l4_exchange_budget_unlimited_by_default() -> Result<(), Box<dyn std::error::Error>> {
+        // The default budget is unlimited: without `with_l4_exchange_budget`, a
+        // long run of exchanges on one connection is served in full (existing tests
+        // and captures are unaffected).
+        let Some(mut dev) = da_tp_device()? else {
+            return Ok(());
+        };
+        connect(&mut dev)?;
+        for i in 0..40u16 {
+            let r = dev.handle_cemi(&data(&dev, 0x300, &[]))?;
+            assert_eq!(
+                r.responses.len(),
+                1,
+                "exchange {i} must be answered under the default unlimited budget"
+            );
+        }
+        assert!(dev.connected, "the connection stays up under no budget");
         Ok(())
     }
 

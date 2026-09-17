@@ -68,10 +68,37 @@ pub struct DeviceConfig {
     /// The initial load state (default: unloaded).
     #[serde(default = "default_initial_state")]
     pub initial_state: InitialState,
+    /// The device's per-connection numbered-exchange budget: after this many
+    /// accepted NDTs on one L4 connection the device drops the connection,
+    /// modelling a real connection-oriented device's per-connection resource
+    /// limit (KNX Virtual drops at ~35). Omit (or set to null) for unlimited (the
+    /// default), so existing configs are unaffected. Set it low (e.g. 25) to
+    /// reproduce the drop and exercise a tool's periodic-reconnect strategy. The
+    /// `KNX_SIM_L4_BUDGET` environment variable overrides this for every device.
+    #[serde(default)]
+    pub l4_exchange_budget: Option<u32>,
 }
 
 fn default_initial_state() -> InitialState {
     InitialState::Unloaded
+}
+
+/// Environment variable that overrides every device's `l4_exchange_budget`.
+///
+/// When set to a parseable `u32`, every device on the bus uses that budget,
+/// regardless of the per-device config value — a convenient way to reproduce the
+/// connection drop against an existing config without editing it. An unset or
+/// unparseable value leaves each device's config value in force.
+const L4_BUDGET_ENV: &str = "KNX_SIM_L4_BUDGET";
+
+/// The effective per-connection exchange budget for a device: the
+/// [`L4_BUDGET_ENV`] override when set and parseable, else the device's config
+/// value.
+fn effective_l4_budget(config_value: Option<u32>) -> Option<u32> {
+    std::env::var(L4_BUDGET_ENV)
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .or(config_value)
 }
 
 /// The whole installation config.
@@ -160,7 +187,8 @@ impl SimConfig {
                     }
                 })?;
             let device =
-                Device::from_product(address, &product, dc.initial_state.into(), events.clone());
+                Device::from_product(address, &product, dc.initial_state.into(), events.clone())
+                    .with_l4_exchange_budget(effective_l4_budget(dc.l4_exchange_budget));
             bus.add_device(device);
         }
         Ok(bus)
@@ -188,6 +216,26 @@ devices:
         assert_eq!(cfg.gateway.port, 3671);
         assert_eq!(cfg.devices.len(), 1);
         assert_eq!(cfg.devices[0].initial_state, InitialState::Unloaded);
+        // Absent by default (unlimited exchange budget).
+        assert_eq!(cfg.devices[0].l4_exchange_budget, None);
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_config_l4_exchange_budget() -> Result<(), ConfigError> {
+        // A device may declare a per-connection numbered-exchange budget; it parses
+        // into `l4_exchange_budget`. Omitting it leaves it `None` (unlimited).
+        let yaml = r#"
+gateway:
+  host: "127.0.0.1"
+  port: 3671
+devices:
+  - address: "1.1.2"
+    knxprod: "x.knxprod"
+    l4_exchange_budget: 25
+"#;
+        let cfg = SimConfig::from_yaml(yaml)?;
+        assert_eq!(cfg.devices[0].l4_exchange_budget, Some(25));
         Ok(())
     }
 
