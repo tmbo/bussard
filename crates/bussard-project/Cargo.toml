@@ -31,3 +31,4 @@ rayon = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+anyhow = { workspace = true }

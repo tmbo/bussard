@@ -94,6 +94,19 @@ pub enum ImportError {
         style: String,
     },
 
+    /// The project declares an ETS schema version bussard does not recognise —
+    /// either below the earliest known (ETS 4.1, schema 11) or an unparseable
+    /// namespace. The message names what was found so the user can identify the
+    /// ETS release.
+    #[error(
+        "unsupported ETS schema version `{version}`; bussard imports ETS 4, 5 and 6 exports \
+         (project namespace http://knx.org/xml/project/{{11..}})"
+    )]
+    UnsupportedSchemaVersion {
+        /// The version integer (or the raw namespace) that was found.
+        version: String,
+    },
+
     /// Failed to build the model from parsed data.
     #[error("building model: {0}")]
     Model(String),
