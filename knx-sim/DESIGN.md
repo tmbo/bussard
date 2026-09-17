@@ -66,10 +66,14 @@ lets a tool's bug slip through; strictness is what catches it.
 
 - **`bus/`** — the virtual bus. Carries cEMI `L_Data` telegrams. A
   connection-oriented (management) telegram is delivered to the addressed
-  device; a group telegram is broadcast (stubbed for now). Every telegram and
-  every device state change is published to an `EventSink` — the seam the future
-  HTML visualization consumes. The bus only observes; it never mutates device
-  state directly.
+  device; a group telegram is broadcast to every device and each device reply is
+  fanned back onto the bus and returned to the tunnel client. A tool-originated
+  group write is also echoed back to the sender as an `L_Data.con` — a real
+  gateway confirms every request it puts on the bus, and the connected
+  monitor/viz relies on that echo to see its own writes (issue #64). Every
+  telegram and every device state change is published to an `EventSink` — the
+  seam the HTML visualization consumes. The bus only observes; it never mutates
+  device state directly.
 
 - **`net/`** — the KNXnet/IP tunneling *frontend*. Presents a gateway endpoint
   so the tool connects exactly as it would to a real KNXnet/IP interface. It
@@ -140,7 +144,10 @@ deterministically so a tool that reads PID 7 gets a stable, real-looking map.
 
 - No HTML viz yet (event stream exposed; `TracingSink` is the placeholder).
 - No routing/multicast (tunneling only; seam left).
-- No group-telegram runtime behavior (broadcast is stubbed).
+- Single tunnel client (the viz use case). The frontend tracks one connected
+  peer; there is no multi-peer mirroring. Group-telegram runtime behavior —
+  broadcast, device replies, write-echo confirmation, and scripted stimulus — is
+  implemented and fully visible to that one client.
 - Only the System B management model and the flash-relevant `LdCtrl*` ops.
 - Only one device per config is exercised end-to-end, though the bus already
   supports many.
