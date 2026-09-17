@@ -421,6 +421,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_group_write_value_and_payload_both_400() {
+        // Providing both value and payload is a mutual-exclusivity 400.
+        let (status, body) = call(
+            state_with_ga(false, Some("1.001")),
+            write_req(serde_json::json!({"address": "3/0/4", "value": "on", "payload": "01"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json(&body)["error"]["code"], "bad_request");
+    }
+
+    #[tokio::test]
+    async fn test_group_write_neither_value_nor_payload_400() {
+        let (status, body) = call(
+            state_with_ga(false, Some("1.001")),
+            write_req(serde_json::json!({"address": "3/0/4"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json(&body)["error"]["code"], "bad_request");
+    }
+
+    #[tokio::test]
+    async fn test_group_write_payload_bad_hex_400() {
+        let (status, body) = call(
+            state_with_ga(false, Some("1.001")),
+            write_req(serde_json::json!({"address": "3/0/4", "payload": "zz"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json(&body)["error"]["code"], "bad_request");
+    }
+
+    #[tokio::test]
+    async fn test_group_write_payload_size_mismatch_400() {
+        // DPT 1.001 is 1 bit / 1 byte; a 2-byte payload is rejected.
+        let (status, body) = call(
+            state_with_ga(false, Some("1.001")),
+            write_req(serde_json::json!({"address": "3/0/4", "payload": "0001"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(json(&body)["error"]["code"], "bad_request");
+    }
+
+    #[tokio::test]
+    async fn test_group_write_payload_protected_403() {
+        // The protected gate applies to raw writes identically.
+        let (status, body) = call(
+            state_with_ga(true, Some("1.001")),
+            write_req(serde_json::json!({"address": "3/0/4", "payload": "01"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(json(&body)["error"]["code"], "protected");
+    }
+
+    #[tokio::test]
+    async fn test_group_write_payload_no_dpt_reaches_bus() {
+        // A raw write with no DPT anywhere is ALLOWED (not a 422): it passes
+        // validation and only fails at the send step with 503 (no bus here).
+        let (status, body) = call(
+            state_with_ga(false, None),
+            write_req(serde_json::json!({"address": "3/0/4", "payload": "abcd"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(json(&body)["error"]["code"], "bus_unavailable");
+    }
+
+    #[tokio::test]
+    async fn test_group_write_payload_known_dpt_valid_reaches_bus() {
+        // A raw write whose length matches the known DPT passes validation and
+        // reaches the send step (503 without a bus). This is the raw happy path.
+        let (status, body) = call(
+            state_with_ga(false, Some("9.001")),
+            write_req(serde_json::json!({"address": "3/0/4", "payload": "0c1a"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(json(&body)["error"]["code"], "bus_unavailable");
+    }
+
+    #[tokio::test]
     async fn test_unknown_asset_404() {
         let (status, _) = call(
             empty_state(),
