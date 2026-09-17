@@ -140,6 +140,63 @@ size 256; object 3 (com-object table) → `0x8000`, size 148; object 2
 size 12. The device reports these bases via PID 7; the simulator assigns them
 deterministically so a tool that reads PID 7 gets a stable, real-looking map.
 
+## System 7 devices (mask 0705 / 0701)
+
+Alongside System B the simulator models a **System 7** device, the conformance
+peer for the System 7 download path. A per-device **profile**
+(`device/profile.rs`) selects the generation: it comes from the product's
+`MaskVersion` (`MV-0705` / `MV-0701` → System 7, `MV-07B0` → System B) or a
+`mask:` override in `sim.yaml`. `A_DeviceDescriptor_Read` type 0 reports the true
+mask, so a tool classifies the device correctly. An unmodelled mask is refused —
+the simulator will not pretend to be a generation it does not implement.
+
+System 7 differs from System B in four ways the device model reproduces strictly
+(built from `docs/system7-spec.md`, not from any tool):
+
+- **Absolute, memory-mapped download.** No `RelSegment`/`WriteRelMem`. The whole
+  download is absolute `A_Memory_Write`s at fixed 16-bit addresses (0x4000
+  table region, 0x4201 association/group-object, 0x4400 params, 0x0700 RAM). Each
+  `AbsSegment` allocation is validated against the device's memory map and its
+  bytes retained per segment; writes outside an open segment are refused.
+- **Three parallel load-state machines** (`device/sys7_lsm.rs`,
+  `Sys7LoadStateMachine`) instead of one. LSM 1/2/3 are torn down and reloaded in
+  order; a `TaskSegment` finalize is a precondition for each `LoadCompleted`.
+- **Two `LsmAccess` realisations, both implemented device-side**, selectable per
+  device (`lsm_access: memory | property`, default `memory`):
+  - **memory-mapped** — a 12-octet load-event record written by `A_Memory_Write`
+    to the LSM control address (default 0x0104), with the LSM state polled back
+    at the status address (default 0xB6EA+);
+  - **property-based** — the 10-octet load event over
+    `PID_LOAD_STATE_CONTROL` (PID 5). A memory-mapped device refuses a PID 5 load
+    write and vice-versa, so a tool that used the wrong realisation is caught.
+- **Wire strictness.** A memory op to a System 7 device must ride a *standard*
+  frame and carry at most 12 data octets. An extended cEMI frame or a >12-octet
+  memory op is refused — the trap that catches a tool wrongly sending 63-byte
+  chunks. Max-APDU is reported as 15; `A_Authorize` (free-access key, or a
+  configured `bcu_key:`) gates memory access.
+
+After Loaded, the System 7 device self-parses its own written address /
+association / group-object tables in the System 7 byte formats
+(`device/sys7_group_comm.rs`, spec §7: 1-byte counts, own-IA slot, 4-byte
+group-object descriptors with the on-device CONFIG byte) and participates on the
+bus through the same `GroupComm` runtime the System B path uses.
+
+The one property the System 7 download touches, object-0 PID 78
+(`PID_HARDWARE_TYPE`), is served as the 10-octet preflight value the MDT
+`CompareProp` matches. Per-loadable-object `PID_MCB_TABLE` (PID 27) reads are
+also served (some System 7 apps, e.g. Jung `A-A011`, verify via
+`LoadImageProp`), reusing the same integrity-block computation as System B.
+
+Calibration constants the spec marks UNKNOWN (the LSM control/status addresses,
+the 12-octet record layout, the alloc access/mem_type octets, the CONFIG
+synthesis rule) are implemented as the spec's best-evidence defaults and tagged
+with the greppable `S7-CAL:` marker for the M2 live-capture pass.
+
+`tests/sys7_calibration.rs` is the System 7 analogue of `ets_calibration.rs`: it
+drives the canonical MDT `M-0083_A-000E` op sequence (encoded as raw TPDUs by the
+test) to `Loaded` on all three LSMs, for *both* `LsmAccess` variants, and asserts
+the strictness refusals.
+
 ## Non-goals (Phase 1)
 
 - No HTML viz yet (event stream exposed; `TracingSink` is the placeholder).
@@ -148,6 +205,8 @@ deterministically so a tool that reads PID 7 gets a stable, real-looking map.
   peer; there is no multi-peer mirroring. Group-telegram runtime behavior —
   broadcast, device replies, write-echo confirmation, and scripted stimulus — is
   implemented and fully visible to that one client.
-- Only the System B management model and the flash-relevant `LdCtrl*` ops.
+- System B and System 7 management models and the flash-relevant `LdCtrl*` ops.
+  System 7 second-phase ops (`TaskCtrl1`, Zennio `CompareMem`, the post-restart
+  LSM-5 dance) are refused cleanly with a named reason (M2).
 - Only one device per config is exercised end-to-end, though the bus already
   supports many.

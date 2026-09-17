@@ -17,12 +17,18 @@ architecture.
   (`src/wire`, `src/net`).
 - Independent `.knxprod` reader for the flash-relevant structure — memory map,
   `LoadProcedures`, load-state-machine layout (`src/prod`).
-- One strict **System B** device (`src/device`): authorize, the load-state
-  machine, segment allocation (RelSegment), memory read/write bounded to
+- Strict **System B** and **System 7** devices (`src/device`): authorize, the
+  load-state machine(s), segment allocation, memory read/write bounded to
   allocated segments, `A_Restart` / master reset, device-descriptor read,
   property read/write. Strictness is deliberate — it rejects out-of-order load
   transitions, writes to the wrong object, out-of-range addresses, and
-  unauthorized writes.
+  unauthorized writes. A per-device profile (from the product mask or a `mask:`
+  config override) selects the generation; `A_DeviceDescriptor_Read` reports the
+  true mask. The System 7 model adds the three parallel absolute memory-mapped
+  load-state machines, both LSM realisations (`lsm_access: memory | property`),
+  the object-0/PID78 preflight, and System 7 wire strictness (standard frame
+  only, ≤12 memory octets — the trap for a tool wrongly sending 63-byte chunks).
+  See `DESIGN.md` and `docs/system7-spec.md`.
 - A virtual bus with an **observable event stream** (`src/bus`) — the seam a
   future read-only HTML visualization will consume. Today a `TracingSink` logs
   every telegram + state change to stdout.

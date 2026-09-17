@@ -1979,4 +1979,107 @@ mod tests {
         assert!(dev.handle_cemi(&mw).is_err());
         Ok(())
     }
+
+    mod sys7 {
+        use super::*;
+        use crate::device::profile::LsmAccess;
+
+        /// Build a System 7 device from the synthetic MDT-canonical product (no
+        /// fixture needed), at 1.1.5, starting Unloaded.
+        fn sys7_device(access: LsmAccess) -> Device {
+            let product = crate::testfixtures::synthetic_mdt_sys7_product();
+            Device::from_product_with_overrides(
+                IndividualAddress::new(1, 1, 5),
+                &product,
+                LoadState::Unloaded,
+                ProfileOverrides {
+                    mask: None,
+                    lsm_access: access,
+                    bcu_key: None,
+                },
+                std::sync::Arc::new(RecordingSink::new()),
+            )
+            .expect("System 7 device builds")
+        }
+
+        #[test]
+        fn test_sys7_profile_selected_from_product_mask() {
+            let dev = sys7_device(LsmAccess::MemoryMapped);
+            assert!(dev.profile().is_system7());
+            assert_eq!(dev.profile().mask(), 0x0705);
+            // The three canonical LSMs exist and start Unloaded.
+            for lsm in [1u8, 2, 3] {
+                assert_eq!(dev.load_state(lsm), Some(LoadState::Unloaded));
+            }
+        }
+
+        #[test]
+        fn test_unmodelled_mask_override_is_refused() {
+            // A mask override to an unmodelled family is refused — a strict
+            // simulator will not pretend to be a device generation it lacks.
+            let product = crate::testfixtures::synthetic_mdt_sys7_product();
+            let err = Device::from_product_with_overrides(
+                IndividualAddress::new(1, 1, 5),
+                &product,
+                LoadState::Unloaded,
+                ProfileOverrides {
+                    mask: Some("0012".into()),
+                    ..Default::default()
+                },
+                std::sync::Arc::new(RecordingSink::new()),
+            );
+            assert!(err.is_err(), "unmodelled mask must be refused");
+        }
+
+        #[test]
+        fn test_sys7_pid78_preflight_value_is_readable() -> Result<(), Box<dyn std::error::Error>> {
+            // Object-0 PID 78 (PID_HARDWARE_TYPE) serves the 10-octet preflight
+            // value the MDT CompareProp matches. App 14 seeds byte 5 = 0x0E.
+            let mut dev = sys7_device(LsmAccess::MemoryMapped);
+            connect(&mut dev)?;
+            let r = dev.handle_cemi(&data(&dev, 0x3D5, &[0x00, 0x4E, 0x10, 0x01]))?;
+            let value = prop_response_value(&r);
+            assert_eq!(value.len(), 10, "PID 78 is a 10-octet value");
+            assert_eq!(value[4], 0x03, "byte 4 is the run-state marker");
+            Ok(())
+        }
+
+        #[test]
+        fn test_sys7_serves_mcb_table_after_load() -> Result<(), Box<dyn std::error::Error>> {
+            // A System 7 device serves PID_MCB_TABLE (27) per loadable object,
+            // computed over the written segment memory (Jung A-A011 uses
+            // LoadImageProp on System 7). Drive LSM 1 to hold real bytes, then read
+            // PID 27 and expect an 8-octet integrity block whose CRC matches.
+            let mut dev = sys7_device(LsmAccess::MemoryMapped);
+            connect(&mut dev)?;
+            dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+            // StartLoading + alloc LSM 1 at 0x4000 via the 12-octet record.
+            let start_rec = [1u8, 0x00, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            dev.handle_cemi(&mem_write_frame(&dev, 0x0104, &start_rec))?;
+            let alloc_rec = [
+                1u8, 0x00, 0x03, 0x00, 0x40, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00,
+            ];
+            dev.handle_cemi(&mem_write_frame(&dev, 0x0104, &alloc_rec))?;
+            // Write 8 bytes into the segment.
+            dev.handle_cemi(&mem_write_frame(&dev, 0x4000, &[1, 2, 3, 4, 5, 6, 7, 8]))?;
+            // Read PID_MCB_TABLE (27) on object 1.
+            let r = dev.handle_cemi(&data(&dev, 0x3D5, &[0x01, 27, 0x10, 0x01]))?;
+            let mcb = prop_response_value(&r);
+            assert_eq!(mcb.len(), MCB_ENTRY_LEN, "MCB entry is 8 octets");
+            // The size field is the 8 written bytes; the CRC matches an independent
+            // computation over those bytes.
+            assert_eq!(&mcb[0..4], &[0, 0, 0, 8]);
+            let crc = crc16_aug_ccitt(&[1, 2, 3, 4, 5, 6, 7, 8]);
+            assert_eq!(&mcb[6..8], &crc.to_be_bytes());
+            Ok(())
+        }
+
+        /// Build a standard-frame A_MemoryWrite NDT at the device's expected seq.
+        fn mem_write_frame(dev: &Device, addr: u16, payload: &[u8]) -> CemiLData {
+            let apci10 = 0x280 | (payload.len() as u16 & 0x3F);
+            let mut d = addr.to_be_bytes().to_vec();
+            d.extend_from_slice(payload);
+            data(dev, apci10, &d)
+        }
+    }
 }
