@@ -7,13 +7,12 @@
 //!
 //! The [`feed`] task copies the bus-subscription pattern from the MCP runner:
 //! subscribe to the [`BusHandle`], decode each inbound frame against the model,
-//! and publish it through the hub. It also polls `handle.status()` on a 1s tick
-//! and emits a `bus` event whenever the connection state changes, and updates
-//! the per-GA state map from Write/Response telegrams on group destinations.
+//! and publish it through the hub. It also awaits `handle.state_changes()` and
+//! emits a `bus` event whenever the connection state changes, and updates the
+//! per-GA state map from Write/Response telegrams on group destinations.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
 
 use bussard_bus::{BusHandle, BusState};
 use bussard_model::{GroupAddress, Model};
@@ -257,14 +256,21 @@ impl TrafficHub {
 /// Feeds the hub from a live bus subscription until the actor shuts down.
 ///
 /// Mirrors the MCP runner's feeder: subscribe to the bus, decode every inbound
-/// frame against the model, and publish it. In parallel it polls the bus status
-/// on a 1s tick and, on any change, republishes the status as a `bus` event so
-/// the UI badge updates without a client round-trip.
+/// frame against the model, and publish it. In parallel it awaits the bus
+/// [`state_changes`](BusHandle::state_changes) watch and, on every transition,
+/// republishes the status as a `bus` event so the UI badge updates immediately
+/// without a client round-trip or a polling tick.
+///
+/// This runs only when a bus is configured (the caller does not spawn it in
+/// model-only mode). The `bus` event on SSE connect is emitted independently by
+/// the SSE handler, so it does not depend on this task ever having run.
 pub async fn feed(hub: TrafficHub, handle: BusHandle, model: Arc<Model>, status: BusStatus) {
     let mut sub = handle.subscribe();
-    let mut ticker = tokio::time::interval(Duration::from_secs(1));
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut last_state: Option<BusState> = None;
+    let mut states = handle.state_changes();
+    // Mark the state present at startup as already seen: the SSE handler emits
+    // the initial `bus` event on connect, so the feeder only publishes genuine
+    // transitions from here on.
+    let mut last_state: BusState = *states.borrow_and_update();
 
     loop {
         tokio::select! {
@@ -279,10 +285,14 @@ pub async fn feed(hub: TrafficHub, handle: BusHandle, model: Arc<Model>, status:
                     None => break,
                 }
             }
-            _ = ticker.tick() => {
-                let now = handle.status();
-                if last_state != Some(now) {
-                    last_state = Some(now);
+            changed = states.changed() => {
+                if changed.is_err() {
+                    // The actor dropped its sender; stop feeding.
+                    break;
+                }
+                let now = *states.borrow_and_update();
+                if now != last_state {
+                    last_state = now;
                     hub.publish_bus(status.to_json());
                 }
             }
@@ -293,7 +303,7 @@ pub async fn feed(hub: TrafficHub, handle: BusHandle, model: Arc<Model>, status:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::SystemTime;
+    use std::time::{Duration, SystemTime};
 
     use bussard_model::IndividualAddress;
     use bussard_model::codec::TypedValue;
@@ -462,5 +472,62 @@ mod tests {
         // A read does not populate the state map.
         let values = hub.state_values();
         assert!(values.as_object().expect("object").is_empty());
+    }
+
+    /// The feeder emits a `bus` event on a genuine state CHANGE, driven by the
+    /// bus watch (`state_changes`) rather than a polling tick. Pointing the bus
+    /// at a dead gateway (`127.0.0.1:1`) forces a real Connecting -> Reconnecting
+    /// transition, which must surface as exactly one `HubEvent::Bus`.
+    #[tokio::test]
+    async fn test_feed_emits_bus_event_on_state_change() -> Result<(), Box<dyn std::error::Error>> {
+        use std::net::{Ipv4Addr, SocketAddrV4};
+
+        use bussard_bus::Bus;
+        use bussard_transport::ConnectionConfig;
+
+        use crate::state::BusStatus;
+
+        // An empty model directory loads fine (every file is optional).
+        let tmp = tempfile::tempdir()?;
+        let model = Arc::new(Model::load(tmp.path())?);
+
+        // A dead gateway on loopback: the actor tries once, fails, and moves
+        // Connecting -> Reconnecting. ALWAYS 127.0.0.1 in tests.
+        let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 1);
+        let (handle, _task) = Bus::connect(ConnectionConfig::tunnel(addr));
+        let status = BusStatus::connected(bussard_transport::TransportKind::Tunnel, handle.clone());
+
+        let hub = TrafficHub::new();
+        // Subscribe before spawning the feeder so no `bus` event is missed.
+        let mut rx = hub.subscribe();
+
+        tokio::spawn(feed(hub.clone(), handle.clone(), model, status));
+
+        // Await the first bus event the feeder publishes on the state change.
+        let evt = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match rx.recv().await {
+                    Ok(HubEvent::Bus(v)) => return Some(v),
+                    Ok(_) => continue,
+                    Err(_) => return None,
+                }
+            }
+        })
+        .await
+        .map_err(|_| "timed out waiting for a bus event")?;
+
+        let v = evt.ok_or("hub closed before a bus event")?;
+        // A configured tunnel to a dead gateway reports a non-connected,
+        // non-"disconnected" state (connecting/reconnecting).
+        assert_eq!(v["transport"], "tunnel");
+        assert_eq!(v["connected"], false);
+        let state = v["state"].as_str().unwrap_or_default();
+        assert!(
+            matches!(state, "connecting" | "reconnecting"),
+            "expected a retrying state, got {state:?}"
+        );
+
+        let _ = handle.close().await;
+        Ok(())
     }
 }
