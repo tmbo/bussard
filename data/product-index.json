@@ -817,6 +817,52 @@
       "application_ref": "M-0071_A-6321-11-5D5D-O0072",
       "redistributable": false,
       "notes": "KNX-IP interface. App V1.1 (filename says 1_0), mask 0012 (System 2 / BCU2) — an older mask family, distinct from the other Zennio System B apps. Verified by download 2026-09-17."
+    },
+    {
+      "manufacturer": "Tense",
+      "manufacturer_id": "M-011F",
+      "order_numbers": [
+        "INFXXX",
+        "Infinity3"
+      ],
+      "name": "Tense Infinity 3 (glass touch panel)",
+      "url": "https://tense.be/fileadmin/Downloads/Products/6_Infinity/KNX_Application/Infinity3_v1_3_1.knxprod",
+      "sha256": "c6a8620a762fd481948665dbbabcc087541d1937d7909d15ba26ca5803ed62d8",
+      "size": 322233,
+      "filename": "Infinity3_v1_3_1.knxprod",
+      "application_ref": "M-011F_A-0001-13-16D0",
+      "redistributable": false,
+      "notes": "NEW VENDOR (Tense, M-011F): glass capacitive touch panel. App V1.3.1, mask 07B0 (System B) — flashable target. Order number is a placeholder (INFXXX) in the vendor data — the hardware covers the Infinity glass-panel range. Hosted bare at tense.be/fileadmin/Downloads/Products/. Verified by download 2026-09-17."
+    },
+    {
+      "manufacturer": "EAE Technology",
+      "manufacturer_id": "M-011E",
+      "order_numbers": [
+        "ACGME100"
+      ],
+      "name": "EAE ACGME100 (energy/metering gateway)",
+      "url": "https://www.eaetechnology.com/upload/dosyalar/ACGME100_v1.3_en_de_fr_it_es.knxprod",
+      "sha256": "be209d0a6a3495325dd3e9d6527c61ba39d7d524fc01a80c067e9a25865d466e",
+      "size": 362023,
+      "filename": "ACGME100_v1.3_en_de_fr_it_es.knxprod",
+      "application_ref": "M-011E_A-BC87-13-B26E",
+      "redistributable": false,
+      "notes": "EAE metering/energy gateway (second EAE product; joins SW108). App V1.3, mask 0705 (System 7). Hosted bare at eaetechnology.com/upload/dosyalar/. Verified by download 2026-09-17."
+    },
+    {
+      "manufacturer": "Interra",
+      "manufacturer_id": "M-0107",
+      "order_numbers": [
+        "ITR902-0001"
+      ],
+      "name": "Interra ITR902 KNX IP Router",
+      "url": "https://interratechnology.com/storage/products/documents/ets-database-689ee3811f60a.knxproj",
+      "sha256": "9ebdede56386a2cb8eea63587006fb9d99552f45eb16e2b33a0e8fe96510db90",
+      "size": 91484,
+      "filename": "ets-database-689ee3811f60a.knxproj",
+      "application_ref": "M-0107_A-233C-12-9407",
+      "redistributable": false,
+      "notes": "NEW VENDOR (Interra, M-0107): KNX IP router. App V1.2, mask 091A (coupler/secure family). NOTE: served with a .knxproj extension and an opaque hash path, but the bytes are a normal .knxprod container (PK zip + knx_master.xml) that read_knxprod parses fine — a good extension-lie parser test case. Verified by download 2026-09-17."
     }
   ]
 }
