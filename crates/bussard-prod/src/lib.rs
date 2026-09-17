@@ -1,4 +1,4 @@
-//! `.knxprod` product-data reading (MIT clean-room — never depends on GPL
+//! `.knxprod` product-data reading (clean-room — never depends on GPL
 //! implementations): application programs, com objects, parameters, and load
 //! procedures.
 //!

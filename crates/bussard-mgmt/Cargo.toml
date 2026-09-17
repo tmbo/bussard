@@ -3,9 +3,9 @@ name = "bussard-mgmt"
 description = "KNX layer-4 management: connection-oriented transport, device descriptor, properties, memory"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+publish.workspace = true
 
 [dependencies]
 bussard-model = { path = "../bussard-model" }
