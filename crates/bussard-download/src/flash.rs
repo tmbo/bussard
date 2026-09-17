@@ -1053,8 +1053,16 @@ pub fn plan_flash(
     // resolves to it when its own AppliesTo does not pin one.
     let mut last_rel_segment: Option<String> = None;
     // Track the image most-recently streamed into device memory so a following
-    // LoadImageProp checks the device's MCB CRC against the very bytes we wrote.
+    // LoadImageProp with no matching per-object image checks the device's MCB CRC
+    // against the very bytes we wrote.
     let mut last_written_image: Option<ImageRef> = None;
+    // Track the image streamed into each object index, so a `LoadImageProp{obj}`
+    // that targets a table object verifies that object's own MCB against the
+    // bytes written to it — not the last object written. Real multi-object System
+    // B procedures (the MDT actuators) write obj1/obj2/obj3 each with its own
+    // segment and then check each object's MCB in turn.
+    let mut written_image_by_object: std::collections::HashMap<u32, ImageRef> =
+        std::collections::HashMap::new();
 
     // The objects worth loading are exactly the ones that receive a segment
     // (a `RelSegment` allocation). A master template also opens/completes
@@ -1275,6 +1283,7 @@ pub fn plan_flash(
                     len,
                 };
                 last_written_image = Some(image.clone());
+                written_image_by_object.insert(*idx, image.clone());
                 steps.push(FlashStep::WriteRelMem {
                     offset,
                     image,
@@ -1323,6 +1332,9 @@ pub fn plan_flash(
                     len,
                 };
                 last_written_image = Some(image.clone());
+                if let Some(oi) = obj_idx {
+                    written_image_by_object.insert(*oi, image.clone());
+                }
                 steps.push(FlashStep::WriteRelMem {
                     offset,
                     image,
@@ -1469,7 +1481,14 @@ pub fn plan_flash(
                 let obj_idx = obj_idx.unwrap_or(0);
                 let prop_id = prop_id.unwrap_or(u32::from(bussard_mgmt::PID_MCB_TABLE));
                 let count = count.unwrap_or(1).max(1);
-                let image = last_written_image.clone();
+                // A table object (obj1/obj2/obj3) is checked against the image
+                // written to *that* object; any other check verifies the
+                // last-written (application) image, whose MCB lives on the
+                // discovered application-program object.
+                let image = written_image_by_object
+                    .get(&obj_idx)
+                    .cloned()
+                    .or_else(|| last_written_image.clone());
                 steps.push(FlashStep::LoadImageProp {
                     obj_idx,
                     prop_id,
@@ -2355,10 +2374,10 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                         }
                     }
                     FlashStep::LoadImageProp {
+                        obj_idx,
                         prop_id,
                         count,
                         image,
-                        ..
                     } => {
                         // Read the loaded object's PID_MCB_TABLE and, where we wrote the
                         // object's image, validate the device's CRC over the stored
@@ -2373,9 +2392,25 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                                 .as_ref()
                                 .and_then(|img| plan.images.get(&img.segment_id))
                                 .map(Vec::as_slice);
+                            // Read the MCB on the object that holds the checked
+                            // segment. A *table* image (obj1/obj2/obj3) lives on its
+                            // own table interface object, named by its own index. A
+                            // code/parameter image is a segment of the one
+                            // application-program object bussard discovered
+                            // (`app_obj`) — including a single-segment procedure that
+                            // names several object indices which all verify that one
+                            // application image (the DA.tp / mock shape). Reading
+                            // `app_obj` for every check (the previous behaviour) made
+                            // each table-object check read the application segment's
+                            // MCB, so the CRC never matched on a multi-object System B
+                            // procedure (the MDT actuators).
+                            let read_obj = match image.as_ref().map(|i| i.kind) {
+                                Some(ImageKind::Table) => (*obj_idx).min(u32::from(u8::MAX)) as u8,
+                                _ => app_obj,
+                            };
                             read_mcb_table(
                                 session.l4(),
-                                app_obj,
+                                read_obj,
                                 1,
                                 (*count).min(255) as u8,
                                 expected,
