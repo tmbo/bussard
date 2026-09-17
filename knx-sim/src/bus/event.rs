@@ -70,6 +70,16 @@ pub enum Event {
         /// The new access level (0 = highest).
         level: u8,
     },
+    /// A device updated a com-object's value from an inbound group write it
+    /// listens to (the runtime group-communication path).
+    GroupObjectUpdated {
+        /// The device address.
+        device: IndividualAddress,
+        /// The com-object number (ASAP) that was updated.
+        object: u16,
+        /// The group address the write arrived on (raw 16-bit).
+        ga: u16,
+    },
 }
 
 /// A read-only observer of the simulation's [`Event`] stream.
@@ -108,6 +118,9 @@ impl EventSink for TracingSink {
             } => tracing::info!(%device, master_reset, "device restarted"),
             Event::AuthChanged { device, level } => {
                 tracing::info!(%device, level, "authorization changed")
+            }
+            Event::GroupObjectUpdated { device, object, ga } => {
+                tracing::info!(%device, object, ga = format!("0x{ga:04x}"), "group object updated")
             }
         }
     }

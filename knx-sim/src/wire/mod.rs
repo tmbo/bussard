@@ -8,6 +8,7 @@
 pub mod address;
 pub mod apdu;
 pub mod cemi;
+pub mod dpt;
 pub mod knxnetip;
 
 pub use address::{GroupAddress, IndividualAddress};

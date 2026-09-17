@@ -130,6 +130,34 @@ impl Memory {
     pub fn written_len(&self) -> usize {
         self.cells.len()
     }
+
+    /// The bytes actually written into the segment owned by `owner`, as a
+    /// contiguous block starting at the segment base and ending at the highest
+    /// written cell within the segment (inclusive). Unwritten gaps below that
+    /// high-water mark read back as `0x00`.
+    ///
+    /// This is what a device's `PID_MCB_TABLE` covers: the loaded image the tool
+    /// streamed, not the (possibly larger) allocated segment. A tool that writes
+    /// a short table image into a larger allocation gets an MCB CRC over exactly
+    /// those bytes. Returns `None` if the owner has no segment, and an empty vec
+    /// if the segment was allocated but never written.
+    pub fn written_span(&self, owner: u8) -> Option<Vec<u8>> {
+        let seg = self.segment_of(owner)?;
+        let base = seg.base as u32;
+        let end = base + seg.len;
+        // The highest written address within the segment, if any.
+        let high = self
+            .cells
+            .keys()
+            .map(|&a| a as u32)
+            .filter(|&a| a >= base && a < end)
+            .max();
+        let Some(high) = high else {
+            return Some(Vec::new());
+        };
+        let len = (high - base + 1) as usize;
+        Some(self.read(seg.base, len))
+    }
 }
 
 #[cfg(test)]
