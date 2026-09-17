@@ -96,14 +96,21 @@ pub const A_RESTART_MASTER_RESET: u16 = 0x381;
 
 /// `A_Restart_Response` — the device's answer to a master-reset `A_Restart`.
 ///
-/// Shares the master-reset restart-type bit; the response direction is
-/// distinguished on the wire by the frame flow (the device is the source). The
-/// payload is an error-code octet followed by a 2-byte big-endian *process time*
-/// (the minimum time to wait before the device is reachable again). A zero error
-/// code means the master reset was accepted; a non-zero code is an error
-/// (`02` = access denied, `03` = unsupported erase code, `04` = invalid channel
-/// number, per the KNX spec).
-pub const A_RESTART_RESPONSE: u16 = 0x381;
+/// The response APCI is **`0x3A1`**, distinct from the master-reset *request*
+/// (`0x381` = [`A_RESTART_MASTER_RESET`]). This was confirmed against the DA.tp
+/// capture (`shared-with-windows/dumpfile.pcap`, issue #49 errata): the tool
+/// sends `43 81 04 00` (request: APCI 0x381, erase=4, channel=0) and the device
+/// answers `43 a1 00 00 00` (response: APCI 0x3A1, error=0, process-time 0). The
+/// earlier value `0x381` collided with the request APCI, so a request could not
+/// be told from its response by APCI alone; the capture settles it.
+///
+/// The payload is an error-code octet followed by a 2-byte big-endian *process
+/// time* (the minimum time to wait before the device is reachable again). A zero
+/// error code means the master reset was accepted; a non-zero code is an error
+/// (`0x01` = access denied, `0x02` = unsupported erase code, `0x03` = invalid
+/// channel number, per the KNX spec — see [`crate::load`]). The capture only ever
+/// showed error `0x00` (success), so the non-zero mapping remains spec-derived.
+pub const A_RESTART_RESPONSE: u16 = 0x3A1;
 
 /// `A_IndividualAddress_Read` — broadcast: which device is in programming mode?
 pub const A_INDIVIDUAL_ADDRESS_READ: u16 = 0x100;
