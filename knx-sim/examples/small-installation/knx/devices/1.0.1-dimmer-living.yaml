@@ -1,0 +1,14 @@
+address: 1.0.1
+name: Dimmer Living
+description: DA.tp dimming actuator (KNX-Virtual), living-room light
+product:
+  manufacturer_ref: M-00FA
+  application_ref: M-00FA_A-2500-10-51CB
+  mask: 07B0
+com_objects:
+  1:
+    dpt: '3.007'
+    flags: CW
+  2:
+    dpt: '5.001'
+    flags: CW

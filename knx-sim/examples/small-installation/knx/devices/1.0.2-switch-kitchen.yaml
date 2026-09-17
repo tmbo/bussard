@@ -1,0 +1,14 @@
+address: 1.0.2
+name: Switch Kitchen
+description: MDT AKK switch actuator, kitchen light
+product:
+  manufacturer_ref: M-0083
+  application_ref: M-0083_A-0007-23-78E9
+  mask: 07B0
+com_objects:
+  1:
+    dpt: '1.001'
+    flags: CW
+  7:
+    dpt: '1.011'
+    flags: CRT

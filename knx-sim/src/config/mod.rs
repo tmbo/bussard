@@ -20,8 +20,8 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
-use crate::bus::Bus;
 use crate::bus::event::EventSink;
+use crate::bus::{Bus, StimulusJob};
 use crate::device::{Device, LoadState};
 use crate::prod::read_knxprod;
 use crate::wire::IndividualAddress;
@@ -101,6 +101,31 @@ fn effective_l4_budget(config_value: Option<u32>) -> Option<u32> {
         .or(config_value)
 }
 
+/// One scripted stimulus entry: a device periodically transmits a value on one
+/// of its com-objects, so an observed bus is alive without any external writes.
+///
+/// The value is encoded to KNX bytes for the given `dpt` (a small,
+/// deterministic codec covering the DPTs the example uses: 1.001 and 9.001) and
+/// sent as an `A_GroupValue_Write` from the device's **send** group address for
+/// `object` — resolved from the device's own flashed association table, so a
+/// stimulus only fires once the device is `Loaded` and actually linked. The
+/// device cycles through `values` in order, wrapping around.
+#[derive(Debug, Clone, Deserialize)]
+pub struct StimulusConfig {
+    /// The individual address of the transmitting device (e.g. `1.0.3`).
+    pub device: String,
+    /// The com-object number that transmits (must have a send GA in the flashed
+    /// association table).
+    pub object: u16,
+    /// The transmit period in milliseconds.
+    pub period_ms: u64,
+    /// The datapoint type used to encode the values (e.g. `1.001`, `9.001`).
+    pub dpt: String,
+    /// The values to cycle through, each parsed per `dpt` (e.g. `"1"`/`"0"` for
+    /// DPT 1.001, `"21.5"` for DPT 9.001).
+    pub values: Vec<String>,
+}
+
 /// The whole installation config.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SimConfig {
@@ -108,6 +133,10 @@ pub struct SimConfig {
     pub gateway: GatewayConfig,
     /// The devices on the bus.
     pub devices: Vec<DeviceConfig>,
+    /// Optional scripted stimulus: periodic device transmits that keep the bus
+    /// alive for observation. Empty (the default) means a quiet bus.
+    #[serde(default)]
+    pub stimulus: Vec<StimulusConfig>,
 }
 
 /// Errors from loading a config.
@@ -139,6 +168,14 @@ pub enum ConfigError {
         path: String,
         /// The underlying error.
         source: crate::prod::ProdError,
+    },
+    /// A stimulus entry could not be prepared (bad value or unsupported DPT).
+    #[error("stimulus error for device {device}: {source}")]
+    Stimulus {
+        /// The stimulus device address.
+        device: String,
+        /// The underlying encoding error.
+        source: crate::wire::dpt::DptError,
     },
 }
 
@@ -191,7 +228,47 @@ impl SimConfig {
                     .with_l4_exchange_budget(effective_l4_budget(dc.l4_exchange_budget));
             bus.add_device(device);
         }
+        bus.set_stimulus(self.build_stimulus()?);
         Ok(bus)
+    }
+
+    /// Prepare the scripted stimulus jobs, encoding each declared value to
+    /// group-data octets for its DPT. The first fire of every job is staggered by
+    /// half a period so several devices do not all transmit on the same tick.
+    fn build_stimulus(&self) -> Result<Vec<StimulusJob>, ConfigError> {
+        let mut jobs = Vec::new();
+        for (i, s) in self.stimulus.iter().enumerate() {
+            let device: IndividualAddress =
+                s.device.parse().map_err(|reason| ConfigError::BadAddress {
+                    addr: s.device.clone(),
+                    reason,
+                })?;
+            let mut values = Vec::with_capacity(s.values.len());
+            for v in &s.values {
+                let bytes = crate::wire::dpt::encode(&s.dpt, v).map_err(|source| {
+                    ConfigError::Stimulus {
+                        device: s.device.clone(),
+                        source,
+                    }
+                })?;
+                values.push(bytes);
+            }
+            if values.is_empty() {
+                continue;
+            }
+            let period_ms = s.period_ms as u128;
+            // Stagger the first fire so concurrent stimuli interleave on the bus.
+            let next_due_ms = (period_ms / 2) + (i as u128 * 250);
+            jobs.push(StimulusJob {
+                device,
+                object: s.object,
+                period_ms,
+                values,
+                next_due_ms,
+                cursor: 0,
+            });
+        }
+        Ok(jobs)
     }
 }
 

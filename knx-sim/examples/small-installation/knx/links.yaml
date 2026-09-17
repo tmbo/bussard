@@ -1,0 +1,50 @@
+# Com-object -> group-address links for the small-installation example.
+#
+# These links are what `bussard flash` compiles into each device's on-device
+# address table (obj1) and association table (obj2). After a flash the simulated
+# device parses those very tables back out of its own memory and uses them to
+# route group telegrams at runtime — so this file is the single source of truth
+# for both the download and the live bus behaviour.
+#
+# `object` is the ETS com-object number of the device's application program (see
+# the generated product model under models/ after `bussard import-product`). A
+# `send` GA is where the object transmits; `listen` GAs are what it receives.
+links:
+  # 1.0.1 — DA.tp dimming actuator (living-room light). Receives dimming
+  # commands; the actuator's input objects listen on the control/value GAs.
+  1.0.1:
+    - object: 1
+      name: Dimming Control
+      listen:
+        - 2/0/1
+    - object: 2
+      name: Dimming Value
+      listen:
+        - 2/0/2
+  # 1.0.2 — MDT AKK switch actuator (kitchen light). Object 1 switches the load;
+  # object 7 is the status object (Read + Transmit), so `bussard read 1/0/2` is
+  # served and the simulator can push status stimulus from it.
+  1.0.2:
+    - object: 1
+      name: Switch
+      listen:
+        - 1/0/1
+    - object: 7
+      name: Status
+      send: 1/0/2
+  # 1.0.3 — MDT AKI/AKS switch actuator (hallway light), a second, distinct switch
+  # actuator product. Object 1 switches; object 8 is its Read+Transmit state.
+  1.0.3:
+    - object: 1
+      name: Switch On/Off
+      listen:
+        - 1/1/1
+    - object: 8
+      name: State
+      send: 1/1/2
+  # 1.0.4 — MDT AKH heating actuator (living-room). Object 1 handles the room
+  # temperature value (Write + Transmit), used here to push a DPT 9.001 heartbeat.
+  1.0.4:
+    - object: 1
+      name: Room temperature
+      send: 3/0/1
