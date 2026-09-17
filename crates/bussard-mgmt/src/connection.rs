@@ -224,6 +224,11 @@ pub struct Layer4Connection<Ch: L4Channel> {
     timeouts: Timeouts,
     send_seq: u8,
     recv_seq: u8,
+    /// The APCI of the most-recently-sent request. Used to recognise a stray
+    /// `A_Memory_Response` **verify echo** (a verify-mode device answers every
+    /// `A_Memory_Write` with one) that arrives when we did NOT send a memory
+    /// read: it must be drained, not mistaken for the current request's answer.
+    last_send_apci: u16,
     /// How many numbered data telegrams (NDTs) this session has sent and had
     /// acknowledged. Used to fold protocol-unit progress into a mid-session
     /// silence error (#50): a stall reported "after N numbered exchanges" is
@@ -274,6 +279,7 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
             timeouts,
             send_seq: 0,
             recv_seq: 0,
+            last_send_apci: 0,
             numbered_exchanges: 0,
             pending_response: None,
             closed: false,
@@ -291,6 +297,7 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
                 address: self.target,
             });
         }
+        self.last_send_apci = apci;
         let seq = self.send_seq;
         let tpci_octet = tpci::ndt(seq);
         let frame = CemiFrame::t_data_connected(self.target, self.source, tpci_octet, apci, data);
@@ -347,6 +354,20 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
         self.pending_response = None;
     }
 
+    /// Whether `apci` is a stray `A_Memory_Response` **verify echo**: a memory
+    /// response arriving when the last request we sent was NOT a memory read.
+    ///
+    /// A verify-mode device answers every `A_Memory_Write` with such an echo. It
+    /// is not a response to any request, so it must be drained (ACKed and
+    /// dropped) rather than returned as the current operation's answer — otherwise
+    /// a following `A_PropertyValue_*` gets the wrong APDU ("malformed response"),
+    /// or, if folded in during a later write's `T_ACK` wait, it is mistaken for
+    /// that write's completion and desyncs the sequence.
+    fn is_stale_memory_echo(&self, apci: u16) -> bool {
+        (apci & crate::apci::APCI_SELECTOR_MASK) == crate::apci::A_MEMORY_RESPONSE
+            && (self.last_send_apci & crate::apci::APCI_SELECTOR_MASK) != crate::apci::A_MEMORY_READ
+    }
+
     /// Sends a management request as a numbered data telegram **without** waiting
     /// for the device's `T_ACK`.
     ///
@@ -361,6 +382,7 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
                 address: self.target,
             });
         }
+        self.last_send_apci = apci;
         let seq = self.send_seq;
         let tpci_octet = tpci::ndt(seq);
         let frame = CemiFrame::t_data_connected(self.target, self.source, tpci_octet, apci, data);
@@ -378,9 +400,13 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
     /// `expected - 1` and dropped. Times out as [`MgmtError::NoResponse`].
     pub async fn recv_response(&mut self) -> Result<(u16, Vec<u8>)> {
         // A folded-ACK response that arrived while we were awaiting the T_ACK has
-        // already been acknowledged and sequenced; hand it back first.
+        // already been acknowledged and sequenced; hand it back first — unless it
+        // is a stray verify-mode memory echo, which is dropped so the real
+        // response is awaited below.
         if let Some(pending) = self.pending_response.take() {
-            return Ok(pending);
+            if !self.is_stale_memory_echo(pending.0) {
+                return Ok(pending);
+            }
         }
         if self.closed {
             return Err(self.silence_error(SilenceKind::Disconnected));
@@ -414,10 +440,14 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
                 }
                 TpciKind::NumberedData(seq) => {
                     if seq == self.recv_seq {
-                        // Expected sequence: ACK and deliver.
+                        // Expected sequence: ACK and (unless it is a stray
+                        // verify-mode memory echo) deliver.
                         self.send_control(tpci::t_ack(seq)).await?;
                         self.recv_seq = (self.recv_seq + 1) & 0x0f;
                         let (apci, data) = extract_apdu(&frame);
+                        if self.is_stale_memory_echo(apci) {
+                            continue;
+                        }
                         return Ok((apci, data));
                     } else {
                         // Wrong sequence (a duplicate): ACK with expected-1 and
@@ -627,7 +657,15 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
                     // NDT that never comes (permanent desync).
                     let _ = self.send_control(tpci::t_ack(nseq)).await;
                     self.recv_seq = (self.recv_seq + 1) & 0x0f;
-                    self.pending_response = Some(extract_apdu(&frame));
+                    let (apci, data) = extract_apdu(&frame);
+                    if self.is_stale_memory_echo(apci) {
+                        // A verify-mode write echo (from THIS or a prior write),
+                        // not the current request's answer: drained (ACKed above),
+                        // keep waiting for the real T_ACK rather than falsely
+                        // treating this as the send's completion (which desyncs).
+                        continue;
+                    }
+                    self.pending_response = Some((apci, data));
                     return AckOutcome::Acked;
                 }
                 TpciKind::NumberedData(_) => {
