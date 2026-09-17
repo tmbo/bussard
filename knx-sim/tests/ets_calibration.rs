@@ -153,12 +153,15 @@ fn test_sim_rejects_memory_write_to_wrong_object() {
 
     // Drive: connect, authorize, unload obj4, start-loading obj4, allocate 256.
     // (PID5 writes use the 10-octet load-event value, zero-padded, as ETS does.)
+    // The device is now strict about L4 sequencing, so each numbered telegram
+    // carries the correct incrementing sequence (0,1,2,3) after the T_Connect
+    // resets the counter. The low nibble of the first TPDU byte is the sequence.
     let seq: Vec<Vec<u8>> = vec![
-        hex("80"),                               // T_Connect
-        hex("4bd100ffffffff"),                   // Authorize FF FF FF FF
-        hex("4fd70405100104000000000000000000"), // PID5 obj4 = Unload
-        hex("4fd70405100101000000000000000000"), // PID5 obj4 = StartLoading
-        hex("4fd704051001030b0000010000000000"), // PID5 obj4 = RelSegment 256
+        hex("80"),                               // T_Connect (resets seq)
+        hex("43d100ffffffff"),                   // seq 0: Authorize FF FF FF FF
+        hex("47d70405100104000000000000000000"), // seq 1: PID5 obj4 = Unload
+        hex("4bd70405100101000000000000000000"), // seq 2: PID5 obj4 = StartLoading
+        hex("4fd704051001030b0000010000000000"), // seq 3: PID5 obj4 = RelSegment 256
     ];
     for tpdu in seq {
         bus.deliver_from_tool(&cemi(0x0000, 0x1102, tpdu));
@@ -167,9 +170,9 @@ fn test_sim_rejects_memory_write_to_wrong_object() {
     // Now the deliberate deviation: A_MemoryWrite of 4 bytes at 0x8000. The
     // com-object table owns 0x8000 but is NOT open/Loading; only object 4's
     // segment at 0x6000 is open. A strict device must reject this.
-    // TPDU: 0x42 = TPCI connected + APCI hi bits; 0x84 = A_MemoryWrite count 4;
-    // 80 00 = address; then 4 data bytes.
-    let mut t = vec![0x42u8, 0x84, 0x80, 0x00];
+    // TPDU: 0x52 = TPCI connected seq 4 + APCI hi bits; 0x84 = A_MemoryWrite
+    // count 4; 80 00 = address; then 4 data bytes.
+    let mut t = vec![0x52u8, 0x84, 0x80, 0x00];
     t.extend_from_slice(&[0x11, 0x22, 0x33, 0x44]);
     bus.deliver_from_tool(&cemi(0x0000, 0x1102, t));
 
@@ -204,12 +207,13 @@ fn test_sim_rejects_load_completed_without_start() {
     bus.add_device(dev);
 
     bus.deliver_from_tool(&cemi(0x0000, 0x1102, hex("80")));
-    bus.deliver_from_tool(&cemi(0x0000, 0x1102, hex("4bd100ffffffff")));
-    // PID5 obj4 = LoadCompleted (0x02) with no StartLoading.
+    // seq 0: Authorize FF FF FF FF.
+    bus.deliver_from_tool(&cemi(0x0000, 0x1102, hex("43d100ffffffff")));
+    // seq 1: PID5 obj4 = LoadCompleted (0x02) with no StartLoading.
     bus.deliver_from_tool(&cemi(
         0x0000,
         0x1102,
-        hex("4fd70405100102000000000000000000"),
+        hex("47d70405100102000000000000000000"),
     ));
 
     let rejected = sink.events().into_iter().any(|e| match e {

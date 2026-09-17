@@ -147,15 +147,33 @@ pub const PID_ORDER_INFO: u8 = 15;
 /// `PID_HARDWARE_TYPE` — 6-byte hardware type identifier.
 pub const PID_HARDWARE_TYPE: u8 = 78;
 
-/// The maximum number of data octets a single `A_Memory_Read` may request. The
-/// count field is 6 bits but the practical per-telegram limit on TP1 is 12.
-pub const MAX_MEMORY_READ_LEN: u8 = 12;
+/// The maximum number of data octets a single `A_Memory_Read` / `A_Memory_Write`
+/// may carry.
+///
+/// This is **63**, matching what ETS uses on a System B device (verified against
+/// an ETS→KNX-Virtual capture: every configuration write is a 63-octet
+/// `A_Memory_Write`). 63 is the natural ceiling for two reasons:
+///
+/// - The count field is the **low 6 bits of the APCI**, so 63 is the largest
+///   value it can encode at all.
+/// - The resulting telegram — `2 APCI octets + [addr_hi, addr_lo] + 63 data` = 67
+///   octets of TPDU, NPDU length 66 — is an **extended** L_Data frame (the
+///   standard/short frame tops out at NPDU length 15). bussard now emits extended
+///   frames automatically when the APDU exceeds the short-frame ceiling (see
+///   [`bussard_transport::cemi::CemiFrame::encode`]), and 66 sits exactly at the
+///   KNX-Virtual device's advertised `PID_MAX_APDU_LENGTH` of 66 octets.
+///
+/// The old value was **12**, chosen to keep every write inside a short frame.
+/// That forced a 256-octet object write into ~22 write+read-back exchanges, which
+/// exhausted the device's per-connection L4 budget mid-write on real hardware.
+/// At 63 octets the same object is a handful of exchanges — matching ETS's
+/// framing and removing the L4 sequence wrap for this workload.
+pub const MAX_MEMORY_READ_LEN: u8 = 63;
 
 /// The maximum number of data octets a single `A_Memory_Write` may carry. Same
-/// 12-octet per-telegram TP1 ceiling as [`MAX_MEMORY_READ_LEN`]: the APDU is
-/// `count(6b in APCI) + [addr_hi, addr_lo, data…]`, and 12 data octets keeps the
-/// whole telegram inside the 15-octet APDU that every System B device accepts.
-pub const MAX_MEMORY_WRITE_LEN: u8 = 12;
+/// 63-octet ceiling as [`MAX_MEMORY_READ_LEN`]; see that constant for the full
+/// rationale (ETS parity, the 6-bit count field, and extended-frame framing).
+pub const MAX_MEMORY_WRITE_LEN: u8 = 63;
 
 /// Encodes the `A_PropertyValue_Read` payload (object index, PID, count/start).
 ///
@@ -616,7 +634,7 @@ mod tests {
         assert_eq!(apci, A_MEMORY_WRITE | 3);
         assert_eq!(payload, vec![0x40, 0x00, 0xAA, 0xBB, 0xCC]);
         // Over-long writes truncate to MAX_MEMORY_WRITE_LEN.
-        let big = vec![0x11u8; 40];
+        let big = vec![0x11u8; 200];
         let (apci, payload) = encode_memory_write(0x0100, &big);
         assert_eq!((apci & 0x3f) as u8, MAX_MEMORY_WRITE_LEN);
         assert_eq!(payload.len(), 2 + usize::from(MAX_MEMORY_WRITE_LEN));
