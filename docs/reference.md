@@ -235,6 +235,17 @@ Run the MCP server over stdio (see [the MCP server](#the-mcp-server)).
 | `--allow-writes` | off | Register the `knx_write_group` tool. Mutually exclusive with `--passive`. |
 | `--capture-db <PATH>` | | A `bussard capture` database to extend `knx_recent_telegrams` history beyond the in-memory ring. |
 
+### `bussard viz`
+
+Serve the network-visualization website: an HTTP server that renders the model as a bus-spine diagram and streams live traffic (see [the viz server](#the-viz-server)).
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--listen <ADDR>` | `127.0.0.1:8080` | The address to bind the HTTP server to. |
+| `--dir <DIR>` | `knx` | The model directory (required; a bad model is a hard error so the protected-GA gate never fails open). |
+| `--gateway <HOST>` | | Gateway override. On connect failure the server degrades to model-only mode. |
+| `--routing` | off | Force routing transport. |
+
 ## Environment variables
 
 | Variable | Meaning |
@@ -466,3 +477,37 @@ Bus operations share one rate limiter (minimum 250 ms between operations, at mos
 | `knx_validate` | none | Every diagnostic (code, severity, message, location) plus counts. |
 | `knx_read_group` | `ga` | Transmits a GroupValueRead and returns the decoded response. Omitted in `--passive` mode. |
 | `knx_write_group` | `ga`, `value` (human-typed), `dpt` (optional override) | A GroupValueWrite. Registered only with `--allow-writes`; refuses protected GAs outright. |
+
+## The viz server
+
+`bussard viz` serves a single self-contained website (no CDN, no build step, works offline) that turns the model into a live picture of the installation. Open the listen address in a browser.
+
+The page shows:
+
+- **Topology.** A bus-spine diagram grouped by floor and room: every device as a card with its name, address, and type; the group-address plan as a tree on the right. Selecting a device or GA draws its links and lists its senders and listeners.
+- **Live traffic.** Telegrams pulse along the spine from sender to listeners and flash the affected cards and tree rows. A bottom log shows time, source, GA, decoded value, and DPT, with a filter grammar and pause.
+- **State.** The last value seen on each GA, decoded against its DPT.
+- **Problems.** Com objects with no link and GAs with no sender or no listener are surfaced for the P5 review.
+- **Test writes.** Per-DPT widgets send a GroupValueWrite from the page. A `protected` GA is disabled until you arm a force checkbox. The confirmation is the echoed telegram on the live stream.
+
+Structure is read-only: devices, groups, and links are edited in the YAML model, and the model is loaded once at startup, so a YAML edit needs a server restart to show up.
+
+### API
+
+The website is driven by a small JSON/SSE API on the same listen address.
+
+| Endpoint | Returns |
+|---|---|
+| `GET /` | The website shell. `GET /assets/{file}` serves the embedded JS/CSS modules. |
+| `GET /api/model` | The precomputed model projection (devices, groups, ranges, links, senders/listeners). Immutable for the process lifetime. |
+| `GET /api/state` | `{bus: {state, transport, connected}, seq, values}`, where `values` is the last value, payload, DPT, and source per GA. |
+| `GET /api/traffic` | Server-Sent Events. `event: bus` (connection state, always sent first), `event: telegram` (`id:` is the seq, `data:` is the [telegram JSON](#telegram-json-contract) plus `seq`), `event: gap` (the subscriber fell behind and should re-snapshot). `?backlog=N` (default 50) replays recent telegrams; a reconnect with `Last-Event-ID` resumes with no duplicates and no gaps. |
+| `POST /api/group-write` | `{address, value, dpt?, force?}`. Encodes and sends a GroupValueWrite; returns `200` with an echo of what was written. |
+
+`POST /api/group-write` uses the same policy as `bussard write`: `400` for a bad address or un-encodable value, `403` for a `protected` GA without `force`, `422` when no DPT can be resolved (supply `dpt`), and `503` when the bus is unavailable. Errors are `{"error": {"code", "message"}}`.
+
+### Degraded and offline modes
+
+If the gateway cannot be reached at startup, the server runs in **model-only mode**: the topology, tree, inspector, and problems panels all work, but there is no live traffic and `POST /api/group-write` returns `503`. If the gateway drops mid-session, the bus actor reconnects in the background: `/api/state` flips to `reconnecting`, the SSE stream emits a `bus` event, and writes fail with `503` until the tunnel recovers. No restart is needed.
+
+The server takes one tunnel connection for the whole session. Whether a second tool (a concurrent `bussard write`, `flash`, or `scan`) can share the gateway depends on the gateway: `knx-sim` currently accepts more than one tunnel, but real gateways vary, and traffic on one tunnel is not necessarily mirrored to another. To drive test traffic that the page will always see, use `POST /api/group-write` on the viz server itself.

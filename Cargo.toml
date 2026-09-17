@@ -16,6 +16,7 @@ members = [
     "crates/bussard-ets",
     "crates/bussard-bus",
     "crates/bussard-download",
+    "crates/bussard-viz",
     "crates/bussard-cli",
 ]
 
@@ -40,6 +41,7 @@ bussard-prod = { path = "crates/bussard-prod", version = "0.1.0" }
 bussard-ets = { path = "crates/bussard-ets", version = "0.1.0" }
 bussard-ha = { path = "crates/bussard-ha", version = "0.1.0" }
 bussard-download = { path = "crates/bussard-download", version = "0.1.0" }
+bussard-viz = { path = "crates/bussard-viz", version = "0.1.0" }
 
 # Third-party (all MIT and/or Apache-2.0)
 tokio = { version = "1", features = ["full"] }
@@ -65,6 +67,14 @@ base64 = "0.22"
 # ApplicationProgram XML files in parallel during `.knxproj` import (the parse
 # dominates import wall time). MIT OR Apache-2.0.
 rayon = "1"
+# axum: the HTTP framework for the `bussard viz` web server (routes, extractors,
+# SSE, static-asset responses). MIT. Its tree (hyper, tower, http) is already
+# vetted by deny.toml's MIT/Apache allow-list.
+axum = "0.8"
+# tokio-stream: adapts the `TrafficHub`'s tokio broadcast receiver into a
+# `Stream` for axum's SSE responder (the `sync` feature wraps broadcast/watch).
+# MIT.
+tokio-stream = { version = "0.1", features = ["sync"] }
 
 # ---------------------------------------------------------------------------
 # Build profiles tuned for test iteration speed.
