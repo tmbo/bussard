@@ -3,9 +3,9 @@ name = "bussard-download"
 description = "The downloader: table computation, load procedures, differential plan/apply"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+publish.workspace = true
 
 [dependencies]
 bussard-model = { workspace = true }

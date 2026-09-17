@@ -22,10 +22,10 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "MIT"
 repository = "https://github.com/tmbo/bussard"
 authors = ["Tom Bocklisch"]
 rust-version = "1.85"
+publish = false
 
 [workspace.dependencies]
 # Internal crates

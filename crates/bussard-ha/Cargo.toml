@@ -3,9 +3,9 @@ name = "bussard-ha"
 description = "Home Assistant KNX config generation from the bussard YAML model"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+publish.workspace = true
 
 [dependencies]
 bussard-model = { path = "../bussard-model" }

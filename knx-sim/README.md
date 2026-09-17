@@ -62,8 +62,8 @@ calibration. `tests/fixtures/ets_da_tp_flash_requests.txt` (the request-directio
 TPDU stream distilled from the ETS capture) *is* committed — it is text, not
 vendor product data.
 
-## Independence & license
+## Independence
 
-MIT. crates.io dependencies only; no GPL, no `bussard` crates. This project is a
+crates.io dependencies only; no GPL, no `bussard` crates. This project is a
 standalone Cargo workspace (it has its own `[workspace]`), cleanly extractable to
 its own repository.
