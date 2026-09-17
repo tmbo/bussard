@@ -160,13 +160,21 @@ impl LoadControl {
 
     /// The load state a device is expected to reach after this control on a
     /// well-behaved single-object write, or `None` when the resulting state is
-    /// not fixed (`NoOperation`, `AdditionalLoadControls`).
+    /// not verified.
+    ///
+    /// `Unload` is deliberately `None`: it is a best-effort reset issued before
+    /// re-loading, and some conformant-in-practice stacks (KNX Virtual) leave the
+    /// object reporting `Loaded` rather than `Unloaded` after it — exactly as ETS
+    /// tolerates, since the following `StartLoading` opens the object from any
+    /// state and the terminal `LoadCompleted` (`Some(Loaded)`) is the authoritative
+    /// verification. A genuine `Error` after any control is still caught separately.
     pub fn expected_state(self) -> Option<LoadState> {
         match self {
             LoadControl::StartLoading => Some(LoadState::Loading),
             LoadControl::LoadCompleted => Some(LoadState::Loaded),
-            LoadControl::Unload => Some(LoadState::Unloaded),
-            LoadControl::NoOperation | LoadControl::AdditionalLoadControls => None,
+            LoadControl::Unload
+            | LoadControl::NoOperation
+            | LoadControl::AdditionalLoadControls => None,
         }
     }
 }
@@ -1346,10 +1354,9 @@ mod tests {
             LoadControl::LoadCompleted.expected_state(),
             Some(LoadState::Loaded)
         );
-        assert_eq!(
-            LoadControl::Unload.expected_state(),
-            Some(LoadState::Unloaded)
-        );
+        // Unload is a best-effort reset (not verified): KNX Virtual reports
+        // Loaded after it, which ETS tolerates and we must too.
+        assert_eq!(LoadControl::Unload.expected_state(), None);
         assert_eq!(LoadControl::NoOperation.expected_state(), None);
         assert_eq!(LoadControl::AdditionalLoadControls.expected_state(), None);
     }
