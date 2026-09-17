@@ -1028,6 +1028,36 @@
       "application_ref": "M-008E_A-7078-10-4940",
       "redistributable": false,
       "notes": "Second Steinel product (joins True Presence 135960). True-presence radar multisensor (measures presence, temperature, humidity, brightness). Database V1.0, mask 0705 (System 7). Hosted bare at steinel.de/out/media/knxsoftware/. Verified by download 2026-09-17."
+    },
+    {
+      "manufacturer": "B.E.G. Brück Electronic",
+      "manufacturer_id": "M-00C8",
+      "order_numbers": [
+        "92432"
+      ],
+      "name": "B.E.G. Luxomat PD2 KNX dimming presence detector",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/BEG/BEG92432_KNX_PD2_Dim_UP_V4.0_ETS4.knxprod",
+      "sha256": "78f142b823ff215ee096fb964f9aaab56ab33d7ddeb6287c0d1bc5f1c5725749",
+      "size": 62221,
+      "filename": "BEG92432_KNX_PD2_Dim_UP_V4.0_ETS4.knxprod",
+      "application_ref": "M-00C8_A-2720-40-090B",
+      "redistributable": false,
+      "notes": "NEW VENDOR (B.E.G. Bruck Electronic, M-00C8): Luxomat PD2 flush-mount dimming presence detector. Database V4.0 (ETS4). Mask 0705 (System 7). The PD2/PD4/PD9 Dim and RC Plus Next variants all share this same application program (A-2720). Hosted in the Siblik B.E.G. KNX-database archive. Verified by download 2026-09-18."
+    },
+    {
+      "manufacturer": "B.E.G. Brück Electronic",
+      "manufacturer_id": "M-00C8",
+      "order_numbers": [
+        "92448"
+      ],
+      "name": "B.E.G. Luxomat PD2 KNX switching presence detector",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/BEG/BEG92448_KNX_PD2_SWI_UP_V3.1_ETS4.knxprod",
+      "sha256": "628a3a9a99aac679367fa6ae19aa6765aa3941d16a72871ea95b909c42e32de3",
+      "size": 55433,
+      "filename": "BEG92448_KNX_PD2_SWI_UP_V3.1_ETS4.knxprod",
+      "application_ref": "M-00C8_A-2638-31-23E4",
+      "redistributable": false,
+      "notes": "B.E.G. Luxomat PD2 flush-mount switching presence detector. Database V3.1 (ETS4). Mask 0025 (previously zero coverage in the index). The PD2/PD4/PD9 SWI variants all share this same application program (A-2638). Hosted in the Siblik B.E.G. KNX-database archive. Verified by download 2026-09-18."
     }
   ]
 }
