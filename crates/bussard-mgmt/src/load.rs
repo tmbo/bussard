@@ -1287,6 +1287,11 @@ async fn write_one_chunk<Ch: L4Channel>(
     // confirmed after the load by the device's own MCB CRC (LdCtrlLoadImageProp)
     // and the flash engine's end-of-segment spot-check.
     l4.send_data(req_apci, &payload).await?;
+    // A verify-mode device answers the write with an unsolicited A_Memory_Response
+    // echo that await_ack folds into the pending slot. This write expects no
+    // response, so drop the echo — otherwise it satisfies the next request's
+    // recv_response with the wrong APDU (a "malformed response").
+    l4.discard_pending_response();
     Ok(())
 }
 
