@@ -58,8 +58,19 @@ upgrade of 0701 [research 4, CONFIRMED]. Any divergence found in capture gets an
 
 System 7 is **memory-mapped and absolute-addressed**: the whole download is a
 sequence of absolute segment writes at fixed 16-bit addresses. `[corpus: 49/49]`
-There is **no `RelSegment`, `WriteRelMem`, `WriteMem`, `WriteProp`,
-`LoadImageProp`, or `PID_MCB_TABLE`** anywhere in the System 7 corpus.
+There is **no `RelSegment`, `WriteRelMem`, `WriteMem`, or `WriteProp`** anywhere
+in the System 7 corpus.
+
+> **Amendment (2026-09-17, Jung 3361-1M):** the freshly fetched Jung
+> `M-0004_A-A011` (0705, the reference installation's presence detector) DOES
+> use `LdCtrlLoadImageProp` with `prop_id = 27` (`PID_MCB_TABLE`) on objects
+> 1-3. MCB verification on System 7 is therefore **app-dependent, not absent**:
+> the 49 MDT/Theben/Zennio corpus apps omit it, Jung requires it. Both sides
+> must support it: bussard executes `LoadImageProp` on System 7 exactly as the
+> procedure demands (per-object MCB, as on System B); the sim's System 7 device
+> serves `PID_MCB_TABLE` reads. Read-back compare remains the baseline verify
+> for procedures without it. Supersedes the two "no MCB on System 7" claims
+> below (section 6).
 
 ### 2.1 Interface objects
 
@@ -397,9 +408,10 @@ meaning, status-byte encoding, whether Property is ever used on real 0705.
   authorize so bussard's ordering is tested.
 - **Verification = read-back compare.** `A_Memory_Write` is unconfirmed; verify
   by `A_Memory_Read` + compare of echoed address, length, and bytes; a short
-  response is an error `[research 3.1, AL 03.03.07 §3.5, CONFIRMED]`. There is
-  **no `PID_MCB_TABLE` and no `LdCtrlLoadImageProp`** on System 7 `[research 3.3,
-  corpus]`. Segment checksums (last byte of a checksum-enabled segment) exist on
+  response is an error `[research 3.1, AL 03.03.07 §3.5, CONFIRMED]`. MCB is
+  app-dependent on System 7: absent from the MDT-era corpus but demanded by
+  Jung `A-A011` via `LoadImageProp` PID 27 — see the section 2 amendment.
+  Segment checksums (last byte of a checksum-enabled segment) exist on
   the BCU2 lineage but are not required for M1.
 - **Restart semantics** `[research 6.3]`. Basic Restart APCI 0x380, no payload,
   fire-and-forget, breaks the management connection — bussard reconnects after

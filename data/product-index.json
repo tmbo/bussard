@@ -592,6 +592,43 @@
       "application_ref": "M-0048_A-107C-11-FCE0",
       "redistributable": false,
       "notes": "Motion detector. Database V1.1, mask 0012 (System 2 / BCU2, an older mask family). Hosted on siblik.com (distributor mirror). Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "Jung",
+      "manufacturer_id": "M-0004",
+      "order_numbers": [
+        "3361-1MWW"
+      ],
+      "name": "Jung Presence detector mini Universal (3361-1 M)",
+      "url": "https://downloads.jung.de/Downloads/Produktdownloads/Datenbank%20ETS4%20-%20ETS5/KNX/de_3361-1m_V1.3_2020-05.knxprod",
+      "sha256": "0b857d3366f89ceb29607e7648b2430ffa948079c08e9c486c4f57ace83c9514",
+      "size": 526096,
+      "filename": "de_3361-1m_V1.3_2020-05.knxprod",
+      "application_ref": "M-0004_A-A011-13-60BC",
+      "redistributable": false,
+      "notes": "NEW VENDOR (Jung, M-0004): presence detector mini universal. Database V1.3 (2020-05), mask 0705 (System 7), single A-A011 application. Direct file behind the product page's 'Database ETS4 + ETS5' link (https://application.jung.de/downloads/download/61665/de); the de/en language URLs serve byte-identical files. Verified by download 2026-09-17."
+    },
+    {
+      "manufacturer": "Jung",
+      "manufacturer_id": "M-0004",
+      "order_numbers": [
+        "42911ST",
+        "42911 ST",
+        "42921ST",
+        "42921 ST",
+        "42931ST",
+        "42931 ST",
+        "42941ST",
+        "42941 ST"
+      ],
+      "name": "Jung KNX push-button module Universal F 40 Secure (429x1 ST)",
+      "url": "https://downloads.jung.de/Downloads/Produktdownloads/Datenbank%20ETS5%20-%20ETS6%20Secure/KNX/all_429x1ST_2v1_2v2_20241010.knxprod",
+      "sha256": "85d54bfb9f762258da97eff2ff1dde64e77813863885b7ab6b104ea696d32fc0",
+      "size": 8299546,
+      "filename": "all_429x1ST_2v1_2v2_20241010.knxprod",
+      "application_ref": "M-0004_A-D131-22-1A67",
+      "redistributable": false,
+      "notes": "Push-button module Universal 1/2/3/4-gang, F 40, KNX Secure (fits A/LS/CD cover sets). ETS5/6 Secure database (2024-10); one file bundles eight applications (A-D131..A-D134 in hardware v2.1 and v2.2), all mask 07B0 (System B). Direct file behind the product page's database link (https://application.jung.de/downloads/download/62232/de). Verified by download 2026-09-17."
     }
   ]
 }
