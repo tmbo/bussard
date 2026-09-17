@@ -1,0 +1,68 @@
+# knx-sim installation for the small-installation example: one bus, four strict
+# System B (mask 07B0) devices behind a KNXnet/IP tunnelling gateway on loopback.
+#
+# Run:   knx-sim knx-sim/examples/small-installation/sim.yaml
+# then drive bussard against 127.0.0.1:13671 (see knx/bussard.yaml and run.sh).
+#
+# The devices start `unloaded` (fresh from the factory). run.sh flashes each one
+# with `bussard flash`; after a successful download a device parses its own
+# freshly-written address/association/com-object tables and comes alive on the
+# bus, routing group telegrams per the links bussard wrote.
+gateway:
+  host: "127.0.0.1"
+  port: 13671
+
+devices:
+  # Living-room dimmer — DA.tp dimming actuator (KNX-Virtual, the calibration
+  # target). Product paths are resolved relative to this config's directory.
+  - address: "1.0.1"
+    knxprod: "products/KNX_Virtual_M-00FA.knxprod"
+    application: "M-00FA_A-2500-10-51CB"
+    initial_state: unloaded
+
+  # Kitchen light — MDT AKK switch actuator.
+  - address: "1.0.2"
+    knxprod: "products/MDT_KP_AKK_03_Switch_Actuator_V23.knxprod"
+    application: "M-0083_A-0007-23-78E9"
+    initial_state: unloaded
+
+  # Hallway light — MDT AKI/AKS switch actuator (a second, different switch
+  # actuator product, as a real bus carries several distinct actuators).
+  - address: "1.0.3"
+    knxprod: "products/MDT_KP_AKI_AKS_03_Switch_Actuator_V32d.knxprod"
+    application: "M-0083_A-0004-32-A137"
+    initial_state: unloaded
+
+  # Living-room heating valve — MDT AKH heating actuator.
+  - address: "1.0.4"
+    knxprod: "products/MDT_KP_AKH_03_Heating_Actuator_V34.knxprod"
+    application: "M-0083_A-013A-34-3E87"
+    initial_state: unloaded
+
+# Scripted stimulus: a deterministic, read-only-observable heartbeat so an
+# observed bus is alive without any external writes. Each entry makes a device
+# transmit a value on one of its com-objects every `period_ms`. Handled by the
+# simulator after the device is Loaded (an unloaded device stays silent). See
+# knx-sim DESIGN.md "runtime group communication".
+stimulus:
+  # The kitchen switch actuator reports its state every 5s (DPT 1.001 toggling),
+  # like a load being switched on and off. Object 7 (Status) sends to 1/0/2.
+  - device: "1.0.2"
+    object: 7
+    period_ms: 5000
+    dpt: "1.001"
+    values: ["1", "0"]
+  # The hallway switch actuator reports its state every 6s. Object 8 (State) to
+  # 1/1/2.
+  - device: "1.0.3"
+    object: 8
+    period_ms: 6000
+    dpt: "1.001"
+    values: ["1", "0"]
+  # The heating actuator pushes the current room temperature every 4s (DPT
+  # 9.001), like a room thermostat. Object 1 sends to 3/0/1.
+  - device: "1.0.4"
+    object: 1
+    period_ms: 4000
+    dpt: "9.001"
+    values: ["21.5", "22.0"]
