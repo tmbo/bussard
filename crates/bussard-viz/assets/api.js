@@ -27,13 +27,21 @@ export async function fetchState() {
 /**
  * Send a group write for testing (T1). Resolves to the echoed telegram info
  * on success; rejects with an Error carrying `.code` and `.status` on failure.
+ *
+ * Sends exactly one of `value` (a DPT-formatted human string, encoded
+ * server-side via parse_value) or `payload` (raw hex bytes, sent verbatim).
+ * Pass the value positionally for the common case, or `opts.payload` for a raw
+ * hex send (in which case `value` must be omitted / null).
+ *
  * @param {string} address — group address
- * @param {string} value — DPT-formatted value string, or raw hex
- * @param {{dpt?:string, force?:boolean}} [opts]
+ * @param {?string} value — DPT-formatted value string; null when sending raw hex
+ * @param {{dpt?:string, force?:boolean, payload?:string}} [opts]
  * @returns {Promise<Object>}
  */
 export async function groupWrite(address, value, opts = {}) {
-  const body = { address, value };
+  const body = { address };
+  if (opts.payload != null) body.payload = opts.payload;
+  else body.value = value;
   if (opts.dpt) body.dpt = opts.dpt;
   if (opts.force) body.force = true;
   const res = await fetch("/api/group-write", {
