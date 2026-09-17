@@ -165,9 +165,10 @@ fn corpus_flashability_sweep() {
 /// `LsmIdx=4 Size=1936`) inside one MergeId block. The lowering must dedupe the
 /// identical consecutive allocation, so no plan in the corpus ever emits two
 /// back-to-back `AllocateSegment` steps of the same size. (Re-allocation on an
-/// already-Loading object is legal per thelsing `table_object.cpp`'s `allocTable`,
-/// which frees and re-allocates — but the second allocation is redundant and is
-/// the step KNX Virtual was observed to choke on, so we drop it.)
+/// already-Loading object is legal per the KNX load-state machine — KNX Spec 3/5/2
+/// `LdCtrlRelSegment` frees any prior backing store and re-allocates — but the
+/// second allocation is redundant and is the step KNX Virtual was observed to
+/// choke on, so we drop it.)
 ///
 /// Env-gated exactly like the sweep: absent corpus skips cleanly (CI never holds
 /// copyrighted vendor data), so this is a local/opt-in regression check.
