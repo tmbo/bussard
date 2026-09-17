@@ -203,7 +203,13 @@ pub fn compute_parameter_image(
         };
         let bit_offset = mem.bit_offset.unwrap_or(0);
 
-        let placement = encode_value(app, pname, ptype, value.as_deref())?;
+        let placement = encode_value(
+            app,
+            pname,
+            ptype,
+            value.as_deref(),
+            ValueSource::VendorDefault,
+        )?;
 
         let seg_size = app.code_segments.get(seg_id).and_then(|s| s.size);
 
@@ -405,7 +411,13 @@ pub fn compute_parameter_image(
             .and_then(|id| app.parameter_types.get(id))
             .map(|d| &d.kind);
 
-        let placement = encode_value(app, pname, ptype, Some(raw_value))?;
+        let placement = encode_value(
+            app,
+            pname,
+            ptype,
+            Some(raw_value),
+            ValueSource::UserOverride,
+        )?;
 
         let seg_size = app.code_segments.get(seg_id).and_then(|s| s.size);
         let image = images
@@ -547,6 +559,30 @@ fn base_image(app: &ApplicationProgram, seg_id: &str) -> Vec<u8> {
         .unwrap_or_default()
 }
 
+/// Where a resolved parameter value came from, for the enum-membership leniency
+/// rule in [`encode_value`].
+///
+/// An enum parameter whose value is not one of its declared members is a
+/// data-quality trap. The rule depends on who chose the value:
+///
+/// - [`ValueSource::VendorDefault`] — the value is the vendor's own shipped
+///   default (the `ParameterType` default, the parameter's `Value`, or a
+///   `ParameterRef` value; chain steps 1-3). A default the vendor shipped is by
+///   definition what the device expects, so a non-member default is passed
+///   through verbatim with a warning rather than refusing the whole flash. Real
+///   cause: Zennio Z40/Z70 v2 ship a parameter whose default sits outside its own
+///   enum, which otherwise refused two otherwise-flashable panels.
+/// - [`ValueSource::UserOverride`] — the value is a caller-supplied override
+///   (chain step 4). A user asking to write a value outside the declared enum is a
+///   genuine mistake worth refusing, so the strict membership check stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValueSource {
+    /// The vendor's own default (chain steps 1-3): lenient on a non-member enum.
+    VendorDefault,
+    /// A caller-supplied override (chain step 4): strict on a non-member enum.
+    UserOverride,
+}
+
 /// An encoded parameter value ready to place.
 enum Placement {
     /// One or more whole bytes, laid down starting at the byte offset. Used for
@@ -560,11 +596,17 @@ enum Placement {
 }
 
 /// Resolves the width/encoding of a value from its parameter type.
+///
+/// `source` selects the enum-membership leniency (see [`ValueSource`]): a
+/// non-member enum value is refused when it is a [`ValueSource::UserOverride`] but
+/// passed through with a warning when it is the vendor's own
+/// [`ValueSource::VendorDefault`].
 fn encode_value(
     app: &ApplicationProgram,
     pname: &str,
     ptype: Option<&ParameterType>,
     value: Option<&str>,
+    source: ValueSource,
 ) -> Result<Placement> {
     match ptype {
         Some(ParameterType::Int {
@@ -581,11 +623,31 @@ fn encode_value(
                 param_err(app, pname, &format!("enum value `{raw}` is not an integer"))
             })?;
             if !values.is_empty() && !values.iter().any(|e| e.value == n) {
-                return Err(param_err(
-                    app,
-                    pname,
-                    &format!("value `{n}` is not a declared enumeration member"),
-                ));
+                match source {
+                    // A user asking to write a value outside the declared enum is a
+                    // genuine mistake — refuse it.
+                    ValueSource::UserOverride => {
+                        return Err(param_err(
+                            app,
+                            pname,
+                            &format!("value `{n}` is not a declared enumeration member"),
+                        ));
+                    }
+                    // The vendor's OWN default sits outside its OWN enum (a real
+                    // Zennio Z40/Z70 v2 data-quality trap). A default the vendor
+                    // shipped is by definition what the device expects, so pass the
+                    // raw byte(s) through with a warning rather than refusing the
+                    // whole flash over the vendor's own metadata bug.
+                    ValueSource::VendorDefault => {
+                        tracing::warn!(
+                            parameter = pname,
+                            value = n,
+                            "vendor default value is not a declared enumeration member; \
+                             passing the raw value through (the shipped default is what the \
+                             device expects)"
+                        );
+                    }
+                }
             }
             encode_int_bits(app, pname, size_bits.unwrap_or(8), false, n)
         }
@@ -1023,7 +1085,11 @@ mod tests {
     }
 
     #[test]
-    fn enum_rejects_undeclared_value() {
+    fn enum_vendor_default_undeclared_value_passes_through() {
+        // A VENDOR DEFAULT (chain steps 1-3) whose value is not a declared enum
+        // member is a real data-quality trap (Zennio Z40/Z70 v2 ship exactly this).
+        // A default the vendor shipped is by definition what the device expects, so
+        // it is encoded verbatim (raw byte 9) with a warning — NOT refused.
         let app = app_with(&[(
             "mode",
             r#"<TypeRestriction Base="Value" SizeInBit="8"><Enumeration Text="Off" Value="0" Id="e0"/></TypeRestriction>"#,
@@ -1031,8 +1097,31 @@ mod tests {
             0,
             0,
         )]);
-        let err = compute_parameter_image(&app, &no_overrides(), &no_bases()).unwrap_err();
-        assert!(err.to_string().contains("mode"), "{err}");
+        let img = compute_parameter_image(&app, &no_overrides(), &no_bases())
+            .expect("a vendor's own out-of-enum default must not refuse the flash");
+        assert_eq!(
+            img["M-1_A-1_RS-1"][0], 9,
+            "the raw default byte is passed through"
+        );
+    }
+
+    #[test]
+    fn enum_user_override_undeclared_value_is_refused() {
+        // A USER OVERRIDE (chain step 4) outside the declared enum is a genuine
+        // mistake worth refusing — the strict membership check stands for overrides.
+        let app = app_with(&[(
+            "mode",
+            r#"<TypeRestriction Base="Value" SizeInBit="8"><Enumeration Text="Off" Value="0" Id="e0"/></TypeRestriction>"#,
+            Some("0"),
+            0,
+            0,
+        )]);
+        let mut ov = BTreeMap::new();
+        ov.insert("P-0_R-1".to_string(), "9".to_string());
+        let err = compute_parameter_image(&app, &ov, &no_bases()).unwrap_err();
+        let s = err.to_string();
+        assert!(s.contains("mode"), "{s}");
+        assert!(s.contains("not a declared enumeration member"), "{s}");
     }
 
     #[test]
