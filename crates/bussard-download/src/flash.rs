@@ -912,6 +912,24 @@ pub fn plan_flash(
     // LoadImageProp checks the device's MCB CRC against the very bytes we wrote.
     let mut last_written_image: Option<ImageRef> = None;
 
+    // The objects worth loading are exactly the ones that receive a segment
+    // (a `RelSegment` allocation). A master template also opens/completes
+    // contentless objects — e.g. an unused "application program 2" at object
+    // index 5 — which some devices (KNX Virtual) refuse to open (StartLoading
+    // leaves them Unloaded). ETS only loads the objects it writes, so skip the
+    // Load/LoadCompleted of any object with no allocation. The Unload still runs
+    // (ETS unloads them too); a `None` index is kept rather than silently dropped.
+    let loadable: std::collections::HashSet<u32> = ops
+        .iter()
+        .filter_map(|op| match op {
+            LoadOp::RelSegment {
+                lsm_idx: Some(idx), ..
+            } => Some(*idx),
+            _ => None,
+        })
+        .collect();
+    let is_loadable = |idx: &Option<u32>| idx.is_none_or(|i| loadable.contains(&i));
+
     for (i, op) in ops.iter().enumerate() {
         let step_no = i + 1;
         match op {
@@ -920,10 +938,14 @@ pub fn plan_flash(
             LoadOp::Connect | LoadOp::Disconnect => {}
 
             LoadOp::Unload { lsm_idx } => steps.push(FlashStep::Unload { target: *lsm_idx }),
-            LoadOp::Load { lsm_idx } => steps.push(FlashStep::StartLoading { target: *lsm_idx }),
-            LoadOp::LoadCompleted { lsm_idx } => {
+            LoadOp::Load { lsm_idx } if is_loadable(lsm_idx) => {
+                steps.push(FlashStep::StartLoading { target: *lsm_idx })
+            }
+            LoadOp::Load { .. } => {}
+            LoadOp::LoadCompleted { lsm_idx } if is_loadable(lsm_idx) => {
                 steps.push(FlashStep::LoadCompleted { target: *lsm_idx })
             }
+            LoadOp::LoadCompleted { .. } => {}
             LoadOp::Restart => steps.push(FlashStep::Restart),
             LoadOp::MasterReset {
                 erase_code,
