@@ -9,7 +9,6 @@ name = "knx-sim"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
-license = "MIT"
 description = "An independent, strict KNX device + bus simulator for cross-checking flashing tools on the wire."
 authors = ["Tom Bocklisch"]
 repository = "https://github.com/tmbo/bussard"
