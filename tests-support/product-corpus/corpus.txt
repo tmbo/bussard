@@ -44,3 +44,7 @@ TA8FXCT-SEC      # 8-fold push-button sensor (KNX Secure)
 
 # --- Elsner Elektronik (M-00C9) ---
 70370            # TH-B-UP temperature/humidity sensor (0701)
+
+# --- Jung (M-0004) ---
+3361-1MWW        # presence detector mini universal (0705)
+42911ST          # push-button module Universal F 40 Secure (07B0 System B)
