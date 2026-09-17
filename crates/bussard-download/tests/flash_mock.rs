@@ -2516,6 +2516,154 @@ async fn flash_master_reset_reconnects_and_reaches_loaded() {
 }
 
 #[tokio::test]
+async fn flash_cycles_l4_connection_before_the_exchange_budget_and_reaches_loaded() {
+    // Proactive periodic L4 reconnection (the ETS pattern): a real
+    // connection-oriented device drops a long-held L4 connection after a bounded
+    // number of numbered exchanges (KNX Virtual DA.tp at ~35). Running the whole
+    // flash on ONE connection sits at that edge and fails ~half the time. The fix
+    // is to cycle the L4 connection (graceful T_Disconnect / T_Connect +
+    // re-authorize) BETWEEN steps once the connection's numbered-exchange count
+    // crosses a threshold well under the budget — the objects' load states and
+    // allocated segments persist across the cycle, so the procedure resumes
+    // seamlessly.
+    //
+    // This test proves both halves:
+    //   1. WITHOUT proactive cycling (threshold 0 = disabled), a device with a low
+    //      per-connection exchange budget drops the connection mid-flash and the
+    //      flash fails "device absent".
+    //   2. WITH proactive cycling at a low threshold, the flash cycles the
+    //      connection before the budget every time and reaches `Loaded` — and the
+    //      device saw several T_Connects (the periodic reconnects).
+    //
+    // SAFETY of env: nextest runs each test in its own process, so these
+    // process-global vars are isolated to this test; they only tune a sleep and
+    // the reconnect threshold and are read once per step.
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
+    }
+
+    // A per-connection budget below the fabricated procedure's total exchange
+    // count, but above the low threshold we cycle at — so a single connection dies
+    // yet cycling keeps every window under budget.
+    const BUDGET: u32 = 12;
+    const THRESHOLD: u32 = 5;
+
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+
+    // --- 1. Without the fix: the low budget kills the single-connection flash. ---
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_RECONNECT_EXCHANGES", "0");
+    }
+    {
+        let (handle, state, gw) = setup_bus(Fault::None).await;
+        state.lock().unwrap().die_after_exchanges = Some(BUDGET);
+        let source = bussard_bus::ops::group_source(&handle);
+        let app = fabricated_app();
+        let plan = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let connector = LeaseConnector {
+            handle: handle.clone(),
+            target,
+            source,
+        };
+        let mut session = Session::open_with_key(connector, None).await.unwrap();
+        let result = flash(
+            &mut session,
+            &plan,
+            bussard_download::FlashOptions::default(),
+            |_| {},
+        )
+        .await;
+        let _ = session.into_disconnect().await;
+        assert!(
+            result.is_err(),
+            "without proactive cycling the low L4 budget must drop the flash: {result:?}"
+        );
+        let _ = handle.close().await;
+        gw.abort();
+    }
+
+    // --- 2. With the fix: cycling before the budget reaches Loaded reliably. ---
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_RECONNECT_EXCHANGES", THRESHOLD.to_string());
+    }
+    {
+        let (handle, state, gw) = setup_bus(Fault::None).await;
+        state.lock().unwrap().die_after_exchanges = Some(BUDGET);
+        let source = bussard_bus::ops::group_source(&handle);
+        let app = fabricated_app();
+        let plan = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let connector = LeaseConnector {
+            handle: handle.clone(),
+            target,
+            source,
+        };
+        let mut session = Session::open_with_key(connector, None).await.unwrap();
+        let outcome = flash(
+            &mut session,
+            &plan,
+            bussard_download::FlashOptions::default(),
+            |_| {},
+        )
+        .await
+        .expect("proactive cycling must keep every window under budget and complete the flash");
+        let _ = session.into_disconnect().await;
+        assert!(
+            outcome.ok(),
+            "the cycled flash must verify as Loaded: {outcome:?}"
+        );
+        assert_eq!(outcome.load_state, LoadState::Loaded);
+        {
+            let s = state.lock().unwrap();
+            // The engine cycled the connection at least once (the original connect
+            // plus one proactive reconnect) to stay under the budget.
+            assert!(
+                s.connects >= 2,
+                "the flash must cycle the L4 connection to stay under the budget (connects = {})",
+                s.connects
+            );
+            // It re-authorized on each fresh window.
+            assert!(
+                s.authorizes_seen >= 2,
+                "each reconnected window must re-authorize (authorizes = {})",
+                s.authorizes_seen
+            );
+            // The connection was gracefully closed each cycle (T_Disconnect), not
+            // just dropped: at least one clean teardown before the terminal one.
+            assert!(
+                s.disconnects >= 1,
+                "a proactive cycle must gracefully T_Disconnect (disconnects = {})",
+                s.disconnects
+            );
+        }
+        let _ = handle.close().await;
+        gw.abort();
+    }
+
+    unsafe {
+        std::env::remove_var("BUSSARD_FLASH_RECONNECT_EXCHANGES");
+        std::env::remove_var("BUSSARD_FLASH_REBOOT_WAIT_MS");
+    }
+}
+
+#[tokio::test]
 async fn flash_final_restart_silence_is_success_not_failure() {
     // The terminal LdCtrlRestart is the SUCCESSFUL last step: bussard sends
     // A_Restart, the device reboots and goes silent, and that silence must be

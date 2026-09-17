@@ -465,6 +465,42 @@ fn master_reset_reboot_wait() -> std::time::Duration {
         .unwrap_or(MASTER_RESET_REBOOT_WAIT)
 }
 
+/// The numbered-exchange count at which the flash proactively cycles the L4
+/// connection (a graceful `T_Disconnect`/`T_Connect` + re-authorize) *between*
+/// steps, to stay under the device's per-connection budget.
+///
+/// A real connection-oriented device drops a long-held L4 connection after a
+/// bounded number of numbered exchanges — the KNX Virtual DA.tp device was
+/// observed to drop at ~35, and a whole post-master-reset flow on one connection
+/// sits right at that edge, failing ~50% of the time. ETS reconnects the L4
+/// connection periodically within a download (its capture shows repeated
+/// T_Disconnect/T_Connect cycles at 2–65-exchange intervals) to stay well clear.
+///
+/// 20 is deliberately well under the observed ~35 so a cycle always lands with
+/// headroom: the check runs *before* each step, and a single step (a chunked
+/// memory write) can add several exchanges, so the effective peak before a cycle
+/// is `THRESHOLD` + one step's exchanges — still comfortably below the budget.
+/// Only sessions that [`can_reconnect`](Session::can_reconnect) cycle; a
+/// single-connection session ([`Session::from_connection`], mocks) keeps the
+/// one-connection path.
+const RECONNECT_EXCHANGE_THRESHOLD: u32 = 20;
+
+/// Environment variable that overrides [`RECONNECT_EXCHANGE_THRESHOLD`] with a
+/// numeric value. Set by the flash-mock periodic-reconnect test so it can drive
+/// the cycle at a low, deterministic exchange count against a small procedure;
+/// unset in normal use, so the default 20 applies. Behaviour is otherwise
+/// unchanged (a value of 0 disables proactive cycling entirely).
+const RECONNECT_THRESHOLD_ENV: &str = "BUSSARD_FLASH_RECONNECT_EXCHANGES";
+
+/// The proactive-reconnect exchange threshold, honouring [`RECONNECT_THRESHOLD_ENV`]
+/// for tests. A value of 0 disables proactive cycling.
+fn reconnect_exchange_threshold() -> u32 {
+    std::env::var(RECONNECT_THRESHOLD_ENV)
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .unwrap_or(RECONNECT_EXCHANGE_THRESHOLD)
+}
+
 /// Identity of the application being flashed, for the pre-flight display and the
 /// verify report.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -807,6 +843,54 @@ impl<C: Connector> Session<C> {
         Self::authorize(&mut l4, self.bcu_key).await?;
         self.l4 = Some(l4);
         Ok(())
+    }
+
+    /// Proactively cycles the L4 connection **between** flash steps to stay under
+    /// the device's per-connection numbered-exchange budget.
+    ///
+    /// Real connection-oriented devices (KNX Virtual, and the couplers ETS drives)
+    /// drop a long-held L4 connection after a bounded number of numbered exchanges
+    /// — the DA.tp device drops at ~35. ETS avoids that by reconnecting the L4
+    /// connection periodically within a download; bussard does the same here.
+    ///
+    /// Unlike [`reconnect`](Session::reconnect) (used after a device *restart*,
+    /// where the peer is mid-reboot and the old connection is already dead), this
+    /// is a **graceful** cycle of a live connection: it sends a `T_Disconnect` to
+    /// close the old connection cleanly, opens a fresh one via the retained
+    /// [`Connector`], and re-presents the same authorization. The objects' load
+    /// states — and their allocated segments — are *persistent device state*, not
+    /// connection state, so they survive the `T_Disconnect`/`T_Connect` and the
+    /// procedure resumes seamlessly on the fresh, zero-exchange connection.
+    ///
+    /// A session built from an already-open connection
+    /// ([`Session::from_connection`]) has no connector and returns
+    /// [`MgmtError::Transport`]`(Closed)` — but such a session never calls this
+    /// (the flash loop only cycles when [`can_reconnect`](Session::can_reconnect)).
+    async fn cycle_l4(&mut self) -> Result<(), WriteError> {
+        // Gracefully close the live connection with a T_Disconnect so the device
+        // frees the old connection immediately (best-effort: a send error here is
+        // irrelevant, the fresh T_Connect below re-establishes state regardless).
+        if let Some(l4) = self.l4.take() {
+            let _ = l4.disconnect().await;
+        }
+        let connector =
+            self.connector
+                .as_mut()
+                .ok_or(WriteError::Mgmt(bussard_mgmt::MgmtError::Transport(
+                    bussard_transport::TransportError::Closed,
+                )))?;
+        let mut l4 = connector.connect().await?;
+        Self::authorize(&mut l4, self.bcu_key).await?;
+        self.l4 = Some(l4);
+        Ok(())
+    }
+
+    /// The current L4 connection's numbered-exchange count, or 0 when the session
+    /// holds no connection.
+    fn numbered_exchanges(&self) -> u32 {
+        self.l4
+            .as_ref()
+            .map_or(0, Layer4Connection::numbered_exchanges)
     }
 
     /// Consumes the session and gracefully disconnects the open connection.
@@ -1878,7 +1962,34 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
     // then; the post-loop verify runs only if it is still `None`.
     let mut verified: Option<FlashOutcome> = None;
 
+    // The proactive-reconnect exchange threshold (0 = disabled), read once.
+    let reconnect_threshold = reconnect_exchange_threshold();
+
     for (i, step) in plan.steps.iter().enumerate() {
+        // Proactive periodic L4 reconnection (the ETS pattern): before starting a
+        // step, if this connection's numbered-exchange count has reached the
+        // threshold, cycle the connection (graceful T_Disconnect / T_Connect +
+        // re-authorize) so it never approaches the device's per-connection budget
+        // (~35 on KNX Virtual). The objects' load states and their allocated
+        // segments are persistent device state, not connection state, so they
+        // survive the cycle and the step resumes on a fresh, zero-exchange
+        // connection. The check is *between* steps — never mid memory-write — so a
+        // chunked write is never split across a reconnect.
+        //
+        // Steps that reboot the device and re-establish the connection themselves
+        // (`MasterReset`, terminal `Restart`) are skipped here: cycling right
+        // before them would be a wasted reconnect (they drop and re-open the
+        // connection anyway). A single-connection session (mocks,
+        // `from_connection`) cannot reconnect, so it keeps the one-connection path.
+        let self_reconnecting_step =
+            matches!(step, FlashStep::MasterReset { .. } | FlashStep::Restart);
+        if reconnect_threshold > 0
+            && session.can_reconnect()
+            && !self_reconnecting_step
+            && session.numbered_exchanges() >= reconnect_threshold
+        {
+            session.cycle_l4().await?;
+        }
         progress(Progress::Step {
             index: i + 1,
             total,
