@@ -298,3 +298,28 @@ KNX IP BAOS 774          # KNX IP BAOS 774 (07B0)
 1177-01                  # Enertex MeTa² KNX Standard/Premium (07B0)
 1174-DK                  # LED Dimmsequenzer 20A/5x REG/DK (07B0)
 1152-3                   # Enertex KNX PowerSupply (07B0)
+
+# ============================================================
+# Throughput round batch 4 (2026-09-18): local scratchpad files,
+# source URLs verified by re-fetch (sha256 matches parsed file).
+# ============================================================
+
+# --- Gira (M-0006) ---
+2167 00                  # KNX IP-Router V4 (091A)
+5001 ..                  # Push button sensor 4 comfort 1-gang 1141 (07B0)
+
+# --- Eelectron (M-006C) ---
+PD00E01KNX               # PD00E01KNX Presence Detector STANDARD Se (0021)
+PD00E02KNX               # PD00E02KNX Presence Detector MULTI Senso (0021)
+
+# --- Arcus-EDS (M-0076) ---
+30801XXX                 # S8-AN2 (0701)
+305xxxxFC                # HLK305 (0701)
+
+# --- Ekinex (M-00B6) ---
+EK-EH2-TP                # APEKEH2TP (0705)
+EK-EI2-TP-4              # APEKEI2TP4 (07B0)
+EK-HE1-TP                # APEKHE1TP (0705)
+
+# --- Interra (M-0107) ---
+ITR901-002               # ITR901-002 - KNX Line Coupler (0912)
