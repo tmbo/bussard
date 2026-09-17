@@ -4159,6 +4159,113 @@ mod tests {
     }
 
     #[test]
+    fn plan_lowers_system_7_task_ctrl1_and_post_restart_lsm5() {
+        // The Theben FIX2 shape (§4.4/§4.7): a TaskCtrl1 on LSM 3, then a restart
+        // followed by a post-restart TaskSegment + Load on LSM 5.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-48_A-4947" ApplicationNumber="18759" ApplicationVersion="16"
+            MaskVersion="MV-0701" Name="FIX2" LoadProcedureStyle="ProductProcedure">
+          <Static>
+           <Code>
+            <AbsoluteSegment Id="M-48_A-4947_AS-1" Size="4" Address="16384"><Data>AAECAw==</Data></AbsoluteSegment>
+           </Code>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlConnect />
+             <LdCtrlUnload LsmIdx="3" />
+             <LdCtrlLoad LsmIdx="3" />
+             <LdCtrlAbsSegment LsmIdx="3" Address="16384" Size="4" />
+             <LdCtrlTaskSegment LsmIdx="3" Address="18486" />
+             <LdCtrlTaskCtrl1 LsmIdx="3" Address="18425" Count="1" />
+             <LdCtrlLoadCompleted LsmIdx="3" />
+             <LdCtrlRestart />
+             <LdCtrlTaskSegment LsmIdx="5" Address="17406" />
+             <LdCtrlLoad LsmIdx="5" />
+             <LdCtrlDisconnect />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-48_A-4947", xml.as_bytes()).unwrap();
+        let plan = plan_flash(
+            &app,
+            "1.1.99",
+            0x0701,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .expect("a System 7 plan");
+
+        // The TaskCtrl1 lowers to its own step.
+        assert!(plan.steps.iter().any(|s| matches!(
+            s,
+            FlashStep::Sys7TaskCtrl1 {
+                lsm: 3,
+                address: 18425,
+                count: 1
+            }
+        )));
+        // A post-restart LSM-5 TaskSegment + Load appears after the Restart.
+        let restart_pos = plan
+            .steps
+            .iter()
+            .position(|s| matches!(s, FlashStep::Restart))
+            .expect("a restart");
+        assert!(
+            plan.steps[restart_pos + 1..]
+                .iter()
+                .any(|s| matches!(s, FlashStep::Sys7TaskSegment { lsm: 5, .. }))
+        );
+        assert!(
+            plan.steps[restart_pos + 1..]
+                .iter()
+                .any(|s| matches!(s, FlashStep::Sys7StartLoading { lsm: 5 }))
+        );
+    }
+
+    #[test]
+    fn plan_lowers_system_7_compare_mem() {
+        // The Zennio LUMENTO shape (§4.5): a raw LdCtrlCompareMem before the LSMs.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-71_A-3211" ApplicationNumber="12817" ApplicationVersion="18"
+            MaskVersion="MV-0701" Name="LUMENTO" LoadProcedureStyle="ProductProcedure">
+          <Static>
+           <Code>
+            <AbsoluteSegment Id="M-71_A-3211_AS-1" Size="2" Address="16384"><Data>AAE=</Data></AbsoluteSegment>
+           </Code>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlConnect />
+             <LdCtrlCompareMem Address="46609" InlineData="3210" Size="2" />
+             <LdCtrlUnload LsmIdx="1" />
+             <LdCtrlLoad LsmIdx="1" />
+             <LdCtrlAbsSegment LsmIdx="1" Address="16384" Size="2" />
+             <LdCtrlLoadCompleted LsmIdx="1" />
+             <LdCtrlDisconnect />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-71_A-3211", xml.as_bytes()).unwrap();
+        let plan = plan_flash(
+            &app,
+            "1.1.99",
+            0x0701,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .expect("a System 7 plan");
+        assert!(plan.steps.iter().any(|s| matches!(
+            s,
+            FlashStep::Sys7CompareMem { address: 46609, expected } if expected == &[0x32, 0x10]
+        )));
+    }
+
+    #[test]
     fn sys7_profile_from_hawk_resolves_memory_mapped_addresses() {
         use bussard_prod::{HawkConfig, HawkResource};
         let mut resources = std::collections::HashMap::new();
