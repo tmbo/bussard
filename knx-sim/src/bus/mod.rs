@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::device::Device;
-use crate::wire::{Apci, CemiLData, GroupAddress, IndividualAddress, Tpci};
+use crate::wire::{Apci, CemiLData, GroupAddress, IndividualAddress, MessageCode, Tpci};
 use event::{Direction, Event, EventSink};
 
 /// The virtual bus. Holds every device by its individual address and dispatches
@@ -87,17 +87,41 @@ impl Bus {
         responses
     }
 
-    /// Deliver a group telegram: broadcast it to every device on the bus and
-    /// collect any group telegrams the devices produce in reply (e.g. an
+    /// Deliver a group telegram from the tool: echo it back to the sender as an
+    /// `L_Data.con`, broadcast it to every device on the bus, and collect any
+    /// group telegrams the devices produce in reply (e.g. an
     /// `A_GroupValue_Response` from a device that holds the Read flag).
     ///
     /// A group telegram is seen by all devices, not just an addressed one — the
     /// defining property of a shared bus. Every reply is itself a bus telegram,
     /// so it is fed back to the other devices (they update their listeners) and
     /// returned to the tunnel client. Emits each reply on the event stream.
+    ///
+    /// The leading `L_Data.con` mirrors real KNXnet/IP gateway behaviour: a
+    /// tunnel client is told its own transmission went out on the bus. Without
+    /// it a monitor/viz sharing that tunnel would never see the writes it sends
+    /// (issue #64), because a tool does not otherwise observe its own traffic.
     fn deliver_group(&mut self, cemi: &CemiLData) -> Vec<CemiLData> {
         let Some((apci, ga, payload)) = decode_group(cemi) else {
             return Vec::new();
+        };
+        // Echo the tool's own transmission back as a local confirmation
+        // (L_Data.con) toward the sender — a real gateway confirms every request
+        // it puts on the bus, and the connected monitor/viz relies on that echo
+        // to see its own group writes (issue #64). A bare GroupValueRead carries
+        // no value to log and is answered by a device's Response instead, so it
+        // is left unechoed to keep read semantics (and the existing tests) exact.
+        let echo = match apci {
+            Apci::GroupValueWrite | Apci::GroupValueResponse => {
+                let echo = confirm_echo(cemi);
+                self.events.emit(Event::Telegram {
+                    direction: Direction::ToTool,
+                    cemi: echo.encode(),
+                    summary: summarize(&echo),
+                });
+                Some(echo)
+            }
+            _ => None,
         };
         // The source device (if the telegram came from a device, not the tool)
         // must not react to its own transmission.
@@ -112,7 +136,9 @@ impl Bus {
         // Fan replies back onto the bus (devices see each other's responses) and
         // out to the tool. A response updates listeners but should not itself
         // trigger further responses (it is not a read), so one pass suffices.
-        let mut out = Vec::new();
+        // The confirmation echo (when present) leads so the tool sees its own
+        // write before any device reply.
+        let mut out: Vec<CemiLData> = echo.into_iter().collect();
         for reply in replies {
             self.events.emit(Event::Telegram {
                 direction: Direction::ToTool,
@@ -209,6 +235,17 @@ pub struct StimulusJob {
     pub next_due_ms: u128,
     /// The index of the next value to send.
     pub cursor: usize,
+}
+
+/// Build the `L_Data.con` echo of a tool-originated telegram: the same frame
+/// re-coded as a local confirmation back toward the sender. A real KNXnet/IP
+/// gateway confirms every request the tool puts on the bus; the connected
+/// monitor/viz relies on that echo to see its own group writes.
+fn confirm_echo(cemi: &CemiLData) -> CemiLData {
+    CemiLData {
+        message_code: MessageCode::LDataCon,
+        ..cemi.clone()
+    }
 }
 
 /// Map a group service to the "listener-updating" service: a `_Response` updates
