@@ -28,6 +28,15 @@
 
 use std::collections::BTreeMap;
 
+/// `PID_OBJECT_TYPE` — the interface-object type (IOT) of an interface object.
+///
+/// This is a global (IOT-independent) property present on *every* interface
+/// object (spec KNX v01.10.01 Resources 03.05.01; ref
+/// `knx-device-spec-references.md` §4.2). It is `PDT_UNSIGNED_INT` (2 octets,
+/// big-endian). A management tool probes `A_PropertyValue_Read(objIdx, PID 1)`
+/// per object index to discover the device's interface-object table, so a
+/// spec-correct device must answer it for each object it exposes.
+pub const PID_OBJECT_TYPE: u8 = 1;
 /// `PID_LOAD_STATE_CONTROL`.
 pub const PID_LOAD_STATE_CONTROL: u8 = 5;
 /// `PID_TABLE_REFERENCE` — the segment base address of a table object.
@@ -36,6 +45,26 @@ pub const PID_TABLE_REFERENCE: u8 = 7;
 pub const PID_RUN_STATE_CONTROL: u8 = 0x0D;
 /// `PID_PROGMODE` — the programming-mode flag on the device object.
 pub const PID_PROGMODE: u8 = 0x36;
+
+/// Interface-object type (IOT) codes — the value `PID_OBJECT_TYPE` reports.
+///
+/// From the KNX interface-object type enumeration (spec Resources 03.05.01; ref
+/// `knx-device-spec-references.md` §4.1). Only the types a System B device
+/// exposes on the flash path are named here.
+pub mod iot {
+    /// Device object.
+    pub const DEVICE: u16 = 0;
+    /// Address table object.
+    pub const ADDRESS_TABLE: u16 = 1;
+    /// Association table object.
+    pub const ASSOCIATION_TABLE: u16 = 2;
+    /// Application program object.
+    pub const APPLICATION_PROGRAM: u16 = 3;
+    /// Interface program object.
+    pub const INTERFACE_PROGRAM: u16 = 4;
+    /// KNX-object association table object.
+    pub const KNX_OBJECT_ASSOCIATION_TABLE: u16 = 5;
+}
 
 /// One property: raw value bytes plus a read-only flag.
 #[derive(Debug, Clone, PartialEq, Eq)]
