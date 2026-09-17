@@ -196,8 +196,15 @@ fn corpus_never_emits_duplicate_consecutive_allocations() {
             let Ok(mask) = u16::from_str_radix(mask_str.trim(), 16) else {
                 continue;
             };
-            let Ok(plan) = plan_flash(app, "1.1.1", mask, &BTreeMap::new(), &BTreeMap::new())
-            else {
+            let Ok(plan) = plan_flash(
+                app,
+                "1.1.1",
+                mask,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                None,
+                &BTreeMap::new(),
+            ) else {
                 continue;
             };
             checked_plans += 1;
@@ -242,6 +249,8 @@ fn classify(app: &bussard_prod::ApplicationProgram) -> Class {
         device_mask,
         &BTreeMap::new(),
         &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
     ) {
         Ok(_plan) => Class::Executable,
         Err(PlanError::NotSystemB { .. }) => Class::NotSystemB,
@@ -272,6 +281,11 @@ fn classify(app: &bussard_prod::ApplicationProgram) -> Class {
         },
         Err(PlanError::UnsupportedWriteProp { .. }) => Class::Refused {
             reason: "UnsupportedWriteProp".to_string(),
+        },
+        // Cannot happen here (no master template is passed, so nothing splices a
+        // table-object write), but the match must be total.
+        Err(PlanError::MissingTableImage { .. }) => Class::Refused {
+            reason: "MissingTableImage".to_string(),
         },
     }
 }
