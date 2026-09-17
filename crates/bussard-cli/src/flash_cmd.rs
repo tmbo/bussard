@@ -287,10 +287,18 @@ fn collect_parameter_overrides(
 ///
 /// obj1 and obj2 come from the device's model links via
 /// [`bussard_download::compute_tables`] (the same tables `bussard apply`
-/// downloads); obj3 is the best-effort group-object descriptor table built from
-/// the app's linked com-objects (its byte format is unverified — see
+/// downloads); obj3 is the System B group-object descriptor table built from the
+/// app's linked com-objects (its byte layout is verified byte-for-byte against
+/// the ETS→KNX-Virtual DA.tp capture — see
 /// [`bussard_download::compute::compute_group_object_table`]). Each image
 /// includes its big-endian element-count word.
+///
+/// obj3 here lists only the device's **linked** com-objects: it reproduces ETS's
+/// per-object descriptor bytes exactly, but ETS additionally emits zero-comm
+/// entries for every com-object the app instantiates on other channels — those
+/// unlinked instances live only in a full `.knxproj` (the product data has no
+/// channel expansion), so a links-only model yields a link-scoped obj3 rather
+/// than the full instantiated table.
 ///
 /// Returns an empty map when the model is absent or the device has no links —
 /// which leaves a self-contained (thelsing) single-object flash untouched.
@@ -300,19 +308,25 @@ fn build_table_images(
     app: &ApplicationProgram,
 ) -> BTreeMap<u32, Vec<u8>> {
     use bussard_download::compute::{
-        compute_group_object_table, descriptors_for_linked_objects, table_image_with_count,
+        GroupObjectDescriptor, Priority, compute_group_object_table,
+        descriptors_for_linked_objects, size_code_from_object_size, table_image_with_count,
     };
 
     let mut out = BTreeMap::new();
-    let Some(model) = model else { return out };
-    let Some(links) = model.links.links.get(&target) else {
-        return out;
-    };
-    if links.is_empty() {
-        return out;
-    }
 
-    // obj1 (address table) + obj2 (association table) from the model links.
+    // The device's model links, if any. A `--dir` model that has no entry for
+    // this device (or an empty link list) is a *bare vendor-default* flash: the
+    // device is programmed with the application's out-of-box group objects but no
+    // group addresses (an empty address/association table), exactly as a
+    // factory-fresh ETS download of an unassigned device would.
+    let links: &[bussard_model::schema::Link] = model
+        .and_then(|m| m.links.links.get(&target))
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+
+    // obj1 (address table) + obj2 (association table) from the model links. With
+    // no links these are the empty tables (count word 0), which a merged
+    // template still allocates and writes on a bare flash.
     let desired = bussard_download::compute_tables(links);
     out.insert(
         1,
@@ -323,11 +337,32 @@ fn build_table_images(
         table_image_with_count(desired.association_count(), &desired.association_elements()),
     );
 
-    // obj3 (group-object table) from the app's com-objects that are linked.
-    let linked: std::collections::BTreeSet<u16> = links.iter().map(|l| l.object).collect();
+    // obj3 (group-object table). With links, ETS registers a descriptor for each
+    // linked com-object (Communication set). On a bare flash (no links), we still
+    // emit a well-formed table for every com-object the application defines, with
+    // Communication cleared — the descriptor bytes ETS writes for an unlinked
+    // instance. This is a link-scoped / template-scoped table: the product data
+    // has no channel expansion, so it lists the app's declared com-objects, not
+    // every per-channel instance a full `.knxproj` would.
     let com_objects = app.resolved_com_objects();
-    let descriptors = descriptors_for_linked_objects(&com_objects, &linked);
-    if let Some(obj3) = compute_group_object_table(&descriptors) {
+    let obj3 = if links.is_empty() {
+        let descriptors: Vec<GroupObjectDescriptor> = com_objects
+            .iter()
+            .map(|c| GroupObjectDescriptor {
+                asap: c.number(),
+                // Communication cleared: an unlinked com-object on a bare flash.
+                flags: c.flags() - bussard_model::Flags::COMMUNICATION,
+                size_code: size_code_from_object_size(c.object_size()),
+                priority: Priority::default(),
+            })
+            .collect();
+        compute_group_object_table(&descriptors)
+    } else {
+        let linked: std::collections::BTreeSet<u16> = links.iter().map(|l| l.object).collect();
+        let descriptors = descriptors_for_linked_objects(&com_objects, &linked);
+        compute_group_object_table(&descriptors)
+    };
+    if let Some(obj3) = obj3 {
         out.insert(3, obj3);
     }
 

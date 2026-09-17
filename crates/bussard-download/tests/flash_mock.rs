@@ -2809,11 +2809,13 @@ async fn flash_da_tp_programs_all_four_objects() {
             asap: 1,
             flags: bussard_model::Flags::COMMUNICATION | bussard_model::Flags::TRANSMIT,
             size_code: 0,
+            priority: bussard_download::Priority::Low,
         },
         GroupObjectDescriptor {
             asap: 2,
             flags: bussard_model::Flags::COMMUNICATION | bussard_model::Flags::WRITE,
             size_code: 0,
+            priority: bussard_download::Priority::Low,
         },
     ])
     .unwrap();

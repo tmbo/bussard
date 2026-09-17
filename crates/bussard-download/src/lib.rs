@@ -24,7 +24,11 @@ pub mod plan;
 pub use apply::{
     TableObjectIndexes, VerifyOutcome, apply_tables, discover_table_objects, read_states,
 };
-pub use compute::{DesiredTables, compute_tables};
+pub use compute::{
+    DesiredTables, GroupObjectDescriptor, Priority, app_program_version,
+    compute_group_object_table, compute_tables, descriptors_for_linked_objects,
+    size_code_from_object_size, table_image_with_count,
+};
 pub use flash::{
     AppIdentity, Connector, FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, ImageRef,
     PlanError, Progress, Session, SingleConnector, discover_application_object, flash, plan_flash,
