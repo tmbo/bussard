@@ -39,6 +39,7 @@ pub use application::{
     Memory, Parameter, ParameterRef, ParameterType, ParameterTypeDecl, ResolvedComObject,
     ResolvedParameter, SegmentKind, parse_application_program,
 };
+pub use bussard_ets::master::{MaskLoadProcedure, MasterTemplate, parse_master_template};
 pub use container::AppEntry;
 pub use error::{ProdError, Result};
 pub use fetch::{DownloadConsent, MAX_DOWNLOAD_BYTES, fetch_entry};
@@ -55,6 +56,10 @@ pub struct ProductData {
     pub hardware: HardwareCatalog,
     /// Every ApplicationProgram in the archive, sorted by id.
     pub applications: Vec<ApplicationProgram>,
+    /// The `knx_master.xml` load-procedure templates, when the archive carries a
+    /// master file. `None` for a self-contained archive without one — the flash
+    /// then stays on the single-object path (no template to splice against).
+    pub master: Option<MasterTemplate>,
 }
 
 impl ProductData {
@@ -113,9 +118,17 @@ pub fn read_knxprod(path: &Path) -> Result<ProductData> {
     }
     applications.sort_by(|a, b| a.id.cmp(&b.id));
 
+    // The master template is optional; a `.knxprod` without `knx_master.xml`
+    // (or produced without one) parses fine and stays on the single-object path.
+    let master = container
+        .master_xml()?
+        .map(|xml| parse_master_template(xml.as_bytes(), "knx_master.xml"))
+        .transpose()?;
+
     Ok(ProductData {
         manufacturers,
         hardware,
         applications,
+        master,
     })
 }

@@ -102,6 +102,16 @@ impl Container {
         Ok(self.read_entry_opt(&entry)?.map(strip_bom))
     }
 
+    /// Reads the archive's top-level `knx_master.xml`, or `None` if absent.
+    ///
+    /// The master file carries the per-mask `Load` procedure templates a merged
+    /// application splices into (`knx_master.xml` → [`crate::MasterTemplate`]). A
+    /// self-contained `.knxprod` (or one produced without the master) has no such
+    /// entry; `None` then leaves the flash on the single-object path.
+    pub fn master_xml(&mut self) -> Result<Option<String>> {
+        Ok(self.read_entry_opt("knx_master.xml")?.map(strip_bom))
+    }
+
     /// Reads a named archive entry to a UTF-8 string (BOM stripped), erroring if
     /// the entry is absent.
     pub fn read_to_string(&mut self, entry: &str) -> Result<String> {
