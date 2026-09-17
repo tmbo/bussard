@@ -465,3 +465,48 @@ jobs:
         run: |
           sudo pkill -f knx-linux-ip 2>/dev/null || true
           sudo tests-support/virtual-device/netns-setup.sh --teardown || true
+
+  # Optional frontend smoke test: boot the `bussard viz` server in-process and
+  # drive the actual DOM with headless Chrome (see
+  # crates/bussard-viz/tests/browser_smoke.rs). Ubuntu-only, because GitHub's
+  # ubuntu runners ship `google-chrome` preinstalled; macOS/Windows runners do
+  # not reliably, and the test skips gracefully when no Chrome is found anyway.
+  #
+  # Kept OFF the required path — its own job name (`browser-smoke`) with
+  # continue-on-error, modeled on the `virtual-device` job — so a flake in the
+  # browser (a real, external, occasionally-cranky dependency) never blocks a
+  # merge and is not a dependency of any required job. The `browser-tests`
+  # cargo feature gates the test source so a normal build never compiles it, and
+  # (unlike the original plan) it pulls in NO new crate: the headless_chrome
+  # crate was rejected by the `deny` gate (its build dep auto_generate_cdp is
+  # GPL-3.0), so the test drives Chrome as a plain subprocess instead.
+  browser-smoke:
+    name: browser-smoke (ubuntu, viz)
+    runs-on: ubuntu-latest
+    # Non-blocking: an external-browser flake must not fail the required suite.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Reuse the ubuntu build graph warmed by lint/test — keeps this cheap.
+          shared-key: rust-ubuntu
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      # GitHub's ubuntu-latest image preinstalls Google Chrome as
+      # `google-chrome`; the test's Chrome finder checks /usr/bin/google-chrome.
+      - name: Show Chrome version
+        run: google-chrome --version || echo "no google-chrome on PATH"
+
+      - name: Browser smoke test (viz)
+        run: cargo nextest run -p bussard-viz --features browser-tests -E 'test(browser)'
