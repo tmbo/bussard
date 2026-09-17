@@ -1223,7 +1223,15 @@ pub fn plan_flash(
     // obj0/PID78 preflight all differ from System B, so it is a separate path
     // rather than a branchy overload of the System B lowering below.
     if profile.is_system_7() {
-        return plan_flash_sys7(app, device, device_mask, overrides, base_offsets, profile);
+        return plan_flash_sys7(
+            app,
+            device,
+            device_mask,
+            overrides,
+            base_offsets,
+            profile,
+            None,
+        );
     }
 
     // 3. Assemble the op sequence to execute. A `MergedProcedure` app splits one
@@ -1828,6 +1836,7 @@ fn plan_flash_sys7(
     overrides: &BTreeMap<String, String>,
     base_offsets: &BTreeMap<String, u32>,
     profile: bussard_mgmt::MaskProfile,
+    hawk: Option<&bussard_prod::HawkConfig>,
 ) -> std::result::Result<FlashPlan, PlanError> {
     let app_mask = app
         .mask_version
@@ -1851,8 +1860,9 @@ fn plan_flash_sys7(
 
     // The data-driven mask profile: from `HawkConfigurationData` when the import
     // path supplied one, else the corpus-default fallback (`[system7-spec §2.4]`).
-    let s7_profile = profile
-        .sys7_default_profile()
+    let s7_profile = hawk
+        .and_then(sys7_profile_from_hawk)
+        .or_else(|| profile.sys7_default_profile())
         .unwrap_or_else(bussard_mgmt::Sys7Profile::corpus_default);
 
     // Index the app's absolute code segments by address so each AbsSegment op can
@@ -2034,6 +2044,85 @@ fn plan_flash_sys7(
             segment_masks,
         }),
     })
+}
+
+/// Plans a System 7 flash using a `.knxprod`'s parsed `HawkConfigurationData` to
+/// resolve the LSM realisation and addresses, falling back to the corpus default
+/// when the block is absent (`[system7-spec §2.4]`).
+///
+/// This is the data-driven entry the CLI uses when it has the master template's
+/// Hawk config for the device mask; [`plan_flash`] itself (which does not receive
+/// the full template) uses the corpus default. Refuses a non-System-7 mask with
+/// [`PlanError::NotSystemB`].
+pub fn plan_flash_sys7_with_hawk(
+    app: &ApplicationProgram,
+    device: &str,
+    device_mask: u16,
+    overrides: &BTreeMap<String, String>,
+    base_offsets: &BTreeMap<String, u32>,
+    hawk: Option<&bussard_prod::HawkConfig>,
+) -> std::result::Result<FlashPlan, PlanError> {
+    let profile = bussard_mgmt::MaskProfile::from_mask(device_mask);
+    if !profile.is_system_7() {
+        return Err(PlanError::NotSystemB {
+            device: device.to_string(),
+            device_mask,
+            system: bussard_mgmt::system_type(device_mask),
+        });
+    }
+    let app_mask = app
+        .mask_version
+        .clone()
+        .ok_or_else(|| PlanError::MissingAppMask(app.id.clone()))?;
+    if u16::from_str_radix(app_mask.trim(), 16).ok() != Some(device_mask) {
+        return Err(PlanError::MaskMismatch {
+            device: device.to_string(),
+            device_mask,
+            app_mask,
+        });
+    }
+    plan_flash_sys7(
+        app,
+        device,
+        device_mask,
+        overrides,
+        base_offsets,
+        profile,
+        hawk,
+    )
+}
+
+/// Derives a [`bussard_mgmt::Sys7Profile`] from a mask's parsed
+/// `HawkConfigurationData` (`[system7-spec §2.4/§5]`).
+///
+/// Reads the `GroupAddressTableLoadControl` (the memory-mapped LSM control
+/// address + record length) and `GroupAddressTableLoadStatus` (the status base)
+/// resources. A `Flavour="LoadControl_M112"` LoadControl selects
+/// [`bussard_mgmt::LsmRealisation::MemoryMapped`] with the resolved addresses;
+/// absent that, `None` (the caller falls back to the corpus default). The Jung
+/// MV-0705 block resolves to exactly the corpus default (control `0x0104`, status
+/// `0xB6EA`), confirming the spec §5 defaults.
+pub fn sys7_profile_from_hawk(
+    hawk: &bussard_prod::HawkConfig,
+) -> Option<bussard_mgmt::Sys7Profile> {
+    let control = hawk.resource("GroupAddressTableLoadControl")?;
+    // Only the memory-mapped M112 LoadControl is data-driven here; a property
+    // realisation would carry a SystemProperty address space instead.
+    let control_addr = match (control.address_space.as_deref(), control.start_address) {
+        (Some("StandardMemory"), Some(addr)) => u16::try_from(addr).ok()?,
+        _ => return None,
+    };
+    let status_addr = hawk
+        .resource("GroupAddressTableLoadStatus")
+        .and_then(|s| s.start_address)
+        .and_then(|a| u16::try_from(a).ok())
+        .unwrap_or(0xB6EA);
+    let mut profile = bussard_mgmt::Sys7Profile::corpus_default();
+    profile.lsm = bussard_mgmt::LsmRealisation::MemoryMapped {
+        control_addr,
+        status_addr,
+    };
+    Some(profile)
 }
 
 /// The mem-type for a System 7 absolute-segment allocation at `addr`: RAM (`2`)
@@ -4067,6 +4156,56 @@ mod tests {
             }
         )));
         assert!(matches!(plan.steps.last(), Some(FlashStep::Restart)));
+    }
+
+    #[test]
+    fn sys7_profile_from_hawk_resolves_memory_mapped_addresses() {
+        use bussard_prod::{HawkConfig, HawkResource};
+        let mut resources = std::collections::HashMap::new();
+        resources.insert(
+            "GroupAddressTableLoadControl".to_string(),
+            HawkResource {
+                name: "GroupAddressTableLoadControl".to_string(),
+                address_space: Some("StandardMemory".to_string()),
+                start_address: Some(260), // 0x0104
+                length: Some(12),
+                flavour: Some("LoadControl_M112".to_string()),
+            },
+        );
+        resources.insert(
+            "GroupAddressTableLoadStatus".to_string(),
+            HawkResource {
+                name: "GroupAddressTableLoadStatus".to_string(),
+                address_space: Some("StandardMemory".to_string()),
+                start_address: Some(46826), // 0xB6EA
+                length: Some(1),
+                flavour: Some("LoadControl_M112".to_string()),
+            },
+        );
+        let hawk = HawkConfig { resources };
+        let profile = sys7_profile_from_hawk(&hawk).expect("a resolved profile");
+        assert_eq!(
+            profile.lsm,
+            bussard_mgmt::LsmRealisation::MemoryMapped {
+                control_addr: 0x0104,
+                status_addr: 0xB6EA,
+            }
+        );
+        // The Jung MV-0705 Hawk block resolves to exactly the corpus default.
+        assert_eq!(profile, bussard_mgmt::Sys7Profile::corpus_default());
+
+        // plan_flash_sys7_with_hawk lowers the same app with the Hawk profile.
+        let app = fabricated_sys7_app();
+        let plan = plan_flash_sys7_with_hawk(
+            &app,
+            "1.1.99",
+            0x0705,
+            &no_overrides(),
+            &BTreeMap::new(),
+            Some(&hawk),
+        )
+        .expect("a System 7 plan");
+        assert!(plan.is_sys7());
     }
 
     #[test]
