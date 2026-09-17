@@ -752,6 +752,7 @@ impl<Ch: L4Channel> Session<SingleConnector<Ch>> {
             connector: None,
             bcu_key: None,
             authorize_outcomes: BTreeMap::new(),
+            max_apdu: None,
         }
     }
 }
@@ -799,6 +800,15 @@ pub struct Session<C: Connector> {
     /// a real write gate must re-present the key on every fresh connection. A
     /// `Denied` never reaches the cache — it fails the open before insertion.
     authorize_outcomes: BTreeMap<u16, bussard_mgmt::AuthorizeOutcome>,
+    /// The device's `PID_MAX_APDU_LENGTH`, negotiated once on the first connection
+    /// and re-seeded (not re-read) onto every later window's connection.
+    ///
+    /// The value is device-stable, so re-reading it each window would only burn a
+    /// numbered exchange against the tight per-connection budget and shift where a
+    /// mid-step drop lands (issue #58). Caching it at the session level keeps every
+    /// window's exchange sequence identical to an un-negotiated flash after the
+    /// first, while still scaling chunks to the device.
+    max_apdu: Option<u16>,
 }
 
 impl<C: Connector> Session<C> {
@@ -825,13 +835,16 @@ impl<C: Connector> Session<C> {
         Self::authorize(&mut l4, bcu_key, &mut authorize_outcomes).await?;
         // Read PID_MAX_APDU_LENGTH once so memory/property chunks scale to the
         // device (issue #58). Best-effort: a failure leaves the conservative
-        // standard-frame caps and never aborts the open.
-        let _ = l4.negotiate_max_apdu().await;
+        // standard-frame caps and never aborts the open. Cached at the session
+        // level and re-seeded (not re-read) on later windows so it costs exactly
+        // one exchange for the whole flash.
+        let max_apdu = l4.negotiate_max_apdu().await.ok().flatten();
         Ok(Session {
             l4: Some(l4),
             connector: Some(connector),
             bcu_key,
             authorize_outcomes,
+            max_apdu,
         })
     }
 
@@ -910,9 +923,10 @@ impl<C: Connector> Session<C> {
                 )))?;
         let mut l4 = connector.connect().await?;
         Self::authorize(&mut l4, self.bcu_key, &mut self.authorize_outcomes).await?;
-        // Re-negotiate the max APDU on the fresh connection (best-effort — a fresh
-        // Layer4Connection starts with no cached value; issue #58).
-        let _ = l4.negotiate_max_apdu().await;
+        // Re-seed the device-stable max APDU onto the fresh connection without a
+        // round-trip, so scaling persists across the cycle without spending an
+        // exchange against the tight per-connection budget (issue #58).
+        l4.set_max_apdu(self.max_apdu);
         self.l4 = Some(l4);
         Ok(())
     }
@@ -953,9 +967,10 @@ impl<C: Connector> Session<C> {
                 )))?;
         let mut l4 = connector.connect().await?;
         Self::authorize(&mut l4, self.bcu_key, &mut self.authorize_outcomes).await?;
-        // Re-negotiate the max APDU on the fresh connection (best-effort — a fresh
-        // Layer4Connection starts with no cached value; issue #58).
-        let _ = l4.negotiate_max_apdu().await;
+        // Re-seed the device-stable max APDU onto the fresh connection without a
+        // round-trip, so scaling persists across the cycle without spending an
+        // exchange against the tight per-connection budget (issue #58).
+        l4.set_max_apdu(self.max_apdu);
         self.l4 = Some(l4);
         Ok(())
     }
