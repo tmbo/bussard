@@ -317,7 +317,15 @@ pub fn compute_parameter_image(
             .as_deref()
             .and_then(|id| app.parameter_types.get(id))
             .map(|d| &d.kind);
-        let placement = encode_value(app, pname, ptype, value.as_deref())?;
+        // Union member values come from vendor data (a ParameterRef override or
+        // the member parameter's default), so the vendor-default leniency applies.
+        let placement = encode_value(
+            app,
+            pname,
+            ptype,
+            value.as_deref(),
+            ValueSource::VendorDefault,
+        )?;
 
         // Member offsets are relative to the union base; a missing member Offset
         // means "at the base".
