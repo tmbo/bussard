@@ -11,15 +11,35 @@ mod interface_object;
 mod lsm;
 mod mcb;
 mod memory;
+pub mod profile;
+mod sys7_group_comm;
+pub mod sys7_lsm;
 
 pub use group_comm::{ComObject, GroupComm, flag};
 pub use interface_object::{
     InterfaceObject, PID_LOAD_STATE_CONTROL, PID_MCB_TABLE, PID_OBJECT_TYPE, PID_PROGMODE,
     PID_RUN_STATE_CONTROL, PID_TABLE_REFERENCE, Property, iot,
 };
-pub use lsm::{LoadEvent, LoadState, LoadStateMachine};
+pub use lsm::{
+    LoadEvent, LoadState, LoadStateMachine, Sys7LoadStateMachine, Sys7Step, Sys7TransitionError,
+};
 pub use mcb::{MCB_ENTRY_LEN, crc16_aug_ccitt, mcb_entry};
 pub use memory::{Memory, MemoryError, Segment};
+pub use profile::{
+    LsmAccess, MaskFamily, MemoryMappedLsm, Profile, Sys7MemoryMap, Sys7Profile, mask_family,
+    parse_mask,
+};
+pub use sys7_group_comm::Sys7GroupComm;
+pub use sys7_lsm::{Sys7Event, Sys7EventError};
+
+/// The KNX free-access authorize key: an unkeyed device grants full access to
+/// any tool presenting this key (spec section 6).
+pub const FREE_ACCESS_KEY: u32 = 0xFFFF_FFFF;
+
+/// The conservative System 7 memory chunk: max 12 data octets per
+/// `A_Memory_Write`/`_Read` on a standard frame (spec section 6). A memory op to
+/// a System 7 device carrying more than this is refused as a real device refuses.
+pub const SYS7_MAX_MEMORY_CHUNK: usize = 12;
 
 use std::collections::BTreeMap;
 
@@ -83,6 +103,13 @@ pub enum DeviceError {
         /// What was wrong.
         detail: String,
     },
+    /// A telegram violated a System 7 wire constraint (standard frame only, at
+    /// most 12 memory octets). A real device refuses such a frame.
+    #[error("wire-strictness violation: {detail}")]
+    WireStrictness {
+        /// What constraint was violated.
+        detail: String,
+    },
 }
 
 /// One loadable object's runtime state: its LSM plus its assigned segment base.
@@ -95,9 +122,45 @@ struct ObjectState {
     descriptor: LoadableObject,
 }
 
-/// A strict System-B KNX device.
+/// Construction-time overrides that select and tune a device's mask profile.
+///
+/// Supplied by the config layer. When `mask` is `None` the mask comes from the
+/// product's `MaskVersion`. `lsm_access` and `bcu_key` apply only to a System 7
+/// device.
+#[derive(Debug, Clone, Default)]
+pub struct ProfileOverrides {
+    /// An explicit mask override (`"0705"`, `"MV-07B0"`, ...). `None` = use the
+    /// product's declared mask.
+    pub mask: Option<String>,
+    /// The System 7 LSM realisation to present.
+    pub lsm_access: profile::LsmAccess,
+    /// The System 7 BCU key required for memory access, or `None` for free
+    /// access.
+    pub bcu_key: Option<u32>,
+}
+
+/// The runtime state of a System 7 device's three parallel load-state machines
+/// plus the memory-region layout it was built with.
+#[derive(Debug, Clone)]
+struct Sys7Runtime {
+    /// The System 7 sub-profile (mask, LSM access, memory map, key, hw type).
+    profile: profile::Sys7Profile,
+    /// The three (or more) parallel LSMs, keyed by LSM index (1, 2, 3, [5]).
+    lsms: BTreeMap<u8, Sys7LoadStateMachine>,
+    /// The base of the group-object descriptor table inside the LSM 1 region.
+    /// The canonical MDT image co-locates it just past the address table; the sim
+    /// derives it after the LSM 1 segment is written (spec §7.3). Defaults to the
+    /// LSM 1 table base until refined.
+    go_table_base: u16,
+}
+
+/// A strict KNX device (System B or System 7, per its [`Profile`]).
 pub struct Device {
     address: IndividualAddress,
+    /// The mask profile: System B or System 7 behaviour.
+    profile: Profile,
+    /// System 7 runtime (the three LSMs + layout); `None` on a System B device.
+    sys7: Option<Sys7Runtime>,
     /// Interface objects keyed by object index (0 = device object).
     objects: BTreeMap<u8, InterfaceObject>,
     /// Loadable-object runtime state keyed by LSM index.
@@ -166,6 +229,18 @@ fn default_base_for(lsm_index: u8) -> u16 {
     }
 }
 
+/// The absolute base address a System 7 LSM index anchors at (spec §2.3): LSM 1
+/// → 0x4000 table region, LSM 2 → 0x4201 table region, LSM 3 → 0x4400 parameter
+/// image. Other indices fall back to the parameter region. Used for
+/// `PID_MCB_TABLE` and the runtime table parse.
+fn sys7_region_base(s7: &profile::Sys7Profile, lsm_index: u8) -> u16 {
+    match lsm_index {
+        1 => s7.memory_map.lsm1_table,
+        2 => s7.memory_map.lsm2_table,
+        _ => s7.memory_map.lsm3_params,
+    }
+}
+
 /// The interface-object type (IOT) reported via `PID_OBJECT_TYPE` for a given
 /// interface-object index on a System B device.
 ///
@@ -200,11 +275,111 @@ fn object_type_for(object_index: u8) -> u16 {
 
 impl Device {
     /// Build a device at `address` from parsed product data, with an initial
-    /// load state applied to every loadable object.
+    /// load state applied to every loadable object. The mask profile comes from
+    /// the product's declared `MaskVersion`; System 7 devices default to a
+    /// memory-mapped LSM and free access.
+    ///
+    /// Panics only via [`Device::from_product_with_overrides`] returning `Err`
+    /// for an unmodelled mask; `from_product` unwraps that into a System B
+    /// fallback so existing callers keep the pre-profile behaviour. Prefer
+    /// [`Device::from_product_with_overrides`] for explicit control.
     pub fn from_product(
         address: IndividualAddress,
         product: &ProductData,
         initial_state: LoadState,
+        events: std::sync::Arc<dyn EventSink>,
+    ) -> Self {
+        // The pre-profile entry point: derive the profile from the product mask,
+        // defaulting to System B when the mask is absent or unmodelled so the
+        // DA.tp calibration path is unchanged.
+        match Self::from_product_with_overrides(
+            address,
+            product,
+            initial_state,
+            ProfileOverrides::default(),
+            events.clone(),
+        ) {
+            Ok(dev) => dev,
+            // Fall back to an explicit System B profile for an unmodelled mask,
+            // preserving the pre-profile behaviour for callers that pass an
+            // exotic product.
+            Err(_) => Self::from_product_with_overrides(
+                address,
+                product,
+                initial_state,
+                ProfileOverrides {
+                    mask: Some("07B0".into()),
+                    ..Default::default()
+                },
+                events,
+            )
+            .expect("System B fallback always builds"),
+        }
+    }
+
+    /// Build a device, selecting and tuning its mask profile from `overrides`.
+    ///
+    /// Returns `Err` with a human reason when the effective mask is a family the
+    /// simulator does not model (only System B `0x07B0` and System 7 `0x0705` /
+    /// `0x0701` are modelled), because a strict simulator refuses to pretend to
+    /// be a device generation it does not implement.
+    pub fn from_product_with_overrides(
+        address: IndividualAddress,
+        product: &ProductData,
+        initial_state: LoadState,
+        overrides: ProfileOverrides,
+        events: std::sync::Arc<dyn EventSink>,
+    ) -> Result<Self, String> {
+        // Resolve the effective mask: override wins, else the product's declared
+        // MaskVersion, else default to System B (the DA.tp calibration default).
+        let mask = match &overrides.mask {
+            Some(s) => {
+                profile::parse_mask(s).ok_or_else(|| format!("unparseable mask override {s:?}"))?
+            }
+            None => profile::parse_mask(&product.mask_version).unwrap_or(0x07B0),
+        };
+        let profile = match profile::mask_family(mask) {
+            profile::MaskFamily::SystemB => Profile::SystemB { mask },
+            profile::MaskFamily::System7 => Profile::System7(profile::Sys7Profile {
+                mask,
+                lsm_access: overrides.lsm_access,
+                mm_lsm: profile::MemoryMappedLsm::default(),
+                memory_map: profile::Sys7MemoryMap::default(),
+                bcu_key: overrides.bcu_key,
+                hardware_type: profile::default_hardware_type(product.application_number),
+            }),
+            profile::MaskFamily::Other => {
+                return Err(format!(
+                    "mask 0x{mask:04x} is not a modelled family (only System B 07B0 and \
+                     System 7 0705/0701 are simulated)"
+                ));
+            }
+        };
+        if profile.is_system7() {
+            Ok(Self::build_system7(
+                address,
+                product,
+                initial_state,
+                profile,
+                events,
+            ))
+        } else {
+            Ok(Self::build_system_b(
+                address,
+                product,
+                initial_state,
+                profile,
+                events,
+            ))
+        }
+    }
+
+    /// Build the System B device (the original construction path).
+    fn build_system_b(
+        address: IndividualAddress,
+        product: &ProductData,
+        initial_state: LoadState,
+        profile: Profile,
         events: std::sync::Arc<dyn EventSink>,
     ) -> Self {
         let mut objects: BTreeMap<u8, InterfaceObject> = BTreeMap::new();
@@ -308,6 +483,8 @@ impl Device {
 
         let mut device = Self {
             address,
+            profile,
+            sys7: None,
             objects,
             loadables,
             memory: Memory::new(),
@@ -329,6 +506,121 @@ impl Device {
         device
     }
 
+    /// Build a System 7 device: the device object with a matchable object-0
+    /// PID 78, the three (plus optional 5) parallel absolute LSMs, and the
+    /// PID_MCB_TABLE-capable loadable objects.
+    fn build_system7(
+        address: IndividualAddress,
+        product: &ProductData,
+        initial_state: LoadState,
+        profile: Profile,
+        events: std::sync::Arc<dyn EventSink>,
+    ) -> Self {
+        let s7 = profile
+            .system7()
+            .expect("build_system7 requires a System 7 profile")
+            .clone();
+        let mut objects: BTreeMap<u8, InterfaceObject> = BTreeMap::new();
+        let mut loadables: BTreeMap<u8, ObjectState> = BTreeMap::new();
+
+        // Device object (index 0). System 7 is almost pure memory; the one
+        // property the download touches is object-0 PID 78 (PID_HARDWARE_TYPE),
+        // the MDT preflight CompareProp target (spec §4.6). Seed it to the
+        // profile's hardware-type so a correctly-targeted flash matches.
+        let mut device_object = InterfaceObject::new();
+        device_object.set_property(
+            PID_OBJECT_TYPE,
+            Property::read_only(object_type_for(0).to_be_bytes().to_vec()),
+        );
+        device_object.set_property(PID_PROGMODE, Property::writable(vec![0x00]));
+        let mfr = manufacturer_id_from_app(&product.application_id).unwrap_or(0x0083);
+        device_object.set_property(0x0C, Property::read_only(mfr.to_be_bytes().to_vec()));
+        device_object.set_property(
+            0x0F,
+            Property::read_only(order_info_bytes(&product.application_id)),
+        );
+        // PID 78 (0x4E) PID_HARDWARE_TYPE: the 10-octet preflight value.
+        device_object.set_property(0x4E, Property::read_only(s7.hardware_type.to_vec()));
+        // Max-APDU absent or 15 on System 7 (spec section 6). Report 15.
+        device_object.set_property(0x38, Property::read_only(vec![0x00, 0x0F]));
+        objects.insert(0, device_object);
+
+        // The System 7 LSM index → interface-object type map: LSM 1 = address
+        // table, LSM 2 = association table, LSM 3 = application program. The
+        // three parallel LSMs are seeded per the product's loadable objects,
+        // defaulting to the canonical 1/2/3 set when the product does not enumerate
+        // them (System 7 products declare them via load procedure, not objects).
+        let mut lsm_indices: Vec<u8> = product.objects.iter().map(|o| o.lsm_index).collect();
+        for canonical in [1u8, 2, 3] {
+            if !lsm_indices.contains(&canonical) {
+                lsm_indices.push(canonical);
+            }
+        }
+        lsm_indices.sort_unstable();
+        lsm_indices.dedup();
+
+        let mut lsms: BTreeMap<u8, Sys7LoadStateMachine> = BTreeMap::new();
+        for lsm_index in lsm_indices {
+            let mut io = InterfaceObject::new();
+            io.set_property(
+                PID_OBJECT_TYPE,
+                Property::read_only(object_type_for(lsm_index).to_be_bytes().to_vec()),
+            );
+            // PID_LOAD_STATE_CONTROL exists for the property-based LSM access
+            // variant; its live value is served from the LSM, not this seed.
+            io.set_property(
+                PID_LOAD_STATE_CONTROL,
+                Property::writable(vec![initial_state.to_byte()]),
+            );
+            io.set_property(0x0E, Property::writable(vec![0x00]));
+            objects.insert(lsm_index, io);
+            lsms.insert(lsm_index, Sys7LoadStateMachine::new(initial_state));
+            // Keep a loadable-object descriptor so PID_MCB_TABLE reads and
+            // memory bookkeeping have a home (base is the S7 table anchor).
+            let descriptor = product
+                .object(lsm_index)
+                .cloned()
+                .unwrap_or(LoadableObject {
+                    lsm_index,
+                    name: format!("System 7 LSM {lsm_index}"),
+                    max_size: None,
+                    image: Vec::new(),
+                });
+            loadables.insert(
+                lsm_index,
+                ObjectState {
+                    lsm: LoadStateMachine::new(initial_state),
+                    base: sys7_region_base(&s7, lsm_index),
+                    descriptor,
+                },
+            );
+        }
+
+        let go_table_base = s7.memory_map.lsm1_table;
+        let mut device = Self {
+            address,
+            profile,
+            sys7: Some(Sys7Runtime {
+                profile: s7,
+                lsms,
+                go_table_base,
+            }),
+            objects,
+            loadables,
+            memory: Memory::new(),
+            access_level: 15,
+            connected: false,
+            tx_seq: 0,
+            rx_seq: 0,
+            l4_exchange_budget: None,
+            l4_exchanges: 0,
+            group_comm: None,
+            events,
+        };
+        device.refresh_group_comm();
+        device
+    }
+
     /// Sets the device's per-connection numbered-exchange budget (builder-style).
     ///
     /// After `budget` accepted NDTs on one L4 connection the device drops the
@@ -345,9 +637,19 @@ impl Device {
         self.address
     }
 
-    /// The current load state of a loadable object (by LSM index).
+    /// The current load state of a loadable object (by LSM index). On a System 7
+    /// device the state lives in the parallel System 7 LSM; on System B it lives
+    /// in the object's `LoadStateMachine`.
     pub fn load_state(&self, lsm_index: u8) -> Option<LoadState> {
+        if let Some(s7) = &self.sys7 {
+            return s7.lsms.get(&lsm_index).map(|m| m.state());
+        }
         self.loadables.get(&lsm_index).map(|o| o.lsm.state())
+    }
+
+    /// The device's mask profile (System B or System 7).
+    pub fn profile(&self) -> &Profile {
+        &self.profile
     }
 
     /// Read-only view of device memory (for tests/observability).
@@ -390,6 +692,29 @@ impl Device {
     /// the exact bytes the download wrote — so the routing is self-describing and
     /// a mistake in the written tables shows up as wrong bus behaviour.
     fn refresh_group_comm(&mut self) {
+        // System 7: the three LSMs are the tables. Once LSM 1 and 2 are Loaded the
+        // device self-parses its own written S7-format tables from the absolute
+        // memory anchors (spec §7) and comes alive.
+        if let Some(s7) = &self.sys7 {
+            let tables_loaded = [1u8, 2]
+                .iter()
+                .all(|&i| self.load_state(i) == Some(LoadState::Loaded));
+            if !tables_loaded {
+                self.group_comm = None;
+                return;
+            }
+            let addr_base = s7.profile.memory_map.lsm1_table;
+            let assoc_base = s7.profile.memory_map.lsm2_table;
+            let go_base = s7.go_table_base;
+            let gc = sys7_group_comm::Sys7GroupComm::from_tables(
+                &self.memory,
+                addr_base,
+                assoc_base,
+                go_base,
+            );
+            self.group_comm = if gc.is_empty() { None } else { Some(gc) };
+            return;
+        }
         let tables_loaded = [1u8, 2, 3]
             .iter()
             .all(|&i| self.load_state(i) == Some(LoadState::Loaded));
@@ -669,6 +994,28 @@ impl Device {
             return Err(DeviceError::NotConnected);
         }
         let tool = cemi.source;
+        // System 7 wire strictness (spec section 6): a memory op to a System 7
+        // device must ride a STANDARD frame and carry at most 12 data octets. An
+        // extended cEMI frame or a >12-octet memory op is exactly the trap that
+        // catches a tool wrongly sending 63-byte chunks; a real device refuses it.
+        if self.profile.is_system7()
+            && matches!(apdu.apci, Apci::MemoryRead(_) | Apci::MemoryWrite(_))
+        {
+            let count = apdu.memory_count() as usize;
+            if !cemi.is_standard_frame() {
+                return Err(DeviceError::WireStrictness {
+                    detail: "System 7 memory op on an extended frame".into(),
+                });
+            }
+            if count > SYS7_MAX_MEMORY_CHUNK {
+                return Err(DeviceError::WireStrictness {
+                    detail: format!(
+                        "System 7 memory op count {count} exceeds the {SYS7_MAX_MEMORY_CHUNK}-octet \
+                         standard-frame ceiling"
+                    ),
+                });
+            }
+        }
         match apdu.apci {
             Apci::AuthorizeRequest => self.on_authorize(tool, apdu),
             Apci::PropertyValueRead => self.on_property_read(tool, apdu),
@@ -692,18 +1039,28 @@ impl Device {
         tool: IndividualAddress,
         apdu: &Apdu,
     ) -> Result<DeviceReaction, DeviceError> {
-        // A_Authorize_Request: data = [reserved, key(4)]. Any key unlocks to
-        // level 0 in this model (the capture uses FF FF FF FF).
+        // A_Authorize_Request: data = [reserved, key(4 BE)]. On a free-access
+        // device any key unlocks to level 0 (the DA.tp capture uses FF FF FF FF).
+        // On a keyed System 7 device the presented key must match the configured
+        // BCU key (or be the free-access key) to grant level 0; otherwise the
+        // device grants the "failed" level 15, and subsequent memory writes are
+        // refused as unauthorized.
         if apdu.data.len() < 5 {
             return Err(DeviceError::Malformed {
                 service: "A_Authorize".into(),
                 detail: "expected 5 data bytes".into(),
             });
         }
-        self.access_level = 0;
+        let key = u32::from_be_bytes([apdu.data[1], apdu.data[2], apdu.data[3], apdu.data[4]]);
+        let granted = match self.profile.system7().and_then(|p| p.bcu_key) {
+            // Keyed device: match the key (free-access key always accepted).
+            Some(required) if key != required && key != FREE_ACCESS_KEY => 15,
+            _ => 0,
+        };
+        self.access_level = granted;
         self.emit(Event::AuthChanged {
             device: self.address,
-            level: 0,
+            level: granted,
         });
         // Response: A_Authorize_Response with the granted level byte.
         let resp = self.respond(tool, 0x3D2, &[self.access_level]);
@@ -808,6 +1165,34 @@ impl Device {
 
         // PID_LOAD_STATE_CONTROL drives the load-state machine.
         if pid == PID_LOAD_STATE_CONTROL {
+            // A System 7 device configured for property-based LSM access decodes
+            // the 10-octet load event straight from the PID 5 value and drives the
+            // addressed LSM (spec section 5, LsmAccess::Property). A System 7
+            // device configured memory-mapped refuses a PID 5 load write — a real
+            // memory-mapped device does not accept it, so a tool that used the
+            // wrong realisation is caught.
+            if let Some(s7) = &self.sys7 {
+                if s7.profile.lsm_access == profile::LsmAccess::Property {
+                    self.apply_sys7_event(tool, object, value)?;
+                    // Property-based LSM write echoes the resulting state.
+                    let state = self.load_state(object).unwrap_or(LoadState::Error);
+                    let mut data = vec![
+                        object,
+                        PID_LOAD_STATE_CONTROL,
+                        (count << 4) | ((start >> 8) as u8 & 0x0F),
+                        (start & 0xFF) as u8,
+                    ];
+                    data.push(state.to_byte());
+                    let resp = self.respond(tool, 0x3D6, &data);
+                    return Ok(DeviceReaction {
+                        responses: vec![resp],
+                        did_master_reset: false,
+                    });
+                }
+                return Err(DeviceError::LoadControl(
+                    "System 7 memory-mapped device does not accept a PID 5 load write".into(),
+                ));
+            }
             return self.on_load_state_write(tool, object, count, start, value);
         }
 
@@ -903,6 +1288,82 @@ impl Device {
         })
     }
 
+    /// Apply a System 7 load event (10-octet record) to the addressed LSM,
+    /// wiring the side effects: AbsSegment allocation reserves the memory
+    /// segment; TaskSegment commits the descriptor; LoadCompleted may complete
+    /// the group configuration. Shared by both LSM-access realisations.
+    fn apply_sys7_event(
+        &mut self,
+        _tool: IndividualAddress,
+        lsm_index: u8,
+        event_record: &[u8],
+    ) -> Result<(), DeviceError> {
+        let event = sys7_lsm::Sys7Event::decode(event_record)
+            .map_err(|e| DeviceError::LoadControl(e.to_string()))?;
+        let s7 = self
+            .sys7
+            .as_mut()
+            .ok_or_else(|| DeviceError::LoadControl("not a System 7 device".into()))?;
+        let lsm = s7.lsms.get_mut(&lsm_index).ok_or(DeviceError::NoProperty {
+            object: lsm_index,
+            pid: PID_LOAD_STATE_CONTROL,
+        })?;
+        let step = match lsm.apply(event) {
+            Ok(s) => s,
+            Err(e) => {
+                self.emit(Event::LoadStateChanged {
+                    device: self.address,
+                    object: lsm_index,
+                    state: LoadState::Error.to_byte(),
+                });
+                return Err(DeviceError::LoadControl(e.to_string()));
+            }
+        };
+        match step {
+            Sys7Step::Alloc {
+                start,
+                length,
+                subtype,
+            } => {
+                // Reserve the absolute segment for this LSM. A subtype-0x02 (Task)
+                // record with a base already allocated for the LSM is a descriptor
+                // commit rather than a fresh allocation, so only (re)allocate when
+                // the address is not already inside the LSM's open segment.
+                let already = self
+                    .memory
+                    .segment_of(lsm_index)
+                    .is_some_and(|seg| seg.contains(start, 1));
+                if !(subtype == 0x02 && already) {
+                    self.memory.allocate(lsm_index, start, length as u32);
+                }
+                // Track the group-object descriptor table base: in the canonical
+                // MDT image it is the address-table region (LSM 1). The first LSM 1
+                // allocation fixes the region base used by the runtime parse.
+                if lsm_index == 1 {
+                    if let Some(s7) = self.sys7.as_mut() {
+                        s7.go_table_base = s7.profile.memory_map.lsm1_table;
+                    }
+                }
+            }
+            Sys7Step::TaskCommitted { address: _ } => {
+                // The descriptor is committed inside the LSM; no memory side effect
+                // in the M1 model (the sim treats it as a precondition flag).
+            }
+            Sys7Step::State(new_state) => {
+                self.emit(Event::LoadStateChanged {
+                    device: self.address,
+                    object: lsm_index,
+                    state: new_state.to_byte(),
+                });
+                if new_state == LoadState::Loaded {
+                    self.refresh_group_comm();
+                }
+            }
+            Sys7Step::NoOp => {}
+        }
+        Ok(())
+    }
+
     fn on_memory_read(
         &mut self,
         tool: IndividualAddress,
@@ -916,7 +1377,14 @@ impl Device {
             });
         }
         let addr = u16::from_be_bytes([apdu.data[0], apdu.data[1]]);
-        let bytes = self.memory.read(addr, n);
+        // System 7 memory-mapped LSM status poll: a read at the status address
+        // returns the addressed LSM's live state (spec section 5). The per-LSM
+        // status byte is at `status_addr + (lsm_index - 1)`.
+        let bytes = if let Some(status) = self.sys7_status_bytes(addr, n) {
+            status
+        } else {
+            self.memory.read(addr, n)
+        };
         // A_MemoryResponse: apci 0x240 | count, then addr(2), then data.
         let mut data = Vec::with_capacity(2 + bytes.len());
         data.extend_from_slice(&addr.to_be_bytes());
@@ -928,9 +1396,36 @@ impl Device {
         })
     }
 
+    /// If `addr` falls in the System 7 memory-mapped LSM status region, return
+    /// the `n` status bytes (one live LSM state per octet), else `None`.
+    fn sys7_status_bytes(&self, addr: u16, n: usize) -> Option<Vec<u8>> {
+        let s7 = self.sys7.as_ref()?;
+        if s7.profile.lsm_access != profile::LsmAccess::MemoryMapped {
+            return None;
+        }
+        let base = s7.profile.mm_lsm.status_addr;
+        // The status region spans one octet per LSM index starting at `base`
+        // (index 1 at base+0). Only serve reads wholly inside that region.
+        let region_len = s7.lsms.keys().copied().max().unwrap_or(0) as usize;
+        let end = base as u32 + region_len as u32;
+        if (addr as u32) < base as u32 || (addr as u32 + n as u32) > end.max(base as u32 + 1) {
+            return None;
+        }
+        let mut out = Vec::with_capacity(n);
+        for i in 0..n {
+            let lsm_index = (addr.wrapping_add(i as u16).wrapping_sub(base)) as u8 + 1;
+            let state = self
+                .load_state(lsm_index)
+                .map(|s| s.to_byte())
+                .unwrap_or(0x00);
+            out.push(state);
+        }
+        Some(out)
+    }
+
     fn on_memory_write(
         &mut self,
-        _tool: IndividualAddress,
+        tool: IndividualAddress,
         apdu: &Apdu,
     ) -> Result<DeviceReaction, DeviceError> {
         if self.access_level != 0 {
@@ -947,6 +1442,18 @@ impl Device {
         }
         let addr = u16::from_be_bytes([apdu.data[0], apdu.data[1]]);
         let payload = &apdu.data[2..2 + n];
+
+        // System 7 memory-mapped LSM control: a write to the LSM control address
+        // is a load-event record, not a segment write (spec section 5). Decode and
+        // drive the addressed LSM.
+        if let Some(s7) = &self.sys7 {
+            if s7.profile.lsm_access == profile::LsmAccess::MemoryMapped
+                && addr == s7.profile.mm_lsm.control_addr
+            {
+                return self.on_sys7_lsm_record(tool, payload);
+            }
+        }
+
         // Determine which object owns this address: strict — the address must be
         // inside exactly one open segment, and that object must be Loading.
         let seg = self
@@ -971,13 +1478,39 @@ impl Device {
         Ok(DeviceReaction::default())
     }
 
+    /// Apply a System 7 memory-mapped LSM control record (the 12-octet form
+    /// written to the control address, spec section 5). The default M1 encoding
+    /// is `[lsm_index:1][0x00][10-octet load event]`.
+    /// S7-CAL: confirm the 12-octet LoadControl_M112 record layout (prefix
+    /// meaning + status poll protocol) against a live 0705 capture.
+    fn on_sys7_lsm_record(
+        &mut self,
+        tool: IndividualAddress,
+        record: &[u8],
+    ) -> Result<DeviceReaction, DeviceError> {
+        if record.len() < 3 {
+            return Err(DeviceError::Malformed {
+                service: "System7 LSM record".into(),
+                detail: "record shorter than 2-octet prefix + event".into(),
+            });
+        }
+        // Prefix: [lsm_index:1][reserved:1], then the 10-octet load event.
+        let lsm_index = record[0];
+        let event_record = &record[2..];
+        self.apply_sys7_event(tool, lsm_index, event_record)?;
+        // A memory-mapped LSM write is unconfirmed at the application layer (the
+        // tool polls the status address); no APDU response.
+        Ok(DeviceReaction::default())
+    }
+
     fn on_device_descriptor_read(
         &mut self,
         tool: IndividualAddress,
         dtype: u8,
     ) -> Result<DeviceReaction, DeviceError> {
-        // Descriptor type 0 → mask version. System B is mask 0x07B0.
-        let mask: u16 = 0x07B0;
+        // Descriptor type 0 → mask version. A real device reports its true mask;
+        // the profile carries it (0x07B0 System B, 0x0705/0x0701 System 7).
+        let mask: u16 = self.profile.mask();
         let resp = self.respond(tool, 0x340 | (dtype as u16 & 0x3F), &mask.to_be_bytes());
         Ok(DeviceReaction {
             responses: vec![resp],
