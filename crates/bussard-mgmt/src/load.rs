@@ -1279,16 +1279,14 @@ async fn write_one_chunk<Ch: L4Channel>(
 ) -> Result<()> {
     let chunk_addr = chunk_address(l4, base, offset)?;
     let (req_apci, payload) = apci::encode_memory_write(chunk_addr, piece);
+    // Write only, no per-chunk read-back. ETS streams the whole image and does
+    // NOT read each chunk back — a read-back after every write doubles the
+    // exchanges (exhausting a device's per-connection L4 budget on a large
+    // segment) and, worse, interleaves stray A_Memory_Responses into the stream
+    // so a following property read correlates the wrong response. Integrity is
+    // confirmed after the load by the device's own MCB CRC (LdCtrlLoadImageProp)
+    // and the flash engine's end-of-segment spot-check.
     l4.send_data(req_apci, &payload).await?;
-    let got = read_memory(l4, chunk_addr, piece.len() as u8).await?;
-    if got != piece {
-        return Err(WriteError::Mgmt(MgmtError::MemoryVerifyFailed {
-            address: l4.target(),
-            addr: chunk_addr,
-            expected: piece.to_vec(),
-            got,
-        }));
-    }
     Ok(())
 }
 
