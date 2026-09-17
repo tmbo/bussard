@@ -95,17 +95,30 @@
     check("deviceGAs union", store.deviceGAs.get("1.1.1").has("1/1/1"));
 
     // --- problems / orphans ----------------------------------------------
-    const probTypes = store.problems.map((p) => p.type);
-    check("unlinked com object detected",
-      store.problems.some((p) => p.type === "unlinked-object" && p.object === 1));
-    check("ga-no-listener detected",
+    // New semantics: only one-sided *linked* GAs are problems. Unlinked com
+    // objects and fully-unlinked GAs are normal and counted as neutral info.
+    check("unlinked com object NOT a problem",
+      !store.problems.some((p) => p.type === "unlinked-object"));
+    check("ga-no-listener detected (senders, no listener)",
       store.problems.some((p) => p.type === "ga-no-listener" && p.ga === "1/1/2"));
-    check("ga-no-sender detected for 1/2/0",
-      store.problems.some((p) => p.type === "ga-no-sender" && p.ga === "1/2/0"));
-    check("linked GA not flagged no-sender",
-      !store.problems.some((p) => p.type === "ga-no-sender" && p.ga === "1/1/1"));
-    check("problem count",
-      probTypes.filter((t) => t === "unlinked-object").length === 1);
+    check("fully-unlinked GA 1/2/0 NOT a problem",
+      !store.problems.some((p) => p.ga === "1/2/0"));
+    check("linked GA 1/1/1 not flagged",
+      !store.problems.some((p) => p.ga === "1/1/1"));
+    check("total problem count is 1",
+      store.problems.length === 1);
+    check("info counts unused com objects", store.info.unusedComObjects === 1);
+    check("info counts unused group addresses", store.info.unusedGroupAddresses === 1);
+    // A GA with listeners but no sender is the mirror problem.
+    const storeMirror = new Store({
+      devices: [], ranges: [], stats: {},
+      groups: [
+        { address: "2/0/1", name: "orphan listener", senders: [],
+          listeners: [{ device: "1.1.9", device_name: "X", object: 0 }] },
+      ],
+    });
+    check("ga-no-sender detected (listeners, no sender)",
+      storeMirror.problems.some((p) => p.type === "ga-no-sender" && p.ga === "2/0/1"));
 
     // --- suspicious -------------------------------------------------------
     check("1/1/2 is suspicious (no listener)", store.isSuspiciousGa("1/1/2"));
