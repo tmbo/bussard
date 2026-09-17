@@ -1,0 +1,466 @@
+//! The traffic hub: a sequenced telegram backlog + broadcast, plus the derived
+//! per-GA state map, fed by a background task subscribed to the bus.
+//!
+//! [`TrafficHub`] gives the SSE endpoint what a raw [`TelegramRing`] cannot: a
+//! monotonic `seq` on every telegram and a bounded backlog that a late
+//! subscriber can replay from without duplicates or gaps (SSE `Last-Event-ID`).
+//!
+//! The [`feed`] task copies the bus-subscription pattern from the MCP runner:
+//! subscribe to the [`BusHandle`], decode each inbound frame against the model,
+//! and publish it through the hub. It also polls `handle.status()` on a 1s tick
+//! and emits a `bus` event whenever the connection state changes, and updates
+//! the per-GA state map from Write/Response telegrams on group destinations.
+
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::Duration;
+
+use bussard_bus::{BusHandle, BusState};
+use bussard_model::{GroupAddress, Model};
+use bussard_monitor::decode::{ApciKind, DestinationRef};
+use bussard_monitor::{DecodedTelegram, json_value};
+use serde_json::{Value, json};
+use tokio::sync::broadcast;
+
+use crate::state::BusStatus;
+
+/// The depth of the SSE broadcast channel. A subscriber that falls this far
+/// behind receives a `gap` event and must reconcile via a fresh snapshot.
+const BROADCAST_DEPTH: usize = 1024;
+
+/// The maximum number of telegrams retained in the replay backlog.
+const BACKLOG_CAP: usize = 1000;
+
+/// A single hub event, tagged for the SSE `event:` field.
+///
+/// [`HubEvent::Telegram`] carries the `json_value` projection extended with its
+/// `seq`; [`HubEvent::Bus`] carries a bus-status object; [`HubEvent::Gap`]
+/// signals broadcast lag (the receiver missed events and should re-snapshot).
+#[derive(Debug, Clone)]
+pub enum HubEvent {
+    /// A decoded telegram with its monotonic sequence id.
+    Telegram {
+        /// The monotonic sequence id (the SSE `id:`).
+        seq: u64,
+        /// The `json_value` projection plus a `seq` field.
+        data: Value,
+    },
+    /// A bus connection-state change (also emitted once at subscribe time).
+    Bus(Value),
+    /// A broadcast-lag signal: the subscriber missed `count` events.
+    Gap {
+        /// How many broadcast messages were skipped.
+        count: u64,
+    },
+}
+
+/// The last observed state of a single group address, for the state endpoint.
+#[derive(Debug, Clone)]
+struct GaState {
+    value: Option<String>,
+    payload: String,
+    dpt: Option<String>,
+    apci: &'static str,
+    ts_utc: String,
+    source: String,
+    source_name: Option<String>,
+    seq: u64,
+}
+
+impl GaState {
+    /// Projects the GA state to its JSON object.
+    fn to_json(&self) -> Value {
+        json!({
+            "value": self.value,
+            "payload": self.payload,
+            "dpt": self.dpt,
+            "apci": self.apci,
+            "ts_utc": self.ts_utc,
+            "source": self.source,
+            "source_name": self.source_name,
+            "seq": self.seq,
+        })
+    }
+}
+
+/// The sequenced backlog + broadcast hub for live telegrams and bus events.
+///
+/// Cloning is cheap (everything is behind `Arc`). A subscriber calls
+/// [`TrafficHub::subscribe`] to get a broadcast receiver, then
+/// [`TrafficHub::backlog_since`] for a race-free replay snapshot (subscribe
+/// first, then snapshot, then drop events at or below the snapshot's max seq).
+#[derive(Clone)]
+pub struct TrafficHub {
+    inner: Arc<Inner>,
+}
+
+/// The shared hub state behind an `Arc`.
+struct Inner {
+    /// The monotonic sequence counter and the bounded backlog, together under
+    /// one lock so a telegram's seq assignment and its push are atomic.
+    backlog: Mutex<Backlog>,
+    /// The broadcast sender fanning events out to SSE subscribers.
+    tx: broadcast::Sender<HubEvent>,
+    /// The last value seen per group address, for `GET /api/state`.
+    ga_state: RwLock<BTreeMap<GroupAddress, GaState>>,
+}
+
+/// The sequence counter and the retained telegram backlog.
+struct Backlog {
+    /// The seq to assign to the next telegram (starts at 1).
+    next_seq: u64,
+    /// The retained telegrams, each as `(seq, json_value+seq)`, capped at
+    /// [`BACKLOG_CAP`] (oldest evicted first).
+    entries: VecDeque<(u64, Value)>,
+}
+
+impl Default for TrafficHub {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl TrafficHub {
+    /// Creates an empty hub with a fresh sequence counter.
+    pub fn new() -> Self {
+        let (tx, _rx) = broadcast::channel(BROADCAST_DEPTH);
+        TrafficHub {
+            inner: Arc::new(Inner {
+                backlog: Mutex::new(Backlog {
+                    next_seq: 1,
+                    entries: VecDeque::with_capacity(BACKLOG_CAP),
+                }),
+                tx,
+                ga_state: RwLock::new(BTreeMap::new()),
+            }),
+        }
+    }
+
+    /// Subscribes to the live event broadcast.
+    ///
+    /// Subscribe *before* calling [`backlog_since`](Self::backlog_since) so no
+    /// telegram can slip between the snapshot and the subscription.
+    pub fn subscribe(&self) -> broadcast::Receiver<HubEvent> {
+        self.inner.tx.subscribe()
+    }
+
+    /// Publishes a decoded telegram: assigns it a seq, appends it to the
+    /// backlog (evicting the oldest if full), updates the GA state, and
+    /// broadcasts it. Returns the assigned seq.
+    pub fn publish(&self, telegram: &DecodedTelegram) -> u64 {
+        let mut data = json_value(telegram);
+
+        let seq = {
+            // Lock is poisoned only if a previous holder panicked while mutating;
+            // recover the guard so a single panic does not wedge the hub.
+            let mut backlog = self.inner.backlog.lock().unwrap_or_else(|p| p.into_inner());
+            let seq = backlog.next_seq;
+            backlog.next_seq += 1;
+            if let Value::Object(map) = &mut data {
+                map.insert("seq".to_string(), Value::from(seq));
+            }
+            backlog.entries.push_back((seq, data.clone()));
+            while backlog.entries.len() > BACKLOG_CAP {
+                backlog.entries.pop_front();
+            }
+            seq
+        };
+
+        self.update_ga_state(telegram, seq);
+
+        // A send with no subscribers returns Err; that is expected and fine.
+        let _ = self.inner.tx.send(HubEvent::Telegram { seq, data });
+        seq
+    }
+
+    /// Broadcasts a bus-status change event (no seq; not backlogged).
+    pub fn publish_bus(&self, status: Value) {
+        let _ = self.inner.tx.send(HubEvent::Bus(status));
+    }
+
+    /// Returns the backlog entries with `seq > after`, up to `limit` of the most
+    /// recent, oldest-first, along with the current maximum seq.
+    ///
+    /// A subscriber that just subscribed calls this to replay: it skips any live
+    /// broadcast event whose seq is `<= max` (those are already in this
+    /// snapshot), giving a gap-free, duplicate-free stream.
+    pub fn backlog_since(&self, after: u64, limit: usize) -> (Vec<Value>, u64) {
+        let backlog = self.inner.backlog.lock().unwrap_or_else(|p| p.into_inner());
+        let max = backlog.next_seq.saturating_sub(1);
+        // Filter to seq > after, then keep the newest `limit`.
+        let mut kept: Vec<Value> = backlog
+            .entries
+            .iter()
+            .filter(|(seq, _)| *seq > after)
+            .map(|(_, v)| v.clone())
+            .collect();
+        if kept.len() > limit {
+            let drop = kept.len() - limit;
+            kept.drain(0..drop);
+        }
+        (kept, max)
+    }
+
+    /// The current maximum assigned seq (0 if none yet).
+    pub fn current_seq(&self) -> u64 {
+        let backlog = self.inner.backlog.lock().unwrap_or_else(|p| p.into_inner());
+        backlog.next_seq.saturating_sub(1)
+    }
+
+    /// The per-GA `values` object for `GET /api/state`, keyed by group address.
+    pub fn state_values(&self) -> Value {
+        let map = self
+            .inner
+            .ga_state
+            .read()
+            .unwrap_or_else(|p| p.into_inner());
+        let mut obj = serde_json::Map::new();
+        for (ga, st) in map.iter() {
+            obj.insert(ga.to_string(), st.to_json());
+        }
+        Value::Object(obj)
+    }
+
+    /// Updates the per-GA state from a Write or Response telegram on a group
+    /// destination. Reads and management traffic do not update state.
+    fn update_ga_state(&self, t: &DecodedTelegram, seq: u64) {
+        let DestinationRef::Group(ga) = t.destination else {
+            return;
+        };
+        if !matches!(t.apci, ApciKind::Write | ApciKind::Response) {
+            return;
+        }
+        let mut payload_hex = String::with_capacity(t.payload.len() * 2);
+        for b in &t.payload {
+            use std::fmt::Write;
+            let _ = write!(payload_hex, "{b:02x}");
+        }
+        let st = GaState {
+            value: t.value.as_ref().map(|v| v.to_string()),
+            payload: payload_hex,
+            dpt: t.dpt.map(|d| d.to_string()),
+            apci: t.apci.tag(),
+            ts_utc: bussard_monitor::timefmt::to_rfc3339(t.timestamp),
+            source: t.source.to_string(),
+            source_name: t.source_name.clone(),
+            seq,
+        };
+        let mut map = self
+            .inner
+            .ga_state
+            .write()
+            .unwrap_or_else(|p| p.into_inner());
+        map.insert(ga, st);
+    }
+}
+
+/// Feeds the hub from a live bus subscription until the actor shuts down.
+///
+/// Mirrors the MCP runner's feeder: subscribe to the bus, decode every inbound
+/// frame against the model, and publish it. In parallel it polls the bus status
+/// on a 1s tick and, on any change, republishes the status as a `bus` event so
+/// the UI badge updates without a client round-trip.
+pub async fn feed(hub: TrafficHub, handle: BusHandle, model: Arc<Model>, status: BusStatus) {
+    let mut sub = handle.subscribe();
+    let mut ticker = tokio::time::interval(Duration::from_secs(1));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut last_state: Option<BusState> = None;
+
+    loop {
+        tokio::select! {
+            inbound = sub.recv() => {
+                match inbound {
+                    Some(frame) => {
+                        let decoded =
+                            DecodedTelegram::from_frame(&frame.frame, Some(model.as_ref()));
+                        hub.publish(&decoded);
+                    }
+                    // The actor shut down; stop feeding.
+                    None => break,
+                }
+            }
+            _ = ticker.tick() => {
+                let now = handle.status();
+                if last_state != Some(now) {
+                    last_state = Some(now);
+                    hub.publish_bus(status.to_json());
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::SystemTime;
+
+    use bussard_model::IndividualAddress;
+    use bussard_model::codec::TypedValue;
+
+    fn ia(s: &str) -> IndividualAddress {
+        s.parse().expect("valid IA")
+    }
+    fn ga(s: &str) -> GroupAddress {
+        s.parse().expect("valid GA")
+    }
+
+    fn telegram(dest: &str, apci: ApciKind, value: Option<TypedValue>) -> DecodedTelegram {
+        DecodedTelegram {
+            timestamp: SystemTime::UNIX_EPOCH,
+            source: ia("1.1.30"),
+            source_name: Some("Meteodata".to_string()),
+            destination: DestinationRef::Group(ga(dest)),
+            destination_name: Some("Windalarm".to_string()),
+            apci,
+            payload: vec![1],
+            value,
+            dpt: Some("1.005".parse().expect("dpt")),
+            object_name: Some("obj".to_string()),
+            decode_note: None,
+        }
+    }
+
+    fn write(dest: &str) -> DecodedTelegram {
+        telegram(
+            dest,
+            ApciKind::Write,
+            Some(TypedValue::Bool {
+                value: true,
+                label: "Alarm",
+            }),
+        )
+    }
+
+    #[test]
+    fn test_seq_is_monotonic_from_one() {
+        let hub = TrafficHub::new();
+        assert_eq!(hub.publish(&write("3/2/0")), 1);
+        assert_eq!(hub.publish(&write("3/2/0")), 2);
+        assert_eq!(hub.publish(&write("3/2/0")), 3);
+        assert_eq!(hub.current_seq(), 3);
+    }
+
+    #[test]
+    fn test_publish_stamps_seq_into_data() {
+        let hub = TrafficHub::new();
+        hub.publish(&write("3/2/0"));
+        let (entries, max) = hub.backlog_since(0, 50);
+        assert_eq!(max, 1);
+        assert_eq!(entries[0]["seq"], 1);
+        assert_eq!(entries[0]["destination"], "3/2/0");
+    }
+
+    #[test]
+    fn test_backlog_evicts_oldest_beyond_cap() {
+        let hub = TrafficHub::new();
+        for _ in 0..(BACKLOG_CAP + 50) {
+            hub.publish(&write("3/2/0"));
+        }
+        let (entries, max) = hub.backlog_since(0, BACKLOG_CAP + 100);
+        assert_eq!(max, (BACKLOG_CAP + 50) as u64);
+        // The backlog holds at most BACKLOG_CAP entries.
+        assert_eq!(entries.len(), BACKLOG_CAP);
+        // The oldest 50 were evicted, so the first retained seq is 51.
+        assert_eq!(entries[0]["seq"], 51);
+    }
+
+    #[test]
+    fn test_backlog_since_filters_by_last_event_id() {
+        let hub = TrafficHub::new();
+        for _ in 0..10 {
+            hub.publish(&write("3/2/0"));
+        }
+        // Last-Event-ID = 7 => only seqs 8, 9, 10 replay.
+        let (entries, max) = hub.backlog_since(7, 50);
+        assert_eq!(max, 10);
+        let seqs: Vec<u64> = entries
+            .iter()
+            .map(|e| e["seq"].as_u64().expect("seq"))
+            .collect();
+        assert_eq!(seqs, vec![8, 9, 10]);
+    }
+
+    #[test]
+    fn test_backlog_since_limit_keeps_newest() {
+        let hub = TrafficHub::new();
+        for _ in 0..10 {
+            hub.publish(&write("3/2/0"));
+        }
+        // limit 3 keeps the newest three of the 10.
+        let (entries, _) = hub.backlog_since(0, 3);
+        let seqs: Vec<u64> = entries
+            .iter()
+            .map(|e| e["seq"].as_u64().expect("seq"))
+            .collect();
+        assert_eq!(seqs, vec![8, 9, 10]);
+    }
+
+    #[test]
+    fn test_replay_then_live_has_no_dup_or_gap() {
+        // Simulate the SSE flow: subscribe, snapshot, then live events.
+        let hub = TrafficHub::new();
+        hub.publish(&write("3/2/0")); // seq 1
+        hub.publish(&write("3/2/0")); // seq 2
+
+        let mut rx = hub.subscribe();
+        let (snapshot, max) = hub.backlog_since(0, 50);
+        assert_eq!(max, 2);
+
+        // Live events arrive after subscribe.
+        hub.publish(&write("3/2/0")); // seq 3
+        hub.publish(&write("3/2/0")); // seq 4
+
+        let mut seen: Vec<u64> = snapshot
+            .iter()
+            .map(|e| e["seq"].as_u64().expect("seq"))
+            .collect();
+        // Drain the broadcast, skipping seq <= max (already in the snapshot).
+        while let Ok(ev) = rx.try_recv() {
+            if let HubEvent::Telegram { seq, .. } = ev {
+                if seq > max {
+                    seen.push(seq);
+                }
+            }
+        }
+        assert_eq!(seen, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn test_ga_state_updated_by_write_and_response() {
+        let hub = TrafficHub::new();
+        hub.publish(&write("3/2/0"));
+        let values = hub.state_values();
+        assert_eq!(values["3/2/0"]["value"], "Alarm");
+        assert_eq!(values["3/2/0"]["apci"], "write");
+        assert_eq!(values["3/2/0"]["seq"], 1);
+        assert_eq!(values["3/2/0"]["source"], "1.1.30");
+
+        // A later Response updates the same GA.
+        let resp = telegram(
+            "3/2/0",
+            ApciKind::Response,
+            Some(TypedValue::Bool {
+                value: false,
+                label: "No alarm",
+            }),
+        );
+        hub.publish(&resp);
+        let values = hub.state_values();
+        assert_eq!(values["3/2/0"]["value"], "No alarm");
+        assert_eq!(values["3/2/0"]["apci"], "response");
+    }
+
+    #[test]
+    fn test_ga_state_ignores_reads() {
+        let hub = TrafficHub::new();
+        let mut read = write("3/2/0");
+        read.apci = ApciKind::Read;
+        read.value = None;
+        read.payload = vec![];
+        hub.publish(&read);
+        // A read does not populate the state map.
+        let values = hub.state_values();
+        assert!(values.as_object().expect("object").is_empty());
+    }
+}

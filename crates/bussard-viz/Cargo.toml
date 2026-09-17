@@ -1,0 +1,33 @@
+[package]
+name = "bussard-viz"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Web visualization server for a bussard KNX installation: topology, group-address tree, and live bus traffic"
+
+[dependencies]
+bussard-model = { workspace = true }
+bussard-transport = { workspace = true }
+bussard-monitor = { workspace = true }
+bussard-bus = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+axum = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+serde_json = { workspace = true }
+# tower's ServiceExt::oneshot drives the router in handler unit tests without
+# binding a socket; http-body-util collects response bodies. Both MIT.
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+# futures-util drives the SSE response body stream in the framing test. MIT.
+futures-util = "0.3"
+tempfile = "3"

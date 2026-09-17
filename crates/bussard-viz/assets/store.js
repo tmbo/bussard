@@ -1,0 +1,481 @@
+// store.js — pure data layer for the KNX visualization.
+//
+// NO DOM access lives here. The store ingests the /api/model contract,
+// builds lookup indexes, derives the P5 problems list and a search index,
+// holds runtime state (selection, live values, log filters, pause flag) and
+// exposes a tiny pub/sub bus. The log filter-predicate parser and the
+// telegram ring buffer also live here so test.html can unit-test them
+// without a browser.
+
+/**
+ * @typedef {Object} Selection
+ * @property {'device'|'ga'|null} kind
+ * @property {string|null} id  device address or group address
+ */
+
+/**
+ * Build a comparator sort key for a KNX individual address (a.b.c).
+ * @param {string} addr
+ * @returns {number}
+ */
+function iaSortKey(addr) {
+  const parts = String(addr).split(".").map((n) => parseInt(n, 10) || 0);
+  return (parts[0] || 0) * 0x10000 + (parts[1] || 0) * 0x100 + (parts[2] || 0);
+}
+
+/**
+ * Build a comparator sort key for a group address (m/mid/sub).
+ * @param {string} addr
+ * @returns {number}
+ */
+function gaSortKey(addr) {
+  const parts = String(addr).split("/").map((n) => parseInt(n, 10) || 0);
+  return (parts[0] || 0) * 0x10000 + (parts[1] || 0) * 0x100 + (parts[2] || 0);
+}
+
+/**
+ * The central application store. Construct once from an /api/model payload.
+ */
+export class Store {
+  /**
+   * @param {Object} model — parsed /api/model JSON matching the contract.
+   */
+  constructor(model) {
+    /** @type {Object} raw model payload */
+    this.model = model || { devices: [], groups: [], ranges: [], stats: {} };
+
+    /** @type {Map<string, Object>} device address -> device */
+    this.deviceByAddr = new Map();
+    /** @type {Map<string, Object>} group address -> group */
+    this.groupByAddr = new Map();
+    /** @type {Map<string, Array<Object>>} ga -> sender refs */
+    this.gaSenders = new Map();
+    /** @type {Map<string, Array<Object>>} ga -> listener refs */
+    this.gaListeners = new Map();
+    /** @type {Map<string, Set<string>>} device address -> set of GAs it touches */
+    this.deviceGAs = new Map();
+
+    /** @type {Array<{kind:string,id:string,haystack:string,label:string,sub:string}>} */
+    this.searchEntries = [];
+
+    /** @type {Array<Object>} derived P5 problems */
+    this.problems = [];
+
+    // Runtime state (mutated over the lifetime of the page).
+    /** @type {Selection} */
+    this.selection = { kind: null, id: null };
+    /** @type {Map<string, Object>} ga -> last value record */
+    this.lastValue = new Map();
+    /** @type {boolean} log paused */
+    this.paused = false;
+    /** @type {string} raw log filter text */
+    this.filterText = "";
+    /** @type {{state:string, connected:boolean, transport:string|null}} */
+    this.busStatus = { state: "unknown", connected: false, transport: null };
+
+    /** @type {Map<string, Set<Function>>} pub/sub subscribers */
+    this._subs = new Map();
+
+    this._buildIndexes();
+    this._buildSearchIndex();
+    this._computeProblems();
+  }
+
+  // --- index construction -------------------------------------------------
+
+  _buildIndexes() {
+    for (const d of this.model.devices || []) {
+      this.deviceByAddr.set(d.address, d);
+      const gas = new Set();
+      for (const co of d.com_objects || []) {
+        if (co.send) gas.add(co.send);
+        for (const l of co.listen || []) gas.add(l);
+      }
+      this.deviceGAs.set(d.address, gas);
+    }
+    for (const g of this.model.groups || []) {
+      this.groupByAddr.set(g.address, g);
+      this.gaSenders.set(g.address, g.senders || []);
+      this.gaListeners.set(g.address, g.listeners || []);
+    }
+  }
+
+  _buildSearchIndex() {
+    const entries = [];
+    for (const d of this.model.devices || []) {
+      const parts = [
+        d.address,
+        d.name,
+        d.description,
+        d.floor,
+        d.room,
+        d.product && d.product.manufacturer,
+        d.product && d.product.order_number,
+      ].filter(Boolean);
+      entries.push({
+        kind: "device",
+        id: d.address,
+        label: d.name || d.address,
+        sub: [d.address, d.floor, d.room].filter(Boolean).join(" · "),
+        haystack: parts.join(" ").toLowerCase(),
+      });
+    }
+    for (const g of this.model.groups || []) {
+      const parts = [
+        g.address,
+        g.name,
+        g.description,
+        g.dpt,
+        g.range && g.range.main,
+        g.range && g.range.middle,
+      ].filter(Boolean);
+      entries.push({
+        kind: "ga",
+        id: g.address,
+        label: g.name || g.address,
+        sub: [g.address, g.dpt].filter(Boolean).join(" · "),
+        haystack: parts.join(" ").toLowerCase(),
+      });
+    }
+    this.searchEntries = entries;
+  }
+
+  _computeProblems() {
+    const problems = [];
+    // Unlinked com objects: no send target AND empty listen list.
+    for (const d of this.model.devices || []) {
+      for (const co of d.com_objects || []) {
+        const noSend = !co.send;
+        const noListen = !(co.listen && co.listen.length);
+        if (noSend && noListen) {
+          problems.push({
+            type: "unlinked-object",
+            device: d.address,
+            device_name: d.name,
+            object: co.number,
+            object_name: co.name,
+            message: `${d.name || d.address} com object ${co.number} is unlinked`,
+          });
+        }
+      }
+    }
+    // GAs without a sender, and GAs without a listener.
+    for (const g of this.model.groups || []) {
+      const noSender = !(g.senders && g.senders.length);
+      const noListener = !(g.listeners && g.listeners.length);
+      if (noSender) {
+        problems.push({
+          type: "ga-no-sender",
+          ga: g.address,
+          ga_name: g.name,
+          message: `${g.address} has no sender`,
+        });
+      }
+      if (noListener) {
+        problems.push({
+          type: "ga-no-listener",
+          ga: g.address,
+          ga_name: g.name,
+          message: `${g.address} has no listener`,
+        });
+      }
+    }
+    this.problems = problems;
+  }
+
+  // --- queries ------------------------------------------------------------
+
+  /**
+   * Sorted device list (by individual address).
+   * @returns {Array<Object>}
+   */
+  devicesSorted() {
+    return [...(this.model.devices || [])].sort(
+      (a, b) => iaSortKey(a.address) - iaSortKey(b.address),
+    );
+  }
+
+  /**
+   * Sorted group list (by group address).
+   * @returns {Array<Object>}
+   */
+  groupsSorted() {
+    return [...(this.model.groups || [])].sort(
+      (a, b) => gaSortKey(a.address) - gaSortKey(b.address),
+    );
+  }
+
+  /**
+   * Is a GA suspicious (has senders but no listeners)? Used for D6 marking.
+   * @param {string} ga
+   * @returns {boolean}
+   */
+  isSuspiciousGa(ga) {
+    const listeners = this.gaListeners.get(ga);
+    if (!this.groupByAddr.has(ga)) return true; // unknown destination
+    return !listeners || listeners.length === 0;
+  }
+
+  /**
+   * Run a search query against the prebuilt index. Space-separated terms are
+   * ANDed. Returns matches grouped by kind, capped per group.
+   * @param {string} query
+   * @param {number} [perGroup=8]
+   * @returns {{devices:Array<Object>, groups:Array<Object>}}
+   */
+  search(query, perGroup = 8) {
+    const q = String(query || "").trim().toLowerCase();
+    const out = { devices: [], groups: [] };
+    if (!q) return out;
+    const terms = q.split(/\s+/).filter(Boolean);
+    for (const e of this.searchEntries) {
+      if (terms.every((t) => e.haystack.includes(t))) {
+        const bucket = e.kind === "device" ? out.devices : out.groups;
+        if (bucket.length < perGroup) bucket.push(e);
+      }
+    }
+    return out;
+  }
+
+  // --- runtime mutations (emit events) ------------------------------------
+
+  /**
+   * Set the current selection and notify listeners.
+   * @param {'device'|'ga'|null} kind
+   * @param {string|null} id
+   */
+  select(kind, id) {
+    this.selection = { kind: kind || null, id: id || null };
+    this.emit("selection", this.selection);
+  }
+
+  /** Clear the selection. */
+  deselect() {
+    this.select(null, null);
+  }
+
+  /**
+   * Record a live value for a GA (from a telegram) and notify listeners.
+   * @param {string} ga
+   * @param {Object} record — {value, payload, dpt, apci, ts_utc, source, seq}
+   */
+  setValue(ga, record) {
+    this.lastValue.set(ga, record);
+    this.emit("ga-value", { ga, record });
+  }
+
+  /**
+   * Set the bus status and notify listeners.
+   * @param {{state:string, connected:boolean, transport?:string}} status
+   */
+  setBusStatus(status) {
+    this.busStatus = {
+      state: status.state,
+      connected: !!status.connected,
+      transport: status.transport || null,
+    };
+    this.emit("bus-status", this.busStatus);
+  }
+
+  /**
+   * Toggle or set the paused flag.
+   * @param {boolean} [value] — if omitted, toggles.
+   * @returns {boolean} the new paused state
+   */
+  setPaused(value) {
+    this.paused = value === undefined ? !this.paused : !!value;
+    this.emit("paused", this.paused);
+    return this.paused;
+  }
+
+  /**
+   * Update the raw log filter text and notify listeners.
+   * @param {string} text
+   */
+  setFilter(text) {
+    this.filterText = text || "";
+    this.emit("filter", this.filterText);
+  }
+
+  // --- pub/sub ------------------------------------------------------------
+
+  /**
+   * Subscribe to a topic. Returns an unsubscribe function.
+   * Topics: selection, ga-value, telegram, bus-status, filter, paused.
+   * @param {string} topic
+   * @param {Function} fn
+   * @returns {Function} unsubscribe
+   */
+  on(topic, fn) {
+    let set = this._subs.get(topic);
+    if (!set) {
+      set = new Set();
+      this._subs.set(topic, set);
+    }
+    set.add(fn);
+    return () => set.delete(fn);
+  }
+
+  /**
+   * Emit a topic with a payload to all subscribers.
+   * @param {string} topic
+   * @param {*} payload
+   */
+  emit(topic, payload) {
+    const set = this._subs.get(topic);
+    if (!set) return;
+    for (const fn of set) {
+      try {
+        fn(payload);
+      } catch (err) {
+        // A misbehaving subscriber must not break the emit loop.
+        if (typeof console !== "undefined") console.error(err);
+      }
+    }
+  }
+}
+
+/**
+ * Parse a log filter query into a predicate over telegram rows.
+ *
+ * Grammar (space-separated terms, all ANDed together):
+ *   d/d/d        exact group address
+ *   d/d/*        GA subtree (main/middle/*)
+ *   d/*          GA subtree (main/*)
+ *   d.d.d        source device (individual address)
+ *   apci:read    apci equals read | write | response
+ *   is:suspicious   GA has no listener
+ *   <text>       case-insensitive substring over the row haystack
+ *
+ * @param {string} query
+ * @param {(ga:string)=>boolean} [isSuspicious] — predicate for is:suspicious.
+ * @returns {(row:Object)=>boolean} predicate; matches everything if empty.
+ */
+export function parseFilter(query, isSuspicious) {
+  const raw = String(query || "").trim();
+  if (!raw) return () => true;
+  const suspFn = isSuspicious || (() => false);
+  const terms = raw.split(/\s+/).filter(Boolean);
+  /** @type {Array<(row:Object)=>boolean>} */
+  const preds = [];
+
+  for (const term of terms) {
+    const lower = term.toLowerCase();
+
+    // apci:<kind>
+    if (lower.startsWith("apci:")) {
+      const kind = lower.slice(5);
+      preds.push((row) => String(row.apci || "").toLowerCase() === kind);
+      continue;
+    }
+    // is:suspicious (or is:<flag>)
+    if (lower.startsWith("is:")) {
+      const flag = lower.slice(3);
+      if (flag === "suspicious") {
+        preds.push((row) => suspFn(row.destination));
+      } else {
+        // Unknown is: flag never matches.
+        preds.push(() => false);
+      }
+      continue;
+    }
+    // Group address (exact or subtree). Contains a slash.
+    if (term.includes("/")) {
+      const parts = term.split("/");
+      if (parts[parts.length - 1] === "*") {
+        // Subtree: match on the non-wildcard prefix.
+        const prefix = parts.slice(0, -1).join("/") + "/";
+        preds.push((row) => String(row.destination || "").startsWith(prefix));
+      } else {
+        preds.push((row) => row.destination === term);
+      }
+      continue;
+    }
+    // Source device (individual address): d.d.d
+    if (/^\d+\.\d+\.\d+$/.test(term)) {
+      preds.push((row) => row.source === term);
+      continue;
+    }
+    // Free text substring over a computed haystack.
+    preds.push((row) => rowHaystack(row).includes(lower));
+  }
+
+  return (row) => preds.every((p) => p(row));
+}
+
+/**
+ * Build a lowercase haystack for a telegram row (used by free-text filtering).
+ * @param {Object} row
+ * @returns {string}
+ */
+export function rowHaystack(row) {
+  return [
+    row.source,
+    row.source_name,
+    row.destination,
+    row.destination_name,
+    row.apci,
+    row.value,
+    row.dpt,
+    row.object_name,
+    row.note,
+  ]
+    .filter((v) => v !== null && v !== undefined && v !== "")
+    .join(" ")
+    .toLowerCase();
+}
+
+/**
+ * Fixed-capacity ring buffer for telegram scrollback. Oldest entries are
+ * overwritten once the cap is reached.
+ */
+export class RingBuffer {
+  /**
+   * @param {number} [cap=5000]
+   */
+  constructor(cap = 5000) {
+    /** @type {number} */
+    this.cap = cap;
+    /** @type {Array<*>} */
+    this._buf = new Array(cap);
+    /** @type {number} write cursor */
+    this._head = 0;
+    /** @type {number} number of live entries */
+    this.size = 0;
+  }
+
+  /**
+   * Push a value, overwriting the oldest entry when full.
+   * @param {*} value
+   */
+  push(value) {
+    this._buf[this._head] = value;
+    this._head = (this._head + 1) % this.cap;
+    if (this.size < this.cap) this.size += 1;
+  }
+
+  /**
+   * Return the live entries in insertion order (oldest first).
+   * @returns {Array<*>}
+   */
+  toArray() {
+    const out = [];
+    if (this.size < this.cap) {
+      for (let i = 0; i < this.size; i++) out.push(this._buf[i]);
+    } else {
+      for (let i = 0; i < this.cap; i++) {
+        out.push(this._buf[(this._head + i) % this.cap]);
+      }
+    }
+    return out;
+  }
+
+  /** Drop all entries. */
+  clear() {
+    this._buf = new Array(this.cap);
+    this._head = 0;
+    this.size = 0;
+  }
+}
+
+export { iaSortKey, gaSortKey };

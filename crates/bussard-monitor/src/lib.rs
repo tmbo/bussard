@@ -27,7 +27,7 @@ pub mod timefmt;
 
 pub use decode::{ApciKind, DecodedTelegram, DestinationRef};
 pub use filter::{Filter, FilterParseError};
-pub use format::{json_line, pretty_line};
+pub use format::{json_line, json_value, pretty_line};
 pub use ring::{RingEvent, RingSubscription, TelegramRing};
 pub use store::{
     CaptureRecord, CaptureStore, CaptureWriter, QueryFilter, StoreError, StoredTelegram,

@@ -19,8 +19,10 @@ mod read_cmd;
 mod reconstruct_cmd;
 mod scan_cmd;
 mod validate_cmd;
+mod viz_cmd;
 mod write_cmd;
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
@@ -360,6 +362,21 @@ enum Command {
         #[arg(long, value_name = "FILE")]
         out: Option<PathBuf>,
     },
+    /// Serve the KNX visualization website (topology, GA tree, live traffic).
+    Viz {
+        /// The address to bind the HTTP server to.
+        #[arg(long, default_value = "127.0.0.1:8080")]
+        listen: SocketAddr,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Override the gateway `host[:port]` for tunneling.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Force KNXnet/IP routing (multicast) transport.
+        #[arg(long)]
+        routing: bool,
+    },
     /// Run the read-only MCP server over stdio.
     Mcp {
         /// The directory containing the model (required for the MCP server).
@@ -604,6 +621,12 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             conn_cmd::ConnOverrides { gateway, routing },
         ),
         Command::HaConfig { dir, out } => ha_config_cmd::run(&dir, out.as_deref()),
+        Command::Viz {
+            listen,
+            dir,
+            gateway,
+            routing,
+        } => viz_cmd::run(listen, &dir, conn_cmd::ConnOverrides { gateway, routing }),
         Command::Mcp {
             dir,
             gateway,

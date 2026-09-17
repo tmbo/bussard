@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>viz self-test</title>
+  <style>
+    body { background: #0e1116; color: #d7dce3; font-family: ui-monospace, Menlo, monospace; padding: 20px; }
+    #result { font-size: 18px; margin-bottom: 12px; }
+    .pass { color: #3fb950; }
+    .fail { color: #f85149; }
+    ul { line-height: 1.6; }
+    li.ok { color: #3fb950; }
+    li.bad { color: #f85149; }
+  </style>
+</head>
+<body>
+  <h1>bussard viz — store self-test</h1>
+  <div id="result">running…</div>
+  <ul id="details"></ul>
+
+  <script type="module">
+    // Relative imports so this page runs from the crate (/assets/test.html or
+    // /test) AND when opened directly via file:// next to its imports.
+    import { Store, parseFilter, RingBuffer, rowHaystack } from "./store.js";
+
+    let pass = 0;
+    let fail = 0;
+    const failures = [];
+    const details = document.getElementById("details");
+
+    /**
+     * Assert a boolean condition; record pass/fail and append a list item.
+     */
+    function check(name, cond) {
+      const li = document.createElement("li");
+      if (cond) {
+        pass++;
+        li.className = "ok";
+        li.textContent = "PASS " + name;
+      } else {
+        fail++;
+        li.className = "bad";
+        li.textContent = "FAIL " + name;
+        failures.push(name);
+      }
+      details.appendChild(li);
+    }
+
+    // --- inline fixture (small; exercises orphan/problem logic) ------------
+    const fixture = {
+      project: "T",
+      stats: { devices: 2, groups: 3, links: 2 },
+      ranges: [{ key: "1", main: 1, middle: null, name: "Licht" }],
+      devices: [
+        {
+          address: "1.1.1", name: "Taster Flur", floor: "EG", room: "Flur",
+          product: { manufacturer: "Gira", order_number: "5142" },
+          channels: [{ key: "CH-1", name: "A" }],
+          com_objects: [
+            { number: 0, name: "Schalten", dpt: "1.001", flags: "C-WT--", channel: "CH-1", send: "1/1/1", listen: [] },
+            { number: 1, name: "Loose", dpt: "1.001", flags: "C-----", channel: "CH-1", send: null, listen: [] }
+          ]
+        },
+        {
+          address: "1.1.2", name: "Aktor", floor: "EG", room: "Technik",
+          product: null, channels: [],
+          com_objects: [
+            { number: 0, name: "Schalten", dpt: "1.001", flags: "C-W-U-", channel: null, send: null, listen: ["1/1/1"] }
+          ]
+        }
+      ],
+      groups: [
+        { address: "1/1/1", name: "Licht Flur", dpt: "1.001", protected: false, main: 1, middle: 1, sub: 1,
+          range: { main: "Licht", middle: null },
+          senders: [{ device: "1.1.1", device_name: "Taster Flur", object: 0, object_name: "Schalten" }],
+          listeners: [{ device: "1.1.2", device_name: "Aktor", object: 0, object_name: "Schalten" }] },
+        { address: "1/1/2", name: "No listener", dpt: "1.001", protected: false, main: 1, middle: 1, sub: 2,
+          range: { main: "Licht", middle: null },
+          senders: [{ device: "1.1.1", device_name: "Taster Flur", object: 0, object_name: "Schalten" }],
+          listeners: [] },
+        { address: "1/2/0", name: null, dpt: null, protected: true, main: 1, middle: 2, sub: 0,
+          range: { main: "Licht", middle: null },
+          senders: [], listeners: [] }
+      ]
+    };
+
+    const store = new Store(fixture);
+
+    // --- indexes ----------------------------------------------------------
+    check("deviceByAddr indexed", store.deviceByAddr.get("1.1.1").name === "Taster Flur");
+    check("groupByAddr indexed", store.groupByAddr.get("1/1/1").name === "Licht Flur");
+    check("gaSenders index", store.gaSenders.get("1/1/1").length === 1);
+    check("gaListeners index", store.gaListeners.get("1/1/1").length === 1);
+    check("deviceGAs union", store.deviceGAs.get("1.1.1").has("1/1/1"));
+
+    // --- problems / orphans ----------------------------------------------
+    const probTypes = store.problems.map((p) => p.type);
+    check("unlinked com object detected",
+      store.problems.some((p) => p.type === "unlinked-object" && p.object === 1));
+    check("ga-no-listener detected",
+      store.problems.some((p) => p.type === "ga-no-listener" && p.ga === "1/1/2"));
+    check("ga-no-sender detected for 1/2/0",
+      store.problems.some((p) => p.type === "ga-no-sender" && p.ga === "1/2/0"));
+    check("linked GA not flagged no-sender",
+      !store.problems.some((p) => p.type === "ga-no-sender" && p.ga === "1/1/1"));
+    check("problem count",
+      probTypes.filter((t) => t === "unlinked-object").length === 1);
+
+    // --- suspicious -------------------------------------------------------
+    check("1/1/2 is suspicious (no listener)", store.isSuspiciousGa("1/1/2"));
+    check("1/1/1 not suspicious", !store.isSuspiciousGa("1/1/1"));
+    check("unknown GA is suspicious", store.isSuspiciousGa("7/7/7"));
+
+    // --- search index -----------------------------------------------------
+    const r1 = store.search("flur");
+    check("search hits device by room", r1.devices.some((e) => e.id === "1.1.1"));
+    const r2 = store.search("gira");
+    check("search hits by manufacturer", r2.devices.some((e) => e.id === "1.1.1"));
+    const r3 = store.search("1/1/1");
+    check("search hits GA by address", r3.groups.some((e) => e.id === "1/1/1"));
+    const r4 = store.search("taster flur");
+    check("search ANDs terms", r4.devices.length === 1 && r4.devices[0].id === "1.1.1");
+    const r5 = store.search("taster aktor");
+    check("search AND with no match", r5.devices.length === 0);
+
+    // --- filter grammar ---------------------------------------------------
+    const susp = (ga) => store.isSuspiciousGa(ga);
+    const mk = (o) => Object.assign({ source: "", destination: "", apci: "", value: "", dpt: "", note: "" }, o);
+
+    const exact = parseFilter("1/1/1", susp);
+    check("filter exact GA match", exact(mk({ destination: "1/1/1" })));
+    check("filter exact GA reject", !exact(mk({ destination: "1/1/2" })));
+
+    const subMid = parseFilter("1/1/*", susp);
+    check("filter subtree m/mid/* match", subMid(mk({ destination: "1/1/9" })));
+    check("filter subtree m/mid/* reject", !subMid(mk({ destination: "1/2/0" })));
+
+    const subMain = parseFilter("1/*", susp);
+    check("filter subtree m/* match", subMain(mk({ destination: "1/2/0" })));
+    check("filter subtree m/* reject other main", !subMain(mk({ destination: "2/0/0" })));
+
+    const dev = parseFilter("1.1.30", susp);
+    check("filter source device match", dev(mk({ source: "1.1.30" })));
+    check("filter source device reject", !dev(mk({ source: "1.1.31" })));
+
+    const rd = parseFilter("apci:read", susp);
+    check("filter apci:read match", rd(mk({ apci: "read" })));
+    check("filter apci:read reject write", !rd(mk({ apci: "write" })));
+
+    const wr = parseFilter("apci:write", susp);
+    check("filter apci:write match", wr(mk({ apci: "write" })));
+
+    const isS = parseFilter("is:suspicious", susp);
+    check("filter is:suspicious match", isS(mk({ destination: "1/1/2" })));
+    check("filter is:suspicious reject linked", !isS(mk({ destination: "1/1/1" })));
+
+    const txt = parseFilter("schalten", susp);
+    check("filter free text match", txt(mk({ note: "Schalten Flur" })));
+    check("filter free text reject", !txt(mk({ note: "Dimmen" })));
+
+    const combo = parseFilter("1/1/* apci:write", susp);
+    check("filter AND of terms match", combo(mk({ destination: "1/1/5", apci: "write" })));
+    check("filter AND of terms reject", !combo(mk({ destination: "1/1/5", apci: "read" })));
+
+    const empty = parseFilter("", susp);
+    check("empty filter matches all", empty(mk({ destination: "9/9/9" })));
+
+    check("rowHaystack lowercases", rowHaystack(mk({ note: "HELLO" })).includes("hello"));
+
+    // --- ring buffer ------------------------------------------------------
+    const ring = new RingBuffer(3);
+    ring.push("a"); ring.push("b");
+    check("ring partial toArray", JSON.stringify(ring.toArray()) === JSON.stringify(["a", "b"]));
+    ring.push("c"); ring.push("d");
+    check("ring wrap drops oldest", JSON.stringify(ring.toArray()) === JSON.stringify(["b", "c", "d"]));
+    check("ring size capped", ring.size === 3);
+    ring.push("e"); ring.push("f");
+    check("ring wrap twice", JSON.stringify(ring.toArray()) === JSON.stringify(["d", "e", "f"]));
+    ring.clear();
+    check("ring clear empties", ring.size === 0 && ring.toArray().length === 0);
+
+    const big = new RingBuffer(5000);
+    for (let i = 0; i < 5200; i++) big.push(i);
+    check("ring cap 5000 holds 5000", big.size === 5000);
+    check("ring cap 5000 oldest correct", big.toArray()[0] === 200);
+
+    // --- pub/sub ----------------------------------------------------------
+    let got = null;
+    const off = store.on("selection", (s) => { got = s; });
+    store.select("ga", "1/1/1");
+    check("pub/sub delivers selection", got && got.id === "1/1/1");
+    off();
+    store.select("ga", "1/2/0");
+    check("pub/sub unsubscribe works", got.id === "1/1/1");
+
+    // --- report -----------------------------------------------------------
+    const result = document.getElementById("result");
+    const summary = `PASS ${pass} / FAIL ${fail}`;
+    document.title = summary;
+    result.textContent = summary;
+    result.className = fail === 0 ? "pass" : "fail";
+    if (failures.length) {
+      const li = document.createElement("li");
+      li.className = "bad";
+      li.textContent = "FAILURES: " + failures.join("; ");
+      details.appendChild(li);
+    }
+  </script>
+</body>
+</html>

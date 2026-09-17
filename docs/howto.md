@@ -21,6 +21,15 @@ $ bussard monitor
 
 Every telegram resolves to its GA name, the sending device, and a typed value. Flip a switch and watch it name itself. Narrow the stream with `--filter 3/2/0,1/0/` (GAs, GA prefixes, or sender IAs); `--json` emits one JSON object per line for tooling. GAs missing from the model show as raw hex; add them to `groups.yaml` with a `dpt:` and re-run.
 
+## ... see the whole network in a browser?
+
+```console
+$ bussard viz
+bussard viz serving on http://127.0.0.1:8080 (Ctrl-C to stop)
+```
+
+Open the address to get a bus-spine diagram of every device by floor and room, the group-address tree, and live telegrams pulsing along the spine as they happen. Select a device or GA to see its links, senders, and listeners. Per-DPT widgets send a test write (protected GAs need an explicit force); the confirmation is the echoed telegram on the live stream. With no reachable gateway the page still shows the model, just without live traffic. See [the viz server](reference.md#the-viz-server) for the endpoints.
+
 ## ... find out what devices are on my line?
 
 ```console

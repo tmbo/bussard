@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>bussard viz — KNX network</title>
+  <link rel="stylesheet" href="/assets/style.css" />
+</head>
+<body>
+  <header id="app-header">
+    <div class="header-left">
+      <span class="brand">bussard <em>viz</em></span>
+      <span id="project-name" class="project-name">KNX</span>
+      <span id="stats" class="stats"></span>
+    </div>
+    <div class="header-center">
+      <div class="search-wrap">
+        <input
+          id="search-input"
+          class="search-input"
+          type="search"
+          placeholder="Search devices, groups, rooms…  ( / )"
+          autocomplete="off"
+          spellcheck="false"
+        />
+        <div id="search-results" class="search-results" hidden></div>
+      </div>
+    </div>
+    <div class="header-right">
+      <button id="problems-btn" class="problems-btn" type="button" title="Problems (P5)">
+        Problems <span id="problems-count" class="problems-count">0</span>
+      </button>
+      <div class="bus-status">
+        <span id="bus-status-dot" class="status-dot" data-state="offline"></span>
+        <span id="bus-status-label" class="status-label">offline</span>
+      </div>
+    </div>
+  </header>
+
+  <main id="app-main">
+    <section id="topology" class="pane topology-pane" aria-label="Topology"></section>
+
+    <aside id="right-panel" class="pane right-panel">
+      <nav class="tabs" role="tablist">
+        <button class="tab active" data-tab="groups" role="tab">Groups</button>
+        <button class="tab" data-tab="inspector" role="tab">Inspector</button>
+      </nav>
+      <div id="tab-groups" class="tab-body active" role="tabpanel">
+        <div id="ga-tree" class="ga-tree"></div>
+      </div>
+      <div id="tab-inspector" class="tab-body" role="tabpanel" hidden>
+        <div id="inspector-panel" class="inspector-panel">
+          <p class="empty-hint">Select a device or group to inspect.</p>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <section id="log-drawer" class="log-drawer" aria-label="Telegram log">
+    <div class="log-toolbar">
+      <span class="log-title">Log</span>
+      <input
+        id="log-filter"
+        class="log-filter"
+        type="search"
+        placeholder="Filter:  2/1/*  ·  1.1.30  ·  apci:write  ·  is:suspicious  ·  text"
+        autocomplete="off"
+        spellcheck="false"
+      />
+      <button id="log-pause" class="log-btn" type="button" title="Pause (p)">Pause</button>
+      <button id="log-follow" class="log-btn active" type="button" title="Follow tail">Follow</button>
+      <button id="log-clear" class="log-btn" type="button" title="Clear log">Clear</button>
+      <span id="log-newcount" class="log-newcount" hidden></span>
+    </div>
+    <div id="log-body" class="log-body" aria-live="off"></div>
+  </section>
+
+  <!-- Templates -->
+  <template id="tpl-device-card">
+    <article class="device-card" data-device="">
+      <header class="dc-head">
+        <span class="dc-addr" data-field="addr"></span>
+        <span class="dc-name" data-field="name"></span>
+      </header>
+      <div class="dc-meta">
+        <span class="dc-type" data-field="type"></span>
+        <span class="dc-room" data-field="room"></span>
+      </div>
+      <span class="dc-orphan" data-field="orphan" hidden>⚠</span>
+    </article>
+  </template>
+
+  <template id="tpl-ga-main">
+    <div class="ga-row ga-main" data-level="main">
+      <span class="ga-twist"></span>
+      <span class="ga-addr" data-field="addr"></span>
+      <span class="ga-name" data-field="name"></span>
+    </div>
+  </template>
+
+  <template id="tpl-ga-middle">
+    <div class="ga-row ga-middle" data-level="middle">
+      <span class="ga-twist"></span>
+      <span class="ga-addr" data-field="addr"></span>
+      <span class="ga-name" data-field="name"></span>
+      <span class="ga-count" data-field="count"></span>
+      <span class="ga-activity" data-field="activity"></span>
+      <span class="ga-orphan" data-field="orphan" hidden></span>
+    </div>
+  </template>
+
+  <template id="tpl-ga-sub">
+    <div class="ga-row ga-sub" data-level="sub" data-ga="">
+      <span class="ga-addr" data-field="addr"></span>
+      <span class="ga-name" data-field="name"></span>
+      <span class="ga-dpt" data-field="dpt"></span>
+      <span class="ga-value" data-field="value" data-ga=""></span>
+      <span class="ga-orphan" data-field="orphan" hidden></span>
+    </div>
+  </template>
+
+  <template id="tpl-log-row">
+    <div class="log-row" data-ga="">
+      <span class="lr-time" data-field="time"></span>
+      <span class="lr-source" data-field="source"></span>
+      <span class="lr-dest" data-field="dest"></span>
+      <span class="lr-apci" data-field="apci"></span>
+      <span class="lr-value" data-field="value"></span>
+      <span class="lr-dpt" data-field="dpt"></span>
+    </div>
+  </template>
+
+  <template id="tpl-inspector-device">
+    <div class="insp insp-device">
+      <header class="insp-head">
+        <span class="insp-addr" data-field="addr"></span>
+        <span class="insp-name" data-field="name"></span>
+      </header>
+      <div class="insp-meta" data-field="meta"></div>
+      <section class="insp-section" data-field="channels"></section>
+      <section class="insp-section" data-field="comobjects"></section>
+    </div>
+  </template>
+
+  <template id="tpl-inspector-ga">
+    <div class="insp insp-ga">
+      <header class="insp-head">
+        <span class="insp-addr" data-field="addr"></span>
+        <span class="insp-name" data-field="name"></span>
+        <span class="insp-dpt" data-field="dpt"></span>
+      </header>
+      <div class="insp-meta" data-field="meta"></div>
+      <section class="insp-section" data-field="widget"></section>
+      <section class="insp-section" data-field="senders"></section>
+      <section class="insp-section" data-field="listeners"></section>
+    </div>
+  </template>
+
+  <script type="module" src="/assets/main.js"></script>
+</body>
+</html>
