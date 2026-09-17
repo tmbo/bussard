@@ -147,11 +147,6 @@ struct Sys7Runtime {
     profile: profile::Sys7Profile,
     /// The three (or more) parallel LSMs, keyed by LSM index (1, 2, 3, [5]).
     lsms: BTreeMap<u8, Sys7LoadStateMachine>,
-    /// The base of the group-object descriptor table inside the LSM 1 region.
-    /// The canonical MDT image co-locates it just past the address table; the sim
-    /// derives it after the LSM 1 segment is written (spec §7.3). Defaults to the
-    /// LSM 1 table base until refined.
-    go_table_base: u16,
 }
 
 /// A strict KNX device (System B or System 7, per its [`Profile`]).
@@ -596,15 +591,10 @@ impl Device {
             );
         }
 
-        let go_table_base = s7.memory_map.lsm1_table;
         let mut device = Self {
             address,
             profile,
-            sys7: Some(Sys7Runtime {
-                profile: s7,
-                lsms,
-                go_table_base,
-            }),
+            sys7: Some(Sys7Runtime { profile: s7, lsms }),
             objects,
             loadables,
             memory: Memory::new(),
@@ -705,7 +695,13 @@ impl Device {
             }
             let addr_base = s7.profile.memory_map.lsm1_table;
             let assoc_base = s7.profile.memory_map.lsm2_table;
-            let go_base = s7.go_table_base;
+            // The group-object descriptor table follows the address table inside
+            // the LSM 1 region (spec §7: the GrAT and GO table are co-located).
+            // Its base is the address table's end: [CNT:1][own-IA + GAs: CNT*2].
+            // S7-CAL: confirm the group-object table offset within the 0x4000
+            // region against a live 0705 capture (co-located vs a fixed sub-addr).
+            let addr_cnt = self.memory.read(addr_base, 1)[0] as u16;
+            let go_base = addr_base.wrapping_add(1).wrapping_add(addr_cnt * 2);
             let gc = sys7_group_comm::Sys7GroupComm::from_tables(
                 &self.memory,
                 addr_base,
@@ -1335,14 +1331,6 @@ impl Device {
                     .is_some_and(|seg| seg.contains(start, 1));
                 if !(subtype == 0x02 && already) {
                     self.memory.allocate(lsm_index, start, length as u32);
-                }
-                // Track the group-object descriptor table base: in the canonical
-                // MDT image it is the address-table region (LSM 1). The first LSM 1
-                // allocation fixes the region base used by the runtime parse.
-                if lsm_index == 1 {
-                    if let Some(s7) = self.sys7.as_mut() {
-                        s7.go_table_base = s7.profile.memory_map.lsm1_table;
-                    }
                 }
             }
             Sys7Step::TaskCommitted { address: _ } => {
