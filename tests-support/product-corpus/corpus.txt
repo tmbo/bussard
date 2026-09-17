@@ -31,6 +31,13 @@ ZCL4FC2PV2       # fan-coil thermostat (07B0 System B)
 ZPDEZTP          # presence/luminosity sensor (07B0 System B)
 ZN1DI-RGBX3      # RGB LED controller (0701)
 ZN1CL-KLIC-DI    # A/C gateway (0701)
+ZIO-IB20         # inBOX 20 compact multifunction actuator (07B0 System B)
+ZIO-IB24         # inBOX 24 compact multifunction actuator (07B0 System B)
+ZDI-DLB4         # DALIBOX Broadcast 4CH DALI gateway (07B0 System B)
+ZDI-IBD          # inBOX DIM compact dimmer (07B0 System B)
+ZVI-FD           # Flat Display touch panel (07B0 System B)
+ZVIIWACDV3       # IWAC Display v3 (07B0 System B)
+ZSY-IP-INT       # KNX-IP Interface (0012 System 2)
 
 # --- Lingg & Janke (M-00E1), mask 0021 System 2 ---
 A6FX-SEC         # 6-fold switch actuator (KNX Secure)
