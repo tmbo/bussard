@@ -1,0 +1,11 @@
+address: 1.0.4
+name: Heating Living
+description: MDT AKH heating actuator, living-room
+product:
+  manufacturer_ref: M-0083
+  application_ref: M-0083_A-013A-34-3E87
+  mask: 07B0
+com_objects:
+  1:
+    dpt: '9.001'
+    flags: CWTU

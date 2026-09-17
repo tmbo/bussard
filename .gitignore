@@ -12,8 +12,10 @@ bussard-initial.md
 # cache dir so nothing downloaded or generated under it is ever committed.
 tests-support/product-corpus/cache/
 
-# Local KNX installation data
-knx/
+# Local KNX installation data (the user's personal model at the repo root).
+# Anchored to the root so it does not swallow committed example models such as
+# knx-sim/examples/small-installation/knx/.
+/knx/
 captures/
 *.db
 
