@@ -402,6 +402,42 @@ devices:
     }
 
     #[test]
+    fn test_parse_config_system7_options() -> Result<(), ConfigError> {
+        // A System 7 device may declare a mask override, an lsm_access mode and a
+        // bcu_key. lsm_access defaults to `memory`.
+        let yaml = r#"
+gateway:
+  host: "127.0.0.1"
+  port: 3671
+devices:
+  - address: "1.1.5"
+    knxprod: "x.knxprod"
+    mask: "0705"
+    lsm_access: property
+    bcu_key: "0x12345678"
+  - address: "1.1.6"
+    knxprod: "y.knxprod"
+"#;
+        let cfg = SimConfig::from_yaml(yaml)?;
+        assert_eq!(cfg.devices[0].mask.as_deref(), Some("0705"));
+        assert_eq!(cfg.devices[0].lsm_access, LsmAccessConfig::Property);
+        assert_eq!(cfg.devices[0].bcu_key.as_deref(), Some("0x12345678"));
+        // Defaults on the second device: no mask, memory-mapped LSM, no key.
+        assert_eq!(cfg.devices[1].mask, None);
+        assert_eq!(cfg.devices[1].lsm_access, LsmAccessConfig::Memory);
+        assert_eq!(cfg.devices[1].bcu_key, None);
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_bcu_key_hex_and_decimal() {
+        assert_eq!(parse_bcu_key("0x12345678"), Some(0x1234_5678));
+        assert_eq!(parse_bcu_key("305419896"), Some(0x1234_5678));
+        assert_eq!(parse_bcu_key("0xFFFFFFFF"), Some(0xFFFF_FFFF));
+        assert_eq!(parse_bcu_key("not-a-key"), None);
+    }
+
+    #[test]
     fn test_build_bus_from_config() -> Result<(), ConfigError> {
         if crate::testfixtures::da_tp_knxprod().is_none() {
             eprintln!("SKIP: DA.tp fixture not present");
