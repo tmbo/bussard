@@ -699,6 +699,27 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
         }
     }
 
+    /// Seeds the cached `PID_MAX_APDU_LENGTH` without a round-trip.
+    ///
+    /// `PID_MAX_APDU_LENGTH` is device-stable, so a caller that negotiated it on
+    /// an earlier connection to the same device (e.g. the flash session across L4
+    /// cycles) can reapply it to a fresh connection with this setter instead of
+    /// spending another numbered exchange re-reading it — which matters when the
+    /// per-connection exchange budget is tight (issue #58). A `None`/zero value is
+    /// ignored so the conservative defaults stay in effect.
+    pub fn set_max_apdu(&mut self, max_apdu: Option<u16>) {
+        if let Some(v) = max_apdu {
+            if v != 0 {
+                self.max_apdu = Some(v);
+            }
+        }
+    }
+
+    /// The cached `PID_MAX_APDU_LENGTH`, if it has been negotiated or seeded.
+    pub fn max_apdu(&self) -> Option<u16> {
+        self.max_apdu
+    }
+
     // --- internals ---
 
     async fn close(&mut self) -> Result<()> {
