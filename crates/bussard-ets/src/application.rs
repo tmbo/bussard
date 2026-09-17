@@ -306,6 +306,19 @@ pub enum LoadOp {
     Disconnect,
     /// `<LdCtrlRestart>`.
     Restart,
+    /// `<LdCtrlMerge MergeId=…>`: a splice marker in a **master-template**
+    /// `Load` procedure (`knx_master.xml`). It is not an on-wire operation: when
+    /// a merged application is assembled against the master template, each
+    /// `Merge` marker is replaced by the ops of the application's
+    /// `<LoadProcedure MergeId="N">` block with the matching id (an unmatched
+    /// marker is dropped). Application XML files never carry `LdCtrlMerge`
+    /// themselves; the marker exists only so the template's op list is a faithful
+    /// record of where the per-object app blocks splice in.
+    Merge {
+        /// The `MergeId` this marker splices; matched against an application's
+        /// `<LoadProcedure MergeId=…>` blocks.
+        merge_id: Option<String>,
+    },
     /// `<LdCtrlMasterReset EraseCode=… ChannelNumber=…>`: a device Master Reset,
     /// realised on the wire as an `A_Restart` request with the master-reset
     /// restart-type bit set. Unlike a basic `Restart` (fire-and-forget), the
@@ -1142,7 +1155,7 @@ fn decode_hex_bytes(s: &str) -> Option<Vec<u8>> {
 
 /// Parses one `LdCtrl*` element into a typed [`LoadOp`], appending to the
 /// current load procedure (if any).
-fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m: &Attrs) {
+pub(crate) fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m: &Attrs) {
     let Some(lp) = cur_lp.as_mut() else {
         return;
     };
@@ -1152,6 +1165,9 @@ fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m: &Attrs) {
         b"LdCtrlConnect" => LoadOp::Connect,
         b"LdCtrlDisconnect" => LoadOp::Disconnect,
         b"LdCtrlRestart" => LoadOp::Restart,
+        b"LdCtrlMerge" => LoadOp::Merge {
+            merge_id: s(b"MergeId"),
+        },
         b"LdCtrlMasterReset" => LoadOp::MasterReset {
             erase_code: u(b"EraseCode"),
             channel_number: u(b"ChannelNumber"),
