@@ -40,7 +40,7 @@ pub use application::{
     ResolvedParameter, SegmentKind, parse_application_program,
 };
 pub use bussard_ets::master::{MaskLoadProcedure, MasterTemplate, parse_master_template};
-pub use container::AppEntry;
+pub use container::{AppEntry, MAX_INNER_KNXPROD_SIZE};
 pub use error::{ProdError, Result};
 pub use fetch::{DownloadConsent, MAX_DOWNLOAD_BYTES, fetch_entry};
 pub use hardware::HardwareCatalog;
@@ -93,9 +93,34 @@ impl ProductData {
 /// Streams every ApplicationProgram XML with bounded memory. Signature entries
 /// and binary baggage are ignored. Errors if the archive cannot be opened or an
 /// application-program XML is malformed.
+///
+/// # ZIP-served wrappers
+///
+/// Many vendors ship their product data as a ZIP that *contains* a `.knxprod`
+/// (a `.knxprod` is itself a ZIP, so a wrapper otherwise looks like a `.knxprod`
+/// with the wrong entries). This transparently unwraps exactly one level: a file
+/// with no `M-XXXX/` manufacturer folders but a single inner `*.knxprod` entry
+/// is read through to that inner file. A wrapper holding several inner
+/// `.knxprod`s errors with the list ([`ProdError::AmbiguousWrapper`]); use
+/// [`read_knxprod_inner`] to pick one. A doubly wrapped archive is rejected
+/// ([`ProdError::NestedWrapper`]), and the inner payload is size-capped
+/// ([`MAX_INNER_KNXPROD_SIZE`]) against zip bombs.
 pub fn read_knxprod(path: &Path) -> Result<ProductData> {
-    let mut container = container::Container::open(path)?;
+    read_product(container::Container::open(path)?)
+}
 
+/// Reads a `.knxprod`, selecting a specific inner `.knxprod` when `path` is a
+/// ZIP-served wrapper holding several (see [`read_knxprod`] for the wrapper
+/// rules).
+///
+/// `inner` matches an inner entry by its full entry name or bare file name; it
+/// is ignored for a plain `.knxprod` or a single-inner wrapper.
+pub fn read_knxprod_inner(path: &Path, inner: Option<&str>) -> Result<ProductData> {
+    read_product(container::Container::open_with_inner(path, inner)?)
+}
+
+/// Reads product data from an already-opened (and already-unwrapped) container.
+fn read_product(mut container: container::Container) -> Result<ProductData> {
     let manufacturers = container.manufacturer_ids();
 
     // Join every manufacturer's Hardware.xml into one order-number catalogue.
