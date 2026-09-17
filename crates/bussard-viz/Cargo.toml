@@ -21,6 +21,20 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 axum = { workspace = true }
 
+[features]
+# `browser-tests`: enables tests/browser_smoke.rs, a headless-Chrome smoke test
+# of the frontend DOM. Off by default, so the default build/test is completely
+# unaffected. Run with `cargo nextest run -p bussard-viz --features browser-tests`.
+#
+# NOTE ON THE DEPENDENCY: the original plan proposed the `headless_chrome` crate
+# to drive Chrome over CDP. It was rejected by the license gate: its build-time
+# dependency `auto_generate_cdp` ships a GPL-3.0-or-later LICENSE, which
+# `cargo deny check` fails (bussard must never take on a copyleft dependency).
+# Instead the test drives Chrome directly as a subprocess
+# (`--headless=new --dump-dom`) with std::process::Command and zero new
+# dependencies. The feature therefore adds NO crates; it is a pure test gate.
+browser-tests = []
+
 [dev-dependencies]
 tokio = { workspace = true }
 serde_json = { workspace = true }
