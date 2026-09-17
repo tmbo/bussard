@@ -677,6 +677,30 @@ fn load_op_summary(op: &LoadOp) -> String {
                 opt(prop_id),
             )
         }
+        LoadOp::CompareRelMem {
+            obj_idx,
+            offset,
+            size,
+            inline_data,
+            mask,
+            invert,
+        } => {
+            let expected = inline_data
+                .as_ref()
+                .map(|d| format!("data={}", hex(d)))
+                .unwrap_or_else(|| "-".to_string());
+            let mask = mask
+                .as_ref()
+                .map(|m| format!(" mask={}", hex(m)))
+                .unwrap_or_default();
+            let invert = if *invert { " invert=true" } else { "" };
+            format!(
+                "compare_rel_mem obj_idx={} offset={} size={} {expected}{mask}{invert}",
+                opt(obj_idx),
+                opt(offset),
+                opt(size),
+            )
+        }
         LoadOp::LoadImageProp {
             obj_idx,
             obj_type,
