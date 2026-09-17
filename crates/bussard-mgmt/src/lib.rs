@@ -69,9 +69,10 @@ pub use error::{MgmtError, Result, SilenceKind};
 pub use load::{
     LD_CTRL_ABS_SEGMENT, LD_CTRL_REL_SEGMENT, LoadControl, LoadState, LoadStateContext,
     MCB_ENTRY_LEN, McbEntry, PID_LOAD_STATE_CONTROL, PID_MCB_TABLE, SegmentAllocation, WriteError,
-    allocate_segment, compare_property, crc16_ccitt, encode_abs_segment, encode_rel_segment,
-    is_connection_death, mcb_entry, read_load_state, read_mcb_table, read_memory,
-    write_load_control, write_memory, write_memory_verified, write_property, write_table,
+    allocate_segment, compare_property, compare_rel_mem, crc16_ccitt, encode_abs_segment,
+    encode_rel_segment, is_connection_death, mcb_entry, read_load_state, read_mcb_table,
+    read_memory, read_table_reference, write_load_control, write_memory, write_memory_verified,
+    write_property, write_table,
 };
 pub use profile::{KnxMedium, MaskFamily, MaskProfile};
 pub use tables::{

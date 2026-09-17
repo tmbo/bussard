@@ -28,8 +28,9 @@
 //!
 //! Both objects are in `Loading` before either is written, so no
 //! partially-updated table is ever *active*: a device evaluates group telegrams
-//! against a table only in the `Loaded` state (thelsing `table_object.cpp`:
-//! `saveMemory()` runs on `LoadCompleted`; a `Loading` object is inactive).
+//! against a table only in the `Loaded` state (per the KNX load-state machine in
+//! KNX Spec 3/5/1, a table object persists and activates its content on
+//! `LoadCompleted`; a `Loading` object is inactive).
 //! Completing the address table before the association table guarantees the
 //! association table is only activated once the address table it points into is
 //! already valid. This mirrors what ETS does for a differential link download.

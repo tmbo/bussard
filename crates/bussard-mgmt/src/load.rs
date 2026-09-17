@@ -295,6 +295,39 @@ pub enum WriteError {
         mask_note: String,
     },
 
+    /// A `LdCtrlCompareRelMem` verify failed: the device's stored relative
+    /// (segment-relative) memory does not match the expected data the vendor
+    /// procedure declared (after masking, and after inversion when the op sets
+    /// `Invert`). The flash is aborted — the device memory is not in the state the
+    /// procedure requires (e.g. wrong firmware/hardware variant, or a resource the
+    /// application depends on holds an unexpected value).
+    #[error(
+        "{address}: object {object_index} relative memory at {addr:#06X} (base {base:#06X} + \
+         offset {offset}) compare failed — {sense} {expected:02X?} but device holds \
+         {actual:02X?}{mask_note} (the application's LdCtrlCompareRelMem precondition is not met)"
+    )]
+    RelMemCompareMismatch {
+        /// The device.
+        address: IndividualAddress,
+        /// The interface object index whose segment was compared.
+        object_index: u8,
+        /// The device-supplied segment base the compare read from.
+        base: u16,
+        /// The vendor offset within that segment.
+        offset: u32,
+        /// The absolute read address (`base + offset`).
+        addr: u16,
+        /// A human note on the comparison sense ("expected" for a match compare,
+        /// "expected to differ from" for an inverted compare).
+        sense: &'static str,
+        /// The expected bytes (from the op's `InlineData`).
+        expected: Vec<u8>,
+        /// The bytes the device actually returned (truncated to the expected len).
+        actual: Vec<u8>,
+        /// A human note naming the mask when one narrowed the comparison.
+        mask_note: String,
+    },
+
     /// A write step's resolved target address does not fit the 16-bit A_Memory
     /// address space. The device-supplied segment base plus the vendor offset (or
     /// an absolute address) exceeded `0xFFFF`, which a `u16` cast would silently
@@ -621,6 +654,152 @@ pub async fn compare_property<Ch: L4Channel>(
     Ok(())
 }
 
+/// Whether a `LdCtrlCompareRelMem` comparison passes, given the `expected` bytes,
+/// the `actual` bytes the device returned, an optional `mask`, and the `invert`
+/// flag.
+///
+/// - Each position is compared under the mask: `mask[i]` non-zero compares that
+///   position, `0x00` ignores it; a mask shorter than `expected` compares every
+///   remaining position (`0xFF`).
+/// - Without `invert`, `actual` must **equal** `expected` under the mask; with
+///   `invert`, it must **differ**.
+/// - A short read (`actual` shorter than `expected`) never passes, regardless of
+///   sense — the precondition memory is not readable as declared.
+fn rel_mem_compare_passes(
+    expected: &[u8],
+    actual: &[u8],
+    mask: Option<&[u8]>,
+    invert: bool,
+) -> bool {
+    if actual.len() != expected.len() {
+        return false;
+    }
+    let equal_under_mask = expected.iter().zip(actual).enumerate().all(|(i, (e, a))| {
+        let m = mask.and_then(|m| m.get(i)).copied().unwrap_or(0xFF);
+        (e & m) == (a & m)
+    });
+    if invert {
+        !equal_under_mask
+    } else {
+        equal_under_mask
+    }
+}
+
+/// Reads relative (segment-relative) device memory and compares it byte-for-byte
+/// against `expected`, honouring an optional `mask` and an `invert` flag — the
+/// execution of a vendor `LdCtrlCompareRelMem` op (the memory twin of
+/// [`compare_property`] and the verify counterpart of [`write_memory`]).
+///
+/// The read starts at the absolute address `base + offset`, where `base` is the
+/// device-reported segment address the caller resolved from the object's
+/// `PID_TABLE_REFERENCE` (exactly as a `WriteRelMem` resolves its write base).
+/// `expected.len()` octets are read, in [`apci::MAX_MEMORY_READ_LEN`]-octet
+/// telegrams (System B devices cap a single `A_Memory_Read` at that many octets),
+/// then compared against `expected`:
+///
+/// - When `mask` is `Some`, each position is compared only where the mask byte is
+///   non-zero (`0xFF` in ETS data = compare, `0x00` = ignore); a `mask` shorter
+///   than `expected` compares every remaining position.
+/// - When `invert` is `false` (the default), the device memory must **equal**
+///   `expected` under the mask.
+/// - When `invert` is `true` (`Invert="true"` on the op), the device memory must
+///   **differ** from `expected` under the mask — the check passes on a mismatch
+///   and fails on an exact match.
+///
+/// On a failed comparison this returns [`WriteError::RelMemCompareMismatch`] with
+/// the resolved address and the expected and actual bytes in hex, so a failed
+/// precondition aborts the flash loudly with detail. A device that answers with
+/// fewer octets than `expected` (a short/refused read) is a failure too: the
+/// precondition memory is not readable as the procedure expects. An empty
+/// `expected` is a vacuous pass.
+///
+/// Clean-room: the `A_Memory_Read`/`A_Memory_Response` framing is the published
+/// KNX application layer (KNX Spec 3/3/7 Application Layer); the `InlineData` /
+/// `Mask` / `Invert` compare semantics follow the ETS `LdCtrlCompareRelMem`
+/// element definition (KNX Spec 3/5/2 Management Procedures), the same mask
+/// convention [`compare_property`] applies for `LdCtrlCompareProp`.
+pub async fn compare_rel_mem<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    object_index: u8,
+    base: u16,
+    offset: u32,
+    expected: &[u8],
+    mask: Option<&[u8]>,
+    invert: bool,
+) -> Result<()> {
+    let address = l4.target();
+
+    if expected.is_empty() {
+        return Ok(());
+    }
+
+    // Resolve the absolute read address; refuse rather than truncate if base +
+    // offset (or the read span) runs past the 16-bit A_Memory space.
+    let start = u32::from(base)
+        .checked_add(offset)
+        .and_then(|a| u16::try_from(a).ok())
+        .ok_or_else(|| WriteError::AddressOutOfRange {
+            address,
+            detail: format!("segment base {base:#X} + offset {offset:#X}"),
+        })?;
+    let end = usize::from(start)
+        .checked_add(expected.len())
+        .filter(|&e| e <= 0x1_0000)
+        .ok_or_else(|| WriteError::AddressOutOfRange {
+            address,
+            detail: format!("read of {} octet(s) from {start:#X}", expected.len()),
+        })?;
+    let _ = end;
+
+    // Read the required span in device-max chunks. `read_memory` clamps a single
+    // telegram to MAX_MEMORY_READ_LEN, so loop until the whole length is gathered.
+    let chunk = usize::from(apci::MAX_MEMORY_READ_LEN);
+    let mut actual: Vec<u8> = Vec::with_capacity(expected.len());
+    while actual.len() < expected.len() {
+        let want = (expected.len() - actual.len()).min(chunk);
+        let addr = start.checked_add(actual.len() as u16).ok_or_else(|| {
+            WriteError::AddressOutOfRange {
+                address,
+                detail: format!("read chunk at {start:#X} + {}", actual.len()),
+            }
+        })?;
+        let got = read_memory(l4, addr, want as u8).await?;
+        if got.is_empty() {
+            // A device that answers a read with zero octets cannot satisfy the
+            // compare: stop and let the length check below report the shortfall.
+            break;
+        }
+        actual.extend_from_slice(&got);
+    }
+    actual.truncate(expected.len());
+
+    let mask_note = match mask {
+        Some(m) => format!(" (mask {m:02X?})"),
+        None => String::new(),
+    };
+
+    let ok = rel_mem_compare_passes(expected, &actual, mask, invert);
+
+    if !ok {
+        return Err(WriteError::RelMemCompareMismatch {
+            address,
+            object_index,
+            base,
+            offset,
+            addr: start,
+            sense: if invert {
+                "expected to differ from"
+            } else {
+                "expected"
+            },
+            expected: expected.to_vec(),
+            actual,
+            mask_note,
+        });
+    }
+    Ok(())
+}
+
 /// Writes a single-octet load control to a loadable object and confirms the
 /// resulting load state.
 ///
@@ -889,7 +1068,12 @@ pub async fn allocate_segment<Ch: L4Channel>(
 /// Reads `PID_TABLE_REFERENCE` element 1 of a loadable object as a big-endian
 /// `u32` — the segment's backing memory address (KNX 3/5/1; a device reports `0`
 /// while the object is `Unloaded`).
-async fn read_table_reference<Ch: L4Channel>(
+///
+/// [`allocate_segment`] reads this to learn where the device placed a
+/// freshly-allocated segment; the download engine also reads it directly to
+/// resolve the base a [`compare_rel_mem`] reads from, for an object it did not
+/// allocate in the current procedure.
+pub async fn read_table_reference<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     object_index: u8,
 ) -> Result<u32> {
@@ -1507,5 +1691,84 @@ mod tests {
     fn mcb_decode_rejects_short_slices() {
         assert!(McbEntry::decode(&[0u8; 7]).is_none());
         assert!(McbEntry::decode(&[0u8; 8]).is_some());
+    }
+
+    #[test]
+    fn rel_mem_compare_exact_match_and_mismatch() {
+        // No mask, no invert: equal bytes pass, any difference fails.
+        assert!(rel_mem_compare_passes(&[0xFF], &[0xFF], None, false));
+        assert!(!rel_mem_compare_passes(&[0xFF], &[0x00], None, false));
+        assert!(rel_mem_compare_passes(
+            &[0x12, 0x34],
+            &[0x12, 0x34],
+            None,
+            false
+        ));
+        assert!(!rel_mem_compare_passes(
+            &[0x12, 0x34],
+            &[0x12, 0x35],
+            None,
+            false
+        ));
+    }
+
+    #[test]
+    fn rel_mem_compare_honours_mask() {
+        // Mask 0x0F ignores the high nibble: 0xA5 vs 0xB5 match on the low nibble.
+        assert!(rel_mem_compare_passes(
+            &[0xA5],
+            &[0xB5],
+            Some(&[0x0F]),
+            false
+        ));
+        // But a low-nibble difference under the mask fails.
+        assert!(!rel_mem_compare_passes(
+            &[0xA5],
+            &[0xB6],
+            Some(&[0x0F]),
+            false
+        ));
+        // A 0x00 mask byte ignores that position entirely.
+        assert!(rel_mem_compare_passes(
+            &[0xAA, 0xBB],
+            &[0x11, 0xBB],
+            Some(&[0x00, 0xFF]),
+            false
+        ));
+        // A mask shorter than expected compares the remaining positions in full.
+        assert!(!rel_mem_compare_passes(
+            &[0xAA, 0xBB],
+            &[0xAA, 0xCC],
+            Some(&[0xFF]),
+            false
+        ));
+    }
+
+    #[test]
+    fn rel_mem_compare_inverts_sense() {
+        // Invert: the memory must DIFFER from expected under the mask.
+        assert!(rel_mem_compare_passes(&[0xFF], &[0x00], None, true));
+        assert!(!rel_mem_compare_passes(&[0xFF], &[0xFF], None, true));
+        // Inverted + masked: a low-nibble difference passes, an equal-under-mask fails.
+        assert!(rel_mem_compare_passes(
+            &[0xA5],
+            &[0xB6],
+            Some(&[0x0F]),
+            true
+        ));
+        assert!(!rel_mem_compare_passes(
+            &[0xA5],
+            &[0xB5],
+            Some(&[0x0F]),
+            true
+        ));
+    }
+
+    #[test]
+    fn rel_mem_compare_short_read_never_passes() {
+        // A short read (fewer octets than expected) fails regardless of sense.
+        assert!(!rel_mem_compare_passes(&[0xFF, 0xFF], &[0xFF], None, false));
+        assert!(!rel_mem_compare_passes(&[0xFF, 0xFF], &[0xFF], None, true));
+        assert!(!rel_mem_compare_passes(&[0xFF], &[], None, false));
     }
 }
