@@ -48,3 +48,8 @@ TA8FXCT-SEC      # 8-fold push-button sensor (KNX Secure)
 # --- Jung (M-0004) ---
 3361-1MWW        # presence detector mini universal (0705)
 42911ST          # push-button module Universal F 40 Secure (07B0 System B)
+IPS300SREG       # HOUSE: KNX IP interface Secure (dual mask 0021 + 07B0)
+230021SU         # HOUSE: switching/blind/input room module (07B0 System B)
+360061SR         # HOUSE: heating actuator 6-gang w/ controller (07B0 System B)
+390041SR         # HOUSE: dimming actuator 4-gang (07B0 System B)
+2116REG          # HOUSE: binary input 6/12-gang REG (0705)

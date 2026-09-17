@@ -629,6 +629,89 @@
       "application_ref": "M-0004_A-D131-22-1A67",
       "redistributable": false,
       "notes": "Push-button module Universal 1/2/3/4-gang, F 40, KNX Secure (fits A/LS/CD cover sets). ETS5/6 Secure database (2024-10); one file bundles eight applications (A-D131..A-D134 in hardware v2.1 and v2.2), all mask 07B0 (System B). Direct file behind the product page's database link (https://application.jung.de/downloads/download/62232/de). Verified by download 2026-09-17."
+    },
+    {
+      "manufacturer": "Jung",
+      "manufacturer_id": "M-0004",
+      "order_numbers": [
+        "IPS300SREG",
+        "IPS 300 SREG",
+        "IPS 300 S REG"
+      ],
+      "name": "Jung KNX IP interface Secure (IPS 300 SREG)",
+      "url": "https://downloads.jung.de/Downloads/Produktdownloads/Datenbank%20ETS5%20Secure/KNX/all_IPS300SREG_v2.2_v1.0_20210719.knxprod",
+      "sha256": "0b645234ee22d7f80bbb93db72461bfca53705acdea5e522998548e8c256d3e7",
+      "size": 208031,
+      "filename": "all_IPS300SREG_v2.2_v1.0_20210719.knxprod",
+      "application_ref": "M-0004_A-0024-22-EA66",
+      "redistributable": false,
+      "notes": "HOUSE DEVICE. KNX Secure IP interface, REG (2 rail units). ETS5 Secure database (v2.2/v1.0, 2021-07). Dual-mask file: the main IP-interface app A-0016 is mask 0021 (System 2 / BCU family) and the additional-function app A-0024 is mask 07B0 (System B) — rare same-file mask pair. Direct file behind the product page's database link (https://application.jung.de/downloads/download/62001/de). Verified by download 2026-09-17."
+    },
+    {
+      "manufacturer": "Jung",
+      "manufacturer_id": "M-0004",
+      "order_numbers": [
+        "230021SU",
+        "2300.21 SU"
+      ],
+      "name": "Jung Switching/blind/input room module (2300.21 SU)",
+      "url": "https://downloads.jung.de/Downloads/Produktdownloads/Datenbank%20ETS5%20Secure/KNX/all_230021SU_v2v_20210930.knxprod",
+      "sha256": "52d6884ba5bbfaa79f65cd2d780f3e565d77605ed932f72bd8a2e96c3a56c523",
+      "size": 1928103,
+      "filename": "all_230021SU_v2v_20210930.knxprod",
+      "application_ref": "M-0004_A-20DE-22-C7D8-O000A",
+      "redistributable": false,
+      "notes": "HOUSE DEVICE. Multifunction module: switching, shutter/blinds and inputs (app A-20DE, mask 07B0 System B). ETS5 Secure database (2021-09). Direct file behind the product page's database link (https://application.jung.de/downloads/download/62106/de). Verified by download 2026-09-17."
+    },
+    {
+      "manufacturer": "Jung",
+      "manufacturer_id": "M-0004",
+      "order_numbers": [
+        "360061SR",
+        "3600.6 1 SR"
+      ],
+      "name": "Jung Heating actuator 6-gang with controller (3600.6 1 SR)",
+      "url": "https://downloads.jung.de/Downloads/Produktdownloads/Datenbank%20ETS5%20-%20ETS6%20Secure/KNX/all_360061SR_20260804.knxprod",
+      "sha256": "d1d073d1cf552e35586b1a1c0f6facd734b2a9c8c0f9e60ec0f5ddc0ab42e65b",
+      "size": 1285726,
+      "filename": "all_360061SR_20260804.knxprod",
+      "application_ref": "M-0004_A-20E0-23-5A91-O000A",
+      "redistributable": false,
+      "notes": "HOUSE DEVICE. Heating actuator 6-gang with controller (app A-20E0, mask 07B0 System B). ETS5/6 Secure database (2026-08; newer than the on-device v2.1, app-number 8416 is the stable identity). Direct file behind the product page's database link (https://application.jung.de/downloads/download/105841/de). Verified by download 2026-09-17."
+    },
+    {
+      "manufacturer": "Jung",
+      "manufacturer_id": "M-0004",
+      "order_numbers": [
+        "390041SR",
+        "3900.4 1 SR"
+      ],
+      "name": "Jung Dimming actuator 4-gang (3900.4 1 SR)",
+      "url": "https://downloads.jung.de/Downloads/Produktdownloads/Datenbank%20ETS5%20-%20ETS6%20Secure/KNX/all_390041SR_20230313.knxprod",
+      "sha256": "4b93c76a4c23ae0a7a281a1b8829973d4715823ef012cd34df690d573af4924e",
+      "size": 1641418,
+      "filename": "all_390041SR_20230313.knxprod",
+      "application_ref": "M-0004_A-3030-23-F0EA-O000A",
+      "redistributable": false,
+      "notes": "HOUSE DEVICE. Universal dimming actuator 4-gang (app A-3030, mask 07B0 System B). ETS5/6 Secure database (2023-03). Direct file behind the product page's database link (https://application.jung.de/downloads/download/62223/de). Verified by download 2026-09-17."
+    },
+    {
+      "manufacturer": "Jung",
+      "manufacturer_id": "M-0004",
+      "order_numbers": [
+        "2116REG",
+        "2116 REG",
+        "2128REG",
+        "2128 REG"
+      ],
+      "name": "Jung Binary input 6/12-gang REG (2116 REG / 2128 REG)",
+      "url": "https://downloads.jung.de/Downloads/Produktdownloads/Datenbank%20ETS4%20-%20ETS5/KNX/de_2116REG_2128REG_14062016.knxprod",
+      "sha256": "34eb1ec9d4f5c3ae0a84eb8639eeacb5c7808ba441d60899512445e0d8054678",
+      "size": 299678,
+      "filename": "de_2116REG_2128REG_14062016.knxprod",
+      "application_ref": "M-0004_A-7066-11-94AD-O000A",
+      "redistributable": false,
+      "notes": "HOUSE DEVICE. Binary input REG: 2116 REG (6-fold, app A-7066) and 2128 REG (12-fold, app A-7068), both mask 0705 (System 7). ETS4/5 database (2016-06). Direct file behind the product page's database link (https://application.jung.de/downloads/download/61737/de). Verified by download 2026-09-17."
     }
   ]
 }
