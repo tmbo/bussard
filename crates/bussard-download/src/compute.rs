@@ -223,8 +223,9 @@ pub enum Priority {
 
 impl Priority {
     /// The raw 2-bit priority code (`0`..=`3`); [`group_object_word`] shifts it
-    /// into bits 8-9 of the descriptor word.
-    fn code(self) -> u16 {
+    /// into bits 8-9 of the System B descriptor word, and the System 7 CONFIG
+    /// byte ([`crate::compute_sys7::sys7_config_byte`]) places it in bits 1-0.
+    pub fn code(self) -> u16 {
         match self {
             Priority::System => 0b00,
             Priority::High => 0b01,

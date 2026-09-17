@@ -18,6 +18,7 @@
 
 pub mod apply;
 pub mod compute;
+pub mod compute_sys7;
 pub mod flash;
 pub mod plan;
 
@@ -28,6 +29,10 @@ pub use compute::{
     ChannelConfig, DesiredTables, GroupObjectDescriptor, Priority, app_program_version,
     compute_group_object_table, compute_tables, descriptors_for_linked_objects,
     expand_group_object_descriptors, size_code_from_object_size, table_image_with_count,
+};
+pub use compute_sys7::{
+    Sys7GroupObject, sys7_address_table, sys7_association_table, sys7_config_byte,
+    sys7_group_object_table, sys7_group_objects,
 };
 pub use flash::{
     AppIdentity, Connector, FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, ImageRef,
