@@ -35,6 +35,10 @@ enum Behavior {
         serial: Vec<u8>,
         order: Vec<u8>,
         memory: HashMap<u16, Vec<u8>>,
+        /// The device's advertised `PID_MAX_APDU_LENGTH`. `Some(v)` answers the
+        /// property with `v`; `None` returns an empty answer (models a device
+        /// that does not expose it, exercising the conservative fallback).
+        max_apdu: Option<u16>,
     },
     /// Accepts the connection but `T_NAK`s the first numbered data telegram.
     Nak,
@@ -369,6 +373,7 @@ fn device_response(behavior: &Behavior, cemi: &CemiFrame) -> Option<(u16, Vec<u8
         serial,
         order,
         memory,
+        max_apdu,
     } = behavior
     else {
         return None;
@@ -416,6 +421,10 @@ fn device_response(behavior: &Behavior, cemi: &CemiFrame) -> Option<(u16, Vec<u8
                 apci::PID_MANUFACTURER_ID => manufacturer.to_be_bytes().to_vec(),
                 apci::PID_SERIAL_NUMBER => serial.clone(),
                 apci::PID_ORDER_INFO => order.clone(),
+                apci::PID_MAX_APDU_LENGTH => match max_apdu {
+                    Some(v) => v.to_be_bytes().to_vec(),
+                    None => Vec::new(),
+                },
                 _ => Vec::new(),
             };
             let count = if value.is_empty() { 0 } else { 1 };
@@ -432,8 +441,19 @@ fn device_response(behavior: &Behavior, cemi: &CemiFrame) -> Option<(u16, Vec<u8
     }
 }
 
-/// A fully-responsive device fixture.
+/// A fully-responsive device fixture that does not expose `PID_MAX_APDU_LENGTH`.
 fn responder(addr: &str, mask: u16, manufacturer: u16) -> MockDevice {
+    responder_with_apdu(addr, mask, manufacturer, None)
+}
+
+/// A fully-responsive device fixture advertising `max_apdu` as its
+/// `PID_MAX_APDU_LENGTH` (`None` = property absent).
+fn responder_with_apdu(
+    addr: &str,
+    mask: u16,
+    manufacturer: u16,
+    max_apdu: Option<u16>,
+) -> MockDevice {
     let mut memory = HashMap::new();
     memory.insert(0x0060u16, vec![0xDE, 0xAD, 0xBE, 0xEF]);
     MockDevice {
@@ -444,6 +464,7 @@ fn responder(addr: &str, mask: u16, manufacturer: u16) -> MockDevice {
             serial: vec![0x00, 0x01, 0x02, 0x03, 0x04, 0x05],
             order: b"MDT-JAL0410".to_vec(),
             memory,
+            max_apdu,
         },
     }
 }
@@ -552,6 +573,57 @@ async fn device_descriptor_property_and_memory() {
     assert_eq!(mem, vec![0xDE, 0xAD, 0xBE, 0xEF]);
 
     dev.disconnect().await.unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+}
+
+#[tokio::test]
+async fn max_apdu_negotiation_scales_memory_chunk() {
+    use bussard_mgmt::Layer4Connection;
+
+    // A device advertising a large max APDU (KNX Virtual's 66) scales to the
+    // 63-octet memory ceiling; a device at the standard-frame floor (15) is capped
+    // to 12-octet chunks (standard frames); a device without the property falls
+    // back to the conservative 12 (issue #58).
+    let (addr, gw) = bind_mock().await;
+    let devices = vec![
+        responder_with_apdu("1.1.10", 0x07B0, 0x0083, Some(66)),
+        responder_with_apdu("1.1.11", 0x07B0, 0x0083, Some(15)),
+        responder_with_apdu("1.1.12", 0x07B0, 0x0083, None),
+    ];
+    let gw_task = tokio::spawn(run_mock(gw, devices));
+
+    let mut bus = open_bus(addr).await;
+    let source: IndividualAddress = "0.0.255".parse().unwrap();
+
+    for (target_str, expected_chunk, expect_negotiated) in [
+        ("1.1.10", 63u8, true),
+        ("1.1.11", 12u8, true),
+        ("1.1.12", 12u8, false),
+    ] {
+        let target: IndividualAddress = target_str.parse().unwrap();
+        let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+            .await
+            .unwrap();
+        // Before negotiation the conservative default applies.
+        assert_eq!(
+            l4.max_memory_chunk(),
+            12,
+            "{target_str}: pre-negotiation must be conservative"
+        );
+        let negotiated = l4.negotiate_max_apdu().await.unwrap();
+        assert_eq!(
+            negotiated.is_some(),
+            expect_negotiated,
+            "{target_str}: negotiation presence mismatch"
+        );
+        assert_eq!(
+            l4.max_memory_chunk(),
+            expected_chunk,
+            "{target_str}: memory chunk must scale to the advertised APDU"
+        );
+        l4.disconnect().await.unwrap();
+    }
+
     let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
 }
 

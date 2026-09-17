@@ -1231,7 +1231,12 @@ pub async fn write_memory_verified<Ch: L4Channel, F: FnMut(usize)>(
     if data.is_empty() {
         return Ok(());
     }
-    let write_chunk = usize::from(apci::MAX_MEMORY_WRITE_LEN);
+    // Scale the chunk to the device's negotiated max APDU (issue #58): a capable
+    // device takes the 63-octet ceiling in one extended frame, while a device
+    // advertising the 15-octet standard-frame floor gets 12-octet chunks in
+    // standard frames it can actually accept. Falls back to the conservative cap
+    // when `PID_MAX_APDU_LENGTH` was never negotiated or was unreadable.
+    let write_chunk = usize::from(l4.max_memory_chunk());
     let mut offset = 0usize;
     while offset < data.len() {
         let take = write_chunk.min(data.len() - offset);

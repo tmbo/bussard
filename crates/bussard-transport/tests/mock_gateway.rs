@@ -379,7 +379,10 @@ async fn retransmit_two_behind_is_acked_and_dropped_then_resyncs() {
         .await
         .expect("fresh frame after the retransmit")
         .unwrap();
-    assert_eq!(next.frame.group_destination().unwrap().to_string(), "12/3/45");
+    assert_eq!(
+        next.frame.group_destination().unwrap().to_string(),
+        "12/3/45"
+    );
 
     gw_task.await.unwrap();
     let _ = conn.close().await;
