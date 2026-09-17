@@ -155,6 +155,24 @@ struct DeviceState {
     object_types: Vec<u16>,
     /// The application object's load state (object index resolved via type 3).
     app_load_state: u8,
+    /// Per-object load states, keyed by object index, for a **multi-object**
+    /// flash (obj1/obj2/obj3/obj4 each track Unloaded→Loading→Loaded
+    /// independently). Empty for the single-object tests, which use
+    /// `app_load_state` alone. When an object index has an entry here it takes
+    /// precedence; `loadable_object_index`/the app path remain the fallback so
+    /// every existing single-object test is unaffected.
+    object_load_states: HashMap<u8, u8>,
+    /// Per-object allocated segment bases, keyed by object index, for the
+    /// multi-object flash (each object's `PID_TABLE_REFERENCE` reports its own
+    /// base). Empty for single-object tests (they use `last_segment_base`).
+    object_segment_bases: HashMap<u8, u16>,
+    /// Per-object allocated segment sizes, keyed by object index.
+    object_segment_sizes: HashMap<u8, u32>,
+    /// Whether this device models the multi-object (master-template) flash. When
+    /// true the load-control / PID7 / memory handlers key off the requested
+    /// object index (`object_load_states`/`object_segment_bases`) instead of the
+    /// single `app_load_state`. Off by default (single-object tests unchanged).
+    multi_object: bool,
     /// Device-placed segment base address, chosen on the first RelSegment.
     next_segment_base: u16,
     /// The base of the most-recently allocated segment (reported via
@@ -480,6 +498,14 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
             s.app_erased_by_master_reset = true;
             s.last_segment_base = 0;
             s.last_segment_size = 0;
+            // Multi-object flash: the reset erases the app object (obj4) load
+            // state and drops its segment; the other table objects are untouched.
+            if s.multi_object {
+                if let Some(app) = app_object_index(&s) {
+                    s.object_load_states.insert(app, LS_UNLOADED);
+                    s.object_segment_bases.remove(&app);
+                }
+            }
         } else if s.fault == Fault::SilentAfterBasicRestart {
             s.l4_dead_after_master_reset = true;
         }
@@ -555,7 +581,10 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
             };
         }
         if pid == PID_LOAD_STATE_CONTROL {
-            let st = if loadable_object_index(&s) == Some(oi) {
+            let st = if s.multi_object {
+                // Multi-object flash: every loadable object tracks its own state.
+                *s.object_load_states.get(&oi).unwrap_or(&LS_UNLOADED)
+            } else if loadable_object_index(&s) == Some(oi) {
                 s.app_load_state
             } else {
                 LS_UNLOADED
@@ -569,8 +598,14 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
             // Record which object index the tool read the per-object base from, so a
             // test can assert the PID7 base read targeted the LsmIdx-named object.
             s.pid7_reads.push(oi);
-            // Report the last-allocated segment base as a big-endian u32.
-            let base = s.last_segment_base as u32;
+            // Report the object's allocated base as a big-endian u32. In the
+            // multi-object flash each object has its own base; otherwise the
+            // single last-allocated base.
+            let base = if s.multi_object {
+                *s.object_segment_bases.get(&oi).unwrap_or(&0) as u32
+            } else {
+                s.last_segment_base as u32
+            };
             return Reaction::Answer(
                 A_PROPERTY_VALUE_RESPONSE,
                 prop_response(oi, pid, 1, start, &base.to_be_bytes()),
@@ -637,6 +672,50 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
             let event = value.first().copied().unwrap_or(0);
             let is_app = loadable_object_index(&s) == Some(oi);
             let fault = s.fault;
+
+            // Multi-object flash: every loadable object has its own load state,
+            // segment base and size, keyed by object index. The allocate /
+            // start / complete / unload events act on the requested object `oi`.
+            if s.multi_object {
+                if event == LE_ADDITIONAL && value.get(1) == Some(&SUB_REL_SEGMENT) {
+                    let size = if value.len() >= 6 {
+                        u32::from_be_bytes([value[2], value[3], value[4], value[5]])
+                    } else {
+                        0
+                    };
+                    let base = s.next_segment_base;
+                    s.object_segment_bases.insert(oi, base);
+                    s.object_segment_sizes.insert(oi, size);
+                    // Mirror into the single-object fields too so the MCB handler
+                    // (which reads last_segment_*) still works for the app object.
+                    s.last_segment_base = base;
+                    s.last_segment_size = size;
+                    s.next_segment_base = base.wrapping_add(size.max(1) as u16);
+                    let st = *s.object_load_states.get(&oi).unwrap_or(&LS_LOADING);
+                    return Reaction::Answer(
+                        A_PROPERTY_VALUE_RESPONSE,
+                        prop_response(oi, pid, 1, start, &[st]),
+                    );
+                }
+                let new_state = match event {
+                    LE_START_LOADING => {
+                        // Re-opening the app object clears a prior master-reset
+                        // erase so its re-allocated segment accepts writes again.
+                        if app_object_index(&s) == Some(oi) {
+                            s.app_erased_by_master_reset = false;
+                        }
+                        LS_LOADING
+                    }
+                    LE_LOAD_COMPLETED => LS_LOADED,
+                    LE_UNLOAD => LS_UNLOADED,
+                    _ => *s.object_load_states.get(&oi).unwrap_or(&LS_UNLOADED),
+                };
+                s.object_load_states.insert(oi, new_state);
+                return Reaction::Answer(
+                    A_PROPERTY_VALUE_RESPONSE,
+                    prop_response(oi, pid, 1, start, &[new_state]),
+                );
+            }
 
             // A 10-octet AdditionalLoadControls write is a segment allocation.
             if event == LE_ADDITIONAL && value.get(1) == Some(&SUB_REL_SEGMENT) {
@@ -960,6 +1039,10 @@ fn fresh_device(fault: Fault) -> Shared {
             OT_APPLICATION_PROGRAM,
         ],
         app_load_state: LS_UNLOADED,
+        object_load_states: HashMap::new(),
+        object_segment_bases: HashMap::new(),
+        object_segment_sizes: HashMap::new(),
+        multi_object: false,
         next_segment_base: 0x4000,
         last_segment_base: 0,
         last_segment_size: 0,
@@ -1215,7 +1298,16 @@ async fn flash_happy_path_loads_and_verifies() {
     let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
 
     let app = fabricated_app();
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
 
     let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
@@ -1258,7 +1350,16 @@ async fn flash_with_image_prop_loads_and_verifies_mcb() {
     let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
 
     let app = app_with_image_prop();
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
     // The plan carries the four MCB checks.
     let checks = plan
         .steps
@@ -1307,7 +1408,16 @@ async fn flash_image_prop_catches_corrupted_stored_image() {
     let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
 
     let app = app_with_image_prop();
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
 
     let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
@@ -1340,7 +1450,16 @@ async fn flash_surfaces_load_error_on_completed() {
     let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
 
     let app = fabricated_app();
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
 
     let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
@@ -1370,7 +1489,16 @@ async fn flash_aborts_on_memory_write_nak() {
     let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
 
     let app = fabricated_app();
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
 
     let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
@@ -1406,7 +1534,16 @@ async fn flash_disconnects_even_when_it_fails_mid_procedure() {
     let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
 
     let app = fabricated_app();
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
 
     let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
@@ -1465,7 +1602,16 @@ async fn flash_unexpected_load_state_names_object_and_table() {
     let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
 
     let app = fabricated_app();
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
 
     let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
@@ -1529,7 +1675,16 @@ async fn flash_tolerates_snap_to_loaded() {
         let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
 
         let app = fabricated_app();
-        let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+        let plan = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
 
         let l4 = Layer4Connection::connect(&mut bus, target, source)
             .await
@@ -1560,7 +1715,16 @@ async fn plan_only_touches_no_load_state() {
     // Building a plan is a pure, offline operation: it must never write a load
     // control (or anything) to the device.
     let app = fabricated_app();
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
     assert!(!plan.steps.is_empty());
     // The first supported device step is the unload of the application object
     // (LsmIdx=4 in the fabricated app).
@@ -1588,15 +1752,32 @@ async fn flash_applies_device_file_parameter_override() {
     let app = fabricated_app();
 
     // The default plan writes the parameter default (7).
-    let default_plan =
-        plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+    let default_plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
     assert_eq!(default_plan.param_images["M-1_A-1_RS-2"], vec![7]);
 
     // The override plan (P-0_R-1 = 42) writes 42 instead — proving the override
     // changed the computed image before any bus traffic.
     let mut ov = BTreeMap::new();
     ov.insert("P-0_R-1".to_string(), "42".to_string());
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &ov, &BTreeMap::new()).unwrap();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &ov,
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
     assert_eq!(
         plan.param_images["M-1_A-1_RS-2"],
         vec![42],
@@ -1646,7 +1827,16 @@ async fn flash_compare_prop_passes_when_property_matches() {
     let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
 
     let app = app_with_compare_prop(None);
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
     // The plan carries the CompareProp precondition.
     assert_eq!(
         plan.steps
@@ -1689,7 +1879,16 @@ async fn flash_write_prop_value_lands_on_the_device() {
     let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
 
     let app = app_with_write_prop();
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
     // The plan lists the WriteProp as a real write carrying the value.
     let write_props: Vec<&FlashStep> = plan
         .steps
@@ -1746,7 +1945,16 @@ async fn flash_compare_prop_aborts_when_property_differs() {
     let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
 
     let app = app_with_compare_prop(None);
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
 
     let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
@@ -1796,7 +2004,16 @@ async fn flash_compare_prop_mask_ignores_don_t_care_bytes() {
     let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
 
     let app = app_with_compare_prop(Some("FF00FF00"));
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
 
     let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
@@ -1827,7 +2044,16 @@ async fn flash_reports_progress_for_every_step() {
     let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
 
     let app = fabricated_app();
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
     let total = plan.steps.len();
 
     let steps_seen = Arc::new(Mutex::new(0usize));
@@ -1882,7 +2108,16 @@ async fn flash_sends_free_access_authorize_and_the_gate_opens() {
     let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
 
     let app = fabricated_app();
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
 
     let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
@@ -1921,7 +2156,16 @@ async fn flash_without_authorize_is_refused_by_the_gate() {
     let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
 
     let app = fabricated_app();
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
 
     let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
@@ -1962,7 +2206,16 @@ async fn flash_tolerates_a_device_without_authorize() {
     let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
 
     let app = fabricated_app();
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
 
     let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
@@ -2104,7 +2357,16 @@ async fn flash_master_reset_reconnects_and_reaches_loaded() {
     let source = bussard_bus::ops::group_source(&handle);
 
     let app = app_with_master_reset();
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
     // The plan lowers the master reset to a MasterReset step carrying the op's
     // EraseCode/ChannelNumber.
     let master_resets: Vec<&FlashStep> = plan
@@ -2233,7 +2495,16 @@ async fn flash_final_restart_silence_is_success_not_failure() {
     let source = bussard_bus::ops::group_source(&handle);
 
     let app = fabricated_app();
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
     // The procedure ends with a Restart step.
     assert!(
         matches!(plan.steps.last(), Some(FlashStep::Restart)),
@@ -2318,7 +2589,16 @@ async fn flash_targets_the_obj_idx_object_not_the_type_object() {
       </Static>
      </ApplicationProgram></KNX>"#;
     let app = parse_application_program("M-1_A-DA", xml.as_bytes()).unwrap();
-    let plan = plan_flash(&app, "1.1.4", 0x07B0, &no_overrides(), &BTreeMap::new()).unwrap();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
 
     let l4 = Layer4Connection::connect(&mut bus, target, source)
         .await
@@ -2375,4 +2655,282 @@ async fn flash_targets_the_obj_idx_object_not_the_type_object() {
     );
 
     handle.abort();
+}
+
+/// The MV-07B0 `Load/all` master-template op list, verbatim from the real
+/// `knx_master.xml` (parsed so the fixture cannot drift from the parser). This is
+/// the skeleton the DA.tp app's MergeId 2/4 blocks splice into.
+fn master_template_all_ops() -> Vec<bussard_prod::LoadOp> {
+    let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+     <MaskVersion Id="MV-07B0" Name="System B">
+      <Procedures>
+       <Procedure ProcedureType="Load" ProcedureSubType="all" Access="remote local2">
+        <LdCtrlConnect />
+        <LdCtrlMerge MergeId="1" />
+        <LdCtrlUnload LsmIdx="5" />
+        <LdCtrlUnload LsmIdx="4" />
+        <LdCtrlUnload LsmIdx="3" />
+        <LdCtrlUnload LsmIdx="2" />
+        <LdCtrlUnload LsmIdx="1" />
+        <LdCtrlLoad LsmIdx="5" />
+        <LdCtrlMerge MergeId="3" />
+        <LdCtrlLoad LsmIdx="4" />
+        <LdCtrlMerge MergeId="2" />
+        <LdCtrlLoad LsmIdx="3" />
+        <LdCtrlRelSegment LsmIdx="3" Size="2" Mode="0" Fill="0" />
+        <LdCtrlLoad LsmIdx="1" />
+        <LdCtrlRelSegment LsmIdx="1" Size="2" Mode="0" Fill="0" />
+        <LdCtrlLoad LsmIdx="2" />
+        <LdCtrlRelSegment LsmIdx="2" Size="2" Mode="0" Fill="0" />
+        <LdCtrlMerge MergeId="5" />
+        <LdCtrlMerge MergeId="4" />
+        <LdCtrlWriteRelMem ObjIdx="3" Offset="0" Size="1048576" Verify="true" />
+        <LdCtrlWriteRelMem ObjIdx="2" Offset="0" Size="1048576" Verify="true" />
+        <LdCtrlWriteRelMem ObjIdx="1" Offset="0" Size="1048576" Verify="true" />
+        <LdCtrlWriteProp ObjIdx="5" PropId="13" Verify="true" InlineData="0000000000" />
+        <LdCtrlWriteProp ObjIdx="4" PropId="13" Verify="true" InlineData="0000000000" />
+        <LdCtrlLoadCompleted LsmIdx="5" />
+        <LdCtrlLoadCompleted LsmIdx="4" />
+        <LdCtrlLoadCompleted LsmIdx="3" />
+        <LdCtrlLoadCompleted LsmIdx="2" />
+        <LdCtrlLoadCompleted LsmIdx="1" />
+        <LdCtrlMerge MergeId="6" />
+        <LdCtrlMerge MergeId="7" />
+        <LdCtrlRestart />
+       </Procedure>
+      </Procedures>
+     </MaskVersion></KNX>"#;
+    let t = bussard_prod::parse_master_template(xml.as_bytes(), "test").unwrap();
+    t.full_load_procedure("07B0").unwrap().ops.clone()
+}
+
+/// 256 bytes of 0xFF as base64 (the DA.tp app segment `<Data>`).
+fn base64_ff_256() -> String {
+    // 256 = 85*3 + 1: 85 groups of 0xFFFFFF ("////") then one trailing 0xFF.
+    let mut s = "////".repeat(85); // 255 bytes
+    s.push_str("/w=="); // one more 0xFF byte
+    s
+}
+
+/// The KNX-Virtual DA.tp merged application: only its own MergeId 2 (allocate the
+/// app segment + master reset) and MergeId 4 (write the app segment) blocks; one
+/// 256-byte LSM4 relative segment of 0xFF (like the real app).
+fn app_da_tp() -> ApplicationProgram {
+    let data = base64_ff_256();
+    let xml = format!(
+        r#"<KNX xmlns="http://knx.org/xml/project/23">
+     <ApplicationProgram Id="M-00FA_A-DA" ApplicationNumber="9472" ApplicationVersion="16"
+        MaskVersion="MV-07B0" Name="Dimming" LoadProcedureStyle="MergedProcedure">
+      <Static>
+       <Code>
+        <RelativeSegment Id="M-00FA_A-DA_RS-04" Size="256" LoadStateMachine="4" Offset="0"><Data>{data}</Data></RelativeSegment>
+       </Code>
+       <LoadProcedures>
+        <LoadProcedure MergeId="2">
+         <LdCtrlRelSegment LsmIdx="4" Size="256" Mode="0" Fill="0" />
+         <LdCtrlMasterReset EraseCode="4" ChannelNumber="0" />
+        </LoadProcedure>
+        <LoadProcedure MergeId="4">
+         <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="256" Verify="false" />
+        </LoadProcedure>
+       </LoadProcedures>
+      </Static>
+     </ApplicationProgram></KNX>"#
+    );
+    parse_application_program("M-00FA_A-DA", xml.as_bytes()).unwrap()
+}
+
+/// A full 4-object flash of the KNX-Virtual DA.tp shape: the master `Load/all`
+/// template spliced with the app's MergeId 2/4 blocks programs obj4 (app), obj3
+/// (group-object table), obj2 (association), obj1 (address) — each with its own
+/// StartLoading → allocate → PID7 base read → memory write → LoadCompleted — and
+/// the LSM5 template ops are skipped (the device has no obj5). The final verify
+/// confirms every programmed object reached Loaded.
+#[tokio::test]
+async fn flash_da_tp_programs_all_four_objects() {
+    use bussard_download::compute::{
+        GroupObjectDescriptor, compute_group_object_table, table_image_with_count,
+    };
+    use bussard_download::compute_tables;
+    use bussard_model::schema::Link;
+
+    // DA.tp carries a MasterReset mid-procedure, so the flash must be able to
+    // reconnect — drive it over the bus actor + a leasing connector like the CLI.
+    // Shorten the reboot wait so the test does not stall.
+    // SAFETY: this test binds its own socket/actor; the var only shortens a sleep.
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
+    }
+    let (handle, state, gw) = setup_bus(Fault::None).await;
+    // obj0 device, obj1 address(1), obj2 association(2), obj3 group-object(9),
+    // obj4 application(3). No obj5 — the LSM5 template ops must be skipped.
+    {
+        let mut s = state.lock().unwrap();
+        s.object_types = vec![
+            OT_DEVICE,
+            OT_ADDRESS_TABLE,       // 1
+            OT_ASSOCIATION_TABLE,   // 2
+            9,                      // 3 = group-object table
+            OT_APPLICATION_PROGRAM, // 4 = application program (the app segment)
+        ];
+        s.multi_object = true;
+        s.wipe_app_on_master_reset = true; // DA.tp carries a MasterReset
+    }
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source = bussard_bus::ops::group_source(&handle);
+
+    // A couple of links so the tables are non-empty.
+    let links = vec![
+        Link {
+            object: 0,
+            name: None,
+            send: Some("1/1/1".parse().unwrap()),
+            listen: vec![],
+        },
+        Link {
+            object: 1,
+            name: None,
+            send: None,
+            listen: vec!["1/1/2".parse().unwrap()],
+        },
+    ];
+    let desired = compute_tables(&links);
+    let mut table_images: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
+    table_images.insert(
+        1,
+        table_image_with_count(desired.address_count(), &desired.address_elements()),
+    );
+    table_images.insert(
+        2,
+        table_image_with_count(desired.association_count(), &desired.association_elements()),
+    );
+    let obj3 = compute_group_object_table(&[
+        GroupObjectDescriptor {
+            asap: 1,
+            flags: bussard_model::Flags::COMMUNICATION | bussard_model::Flags::TRANSMIT,
+            size_code: 0,
+        },
+        GroupObjectDescriptor {
+            asap: 2,
+            flags: bussard_model::Flags::COMMUNICATION | bussard_model::Flags::WRITE,
+            size_code: 0,
+        },
+    ])
+    .unwrap();
+    table_images.insert(3, obj3.clone());
+
+    let app = app_da_tp();
+    let template = master_template_all_ops();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        Some(&template),
+        &table_images,
+    )
+    .unwrap();
+
+    let connector = LeaseConnector {
+        handle: handle.clone(),
+        target,
+        source,
+    };
+    let mut session = Session::open_with_key(connector, None).await.unwrap();
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .unwrap();
+    let _ = session.into_disconnect().await;
+
+    // Every programmed object reached Loaded (the verify_outcome fix): obj1..4.
+    assert!(outcome.ok(), "the 4-object flash must verify: {outcome:?}");
+    for obj in [1u8, 2, 3, 4] {
+        assert!(
+            outcome
+                .object_states
+                .iter()
+                .any(|(o, st)| *o == obj && *st == LoadState::Loaded),
+            "object {obj} must be Loaded; states {:?}",
+            outcome.object_states
+        );
+    }
+
+    {
+        let s = state.lock().unwrap();
+        for obj in [1u8, 2, 3, 4] {
+            assert!(
+                s.load_control_targets.contains(&obj),
+                "load-control must target object {obj}; got {:?}",
+                s.load_control_targets
+            );
+        }
+        assert!(
+            !s.load_control_targets.contains(&5),
+            "LSM5 ops must be skipped (no obj5); got {:?}",
+            s.load_control_targets
+        );
+        assert!(
+            !s.load_control_targets.contains(&0),
+            "no load-control write may target the device object 0"
+        );
+        for obj in [1u8, 2, 3, 4] {
+            assert!(
+                s.pid7_reads.contains(&obj),
+                "the tool must read PID7 from object {obj}; got {:?}",
+                s.pid7_reads
+            );
+        }
+        // The obj3 group-object image landed at obj3's own allocated base.
+        let obj3_base = *s.object_segment_bases.get(&3).unwrap();
+        let obj3_written: Vec<u8> = (0..obj3.len() as u16)
+            .map(|i| *s.memory.get(&obj3_base.wrapping_add(i)).unwrap_or(&0))
+            .collect();
+        assert_eq!(obj3_written, obj3, "obj3 table body landed at obj3's base");
+        // The obj1 address image landed at obj1's own base.
+        let obj1_base = *s.object_segment_bases.get(&1).unwrap();
+        let obj1_img = &table_images[&1];
+        let obj1_written: Vec<u8> = (0..obj1_img.len() as u16)
+            .map(|i| *s.memory.get(&obj1_base.wrapping_add(i)).unwrap_or(&0))
+            .collect();
+        assert_eq!(
+            &obj1_written, obj1_img,
+            "obj1 address table landed at obj1's base"
+        );
+    }
+
+    let _ = handle.close().await;
+    gw.abort();
+}
+
+/// A merged flash whose master template programs obj1/obj2/obj3 but the caller
+/// supplies no table images: the template `WriteRelMem` for those objects then
+/// resolves against the app's (single, obj4) code segments and fails to resolve —
+/// the whole procedure is refused at pre-flight rather than writing a wrong
+/// image. Proves the table images are required when the template programs the
+/// table objects.
+#[tokio::test]
+async fn flash_da_tp_without_table_images_refuses() {
+    let app = app_da_tp();
+    let template = master_template_all_ops();
+    let empty: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
+    let result = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        Some(&template),
+        &empty,
+    );
+    assert!(
+        result.is_err(),
+        "a template that writes obj1/2/3 with no table images must refuse, not \
+         silently write the app segment to a table object"
+    );
 }
