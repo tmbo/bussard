@@ -78,6 +78,12 @@ impl Tpci {
 /// by [`Apci::from_u10`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Apci {
+    /// `A_GroupValue_Read` (0x000) — a query for a group value.
+    GroupValueRead,
+    /// `A_GroupValue_Response` (0x040) — an answer carrying a group value.
+    GroupValueResponse,
+    /// `A_GroupValue_Write` (0x080) — a push of a group value.
+    GroupValueWrite,
     /// `A_Memory_Read` with byte count.
     MemoryRead(u8),
     /// `A_Memory_Response` with byte count.
@@ -113,7 +119,13 @@ pub enum Apci {
 impl Apci {
     /// Decode the 10-bit APCI.
     pub fn from_u10(apci: u16) -> Self {
+        // The group-value family occupies the top-four-bit selectors 0x000 /
+        // 0x040 / 0x080; the low 6 bits carry a packed sub-byte value (for the
+        // "small" APDU form) and are not part of the service identity.
         match apci & 0x3C0 {
+            0x000 => return Apci::GroupValueRead,
+            0x040 => return Apci::GroupValueResponse,
+            0x080 => return Apci::GroupValueWrite,
             0x200 => return Apci::MemoryRead((apci & 0x3F) as u8),
             0x240 => return Apci::MemoryResponse((apci & 0x3F) as u8),
             0x280 => return Apci::MemoryWrite((apci & 0x3F) as u8),
@@ -144,6 +156,9 @@ impl Apci {
     /// families that carry them; callers OR those in themselves).
     pub fn to_u10(self) -> u16 {
         match self {
+            Apci::GroupValueRead => 0x000,
+            Apci::GroupValueResponse => 0x040,
+            Apci::GroupValueWrite => 0x080,
             Apci::MemoryRead(n) => 0x200 | (n as u16 & 0x3F),
             Apci::MemoryResponse(n) => 0x240 | (n as u16 & 0x3F),
             Apci::MemoryWrite(n) => 0x280 | (n as u16 & 0x3F),

@@ -10,6 +10,7 @@
 //! feed the same bus.
 
 use std::net::{SocketAddr, UdpSocket};
+use std::time::{Duration, Instant};
 
 use crate::bus::Bus;
 use crate::wire::cemi::CemiLData;
@@ -22,6 +23,12 @@ pub struct KnxnetIpServer {
     channel: u8,
     /// Sequence counter for TUNNELLING_REQUESTs we send toward the tool.
     tx_seq: u8,
+    /// The currently-connected tunnel client (peer address + channel), if any.
+    /// Device-originated telegrams (scripted stimulus, group responses fanned to
+    /// the tool) are forwarded here so the connected monitor/read sees them.
+    peer: Option<SocketAddr>,
+    /// A monotonic clock origin for scheduling stimulus.
+    started: Instant,
 }
 
 /// Errors from running the server.
@@ -41,6 +48,8 @@ impl KnxnetIpServer {
             bus,
             channel: 1,
             tx_seq: 0,
+            peer: None,
+            started: Instant::now(),
         })
     }
 
@@ -54,12 +63,62 @@ impl KnxnetIpServer {
         &self.bus
     }
 
-    /// Serve forever, one datagram at a time. Returns only on socket error.
+    /// Serve forever. Returns only on a socket error.
+    ///
+    /// The socket has a short read timeout so the loop wakes periodically even
+    /// when the client is idle, letting it drive scripted stimulus. Each wake
+    /// ticks the bus's stimulus schedule and forwards any device-originated
+    /// telegrams to the connected tunnel client.
     pub fn serve(&mut self) -> Result<(), ServerError> {
+        // A 100 ms wakeup is fine-grained enough for the example's multi-second
+        // stimulus periods while keeping the loop responsive to client traffic.
+        self.socket
+            .set_read_timeout(Some(Duration::from_millis(100)))?;
         let mut buf = [0u8; 1024];
         loop {
-            let (n, peer) = self.socket.recv_from(&mut buf)?;
-            self.handle_datagram(&buf[..n], peer)?;
+            match self.socket.recv_from(&mut buf) {
+                Ok((n, peer)) => self.handle_datagram(&buf[..n], peer)?,
+                // Idle wakeups (read timeout) drive the stimulus below.
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                    ) => {}
+                // A client that closed its socket (e.g. mid-flash across a device
+                // reboot) can trigger an ICMP port-unreachable, surfaced on the
+                // next recv as ConnectionRefused/ConnectionReset. A real gateway
+                // keeps serving — it does not fall over because one datagram could
+                // not be delivered — so treat it as transient and forget the peer.
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::ConnectionReset
+                    ) =>
+                {
+                    self.peer = None;
+                }
+                Err(e) => return Err(ServerError::Io(e)),
+            }
+            self.pump_stimulus();
+        }
+    }
+
+    /// Tick the stimulus schedule and forward any produced telegrams to the
+    /// connected tunnel client. A send failure (the client went away) is
+    /// non-fatal: a real gateway does not crash because a datagram could not be
+    /// delivered — it forgets the peer and keeps serving.
+    fn pump_stimulus(&mut self) {
+        let Some(peer) = self.peer else {
+            return;
+        };
+        let now_ms = self.started.elapsed().as_millis();
+        let telegrams = self.bus.tick_stimulus(now_ms);
+        for cemi in telegrams {
+            if self.send_tunnelling(&cemi, self.channel, peer).is_err() {
+                // The client is gone; stop forwarding until it reconnects.
+                self.peer = None;
+                break;
+            }
         }
     }
 
@@ -91,6 +150,9 @@ impl KnxnetIpServer {
     }
 
     fn on_connect_request(&mut self, _body: &[u8], peer: SocketAddr) -> Result<(), ServerError> {
+        // Remember the client so device-originated telegrams (stimulus, fanned
+        // group responses) are forwarded to it.
+        self.peer = Some(peer);
         // CONNECT_RESPONSE body: channel, status, data-endpoint HPAI (8),
         // connection-response data block (CRD): len(1), type(1) + KNX addr(2).
         let mut body = Vec::new();
@@ -133,6 +195,8 @@ impl KnxnetIpServer {
         let Some(hdr) = ConnectionHeader::parse(body) else {
             return Ok(());
         };
+        // Track the active client for device-originated forwarding.
+        self.peer = Some(peer);
         // ACK the request first.
         let ack = KnxnetIpFrame::encode(
             service::TUNNELLING_ACK,
