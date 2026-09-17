@@ -65,6 +65,13 @@ base64 = "0.22"
 # ApplicationProgram XML files in parallel during `.knxproj` import (the parse
 # dominates import wall time). MIT OR Apache-2.0.
 rayon = "1"
+# zip: reads `.knxprod`/`.knxproj` container entries (deflate only, no AES here —
+# encrypted `.knxproj` inner archives are handled inside bussard-project). Shared
+# by bussard-ets and bussard-prod. MIT licensed.
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
+# quick-xml: streaming XML (never builds a DOM) so 20+ MB application-program
+# files parse with bounded memory. MIT licensed.
+quick-xml = "0.41"
 
 # ---------------------------------------------------------------------------
 # Build profiles tuned for test iteration speed.
