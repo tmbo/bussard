@@ -244,13 +244,17 @@ class Log {
     row.dataset.source = t.source || "";
     row.querySelector("[data-field=time]").textContent = formatTime(t.ts_utc);
 
+    // Source / destination each show "addr name"; the full text is on the title
+    // attribute so a truncated cell still reveals everything on hover.
     const src = row.querySelector("[data-field=source]");
-    src.textContent = t.source_name || t.source || "";
-    if (t.source) src.title = t.source;
+    const srcText = [t.source, t.source_name].filter(Boolean).join(" ");
+    src.textContent = srcText;
+    if (srcText) src.title = srcText;
 
     const dest = row.querySelector("[data-field=dest]");
-    dest.textContent = t.destination_name || t.destination || "";
-    if (t.destination) dest.title = t.destination;
+    const destText = [t.destination, t.destination_name].filter(Boolean).join(" ");
+    dest.textContent = destText;
+    if (destText) dest.title = destText;
 
     const apci = row.querySelector("[data-field=apci]");
     apci.textContent = apciGlyph(t.apci);
