@@ -8,7 +8,7 @@
 //! - descriptor **0705**, an **authorize gate** (free-access key), and object-0
 //!   **PID 78** readable for the MDT preflight;
 //! - **three parallel load-state machines**, driven either memory-mapped (a
-//!   12-octet record written to `0x0104`, status polled at `0xB6EA+`) or
+//!   11-octet record written to `0x0104`, status polled at `0xB6EA+`) or
 //!   property-based (`PID_LOAD_STATE_CONTROL` per object) — selected by a
 //!   construction-time flag so the same device serves both `LsmAccess` variants;
 //! - **absolute `A_Memory_Write`/`_Read`** over sparse memory, so the client's
@@ -74,7 +74,7 @@ const LE_UNLOAD: u8 = 4;
 /// Which load-state realisation the mock serves.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum LsmMode {
-    /// 12-octet record to `0x0104`, status at `0xB6EA+` (the default).
+    /// 11-octet record to `0x0104`, status at `0xB6EA+` (Theben 0701 form).
     MemoryMapped,
     /// `PID_LOAD_STATE_CONTROL` per object.
     Property,
@@ -482,13 +482,20 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
     Reaction::Nak
 }
 
-/// Applies a memory-mapped 12-octet LSM record `[lsm][00][10-octet event]`.
+/// Applies a memory-mapped **11-octet** LSM record (Theben 0701 form): the LSM
+/// index is the high nibble of octet 0 and the event opcode its low nibble; the
+/// start address occupies 3 octets. Reconstruct the 10-octet abstract event
+/// (narrowing the address) and apply it.
 fn apply_lsm_record(s: &mut DeviceState, record: &[u8]) {
-    if record.len() < 12 {
+    if record.len() < 11 {
         return;
     }
-    let lsm = record[0];
-    apply_lsm_event(s, lsm, &record[2..12]);
+    let lsm = record[0] >> 4;
+    let mut event = [0u8; 10];
+    event[0] = record[0] & 0x0F;
+    event[1] = record[1];
+    event[2..10].copy_from_slice(&record[3..11]);
+    apply_lsm_event(s, lsm, &event);
 }
 
 /// Applies a 10-octet load event to LSM `lsm`.
