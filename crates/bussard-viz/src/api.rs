@@ -92,20 +92,24 @@ pub async fn get_traffic(
     }));
 
     // The live tail: drop telegrams already covered by the snapshot; map a
-    // broadcast lag into a `gap` event so the client re-snapshots.
-    let live_stream = BroadcastStream::new(rx).filter_map(move |item| match item {
-        Ok(HubEvent::Telegram { seq, data }) => {
-            if seq <= snapshot_max {
-                None
-            } else {
-                Some(Ok(to_sse(HubEvent::Telegram { seq, data })))
+    // broadcast lag into a `gap` event so the client re-snapshots. The stream
+    // ENDS on `Shutdown` (take_while) so an open SSE connection cannot hold
+    // axum's graceful shutdown open forever.
+    let live_stream = BroadcastStream::new(rx)
+        .take_while(|item| !matches!(item, Ok(HubEvent::Shutdown)))
+        .filter_map(move |item| match item {
+            Ok(HubEvent::Telegram { seq, data }) => {
+                if seq <= snapshot_max {
+                    None
+                } else {
+                    Some(Ok(to_sse(HubEvent::Telegram { seq, data })))
+                }
             }
-        }
-        Ok(other) => Some(Ok(to_sse(other))),
-        Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(count)) => {
-            Some(Ok(to_sse(HubEvent::Gap { count })))
-        }
-    });
+            Ok(other) => Some(Ok(to_sse(other))),
+            Err(tokio_stream::wrappers::errors::BroadcastStreamRecvError::Lagged(count)) => {
+                Some(Ok(to_sse(HubEvent::Gap { count })))
+            }
+        });
 
     let stream = bus_stream.chain(replay_stream).chain(live_stream);
 
@@ -124,6 +128,8 @@ fn to_sse(event: HubEvent) -> Event {
         HubEvent::Gap { count } => Event::default()
             .event("gap")
             .data(json!({ "count": count }).to_string()),
+        // Filtered out by take_while before mapping; never rendered.
+        HubEvent::Shutdown => Event::default().event("shutdown"),
     }
 }
 
