@@ -72,8 +72,8 @@ pub use load::{
     MCB_ENTRY_LEN, McbEntry, PID_LOAD_STATE_CONTROL, PID_MCB_TABLE, SegmentAllocation, WriteError,
     allocate_segment, compare_property, compare_rel_mem, crc16_ccitt, encode_abs_segment,
     encode_rel_segment, is_connection_death, mcb_entry, read_load_state, read_mcb_table,
-    read_memory, read_table_reference, write_load_control, write_memory, write_memory_verified,
-    write_property, write_table,
+    read_memory, read_table_reference, select_extended_memory, write_load_control, write_memory,
+    write_memory_verified, write_property, write_table,
 };
 pub use profile::{KnxMedium, LsmRealisation, MaskFamily, MaskProfile, Sys7Profile};
 pub use sys7::{

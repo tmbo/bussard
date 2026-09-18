@@ -547,6 +547,16 @@ fn maybe_substitute_app_id(
 /// time rather than driving an allocation or an out-of-range address.
 const MAX_WRITE_SPAN: u64 = 1024 * 1024;
 
+/// The exclusive upper bound of the memory address space a flash write may reach:
+/// the 24-bit extended-memory space, `0x100_0000`. A write whose end address
+/// exceeds this is refused at plan time. This replaces the old 16-bit ceiling
+/// (`0x1_0000`): the System B extended memory service reaches 24-bit addresses,
+/// which the real 07B0 actuators require (segment bases at `0xf000..0x16000`,
+/// writes running to `0x1aad3`). The per-chunk selection between the plain and
+/// extended service happens at flash time from the resolved absolute address (see
+/// [`bussard_mgmt::select_extended_memory`]).
+const MAX_MEMORY_END: u64 = 0x100_0000;
+
 /// How long to wait for a device to come back after a master-reset `A_Restart`
 /// before attempting to reconnect. A real ETS→KNX-Virtual capture showed ~6.5s of
 /// silence while the device rebooted; this is deliberately generous so a slower
@@ -1526,7 +1536,7 @@ pub fn plan_flash(
                 let len = bytes.len();
                 let offset = offset.unwrap_or(0);
                 let end = u64::from(offset).saturating_add(len as u64);
-                if len as u64 > MAX_WRITE_SPAN || u64::from(offset) > MAX_WRITE_SPAN || end > 0xFFFF
+                if len as u64 > MAX_WRITE_SPAN || u64::from(offset) > MAX_WRITE_SPAN || end > MAX_MEMORY_END
                 {
                     return Err(PlanError::AddressOutOfRange {
                         step: step_no,
@@ -1576,7 +1586,7 @@ pub fn plan_flash(
                 // offset+len does. Refuse here rather than truncate later. Also
                 // reject an absurd offset/len before any allocation.
                 let end = u64::from(offset).saturating_add(len as u64);
-                if len as u64 > MAX_WRITE_SPAN || u64::from(offset) > MAX_WRITE_SPAN || end > 0xFFFF
+                if len as u64 > MAX_WRITE_SPAN || u64::from(offset) > MAX_WRITE_SPAN || end > MAX_MEMORY_END
                 {
                     return Err(PlanError::AddressOutOfRange {
                         step: step_no,
@@ -1618,7 +1628,7 @@ pub fn plan_flash(
                 // Absolute write: the full [address, address+len) range must fit
                 // the 16-bit A_Memory space, checked before any allocation.
                 let end = u64::from(address).saturating_add(len as u64);
-                if len as u64 > MAX_WRITE_SPAN || end > 0xFFFF {
+                if len as u64 > MAX_WRITE_SPAN || end > MAX_MEMORY_END {
                     return Err(PlanError::AddressOutOfRange {
                         step: step_no,
                         size: len as u64,
@@ -1754,7 +1764,7 @@ pub fn plan_flash(
                     .map(|d| d.len() as u64)
                     .unwrap_or_else(|| u64::from(size.unwrap_or(0)));
                 let end = u64::from(offset).saturating_add(read_len);
-                if read_len > MAX_WRITE_SPAN || u64::from(offset) > MAX_WRITE_SPAN || end > 0xFFFF {
+                if read_len > MAX_WRITE_SPAN || u64::from(offset) > MAX_WRITE_SPAN || end > MAX_MEMORY_END {
                     return Err(PlanError::AddressOutOfRange {
                         step: step_no,
                         size: read_len,
@@ -2865,8 +2875,10 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
     // double-`StartLoading` it (the template re-opens obj3 itself after the reset)
     // and drive it to `Error`. `None` until the first `AllocateSegment`.
     let mut last_alloc_target: Option<u8> = None;
-    // Track (address, sample_len) of writes for the post-flash spot check.
-    let mut written_samples: Vec<(u16, Vec<u8>)> = Vec::new();
+    // Track (address, sample_len) of writes for the post-flash spot check. The
+    // address is 24-bit: an extended-memory segment (07B0 actuators) lives above
+    // 0xFFFF, and the spot-check read picks plain vs extended from it.
+    let mut written_samples: Vec<(u32, Vec<u8>)> = Vec::new();
     // The verified outcome, captured just before a terminal restart reboots the
     // device (after which it is unreachable and cannot be verified). `None` until
     // then; the post-loop verify runs only if it is still `None`.
@@ -2990,11 +3002,14 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                         .or(segment_base)
                         .unwrap_or(0);
                         // The device-supplied segment base plus the vendor offset must fit
-                        // the 16-bit A_Memory space. A `u16` cast of the sum would silently
-                        // wrap and stream the image to the wrong address; refuse instead.
+                        // the 24-bit extended-memory space. `write_image` picks the plain
+                        // A_Memory_Write (≤0xFFFF, byte-identical to before) or the
+                        // A_MemoryExtended_Write service from the resolved address, so a
+                        // base above 0xFFFF (the Jung/ABB 07B0 actuators) streams via the
+                        // extended service instead of being refused.
                         let addr = base
                             .checked_add(*offset)
-                            .and_then(|a| u16::try_from(a).ok())
+                            .filter(|&a| a <= bussard_mgmt::apci::MAX_MEMORY_ADDRESS)
                             .ok_or_else(|| WriteError::AddressOutOfRange {
                                 address: session.l4().target(),
                                 detail: format!("segment base {base:#X} + offset {offset:#X}"),
@@ -3010,13 +3025,16 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                         }
                     }
                     FlashStep::WriteMem { address, image } => {
-                        // The absolute address must fit the 16-bit A_Memory space; a `u16`
-                        // cast would silently truncate a too-large vendor address.
-                        let addr =
-                            u16::try_from(*address).map_err(|_| WriteError::AddressOutOfRange {
+                        // The absolute address must fit the 24-bit extended-memory space;
+                        // `write_image` picks plain vs extended from the address (≤0xFFFF
+                        // stays byte-identical to the historical plain path).
+                        let addr = *address;
+                        if addr > bussard_mgmt::apci::MAX_MEMORY_ADDRESS {
+                            return Err(WriteError::AddressOutOfRange {
                                 address: session.l4().target(),
                                 detail: format!("absolute address {address:#X}"),
-                            })?;
+                            });
+                        }
                         let bytes = plan
                             .images
                             .get(&image.segment_id)
@@ -3103,21 +3121,14 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                             // The read base is this object's segment address. Prefer the
                             // base allocated earlier in this procedure; otherwise read the
                             // object's PID_TABLE_REFERENCE fresh (a compare against an
-                            // object this procedure did not itself allocate). Both u32
-                            // bases must fit the 16-bit A_Memory space; `compare_rel_mem`
-                            // refuses rather than truncates if base + offset does not.
+                            // object this procedure did not itself allocate). The u32 base
+                            // may exceed 0xFFFF (07B0 actuators); `compare_rel_mem` reads
+                            // via the extended service in that case and refuses only if
+                            // base + offset exceeds the 24-bit space.
                             let base = match segment_bases.get(&obj).copied().or(segment_base) {
                                 Some(b) => b,
                                 None => read_table_reference(session.l4(), obj).await?,
                             };
-                            let base =
-                                u16::try_from(base).map_err(|_| WriteError::AddressOutOfRange {
-                                    address: session.l4().target(),
-                                    detail: format!(
-                                        "object {obj} segment base {base:#X} exceeds the 16-bit \
-                                         A_Memory space"
-                                    ),
-                                })?;
                             compare_rel_mem(
                                 session.l4(),
                                 obj,
@@ -3555,7 +3566,7 @@ async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                     return Err(WriteError::Mgmt(
                         bussard_mgmt::MgmtError::MemoryVerifyFailed {
                             address: session.l4().target(),
-                            addr,
+                            addr: u32::from(addr),
                             expected: expected.clone(),
                             got,
                         },
@@ -3757,7 +3768,7 @@ async fn read_sys7_memory<C: Connector>(
     while offset < len {
         let take = chunk.min(len - offset);
         let piece_addr = addr.saturating_add(offset as u16);
-        let piece = read_memory(session.l4(), piece_addr, take as u8).await?;
+        let piece = read_memory(session.l4(), u32::from(piece_addr), take as u8).await?;
         out.extend_from_slice(&piece);
         offset += take;
     }
@@ -3778,7 +3789,7 @@ async fn write_sys7_segment<C: Connector, F: FnMut(Progress)>(
     progress: &mut F,
 ) -> Result<(), WriteError> {
     let Some(mask) = mask else {
-        return write_image(session, addr, bytes, progress).await;
+        return write_image(session, u32::from(addr), bytes, progress).await;
     };
     // Walk the mask, writing each maximal run of owned (0xFF) bytes at its address.
     let mut i = 0usize;
@@ -3793,7 +3804,7 @@ async fn write_sys7_segment<C: Connector, F: FnMut(Progress)>(
             i += 1;
         }
         let run_addr = addr.saturating_add(run_start as u16);
-        write_image(session, run_addr, &bytes[run_start..i], progress).await?;
+        write_image(session, u32::from(run_addr), &bytes[run_start..i], progress).await?;
     }
     Ok(())
 }
@@ -3823,7 +3834,7 @@ async fn read_load_state_resumable<C: Connector>(
 /// across an unexpected connection death (like [`read_load_state_resumable`]).
 async fn read_memory_resumable<C: Connector>(
     session: &mut Session<C>,
-    addr: u16,
+    addr: u32,
     len: u8,
 ) -> Result<Vec<u8>, WriteError> {
     let mut reconnects = 0u32;
@@ -3860,7 +3871,7 @@ async fn verify_outcome<C: Connector>(
     session: &mut Session<C>,
     app_obj: u8,
     completed_objects: &[u8],
-    written_samples: &[(u16, Vec<u8>)],
+    written_samples: &[(u32, Vec<u8>)],
 ) -> Result<FlashOutcome, WriteError> {
     // The application object's own state (kept as the headline `load_state`).
     let load_state = read_load_state_resumable(session, app_obj).await?;
@@ -3914,7 +3925,7 @@ async fn verify_outcome<C: Connector>(
 /// death unchanged, exactly as before.
 async fn write_image<C: Connector, F: FnMut(Progress)>(
     session: &mut Session<C>,
-    addr: u16,
+    addr: u32,
     bytes: &[u8],
     progress: &mut F,
 ) -> Result<(), WriteError> {
@@ -3937,7 +3948,7 @@ async fn write_image<C: Connector, F: FnMut(Progress)>(
                 total,
             });
         };
-        let tail_addr = addr.saturating_add(confirmed as u16);
+        let tail_addr = addr.saturating_add(confirmed as u32);
         let result = bussard_mgmt::write_memory_verified(
             session.l4(),
             tail_addr,
@@ -5092,11 +5103,13 @@ mod tests {
     // ---------------------------------------------------------------------
 
     #[test]
-    fn plan_refuses_write_rel_mem_offset_past_16bit_space() {
-        // A WriteRelMem whose offset alone lands the write past 0xFFFF must be
-        // refused at plan time (the segment base is added at flash time and is
-        // >= 0, so the range already exceeds the 16-bit A_Memory space). This is
-        // rejected in the plan, before any allocation or write happens.
+    fn plan_refuses_write_rel_mem_offset_past_24bit_space() {
+        // A WriteRelMem whose offset alone lands the write past the 24-bit
+        // extended-memory space (0xFF_FFFF) must be refused at plan time (the
+        // segment base is added at flash time and is >= 0, so the range already
+        // exceeds the addressable space). This is the raised ceiling: an offset
+        // past 0xFFFF but within 24 bits is now valid (the extended service
+        // reaches it), so only an offset past the 24-bit space is refused.
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
          <ApplicationProgram Id="M-1_A-7" MaskVersion="MV-07B0" Name="Overflow">
           <Static>
@@ -5105,7 +5118,7 @@ mod tests {
             <LoadProcedure>
              <LdCtrlLoad LsmIdx="4" />
              <LdCtrlRelSegment LsmIdx="4" Size="6" AppliesTo="full" />
-             <LdCtrlWriteRelMem ObjIdx="0" Offset="65535" Size="6" AppliesTo="full" />
+             <LdCtrlWriteRelMem ObjIdx="0" Offset="16777215" Size="6" AppliesTo="full" />
              <LdCtrlLoadCompleted LsmIdx="4" />
             </LoadProcedure>
            </LoadProcedures>
@@ -5124,24 +5137,63 @@ mod tests {
         .unwrap_err();
         match err {
             PlanError::AddressOutOfRange { end, .. } => {
-                assert!(end > 0xFFFF, "end {end} must exceed the 16-bit space");
+                assert!(end > MAX_MEMORY_END, "end {end} must exceed the 24-bit space");
             }
             other => panic!("expected AddressOutOfRange, got {other:?}"),
         }
     }
 
     #[test]
-    fn plan_refuses_write_mem_address_past_16bit_space() {
-        // An absolute WriteMem at an address past 0xFFFF is refused (a u16 cast
-        // would silently truncate and stream to the wrong memory).
+    fn plan_accepts_write_rel_mem_offset_above_16bit_space() {
+        // A WriteRelMem at an offset past 0xFFFF but inside the 24-bit space is now
+        // planned (the extended service reaches it) — the old 16-bit refusal is
+        // gone. The plain-vs-extended selection is deferred to flash time from the
+        // device-supplied base + offset.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-7b" MaskVersion="MV-07B0" Name="ExtOffset">
+          <Static>
+           <Code><RelativeSegment Id="M-1_A-7b_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment></Code>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlLoad LsmIdx="4" />
+             <LdCtrlRelSegment LsmIdx="4" Size="6" AppliesTo="full" />
+             <LdCtrlWriteRelMem ObjIdx="0" Offset="65540" Size="6" AppliesTo="full" />
+             <LdCtrlLoadCompleted LsmIdx="4" />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-1_A-7b", xml.as_bytes()).unwrap();
+        let plan = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .expect("an offset above 0xFFFF but within 24 bits must plan via the extended service");
+        assert!(
+            plan.steps
+                .iter()
+                .any(|s| matches!(s, FlashStep::WriteRelMem { offset, .. } if *offset == 65540)),
+            "the WriteRelMem step must survive lowering"
+        );
+    }
+
+    #[test]
+    fn plan_refuses_write_mem_address_past_24bit_space() {
+        // An absolute WriteMem at an address past the 24-bit space (0xFF_FFFF) is
+        // refused (a cast would silently truncate and stream to the wrong memory).
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
          <ApplicationProgram Id="M-1_A-8" MaskVersion="MV-07B0" Name="AbsOverflow">
           <Static>
-           <Code><AbsoluteSegment Id="M-1_A-8_AS-1" Address="70000" Size="4"><Data>AAECAw==</Data></AbsoluteSegment></Code>
+           <Code><AbsoluteSegment Id="M-1_A-8_AS-1" Address="16777214" Size="4"><Data>AAECAw==</Data></AbsoluteSegment></Code>
            <LoadProcedures>
             <LoadProcedure>
              <LdCtrlLoad LsmIdx="0" />
-             <LdCtrlWriteMem Address="70000" Size="4" />
+             <LdCtrlWriteMem Address="16777214" Size="4" />
              <LdCtrlLoadCompleted LsmIdx="0" />
             </LoadProcedure>
            </LoadProcedures>

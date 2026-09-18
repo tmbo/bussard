@@ -302,7 +302,7 @@ pub enum WriteError {
     /// procedure requires (e.g. wrong firmware/hardware variant, or a resource the
     /// application depends on holds an unexpected value).
     #[error(
-        "{address}: object {object_index} relative memory at {addr:#06X} (base {base:#06X} + \
+        "{address}: object {object_index} relative memory at {addr:#08X} (base {base:#08X} + \
          offset {offset}) compare failed — {sense} {expected:02X?} but device holds \
          {actual:02X?}{mask_note} (the application's LdCtrlCompareRelMem precondition is not met)"
     )]
@@ -311,12 +311,12 @@ pub enum WriteError {
         address: IndividualAddress,
         /// The interface object index whose segment was compared.
         object_index: u8,
-        /// The device-supplied segment base the compare read from.
-        base: u16,
+        /// The device-supplied segment base the compare read from (24-bit).
+        base: u32,
         /// The vendor offset within that segment.
         offset: u32,
-        /// The absolute read address (`base + offset`).
-        addr: u16,
+        /// The absolute read address (`base + offset`), up to 24-bit.
+        addr: u32,
         /// A human note on the comparison sense ("expected" for a match compare,
         /// "expected to differ from" for an inverted compare).
         sense: &'static str,
@@ -328,15 +328,15 @@ pub enum WriteError {
         mask_note: String,
     },
 
-    /// A write step's resolved target address does not fit the 16-bit A_Memory
-    /// address space. The device-supplied segment base plus the vendor offset (or
-    /// an absolute address) exceeded `0xFFFF`, which a `u16` cast would silently
-    /// truncate — streaming the image to the WRONG device memory. Aborted before
-    /// any octet is written.
+    /// A write step's resolved target address does not fit the 24-bit
+    /// extended-memory address space. The device-supplied segment base plus the
+    /// vendor offset (or an absolute address) exceeded `0xFF_FFFF`, which a cast
+    /// would silently truncate — streaming the image to the WRONG device memory.
+    /// Aborted before any octet is written.
     #[error(
-        "{address}: write target address is out of range — {detail} exceeds the 16-bit A_Memory \
-         space (max {max:#06X}); aborting rather than truncating and writing to the wrong memory",
-        max = 0xFFFF_u32
+        "{address}: write target address is out of range — {detail} exceeds the 24-bit A_Memory \
+         space (max {max:#08X}); aborting rather than truncating and writing to the wrong memory",
+        max = crate::apci::MAX_MEMORY_ADDRESS
     )]
     AddressOutOfRange {
         /// The device.
@@ -729,7 +729,7 @@ fn rel_mem_compare_passes(
 pub async fn compare_rel_mem<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     object_index: u8,
-    base: u16,
+    base: u32,
     offset: u32,
     expected: &[u8],
     mask: Option<&[u8]>,
@@ -742,22 +742,23 @@ pub async fn compare_rel_mem<Ch: L4Channel>(
     }
 
     // Resolve the absolute read address; refuse rather than truncate if base +
-    // offset (or the read span) runs past the 16-bit A_Memory space.
-    let start = u32::from(base)
+    // offset (or the read span) runs past the 24-bit extended-memory space.
+    // `read_memory` picks the plain or extended service from the address itself,
+    // so a base above 0xFFFF verifies via A_MemoryExtended_Read.
+    let start = base
         .checked_add(offset)
-        .and_then(|a| u16::try_from(a).ok())
+        .filter(|&a| a <= apci::MAX_MEMORY_ADDRESS)
         .ok_or_else(|| WriteError::AddressOutOfRange {
             address,
             detail: format!("segment base {base:#X} + offset {offset:#X}"),
         })?;
-    let end = usize::from(start)
-        .checked_add(expected.len())
-        .filter(|&e| e <= 0x1_0000)
+    u64::from(start)
+        .checked_add(expected.len() as u64)
+        .filter(|&e| e <= u64::from(apci::MAX_MEMORY_ADDRESS) + 1)
         .ok_or_else(|| WriteError::AddressOutOfRange {
             address,
             detail: format!("read of {} octet(s) from {start:#X}", expected.len()),
         })?;
-    let _ = end;
 
     // Read the required span in device-max chunks. `read_memory` clamps a single
     // telegram to MAX_MEMORY_READ_LEN, so loop until the whole length is gathered.
@@ -765,7 +766,7 @@ pub async fn compare_rel_mem<Ch: L4Channel>(
     let mut actual: Vec<u8> = Vec::with_capacity(expected.len());
     while actual.len() < expected.len() {
         let want = (expected.len() - actual.len()).min(chunk);
-        let addr = start.checked_add(actual.len() as u16).ok_or_else(|| {
+        let addr = start.checked_add(actual.len() as u32).ok_or_else(|| {
             WriteError::AddressOutOfRange {
                 address,
                 detail: format!("read chunk at {start:#X} + {}", actual.len()),
@@ -1353,12 +1354,21 @@ pub async fn write_table<Ch: L4Channel>(
 /// [`Layer4Connection`]. `len` is clamped to [`apci::MAX_MEMORY_READ_LEN`] per
 /// telegram — callers loop for larger ranges. Mirrors
 /// [`crate::device::DeviceConnection::read_memory`].
+///
+/// When the address fits the 16-bit space this uses the plain `A_Memory_Read`
+/// (byte-identical to before); an address above `0xFFFF` uses
+/// `A_MemoryExtended_Read` (APCI `0x1FD`, 3-octet address) — the System B
+/// extended service the ≥16-bit devices require (see [`select_extended_memory`]).
 pub async fn read_memory<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
-    addr: u16,
+    addr: u32,
     len: u8,
 ) -> Result<Vec<u8>> {
-    let (req_apci, payload) = apci::encode_memory_read(addr, len);
+    if select_extended_memory(addr, usize::from(len)) {
+        return read_memory_extended(l4, addr, len).await;
+    }
+    let addr16 = addr as u16;
+    let (req_apci, payload) = apci::encode_memory_read(addr16, len);
     let (resp_apci, data) = l4.request(req_apci, &payload).await?;
     let resp = apci::decode_memory_response(resp_apci, &data).ok_or_else(|| {
         WriteError::Mgmt(MgmtError::MalformedResponse {
@@ -1369,6 +1379,52 @@ pub async fn read_memory<Ch: L4Channel>(
             ),
         })
     })?;
+    Ok(resp.data)
+}
+
+/// Whether a memory access at `addr` spanning `len` octets must use the System B
+/// **extended** memory service rather than the plain `A_Memory_*` service.
+///
+/// The rule, matched to the real ETS6 captures
+/// (`scratchpad/ets-analysis/sysb-{a,c}.md`): use the extended service **iff the
+/// top address of the access exceeds the 16-bit space** (`addr + len - 1 >
+/// 0xFFFF`). ETS drives Steinel (segment `0x3400..0x3BD6`, all ≤ `0xFFFF`) with
+/// plain `A_Memory_Write`, and the Jung/ABB 07B0 devices whose segments live at
+/// `0xf000..0x1aad3` with `A_MemoryExtended_Write` — the selection is per address
+/// range, not per device. This keeps every ≤16-bit device (KV, DA.tp, Steinel,
+/// BM/A4) on the byte-identical plain path.
+pub fn select_extended_memory(addr: u32, len: usize) -> bool {
+    let top = u64::from(addr).saturating_add(len.max(1) as u64 - 1);
+    top > 0xFFFF
+}
+
+/// Reads `len` octets at the 24-bit `addr` via `A_MemoryExtended_Read` (APCI
+/// `0x1FD`), validating the response's return code and echoed address.
+async fn read_memory_extended<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    addr: u32,
+    len: u8,
+) -> Result<Vec<u8>> {
+    let (req_apci, payload) = apci::encode_memory_extended_read(addr, u16::from(len));
+    let (resp_apci, data) = l4.request(req_apci, &payload).await?;
+    let resp = apci::decode_memory_extended_response(resp_apci, &data).ok_or_else(|| {
+        WriteError::Mgmt(MgmtError::MalformedResponse {
+            address: l4.target(),
+            reason: format!(
+                "expected A_MemoryExtended_Read_Response ({})",
+                raw_response_detail(resp_apci, &data)
+            ),
+        })
+    })?;
+    if resp.return_code != 0 {
+        return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
+            address: l4.target(),
+            reason: format!(
+                "A_MemoryExtended_Read at {addr:#08X} returned non-zero code {:#04X}",
+                resp.return_code
+            ),
+        }));
+    }
     Ok(resp.data)
 }
 
@@ -1384,7 +1440,7 @@ pub async fn read_memory<Ch: L4Channel>(
 /// callback.
 pub async fn write_memory<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
-    addr: u16,
+    addr: u32,
     data: &[u8],
 ) -> Result<()> {
     write_memory_verified(l4, addr, data, |_| {}).await
@@ -1416,19 +1472,27 @@ const MAX_EXCHANGE_RETRIES: u32 = 3;
 /// refusal propagates immediately. An empty `data` is a no-op.
 pub async fn write_memory_verified<Ch: L4Channel, F: FnMut(usize)>(
     l4: &mut Layer4Connection<Ch>,
-    addr: u16,
+    addr: u32,
     data: &[u8],
     mut on_written: F,
 ) -> Result<()> {
     if data.is_empty() {
         return Ok(());
     }
-    // Scale the chunk to the device's negotiated max APDU (issue #58): a capable
-    // device takes the 63-octet ceiling in one extended frame, while a device
-    // advertising the 15-octet standard-frame floor gets 12-octet chunks in
-    // standard frames it can actually accept. Falls back to the conservative cap
-    // when `PID_MAX_APDU_LENGTH` was never negotiated or was unreadable.
-    let write_chunk = usize::from(l4.max_memory_chunk());
+    // Choose plain vs extended for the whole write from its top address (see
+    // `select_extended_memory`): a segment that fits 16 bits stays byte-identical
+    // to the historical plain `A_Memory_Write` path; one that runs past `0xFFFF`
+    // uses the System B extended service.
+    let extended = select_extended_memory(addr, data.len());
+    // Scale the chunk to the device's negotiated max APDU (issue #58). The plain
+    // service caps at 63 (the 6-bit count field); the extended service scales to
+    // the 228-octet extended-frame budget ETS uses. Both fall back to the
+    // conservative cap when `PID_MAX_APDU_LENGTH` was never negotiated.
+    let write_chunk = if extended {
+        usize::from(l4.max_extended_memory_chunk())
+    } else {
+        usize::from(l4.max_memory_chunk())
+    };
     let mut offset = 0usize;
     while offset < data.len() {
         let take = write_chunk.min(data.len() - offset);
@@ -1439,7 +1503,7 @@ pub async fn write_memory_verified<Ch: L4Channel, F: FnMut(usize)>(
         // verify mismatch) is not retried — retrying would just fail again.
         let mut attempt = 0u32;
         loop {
-            match write_one_chunk(l4, addr, offset, piece).await {
+            match write_one_chunk(l4, addr, offset, piece, extended).await {
                 Ok(()) => break,
                 Err(err) if is_connection_death(&err) && attempt < MAX_EXCHANGE_RETRIES => {
                     attempt += 1;
@@ -1476,15 +1540,48 @@ pub fn is_connection_death(err: &WriteError) -> bool {
     )
 }
 
-/// Writes one memory chunk at `base + offset` and verifies it by read-back.
+/// Writes one memory chunk at `base + offset`.
+///
+/// When `extended` is false this is the historical plain `A_Memory_Write` path,
+/// byte-identical to before: a fire-and-forget write whose optional echo is
+/// discarded (integrity is confirmed later by the MCB CRC and the end-of-segment
+/// spot-check). When `extended` is true it sends `A_MemoryExtended_Write` (APCI
+/// `0x1FB`, 3-octet address) and awaits the device's inline
+/// `A_MemoryExtended_Write_Response` (`0x1FC`), failing on a non-zero return code
+/// — the extended service confirms every chunk on the wire, so no separate
+/// read-back is needed.
 async fn write_one_chunk<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
-    base: u16,
+    base: u32,
     offset: usize,
     piece: &[u8],
+    extended: bool,
 ) -> Result<()> {
     let chunk_addr = chunk_address(l4, base, offset)?;
-    let (req_apci, payload) = apci::encode_memory_write(chunk_addr, piece);
+    if extended {
+        let (req_apci, payload) = apci::encode_memory_extended_write(chunk_addr, piece);
+        let (resp_apci, data) = l4.request(req_apci, &payload).await?;
+        let resp = apci::decode_memory_extended_response(resp_apci, &data).ok_or_else(|| {
+            WriteError::Mgmt(MgmtError::MalformedResponse {
+                address: l4.target(),
+                reason: format!(
+                    "expected A_MemoryExtended_Write_Response ({})",
+                    raw_response_detail(resp_apci, &data)
+                ),
+            })
+        })?;
+        if resp.return_code != 0 {
+            return Err(WriteError::Mgmt(MgmtError::MemoryVerifyFailed {
+                address: l4.target(),
+                addr: chunk_addr,
+                expected: piece.to_vec(),
+                got: Vec::new(),
+            }));
+        }
+        return Ok(());
+    }
+    let addr16 = chunk_addr as u16;
+    let (req_apci, payload) = apci::encode_memory_write(addr16, piece);
     // Write only, no per-chunk read-back. ETS streams the whole image and does
     // NOT read each chunk back — a read-back after every write doubles the
     // exchanges (exhausting a device's per-connection L4 budget on a large
@@ -1501,20 +1598,23 @@ async fn write_one_chunk<Ch: L4Channel>(
     Ok(())
 }
 
-/// Computes `base + offset` as a 16-bit device address, failing if it runs past
-/// the 16-bit address space (a programming error, not a device fault).
+/// Computes `base + offset` as a device address, failing if it runs past the
+/// 24-bit extended-memory address space (a programming error, not a device
+/// fault). The plain-service caller keeps the same behaviour for ≤16-bit
+/// addresses; the extended service reaches the full 24-bit space.
 fn chunk_address<Ch: L4Channel>(
     l4: &Layer4Connection<Ch>,
-    base: u16,
+    base: u32,
     offset: usize,
-) -> Result<u16> {
-    u16::try_from(offset)
+) -> Result<u32> {
+    u32::try_from(offset)
         .ok()
         .and_then(|off| base.checked_add(off))
+        .filter(|&a| a <= apci::MAX_MEMORY_ADDRESS)
         .ok_or_else(|| {
             WriteError::Mgmt(MgmtError::MalformedResponse {
                 address: l4.target(),
-                reason: "memory write range exceeds the 16-bit address space".to_string(),
+                reason: "memory write range exceeds the 24-bit address space".to_string(),
             })
         })
 }

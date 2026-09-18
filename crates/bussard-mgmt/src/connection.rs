@@ -689,6 +689,23 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
         }
     }
 
+    /// The negotiated `A_MemoryExtended_Write`/`_Read` data-octet cap for this
+    /// connection: scaled from `PID_MAX_APDU_LENGTH` when
+    /// [`negotiate_max_apdu`](Self::negotiate_max_apdu) found it (up to the
+    /// 228-octet extended-frame ceiling ETS uses), else the conservative
+    /// standard-frame floor.
+    ///
+    /// This is the extended-service twin of [`max_memory_chunk`](Self::max_memory_chunk):
+    /// the extended service carries its count in a full payload octet (not the
+    /// 6-bit APCI field), so a capable device (`PID_MAX_APDU=233`) takes 228-octet
+    /// chunks instead of the plain service's 63.
+    pub fn max_extended_memory_chunk(&self) -> u16 {
+        match self.max_apdu {
+            Some(v) => crate::apci::extended_memory_chunk_for_apdu(v),
+            None => u16::from(crate::apci::CONSERVATIVE_MEMORY_CHUNK),
+        }
+    }
+
     /// The negotiated `A_PropertyValue_Read` value-octet cap for this connection:
     /// scaled from `PID_MAX_APDU_LENGTH` when negotiated, else the conservative
     /// [`CONSERVATIVE_PROPERTY_READ_OCTETS`](crate::apci::CONSERVATIVE_PROPERTY_READ_OCTETS).
