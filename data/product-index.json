@@ -7888,6 +7888,22 @@
       "application_ref": "M-0004_A-A033-12-6E08-O000A",
       "redistributable": false,
       "notes": "Jung Automatikschalter Standard 1-10 m, family 3x81. Login-free direct .knxprod (ETS4-ETS5 database, dated 2017-11-24). Mask 0705, order 3181. CAVEAT: this build exposes app M-0004_A-A033-12-6E08-O000A; the ETS capture for IA 1.1.46 uses M-0004_A-A033-12-83F3-O000A (same app A-A033 version 12, different build hash), so it will NOT byte-match the capture image. Verified by download 2026-09-18."
+    },
+    {
+      "manufacturer": "ABB AG (Busch - Jaeger)",
+      "manufacturer_id": "M-0007",
+      "order_numbers": [
+        "6119/20",
+        "6119/40"
+      ],
+      "name": "Busch-Jaeger Universalschnittstelle 6119/20 (2f, UP) [ABB/BJ combined ETS DB, Rev K]",
+      "url": "https://search.abb.com/library/Download.aspx?DocumentID=9AKK107046A7479&LanguageCode=de&LanguageCode=en&DocumentPartId=BJE&Action=Launch",
+      "sha256": "8660b40bd17bcacf670856cd708d8e26c3f9563772570929d92090fbae7f8f00",
+      "size": 92762432,
+      "filename": "IBUS_ETS5_BJE_XX_V24-12-20_9AKK107046A7479-Rev_K.knxprod",
+      "application_ref": "M-0007_A-A002-13-73C8-O0002",
+      "redistributable": false,
+      "notes": "ABB/Busch-Jaeger ship no convenient per-product .knxprod; this is the official combined all-products ETS5/6 database (ABB Library DocumentID 9AKK107046A7479, DocumentPartId=BJE, Rev K, 2024-12-20), ~88 MB, holding 659 M-0007 application programs. Login-free: the Download.aspx URL 302-redirects (no login, no Referer, no User-Agent needed) to a signed library.e.abb.com URL; the served bytes are byte-stable (verified identical sha256 across downloads), and ureq follows the redirect. A plain .knxprod (M-0007/ at root), no --inner needed. Inner app M-0007_A-A002-13-73C8-O0002 matches the ETS capture for IA 1.1.44 (6119/20 universal interface) EXACTLY. NOTE: this Rev K does NOT contain the Busch-Waechter PRO 280 app A-6179-82 (IA 1.1.30) - that device is newer than this DB revision. Verified by download 2026-09-18."
     }
   ]
 }
