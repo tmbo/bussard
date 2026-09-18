@@ -237,6 +237,14 @@ pub enum Sys7Step {
         /// The segment base the descriptor points at.
         address: u16,
     },
+    /// A task-control-1 entry was written (spec §4.4); accepted while Loading with
+    /// no memory side effect in the M1 model (like [`Sys7Step::TaskCommitted`]).
+    TaskCtrl1 {
+        /// The task-control table address.
+        address: u16,
+        /// The number of entries written.
+        count: u8,
+    },
     /// A no-op event (NoOperation) — accepted, no state change.
     NoOp,
 }
@@ -316,6 +324,11 @@ impl Sys7LoadStateMachine {
             (LoadState::Loading, E::TaskSegment { address }) => {
                 self.task_committed = true;
                 Ok(Sys7Step::TaskCommitted { address })
+            }
+            // TaskCtrl1 writes a task-control table entry; a spec-legal
+            // second-phase op accepted while Loading (spec §4.4). No state change.
+            (LoadState::Loading, E::TaskCtrl1 { address, count }) => {
+                Ok(Sys7Step::TaskCtrl1 { address, count })
             }
             // LoadCompleted finalises to Loaded, but only after a committed task
             // descriptor (spec §4.3 precondition).

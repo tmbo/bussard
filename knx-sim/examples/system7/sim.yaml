@@ -1,0 +1,40 @@
+# knx-sim installation for the System 7 (mask 0705) cross-implementation
+# conformance loop: bussard flashing simulated System 7 devices to a verified
+# `Loaded`, exercising BOTH LsmAccess realisations and the Jung MCB path.
+#
+# run.sh (next to this file) resolves the vendor `.knxprod` products from the
+# product-corpus cache into the git-ignored `products/` dir, starts the
+# simulator on the port below, and flashes every device to verified Loaded.
+#
+# Three devices, all mask 0705:
+#   1.1.5  MDT M-0083_A-000E  lsm_access: memory    (the memory-mapped LSM)
+#   1.1.6  MDT M-0083_A-000E  lsm_access: property  (the PID-5 property LSM)
+#   1.1.7  Jung M-0004_A-A011 lsm_access: memory    (per-object MCB + TaskCtrl1)
+#
+# The two MDT devices serve the same product with the two LSM realisations so a
+# tool's realisation switch is exercised against each (a real device is one or
+# the other; this is a test convenience — see docs/system7-spec.md §5). bussard
+# selects memory-mapped from the product data by default and is pointed at the
+# property side with `BUSSARD_FLASH_SYS7_LSM=property` (see run.sh).
+gateway:
+  host: "127.0.0.1"
+  port: 13691
+
+devices:
+  - address: "1.1.5"
+    knxprod: "products/MDT_KP_AKK_03_Switch_Actuator_V23.knxprod"
+    application: "M-0083_A-000E-23-2274"
+    initial_state: unloaded
+    lsm_access: memory
+
+  - address: "1.1.6"
+    knxprod: "products/MDT_KP_AKK_03_Switch_Actuator_V23.knxprod"
+    application: "M-0083_A-000E-23-2274"
+    initial_state: unloaded
+    lsm_access: property
+
+  - address: "1.1.7"
+    knxprod: "products/de_3361-1m_V1.3_2020-05.knxprod"
+    application: "M-0004_A-A011-13-60BC-O000A"
+    initial_state: unloaded
+    lsm_access: memory
