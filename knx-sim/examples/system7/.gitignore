@@ -1,0 +1,5 @@
+# Vendor product data is copyrighted and never committed. run.sh regenerates
+# this directory from the product corpus cache.
+/products/
+# The empty model dir run.sh generates for the bare flashes.
+/model/
