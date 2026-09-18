@@ -98,6 +98,7 @@ pub struct GroupComm {
 /// returning the entry bytes (`count * elem_size`), or `None` if the count word
 /// is unreadable.
 fn read_counted_table(mem: &Memory, base: u16, elem_size: usize) -> Option<Vec<u8>> {
+    let base = u32::from(base);
     let count_bytes = mem.read(base, 2);
     let count = u16::from_be_bytes([count_bytes[0], count_bytes[1]]) as usize;
     if count == 0 {
