@@ -109,6 +109,7 @@ impl Sys7GroupComm {
 /// Parse the address table: `[CNT:1][own-IA:2][GA1:2]...`. Returns the raw
 /// 2-byte entries as [`GroupAddress`] values, index 0 = own IA, index k = TSAP k.
 fn parse_address_table(memory: &Memory, base: u16) -> Vec<GroupAddress> {
+    let base = u32::from(base);
     let cnt = memory.read(base, 1)[0] as usize;
     if cnt == 0 {
         return Vec::new();
@@ -123,6 +124,7 @@ fn parse_address_table(memory: &Memory, base: u16) -> Vec<GroupAddress> {
 /// Parse the association table: `[CNT:1][TSAP:1][ASAP:1]...`. Returns
 /// `(TSAP, ASAP)` pairs.
 fn parse_association_table(memory: &Memory, base: u16) -> Vec<(u8, u8)> {
+    let base = u32::from(base);
     let cnt = memory.read(base, 1)[0] as usize;
     if cnt == 0 {
         return Vec::new();
@@ -135,6 +137,7 @@ fn parse_association_table(memory: &Memory, base: u16) -> Vec<(u8, u8)> {
 /// 4-byte descriptor `[data-ptr:2][CONFIG:1][TYPE:1]`. Returns per-object
 /// `(runtime flags, TYPE code)` indexed by ASAP (object number, 0-based).
 fn parse_group_object_table(memory: &Memory, base: u16) -> Vec<(u16, u8)> {
+    let base = u32::from(base);
     let cnt = memory.read(base, 1)[0] as usize;
     if cnt == 0 {
         return Vec::new();

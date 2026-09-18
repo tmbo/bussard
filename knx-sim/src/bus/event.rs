@@ -42,8 +42,8 @@ pub enum Event {
     MemoryWritten {
         /// The device address.
         device: IndividualAddress,
-        /// The write base address.
-        addr: u16,
+        /// The write base address (up to 24-bit).
+        addr: u32,
         /// The number of bytes written.
         len: usize,
     },
@@ -105,7 +105,7 @@ impl EventSink for TracingSink {
                 state,
             } => tracing::info!(%device, object, state, "load-state changed"),
             Event::MemoryWritten { device, addr, len } => {
-                tracing::info!(%device, addr = format!("0x{addr:04x}"), len, "memory written")
+                tracing::info!(%device, addr = format!("0x{addr:06x}"), len, "memory written")
             }
             Event::PropertyWritten {
                 device,
