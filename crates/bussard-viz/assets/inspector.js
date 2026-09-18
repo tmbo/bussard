@@ -85,10 +85,12 @@ class Inspector {
     view.querySelector("[data-field=addr]").textContent = d.address;
     view.querySelector("[data-field=name]").textContent = d.name || d.address;
 
-    // Meta: floor/room + product.
-    const meta = view.querySelector("[data-field=meta]");
+    // Subtitle: floor/room location (device-specific), on the typed header line.
     const loc = [d.floor, d.room].filter(Boolean).join(" · ");
-    if (loc) meta.appendChild(el("span", "insp-chip", loc));
+    view.querySelector("[data-field=subtitle]").textContent = loc || "no location";
+
+    // Meta: product + description.
+    const meta = view.querySelector("[data-field=meta]");
     if (d.product) {
       const p = [d.product.manufacturer, d.product.order_number].filter(Boolean).join(" ");
       if (p) meta.appendChild(el("span", "insp-chip", p));
@@ -99,7 +101,8 @@ class Inspector {
     // gone: the channel is now the grouping key inside the table).
     const coSection = view.querySelector("[data-field=comobjects]");
     const cos = d.com_objects || [];
-    coSection.appendChild(el("h3", "insp-h3", `Com objects (${cos.length})`));
+    // "Communicates" framing parallels the GA view's senders/listeners block.
+    coSection.appendChild(el("h3", "insp-h3", `Communicates · com objects (${cos.length})`));
     coSection.appendChild(this._comObjectTable(d, cos));
 
     this.root.appendChild(view);
@@ -313,12 +316,14 @@ class Inspector {
     if (g.dpt) dptEl.textContent = g.dpt;
     else dptEl.hidden = true;
 
-    // Meta: range path, protected marker, live value + updated-at.
-    const meta = view.querySelector("[data-field=meta]");
+    // Subtitle: range path (GA-specific), on the typed header line.
     const rangePath = [g.range && g.range.main, g.range && g.range.middle]
       .filter(Boolean)
       .join(" › ");
-    if (rangePath) meta.appendChild(el("span", "insp-chip", rangePath));
+    view.querySelector("[data-field=subtitle]").textContent = rangePath || "no range";
+
+    // Meta: protected marker, live value + updated-at.
+    const meta = view.querySelector("[data-field=meta]");
     if (g.protected) {
       const lock = el("span", "insp-chip protected-chip", "🔒 protected");
       meta.appendChild(lock);

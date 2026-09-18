@@ -14,6 +14,20 @@
  */
 
 /**
+ * @typedef {Object} ViewState
+ * @property {'all'|'device-partners'|'ga-focus'} mode
+ * @property {'device'|'ga'|null} kind  — selection kind that drives the view
+ * @property {string|null} id  — selected device or GA address
+ * @property {Array<{device:string, gas:Array<string>}>} partners  — partner
+ *   devices (device-partners mode), each with the GAs it shares with the
+ *   selected device.
+ * @property {Array<string>} focusDevices  — participating device addresses
+ *   (ga-focus mode): senders and listeners of the focused GA.
+ */
+
+const LS_FLASH_KEY = "bussard-viz.flash-effects";
+
+/**
  * Build a comparator sort key for a KNX individual address (a.b.c).
  * @param {string} addr
  * @returns {number}
@@ -66,6 +80,26 @@ export class Store {
     // Runtime state (mutated over the lifetime of the page).
     /** @type {Selection} */
     this.selection = { kind: null, id: null };
+    /**
+     * Derived view state: the single source of truth topology renders from.
+     * Recomputed on every selection change from the store indexes.
+     * @type {ViewState}
+     */
+    this.view = {
+      mode: "all",
+      kind: null,
+      id: null,
+      partners: [],
+      focusDevices: [],
+    };
+    /**
+     * Whether live-traffic visual effects (card/tree/GA flashes and spine
+     * pulses) are enabled. The log is never affected by this flag. Persisted in
+     * localStorage; defaults to on. prefers-reduced-motion still wins in the
+     * view layer regardless of this value.
+     * @type {boolean}
+     */
+    this.flashEnabled = this._loadFlashEnabled();
     /** @type {Map<string, Object>} ga -> last value record */
     this.lastValue = new Map();
     /** @type {boolean} log paused */
@@ -248,18 +282,147 @@ export class Store {
   // --- runtime mutations (emit events) ------------------------------------
 
   /**
-   * Set the current selection and notify listeners.
+   * Set the current selection, recompute the derived view state, and notify
+   * listeners. A `selection` event carries the raw selection (for the tree /
+   * inspector / tab wiring); a `view` event carries the derived {@link ViewState}
+   * the topology renders from. Both fire on every change so downstream views
+   * stay consistent.
+   *
+   * A device selection puts the view into `device-partners` mode (selected card
+   * plus its communication partners). A GA selection puts it into `ga-focus`
+   * mode (only the participating cards plus the GA node). Deselecting returns to
+   * `all`.
    * @param {'device'|'ga'|null} kind
    * @param {string|null} id
    */
   select(kind, id) {
     this.selection = { kind: kind || null, id: id || null };
+    this.view = this._computeView(this.selection);
     this.emit("selection", this.selection);
+    this.emit("view", this.view);
   }
 
-  /** Clear the selection. */
+  /** Clear the selection (returns the view to `all`). */
   deselect() {
     this.select(null, null);
+  }
+
+  /**
+   * Derive the {@link ViewState} for a selection. Pure: reads only the store
+   * indexes, mutates nothing. Exposed shape is stable so test.html can assert
+   * the transitions.
+   * @param {Selection} sel
+   * @returns {ViewState}
+   */
+  _computeView(sel) {
+    if (!sel || !sel.kind) {
+      return { mode: "all", kind: null, id: null, partners: [], focusDevices: [] };
+    }
+    if (sel.kind === "device") {
+      return {
+        mode: "device-partners",
+        kind: "device",
+        id: sel.id,
+        partners: this.communicationPartners(sel.id),
+        focusDevices: [],
+      };
+    }
+    // GA selection -> focus mode over its senders + listeners.
+    return {
+      mode: "ga-focus",
+      kind: "ga",
+      id: sel.id,
+      partners: [],
+      focusDevices: this.gaParticipants(sel.id),
+    };
+  }
+
+  /**
+   * Communication partners of a device: every other device that sends on a GA
+   * this device listens to, or listens on a GA this device sends. Computed from
+   * the sender/listener indexes. Returns one entry per partner device (not per
+   * GA) with the sorted list of GAs shared with the selected device.
+   * @param {string} deviceAddr
+   * @returns {Array<{device:string, gas:Array<string>}>}
+   */
+  communicationPartners(deviceAddr) {
+    const d = this.deviceByAddr.get(deviceAddr);
+    if (!d) return [];
+    /** @type {Map<string, Set<string>>} partner addr -> shared GAs */
+    const byPartner = new Map();
+    const add = (addr, ga) => {
+      if (!addr || addr === deviceAddr) return;
+      let set = byPartner.get(addr);
+      if (!set) {
+        set = new Set();
+        byPartner.set(addr, set);
+      }
+      set.add(ga);
+    };
+    for (const co of d.com_objects || []) {
+      // Devices listening to a GA this device sends on.
+      if (co.send) {
+        for (const l of this.gaListeners.get(co.send) || []) add(l.device, co.send);
+      }
+      // Devices sending on a GA this device listens to.
+      for (const ga of co.listen || []) {
+        for (const s of this.gaSenders.get(ga) || []) add(s.device, ga);
+      }
+    }
+    const out = [];
+    for (const [device, gas] of byPartner) {
+      out.push({ device, gas: [...gas].sort((a, b) => gaSortKey(a) - gaSortKey(b)) });
+    }
+    out.sort((a, b) => iaSortKey(a.device) - iaSortKey(b.device));
+    return out;
+  }
+
+  /**
+   * Devices participating in a GA: the union of its senders and listeners
+   * (deduplicated, sorted by individual address).
+   * @param {string} ga
+   * @returns {Array<string>}
+   */
+  gaParticipants(ga) {
+    const set = new Set();
+    for (const s of this.gaSenders.get(ga) || []) if (s.device) set.add(s.device);
+    for (const l of this.gaListeners.get(ga) || []) if (l.device) set.add(l.device);
+    return [...set].sort((a, b) => iaSortKey(a) - iaSortKey(b));
+  }
+
+  // --- flash-effects toggle -----------------------------------------------
+
+  /**
+   * Read the persisted flash-effects preference; defaults to enabled.
+   * @returns {boolean}
+   */
+  _loadFlashEnabled() {
+    try {
+      if (typeof localStorage === "undefined") return true;
+      const v = localStorage.getItem(LS_FLASH_KEY);
+      return v === null ? true : v === "1";
+    } catch {
+      return true;
+    }
+  }
+
+  /**
+   * Toggle or set whether live-traffic visual effects are enabled, persist the
+   * choice, and notify listeners. The log is never affected by this flag.
+   * @param {boolean} [value] — if omitted, toggles.
+   * @returns {boolean} the new value
+   */
+  setFlashEnabled(value) {
+    this.flashEnabled = value === undefined ? !this.flashEnabled : !!value;
+    try {
+      if (typeof localStorage !== "undefined") {
+        localStorage.setItem(LS_FLASH_KEY, this.flashEnabled ? "1" : "0");
+      }
+    } catch {
+      // Storage unavailable (private mode); keep the in-memory value.
+    }
+    this.emit("flash-enabled", this.flashEnabled);
+    return this.flashEnabled;
   }
 
   /**
@@ -309,7 +472,8 @@ export class Store {
 
   /**
    * Subscribe to a topic. Returns an unsubscribe function.
-   * Topics: selection, ga-value, telegram, bus-status, filter, paused.
+   * Topics: selection, view, ga-value, telegram, bus-status, filter, paused,
+   * flash-enabled.
    * @param {string} topic
    * @param {Function} fn
    * @returns {Function} unsubscribe
