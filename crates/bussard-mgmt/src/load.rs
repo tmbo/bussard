@@ -37,20 +37,23 @@
 //! A failed load (a bad table, or a device that refuses the written content)
 //! leaves the object in `Error`; the only recovery is `Unload` (or ETS).
 //!
-//! ## Single-byte controls suffice for a plain table write
+//! ## Load-control writes carry the full 10-octet value, count 1
 //!
-//! The standard defines a 10-octet `AdditionalLoadControls` structure used to
-//! *allocate* a table's backing memory (segment type, address, size, …). For a
-//! System B device whose table objects already exist and are merely being
-//! re-filled — the group-address and association tables of an already-programmed
-//! actuator, the bussard use case — the plain single-octet `StartLoading` /
-//! `LoadCompleted` controls are sufficient: `StartLoading` opens the object for
-//! writing, the `PID_TABLE` element writes replace its content in place, and
-//! `LoadCompleted` persists it. Per KNX 3/5/2, a bare `LoadCompleted` completes
-//! an in-place re-fill without a preceding `AdditionalLoadControls`
-//! (`AdditionalLoadControls` is only consulted to *grow* backing memory). This
-//! module therefore emits only single-octet controls; growing a table beyond its
-//! current backing store is out of scope and documented as a limitation.
+//! The load-state machine keys only on the first octet of the
+//! `PID_LOAD_STATE_CONTROL` value: `01` = StartLoading, `02` = LoadCompleted,
+//! `03 0B …` = the 10-octet `AdditionalLoadControls` relative-segment allocation
+//! (segment size, fill, …), `04` = Unload. A single octet suffices to *drive*
+//! the machine, but every real ETS download writes the full 10-octet value for
+//! the simple transitions too — the trailing nine octets are reserved zero. The
+//! ETS→KNX-Virtual DA.tp capture (`shared-with-windows/dumpfile.pcap`) sends
+//! `04/01/02 00 00 00 00 00 00 00 00 00` for Unload/StartLoading/LoadCompleted on
+//! objects 1–5. [`write_load_control`] therefore emits the 10-octet
+//! [`LoadControl::encode_full`] value (element count 1), byte-identical to ETS,
+//! for both the load-state transitions and the segment allocation.
+//!
+//! Growing a table beyond its current backing store is still out of scope: bussard
+//! only re-fills a segment the device already sized (via `AdditionalLoadControls`
+//! relative-segment allocation), and that is documented as a limitation.
 //!
 //! # Everything here writes to the bus
 //!
@@ -156,6 +159,25 @@ impl LoadControl {
             LoadControl::AdditionalLoadControls => 3,
             LoadControl::Unload => 4,
         }
+    }
+
+    /// Encodes the full 10-octet `PID_LOAD_STATE_CONTROL` value ETS writes for a
+    /// simple load-control transition: the control octet in position 0 and nine
+    /// reserved zero octets padding the value to the standard
+    /// `AdditionalLoadControls` width.
+    ///
+    /// The load-state machine keys only on the first octet ([`Self::octet`]); the
+    /// trailing zeros are reserved. Real ETS downloads — including the
+    /// ETS→KNX-Virtual DA.tp capture (`shared-with-windows/dumpfile.pcap`, obj1–5
+    /// `Unload`/`StartLoading`/`LoadCompleted` all sent as
+    /// `04/01/02 00 00 00 00 00 00 00 00 00`) — write the full 10-octet form for
+    /// every transition, so bussard emits it too for byte-parity. The element
+    /// count on the wire stays 1 (a single `PDT_CONTROL` element); only the value
+    /// width is 10 octets, exactly as the capture shows.
+    pub fn encode_full(self) -> [u8; 10] {
+        let mut v = [0u8; 10];
+        v[0] = self.octet();
+        v
     }
 
     /// The load state a device is expected to reach after this control on a
@@ -809,8 +831,14 @@ pub async fn compare_rel_mem<Ch: L4Channel>(
     Ok(())
 }
 
-/// Writes a single-octet load control to a loadable object and confirms the
-/// resulting load state.
+/// Writes a load control to a loadable object and confirms the resulting load
+/// state.
+///
+/// The value is the full 10-octet `PID_LOAD_STATE_CONTROL` structure ETS writes
+/// ([`LoadControl::encode_full`]): the control octet followed by nine reserved
+/// zero octets, element count 1. This is what every real ETS download sends,
+/// including the ETS→KNX-Virtual DA.tp capture, so bussard is byte-identical to
+/// ETS on these transitions.
 ///
 /// The device echoes `PID_LOAD_STATE_CONTROL` after the write, which is the
 /// *resulting* [`LoadState`]; this validates it against
@@ -823,7 +851,7 @@ pub async fn write_load_control<Ch: L4Channel>(
     control: LoadControl,
 ) -> Result<LoadState> {
     let address = l4.target();
-    let control_octet = [control.octet()];
+    let control_value = control.encode_full();
     // Some devices echo the resulting state; some echo nothing meaningful. Write
     // without a strict echo compare, then read the state back to validate — the
     // read-back is the reliable confirmation across stacks.
@@ -834,7 +862,7 @@ pub async fn write_load_control<Ch: L4Channel>(
         PID_LOAD_STATE_CONTROL,
         1,
         1,
-        &control_octet,
+        &control_value,
     )
     .await?;
 
@@ -1662,6 +1690,39 @@ mod tests {
         assert_eq!(LoadControl::LoadCompleted.octet(), 2);
         assert_eq!(LoadControl::AdditionalLoadControls.octet(), 3);
         assert_eq!(LoadControl::Unload.octet(), 4);
+    }
+
+    #[test]
+    fn load_control_encode_full_matches_ets_da_tp_capture() {
+        // The ETS→KNX-Virtual DA.tp capture (dumpfile.pcap) writes the full
+        // 10-octet PID_LOAD_STATE_CONTROL value for every simple transition:
+        // the control octet followed by nine reserved zero octets. These are the
+        // exact request payloads seen on objects 1–5 in that capture.
+        assert_eq!(
+            LoadControl::Unload.encode_full(),
+            [0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
+        assert_eq!(
+            LoadControl::StartLoading.encode_full(),
+            [0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
+        assert_eq!(
+            LoadControl::LoadCompleted.encode_full(),
+            [0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
+        // Every simple control is exactly 10 octets, matching the standard
+        // AdditionalLoadControls width ETS always writes.
+        for c in [
+            LoadControl::NoOperation,
+            LoadControl::StartLoading,
+            LoadControl::LoadCompleted,
+            LoadControl::AdditionalLoadControls,
+            LoadControl::Unload,
+        ] {
+            assert_eq!(c.encode_full().len(), 10);
+            assert_eq!(c.encode_full()[0], c.octet());
+            assert!(c.encode_full()[1..].iter().all(|&b| b == 0));
+        }
     }
 
     #[test]
