@@ -266,30 +266,72 @@ class Log {
 
     if (t.__suspicious) row.classList.add("suspicious");
 
-    // Row click -> select GA + reveal in tree + flash sender; Alt-click -> device.
+    // Row click -> select GA + reveal in tree + cue cards; Alt-click -> device.
+    // The clicked row also gains a persistent blue `selected` state (item 6),
+    // distinct from the transient sender flash, until another row is selected.
     row.addEventListener("click", (ev) => {
       if (ev.altKey && t.source) {
+        this._markSelectedRow(row);
         this.store.select("device", t.source);
         return;
       }
       if (t.destination) {
+        this._markSelectedRow(row);
         this.store.select("ga", t.destination);
         if (this.tree && typeof this.tree.expandTo === "function") {
           this.tree.expandTo(t.destination);
         }
-        this._flashSenderCard(t.source);
+        this._cueTelegramCards(t);
       }
     });
     return row;
   }
 
-  _flashSenderCard(source) {
-    if (!source) return;
-    const card = document.querySelector(`.device-card[data-device="${cssEscape(source)}"]`);
+  /**
+   * Mark a log row as the selected one (persistent blue state), clearing any
+   * previously selected row. Distinct from the transient sender flash.
+   * @param {HTMLElement} row
+   */
+  _markSelectedRow(row) {
+    if (this._selectedRow && this._selectedRow !== row) {
+      this._selectedRow.classList.remove("selected");
+    }
+    row.classList.add("selected");
+    this._selectedRow = row;
+  }
+
+  /**
+   * Cue the cards for a selected telegram (item 6): the SOURCE device card is
+   * marked outgoing (it emitted the telegram) and the destination GA's listener
+   * device cards are marked incoming (they receive it). The user's wording was
+   * ambiguous; sender=outgoing / receivers=incoming is the only self-consistent
+   * reading. The cue is a brief flash so it does not fight the selection tint.
+   * @param {Object} t — the telegram row.
+   */
+  _cueTelegramCards(t) {
+    this._flashCard(t.source, "flash-out");
+    for (const l of this.store.gaListeners.get(t.destination) || []) {
+      if (l.device && l.device !== t.source) this._flashCard(l.device, "flash-in");
+    }
+  }
+
+  /**
+   * Flash a device card with a directional class (`flash-out` / `flash-in`).
+   * @param {string} addr
+   * @param {string} cls
+   */
+  _flashCard(addr, cls) {
+    if (!addr) return;
+    const card = document.querySelector(`.device-card[data-device="${cssEscape(addr)}"]`);
     if (!card) return;
-    card.classList.remove("flash");
+    card.classList.remove(cls);
     void card.offsetWidth;
-    card.classList.add("flash");
+    card.classList.add(cls);
+    const clear = () => {
+      card.classList.remove(cls);
+      card.removeEventListener("animationend", clear);
+    };
+    card.addEventListener("animationend", clear);
   }
 
   // --- filter (D3) ---------------------------------------------------------
@@ -401,6 +443,7 @@ class Log {
     this.ring.clear();
     this.queue = [];
     this.body.textContent = "";
+    this._selectedRow = null;
     this.behindNew = 0;
     this.pausedNew = 0;
     this._updateFollowPill();
