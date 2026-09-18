@@ -56,15 +56,18 @@ impl From<InitialState> for LoadState {
 
 /// How a System 7 device realises its load-state machines, as declared in
 /// config. Selects the device side the simulator presents so a tool can be
-/// conformance-tested against either realisation. Default: memory-mapped.
+/// conformance-tested against either realisation. Default: property-based (the
+/// M2 Jung 0705 capture, issue #70, showed the real device drives load control
+/// over `PID_LOAD_STATE_CONTROL`).
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum LsmAccessConfig {
     /// 12-octet record over `A_Memory_Write` to the LSM control address, status
-    /// polled via `A_Memory_Read` (the default).
+    /// polled via `A_Memory_Read`. The pre-M2 default, kept selectable for any
+    /// 0705 silicon whose product data drives the LSM this way.
     Memory,
     /// Load events over `PID_LOAD_STATE_CONTROL` (PID 5) via
-    /// `A_PropertyValue_Write/Read`.
+    /// `A_PropertyValue_Write/Read` (the default — M2 Jung 0705 capture).
     Property,
 }
 
@@ -78,7 +81,7 @@ impl From<LsmAccessConfig> for crate::device::LsmAccess {
 }
 
 fn default_lsm_access() -> LsmAccessConfig {
-    LsmAccessConfig::Memory
+    LsmAccessConfig::Property
 }
 
 /// One device entry in the config.
@@ -101,7 +104,8 @@ pub struct DeviceConfig {
     #[serde(default)]
     pub mask: Option<String>,
     /// For a System 7 device, how its load-state machines are realised on the
-    /// wire (default: memory-mapped). Ignored for System B.
+    /// wire (default: property-based, the M2 Jung 0705 capture). Ignored for
+    /// System B.
     #[serde(default = "default_lsm_access")]
     pub lsm_access: LsmAccessConfig,
     /// For a System 7 device, the BCU key (as a hex or decimal `u32`) required
@@ -404,7 +408,8 @@ devices:
     #[test]
     fn test_parse_config_system7_options() -> Result<(), ConfigError> {
         // A System 7 device may declare a mask override, an lsm_access mode and a
-        // bcu_key. lsm_access defaults to `memory`.
+        // bcu_key. lsm_access defaults to `property` (M2 Jung 0705 capture); the
+        // memory-mapped variant stays selectable via `lsm_access: memory`.
         let yaml = r#"
 gateway:
   host: "127.0.0.1"
@@ -413,18 +418,19 @@ devices:
   - address: "1.1.5"
     knxprod: "x.knxprod"
     mask: "0705"
-    lsm_access: property
+    lsm_access: memory
     bcu_key: "0x12345678"
   - address: "1.1.6"
     knxprod: "y.knxprod"
 "#;
         let cfg = SimConfig::from_yaml(yaml)?;
         assert_eq!(cfg.devices[0].mask.as_deref(), Some("0705"));
-        assert_eq!(cfg.devices[0].lsm_access, LsmAccessConfig::Property);
+        // The memory-mapped variant is still selectable.
+        assert_eq!(cfg.devices[0].lsm_access, LsmAccessConfig::Memory);
         assert_eq!(cfg.devices[0].bcu_key.as_deref(), Some("0x12345678"));
-        // Defaults on the second device: no mask, memory-mapped LSM, no key.
+        // Defaults on the second device: no mask, property-based LSM, no key.
         assert_eq!(cfg.devices[1].mask, None);
-        assert_eq!(cfg.devices[1].lsm_access, LsmAccessConfig::Memory);
+        assert_eq!(cfg.devices[1].lsm_access, LsmAccessConfig::Property);
         assert_eq!(cfg.devices[1].bcu_key, None);
         Ok(())
     }
