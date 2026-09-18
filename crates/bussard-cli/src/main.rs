@@ -175,6 +175,11 @@ enum Command {
         /// with `--order-number`.
         #[arg(long)]
         yes_download: bool,
+        /// When the `.knxprod` is a ZIP wrapping several inner `.knxprod` files,
+        /// select which one to import (by entry or file name). Ignored for a
+        /// plain `.knxprod` or a single-inner wrapper.
+        #[arg(long, value_name = "NAME")]
+        inner: Option<String>,
         /// List the product-data pointer index and exit.
         #[arg(long, conflicts_with_all = ["file", "order_number"])]
         list: bool,
@@ -491,12 +496,14 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             dir,
             order_number,
             yes_download,
+            inner,
             list,
         } => import_product_cmd::run(
             file.as_deref(),
             &dir,
             order_number.as_deref(),
             yes_download,
+            inner.as_deref(),
             list,
         ),
         Command::Adopt {
