@@ -863,6 +863,21 @@
       "application_ref": "M-0107_A-233C-12-9407",
       "redistributable": false,
       "notes": "NEW VENDOR (Interra, M-0107): KNX IP router. App V1.2, mask 091A (coupler/secure family). NOTE: served with a .knxproj extension and an opaque hash path, but the bytes are a normal .knxprod container (PK zip + knx_master.xml) that read_knxprod parses fine — a good extension-lie parser test case. Verified by download 2026-09-17."
+    },
+    {
+      "manufacturer": "Steinel",
+      "manufacturer_id": "M-008E",
+      "order_numbers": [
+        "4007841056353"
+      ],
+      "name": "Steinel True Presence Multisensor",
+      "url": "https://www.steinel.de/out/media/knxsoftware/135959_True_Presence_Multisensor_V1_0_DE_EN_NL.knxprod",
+      "sha256": "c474ebc5ccc242e198068ec0389e4daf9ecafca4183ea2b67b08459b204b3fa0",
+      "size": 95784,
+      "filename": "135959_True_Presence_Multisensor_V1_0_DE_EN_NL.knxprod",
+      "application_ref": "M-008E_A-7078-10-4940",
+      "redistributable": false,
+      "notes": "Second Steinel product (joins True Presence 135960). True-presence radar multisensor (measures presence, temperature, humidity, brightness). Database V1.0, mask 0705 (System 7). Hosted bare at steinel.de/out/media/knxsoftware/. Verified by download 2026-09-17."
     }
   ]
 }

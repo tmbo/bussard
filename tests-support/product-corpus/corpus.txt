@@ -61,6 +61,10 @@ ACGME100         # energy/metering gateway (0705)
 # --- Interra (M-0107) ---
 ITR902-0001      # ITR902 KNX IP router (091A; .knxproj-extension container)
 
+# --- Steinel (M-008E) ---
+4007841056339    # True Presence presence detector (0705)
+4007841056353    # True Presence Multisensor (0705)
+
 # --- Jung (M-0004) ---
 3361-1MWW        # presence detector mini universal (0705)
 42911ST          # push-button module Universal F 40 Secure (07B0 System B)
