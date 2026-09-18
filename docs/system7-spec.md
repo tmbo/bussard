@@ -47,10 +47,21 @@ standard frames, the three parallel load-state machines, verify by read-back.
 - Extended-frame long downloads: System 7 has no extended-frame guarantee;
   standard frame only (section 6) [research 5.3, CONFIRMED substance].
 
-0701 and 0705 are treated identically at the wire level. No allowed source
-shows a byte-level 0701-vs-0705 descriptor difference; 0705 is documented as an
-upgrade of 0701 [research 4, CONFIRMED]. Any divergence found in capture gets an
-`S7-CAL:` marker.
+0701 and 0705 share the resource model and op set, but the **LSM realisation is
+vendor / mask-family dependent** — they are NOT identical at the wire level. Two
+real-ETS download captures settle it (superseding the earlier "0701==0705"
+claim):
+
+- **Jung `0705`** (M2 issue #70, plus the binaereingang / automitschalter /
+  schaltaktor 0705 analysis captures) drives load control **property-based** over
+  `PID_LOAD_STATE_CONTROL` (PID 5) — see §5.
+- **Theben `0701`** (Meteodata 1409207, IA 1.1.202) drives load control
+  **memory-mapped**: 11-octet records written by `A_Memory_Write` to `0x0104`,
+  status read at `0xB6EA + (lsm - 1)`, with ZERO PID-5 traffic — see §5.
+
+So the download-path realisation branches on the mask family (0705 → property,
+0701 → memory-mapped) via `Sys7Profile::corpus_default_for_mask`. Any further
+divergence found in capture gets an `S7-CAL:` marker.
 
 ---
 
@@ -347,21 +358,34 @@ derives run-state from the loaded tables, ETS only checks `[corpus §5]`.
 
 ---
 
-## 5. LSM realisation — RESOLVED by the M2 capture
+## 5. LSM realisation — RESOLVED: vendor / mask-family dependent
 
-**This was the single most important open question. The M2 live capture (issue
-#70, a real ETS 6 download to a Jung 3361-1M / mask 0705) settled it: load control
-is property-based.**
+**This was the single most important open question. Two real-ETS download
+captures settle it — and the answer is that the realisation depends on the mask
+family, NOT a single global default.**
 
-**Verdict (M2 Jung 0705 capture CONFIRMED):** the real device drives its LSMs
-**property-based** — every Unload / StartLoading / AbsSegment / TaskSegment /
-LoadCompleted is an `A_PropertyValue_Write(objN, PID 5, 10-octet load event, one
-element at index 1)`, and state is read back via `A_PropertyValue_Read(objN, PID
-5)`. There is **no `A_Memory_Write` to `0x0104`** anywhere in the capture. The
-only `0xB6EA+` touch is a single `A_Memory_Read` at `0xB6EC` returning `00`, so
-that region is a **readable status region**, not a written control record. So
-[`LsmAccess::Property`] is the default; the memory-mapped variant is kept for
-silicon a future capture proves genuinely memory-mapped.
+**Verdict (both captures CONFIRMED):**
+
+- **Jung `0705` — property-based.** The M2 live capture (issue #70, a real ETS 6
+  download to a Jung 3361-1M) and the 0705 analysis captures (binaereingang,
+  automitschalter, schaltaktor) drive their LSMs **property-based**: every Unload
+  / StartLoading / AbsSegment / TaskSegment / LoadCompleted is an
+  `A_PropertyValue_Write(objN, PID 5, 10-octet load event, one element at index
+  1)`, state read back via `A_PropertyValue_Read(objN, PID 5)`. There is **no
+  `A_Memory_Write` to `0x0104`** anywhere; the only `0xB6EA+` touch is a single
+  readable-status `A_Memory_Read`. So [`LsmAccess::Property`] is the `0705`
+  default.
+- **Theben `0701` — memory-mapped.** The Theben Meteodata 1409207 (IA 1.1.202)
+  capture drives its LSMs **memory-mapped**: **11-octet** records written by
+  `A_Memory_Write` to `0x0104`, status read at `0xB6EA + (lsm - 1)` (returning
+  `02` Loading … `01` Loaded), with **zero PID-5 traffic**. So
+  [`LsmAccess::MemoryMapped`] is the `0701` default.
+
+The download path selects the realisation by mask family
+(`Sys7Profile::corpus_default_for_mask`: `0701` → memory-mapped, everything else
+→ property), overridable by `HawkConfigurationData` when a product carries a
+usable block. This corrects the earlier claim that property was the default for
+ALL System 7 — that regressed the memory-mapped Theben 0701.
 
 The two research inputs that disagreed before M2:
 
@@ -379,46 +403,57 @@ The two research inputs that disagreed before M2:
   the normal CLI flash path (it plans with the property corpus default); the
   helper stays only for the memory-mapped conformance harness.
 
-**Both realisations stay behind an `LsmAccess` seam** with two variants (property
-default, memory-mapped alternative):
+**Both realisations stay behind an `LsmAccess` seam**, selected per mask family:
 
 ```
 trait LsmAccess {
-    fn send_event(lsm, event_record: [u8; 10 or 12]) -> Result<()>;
+    fn send_event(lsm, event_record: [u8; 10]) -> Result<()>;  // 10-octet abstract event
     fn read_state(lsm) -> Result<u8>;   // 0..5 per §4.1
 }
 ```
 
-- **`LsmAccess::Property`** — `A_PropertyValue_Write(obj, PID 5, 10-octet event)`
-  / `A_PropertyValue_Read(obj, PID 5) -> 1 octet`. Standards-defensible.
-- **`LsmAccess::MemoryMapped`** — write a 12-octet record to the LSM control
-  address (default 0x0104), poll status at the status address (default 0xB6EA+),
-  both via `A_Memory_Write`/`_Read`. First-party / corpus evidence.
+- **`LsmAccess::Property`** (the `0705` default) — `A_PropertyValue_Write(obj, PID
+  5, 10-octet event)` / `A_PropertyValue_Read(obj, PID 5) -> 1 octet`. Confirmed
+  by the M2 Jung 0705 capture.
+- **`LsmAccess::MemoryMapped`** (the `0701` default) — write the **11-octet**
+  record to the LSM control address (default 0x0104), poll status at
+  `0xB6EA + (lsm - 1)`, both via `A_Memory_Write`/`_Read`. Confirmed by the Theben
+  0701 Meteodata capture.
 
-The memory-mapped variant's 12-octet record is `[lsm_index:1][0x00][10-octet load
-event]` written to the control address (default `0x0104`), status polled at the
-status address (default `0xB6EA+`). This variant is unexercised by any live
-capture; its record layout remains an `S7-CAL:` on the memory-mapped path
-(`bussard_mgmt::wrap_memory_lsm_record`).
+The memory-mapped variant's **11-octet** record (Theben 0701 CONFIRMED) folds the
+LSM index into the high nibble of the event opcode byte and widens the address to
+3 octets — there is NO `[lsm][00]` prefix:
+```
+[0] (lsm << 4) | event_opcode   [1] subtype   [2] 0x00 (addr high octet)
+[3..5] start:2 BE   [5..7] length:2 BE   [7..11] tail (alloc attrs or task marker)
+```
+e.g. `13 00 00 40 00 00 1d f2 03 80 00` (LSM1 alloc 0x4000 len 0x1D EEPROM),
+`13 02 00 40 00 00 00 48 14 0c 14` (LSM1 task, marker `48 14 0c 14`),
+`33 04 00 46 eb 01 00 00 00 00 00` (LSM3 taskctrl1 0x46EB count 1). Built by
+`bussard_mgmt::wrap_memory_lsm_record`, decoded by the sim's
+`decode_memory_lsm_record`.
 
-**Default:** `Property` — the M2 Jung 0705 capture proved the real device drives
-load control over PID 5. The corpus fallback profile is property; a
-`HawkConfigurationData` block may still select `MemoryMapped` for silicon that
-uses it, but the normal CLI flash path plans with the property default (it does
-not feed a Hawk config to the planner). `LsmAccess::MemoryMapped` is built and
-kept so bussard's realisation switch can be conformance-tested against a
-memory-mapped device side (`BUSSARD_FLASH_SYS7_LSM=memory`).
+**Default:** mask-family dependent (`Sys7Profile::corpus_default_for_mask`):
+`0701` → `MemoryMapped { control 0x0104, status 0xB6EA }`; every other System 7
+mask → `Property`. A `HawkConfigurationData` block may still select `MemoryMapped`
+for a product that carries a `StandardMemory` LoadControl (the 0701 Hawk block
+does; the 0705 Jung block also resolves there but is a pre-M2 false positive, so
+the normal Jung flash plans with the property default and does not feed a Hawk
+config). `BUSSARD_FLASH_SYS7_LSM=memory|property` overrides the realisation for
+conformance testing.
 
 **The sim implements the device side of BOTH variants** (PID-5 property
-writes/reads as the default, plus memory writes to 0x0104 with 0xB6EA+ status)
-and selects by a construction-time flag, so bussard can be conformance-tested
-against either realisation without a second sim.
+writes/reads, plus 11-octet memory writes to 0x0104 with `0xB6EA + (lsm-1)`
+status) and selects by a construction-time flag, so bussard can be
+conformance-tested against either realisation without a second sim.
 
-M2-resolved calibration constants (were `S7-CAL:`, now CONFIRMED): LSM realisation
-= property (PID 5); free-access authorize with `0xFFFFFFFF` → level 0; max-APDU
-absent → 15-octet floor → 12-octet chunks; MCB via `A_PropertyValue_Read(PID 27)`;
-bare-0x380 fire-and-forget restart. Still `S7-CAL:` (memory-mapped path only, no
-live capture): the 12-octet record prefix meaning and the 0xB6EA+ poll protocol.
+Calibration constants now CONFIRMED (were `S7-CAL:`): LSM realisation is
+mask-family dependent (0705 property PID 5 / 0701 memory-mapped 11-octet @0x0104);
+free-access authorize with `0xFFFFFFFF` → level 0; max-APDU absent → 15-octet
+floor → 12-octet chunks; MCB via `A_PropertyValue_Read(PID 27)`; bare-0x380
+fire-and-forget restart. Remaining `S7-CAL:` on the memory-mapped path: the
+TaskSegment marker lead/version octets and the residual alloc `seg_flags 0xF3` /
+last-EEPROM `checksum_ctrl 0x00`.
 
 ---
 

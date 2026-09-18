@@ -162,10 +162,12 @@ System 7 differs from System B in four ways the device model reproduces strictly
   `Sys7LoadStateMachine`) instead of one. LSM 1/2/3 are torn down and reloaded in
   order; a `TaskSegment` finalize is a precondition for each `LoadCompleted`.
 - **Two `LsmAccess` realisations, both implemented device-side**, selectable per
-  device (`lsm_access: memory | property`, default `memory`):
-  - **memory-mapped** — a 12-octet load-event record written by `A_Memory_Write`
-    to the LSM control address (default 0x0104), with the LSM state polled back
-    at the status address (default 0xB6EA+);
+  device (`lsm_access: memory | property`, default `property`), matching the
+  vendor/mask-family split (Jung 0705 → property, Theben 0701 → memory-mapped):
+  - **memory-mapped** — an 11-octet load-event record written by `A_Memory_Write`
+    to the LSM control address (default 0x0104), with the LSM index folded into
+    the high nibble of octet 0 and the state polled back at the status address
+    (default 0xB6EA + (lsm - 1)) — the Theben 0701 Meteodata form;
   - **property-based** — the 10-octet load event over
     `PID_LOAD_STATE_CONTROL` (PID 5). A memory-mapped device refuses a PID 5 load
     write and vice-versa, so a tool that used the wrong realisation is caught.
@@ -187,10 +189,13 @@ The one property the System 7 download touches, object-0 PID 78
 also served (some System 7 apps, e.g. Jung `A-A011`, verify via
 `LoadImageProp`), reusing the same integrity-block computation as System B.
 
-Calibration constants the spec marks UNKNOWN (the LSM control/status addresses,
-the 12-octet record layout, the alloc access/mem_type octets, the CONFIG
-synthesis rule) are implemented as the spec's best-evidence defaults and tagged
-with the greppable `S7-CAL:` marker for the M2 live-capture pass.
+Remaining calibration constants the spec still marks UNKNOWN (the TaskSegment
+marker lead/version octets, the residual alloc `seg_flags 0xF3` and last-EEPROM
+`checksum_ctrl 0x00`, the CONFIG synthesis rule) are implemented as the analysis'
+best-evidence defaults and tagged with the greppable `S7-CAL:` marker. The LSM
+realisation, the 11-octet memory record layout and the control/status addresses
+are now CONFIRMED by the real-ETS captures (Jung 0705 property, Theben 0701
+memory-mapped).
 
 `tests/sys7_calibration.rs` is the System 7 analogue of `ets_calibration.rs`: it
 drives the canonical MDT `M-0083_A-000E` op sequence (encoded as raw TPDUs by the
