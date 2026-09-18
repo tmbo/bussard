@@ -9,13 +9,15 @@
 # Three devices, all mask 0705:
 #   1.1.5  MDT M-0083_A-000E  lsm_access: memory    (the memory-mapped LSM)
 #   1.1.6  MDT M-0083_A-000E  lsm_access: property  (the PID-5 property LSM)
-#   1.1.7  Jung M-0004_A-A011 lsm_access: memory    (per-object MCB + TaskCtrl1)
+#   1.1.7  Jung M-0004_A-A011 lsm_access: property  (per-object MCB + TaskCtrl1)
 #
 # The two MDT devices serve the same product with the two LSM realisations so a
 # tool's realisation switch is exercised against each (a real device is one or
-# the other; this is a test convenience — see docs/system7-spec.md §5). bussard
-# selects memory-mapped from the product data by default and is pointed at the
-# property side with `BUSSARD_FLASH_SYS7_LSM=property` (see run.sh).
+# the other; this is a test convenience — see docs/system7-spec.md §5). The M2
+# Jung 0705 capture (issue #70) proved the real device drives load control over
+# PID 5, so property is bussard's default now: 1.1.6 (MDT) and 1.1.7 (Jung) are
+# flashed with the default and no env override, and 1.1.5 is pointed at the
+# memory-mapped side with `BUSSARD_FLASH_SYS7_LSM=memory` (see run.sh).
 gateway:
   host: "127.0.0.1"
   port: 13691
@@ -37,4 +39,4 @@ devices:
     knxprod: "products/de_3361-1m_V1.3_2020-05.knxprod"
     application: "M-0004_A-A011-13-60BC-O000A"
     initial_state: unloaded
-    lsm_access: memory
+    lsm_access: property
