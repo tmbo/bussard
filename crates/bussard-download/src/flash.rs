@@ -736,6 +736,13 @@ impl FlashPlan {
         self.sys7.is_some()
     }
 
+    /// The System 7 LSM realisation this plan will drive (property-based vs
+    /// memory-mapped), or `None` for a System B plan. Property is the default
+    /// (M2 Jung 0705 capture, `[system7-spec §5]`).
+    pub fn sys7_lsm(&self) -> Option<bussard_mgmt::LsmRealisation> {
+        self.sys7.as_ref().map(|s| s.profile.lsm)
+    }
+
     /// Total octets written to device memory across all memory-write steps.
     pub fn total_write_bytes(&self) -> usize {
         self.steps
@@ -2137,13 +2144,21 @@ pub fn plan_flash_sys7_with_hawk(
 /// Derives a [`bussard_mgmt::Sys7Profile`] from a mask's parsed
 /// `HawkConfigurationData` (`[system7-spec §2.4/§5]`).
 ///
-/// Reads the `GroupAddressTableLoadControl` (the memory-mapped LSM control
-/// address + record length) and `GroupAddressTableLoadStatus` (the status base)
-/// resources. A `Flavour="LoadControl_M112"` LoadControl selects
+/// Reads the `GroupAddressTableLoadControl` (the LSM control address + record
+/// length) and `GroupAddressTableLoadStatus` (the status base) resources. A
+/// `Flavour="LoadControl_M112"` LoadControl in `StandardMemory` selects
 /// [`bussard_mgmt::LsmRealisation::MemoryMapped`] with the resolved addresses;
-/// absent that, `None` (the caller falls back to the corpus default). The Jung
-/// MV-0705 block resolves to exactly the corpus default (control `0x0104`, status
-/// `0xB6EA`), confirming the spec §5 defaults.
+/// absent that, `None` (the caller falls back to the corpus default — property).
+///
+/// **M2 caveat (issue #70).** The Jung MV-0705 block resolves to control `0x0104`
+/// / status `0xB6EA`, but the M2 live capture proved the Jung device does NOT
+/// drive its LSM there: load control is property-based (`A_PropertyValue_Write`
+/// PID 5), and the only `0xB6EA+` touch is a single `A_Memory_Read` at `0xB6EC`
+/// (a *readable* status region). So the `LoadControl_M112 @ 0x0104` block did not
+/// predict the wire for Jung. The normal CLI flash path therefore does NOT feed a
+/// Hawk config here (it plans with the property corpus default); this helper stays
+/// for the data-driven memory-mapped conformance harness and for any 0705 silicon
+/// a future capture proves genuinely memory-mapped.
 pub fn sys7_profile_from_hawk(
     hawk: &bussard_prod::HawkConfig,
 ) -> Option<bussard_mgmt::Sys7Profile> {
@@ -3449,9 +3464,13 @@ async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                 mem_type,
                 image,
             } => {
-                // 1. Allocate the absolute segment on the LSM. `access`/`mem_attr`
-                //    default to 0 per the corpus-default profile (S7-CAL markers in
-                //    `bussard_mgmt::sys7`).
+                // 1. Allocate the absolute segment on the LSM. The M2 capture pins
+                //    opcode/subtype, big-endian start+length and `mem_type`; the
+                //    per-segment `seg_flags` (0xF2/0xF3) and `checksum_ctrl`
+                //    (0x80/0x00) attribute octets are not yet derivable from product
+                //    data, so bussard emits 0 for them (remaining S7-CAL markers in
+                //    `bussard_mgmt::sys7`). A 0705 device keys the allocation on
+                //    subtype + start + length, so this drives it to Loaded.
                 let event = bussard_mgmt::encode_alloc_segment(
                     bussard_mgmt::sys7::S7_SUB_ALLOC_DATA,
                     (*address & 0xFFFF) as u16,
@@ -4403,6 +4422,9 @@ mod tests {
         );
         let hawk = HawkConfig { resources };
         let profile = sys7_profile_from_hawk(&hawk).expect("a resolved profile");
+        // A LoadControl_M112 @ StandardMemory Hawk block still resolves to the
+        // memory-mapped realisation with the block's addresses (the data-driven
+        // memory-mapped conformance path).
         assert_eq!(
             profile.lsm,
             bussard_mgmt::LsmRealisation::MemoryMapped {
@@ -4410,8 +4432,17 @@ mod tests {
                 status_addr: 0xB6EA,
             }
         );
-        // The Jung MV-0705 Hawk block resolves to exactly the corpus default.
-        assert_eq!(profile, bussard_mgmt::Sys7Profile::corpus_default());
+        // It differs from the corpus default only in `lsm`: the M2 Jung 0705
+        // capture proved the real default is property-based (issue #70), so the
+        // corpus default is Property while this Hawk block selects MemoryMapped.
+        assert_ne!(profile, bussard_mgmt::Sys7Profile::corpus_default());
+        assert_eq!(
+            bussard_mgmt::Sys7Profile::corpus_default().lsm,
+            bussard_mgmt::LsmRealisation::Property
+        );
+        assert_eq!(profile.authorize_level, 0);
+        assert_eq!(profile.eeprom_mem_type, 3);
+        assert_eq!(profile.ram_mem_type, 2);
 
         // plan_flash_sys7_with_hawk lowers the same app with the Hawk profile.
         let app = fabricated_sys7_app();
