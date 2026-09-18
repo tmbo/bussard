@@ -179,21 +179,23 @@ class Inspector {
     tr.appendChild(el("td", "mono dim", co.dpt || "—"));
     tr.appendChild(el("td", "mono dim", co.flags || "—"));
 
-    // Send GA: chip + the GA's listeners (the devices this send reaches).
+    // Send GA: chip + the GA's listeners (the devices this send reaches). A
+    // send is data leaving this device: outgoing (item 6).
     const sendTd = el("td", "link-cell");
     if (co.send) {
-      sendTd.appendChild(this._gaLinkCell(co.send, "listeners", d.address, "→"));
+      sendTd.appendChild(this._gaLinkCell(co.send, "listeners", d.address, "→", "outgoing"));
     } else {
       sendTd.textContent = "—";
     }
     tr.appendChild(sendTd);
 
-    // Listen GA(s): chip + each GA's senders (the devices that drive this listen).
+    // Listen GA(s): chip + each GA's senders (the devices that drive this
+    // listen). A listen is data arriving at this device: incoming (item 6).
     const listenTd = el("td", "link-cell");
     const listen = co.listen || [];
     if (listen.length) {
       for (const ga of listen) {
-        listenTd.appendChild(this._gaLinkCell(ga, "senders", d.address, "←"));
+        listenTd.appendChild(this._gaLinkCell(ga, "senders", d.address, "←", "incoming"));
       }
     } else {
       listenTd.textContent = "—";
@@ -212,11 +214,12 @@ class Inspector {
    * @param {"listeners"|"senders"} side
    * @param {string} selfAddr - the owning device address (excluded from the list).
    * @param {string} arrow - direction glyph shown before the remote devices.
+   * @param {"incoming"|"outgoing"} direction - data-flow direction for coloring.
    * @returns {HTMLElement}
    */
-  _gaLinkCell(ga, side, selfAddr, arrow) {
+  _gaLinkCell(ga, side, selfAddr, arrow, direction) {
     const CAP = 3;
-    const wrap = el("div", "ga-link");
+    const wrap = el("div", `ga-link dir-${direction}`);
     wrap.appendChild(this._gaChip(ga));
 
     const refs = (side === "listeners" ? this.store.gaListeners : this.store.gaSenders).get(ga) || [];
@@ -231,15 +234,14 @@ class Inspector {
     if (!devices.length) return wrap;
 
     const line = el("div", "ga-remotes");
-    line.appendChild(el("span", "ga-arrow", arrow));
     const shown = devices.slice(0, CAP);
-    for (const r of shown) line.appendChild(this._remoteDeviceChip(r));
+    for (const r of shown) line.appendChild(this._remoteDeviceChip(r, arrow));
     if (devices.length > CAP) {
       const more = el("button", "more-btn", `+${devices.length - CAP} more`);
       more.type = "button";
       more.addEventListener("click", () => {
         more.remove();
-        for (const r of devices.slice(CAP)) line.appendChild(this._remoteDeviceChip(r));
+        for (const r of devices.slice(CAP)) line.appendChild(this._remoteDeviceChip(r, arrow));
       });
       line.appendChild(more);
     }
@@ -248,17 +250,26 @@ class Inspector {
   }
 
   /**
-   * A compact clickable device name (selects the device on click). Shows the
-   * device name with its address, e.g. "Schaltaktor UV (1.1.7)".
+   * A compact clickable remote-device reference (selects the device on click).
+   * Address-first to match the viz cards (item 4): a direction arrow + the
+   * monospace address on the first line, the device name below it capped with an
+   * ellipsis (the full name lives on the title attribute). e.g. "→ 1.1.1" /
+   * "Binäreingang 6fach".
    * @param {{device:string, device_name?:string}} ref
+   * @param {string} [arrow] — direction glyph shown before the address.
    * @returns {HTMLElement}
    */
-  _remoteDeviceChip(ref) {
+  _remoteDeviceChip(ref, arrow) {
     const d = this.store.deviceByAddr.get(ref.device);
     const name = ref.device_name || (d && d.name) || ref.device;
-    const btn = el("button", "remote-dev", `${name} (${ref.device})`);
+    const btn = el("button", "remote-dev");
     btn.type = "button";
-    btn.title = `${name} (${ref.device})`;
+    btn.title = `${ref.device} ${name}`;
+    const top = el("div", "remote-dev-top");
+    if (arrow) top.appendChild(el("span", "ga-arrow", arrow));
+    top.appendChild(el("span", "remote-dev-addr mono", ref.device));
+    btn.appendChild(top);
+    btn.appendChild(el("span", "remote-dev-name", name));
     btn.addEventListener("click", () => this.store.select("device", ref.device));
     return btn;
   }
@@ -275,24 +286,6 @@ class Inspector {
     if (g && g.name) btn.title = g.name;
     if (this.store.isSuspiciousGa(ga)) btn.classList.add("suspicious");
     btn.addEventListener("click", () => this._selectGa(ga));
-    return btn;
-  }
-
-  /**
-   * A clickable device chip that selects the device.
-   * @param {string} addr
-   * @param {string} [label]
-   * @returns {HTMLElement}
-   */
-  _deviceChip(addr, label) {
-    const d = this.store.deviceByAddr.get(addr);
-    const text = label || (d && d.name) || addr;
-    const btn = el("button", "device-chip", text);
-    btn.type = "button";
-    btn.title = addr;
-    const sub = el("span", "chip-addr mono", addr);
-    btn.appendChild(sub);
-    btn.addEventListener("click", () => this.store.select("device", addr));
     return btn;
   }
 
@@ -346,16 +339,28 @@ class Inspector {
     widgetSection.appendChild(el("h3", "insp-h3", "Send test value"));
     widgetSection.appendChild(this._buildSendWidget(g));
 
-    // Senders / listeners.
+    // Senders / listeners. Senders emit onto the GA (outgoing); listeners
+    // receive from it (incoming) — accented per item 6.
     const sendersSection = view.querySelector("[data-field=senders]");
-    this._buildRefList(sendersSection, "Senders", g.senders || []);
+    this._buildRefList(sendersSection, "Senders", g.senders || [], "outgoing");
     const listenersSection = view.querySelector("[data-field=listeners]");
-    this._buildRefList(listenersSection, "Listeners", g.listeners || []);
+    this._buildRefList(listenersSection, "Listeners", g.listeners || [], "incoming");
 
     this.root.appendChild(view);
   }
 
-  _buildRefList(section, title, refs) {
+  /**
+   * Build the GA sender/listener list (item 5): compact clickable rows,
+   * ADDRESS-first (monospace, like the cards), then the device name truncated
+   * with an ellipsis; the com-object annotation (e.g. "#15 Venetian blind -
+   * Safety - Input") drops to a smaller secondary line under the device line.
+   * The row is accented by data-flow `direction` (item 6).
+   * @param {HTMLElement} section
+   * @param {string} title
+   * @param {Array<Object>} refs
+   * @param {"incoming"|"outgoing"} direction
+   */
+  _buildRefList(section, title, refs, direction) {
     section.appendChild(el("h3", "insp-h3", `${title} (${refs.length})`));
     if (!refs.length) {
       section.appendChild(el("p", "insp-none", `no ${title.toLowerCase()}`));
@@ -363,13 +368,39 @@ class Inspector {
     }
     const list = el("div", "ref-list");
     for (const r of refs) {
-      const row = el("div", "ref-row");
-      row.appendChild(this._deviceChip(r.device, r.device_name));
-      const objTxt = r.object_name ? `#${r.object} ${r.object_name}` : `#${r.object}`;
-      row.appendChild(el("span", "ref-obj dim", objTxt));
-      list.appendChild(row);
+      list.appendChild(this._refRow(r, direction));
     }
     section.appendChild(list);
+  }
+
+  /**
+   * A single GA sender/listener row: address-first device line + a subordinate
+   * com-object line. Clickable (selects the device).
+   * @param {{device:string, device_name?:string, object?:number, object_name?:string}} r
+   * @param {"incoming"|"outgoing"} direction
+   * @returns {HTMLElement}
+   */
+  _refRow(r, direction) {
+    const d = this.store.deviceByAddr.get(r.device);
+    const name = r.device_name || (d && d.name) || r.device;
+    const btn = el("button", `ref-row-btn dir-${direction}`);
+    btn.type = "button";
+    btn.title = `${r.device} ${name}`;
+
+    const devLine = el("div", "ref-dev-line");
+    devLine.appendChild(el("span", "ref-dev-addr mono", r.device));
+    devLine.appendChild(el("span", "ref-dev-name", name));
+    btn.appendChild(devLine);
+
+    if (r.object != null || r.object_name) {
+      const objTxt = r.object_name ? `#${r.object} ${r.object_name}` : `#${r.object}`;
+      const objLine = el("div", "ref-obj-line", objTxt);
+      objLine.title = objTxt;
+      btn.appendChild(objLine);
+    }
+
+    btn.addEventListener("click", () => this.store.select("device", r.device));
+    return btn;
   }
 
   // --- send widgets (T1) ---------------------------------------------------
