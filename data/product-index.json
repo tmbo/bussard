@@ -4240,6 +4240,3576 @@
       "redistributable": false,
       "notes": "Interra product database. Masks: 0912. 1 application program(s). App refs: M-0107_A-1092-31-8751-O0072 (0912). Verified by download 2026-09-18 (URL fetch sha256 matches parsed file, import-product parse OK).",
       "application_ref": "M-0107_A-1092-31-8751-O0072"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZN4131"
+      ],
+      "name": "ACTinBOX MAX6 3.2",
+      "url": "https://assets.zennio.com/application_program/ACTINBOX_MAX6_3.2_EI.knxprod",
+      "sha256": "21044f6462d44019a2c04a90a8d96326c5f231773ea7a9f8783703b31b905c68",
+      "size": 488479,
+      "filename": "ACTINBOX_MAX6_3.2_EI.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 0701. 1 application program(s). App refs: M-0071_A-4131-32-17BF (0701). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4131-32-17BF"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZN4141"
+      ],
+      "name": "ACTinBOX QUATRO 2.1",
+      "url": "https://assets.zennio.com/application_program/ACTinBOX_QUATRO_2.1_EI.knxprod",
+      "sha256": "67fcd4f2a381bc75e4030449e24961cc1e9dc36e76a9dfcac3a98f074e572c3f",
+      "size": 402517,
+      "filename": "ACTinBOX_QUATRO_2.1_EI.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 0701. 1 application program(s). App refs: M-0071_A-4141-21-44AB (0701). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4141-21-44AB"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZPR1612"
+      ],
+      "name": "ALLinBOX 1612 1.3",
+      "url": "https://assets.zennio.com/application_program/ALLinBOX_1612_1.3_EIFAItR_ETS5.knxprod",
+      "sha256": "10d475f84aa103fa0ad74dbf78432773ad90b592b3ef259f715a42a9e140e625",
+      "size": 2583401,
+      "filename": "ALLinBOX_1612_1.3_EIFAItR_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4A11-13-48E1 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4A11-13-48E1"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZPR1612V2"
+      ],
+      "name": "ALLinBOX 1612 v2 2.1",
+      "url": "https://assets.zennio.com/application_program/ALLinBOX_1612_v2_2.1_EIFARUk.knxprod",
+      "sha256": "c62924f91416c97bb82007d0a1af6d096460e29b6e2d6495a97e9d1288ece4b5",
+      "size": 3045121,
+      "filename": "ALLinBOX_1612_v2_2.1_EIFARUk.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4A31-21-B5B3 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4A31-21-B5B3"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZPR1612V3"
+      ],
+      "name": "ALLinBOX 1612 v3 2.3",
+      "url": "https://assets.zennio.com/application_program/ALLinBOX_1612_v3_2.3_EIFAItRUk_Cert.knxprod",
+      "sha256": "a5baeea4e7c8efc21ec01546b625bf8eaa48b1b4dc461fa8e467c03b3e05d66d",
+      "size": 3226991,
+      "filename": "ALLinBOX_1612_v3_2.3_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4A71-23-34FD (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4A71-23-34FD"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZPR46"
+      ],
+      "name": "ALLinBOX 46 2.1",
+      "url": "https://assets.zennio.com/application_program/ALLinBOX_46_2.1_EIFARUk.knxprod",
+      "sha256": "7a99b66e0200a571d380aaf0423b57996e459a123484cd5c522c957f9a1ab974",
+      "size": 3045663,
+      "filename": "ALLinBOX_46_2.1_EIFARUk.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4A41-21-EF9B (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4A41-21-EF9B"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZPR46V2"
+      ],
+      "name": "ALLinBOX 46 v2 2.3",
+      "url": "https://assets.zennio.com/application_program/ALLinBOX_46_v2_2.3_EIFAItRUk_Cert.knxprod",
+      "sha256": "f50e9d5c61bfb906b63b691a89a638e75406844cdc18c3b89a2baabd5243da67",
+      "size": 3227502,
+      "filename": "ALLinBOX_46_v2_2.3_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4A81-23-E24E (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4A81-23-E24E"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZPR88"
+      ],
+      "name": "ALLinBOX 88 2.1",
+      "url": "https://assets.zennio.com/application_program/ALLinBOX_88_2.1_EIFARUk.knxprod",
+      "sha256": "20664fd01156e4558908e43364e7aa7460a90c775b36c02b8e7c013e7f37576d",
+      "size": 3045029,
+      "filename": "ALLinBOX_88_2.1_EIFARUk.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4A21-21-A157 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4A21-21-A157"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZPR88V2"
+      ],
+      "name": "ALLinBOX 88 v2 2.3",
+      "url": "https://assets.zennio.com/application_program/ALLinBOX_88_v2_2.3_EIFAItRUk_Cert.knxprod",
+      "sha256": "ebdb5879a654c7a0ae8378c3d32ec9846cdb412b3e9309cca8dbf51d21339b8b",
+      "size": 3227305,
+      "filename": "ALLinBOX_88_v2_2.3_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4A61-23-2BEB (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4A61-23-2BEB"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZPRHP"
+      ],
+      "name": "ALLinBOX Hospitality 2.1",
+      "url": "https://assets.zennio.com/application_program/ALLinBOX_Hospitality_2.1_EIFARUk.knxprod",
+      "sha256": "847c70798046b4482101661a3be23a89f82ace650f00128c20a52324a8211bad",
+      "size": 3045484,
+      "filename": "ALLinBOX_Hospitality_2.1_EIFARUk.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4A51-21-A622 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4A51-21-A622"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZPRHPV2"
+      ],
+      "name": "ALLinBOX Hospitality v2 2.3",
+      "url": "https://assets.zennio.com/application_program/ALLinBOX_Hospitality_v2_2.3_EIFAItRUk_Cert.knxprod",
+      "sha256": "57cb46538f1c471723b653422631ec41d33c5704032b21008ebc183ed434e000",
+      "size": 3227366,
+      "filename": "ALLinBOX_Hospitality_v2_2.3_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4A91-23-B2E5 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4A91-23-B2E5"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZS-THCDE"
+      ],
+      "name": "Air Sensato THCDE 1.0",
+      "url": "https://assets.zennio.com/application_program/Air_Sensato_THCDE_1.0_EIA_CERT.knxprod",
+      "sha256": "a27f1e27e1f3e45a56857d5446e689534dee46bc988172593fad30e3a251c247",
+      "size": 287915,
+      "filename": "Air_Sensato_THCDE_1.0_EIA_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 0701. 1 application program(s). App refs: M-0071_A-4411-10-C69D-O00C9 (0701). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4411-10-C69D-O00C9"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZLMABOX"
+      ],
+      "name": "AmbianceBOX 1.1",
+      "url": "https://assets.zennio.com/application_program/AmbianceBOX_1.1_EIFAItRUk_Cert.knxprod",
+      "sha256": "d256e7cf3e5762d75655a7f2d2cbd31c9676cb4efdeffc91083a7bf701bfbd93",
+      "size": 205655,
+      "filename": "AmbianceBOX_1.1_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-6411-11-5085 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-6411-11-5085"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZMU-AUIR"
+      ],
+      "name": "AudioInRoom 1.2",
+      "url": "https://assets.zennio.com/application_program/AudioInRoom_1.2_EIFAItR_ETS5_Cert.knxprod",
+      "sha256": "9142dc2c7be98f72766d2d8feda483f5daf331f45fc0418e615bc3dab0d3530b",
+      "size": 146280,
+      "filename": "AudioInRoom_1.2_EIFAItR_ETS5_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-2411-12-801C (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-2411-12-801C"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIO-BIN2X"
+      ],
+      "name": "BIN 2X 1.0",
+      "url": "https://assets.zennio.com/application_program/BIN_2X_1_0_EIFAItRS_ETS5_CERT.knxprod",
+      "sha256": "ecc34f8c5b16ed3cf4d228eb3a5007345264ffcb919249b0ff255e35e6ee643a",
+      "size": 168939,
+      "filename": "BIN_2X_1_0_EIFAItRS_ETS5_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4631-10-A468 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4631-10-A468"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIO-BIN2X"
+      ],
+      "name": "BIN 2X 1.2",
+      "url": "https://assets.zennio.com/application_program/BIN_2X_1_2_EIFAItRS_ETS5.knxprod",
+      "sha256": "47a27235cf6adb3d701250b636b4acfe99e3179b104f923a4728afff597b16ff",
+      "size": 178152,
+      "filename": "BIN_2X_1_2_EIFAItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4631-12-DFE7 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4631-12-DFE7"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOBIN2XV2"
+      ],
+      "name": "BIN 2X v2 1.0",
+      "url": "https://assets.zennio.com/application_program/BIN_2X_v2_1.0_EIFAItR_Cert.knxprod",
+      "sha256": "c7c4fdf4897c26d9663a29bc4e13a1e2a86bcee13725fe71baced19df6dca483",
+      "size": 246403,
+      "filename": "BIN_2X_v2_1.0_EIFAItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4661-10-A1C0 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4661-10-A1C0"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIO-BIN44"
+      ],
+      "name": "BIN 44 1.0",
+      "url": "https://assets.zennio.com/application_program/BIN_44_1_0_EIFAItRS_ETS5_CERT.knxprod",
+      "sha256": "74e9b5d42a0606c266c94fb4c4d379d952555e5eeecc9e8f5aa2cc535fd033dc",
+      "size": 215893,
+      "filename": "BIN_44_1_0_EIFAItRS_ETS5_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4611-10-CDF1 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4611-10-CDF1"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIO-BIN44"
+      ],
+      "name": "BIN 44 1.2",
+      "url": "https://assets.zennio.com/application_program/BIN_44_1_2_EIFAItRS_ETS5.knxprod",
+      "sha256": "471f4ac46c0fa092a53d5326f35e16e8990688103e7fe9bd59bf4c6c6efc0e7e",
+      "size": 225464,
+      "filename": "BIN_44_1_2_EIFAItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4611-12-FD9F (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4611-12-FD9F"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIO-BIN4X"
+      ],
+      "name": "BIN 4X 1.0",
+      "url": "https://assets.zennio.com/application_program/BIN_4X_1_0_EIFAItRS_ETS5_CERT.knxprod",
+      "sha256": "492838db34764e85b0aeedd483dae1db65ce61a5f6e1db178c0f41b3c7caaa97",
+      "size": 215466,
+      "filename": "BIN_4X_1_0_EIFAItRS_ETS5_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4621-10-BB03 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4621-10-BB03"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIO-BIN4X"
+      ],
+      "name": "BIN 4X 1.2",
+      "url": "https://assets.zennio.com/application_program/BIN_4X_1_2_EIFAItRS_ETS5.knxprod",
+      "sha256": "bceadb97169d2bdbbb5583d0f9e5e49caf02d9fa463c45e3d5f8646066cc004b",
+      "size": 225392,
+      "filename": "BIN_4X_1_2_EIFAItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4621-12-E955 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4621-12-E955"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOBIN4XV2"
+      ],
+      "name": "BIN 4X v2 1.0",
+      "url": "https://assets.zennio.com/application_program/BIN_4X_v2_1.0_EIFAItR_Cert.knxprod",
+      "sha256": "5e9fcb204e042e0aee953d65432ba2a42ac8fcf839f4927a5aca343524c538cd",
+      "size": 246401,
+      "filename": "BIN_4X_v2_1.0_EIFAItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4651-10-EB78 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4651-10-EB78"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVICXxy"
+      ],
+      "name": "CX 1.1",
+      "url": "https://assets.zennio.com/application_program/CX_1.1_EIFAItRUk.knxprod",
+      "sha256": "250961d78b5271b42c61e45c6da2a26175ab211ccffa65e1c93d9a847990aa28",
+      "size": 1495483,
+      "filename": "CX_1.1_EIFAItRUk.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5D21-11-E639 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5D21-11-E639"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDIDLIV2"
+      ],
+      "name": "DALI-BOX Interface v2 1.1",
+      "url": "https://assets.zennio.com/application_program/DALI-BOX_Interface_v2_1.1_EIFAItR_ETS5_Cert.knxprod",
+      "sha256": "68d9785c3319b9111d9ffd2af6e8c19873e05ff26701f5e97dec039586951af6",
+      "size": 3872512,
+      "filename": "DALI-BOX_Interface_v2_1.1_EIFAItR_ETS5_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3342-11-C600 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3342-11-C600"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDI-DLB4"
+      ],
+      "name": "DALIBOX Broadcast 4CH 1.1",
+      "url": "https://assets.zennio.com/application_program/DALIBOX_Broadcast_4CH_1.1_EIFAItRSP.knxprod",
+      "sha256": "b204fcc8169daee1d33620effea4280b07f18e827085e6a672c88cc77cfc78cf",
+      "size": 371628,
+      "filename": "DALIBOX_Broadcast_4CH_1.1_EIFAItRSP.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3331-11-385F (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3331-11-385F"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDI-DLB6"
+      ],
+      "name": "DALIBOX Broadcast 6CH 1.0",
+      "url": "https://assets.zennio.com/application_program/DALIBOX_Broadcast_6CH_1.0_EIFAItRSP.knxprod",
+      "sha256": "bf813b05e22cad5cec2cc4e3c552dafdf9e1ea7a9d5c2533f0d5ebe00995e215",
+      "size": 371490,
+      "filename": "DALIBOX_Broadcast_6CH_1.0_EIFAItRSP.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3311-10-0E56 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3311-10-0E56"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDI-DLI"
+      ],
+      "name": "DALIBOX Interface 64/32 1.1",
+      "url": "https://assets.zennio.com/application_program/DALIBOX_Interface_64_32_1_1_EIFAItRS.knxprod",
+      "sha256": "ce6bb101d12808d9bd62efdc76ff5a7566faddb624babf0e1c33ca731c2fa33a",
+      "size": 1064602,
+      "filename": "DALIBOX_Interface_64_32_1_1_EIFAItRS.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3321-11-EFBF (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3321-11-EFBF"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDI-DLI"
+      ],
+      "name": "DALIBOX Interface 64/32 1.2",
+      "url": "https://assets.zennio.com/application_program/DALIBOX_Interface_64_32_1_2_EIFAItRS.knxprod",
+      "sha256": "71c030bf82423d74471a86d350f3e3fb2359035354eb41d0cf5a06a8e4942f72",
+      "size": 1075765,
+      "filename": "DALIBOX_Interface_64_32_1_2_EIFAItRS.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3321-12-32EB (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3321-12-32EB"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDI-DLI"
+      ],
+      "name": "DALIBOX Interface 64/32 1.3",
+      "url": "https://assets.zennio.com/application_program/DALIBOX_Interface_64_32_1_3_EIFAItRS.knxprod",
+      "sha256": "b6be44b400ad3130eb612028dabbb9f5f2a8dc38718ba88263a08aaa933120cd",
+      "size": 1077088,
+      "filename": "DALIBOX_Interface_64_32_1_3_EIFAItRS.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3321-13-0736 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3321-13-0736"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDI-DLI"
+      ],
+      "name": "DALIBOX Interface 64/32 1.3",
+      "url": "https://assets.zennio.com/application_program/DALIBOX_Interface_64_32_1_3_EIFAItRS_ETS5.knxprod",
+      "sha256": "2093cfd87f62a627d7fb4949ff30638a5e0fb6e42ec1e4f669b6a9f6a0ef7afb",
+      "size": 1030462,
+      "filename": "DALIBOX_Interface_64_32_1_3_EIFAItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3321-13-6084 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3321-13-6084"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDI-DLI"
+      ],
+      "name": "DALIBOX Interface 64/32 1.4",
+      "url": "https://assets.zennio.com/application_program/DALIBOX_Interface_64_32_1_4_EIFAItRS_CERT.knxprod",
+      "sha256": "9c73e6756cd0ab095cc917bdd192832916d80a204c9482c5db6cecde4ec5421f",
+      "size": 1068457,
+      "filename": "DALIBOX_Interface_64_32_1_4_EIFAItRS_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3321-14-3010 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3321-14-3010"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDIDLB4V2"
+      ],
+      "name": "DALI BOX Broadcast 4CH v2 2.3",
+      "url": "https://assets.zennio.com/application_program/DALI_BOX_Broadcast_4CH_v2_2.3_EIFAItRUk_Cert.knxprod",
+      "sha256": "7ccdb618448e9326c3bbd7e226dc79374af4f5a9cb53aa1e42ec4988d48dfb0f",
+      "size": 238522,
+      "filename": "DALI_BOX_Broadcast_4CH_v2_2.3_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3371-23-AF29 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3371-23-AF29"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDIDLB6V2"
+      ],
+      "name": "DALI BOX Broadcast 6CH v2 2.3",
+      "url": "https://assets.zennio.com/application_program/DALI_BOX_Broadcast_6CH_v2_2.3_EIFAItRUk_Cert.knxprod",
+      "sha256": "262eb4c64b869a94db279765483cefa0a80a21ef923be6d666176562c6b736fb",
+      "size": 242511,
+      "filename": "DALI_BOX_Broadcast_6CH_v2_2.3_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3361-23-5FB5 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3361-23-5FB5"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDID64X2"
+      ],
+      "name": "DALI BOX Interface 64 X2 2.1",
+      "url": "https://assets.zennio.com/application_program/DALI_BOX_Interface_64_X2_2.1_EIFAItRUk_Cert.knxprod",
+      "sha256": "4c59fdd1d4aaf20dbf85a21cb22d1def20bfbba5473bd7999ff0c44646dd09ae",
+      "size": 1564504,
+      "filename": "DALI_BOX_Interface_64_X2_2.1_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3391-21-864C (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3391-21-864C"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDID64V3"
+      ],
+      "name": "DALI BOX Interface 64 v3 2.1",
+      "url": "https://assets.zennio.com/application_program/DALI_BOX_Interface_64_v3_2.1_EIFAItRUk_Cert.knxprod",
+      "sha256": "336de4dc88eea7b65767b7bd9737eb70b4d7bf3a39855f562d8166bea9aa64fb",
+      "size": 1557709,
+      "filename": "DALI_BOX_Interface_64_v3_2.1_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3351-21-DCFB (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3351-21-DCFB"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDI-DB2C"
+      ],
+      "name": "DIMinBOX 2CH 1.0",
+      "url": "https://assets.zennio.com/application_program/DIMinBOX-2CH_1.0_EIFAItRSP_CERT.knxprod",
+      "sha256": "a1560f8a9b4fccc6e0dbfcd395c30a727eb243d34d2d666473919df93752e2d7",
+      "size": 680029,
+      "filename": "DIMinBOX-2CH_1.0_EIFAItRSP_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3131-10-F255 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3131-10-F255"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDI-DB2C"
+      ],
+      "name": "DIMinBOX 2CH 1.1",
+      "url": "https://assets.zennio.com/application_program/DIMinBOX_2Ch_1_1_EIFAItRSP.knxprod",
+      "sha256": "10bcd284aa5dea4ec89d9124a17d7532da374335f9fba214b031b1f5620e7f3d",
+      "size": 691431,
+      "filename": "DIMinBOX_2Ch_1_1_EIFAItRSP.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3131-11-FD51 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3131-11-FD51"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDIDBDX1"
+      ],
+      "name": "DIMinBOX DX1 1.0",
+      "url": "https://assets.zennio.com/application_program/DIMinBOX_DX1_1.0_EIAFItRS.knxprod",
+      "sha256": "29ba7ce3d68e3d21221deae7e3ffebac188c15dca6ae4ca574f5678f231b54f2",
+      "size": 492842,
+      "filename": "DIMinBOX_DX1_1.0_EIAFItRS.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3171-10-B384 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3171-10-B384"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDI-DBDX2"
+      ],
+      "name": "DIMinBOX DX2 1.1",
+      "url": "https://assets.zennio.com/application_program/DIMinBOX_DX2_1.1_EIFAItRS.knxprod",
+      "sha256": "858215039602b474cf68426203321e43d53788567dc5499cc36eb916bd2fddef",
+      "size": 843646,
+      "filename": "DIMinBOX_DX2_1.1_EIFAItRS.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3141-11-8B9B (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3141-11-8B9B"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDI-DBDX2"
+      ],
+      "name": "DIMinBOX DX2 1.0",
+      "url": "https://assets.zennio.com/application_program/DIMinBOX_DX2_1_0_EIFAItRSP_ETS5.knxprod",
+      "sha256": "17fdc9ebcce0993b081171e9303a7a3bb0fb0020536c88993071d1ee6d903ad2",
+      "size": 686683,
+      "filename": "DIMinBOX_DX2_1_0_EIFAItRSP_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3141-10-700A (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3141-10-700A"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDI-DBDX2"
+      ],
+      "name": "DIMinBOX DX2 1.1",
+      "url": "https://assets.zennio.com/application_program/DIMinBOX_DX2_1_1_EIFAItRS_ETS5.knxprod",
+      "sha256": "facf27835075fd35ba0e0f0d74b2f45f4689045ab4a1f22959c84f370ddcfb52",
+      "size": 815271,
+      "filename": "DIMinBOX_DX2_1_1_EIFAItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3141-11-892F (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3141-11-892F"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDIDBDX4"
+      ],
+      "name": "DIMinBOX DX4 1.0",
+      "url": "https://assets.zennio.com/application_program/DIMinBOX_DX4_1.0_EIFAItRS_ETS5.knxprod",
+      "sha256": "c72bf43d204c62c9fd489e5890176f08f238bb548b001b93a501756f00694b56",
+      "size": 691962,
+      "filename": "DIMinBOX_DX4_1.0_EIFAItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3161-10-00C2 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3161-10-00C2"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZPDEZTPVT"
+      ],
+      "name": "EyeZen TP vT 1.3",
+      "url": "https://assets.zennio.com/application_program/EyeZen_TP_vT_1.3_EIFAItR_ETS5_CERT.knxprod",
+      "sha256": "37211c9fe4c57741beb6869e9e0653516cf7c95a2da33637f97c358465ef64d5",
+      "size": 510281,
+      "filename": "EyeZen_TP_vT_1.3_EIFAItR_ETS5_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-7121-13-1B30 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-7121-13-1B30"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCLFB110C1"
+      ],
+      "name": "FANinBOX 110V 1CH 1.1",
+      "url": "https://assets.zennio.com/application_program/FANinBOX_110V_1CH_1.1_EIFAItR_Cert_ETS5.knxprod",
+      "sha256": "e15c7ff4ca6c8cad64c250c8115e33af313abfd9aa7b8aa6afb4329cd9ad165b",
+      "size": 443615,
+      "filename": "FANinBOX_110V_1CH_1.1_EIFAItR_Cert_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4811-11-C419 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4811-11-C419"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCLFB230C1"
+      ],
+      "name": "FANinBOX 230V 1CH 1.2",
+      "url": "https://assets.zennio.com/application_program/FANinBOX_230V_1CH_1.2_EIFAItR_ETS5_Cert.knxprod",
+      "sha256": "f6fee99d44fd600eb40e6f29be162492a2975abb682973fe5595df6917193f05",
+      "size": 465174,
+      "filename": "FANinBOX_230V_1CH_1.2_EIFAItR_ETS5_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4821-12-2859 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4821-12-2859"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVI-F1"
+      ],
+      "name": "Flat 1 1.3",
+      "url": "https://assets.zennio.com/application_program/Flat_1_1.3_EIFAItRS_ETS5.knxprod",
+      "sha256": "20b2e8766aa5e757f7c3d18662e08590b9e1bfb19c9e9b4dfd671da6644ef6fa",
+      "size": 563846,
+      "filename": "Flat_1_1.3_EIFAItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5711-13-775B (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5711-13-775B"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIF1V2"
+      ],
+      "name": "Flat 1 v2 1.8",
+      "url": "https://assets.zennio.com/application_program/Flat_1_v2_1.8_EIAFItR_Cert.knxprod",
+      "sha256": "4138205059b60195df1623fe5ea818b1cf7312d516ee7dd1553041b88842cae3",
+      "size": 1247545,
+      "filename": "Flat_1_v2_1.8_EIAFItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5751-18-8409 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5751-18-8409"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVI-F2"
+      ],
+      "name": "Flat 2 1.4",
+      "url": "https://assets.zennio.com/application_program/Flat_2_1.4_EIFAItRS_Cert_ETS5.knxprod",
+      "sha256": "a4b5c4ced50069850cedee19d08ac98cb212456876cd04e3514a3cf21dd83904",
+      "size": 570700,
+      "filename": "Flat_2_1.4_EIFAItRS_Cert_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5721-14-EC5F (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5721-14-EC5F"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIF2V2"
+      ],
+      "name": "Flat 2 v2 1.8",
+      "url": "https://assets.zennio.com/application_program/Flat_2_v2_1.8_EIAFItR_Cert.knxprod",
+      "sha256": "5cd55b70f2da3bfdca9a1a2b2ad66ed07be143000bd62259673e75928af8262b",
+      "size": 1247588,
+      "filename": "Flat_2_v2_1.8_EIAFItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5761-18-D079 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5761-18-D079"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVI-F4"
+      ],
+      "name": "Flat 4 1.4",
+      "url": "https://assets.zennio.com/application_program/Flat_4_1.4_EIFAItRS_Cert_ETS5.knxprod",
+      "sha256": "8a6fbfcf80c08c640fb3da2d197797c16c39d453459c6d1a31b2cfe0c8bcd309",
+      "size": 570712,
+      "filename": "Flat_4_1.4_EIFAItRS_Cert_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5731-14-9C69 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5731-14-9C69"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIF4V2"
+      ],
+      "name": "Flat 4 v2 1.8",
+      "url": "https://assets.zennio.com/application_program/Flat_4_v2_1.8_EIFAItR_Cert.knxprod",
+      "sha256": "6fa507f089c6f24a125fc1fc9ba40e29c5c4f2288d274c0c1e3178e9fb613f63",
+      "size": 1247583,
+      "filename": "Flat_4_v2_1.8_EIFAItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5771-18-C343 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5771-18-C343"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVI-F55D"
+      ],
+      "name": "Flat 55 Display 1.0",
+      "url": "https://assets.zennio.com/application_program/Flat_55_Display_1_0_EIFAItRS_ETS5.knxprod",
+      "sha256": "7ed87703449f1242c8a6a418740e75ac6f1c376ec5c27fa5ded7988eaa41c616",
+      "size": 832702,
+      "filename": "Flat_55_Display_1_0_EIFAItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5261-10-00B6 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5261-10-00B6"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIF55DV2"
+      ],
+      "name": "Flat 55 Display v2 2.1",
+      "url": "https://assets.zennio.com/application_program/Flat_55_Display_v2_2.1_EIFAItR_ETS5_Cert.knxprod",
+      "sha256": "ed94afa3a5cecd24146d95f3f5ae4b7698398375ba238f136e5dab11442a83c7",
+      "size": 907381,
+      "filename": "Flat_55_Display_v2_2.1_EIFAItR_ETS5_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5291-21-24F7 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5291-21-24F7"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIF55X1V2"
+      ],
+      "name": "Flat 55 X1 v2 1.8",
+      "url": "https://assets.zennio.com/application_program/Flat_55_X1_v2_1.8_EIFAItR_Cert.knxprod",
+      "sha256": "3bcfd48645db3d63dc89f915dcc275886f1f308df38c64de55a2ef8fdbefb623",
+      "size": 1246413,
+      "filename": "Flat_55_X1_v2_1.8_EIFAItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5841-18-57B4 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5841-18-57B4"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIF55X2V2"
+      ],
+      "name": "Flat 55 X2 v2 1.8",
+      "url": "https://assets.zennio.com/application_program/Flat_55_X2_v2_1.8_EIFAItR_Cert.knxprod",
+      "sha256": "d5007bbec26a91ce992e926cc4448d9ab5954821636113519a3d9a2049656af8",
+      "size": 1246447,
+      "filename": "Flat_55_X2_v2_1.8_EIFAItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5851-18-CE8D (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5851-18-CE8D"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIF55X4V2"
+      ],
+      "name": "Flat 55 X4 v2 1.8",
+      "url": "https://assets.zennio.com/application_program/Flat_55_X4_v2_1.8_EIFAItR_Cert.knxprod",
+      "sha256": "e12807b9972967b831ba4c6d27b1cda06311cc7aa51a5e4e6acff93cd99fa1a7",
+      "size": 1246439,
+      "filename": "Flat_55_X4_v2_1.8_EIFAItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5861-18-086E (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5861-18-086E"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVI-F6"
+      ],
+      "name": "Flat 6 1.4",
+      "url": "https://assets.zennio.com/application_program/Flat_6_1.4_EIFAItRS_Cert_ETS5.knxprod",
+      "sha256": "2481c7caee24618b97aa3ad9fce65f23c072b22ae52d9c28936ffc36999105d7",
+      "size": 570751,
+      "filename": "Flat_6_1.4_EIFAItRS_Cert_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5741-14-C51F (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5741-14-C51F"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIF6V2"
+      ],
+      "name": "Flat 6 v2 1.8",
+      "url": "https://assets.zennio.com/application_program/Flat_6_v2_1.8_EIFAItR_Cert.knxprod",
+      "sha256": "3252e35a4510412df14201211bca7ca27403dfc81a795d74262b81c1c87d1c2f",
+      "size": 1247587,
+      "filename": "Flat_6_v2_1.8_EIFAItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5781-18-A1D6 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5781-18-A1D6"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVI-FD"
+      ],
+      "name": "Flat Display 2.1",
+      "url": "https://assets.zennio.com/application_program/Flat_Display_2.1_EIFAItRS_ETS5.knxprod",
+      "sha256": "bbf9186ee61054d3283340ce0ab518ba577c388e566f0301c4432d7c4ab732aa",
+      "size": 790430,
+      "filename": "Flat_Display_2.1_EIFAItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5251-21-4B10 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5251-21-4B10"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIFDH"
+      ],
+      "name": "Flat Display H 2.2",
+      "url": "https://assets.zennio.com/application_program/Flat_Display_H_2.2_EIFAItRS_ETS5.knxprod",
+      "sha256": "ce15b3492a099df885ba5c4802119638b8e7ce4220320e1aa08e85a8ef6f8946",
+      "size": 814299,
+      "filename": "Flat_Display_H_2.2_EIFAItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5271-22-1E9A (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5271-22-1E9A"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIFDV2"
+      ],
+      "name": "Flat Display v2 2.4",
+      "url": "https://assets.zennio.com/application_program/Flat_Display_v2_2.4_EIFAItR_Cert.knxprod",
+      "sha256": "12e670f5e142874f2d464b75ce5dfc42df928d5b5a767de6d17029b4507ce3d6",
+      "size": 784914,
+      "filename": "Flat_Display_v2_2.4_EIFAItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-52A1-24-7056 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-52A1-24-7056"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIFDV2"
+      ],
+      "name": "Flat Display v2 2.5",
+      "url": "https://assets.zennio.com/application_program/Flat_Display_v2_2_5_EIFAItR_Cert.knxprod",
+      "sha256": "b6f9efe7ce7627cdd0678f16c1d46b0fe7cdb4ea25c8d73b3d18a7688845f3ba",
+      "size": 785674,
+      "filename": "Flat_Display_v2_2_5_EIFAItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-52A1-25-8AD1 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-52A1-25-8AD1"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZS-FSEN"
+      ],
+      "name": "Flat Sensato 1.0",
+      "url": "https://assets.zennio.com/application_program/Flat_Sensato_1_0_EIFAItRS_ETS5.knxprod",
+      "sha256": "0601c0a497085c6674e165c2da9f6d967ef71aad350000600848aae0a19d83cf",
+      "size": 537408,
+      "filename": "Flat_Sensato_1_0_EIFAItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4431-10-F684 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4431-10-F684"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZS-FSEN"
+      ],
+      "name": "Flat Sensato 1.1",
+      "url": "https://assets.zennio.com/application_program/Flat_Sensato_1_1_EIFAItRS_ETS5.knxprod",
+      "sha256": "819253bc8bdf784f18275266387a28a087fab7513e549fb4d226c3a3ecffb695",
+      "size": 540036,
+      "filename": "Flat_Sensato_1_1_EIFAItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4431-11-EFEA (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4431-11-EFEA"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIFXLX10"
+      ],
+      "name": "Flat XL X10 1.7",
+      "url": "https://assets.zennio.com/application_program/Flat_XL_10_1.7_EIFAItR_Cert.knxprod",
+      "sha256": "f66cedaa77c453be032adc10e1a2d3095e4c51974fdb1eeaf515857808f244d5",
+      "size": 1170736,
+      "filename": "Flat_XL_10_1.7_EIFAItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5B41-17-5A80 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5B41-17-5A80"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIFXLX4"
+      ],
+      "name": "Flat XL X4 1.7",
+      "url": "https://assets.zennio.com/application_program/Flat_XL_4_1.7_EIFAItR_Cert.knxprod",
+      "sha256": "ec9e5ff2b5a3f7f888790849012f33a6ddec9f27715e903cdcbb06a627cd7a6f",
+      "size": 1170656,
+      "filename": "Flat_XL_4_1.7_EIFAItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5B11-17-437B (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5B11-17-437B"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIFXLX6"
+      ],
+      "name": "Flat XL X6 1.7",
+      "url": "https://assets.zennio.com/application_program/Flat_XL_6_1.7_EIFAItR_Cert.knxprod",
+      "sha256": "8d30bc5bd6cfe966a1c86508a6942223c527075556d0ef8a83c26e33a1b551b4",
+      "size": 1170688,
+      "filename": "Flat_XL_6_1.7_EIFAItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5B21-17-5FE2 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5B21-17-5FE2"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIFXLX8"
+      ],
+      "name": "Flat XL X8 1.7",
+      "url": "https://assets.zennio.com/application_program/Flat_XL_8_1.7_EIFAItR_Cert.knxprod",
+      "sha256": "48b392540db52a3b0e7640ad70aa16cb6397cd7ee6319ee6279d137bb5b017be",
+      "size": 1170686,
+      "filename": "Flat_XL_8_1.7_EIFAItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5B31-17-A849 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5B31-17-A849"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIFXLX10"
+      ],
+      "name": "Flat XL X10 1.8",
+      "url": "https://assets.zennio.com/application_program/Flat_XL_X10_1.8_EIFAItR_Cert.knxprod",
+      "sha256": "2afcb0912484aa7065ccd8f66c63e22dd159805a9c03930a424df70f8acbb30f",
+      "size": 1174186,
+      "filename": "Flat_XL_X10_1.8_EIFAItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5B41-18-C3C9 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5B41-18-C3C9"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIFXLX4"
+      ],
+      "name": "Flat XL X4 1.8",
+      "url": "https://assets.zennio.com/application_program/Flat_XL_X4_1.8_EIFAItR_Cert.knxprod",
+      "sha256": "a94967bce477f4a84eb216198a7fd2f9f2ade94b8abf09327c2492e7fdee19b9",
+      "size": 1174138,
+      "filename": "Flat_XL_X4_1.8_EIFAItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5B11-18-3E92 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5B11-18-3E92"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIFXLX6"
+      ],
+      "name": "Flat XL X6 1.8",
+      "url": "https://assets.zennio.com/application_program/Flat_XL_X6_1.8_EIFAItR_Cert.knxprod",
+      "sha256": "b7d2196ae4fbe49aa5216b768884832b493057abcd54f9bef8654939be410913",
+      "size": 1174129,
+      "filename": "Flat_XL_X6_1.8_EIFAItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5B21-18-3F45 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5B21-18-3F45"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIFXLX8"
+      ],
+      "name": "Flat XL X8 1.8",
+      "url": "https://assets.zennio.com/application_program/Flat_XL_X8_1.8_EIFAItR_Cert.knxprod",
+      "sha256": "fc4522e26483e1e924d759b876fb5ca69d8b37ea1396dcd0ec2c0c73008b2dd7",
+      "size": 1174132,
+      "filename": "Flat_XL_X8_1.8_EIFAItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5B31-18-BE0D (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5B31-18-BE0D"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL-4HT230"
+      ],
+      "name": "HeatingBOX 230V 4X 1.2",
+      "url": "https://assets.zennio.com/application_program/HeatingBOX_230V_4X_1.2_EIFAItRS_Cert_ETS5.knxprod",
+      "sha256": "64e8f72a449476c48c992c638ef6c343131c4098df6ca54872d8614e91be439c",
+      "size": 564398,
+      "filename": "HeatingBOX_230V_4X_1.2_EIFAItRS_Cert_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4361-12-F88E (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4361-12-F88E"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL-8HT230"
+      ],
+      "name": "HeatingBOX 230V 8X 1.2",
+      "url": "https://assets.zennio.com/application_program/HeatingBOX_230V_8X_1.2_EIFAItRS_Cert_ETS5.knxprod",
+      "sha256": "fad80fb49acd1b9028e26dca5b5837c2a375e5b692db587fbdf2847f1a703ce8",
+      "size": 665815,
+      "filename": "HeatingBOX_230V_8X_1.2_EIFAItRS_Cert_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4331-12-8388 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4331-12-8388"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIIDAC"
+      ],
+      "name": "IDAC 1.0",
+      "url": "https://assets.zennio.com/application_program/IDAC_1.0_EIFAItR_Cert_ETS5.knxprod",
+      "sha256": "0de87b4e42f8fbe1820c5236e2aba124fdb0c5f5dbb9a8ce307ba45a5892fcb8",
+      "size": 256389,
+      "filename": "IDAC_1.0_EIFAItR_Cert_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5621-10-ADD9 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5621-10-ADD9"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZSYIPRCL"
+      ],
+      "name": "IP Router CL 1.0",
+      "url": "https://assets.zennio.com/application_program/IP_Router_CL_1.0_EIFAItRS_ETS5_CERT.knxprod",
+      "sha256": "a1d27a7fa666d510624c4908f74f8d2aaa93439a3326b40f33dcfd8312364d3d",
+      "size": 90379,
+      "filename": "IP_Router_CL_1.0_EIFAItRS_ETS5_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 091A. 1 application program(s). App refs: M-0071_A-6371-10-B2D9-O0072 (091A). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-6371-10-B2D9-O0072"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZN1CL-IRSC"
+      ],
+      "name": "IRSC Plus 8.2",
+      "url": "https://assets.zennio.com/application_program/IRSC_Plus_8.2_EIAFItRSP_Cert.knxprod",
+      "sha256": "25f971110f7acac1166099774611e995c32f8086d500e7d44aad83ad081bdfc6",
+      "size": 101605,
+      "filename": "IRSC_Plus_8.2_EIAFItRSP_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 0701. 1 application program(s). App refs: M-0071_A-1130-82-F217 (0701). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-1130-82-F217"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZN1CL-IRSC"
+      ],
+      "name": "IRSC Zone 1.8",
+      "url": "https://assets.zennio.com/application_program/IRSC_Zone_1.8_EIFARSIt.knxprod",
+      "sha256": "59e44c6034aea13e48f3fc448f5cf9eab071a68f664f64919dd40a53406ad9a1",
+      "size": 72094,
+      "filename": "IRSC_Zone_1.8_EIFARSIt.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 0701. 1 application program(s). App refs: M-0071_A-1140-18-A0B7 (0701). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-1140-18-A0B7"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVI-IWACD"
+      ],
+      "name": "IWAC Display 1.0",
+      "url": "https://assets.zennio.com/application_program/IWAC_Display_1_0_EIFAItRS_ETS5.knxprod",
+      "sha256": "014d9b70552f9d7b2255daf1734d7cbf5aa3bde54376deedb2b1dd97267da36e",
+      "size": 325306,
+      "filename": "IWAC_Display_1_0_EIFAItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5611-10-110A (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5611-10-110A"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIIWACDV2"
+      ],
+      "name": "IWAC Display v2 1.1",
+      "url": "https://assets.zennio.com/application_program/IWAC_Display_v2_1_1_EIFAItRS_ETS5.knxprod",
+      "sha256": "f72f654f419379577530e46f19570665c1c1b216147060f3e679cf350f8b2097",
+      "size": 364025,
+      "filename": "IWAC_Display_v2_1_1_EIFAItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5631-11-6720 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5631-11-6720"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIIWACDV2"
+      ],
+      "name": "IWAC Display v2 2.1",
+      "url": "https://assets.zennio.com/application_program/IWAC_Display_v2_2.1_EIFAItR_Cert_ETS5.knxprod",
+      "sha256": "fd8fed0023a83743285f4c850b5e7ec360ef458017a4c9c2505436dd92fd99c7",
+      "size": 383201,
+      "filename": "IWAC_Display_v2_2.1_EIFAItR_Cert_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5631-21-78CF (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5631-21-78CF"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIIWACDV3"
+      ],
+      "name": "IWAC Display v3 3.0",
+      "url": "https://assets.zennio.com/application_program/IWAC_Display_v3_3.0_EIFAItR_ETS5_Cert.knxprod",
+      "sha256": "227bbc4bfa057aab0cc2917d01be38f573077d8b11e1d3fe8a1397d992b20cca",
+      "size": 385474,
+      "filename": "IWAC_Display_v3_3.0_EIFAItR_ETS5_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5641-30-7BF9 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5641-30-7BF9"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIIWO"
+      ],
+      "name": "IWAC Out 1.0",
+      "url": "https://assets.zennio.com/application_program/IWAC_Out_1.0_EIFAItR_Cert.knxprod",
+      "sha256": "550e8a865da2ca469e622b454ab8dcded270602f7c1430cb77883143a30d5e42",
+      "size": 233280,
+      "filename": "IWAC_Out_1.0_EIFAItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5651-10-61FF (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5651-10-61FF"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIIWOK"
+      ],
+      "name": "IWAC Out Keypad 1.0",
+      "url": "https://assets.zennio.com/application_program/IWAC_Out_Keypad_1.0_EIAFItRUk_Cert.knxprod",
+      "sha256": "23d131b209759daae90bb407f9c4a744b9857d5da0c3e6e2506aaad022482d2d",
+      "size": 172823,
+      "filename": "IWAC_Out_Keypad_1.0_EIAFItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5661-10-6221 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5661-10-6221"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZN1VI-TP41C"
+      ],
+      "name": "InZennio Z41 3.1",
+      "url": "https://assets.zennio.com/application_program/InZennio_Z41_3.1_EIFARSItP_CERT.knxprod",
+      "sha256": "b91c1443354a1ebb7f2e6d42431cef17df53527e1f4b2f3998c8ecb86f4ea87c",
+      "size": 1247087,
+      "filename": "InZennio_Z41_3.1_EIFARSItP_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 0701. 1 application program(s). App refs: M-0071_A-5161-31-3959 (0701). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5161-31-3959"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOINB4"
+      ],
+      "name": "IndustrialBOX 4 1.1",
+      "url": "https://assets.zennio.com/application_program/IndustrialBOX_4_1.1_EIFAItRUk_Cert.knxprod",
+      "sha256": "f079e3825d0353fde09777fd1e71432c0d332bdcd2c87e31e67c5d7ed5236e00",
+      "size": 909020,
+      "filename": "IndustrialBOX_4_1.1_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4B71-11-1F1C (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4B71-11-1F1C"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOINBC4"
+      ],
+      "name": "IndustrialBOX Current 4 2.0",
+      "url": "https://assets.zennio.com/application_program/IndustrialBOX_Current_4_2.0_EIFAItRUk_Cert.knxprod",
+      "sha256": "acf28778eb35ab2b430039b5a726e125d9d23a1981e687ae10aa32191e444212",
+      "size": 1022567,
+      "filename": "IndustrialBOX_Current_4_2.0_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4D21-20-006B (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4D21-20-006B"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZN1VI-TP38i"
+      ],
+      "name": "InZennio Z38i 2.1",
+      "url": "https://assets.zennio.com/application_program/Inzennio_Z38i_2.1_EIFAHS_CERT.knxprod",
+      "sha256": "0f70f164551496547406752df4d3e1b4eb625de57e54dfe7554046d631cda95a",
+      "size": 332568,
+      "filename": "Inzennio_Z38i_2.1_EIFAHS_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 0701. 1 application program(s). App refs: M-0071_A-5121-21-5CB5 (0701). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5121-21-5CB5"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZRX-KCI4S0"
+      ],
+      "name": "KCI 4 S0 1.0",
+      "url": "https://assets.zennio.com/application_program/KCI-4S0_1.0_EIAFItPRS_CERT.knxprod",
+      "sha256": "9033e3deb66a49e20e9df75cdf9f855480de1c9de333a28f85d4720ed2428fb1",
+      "size": 75999,
+      "filename": "KCI-4S0_1.0_EIAFItPRS_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4231-10-34FD (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4231-10-34FD"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZRX-KCI4S0"
+      ],
+      "name": "KCI 4 S0 1.1",
+      "url": "https://assets.zennio.com/application_program/KCI_4_S0_1_1_EIFAItRSP.knxprod",
+      "sha256": "6b4c593da1f51937ad1585212300cca618194f0edfc81f57a2e1544afa94892f",
+      "size": 76170,
+      "filename": "KCI_4_S0_1_1_EIFAItRSP.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4231-11-7CAF (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4231-11-7CAF"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZEMKEM"
+      ],
+      "name": "KEM 1.0",
+      "url": "https://assets.zennio.com/application_program/KEM_1.0_EIFAItR_ETS5.knxprod",
+      "sha256": "7b2c9e291f6de3ae2d3dbf3ca98038677a04cb931d87760b7c2e837f185d2d7e",
+      "size": 821007,
+      "filename": "KEM_1.0_EIFAItR_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4271-10-215D (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4271-10-215D"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZN1IO-KES"
+      ],
+      "name": "KES 1xThree-phase 2.0",
+      "url": "https://assets.zennio.com/application_program/KES_1xThree-phase_2.0_EIFAIt.knxprod",
+      "sha256": "9f4f39181313ef5eacdd6e22b1fb1bf08bcf4bc2092b952f40cd111254f9c896",
+      "size": 261503,
+      "filename": "KES_1xThree-phase_2.0_EIFAIt.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 0701. 1 application program(s). App refs: M-0071_A-4222-20-8460 (0701). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4222-20-8460"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZN1IO-KES"
+      ],
+      "name": "KES 3xSingle-phase 2.0",
+      "url": "https://assets.zennio.com/application_program/KES_3xSingle-phase_2.0_EIFAIt.knxprod",
+      "sha256": "a4e32c7e077bf0906297cc6599d1f0bc70f86128affd24c4d79199b4a45fc153",
+      "size": 279580,
+      "filename": "KES_3xSingle-phase_2.0_EIFAIt.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 0701. 1 application program(s). App refs: M-0071_A-4221-20-2CC1 (0701). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4221-20-2CC1"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIO-KESP"
+      ],
+      "name": "KES Plus 1.4",
+      "url": "https://assets.zennio.com/application_program/KES_Plus_1.4_EIFAItR_Cert.knxprod",
+      "sha256": "5d2c203f0516de186f23a37b6df69d5f0237ca42279de8e37edbfc5589a72dff",
+      "size": 624967,
+      "filename": "KES_Plus_1.4_EIFAItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4261-14-DDEA (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4261-14-DDEA"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZITKIL"
+      ],
+      "name": "KILock 1.1",
+      "url": "https://assets.zennio.com/application_program/KILock_1.1_EIFAItRUk.knxprod",
+      "sha256": "31da26263e64432225a22fa086dbeb38700183f9a2592e83bca1d40f9688378d",
+      "size": 168921,
+      "filename": "KILock_1.1_EIFAItRUk.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-2521-11-B87B (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-2521-11-B87B"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZSYKIPIRC"
+      ],
+      "name": "KIPI-RC 1.1",
+      "url": "https://assets.zennio.com/application_program/KIPI-RC_1.1_EIFAItR_Cert_ETS5.knxprod",
+      "sha256": "ada35ca096ec75c67bbcfa120f512dab805b1d8ab5bcea46c6b40a3b3508e958",
+      "size": 630804,
+      "filename": "KIPI-RC_1.1_EIFAItR_Cert_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-1321-11-6223 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-1321-11-6223"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZSYKIPRCSC"
+      ],
+      "name": "KIPI-RC SC 1.6",
+      "url": "https://assets.zennio.com/application_program/KIPI-RC_SC_1.6_EIFAItRUk.knxprod",
+      "sha256": "ef598958f89ab5a9334e41c197b833371282f404d09c72a7bc6e268e8b057f23",
+      "size": 827180,
+      "filename": "KIPI-RC_SC_1.6_EIFAItRUk.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-1331-16-E1BF (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-1331-16-E1BF"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIRN"
+      ],
+      "name": "KIRN 1.0",
+      "url": "https://assets.zennio.com/application_program/KIRN_1.0_EIFAItRUk_Cert.knxprod",
+      "sha256": "ec38e4c5381ed2ae803a465df17c60cee25839bbf087ef206e28e72fed8e1349",
+      "size": 123263,
+      "filename": "KIRN_1.0_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-2511-10-5C5D (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-2511-10-5C5D"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZN1CL-KLIC-DA"
+      ],
+      "name": "KLIC-DA LT 1.4",
+      "url": "https://assets.zennio.com/application_program/KLIC-DA_1.4_EIFAItRS.knxprod",
+      "sha256": "4ee526cb8402d44a7542943ff6144acb0cea53849712f2124c76973b22f5b90f",
+      "size": 58435,
+      "filename": "KLIC-DA_1.4_EIFAItRS.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 0701. 1 application program(s). App refs: M-0071_A-1231-14-8C11 (0701). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-1231-14-8C11"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZN1CL-KLIC-DA"
+      ],
+      "name": "KLIC-DA LT 2.2",
+      "url": "https://assets.zennio.com/application_program/KLIC-DA_LT_2.2_EIFAItRS.knxprod",
+      "sha256": "e5af04d55e2b7b74158b41e276b8fcd0b70730808dd779f6a1cb85076da55deb",
+      "size": 66166,
+      "filename": "KLIC-DA_LT_2.2_EIFAItRS.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 0701. 1 application program(s). App refs: M-0071_A-1231-22-E232 (0701). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-1231-22-E232"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCLDAV2"
+      ],
+      "name": "KLIC-DA v2 1.0",
+      "url": "https://assets.zennio.com/application_program/KLIC-DA_v2_1.0_EIFAItR_Cert_ETS5.knxprod",
+      "sha256": "c06e31d4369c49afbf478711fba7d7b5f10a506185491a44671de9fb42ef45b6",
+      "size": 564105,
+      "filename": "KLIC-DA_v2_1.0_EIFAItR_Cert_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-12E1-10-54AB (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-12E1-10-54AB"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCLDDV3"
+      ],
+      "name": "KLIC-DD v3 1.4",
+      "url": "https://assets.zennio.com/application_program/KLIC-DD_v3_1.4_EIFAItRUk_Cert.knxprod",
+      "sha256": "73f681ecd3f93922220f397c4933cce7f765d819dc1c320ca07637e8b5fad5c8",
+      "size": 632289,
+      "filename": "KLIC-DD_v3_1.4_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-12A1-14-6EF6 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-12A1-14-6EF6"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCLDIV2"
+      ],
+      "name": "KLIC-DI v2 1.4",
+      "url": "https://assets.zennio.com/application_program/KLIC-DI_v2_1.4_EIFAItRUk_Cert.knxprod",
+      "sha256": "02b7350c0503ee497a9da71bec5e9e791b30d5d31ecda957787cd9f6fc0c5b54",
+      "size": 629719,
+      "filename": "KLIC-DI_v2_1.4_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-12D1-14-72DC (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-12D1-14-72DC"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCLFJT"
+      ],
+      "name": "KLIC-FJT 1.1",
+      "url": "https://assets.zennio.com/application_program/KLIC-FJT_1.1_EIFAItRUk_Cert.knxprod",
+      "sha256": "c827c4ee6130297f95cb1d38308ae5713ff6fb64e078b29c67370fb13d3dd6b4",
+      "size": 664135,
+      "filename": "KLIC-FJT_1.1_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-1431-11-4E0B (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-1431-11-4E0B"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL-FJ"
+      ],
+      "name": "KLIC-FJ 1.0",
+      "url": "https://assets.zennio.com/application_program/KLIC-FJ_1_0_EIFAItRS_ETS5.knxprod",
+      "sha256": "d2a1f8a22f8af85c48bc3c066337a4893010f4505491991b7629a3e590112fee",
+      "size": 635612,
+      "filename": "KLIC-FJ_1_0_EIFAItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-1281-10-097B (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-1281-10-097B"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCLPA"
+      ],
+      "name": "KLIC-PA 1.0",
+      "url": "https://assets.zennio.com/application_program/KLIC-PA_1.0_EIFAItRS_Cert_ETS5.knxprod",
+      "sha256": "f2db746254d0dcd78fa2c6d82ea49216f960ade2dab49ba47da1a79bc8f9cc29",
+      "size": 641016,
+      "filename": "KLIC-PA_1.0_EIFAItRS_Cert_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-12B1-10-59A8 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-12B1-10-59A8"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCLSG"
+      ],
+      "name": "KLIC-SG 1.0",
+      "url": "https://assets.zennio.com/application_program/KLIC-SG_1.0_EIFAItR_ETS5_Cert.knxprod",
+      "sha256": "1482f462c6796ee45fe8310c136916da220beb8591faca167ce74488a2b2dd02",
+      "size": 577981,
+      "filename": "KLIC-SG_1.0_EIFAItR_ETS5_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-12F1-10-EFBB (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-12F1-10-EFBB"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZN1CL-KLIC-DI"
+      ],
+      "name": "KLIC-DI SKY 2.3",
+      "url": "https://assets.zennio.com/application_program/KLIC_DI_SKY_2.3_EIFAItRS.knxprod",
+      "sha256": "a11f0731ca59262391d30ea382635c1ba03d2921686742d65e8b084409e4217f",
+      "size": 319517,
+      "filename": "KLIC_DI_SKY_2.3_EIFAItRS.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 0701. 1 application program(s). App refs: M-0071_A-1221-23-6EC3 (0701). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-1221-23-6EC3"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZN1CL-KLIC-DI"
+      ],
+      "name": "KLIC-DI VRV 1.13",
+      "url": "https://assets.zennio.com/application_program/KLIC_DI_VRV_1.13_EIFAItRS.knxprod",
+      "sha256": "8c6a9c1352d817009997806bc6d96759aaf2e8ecb8a01136357f717ce09660d1",
+      "size": 79254,
+      "filename": "KLIC_DI_VRV_1.13_EIFAItRS.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 0701. 1 application program(s). App refs: M-0071_A-1222-1D-B914 (0701). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-1222-1D-B914"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL-LG1"
+      ],
+      "name": "KLIC-LG1 1.0",
+      "url": "https://assets.zennio.com/application_program/KLIC_LG1_1_0_EIAFItRS_ETS5.knxprod",
+      "sha256": "392a8b3f4a6c35d352264dc4f31309d5aa8799b23c11993e9994209e8a6885ec",
+      "size": 622169,
+      "filename": "KLIC_LG1_1_0_EIAFItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-1251-10-216A (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-1251-10-216A"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL-MITT"
+      ],
+      "name": "KLIC-MITT 1.0",
+      "url": "https://assets.zennio.com/application_program/KLIC_MITT_1_0_EIAItRSF.knxprod",
+      "sha256": "44d2414f4d531ae6823267f7091175cf0574f686d9b6a7f7994e1e2c390196a8",
+      "size": 599192,
+      "filename": "KLIC_MITT_1_0_EIAItRSF.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-1241-10-FF81 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-1241-10-FF81"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCLMITTV2"
+      ],
+      "name": "KLIC-MITT v2 1.0",
+      "url": "https://assets.zennio.com/application_program/KLIC_MITT_v2_1.0_EIFAItRS_ETS5.knxprod",
+      "sha256": "34873a399cab5a183064785aa3f88bf5fda7080ab0a1c6123b0820528d7ba60f",
+      "size": 598252,
+      "filename": "KLIC_MITT_v2_1.0_EIFAItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-1291-10-11E3 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-1291-10-11E3"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCLMITTV3"
+      ],
+      "name": "KLIC-MITT v3 1.3",
+      "url": "https://assets.zennio.com/application_program/KLIC_MITT_v3_1.3_EIFAItRUk_Cert.knxprod",
+      "sha256": "6d10a463a0c432e1ab5a71fbe69657710ff9f15fe2eb59407f9e2b07ce79795c",
+      "size": 671582,
+      "filename": "KLIC_MITT_v3_1.3_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-1421-13-5324 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-1421-13-5324"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL-TS"
+      ],
+      "name": "KLIC-TS 1.0",
+      "url": "https://assets.zennio.com/application_program/KLIC_TS_1_0_EIFAItRS_ETS5.knxprod",
+      "sha256": "c06480f02b22c62a57771cc69af179f3e84884af37af56c72a153a4952045c3b",
+      "size": 624582,
+      "filename": "KLIC_TS_1_0_EIFAItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-1271-10-455A (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-1271-10-455A"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL-TS"
+      ],
+      "name": "KLIC-TS 1.1",
+      "url": "https://assets.zennio.com/application_program/KLIC_TS_1_1_EIFAItR_Cert_ETS5.knxprod",
+      "sha256": "d67ed34516fd5ae281f304aee72c27d7fe62acc39347562af9baa2b2d04029ec",
+      "size": 609521,
+      "filename": "KLIC_TS_1_1_EIFAItR_Cert_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-1271-11-31F4 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-1271-11-31F4"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL-TS"
+      ],
+      "name": "KLIC-TS 2.0",
+      "url": "https://assets.zennio.com/application_program/KLIC_TS_2_0_EIFAItR_ETS5_Cert.knxprod",
+      "sha256": "391654402a5c679b5f038f02e171519dcdef60bb85bffb2f1fa2e2a5a78108b3",
+      "size": 613019,
+      "filename": "KLIC_TS_2_0_EIFAItR_ETS5_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-1271-20-E2DD (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-1271-20-E2DD"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZN1DI-P400"
+      ],
+      "name": "LUZEN PLUS 3.2",
+      "url": "https://assets.zennio.com/application_program/LUZEN_PLUS_3.2_EIFAItRS.knxprod",
+      "sha256": "720eab7034f6010c2614e674473c993d1e855c63c225aaa5c6f1d40fee9ff147",
+      "size": 295953,
+      "filename": "LUZEN_PLUS_3.2_EIFAItRS.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 0701. 1 application program(s). App refs: M-0071_A-3121-32-345F (0701). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3121-32-345F"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZN1DI-4001"
+      ],
+      "name": "LuZen ONE 2.3",
+      "url": "https://assets.zennio.com/application_program/LuZen_ONE_2.3_EIFAH_CERT.knxprod",
+      "sha256": "6ca7a7c75d5b09805971b44e2841489dce48a1f542297b6cf82a8a1e923494f0",
+      "size": 258555,
+      "filename": "LuZen_ONE_2.3_EIFAH_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 0701. 1 application program(s). App refs: M-0071_A-3111-23-D076 (0701). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3111-23-D076"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZN1DI-RGBX4"
+      ],
+      "name": "LUMENTO X4 LED 1.1",
+      "url": "https://assets.zennio.com/application_program/LumentoX4_LED_1.1_EIFAIt.knxprod",
+      "sha256": "0bf2bd9478edceb11c6df43a6b1794da417b17fec5332ef1999f15ba5831de23",
+      "size": 120974,
+      "filename": "LumentoX4_LED_1.1_EIFAIt.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 0701. 1 application program(s). App refs: M-0071_A-3222-11-1137 (0701). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3222-11-1137"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZN1DI-RGBX4"
+      ],
+      "name": "LUMENTO X4 RGBW 1.1",
+      "url": "https://assets.zennio.com/application_program/LumentoX4_RGBW_1.1_EIFAS.knxprod",
+      "sha256": "4b4ce8e5568b64cd1f6b680a856f476c2e0ecf6bb8aa20b489371b3d2d55a991",
+      "size": 117439,
+      "filename": "LumentoX4_RGBW_1.1_EIFAS.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 0701. 1 application program(s). App refs: M-0071_A-3221-11-E63A (0701). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3221-11-E63A"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZN1DI-RGBX4"
+      ],
+      "name": "LUMENTO X4 WHITE 1.1",
+      "url": "https://assets.zennio.com/application_program/LumentoX4_WHITE_1.1_EIFAIt.knxprod",
+      "sha256": "447b0529ade8cab9a6631f2d6f040ed5cb36f5120a4fb09af11b8a3dba6ca636",
+      "size": 104330,
+      "filename": "LumentoX4_WHITE_1.1_EIFAIt.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 0701. 1 application program(s). App refs: M-0071_A-3223-11-6D23 (0701). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3223-11-6D23"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDI-RGBCC3"
+      ],
+      "name": "Lumento C3 1.1",
+      "url": "https://assets.zennio.com/application_program/Lumento_C3_1.1_EIFAItRSP_CERT.knxprod",
+      "sha256": "40fef24e767e6c35e10235bc6b05944a33e40dea594e7e573182085c45c72fe5",
+      "size": 253632,
+      "filename": "Lumento_C3_1.1_EIFAItRSP_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3241-11-5AF5 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3241-11-5AF5"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDI-RGBCC4"
+      ],
+      "name": "Lumento C4 1.1",
+      "url": "https://assets.zennio.com/application_program/Lumento_C4_1.1_EIFAItPRS_CERT.knxprod",
+      "sha256": "20922a5437f0a8a4392dd5c1f70dfeb489b157b917f23c7a409b73741884980d",
+      "size": 378714,
+      "filename": "Lumento_C4_1.1_EIFAItPRS_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3231-11-FD3F (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3231-11-FD3F"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDI-RGBDX4"
+      ],
+      "name": "Lumento DX4 1.2",
+      "url": "https://assets.zennio.com/application_program/Lumento_DX4_1.2_EIFAItRS_ETS5.knxprod",
+      "sha256": "c21e1f682271ba2ebfc1ca272e5af381d5c464a5b9d3a4102c6c4964e28ab7c2",
+      "size": 697778,
+      "filename": "Lumento_DX4_1.2_EIFAItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3251-12-4CC0 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3251-12-4CC0"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZN1DI-RGBX3"
+      ],
+      "name": "LUMENTO X3 LED 1.1",
+      "url": "https://assets.zennio.com/application_program/Lumento_X3_LED_1.1_EIFA.knxprod",
+      "sha256": "e7b888bc21cb88b5d7fe04089a10c6226c442bd5065de0e6dbd6aa525acd26cf",
+      "size": 99201,
+      "filename": "Lumento_X3_LED_1.1_EIFA.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 0701. 1 application program(s). App refs: M-0071_A-3212-11-AA50 (0701). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3212-11-AA50"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZN1DI-RGBX3"
+      ],
+      "name": "LUMENTO X3 RGB 1.1",
+      "url": "https://assets.zennio.com/application_program/Lumento_X3_RGB_1.1_EIFA.knxprod",
+      "sha256": "43c75b33580dd5feb4e0bd91bfa45f447f00f0179baba309dae92cafd1e061b7",
+      "size": 99433,
+      "filename": "Lumento_X3_RGB_1.1_EIFA.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 0701. 1 application program(s). App refs: M-0071_A-3211-11-91EC (0701). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3211-11-91EC"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZN1IO-MB16"
+      ],
+      "name": "MAXinBOX 16 2.2",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX16_2.2_EIFAR.knxprod",
+      "sha256": "05d81332578bcb192649b02e8fe353ddb62ddf1dca6a2ada466dcf1e06e45153",
+      "size": 583390,
+      "filename": "MAXinBOX16_2.2_EIFAR.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 0701. 1 application program(s). App refs: M-0071_A-4151-22-69AC (0701). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4151-22-69AC"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZN1IO-MB8"
+      ],
+      "name": "MAXinBOX 8 1.0",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX8_1.0_EI.knxprod",
+      "sha256": "e6b26b7beba2a413520b15e20c676ba51f0f1816d117c78cc6dae258989491d3",
+      "size": 433336,
+      "filename": "MAXinBOX8_1.0_EI.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 0701. 1 application program(s). App refs: M-0071_A-4161-10-5AB4 (0701). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4161-10-5AB4"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOMB1212"
+      ],
+      "name": "MAXinBOX 1212 1.7",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_1212_1.7_EIFAItRUk_Cert.knxprod",
+      "sha256": "46ef9cfaa5f6f511292e0ab6fe317046e0e5ee7a85b734536a4bdb7d08da6bce",
+      "size": 2615072,
+      "filename": "MAXinBOX_1212_1.7_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-49D1-17-E1DC (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-49D1-17-E1DC"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOMB12"
+      ],
+      "name": "MAXinBOX 12 1.12",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_12_1.12_EIFAItRUk_Cert.knxprod",
+      "sha256": "4723883d7df32755f0704cad9bd6a397ca594da4d57eb2b962013fdc46fa4963",
+      "size": 2734533,
+      "filename": "MAXinBOX_12_1.12_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4961-1C-C995 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4961-1C-C995"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIO-MB16P"
+      ],
+      "name": "MAXinBOX 16 Plus 1.0",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_16_Plus_1_0_EIFAItRSP.knxprod",
+      "sha256": "b42c8e4bbb5213768d2e14d3bb7b4f6a1d21380c88862583f63db5c1fca24e37",
+      "size": 1656658,
+      "filename": "MAXinBOX_16_Plus_1_0_EIFAItRSP.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-41A1-10-9E29 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-41A1-10-9E29"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIO-MB16P"
+      ],
+      "name": "MAXinBOX 16 Plus 1.1",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_16_Plus_1_1_EIFAItRSP_CERT.knxprod",
+      "sha256": "e47a82a83f9fa88c9e3599c1e39e53a940f520edab649607b79ba26a5db6314c",
+      "size": 1668394,
+      "filename": "MAXinBOX_16_Plus_1_1_EIFAItRSP_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-41A1-11-A7F7 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-41A1-11-A7F7"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIO-MB16P"
+      ],
+      "name": "MAXinBOX 16 Plus 1.2",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_16_Plus_1_2_EIFAItRSP_CERT.knxprod",
+      "sha256": "1ea74210347642d045e3d8991f5f78acda12afecf104825f84e55af834e685a3",
+      "size": 1668349,
+      "filename": "MAXinBOX_16_Plus_1_2_EIFAItRSP_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-41A1-12-608E (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-41A1-12-608E"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIO-MB16P"
+      ],
+      "name": "MAXinBOX 16 Plus 1.2",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_16_Plus_1_2_EIFAItRSP_ETS5_CERT.knxprod",
+      "sha256": "1dee8b43858c298ab49a946dd4612bdd7fddf6ea325daf70ee13ca0ec22b4ef4",
+      "size": 1574151,
+      "filename": "MAXinBOX_16_Plus_1_2_EIFAItRSP_ETS5_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-41A1-12-0D47 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-41A1-12-0D47"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOMB16V4"
+      ],
+      "name": "MAXinBOX 16 v4 1.12",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_16_v4_1.12_EIFAItRUk_Cert.knxprod",
+      "sha256": "fefc8f3bf6e1d5db68532c58bd48b6f95b1e154787aa8a3e482fb42fa4f98acb",
+      "size": 2737462,
+      "filename": "MAXinBOX_16_v4_1.12_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4981-1C-94CF (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4981-1C-94CF"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOMB20"
+      ],
+      "name": "MAXinBOX 20 1.12",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_20_1.12_EIFAItRUk_Cert.knxprod",
+      "sha256": "86edcab813b48ea6a844def63f97d1beda51e719a2483f6fa15f872df4e8c4ee",
+      "size": 2735050,
+      "filename": "MAXinBOX_20_1.12_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4971-1C-A239 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4971-1C-A239"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIO-MB24"
+      ],
+      "name": "MAXinBOX 24 1.4",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_24_1.4_EIFAItR_Cert_ETS5.knxprod",
+      "sha256": "48fe948b99a46bb0575d77eb79c352f6fb3c332bc8f212e4843143d927db5ec3",
+      "size": 2575130,
+      "filename": "MAXinBOX_24_1.4_EIFAItR_Cert_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-41F1-14-2A9A (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-41F1-14-2A9A"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOMB24V2"
+      ],
+      "name": "MAXinBOX 24 v2 1.12",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_24_v2_1.12_EIFAItRUk_Cert.knxprod",
+      "sha256": "2a410e0d48d1ab7f2a4584a9b1495afae43a06367f7262169f5b60a512cefefe",
+      "size": 2733633,
+      "filename": "MAXinBOX_24_v2_1.12_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4951-1C-7327 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4951-1C-7327"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZN1IO-MB66"
+      ],
+      "name": "MAXinBOX 66 1.3",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_66_1.3_EIFAItRSP.knxprod",
+      "sha256": "cf11901a220986fb9351ac63ebccae31a463544aaa2d4c8e015408f2adf8d660",
+      "size": 1163810,
+      "filename": "MAXinBOX_66_1.3_EIFAItRSP.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4171-13-DF14 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4171-13-DF14"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOMB66V2"
+      ],
+      "name": "MAXinBOX 66 v2 1.1",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_66_v2_1.1_EIFAItRS_ETS5.knxprod",
+      "sha256": "4a1177643f5e7bb74b68d25220554f308efd30e5b38950c748b5ad71c0a65339",
+      "size": 1394529,
+      "filename": "MAXinBOX_66_v2_1.1_EIFAItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4931-11-425E (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4931-11-425E"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOMB66V3"
+      ],
+      "name": "MAXinBOX 66 v3 1.6",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_66_v3_1.6_EIFAItRUk_Cert.knxprod",
+      "sha256": "031558805408cec7ca3d5bfc71713f4213b5b71dd859ad0478c819187bb9a439",
+      "size": 2299389,
+      "filename": "MAXinBOX_66_v3_1.6_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-49B1-16-379C (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-49B1-16-379C"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOMB88"
+      ],
+      "name": "MAXinBOX 88 1.6",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_88_1.6_EIFAItRUk_Cert.knxprod",
+      "sha256": "2f6c6b0438c07f93588aea6df31d588a89810c725d3e25d65342de2b9909fcf4",
+      "size": 2299103,
+      "filename": "MAXinBOX_88_1.6_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-49C1-16-0451 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-49C1-16-0451"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIO-MB8P"
+      ],
+      "name": "MAXinBOX 8 Plus 1.1",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_8_Plus_1_1_EIFAItRSP_CERT.knxprod",
+      "sha256": "4a346720bdb393e2508521d523b86a9b95f4739ec62427787f9d207e801d62c8",
+      "size": 1227286,
+      "filename": "MAXinBOX_8_Plus_1_1_EIFAItRSP_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-41D1-11-17CE (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-41D1-11-17CE"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOMB8V3"
+      ],
+      "name": "MAXinBOX 8 v3 1.2",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_8_v3_1.2_EIFAItRS_ETS5_CERT.knxprod",
+      "sha256": "2442d9fd354ec6a21476be04c0830fabe37c075a86e3037534edf172b4817fc6",
+      "size": 2855126,
+      "filename": "MAXinBOX_8_v3_1.2_EIFAItRS_ETS5_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4921-12-B716 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4921-12-B716"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOMB8V4"
+      ],
+      "name": "MAXinBOX 8 v4 1.12",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_8_v4_1.12_EIFAItRUk_Cert.knxprod",
+      "sha256": "1cc90dd6009e4aca7b2a2b05f3f8ad6251cb15f17e884c7993d5ddde7a0f62d1",
+      "size": 2737748,
+      "filename": "MAXinBOX_8_v4_1.12_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4991-1C-AED6 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4991-1C-AED6"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL-2XFC2P"
+      ],
+      "name": "MAXinBOX FANCOIL 2CH2P 1.1",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_FANCOIL_2CH2P_1_1_EIFAItRSP_CERT.knxprod",
+      "sha256": "7c2c06d1b0cbdfb8c501031f5c5e9d4e3fccbb7cc9e9057803f4fcd15f3bac98",
+      "size": 816089,
+      "filename": "MAXinBOX_FANCOIL_2CH2P_1_1_EIFAItRSP_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4351-11-03E1 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4351-11-03E1"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL2FC2PV2"
+      ],
+      "name": "MAXinBOX FANCOIL 2CH2P v2 1.2",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_FANCOIL_2CH2P_v2_1.2_EIFAItRS_ETS5_CERT.knxprod",
+      "sha256": "069a98209e6f4ba21287f4186a01d78379710d71e6e8ad1023a2c259a7c2cdf8",
+      "size": 2854156,
+      "filename": "MAXinBOX_FANCOIL_2CH2P_v2_1.2_EIFAItRS_ETS5_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-43D1-12-453F (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-43D1-12-453F"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL-4XFC2P"
+      ],
+      "name": "MAXinBOX FANCOIL 4CH2P 1.0",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_FANCOIL_4CH2P_1_0_EFAItRSP.knxprod",
+      "sha256": "aeba4d899f5484b6ae0af2491c660eac1a6584c1f3b795e8b574fbda97e72926",
+      "size": 889562,
+      "filename": "MAXinBOX_FANCOIL_4CH2P_1_0_EFAItRSP.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4341-10-6337 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4341-10-6337"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL-4XFC2P"
+      ],
+      "name": "MAXinBOX FANCOIL 4CH2P 1.1",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_FANCOIL_4CH2P_1_1_EIFAItRSP_CERT.knxprod",
+      "sha256": "288274f1b8a24fab3a930d68b55309e74d200d6dd8d71973716393acadfef176",
+      "size": 899959,
+      "filename": "MAXinBOX_FANCOIL_4CH2P_1_1_EIFAItRSP_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4341-11-A310 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4341-11-A310"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL-FC010F"
+      ],
+      "name": "MAXinBOX FC 0-10V FAN 1.9",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_FC_0-10V_FAN_1.9_EIFAItRUk.knxprod",
+      "sha256": "1d3a65433b554ca7a7c30c0cf75fa800e567ce3e294ccd9bcde7e52392eb081c",
+      "size": 824551,
+      "filename": "MAXinBOX_FC_0-10V_FAN_1.9_EIFAItRUk.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4181-19-CCDD (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4181-19-CCDD"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL-FC010V"
+      ],
+      "name": "MAXinBOX FC 0-10V VALVE 1.4",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_FC_0-10V_VALVE_1.4_EIFAItRS_Cert_ETS5.knxprod",
+      "sha256": "44bbd17381ac71548ff305fa68b9d2843b6b30e3d9d8c6eda21f0753c90b24b6",
+      "size": 839099,
+      "filename": "MAXinBOX_FC_0-10V_VALVE_1.4_EIFAItRS_Cert_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-41B1-14-C19D (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-41B1-14-C19D"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL-HP126"
+      ],
+      "name": "MAXinBOX Hospitality 1.1",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_Hospitality_1.1_EIFAItRSP_CERT.knxprod",
+      "sha256": "14816d4ac0d3a017a8889b896f34d5c1a1cd9f0f1df8a24c6343ad20beebb8ac",
+      "size": 765322,
+      "filename": "MAXinBOX_Hospitality_1.1_EIFAItRSP_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4191-11-7151 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4191-11-7151"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL-HP126"
+      ],
+      "name": "MAXinBOX Hospitality 2.0",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_Hospitality_2_0_EIFAItRS.knxprod",
+      "sha256": "e608ec732c9c4d6e05093b1de81fc27da631a9135dd306608b13b169a4d30f7f",
+      "size": 837940,
+      "filename": "MAXinBOX_Hospitality_2_0_EIFAItRS.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4191-20-A996 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4191-20-A996"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL-HP126"
+      ],
+      "name": "MAXinBOX Hospitality 2.1",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_Hospitality_2_1_EIFAItRS_CERT.knxprod",
+      "sha256": "658152fa58103743f9c87662126965150c6613acfac6f94e9774c2276e3bc0d1",
+      "size": 901049,
+      "filename": "MAXinBOX_Hospitality_2_1_EIFAItRS_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4191-21-5355 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4191-21-5355"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL-HP126"
+      ],
+      "name": "MAXinBOX Hospitality 2.1",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_Hospitality_2_1_EIFAItRS_ETS5_CERT.knxprod",
+      "sha256": "4781d65fae8a843debca11a4168f4b0a807a9be2c81b4d5b65957bb7856753b0",
+      "size": 861683,
+      "filename": "MAXinBOX_Hospitality_2_1_EIFAItRS_ETS5_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4191-21-22B3 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4191-21-22B3"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL-HP126"
+      ],
+      "name": "MAXinBOX Hospitality 2.2",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_Hospitality_2_2_EIFAItRS_ETS5.knxprod",
+      "sha256": "5936a4fbb444618b8c47d8ff49769aba281d71047803bc902a2f0188918aed8c",
+      "size": 900332,
+      "filename": "MAXinBOX_Hospitality_2_2_EIFAItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4191-22-CBAE (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4191-22-CBAE"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL-HP126"
+      ],
+      "name": "MAXinBOX Hospitality 2.3",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_Hospitality_2_3_EIFAItRS_Cert_ETS5.knxprod",
+      "sha256": "59cf921186537300ab176b3355e3c3dbe59188f5cd47b1363136f39d3dbea358",
+      "size": 906794,
+      "filename": "MAXinBOX_Hospitality_2_3_EIFAItRS_Cert_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4191-23-D602 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4191-23-D602"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZSxxSOFT"
+      ],
+      "name": "Soft Push button 1.0",
+      "url": "https://assets.zennio.com/application_program/Soft_Push_button_1.0_EIFAItRUk.knxprod",
+      "sha256": "b0fb8a7c56239e903211a1994ef2d735dd71ad1f91c2c43fc2f723c13e1d9fea",
+      "size": 1134428,
+      "filename": "Soft_Push_button_1.0_EIFAItRUk.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5C31-10-33A6 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5C31-10-33A6"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIT55X6"
+      ],
+      "name": "Tecla 55 X6 1.8",
+      "url": "https://assets.zennio.com/application_program/Tecla_55_X6_1.8_EIAFItR_Cert.knxprod",
+      "sha256": "3d2fa04041164c7436a412622c6a4ebe75a32b90e64b9a63de7ec4329831f68e",
+      "size": 1246228,
+      "filename": "Tecla_55_X6_1.8_EIAFItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5941-18-10EC (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5941-18-10EC"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVI-Z41LIT"
+      ],
+      "name": "Z41 Lite 2.2",
+      "url": "https://assets.zennio.com/application_program/Z41_Lite_2_2_EIFAItRSP.knxprod",
+      "sha256": "8aa194ef9f5e0432595450a77bb0937e6012fc88c0ab67fd3792a8cd40c1b061",
+      "size": 3374419,
+      "filename": "Z41_Lite_2_2_EIFAItRSP.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5171-22-E8E9 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5171-22-E8E9"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZSY-IPR-PL"
+      ],
+      "name": "Zennio KNX-IP Router PLess 1.0",
+      "url": "https://assets.zennio.com/application_program/Zennio_KNX_IP_Router_PLess_1_0_EIFAItRS_CERT.knxprod",
+      "sha256": "24f4024adc65d8b518785a1586c0d2b333318b73e975db57abd2f3faa82cd77d",
+      "size": 52073,
+      "filename": "Zennio_KNX_IP_Router_PLess_1_0_EIFAItRS_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 091A. 1 application program(s). App refs: M-0071_A-6331-10-1E3B-O0072 (091A). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-6331-10-1E3B-O0072"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZN1SY-LCTP"
+      ],
+      "name": "Zennio Linecoupler 1.1",
+      "url": "https://assets.zennio.com/application_program/Zennio_Linecoupler_1.1_EIFAItRSP.knxprod",
+      "sha256": "0a067bb8e04462cb84826a02136abf841f589973b569368cb5591e14dd7596df",
+      "size": 53744,
+      "filename": "Zennio_Linecoupler_1.1_EIFAItRSP.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 0912. 2 application program(s). App refs: M-0071_A-6211-11-7961-O0072 (0912); M-0071_A-6212-11-A39F-O0072 (0912). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-6211-11-7961-O0072"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL-ZB6"
+      ],
+      "name": "ZoningBOX 6 1.0",
+      "url": "https://assets.zennio.com/application_program/ZoningBOX_6_1_0_EIFAItRSP_ETS5_CERT.knxprod",
+      "sha256": "7fbd53eeaaedf7110ce06cf116fa29a84909dd8c82308bf5c3ce2eff0b84a91d",
+      "size": 186712,
+      "filename": "ZoningBOX_6_1_0_EIFAItRSP_ETS5_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-41C1-10-D4B2 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-41C1-10-D4B2"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL-ZB6"
+      ],
+      "name": "ZoningBOX 6 2.0",
+      "url": "https://assets.zennio.com/application_program/ZoningBOX_6_2.0_EIAFItR_ETS5.knxprod",
+      "sha256": "9bdee2804e941abfc9f353eae288c657d1b1c5ca3a960881f00988611ae56844",
+      "size": 251688,
+      "filename": "ZoningBOX_6_2.0_EIAFItR_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-41C1-20-4F6F (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-41C1-20-4F6F"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOIB20V2"
+      ],
+      "name": "inBOX 20 v2 1.2",
+      "url": "https://assets.zennio.com/application_program/inBOX_20_v2_1.2_EIAFItRS_ETS5_CERT.knxprod",
+      "sha256": "555726e678f9301ac736d3526685098708f4c980c4fedb31c379443adfb72146",
+      "size": 2853673,
+      "filename": "inBOX_20_v2_1.2_EIAFItRS_ETS5_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4741-12-5A8C (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4741-12-5A8C"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOIB20V3"
+      ],
+      "name": "inBOX 20 v3 1.12",
+      "url": "https://assets.zennio.com/application_program/inBOX_20_v3_1.12_EIFAItRUk_Cert.knxprod",
+      "sha256": "9c05e9c8fadf0bb96fdb617f97a7790893bc0997361a60885ab2c7073e082711",
+      "size": 2733783,
+      "filename": "inBOX_20_v3_1.12_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4761-1C-0AA4 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4761-1C-0AA4"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIO-IB24"
+      ],
+      "name": "inBOX 24 1.1",
+      "url": "https://assets.zennio.com/application_program/inBOX_24_1_1_EIFAItRS_ETS5.knxprod",
+      "sha256": "979b273be82f24dd899e9dcaee19b23ff1310b2e6ecbaa2e52f59a16676f642f",
+      "size": 809220,
+      "filename": "inBOX_24_1_1_EIFAItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4711-11-9ACC (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4711-11-9ACC"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIO-IB24"
+      ],
+      "name": "inBOX 24 1.2",
+      "url": "https://assets.zennio.com/application_program/inBOX_24_1_2_EIFAItRS.knxprod",
+      "sha256": "c80524af21292145c3b0c485abeec924f096327aa0e43828944ee449b4e2261d",
+      "size": 878552,
+      "filename": "inBOX_24_1_2_EIFAItRS.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4711-12-E642 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4711-12-E642"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIO-IB24"
+      ],
+      "name": "inBOX 24 1.3",
+      "url": "https://assets.zennio.com/application_program/inBOX_24_1_3_EIFAItRS_ETS5_CERT.knxprod",
+      "sha256": "baa9f9c0d30daaec43e1009b308fe8742c71788dcee8638ce7080c66baaf63a0",
+      "size": 851772,
+      "filename": "inBOX_24_1_3_EIFAItRS_ETS5_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4711-13-E93A (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4711-13-E93A"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOIB24V3"
+      ],
+      "name": "inBOX 24 v3 1.6",
+      "url": "https://assets.zennio.com/application_program/inBOX_24_v3_1.6_EIAFItRUk_Cert.knxprod",
+      "sha256": "9bb47a97b6a5044bab1a10467891982caf1c13c0490a4f3e56846c16999a7753",
+      "size": 2292559,
+      "filename": "inBOX_24_v3_1.6_EIAFItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4751-16-6186 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4751-16-6186"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDIIBD16"
+      ],
+      "name": "inBOX DALI 16 2.2",
+      "url": "https://assets.zennio.com/application_program/inBOX_DALI_16_2.2_EIFAItRUk_Cert.knxprod",
+      "sha256": "81b29c34d34f7c4412a44bbc37727e84fa5b0767f41e4d99e86221ae8fbb5a84",
+      "size": 764079,
+      "filename": "inBOX_DALI_16_2.2_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3381-22-DC67 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3381-22-DC67"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZN1CL-IRSC"
+      ],
+      "name": "IRSC Open 1.1",
+      "url": "https://assets.zennio.com/application_program/IRSC_Open_1.1_EIFAHS_CERT.knxprod",
+      "sha256": "ee2362ff8b3959524e8223b7f20a7c7e3401a91a3c09bb168d30875d0254098d",
+      "size": 80426,
+      "filename": "IRSC_Open_1.1_EIFAHS_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 0701. 1 application program(s). App refs: M-0071_A-2311-11-D0E8 (0701). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-2311-11-D0E8"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOMB24V2"
+      ],
+      "name": "MAXinBOX 24 v2 1.6",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_24_v2_1.6_EIFAItR_Cert.knxprod",
+      "sha256": "ba412a5580f3552fb19da85c8996c0cf3023ae63cad426bb9e7f2535602bc7a9",
+      "size": 2594458,
+      "filename": "MAXinBOX_24_v2_1.6_EIFAItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4951-16-0F22 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4951-16-0F22"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCLHP126V3"
+      ],
+      "name": "MAXinBOX Hospitality v3 2.0",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_Hospitality_v3_2.0_EIFAItRUk_Cert.knxprod",
+      "sha256": "dd02e636c169b9c52571a1dd365fc755db1b44fd760a1035ad1ac5c063fc81a9",
+      "size": 1232404,
+      "filename": "MAXinBOX_Hospitality_v3_2.0_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-49A1-20-55B2 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-49A1-20-55B2"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIO–MBSHU4"
+      ],
+      "name": "MAXinBOX SHUTTER 4CH 1.2",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_SHUTTER_4CH_1_2_EIFAItRS_ETS5.knxprod",
+      "sha256": "2b09690d9de5f49bc41ae356ea3746a401778aa0a40e182433b2b29219c7e09f",
+      "size": 828639,
+      "filename": "MAXinBOX_SHUTTER_4CH_1_2_EIFAItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4321-12-C9FA (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4321-12-C9FA"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOMBSH4V2"
+      ],
+      "name": "MAXinBOX SHUTTER 4CH v2 1.2",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_SHUTTER_4CH_v2_1_2_EIFAItRS_ETS5_CERT.knxprod",
+      "sha256": "1991a707487706a06cfdd7f38814580a4739c0ab2130b45ff22a38dec439eeed",
+      "size": 2853497,
+      "filename": "MAXinBOX_SHUTTER_4CH_v2_1_2_EIFAItRS_ETS5_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-43B1-12-CA3F (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-43B1-12-CA3F"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOMBSH4V3"
+      ],
+      "name": "MAXinBOX SHUTTER 4CH v3 1.13",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_SHUTTER_4CH_v3_1.13_EIFAItRUk_Cert.knxprod",
+      "sha256": "d58ff0c1964889376bf8a474dc870a317a8fdfb0e4a6e25f85ec16ea493dff41",
+      "size": 2861636,
+      "filename": "MAXinBOX_SHUTTER_4CH_v3_1.13_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4B61-1D-61AA (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4B61-1D-61AA"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIO–MBSHU8"
+      ],
+      "name": "MAXinBOX SHUTTER 8CH 1.2",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_SHUTTER_8CH_1_2_EIFAItRS_ETS5.knxprod",
+      "sha256": "d1d7de3857e26eeadf13cb32578f5fb1ffb74dfba10ff7ea9eb72e9d238c6765",
+      "size": 1002319,
+      "filename": "MAXinBOX_SHUTTER_8CH_1_2_EIFAItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4311-12-895F (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4311-12-895F"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOMBSH8V2"
+      ],
+      "name": "MAXinBOX SHUTTER 8CH v2 1.2",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_SHUTTER_8CH_v2_1_2_EIFAItRS_ETS5_CERT.knxprod",
+      "sha256": "117858fc0205ddd3d76f4242441a80f3eddaefb936c965cc0d25df1d9b12840d",
+      "size": 2853633,
+      "filename": "MAXinBOX_SHUTTER_8CH_v2_1_2_EIFAItRS_ETS5_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-43A1-12-1AB6 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-43A1-12-1AB6"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOMBSH8V3"
+      ],
+      "name": "MAXinBOX SHUTTER 8CH v3 1.13",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_SHUTTER_8CH_v3_1.13_EIFAItRUk_Cert.knxprod",
+      "sha256": "85f2b1b53f8321106102466fcc5db328a03b4402d6344a2b094675960f64fea3",
+      "size": 2861476,
+      "filename": "MAXinBOX_SHUTTER_8CH_v3_1.13_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4B51-1D-B865 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4B51-1D-B865"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIO1X010"
+      ],
+      "name": "MINiBOX 0-10V X1 1.4",
+      "url": "https://assets.zennio.com/application_program/MINiBOX_0-10V_X1_1.4_EIAFItRUk_Cert.knxprod",
+      "sha256": "b121f1abdbc002aa138a1f55e72ca5bf24786979eaf606ffc605542351f4e42b",
+      "size": 792222,
+      "filename": "MINiBOX_0-10V_X1_1.4_EIAFItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-45A1-14-E3EB (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-45A1-14-E3EB"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIO2X010"
+      ],
+      "name": "MINiBOX 0-10V X2 1.4",
+      "url": "https://assets.zennio.com/application_program/MINiBOX_0-10V_X2_1.4_EIFAItRUk_Cert.knxprod",
+      "sha256": "08e737106326b5f3bc19e04cddd475764fd7a25ca3b066903894d980d4489b6f",
+      "size": 792218,
+      "filename": "MINiBOX_0-10V_X2_1.4_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4591-14-8FFC (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4591-14-8FFC"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIO3X010"
+      ],
+      "name": "MINiBOX 0-10V X3 1.4",
+      "url": "https://assets.zennio.com/application_program/MINiBOX_0-10V_X3_1.4_EIFAItRUk_Cert.knxprod",
+      "sha256": "16544cebb7158c032677fdf65cabbbad9e93e5175b416943b925c1cd51ac4d47",
+      "size": 792217,
+      "filename": "MINiBOX_0-10V_X3_1.4_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4581-14-D5F5 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4581-14-D5F5"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOMN20V2"
+      ],
+      "name": "MINiBOX 20 v2 1.7",
+      "url": "https://assets.zennio.com/application_program/MINiBOX_20_v2_1_7_EIAFItR_Cert.knxprod",
+      "sha256": "8f7f91a7261bdabbe52ae0094f430c10577fe296afa3f9368b2a2467c69f53d0",
+      "size": 2597556,
+      "filename": "MINiBOX_20_v2_1_7_EIAFItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-45B1-17-79BD (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-45B1-17-79BD"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOMN25V2"
+      ],
+      "name": "MINiBOX 25 v2 1.2",
+      "url": "https://assets.zennio.com/application_program/MINiBOX_25_v2_1.2_EIFAItR_Cert_ETS5.knxprod",
+      "sha256": "2adc3aba86c55c9af794b78c5310ca8f9feb73f840f2fb1e74330e918ac4afd5",
+      "size": 1308658,
+      "filename": "MINiBOX_25_v2_1.2_EIFAItR_Cert_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4571-12-C8F1 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4571-12-C8F1"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOMN25V3"
+      ],
+      "name": "MINiBOX 25 v3 1.6",
+      "url": "https://assets.zennio.com/application_program/MINiBOX_25_v3_1.6_EIFAItRUk_Cert.knxprod",
+      "sha256": "37688d0e0970445ea28f97c2a19d02c4b40e7232d237a1131166b84312ed57cb",
+      "size": 2299249,
+      "filename": "MINiBOX_25_v3_1.6_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-45E1-16-3809 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-45E1-16-3809"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOMN40V2"
+      ],
+      "name": "MINiBOX 40 v2 1.3",
+      "url": "https://assets.zennio.com/application_program/MINiBOX_40_v2_1.3_EIFAItR_ETS5.knxprod",
+      "sha256": "47ad9b006ca516241cea1ce7143ace5fe0bbe8eade7c220b2460e4636de056d0",
+      "size": 2575133,
+      "filename": "MINiBOX_40_v2_1.3_EIFAItR_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4551-13-C7D5 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4551-13-C7D5"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOMN40V3"
+      ],
+      "name": "MINiBOX 40 v3 1.12",
+      "url": "https://assets.zennio.com/application_program/MINiBOX_40_v3_1.12_EIFAItRUk_Cert.knxprod",
+      "sha256": "ed370ae5d2ba49df4882a9f94bc54e03550975833ddf0fcb6aa840b6d180a426",
+      "size": 2737320,
+      "filename": "MINiBOX_40_v3_1.12_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-45C1-1C-7989 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-45C1-1C-7989"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIO-MN45"
+      ],
+      "name": "MINiBOX 45 1.3",
+      "url": "https://assets.zennio.com/application_program/MINiBOX_45_1.3_EIFAItRSP.knxprod",
+      "sha256": "df452fc2e18a3c88fb69d1296f46e830c9fb2069dd28bf87259f2e9b22e94ec5",
+      "size": 1017677,
+      "filename": "MINiBOX_45_1.3_EIFAItRSP.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4511-13-486B (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4511-13-486B"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOMN45V2"
+      ],
+      "name": "MINiBOX 45 v2 1.2",
+      "url": "https://assets.zennio.com/application_program/MINiBOX_45_v2_1.2_EIFAItR_Cert_ETS5.knxprod",
+      "sha256": "fd409e25c32a6f4977320207e3451e0e6aecbb0fccbe3e4f8de8d98a60e490d9",
+      "size": 1308643,
+      "filename": "MINiBOX_45_v2_1.2_EIFAItR_Cert_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4561-12-3D7C (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4561-12-3D7C"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOMN45V3"
+      ],
+      "name": "MINiBOX 45 v3 1.6",
+      "url": "https://assets.zennio.com/application_program/MINiBOX_45_v3_1.6_EIFAItRUk_Cert.knxprod",
+      "sha256": "383e3880553499c13fae930c9a355ffcd0ebc850dd59d6511c8932ea0df00d78",
+      "size": 2299138,
+      "filename": "MINiBOX_45_v3_1.6_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-45D1-16-95B4 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-45D1-16-95B4"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIO-MN40"
+      ],
+      "name": "MINiBOX QUATRO 1.2",
+      "url": "https://assets.zennio.com/application_program/MINiBOX_QUATRO_1_2_EIFAItRSP.knxprod",
+      "sha256": "4a3f5c4af0d8ab35cbfc9c3cea15fbe2599d7104332d086bfebf4f115e8a35cb",
+      "size": 734232,
+      "filename": "MINiBOX_QUATRO_1_2_EIFAItRSP.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4531-12-6412 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4531-12-6412"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL-MCC"
+      ],
+      "name": "Multiroom Climate Controller 2.1",
+      "url": "https://assets.zennio.com/application_program/Multiroom_Climate_Controller_2_1_EIFAItRS.knxprod",
+      "sha256": "1ba21f6ec176e446d6471af2b44484595094c2a937b9c9c752a57b6d4e78df7c",
+      "size": 474391,
+      "filename": "Multiroom_Climate_Controller_2_1_EIFAItRS.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-1311-21-A0E5 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-1311-21-A0E5"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDINDX2"
+      ],
+      "name": "NarrowDIM X2 1.3",
+      "url": "https://assets.zennio.com/application_program/NarrowDIM_X2_1.3_EIFAItR_ETS5_Cert.knxprod",
+      "sha256": "238690359c45b328236a39ac8c329fa4730fc052e880e9da32bd5f71a4536377",
+      "size": 665180,
+      "filename": "NarrowDIM_X2_1.3_EIFAItR_ETS5_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3191-13-3ED5 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3191-13-3ED5"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDINDX4"
+      ],
+      "name": "NarrowDIM X4 1.4",
+      "url": "https://assets.zennio.com/application_program/NarrowDIM_X4_1.4_EIFAItR_ETS5_Cert.knxprod",
+      "sha256": "00942ab66b83698f0976bc7679cda5e941f85eab5b674857eb0b183c334c420a",
+      "size": 671966,
+      "filename": "NarrowDIM_X4_1.4_EIFAItR_ETS5_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3181-14-2F41 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-3181-14-2F41"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZPD-C30L"
+      ],
+      "name": "Presentia C 1.0",
+      "url": "https://assets.zennio.com/application_program/Presentia_C_1.0_EIFAItRS_ETS5.knxprod",
+      "sha256": "ace3ad2e0f0b3b5da31d366765a24d21592803a9c51e3b0989e42814893f230c",
+      "size": 512269,
+      "filename": "Presentia_C_1.0_EIFAItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4421-10-67C1 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4421-10-67C1"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZPDCMS"
+      ],
+      "name": "Presentia C MultiSensor 1.0",
+      "url": "https://assets.zennio.com/application_program/Presentia_C_MultiSensor_1.0_EIFAItRUk_Cert.knxprod",
+      "sha256": "3722582583cbe7a140f5174e64b41cf99868e2af90e492f35326ce6e02ccf3ee",
+      "size": 878464,
+      "filename": "Presentia_C_MultiSensor_1.0_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4C21-10-9E09 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4C21-10-9E09"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZPDC30LV2"
+      ],
+      "name": "Presentia C v2 1.5",
+      "url": "https://assets.zennio.com/application_program/Presentia_C_v2_1.5_EIFAItRUk_Cert.knxprod",
+      "sha256": "7ebe04ce38e2230e23673fe8019fe0f175c65371fdc00865052c03c19e424c6f",
+      "size": 640870,
+      "filename": "Presentia_C_v2_1.5_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4481-15-1656 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4481-15-1656"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZPDW0"
+      ],
+      "name": "Presentia W0 1.0",
+      "url": "https://assets.zennio.com/application_program/Presentia_W0_1.0_EIFAItR_ETS5_Cert.knxprod",
+      "sha256": "0cf3fc263a967eff156a6dcfc3677f3d4d96502f139e45b16665119227a703bf",
+      "size": 590153,
+      "filename": "Presentia_W0_1.0_EIFAItR_ETS5_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4471-10-6821 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4471-10-6821"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZPDW0VT"
+      ],
+      "name": "Presentia W0 vT 1.0",
+      "url": "https://assets.zennio.com/application_program/Presentia_W0_vT_1.0_EIFAItR_ETS5_Cert.knxprod",
+      "sha256": "999e1527ec292ba0b1a1d734b5b2597103bd6ead37dbec2bc4b3a5961af80d41",
+      "size": 588870,
+      "filename": "Presentia_W0_vT_1.0_EIFAItR_ETS5_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-71D1-10-AFBA (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-71D1-10-AFBA"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZN1IO-4IAD"
+      ],
+      "name": "QUAD 5.2",
+      "url": "https://assets.zennio.com/application_program/QUAD_5.2_EIFAItRSP.knxprod",
+      "sha256": "fb2dbae4aa3b8195acf0dc6b232f91937fd74db47fa920ff6a9a99f007cde8b3",
+      "size": 256974,
+      "filename": "QUAD_5.2_EIFAItRSP.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 0701. 1 application program(s). App refs: M-0071_A-4211-52-FB7D (0701). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4211-52-FB7D"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOQUADV3"
+      ],
+      "name": "QUAD v3 1.0",
+      "url": "https://assets.zennio.com/application_program/QUAD_v3_1.0_EIFAItRUk_Cert.knxprod",
+      "sha256": "a8127560b597078ae756c10ff852a7e349d762c642934265186363d816034158",
+      "size": 887406,
+      "filename": "QUAD_v3_1.0_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4281-10-E721 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4281-10-E721"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIO-QUADP"
+      ],
+      "name": "QUAD Plus 1.5",
+      "url": "https://assets.zennio.com/application_program/Quad_Plus_1.5_EIAFItRS_ETS5_CERT.knxprod",
+      "sha256": "0fddda8054c55bf4a345e14be3bf00babd2800218bafb3ccce206b239a9f366a",
+      "size": 477439,
+      "filename": "Quad_Plus_1.5_EIAFItRS_ETS5_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4241-15-D771 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4241-15-D771"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIO-RQUAD8"
+      ],
+      "name": "RailQUAD 8 1.6",
+      "url": "https://assets.zennio.com/application_program/RailQUAD_8_1.6_EIFAItR_ETS5_Cert.knxprod",
+      "sha256": "01abea6a102d66f85170290276142811ffce87b7f9e8a300c626db0da49a06d9",
+      "size": 653268,
+      "filename": "RailQUAD_8_1.6_EIFAItR_ETS5_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4251-16-9E17 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4251-16-9E17"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZSYRBOX"
+      ],
+      "name": "RemoteBOX 4.1",
+      "url": "https://assets.zennio.com/application_program/RemoteBOX_4.1_EIFAItRUk_Cert.knxprod",
+      "sha256": "e1b2311c3720c64e20e1396296a4d2896ebeee4c2c445ce9ac3c0df4d32a42d5",
+      "size": 1722406,
+      "filename": "RemoteBOX_4.1_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5551-41-713A (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5551-41-713A"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZN1VI-TPZAS"
+      ],
+      "name": "Roll-ZAS 1.4",
+      "url": "https://assets.zennio.com/application_program/Roll-ZAS_1.4_EIFAItRSP_CERT.knxprod",
+      "sha256": "db9ce036783cca837fc9b41306363bbf99b8319b5d972eda23d1aea11f6fb4ef",
+      "size": 400902,
+      "filename": "Roll-ZAS_1.4_EIFAItRSP_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 0701. 1 application program(s). App refs: M-0071_A-5212-14-8DD2 (0701). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5212-14-8DD2"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOSHD4"
+      ],
+      "name": "ShutterBOX Drive 4CH 1.0",
+      "url": "https://assets.zennio.com/application_program/ShutterBOX_Drive_4ch_1.0_EIFAItRUk_Cert.knxprod",
+      "sha256": "9e7998c7e2f7b80a5790187b0328f0ef394d7a152eff87738b308be11059646e",
+      "size": 1003573,
+      "filename": "ShutterBOX_Drive_4ch_1.0_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4D11-10-4286 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-4D11-10-4286"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVI-SQTMDD"
+      ],
+      "name": "Square TMD-Display 1.4",
+      "url": "https://assets.zennio.com/application_program/Square_TMD-Display_1_4_EIFAItRS.knxprod",
+      "sha256": "614456cfe63d638e8851f376df00865541be80429211289d1805cba64078e3ea",
+      "size": 636279,
+      "filename": "Square_TMD-Display_1_4_EIFAItRS.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5231-14-33DE (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5231-14-33DE"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVI-SQTMD6"
+      ],
+      "name": "Square TMD 6 1.1",
+      "url": "https://assets.zennio.com/application_program/Square_TMD_6_1.1_EIFAItRSP.knxprod",
+      "sha256": "b664ebc02421855e755f713f4eb30d2d5db73d3146413578aa476245c22519f0",
+      "size": 442068,
+      "filename": "Square_TMD_6_1.1_EIFAItRSP.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5441-11-38B7 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5441-11-38B7"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVI-TMDD"
+      ],
+      "name": "TMD-Display One 2.1",
+      "url": "https://assets.zennio.com/application_program/TMD-Display_One_2_1_EIAFItRSP_CERT.knxprod",
+      "sha256": "8b8b86eff528cdfcff9892b62e818164f7c389ce3591c1fc9d969af5f7510d20",
+      "size": 1129647,
+      "filename": "TMD-Display_One_2_1_EIAFItRSP_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5221-21-6911 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5221-21-6911"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVI-TMDV"
+      ],
+      "name": "TMD-Display View 1.1",
+      "url": "https://assets.zennio.com/application_program/TMD-Display_View_1.1_EIFAItRSP.knxprod",
+      "sha256": "c89485d919396289fac3904d5d7fd296b22241f648426ad5570a94413537bd39",
+      "size": 977445,
+      "filename": "TMD-Display_View_1.1_EIFAItRSP.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5241-11-556F (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5241-11-556F"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVI-TMDP4"
+      ],
+      "name": "Touch-MyDesign Plus 4 1.2",
+      "url": "https://assets.zennio.com/application_program/TMD-Plus-4_1.2_EIFAItRSP_CERT.knxprod",
+      "sha256": "efb4ece8410eead4c5ee5d6ccc937279bf441a3ac826481731ebc12cd91263e0",
+      "size": 370541,
+      "filename": "TMD-Plus-4_1.2_EIFAItRSP_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5341-12-B89E (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5341-12-B89E"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVI-TMDP6"
+      ],
+      "name": "Touch-MyDesign Plus 6 1.2",
+      "url": "https://assets.zennio.com/application_program/TMD-Plus-6_1.2_EIFAItRSP_CERT.knxprod",
+      "sha256": "7832510b6942cbbd439dfc005f269e54ef5770f6ed1078f950c9874ea4f857b5",
+      "size": 370514,
+      "filename": "TMD-Plus-6_1.2_EIFAItRSP_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5351-12-46BD (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5351-12-46BD"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVI-TMDP8"
+      ],
+      "name": "Touch-MyDesign Plus 8 1.2",
+      "url": "https://assets.zennio.com/application_program/TMD-Plus-8_1.2_EIFAItRSP_CERT.knxprod",
+      "sha256": "6ff2a5b3fdee7695281d3c397f9a36a2b2a903e844a46854e308ebd2d40f9a6e",
+      "size": 370566,
+      "filename": "TMD-Plus-8_1.2_EIFAItRSP_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5361-12-46CE (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5361-12-46CE"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIT55X1"
+      ],
+      "name": "Tecla 55 X1 1.8",
+      "url": "https://assets.zennio.com/application_program/Tecla_55_X1_1.8_EIAFItR_Cert.knxprod",
+      "sha256": "12a89ac50ef8d68659443a7335571e5d3c224cc1b28e522739dbe7d3ea26bfcb",
+      "size": 1246202,
+      "filename": "Tecla_55_X1_1.8_EIAFItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5911-18-432A (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5911-18-432A"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIT55X2"
+      ],
+      "name": "Tecla 55 X2 1.8",
+      "url": "https://assets.zennio.com/application_program/Tecla_55_X2_1.8_EIAFItR_Cert.knxprod",
+      "sha256": "95011a39e300e7a13facdb1a512ffdbd6733592a8a4e52df1309c1fdc73a1ad8",
+      "size": 1246210,
+      "filename": "Tecla_55_X2_1.8_EIAFItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5921-18-B0B2 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5921-18-B0B2"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIT55X2"
+      ],
+      "name": "Tecla 55 X2 Sign 1.0",
+      "url": "https://assets.zennio.com/application_program/Tecla_55_X2_Sign_1.0_EIFAItR_ETS5_Cert.knxprod",
+      "sha256": "10b4a538ab6e2f8ed1d445bc96008392c81502bd38a93ef5edfdc4d3706c5a69",
+      "size": 206285,
+      "filename": "Tecla_55_X2_Sign_1.0_EIFAItR_ETS5_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5922-10-661F (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5922-10-661F"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIT55X4"
+      ],
+      "name": "Tecla 55 X4 1.8",
+      "url": "https://assets.zennio.com/application_program/Tecla_55_X4_1.8_EIAFItR_Cert.knxprod",
+      "sha256": "3a4d43d7473f5281dfa215e420d9cc706b8d64e5adeb128f2a0638c458e31d52",
+      "size": 1246223,
+      "filename": "Tecla_55_X4_1.8_EIAFItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5931-18-D12C (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5931-18-D12C"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVITRxy"
+      ],
+      "name": "Tecla RGB 1.1",
+      "url": "https://assets.zennio.com/application_program/Tecla_RGB_1.1_EIFAItRUk.knxprod",
+      "sha256": "0d93ca1380846a29536071a171883bb4357fc4b0a4719c594ad7050ec054de5c",
+      "size": 1511006,
+      "filename": "Tecla_RGB_1.1_EIFAItRUk.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5C41-11-DEB0 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5C41-11-DEB0"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVITXLX10"
+      ],
+      "name": "Tecla XL X10 1.8",
+      "url": "https://assets.zennio.com/application_program/Tecla_XL_X10_1.8_EIAFItR_Cert.knxprod",
+      "sha256": "93a8669d4ba71cef355589c48a853116b97ca442b19cf18edcbf18ab4922f5b7",
+      "size": 1245296,
+      "filename": "Tecla_XL_X10_1.8_EIAFItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5A41-18-6B88 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5A41-18-6B88"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVITXLX4"
+      ],
+      "name": "Tecla XL X4 1.8",
+      "url": "https://assets.zennio.com/application_program/Tecla_XL_X4_1.8_EIAFItR_Cert.knxprod",
+      "sha256": "a3274b70dcc2fa48fd9f1229f0e46c74a6a389f457f83edca54d3a9f4dc482e6",
+      "size": 1245241,
+      "filename": "Tecla_XL_X4_1.8_EIAFItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5A11-18-7B66 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5A11-18-7B66"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVITXLX6"
+      ],
+      "name": "Tecla XL X6 1.8",
+      "url": "https://assets.zennio.com/application_program/Tecla_XL_X6_1.8_EIAFItR_Cert.knxprod",
+      "sha256": "e23dc1f67b2ae17b1e1aff2b6ad81047d7783d486932394cf80b0b7e24e6c155",
+      "size": 1245240,
+      "filename": "Tecla_XL_X6_1.8_EIAFItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5A21-18-8B93 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5A21-18-8B93"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVITXLX8"
+      ],
+      "name": "Tecla XL X8 1.8",
+      "url": "https://assets.zennio.com/application_program/Tecla_XL_X8_1.8_EIAFItR_Cert.knxprod",
+      "sha256": "e6f6ef81a846c70cb188b8e591df7eef94d98cc0889243b84f4094dace01e985",
+      "size": 1245236,
+      "filename": "Tecla_XL_X8_1.8_EIAFItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5A31-18-F78D (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5A31-18-F78D"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVITX"
+      ],
+      "name": "Tecla X 1.9",
+      "url": "https://assets.zennio.com/application_program/Tecla_X_1.9_EIFAItRUk_Cert.knxprod",
+      "sha256": "539ca05a5cb8cf542ac57d4e703199a73a324dfb2fad9b01413e485e30fd5752",
+      "size": 1360820,
+      "filename": "Tecla_X_1.9_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5C11-19-A965 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5C11-19-A965"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVI-TMDP8"
+      ],
+      "name": "Touch-MyDesign Plus 8 1.3",
+      "url": "https://assets.zennio.com/application_program/Touch_MyDesign_Plus_8_1_3_EIFAItRSP_CERT.knxprod",
+      "sha256": "9ae6d79df5ce134ea76121970057586c5198539e6200cf0a30f86e7fc16c00aa",
+      "size": 373488,
+      "filename": "Touch_MyDesign_Plus_8_1_3_EIFAItRSP_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5361-13-C16B (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5361-13-C16B"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZRFWD915"
+      ],
+      "name": "WinDoor RF 915 1.0",
+      "url": "https://assets.zennio.com/application_program/WinDoor_RF_915_1.0_EIFAItR_ETS5.knxprod",
+      "sha256": "8235fbf94668d717fbe04a8d9a2a5e2d4201ca7f31449f3d091121bf93ef350e",
+      "size": 98495,
+      "filename": "WinDoor_RF_915_1.0_EIFAItR_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 27B0. 1 application program(s). App refs: M-0071_A-44D1-10-962A (27B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-44D1-10-962A"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVI-Z28"
+      ],
+      "name": "Z28 3.4",
+      "url": "https://assets.zennio.com/application_program/Z28_3.4_EIFAItRUk_Cert.knxprod",
+      "sha256": "2e124092c41766556f2c4380edaa307fa117907f1219018eef03254bc309fb1d",
+      "size": 1199294,
+      "filename": "Z28_3.4_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-51F1-34-92E9 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-51F1-34-92E9"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVI-Z35"
+      ],
+      "name": "Z35 3.1",
+      "url": "https://assets.zennio.com/application_program/Z35_3.1_EIFAItR_Cert.knxprod",
+      "sha256": "140d8eb965b54a3a1a2e7522b8d296b18178e0371089f88a81ce8e431bc60d16",
+      "size": 1110374,
+      "filename": "Z35_3.1_EIFAItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-51A1-31-6FD3 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-51A1-31-6FD3"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIZ35H"
+      ],
+      "name": "Z35 H 3.0",
+      "url": "https://assets.zennio.com/application_program/Z35_H_3.0_EIFAItR_ETS5_Cert.knxprod",
+      "sha256": "261949dd7bf482caf2ad7338aa159b1021d3a843a459ce124e0829ac7b5e326a",
+      "size": 1109681,
+      "filename": "Z35_H_3.0_EIFAItR_ETS5_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-51C1-30-070E (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-51C1-30-070E"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIZ35V2"
+      ],
+      "name": "Z35 v2 3.1",
+      "url": "https://assets.zennio.com/application_program/Z35_V2_3.1_EIFAItR_Cert.knxprod",
+      "sha256": "c6ed88eafa0a84fb08194d155a7674e8104b2dfb57de71eedb613d6f4a245d06",
+      "size": 1109737,
+      "filename": "Z35_V2_3.1_EIFAItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-51E1-31-32AF (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-51E1-31-32AF"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIZ35V3"
+      ],
+      "name": "Z35 v3 3.7",
+      "url": "https://assets.zennio.com/application_program/Z35_v3_3.7_EIFAItRUk_Cert.knxprod",
+      "sha256": "ee546b3700f014fb7f4ad2ac091576b948c2f2b380df8cc4e92c1d4a0776ccff",
+      "size": 1205052,
+      "filename": "Z35_v3_3.7_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5D11-37-07EC (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5D11-37-07EC"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIZ35VT"
+      ],
+      "name": "Z35 vT 3.4",
+      "url": "https://assets.zennio.com/application_program/Z35_vT_3.4_EIFAItRUk_Cert.knxprod",
+      "sha256": "a1ef92a641e6c93a75c2b1c12d251ba3e706d38cf1aac06da77a4aaf89e9df3c",
+      "size": 1197501,
+      "filename": "Z35_vT_3.4_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-71E1-34-8B8D (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-71E1-34-8B8D"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIZ40"
+      ],
+      "name": "Z40 3.3",
+      "url": "https://assets.zennio.com/application_program/Z40_3.3_EIAFItR_Cert.knxprod",
+      "sha256": "9f570c1ae8fb80aebcabcd7a4ccf1dac9cb044878b172aa5916c0ebf142ed78e",
+      "size": 1116040,
+      "filename": "Z40_3.3_EIAFItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-51D1-33-72E2 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-51D1-33-72E2"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVI-Z41COM"
+      ],
+      "name": "Z41 COM 1.1",
+      "url": "https://assets.zennio.com/application_program/Z41_COM_1_1_EIAFItRS_ETS5.knxprod",
+      "sha256": "6df45a614f038766c046877de68945e2213bc215f9b0330015781bd2330f864d",
+      "size": 3418970,
+      "filename": "Z41_COM_1_1_EIAFItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5191-11-5C53 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5191-11-5C53"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVI-Z41LIT"
+      ],
+      "name": "Z41 Lite 2.3",
+      "url": "https://assets.zennio.com/application_program/Z41_Lite_2_3_EIFAItRSP.knxprod",
+      "sha256": "44a0481f0fb5275805ef906815dc410204f63d50901bd82772e7daed86b33863",
+      "size": 3379736,
+      "filename": "Z41_Lite_2_3_EIFAItRSP.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5171-23-F039 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5171-23-F039"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVI-Z41PRO"
+      ],
+      "name": "Z41 Pro 3.4",
+      "url": "https://assets.zennio.com/application_program/Z41_Pro_3_4_EIFAItRS_ETS5.knxprod",
+      "sha256": "7ba7f4af93163df5acaf89b2a1937b721de4be211c38e99580fa6a1dc032000f",
+      "size": 4221110,
+      "filename": "Z41_Pro_3_4_EIFAItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5181-34-D775 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5181-34-D775"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIZ70"
+      ],
+      "name": "Z70 1.3",
+      "url": "https://assets.zennio.com/application_program/Z70_1.3_EIFAItR_ETS5_Cert.knxprod",
+      "sha256": "f6172b386b80891e688dc968001c939cd2ba62b20c973c86d7d7de1004693422",
+      "size": 6426252,
+      "filename": "Z70_1.3_EIFAItR_ETS5_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5511-13-3846 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-5511-13-3846"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL-ZB6"
+      ],
+      "name": "ZoningBOX 6 2.1",
+      "url": "https://assets.zennio.com/application_program/ZoningBOX_6_2.1_EIFAItR_Cert_ETS5.knxprod",
+      "sha256": "7d7854c6f75f0ba0b799dbac050a5dde230866065360625641ed6b3a9fd33885",
+      "size": 254158,
+      "filename": "ZoningBOX_6_2.1_EIFAItR_Cert_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-41C1-21-66B8 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
+      "application_ref": "M-0071_A-41C1-21-66B8"
     }
   ]
 }
