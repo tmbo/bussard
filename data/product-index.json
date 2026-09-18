@@ -1148,6 +1148,2573 @@
       "application_ref": "M-0006_A-5901-01-CF9C",
       "redistributable": false,
       "notes": "Berker KNX Master Control central controller. Database V0.1 (ETS4). Mask 0701 (System 7). One .knxprod covers the 7574001x order-number range. Hosted in the Siblik Berker KNX-database archive. Verified by download 2026-09-18."
+    },
+    {
+      "manufacturer": "Steinel",
+      "manufacturer_id": "M-008E",
+      "order_numbers": [
+        "4007841033200"
+      ],
+      "name": "HPD 2 KNX V1.00",
+      "url": "https://www.steinel.de/out/media/knxsoftware/21979_STEINEL_HPD2_KNX%20V1.0.knxprod",
+      "sha256": "5f42ceed91ca2922c2e8622f59529e58a09bf29118cbf51c694926eeec0f3d36",
+      "size": 56314,
+      "filename": "21979_STEINEL_HPD2_KNX V1.0.knxprod",
+      "redistributable": false,
+      "notes": "Steinel product database. Masks: 0705. 1 application program(s). App refs: M-008E_A-6766-10-2E7A (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-008E_A-6766-10-2E7A"
+    },
+    {
+      "manufacturer": "EAE Technology",
+      "manufacturer_id": "M-011E",
+      "order_numbers": [
+        "48267"
+      ],
+      "name": "ACGDAI100",
+      "url": "https://www.eaetechnology.com/upload/dosyalar/ACGDAI100.knxprod",
+      "sha256": "43167fd63127f24b8d804b70def5941562b43b60a7dc3f6e1c0e71a647967e0c",
+      "size": 390708,
+      "filename": "ACGDAI100.knxprod",
+      "redistributable": false,
+      "notes": "EAE Technology product database. Masks: 0705. 1 application program(s). App refs: M-011E_A-BC8B-10-0F6A (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-011E_A-BC8B-10-0F6A"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "AKD-0260CC.02"
+      ],
+      "name": "Dimming CC 2fold, white LED",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/AKD-02x0CC-02_MDT_KP_V31.knxprod",
+      "sha256": "3993ae78adb9a9d5e05cec581f8f47c3ede4d1c78600764d49ace4affe6e095b",
+      "size": 346917,
+      "filename": "AKD-02x0CC-02_MDT_KP_V31.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 1 application program(s). App refs: M-0083_A-013F-31-1DDA (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-013F-31-1DDA"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "AKD-0201.02",
+        "AKD-0401.02"
+      ],
+      "name": "Dimming 2-fold",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/AKD-0x01-02_MDT_KP_V23.knxprod",
+      "sha256": "7a4f4ed5962c0320a8c10a3ae263d46ae6dd27b554e03056609c1c2647ca57a8",
+      "size": 438358,
+      "filename": "AKD-0x01-02_MDT_KP_V23.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 2 application program(s). App refs: M-0083_A-001B-23-399C (0705); M-0083_A-001C-23-8C75 (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-001B-23-399C"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "AKR-IO108.01S",
+        "AKR-IO86.01S"
+      ],
+      "name": "Room Actuator 6 channel output, 8 channel input",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/AKR-IOxxx-01S_MDT_KP_V13a.knxprod",
+      "sha256": "d693857b8ce864bfd255278f1015331ce499080ec9a23f33d61de49cd1096f61",
+      "size": 875955,
+      "filename": "AKR-IOxxx-01S_MDT_KP_V13a.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 07B0. 2 application program(s). App refs: M-0083_A-0213-13-518D (07B0); M-0083_A-0214-13-E0FE (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0213-13-518D"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "BE-GTS06TX.01S",
+        "BE-GTSP6TX.01S"
+      ],
+      "name": "Glass Touch Smart",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/BE-GTSx6Tx-01S_MDT_KP_V23.knxprod",
+      "sha256": "6294b687968c1d55ad012765fd149a5ec0943167e8f91816ce1fde0f9428ef05",
+      "size": 1811052,
+      "filename": "BE-GTSx6Tx-01S_MDT_KP_V23.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 07B0. 1 application program(s). App refs: M-0083_A-018C-23-81D7 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-018C-23-81D7"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "BE-TA5502.02",
+        "BE-TA5504.02",
+        "BE-TA5506.02",
+        "BE-TA5508.02",
+        "BE-TA55P2.02",
+        "BE-TA55P4.02",
+        "BE-TA55P6.02",
+        "BE-TA55P8.02",
+        "BE-TA55T2.02",
+        "BE-TA55T4.02",
+        "BE-TA55T6.02",
+        "BE-TA55T8.02"
+      ],
+      "name": "Push Button Plus 55 8-fold",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/BE-TA55xx-x2_MDT_KP_V21a.knxprod",
+      "sha256": "6d83f561be29830c26a53086d705c2b105832e6dc03e4e43297ab9416c87830b",
+      "size": 1208574,
+      "filename": "BE-TA55xx-x2_MDT_KP_V21a.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 12 application program(s). App refs: M-0083_A-0220-21-CE70 (0705); M-0083_A-0221-21-FCE5 (0705); M-0083_A-0222-21-0004 (0705); M-0083_A-0223-21-3968 (0705); M-0083_A-0224-21-C696 (0705); M-0083_A-0225-21-55EB (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0220-21-CE70"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "BWM-6001x.03S",
+        "BWM-60T1x.03S",
+        "BWM-6300x.03S",
+        "BWM-63T0x.03S",
+        "BWM5500x.03S",
+        "BWM55T0x.03S",
+        "PSE-B552T0x.02S"
+      ],
+      "name": "Motion Detector, Secure",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/BWM-xxxxx-03S_MDT_KP_V11.knxprod",
+      "sha256": "2b08af9e4d8a5a1ab71d827b865958aa9a10d36e7b23d1a4c79b371f6bd765e3",
+      "size": 663084,
+      "filename": "BWM-xxxxx-03S_MDT_KP_V11.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 07B0. 1 application program(s). App refs: M-0083_A-047A-11-B6E0 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-047A-11-B6E0"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "87341"
+      ],
+      "name": "COMIP2",
+      "url": "https://lingg-janke.de/assets/files/COMIP-REG-1.knxprod",
+      "sha256": "b05adf4e8beb4b015974aa0ba5b052e394f9597bbc3a696b2c60fa6ce382095a",
+      "size": 41801,
+      "filename": "COMIP-REG-1.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0701. 1 application program(s). App refs: M-00E1_A-A00D-10-12FB-O00C5 (0701). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-A00D-10-12FB-O00C5"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDIDLIV2"
+      ],
+      "name": "DALI-BOX Interface v2 1.0",
+      "url": "https://assets.zennio.com/application_program/DALI-BOX_Interface_v2_1.0_EIFAItR_ETS5.knxprod",
+      "sha256": "55c670dc5be0a3d574ac5a6767cbd10a0bdb7948259df25412888bae71f40221",
+      "size": 3870021,
+      "filename": "DALI-BOX_Interface_v2_1.0_EIFAItR_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3342-10-085A (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-3342-10-085A"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDIDLIV2"
+      ],
+      "name": "DALI-BOX Interface v2 1.2",
+      "url": "https://assets.zennio.com/application_program/DALI-BOX_Interface_v2_1.2_EIAFItR.knxprod",
+      "sha256": "50edd339a93fe4774c221d9b4d8868463c662cc4e3ed03472aedac7ede113897",
+      "size": 3882756,
+      "filename": "DALI-BOX_Interface_v2_1.2_EIAFItR.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3342-12-7291 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-3342-12-7291"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDID64X2"
+      ],
+      "name": "DALI BOX Interface 64 X2 2.1",
+      "url": "https://assets.zennio.com/application_program/DALI_BOX_Interface_64_X2_2.1_EIFAItRUk.knxprod",
+      "sha256": "c48c3d8f9061fa0db1b5f5bf70457d0eac5cdf4b40b4b9a3b5e47d35f69b08a2",
+      "size": 1562116,
+      "filename": "DALI_BOX_Interface_64_X2_2.1_EIFAItRUk.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3391-21-864C (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-3391-21-864C"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDIDBDX1"
+      ],
+      "name": "DIMinBOX DX1 1.4",
+      "url": "https://assets.zennio.com/application_program/DIMinBOX_DX1_1.4_EIFAItR_Cert.knxprod",
+      "sha256": "d14795ed6878231f57879ddd2246200a523a9b5907fa56e82fe4616e56ab5d4c",
+      "size": 484541,
+      "filename": "DIMinBOX_DX1_1.4_EIFAItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3171-14-A8F0 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-3171-14-A8F0"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDI-DBDX2"
+      ],
+      "name": "DIMinBOX DX2 1.2",
+      "url": "https://assets.zennio.com/application_program/DIMinBOX_DX2_1.2_EIAFItRS_Cert_ETS5.knxprod",
+      "sha256": "ab46e3e6c89742a5c1c931adbc6cf0cdd56f665d35da6dc8511c8b3dd6416b79",
+      "size": 707415,
+      "filename": "DIMinBOX_DX2_1.2_EIAFItRS_Cert_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3141-12-45CE (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-3141-12-45CE"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDIDBDX4"
+      ],
+      "name": "DIMinBOX DX4 1.2",
+      "url": "https://assets.zennio.com/application_program/DIMinBOX_DX4_1.2_EIFAItRS_Cert_ETS5.knxprod",
+      "sha256": "4fc87de3253213e302c21fb6105e026b83a44c736bd278e8221a0f8c8947ebc5",
+      "size": 666413,
+      "filename": "DIMinBOX_DX4_1.2_EIFAItRS_Cert_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3161-12-7361 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-3161-12-7361"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZPDEZTPV2"
+      ],
+      "name": "EyeZen TP v2 1.5",
+      "url": "https://assets.zennio.com/application_program/EyeZen_TP_v2_1.5_EIFAItRUk_Cert.knxprod",
+      "sha256": "99e8276ae5ea4c44cf5120ce860d260235b9f9643a467ead39b079b7c46afed3",
+      "size": 561886,
+      "filename": "EyeZen_TP_v2_1.5_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-44F1-15-B839 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-44F1-15-B839"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIF55DV2"
+      ],
+      "name": "Flat 55 Display v2 2.2",
+      "url": "https://assets.zennio.com/application_program/Flat_55_Display_v2_2.2_EIFAItR_Cert.knxprod",
+      "sha256": "d87bf863a27970da208334def52f7e9c469e6c7ff70b6e4f9af2be2a4456a2b5",
+      "size": 911889,
+      "filename": "Flat_55_Display_v2_2.2_EIFAItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5291-22-BB0B (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-5291-22-BB0B"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIF55X2V2"
+      ],
+      "name": "Flat 55 X2 v2 1.5",
+      "url": "https://assets.zennio.com/application_program/Flat_55_X2_v2_1.5_EIFAItR_ETS5_Cert.knxprod",
+      "sha256": "e882961e019b0004b405981d03eb7dcbd5099bffdfc0b4cefeec444ea4ef2f29",
+      "size": 1167418,
+      "filename": "Flat_55_X2_v2_1.5_EIFAItR_ETS5_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5851-15-81CA (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-5851-15-81CA"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVI-FD"
+      ],
+      "name": "Flat Display 2.2",
+      "url": "https://assets.zennio.com/application_program/Flat_Display_2.2_EIFAItRS_ETS5.knxprod",
+      "sha256": "3d745f0a406ea542e22d19999c2984522dfd74978ef0f45b27194144d425f067",
+      "size": 814418,
+      "filename": "Flat_Display_2.2_EIFAItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5251-22-8BF3 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-5251-22-8BF3"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIFRxy"
+      ],
+      "name": "Flat RGB 1.1",
+      "url": "https://assets.zennio.com/application_program/Flat_RGB_1.1_EIFAItRUk.knxprod",
+      "sha256": "9939837b5d890a3c3a499ff87cdf9db8ec179b647786ce3cecdfb1d94b380485",
+      "size": 1511347,
+      "filename": "Flat_RGB_1.1_EIFAItRUk.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5E21-11-19DE (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-5E21-11-19DE"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZSFSENV2"
+      ],
+      "name": "Flat Sensato v2 1.3",
+      "url": "https://assets.zennio.com/application_program/Flat_Sensato_v2_1.3_EIFAItR_ETS5_Cert.knxprod",
+      "sha256": "33a0ff2c635a1b4d7df739e3675e85eea75824497edd2889e9ec6db292a4b0e7",
+      "size": 550634,
+      "filename": "Flat_Sensato_v2_1.3_EIFAItR_ETS5_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-44C1-13-F5A9 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-44C1-13-F5A9"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIIWACDV3"
+      ],
+      "name": "IWAC Display v3 3.1",
+      "url": "https://assets.zennio.com/application_program/IWAC_Display_v3_3.1_EIFAItRUk_Cert.knxprod",
+      "sha256": "84b5fd2cc6b1c0d58cabbdcddb93285429550303f476f7f94451dd06b2b28522",
+      "size": 412171,
+      "filename": "IWAC_Display_v3_3.1_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5641-31-F959 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-5641-31-F959"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVIIWOK"
+      ],
+      "name": "IWAC Out Keypad 1.1",
+      "url": "https://assets.zennio.com/application_program/IWAC_Out_Keypad_1.1_EIFAItRUk.knxprod",
+      "sha256": "32f549c3648a35a61797fc8b2354c504b8c3cff7cd76d84ab8deb41a9f46d513",
+      "size": 175365,
+      "filename": "IWAC_Out_Keypad_1.1_EIFAItRUk.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5661-11-75C2 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-5661-11-75C2"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZSYKIPISC"
+      ],
+      "name": "KIPI SC 1.1",
+      "url": "https://assets.zennio.com/application_program/KIPI_SC_1.1_EIFAItR_Cert.knxprod",
+      "sha256": "c4413af09d098ac832ac560d2e384d7fd87a5bf3bc33460dfa2a75c3eded5098",
+      "size": 667510,
+      "filename": "KIPI_SC_1.1_EIFAItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-6391-11-346B (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-6391-11-346B"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL-FJ"
+      ],
+      "name": "KLIC-FJ 1.1",
+      "url": "https://assets.zennio.com/application_program/KLIC-FJ_1_1_EIFAItR_ETS5_Cert.knxprod",
+      "sha256": "cc5a1583336dd295ed61f8af63723cc7736ae15b992e6fd3d910481822093c6f",
+      "size": 619365,
+      "filename": "KLIC-FJ_1_1_EIFAItR_ETS5_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-1281-11-B1E1 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-1281-11-B1E1"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCLFJVT"
+      ],
+      "name": "KLIC-FJ vT 1.1",
+      "url": "https://assets.zennio.com/application_program/KLIC-FJ_vT_1.1_EIFAItR_ETS5_Cert.knxprod",
+      "sha256": "b78862f64c7a52c20bc720228b11673f0ec92301ec19825926208733f744d791",
+      "size": 620009,
+      "filename": "KLIC-FJ_vT_1.1_EIFAItR_ETS5_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-7141-11-9118 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-7141-11-9118"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL-LG1"
+      ],
+      "name": "KLIC-LG1 1.1",
+      "url": "https://assets.zennio.com/application_program/KLIC-LG1_1.1_EIFAItRS_Cert_ETS5.knxprod",
+      "sha256": "4e014b574c4286da3456c7768bf05179d78fda6928d264eaf9bef170b73cef4e",
+      "size": 635862,
+      "filename": "KLIC-LG1_1.1_EIFAItRS_Cert_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-1251-11-A621 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-1251-11-A621"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCLLG1VT"
+      ],
+      "name": "KLIC-LG1 vT 1.1",
+      "url": "https://assets.zennio.com/application_program/KLIC-LG1_vT_1.1_EIFAItR_ETS5_Cert.knxprod",
+      "sha256": "d47eb7cce750ebb160b90bb34ca3dfb695a60da32e949d52ad65e8bc8364fe6b",
+      "size": 594677,
+      "filename": "KLIC-LG1_vT_1.1_EIFAItR_ETS5_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-7131-11-146C (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-7131-11-146C"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCLMITTV3"
+      ],
+      "name": "KLIC-MITT v3 1.2",
+      "url": "https://assets.zennio.com/application_program/KLIC_MITT_v3_1.2_EIFAItRUk_Cert.knxprod",
+      "sha256": "058a2b411da51957acd2388c47886725807f873ca5cf61c191eb9c2d34e70cb8",
+      "size": 632170,
+      "filename": "KLIC_MITT_v3_1.2_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-1421-12-96BC (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-1421-12-96BC"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "A2FX-SEC"
+      ],
+      "name": "SEC 2x switching, time, scene, announce, inh. 2027-30",
+      "url": "https://lingg-janke.de/datenbanken/L&J-a2fx-sec-en-de-30.knxprod",
+      "sha256": "257d8023471868bd06846fd980ce64b1736641ed9c9ce07f396147994476e23e",
+      "size": 105296,
+      "filename": "L&J-a2fx-sec-en-de-30.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-2027-30-1B9E (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-2027-30-1B9E"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "A3FX-SEC"
+      ],
+      "name": "SEC 3x switching, time, scene, announce, inh. 2026-30",
+      "url": "https://lingg-janke.de/datenbanken/L&J-a3fx-sec-en-de-30.knxprod",
+      "sha256": "a45f3ce1fdfbb03e0b11cf25204e17255c9ce61b60a184b04a2cdb4081e06deb",
+      "size": 111713,
+      "filename": "L&J-a3fx-sec-en-de-30.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-2026-30-5AB5 (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-2026-30-5AB5"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "A4FX-SEC"
+      ],
+      "name": "SEC 4x switching, time, scene, announce, inh. 2025-30",
+      "url": "https://lingg-janke.de/datenbanken/L&J-a4fx-sec-en-de-30.knxprod",
+      "sha256": "e158dd4efac46a817c200ab70188562a11fa538791c29f11924209068bfdab1a",
+      "size": 118084,
+      "filename": "L&J-a4fx-sec-en-de-30.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-2025-30-5A95 (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-2025-30-5A95"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "A5FX-SEC"
+      ],
+      "name": "SEC 5x switching, time, scene, announce, inh. 2024-30",
+      "url": "https://lingg-janke.de/datenbanken/L&J-a5fx-sec-en-de-30.knxprod",
+      "sha256": "7fd694c885cc80a6b814e0d54170ea3500a5ad2406734457b6262ec78c6eeb16",
+      "size": 124414,
+      "filename": "L&J-a5fx-sec-en-de-30.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-2024-30-68CD (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-2024-30-68CD"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "A9FX-SEC"
+      ],
+      "name": "SEC 9x switching, time, scene, announce, inh. 2021-30",
+      "url": "https://lingg-janke.de/datenbanken/L&J-a9fx-sec-en-de-30.knxprod",
+      "sha256": "3f3312454363ac12331e32ca473e5a6254e31e366eb98b5a886d1ee6b80f3a05",
+      "size": 148844,
+      "filename": "L&J-a9fx-sec-en-de-30.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-2021-30-D527 (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-2021-30-D527"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "J2FX-SEC"
+      ],
+      "name": "SEC 2x shutter, positions, scenes, status 9005-30",
+      "url": "https://lingg-janke.de/datenbanken/L&J-j2fx-sec-en-de-30.knxprod",
+      "sha256": "ffbdc667d3b5e7f3421b550b1364db5334fffc508b5640bfb560011d038c35b3",
+      "size": 111280,
+      "filename": "L&J-j2fx-sec-en-de-30.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-9005-30-EF1E (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-9005-30-EF1E"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "TAUNI8FA-FW"
+      ],
+      "name": "8x push buttons FW, LEDs, logic type A E003-20",
+      "url": "https://lingg-janke.de/assets/files/LuJ-tacjc8fa-fw-20-en-de.knxprod",
+      "sha256": "f24247f709413833037b70e4d5bf93264e5474c54f48f004b072fff33d2b610b",
+      "size": 144637,
+      "filename": "LuJ-tacjc8fa-fw-20-en-de.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-E003-20-CC69 (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-E003-20-CC69"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDILX3V2"
+      ],
+      "name": "Lumento X3 v2 1.0",
+      "url": "https://assets.zennio.com/application_program/Lumento_X3_v2_1.0_EIFAItRUk_Cert.knxprod",
+      "sha256": "2b63f813afebf520f35f1ec1f0597d4fac9f265da10486abc9a7cb164e7e5d0e",
+      "size": 908803,
+      "filename": "Lumento_X3_v2_1.0_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3281-10-F851 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-3281-10-F851"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOMB16V4"
+      ],
+      "name": "MAXinBOX 16 v4 1.10",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_16_v4_1.10_EIAFItRUk_Cert.knxprod",
+      "sha256": "0002b2c6d9f25b74c5ddf377668ed89ba699a3accf647e34c37b7df40cb0c1cf",
+      "size": 2723265,
+      "filename": "MAXinBOX_16_v4_1.10_EIAFItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4981-1A-1D0C (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-4981-1A-1D0C"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOMB88"
+      ],
+      "name": "MAXinBOX 88 1.6",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_88_1.6_EIAFItRUk.knxprod",
+      "sha256": "e323bcf18fbddee450097fb76c7dd62196176e8a47b8cecb2871e66ddf2a3718",
+      "size": 2298688,
+      "filename": "MAXinBOX_88_1.6_EIAFItRUk.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-49C1-16-0451 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-49C1-16-0451"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOMB8V4"
+      ],
+      "name": "MAXinBOX 8 v4 1.10",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_8_v4_1.10_EIAFItRUk_Cert.knxprod",
+      "sha256": "3e9143d2c7ba2ae304e3409d5caca62c13828febcfc7a71e9743e27f4c0750bd",
+      "size": 2723254,
+      "filename": "MAXinBOX_8_v4_1.10_EIAFItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4991-1A-BDF2 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-4991-1A-BDF2"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL-4XFC2P"
+      ],
+      "name": "MAXinBOX FANCOIL 4CH2P 1.2",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_FANCOIL_4CH2P_1_2_EIFAItRSP_ETS5_CERT.knxprod",
+      "sha256": "f678cf705b1aa7be3ffd8d822d3cda583b1c04437314e4f98eda350e701dd30a",
+      "size": 843893,
+      "filename": "MAXinBOX_FANCOIL_4CH2P_1_2_EIFAItRSP_ETS5_CERT.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4341-12-3A67 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-4341-12-3A67"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZCL-FC010F"
+      ],
+      "name": "MAXinBOX FC 0-10V FAN 1.6",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_FC_0-10V_FAN_1.6_EIFAItRS_Cert_ETS5.knxprod",
+      "sha256": "0b568d27cc096a96b6ee39a48b6f02ce809d6716fc39d72be004bf31926b9892",
+      "size": 797461,
+      "filename": "MAXinBOX_FC_0-10V_FAN_1.6_EIFAItRS_Cert_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4181-16-69E1 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-4181-16-69E1"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOMBSH8V3"
+      ],
+      "name": "MAXinBOX SHUTTER 8CH v3 1.10",
+      "url": "https://assets.zennio.com/application_program/MAXinBOX_SHUTTER_8CH_v3_1.10_EIFAItRUk_Cert.knxprod",
+      "sha256": "e300d2171b9aeec4c77399ba943654e5475682fdbcbdb91cb9e7c77435aa7072",
+      "size": 2723042,
+      "filename": "MAXinBOX_SHUTTER_8CH_v3_1.10_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4B51-1A-74F4 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-4B51-1A-74F4"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "AIO-0210V.01",
+        "AIO-0410V.01"
+      ],
+      "name": "Analog I/O 2-fold, flush mounted",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_AIO_01_Analog_Input_Output_V12a.knxprod",
+      "sha256": "925ccc25604fe0f7eb072942fd7d3b8bd671ad41b3d40030ef393ab0e2c080a2",
+      "size": 243012,
+      "filename": "MDT_KP_AIO_01_Analog_Input_Output_V12a.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 2 application program(s). App refs: M-0083_A-005A-12-36CF (0705); M-0083_A-005B-12-33FE (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-005A-12-36CF"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "AKD-0410V.02"
+      ],
+      "name": "Switch, Dimming 4f; RGBW LED",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_AKD_02_Dimming_Actuator_RGBW_1_10V_V21.knxprod",
+      "sha256": "cf754e22fd196da22ab38962914ba96443060e8d1e0e01da64b26c7f9dcdb2fe",
+      "size": 321480,
+      "filename": "MDT_KP_AKD_02_Dimming_Actuator_RGBW_1_10V_V21.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0701. 1 application program(s). App refs: M-0083_A-003C-21-0499 (0701). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-003C-21-0499"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "AKD-0224V.02",
+        "AKD-0324V.02",
+        "AKD-0424R.02",
+        "AKD-0424R2.02",
+        "AKD-0424V.02"
+      ],
+      "name": "Dimming 2fold, white LED",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_AKD_02_LED_Controller_V26.knxprod",
+      "sha256": "7de1a7cf9bf995ea54a047998ac0e7d9cccbfa2ba1f9b366638ef53070364fc9",
+      "size": 1679585,
+      "filename": "MDT_KP_AKD_02_LED_Controller_V26.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 4 application program(s). App refs: M-0083_A-003D-26-EF07 (0705); M-0083_A-003E-26-D501 (0705); M-0083_A-003F-26-E7E2 (0705); M-0083_A-0040-26-D2EF (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-003D-26-EF07"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "AKH-0400.03",
+        "AKH-0600.03",
+        "AKH-0800.03"
+      ],
+      "name": "Heating actuator 4-fold",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_AKH_03_Heating_Actuator_V32.knxprod",
+      "sha256": "174c4e25a248659a5ef72d5db845a81719f1cb5a412204c665f298c74ae55a29",
+      "size": 285786,
+      "filename": "MDT_KP_AKH_03_Heating_Actuator_V32.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 07B0. 3 application program(s). App refs: M-0083_A-013A-32-DCC1 (07B0); M-0083_A-013B-32-C541 (07B0); M-0083_A-013C-32-51EA (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-013A-32-DCC1"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "AKI-0416.03",
+        "AKI-0816.03",
+        "AKI-1216.03",
+        "AKS-0416.03",
+        "AKS-0816.03",
+        "AKS-1216.03",
+        "AKS-1616.03",
+        "AKS-2016.03"
+      ],
+      "name": "Switching, Staircase 12f",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_AKI_AKS_03_Switch_Actuator_V21a.knxprod",
+      "sha256": "d4fb8654ad395776c4d97e7909aaf5c8acbbb003fb8e39ee00c5767b51c88e5e",
+      "size": 777425,
+      "filename": "MDT_KP_AKI_AKS_03_Switch_Actuator_V21a.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 5 application program(s). App refs: M-0083_A-0009-21-FB5C (0705); M-0083_A-0013-21-FD98 (0705); M-0083_A-0014-21-9BC0 (0705); M-0083_A-0015-21-78B4 (0705); M-0083_A-0016-21-3525 (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0009-21-FB5C"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "AKK-03UP.03",
+        "AKK-04FC.03"
+      ],
+      "name": "Switch, Staircase 3fold, FanCoil",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_AKK_03_Switch_Actuator_Fan_coil_V20.knxprod",
+      "sha256": "92c05e7a10c4af5a6887dc997753259c56a39073ae284fde0e8a549a822d4129",
+      "size": 150022,
+      "filename": "MDT_KP_AKK_03_Switch_Actuator_Fan_coil_V20.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 2 application program(s). App refs: M-0083_A-001A-20-A2C5 (0705); M-0083_A-0023-20-6308 (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-001A-20-A2C5"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "AMI-0416.03",
+        "AMI-0816.03",
+        "AMI-1216.03",
+        "AMS-0416.03",
+        "AMS-0816.03",
+        "AMS-1216.03"
+      ],
+      "name": "Switch, Staircase light, Current measurement, 12-channel",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_AMI_AMS_03_Switch_Actuator_V31a.knxprod",
+      "sha256": "889fb0e46b2c80e56402c29f55b7b0a38a37d92e3e6805596ab81501a97e2b28",
+      "size": 381886,
+      "filename": "MDT_KP_AMI_AMS_03_Switch_Actuator_V31a.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 3 application program(s). App refs: M-0083_A-0317-31-7DC6 (0705); M-0083_A-0318-31-DB39 (0705); M-0083_A-0319-31-587B (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0317-31-7DC6"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "AZI-0316.03",
+        "AZI-0616.03"
+      ],
+      "name": "Switch, Staircase light, Active power meter, 3-channel",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_AZI_03_Switch_Actuator_V31.knxprod",
+      "sha256": "c42cf545c81e70da1f48adcf67f757a041924e97741b45127d98963e8ce42073",
+      "size": 280548,
+      "filename": "MDT_KP_AZI_03_Switch_Actuator_V31.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 2 application program(s). App refs: M-0083_A-0211-31-2283 (0705); M-0083_A-0212-31-1F7E (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0211-31-2283"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "BE-GTL10x.01",
+        "BE-GTL1Tx.01",
+        "BE-GTL20x.01",
+        "BE-GTL2Tx.01",
+        "BE-GTL40x.01",
+        "BE-GTL4Tx.01"
+      ],
+      "name": "Glass Push Button II Lite 1-fold",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_BE_01_Glass_Push_Button_II_Light_V13c.knxprod",
+      "sha256": "c8feaa000ca891df90b455a4ae27de9e1c0e3d3e5cf53e63cf944807f755c7e9",
+      "size": 601604,
+      "filename": "MDT_KP_BE_01_Glass_Push_Button_II_Light_V13c.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 4 application program(s). App refs: M-0083_A-0090-13-D12F (0705); M-0083_A-0091-13-4893 (0705); M-0083_A-0092-13-5D3E (0705); M-0083_A-0093-13-E3BA (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0090-13-D12F"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "BE-GT04x.01",
+        "BE-GT08x.01",
+        "BE-GTT4x.01",
+        "BE-GTT8x.01"
+      ],
+      "name": "Glass push button 4f / Plus",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_BE_01_Glass_Push_Button_Plus_V10a.knxprod",
+      "sha256": "89807b774a8c75ff55c6b0ca28e4491765d82783705b0177eb8c0698ac83bc6e",
+      "size": 349127,
+      "filename": "MDT_KP_BE_01_Glass_Push_Button_Plus_V10a.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0701. 4 application program(s). App refs: M-0083_A-0084-10-E9BD (0701); M-0083_A-0085-10-4A58 (0701); M-0083_A-0086-10-FF1B (0701); M-0083_A-0087-10-0D0B (0701). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0084-10-E9BD"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "BE-TAL5501.01",
+        "BE-TAL5502.01",
+        "BE-TAL5504.01",
+        "BE-TAL55B1.01",
+        "BE-TAL55B2.01",
+        "BE-TAL55T1.01",
+        "BE-TAL55T2.01",
+        "BE-TAL55T4.01",
+        "BE-TAL6301.01",
+        "BE-TAL6302.01",
+        "BE-TAL6304.01",
+        "BE-TAL63T1.01",
+        "BE-TAL63T2.01",
+        "BE-TAL63T4.01"
+      ],
+      "name": "Push Button Lite 55 1-fold Basic",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_BE_01_Push_Button_Lite_55_63_V14.knxprod",
+      "sha256": "c7421eed9fb1b97857b55699c048409b97bfc4b3d3456cbce82dd93a55bf3df5",
+      "size": 847112,
+      "filename": "MDT_KP_BE_01_Push_Button_Lite_55_63_V14.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 6 application program(s). App refs: M-0083_A-0094-14-881A (0705); M-0083_A-0095-14-F319 (0705); M-0083_A-0096-14-0DA5 (0705); M-0083_A-0097-14-87FD (0705); M-0083_A-009A-14-5109 (0705); M-0083_A-009B-14-E59D (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0094-14-881A"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "BE-TAL5501.01",
+        "BE-TAL5502.01",
+        "BE-TAL5504.01",
+        "BE-TAL55B1.01",
+        "BE-TAL55B2.01",
+        "BE-TAL55T1.01",
+        "BE-TAL55T2.01",
+        "BE-TAL55T4.01",
+        "BE-TAL6301.01",
+        "BE-TAL6302.01",
+        "BE-TAL6304.01",
+        "BE-TAL63T1.01",
+        "BE-TAL63T2.01",
+        "BE-TAL63T4.01"
+      ],
+      "name": "Push Button Lite 55 1-fold Basic",
+      "url": "https://www.mdt.de/fileadmin/user_upload/MDT_KP_BE_01_Push_Button_Lite_55_63_V15.knxprod",
+      "sha256": "8d85c543648105253c8659435f118914789a7a858625375e019b83781d4046b3",
+      "size": 1172259,
+      "filename": "MDT_KP_BE_01_Push_Button_Lite_55_63_V15.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 6 application program(s). App refs: M-0083_A-0094-15-2D28 (0705); M-0083_A-0095-15-B3F0 (0705); M-0083_A-0096-15-0AAE (0705); M-0083_A-0097-15-C5AE (0705); M-0083_A-009A-15-C0AB (0705); M-0083_A-009B-15-E0CF (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0094-15-2D28"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "BE-TAL6001.01",
+        "BE-TAL6002.01",
+        "BE-TAL6004.01",
+        "BE-TAL60T1.01",
+        "BE-TAL60T2.01",
+        "BE-TAL60T4.01"
+      ],
+      "name": "Push Button Lite 60 CH 1-fold",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_BE_01_Push_Button_Lite_60_CH_V14.knxprod",
+      "sha256": "3180f315bcb026de2c3de129bb6858d0fc6d4099c32972bae9b6612902a36713",
+      "size": 602511,
+      "filename": "MDT_KP_BE_01_Push_Button_Lite_60_CH_V14.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 4 application program(s). App refs: M-0083_A-009C-14-F67C (0705); M-0083_A-009D-14-F719 (0705); M-0083_A-009E-14-33ED (0705); M-0083_A-009F-14-95D8 (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-009C-14-F67C"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "BE-GT20x.02",
+        "BE-GT2Tx.02",
+        "BE-TAS86Tx.02",
+        "BE-TAS86x.02"
+      ],
+      "name": "Glass Push-button II Smart",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/MDT_KP_BE_02_Push_Button_Smart_86_V30.knxprod",
+      "sha256": "aa027a26a74cba9c3c5d0f15010afc981f623ac7213c6105fb4aeb24426d2adc",
+      "size": 741717,
+      "filename": "MDT_KP_BE_02_Push_Button_Smart_86_V30.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 2 application program(s). App refs: M-0083_A-018A-30-BDF6 (0705); M-0083_A-018B-30-F0FC (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-018A-30-BDF6"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "BE-02001.02",
+        "BE-02230.02",
+        "BE-04001.02 ",
+        "BE-06001.02"
+      ],
+      "name": "Universal Interface 2-fold",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_BE_02_Universal_Interface_V32a.knxprod",
+      "sha256": "b8ebd3d96e8d995a061f3ccea1053352f2e2c91cbd540b9693f9a57b7e673606",
+      "size": 383923,
+      "filename": "MDT_KP_BE_02_Universal_Interface_V32a.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 4 application program(s). App refs: M-0083_A-00B4-32-3919 (0705); M-0083_A-00B5-32-170A (0705); M-0083_A-00B6-32-9642 (0705); M-0083_A-00B7-32-1E8C (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-00B4-32-3919"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "BE-BZS86.01",
+        "BE-GBZx.01"
+      ],
+      "name": "Central Operation Unit Smart",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_BE_Central_Operation_Unit_Smart_V14.knxprod",
+      "sha256": "61dcfd326a626d696af9bf6796f83e5bf5d87c700d77c800a10bbd0e45b472cd",
+      "size": 1292731,
+      "filename": "MDT_KP_BE_Central_Operation_Unit_Smart_V14.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 1 application program(s). App refs: M-0083_A-0054-14-0D63 (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0054-14-0D63"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "BE-TAS5504.01",
+        "BE-TAS55T4.01",
+        "BE-TAS6304.01",
+        "BE-TAS63T4.01"
+      ],
+      "name": "Push Button Smart 55/63 4-fold",
+      "url": "https://www.mdt.de/fileadmin/user_upload/MDT_KP_BE_Push_Button_Smart_55_63_V12a.knxprod",
+      "sha256": "6a228900a7ea4de049be5255b581bfafb2354cb5c1f41f68fc5f18cd513cbaa1",
+      "size": 804239,
+      "filename": "MDT_KP_BE_Push_Button_Smart_55_63_V12a.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 2 application program(s). App refs: M-0083_A-0098-12-489B (0705); M-0083_A-0099-12-3564 (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0098-12-489B"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "BE-TAS6004.01",
+        "BE-TAS60T4.01"
+      ],
+      "name": "Push Button Smart 55/63 4-fold",
+      "url": "https://www.mdt.de/fileadmin/user_upload/MDT_KP_BE_Push_Button_Smart_60_CH_V12a.knxprod",
+      "sha256": "9a91c77bbc292a6cc0d3a498db744454e61bf4a8be4a14cdf9e1df330e4689ec",
+      "size": 803623,
+      "filename": "MDT_KP_BE_Push_Button_Smart_60_CH_V12a.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 2 application program(s). App refs: M-0083_A-0098-12-489B (0705); M-0083_A-0099-12-3564 (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0098-12-489B"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "JAL-B1UP.02"
+      ],
+      "name": "Shutters and Blinds 1-fold, Binary input 4-fold",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_JAL_B1UP_02_Shutter_Actuator_V39.knxprod",
+      "sha256": "e3fdfef3314b8d1bc40e40831a5cd5dfb68bcca78c9fd6cdf56e25b55aeb58e4",
+      "size": 158100,
+      "filename": "MDT_KP_JAL_B1UP_02_Shutter_Actuator_V39.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 1 application program(s). App refs: M-0083_A-0023-39-723D (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0023-39-723D"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "JAL-0410M.02",
+        "JAL-0810M.02"
+      ],
+      "name": "Shutter and Blinds with travel time measurement 4-fold",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_JAL_Meas_02_Shutter_Actuator_V43a.knxprod",
+      "sha256": "886fbdaf52a7184d34c0914aef195a5026cd2b73d4f816af35ebe66dae2122ab",
+      "size": 407247,
+      "filename": "MDT_KP_JAL_Meas_02_Shutter_Actuator_V43a.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 2 application program(s). App refs: M-0083_A-0128-43-7CBD (0705); M-0083_A-0129-43-D5CF (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0128-43-7CBD"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "BE-JTA5504.01"
+      ],
+      "name": "Blinds Push Button Smart",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_JTA_01_Blind_Push_Button_Smart_V10.knxprod",
+      "sha256": "5af798844d36f0f4db1886410970ae72a7a866e633652789a61008f10878ccc8",
+      "size": 276035,
+      "filename": "MDT_KP_JTA_01_Blind_Push_Button_Smart_V10.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 07B0. 1 application program(s). App refs: M-0083_A-00A2-10-6169 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-00A2-10-6169"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "RF-GTA4x.01",
+        "RF-GTA8x.01",
+        "RF-GTT4x.01",
+        "RF-GTT8x.01"
+      ],
+      "name": "Glass Push Button 4f Plus, Switch 2f, Shutter 1f",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/MDT_KP_RF_01_RF_Glass_Push_Button_V11a.knxprod",
+      "sha256": "3f1e6fca9bf8753408a467253e966f0c8869f4de70256ed9a3f2bfa8d5c29591",
+      "size": 609124,
+      "filename": "MDT_KP_RF_01_RF_Glass_Push_Button_V11a.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 2705. 4 application program(s). App refs: M-0083_A-00C9-11-5212 (2705); M-0083_A-00CA-11-2F94 (2705); M-0083_A-00CB-11-0084 (2705); M-0083_A-00CC-11-F3FE (2705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-00C9-11-5212"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "RF-TA55A2.01",
+        "RF-TA55A4.01",
+        "RF-TA55A6.01",
+        "RF-TA55A8.01",
+        "RF-TA55P2.01",
+        "RF-TA55P4.01",
+        "RF-TA55P6.01",
+        "RF-TA55P8.01"
+      ],
+      "name": "Push Button 2f Plus",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/MDT_KP_RF_01_RF_Push_Button_4fold_V11.knxprod",
+      "sha256": "8806b313f9ec2046d2f56655ead866ff36177b8516b9e63a582daaee74cb5aec",
+      "size": 574623,
+      "filename": "MDT_KP_RF_01_RF_Push_Button_4fold_V11.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 2705. 8 application program(s). App refs: M-0083_A-00D1-10-C17F (2705); M-0083_A-00D2-10-8B93 (2705); M-0083_A-00D3-10-2B6C (2705); M-0083_A-00D4-10-471E (2705); M-0083_A-00D5-11-D635 (2705); M-0083_A-00D6-11-7D61 (2705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-00D1-10-C17F"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "RF-TA55A2.01",
+        "RF-TA55A4.01",
+        "RF-TA55A6.01",
+        "RF-TA55A8.01",
+        "RF-TA55P2.01",
+        "RF-TA55P4.01",
+        "RF-TA55P6.01",
+        "RF-TA55P8.01"
+      ],
+      "name": "Push Button 2f Plus",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/MDT_KP_RF_01_RF_Push_Button_V10_01.knxprod",
+      "sha256": "16db331a5fc3ef2b8608d614bd5dcf7dfd66f0a3e934ecfa1de773427f644e3a",
+      "size": 711684,
+      "filename": "MDT_KP_RF_01_RF_Push_Button_V10_01.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 2705. 8 application program(s). App refs: M-0083_A-00D1-10-C17F (2705); M-0083_A-00D2-10-8B93 (2705); M-0083_A-00D3-10-2B6C (2705); M-0083_A-00D4-10-471E (2705); M-0083_A-00D5-11-D635 (2705); M-0083_A-00D6-11-7D61 (2705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-00D1-10-C17F"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "RF-JAL1UP.01"
+      ],
+      "name": "Blinds and Shutters 1-fold",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/MDT_KP_RF_01_RF_Shutter_Actuator_V10.knxprod",
+      "sha256": "c1134c5b5f7dc8c889b2f01e7acf4588657b0328e810583dec51c45b6ad6d399",
+      "size": 86083,
+      "filename": "MDT_KP_RF_01_RF_Shutter_Actuator_V10.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 2705. 1 application program(s). App refs: M-0083_A-00EC-10-5492 (2705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-00EC-10-5492"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "RF-AKK1ST.01",
+        "RF-AZK1ST.01"
+      ],
+      "name": "Switching, Staircase 1f",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/MDT_KP_RF_01_RF_Socket_V10.knxprod",
+      "sha256": "f56cb5aa55023844e6409125a0c7128c7efc2b7c1489f373c640ec256a07f574",
+      "size": 88184,
+      "filename": "MDT_KP_RF_01_RF_Socket_V10.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 2705. 2 application program(s). App refs: M-0083_A-00E8-10-1048 (2705); M-0083_A-00E9-10-C53A (2705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-00E8-10-1048"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "RF-AKK1UP.01",
+        "RF-AKK2UP.01"
+      ],
+      "name": "Switching, Staircase 1f AKK",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/MDT_KP_RF_01_RF_Switch_Actuator_V10.knxprod",
+      "sha256": "6f9f34ec92f74339fdfe8f26a876616aa9c1404aedd8ea9d51eadb31446a0e5c",
+      "size": 89715,
+      "filename": "MDT_KP_RF_01_RF_Switch_Actuator_V10.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 2705. 2 application program(s). App refs: M-0083_A-00E6-10-D91A (2705); M-0083_A-00E7-10-832A (2705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-00E6-10-D91A"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "RF-BE2230.01"
+      ],
+      "name": "Binary input 230VAC 2fold",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/MDT_KP_RF_01_RF_Universal_Interface_V10a.knxprod",
+      "sha256": "b3e32dbe4bd77003838490e7923d10285226f684f8e2ec4575d4865f77e82481",
+      "size": 99521,
+      "filename": "MDT_KP_RF_01_RF_Universal_Interface_V10a.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 2705. 1 application program(s). App refs: M-0083_A-00D9-10-4757 (2705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-00D9-10-4757"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "RF-LK001.02"
+      ],
+      "name": "RF+ Line Couppler",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/MDT_KP_RF_02_RF_Line_Coupler_V12.knxprod",
+      "sha256": "f20d3a5a838ea44a8208eb92c6a922431daa875a5b7daf5e4b4afb0675f9b8e8",
+      "size": 75251,
+      "filename": "MDT_KP_RF_02_RF_Line_Coupler_V12.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 2920. 1 application program(s). App refs: M-0083_A-00F0-12-E2A3-O0072 (2920). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-00F0-12-E2A3-O0072"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-LSD01.01"
+      ],
+      "name": "Brightness Sensor CL",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_SCN_01_Brightness_Sensor_Controller_V11a.knxprod",
+      "sha256": "8584642941e93c0ebee68e75d48056c4f2d5ed60d9742a14461819f38ee3d0fe",
+      "size": 71121,
+      "filename": "MDT_KP_SCN_01_Brightness_Sensor_Controller_V11a.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 1 application program(s). App refs: M-0083_A-004C-11-F0BB (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-004C-11-F0BB"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-GLED1x.01",
+        "SCN-LED55.01"
+      ],
+      "name": "LED Indicator",
+      "url": "https://www.mdt.de/fileadmin/user_upload/MDT_KP_SCN_01_LED_Indicator_V13.knxprod",
+      "sha256": "c954fc70e2215abea1298162a1aae179ae40e24a9254ff329299f4cd986494a5",
+      "size": 209858,
+      "filename": "MDT_KP_SCN_01_LED_Indicator_V13.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0701. 1 application program(s). App refs: M-0083_A-008E-13-9EB9 (0701). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-008E-13-9EB9"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-LSEN1.01"
+      ],
+      "name": "Leakage sensor",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/MDT_KP_SCN_01_Leakage_Sensor.knxprod",
+      "sha256": "15dc1213ffcd9823ce45d0f763f57adedf864290b34601dfd54c32243af0ee49",
+      "size": 93856,
+      "filename": "MDT_KP_SCN_01_Leakage_Sensor.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 1 application program(s). App refs: M-0083_A-014F-10-DDAF (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-014F-10-DDAF"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-G360D3.01",
+        "SCN-G360K3.01",
+        "SCN-P360D1.01",
+        "SCN-P360D3.01",
+        "SCN-P360D4.01",
+        "SCN-P360K3.01",
+        "SCN-P360K4.01"
+      ],
+      "name": "Presence Detector 360 Ceiling 3S",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_SCN_01_Presence_Detector_1_Sensor_V24.knxprod",
+      "sha256": "f9902cace9c86bb0807ea17d6e4cf56e474b434f5908cebcb30774bec355c338",
+      "size": 423712,
+      "filename": "MDT_KP_SCN_01_Presence_Detector_1_Sensor_V24.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 5 application program(s). App refs: M-0083_A-0064-24-F379 (0705); M-0083_A-0065-24-EAB6 (0705); M-0083_A-0066-24-1694 (0705); M-0083_A-0067-24-2310 (0705); M-0083_A-0068-24-110E (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0064-24-F379"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-RS1R.01"
+      ],
+      "name": "Rain sensor",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_SCN_01_Rain_Sensor_V11.knxprod",
+      "sha256": "8541f3cd9d2a36f4021285433cbfb4d8d26ff819c0e9d428f85d9a93893d9dc7",
+      "size": 41396,
+      "filename": "MDT_KP_SCN_01_Rain_Sensor_V11.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0701. 1 application program(s). App refs: M-0083_A-004F-11-8F33 (0701). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-004F-11-8F33"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-RT1APE.01",
+        "SCN-RT1UP.01",
+        "SCN-RT1UPE.01",
+        "SCN-TS1UP.01"
+      ],
+      "name": "Room temperature controller",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_SCN_01_Room_Temperature_Controller_Sensor_V14a.knxprod",
+      "sha256": "c747eaf977e283e1917223e823f38ecb9a39c593874ce86c98f0e40f86351d6d",
+      "size": 114807,
+      "filename": "MDT_KP_SCN_01_Room_Temperature_Controller_Sensor_V14a.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0701. 3 application program(s). App refs: M-0083_A-0041-14-2975 (0701); M-0083_A-0044-14-7E32 (0701); M-0083_A-0045-14-493D (0701). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0041-14-2975"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-RTN60S.01",
+        "SCN-RTR60O.01",
+        "SCN-RTR60S.01",
+        "SCN-TFS60.01"
+      ],
+      "name": "Object Controller 55/63",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_SCN_01_Room_Temperature_Controller_Smart_60_CH_V13a.knxprod",
+      "sha256": "464253e326b9ee9c7c651f89ab7515e813cc11763002a7429148129c4b8740f2",
+      "size": 432576,
+      "filename": "MDT_KP_SCN_01_Room_Temperature_Controller_Smart_60_CH_V13a.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 4 application program(s). App refs: M-0083_A-005C-13-999B (0705); M-0083_A-005D-13-B35B (0705); M-0083_A-005E-13-89A9 (0705); M-0083_A-005F-13-2FD2 (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-005C-13-999B"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-SAFE.01"
+      ],
+      "name": "Safety Module",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/MDT_KP_SCN_01_Safety_Module_V10.knxprod",
+      "sha256": "f0c302cd65192ccb31c503603d794a0dd2d094b712c27e5fe2737d4de2381838",
+      "size": 3267684,
+      "filename": "MDT_KP_SCN_01_Safety_Module_V10.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 1 application program(s). App refs: M-0083_A-0050-10-B997 (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0050-10-B997"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-RT2UP.01",
+        "SCN-RT4UP.01",
+        "SCN-RT6AP.01",
+        "SCN-RT6REG.01"
+      ],
+      "name": "Temperature controller 2 fold UP",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/MDT_KP_SCN_01_Temperature_Controller_V13a.knxprod",
+      "sha256": "ae3cb0e7c86f510948d947139b555e5994a99358898efaf5f2bc1a24197807a8",
+      "size": 359591,
+      "filename": "MDT_KP_SCN_01_Temperature_Controller_V13a.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0701. 4 application program(s). App refs: M-0083_A-0042-13-7561 (0701); M-0083_A-0043-13-34C2 (0701); M-0083_A-0049-13-86F4 (0701); M-0083_A-004A-13-C239 (0701). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0042-13-7561"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-DTSEN1.01"
+      ],
+      "name": "Twilight / Temperature sensor",
+      "url": "https://www.mdt.de/fileadmin/user_upload/MDT_KP_SCN_01_Twilight_Temperature_Sensor_V11a.knxprod",
+      "sha256": "ea4172fd57b93c0def84b72476890d10511a5cf61a5423ecb19092629afd3b7b",
+      "size": 119081,
+      "filename": "MDT_KP_SCN_01_Twilight_Temperature_Sensor_V11a.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 1 application program(s). App refs: M-0083_A-014D-11-EFEF (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-014D-11-EFEF"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-IP000.02",
+        "SCN-IP100.02"
+      ],
+      "name": "IP Interface/Router Email and Time server function",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/MDT_KP_SCN_02_03_Email_Function_IP_Router_Interface_V10c.knxprod",
+      "sha256": "a9375be9cce814b066801199ff64e0a525fac4c6d577c28badc19853bbfd6557",
+      "size": 104397,
+      "filename": "MDT_KP_SCN_02_03_Email_Function_IP_Router_Interface_V10c.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 07B0. 1 application program(s). App refs: M-0083_A-0133-10-8772 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0133-10-8772"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-IP000.02",
+        "SCN-IP100.02"
+      ],
+      "name": "KNX IP Interface",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/MDT_KP_SCN_02_03_IP_Router_Interface_V11b.knxprod",
+      "sha256": "e2efb195e23241fa62d827f855622a9f653e97faf8a3f350358551831da90624",
+      "size": 57440,
+      "filename": "MDT_KP_SCN_02_03_IP_Router_Interface_V11b.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0012,091A. 2 application program(s). App refs: M-0083_A-0134-10-4522-O0072 (0012); M-0083_A-0135-11-8D15-O0072 (091A). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0134-10-4522-O0072"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-RTRGx.02"
+      ],
+      "name": "Glass Temperature Controller Smart",
+      "url": "https://www.mdt.de/fileadmin/user_upload/MDT_KP_SCN_02_Glass_Room_Temperature_Controller_V12b.knxprod",
+      "sha256": "a3f4565621ca1fb6f9408ff8d624d45aff02544f9a8f6ae596616f90c1224c58",
+      "size": 327897,
+      "filename": "MDT_KP_SCN_02_Glass_Room_Temperature_Controller_V12b.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 1 application program(s). App refs: M-0083_A-0247-12-B13D (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0247-12-B13D"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-BWM55.02",
+        "SCN-BWM55T.G2",
+        "SCN-BWM60.02",
+        "SCN-BWM60T.02",
+        "SCN-BWM63.02",
+        "SCN-BWM63.G2",
+        "SCN-BWM63T.02",
+        "SCN-BWM63T.G2"
+      ],
+      "name": "Motion Detector 55",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_SCN_02_Motion_Detector_60_CH_V44a.knxprod",
+      "sha256": "53028d445ef60f080cb676fe09854e27cb45de707a46d9017a4e1b3c47934f7c",
+      "size": 214530,
+      "filename": "MDT_KP_SCN_02_Motion_Detector_60_CH_V44a.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 2 application program(s). App refs: M-0083_A-006D-44-E3C8 (0705); M-0083_A-006E-44-ED2B (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-006D-44-E3C8"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-BWM55.02",
+        "SCN-BWM55T.G2",
+        "SCN-BWM60.02",
+        "SCN-BWM60T.02",
+        "SCN-BWM63.02",
+        "SCN-BWM63.G2",
+        "SCN-BWM63T.02",
+        "SCN-BWM63T.G2"
+      ],
+      "name": "Motion Detector 55",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/MDT_KP_SCN_02_Motion_Detector_V44a.knxprod",
+      "sha256": "4caca01a2820587668a2ec96795ad7d1f0891634eeff2288bc091eb8ce84bb54",
+      "size": 214651,
+      "filename": "MDT_KP_SCN_02_Motion_Detector_V44a.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 2 application program(s). App refs: M-0083_A-006D-44-E3C8 (0705); M-0083_A-006E-44-ED2B (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-006D-44-E3C8"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-RT8REG.02"
+      ],
+      "name": "Temperature controller 8-fold",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/MDT_KP_SCN_02_Temperature_Controller_8fold_V10.knxprod",
+      "sha256": "af7ffb4488ae9eab70fd333ef31352f4cb67eb8aee928df0c307513ea66f8f99",
+      "size": 118048,
+      "filename": "MDT_KP_SCN_02_Temperature_Controller_8fold_V10.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 07B0. 1 application program(s). App refs: M-0083_A-0140-10-4808 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0140-10-4808"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-RTC20.02"
+      ],
+      "name": "Time Switch with colour display",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/MDT_KP_SCN_02_Time_Switch_V21.knxprod",
+      "sha256": "59fc1507f087f2525c2584930dbba57aaeb2a4287007a98fb331ebafb374fd36",
+      "size": 256118,
+      "filename": "MDT_KP_SCN_02_Time_Switch_V21.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 1 application program(s). App refs: M-0083_A-0255-21-0ECA (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0255-21-0ECA"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-IP000.03",
+        "SCN-IP100.03"
+      ],
+      "name": "IP Interface/Router Email and Time server function",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/MDT_KP_SCN_03_Email_Function_IP_Router_Interface_Secure_V20c.knxprod",
+      "sha256": "8f9785c0178f60e3f92653215303b5c3ec9eceb0745f3d5ab54d6b6c6a74b61e",
+      "size": 176372,
+      "filename": "MDT_KP_SCN_03_Email_Function_IP_Router_Interface_Secure_V20c.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 07B0. 1 application program(s). App refs: M-0083_A-0137-20-7EB2 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0137-20-7EB2"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-IP000.03"
+      ],
+      "name": "IP Interface Secure",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/MDT_KP_SCN_03_IP_Interface_Secure_V21a.knxprod",
+      "sha256": "f72c532ca15fcbb4d3e740b98dab6544071817e12b0f9edfc019f7124473cdf6",
+      "size": 89851,
+      "filename": "MDT_KP_SCN_03_IP_Interface_Secure_V21a.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0012. 1 application program(s). App refs: M-0083_A-0138-21-F18E-O0072 (0012). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0138-21-F18E-O0072"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-IP100.03"
+      ],
+      "name": "IP Router Secure",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/MDT_KP_SCN_03_IP_Router_Secure_V23.knxprod",
+      "sha256": "41734c7577f021e454f2619b4fcc2319f38fd37a209aa92f5445cbdfefdc590b",
+      "size": 103862,
+      "filename": "MDT_KP_SCN_03_IP_Router_Secure_V23.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 091A. 1 application program(s). App refs: M-0083_A-0139-23-76E0-O0072 (091A). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0139-23-76E0-O0072"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-LK001.03"
+      ],
+      "name": "Line Coupler",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/MDT_KP_SCN_03_Line_Coupler_Data_Secure_V42.knxprod",
+      "sha256": "22cb28aab4a5d4afcd7285303de67403bf75653c94b3bca17eadebe567e63bc5",
+      "size": 99933,
+      "filename": "MDT_KP_SCN_03_Line_Coupler_Data_Secure_V42.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0912. 2 application program(s). App refs: M-0083_A-0235-42-0EE0-O0072 (0912); M-0083_A-0236-41-6E6C-O0072 (0912). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0235-42-0EE0-O0072"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-LK001.02"
+      ],
+      "name": "Line Coupler",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/MDT_KP_SCN_03_Line_Coupler_V30a.knxprod",
+      "sha256": "ea8d0b2e3fe806a97b8316a98af554dc57f7b57d42c6a1f94c07023e15be2563",
+      "size": 69230,
+      "filename": "MDT_KP_SCN_03_Line_Coupler_V30a.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0912. 2 application program(s). App refs: M-0083_A-0035-30-0F9F-O0072 (0912); M-0083_A-0036-30-57FB-O0072 (0912). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0035-30-0F9F-O0072"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "STC-0640.01",
+        "STC-0960.01",
+        "STC-1280.01"
+      ],
+      "name": "Bus power supply with diagnosis function",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/MDT_KP_STC_01_Bus_Power_Supply_Diagnosis_V12.knxprod",
+      "sha256": "1eba8e7fab62e5bf90090e9b4fc188bddaaf4c342a0b449b4dfa8b9d2e2fe2a4",
+      "size": 185486,
+      "filename": "MDT_KP_STC_01_Bus_Power_Supply_Diagnosis_V12.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 1 application program(s). App refs: M-0083_A-0056-12-4954 (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0056-12-4954"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "STR-0640.01"
+      ],
+      "name": "Redundant Bus power supply with diagnosis function",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/MDT_KP_STR_01_Bus_Power_Supply_Redundant_V10b.knxprod",
+      "sha256": "d3e4080b475df2345290db239ca0179a0fd90fbac0b663284c19c4d51d730f42",
+      "size": 184983,
+      "filename": "MDT_KP_STR_01_Bus_Power_Supply_Redundant_V10b.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 1 application program(s). App refs: M-0083_A-0057-10-3D61 (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0057-10-3D61"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "RF-FGxS.01S"
+      ],
+      "name": "KNX RF+ Window Handle, Secure",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/MDT_RF_Fenstergriff_V10.knxprod",
+      "sha256": "309030bfe9de8f6755bc13f00c4374ec852308a72410be50d04b67b3f98e2817",
+      "size": 108508,
+      "filename": "MDT_RF_Fenstergriff_V10.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 27B0. 1 application program(s). App refs: M-0083_A-00F4-10-12C7 (27B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-00F4-10-12C7"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "PSE-B552T0x.02S"
+      ],
+      "name": "Motion Detector 2,2 m TS 55, Secure",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/PSE-B552T0x-02S_MDT_KP_V10.knxprod",
+      "sha256": "389f693574f8f7505deee9056a84ef26d72f0aab04a61995b1a74a8ae2820d58",
+      "size": 210095,
+      "filename": "PSE-B552T0x-02S_MDT_KP_V10.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 07B0. 1 application program(s). App refs: M-0083_A-047A-10-6CE0 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-047A-10-6CE0"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "PSE-B552T0x.02"
+      ],
+      "name": "Motion Detector 2,2 m TS 55",
+      "url": "https://www.mdt.de/fileadmin/user_upload/PSE-B552T0x-02_MDT_KP_V44.knxprod",
+      "sha256": "ce04c5584519ff97636b0e20682ea9c36809a302db6631b94a5b1be7dae0f73f",
+      "size": 215008,
+      "filename": "PSE-B552T0x-02_MDT_KP_V44.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 1 application program(s). App refs: M-0083_A-007B-44-A049 (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-007B-44-A049"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "PSE-BWML0x.01S",
+        "PSE-PMC0x.01S"
+      ],
+      "name": "Micro Presence Detector",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/PSE-xxx0x-01S_MDT_KP_V10a.knxprod",
+      "sha256": "5ffe742a166e879184e322e7e46e0ee39cdab976bdbaf645933e0effa1729370",
+      "size": 185675,
+      "filename": "PSE-xxx0x-01S_MDT_KP_V10a.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 07B0. 1 application program(s). App refs: M-0083_A-0479-10-0DC9 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0479-10-0DC9"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "RF-AKD230CC.02S",
+        "RF-AKD260CC.02S"
+      ],
+      "name": "RF-AKD2x0CC",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/RF-AKD2x0CC_02S_MDT_KP_V10.knxprod",
+      "sha256": "3b776a3bdf0c79e9e801d8731901304ed90109df669aeb0a2a80371a5273f844",
+      "size": 415336,
+      "filename": "RF-AKD2x0CC_02S_MDT_KP_V10.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 27B0. 1 application program(s). App refs: M-0083_A-00ED-10-33FD (27B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-00ED-10-33FD"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "RF-FKWS.01S"
+      ],
+      "name": "KNX RF+ Window Contact, Secure",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/RF-FKxx-01S_MDT_KP_V10.knxprod",
+      "sha256": "b01d5f67d3c4c5a74c84cebf171f433c32f08a6b93047f8fb11d78fd938dff3b",
+      "size": 154079,
+      "filename": "RF-FKxx-01S_MDT_KP_V10.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 27B0. 1 application program(s). App refs: M-0083_A-00F7-10-9052 (27B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-00F7-10-9052"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "RF-HVA1DAA.01S",
+        "RF-HVA1DLB.01S",
+        "RF-HVA1ILB.01S"
+      ],
+      "name": "RF+ Heating Valve Drive",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/RF-HVA1xxx-01S_MDT_KP_V11.knxprod",
+      "sha256": "b96290723461e2397709b2aa513b60e173d6da62ecd2cd8fa82f6c22a57c0c3b",
+      "size": 120544,
+      "filename": "RF-HVA1xxx-01S_MDT_KP_V11.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 27B0. 1 application program(s). App refs: M-0083_A-00F3-11-E0F2 (27B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-00F3-11-E0F2"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "RF-LK001.03"
+      ],
+      "name": "RF+ Line Coupler",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/RF-LK001-03_MDT_KP_V23.knxprod",
+      "sha256": "13c9e71444a58352f3ec5a1fbdd5f33a2f6f4ed3ddd65ef89517025ebe4d34e9",
+      "size": 97579,
+      "filename": "RF-LK001-03_MDT_KP_V23.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 2920. 1 application program(s). App refs: M-0083_A-00F0-23-DE85-O0072 (2920). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-00F0-23-DE85-O0072"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "RF-TAL55B10x.01S",
+        "RF-TAL55B20x.01S"
+      ],
+      "name": "RF_Taster_Light55_Basic_Secure",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/RF-TAL55Bx0x-01S_MDT_KP_V12.knxprod",
+      "sha256": "512f7507c60b10caab37a23f4a11a885566a3b5bad99ff5adea3570ffa6e6423",
+      "size": 311734,
+      "filename": "RF-TAL55Bx0x-01S_MDT_KP_V12.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 27B0. 1 application program(s). App refs: M-0083_A-00F2-12-05C4 (27B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-00F2-12-05C4"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-ACG0DAI.01"
+      ],
+      "name": "KNX Gateway for Daikin residential air conditioning units, flush mounted",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/SCN-ACG0DAI-01_MDT_KP_V04.knxprod",
+      "sha256": "211aadf2609afcb69c06b81357aed41f7172c83c111f836edc3a69d68d35bdf6",
+      "size": 127214,
+      "filename": "SCN-ACG0DAI-01_MDT_KP_V04.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0025. 1 application program(s). App refs: M-0083_A-0481-04-D684-O0077 (0025). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0481-04-D684-O0077"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-ACG0MIT.01"
+      ],
+      "name": "KNX Gateway for Mitsubishi air conditioning units, flush mounted",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/SCN-ACG0MIT-01_MDT_KP_V10.knxprod",
+      "sha256": "2e6ef797363602ec8af6c962463dbfccde6a90c83e6f447b30ff34c5edc70e9b",
+      "size": 133866,
+      "filename": "SCN-ACG0MIT-01_MDT_KP_V10.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0025. 1 application program(s). App refs: M-0083_A-0482-10-5CB7-O0077 (0025). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0482-10-5CB7-O0077"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-ACG0PAN.01"
+      ],
+      "name": "KNX Gateway for Panasonic Etherea air conditioning units, flush mounted",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/SCN-ACG0PAN-01_MDT_KP_V15.knxprod",
+      "sha256": "f25dfc2c85857f19dbc95bda5068247da2de75e16530222061bf1d41f0d6c2b1",
+      "size": 188949,
+      "filename": "SCN-ACG0PAN-01_MDT_KP_V15.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0025. 1 application program(s). App refs: M-0083_A-0483-15-A264-O0077 (0025). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0483-15-A264-O0077"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-ACG1DAI.01"
+      ],
+      "name": "KNX Gateway for Daikin commercial air conditioning units, flush mounted",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/SCN-ACG1DAI-01_MDT_KP_V15.knxprod",
+      "sha256": "01379e738b29f9e004bd31d50d6a5c3c5fe7331db81802077ca380eb31036ccf",
+      "size": 158594,
+      "filename": "SCN-ACG1DAI-01_MDT_KP_V15.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0025. 1 application program(s). App refs: M-0083_A-0484-15-5F66-O0077 (0025). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0484-15-5F66-O0077"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-CO2M601x.02",
+        "SCN-CO2MGS.02"
+      ],
+      "name": "Air Quality Sensor with CO2 and VOC sensor",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/SCN-CO2M601x-02_MDT_KP_V12.knxprod",
+      "sha256": "9ca5ec60c0c79d92102153d5a626278f079a9a24de949de8d42d6f6fb8dd74d9",
+      "size": 307482,
+      "filename": "SCN-CO2M601x-02_MDT_KP_V12.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 07B0. 1 application program(s). App refs: M-0083_A-0146-12-1EDD (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0146-12-1EDD"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-CO2M601x.02",
+        "SCN-CO2MGS.02"
+      ],
+      "name": "Air Quality Sensor with CO2 and VOC sensor",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/SCN-CO2MGSxx-02_MDT_KP_V12.knxprod",
+      "sha256": "6eb3a9922545212ff8f1cba326d98d6cd0d8b39a25859085f21fa3cd18692366",
+      "size": 308519,
+      "filename": "SCN-CO2MGSxx-02_MDT_KP_V12.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 07B0. 1 application program(s). App refs: M-0083_A-0146-12-1EDD (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0146-12-1EDD"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-DA641P.04S"
+      ],
+      "name": "DALI Control Pro64 Gateway",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/SCN-DA641P-04S_MDT_KP_V21.knxprod",
+      "sha256": "0db9921c22cc68b936eaaa7d79b0d1e17672efe7655d41633f0445148017f2a0",
+      "size": 195126,
+      "filename": "SCN-DA641P-04S_MDT_KP_V21.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 07B0. 1 application program(s). App refs: M-0083_A-0153-21-8829-O00EF (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0153-21-8829-O00EF"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-KP360K3.03"
+      ],
+      "name": "Combi-Presence Detector ",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/SCN-KP360K3xx01_MDT_KP_V10.knxprod",
+      "sha256": "2b369b81723c863627cc72c25654d8b3597c38dca455431f004d48b7e5106121",
+      "size": 332077,
+      "filename": "SCN-KP360K3xx01_MDT_KP_V10.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 07B0. 1 application program(s). App refs: M-0083_A-0078-10-C9D1 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0078-10-C9D1"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-LK001.03S"
+      ],
+      "name": "Line/Segment Coupler/Secure Proxy",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/SCN-LK001-03S_MDT_KP_V10_ETS6.knxprod",
+      "sha256": "df146ee69658131bc95fb28f56608207da86b5ce0d1b2201a9bb3d53412b067f",
+      "size": 111720,
+      "filename": "SCN-LK001-03S_MDT_KP_V10_ETS6.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0912. 1 application program(s). App refs: M-0083_A-0237-10-7F46-O0072 (0912). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0237-10-7F46-O0072"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-LK001.03"
+      ],
+      "name": "Line/Segment Coupler",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/SCN-LK001.03_MDT_KP_V50_from_HW_%20R6.1.knxprod",
+      "sha256": "d6f167ed34ba63c49f8bbaeac58aa885945f8bba6383e2eb32813de8008b296a",
+      "size": 98132,
+      "filename": "SCN-LK001.03_MDT_KP_V50_from_HW_ R6.1.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0912. 1 application program(s). App refs: M-0083_A-0235-50-9EF7-O0072 (0912). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0235-50-9EF7-O0072"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-LOG1.03S"
+      ],
+      "name": "Logic Module Secure",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/SCN-LOG1-03S_MDT_KP_V10a.knxprod",
+      "sha256": "bda63d3285f6de3fb93bc6854d8f058baf71ccd40409fc7e16a3908b708600fa",
+      "size": 386004,
+      "filename": "SCN-LOG1-03S_MDT_KP_V10a.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 07B0. 1 application program(s). App refs: M-0083_A-044B-10-A7DE (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-044B-10-A7DE"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-MBGRTU.01"
+      ],
+      "name": "Modbus Gateway (1-200)",
+      "url": "https://www.mdt-group.com/fileadmin/user_upload/user_upload/download/SCN-MBGRTU-01_MDT_KP_V12.knxprod",
+      "sha256": "aa778e5e17cb0ba3b0088d1ef0b4b65a50b0acb2f69a7d80882ca4b782b92022",
+      "size": 356313,
+      "filename": "SCN-MBGRTU-01_MDT_KP_V12.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 07B0. 1 application program(s). App refs: M-0083_A-0150-12-69A3 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-0150-12-69A3"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-G360D3.03",
+        "SCN-G360K3.03",
+        "SCN-P360D3.03",
+        "SCN-P360D4.03",
+        "SCN-P360E3.03",
+        "SCN-P360K3.03",
+        "SCN-P360K4.03",
+        "SCN-P360L2.03",
+        "SCN-P360L3.03"
+      ],
+      "name": "Glass Presence Detector 360° 3S",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/SCN-x360xx-03_MDT_KP_V44b.knxprod",
+      "sha256": "cebcf4f9fb4ec6eab8f8c20a0708721e65ebe198fba0640e85f3fcd6fc7adc7c",
+      "size": 860944,
+      "filename": "SCN-x360xx-03_MDT_KP_V44b.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 8 application program(s). App refs: M-0083_A-006C-44-494C (0705); M-0083_A-006F-44-9B60 (0705); M-0083_A-0072-44-49AB (0705); M-0083_A-0073-44-53B9 (0705); M-0083_A-0074-44-7B27 (0705); M-0083_A-0075-44-8EAB (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-006C-44-494C"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "SCN-RTN55S.01",
+        "SCN-RTN60S.01",
+        "SCN-RTN63S.01",
+        "SCN-RTR55O.01",
+        "SCN-RTR55S.01",
+        "SCN-RTR60O.01",
+        "SCN-RTR60S.01",
+        "SCN-RTR63O.01",
+        "SCN-RTR63S.01",
+        "SCN-TFS55.01",
+        "SCN-TFS60.01",
+        "SCN-TFS63.01"
+      ],
+      "name": "Object Controller 55/63",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/SCN-xxxxxx-01_RoomTemperatureController_MDT_KP_V14.knxprod",
+      "sha256": "4d35eefa60a93a0c7636dd6792fb13660eb448c09e05e7ba2d9c441d070abc11",
+      "size": 537937,
+      "filename": "SCN-xxxxxx-01_RoomTemperatureController_MDT_KP_V14.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 0705. 4 application program(s). App refs: M-0083_A-005C-14-B9A9 (0705); M-0083_A-005D-14-25DC (0705); M-0083_A-005E-14-EDD2 (0705); M-0083_A-005F-14-5403 (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-005C-14-B9A9"
+    },
+    {
+      "manufacturer": "EAE Technology",
+      "manufacturer_id": "M-011E",
+      "order_numbers": [
+        "48037"
+      ],
+      "name": "Switch Actuator,4-Channel 16A/1.0",
+      "url": "https://www.eaetechnology.com/upload/dosyalar/SW104_Switch_Actuator_v1.0-tr_en_de_es_fr_it.knxprod",
+      "sha256": "886d4341ca60f1bfc44df843d96a115f81db21254916c26ce60e08027b464e3a",
+      "size": 124415,
+      "filename": "SW104_Switch_Actuator_v1.0-tr_en_de_es_fr_it.knxprod",
+      "redistributable": false,
+      "notes": "EAE Technology product database. Masks: 0705. 1 application program(s). App refs: M-011E_A-BBA5-10-226C (0705). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-011E_A-BBA5-10-226C"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVI-SQTMD2"
+      ],
+      "name": "Square TMD 2 1.2",
+      "url": "https://assets.zennio.com/application_program/Square_TMD_2_1.2_EIFAItRS_ETS5.knxprod",
+      "sha256": "c99a7cdb9aff9d81b080fb3fa1ae228153d66ba21d8382b431ad4e5f422f0f52",
+      "size": 438800,
+      "filename": "Square_TMD_2_1.2_EIFAItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5421-12-57B2 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-5421-12-57B2"
+    },
+    {
+      "manufacturer": "Theben",
+      "manufacturer_id": "M-0048",
+      "order_numbers": [
+        "1079200"
+      ],
+      "name": "SPX 390: 2-channel presence detector",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Theben/T1079/T1079200_Sphinx_390_2-Kanal_PrNsenzmelder_V1.0.knxprod",
+      "sha256": "e3f85bac5756fd71b0918491b4038a02cda5d7e8af8a15f32b7a357960faa516",
+      "size": 45132,
+      "filename": "T1079200_Sphinx_390_2-Kanal_PrNsenzmelder_V1.0.knxprod",
+      "redistributable": false,
+      "notes": "Theben product database. Masks: 0012. 1 application program(s). App refs: M-0048_A-107A-10-1FF1-O0009 (0012). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0048_A-107A-10-1FF1-O0009"
+    },
+    {
+      "manufacturer": "Theben",
+      "manufacturer_id": "M-0048",
+      "order_numbers": [
+        "110 9 200"
+      ],
+      "name": "twilight switch",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Theben/T1109/T1109200_LU_110_EIB_1-Kanal_DNmmerungsschalter_V0.0.knxprod",
+      "sha256": "c9cf90fbf36ca719b1f861144b64345d9d891a6232a182f9123099dedf111150",
+      "size": 40742,
+      "filename": "T1109200_LU_110_EIB_1-Kanal_DNmmerungsschalter_V0.0.knxprod",
+      "redistributable": false,
+      "notes": "Theben product database. Masks: 0011. 1 application program(s). App refs: M-0048_A-110A-00-737B (0011). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0048_A-110A-00-737B"
+    },
+    {
+      "manufacturer": "Theben",
+      "manufacturer_id": "M-0048",
+      "order_numbers": [
+        "130 9 200"
+      ],
+      "name": "brightness sensor with 4 scenes",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Theben/T1309/T1309200_LU_130_EIB_3-Kanal_Helligkeitssensor_V0.0.knxprod",
+      "sha256": "ce96586b296de02e7f5cefd7c73f31829bbdb2ad7eccd996f876e0e610018f03",
+      "size": 51166,
+      "filename": "T1309200_LU_130_EIB_3-Kanal_Helligkeitssensor_V0.0.knxprod",
+      "redistributable": false,
+      "notes": "Theben product database. Masks: 0012. 1 application program(s). App refs: M-0048_A-130A-00-1AC9 (0012). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0048_A-130A-00-1AC9"
+    },
+    {
+      "manufacturer": "Theben",
+      "manufacturer_id": "M-0048",
+      "order_numbers": [
+        "490 0 204"
+      ],
+      "name": "12 x click-clack",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Theben/T4900/T4900204_RM_4_RM_4.knxprod",
+      "sha256": "1a073237febac4cbef1be8415d868f195b26e9a08801a373bba1d66dd57845b4",
+      "size": 111061,
+      "filename": "T4900204_RM_4_RM_4.knxprod",
+      "redistributable": false,
+      "notes": "Theben product database. Masks: 0011,0012. 8 application program(s). App refs: M-0048_A-0204-10-2492 (0011); M-0048_A-2041-01-FC62 (0011); M-0048_A-204B-00-594D (0011); M-0048_A-204C-00-C941 (0012); M-0048_A-204D-01-DCA3 (0011); M-0048_A-204E-01-1C8C (0011). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0048_A-0204-10-2492"
+    },
+    {
+      "manufacturer": "Theben",
+      "manufacturer_id": "M-0048",
+      "order_numbers": [
+        "612 9 201"
+      ],
+      "name": "2 scenes with switching, value, priority",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Theben/T6129/T6129201_TR_612_S_EIB_2-Kanal_Wochenschaltuhr_V0.0.knxprod",
+      "sha256": "c5a1c52a3649d8bb27ced7c87b19099837dda8c5e93f74b5db8ab0e1d10311fa",
+      "size": 52199,
+      "filename": "T6129201_TR_612_S_EIB_2-Kanal_Wochenschaltuhr_V0.0.knxprod",
+      "redistributable": false,
+      "notes": "Theben product database. Masks: 0011. 1 application program(s). App refs: M-0048_A-612C-00-EE11 (0011). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0048_A-612C-00-EE11"
+    },
+    {
+      "manufacturer": "Theben",
+      "manufacturer_id": "M-0048",
+      "order_numbers": [
+        "644 9 200"
+      ],
+      "name": "scene with switching, value , priority ",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Theben/T6449/T6449200_TR_644_S_EIB_Schaltaktor_4-Kanal_V0.0.knxprod",
+      "sha256": "73182dd9bfe6c7ce16998078e8e7f03779edbc1c063d6c4d50030e09ad15841c",
+      "size": 73848,
+      "filename": "T6449200_TR_644_S_EIB_Schaltaktor_4-Kanal_V0.0.knxprod",
+      "redistributable": false,
+      "notes": "Theben product database. Masks: 0011,0012. 3 application program(s). App refs: M-0048_A-644A-00-3A97 (0012); M-0048_A-644B-00-FD5F (0011); M-0048_A-644C-00-6FEC (0012). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0048_A-644A-00-3A97"
+    },
+    {
+      "manufacturer": "Theben",
+      "manufacturer_id": "M-0048",
+      "order_numbers": [
+        "648 9 201"
+      ],
+      "name": "Switch, value, HVAC, Scenes, time+date V1.3",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Theben/T6489/T6489201_TR_648_6-Kanal_Schaltaktor_V1.3.knxprod",
+      "sha256": "36b3e838075b9a1c3febff027692a8f0d91d662e1381d0402e4dfd00b861cdcf",
+      "size": 80867,
+      "filename": "T6489201_TR_648_6-Kanal_Schaltaktor_V1.3.knxprod",
+      "redistributable": false,
+      "notes": "Theben product database. Masks: 0021. 1 application program(s). App refs: M-0048_A-648A-13-9189 (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0048_A-648A-13-9189"
+    },
+    {
+      "manufacturer": "Theben",
+      "manufacturer_id": "M-0048",
+      "order_numbers": [
+        "710 9 200"
+      ],
+      "name": "controller with 3 temperature steps",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Theben/T7109/T7109200__RAM_710_EIB_Thermostat_f-_Einzelraumregelung_V0.1.knxprod",
+      "sha256": "d673ff222d47d1d7b8696786813bfa4d319adf2c1e14bd72401fa29c5ff0336d",
+      "size": 64084,
+      "filename": "T7109200__RAM_710_EIB_Thermostat_f-_Einzelraumregelung_V0.1.knxprod",
+      "redistributable": false,
+      "notes": "Theben product database. Masks: 0012. 3 application program(s). App refs: M-0048_A-710A-01-A6C1 (0012); M-0048_A-710B-01-1201 (0012); M-0048_A-710C-01-F8A5 (0012). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0048_A-710A-01-A6C1"
+    },
+    {
+      "manufacturer": "Theben",
+      "manufacturer_id": "M-0048",
+      "order_numbers": [
+        "713 9 200"
+      ],
+      "name": "Room temp. control, switching, dimming, blinds",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Theben/T7139/T7139200_RAM_713_Einzelraum_Temperaturregler_V1.0.knxprod",
+      "sha256": "9888fd2515493cd5629040db130dd29731b488064a6bb8bb342203cc455b2aaa",
+      "size": 62211,
+      "filename": "T7139200_RAM_713_Einzelraum_Temperaturregler_V1.0.knxprod",
+      "redistributable": false,
+      "notes": "Theben product database. Masks: 0012. 1 application program(s). App refs: M-0048_A-713A-10-D9E4 (0012). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0048_A-713A-10-D9E4"
+    },
+    {
+      "manufacturer": "MDT",
+      "manufacturer_id": "M-0083",
+      "order_numbers": [
+        "TAL-550100x.02S",
+        "TAL-5501A0x.02S",
+        "TAL-5501B0x.02S",
+        "TAL-550200x.02S",
+        "TAL-5502A0x.02S",
+        "TAL-5502B0x.02S",
+        "TAL-5502C0x.02S",
+        "TAL-5502D0x.02S",
+        "TAL-550400x.02S",
+        "TAL-55B100x.02S",
+        "TAL-55B200x.02S",
+        "TAL-55T100x.02S",
+        "TAL-55T1A0x.02S",
+        "TAL-55T1B0x.02S",
+        "TAL-55T200x.02S",
+        "TAL-55T2A0x.02S",
+        "TAL-55T2B0x.02S",
+        "TAL-55T2C0x.02S",
+        "TAL-55T2D0x.02S",
+        "TAL-55T400x.02S",
+        "TAL-600101x.02S",
+        "TAL-6001A1x.02S",
+        "TAL-6001B1x.02S",
+        "TAL-600201x.02S",
+        "TAL-6002A1x.02S",
+        "TAL-6002B1x.02S",
+        "TAL-6002C1x.02S",
+        "TAL-6002D1x.02S",
+        "TAL-600401x.02S",
+        "TAL-60T101x.02S",
+        "TAL-60T1A1x.02S",
+        "TAL-60T1B1x.02S",
+        "TAL-60T201x.02S",
+        "TAL-60T2A1x.02S",
+        "TAL-60T2B1x.02S",
+        "TAL-60T2C1x.02S",
+        "TAL-60T2D1x.02S",
+        "TAL-60T401x.02S",
+        "TAL-630100x.02S",
+        "TAL-6301A0x.02S",
+        "TAL-6301B0x.02S",
+        "TAL-630200x.02S",
+        "TAL-6302A0x.02S",
+        "TAL-6302B0x.02S",
+        "TAL-6302C0x.02S",
+        "TAL-6302D0x.02S",
+        "TAL-630400x.02S",
+        "TAL-63T100x.02S",
+        "TAL-63T1A0x.02S",
+        "TAL-63T1B0x.02S",
+        "TAL-63T200x.02S",
+        "TAL-63T2A0x.02S",
+        "TAL-63T2B0x.02S",
+        "TAL-63T2C0x.02S",
+        "TAL-63T2D0x.02S",
+        "TAL-63T400x.02S"
+      ],
+      "name": "Push Button Light",
+      "url": "https://www.mdt.de/fileadmin/user_upload/user_upload/download/TAL-xxxxxxx-02S_MDT_KP_V10.knxprod",
+      "sha256": "50e92a90abf9211a469bca8227afd9340cb59b0445322f24ecb38bb5d20f3516",
+      "size": 1367831,
+      "filename": "TAL-xxxxxxx-02S_MDT_KP_V10.knxprod",
+      "redistributable": false,
+      "notes": "MDT product database. Masks: 07B0. 1 application program(s). App refs: M-0083_A-04C0-10-7517 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0083_A-04C0-10-7517"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZVI-Z41PRO"
+      ],
+      "name": "Z41 Pro 3.6",
+      "url": "https://assets.zennio.com/application_program/Z41_Pro_3_6_EIFAItR_cert_ETS5.knxprod",
+      "sha256": "28645a7e45eb82dd2b263ec7c0cd746dd745b7d8206522472ec6cd08f05ba778",
+      "size": 4006641,
+      "filename": "Z41_Pro_3_6_EIFAItR_cert_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-5181-36-7D87 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-5181-36-7D87"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "A2FX-E-Q"
+      ],
+      "name": "2x switching, time, scene, announce, inh. 2027-21",
+      "url": "https://lingg-janke.de/datenbanken/a2fx-E-Q-en-de-21.knxprod",
+      "sha256": "a00c7ee269d3799678ffc4ad1cc94a1fcddf90b83e1644f96df930b9fd5fbc50",
+      "size": 59997,
+      "filename": "a2fx-E-Q-en-de-21.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-2027-21-F74E (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-2027-21-F74E"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "A2X6F16H-2"
+      ],
+      "name": "6x switching, time, scene, announce, inh. 2023-21",
+      "url": "https://lingg-janke.de/assets/files/a2x6f16h-2-en-de-21.knxprod",
+      "sha256": "96bd4dd6f84aa088db7ae20f0b68da83b3f25a467dc40b3442748dab7b0fe65c",
+      "size": 87600,
+      "filename": "a2x6f16h-2-en-de-21.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-2023-21-126F (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-2023-21-126F"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "A3FX-E-Q"
+      ],
+      "name": "3x switching, time, scene, announce, inh. 2026-21",
+      "url": "https://lingg-janke.de/assets/files/Software/quick-eco-plus/a3fx-knxproj/a3fx-E-Q-en-de-21.knxprod",
+      "sha256": "d01c749b8bf030a76e8b0289262ad64e0797ebf2bdd33475787fc74b5f372924",
+      "size": 66530,
+      "filename": "a3fx-E-Q-en-de-21.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-2026-21-96C0 (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-2026-21-96C0"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "A4FX-E-Q"
+      ],
+      "name": "4x switching, time, scene, announce, inh. 2025-21",
+      "url": "https://lingg-janke.de/assets/files/Software/quick-eco-plus/a4fx-knxproj/a4fx-E-Q-en-de-21.knxprod",
+      "sha256": "31ed62157eeec9bb573dd2734b06cb84df0b6498fac9ef224e1f52df6411037a",
+      "size": 72818,
+      "filename": "a4fx-E-Q-en-de-21.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-2025-21-D735 (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-2025-21-D735"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "A5FX-E-Q"
+      ],
+      "name": "5x switching, time, scene, announce, inh. 2024-21",
+      "url": "https://lingg-janke.de/assets/files/Software/quick-eco-plus/a5fx-knxproj/a5fx-E-Q-en-de-21.knxprod",
+      "sha256": "cdd6a91edd96760d1e69d1e3e9be48adf19832ae424147c351a0046854d8b80a",
+      "size": 80964,
+      "filename": "a5fx-E-Q-en-de-21.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-2024-21-A21B (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-2024-21-A21B"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "A6F16H-2"
+      ],
+      "name": "6x switching, time, scene, announce, inh. 2023-21",
+      "url": "https://lingg-janke.de/assets/files/a6f16h-2-en-de-21.knxprod",
+      "sha256": "710545169cc8dbabe49d21a2fd4e1ff71ddef541841e6ce8bb70cdfdfdf1e311",
+      "size": 87592,
+      "filename": "a6f16h-2-en-de-21.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-2023-21-126F (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-2023-21-126F"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "A6FX-E-Q"
+      ],
+      "name": "6x switching, time, scene, announce, inh. 2023-21",
+      "url": "https://lingg-janke.de/assets/files/Software/quick-eco-plus/a6fx-knxproj/a6fx-E-Q-en-de-21.knxprod",
+      "sha256": "d19dca4e82e378798a894950fd3bda60919a0bf7808c37356a5d2d8beb73625e",
+      "size": 87680,
+      "filename": "a6fx-E-Q-en-de-21.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-2023-21-126F (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-2023-21-126F"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "A9FX-E-Q"
+      ],
+      "name": "9x switching, time, scene, announce, inh. 2021-21",
+      "url": "https://lingg-janke.de/assets/files/Software/quick-eco-plus/a9fx-knxproj/a9fx-E-Q-en-de-21.knxprod",
+      "sha256": "7ef94e20be5bdf8d97feedadbd8a48b1ae1de9b6718dada74d860648037b8a20",
+      "size": 107463,
+      "filename": "a9fx-E-Q-en-de-21.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-2021-21-D78E (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-2021-21-D78E"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "BE4FX-E-Q"
+      ],
+      "name": "4x binary inputs, counters 6011-10",
+      "url": "https://lingg-janke.de/assets/files/Software/quick-eco-plus/be4fx-knxproj/be4fx-E-Q-en-de-10.knxprod",
+      "sha256": "6e27c03b32d01a1066f269bc6c538b3628b6d6d91601809cfb37358377e0719d",
+      "size": 71190,
+      "filename": "be4fx-E-Q-en-de-10.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-6011-10-D110 (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-6011-10-D110"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "BEA4FX-E-Q"
+      ],
+      "name": "4x binary input, binary output 5003-21",
+      "url": "https://lingg-janke.de/assets/files/Software/quick-eco-plus/bea4fx-knxproj/bea4fx-E-Q-en-de-21.knxprod",
+      "sha256": "4c13bf54f813af6d2f15ca76c6f3dfe0801223c12d38c0d55a06512049a3a5b0",
+      "size": 97204,
+      "filename": "bea4fx-E-Q-en-de-21.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-5003-21-CEF9 (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-5003-21-CEF9"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "BEA8FX-E-Q"
+      ],
+      "name": "8x binary input, binary output 5001-21",
+      "url": "https://lingg-janke.de/assets/files/Software/quick-eco-plus/bea8fx-knxproj/bea8fx-E-Q-en-de-21.knxprod",
+      "sha256": "d9b1f0d5a1640a9cc330f4747111451a83e09ca862151c01ff2094ef6a35442b",
+      "size": 143164,
+      "filename": "bea8fx-E-Q-en-de-21.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-5001-21-8BF5 (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-5001-21-8BF5"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "DIM4FU-2-FW"
+      ],
+      "name": "4x dimming-FW, meters, scenes, sequences 3003-22",
+      "url": "https://lingg-janke.de/assets/files/Software/quick-eco-plus/dim4fu-knxproj/dim4fu_2_fw_E_Q_en_de_22.knxprod",
+      "sha256": "6e9d5ee0c087df1fa2c7d356df4e32d6da1712b16c72a5cfed7582354ba09e4f",
+      "size": 78814,
+      "filename": "dim4fu_2_fw_E_Q_en_de_22.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-3003-22-7DB8 (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-3003-22-7DB8"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOIB20V3"
+      ],
+      "name": "inBOX 20 v3 1.8",
+      "url": "https://assets.zennio.com/application_program/inBOX_20_v3_1.8_EIAFItR_Cert.knxprod",
+      "sha256": "09ec8c81415bd9fece7f07078a7a88ec35f308b1e2b01f181acc10dd18da05e1",
+      "size": 2597872,
+      "filename": "inBOX_20_v3_1.8_EIAFItR_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4761-18-AE77 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-4761-18-AE77"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZIOIB24V2"
+      ],
+      "name": "inBOX 24 v2 1.1",
+      "url": "https://assets.zennio.com/application_program/inBOX_24_v2_1_1_EIFAItRS_ETS5.knxprod",
+      "sha256": "455af64a5266dfd57afd2aff7a0c638521b641294d8d1ab56ff1a0a598505532",
+      "size": 1395051,
+      "filename": "inBOX_24_v2_1_1_EIFAItRS_ETS5.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-4731-11-43B1 (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-4731-11-43B1"
+    },
+    {
+      "manufacturer": "Zennio",
+      "manufacturer_id": "M-0071",
+      "order_numbers": [
+        "ZDIIBD16"
+      ],
+      "name": "inBOX DALI 16 1.4",
+      "url": "https://assets.zennio.com/application_program/inBOX_DALI_16_1.4_EIFAItRUk_Cert.knxprod",
+      "sha256": "74ab4e2e6267bbe60404a8c75537ffef0ed46a0f9464382ad190400cbf30a3f4",
+      "size": 3017083,
+      "filename": "inBOX_DALI_16_1.4_EIFAItRUk_Cert.knxprod",
+      "redistributable": false,
+      "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-3381-14-3BAA (07B0). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-0071_A-3381-14-3BAA"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "J2FX-E-Q"
+      ],
+      "name": "2x shutter, positions, scenes, status 9005-20",
+      "url": "https://lingg-janke.de/assets/files/Software/quick-eco-plus/j2fx-knxproj/j2fx_E_Q_en_de_20.knxprod",
+      "sha256": "a3f1a5ce51e9349c3d6bc3a845dff8b47fbca0770cfb4b4ac1e05ccecdff223d",
+      "size": 61779,
+      "filename": "j2fx_E_Q_en_de_20.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-9005-20-8627 (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-9005-20-8627"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "J4F6H-2"
+      ],
+      "name": "4x shutter, positions, scenes, status 9004-20",
+      "url": "https://lingg-janke.de/assets/files/j4f6h-2-en-de-20.knxprod",
+      "sha256": "a30f4cf53ed5982ffe78c5764de65efde2a856e978f6240232e9bd123a85c34a",
+      "size": 89411,
+      "filename": "j4f6h-2-en-de-20.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-9004-20-04A3 (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-9004-20-04A3"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "J4FX-E-Q"
+      ],
+      "name": "4x shutter, positions, scenes, status 9004-20",
+      "url": "https://lingg-janke.de/assets/files/Software/quick-eco-plus/j4fx-knxproj/j4fx_E_Q_en_de_20.knxprod",
+      "sha256": "c812a185c643e667590a619ac9f70b1d34c36eab42c31b0136c22eb5a9f67270",
+      "size": 85306,
+      "filename": "j4fx_E_Q_en_de_20.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-9004-20-04A3 (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-9004-20-04A3"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "J6F6H-2"
+      ],
+      "name": "6x shutter, positions, scenes, status 9003-20",
+      "url": "https://lingg-janke.de/assets/files/j6f6h-2-en-de-20.knxprod",
+      "sha256": "a4b7a8e71a84e65ead873b5149dac99b26520d96ab22f4aa4fec98e10c5d599e",
+      "size": 110656,
+      "filename": "j6f6h-2-en-de-20.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-9003-20-953B (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-9003-20-953B"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "J6FX-E-Q"
+      ],
+      "name": "6x shutter, positions, scenes, status 9003-20",
+      "url": "https://lingg-janke.de/assets/files/Software/quick-eco-plus/j6fx-knxproj/j6fx_E_Q_en_de_20.knxprod",
+      "sha256": "da42ff4afd1a85b728681769f65d2eaacfff6b48b101eeedd0392813e38bedbf",
+      "size": 106555,
+      "filename": "j6fx_E_Q_en_de_20.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-9003-20-953B (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-9003-20-953B"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "NTA6F16H-2"
+      ],
+      "name": "6x switching, time, scene, announce, inh. 2023-21",
+      "url": "https://lingg-janke.de/assets/files/nta6f16h-2-en-de-21.knxprod",
+      "sha256": "b0ec75c008f1e25242edea2298502bdc1cf93fe66a05f1142264c1e87aa8cf9a",
+      "size": 87595,
+      "filename": "nta6f16h-2-en-de-21.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-2023-21-126F (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-2023-21-126F"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "TAKP2FA-FW"
+      ],
+      "name": "4x push-button 2f universal type A E001-20",
+      "url": "https://lingg-janke.de/assets/files/takp2fa-en-de-30.knxprod",
+      "sha256": "0423c5c5e71035db4d94ecb666a81e72c826d2d4d7abcf40988ae712fe1c6bed",
+      "size": 154581,
+      "filename": "takp2fa-en-de-30.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-E001-30-D64B (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-E001-30-D64B"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "TS4FXT-E-Q"
+      ],
+      "name": "4x push buttons, LEDs, logic, temp. 6022-21",
+      "url": "https://lingg-janke.de/assets/files/Software/quick-eco-plus/ts4fxt-knxproj/ts4fxt-E-Q-en-de-21.knxprod",
+      "sha256": "b86f05e2d3b44fed838662c0b7b54e0504112f948d8e7c82bb5125bf4b802355",
+      "size": 102130,
+      "filename": "ts4fxt-E-Q-en-de-21.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-6022-21-F913 (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-6022-21-F913"
+    },
+    {
+      "manufacturer": "Lingg & Janke",
+      "manufacturer_id": "M-00E1",
+      "order_numbers": [
+        "TS8FXT-E-Q"
+      ],
+      "name": "8x push buttons, LEDs, logic, temp. 6024-21",
+      "url": "https://lingg-janke.de/assets/files/Software/quick-eco-plus/ts8fxt-knxproj/ts8fxt-E-Q-en-de-21.knxprod",
+      "sha256": "a5805da01b0742cf8bf15a538666c174302ed608402176da86e50dd89ea81de4",
+      "size": 149818,
+      "filename": "ts8fxt-E-Q-en-de-21.knxprod",
+      "redistributable": false,
+      "notes": "Lingg & Janke product database. Masks: 0021. 1 application program(s). App refs: M-00E1_A-6024-21-0C89 (0021). Verified by download 2026-09-18 (size+sha256 match sweep manifest, import-product parse OK).",
+      "application_ref": "M-00E1_A-6024-21-0C89"
     }
   ]
 }
