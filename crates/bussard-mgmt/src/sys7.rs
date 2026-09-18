@@ -215,7 +215,9 @@ impl LsmAccess {
         match self {
             LsmAccess::MemoryMapped { control_addr, .. } => {
                 let record = wrap_memory_lsm_record(lsm, event);
-                write_memory(l4, *control_addr, &record).await
+                // System 7 addresses are always ≤16-bit, so this stays on the
+                // plain A_Memory_Write path (see `select_extended_memory`).
+                write_memory(l4, u32::from(*control_addr), &record).await
             }
             LsmAccess::Property => {
                 property_write_request(l4, lsm, crate::load::PID_LOAD_STATE_CONTROL, 1, 1, event)
@@ -237,7 +239,7 @@ impl LsmAccess {
         match self {
             LsmAccess::MemoryMapped { status_addr, .. } => {
                 let addr = status_addr.saturating_add(u16::from(lsm.saturating_sub(1)));
-                let data = read_memory(l4, addr, 1).await?;
+                let data = read_memory(l4, u32::from(addr), 1).await?;
                 let octet = data.first().copied().ok_or_else(|| {
                     WriteError::Mgmt(crate::MgmtError::MalformedResponse {
                         address: l4.target(),
