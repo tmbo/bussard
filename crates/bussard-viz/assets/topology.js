@@ -19,6 +19,17 @@ const PULSE_MS = 520; // pulse travel duration
 const RECENT_TINT_MS = 3500; // recent-activity tint lifetime after a flash
 const SVG_NS = "http://www.w3.org/2000/svg";
 
+// --- electrician-style wiring geometry (item 2) ---------------------------
+// The spine runs down a narrow left gutter. Cards sit to the right of a dot
+// CORRIDOR (GUTTER_W px wide) so animated dots and selection edges never run
+// over a card border. Wiring is orthogonal only: each card drops straight down
+// from its bottom edge to a horizontal ROW FEEDER drawn in the gap below the
+// row, the feeder runs left to the spine, and the spine carries traffic
+// vertically between rows. See the geometry doc in `relayout`.
+const SPINE_X = 12; // content-space x of the vertical bus spine
+const GUTTER_W = 40; // dot-corridor width between the spine and the first card
+const ROW_EPS = 8; // px tolerance when grouping cards into a visual row by top
+
 /**
  * Split a KNX individual address (a.b.c) into a comparable number.
  * @param {string} addr
@@ -59,12 +70,26 @@ class Topology {
     this.floorBodyByDevice = new Map();
     /** @type {Map<string, {label:HTMLElement, body:HTMLElement, floor:string}>} */
     this.floorSections = new Map();
-    /** @type {Map<string, {x:number, y:number}>} device -> spine drop point */
+    /**
+     * Per-card wiring anchors in content coordinates. `x` is the card's
+     * horizontal center (where the vertical drop lives), `dropY` the card's
+     * bottom edge (top of the drop), `feederY` the horizontal row feeder the
+     * drop lands on. `y` mirrors `feederY` so legacy call sites reading `.y`
+     * still route via the feeder.
+     * @type {Map<string, {x:number, y:number, dropY:number, feederY:number, rowRight:number}>}
+     */
     this.dropPoints = new Map();
+    /**
+     * One entry per visible card ROW: the feeder line geometry. `y` is the
+     * feeder's vertical position (in the gap below the row); `right` the x of
+     * the row's rightmost drop (feeder spans SPINE_X..right).
+     * @type {Array<{y:number, right:number}>}
+     */
+    this.rowFeeders = [];
     /** @type {{x:number, y:number}} spine head (unknown source IAs) */
     this.headPoint = { x: 0, y: 0 };
     /** @type {number} content-space x of the vertical spine */
-    this.spineX = 0;
+    this.spineX = SPINE_X;
     /**
      * The live view state (mirrors store.view). Topology renders from this
      * declaratively rather than layering ad-hoc selection classes.
@@ -304,23 +329,61 @@ class Topology {
     this.svg.setAttribute("height", String(h));
     this.svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
 
-    // Spine runs down a narrow left gutter of the content area.
-    this.spineX = 10;
+    // GEOMETRY MODEL (electrician-style row feeders):
+    //   * The bus spine is a vertical line at SPINE_X.
+    //   * A GUTTER_W-wide dot corridor sits between the spine and the cards
+    //     (reserved by .topo-cards margin-left in CSS), so nothing routes over a
+    //     card border.
+    //   * Visible cards are grouped into ROWS by their top offset. Each row gets
+    //     one horizontal FEEDER drawn in the gap BELOW the row.
+    //   * Every card DROPS straight down from its bottom-center to its feeder.
+    //   * The feeder runs from the card drops left to the spine.
+    //   * All edges/pulses route: card -> drop -> feeder -> spine -> (vertical)
+    //     -> target feeder -> target drop -> target card. Orthogonal only.
+    this.spineX = SPINE_X;
     const topPad = 6;
     const bottomPad = 6;
     this.headPoint = { x: this.spineX, y: topPad + 4 };
 
-    // Drop point per visible card: vertical mid of the card, at the spine x.
-    this.dropPoints.clear();
-    const hostLeft = this.cardHost.offsetLeft;
-    const hostTop = this.cardHost.offsetTop;
+    // Measure every visible card in content coordinates.
+    /** @type {Array<{addr:string, cx:number, top:number, bottom:number}>} */
+    const boxes = [];
     for (const [addr, card] of this.cardByDevice) {
       if (card.offsetParent === null) continue; // hidden (collapsed section)
-      const cx = this._cardCenter(card, hostLeft, hostTop);
-      this.dropPoints.set(addr, cx);
+      const b = this._cardBox(card);
+      boxes.push({ addr, cx: b.cx, top: b.top, bottom: b.bottom });
     }
 
-    // Repaint spine + drop lines.
+    // Group cards into visual rows by their top offset (within ROW_EPS), then
+    // place each row's feeder in the gap just below the row's tallest card.
+    boxes.sort((a, b) => a.top - b.top || a.cx - b.cx);
+    this.dropPoints.clear();
+    this.rowFeeders = [];
+    let i = 0;
+    while (i < boxes.length) {
+      const rowTop = boxes[i].top;
+      const row = [];
+      while (i < boxes.length && Math.abs(boxes[i].top - rowTop) <= ROW_EPS) {
+        row.push(boxes[i]);
+        i += 1;
+      }
+      const rowBottom = Math.max(...row.map((b) => b.bottom));
+      // Feeder sits a few px below the row bottom, inside the inter-row gap.
+      const feederY = rowBottom + 7;
+      const rowRight = Math.max(...row.map((b) => b.cx));
+      this.rowFeeders.push({ y: feederY, right: rowRight });
+      for (const b of row) {
+        this.dropPoints.set(b.addr, {
+          x: b.cx,
+          y: feederY, // legacy `.y` == feeder y so old routing still works
+          dropY: b.bottom,
+          feederY,
+          rowRight,
+        });
+      }
+    }
+
+    // Repaint spine + feeders + drops (static faint underlay).
     this.spineLayer.textContent = "";
     const spine = document.createElementNS(SVG_NS, "line");
     spine.setAttribute("class", "bus-spine");
@@ -338,18 +401,28 @@ class Topology {
     head.setAttribute("r", "5");
     this.spineLayer.appendChild(head);
 
+    // Row feeders (horizontal), then per-card drops (vertical).
+    for (const f of this.rowFeeders) {
+      const feeder = document.createElementNS(SVG_NS, "line");
+      feeder.setAttribute("class", "feeder-line");
+      feeder.setAttribute("x1", String(this.spineX));
+      feeder.setAttribute("y1", String(f.y));
+      feeder.setAttribute("x2", String(f.right));
+      feeder.setAttribute("y2", String(f.y));
+      this.spineLayer.appendChild(feeder);
+    }
     for (const [, pt] of this.dropPoints) {
       const drop = document.createElementNS(SVG_NS, "line");
       drop.setAttribute("class", "drop-line");
-      drop.setAttribute("x1", String(this.spineX));
-      drop.setAttribute("y1", String(pt.y));
+      drop.setAttribute("x1", String(pt.x));
+      drop.setAttribute("y1", String(pt.dropY));
       drop.setAttribute("x2", String(pt.x));
-      drop.setAttribute("y2", String(pt.y));
+      drop.setAttribute("y2", String(pt.feederY));
       this.spineLayer.appendChild(drop);
     }
 
-    // In ga-focus mode, draw the GA node prominently on the spine, vertically
-    // centered on the participating cards, then rebuild edges through it.
+    // In ga-focus mode, place the GA-node marker on the spine (a small dot; the
+    // GA identity text lives in the top banner, never over the card grid).
     this.gaNodePoint = null;
     if (this.viewState && this.viewState.mode === "ga-focus") {
       this._drawGaNode();
@@ -360,19 +433,21 @@ class Topology {
   }
 
   /**
-   * Draw the focused GA as a labeled node on the spine. Placed at the vertical
-   * midpoint of the participating cards (or the pane middle if none are laid
-   * out), offset just right of the spine so its label is readable.
+   * Place the focused GA as a small marker on the spine, at the vertical
+   * midpoint of the participating cards' feeders (or the pane middle if none are
+   * laid out). NO label is drawn here: the GA identity (address, name, DPT) is
+   * carried by the top filter banner, so nothing ever floats over the cards.
+   * The direction arrowhead offset (see `_appendFocusEdge`) keeps the arrow off
+   * the marker.
    */
   _drawGaNode() {
     const v = this.viewState;
-    const g = this.store.groupByAddr.get(v.id);
     const pts = v.focusDevices
       .map((a) => this.dropPoints.get(a))
       .filter(Boolean);
     let y;
     if (pts.length) {
-      y = pts.reduce((s, p) => s + p.y, 0) / pts.length;
+      y = pts.reduce((s, p) => s + p.feederY, 0) / pts.length;
     } else {
       y = this.root.scrollHeight / 2;
     }
@@ -381,52 +456,30 @@ class Topology {
 
     const grp = document.createElementNS(SVG_NS, "g");
     grp.setAttribute("class", "ga-node");
+    // A subtle halo so the marker reads against the spine without a label.
+    const halo = document.createElementNS(SVG_NS, "circle");
+    halo.setAttribute("cx", String(x));
+    halo.setAttribute("cy", String(y));
+    halo.setAttribute("r", "9");
+    halo.setAttribute("class", "ga-node-halo");
+    grp.appendChild(halo);
     const dot = document.createElementNS(SVG_NS, "circle");
     dot.setAttribute("cx", String(x));
     dot.setAttribute("cy", String(y));
-    dot.setAttribute("r", "7");
+    dot.setAttribute("r", "6");
     dot.setAttribute("class", "ga-node-dot");
     grp.appendChild(dot);
-
-    // Label box: address + name + DPT, anchored just right of the spine.
-    const labelX = x + 16;
-    const addr = v.id;
-    const name = (g && g.name) || "(unnamed)";
-    const dpt = g && g.dpt ? g.dpt : "";
-    const text = document.createElementNS(SVG_NS, "text");
-    text.setAttribute("x", String(labelX));
-    text.setAttribute("y", String(y));
-    text.setAttribute("class", "ga-node-label");
-    text.setAttribute("dominant-baseline", "middle");
-    const t1 = document.createElementNS(SVG_NS, "tspan");
-    t1.setAttribute("class", "ga-node-addr");
-    t1.textContent = addr;
-    text.appendChild(t1);
-    const t2 = document.createElementNS(SVG_NS, "tspan");
-    t2.setAttribute("class", "ga-node-name");
-    t2.setAttribute("dx", "8");
-    t2.textContent = name;
-    text.appendChild(t2);
-    if (dpt) {
-      const t3 = document.createElementNS(SVG_NS, "tspan");
-      t3.setAttribute("class", "ga-node-dpt");
-      t3.setAttribute("dx", "8");
-      t3.textContent = dpt;
-      text.appendChild(t3);
-    }
-    grp.appendChild(text);
     this.spineLayer.appendChild(grp);
   }
 
   /**
-   * Content-space anchor point on a card's left edge (where a drop line meets).
+   * A card's wiring box in content coordinates: horizontal center `cx` and its
+   * `top`/`bottom` edges. offsetLeft/Top are relative to offsetParent, so walk
+   * up to the scroll root accumulating both.
    * @param {HTMLElement} card
-   * @param {number} hostLeft
-   * @param {number} hostTop
-   * @returns {{x:number, y:number, left:number, right:number}}
+   * @returns {{cx:number, top:number, bottom:number}}
    */
-  _cardCenter(card, hostLeft, hostTop) {
-    // offsetLeft/Top are relative to offsetParent; walk up to the scroll root.
+  _cardBox(card) {
     let left = 0;
     let top = 0;
     let el = card;
@@ -435,8 +488,11 @@ class Topology {
       top += el.offsetTop;
       el = el.offsetParent;
     }
-    const y = top + card.offsetHeight / 2;
-    return { x: left, y, left, right: left + card.offsetWidth };
+    return {
+      cx: left + card.offsetWidth / 2,
+      top,
+      bottom: top + card.offsetHeight,
+    };
   }
 
   // --- view-driven rendering (items 2,3,4,6) -------------------------------
@@ -477,22 +533,33 @@ class Topology {
    */
   _applyCardClasses() {
     const v = this.viewState;
+    const DIR = ["dir-incoming", "dir-outgoing", "dir-both"];
     for (const card of this.cardByDevice.values()) {
-      card.classList.remove("selected", "partner", "partner-dimmed", "focus-part");
+      card.classList.remove("selected", "partner", "partner-dimmed", "focus-part", ...DIR);
     }
     if (v.mode === "device-partners") {
       const self = this.cardByDevice.get(v.id);
       if (self) self.classList.add("selected");
-      const partnerAddrs = new Set(v.partners.map((p) => p.device));
+      const byAddr = new Map(v.partners.map((p) => [p.device, p]));
       for (const [addr, card] of this.cardByDevice) {
         if (addr === v.id) continue;
-        if (partnerAddrs.has(addr)) card.classList.add("partner");
-        else card.classList.add("partner-dimmed");
+        const p = byAddr.get(addr);
+        if (p) {
+          // Direction tint (item 6): partners that send TO the selection are
+          // incoming (green); partners that receive FROM it are outgoing
+          // (orange); a partner doing both gets the dual treatment.
+          card.classList.add("partner", `dir-${p.direction}`);
+        } else {
+          card.classList.add("partner-dimmed");
+        }
       }
     } else if (v.mode === "ga-focus") {
+      // Sender cards = outgoing (they emit onto the GA); listeners = incoming.
+      const roles = this.store.gaDirections(v.id);
       for (const addr of v.focusDevices) {
         const card = this.cardByDevice.get(addr);
-        if (card) card.classList.add("focus-part");
+        if (!card) continue;
+        card.classList.add("focus-part", `dir-${roles.get(addr) || "incoming"}`);
       }
     }
   }
@@ -577,9 +644,12 @@ class Topology {
   }
 
   /**
-   * Draw one edge per communication partner: selected card -> spine -> partner
-   * card. Bounded to {@link MAX_PARTNER_EDGES}. Each edge carries a title with
-   * the shared GAs so hovering reveals the relationship.
+   * Draw one edge per communication partner, colored by data-flow direction
+   * (item 6): incoming partners green, outgoing partners orange, `both` gets a
+   * dual (incoming + outgoing) pair of edges. Each edge is a full orthogonal
+   * path from the selected card, down its drop, along its feeder, up/down the
+   * spine, along the partner's feeder, up its drop, to the partner card
+   * (item 3). Bounded to {@link MAX_PARTNER_EDGES}.
    * @param {import('./store.js').ViewState} v
    */
   _renderPartnerEdges(v) {
@@ -590,20 +660,29 @@ class Topology {
       if (drawn >= MAX_PARTNER_EDGES) break;
       const to = this.dropPoints.get(p.device);
       if (!to) continue;
-      const path = document.createElementNS(SVG_NS, "path");
-      path.setAttribute("class", "sel-edge partner-edge");
-      path.setAttribute("d", this._edgePathBetween(from, to));
-      const title = document.createElementNS(SVG_NS, "title");
-      title.textContent = `shared: ${p.gas.join(", ")}`;
-      path.appendChild(title);
-      this.edgeLayer.appendChild(path);
+      const dirs = p.direction === "both" ? ["incoming", "outgoing"] : [p.direction];
+      for (const dir of dirs) {
+        const path = document.createElementNS(SVG_NS, "path");
+        path.setAttribute("class", `sel-edge partner-edge dir-${dir}`);
+        path.setAttribute("marker-end", "url(#topo-arrow)");
+        // Incoming: data flows partner -> selection. Outgoing: selection ->
+        // partner. Orient the arrow accordingly.
+        path.setAttribute("d", dir === "incoming"
+          ? this._wirePath(to, from)
+          : this._wirePath(from, to));
+        const title = document.createElementNS(SVG_NS, "title");
+        title.textContent = `${dir} · shared: ${p.gas.join(", ")}`;
+        path.appendChild(title);
+        this.edgeLayer.appendChild(path);
+      }
       drawn += 1;
     }
   }
 
   /**
-   * Draw focus-mode edges through the GA node: sender cards -> GA node (send
-   * direction) and GA node -> listener cards (listen direction). Bounded.
+   * Draw focus-mode edges through the GA node marker: sender cards -> GA
+   * (outgoing, orange) and GA -> listener cards (incoming, green). A device that
+   * both sends and listens gets both edges. Bounded.
    * @param {import('./store.js').ViewState} v
    */
   _renderFocusEdges(v) {
@@ -611,6 +690,13 @@ class Topology {
     if (!node) return;
     const senders = this.store.gaSenders.get(v.id) || [];
     const listeners = this.store.gaListeners.get(v.id) || [];
+    // Terminate/originate edges a few px off the marker so the arrowhead does
+    // not overlap the GA dot (item 1 / S1). Senders approaching from above land
+    // just above the dot; from below, just below it.
+    const nodeAnchor = (fromY) => ({
+      x: node.x,
+      y: fromY <= node.y ? node.y - 11 : node.y + 11,
+    });
     const seenS = new Set();
     let count = 0;
     for (const s of senders) {
@@ -618,7 +704,8 @@ class Topology {
       seenS.add(s.device);
       const pt = this.dropPoints.get(s.device);
       if (!pt) continue;
-      this._appendFocusEdge(pt, node, "sender");
+      // Sender emits ONTO the GA: outgoing (from the sender's perspective).
+      this._appendFocusEdge(pt, nodeAnchor(pt.feederY), "outgoing");
       count += 1;
     }
     const seenL = new Set();
@@ -628,41 +715,57 @@ class Topology {
       seenL.add(l.device);
       const pt = this.dropPoints.get(l.device);
       if (!pt) continue;
-      this._appendFocusEdge(node, pt, "listener");
+      // Listener receives FROM the GA: incoming (from the listener's perspective).
+      this._appendFocusEdge(nodeAnchor(pt.feederY), pt, "incoming");
       count += 1;
     }
   }
 
-  _appendFocusEdge(from, to, kind) {
+  /**
+   * Append a focus-mode direction edge. `from`/`to` are wiring anchors or the
+   * GA-node point on the spine; `dir` is `outgoing` or `incoming`.
+   * @param {{x:number, y:number, feederY?:number, dropY?:number}} from
+   * @param {{x:number, y:number, feederY?:number, dropY?:number}} to
+   * @param {'incoming'|'outgoing'} dir
+   */
+  _appendFocusEdge(from, to, dir) {
     const path = document.createElementNS(SVG_NS, "path");
-    path.setAttribute("class", `sel-edge ${kind} focus-edge`);
+    path.setAttribute("class", `sel-edge focus-edge dir-${dir}`);
     path.setAttribute("marker-end", "url(#topo-arrow)");
-    path.setAttribute("d", this._edgePathBetween(from, to));
+    path.setAttribute("d", this._wirePath(from, to));
     this.edgeLayer.appendChild(path);
   }
 
   /**
-   * Build a curved path from the spine to a card anchor.
-   * @param {{x:number, y:number}} pt
+   * Build a fully orthogonal wire between two anchors, never crossing a card.
+   * Each anchor may be a card wiring point ({x, dropY, feederY}) or a spine
+   * point (the GA node / spine head, where feederY is absent). The route is:
+   *   card top (dropY) -> down its drop to its feederY -> left along the feeder
+   *   to the spine -> vertical along the spine to the other feederY -> right
+   *   along that feeder -> up its drop to the other card top.
+   * When an endpoint is on the spine (no feederY), it starts/ends at the spine
+   * at that endpoint's y directly.
+   * @param {{x:number, y:number, feederY?:number, dropY?:number}} a
+   * @param {{x:number, y:number, feederY?:number, dropY?:number}} b
    * @returns {string} SVG path data
    */
-  _edgePath(pt) {
-    const midX = (this.spineX + pt.x) / 2;
-    return `M ${this.spineX} ${pt.y} C ${midX} ${pt.y}, ${midX} ${pt.y}, ${pt.x} ${pt.y}`;
-  }
-
-  /**
-   * Build a path between two card anchors routed via the spine gutter:
-   * from -> spine(from.y) -> spine(to.y) -> to. Keeps edges off the cards.
-   * @param {{x:number, y:number}} from
-   * @param {{x:number, y:number}} to
-   * @returns {string} SVG path data
-   */
-  _edgePathBetween(from, to) {
-    return (
-      `M ${from.x} ${from.y} L ${this.spineX} ${from.y} ` +
-      `L ${this.spineX} ${to.y} L ${to.x} ${to.y}`
-    );
+  _wirePath(a, b) {
+    const seg = [];
+    // Start point: card top if a is a card, else the spine at a.y.
+    if (a.dropY != null && a.feederY != null) {
+      seg.push(`M ${a.x} ${a.dropY}`); // card bottom edge
+      seg.push(`L ${a.x} ${a.feederY}`); // down the drop to the feeder
+      seg.push(`L ${this.spineX} ${a.feederY}`); // along the feeder to the spine
+    } else {
+      seg.push(`M ${this.spineX} ${a.y}`); // spine point (GA node / head)
+    }
+    const by = b.feederY != null ? b.feederY : b.y;
+    seg.push(`L ${this.spineX} ${by}`); // vertical along the spine
+    if (b.dropY != null && b.feederY != null) {
+      seg.push(`L ${b.x} ${b.feederY}`); // along the target feeder
+      seg.push(`L ${b.x} ${b.dropY}`); // up the target drop to the card
+    }
+    return seg.join(" ");
   }
 
   /**
@@ -711,8 +814,20 @@ class Topology {
     const banner = document.createElement("div");
     banner.className = "topo-filter-banner";
     banner.hidden = true;
-    const label = document.createElement("span");
-    label.className = "tfb-label";
+
+    // The GA identity lives IN the banner (item 1): amber badge + address +
+    // name + DPT, so the focused group address has a dedicated home that can
+    // never collide with the card grid. No floating labels over the cards.
+    const badge = document.createElement("span");
+    badge.className = "tfb-badge";
+    badge.textContent = "GROUP ADDRESS";
+    const addr = document.createElement("span");
+    addr.className = "tfb-addr mono";
+    const name = document.createElement("span");
+    name.className = "tfb-name";
+    const dpt = document.createElement("span");
+    dpt.className = "tfb-dpt mono";
+
     const close = document.createElement("button");
     close.type = "button";
     close.className = "tfb-close";
@@ -720,11 +835,14 @@ class Topology {
     close.title = "Clear filter (Esc)";
     close.setAttribute("aria-label", "Clear group-address filter");
     close.addEventListener("click", () => this.store.deselect());
-    banner.append(label, close);
-    // The banner is pinned to the top of the topology pane.
-    this.root.appendChild(banner);
+
+    banner.append(badge, addr, name, dpt, close);
+    // The banner is pinned to the TOP of the topology pane, above the cards.
+    this.root.insertBefore(banner, this.root.firstChild);
     this.banner = banner;
-    this.bannerLabel = label;
+    this.bannerAddr = addr;
+    this.bannerName = name;
+    this.bannerDpt = dpt;
   }
 
   _updateBanner() {
@@ -735,9 +853,14 @@ class Topology {
       return;
     }
     const g = this.store.groupByAddr.get(v.id);
-    const name = (g && g.name) || "(unnamed)";
-    const dpt = g && g.dpt ? ` · ${g.dpt}` : "";
-    this.bannerLabel.textContent = `Filtered by ${v.id} ${name}${dpt}`;
+    this.bannerAddr.textContent = v.id;
+    this.bannerName.textContent = (g && g.name) || "(unnamed)";
+    if (g && g.dpt) {
+      this.bannerDpt.textContent = g.dpt;
+      this.bannerDpt.hidden = false;
+    } else {
+      this.bannerDpt.hidden = true;
+    }
     this.banner.hidden = false;
   }
 
@@ -818,8 +941,7 @@ class Topology {
     // Fan-out policy: >4 listeners -> single pulse to spine + spine glow.
     if (listeners.length > 4) {
       this._spineGlow(suspicious);
-      const spineTop = this._nearestDrop(srcPt);
-      this._spawnPulse(srcPt, { x: this.spineX, y: spineTop }, suspicious);
+      this._spawnPulse(srcPt, { x: this.spineX, y: srcPt.y }, suspicious);
       return;
     }
 
@@ -840,7 +962,7 @@ class Topology {
    * sender card, else the line-head node (unknown source IAs).
    * @param {string} source
    * @param {Array<Object>} senders
-   * @returns {{x:number, y:number}}
+   * @returns {{x:number, y:number, feederY?:number, dropY?:number}}
    */
   _sourcePoint(source, senders) {
     if (source && this.dropPoints.has(source)) return this.dropPoints.get(source);
@@ -848,10 +970,6 @@ class Topology {
       return this.dropPoints.get(senders[0].device);
     }
     return this.headPoint;
-  }
-
-  _nearestDrop(pt) {
-    return pt ? pt.y : this.headPoint.y;
   }
 
   _flashCard(addr, suspicious) {
@@ -903,9 +1021,10 @@ class Topology {
 
   /**
    * Spawn a traveling pulse along an offset-path from `from` to `to`, routed
-   * via the spine (down the gutter then across). Respects the pulse budget.
-   * @param {{x:number, y:number}} from
-   * @param {{x:number, y:number}} to
+   * through the wiring corridor (drop -> feeder -> spine -> feeder -> drop) so
+   * the dot never crosses a card. Respects the pulse budget.
+   * @param {{x:number, y:number, feederY?:number, dropY?:number}} from
+   * @param {{x:number, y:number, feederY?:number, dropY?:number}} to
    * @param {boolean} suspicious
    */
   _spawnPulse(from, to, suspicious) {
@@ -913,12 +1032,7 @@ class Topology {
     const circle = document.createElementNS(SVG_NS, "circle");
     circle.setAttribute("r", "4");
     circle.setAttribute("class", suspicious ? "topo-pulse suspicious" : "topo-pulse");
-    // Route: from -> spine(from.y) -> spine(to.y) -> to.
-    const d =
-      `M ${from.x} ${from.y} ` +
-      `L ${this.spineX} ${from.y} ` +
-      `L ${this.spineX} ${to.y} ` +
-      `L ${to.x} ${to.y}`;
+    const d = this._wirePath(from, to);
     circle.style.offsetPath = `path("${d}")`;
     circle.style.offsetRotate = "0deg";
     this.pulseLayer.appendChild(circle);

@@ -18,9 +18,12 @@
  * @property {'all'|'device-partners'|'ga-focus'} mode
  * @property {'device'|'ga'|null} kind  — selection kind that drives the view
  * @property {string|null} id  — selected device or GA address
- * @property {Array<{device:string, gas:Array<string>}>} partners  — partner
- *   devices (device-partners mode), each with the GAs it shares with the
- *   selected device.
+ * @property {Array<{device:string, gas:Array<string>, direction:'incoming'|'outgoing'|'both'}>} partners
+ *   — partner devices (device-partners mode), each with the GAs it shares with
+ *   the selected device and its data-flow direction relative to the selection:
+ *   `incoming` (the partner sends onto a GA the selection listens to),
+ *   `outgoing` (the partner listens to a GA the selection sends onto), or
+ *   `both`.
  * @property {Array<string>} focusDevices  — participating device addresses
  *   (ga-focus mode): senders and listeners of the focused GA.
  */
@@ -341,37 +344,50 @@ export class Store {
    * Communication partners of a device: every other device that sends on a GA
    * this device listens to, or listens on a GA this device sends. Computed from
    * the sender/listener indexes. Returns one entry per partner device (not per
-   * GA) with the sorted list of GAs shared with the selected device.
+   * GA) with the sorted list of GAs shared with the selected device and a
+   * data-flow `direction` relative to the selection:
+   *   `outgoing` — the partner only *listens* to a GA the selection *sends* onto
+   *                (data flows out of the selection to the partner);
+   *   `incoming` — the partner only *sends* onto a GA the selection *listens* to
+   *                (data flows into the selection from the partner);
+   *   `both`     — the partner does both.
    * @param {string} deviceAddr
-   * @returns {Array<{device:string, gas:Array<string>}>}
+   * @returns {Array<{device:string, gas:Array<string>, direction:'incoming'|'outgoing'|'both'}>}
    */
   communicationPartners(deviceAddr) {
     const d = this.deviceByAddr.get(deviceAddr);
     if (!d) return [];
-    /** @type {Map<string, Set<string>>} partner addr -> shared GAs */
+    /** @type {Map<string, {gas:Set<string>, out:boolean, in:boolean}>} */
     const byPartner = new Map();
-    const add = (addr, ga) => {
+    const add = (addr, ga, dir) => {
       if (!addr || addr === deviceAddr) return;
-      let set = byPartner.get(addr);
-      if (!set) {
-        set = new Set();
-        byPartner.set(addr, set);
+      let rec = byPartner.get(addr);
+      if (!rec) {
+        rec = { gas: new Set(), out: false, in: false };
+        byPartner.set(addr, rec);
       }
-      set.add(ga);
+      rec.gas.add(ga);
+      if (dir === "out") rec.out = true;
+      else rec.in = true;
     };
     for (const co of d.com_objects || []) {
-      // Devices listening to a GA this device sends on.
+      // Devices listening to a GA this device sends on: data flows OUT to them.
       if (co.send) {
-        for (const l of this.gaListeners.get(co.send) || []) add(l.device, co.send);
+        for (const l of this.gaListeners.get(co.send) || []) add(l.device, co.send, "out");
       }
-      // Devices sending on a GA this device listens to.
+      // Devices sending on a GA this device listens to: data flows IN from them.
       for (const ga of co.listen || []) {
-        for (const s of this.gaSenders.get(ga) || []) add(s.device, ga);
+        for (const s of this.gaSenders.get(ga) || []) add(s.device, ga, "in");
       }
     }
     const out = [];
-    for (const [device, gas] of byPartner) {
-      out.push({ device, gas: [...gas].sort((a, b) => gaSortKey(a) - gaSortKey(b)) });
+    for (const [device, rec] of byPartner) {
+      const direction = rec.out && rec.in ? "both" : rec.out ? "outgoing" : "incoming";
+      out.push({
+        device,
+        gas: [...rec.gas].sort((a, b) => gaSortKey(a) - gaSortKey(b)),
+        direction,
+      });
     }
     out.sort((a, b) => iaSortKey(a.device) - iaSortKey(b.device));
     return out;
@@ -388,6 +404,38 @@ export class Store {
     for (const s of this.gaSenders.get(ga) || []) if (s.device) set.add(s.device);
     for (const l of this.gaListeners.get(ga) || []) if (l.device) set.add(l.device);
     return [...set].sort((a, b) => iaSortKey(a) - iaSortKey(b));
+  }
+
+  /**
+   * Classify a GA's participating devices by their role, from the perspective of
+   * the GA. A device that only *sends* onto the GA emits data onto it
+   * (`outgoing` relative to the sender). A device that only *listens* receives
+   * from it (`incoming` relative to the listener). A device doing both is
+   * `both`. Used by ga-focus mode to color sender cards/edges outgoing and
+   * listener cards/edges incoming.
+   * @param {string} ga
+   * @returns {Map<string, 'incoming'|'outgoing'|'both'>} device addr -> role
+   */
+  gaDirections(ga) {
+    /** @type {Map<string, {send:boolean, listen:boolean}>} */
+    const roles = new Map();
+    const mark = (addr, key) => {
+      if (!addr) return;
+      let rec = roles.get(addr);
+      if (!rec) {
+        rec = { send: false, listen: false };
+        roles.set(addr, rec);
+      }
+      rec[key] = true;
+    };
+    for (const s of this.gaSenders.get(ga) || []) mark(s.device, "send");
+    for (const l of this.gaListeners.get(ga) || []) mark(l.device, "listen");
+    /** @type {Map<string, 'incoming'|'outgoing'|'both'>} */
+    const out = new Map();
+    for (const [addr, rec] of roles) {
+      out.set(addr, rec.send && rec.listen ? "both" : rec.send ? "outgoing" : "incoming");
+    }
+    return out;
   }
 
   // --- flash-effects toggle -----------------------------------------------
