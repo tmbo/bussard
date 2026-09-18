@@ -77,8 +77,8 @@ pub use load::{
 };
 pub use profile::{KnxMedium, LsmRealisation, MaskFamily, MaskProfile, Sys7Profile};
 pub use sys7::{
-    LsmAccess, encode_alloc_segment, encode_task_ctrl1, encode_task_segment,
-    lsm_access_from_profile,
+    LsmAccess, alloc_attr_octets, encode_alloc_segment, encode_task_ctrl1, encode_task_segment,
+    lsm_access_from_profile, task_segment_marker,
 };
 pub use tables::{
     DeviceTables, ResolvedLink, TableSource, TablesError, discover_interface_objects, read_tables,

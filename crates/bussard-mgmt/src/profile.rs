@@ -239,16 +239,21 @@ impl MaskProfile {
 
     /// The default System 7 programming profile for this mask: the corpus-derived
     /// defaults used when a `.knxprod`'s `HawkConfigurationData` is absent or
-    /// unparsable (see [`Sys7Profile::corpus_default`]).
+    /// unparsable (see [`Sys7Profile::corpus_default_for_mask`]).
     ///
-    /// Returns `None` for non-System-7 masks. The data-driven path (issue #49
+    /// Returns `None` for non-System-7 masks. The LSM realisation is
+    /// **mask-family-dependent** (not a single global default): the Jung `0705`
+    /// family drives load control property-based (PID 5, M2 Jung capture), while
+    /// the Theben `0701` family (Meteodata) drives it memory-mapped (11-octet
+    /// records to `0x0104`, status at `0xB6EA+`) — established by the real-ETS
+    /// download analysis and `[system7-spec §5]`. The data-driven path (issue #49
     /// M1.5) parses `HawkConfigurationData` per mask and overrides these; this is
     /// the named fallback so a download is still attemptable on a device whose
-    /// product data lacks the block — the corpus shape is uniform enough to drive
-    /// blind `[system7-spec §2.4]`.
+    /// product data lacks the block — the corpus shape is uniform enough within a
+    /// family to drive blind `[system7-spec §2.4]`.
     pub fn sys7_default_profile(self) -> Option<Sys7Profile> {
         if self.is_system_7() {
-            Some(Sys7Profile::corpus_default())
+            Some(Sys7Profile::corpus_default_for_mask(self.mask))
         } else {
             None
         }
@@ -258,22 +263,29 @@ impl MaskProfile {
 /// How a System 7 device realises its load-state machines (the single most
 /// load-bearing System 7 design decision — `[system7-spec §5]`).
 ///
-/// The M2 live capture (issue #70, a real ETS 6 download to a Jung 3361-1M / mask
-/// 0705) settled the open question: the device drives load control **property-
-/// based** (PID 5), so [`LsmRealisation::Property`] is the Jung-confirmed default.
-/// The [`LsmRealisation::MemoryMapped`] variant is kept for any other 0705 silicon
-/// that may drive the LSM via `A_Memory_Write` to a control address; select it per
-/// mask from `HawkConfigurationData` when present.
+/// The realisation is **vendor / mask-family dependent**, not a single global
+/// default. Two real-ETS download captures settle it:
+/// - **Jung `0705`** (M2, issue #70; and the binaereingang / automitschalter /
+///   schaltaktor 0705 analysis captures) drives load control **property-based**
+///   (PID 5), so [`LsmRealisation::Property`] is the `0705` default.
+/// - **Theben `0701`** (Meteodata 1409207, IA 1.1.202) drives load control
+///   **memory-mapped**: 11-octet records written by `A_Memory_Write` to `0x0104`,
+///   status read at `0xB6EA + (lsm - 1)`, with zero PID-5 traffic. So
+///   [`LsmRealisation::MemoryMapped`] is the `0701` default.
+///
+/// Select per mask via [`Sys7Profile::corpus_default_for_mask`] (the fallback) or
+/// from `HawkConfigurationData` when the product carries a usable block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LsmRealisation {
-    /// **Memory-mapped**: a 12-octet LSM-control record written by `A_Memory_Write`
+    /// **Memory-mapped**: an 11-octet LSM-control record written by `A_Memory_Write`
     /// to a control address (default `0x0104`), with status polled by
-    /// `A_Memory_Read` at a status address (default `0xB6EA`) `[system7-spec §5]`.
-    /// This was the pre-M2 best-evidence default; the M2 Jung capture proved the
-    /// real device is property-based instead (no write to `0x0104` occurs anywhere
-    /// in the capture — the only `0xB6EA+` touch is a single read at `0xB6EC`, so
-    /// that region is a readable status region, not a control write). Kept as the
-    /// alternative for 0705 silicon whose product data selects it.
+    /// `A_Memory_Read` at a status address (default `0xB6EA + (lsm - 1)`)
+    /// `[system7-spec §5]`. This is the confirmed default for the Theben `0701`
+    /// family (Meteodata capture: 11-octet writes to `0x0104`, `MemoryRead @0xB6EC`
+    /// returning `02`…`01`, zero PID-5 traffic). It is the alternative — not the
+    /// default — for the Jung `0705` family, whose M2 capture is property-based (no
+    /// write to `0x0104`; the only `0xB6EA+` touch is a single readable-status
+    /// read).
     MemoryMapped {
         /// The LSM-control write address (default `0x0104`).
         control_addr: u16,
@@ -281,14 +293,22 @@ pub enum LsmRealisation {
         /// `n` is read at `status_addr + (n - 1)`.
         status_addr: u16,
     },
-    /// **Property-based** (the Jung-confirmed default, M2 capture): load events
+    /// **Property-based** (the Jung `0705` default, M2 capture): load events
     /// written to `PID_LOAD_STATE_CONTROL` (PID 5) via `A_PropertyValue_Write`
     /// (10-octet load event, one element at index 1), state read back via
     /// `A_PropertyValue_Read`. The M2 capture shows exactly this: every load
     /// control on objects 1/2/3 is an `A_PropertyValue_Write(objN, PID 5)`
-    /// `[system7-spec §5, M2 capture CONFIRMED]`.
+    /// `[system7-spec §5, M2 Jung 0705 capture CONFIRMED]`.
     Property,
 }
+
+/// The default memory-mapped LSM control-write address for the Theben `0701`
+/// family (`[system7-spec §5]`; Meteodata capture: 11-octet writes to `0x0104`).
+pub const SYS7_DEFAULT_CONTROL_ADDR: u16 = 0x0104;
+/// The default memory-mapped LSM status-poll base address for the Theben `0701`
+/// family; the status of LSM `n` is read at this address `+ (n - 1)`
+/// (`[system7-spec §5]`; Meteodata capture: `MemoryRead @0xB6EC` for LSM 3).
+pub const SYS7_DEFAULT_STATUS_ADDR: u16 = 0xB6EA;
 
 /// The per-mask System 7 programming configuration: the resource/LSM realisation,
 /// table locations and authorize level a System 7 download needs.
@@ -315,23 +335,47 @@ pub struct Sys7Profile {
 }
 
 impl Sys7Profile {
-    /// The default System 7 profile, calibrated against the M2 Jung 0705 capture
-    /// (`[system7-spec §2.4/§5]`): **property-based** LSM (PID 5), authorize level 0
-    /// (free-access key), EEPROM mem-type 3 for the table/param regions and RAM
-    /// mem-type 2 for the low-RAM allocations.
+    /// The mask-family-aware default System 7 profile (`[system7-spec §2.4/§5]`):
+    /// authorize level 0 (free-access key), EEPROM mem-type 3 for the table/param
+    /// regions, RAM mem-type 2 for the low-RAM allocations, and an LSM realisation
+    /// selected by mask family:
     ///
-    /// The LSM realisation, the authorize-with-free-key requirement and the
-    /// mem-types are all CONFIRMED by the M2 capture (issue #70). The name is
-    /// retained (it is the fallback when no `HawkConfigurationData` selects a
-    /// memory-mapped variant); a memory-mapped 0705 device overrides `lsm` via
+    /// - Jung `0705` (and any other non-`0701` System 7 mask) →
+    ///   [`LsmRealisation::Property`] (PID 5), confirmed by the M2 Jung capture
+    ///   (issue #70) and the 0705 analysis captures.
+    /// - Theben `0701` → [`LsmRealisation::MemoryMapped`] at the default
+    ///   control/status addresses ([`SYS7_DEFAULT_CONTROL_ADDR`] /
+    ///   [`SYS7_DEFAULT_STATUS_ADDR`]), confirmed by the Meteodata 0701 capture.
+    ///
+    /// This is the fallback when no `HawkConfigurationData` selects a realisation;
+    /// a product-data Hawk block still overrides `lsm` via
     /// [`sys7_profile_from_hawk`](../download/index.html).
-    pub fn corpus_default() -> Sys7Profile {
+    pub fn corpus_default_for_mask(mask: u16) -> Sys7Profile {
+        // The 0701 family (Theben Meteodata) is memory-mapped; every other System 7
+        // mask (Jung 0705) defaults to property-based load control.
+        let lsm = if mask & 0x0FFF == 0x701 {
+            LsmRealisation::MemoryMapped {
+                control_addr: SYS7_DEFAULT_CONTROL_ADDR,
+                status_addr: SYS7_DEFAULT_STATUS_ADDR,
+            }
+        } else {
+            LsmRealisation::Property
+        };
         Sys7Profile {
-            lsm: LsmRealisation::Property,
+            lsm,
             authorize_level: 0,
             eeprom_mem_type: 3,
             ram_mem_type: 2,
         }
+    }
+
+    /// The property-based System 7 default profile (Jung `0705`): a convenience
+    /// for callers that already know the mask is the property family, and the
+    /// value [`corpus_default_for_mask`](Sys7Profile::corpus_default_for_mask)
+    /// returns for every non-`0701` System 7 mask. Equivalent to
+    /// `corpus_default_for_mask(0x0705)`.
+    pub fn corpus_default() -> Sys7Profile {
+        Sys7Profile::corpus_default_for_mask(0x0705)
     }
 }
 
@@ -369,19 +413,43 @@ mod tests {
     }
 
     #[test]
-    fn test_sys7_default_profile_is_property_m2_calibrated() {
-        // The M2 Jung 0705 capture (#70) proved the default LSM realisation is
-        // property-based (PID 5), not the pre-M2 memory-mapped guess.
-        for mask in [0x0705u16, 0x0701, 0x0700] {
+    fn test_sys7_default_profile_is_mask_family_aware() {
+        // The realisation is vendor/mask-family dependent, NOT a single global
+        // default. Jung 0705 (M2 capture) drives PID 5 (property); Theben 0701
+        // (Meteodata capture) drives memory-mapped 11-octet records to 0x0104 with
+        // status at 0xB6EA+. The common mem-types/authorize level are shared.
+        for mask in [0x0705u16, 0x0700] {
             let p = MaskProfile::from_mask(mask);
             assert!(p.is_system_7(), "{mask:04X}");
             assert_eq!(p.max_apdu_fallback(), 15, "{mask:04X}");
             let s7 = p.sys7_default_profile().expect("a System 7 profile");
-            assert_eq!(s7.lsm, LsmRealisation::Property, "{mask:04X}");
+            assert_eq!(
+                s7.lsm,
+                LsmRealisation::Property,
+                "{mask:04X} is the property family"
+            );
             assert_eq!(s7.authorize_level, 0, "{mask:04X}");
             assert_eq!(s7.eeprom_mem_type, 3, "{mask:04X}");
             assert_eq!(s7.ram_mem_type, 2, "{mask:04X}");
         }
+
+        // Theben 0701 (Meteodata) is memory-mapped at the default control/status
+        // addresses — this is the regression the M2 "Property for all System 7"
+        // default caused, now fixed.
+        let theben = MaskProfile::from_mask(0x0701);
+        assert!(theben.is_system_7());
+        let s7 = theben.sys7_default_profile().expect("a System 7 profile");
+        assert_eq!(
+            s7.lsm,
+            LsmRealisation::MemoryMapped {
+                control_addr: SYS7_DEFAULT_CONTROL_ADDR,
+                status_addr: SYS7_DEFAULT_STATUS_ADDR,
+            },
+            "Theben 0701 Meteodata drives load control memory-mapped"
+        );
+        assert_eq!(s7.authorize_level, 0);
+        assert_eq!(s7.eeprom_mem_type, 3);
+        assert_eq!(s7.ram_mem_type, 2);
     }
 
     #[test]
