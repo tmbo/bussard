@@ -48,6 +48,16 @@ TA8FXCT-SEC      # 8-fold push-button sensor (KNX Secure)
 # --- Theben (M-0048) ---
 4900270          # HMG 8 heating actuator (0021)
 4940275          # FIX2 dimmer (0701)
+4940200          # FIX1 8x switch / 4x blind actuator (0701)
+4940205          # FIX2 16x switch / 8x blind actuator (0701)
+4940245          # FIX2 12x heating actuator (0701)
+4900250          # JMG 4 4-channel blind actuator (0020)
+4900240          # RM 4 switch actuator (mixed 0011/0012)
+1079201          # Sphinx 395 1-channel presence detector (0012)
+1079212          # Sphinx 332 2-channel motion detector w/ light control (0012)
+7109202          # RAM 710 Venkon fan-coil controller (0011)
+7139201          # RAM 713 S room temperature controller (0012)
+7139202          # RAM 713 fan-coil room temperature controller (0012)
 
 # --- Elsner Elektronik (M-00C9) ---
 70370            # TH-B-UP temperature/humidity sensor (0701)
