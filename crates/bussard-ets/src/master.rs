@@ -47,6 +47,47 @@ pub struct MaskLoadProcedure {
     pub ops: Vec<LoadOp>,
 }
 
+/// One `<Resource>` entry from a mask's `HawkConfigurationData`: a named device
+/// resource (LSM control/status, a table location, …) with its memory location.
+///
+/// System 7 (mask 0705/0701) resolves its LSM realisation and table addresses
+/// from these rather than from hardcoded Rust constants (`[system7-spec §2.4]`).
+/// The Jung MV-0705 block confirms the corpus defaults: `GroupAddressTableLoadControl`
+/// at `StandardMemory` `StartAddress=260` (`0x0104`), `Length=12`,
+/// `Flavour="LoadControl_M112"`, and the per-table load-status bytes at
+/// `0xB6EA`, `0xB6EB`, `0xB6EC` (one per LSM).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HawkResource {
+    /// The resource name, e.g. `"GroupAddressTableLoadControl"`.
+    pub name: String,
+    /// The `<Location>` `AddressSpace` (e.g. `"StandardMemory"`, `"SystemProperty"`,
+    /// `"Constant"`, `"None"`).
+    pub address_space: Option<String>,
+    /// The `<Location>` `StartAddress`, when the address space carries one.
+    pub start_address: Option<u32>,
+    /// The `<ResourceType>` `Length` in octets.
+    pub length: Option<u32>,
+    /// The `<ResourceType>` `Flavour`, e.g. `"LoadControl_M112"`.
+    pub flavour: Option<String>,
+}
+
+/// The `HawkConfigurationData` resource records extracted for one mask.
+///
+/// Keyed by resource name. Parsed from a `.knxprod`'s `knx_master.xml`
+/// (`[system7-spec §2.4]`); [`HawkConfig::resource`] looks one up by name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HawkConfig {
+    /// Resource name → its parsed record.
+    pub resources: HashMap<String, HawkResource>,
+}
+
+impl HawkConfig {
+    /// The resource with the given name, if present.
+    pub fn resource(&self, name: &str) -> Option<&HawkResource> {
+        self.resources.get(name)
+    }
+}
+
 /// The load-procedure templates extracted from a `knx_master.xml`, keyed by the
 /// **`MV-`-stripped** mask id (e.g. `"07B0"`) to match
 /// [`crate::ApplicationProgram::mask_version`].
@@ -55,6 +96,9 @@ pub struct MasterTemplate {
     /// Mask id (`"07B0"`) → the mask's `Load` procedure templates, in document
     /// order.
     pub masks: HashMap<String, Vec<MaskLoadProcedure>>,
+    /// Mask id (`"0705"`) → its `HawkConfigurationData` resources, when the mask
+    /// block carried one. Empty for masks without a Hawk block.
+    pub hawk: HashMap<String, HawkConfig>,
 }
 
 impl MasterTemplate {
@@ -75,6 +119,12 @@ impl MasterTemplate {
         pick("all")
             .or_else(|| pick("ap1"))
             .or_else(|| procs.iter().find(|p| !p.ops.is_empty()))
+    }
+
+    /// The parsed `HawkConfigurationData` for a mask, or `None` if the mask
+    /// declared none. `mask` is the `MV-`-stripped id (`"0705"`).
+    pub fn hawk_config(&self, mask: &str) -> Option<&HawkConfig> {
+        self.hawk.get(mask)
     }
 }
 
@@ -100,6 +150,10 @@ pub fn parse_master_template(xml: &[u8], context: &str) -> Result<MasterTemplate
     // `<Procedure ProcedureType="Load">`.
     let mut cur_proc: Option<LoadProcedure> = None;
     let mut cur_sub_type: Option<String> = None;
+
+    // The `HawkConfigurationData` resource currently being accumulated, if inside
+    // a `<Resource>` element within the current mask's Hawk block.
+    let mut cur_resource: Option<HawkResource> = None;
 
     loop {
         let event = reader.read_event().map_err(|source| EtsError::Xml {
@@ -130,14 +184,43 @@ pub fn parse_master_template(xml: &[u8], context: &str) -> Result<MasterTemplate
                         attrs.parse_into(&e, context)?;
                         push_load_op(&mut cur_proc, &e, &attrs);
                     }
+                    // A `HawkConfigurationData` `<Resource>` (has child <Location>
+                    // / <ResourceType>): start accumulating it.
+                    b"Resource" if cur_mask.is_some() => {
+                        attrs.parse_into(&e, context)?;
+                        cur_resource = Some(HawkResource {
+                            name: get(&attrs, b"Name").unwrap_or_default().to_string(),
+                            ..HawkResource::default()
+                        });
+                    }
                     _ => {}
                 }
             }
             Event::Empty(e) => {
                 let local = e.local_name();
-                if local.as_ref().starts_with(b"LdCtrl") && cur_proc.is_some() {
-                    attrs.parse_into(&e, context)?;
-                    push_load_op(&mut cur_proc, &e, &attrs);
+                match local.as_ref() {
+                    name if name.starts_with(b"LdCtrl") && cur_proc.is_some() => {
+                        attrs.parse_into(&e, context)?;
+                        push_load_op(&mut cur_proc, &e, &attrs);
+                    }
+                    // `<Location .../>` and `<ResourceType .../>` fill the current
+                    // resource (both are self-closing empty elements).
+                    b"Location" if cur_resource.is_some() => {
+                        attrs.parse_into(&e, context)?;
+                        if let Some(r) = cur_resource.as_mut() {
+                            r.address_space = get(&attrs, b"AddressSpace").map(str::to_string);
+                            r.start_address =
+                                get(&attrs, b"StartAddress").and_then(|s| s.trim().parse().ok());
+                        }
+                    }
+                    b"ResourceType" if cur_resource.is_some() => {
+                        attrs.parse_into(&e, context)?;
+                        if let Some(r) = cur_resource.as_mut() {
+                            r.length = get(&attrs, b"Length").and_then(|s| s.trim().parse().ok());
+                            r.flavour = get(&attrs, b"Flavour").map(str::to_string);
+                        }
+                    }
+                    _ => {}
                 }
             }
             Event::End(e) => match e.local_name().as_ref() {
@@ -149,6 +232,17 @@ pub fn parse_master_template(xml: &[u8], context: &str) -> Result<MasterTemplate
                         });
                     }
                     cur_sub_type = None;
+                }
+                b"Resource" => {
+                    if let (Some(mask), Some(resource)) = (cur_mask.clone(), cur_resource.take())
+                        && !resource.name.is_empty()
+                    {
+                        out.hawk
+                            .entry(mask)
+                            .or_default()
+                            .resources
+                            .insert(resource.name.clone(), resource);
+                    }
                 }
                 b"MaskVersion" => cur_mask = None,
                 _ => {}
@@ -258,6 +352,75 @@ mod tests {
     fn test_absent_mask_has_no_template() -> Result<()> {
         let t = parse_master_template(SAMPLE.as_bytes(), "test")?;
         assert!(t.full_load_procedure("2705").is_none());
+        Ok(())
+    }
+
+    /// A MV-0705 mask carrying a `HawkConfigurationData` block with the
+    /// LoadControl/LoadStatus resources the real Jung 3361-1M declares.
+    const HAWK_SAMPLE: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<KNX xmlns="http://knx.org/xml/project/23">
+ <MasterData><MaskVersions>
+  <MaskVersion Id="MV-0705" Name="System 7">
+   <HawkConfigurationData>
+    <Resources>
+     <Resource Name="ManagementStyle" Access="remote">
+      <Location AddressSpace="Constant" StartAddress="2" />
+      <ResourceType Length="1" />
+     </Resource>
+     <Resource Name="GroupAddressTableLoadControl" Access="remote">
+      <Location AddressSpace="StandardMemory" StartAddress="260" />
+      <ResourceType Length="12" Flavour="LoadControl_M112" />
+     </Resource>
+     <Resource Name="GroupAddressTableLoadStatus" Access="remote">
+      <Location AddressSpace="StandardMemory" StartAddress="46826" />
+      <ResourceType Length="1" Flavour="LoadControl_M112" />
+     </Resource>
+     <Resource Name="GroupAssociationTableLoadStatus" Access="remote">
+      <Location AddressSpace="StandardMemory" StartAddress="46827" />
+      <ResourceType Length="1" Flavour="LoadControl_M112" />
+     </Resource>
+    </Resources>
+   </HawkConfigurationData>
+  </MaskVersion>
+ </MaskVersions></MasterData>
+</KNX>"#;
+
+    #[test]
+    fn test_parse_hawk_configuration_data_for_system7() -> Result<()> {
+        let t = parse_master_template(HAWK_SAMPLE.as_bytes(), "test")?;
+        let hawk = t.hawk_config("0705").expect("a Hawk config for 0705");
+
+        // The LoadControl is the 12-octet record at StandardMemory 260 = 0x0104,
+        // Flavour LoadControl_M112 — the memory-mapped LSM control the spec §5
+        // default names.
+        let ctrl = hawk
+            .resource("GroupAddressTableLoadControl")
+            .expect("a LoadControl resource");
+        assert_eq!(ctrl.address_space.as_deref(), Some("StandardMemory"));
+        assert_eq!(ctrl.start_address, Some(260)); // 0x0104
+        assert_eq!(ctrl.length, Some(12));
+        assert_eq!(ctrl.flavour.as_deref(), Some("LoadControl_M112"));
+
+        // The per-table load-status bytes sit at 0xB6EA, 0xB6EB (one per LSM).
+        assert_eq!(
+            hawk.resource("GroupAddressTableLoadStatus")
+                .and_then(|r| r.start_address),
+            Some(46826) // 0xB6EA
+        );
+        assert_eq!(
+            hawk.resource("GroupAssociationTableLoadStatus")
+                .and_then(|r| r.start_address),
+            Some(46827) // 0xB6EB
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_mask_without_hawk_block_has_no_config() -> Result<()> {
+        let t = parse_master_template(SAMPLE.as_bytes(), "test")?;
+        // The SAMPLE masks declare no HawkConfigurationData.
+        assert!(t.hawk_config("0705").is_none());
+        assert!(t.hawk_config("07B0").is_none());
         Ok(())
     }
 }

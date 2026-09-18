@@ -36,7 +36,7 @@ pub use compute_sys7::{
 };
 pub use flash::{
     AppIdentity, Connector, FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, ImageRef,
-    PlanError, Progress, Session, SingleConnector, discover_application_object, flash, plan_flash,
-    select_application, trace,
+    PlanError, Progress, Session, SingleConnector, Sys7Context, discover_application_object, flash,
+    plan_flash, plan_flash_sys7_with_hawk, select_application, sys7_profile_from_hawk, trace,
 };
 pub use plan::{LoadStep, ObjectGa, PlanReport, plan};

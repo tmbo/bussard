@@ -39,7 +39,9 @@ pub use application::{
     Memory, Parameter, ParameterRef, ParameterType, ParameterTypeDecl, ResolvedComObject,
     ResolvedParameter, SegmentKind, parse_application_program,
 };
-pub use bussard_ets::master::{MaskLoadProcedure, MasterTemplate, parse_master_template};
+pub use bussard_ets::master::{
+    HawkConfig, HawkResource, MaskLoadProcedure, MasterTemplate, parse_master_template,
+};
 pub use container::AppEntry;
 pub use error::{ProdError, Result};
 pub use fetch::{DownloadConsent, MAX_DOWNLOAD_BYTES, fetch_entry};
