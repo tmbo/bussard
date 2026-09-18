@@ -41,8 +41,9 @@ pub enum Sys7Event {
         /// The segment base this task descriptor points at.
         address: u16,
     },
-    /// `AdditionalLoadControls` → task-control 1 (subtype 0x04, spec §4.4). A
-    /// second-phase op refused cleanly in M1.
+    /// `AdditionalLoadControls` → task-control 1 (subtype 0x04, spec §4.4).
+    /// Writes a task-control table entry at `address`, `count` times; accepted
+    /// while Loading (used by the Jung `M-0004_A-A011` download).
     TaskCtrl1 {
         /// The task-control table address.
         address: u16,
@@ -66,10 +67,6 @@ pub enum Sys7EventError {
     /// The record was too short for the sub-command's fields.
     #[error("System 7 load-event record too short for sub-command 0x{0:02x}")]
     TooShort(u8),
-    /// A `TaskCtrl1` sub-command was received; it is a second-phase op refused in
-    /// M1 with this named reason (spec §4.4).
-    #[error("TaskCtrl1 (AdditionalLoadControls 0x04) is not supported in M1")]
-    TaskCtrl1Unsupported,
 }
 
 impl Sys7Event {
@@ -107,8 +104,18 @@ impl Sys7Event {
                             subtype: sub,
                         })
                     }
-                    // Task control 1 (spec §4.4): [address:2][count]. Refuse in M1.
-                    0x04 => Err(Sys7EventError::TaskCtrl1Unsupported),
+                    // Task control 1 (spec §4.4): [address:2][count]. Used by the
+                    // Jung 3361-1M (`M-0004_A-A011`) and Theben/Steinel/Elsner
+                    // downloads; a spec-legal `AdditionalLoadControls` sub-command
+                    // the device accepts while Loading.
+                    0x04 => {
+                        if record.len() < 4 {
+                            return Err(Sys7EventError::TooShort(sub));
+                        }
+                        let address = u16::from_be_bytes([record[2], record[3]]);
+                        let count = *record.get(4).unwrap_or(&0);
+                        Ok(Sys7Event::TaskCtrl1 { address, count })
+                    }
                     other => Err(Sys7EventError::UnsupportedSubCommand(other)),
                 }
             }
@@ -145,11 +152,24 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_task_ctrl1_refused() {
+    fn test_decode_task_ctrl1() {
+        // TaskCtrl1 (spec §4.4): [0x03][0x04][address:2][count]. Accepted, decodes
+        // to the address and repeat count (the Jung M-0004_A-A011 download op).
         let rec = [0x03, 0x04, 0x47, 0xF9, 0x01, 0, 0, 0, 0, 0];
         assert_eq!(
             Sys7Event::decode(&rec),
-            Err(Sys7EventError::TaskCtrl1Unsupported)
+            Ok(Sys7Event::TaskCtrl1 {
+                address: 0x47F9,
+                count: 0x01,
+            })
+        );
+    }
+
+    #[test]
+    fn test_decode_task_ctrl1_too_short() {
+        assert_eq!(
+            Sys7Event::decode(&[0x03, 0x04, 0x47]),
+            Err(Sys7EventError::TooShort(0x04))
         );
     }
 

@@ -287,11 +287,17 @@ descriptor committed"; it is a precondition for the following `LoadCompleted`.
 
 ### 4.4 TaskCtrl1
 
-`TaskCtrl1{lsm_idx, address, count}` `[corpus: 3/49 — Theben, Steinel, Elsner]`
-is `AdditionalLoadControls` subtype 0x04, `[address:2][count]`. It writes a
-task-control table entry `count` times. Second-phase op; refuse cleanly in M1
-with a named message, implement in M2. `S7-CAL: TaskCtrl1 record layout and
-count semantics`.
+`TaskCtrl1{lsm_idx, address, count}` `[corpus: 3/49 — Theben, Steinel, Elsner;
+plus Jung M-0004_A-A011]` is `AdditionalLoadControls` subtype 0x04,
+`[address:2][count]`. It writes a task-control table entry `count` times.
+
+**Implemented (2026-09-18):** the Jung `M-0004_A-A011` (0705) download issues a
+TaskCtrl1 on LSM 3, so it is on the conformance hot path, not a second-phase op.
+bussard plans and executes it; the sim decodes subtype 0x04 into `TaskCtrl1
+{address, count}` and accepts it while `Loading` with no memory side effect in
+the M1 model (like TaskSegment). `S7-CAL: confirm the TaskCtrl1 record layout,
+the count semantics, and whether the entry write has an observable memory effect
+against a live capture.`
 
 ### 4.5 CompareMem
 
