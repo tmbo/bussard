@@ -23,8 +23,17 @@
   --accent-device-soft: rgba(74, 163, 255, 0.16);
   --accent-ga: #e0a83a;
   --accent-ga-soft: rgba(224, 168, 58, 0.16);
-  --partner: #35c9b0;
-  --partner-soft: rgba(53, 201, 176, 0.16);
+  /* Directional semantic colors (item 6). --color-incoming marks data flowing
+     INTO the perspective entity; --color-outgoing marks data flowing OUT.
+     Green (incoming) and orange (outgoing) read clearly on the dark theme and
+     stay distinct from selection blue (#4aa3ff) and GA amber (#e0a83a): the
+     orange is a hotter, more saturated #f97316 versus the muted GA gold, and
+     the green is far from both. SELECTION stays blue everywhere; amber is now
+     ONLY the GA-entity identity color. */
+  --color-incoming: #34d399;
+  --color-incoming-soft: rgba(52, 211, 153, 0.16);
+  --color-outgoing: #f97316;
+  --color-outgoing-soft: rgba(249, 115, 22, 0.16);
   --ok: #3fb950;
   --warn: #d29922;
   --bad: #f85149;
@@ -297,9 +306,10 @@ body {
 .ga-sub { padding-left: 34px; }
 .ga-row:hover { background: var(--panel); }
 .ga-sub.selected { background: var(--accent-ga-soft); box-shadow: inset 2px 0 0 var(--accent-ga); }
-/* GAs shared with a selected device's communication partners (item 3). */
-.ga-sub.partner-ga { box-shadow: inset 2px 0 0 var(--partner); }
-.ga-sub.partner-ga .ga-addr { color: var(--partner); }
+/* GAs shared with a selected device's communication partners (item 3). A
+   neutral marker: partner direction is conveyed on the cards/edges, not here. */
+.ga-sub.partner-ga { box-shadow: inset 2px 0 0 var(--text-dim); }
+.ga-sub.partner-ga .ga-addr { color: var(--text); }
 
 .ga-twist::before { content: "▾"; color: var(--text-faint); font-size: 10px; }
 .ga-row.collapsed .ga-twist::before { content: "▸"; }
@@ -403,6 +413,12 @@ body {
   border-bottom: 1px solid var(--border-soft);
 }
 .log-row:hover { background: var(--panel); cursor: pointer; }
+/* A clicked log row keeps a persistent blue selected state (item 6), distinct
+   from the transient sender flash, until another row is selected. */
+.log-row.selected {
+  background: var(--accent-device-soft);
+  box-shadow: inset 3px 0 0 var(--accent-device);
+}
 /* Every column truncates with an ellipsis. min-width:0 lets grid children shrink
    below their content width (the default is auto), which is what prevents long
    source/destination names from overflowing into the next column. */
@@ -457,6 +473,21 @@ body.query-active .ga-sub:not(.match) { opacity: 0.35; }
 .flash-suspicious { animation: glow-out-suspicious 1000ms ease-out; }
 .recent { animation: recent-decay 3500ms ease-out forwards; }
 
+/* Directional card cue for a selected log row (item 6): the SOURCE card flashes
+   outgoing (orange), the destination listener cards flash incoming (green). */
+@keyframes glow-out-outgoing {
+  0% { background-color: var(--color-outgoing-soft); box-shadow: 0 0 10px var(--color-outgoing); }
+  20% { background-color: var(--color-outgoing-soft); box-shadow: 0 0 9px var(--color-outgoing); }
+  100% { background-color: transparent; box-shadow: none; }
+}
+@keyframes glow-out-incoming {
+  0% { background-color: var(--color-incoming-soft); box-shadow: 0 0 10px var(--color-incoming); }
+  20% { background-color: var(--color-incoming-soft); box-shadow: 0 0 9px var(--color-incoming); }
+  100% { background-color: transparent; box-shadow: none; }
+}
+.device-card.flash-out { animation: glow-out-outgoing 1000ms ease-out; }
+.device-card.flash-in { animation: glow-out-incoming 1000ms ease-out; }
+
 .suspicious { color: var(--suspicious) !important; }
 .log-row.suspicious .lr-dest { color: var(--suspicious); }
 /* The apci glyph column is overflow:visible, so the suspicious marker rides
@@ -478,12 +509,14 @@ body.query-active .ga-sub:not(.match) { opacity: 0.35; }
 /* --- reduced motion ------------------------------------------------------- */
 
 @media (prefers-reduced-motion: reduce) {
-  .flash, .flash-suspicious {
+  .flash, .flash-suspicious, .device-card.flash-out, .device-card.flash-in {
     animation: none;
     /* instant highlight instead of a glow-out; cleared by JS class removal */
     background-color: rgba(255, 207, 90, 0.35);
   }
   .flash-suspicious { background-color: rgba(219, 97, 255, 0.35); }
+  .device-card.flash-out { background-color: var(--color-outgoing-soft); }
+  .device-card.flash-in { background-color: var(--color-incoming-soft); }
   /* Reduced motion wins: the flash toggle cannot re-enable these. */
   .recent, .device-card.recent, .device-card.locate { animation: none; }
   .pulse-circle { display: none; }
@@ -492,7 +525,10 @@ body.query-active .ga-sub:not(.match) { opacity: 0.35; }
 
 /* --- topology: SVG underlay (wave 2) -------------------------------------- */
 
-.topo-cards { position: relative; z-index: 1; }
+/* Reserve a dot corridor (GUTTER) between the spine and the cards so animated
+   dots and edges never run over a card border. The value must exceed the
+   topology.js SPINE_X (12) + GUTTER_W (40) so the corridor clears the spine. */
+.topo-cards { position: relative; z-index: 1; margin-left: 52px; }
 .topo-underlay {
   position: absolute;
   top: 0;
@@ -504,11 +540,16 @@ body.query-active .ga-sub:not(.match) { opacity: 0.35; }
 .bus-spine { stroke: var(--accent-dim); stroke-width: 2; opacity: 0.55; }
 .bus-spine.glow { stroke: var(--flash); opacity: 1; transition: none; }
 .bus-spine.glow-suspicious { stroke: var(--suspicious); opacity: 1; }
-.drop-line { stroke: var(--border); stroke-width: 1; opacity: 0.5; }
+/* Faint row feeders + drops (item 2): quiet by default, brightened only when
+   part of an active edge/pulse (edges live in their own layer above). */
+.drop-line { stroke: var(--border); stroke-width: 1; opacity: 0.45; }
+.feeder-line { stroke: var(--border); stroke-width: 1; opacity: 0.4; }
 .spine-head { fill: var(--text-dim); stroke: var(--bg); stroke-width: 1; }
-.sel-edge { fill: none; stroke-width: 1.5; opacity: 0.85; }
-.sel-edge.sender { stroke: var(--accent); }
-.sel-edge.listener { stroke: var(--ok); stroke-dasharray: 4 3; }
+/* Selection / partner / focus edges, colored by data-flow direction (item 6).
+   Incoming green, outgoing orange; selection itself stays blue on the card. */
+.sel-edge { fill: none; stroke-width: 1.6; opacity: 0.9; }
+.sel-edge.dir-incoming { stroke: var(--color-incoming); }
+.sel-edge.dir-outgoing { stroke: var(--color-outgoing); }
 .topo-pulse { fill: var(--flash); filter: drop-shadow(0 0 4px var(--flash)); }
 .topo-pulse.suspicious { fill: var(--suspicious); filter: drop-shadow(0 0 4px var(--suspicious)); }
 
@@ -539,51 +580,97 @@ body.query-active .ga-sub:not(.match) { opacity: 0.35; }
 
 /* Selected device keeps the existing selection style (blue). Its communication
    partners get a distinct teal highlight; non-partners are dimmed. */
-.device-card.partner {
-  border-color: var(--partner);
-  box-shadow: 0 0 0 1px var(--partner);
+/* Partner cards tinted by data-flow direction (item 6): incoming green,
+   outgoing orange. A partner doing BOTH gets a split-color border so the dual
+   relationship reads at a glance. Selection itself stays blue (above). */
+.device-card.partner.dir-incoming {
+  border-color: var(--color-incoming);
+  box-shadow: 0 0 0 1px var(--color-incoming);
+  background: var(--color-incoming-soft);
+}
+.device-card.partner.dir-outgoing {
+  border-color: var(--color-outgoing);
+  box-shadow: 0 0 0 1px var(--color-outgoing);
+  background: var(--color-outgoing-soft);
+}
+.device-card.partner.dir-both {
+  /* Split border: incoming on the left half, outgoing on the right. */
+  border-color: var(--color-incoming);
+  border-right-color: var(--color-outgoing);
+  border-bottom-color: var(--color-outgoing);
+  box-shadow: 0 0 0 1px var(--color-incoming);
 }
 .device-card.partner-dimmed { opacity: 0.32; }
 
 /* --- item 4: GA focus mode ------------------------------------------------ */
 
-/* Participating cards in ga-focus mode get the GA accent ring. */
-.device-card.focus-part {
-  border-color: var(--accent-ga);
-  box-shadow: 0 0 0 1px var(--accent-ga);
+/* Participating cards in ga-focus mode, colored by role (item 6): senders emit
+   onto the GA (outgoing, orange), listeners receive from it (incoming, green),
+   a device doing both gets a split border. The GA itself stays amber. */
+.device-card.focus-part.dir-outgoing {
+  border-color: var(--color-outgoing);
+  box-shadow: 0 0 0 1px var(--color-outgoing);
+  background: var(--color-outgoing-soft);
+}
+.device-card.focus-part.dir-incoming {
+  border-color: var(--color-incoming);
+  box-shadow: 0 0 0 1px var(--color-incoming);
+  background: var(--color-incoming-soft);
+}
+.device-card.focus-part.dir-both {
+  border-color: var(--color-incoming);
+  border-right-color: var(--color-outgoing);
+  border-bottom-color: var(--color-outgoing);
+  box-shadow: 0 0 0 1px var(--color-incoming);
 }
 /* Hidden by focus mode: cards, room blocks and floor labels with no participant. */
 .device-card.focus-hidden,
 .room-block.focus-hidden,
 .floor-label.focus-hidden { display: none; }
 
-/* Filter banner pinned to the top of the topology pane. */
+/* Filter banner pinned to the TOP of the topology pane (item 1). It carries the
+   amber GA identity (badge + address + name + DPT), so the focused group
+   address has a dedicated home and never collides with the card grid. */
 .topo-filter-banner {
   position: sticky;
   top: -16px; /* cancel the pane's 16px padding so it hugs the top edge */
-  z-index: 5;
+  z-index: 6;
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 10px;
-  margin: -16px -16px 14px -16px;
-  padding: 8px 14px;
+  margin: -16px -16px 16px -16px;
+  padding: 10px 14px;
   background: var(--accent-ga-soft);
-  border-bottom: 1px solid var(--accent-ga);
+  border-bottom: 2px solid var(--accent-ga);
   color: var(--text);
-  font-size: 12px;
+  font-size: 13px;
 }
 .topo-filter-banner[hidden] { display: none; }
-.tfb-label { font-weight: 500; }
-.tfb-label::before {
-  content: "▾ filter";
-  margin-right: 8px;
-  color: var(--accent-ga);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
+.tfb-badge {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: var(--accent-ga);
+  color: #1a1200;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
 }
+.tfb-addr { color: var(--accent-ga); font-weight: 600; }
+.tfb-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tfb-dpt {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  background: var(--border);
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+.tfb-dpt[hidden] { display: none; }
 .tfb-close {
+  flex: 0 0 auto;
   margin-left: auto;
+  align-self: center;
   padding: 0 6px;
   background: none;
   border: 1px solid var(--accent-ga);
@@ -595,16 +682,13 @@ body.query-active .ga-sub:not(.match) { opacity: 0.35; }
 }
 .tfb-close:hover { background: var(--accent-ga); color: #1a1200; }
 
-/* GA node drawn on the spine in focus mode. */
+/* GA node marker on the spine in focus mode (item 1): a small amber dot with a
+   soft halo, NO label (the identity lives in the banner). */
+.ga-node-halo { fill: var(--accent-ga-soft); }
 .ga-node-dot { fill: var(--accent-ga); stroke: var(--bg); stroke-width: 2; }
-.ga-node-label { font-family: var(--sans); font-size: 12px; }
-.ga-node-addr { fill: var(--accent-ga); font-family: var(--mono); font-weight: 600; }
-.ga-node-name { fill: var(--text); }
-.ga-node-dpt { fill: var(--text-dim); font-family: var(--mono); font-size: 10px; }
-.topo-arrow-head { fill: var(--text-dim); }
-.sel-edge.focus-edge.sender { stroke: var(--accent-device); }
-.sel-edge.focus-edge.listener { stroke: var(--ok); }
-.sel-edge.partner-edge { stroke: var(--partner); stroke-width: 1.5; opacity: 0.9; }
+/* The arrowhead adopts the edge's stroke color so incoming/outgoing read on the
+   marker too (context-stroke is supported by the headless-Chrome target). */
+.topo-arrow-head { fill: context-stroke; }
 
 /* --- inspector (wave 2) --------------------------------------------------- */
 
@@ -709,28 +793,49 @@ body.query-active .ga-sub:not(.match) { opacity: 0.35; }
   border-bottom: 1px solid var(--border);
 }
 
-/* Send/listen cells: a GA chip with a secondary line of remote devices. */
+/* Send/listen cells: a GA chip with a secondary line of remote devices. The
+   cell is tinted by data-flow direction (item 6): send = outgoing (orange),
+   listen = incoming (green). */
 .link-cell { vertical-align: top; }
-.ga-link { display: flex; flex-direction: column; gap: 2px; margin-bottom: 4px; }
+.ga-link { display: flex; flex-direction: column; gap: 3px; margin-bottom: 6px; }
 .ga-remotes {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
-  gap: 4px;
+  align-items: flex-start;
+  gap: 6px;
   padding-left: 4px;
 }
-.ga-arrow { color: var(--text-faint); font-family: var(--mono); }
+.ga-arrow { font-family: var(--mono); }
+.ga-link.dir-outgoing .ga-arrow { color: var(--color-outgoing); }
+.ga-link.dir-incoming .ga-arrow { color: var(--color-incoming); }
+/* The GA chip border adopts the direction color so the send/listen cells read
+   as outgoing/incoming (item 6). Suspicious still overrides (below). */
+.ga-link.dir-outgoing > .ga-chip:not(.suspicious) { border-color: var(--color-outgoing); }
+.ga-link.dir-incoming > .ga-chip:not(.suspicious) { border-color: var(--color-incoming); }
+/* Remote-device reference: address-first (item 4). Arrow + monospace address on
+   the first line, the name below capped with an ellipsis. */
 .remote-dev {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  max-width: 150px;
   padding: 0;
   background: none;
   border: none;
-  color: var(--text-dim);
   cursor: pointer;
-  font-family: var(--sans);
-  font-size: 11px;
   text-align: left;
 }
-.remote-dev:hover { color: var(--accent); text-decoration: underline; }
+.remote-dev-top { display: flex; align-items: baseline; gap: 4px; }
+.remote-dev-addr { font-size: 11px; color: var(--accent-device); }
+.remote-dev-name {
+  font-family: var(--sans);
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.remote-dev:hover .remote-dev-name { color: var(--accent); text-decoration: underline; }
 .more-btn {
   padding: 0 4px;
   background: none;
@@ -756,24 +861,45 @@ body.query-active .ga-sub:not(.match) { opacity: 0.35; }
 .ga-chip:hover { border-color: var(--accent); }
 .ga-chip.suspicious { color: var(--suspicious); border-color: var(--suspicious); }
 
+/* GA sender/listener rows (item 5): compact, address-first, with a subordinate
+   com-object line. Accented by data-flow direction on the left edge (item 6):
+   senders outgoing (orange), listeners incoming (green). */
 .ref-list { display: flex; flex-direction: column; gap: 4px; }
-.ref-row { display: flex; align-items: center; gap: 8px; }
-.ref-obj { font-size: 11px; }
-.device-chip {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  padding: 3px 8px;
+.ref-row-btn {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  padding: 4px 8px;
   background: var(--bg-raised);
   border: 1px solid var(--border);
+  border-left-width: 3px;
   border-radius: 6px;
   color: var(--text);
   cursor: pointer;
+  text-align: left;
+}
+.ref-row-btn:hover { border-color: var(--accent-dim); }
+.ref-row-btn.dir-outgoing { border-left-color: var(--color-outgoing); }
+.ref-row-btn.dir-incoming { border-left-color: var(--color-incoming); }
+.ref-dev-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.ref-dev-addr { flex: 0 0 auto; font-size: 11px; color: var(--accent-device); }
+.ref-dev-name {
+  flex: 1 1 auto;
+  min-width: 0;
   font-family: var(--sans);
   font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.device-chip:hover { border-color: var(--accent-dim); }
-.chip-addr { color: var(--accent); font-size: 10px; }
+.ref-obj-line {
+  color: var(--text-faint);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* --- send widget ---------------------------------------------------------- */
 
