@@ -609,6 +609,40 @@ fn reconnect_exchange_threshold() -> u32 {
         .unwrap_or(RECONNECT_EXCHANGE_THRESHOLD)
 }
 
+/// Environment variable that overrides the System 7 LSM realisation the product
+/// data selected (`memory` for [`LsmRealisation::MemoryMapped`], `property` for
+/// [`LsmRealisation::Property`]).
+///
+/// The spec (`[system7-spec §5]`) resolves the memory-vs-property disagreement by
+/// building a seam with a best-evidence default (memory-mapped) and notes that
+/// "flipping the profile bit is a one-line change". This env var is that switch:
+/// it lets bussard's `LsmAccess` realisation be conformance-tested against a
+/// property-based device side (the knx-sim `lsm_access: property` device) without
+/// a second product carrying a property `HawkConfigurationData`. Unset in normal
+/// use, so a flash uses exactly the product-driven realisation.
+const SYS7_LSM_OVERRIDE_ENV: &str = "BUSSARD_FLASH_SYS7_LSM";
+
+/// The System 7 LSM-realisation override from [`SYS7_LSM_OVERRIDE_ENV`], or `None`
+/// to keep the product-driven realisation. `memory` keeps the memory-mapped record
+/// at the profile's control/status addresses; `property` drives PID 5.
+fn sys7_lsm_override() -> Option<bussard_mgmt::LsmRealisation> {
+    match std::env::var(SYS7_LSM_OVERRIDE_ENV)
+        .ok()?
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "property" | "prop" => Some(bussard_mgmt::LsmRealisation::Property),
+        "memory" | "mem" | "memory-mapped" | "memorymapped" => {
+            Some(bussard_mgmt::LsmRealisation::MemoryMapped {
+                control_addr: 0x0104,
+                status_addr: 0xB6EA,
+            })
+        }
+        _ => None,
+    }
+}
+
 /// How many times a single flash step is retried after an *unexpected* mid-flow
 /// connection death before the flash gives up on it.
 ///
@@ -1860,10 +1894,18 @@ fn plan_flash_sys7(
 
     // The data-driven mask profile: from `HawkConfigurationData` when the import
     // path supplied one, else the corpus-default fallback (`[system7-spec §2.4]`).
-    let s7_profile = hawk
+    let mut s7_profile = hawk
         .and_then(sys7_profile_from_hawk)
         .or_else(|| profile.sys7_default_profile())
         .unwrap_or_else(bussard_mgmt::Sys7Profile::corpus_default);
+    // Realisation override (`[system7-spec §5]`: "flipping the profile bit is a
+    // one-line change"). The product data selects the realisation (default
+    // memory-mapped); this env var flips it so bussard's `LsmAccess` switch can be
+    // conformance-tested against a property-based device side without a second
+    // product. It never changes what a normal, product-driven flash does.
+    if let Some(lsm) = sys7_lsm_override() {
+        s7_profile.lsm = lsm;
+    }
 
     // Index the app's absolute code segments by address so each AbsSegment op can
     // find its <Data>/<Mask> payload. System 7 segments are all absolute.
@@ -3337,7 +3379,7 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
 async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
     session: &mut Session<C>,
     plan: &FlashPlan,
-    _options: FlashOptions,
+    options: FlashOptions,
     mut progress: F,
 ) -> Result<FlashOutcome, WriteError> {
     let ctx = plan
@@ -3345,6 +3387,13 @@ async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
         .as_ref()
         .expect("flash_sys7 called on a non-System-7 plan");
     let lsm = bussard_mgmt::lsm_access_from_profile(&ctx.profile);
+    // Whether to verify after the terminal restart (real device) or before it (a
+    // mock that does not reboot-and-return). Read once, then consumed in the
+    // terminal-restart arm — same discipline as the System B path.
+    let verify_after_restart = options.verify_after_restart;
+    // The final outcome, captured either by the terminal-restart arm (verify AFTER
+    // reconnect) or by the post-loop fallback (a procedure with no final Restart).
+    let mut verified: Option<FlashOutcome> = None;
     let total = plan.steps.len();
     // Read-back spot-check samples of the segment writes (address, first octets).
     let mut written_samples: Vec<(u16, Vec<u8>)> = Vec::new();
@@ -3535,13 +3584,42 @@ async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                 }
             }
             FlashStep::Restart => {
-                // Fire-and-forget the basic restart (System 7 ends every procedure
-                // with one, `[corpus 47/49]`). Verification happens before the
-                // restart (below, after the loop) since a System 7 device does not
-                // re-expose a memory-mapped LSM status the way System B re-reads a
-                // property; the read-back spot checks already ran per-segment.
+                // The terminal restart reboots the device and drops the L4
+                // connection, and the flash is only a real success if the load
+                // *persists* across that reboot (System B taught us a bad image
+                // silently reverts to Unloaded — the same rigor applies here). So
+                // when the session can re-open its own connection, verify AFTER the
+                // restart: fire the restart, wait out the reboot, reconnect and
+                // re-authorize (the retained connector), then re-read the LSM states
+                // and run the segment spot checks on the *fresh* connection. Reading
+                // the LSM status or a segment on the now-closed pre-restart
+                // connection is exactly the "management telegram with no open
+                // connection" rejection a real device (and the sim) issues.
+                //
+                // A session built from an already-open connection
+                // ([`Session::from_connection`], the mock-device tests) has no
+                // connector to reconnect with and its mock does not reboot — so fall
+                // back to verifying over the still-open connection *before* the
+                // restart, preserving those tests' behaviour.
                 let (apci, payload) = bussard_mgmt::apci::encode_restart(0);
-                let _ = session.l4().send_data_unacked(apci, &payload).await;
+                if verify_after_restart && session.can_reconnect() {
+                    let _ = session.l4().send_data_unacked(apci, &payload).await;
+                    // The device is unreachable while it reboots; wait it out (a
+                    // single bounded sleep, not a poll loop), then re-establish the
+                    // authorized connection and verify honestly on it.
+                    tokio::time::sleep(master_reset_reboot_wait()).await;
+                    session.reconnect().await?;
+                    verified = Some(
+                        verify_sys7(session, &lsm, &completed_lsms, &written_samples).await?,
+                    );
+                } else {
+                    // No connector to reconnect with (mock): verify over the
+                    // still-open connection, then fire-and-forget the restart.
+                    verified = Some(
+                        verify_sys7(session, &lsm, &completed_lsms, &written_samples).await?,
+                    );
+                    let _ = session.l4().send_data_unacked(apci, &payload).await;
+                }
             }
             // System B steps never appear in a System 7 plan.
             other => {
@@ -3572,23 +3650,57 @@ async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
         }
     }
 
-    // System 7 verify: the LSMs that completed report `Loaded`, and every
-    // per-segment read-back spot check matched. Read the LSM states back through
-    // the same access seam.
+    // The terminal restart captured the outcome (verify AFTER reboot). A procedure
+    // with no final Restart falls back to verifying now over the still-open
+    // connection.
+    match verified {
+        Some(outcome) => Ok(outcome),
+        None => verify_sys7(session, &lsm, &completed_lsms, &written_samples).await,
+    }
+}
+
+/// Verifies a completed System 7 download by read-back: every LSM that reached
+/// `LoadCompleted` must report `Loaded`, and each recorded segment spot check must
+/// still match device memory.
+///
+/// Called AFTER the terminal restart+reconnect (a real device) so the load is
+/// checked as it *persists* across the reboot, or over the still-open connection
+/// when there is no restart / no connector (the mock-device tests). The LSM-state
+/// reads tolerate a single resumable connection death by re-reading, because a
+/// freshly-rebooted device can drop the first probe on the newly-opened
+/// connection; the segment spot checks stay best-effort (each byte was already
+/// read-back-verified per-chunk during its write, so a transient read miss here is
+/// not a mismatch).
+async fn verify_sys7<C: Connector>(
+    session: &mut Session<C>,
+    lsm: &bussard_mgmt::LsmAccess,
+    completed_lsms: &[u32],
+    written_samples: &[(u16, Vec<u8>)],
+) -> Result<FlashOutcome, WriteError> {
     let mut object_states: Vec<(u8, LoadState)> = Vec::new();
     let mut all_loaded = true;
-    for idx in &completed_lsms {
-        let state = lsm.read_state(session.l4(), lsm_octet(*idx)).await?;
+    for idx in completed_lsms {
+        let octet = lsm_octet(*idx);
+        // Re-read once through a resumable death: a just-rebooted device can drop
+        // the first probe on the fresh connection before it is fully back.
+        let state = match lsm.read_state(session.l4(), octet).await {
+            Ok(state) => state,
+            Err(e) if resumable_death(&e, session) && session.can_reconnect() => {
+                session.reconnect().await?;
+                lsm.read_state(session.l4(), octet).await?
+            }
+            Err(e) => return Err(e),
+        };
         if state != LoadState::Loaded {
             all_loaded = false;
         }
-        object_states.push((lsm_octet(*idx), state));
+        object_states.push((octet, state));
     }
-    // Spot-check the written segments (best-effort: after a restart the device may
-    // be rebooting, so a read failure is not treated as a mismatch here — the
-    // per-chunk read-back during the write already verified each byte).
+    // Spot-check the written segments (best-effort: a read failure is not treated
+    // as a mismatch here — the per-chunk read-back during the write already
+    // verified each byte).
     let mut spot_checks_match = true;
-    for (addr, expected) in &written_samples {
+    for (addr, expected) in written_samples {
         match read_sys7_memory(session, *addr, expected.len()).await {
             Ok(got) if &got != expected => spot_checks_match = false,
             _ => {}
