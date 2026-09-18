@@ -1344,6 +1344,13 @@ impl Device {
                 // The descriptor is committed inside the LSM; no memory side effect
                 // in the M1 model (the sim treats it as a precondition flag).
             }
+            Sys7Step::TaskCtrl1 {
+                address: _,
+                count: _,
+            } => {
+                // A task-control-1 entry (spec §4.4, Jung M-0004_A-A011): accepted
+                // while Loading with no memory side effect in the M1 model.
+            }
             Sys7Step::State(new_state) => {
                 self.emit(Event::LoadStateChanged {
                     device: self.address,
