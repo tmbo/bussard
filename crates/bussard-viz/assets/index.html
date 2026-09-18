@@ -76,6 +76,13 @@
         spellcheck="false"
       />
       <button id="log-pause" class="log-btn" type="button" title="Pause (p)">Pause</button>
+      <button
+        id="flash-toggle"
+        class="log-btn flash-toggle active"
+        type="button"
+        aria-pressed="true"
+        title="Toggle live-traffic highlights in the diagram (the log always keeps appending)"
+      >⚡</button>
       <button id="log-follow" class="log-btn active" type="button" title="Follow tail">Follow</button>
       <button id="log-clear" class="log-btn" type="button" title="Clear log">Clear</button>
       <span id="log-newcount" class="log-newcount" hidden></span>
@@ -140,10 +147,16 @@
 
   <template id="tpl-inspector-device">
     <div class="insp insp-device">
-      <header class="insp-head">
-        <span class="insp-addr" data-field="addr"></span>
-        <span class="insp-name" data-field="name"></span>
-      </header>
+      <div class="insp-typehead insp-typehead-device">
+        <span class="insp-badge badge-device">DEVICE</span>
+        <div class="insp-titleblock">
+          <div class="insp-titlerow">
+            <span class="insp-addr" data-field="addr"></span>
+            <span class="insp-name" data-field="name"></span>
+          </div>
+          <span class="insp-subtitle" data-field="subtitle"></span>
+        </div>
+      </div>
       <div class="insp-meta" data-field="meta"></div>
       <section class="insp-section" data-field="comobjects"></section>
     </div>
@@ -151,11 +164,17 @@
 
   <template id="tpl-inspector-ga">
     <div class="insp insp-ga">
-      <header class="insp-head">
-        <span class="insp-addr" data-field="addr"></span>
-        <span class="insp-name" data-field="name"></span>
-        <span class="insp-dpt" data-field="dpt"></span>
-      </header>
+      <div class="insp-typehead insp-typehead-ga">
+        <span class="insp-badge badge-ga">GROUP ADDRESS</span>
+        <div class="insp-titleblock">
+          <div class="insp-titlerow">
+            <span class="insp-addr" data-field="addr"></span>
+            <span class="insp-name" data-field="name"></span>
+            <span class="insp-dpt" data-field="dpt"></span>
+          </div>
+          <span class="insp-subtitle" data-field="subtitle"></span>
+        </div>
+      </div>
       <div class="insp-meta" data-field="meta"></div>
       <section class="insp-section" data-field="widget"></section>
       <section class="insp-section" data-field="senders"></section>
