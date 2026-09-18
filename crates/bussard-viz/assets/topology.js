@@ -200,16 +200,9 @@ class Topology {
     card.querySelector("[data-field=type]").textContent = type;
     card.querySelector("[data-field=room]").textContent = d.room || "";
 
-    // Orphan badge: device has com objects but none of them are linked.
-    const cos = d.com_objects || [];
-    const anyLinked = cos.some((c) => c.send || (c.listen && c.listen.length));
-    if (cos.length > 0 && !anyLinked) {
-      const orphan = card.querySelector("[data-field=orphan]");
-      if (orphan) {
-        orphan.hidden = false;
-        orphan.title = "no linked com objects";
-      }
-    }
+    // No device orphan badge: an actuator with hundreds of objects and only a
+    // few linked (or none) is normal in KNX, so an all-unlinked device is not a
+    // warning. The badge element stays hidden.
 
     card.addEventListener("click", () => this.store.select("device", d.address));
     this.cardByDevice.set(d.address, card);
