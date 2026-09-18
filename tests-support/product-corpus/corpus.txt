@@ -588,3 +588,10 @@ ZVIZ70                 # Z70 1.3 (07B0)
 
 # --- Theben (M-0048) ---
 1409207          # HOUSE IA 1.1.202: Meteodata 140 S weather station; app A-140C-14-A512 (0701) version-mismatch (capture uses A-140C-14-EB70)
+
+# --- ABB / Busch-Jaeger (M-0007), combined all-products ETS DB (Rev K) ---
+# NOTE: this order downloads the ~88 MB ABB/BJ combined database (login-free
+# via ABB Library Download.aspx, byte-stable, ureq follows the signed redirect).
+# Import takes ~4-5 min and generates 659 model YAMLs. Rev K does NOT contain
+# the Busch-Waechter PRO 280 (IA 1.1.30, app A-6179-82) - that device is newer.
+6119/20          # HOUSE IA 1.1.44: Universalschnittstelle 6119/20 2f UP; app A-A002-13-73C8 (0701) EXACT
