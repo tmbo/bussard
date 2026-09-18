@@ -79,6 +79,57 @@ pub const A_MEMORY_RESPONSE: u16 = 0x240;
 /// [`encode_memory_write`] and [`crate::device::DeviceConnection::write_memory`].
 pub const A_MEMORY_WRITE: u16 = 0x280;
 
+/// `A_MemoryExtended_Write` — write device memory at a **24-bit** address.
+///
+/// The System B *extended* memory service ETS drives every capable 07B0 device
+/// with (verified against four real ETS6 downloads: ABB BE/S16, Jung
+/// Schaltaktor-24 and Heizungsaktor-6, Jung Tastsensor — see
+/// `scratchpad/ets-analysis/sysb-{a,c}.md`). Unlike plain [`A_MEMORY_WRITE`], the
+/// octet count is a full **payload** octet (not the 6-bit APCI field), and the
+/// address is **3 octets big-endian**, so it reaches segment bases such as the
+/// Jung actuators' `0xf000..0x16000` and writes running to `0x1aad3` that a
+/// 16-bit `A_Memory_Write` cannot represent. Payload:
+/// `[count][addr_hi, addr_mid, addr_lo][data…]`. Encoded by
+/// [`encode_memory_extended_write`]. The device confirms inline with an
+/// [`A_MEMORY_EXTENDED_WRITE_RESPONSE`] carrying a return code and the echoed
+/// address — no separate `A_Memory_Read` read-back is needed.
+pub const A_MEMORY_EXTENDED_WRITE: u16 = 0x1FB;
+/// `A_MemoryExtended_Write_Response` — the inline confirmation of an
+/// [`A_MEMORY_EXTENDED_WRITE`]. Payload: `[return_code][addr_hi, addr_mid,
+/// addr_lo]`, where `return_code == 0x00` means the write was stored. Decoded by
+/// [`decode_memory_extended_response`].
+pub const A_MEMORY_EXTENDED_WRITE_RESPONSE: u16 = 0x1FC;
+/// `A_MemoryExtended_Read` — read device memory at a **24-bit** address. Payload:
+/// `[count][addr_hi, addr_mid, addr_lo]`. The verify counterpart of
+/// [`A_MEMORY_EXTENDED_WRITE`] for addresses above the 16-bit space; encoded by
+/// [`encode_memory_extended_read`].
+pub const A_MEMORY_EXTENDED_READ: u16 = 0x1FD;
+/// `A_MemoryExtended_Read_Response` — the answer to an [`A_MEMORY_EXTENDED_READ`].
+/// Payload: `[return_code][addr_hi, addr_mid, addr_lo][data…]`. Decoded by
+/// [`decode_memory_extended_response`].
+pub const A_MEMORY_EXTENDED_READ_RESPONSE: u16 = 0x1FE;
+
+/// The largest memory address the extended memory service can carry: a 24-bit
+/// (3-octet) address, `0xFF_FFFF`. A write or read whose top address exceeds this
+/// is refused rather than truncated.
+pub const MAX_MEMORY_ADDRESS: u32 = 0x00FF_FFFF;
+
+/// The fixed APDU overhead of an `A_MemoryExtended_Write`/`_Read` telegram, in
+/// octets, on top of the memory data: the 2-octet APCI, the 1-octet count and the
+/// 3-octet address. The largest data run that fits a device advertising
+/// `max_apdu` NPDU octets on the extended service is
+/// `max_apdu - EXTENDED_MEMORY_APDU_OVERHEAD` (see
+/// [`extended_memory_chunk_for_apdu`]). Verified against ETS: a device advertising
+/// `PID_MAX_APDU=233` gets 228-octet chunks (`233 - 5`), one at `55` gets 50.
+const EXTENDED_MEMORY_APDU_OVERHEAD: u8 = 5;
+
+/// The maximum number of data octets a single `A_MemoryExtended_Write`/`_Read`
+/// may carry: **228**, matching the largest chunk ETS emits (a device advertising
+/// `PID_MAX_APDU=233`). Unlike the plain service the count is a full octet, so the
+/// ceiling is the extended-frame budget rather than the 6-bit APCI field; 228 is
+/// the largest value observed in the captures and a safe cap.
+pub const MAX_EXTENDED_MEMORY_LEN: u16 = 228;
+
 /// `A_Restart` — restart the device.
 pub const A_RESTART: u16 = 0x380;
 
@@ -198,6 +249,20 @@ pub fn memory_chunk_for_apdu(max_apdu: u16) -> u8 {
     let usable = max_apdu.saturating_sub(u16::from(MEMORY_APDU_OVERHEAD));
     let capped = usable.min(u16::from(MAX_MEMORY_WRITE_LEN));
     (capped as u8).max(1)
+}
+
+/// The extended-memory data-octet cap for a device advertising `max_apdu` NPDU
+/// octets: `min(max_apdu - EXTENDED_MEMORY_APDU_OVERHEAD, MAX_EXTENDED_MEMORY_LEN)`,
+/// never less than 1.
+///
+/// This scales `A_MemoryExtended_Write`/`_Read` chunks to the device's negotiated
+/// `PID_MAX_APDU_LENGTH`, matching ETS: a device advertising `233` yields 228, one
+/// at `55` yields 50. Unlike [`memory_chunk_for_apdu`] the count is a full octet
+/// (not the 6-bit APCI field), so the ceiling is the 228-octet extended-frame cap
+/// rather than 63.
+pub fn extended_memory_chunk_for_apdu(max_apdu: u16) -> u16 {
+    let usable = max_apdu.saturating_sub(u16::from(EXTENDED_MEMORY_APDU_OVERHEAD));
+    usable.min(MAX_EXTENDED_MEMORY_LEN).max(1)
 }
 
 /// The property-read value-octet cap for a device advertising `max_apdu` NPDU
@@ -534,6 +599,151 @@ pub fn decode_memory_write(req_apci: u16, payload: &[u8]) -> Option<MemoryWrite>
     })
 }
 
+/// Encodes an `A_MemoryExtended_Write` request: APCI [`A_MEMORY_EXTENDED_WRITE`]
+/// with payload `[count][addr_hi, addr_mid, addr_lo][data…]`.
+///
+/// Returns the `(apci, payload)` pair to send. Unlike [`encode_memory_write`] the
+/// count is a **full payload octet** and the address is **3 octets big-endian**,
+/// so this reaches the 24-bit space. `data` must be at most
+/// [`MAX_EXTENDED_MEMORY_LEN`] octets; longer slices are truncated to that limit
+/// (callers chunk larger ranges). `addr` is masked to 24 bits.
+pub fn encode_memory_extended_write(addr: u32, data: &[u8]) -> (u16, Vec<u8>) {
+    let count = data.len().min(usize::from(MAX_EXTENDED_MEMORY_LEN)) as u8;
+    let mut payload = Vec::with_capacity(4 + usize::from(count));
+    payload.push(count);
+    payload.extend_from_slice(&addr_3_octets_be(addr));
+    payload.extend_from_slice(&data[..usize::from(count)]);
+    (A_MEMORY_EXTENDED_WRITE, payload)
+}
+
+/// Encodes an `A_MemoryExtended_Read` request: APCI [`A_MEMORY_EXTENDED_READ`]
+/// with payload `[count][addr_hi, addr_mid, addr_lo]`.
+///
+/// Returns the `(apci, payload)` pair to send. `count` is clamped to
+/// [`MAX_EXTENDED_MEMORY_LEN`]; `addr` is masked to 24 bits. The verify
+/// counterpart of [`encode_memory_extended_write`] for addresses above the 16-bit
+/// space.
+pub fn encode_memory_extended_read(addr: u32, count: u16) -> (u16, Vec<u8>) {
+    let count = count.min(MAX_EXTENDED_MEMORY_LEN) as u8;
+    let mut payload = Vec::with_capacity(4);
+    payload.push(count);
+    payload.extend_from_slice(&addr_3_octets_be(addr));
+    (A_MEMORY_EXTENDED_READ, payload)
+}
+
+/// The low 24 bits of `addr` as a 3-octet big-endian array.
+fn addr_3_octets_be(addr: u32) -> [u8; 3] {
+    let a = addr & MAX_MEMORY_ADDRESS;
+    [(a >> 16) as u8, (a >> 8) as u8, a as u8]
+}
+
+/// A parsed `A_MemoryExtended_Write`/`_Read` request: the count, the 24-bit
+/// address and (for a write) the data octets.
+///
+/// The device-side sim and tests use this to interpret a request; the client side
+/// builds requests with [`encode_memory_extended_write`] /
+/// [`encode_memory_extended_read`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtendedMemoryRequest {
+    /// Number of octets to write/read.
+    pub count: u8,
+    /// The 24-bit memory address the operation starts at.
+    pub addr: u32,
+    /// The data octets (empty for a read request).
+    pub data: Vec<u8>,
+}
+
+/// Decodes an `A_MemoryExtended_Write` or `A_MemoryExtended_Read` request payload
+/// `[count][addr_hi, addr_mid, addr_lo][data…]`.
+///
+/// `is_write` selects whether the trailing `count` data octets are required (a
+/// write carries them; a read does not). Returns `None` if the payload is shorter
+/// than the 4-octet `[count][addr:3]` header, or, for a write, holds fewer data
+/// octets than `count` advertises.
+pub fn decode_memory_extended_request(payload: &[u8], is_write: bool) -> Option<ExtendedMemoryRequest> {
+    if payload.len() < 4 {
+        return None;
+    }
+    let count = payload[0];
+    let addr = u32::from_be_bytes([0, payload[1], payload[2], payload[3]]);
+    let data = &payload[4..];
+    if is_write {
+        if data.len() < usize::from(count) {
+            return None;
+        }
+        Some(ExtendedMemoryRequest {
+            count,
+            addr,
+            data: data[..usize::from(count)].to_vec(),
+        })
+    } else {
+        Some(ExtendedMemoryRequest {
+            count,
+            addr,
+            data: Vec::new(),
+        })
+    }
+}
+
+/// A parsed `A_MemoryExtended_*_Response`: the return code, the echoed 24-bit
+/// address and (for a read response) the data octets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtendedMemoryResponse {
+    /// The device's return code: `0x00` means success.
+    pub return_code: u8,
+    /// The 24-bit address the device echoed back.
+    pub addr: u32,
+    /// The data octets (empty for a write-response).
+    pub data: Vec<u8>,
+}
+
+/// Encodes an `A_MemoryExtended_Write_Response`: APCI
+/// [`A_MEMORY_EXTENDED_WRITE_RESPONSE`] with payload
+/// `[return_code][addr_hi, addr_mid, addr_lo]`. Used by device-side mocks/tests.
+pub fn encode_memory_extended_write_response(return_code: u8, addr: u32) -> (u16, Vec<u8>) {
+    let mut payload = Vec::with_capacity(4);
+    payload.push(return_code);
+    payload.extend_from_slice(&addr_3_octets_be(addr));
+    (A_MEMORY_EXTENDED_WRITE_RESPONSE, payload)
+}
+
+/// Encodes an `A_MemoryExtended_Read_Response`: APCI
+/// [`A_MEMORY_EXTENDED_READ_RESPONSE`] with payload
+/// `[return_code][addr_hi, addr_mid, addr_lo][data…]`. Used by device-side
+/// mocks/tests.
+pub fn encode_memory_extended_read_response(return_code: u8, addr: u32, data: &[u8]) -> (u16, Vec<u8>) {
+    let mut payload = Vec::with_capacity(4 + data.len());
+    payload.push(return_code);
+    payload.extend_from_slice(&addr_3_octets_be(addr));
+    payload.extend_from_slice(data);
+    (A_MEMORY_EXTENDED_READ_RESPONSE, payload)
+}
+
+/// Decodes an `A_MemoryExtended_Write_Response` or `A_MemoryExtended_Read_Response`
+/// payload, given its response APCI.
+///
+/// The payload is `[return_code][addr_hi, addr_mid, addr_lo][data…]`; the data
+/// tail is present only on a read-response. Returns `None` if the APCI is neither
+/// extended-memory response, or the payload is shorter than the 4-octet
+/// `[code][addr:3]` header.
+pub fn decode_memory_extended_response(
+    resp_apci: u16,
+    payload: &[u8],
+) -> Option<ExtendedMemoryResponse> {
+    if resp_apci != A_MEMORY_EXTENDED_WRITE_RESPONSE && resp_apci != A_MEMORY_EXTENDED_READ_RESPONSE
+    {
+        return None;
+    }
+    if payload.len() < 4 {
+        return None;
+    }
+    Some(ExtendedMemoryResponse {
+        return_code: payload[0],
+        addr: u32::from_be_bytes([0, payload[1], payload[2], payload[3]]),
+        data: payload[4..].to_vec(),
+    })
+}
+
 /// Decodes an `A_DeviceDescriptor_Response` payload into the 16-bit mask
 /// version (descriptor type 0).
 ///
@@ -763,6 +973,83 @@ mod tests {
         // A pathologically small value never underflows below 1.
         assert_eq!(memory_chunk_for_apdu(0), 1);
         assert_eq!(memory_chunk_for_apdu(3), 1);
+    }
+
+    #[test]
+    fn memory_extended_write_encodes_count_then_3byte_addr() {
+        // Payload is [count][addr:3 BE][data]; the address reaches the 24-bit space.
+        let (apci, payload) = encode_memory_extended_write(0x01_6000, &[0xAA, 0xBB, 0xCC]);
+        assert_eq!(apci, A_MEMORY_EXTENDED_WRITE);
+        assert_eq!(payload, vec![0x03, 0x01, 0x60, 0x00, 0xAA, 0xBB, 0xCC]);
+        // Over-long writes truncate to MAX_EXTENDED_MEMORY_LEN.
+        let big = vec![0x11u8; 300];
+        let (_, payload) = encode_memory_extended_write(0x10_0000, &big);
+        assert_eq!(payload[0], MAX_EXTENDED_MEMORY_LEN as u8);
+        assert_eq!(payload.len(), 4 + usize::from(MAX_EXTENDED_MEMORY_LEN));
+    }
+
+    #[test]
+    fn memory_extended_read_encodes_count_then_3byte_addr() {
+        let (apci, payload) = encode_memory_extended_read(0x01_7805, 8);
+        assert_eq!(apci, A_MEMORY_EXTENDED_READ);
+        assert_eq!(payload, vec![0x08, 0x01, 0x78, 0x05]);
+    }
+
+    #[test]
+    fn memory_extended_write_roundtrips_through_decode() {
+        // Top address 0x1aad3 (past u16) survives the 3-octet round-trip.
+        let (_, payload) = encode_memory_extended_write(0x01_AAD3, &[1, 2, 3, 4]);
+        let parsed = decode_memory_extended_request(&payload, true).unwrap();
+        assert_eq!(parsed.count, 4);
+        assert_eq!(parsed.addr, 0x01_AAD3);
+        assert_eq!(parsed.data, vec![1, 2, 3, 4]);
+        // The read form carries no data tail.
+        let (_, payload) = encode_memory_extended_read(0x0F_0000, 12);
+        let parsed = decode_memory_extended_request(&payload, false).unwrap();
+        assert_eq!(parsed.count, 12);
+        assert_eq!(parsed.addr, 0x0F_0000);
+        assert!(parsed.data.is_empty());
+    }
+
+    #[test]
+    fn memory_extended_request_rejects_short_or_truncated() {
+        // Shorter than [count][addr:3].
+        assert!(decode_memory_extended_request(&[0x03, 0x01, 0x60], true).is_none());
+        // Write count advertises more data than present.
+        assert!(decode_memory_extended_request(&[0x03, 0x01, 0x60, 0x00, 0xAA], true).is_none());
+    }
+
+    #[test]
+    fn memory_extended_write_response_confirms_return_code_and_addr() {
+        let (apci, payload) = encode_memory_extended_write_response(0x00, 0x01_6000);
+        assert_eq!(apci, A_MEMORY_EXTENDED_WRITE_RESPONSE);
+        assert_eq!(payload, vec![0x00, 0x01, 0x60, 0x00]);
+        let parsed = decode_memory_extended_response(apci, &payload).unwrap();
+        assert_eq!(parsed.return_code, 0);
+        assert_eq!(parsed.addr, 0x01_6000);
+        assert!(parsed.data.is_empty());
+    }
+
+    #[test]
+    fn memory_extended_read_response_carries_data() {
+        let (apci, payload) = encode_memory_extended_read_response(0x00, 0x0F_0000, &[0xDE, 0xAD]);
+        assert_eq!(apci, A_MEMORY_EXTENDED_READ_RESPONSE);
+        let parsed = decode_memory_extended_response(apci, &payload).unwrap();
+        assert_eq!(parsed.return_code, 0);
+        assert_eq!(parsed.addr, 0x0F_0000);
+        assert_eq!(parsed.data, vec![0xDE, 0xAD]);
+        // A non-extended-response APCI is rejected.
+        assert!(decode_memory_extended_response(A_MEMORY_RESPONSE, &payload).is_none());
+    }
+
+    #[test]
+    fn extended_memory_chunk_scales_with_max_apdu() {
+        // The two capture APDU sizes: 233 -> 228, 55 -> 50.
+        assert_eq!(extended_memory_chunk_for_apdu(233), 228);
+        assert_eq!(extended_memory_chunk_for_apdu(55), 50);
+        // Capped at the 228 ceiling and never below 1.
+        assert_eq!(extended_memory_chunk_for_apdu(1000), MAX_EXTENDED_MEMORY_LEN);
+        assert_eq!(extended_memory_chunk_for_apdu(0), 1);
     }
 
     #[test]
