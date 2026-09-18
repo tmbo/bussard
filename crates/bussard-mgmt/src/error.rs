@@ -60,14 +60,14 @@ pub enum MgmtError {
     /// was written. Names the exact address, what was expected and what was read
     /// so the caller can pinpoint the diverging octet.
     #[error(
-        "{address}: memory verify failed at {addr:#06X} (wrote {expected:02X?}, read back \
+        "{address}: memory verify failed at {addr:#08X} (wrote {expected:02X?}, read back \
          {got:02X?})"
     )]
     MemoryVerifyFailed {
         /// The device.
         address: IndividualAddress,
-        /// The address of the chunk that did not verify.
-        addr: u16,
+        /// The address of the chunk that did not verify (up to 24-bit).
+        addr: u32,
         /// The octets that were written.
         expected: Vec<u8>,
         /// The octets read back.
