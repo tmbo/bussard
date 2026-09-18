@@ -268,8 +268,12 @@ pub enum FlashStep {
         lsm: u32,
         /// The segment base address the task descriptor points at.
         address: u32,
-        /// The LSM's total loaded span (the task descriptor's length field).
-        span: u32,
+        /// The 4-octet trailing marker `[lead][AppNumber:2 BE][ver]` ETS writes
+        /// after the zero-length field (`[system7-spec §4.3]`). Derived at plan
+        /// time from the mask family + application number (see
+        /// [`bussard_mgmt::task_segment_marker`]). The real captures show the
+        /// length field is `0x0000`, NOT the loaded span.
+        marker: [u8; 4],
     },
     /// Write a task-control-table entry `count` times on `lsm` (`LdCtrlTaskCtrl1`,
     /// `[system7-spec §4.4]`) — the Theben/Steinel/Elsner second-phase op.
@@ -1928,10 +1932,17 @@ fn plan_flash_sys7(
     let mut steps: Vec<FlashStep> = Vec::new();
     let mut images: BTreeMap<String, Vec<u8>> = BTreeMap::new();
     let mut segment_masks: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-    // Track, per LSM, the highest (address + size) seen so a TaskSegment's span
-    // can be the LSM's total loaded extent from its base.
-    let mut lsm_span_end: BTreeMap<u32, u32> = BTreeMap::new();
-    let mut lsm_span_base: BTreeMap<u32, u32> = BTreeMap::new();
+
+    // The TaskSegment trailing marker `[lead][AppNumber:2][ver]` is per-app: the
+    // lead byte tracks the mask family (0x04 on 0705, 0x48 on 0701), the middle two
+    // octets are the application number, the trailing octet the app version's low
+    // byte (`[system7-spec §4.3]`; the lead/version octets are best-effort — see
+    // `bussard_mgmt::task_segment_marker`).
+    let task_marker = bussard_mgmt::task_segment_marker(
+        device_mask,
+        app.application_number.unwrap_or(0) as u16,
+        app.application_version.unwrap_or(0) as u8,
+    );
 
     for (i, op) in ops.iter().enumerate() {
         let step_no = i + 1;
@@ -1958,15 +1969,6 @@ fn plan_flash_sys7(
                     reason: "LdCtrlAbsSegment has no Address".to_string(),
                 })?;
                 let size = size.unwrap_or(0);
-                // Track the LSM's loaded extent for the TaskSegment span.
-                lsm_span_base
-                    .entry(lsm)
-                    .and_modify(|b| *b = (*b).min(addr))
-                    .or_insert(addr);
-                lsm_span_end
-                    .entry(lsm)
-                    .and_modify(|e| *e = (*e).max(addr + size))
-                    .or_insert(addr + size);
                 // Bind the segment's <Data>/<Mask>. A segment with no <Data> is an
                 // allocate-only record (e.g. the 0x0700 RAM region) — no stream.
                 let image = seg_by_addr.get(&addr).and_then(|seg| {
@@ -1996,13 +1998,13 @@ fn plan_flash_sys7(
                     step: step_no,
                     reason: "LdCtrlTaskSegment has no Address".to_string(),
                 })?;
-                let base = lsm_span_base.get(&lsm).copied().unwrap_or(addr);
-                let end = lsm_span_end.get(&lsm).copied().unwrap_or(addr);
-                let span = end.saturating_sub(base);
+                // ETS writes a zero-length field + a `[lead][AppNumber:2][ver]`
+                // marker, not the loaded span. Derive the marker from the mask
+                // family + application number (`[system7-spec §4.3]`).
                 steps.push(FlashStep::Sys7TaskSegment {
                     lsm,
                     address: addr,
-                    span,
+                    marker: task_marker,
                 });
             }
             LoadOp::TaskCtrl1 {
@@ -3464,20 +3466,20 @@ async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                 mem_type,
                 image,
             } => {
-                // 1. Allocate the absolute segment on the LSM. The M2 capture pins
+                // 1. Allocate the absolute segment on the LSM. The captures pin
                 //    opcode/subtype, big-endian start+length and `mem_type`; the
-                //    per-segment `seg_flags` (0xF2/0xF3) and `checksum_ctrl`
-                //    (0x80/0x00) attribute octets are not yet derivable from product
-                //    data, so bussard emits 0 for them (remaining S7-CAL markers in
-                //    `bussard_mgmt::sys7`). A 0705 device keys the allocation on
-                //    subtype + start + length, so this drives it to Loaded.
+                //    per-segment `seg_flags` (0xF2) and `checksum_ctrl` (0x80 EEPROM
+                //    / 0x00 RAM) attribute octets are now derived from `mem_type`
+                //    (`bussard_mgmt::alloc_attr_octets`), reproducing the dominant
+                //    captured pattern.
+                let (seg_flags, checksum_ctrl) = bussard_mgmt::alloc_attr_octets(*mem_type);
                 let event = bussard_mgmt::encode_alloc_segment(
                     bussard_mgmt::sys7::S7_SUB_ALLOC_DATA,
                     (*address & 0xFFFF) as u16,
                     (*size & 0xFFFF) as u16,
-                    0x00,
+                    seg_flags,
                     *mem_type,
-                    0x00,
+                    checksum_ctrl,
                 );
                 lsm.send_control(session.l4(), lsm_octet(*idx), &event)
                     .await?;
@@ -3517,12 +3519,10 @@ async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
             FlashStep::Sys7TaskSegment {
                 lsm: idx,
                 address,
-                span,
+                marker,
             } => {
-                let event = bussard_mgmt::encode_task_segment(
-                    (*address & 0xFFFF) as u16,
-                    (*span & 0xFFFF) as u16,
-                );
+                let event =
+                    bussard_mgmt::encode_task_segment((*address & 0xFFFF) as u16, *marker);
                 lsm.send_control(session.l4(), lsm_octet(*idx), &event)
                     .await?;
             }
@@ -4085,8 +4085,12 @@ fn step_label(step: &FlashStep) -> String {
             ),
             None => format!("[S7] alloc segment ({size} bytes) at {address:#06X} on LSM {lsm}"),
         },
-        FlashStep::Sys7TaskSegment { lsm, address, span } => {
-            format!("[S7] finalize LSM {lsm} task segment at {address:#06X} (span {span})")
+        FlashStep::Sys7TaskSegment {
+            lsm,
+            address,
+            marker,
+        } => {
+            format!("[S7] finalize LSM {lsm} task segment at {address:#06X} (marker {marker:02X?})")
         }
         FlashStep::Sys7TaskCtrl1 {
             lsm,
