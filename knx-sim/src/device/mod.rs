@@ -545,6 +545,10 @@ impl Device {
         device_object.set_property(0x4E, Property::read_only(s7.hardware_type.to_vec()));
         // Max-APDU absent or 15 on System 7 (spec section 6). Report 15.
         device_object.set_property(0x38, Property::read_only(vec![0x00, 0x0F]));
+        // PID 0x0E (PID_ERROR_CODE): the M2 Jung 0705 capture reads it on object 0
+        // (`d5 00 0e 10 01` -> 00) and writes it (`d7 00 0e 10 01 04`) during the
+        // download housekeeping; seed it writable so that flow is accepted.
+        device_object.set_property(0x0E, Property::writable(vec![0x00]));
         objects.insert(0, device_object);
 
         // The System 7 LSM index → interface-object type map: LSM 1 = address
@@ -552,8 +556,13 @@ impl Device {
         // three parallel LSMs are seeded per the product's loadable objects,
         // defaulting to the canonical 1/2/3 set when the product does not enumerate
         // them (System 7 products declare them via load procedure, not objects).
+        //
+        // Object 4 is seeded too but tear-down-only: the M2 Jung 0705 capture
+        // Unloads objects 1..4 up front (`d7 04 05 …` = PID-5 Unload on object 4),
+        // though only 1/2/3 are ever loaded. Seeding it lets a real ETS sequence's
+        // object-4 Unload be accepted; `refresh_group_comm` only requires 1/2.
         let mut lsm_indices: Vec<u8> = product.objects.iter().map(|o| o.lsm_index).collect();
-        for canonical in [1u8, 2, 3] {
+        for canonical in [1u8, 2, 3, 4] {
             if !lsm_indices.contains(&canonical) {
                 lsm_indices.push(canonical);
             }
@@ -1481,10 +1490,13 @@ impl Device {
     }
 
     /// Apply a System 7 memory-mapped LSM control record (the 12-octet form
-    /// written to the control address, spec section 5). The default M1 encoding
-    /// is `[lsm_index:1][0x00][10-octet load event]`.
+    /// written to the control address, spec section 5). The encoding is
+    /// `[lsm_index:1][0x00][10-octet load event]`. This is the memory-mapped
+    /// *alternative* device side: the M2 Jung 0705 capture (issue #70) proved the
+    /// real device is property-based (`on_sys7_property_lsm`), so this path serves
+    /// only a device explicitly configured `lsm_access: memory`.
     /// S7-CAL: confirm the 12-octet LoadControl_M112 record layout (prefix
-    /// meaning + status poll protocol) against a live 0705 capture.
+    /// meaning + status poll protocol) on a genuinely memory-mapped 0705 device.
     fn on_sys7_lsm_record(
         &mut self,
         tool: IndividualAddress,
