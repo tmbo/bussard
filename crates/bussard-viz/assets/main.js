@@ -40,6 +40,7 @@ async function boot() {
   initKeyboard();
   initTabs();
   initReloadButton();
+  initFlashToggle();
 
   // Load the initial state snapshot (last values + bus status).
   try {
@@ -259,6 +260,34 @@ function initReloadButton() {
   });
 }
 
+// --- flash-effects toggle --------------------------------------------------
+
+// The live-traffic highlight toggle. Reflects and mutates store.flashEnabled,
+// which is persisted in localStorage. The log is never affected by this flag.
+function initFlashToggle() {
+  const btn = document.getElementById("flash-toggle");
+  if (!btn) return;
+  const apply = (on) => {
+    btn.classList.toggle("active", on);
+    btn.setAttribute("aria-pressed", String(on));
+    btn.title = on
+      ? "Live-traffic highlights ON — click to mute diagram flashes (the log keeps appending)"
+      : "Live-traffic highlights OFF — click to show diagram flashes again";
+  };
+  app._applyFlash = apply;
+  apply(app.store.flashEnabled);
+  btn.addEventListener("click", () => {
+    const on = app.store.setFlashEnabled();
+    apply(on);
+  });
+  subscribeFlash();
+}
+
+// Re-subscribe the toggle apply to the current store (called on each rebuild).
+function subscribeFlash() {
+  if (app._applyFlash) app.store.on("flash-enabled", app._applyFlash);
+}
+
 // --- tabs ------------------------------------------------------------------
 
 function initTabs() {
@@ -288,7 +317,25 @@ function subscribeTabs() {
   if (app._showTab) {
     app.store.on("selection", (sel) => {
       if (sel.kind) app._showTab("inspector");
+      updateInspectorTabLabel(sel);
     });
+  }
+}
+
+// Reflect the selection type in the Inspector tab label so switching between
+// the Groups tab and the Inspector is not disorienting (item 5).
+function updateInspectorTabLabel(sel) {
+  const tab = document.querySelector('.tab[data-tab="inspector"]');
+  if (!tab) return;
+  tab.classList.remove("type-device", "type-ga");
+  if (sel && sel.kind === "device") {
+    tab.textContent = "Inspector · Device";
+    tab.classList.add("type-device");
+  } else if (sel && sel.kind === "ga") {
+    tab.textContent = "Inspector · Group";
+    tab.classList.add("type-ga");
+  } else {
+    tab.textContent = "Inspector";
   }
 }
 
@@ -365,6 +412,8 @@ async function rebuildFromServer() {
   // Re-attach the long-lived subscriptions that live on the store instance.
   subscribeBusStatus();
   subscribeTabs();
+  subscribeFlash();
+  if (app._applyFlash) app._applyFlash(app.store.flashEnabled);
   // Carry the last-known bus status onto the fresh store's header.
   if (previousBus) app.store.setBusStatus(previousBus);
   window.__debug.wave2 = app.wave2;

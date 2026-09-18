@@ -51,6 +51,9 @@ export class GaTree {
     this._build();
 
     store.on("selection", (sel) => this._applySelection(sel));
+    // Partner GAs (device selection) come from the derived view state so the
+    // tree highlights exactly the GAs shared with communication partners.
+    store.on("view", (v) => this._applyView(v));
     store.on("ga-value", ({ ga, record }) => this.updateValue(ga, record));
   }
 
@@ -201,15 +204,33 @@ export class GaTree {
   updateValue(ga, record) {
     const cell = this.valueCells.get(ga);
     if (cell) {
+      // Always update the text (the value is data, not an effect).
       cell.textContent =
         record.value != null ? String(record.value) : String(record.payload || "");
-      cell.classList.remove("flash");
-      // Force reflow so re-adding the class restarts the animation.
-      void cell.offsetWidth;
-      cell.classList.add("flash");
+      // The flash is a live-traffic effect: suppress it when the user disabled
+      // effects, or in ga-focus mode for GAs other than the focused one.
+      if (this._flashAllowed(ga)) {
+        cell.classList.remove("flash");
+        // Force reflow so re-adding the class restarts the animation.
+        void cell.offsetWidth;
+        cell.classList.add("flash");
+      }
     }
     this.lastActivity.set(ga, Date.now());
     this._refreshActivityDots();
+  }
+
+  /**
+   * Whether a live-value flash is allowed for a GA given the flash toggle and
+   * the current view mode.
+   * @param {string} ga
+   * @returns {boolean}
+   */
+  _flashAllowed(ga) {
+    if (!this.store.flashEnabled) return false;
+    const v = this.store.view;
+    if (v && v.mode === "ga-focus" && v.id !== ga) return false;
+    return true;
   }
 
   _refreshActivityDots() {
@@ -231,6 +252,23 @@ export class GaTree {
     if (sel.kind === "ga") {
       const row = this.subRows.get(sel.id);
       if (row) row.classList.add("selected");
+    }
+  }
+
+  /**
+   * Sync partner highlighting with the topology. On a device selection, the GAs
+   * shared with communication partners are marked `.partner-ga`; on a GA
+   * selection or in `all` mode the marks are cleared.
+   * @param {import('./store.js').ViewState} v
+   */
+  _applyView(v) {
+    for (const row of this.subRows.values()) row.classList.remove("partner-ga");
+    if (!v || v.mode !== "device-partners") return;
+    const gas = new Set();
+    for (const p of v.partners || []) for (const ga of p.gas) gas.add(ga);
+    for (const ga of gas) {
+      const row = this.subRows.get(ga);
+      if (row) row.classList.add("partner-ga");
     }
   }
 
