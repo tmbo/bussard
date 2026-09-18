@@ -1,11 +1,15 @@
 //! A sparse device memory model with allocated segments.
 //!
-//! A real KNX device has a small address space (System B uses a 16-bit address,
-//! with the table/segment bases in the ETS capture at 0x6000/0x8000/0xA000/
-//! 0xC000). Memory is modelled sparsely: only written cells are stored, and
-//! writes are bounded to *allocated segments*. A write to an address that no
-//! open segment covers is rejected — this strictness is what catches a tool
-//! that targets the wrong base.
+//! A real KNX device addresses memory with up to a 24-bit address. Classic
+//! System B tables/segments sit low (the DA.tp capture bases at
+//! 0x6000/0x8000/0xA000/0xC000), while a capable 07B0 device places its loadable
+//! segments above 0x10000 (the Jung/ABB actuators at 0xf000..0x16000, writes to
+//! 0x1aad3) and streams them with the extended memory service. Addresses are
+//! therefore modelled as `u32`. Memory is modelled sparsely: only written cells
+//! are stored, and writes are bounded to *allocated segments*. A write to an
+//! address that no open segment covers is rejected — this strictness is what
+//! catches a tool that targets the wrong base, and it applies identically to the
+//! plain and extended write services.
 
 use std::collections::BTreeMap;
 
@@ -15,18 +19,18 @@ use std::collections::BTreeMap;
 pub struct Segment {
     /// The object (LSM index) that owns this segment.
     pub owner: u8,
-    /// The base address.
-    pub base: u16,
+    /// The base address (up to 24-bit).
+    pub base: u32,
     /// The allocated length in bytes.
     pub len: u32,
 }
 
 impl Segment {
     /// True if `[addr, addr+len)` lies wholly within this segment.
-    pub fn contains(&self, addr: u16, len: usize) -> bool {
-        let end = self.base as u32 + self.len;
-        let req_end = addr as u32 + len as u32;
-        addr as u32 >= self.base as u32 && req_end <= end
+    pub fn contains(&self, addr: u32, len: usize) -> bool {
+        let end = self.base as u64 + self.len as u64;
+        let req_end = addr as u64 + len as u64;
+        addr as u64 >= self.base as u64 && req_end <= end
     }
 }
 
@@ -34,21 +38,21 @@ impl Segment {
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum MemoryError {
     /// The write did not fall entirely within any allocated segment.
-    #[error("memory write to 0x{addr:04x}+{len} is outside any allocated segment")]
+    #[error("memory write to 0x{addr:06x}+{len} is outside any allocated segment")]
     OutOfSegment {
         /// The write base address.
-        addr: u16,
+        addr: u32,
         /// The write length.
         len: usize,
     },
     /// The write fell within a segment owned by a different object than the one
     /// currently being programmed.
     #[error(
-        "memory write to 0x{addr:04x} lands in object {found}'s segment, expected object {expected}"
+        "memory write to 0x{addr:06x} lands in object {found}'s segment, expected object {expected}"
     )]
     WrongOwner {
         /// The write address.
-        addr: u16,
+        addr: u32,
         /// The object owning the segment hit.
         found: u8,
         /// The object the caller expected to be writing.
@@ -59,7 +63,7 @@ pub enum MemoryError {
 /// The sparse memory with its allocated segments.
 #[derive(Debug, Clone, Default)]
 pub struct Memory {
-    cells: BTreeMap<u16, u8>,
+    cells: BTreeMap<u32, u8>,
     segments: Vec<Segment>,
 }
 
@@ -72,7 +76,7 @@ impl Memory {
     /// Allocate (or replace) the segment owned by `owner` at `base` of `len`
     /// bytes. Any previous segment for the same owner is dropped so a re-flash
     /// starts clean.
-    pub fn allocate(&mut self, owner: u8, base: u16, len: u32) {
+    pub fn allocate(&mut self, owner: u8, base: u32, len: u32) {
         self.segments.retain(|s| s.owner != owner);
         self.segments.push(Segment { owner, base, len });
     }
@@ -83,14 +87,14 @@ impl Memory {
     }
 
     /// The segment covering `addr`, if any.
-    pub fn segment_at(&self, addr: u16) -> Option<Segment> {
+    pub fn segment_at(&self, addr: u32) -> Option<Segment> {
         self.segments.iter().copied().find(|s| s.contains(addr, 1))
     }
 
     /// Write `data` at `addr`, bounded to the segment owned by `expected_owner`.
     /// Strict: rejects writes outside any segment or into another object's
     /// segment.
-    pub fn write(&mut self, expected_owner: u8, addr: u16, data: &[u8]) -> Result<(), MemoryError> {
+    pub fn write(&mut self, expected_owner: u8, addr: u32, data: &[u8]) -> Result<(), MemoryError> {
         let seg = self
             .segments
             .iter()
@@ -108,18 +112,18 @@ impl Memory {
             });
         }
         for (i, b) in data.iter().enumerate() {
-            self.cells.insert(addr.wrapping_add(i as u16), *b);
+            self.cells.insert(addr.wrapping_add(i as u32), *b);
         }
         Ok(())
     }
 
     /// Read `len` bytes starting at `addr`; unwritten cells read back as `0x00`.
     /// This models verify-on-read for the tool.
-    pub fn read(&self, addr: u16, len: usize) -> Vec<u8> {
+    pub fn read(&self, addr: u32, len: usize) -> Vec<u8> {
         (0..len)
             .map(|i| {
                 self.cells
-                    .get(&addr.wrapping_add(i as u16))
+                    .get(&addr.wrapping_add(i as u32))
                     .copied()
                     .unwrap_or(0)
             })
@@ -143,13 +147,13 @@ impl Memory {
     /// if the segment was allocated but never written.
     pub fn written_span(&self, owner: u8) -> Option<Vec<u8>> {
         let seg = self.segment_of(owner)?;
-        let base = seg.base as u32;
-        let end = base + seg.len;
+        let base = seg.base as u64;
+        let end = base + seg.len as u64;
         // The highest written address within the segment, if any.
         let high = self
             .cells
             .keys()
-            .map(|&a| a as u32)
+            .map(|&a| a as u64)
             .filter(|&a| a >= base && a < end)
             .max();
         let Some(high) = high else {
@@ -204,5 +208,18 @@ mod tests {
         let mut mem = Memory::new();
         mem.allocate(4, 0x6000, 4);
         assert!(mem.write(4, 0x6002, &[0, 0, 0, 0]).is_err());
+    }
+
+    #[test]
+    fn test_write_above_16bit_space_roundtrips() -> Result<(), MemoryError> {
+        // A capable 07B0 object places its segment above 0xFFFF (the Jung/ABB
+        // actuators at 0xf000..0x16000, writes to 0x1aad3). The sparse memory now
+        // addresses the full 24-bit space, so an extended write there round-trips.
+        let mut mem = Memory::new();
+        mem.allocate(4, 0x01_6000, 0x5000);
+        mem.write(4, 0x01_AAD0, &[0xDE, 0xAD, 0xBE, 0xEF])?;
+        assert_eq!(mem.read(0x01_AAD0, 4), vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        assert_eq!(mem.segment_at(0x01_AAD0).map(|s| s.owner), Some(4));
+        Ok(())
     }
 }
