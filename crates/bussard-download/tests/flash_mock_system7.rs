@@ -121,6 +121,19 @@ struct DeviceState {
     mcb_objects: Vec<u8>,
     /// Interface-object types by index (for object-type discovery).
     object_types: Vec<u16>,
+    /// When true, a basic restart reboots the device: it drops the current L4
+    /// connection (goes silent, exactly like a real device that reboots) so the
+    /// tool must reconnect before it can verify. Models the real
+    /// restart-then-reconnect the terminal-restart verify handles.
+    reboot_on_restart: bool,
+    /// When true, the reboot reverts every LSM to `Unloaded` — a load that did
+    /// *not* persist across the reboot. A verify that reads state *before* the
+    /// restart would wrongly see the transient `Loaded`; verifying *after* the
+    /// reconnect catches the revert and fails the flash.
+    revert_on_reboot: bool,
+    /// Set the moment a rebooting device sees its restart; the current connection
+    /// then goes silent until a fresh T_Connect (the tool's reconnect) clears it.
+    rebooting: bool,
 }
 
 impl DeviceState {
@@ -148,6 +161,9 @@ fn fresh_device(mode: LsmMode, fault: Fault) -> Shared {
         exchanges_this_connection: 0,
         mcb_objects: Vec::new(),
         object_types: vec![0, 1, 2, 3],
+        reboot_on_restart: false,
+        revert_on_reboot: false,
+        rebooting: false,
     }))
 }
 
@@ -291,7 +307,19 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
 
     // Basic restart (terminal): fire-and-forget — just T_ACK, no response NDT.
     if sel == A_RESTART_SEL {
-        state.lock().unwrap().restarts_seen += 1;
+        let mut s = state.lock().unwrap();
+        s.restarts_seen += 1;
+        if s.reboot_on_restart {
+            // The device reboots: it stops answering on this connection (the tool
+            // must reconnect) and — when modelling a non-persisting load — reverts
+            // every LSM to Unloaded.
+            s.rebooting = true;
+            if s.revert_on_reboot {
+                for v in s.lsm_states.values_mut() {
+                    *v = LS_UNLOADED;
+                }
+            }
+        }
         return Reaction::Ack;
     }
 
@@ -557,6 +585,9 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
                         }
                         s.exchanges_this_connection = 0;
                         s.authorized = false;
+                        // The tool reconnecting after a reboot: the device is back
+                        // up and answers the fresh connection normally.
+                        s.rebooting = false;
                     }
                     TpciKind::Disconnect => {}
                     TpciKind::NumberedData(client_seq) => {
@@ -570,6 +601,12 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
                                     // serves fully and the resume completes.
                                     continue;
                                 }
+                            }
+                            // A rebooting device is unreachable: it went silent when
+                            // it saw the restart and stays silent until the tool
+                            // reconnects (a fresh T_Connect clears `rebooting`).
+                            if s.rebooting {
+                                continue;
                             }
                         }
                         let (req_apci, payload) = match (&cemi.tpci, &cemi.apdu) {
@@ -798,6 +835,114 @@ async fn flash_system7_resumes_across_a_connection_drop() -> Result<(), Box<dyn 
     }
     gw.abort();
     let _ = session.into_disconnect().await;
+    Ok(())
+}
+
+/// Runs a full MDT-canonical flash with `verify_after_restart` against a device
+/// that **reboots** on the terminal restart (drops the L4 connection). `revert`
+/// selects whether the load persists across the reboot (`false`, the honest
+/// success) or silently reverts to Unloaded (`true`, the false-positive the
+/// after-restart verify must catch). Returns the flash result and the shared
+/// device state for assertions.
+async fn run_flash_with_reboot(
+    revert: bool,
+) -> Result<
+    (
+        Result<bussard_download::FlashOutcome, bussard_mgmt::load::WriteError>,
+        Shared,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let port = sock.local_addr().unwrap().port();
+    let addr: bussard_model::IndividualAddress = "1.1.99".parse().unwrap();
+    let state = fresh_device(LsmMode::MemoryMapped, Fault::None);
+    {
+        let mut s = state.lock().unwrap();
+        s.reboot_on_restart = true;
+        s.revert_on_reboot = revert;
+    }
+    let gw = tokio::spawn(run_gateway(sock, addr, Arc::clone(&state)));
+    let (handle, _actor) = bussard_bus::Bus::connect(ConnectionConfig::tunnel(
+        format!("127.0.0.1:{port}").parse().unwrap(),
+    ));
+    handle.wait_connected(Duration::from_secs(5)).await;
+
+    let connector = LeaseConnector {
+        handle: handle.clone(),
+        target: "1.1.99".parse().unwrap(),
+        source: "0.0.255".parse().unwrap(),
+    };
+    let mut session = Session::open_with_key(connector, None).await?;
+    let app = mdt_canonical_app();
+    let plan = plan_flash(
+        &app,
+        "1.1.99",
+        MASK_0705,
+        &no_overrides(),
+        &std::collections::BTreeMap::new(),
+        None,
+        &std::collections::BTreeMap::new(),
+    )?;
+    // Verify AFTER the restart: the reconnecting session re-opens the connection
+    // once the (fast, test-tuned) reboot wait elapses, then re-reads the LSM state.
+    // Shrink the reboot wait so the test does not stall on the 10 s production wait.
+    // SAFETY: nextest runs each test in its own process (see CLAUDE.md testing
+    // notes), so this process-global env write races with no other thread; the two
+    // reboot tests set the same value and no other test reads it.
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
+    }
+    let options = bussard_download::FlashOptions {
+        bcu_key: None,
+        verify_after_restart: true,
+    };
+    let result = flash(&mut session, &plan, options, |_p| {}).await;
+    gw.abort();
+    let _ = session.into_disconnect().await;
+    Ok((result, state))
+}
+
+#[tokio::test]
+async fn flash_system7_verifies_after_restart_reaches_loaded()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The device reboots on the terminal restart and the load PERSISTS. The
+    // after-restart verify must reconnect and re-read the LSM state on the fresh
+    // connection (a read on the dropped pre-restart connection would be rejected
+    // as "no open connection"), then report the honest `Loaded`.
+    let (result, state) = run_flash_with_reboot(false).await?;
+    let outcome = result?;
+    assert!(
+        outcome.ok(),
+        "a persisting load must verify Loaded after the reboot: {outcome:?}"
+    );
+    let s = state.lock().unwrap();
+    assert_eq!(s.restarts_seen, 1, "one terminal restart");
+    for lsm in [1u8, 2, 3] {
+        assert_eq!(
+            s.lsm_state(lsm),
+            LS_LOADED,
+            "LSM {lsm} should still be Loaded after the reboot"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn flash_system7_after_restart_verify_catches_reverted_load()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The device reboots on the terminal restart and the load does NOT persist:
+    // every LSM reverts to Unloaded. Verifying BEFORE the restart would read the
+    // transient `Loaded` and wrongly report success — the exact false-positive the
+    // after-restart verify exists to catch. It must NOT report a successful flash.
+    let (result, state) = run_flash_with_reboot(true).await?;
+    let succeeded = matches!(result, Ok(ref o) if o.ok());
+    assert!(
+        !succeeded,
+        "a load that reverted to Unloaded after the reboot must not report success: {result:?}"
+    );
+    let s = state.lock().unwrap();
+    assert_eq!(s.restarts_seen, 1, "the restart still fired");
     Ok(())
 }
 
