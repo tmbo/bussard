@@ -134,6 +134,10 @@ struct DeviceState {
     /// Set the moment a rebooting device sees its restart; the current connection
     /// then goes silent until a fresh T_Connect (the tool's reconnect) clears it.
     rebooting: bool,
+    /// Count of `A_PropertyValue` accesses to object 5 / PID 5 (load-state
+    /// control). A memory-mapped device has no such property, so a correct
+    /// memory-mapped flash of a post-restart LSM 5 must leave this at zero.
+    lsm5_property_accesses: usize,
 }
 
 impl DeviceState {
@@ -164,6 +168,7 @@ fn fresh_device(mode: LsmMode, fault: Fault) -> Shared {
         reboot_on_restart: false,
         revert_on_reboot: false,
         rebooting: false,
+        lsm5_property_accesses: 0,
     }))
 }
 
@@ -211,6 +216,51 @@ fn mdt_canonical_app() -> ApplicationProgram {
       </Static>
      </ApplicationProgram></KNX>"#;
     parse_application_program("M-83_A-E", xml.as_bytes()).expect("parse MDT S7 app")
+}
+
+/// A Theben-style 0701 app with a **post-restart LSM-5** section (spec §3/§4.7):
+/// LSMs 1/2/3 load normally, the device restarts, then a TaskSegment + Load are
+/// issued on LSM 5 (a fourth machine the device opens only after the restart).
+/// This is the memory-mapped × post-restart-LSM5 corner that no earlier mock or
+/// replay test exercised — the shape that broke the live `run.sh` device 1.1.8.
+fn theben_post_restart_lsm5_app() -> ApplicationProgram {
+    let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+     <ApplicationProgram Id="M-48_A-4947" ApplicationNumber="18759" ApplicationVersion="16"
+        MaskVersion="MV-0701" Name="FIX2 post-restart LSM5" LoadProcedureStyle="ProductProcedure">
+      <Static>
+       <Code>
+        <AbsoluteSegment Id="M-48_A-4947_AS-1" Size="4" Address="16384"><Data>AAECAw==</Data></AbsoluteSegment>
+        <AbsoluteSegment Id="M-48_A-4947_AS-2" Size="3" Address="16897"><Data>AQID</Data></AbsoluteSegment>
+        <AbsoluteSegment Id="M-48_A-4947_AS-3" Size="2" Address="17408"><Data>BAU=</Data></AbsoluteSegment>
+       </Code>
+       <LoadProcedures>
+        <LoadProcedure>
+         <LdCtrlConnect />
+         <LdCtrlUnload LsmIdx="1" />
+         <LdCtrlUnload LsmIdx="2" />
+         <LdCtrlUnload LsmIdx="3" />
+         <LdCtrlLoad LsmIdx="1" />
+         <LdCtrlAbsSegment LsmIdx="1" Address="16384" Size="4" />
+         <LdCtrlTaskSegment LsmIdx="1" Address="16384" />
+         <LdCtrlLoadCompleted LsmIdx="1" />
+         <LdCtrlLoad LsmIdx="2" />
+         <LdCtrlAbsSegment LsmIdx="2" Address="16897" Size="3" />
+         <LdCtrlTaskSegment LsmIdx="2" Address="16897" />
+         <LdCtrlLoadCompleted LsmIdx="2" />
+         <LdCtrlLoad LsmIdx="3" />
+         <LdCtrlAbsSegment LsmIdx="3" Address="17408" Size="2" />
+         <LdCtrlTaskSegment LsmIdx="3" Address="17408" />
+         <LdCtrlLoadCompleted LsmIdx="3" />
+         <LdCtrlRestart />
+         <LdCtrlTaskSegment LsmIdx="5" Address="17406" />
+         <LdCtrlLoad LsmIdx="5" />
+         <LdCtrlDisconnect />
+        </LoadProcedure>
+       </LoadProcedures>
+      </Static>
+     </ApplicationProgram></KNX>"#;
+    parse_application_program("M-48_A-4947", xml.as_bytes())
+        .expect("parse Theben post-restart LSM5 app")
 }
 
 // --- KNXnet/IP gateway scaffolding (mirrors flash_mock.rs) ------------------
@@ -400,7 +450,16 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
         let Some((obj, pid, count, start)) = decode_prop_header(payload) else {
             return Reaction::Nak;
         };
-        let s = state.lock().unwrap();
+        let mut s = state.lock().unwrap();
+        // A memory-mapped device has NO load-state-control property: a PID-5
+        // access to object 5 (or any object) is a bug in the tool's realisation
+        // switch. Count it and reject, exactly as the live sim does.
+        if s.lsm_mode == LsmMode::MemoryMapped && pid == PID_LOAD_STATE_CONTROL {
+            if obj == 5 {
+                s.lsm5_property_accesses += 1;
+            }
+            return Reaction::Nak;
+        }
         // Object-type discovery (PID 1 on each object).
         if pid == PID_OBJECT_TYPE {
             let ot = s
@@ -463,6 +522,15 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
         if !s.authorized {
             return Reaction::Nak;
         }
+        // A memory-mapped device has NO load-state-control property: a PID-5 write
+        // to object 5 (or any object) means the tool wrongly drove the LSM by
+        // property instead of the 0x0104 memory record. Count it and reject.
+        if s.lsm_mode == LsmMode::MemoryMapped && pid == PID_LOAD_STATE_CONTROL {
+            if obj == 5 {
+                s.lsm5_property_accesses += 1;
+            }
+            return Reaction::Nak;
+        }
         // Property-mode LSM control write: a 10-octet load event to PID 5.
         if s.lsm_mode == LsmMode::Property && pid == PID_LOAD_STATE_CONTROL {
             apply_lsm_event(&mut s, obj, value);
@@ -504,8 +572,12 @@ fn apply_lsm_event(s: &mut DeviceState, lsm: u8, event: &[u8]) {
         return;
     };
     let cur = s.lsm_state(lsm);
+    // The AdditionalLoadControls sub-command selector (octet 1); 0x02 = Task.
+    let subtype = event.get(1).copied().unwrap_or(0);
     let next = match opcode {
         LE_UNLOAD => LS_UNLOADED,
+        // StartLoading opens the LSM; idempotent while already Loading (the
+        // post-restart LSM-5 dance re-asserts it after the task descriptor).
         LE_START_LOADING => LS_LOADING,
         LE_LOAD_COMPLETED => {
             if cur == LS_LOADING || cur == LS_LOADED {
@@ -515,9 +587,15 @@ fn apply_lsm_event(s: &mut DeviceState, lsm: u8, event: &[u8]) {
             }
         }
         LE_ADDITIONAL => {
-            // Allocation / task control: must be open (Loading) to be accepted.
+            // Allocation / task control: normally valid only while Loading. A
+            // subtype-0x02 (Task) record on an Unloaded LSM opens the post-restart
+            // descriptor dance (Theben 0701 LSM 5, spec §3/§4.7): the device opens
+            // the LSM to Loading to accept the descriptor. LSMs 1/2/3 never take
+            // this edge (their alloc records always follow a StartLoading).
             if cur == LS_LOADING || cur == LS_LOADED {
                 cur
+            } else if cur == LS_UNLOADED && subtype == 0x02 {
+                LS_LOADING
             } else {
                 LS_ERROR
             }
@@ -1022,5 +1100,78 @@ async fn lsm_access_property_drives_state() -> Result<(), Box<dyn std::error::Er
     assert_eq!(state.lock().unwrap().lsm_state(1), LS_LOADED);
     assert_eq!(lsm.read_state(&mut l4, 1).await?, LoadState::Loaded);
     handle.abort();
+    Ok(())
+}
+
+/// A **memory-mapped** device with a **post-restart LSM-5** section (spec §3/§4.7,
+/// the Theben 0701 shape) must reach Loaded, and every LSM — including the
+/// post-restart LSM 5 — must be driven through the memory-mapped 0x0104 record,
+/// never a property `A_PropertyValue` access to object 5 / PID 5. This is the
+/// corner that broke the live `run.sh` device 1.1.8: a memory-mapped device has
+/// no PID-5 property, so any property access to object 5 fails the flash. The
+/// mock rejects (and counts) such an access, so the assertion below fails loudly
+/// if the executor ever drives LSM 5 off the `LsmAccess` seam.
+#[tokio::test]
+async fn flash_system7_memory_mapped_post_restart_lsm5_reaches_loaded()
+-> Result<(), Box<dyn std::error::Error>> {
+    // 0701 defaults to memory-mapped; also flip the switch explicitly so the plan
+    // and the mock device agree on the realisation.
+    set_sys7_lsm_env(LsmMode::MemoryMapped);
+    let (mut bus, state, handle) = setup(LsmMode::MemoryMapped, Fault::None).await;
+    let target: bussard_model::IndividualAddress = "1.1.99".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+    let app = theben_post_restart_lsm5_app();
+    // Mask 0x0701 → memory-mapped LSM realisation by mask-family default.
+    let plan = plan_flash(
+        &app,
+        "1.1.99",
+        0x0701,
+        &no_overrides(),
+        &std::collections::BTreeMap::new(),
+        None,
+        &std::collections::BTreeMap::new(),
+    )?;
+    assert!(
+        plan.is_sys7(),
+        "the Theben app must lower to a System 7 plan"
+    );
+
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_p| {},
+    )
+    .await?;
+
+    assert!(
+        outcome.ok(),
+        "memory-mapped post-restart LSM-5 flash should reach Loaded: {outcome:?}"
+    );
+    {
+        let s = state.lock().unwrap();
+        // LSMs 1/2/3 completed and persisted.
+        for lsm in [1u8, 2, 3] {
+            assert_eq!(s.lsm_state(lsm), LS_LOADED, "LSM {lsm} should be Loaded");
+        }
+        // The post-restart LSM 5 was opened (Loading, no LoadCompleted in the plan)
+        // via the memory-mapped record — never Error/Unloaded.
+        assert_eq!(
+            s.lsm_state(5),
+            LS_LOADING,
+            "post-restart LSM 5 should be open (Loading)"
+        );
+        // The load-bearing assertion: NO property access to object 5 / PID 5. A
+        // memory-mapped device has no such property; driving LSM 5 that way is the
+        // exact bug this test guards against.
+        assert_eq!(
+            s.lsm5_property_accesses, 0,
+            "LSM 5 must be driven memory-mapped, never via object-5/PID-5 property"
+        );
+    }
+    handle.abort();
+    let _ = session.into_disconnect().await;
     Ok(())
 }
