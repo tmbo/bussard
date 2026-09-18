@@ -1489,29 +1489,28 @@ impl Device {
         Ok(DeviceReaction::default())
     }
 
-    /// Apply a System 7 memory-mapped LSM control record (the 12-octet form
-    /// written to the control address, spec section 5). The encoding is
-    /// `[lsm_index:1][0x00][10-octet load event]`. This is the memory-mapped
-    /// *alternative* device side: the M2 Jung 0705 capture (issue #70) proved the
-    /// real device is property-based (`on_sys7_property_lsm`), so this path serves
-    /// only a device explicitly configured `lsm_access: memory`.
-    /// S7-CAL: confirm the 12-octet LoadControl_M112 record layout (prefix
-    /// meaning + status poll protocol) on a genuinely memory-mapped 0705 device.
+    /// Apply a System 7 memory-mapped LSM control record (the **11-octet** form
+    /// written to the control address, spec section 5). The encoding is confirmed
+    /// by the Theben 0701 Meteodata capture:
+    /// ```text
+    /// [0] (lsm_index << 4) | event_opcode   [1] subtype   [2] 0x00 (addr high)
+    /// [3..5] start:2 BE   [5..7] length:2 BE   [7..11] tail
+    /// ```
+    /// The LSM index is folded into the high nibble of the event byte — there is
+    /// NO separate `[lsm][00]` prefix. This is the memory-mapped device side, used
+    /// by a device configured `lsm_access: memory` (the Theben 0701 family); the
+    /// Jung 0705 family is property-based (`on_sys7_property_lsm`).
     fn on_sys7_lsm_record(
         &mut self,
         tool: IndividualAddress,
         record: &[u8],
     ) -> Result<DeviceReaction, DeviceError> {
-        if record.len() < 3 {
-            return Err(DeviceError::Malformed {
+        let (lsm_index, event_record) =
+            sys7_lsm::decode_memory_lsm_record(record).map_err(|e| DeviceError::Malformed {
                 service: "System7 LSM record".into(),
-                detail: "record shorter than 2-octet prefix + event".into(),
-            });
-        }
-        // Prefix: [lsm_index:1][reserved:1], then the 10-octet load event.
-        let lsm_index = record[0];
-        let event_record = &record[2..];
-        self.apply_sys7_event(tool, lsm_index, event_record)?;
+                detail: e.to_string(),
+            })?;
+        self.apply_sys7_event(tool, lsm_index, &event_record)?;
         // A memory-mapped LSM write is unconfirmed at the application layer (the
         // tool polls the status address); no APDU response.
         Ok(DeviceReaction::default())
@@ -2079,11 +2078,12 @@ mod tests {
             let mut dev = sys7_device(LsmAccess::MemoryMapped);
             connect(&mut dev)?;
             dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
-            // StartLoading + alloc LSM 1 at 0x4000 via the 12-octet record.
-            let start_rec = [1u8, 0x00, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+            // StartLoading + alloc LSM 1 at 0x4000 via the 11-octet memory record
+            // (LSM in the high nibble of octet 0, 3-octet start address).
+            let start_rec = [0x11u8, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0];
             dev.handle_cemi(&mem_write_frame(&dev, 0x0104, &start_rec))?;
             let alloc_rec = [
-                1u8, 0x00, 0x03, 0x00, 0x40, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00,
+                0x13u8, 0x00, 0x00, 0x40, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00,
             ];
             dev.handle_cemi(&mem_write_frame(&dev, 0x0104, &alloc_rec))?;
             // Write 8 bytes into the segment.

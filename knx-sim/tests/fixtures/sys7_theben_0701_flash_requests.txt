@@ -1,0 +1,109 @@
+# ETS -> real Theben Meteodata 1409207 (1.1.202) System 7 (mask 0701) flash:
+# request-direction TPDUs, memory-mapped LSM realisation. Source: real ETS
+# download capture (shared-with-windows/meteodata-140-s-download.pcapng), app
+# M-0048_A-140C (Meteodata 140 S). Each line: <src_ia_hex> <dst_ia_hex> <tpdu_hex>.
+# Requests only (L_Data.req). The real device address is rewritten to 1105
+# (1.1.5) so this committed fixture carries NO real individual address, only the
+# load-control + memory shape.
+#
+# This is the MEMORY-MAPPED-LSM oracle for the knx-sim System 7 calibration test
+# and the 0701-family counterpart of sys7_jung_flash_requests.txt (which pins the
+# property/PID-5 realisation of the Jung 0705 family). It pins the Theben 0701
+# verdict on the wire: load control is an 11-octet record written by
+# A_Memory_Write to 0x0104 with the LSM index in the high nibble of octet 0
+# (14/24/34 = Unload LSM1/2/3; 11/21/31 = StartLoading; 13.. = AbsSegment alloc;
+# 1302.. = TaskSegment marker 48 140c 14; 3304.. = TaskCtrl1; 12/22/32 =
+# LoadCompleted), status polled by A_Memory_Read at 0xB6EA + (lsm-1), and a bare
+# 0x380 fire-and-forget restart. ZERO PID-5 traffic.
+#
+# The capture was a re-download (most memory already matched, so ETS wrote only
+# deltas and read-verified the rest); this fixture keeps the clean load-control
+# skeleton + the two real delta segment writes and renumbers the L4 sequence
+# consecutively from the single load T_Connect so a FRESH sim device replays it
+# to Loaded on LSM 1/2/3. Control frames: 80 = T_Connect, 81 = T_Disconnect,
+# c2/c6/... = the tool's outgoing T_ACK (the sim ignores tool ACKs).
+0000 1105 80
+0000 1105 43d100ffffffff
+0000 1105 c2
+0000 1105 468b01041400000000000000000000
+0000 1105 c6
+0000 1105 4a01b6ea
+0000 1105 ca
+0000 1105 4e8b01042400000000000000000000
+0000 1105 ce
+0000 1105 5201b6eb
+0000 1105 d2
+0000 1105 568b01043400000000000000000000
+0000 1105 d6
+0000 1105 5a01b6ec
+0000 1105 da
+0000 1105 5e8b01041100000000000000000000
+0000 1105 de
+0000 1105 6201b6ea
+0000 1105 e2
+0000 1105 668b01041300004000001df2038000
+0000 1105 e6
+0000 1105 6a01b6ea
+0000 1105 ea
+0000 1105 6e8140000e
+0000 1105 ee
+0000 1105 728b01041302004000000048140c14
+0000 1105 f2
+0000 1105 7601b6ea
+0000 1105 f6
+0000 1105 7a8b01041200000000000000000000
+0000 1105 fa
+0000 1105 7e01b6ea
+0000 1105 fe
+0000 1105 428b01042100000000000000000000
+0000 1105 c2
+0000 1105 4601b6eb
+0000 1105 c6
+0000 1105 4a8b0104230000401d03e3f2038000
+0000 1105 ca
+0000 1105 4e01b6eb
+0000 1105 ce
+0000 1105 528b0104230200401d000048140c14
+0000 1105 d2
+0000 1105 5601b6eb
+0000 1105 d6
+0000 1105 5a8b01042200000000000000000000
+0000 1105 da
+0000 1105 5e01b6eb
+0000 1105 de
+0000 1105 628b01043100000000000000000000
+0000 1105 e2
+0000 1105 6601b6ec
+0000 1105 e6
+0000 1105 6a8b01043300001c0001b0f2020000
+0000 1105 ea
+0000 1105 6e01b6ec
+0000 1105 ee
+0000 1105 728b0104330000440003bef2038000
+0000 1105 f2
+0000 1105 7601b6ec
+0000 1105 f6
+0000 1105 7a8b010433000048000400ff030000
+0000 1105 fa
+0000 1105 7e01b6ec
+0000 1105 fe
+0000 1105 42814800aa
+0000 1105 c2
+0000 1105 468b01043300004c000400ff030000
+0000 1105 c6
+0000 1105 4a01b6ec
+0000 1105 ca
+0000 1105 4e8b010433020047b4000048140c14
+0000 1105 ce
+0000 1105 5201b6ec
+0000 1105 d2
+0000 1105 568b010433040046eb010000000000
+0000 1105 d6
+0000 1105 5a01b6ec
+0000 1105 da
+0000 1105 5e8b01043200000000000000000000
+0000 1105 de
+0000 1105 6201b6ec
+0000 1105 e2
+0000 1105 6780
+0000 1105 e6

@@ -46,9 +46,9 @@ pub enum LsmAccess {
 /// for any 0705 silicon whose product data selects memory-mapped LSM control.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MemoryMappedLsm {
-    /// The address the 12-octet LSM load-event record is written to (the pre-M2
-    /// best-evidence value; the real Jung 0705 is property-based, see the struct
-    /// doc). Drives the sim's memory-mapped variant only.
+    /// The address the 11-octet LSM load-event record is written to (Theben 0701
+    /// Meteodata capture; the Jung 0705 family is property-based, see the struct
+    /// doc). Drives the sim's memory-mapped variant.
     pub control_addr: u16,
     /// The base address the 1-octet LSM status is polled from. Per-LSM status is
     /// at `status_addr + (lsm_index - 1)`. The M2 capture's one status touch was a
@@ -60,13 +60,14 @@ pub struct MemoryMappedLsm {
 
 impl Default for MemoryMappedLsm {
     fn default() -> Self {
-        // Memory-mapped-variant defaults (spec section 5). The default LSM
-        // realisation is property-based (M2 capture); these apply only when a
-        // device is explicitly configured memory-mapped.
+        // Memory-mapped-variant defaults (spec section 5), confirmed by the Theben
+        // 0701 Meteodata capture: 11-octet records to 0x0104, status at 0xB6EA+.
+        // The Jung 0705 family is property-based; these apply only when a device is
+        // configured memory-mapped (the 0701 default and `lsm_access: memory`).
         Self {
             control_addr: 0x0104,
             status_addr: 0xB6EA,
-            record_len: 12,
+            record_len: 11,
         }
     }
 }
@@ -253,7 +254,8 @@ mod tests {
         let mm = MemoryMappedLsm::default();
         assert_eq!(mm.control_addr, 0x0104);
         assert_eq!(mm.status_addr, 0xB6EA);
-        assert_eq!(mm.record_len, 12);
+        // 11 octets, confirmed by the Theben 0701 Meteodata capture.
+        assert_eq!(mm.record_len, 11);
     }
 
     #[test]
