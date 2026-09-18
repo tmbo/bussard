@@ -116,8 +116,9 @@ pub enum DeviceError {
 #[derive(Debug, Clone)]
 struct ObjectState {
     lsm: LoadStateMachine,
-    /// The segment base this object reports via `PID_TABLE_REFERENCE`.
-    base: u16,
+    /// The segment base this object reports via `PID_TABLE_REFERENCE` (up to
+    /// 24-bit; a capable 07B0 object places its segment above 0xFFFF).
+    base: u32,
     #[allow(dead_code)] // retained for logging / future viz
     descriptor: LoadableObject,
 }
@@ -214,13 +215,13 @@ fn order_info_bytes(application_id: &str) -> Vec<u8> {
 /// Deterministic segment bases matching the ETS→KNX-Virtual capture for the
 /// DA.tp product, so a tool that reads `PID_TABLE_REFERENCE` gets a stable,
 /// real-looking map. Objects not listed fall back to a generated base.
-fn default_base_for(lsm_index: u8) -> u16 {
+fn default_base_for(lsm_index: u8) -> u32 {
     match lsm_index {
         1 => 0xA000, // address table
         2 => 0xC000, // association table
         3 => 0x8000, // com-object table
         4 => 0x6000, // application segment
-        other => 0x6000u16.wrapping_add((other as u16) << 12),
+        other => 0x6000u32.wrapping_add((other as u32) << 12),
     }
 }
 
@@ -233,6 +234,48 @@ fn sys7_region_base(s7: &profile::Sys7Profile, lsm_index: u8) -> u16 {
         1 => s7.memory_map.lsm1_table,
         2 => s7.memory_map.lsm2_table,
         _ => s7.memory_map.lsm3_params,
+    }
+}
+
+/// A decoded `A_MemoryExtended_*` request: the count, the 24-bit address and (for
+/// a write) the data octets.
+struct ExtendedMemoryRequest {
+    /// Number of octets to write/read.
+    count: u8,
+    /// The 24-bit memory address.
+    addr: u32,
+    /// The data octets (empty for a read request).
+    data: Vec<u8>,
+}
+
+/// Decode an `A_MemoryExtended_Write`/`_Read` payload `[count][addr:3 BE][data]`.
+///
+/// `is_write` selects whether the trailing `count` data octets are required.
+/// Returns `None` if the payload is shorter than the 4-octet `[count][addr:3]`
+/// header, or (for a write) holds fewer data octets than `count` advertises. This
+/// is the sim's own decoder — the simulator never links a bussard crate.
+fn bussard_extended_request(payload: &[u8], is_write: bool) -> Option<ExtendedMemoryRequest> {
+    if payload.len() < 4 {
+        return None;
+    }
+    let count = payload[0];
+    let addr = u32::from_be_bytes([0, payload[1], payload[2], payload[3]]);
+    let data = &payload[4..];
+    if is_write {
+        if data.len() < usize::from(count) {
+            return None;
+        }
+        Some(ExtendedMemoryRequest {
+            count,
+            addr,
+            data: data[..usize::from(count)].to_vec(),
+        })
+    } else {
+        Some(ExtendedMemoryRequest {
+            count,
+            addr,
+            data: Vec::new(),
+        })
     }
 }
 
@@ -461,10 +504,13 @@ impl Device {
                 PID_LOAD_STATE_CONTROL,
                 Property::writable(vec![initial_state.to_byte()]),
             );
-            // PID_TABLE_REFERENCE is a 4-byte value; the base is the low 16 bits.
+            // PID_TABLE_REFERENCE is a 4-byte big-endian value carrying the full
+            // segment base — up to 24 bits, so a capable 07B0 object reports a base
+            // above 0xFFFF (e.g. 0x00018000) that a tool addresses via the extended
+            // memory service.
             io.set_property(
                 PID_TABLE_REFERENCE,
-                Property::read_only(vec![0x00, 0x00, (base >> 8) as u8, (base & 0xFF) as u8]),
+                Property::read_only(base.to_be_bytes().to_vec()),
             );
             // PID 0x0D (PID_PROGRAM_VERSION / run-state / app-id) is written near
             // the end of a flash to stamp the application id (ETS writes
@@ -601,7 +647,7 @@ impl Device {
                 lsm_index,
                 ObjectState {
                     lsm: LoadStateMachine::new(initial_state),
-                    base: sys7_region_base(&s7, lsm_index),
+                    base: u32::from(sys7_region_base(&s7, lsm_index)),
                     descriptor,
                 },
             );
@@ -670,8 +716,12 @@ impl Device {
     }
 
     /// The segment base a loadable object reports via `PID_TABLE_REFERENCE`.
+    ///
+    /// System B table objects (address/association/com-object tables) live in the
+    /// low 16-bit region, so the group-comm table parse takes a `u16` base; a
+    /// base above 0xFFFF here would be an application segment, not a routing table.
     fn base_of(&self, lsm_index: u8) -> Option<u16> {
-        self.loadables.get(&lsm_index).map(|o| o.base)
+        self.loadables.get(&lsm_index).map(|o| o.base as u16)
     }
 
     /// The 8-octet `PID_MCB_TABLE` entry this object would report: an integrity
@@ -716,7 +766,7 @@ impl Device {
             // Its base is the address table's end: [CNT:1][own-IA + GAs: CNT*2].
             // S7-CAL: confirm the group-object table offset within the 0x4000
             // region against a live 0705 capture (co-located vs a fixed sub-addr).
-            let addr_cnt = self.memory.read(addr_base, 1)[0] as u16;
+            let addr_cnt = self.memory.read(u32::from(addr_base), 1)[0] as u16;
             let go_base = addr_base.wrapping_add(1).wrapping_add(addr_cnt * 2);
             let gc = sys7_group_comm::Sys7GroupComm::from_tables(
                 &self.memory,
@@ -1034,6 +1084,8 @@ impl Device {
             Apci::PropertyValueWrite => self.on_property_write(tool, apdu),
             Apci::MemoryRead(_) => self.on_memory_read(tool, apdu),
             Apci::MemoryWrite(_) => self.on_memory_write(tool, apdu),
+            Apci::MemoryExtendedWrite => self.on_memory_extended_write(tool, apdu),
+            Apci::MemoryExtendedRead => self.on_memory_extended_read(tool, apdu),
             Apci::DeviceDescriptorRead(t) => self.on_device_descriptor_read(tool, t),
             Apci::Restart => self.on_restart(tool, apdu),
             // A_RestartMasterReset (0x381) decodes as RestartResponse in the raw
@@ -1341,6 +1393,7 @@ impl Device {
                 // record with a base already allocated for the LSM is a descriptor
                 // commit rather than a fresh allocation, so only (re)allocate when
                 // the address is not already inside the LSM's open segment.
+                let start = u32::from(start);
                 let already = self
                     .memory
                     .segment_of(lsm_index)
@@ -1394,7 +1447,7 @@ impl Device {
         let bytes = if let Some(status) = self.sys7_status_bytes(addr, n) {
             status
         } else {
-            self.memory.read(addr, n)
+            self.memory.read(u32::from(addr), n)
         };
         // A_MemoryResponse: apci 0x240 | count, then addr(2), then data.
         let mut data = Vec::with_capacity(2 + bytes.len());
@@ -1467,6 +1520,59 @@ impl Device {
 
         // Determine which object owns this address: strict — the address must be
         // inside exactly one open segment, and that object must be Loading.
+        let addr32 = u32::from(addr);
+        let seg = self
+            .memory
+            .segment_at(addr32)
+            .ok_or(MemoryError::OutOfSegment {
+                addr: addr32,
+                len: n,
+            })?;
+        let owner = seg.owner;
+        if self.load_state(owner) != Some(LoadState::Loading) {
+            return Err(DeviceError::LoadControl(format!(
+                "memory write to object {owner} while not Loading"
+            )));
+        }
+        self.memory.write(owner, addr32, payload)?;
+        self.emit(Event::MemoryWritten {
+            device: self.address,
+            addr: addr32,
+            len: n,
+        });
+        // A_MemoryWrite is not acknowledged at the application layer in the
+        // captured flow (the tool relies on the transport T_ACK), so no APDU
+        // response is produced.
+        Ok(DeviceReaction::default())
+    }
+
+    /// Handle an `A_MemoryExtended_Write` (APCI 0x1FB): the System B extended
+    /// memory service ETS drives every capable 07B0 device with (verified against
+    /// four real ETS6 downloads). The payload is `[count][addr:3 BE][data]`, so
+    /// this reaches the 24-bit space a plain `A_Memory_Write` cannot. It is
+    /// bounded and access-checked exactly like [`on_memory_write`]: the address
+    /// must fall inside exactly one open segment whose owner is Loading. Unlike
+    /// the plain write it is confirmed **inline** with an
+    /// `A_MemoryExtended_Write_Response` (0x1FC) carrying a return code (0 = ok)
+    /// and the echoed address, so no separate read-back is needed.
+    fn on_memory_extended_write(
+        &mut self,
+        tool: IndividualAddress,
+        apdu: &Apdu,
+    ) -> Result<DeviceReaction, DeviceError> {
+        if self.access_level != 0 {
+            return Err(DeviceError::Unauthorized {
+                level: self.access_level,
+            });
+        }
+        let req = bussard_extended_request(&apdu.data, true).ok_or(DeviceError::Malformed {
+            service: "A_MemoryExtended_Write".into(),
+            detail: "payload shorter than [count][addr:3] or truncated data".into(),
+        })?;
+        let addr = req.addr;
+        let n = req.data.len();
+
+        // Same strict segment/ownership discipline as the plain write.
         let seg = self
             .memory
             .segment_at(addr)
@@ -1474,19 +1580,51 @@ impl Device {
         let owner = seg.owner;
         if self.load_state(owner) != Some(LoadState::Loading) {
             return Err(DeviceError::LoadControl(format!(
-                "memory write to object {owner} while not Loading"
+                "extended memory write to object {owner} while not Loading"
             )));
         }
-        self.memory.write(owner, addr, payload)?;
+        self.memory.write(owner, addr, &req.data)?;
         self.emit(Event::MemoryWritten {
             device: self.address,
             addr,
             len: n,
         });
-        // A_MemoryWrite is not acknowledged at the application layer in the
-        // captured flow (the tool relies on the transport T_ACK), so no APDU
-        // response is produced.
-        Ok(DeviceReaction::default())
+        // Confirm inline: return code 0x00 + echoed 3-octet address.
+        let mut data = Vec::with_capacity(4);
+        data.push(0x00);
+        data.extend_from_slice(&[(addr >> 16) as u8, (addr >> 8) as u8, addr as u8]);
+        let resp = self.respond(tool, Apci::MemoryExtendedWriteResponse.to_u10(), &data);
+        Ok(DeviceReaction {
+            responses: vec![resp],
+            did_master_reset: false,
+        })
+    }
+
+    /// Handle an `A_MemoryExtended_Read` (APCI 0x1FD): read `count` octets at the
+    /// 24-bit address and answer with an `A_MemoryExtended_Read_Response` (0x1FE)
+    /// carrying `[return_code][addr:3][data]`. The read is served from the sparse
+    /// memory (unwritten cells read back as 0x00), modelling verify-on-read for
+    /// the tool. No segment gate on reads — a tool verifies freely.
+    fn on_memory_extended_read(
+        &mut self,
+        tool: IndividualAddress,
+        apdu: &Apdu,
+    ) -> Result<DeviceReaction, DeviceError> {
+        let req = bussard_extended_request(&apdu.data, false).ok_or(DeviceError::Malformed {
+            service: "A_MemoryExtended_Read".into(),
+            detail: "payload shorter than [count][addr:3]".into(),
+        })?;
+        let addr = req.addr;
+        let bytes = self.memory.read(addr, req.count as usize);
+        let mut data = Vec::with_capacity(4 + bytes.len());
+        data.push(0x00);
+        data.extend_from_slice(&[(addr >> 16) as u8, (addr >> 8) as u8, addr as u8]);
+        data.extend_from_slice(&bytes);
+        let resp = self.respond(tool, Apci::MemoryExtendedReadResponse.to_u10(), &data);
+        Ok(DeviceReaction {
+            responses: vec![resp],
+            did_master_reset: false,
+        })
     }
 
     /// Apply a System 7 memory-mapped LSM control record (the **11-octet** form

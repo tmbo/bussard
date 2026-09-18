@@ -90,6 +90,14 @@ pub enum Apci {
     MemoryResponse(u8),
     /// `A_Memory_Write` with byte count.
     MemoryWrite(u8),
+    /// `A_MemoryExtended_Write` (0x1FB) — write memory at a 24-bit address.
+    MemoryExtendedWrite,
+    /// `A_MemoryExtended_Write_Response` (0x1FC).
+    MemoryExtendedWriteResponse,
+    /// `A_MemoryExtended_Read` (0x1FD) — read memory at a 24-bit address.
+    MemoryExtendedRead,
+    /// `A_MemoryExtended_Read_Response` (0x1FE).
+    MemoryExtendedReadResponse,
     /// `A_DeviceDescriptor_Read` (descriptor type in low bits).
     DeviceDescriptorRead(u8),
     /// `A_DeviceDescriptor_Response`.
@@ -139,6 +147,10 @@ impl Apci {
             return Apci::DeviceDescriptorResponse((apci & 0x3F) as u8);
         }
         match apci {
+            0x1FB => Apci::MemoryExtendedWrite,
+            0x1FC => Apci::MemoryExtendedWriteResponse,
+            0x1FD => Apci::MemoryExtendedRead,
+            0x1FE => Apci::MemoryExtendedReadResponse,
             0x380 => Apci::Restart,
             0x381 => Apci::RestartResponse,
             0x3D1 => Apci::AuthorizeRequest,
@@ -162,6 +174,10 @@ impl Apci {
             Apci::MemoryRead(n) => 0x200 | (n as u16 & 0x3F),
             Apci::MemoryResponse(n) => 0x240 | (n as u16 & 0x3F),
             Apci::MemoryWrite(n) => 0x280 | (n as u16 & 0x3F),
+            Apci::MemoryExtendedWrite => 0x1FB,
+            Apci::MemoryExtendedWriteResponse => 0x1FC,
+            Apci::MemoryExtendedRead => 0x1FD,
+            Apci::MemoryExtendedReadResponse => 0x1FE,
             Apci::DeviceDescriptorRead(t) => 0x300 | (t as u16 & 0x3F),
             Apci::DeviceDescriptorResponse(t) => 0x340 | (t as u16 & 0x3F),
             Apci::Restart => 0x380,
@@ -264,6 +280,19 @@ mod tests {
     #[test]
     fn test_apdu_parse_control_frame() {
         assert!(Apdu::parse(&[0x80]).is_none());
+    }
+
+    #[test]
+    fn test_apci_decode_extended_memory() {
+        assert_eq!(Apci::from_u10(0x1FB), Apci::MemoryExtendedWrite);
+        assert_eq!(Apci::from_u10(0x1FC), Apci::MemoryExtendedWriteResponse);
+        assert_eq!(Apci::from_u10(0x1FD), Apci::MemoryExtendedRead);
+        assert_eq!(Apci::from_u10(0x1FE), Apci::MemoryExtendedReadResponse);
+        // Round-trips through to_u10.
+        assert_eq!(Apci::MemoryExtendedWrite.to_u10(), 0x1FB);
+        assert_eq!(Apci::MemoryExtendedReadResponse.to_u10(), 0x1FE);
+        // The extended selectors do NOT collide with the plain memory family.
+        assert!(matches!(Apci::from_u10(0x280), Apci::MemoryWrite(_)));
     }
 
     #[test]

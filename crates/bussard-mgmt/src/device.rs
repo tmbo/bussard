@@ -177,19 +177,19 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
     /// `len` is clamped to [`apci::MAX_MEMORY_READ_LEN`] per telegram (this is
     /// the golden-fixture dump primitive; callers loop over addresses for larger
     /// ranges). Returns the octets from the `A_Memory_Response`.
-    pub async fn read_memory(&mut self, addr: u16, len: u8) -> Result<Vec<u8>> {
-        let (req_apci, payload) = apci::encode_memory_read(addr, len);
-        let (resp_apci, data) = self.inner.request(req_apci, &payload).await?;
-        let resp = apci::decode_memory_response(resp_apci, &data).ok_or_else(|| {
-            MgmtError::MalformedResponse {
-                address: self.inner.target(),
-                reason: format!(
-                    "expected A_Memory_Response with matching count ({})",
-                    raw_response_detail(resp_apci, &data)
-                ),
-            }
-        })?;
-        Ok(resp.data)
+    pub async fn read_memory(&mut self, addr: u32, len: u8) -> Result<Vec<u8>> {
+        // Delegate to the shared load-layer primitive, which picks the plain
+        // A_Memory_Read or the 24-bit A_MemoryExtended_Read from the address (see
+        // `crate::load::read_memory` / `select_extended_memory`).
+        crate::load::read_memory(&mut self.inner, addr, len)
+            .await
+            .map_err(|e| match e {
+                crate::load::WriteError::Mgmt(m) => m,
+                other => MgmtError::MalformedResponse {
+                    address: self.inner.target(),
+                    reason: other.to_string(),
+                },
+            })
     }
 
     /// Writes `data` to device memory starting at `addr`, in
@@ -215,22 +215,53 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
     /// [`apci::encode_memory_write`] primitive and skip verification.
     ///
     /// An empty `data` is a no-op.
-    pub async fn write_memory(&mut self, addr: u16, data: &[u8]) -> Result<()> {
+    pub async fn write_memory(&mut self, addr: u32, data: &[u8]) -> Result<()> {
         let chunk = usize::from(apci::MAX_MEMORY_WRITE_LEN);
         let mut offset = 0usize;
         while offset < data.len() {
             let take = chunk.min(data.len() - offset);
             let piece = &data[offset..offset + take];
-            // A u16 address space; a write that would run past 0xFFFF is a
+            // A 24-bit address space; a write that would run past 0xFF_FFFF is a
             // programming error caught here rather than silently wrapping.
-            let chunk_addr =
-                addr.checked_add(offset as u16)
-                    .ok_or(MgmtError::MalformedResponse {
-                        address: self.inner.target(),
-                        reason: "memory write range exceeds the 16-bit address space".to_string(),
-                    })?;
+            let chunk_addr = u32::try_from(offset)
+                .ok()
+                .and_then(|off| addr.checked_add(off))
+                .filter(|&a| a <= apci::MAX_MEMORY_ADDRESS)
+                .ok_or(MgmtError::MalformedResponse {
+                    address: self.inner.target(),
+                    reason: "memory write range exceeds the 24-bit address space".to_string(),
+                })?;
 
-            let (req_apci, payload) = apci::encode_memory_write(chunk_addr, piece);
+            // Pick the plain A_Memory_Write or the 24-bit A_MemoryExtended_Write
+            // from the address, keeping the ≤16-bit path byte-identical. The
+            // extended write is confirmed inline; the plain write is verified by a
+            // separate read-back compare (the historical dump-primitive discipline).
+            if crate::load::select_extended_memory(chunk_addr, take) {
+                let (req_apci, payload) = apci::encode_memory_extended_write(chunk_addr, piece);
+                let (resp_apci, resp) = self.inner.request(req_apci, &payload).await?;
+                let parsed =
+                    apci::decode_memory_extended_response(resp_apci, &resp).ok_or_else(|| {
+                        MgmtError::MalformedResponse {
+                            address: self.inner.target(),
+                            reason: format!(
+                                "expected A_MemoryExtended_Write_Response ({})",
+                                raw_response_detail(resp_apci, &resp)
+                            ),
+                        }
+                    })?;
+                if parsed.return_code != 0 {
+                    return Err(MgmtError::MemoryVerifyFailed {
+                        address: self.inner.target(),
+                        addr: chunk_addr,
+                        expected: piece.to_vec(),
+                        got: Vec::new(),
+                    });
+                }
+                offset += take;
+                continue;
+            }
+
+            let (req_apci, payload) = apci::encode_memory_write(chunk_addr as u16, piece);
             // A_Memory_Write is acknowledged (T_ACK) but not answered, so send it
             // and wait only for the ACK; the read-back is the confirmation.
             self.inner.send_data(req_apci, &payload).await?;
