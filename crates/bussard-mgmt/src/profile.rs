@@ -258,34 +258,35 @@ impl MaskProfile {
 /// How a System 7 device realises its load-state machines (the single most
 /// load-bearing System 7 design decision — `[system7-spec §5]`).
 ///
-/// The two research inputs disagree on this point, so bussard implements a seam
-/// with two variants and a best-evidence default ([`LsmRealisation::MemoryMapped`]).
-/// Selected per mask from `HawkConfigurationData` when present; falls back to the
-/// memory-mapped default otherwise.
+/// The M2 live capture (issue #70, a real ETS 6 download to a Jung 3361-1M / mask
+/// 0705) settled the open question: the device drives load control **property-
+/// based** (PID 5), so [`LsmRealisation::Property`] is the Jung-confirmed default.
+/// The [`LsmRealisation::MemoryMapped`] variant is kept for any other 0705 silicon
+/// that may drive the LSM via `A_Memory_Write` to a control address; select it per
+/// mask from `HawkConfigurationData` when present.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LsmRealisation {
-    /// **Memory-mapped** (the default): a 12-octet LSM-control record written by
-    /// `A_Memory_Write` to a control address (default `0x0104`), with status
-    /// polled by `A_Memory_Read` at a status address (default `0xB6EA`). This is
-    /// what both the corpus and the first-party BIM-M112 evidence show for the
-    /// real 0705 devices bussard must flash `[system7-spec §5]`. **Confirmed** by
-    /// the Jung 3361-1M MV-0705 `HawkConfigurationData` (parsed in `bussard-ets`):
-    /// `GroupAddressTableLoadControl` at `StandardMemory` `260` (`0x0104`),
-    /// `Length=12`, `Flavour="LoadControl_M112"`, and the per-LSM load-status
-    /// bytes at `0xB6EA`/`0xB6EB`/`0xB6EC`.
+    /// **Memory-mapped**: a 12-octet LSM-control record written by `A_Memory_Write`
+    /// to a control address (default `0x0104`), with status polled by
+    /// `A_Memory_Read` at a status address (default `0xB6EA`) `[system7-spec §5]`.
+    /// This was the pre-M2 best-evidence default; the M2 Jung capture proved the
+    /// real device is property-based instead (no write to `0x0104` occurs anywhere
+    /// in the capture — the only `0xB6EA+` touch is a single read at `0xB6EC`, so
+    /// that region is a readable status region, not a control write). Kept as the
+    /// alternative for 0705 silicon whose product data selects it.
     MemoryMapped {
-        /// The LSM-control write address (default `0x0104`; Jung MV-0705 confirms).
+        /// The LSM-control write address (default `0x0104`).
         control_addr: u16,
         /// The LSM status-poll base address (default `0xB6EA`); the status of LSM
-        /// `n` is read at `status_addr + (n - 1)` — the +1 per-LSM stride the Jung
-        /// MV-0705 Hawk block confirms (`0xB6EA`/`0xB6EB`/`0xB6EC` for LSM 1/2/3).
+        /// `n` is read at `status_addr + (n - 1)`.
         status_addr: u16,
     },
-    /// **Property-based**: load events written to `PID_LOAD_STATE_CONTROL` (PID 5)
-    /// via `A_PropertyValue_Write`, state read back via `A_PropertyValue_Read`.
-    /// Standards-defensible (the BCU2 / System B lineage) but not the default; it
-    /// exists so that if a capture proves a given 0705 silicon is property-based,
-    /// flipping the profile bit is a one-line change `[system7-spec §5]`.
+    /// **Property-based** (the Jung-confirmed default, M2 capture): load events
+    /// written to `PID_LOAD_STATE_CONTROL` (PID 5) via `A_PropertyValue_Write`
+    /// (10-octet load event, one element at index 1), state read back via
+    /// `A_PropertyValue_Read`. The M2 capture shows exactly this: every load
+    /// control on objects 1/2/3 is an `A_PropertyValue_Write(objN, PID 5)`
+    /// `[system7-spec §5, M2 capture CONFIRMED]`.
     Property,
 }
 
@@ -314,21 +315,19 @@ pub struct Sys7Profile {
 }
 
 impl Sys7Profile {
-    /// The corpus-derived default System 7 profile (`[system7-spec §2.4/§5]`):
-    /// memory-mapped LSM at `0x0104` / `0xB6EA`, authorize level 0 (free-access
-    /// key), EEPROM mem-type 3 for the table/param regions and RAM mem-type 2 for
-    /// the low-RAM allocations.
+    /// The default System 7 profile, calibrated against the M2 Jung 0705 capture
+    /// (`[system7-spec §2.4/§5]`): **property-based** LSM (PID 5), authorize level 0
+    /// (free-access key), EEPROM mem-type 3 for the table/param regions and RAM
+    /// mem-type 2 for the low-RAM allocations.
     ///
-    /// `S7-CAL: every constant here is a best-evidence default from the corpus and
-    /// first-party BIM-M112 evidence; a live Jung 0705 capture (issue #49 M2) must
-    /// confirm the LSM control/status addresses, the record layout and the
-    /// authorize requirement.`
+    /// The LSM realisation, the authorize-with-free-key requirement and the
+    /// mem-types are all CONFIRMED by the M2 capture (issue #70). The name is
+    /// retained (it is the fallback when no `HawkConfigurationData` selects a
+    /// memory-mapped variant); a memory-mapped 0705 device overrides `lsm` via
+    /// [`sys7_profile_from_hawk`](../download/index.html).
     pub fn corpus_default() -> Sys7Profile {
         Sys7Profile {
-            lsm: LsmRealisation::MemoryMapped {
-                control_addr: 0x0104,
-                status_addr: 0xB6EA,
-            },
+            lsm: LsmRealisation::Property,
             authorize_level: 0,
             eeprom_mem_type: 3,
             ram_mem_type: 2,
@@ -370,20 +369,15 @@ mod tests {
     }
 
     #[test]
-    fn test_sys7_default_profile_is_memory_mapped_corpus_default() {
+    fn test_sys7_default_profile_is_property_m2_calibrated() {
+        // The M2 Jung 0705 capture (#70) proved the default LSM realisation is
+        // property-based (PID 5), not the pre-M2 memory-mapped guess.
         for mask in [0x0705u16, 0x0701, 0x0700] {
             let p = MaskProfile::from_mask(mask);
             assert!(p.is_system_7(), "{mask:04X}");
             assert_eq!(p.max_apdu_fallback(), 15, "{mask:04X}");
             let s7 = p.sys7_default_profile().expect("a System 7 profile");
-            assert_eq!(
-                s7.lsm,
-                LsmRealisation::MemoryMapped {
-                    control_addr: 0x0104,
-                    status_addr: 0xB6EA,
-                },
-                "{mask:04X}"
-            );
+            assert_eq!(s7.lsm, LsmRealisation::Property, "{mask:04X}");
             assert_eq!(s7.authorize_level, 0, "{mask:04X}");
             assert_eq!(s7.eeprom_mem_type, 3, "{mask:04X}");
             assert_eq!(s7.ram_mem_type, 2, "{mask:04X}");
