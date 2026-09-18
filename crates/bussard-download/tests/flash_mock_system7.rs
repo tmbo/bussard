@@ -679,7 +679,28 @@ fn no_overrides() -> std::collections::BTreeMap<String, String> {
 
 // --- Tests -------------------------------------------------------------------
 
+/// Point bussard's System 7 plan at the LSM realisation matching a mock device's
+/// `mode`. The plan defaults to property (M2 Jung 0705 capture, issue #70), so a
+/// memory-mapped mock must set `BUSSARD_FLASH_SYS7_LSM=memory`; a property mock
+/// clears the override to use the default.
+///
+/// SAFETY: nextest runs each test in its own process (see CLAUDE.md testing
+/// notes), so this process-global env write races with no other thread.
+fn set_sys7_lsm_env(mode: LsmMode) {
+    unsafe {
+        match mode {
+            LsmMode::MemoryMapped => std::env::set_var("BUSSARD_FLASH_SYS7_LSM", "memory"),
+            LsmMode::Property => std::env::remove_var("BUSSARD_FLASH_SYS7_LSM"),
+        }
+    }
+}
+
 async fn run_full_flash(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>> {
+    // Select the plan's LSM realisation to match the mock device's mode. Since the
+    // M2 Jung 0705 capture (issue #70) the plan defaults to property, so a
+    // memory-mapped mock must flip bussard's realisation switch, exactly as the
+    // system7 example's run.sh does with `BUSSARD_FLASH_SYS7_LSM=memory`.
+    set_sys7_lsm_env(mode);
     let (mut bus, state, handle) = setup(mode, Fault::None).await;
     let target: bussard_model::IndividualAddress = "1.1.99".parse().unwrap();
     let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
@@ -742,6 +763,7 @@ async fn flash_system7_memory_mapped_reaches_loaded() -> Result<(), Box<dyn std:
 async fn flash_system7_verify_mismatch_fails() -> Result<(), Box<dyn std::error::Error>> {
     // A device that corrupts every stored write: the per-chunk read-back verify
     // inside write_memory_verified diverges and the flash fails at that write.
+    set_sys7_lsm_env(LsmMode::MemoryMapped);
     let (mut bus, _state, handle) = setup(LsmMode::MemoryMapped, Fault::CorruptStoredImage).await;
     let target: bussard_model::IndividualAddress = "1.1.99".parse().unwrap();
     let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
@@ -807,6 +829,7 @@ async fn flash_system7_resumes_across_a_connection_drop() -> Result<(), Box<dyn 
     };
     let mut session = Session::open_with_key(connector, None).await?;
     let app = mdt_canonical_app();
+    set_sys7_lsm_env(LsmMode::MemoryMapped);
     let plan = plan_flash(
         &app,
         "1.1.99",
@@ -875,6 +898,7 @@ async fn run_flash_with_reboot(
     };
     let mut session = Session::open_with_key(connector, None).await?;
     let app = mdt_canonical_app();
+    set_sys7_lsm_env(LsmMode::MemoryMapped);
     let plan = plan_flash(
         &app,
         "1.1.99",

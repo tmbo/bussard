@@ -22,41 +22,47 @@
 pub enum LsmAccess {
     /// Load events are written as a 12-octet record to the LSM control address
     /// via `A_Memory_Write`, and the state is polled at the status address via
-    /// `A_Memory_Read`. This is the corpus / first-party default for real 0705
-    /// silicon, and thus the default (spec section 5).
-    #[default]
+    /// `A_Memory_Read`. The pre-M2 best-evidence default; kept selectable for any
+    /// 0705 silicon whose product data drives the LSM this way (spec section 5).
     MemoryMapped,
     /// Load events are written to `PID_LOAD_STATE_CONTROL` (PID 5) via
     /// `A_PropertyValue_Write`, and the state is read back via
-    /// `A_PropertyValue_Read`. Standards-defensible; built but not the default.
+    /// `A_PropertyValue_Read`. The M2 Jung 0705 capture (issue #70) showed the
+    /// real device drives load control exactly this way, so this is the default
+    /// (spec section 5, M2 capture CONFIRMED).
+    #[default]
     Property,
 }
 
 /// The memory-mapped LSM realisation constants (spec section 5).
 ///
-/// These are all `S7-CAL:` calibration defaults: no public capture confirms the
-/// exact control/status addresses or the 12-octet record layout for mask 0705.
-/// The M2 live capture settles them; until then the sim uses the best-evidence
-/// defaults from `docs/system7-spec.md`.
+/// The M2 Jung 0705 capture (issue #70) showed the real device is *property*-based,
+/// not memory-mapped: there is no `A_Memory_Write` to `0x0104` anywhere in the
+/// capture, and the only `0xB6EA+` touch is a single `A_Memory_Read` at `0xB6EC`
+/// (so that region is a readable status region, not a written control record).
+/// These constants therefore drive the sim's *alternative* memory-mapped device
+/// side only — the one bussard reaches with `BUSSARD_FLASH_SYS7_LSM=memory` — not
+/// the default. They remain the best-evidence values from `docs/system7-spec.md`
+/// for any 0705 silicon whose product data selects memory-mapped LSM control.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MemoryMappedLsm {
-    /// The address the 12-octet LSM load-event record is written to.
-    /// S7-CAL: confirm the LoadControl_M112 control address (0x0104?) against a
-    /// live 0705 capture.
+    /// The address the 12-octet LSM load-event record is written to (the pre-M2
+    /// best-evidence value; the real Jung 0705 is property-based, see the struct
+    /// doc). Drives the sim's memory-mapped variant only.
     pub control_addr: u16,
     /// The base address the 1-octet LSM status is polled from. Per-LSM status is
-    /// at `status_addr + (lsm_index - 1)`.
-    /// S7-CAL: confirm the 0xB6EA+ status byte address and per-LSM stride against
-    /// a live 0705 capture.
+    /// at `status_addr + (lsm_index - 1)`. The M2 capture's one status touch was a
+    /// read at `0xB6EC`, in this family; drives the memory-mapped variant only.
     pub status_addr: u16,
     /// The length of the LSM load-event record written to `control_addr`.
-    /// S7-CAL: confirm the 12-octet LoadControl_M112 record length.
     pub record_len: usize,
 }
 
 impl Default for MemoryMappedLsm {
     fn default() -> Self {
-        // Spec section 5 defaults (all S7-CAL).
+        // Memory-mapped-variant defaults (spec section 5). The default LSM
+        // realisation is property-based (M2 capture); these apply only when a
+        // device is explicitly configured memory-mapped.
         Self {
             control_addr: 0x0104,
             status_addr: 0xB6EA,
@@ -235,8 +241,11 @@ mod tests {
     }
 
     #[test]
-    fn test_default_lsm_access_is_memory_mapped() {
-        assert_eq!(LsmAccess::default(), LsmAccess::MemoryMapped);
+    fn test_default_lsm_access_is_property_m2_calibrated() {
+        // The M2 Jung 0705 capture (#70) settled that the real device drives load
+        // control over PID 5; property-based is the default. Memory-mapped stays
+        // selectable for silicon whose product data uses it.
+        assert_eq!(LsmAccess::default(), LsmAccess::Property);
     }
 
     #[test]
