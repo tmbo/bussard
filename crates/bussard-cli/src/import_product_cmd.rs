@@ -34,16 +34,17 @@ pub fn run(
     dir: &Path,
     order_number: Option<&str>,
     yes_download: bool,
+    inner: Option<&str>,
     list: bool,
 ) -> anyhow::Result<ExitCode> {
     if list {
         return run_list();
     }
     if let Some(order) = order_number {
-        return run_order_number(order, dir, yes_download);
+        return run_order_number(order, dir, yes_download, inner);
     }
     match file {
-        Some(f) => run_file(f, dir),
+        Some(f) => run_file(f, dir, inner),
         None => bail!(
             "nothing to import: give a .knxprod FILE, --order-number <ORDER> to \
              download from the index, or --list to show the index"
@@ -80,7 +81,12 @@ fn run_list() -> anyhow::Result<ExitCode> {
 
 /// Looks an order number up in the index, confirms, downloads and verifies the
 /// `.knxprod`, then runs the normal import on the cached file.
-fn run_order_number(order: &str, dir: &Path, yes_download: bool) -> anyhow::Result<ExitCode> {
+fn run_order_number(
+    order: &str,
+    dir: &Path,
+    yes_download: bool,
+    inner: Option<&str>,
+) -> anyhow::Result<ExitCode> {
     let index = load_index()?;
     let entry = index.lookup(order).with_context(|| {
         format!(
@@ -123,6 +129,7 @@ fn run_order_number(order: &str, dir: &Path, yes_download: bool) -> anyhow::Resu
     import_from_file(
         &cached,
         dir,
+        inner,
         DownloadNote::Downloaded(entry.filename.clone()),
     )
 }
@@ -164,11 +171,11 @@ enum DownloadNote {
 }
 
 /// Runs the normal import on a local `.knxprod` file (positional mode).
-fn run_file(file: &Path, dir: &Path) -> anyhow::Result<ExitCode> {
+fn run_file(file: &Path, dir: &Path, inner: Option<&str>) -> anyhow::Result<ExitCode> {
     if !file.exists() {
         bail!("product file not found: {}", file.display());
     }
-    import_from_file(file, dir, DownloadNote::Local)
+    import_from_file(file, dir, inner, DownloadNote::Local)
 }
 
 /// Ensures `<dir>/vendor/` exists with its self-protecting `.gitignore`.
@@ -188,8 +195,13 @@ fn ensure_vendor_dir(vendor_dir: &Path) -> anyhow::Result<()> {
 ///
 /// For a downloaded file the source already lives under `vendor/`, so the cache
 /// step notes it in place rather than copying it onto itself.
-fn import_from_file(file: &Path, dir: &Path, note: DownloadNote) -> anyhow::Result<ExitCode> {
-    let product = bussard_prod::read_knxprod(file)
+fn import_from_file(
+    file: &Path,
+    dir: &Path,
+    inner: Option<&str>,
+    note: DownloadNote,
+) -> anyhow::Result<ExitCode> {
+    let product = bussard_prod::read_knxprod_inner(file, inner)
         .with_context(|| format!("reading product data from {}", file.display()))?;
 
     if product.applications.is_empty() {
