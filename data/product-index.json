@@ -437,6 +437,36 @@
       "notes": "Temperature/humidity sensor (weather/climate). Database V3.0, mask 0701 (System 7). Hosted on siblik.com (distributor mirror; elsner-elektronik.de is shop/catalogue-gated). Verified by download 2026-09-16."
     },
     {
+      "manufacturer": "Elsner Elektronik",
+      "manufacturer_id": "M-00C9",
+      "order_numbers": [
+        "70178"
+      ],
+      "name": "Elsner KNX T-Objekt-UP temperature sensor",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Elsner/ELS701/ELS70178_KNX_T-Objekt-UP_V2.0.knxprod",
+      "sha256": "90d7d1941f469a6c9fb9cf1adf4fe304ddb46bb6698d0888c8565f07ddc31898",
+      "size": 171802,
+      "filename": "ELS70178_KNX_T-Objekt-UP_V2.0.knxprod",
+      "application_ref": "M-00C9_A-FF14-20-6DBB",
+      "redistributable": false,
+      "notes": "Elsner KNX T-Objekt-UP flush-mount temperature sensor. Database V2.0. Mask 0701 (System 7). Hosted in the Siblik Elsner KNX-database archive. Verified by download 2026-09-18."
+    },
+    {
+      "manufacturer": "Elsner Elektronik",
+      "manufacturer_id": "M-00C9",
+      "order_numbers": [
+        "70239"
+      ],
+      "name": "Elsner KNX AQS/TH-B-UP air-quality / temperature / humidity sensor",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Elsner/ELS702/ELS70239-42_KNX_AQSTH-B-UP_V1.0.knxprod",
+      "sha256": "a737312171347fec6474325c50600000d8f0206f9931e0a20d28dce184532295",
+      "size": 503357,
+      "filename": "ELS70239-42_KNX_AQSTH-B-UP_V1.0.knxprod",
+      "application_ref": "M-00C9_A-1005-10-A4E6",
+      "redistributable": false,
+      "notes": "Elsner KNX AQS/TH-B-UP flush-mount air-quality (CO2/VOC), temperature and humidity sensor. Database V1.0. One .knxprod covers order numbers 70239-70242. Mask 0701 (System 7). Hosted in the Siblik Elsner KNX-database archive. Verified by download 2026-09-18."
+    },
+    {
       "manufacturer": "MDT",
       "manufacturer_id": "M-0083",
       "order_numbers": [
