@@ -1088,6 +1088,66 @@
       "application_ref": "M-00C8_A-2638-31-23E4",
       "redistributable": false,
       "notes": "B.E.G. Luxomat PD2 flush-mount switching presence detector. Database V3.1 (ETS4). Mask 0025 (previously zero coverage in the index). The PD2/PD4/PD9 SWI variants all share this same application program (A-2638). Hosted in the Siblik B.E.G. KNX-database archive. Verified by download 2026-09-18."
+    },
+    {
+      "manufacturer": "Berker",
+      "manufacturer_id": "M-0006",
+      "order_numbers": [
+        "754411"
+      ],
+      "name": "Berker KNX room thermostat with push-button interface",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Berker/7544/754411xx_Berker_RTR_mit_Tsterschnittstelle_V1.1.knxprod",
+      "sha256": "bb164e4ff262fa69076309f1dd9f5c2fdc34e96dd757ae1fcf11a869bbbcea18",
+      "size": 128378,
+      "filename": "754411xx_Berker_RTR_mit_Tsterschnittstelle_V1.1.knxprod",
+      "application_ref": "M-0006_A-705C-11-6D77",
+      "redistributable": false,
+      "notes": "NEW VENDOR (Berker, M-0006): KNX room temperature controller (RTR) with push-button interface. Database V1.1. Mask 0705 (System 7). One .knxprod covers the 754411xx order-number range. Hosted in the Siblik Berker KNX-database archive. Verified by download 2026-09-18."
+    },
+    {
+      "manufacturer": "Berker",
+      "manufacturer_id": "M-0006",
+      "order_numbers": [
+        "75492001"
+      ],
+      "name": "Berker KNX brightness and temperature sensor",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Berker/7549/75492001_Helligkeits-_und_Temperatursensor_V2.0.knxprod",
+      "sha256": "7bd24cee423a5c68e3667246162cc2359c525fb8657bf0613131ae714166eb17",
+      "size": 59362,
+      "filename": "75492001_Helligkeits-_und_Temperatursensor_V2.0.knxprod",
+      "application_ref": "M-0006_A-0020-20-ACEC",
+      "redistributable": false,
+      "notes": "Berker KNX brightness and temperature sensor. Database V2.0. Mask 0012 (System 2). Hosted in the Siblik Berker KNX-database archive. Verified by download 2026-09-18."
+    },
+    {
+      "manufacturer": "Berker",
+      "manufacturer_id": "M-0006",
+      "order_numbers": [
+        "75730010"
+      ],
+      "name": "Berker KNX alarm control panel",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Berker/7573/75730010_Berker_Alarmzentrale_V0.3_ETS4.knxprod",
+      "sha256": "8f55a34f8d8670dc78e114a995cb9bc6c790fe1e0dabe9d633a3f7b63869cb5e",
+      "size": 520104,
+      "filename": "75730010_Berker_Alarmzentrale_V0.3_ETS4.knxprod",
+      "application_ref": "M-0006_A-C004-03-133E",
+      "redistributable": false,
+      "notes": "Berker KNX alarm control panel (Alarmzentrale). Database V0.3 (ETS4). Mask 0701 (System 7). Hosted in the Siblik Berker KNX-database archive. Verified by download 2026-09-18."
+    },
+    {
+      "manufacturer": "Berker",
+      "manufacturer_id": "M-0006",
+      "order_numbers": [
+        "7574001"
+      ],
+      "name": "Berker KNX Master Control",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Berker/7574/7574001x_Berker_Master_Control_V0.1_ETS4.knxprod",
+      "sha256": "8c20587e3b3241974dcef9fbf3f27c576275ad0d03c2cbbe499a937d6ca6965b",
+      "size": 354370,
+      "filename": "7574001x_Berker_Master_Control_V0.1_ETS4.knxprod",
+      "application_ref": "M-0006_A-5901-01-CF9C",
+      "redistributable": false,
+      "notes": "Berker KNX Master Control central controller. Database V0.1 (ETS4). Mask 0701 (System 7). One .knxprod covers the 7574001x order-number range. Hosted in the Siblik Berker KNX-database archive. Verified by download 2026-09-18."
     }
   ]
 }
