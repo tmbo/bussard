@@ -7904,6 +7904,21 @@
       "application_ref": "M-0007_A-A002-13-73C8-O0002",
       "redistributable": false,
       "notes": "ABB/Busch-Jaeger ship no convenient per-product .knxprod; this is the official combined all-products ETS5/6 database (ABB Library DocumentID 9AKK107046A7479, DocumentPartId=BJE, Rev K, 2024-12-20), ~88 MB, holding 659 M-0007 application programs. Login-free: the Download.aspx URL 302-redirects (no login, no Referer, no User-Agent needed) to a signed library.e.abb.com URL; the served bytes are byte-stable (verified identical sha256 across downloads), and ureq follows the redirect. A plain .knxprod (M-0007/ at root), no --inner needed. Inner app M-0007_A-A002-13-73C8-O0002 matches the ETS capture for IA 1.1.44 (6119/20 universal interface) EXACTLY. NOTE: this Rev K does NOT contain the Busch-Waechter PRO 280 app A-6179-82 (IA 1.1.30) - that device is newer than this DB revision. Verified by download 2026-09-18."
+    },
+    {
+      "manufacturer": "ABB AG",
+      "manufacturer_id": "M-0002",
+      "order_numbers": [
+        "2CDG 110 283 R0011"
+      ],
+      "name": "ABB i-bus BE/S 16.230.3.2 Binary Input 16f 230V [ABB combined ETS DB, Rev P]",
+      "url": "https://search.abb.com/library/Download.aspx?DocumentID=9AKK107046A7479&LanguageCode=de&LanguageCode=en&DocumentPartId=ABB&Action=Launch",
+      "sha256": "25509a9a58ab4d36d5815f3fa6f1f72db7e9ef17951e22a9024923d7499b7f76",
+      "size": 159278548,
+      "filename": "IBUS_ETS5_ABB_XX_V24-12-20_9AKK107046A7479-Rev_P.knxprod",
+      "application_ref": "M-0002_A-A0ED-10-9B4E",
+      "redistributable": false,
+      "notes": "User-provided 2026-09-18; ABB i-bus all-products ETS5/6 database (ABB Library DocumentID 9AKK107046A7479, DocumentPartId=ABB, Rev P, 2024-12-20), ~152 MB, holding 407 M-0002 application programs (ABB proper; distinct from the M-0007 Busch-Jaeger DocumentPartId=BJE database). Plain .knxprod (M-0002/ at root), no --inner needed. NOT auto-fetchable: unlike the BJE part, the DocumentPartId=ABB Download.aspx URL 404s in the open (the file sits behind the signed-CloudFront ETS product SPA), so this entry was indexed from the user's local download rather than a network fetch — verify against the recorded sha256+size. Contains the ETS capture app M-0002_A-A0ED-10-9B4E EXACTLY (BE/S 16.230.3.2 binary input, 'Binary Input 16f 230V/1.0', app 41197 v16, mask 07B0, IA 1.1.39); the v2.0 sibling A-A0ED-20-EC31 (v32) shares order 2CDG 110 283 R0011. NOTE: this ABB database does NOT contain the Busch-Waechter PRO 280 app A-6179-82 (M-0007, IA 1.1.30) - that is a Busch-Jaeger (M-0007) app absent from both this Rev P and the BJE Rev K DB."
     }
   ]
 }
