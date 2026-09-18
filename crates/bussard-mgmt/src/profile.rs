@@ -207,6 +207,12 @@ impl MaskProfile {
         self.family == MaskFamily::System7
     }
 
+    /// Whether this mask belongs to the System 7 family (`x705` / `x701` /
+    /// `x700`) — the memory-mapped, absolute-addressed download path (issue #49).
+    pub fn is_system_7(self) -> bool {
+        self.family == MaskFamily::System7
+    }
+
     /// Whether bussard can read this device's tables today.
     ///
     /// Only System B is implemented. System 7 is a known, named gap (issue #49)
@@ -214,6 +220,116 @@ impl MaskProfile {
     /// [`MaskProfile::family`] directly.
     pub fn tables_supported(self) -> bool {
         self.is_system_b()
+    }
+
+    /// The conservative fallback max-APDU (NPDU octet count) for this family when
+    /// the device does not advertise `PID_MAX_APDU_LENGTH`.
+    ///
+    /// System 7 has no extended-frame guarantee: it is standard-frame only, so
+    /// the floor is **15** (→ 12 data octets per `A_Memory_Write`/`_Read` via
+    /// [`crate::apci::memory_chunk_for_apdu`], i.e.
+    /// [`crate::apci::CONSERVATIVE_MEMORY_CHUNK`]) `[system7-spec §6, XKNX
+    /// PR#1834/#1938]`. System B shares the same 15-octet standard-frame floor;
+    /// it scales up only when a device advertises a larger APDU.
+    pub fn max_apdu_fallback(self) -> u16 {
+        // Both families floor at the standard-frame ceiling (NPDU length 15).
+        // System 7 must NEVER be pushed to an extended frame it may reject.
+        15
+    }
+
+    /// The default System 7 programming profile for this mask: the corpus-derived
+    /// defaults used when a `.knxprod`'s `HawkConfigurationData` is absent or
+    /// unparsable (see [`Sys7Profile::corpus_default`]).
+    ///
+    /// Returns `None` for non-System-7 masks. The data-driven path (issue #49
+    /// M1.5) parses `HawkConfigurationData` per mask and overrides these; this is
+    /// the named fallback so a download is still attemptable on a device whose
+    /// product data lacks the block — the corpus shape is uniform enough to drive
+    /// blind `[system7-spec §2.4]`.
+    pub fn sys7_default_profile(self) -> Option<Sys7Profile> {
+        if self.is_system_7() {
+            Some(Sys7Profile::corpus_default())
+        } else {
+            None
+        }
+    }
+}
+
+/// How a System 7 device realises its load-state machines (the single most
+/// load-bearing System 7 design decision — `[system7-spec §5]`).
+///
+/// The two research inputs disagree on this point, so bussard implements a seam
+/// with two variants and a best-evidence default ([`LsmRealisation::MemoryMapped`]).
+/// Selected per mask from `HawkConfigurationData` when present; falls back to the
+/// memory-mapped default otherwise.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LsmRealisation {
+    /// **Memory-mapped** (the default): a 12-octet LSM-control record written by
+    /// `A_Memory_Write` to a control address (default `0x0104`), with status
+    /// polled by `A_Memory_Read` at a status address (default `0xB6EA`). This is
+    /// what both the corpus and the first-party BIM-M112 evidence show for the
+    /// real 0705 devices bussard must flash `[system7-spec §5]`.
+    MemoryMapped {
+        /// The LSM-control write address (default `0x0104`). `S7-CAL: confirm the
+        /// LSM control address against a live 0705 capture`.
+        control_addr: u16,
+        /// The LSM status-poll base address (default `0xB6EA`); the status of LSM
+        /// `n` is read relative to this. `S7-CAL: confirm the 0xB6EA+ status
+        /// address and its per-LSM stride`.
+        status_addr: u16,
+    },
+    /// **Property-based**: load events written to `PID_LOAD_STATE_CONTROL` (PID 5)
+    /// via `A_PropertyValue_Write`, state read back via `A_PropertyValue_Read`.
+    /// Standards-defensible (the BCU2 / System B lineage) but not the default; it
+    /// exists so that if a capture proves a given 0705 silicon is property-based,
+    /// flipping the profile bit is a one-line change `[system7-spec §5]`.
+    Property,
+}
+
+/// The per-mask System 7 programming configuration: the resource/LSM realisation,
+/// table locations and authorize level a System 7 download needs.
+///
+/// This is the data-driven mask profile issue #49 calls for: parsed from a
+/// `.knxprod`'s `HawkConfigurationData` at import time (see `bussard-ets`), or
+/// filled from [`Sys7Profile::corpus_default`] when that block is absent. Do NOT
+/// hardcode per-mask addresses at call sites — resolve them through this value
+/// `[system7-spec §2.4]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Sys7Profile {
+    /// How the load-state machines are driven (memory-mapped vs property).
+    pub lsm: LsmRealisation,
+    /// The access level to authorize with before memory access. `0` = highest
+    /// privilege; the free-access key grants a usable level on an unkeyed device.
+    pub authorize_level: u8,
+    /// The default memory type for absolute-segment allocation of the EEPROM
+    /// table/param regions (`0x4000`/`0x4201`/`0x4400`). `3` = EEPROM
+    /// `[system7-spec §4.1/§4.2]`.
+    pub eeprom_mem_type: u8,
+    /// The default memory type for the low-RAM working-region allocations
+    /// (`0x0700`/`0x0730`). `2` = RAM `[system7-spec §4.2]`.
+    pub ram_mem_type: u8,
+}
+
+impl Sys7Profile {
+    /// The corpus-derived default System 7 profile (`[system7-spec §2.4/§5]`):
+    /// memory-mapped LSM at `0x0104` / `0xB6EA`, authorize level 0 (free-access
+    /// key), EEPROM mem-type 3 for the table/param regions and RAM mem-type 2 for
+    /// the low-RAM allocations.
+    ///
+    /// `S7-CAL: every constant here is a best-evidence default from the corpus and
+    /// first-party BIM-M112 evidence; a live Jung 0705 capture (issue #49 M2) must
+    /// confirm the LSM control/status addresses, the record layout and the
+    /// authorize requirement.`
+    pub fn corpus_default() -> Sys7Profile {
+        Sys7Profile {
+            lsm: LsmRealisation::MemoryMapped {
+                control_addr: 0x0104,
+                status_addr: 0xB6EA,
+            },
+            authorize_level: 0,
+            eeprom_mem_type: 3,
+            ram_mem_type: 2,
+        }
     }
 }
 
@@ -248,6 +364,39 @@ mod tests {
             assert!(p.uses_memory_mapped_tables(), "{mask:04X}");
             assert!(p.requires_authorize(), "{mask:04X}");
         }
+    }
+
+    #[test]
+    fn test_sys7_default_profile_is_memory_mapped_corpus_default() {
+        for mask in [0x0705u16, 0x0701, 0x0700] {
+            let p = MaskProfile::from_mask(mask);
+            assert!(p.is_system_7(), "{mask:04X}");
+            assert_eq!(p.max_apdu_fallback(), 15, "{mask:04X}");
+            let s7 = p.sys7_default_profile().expect("a System 7 profile");
+            assert_eq!(
+                s7.lsm,
+                LsmRealisation::MemoryMapped {
+                    control_addr: 0x0104,
+                    status_addr: 0xB6EA,
+                },
+                "{mask:04X}"
+            );
+            assert_eq!(s7.authorize_level, 0, "{mask:04X}");
+            assert_eq!(s7.eeprom_mem_type, 3, "{mask:04X}");
+            assert_eq!(s7.ram_mem_type, 2, "{mask:04X}");
+        }
+    }
+
+    #[test]
+    fn test_sys7_default_profile_absent_for_non_system_7() {
+        assert!(
+            MaskProfile::from_mask(0x07B0)
+                .sys7_default_profile()
+                .is_none()
+        );
+        assert!(!MaskProfile::from_mask(0x07B0).is_system_7());
+        // System B also floors at the standard-frame ceiling (15).
+        assert_eq!(MaskProfile::from_mask(0x07B0).max_apdu_fallback(), 15);
     }
 
     #[test]
