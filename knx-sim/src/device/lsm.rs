@@ -301,8 +301,13 @@ impl Sys7LoadStateMachine {
                 self.task_committed = false;
                 Ok(Sys7Step::State(LoadState::Loading))
             }
-            // Absolute-segment allocation is only valid while Loading. A
-            // subtype-0x02 (Task) record also commits the task descriptor.
+            // StartLoading while already Loading is idempotent: the post-restart
+            // LSM dance (Theben 0701 LSM 5, spec §3/§4.7) opens the LSM with a
+            // TaskSegment and then re-asserts StartLoading. Stay in Loading; keep
+            // the committed descriptor so a following LoadCompleted still holds.
+            (LoadState::Loading, E::StartLoading) => Ok(Sys7Step::State(LoadState::Loading)),
+            // Absolute-segment allocation is valid while Loading. A subtype-0x02
+            // (Task) record also commits the task descriptor.
             (
                 LoadState::Loading,
                 E::AllocAbsSegment {
@@ -320,7 +325,30 @@ impl Sys7LoadStateMachine {
                     subtype,
                 })
             }
-            // TaskSegment commits the descriptor; only valid while Loading.
+            // A subtype-0x02 (Task) segment record on an Unloaded LSM opens the
+            // post-restart descriptor dance (Theben 0701 LSM 5, spec §3/§4.7): the
+            // device opens the LSM to Loading to accept the task descriptor. Only
+            // the Task subtype takes this edge; a plain Data/Stack allocation from
+            // Unloaded stays illegal. LSMs 1/2/3 never reach here (their alloc
+            // records always arrive after a StartLoading), so the strict up-front
+            // ordering for the main tables is unchanged.
+            (
+                LoadState::Unloaded,
+                E::AllocAbsSegment {
+                    start,
+                    length,
+                    subtype: 0x02,
+                },
+            ) => {
+                self.state = LoadState::Loading;
+                self.task_committed = true;
+                Ok(Sys7Step::Alloc {
+                    start,
+                    length,
+                    subtype: 0x02,
+                })
+            }
+            // TaskSegment commits the descriptor; valid while Loading.
             (LoadState::Loading, E::TaskSegment { address }) => {
                 self.task_committed = true;
                 Ok(Sys7Step::TaskCommitted { address })
@@ -492,6 +520,51 @@ mod tests {
                 lsm.apply(E::LoadCompleted),
                 Ok(Sys7Step::State(LoadState::Loaded))
             );
+        }
+
+        #[test]
+        fn test_sys7_post_restart_lsm5_task_then_start_opens_loading() {
+            // The Theben 0701 post-restart LSM-5 dance (spec §3/§4.7): a fresh
+            // (Unloaded) LSM receives a subtype-0x02 (Task) allocation record and
+            // then StartLoading, with no prior StartLoading and no LoadCompleted.
+            // The device opens it to Loading and stays there — never Error.
+            let mut lsm = Sys7LoadStateMachine::default();
+            assert_eq!(
+                lsm.apply(E::AllocAbsSegment {
+                    start: 0x43FE,
+                    length: 0,
+                    subtype: 0x02,
+                }),
+                Ok(Sys7Step::Alloc {
+                    start: 0x43FE,
+                    length: 0,
+                    subtype: 0x02,
+                })
+            );
+            assert_eq!(lsm.state(), LoadState::Loading);
+            // StartLoading while already Loading is idempotent (stays Loading).
+            assert_eq!(
+                lsm.apply(E::StartLoading),
+                Ok(Sys7Step::State(LoadState::Loading))
+            );
+            assert_eq!(lsm.state(), LoadState::Loading);
+        }
+
+        #[test]
+        fn test_sys7_data_alloc_from_unloaded_still_errors() {
+            // Only the Task subtype (0x02) opens a post-restart LSM; a plain Data
+            // (0x00) allocation from Unloaded stays illegal, so the strict up-front
+            // ordering for LSMs 1/2/3 is unchanged.
+            let mut lsm = Sys7LoadStateMachine::default();
+            assert!(matches!(
+                lsm.apply(E::AllocAbsSegment {
+                    start: 0x4000,
+                    length: 8,
+                    subtype: 0x00,
+                }),
+                Err(Sys7TransitionError::Illegal { .. })
+            ));
+            assert_eq!(lsm.state(), LoadState::Error);
         }
     }
 }
