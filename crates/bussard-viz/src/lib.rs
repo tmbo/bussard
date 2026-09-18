@@ -619,6 +619,40 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn test_sse_stream_ends_on_hub_shutdown() {
+        // An open SSE connection must END when the hub broadcasts Shutdown;
+        // otherwise it is a never-ending in-flight request that holds axum's
+        // graceful shutdown open forever (the Ctrl-C hang).
+        let state = empty_state();
+        let hub = state.hub.clone();
+
+        let resp = router(state)
+            .oneshot(
+                Request::builder()
+                    .uri("/api/traffic?backlog=0")
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("responds");
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        hub.shutdown();
+
+        // Drain the body: it must reach the end (next() -> None) promptly
+        // instead of pending forever on the live tail.
+        let drained = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            use futures_util::StreamExt as _;
+            let mut body = resp.into_body().into_data_stream();
+            while let Some(chunk) = body.next().await {
+                let _ = chunk.expect("chunk");
+            }
+        })
+        .await;
+        assert!(drained.is_ok(), "SSE stream did not end on hub shutdown");
+    }
+
     // --- POST /api/reload ----------------------------------------------------
 
     use std::io::Write as _;

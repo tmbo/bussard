@@ -54,8 +54,18 @@ pub fn run(listen: SocketAddr, dir: &Path, overrides: ConnOverrides) -> anyhow::
 
 /// Serves the viz site until Ctrl-C, then shuts down gracefully and closes the
 /// bus (freeing the gateway tunnel slot).
+///
+/// Shutdown has two layers: on the first Ctrl-C the hub broadcasts
+/// [`HubEvent::Shutdown`] so every open SSE stream ends (otherwise those
+/// never-ending in-flight requests hold axum's graceful shutdown open
+/// forever), and a backstop force-exits if a second Ctrl-C arrives or the
+/// grace period elapses before the graceful path completes.
 async fn serve_with_ctrl_c(config: VizConfig) -> anyhow::Result<()> {
+    /// How long the graceful path gets before the backstop gives up on it.
+    const GRACE: std::time::Duration = std::time::Duration::from_secs(3);
+
     let (state, handle) = bussard_viz::build_state(&config)?;
+    let hub = state.hub.clone();
     let app = bussard_viz::router(state);
 
     let listener = tokio::net::TcpListener::bind(config.listen)
@@ -65,15 +75,34 @@ async fn serve_with_ctrl_c(config: VizConfig) -> anyhow::Result<()> {
     tracing::info!("bussard viz serving on http://{addr}");
     eprintln!("bussard viz serving on http://{addr} (Ctrl-C to stop)");
 
-    let shutdown = async {
-        let _ = tokio::signal::ctrl_c().await;
-        tracing::info!("shutdown requested");
+    let shutdown = {
+        let hub = hub.clone();
+        async move {
+            let _ = tokio::signal::ctrl_c().await;
+            tracing::info!("shutdown requested");
+            eprintln!("\nshutting down (Ctrl-C again to force)");
+            // End every open SSE stream so graceful shutdown can complete.
+            hub.shutdown();
+        }
     };
 
-    let result = axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown)
-        .await
-        .map_err(|e| anyhow::anyhow!("http server error: {e}"));
+    // Backstop: every concurrent `ctrl_c()` listener fires on each SIGINT, so
+    // this future observes the FIRST Ctrl-C alongside the graceful path, then
+    // force-exits on a SECOND Ctrl-C or when the grace period elapses.
+    let force = async {
+        let _ = tokio::signal::ctrl_c().await;
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => eprintln!("second Ctrl-C, forcing exit"),
+            _ = tokio::time::sleep(GRACE) => eprintln!("grace period elapsed, forcing exit"),
+        }
+    };
+
+    let serve = axum::serve(listener, app).with_graceful_shutdown(shutdown);
+    let result = tokio::select! {
+        r = serve => r.map_err(|e| anyhow::anyhow!("http server error: {e}")),
+        // Dropping the serve future closes the listener and all connections.
+        _ = force => Ok(()),
+    };
 
     // Free the tunnel slot on the way out.
     if let Some(h) = handle {

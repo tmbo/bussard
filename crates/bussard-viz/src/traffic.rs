@@ -54,6 +54,9 @@ pub enum HubEvent {
         /// How many broadcast messages were skipped.
         count: u64,
     },
+    /// Server shutdown: every SSE stream ends on receipt so axum's graceful
+    /// shutdown is not held open forever by never-ending event streams.
+    Shutdown,
 }
 
 /// The last observed state of a single group address, for the state endpoint.
@@ -184,6 +187,15 @@ impl TrafficHub {
     /// pages refetch `/api/model`. `data` is `{ "model_version", "stats" }`.
     pub fn publish_model(&self, data: Value) {
         let _ = self.inner.tx.send(HubEvent::Model(data));
+    }
+
+    /// Broadcasts [`HubEvent::Shutdown`], ending every live SSE stream.
+    ///
+    /// Called on Ctrl-C before axum's graceful shutdown: without it, open
+    /// `/api/traffic` connections are never-ending in-flight requests that
+    /// keep the graceful shutdown waiting forever.
+    pub fn shutdown(&self) {
+        let _ = self.inner.tx.send(HubEvent::Shutdown);
     }
 
     /// Returns the backlog entries with `seq > after`, up to `limit` of the most
