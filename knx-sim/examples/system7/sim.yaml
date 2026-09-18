@@ -10,6 +10,7 @@
 #   1.1.5  MDT M-0083_A-000E  lsm_access: memory    (the memory-mapped LSM)
 #   1.1.6  MDT M-0083_A-000E  lsm_access: property  (the PID-5 property LSM)
 #   1.1.7  Jung M-0004_A-A011 lsm_access: property  (per-object MCB + TaskCtrl1)
+#   1.1.8  Theben M-0048_A-4947 (0701) lsm_access: memory (11-octet records @0x0104)
 #
 # The two MDT devices serve the same product with the two LSM realisations so a
 # tool's realisation switch is exercised against each (a real device is one or
@@ -40,3 +41,12 @@ devices:
     application: "M-0004_A-A011-13-60BC-O000A"
     initial_state: unloaded
     lsm_access: property
+
+  # A genuinely memory-mapped Theben 0701 device (Meteodata is not in the corpus;
+  # the FIX2 DM 4T shares the 0701 family memory-mapped LSM realisation). bussard
+  # selects memory-mapped for 0701 from its mask-family default — no env override.
+  - address: "1.1.8"
+    knxprod: "products/T4940275_KNX_FIX2_Dimmaktor_V1.0_ETS4.knxprod"
+    application: "M-0048_A-4947-10-4918"
+    initial_state: unloaded
+    lsm_access: memory
