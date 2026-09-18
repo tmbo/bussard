@@ -341,7 +341,14 @@ impl Device {
                 mm_lsm: profile::MemoryMappedLsm::default(),
                 memory_map: profile::Sys7MemoryMap::default(),
                 bcu_key: overrides.bcu_key,
-                hardware_type: profile::default_hardware_type(product.application_number),
+                // Prefer the value the app's own CompareProp preflight expects
+                // (a factory device holds exactly that); fall back to the
+                // derived default only when the procedure carries no compare.
+                hardware_type: product
+                    .hardware_type_marker
+                    .as_deref()
+                    .and_then(|m| <[u8; 10]>::try_from(m).ok())
+                    .unwrap_or_else(|| profile::default_hardware_type(product.application_number)),
             }),
             profile::MaskFamily::Other => {
                 return Err(format!(

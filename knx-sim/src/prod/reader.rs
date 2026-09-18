@@ -86,6 +86,18 @@ pub fn read_knxprod_bytes(
     Err(ProdError::NoApplicationProgram)
 }
 
+/// Decode an even-length hex string (as used by `InlineData`); `None` on any
+/// malformed input rather than a partial value.
+fn decode_hex(s: &str) -> Option<Vec<u8>> {
+    if s.len() % 2 != 0 {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+        .collect()
+}
+
 fn attr<'a>(e: &'a quick_xml::events::BytesStart<'a>, key: &str) -> Option<String> {
     e.attributes().flatten().find_map(|a| {
         if a.key.as_ref() == key.as_bytes() {
@@ -131,6 +143,7 @@ fn parse_application_program(
     let mut has_comobject_table = false;
     let mut segments: Vec<RelativeSegment> = Vec::new();
     let mut load_procedures: Vec<LoadProcedure> = Vec::new();
+    let mut hardware_type_marker: Option<Vec<u8>> = None;
 
     // Transient state while parsing a RelativeSegment (which has a child <Data>).
     let mut cur_segment: Option<RelativeSegment> = None;
@@ -222,6 +235,19 @@ fn parse_application_program(
                         });
                     }
                 }
+                b"LdCtrlCompareProp" => {
+                    // The object-0 PID 78 preflight carries the device's
+                    // hardware-type marker as inline hex. Capture it so the
+                    // simulated device can seed PID 78 with the value its own
+                    // vendor procedure expects (see `ProductData`).
+                    if in_app
+                        && parse_u32(&e, "ObjIdx")?.unwrap_or(u32::MAX) == 0
+                        && parse_u32(&e, "PropId")?.unwrap_or(0) == 78
+                        && let Some(hex) = attr(&e, "InlineData")
+                    {
+                        hardware_type_marker = decode_hex(&hex);
+                    }
+                }
                 _ => {}
             },
             Event::Text(t) if in_data => {
@@ -306,6 +332,7 @@ fn parse_application_program(
         objects,
         load_procedures,
         segments,
+        hardware_type_marker,
     }))
 }
 
