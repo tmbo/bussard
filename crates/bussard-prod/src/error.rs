@@ -32,6 +32,51 @@ pub enum ProdError {
         entry: String,
     },
 
+    /// A ZIP-served wrapper held more than one inner `.knxprod`, so it is
+    /// ambiguous which product to import. The caller should pick one (e.g. via
+    /// `import-product --inner <name>`).
+    #[error(
+        "{path} is a ZIP wrapping multiple .knxprod files; pick one with \
+         --inner <name>. Candidates: {}",
+        entries.join(", ")
+    )]
+    AmbiguousWrapper {
+        /// The wrapper archive being read.
+        path: PathBuf,
+        /// The inner `.knxprod` entry names, sorted.
+        entries: Vec<String>,
+    },
+
+    /// A ZIP-served wrapper's inner `.knxprod` decompressed past the size cap
+    /// (a zip-bomb guard); it is rejected rather than buffered.
+    #[error(
+        "{path}: inner .knxprod `{entry}` exceeds the {cap}-byte decompression \
+         cap; refusing to buffer it"
+    )]
+    InnerTooLarge {
+        /// The wrapper archive being read.
+        path: PathBuf,
+        /// The inner `.knxprod` entry that was too large.
+        entry: String,
+        /// The cap in bytes.
+        cap: u64,
+    },
+
+    /// A ZIP-served wrapper's inner `.knxprod` was itself a wrapper. Unwrapping
+    /// recurses at most one level, so a doubly wrapped archive is rejected.
+    #[error(
+        "{path}: inner .knxprod `{outer}` is itself a wrapper (contains \
+         `{inner}`); nested wrappers are not supported"
+    )]
+    NestedWrapper {
+        /// The outer wrapper archive being read.
+        path: PathBuf,
+        /// The inner `.knxprod` entry that turned out to be a wrapper.
+        outer: String,
+        /// The `.knxprod` found nested inside it.
+        inner: String,
+    },
+
     /// A parameter's default (or override) could not be laid into its segment
     /// memory image: the value did not parse for its type, exceeded the field's
     /// declared width, or the memory location was incomplete.
