@@ -262,7 +262,7 @@ pub fn memory_chunk_for_apdu(max_apdu: u16) -> u8 {
 /// rather than 63.
 pub fn extended_memory_chunk_for_apdu(max_apdu: u16) -> u16 {
     let usable = max_apdu.saturating_sub(u16::from(EXTENDED_MEMORY_APDU_OVERHEAD));
-    usable.min(MAX_EXTENDED_MEMORY_LEN).max(1)
+    usable.clamp(1, MAX_EXTENDED_MEMORY_LEN)
 }
 
 /// The property-read value-octet cap for a device advertising `max_apdu` NPDU
@@ -660,7 +660,10 @@ pub struct ExtendedMemoryRequest {
 /// write carries them; a read does not). Returns `None` if the payload is shorter
 /// than the 4-octet `[count][addr:3]` header, or, for a write, holds fewer data
 /// octets than `count` advertises.
-pub fn decode_memory_extended_request(payload: &[u8], is_write: bool) -> Option<ExtendedMemoryRequest> {
+pub fn decode_memory_extended_request(
+    payload: &[u8],
+    is_write: bool,
+) -> Option<ExtendedMemoryRequest> {
     if payload.len() < 4 {
         return None;
     }
@@ -711,7 +714,11 @@ pub fn encode_memory_extended_write_response(return_code: u8, addr: u32) -> (u16
 /// [`A_MEMORY_EXTENDED_READ_RESPONSE`] with payload
 /// `[return_code][addr_hi, addr_mid, addr_lo][data…]`. Used by device-side
 /// mocks/tests.
-pub fn encode_memory_extended_read_response(return_code: u8, addr: u32, data: &[u8]) -> (u16, Vec<u8>) {
+pub fn encode_memory_extended_read_response(
+    return_code: u8,
+    addr: u32,
+    data: &[u8],
+) -> (u16, Vec<u8>) {
     let mut payload = Vec::with_capacity(4 + data.len());
     payload.push(return_code);
     payload.extend_from_slice(&addr_3_octets_be(addr));
@@ -1048,7 +1055,10 @@ mod tests {
         assert_eq!(extended_memory_chunk_for_apdu(233), 228);
         assert_eq!(extended_memory_chunk_for_apdu(55), 50);
         // Capped at the 228 ceiling and never below 1.
-        assert_eq!(extended_memory_chunk_for_apdu(1000), MAX_EXTENDED_MEMORY_LEN);
+        assert_eq!(
+            extended_memory_chunk_for_apdu(1000),
+            MAX_EXTENDED_MEMORY_LEN
+        );
         assert_eq!(extended_memory_chunk_for_apdu(0), 1);
     }
 

@@ -231,6 +231,103 @@ fn corpus_never_emits_duplicate_consecutive_allocations() {
     eprintln!("duplicate-allocation guard checked {checked_plans} executable plan(s).");
 }
 
+/// Extended-memory regression guard, run against the real corpus when present.
+///
+/// The four real ETS6 downloads analysed in `scratchpad/ets-analysis/sysb-{a,c}.md`
+/// place their loadable segments **above 0x10000** (the Jung Schaltaktor-24
+/// `A-20D7` at `0xf000..0x1aad3`, the Heizungsaktor-6 `A-20E0` at
+/// `0xf000..0x17d89`, the Tastsensor `A-D142` at `0xf000..0x17805`, the ABB
+/// BE/S16 `A-A0ED` at `0x18000..0x19242`). Before the extended-memory work
+/// `plan_flash` refused these at pre-flight with `AddressOutOfRange` (the 16-bit
+/// guard). Now each must lower to an **executable** plan — the address width is
+/// 24-bit and the flash engine selects `A_MemoryExtended_Write` at flash time from
+/// the device-supplied base. The plan does not itself pick the service (the base
+/// is device-supplied), so the assertion is that these known >64K-segment apps are
+/// no longer refused.
+///
+/// Env-gated exactly like the sweep: an absent corpus skips cleanly, so CI never
+/// needs the copyrighted vendor data. The apps are matched by app-id substring, so
+/// a corpus missing a given product simply skips it (reported), never fails.
+#[test]
+fn corpus_extended_memory_apps_lower_to_executable_plans() {
+    let Some(dir) = std::env::var_os("BUSSARD_PRODUCT_CORPUS") else {
+        eprintln!("BUSSARD_PRODUCT_CORPUS unset; skipping the extended-memory guard.");
+        return;
+    };
+    let dir = PathBuf::from(dir);
+    let files = knxprod_files(&dir);
+    if files.is_empty() {
+        eprintln!("corpus empty; skipping the extended-memory guard.");
+        return;
+    }
+
+    // App-id prefixes of the four capture devices whose segments exceed 0xFFFF.
+    const EXTENDED_APP_PREFIXES: &[&str] = &[
+        "M-0004_A-20D7", // Jung Schaltaktor-24 / Jalousie-12
+        "M-0004_A-20E0", // Jung Heizungsaktor-6 (capture version + sibling)
+        "M-0004_A-D142", // Jung Tastsensor Universal 2f
+        "M-0002_A-A0ED", // ABB BE/S16 binary input
+    ];
+
+    let mut found = 0usize;
+    for file in &files {
+        let Ok(product) = bussard_prod::read_knxprod(file) else {
+            continue;
+        };
+        for app in &product.applications {
+            if !EXTENDED_APP_PREFIXES.iter().any(|p| app.id.starts_with(p)) {
+                continue;
+            }
+            found += 1;
+            let mask = app
+                .mask_version
+                .as_deref()
+                .and_then(|m| u16::from_str_radix(m.trim(), 16).ok())
+                .expect("a capture 07B0 app must declare a hex mask");
+            match plan_flash(
+                app,
+                "1.1.1",
+                mask,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                None,
+                &BTreeMap::new(),
+            ) {
+                Ok(plan) => {
+                    assert!(
+                        plan.steps
+                            .iter()
+                            .any(|s| matches!(s, FlashStep::WriteRelMem { .. })),
+                        "app {} must stream a relative segment",
+                        app.id
+                    );
+                    eprintln!(
+                        "extended-memory: {} lowered to an executable plan ({} step(s), {} write byte(s))",
+                        app.id,
+                        plan.steps.len(),
+                        plan.total_write_bytes(),
+                    );
+                }
+                Err(e) => panic!(
+                    "app {} (a >64K-segment capture device) must lower to an executable \
+                     plan now that the extended memory service is supported, but was \
+                     refused: {e}",
+                    app.id
+                ),
+            }
+        }
+    }
+
+    if found == 0 {
+        eprintln!(
+            "extended-memory guard: none of the four capture products \
+             ({EXTENDED_APP_PREFIXES:?}) are in this corpus; nothing to assert."
+        );
+    } else {
+        eprintln!("extended-memory guard checked {found} capture app(s).");
+    }
+}
+
 /// Classifies one application by attempting a dry-run plan against its own mask.
 fn classify(app: &bussard_prod::ApplicationProgram) -> Class {
     // Plan against the app's OWN declared mask so the System B gate and the mask

@@ -239,15 +239,16 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
             if crate::load::select_extended_memory(chunk_addr, take) {
                 let (req_apci, payload) = apci::encode_memory_extended_write(chunk_addr, piece);
                 let (resp_apci, resp) = self.inner.request(req_apci, &payload).await?;
-                let parsed = apci::decode_memory_extended_response(resp_apci, &resp).ok_or_else(
-                    || MgmtError::MalformedResponse {
-                        address: self.inner.target(),
-                        reason: format!(
-                            "expected A_MemoryExtended_Write_Response ({})",
-                            raw_response_detail(resp_apci, &resp)
-                        ),
-                    },
-                )?;
+                let parsed =
+                    apci::decode_memory_extended_response(resp_apci, &resp).ok_or_else(|| {
+                        MgmtError::MalformedResponse {
+                            address: self.inner.target(),
+                            reason: format!(
+                                "expected A_MemoryExtended_Write_Response ({})",
+                                raw_response_detail(resp_apci, &resp)
+                            ),
+                        }
+                    })?;
                 if parsed.return_code != 0 {
                     return Err(MgmtError::MemoryVerifyFailed {
                         address: self.inner.target(),
