@@ -25,6 +25,26 @@ pub fn da_tp_knxprod() -> Option<Vec<u8>> {
     std::fs::read(da_tp_knxprod_path()).ok()
 }
 
+/// The path where the Jung 3361-1M (`M-0004_A-A011`, mask 0705) calibration
+/// `.knxprod` is expected: the product-corpus cache the repo's `fetch.sh`
+/// populates (`tests-support/product-corpus/cache/vendor/`). Vendor data is
+/// copyrighted and git-ignored, so tests read it at runtime and skip when absent.
+pub fn jung_3361_knxprod_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("tests-support")
+        .join("product-corpus")
+        .join("cache")
+        .join("vendor")
+        .join("de_3361-1m_V1.3_2020-05.knxprod")
+}
+
+/// Load the Jung 3361-1M calibration `.knxprod` bytes, or `None` if the
+/// (un-committed, copyrighted) vendor file is not present in the corpus cache.
+pub fn jung_3361_knxprod() -> Option<Vec<u8>> {
+    std::fs::read(jung_3361_knxprod_path()).ok()
+}
+
 /// A synthetic MDT-canonical System 7 product (`M-0083_A-000E`, mask 0705),
 /// built in memory so the System 7 conformance tests need no vendor fixture.
 ///

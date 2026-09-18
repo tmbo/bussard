@@ -144,11 +144,18 @@ Extract, per mask version:
 
 **Fallback when `HawkConfigurationData` is absent or unparsable:** fall back to
 the corpus-derived defaults hardcoded as a *named default profile* (not scattered
-constants): LSM realisation = memory-mapped (section 5 default), addresses from
-segment `Address`, authorize with the free-access key. Emit an `S7-CAL:` log line
-naming the mask so the gap is greppable. The download must still be attemptable
-on a device whose product data lacks the block, because the corpus shape is
-uniform enough to drive blind.
+constants): LSM realisation = property (section 5 default, M2 CONFIRMED),
+addresses from segment `Address`, authorize with the free-access key. The download
+must still be attemptable on a device whose product data lacks the block, because
+the corpus shape is uniform enough to drive blind.
+
+**M2 caveat on the Hawk block itself.** The Jung MV-0705 `HawkConfigurationData`
+carries a `LoadControl_M112 @ StandardMemory 0x0104` block, which pre-M2 was read
+as "this device's LSM is a 12-octet memory record". The M2 capture disproved that
+reading (control is property; see section 5). So bussard's normal flash path does
+**not** feed a parsed Hawk config to the planner — it plans with the property
+corpus default. `sys7_profile_from_hawk` stays for the memory-mapped conformance
+harness only.
 
 For M1 the sim and bussard MAY share a single hand-written default profile
 matching `M-0083_A-000E`; `HawkConfigurationData` parsing is the M1.5 hardening
@@ -257,11 +264,20 @@ zero-page RAM, 2 = RAM, 3 = EEPROM. `mem_attr` bit 7 = checksum-control enable.
 `AbsSegment{lsm_idx, address, size}` lowers to two device actions:
 
 1. **Allocate:** an `AdditionalLoadControls` "Alloc absolute Data segment"
-   (subtype 0x00) record for the LSM, filled `[start=address:2][length=size:2]
-   [access][mem_type][mem_attr]`. `access`/`mem_type`/`mem_attr` are UNKNOWN
-   from public sources for 0705; default `access=0x00`, `mem_type` = EEPROM (3)
-   for 0x4000/0x4201/0x4400 and RAM (2) for 0x0700-region allocs, `mem_attr=0x00`.
-   `S7-CAL: capture the exact alloc-record access/mem_type/mem_attr octets`.
+   (subtype 0x00) record for the LSM, filled
+   `[event=3][subtype=0][start:2 BE][length:2 BE][seg_flags][mem_type][checksum_ctrl][reserved]`.
+   **M2 CONFIRMED** (cross-checked against the Jung app M-0004_A-A011's declared
+   AbsSegment addresses/sizes): the opcode/subtype, the big-endian `start` and
+   `length` (= the declared segment size in octets), and `mem_type` at octet 7 —
+   `2` (RAM) for the `0x0700` low-RAM region, `3` (EEPROM) for the `0x4xxx`
+   table/param regions. Every captured record's length equals the product's
+   declared size (e.g. `0x43FF` size 811 = `0x032B`; `0x4743` size 260 = `0x0104`).
+   Two attribute octets are shown by the capture but not yet derivable from
+   product data, so bussard emits `0`: `seg_flags` (octet 6, observed `0xF2`/`0xF3`)
+   and `checksum_ctrl` (octet 8, observed `0x80`/`0x00`). A 0705 device keys the
+   allocation on subtype + start + length, so a zero attribute tail still drives it
+   to `Loaded`. `S7-CAL: derive the alloc-record seg_flags (0xF2/0xF3) and
+   checksum_ctrl (0x80/0x00) octets from product data`.
 2. **Stream payload:** if the segment carries `<Data>`, write those bytes to
    `address` via absolute `A_Memory_Write` in 12-octet chunks (section 6). **The
    segment `<Data>` IS the payload** — there is no separate `WriteMem` op
@@ -277,10 +293,13 @@ a write into a masked region, must accept the owned bytes and preserve the rest.
 `TaskSegment{lsm_idx, address}` `[corpus: 47/49]` writes a task/segment
 descriptor pointing at the segment base, issued once per LSM immediately before
 `LoadCompleted`. Realisation: an `AdditionalLoadControls` record carrying the
-address (the exact subtype for TaskSegment vs the AllocTask 0x02 form is
-UNKNOWN). Default: encode as AllocAbsTaskSegment (subtype 0x02) with
-`start=address`, `length` = the LSM's total loaded span. `S7-CAL: confirm the
-TaskSegment sub-command byte and its length field`.
+address. Default: encode as AllocAbsTaskSegment (subtype 0x02) with
+`start=address`, `length` = the LSM's total loaded span. **M2 CONFIRMED** the
+`[03][02][address:2 BE]` prefix (LSM1 `0x4000`, LSM2 `0x41FF`, LSM3 `0x4722`); in
+the capture the length field was `0x0000` and the four trailing octets a fixed
+`04 a0 11 13` marker. bussard's `length=span` form still drives the sim to Loaded
+(it keys the finalize on subtype + address). `S7-CAL: confirm the TaskSegment
+length field (0x0000 vs span) and the trailing 04 a0 11 13 marker`.
 
 The sim must accept a TaskSegment in `Loading` state and treat it as "segment
 descriptor committed"; it is a precondition for the following `LoadCompleted`.
@@ -295,9 +314,12 @@ plus Jung M-0004_A-A011]` is `AdditionalLoadControls` subtype 0x04,
 TaskCtrl1 on LSM 3, so it is on the conformance hot path, not a second-phase op.
 bussard plans and executes it; the sim decodes subtype 0x04 into `TaskCtrl1
 {address, count}` and accepts it while `Loading` with no memory side effect in
-the M1 model (like TaskSegment). `S7-CAL: confirm the TaskCtrl1 record layout,
-the count semantics, and whether the entry write has an observable memory effect
-against a live capture.`
+the M1 model (like TaskSegment). **M2 CONFIRMED** the `03 04` opcode is on the
+Jung download hot path (a single TaskCtrl1 on LSM 3), but the captured record was
+`03 04` then all-zero (address 0, count 0), so the product's declared
+address/count are not carried on the wire the way this encoder lays them out; the
+sim's no-side-effect accept still reaches Loaded. `S7-CAL: reconcile the TaskCtrl1
+address/count fields with the captured all-zero record.`
 
 ### 4.5 CompareMem
 
@@ -325,24 +347,40 @@ derives run-state from the loaded tables, ETS only checks `[corpus §5]`.
 
 ---
 
-## 5. LSM realisation — the open question, handled honestly
+## 5. LSM realisation — RESOLVED by the M2 capture
 
-**This is the single most important design decision and the one point where the
-two research inputs disagree.**
+**This was the single most important open question. The M2 live capture (issue
+#70, a real ETS 6 download to a Jung 3361-1M / mask 0705) settled it: load control
+is property-based.**
+
+**Verdict (M2 Jung 0705 capture CONFIRMED):** the real device drives its LSMs
+**property-based** — every Unload / StartLoading / AbsSegment / TaskSegment /
+LoadCompleted is an `A_PropertyValue_Write(objN, PID 5, 10-octet load event, one
+element at index 1)`, and state is read back via `A_PropertyValue_Read(objN, PID
+5)`. There is **no `A_Memory_Write` to `0x0104`** anywhere in the capture. The
+only `0xB6EA+` touch is a single `A_Memory_Read` at `0xB6EC` returning `00`, so
+that region is a **readable status region**, not a written control record. So
+[`LsmAccess::Property`] is the default; the memory-mapped variant is kept for
+silicon a future capture proves genuinely memory-mapped.
+
+The two research inputs that disagreed before M2:
 
 - **Standards/clean-room research** (`system7-research.md` 2.1): System 7 is a
   BCU2 descendant; the KNX LSM is property-based — load events written to
   `PID_LOAD_STATE_CONTROL` (PID 5) via `A_PropertyValue_Write`, state read back
-  via `A_PropertyValue_Read`. CONFIRMED for the BCU2/System B lineage;
-  INFERRED-strong for 0705.
+  via `A_PropertyValue_Read`. **M2 confirmed this is correct for 0705.**
 - **First-party evidence** (`[issue #49]`, from `.knxprod` HawkConfigurationData
-  + ETS analysis): BIM M112 (0705/0701) realises the LSM as a **12-octet record
-  written by `A_Memory_Write` to address 0x0104, with status bytes at 0xB6EA+**.
-  INFERRED, no public corroboration. The corpus agrees the mechanism is
-  memory-mapped (LSM control over `A_Memory_Write`, not PID 5) `[corpus §5]`.
+  + ETS analysis): the `.knxprod` `HawkConfigurationData` carries a
+  `LoadControl_M112 @ StandardMemory 0x0104` block with status at `0xB6EA+`, read
+  as evidence the LSM is a **12-octet memory record**. **M2 disproved this
+  reading:** the `LoadControl_M112 @ 0x0104` Hawk block did NOT predict the wire —
+  control is property; `0xB6EA+` is a readable status region (the single read at
+  `0xB6EC`), not a control-write target. `sys7_profile_from_hawk` no longer feeds
+  the normal CLI flash path (it plans with the property corpus default); the
+  helper stays only for the memory-mapped conformance harness.
 
-**Resolution — do not pick a winner; implement a seam.** Both sides define an
-`LsmAccess` abstraction with two variants:
+**Both realisations stay behind an `LsmAccess` seam** with two variants (property
+default, memory-mapped alternative):
 
 ```
 trait LsmAccess {
@@ -357,27 +395,30 @@ trait LsmAccess {
   address (default 0x0104), poll status at the status address (default 0xB6EA+),
   both via `A_Memory_Write`/`_Read`. First-party / corpus evidence.
 
-The 12-octet memory record is hypothesised as a **2-octet prefix (LSM index or
-object type) + the standard 10-octet load event** `[research 2.1, testable]`.
-Default M1 encoding: `[lsm_index:1][0x00][10-octet load event]`. `S7-CAL:
-confirm the 12-octet LoadControl_M112 record layout (prefix meaning + the
-0xB6EA+ status byte semantics and poll protocol)`.
+The memory-mapped variant's 12-octet record is `[lsm_index:1][0x00][10-octet load
+event]` written to the control address (default `0x0104`), status polled at the
+status address (default `0xB6EA+`). This variant is unexercised by any live
+capture; its record layout remains an `S7-CAL:` on the memory-mapped path
+(`bussard_mgmt::wrap_memory_lsm_record`).
 
-**Default:** `MemoryMapped` — it is what both the corpus and the first-party
-evidence show for the actual 0705 devices bussard must flash. Select it from
-`HawkConfigurationData` when present; fall back to `MemoryMapped` for System 7
-otherwise. `LsmAccess::Property` is built but not the default; it exists so that
-if a capture proves a given 0705 silicon is property-based, flipping the profile
-bit is a one-line change.
+**Default:** `Property` — the M2 Jung 0705 capture proved the real device drives
+load control over PID 5. The corpus fallback profile is property; a
+`HawkConfigurationData` block may still select `MemoryMapped` for silicon that
+uses it, but the normal CLI flash path plans with the property default (it does
+not feed a Hawk config to the planner). `LsmAccess::MemoryMapped` is built and
+kept so bussard's realisation switch can be conformance-tested against a
+memory-mapped device side (`BUSSARD_FLASH_SYS7_LSM=memory`).
 
-**The sim MUST implement the device side of BOTH variants** (memory writes to
-0x0104 with 0xB6EA+ status, and PID-5 property writes/reads) and select by a
-construction-time flag, so bussard can be conformance-tested against either
-realisation without a second sim.
+**The sim implements the device side of BOTH variants** (PID-5 property
+writes/reads as the default, plus memory writes to 0x0104 with 0xB6EA+ status)
+and selects by a construction-time flag, so bussard can be conformance-tested
+against either realisation without a second sim.
 
-Calibration constants the M2 capture must confirm (all `S7-CAL:`): LSM control
-address (0x0104?), status address (0xB6EA+?), record length (12?), prefix
-meaning, status-byte encoding, whether Property is ever used on real 0705.
+M2-resolved calibration constants (were `S7-CAL:`, now CONFIRMED): LSM realisation
+= property (PID 5); free-access authorize with `0xFFFFFFFF` → level 0; max-APDU
+absent → 15-octet floor → 12-octet chunks; MCB via `A_PropertyValue_Read(PID 27)`;
+bare-0x380 fire-and-forget restart. Still `S7-CAL:` (memory-mapped path only, no
+live capture): the 12-octet record prefix meaning and the 0xB6EA+ poll protocol.
 
 ---
 
@@ -385,10 +426,16 @@ meaning, status-byte encoding, whether Property is ever used on real 0705.
 
 - **12-octet memory chunks on standard frames.** System 7 has no extended-frame
   guarantee; treat max APDU as 15 → 12 data octets per `A_Memory_Write`/`_Read`
-  (3-octet header: APCI+count, addr-hi, addr-lo) `[research 5.1/5.3, XKNX PR#1938,
-  CONFIRMED]`. This is exactly `CONSERVATIVE_MEMORY_CHUNK = 12` in `apci.rs`.
-  Do **not** use the 63-octet `MAX_MEMORY_*_LEN` ceiling (that is the System B
-  extended-frame path). Fallback max-APDU when unreadable = 15 `[XKNX PR#1834]`.
+  (3-octet header: APCI+count, addr-hi, addr-lo) `[research 5.1/5.3, XKNX PR#1938;
+  M2 Jung 0705 capture CONFIRMED]`. The M2 capture is byte-exact on this: every
+  segment `A_Memory_Write` carried exactly 12 data octets on a standard frame
+  (only the trailing partial chunks were shorter), across the whole 0x4000–0x4916
+  span, with no extended frames. This is exactly `CONSERVATIVE_MEMORY_CHUNK = 12`
+  in `apci.rs`. Do **not** use the 63-octet `MAX_MEMORY_*_LEN` ceiling (that is
+  the System B extended-frame path). Fallback max-APDU when unreadable = 15
+  `[XKNX PR#1834; M2 CONFIRMED]`. In the M2 capture, `PropRead(obj0, PID 56)`
+  returned count 0 (`47 d6 00 38 00 01`) — max-APDU absent — and ETS fell back to
+  the 15-octet standard-frame floor exactly as bussard does.
 - **APDU byte layouts** `[research 5.2, CONFIRMED]`:
   - `A_Memory_Read` APCI 0x0200: `[TPCI|APCI-hi][APCI-lo|count&0x3F][addr-hi][addr-lo]`.
   - `A_Memory_Response` APCI 0x0240: same header + `count` data octets.
@@ -408,21 +455,29 @@ meaning, status-byte encoding, whether Property is ever used on real 0705.
   Key_Write:          [APCI][level:1][key:4 BE]
   Key_Response:       [APCI][level:1]
   ```
-  `S7-CAL: is A_Authorize mandatory on unkeyed 0705 before memory writes, and
-  does 0xFFFFFFFF suffice`. The sim must accept the free-access key and grant a
-  usable level, and (optionally) reject memory writes issued before a successful
-  authorize so bussard's ordering is tested.
+  **M2 CONFIRMED:** the Jung 0705 download authorized with the free-access key —
+  `Authorize_Request [d1 00 ff ff ff ff]` → `Authorize_Response [d2 00]` (level 0)
+  — exactly the `[APCI][reserved=0x00][key:4 BE]` / `[APCI][level:1]` layout above,
+  so `0xFFFFFFFF` suffices on an unkeyed device. The sim must accept the free-access
+  key and grant a usable level, and (optionally) reject memory writes issued before
+  a successful authorize so bussard's ordering is tested.
 - **Verification = read-back compare.** `A_Memory_Write` is unconfirmed; verify
   by `A_Memory_Read` + compare of echoed address, length, and bytes; a short
   response is an error `[research 3.1, AL 03.03.07 §3.5, CONFIRMED]`. MCB is
   app-dependent on System 7: absent from the MDT-era corpus but demanded by
-  Jung `A-A011` via `LoadImageProp` PID 27 — see the section 2 amendment.
+  Jung `A-A011` via `LoadImageProp` PID 27 — see the section 2 amendment. **M2
+  CONFIRMED:** ETS verified the Jung MCB by *reading* `PID 27 (0x1B)` per object
+  (`PropRead [d5 03 1b 10 01]` on objects 1/2/3, object 3 across start indices
+  1..6), never writing it — exactly `A_PropertyValue_Read(PID_MCB_TABLE)`.
   Segment checksums (last byte of a checksum-enabled segment) exist on
   the BCU2 lineage but are not required for M1.
-- **Restart semantics** `[research 6.3]`. Basic Restart APCI 0x380, no payload,
-  fire-and-forget, breaks the management connection — bussard reconnects after
-  the device reboots. Every load procedure ends with a restart `[corpus: 47/49]`.
-  Master-reset request/response caveats are errata (section 8).
+- **Restart semantics** `[research 6.3; M2 Jung 0705 capture CONFIRMED]`. Basic
+  Restart APCI 0x380, no payload, fire-and-forget, breaks the management
+  connection — bussard reconnects after the device reboots. The M2 capture shows
+  exactly this: bare `[4f 80]` / `[6f 80]` restarts with no payload and no
+  `RestartResponse`, no master-reset (0x381/0x3A1) variant anywhere in a normal
+  download. Every load procedure ends with a restart `[corpus: 47/49]`.
+  Master-reset request/response caveats are errata (section 8), unaffected by M2.
 
 ---
 

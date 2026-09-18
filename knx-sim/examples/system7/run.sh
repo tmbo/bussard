@@ -7,9 +7,13 @@
 # property-based) and the Jung MCB / TaskCtrl1 download path.
 #
 # Devices (all mask 0705):
-#   1.1.5  MDT  M-0083_A-000E   memory-mapped LSM
-#   1.1.6  MDT  M-0083_A-000E   property (PID-5) LSM   [BUSSARD_FLASH_SYS7_LSM=property]
-#   1.1.7  Jung M-0004_A-A011   per-object MCB (PID 27) + TaskCtrl1
+#   1.1.5  MDT  M-0083_A-000E   memory-mapped LSM      [BUSSARD_FLASH_SYS7_LSM=memory]
+#   1.1.6  MDT  M-0083_A-000E   property (PID-5) LSM    (bussard's default)
+#   1.1.7  Jung M-0004_A-A011   per-object MCB (PID 27) + TaskCtrl1, property (default)
+#
+# Property is bussard's default LSM realisation (M2 Jung 0705 capture, issue #70):
+# 1.1.6 and 1.1.7 are flashed with no env override; 1.1.5 is pointed at the
+# memory-mapped side with BUSSARD_FLASH_SYS7_LSM=memory.
 #
 # Exits non-zero if any device does not reach a verified Loaded. Run from
 # anywhere:
@@ -121,12 +125,12 @@ flash_dev() {
   fi
 }
 
-# 1.1.5 — memory-mapped LSM (the product-driven default).
-flash_dev 1.1.5 MDT_KP_AKK_03_Switch_Actuator_V23 M-0083_A-000E-23-2274
-# 1.1.6 — property (PID-5) LSM: the same product, bussard's realisation switch
-# flipped to property so the property device side is exercised.
-flash_dev 1.1.6 MDT_KP_AKK_03_Switch_Actuator_V23 M-0083_A-000E-23-2274 BUSSARD_FLASH_SYS7_LSM=property
-# 1.1.7 — Jung: per-object MCB (LoadImageProp PID 27) + TaskCtrl1.
+# 1.1.5 — memory-mapped LSM: the same product with bussard's realisation switch
+# flipped to memory so the memory-mapped device side is exercised.
+flash_dev 1.1.5 MDT_KP_AKK_03_Switch_Actuator_V23 M-0083_A-000E-23-2274 BUSSARD_FLASH_SYS7_LSM=memory
+# 1.1.6 — property (PID-5) LSM: bussard's default realisation, no env override.
+flash_dev 1.1.6 MDT_KP_AKK_03_Switch_Actuator_V23 M-0083_A-000E-23-2274
+# 1.1.7 — Jung: per-object MCB (LoadImageProp PID 27) + TaskCtrl1, property (default).
 flash_dev 1.1.7 de_3361-1m_V1.3_2020-05 M-0004_A-A011-13-60BC-O000A
 
 rm -f "$SIM_LOG"
