@@ -797,12 +797,24 @@ fn encode_int_bits(
     };
 
     if bits > 64 {
-        // Integers wider than 64 bits do not occur in ETS parameter memory.
-        return Err(param_err(
-            app,
-            pname,
-            &format!("unsupported integer field width of {bits} bits"),
-        ));
+        // Wide fields do occur: byte-aligned "object link" parameters (e.g. the
+        // Theben Meteodata's 472-bit `Objektlink`) are effectively fixed-size byte
+        // blobs whose default is a small value (usually 0). Lay the value down
+        // big-endian, zero-extended to the full width, matching the byte-multiple
+        // `Other` convention. A non-byte-aligned field this wide does not occur;
+        // refuse it rather than guess a bit placement.
+        if bits % 8 != 0 {
+            return Err(param_err(
+                app,
+                pname,
+                &format!("unsupported integer field width of {bits} bits (not byte-aligned)"),
+            ));
+        }
+        let mut buf = vec![0u8; (bits / 8) as usize];
+        let v = unsigned.to_be_bytes();
+        let start = buf.len() - v.len();
+        buf[start..].copy_from_slice(&v);
+        return Ok(Placement::Bytes(buf));
     }
     // A general MSB-first bit field: `place` writes it into the byte image at
     // the parameter's `BitOffset`, spanning byte boundaries where needed (ETS
