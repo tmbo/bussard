@@ -8,9 +8,10 @@
 //!
 //! This module decodes that record into a [`Sys7Event`] the device applies to
 //! the addressed LSM, and provides the two device-side LSM realisations
-//! ([`crate::device::profile::LsmAccess`]): a 12-octet memory-mapped record and
-//! the property-based (PID 5) form. Both decode to the same [`Sys7Event`], so the
-//! device logic is realisation-independent.
+//! ([`crate::device::profile::LsmAccess`]): the 11-octet memory-mapped record
+//! (Theben 0701 form, [`decode_memory_lsm_record`]) and the property-based (PID
+//! 5) form. Both decode to the same [`Sys7Event`], so the device logic is
+//! realisation-independent.
 
 /// A decoded System 7 load event (spec §4.1 / §4.2 / §4.3 / §4.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +125,40 @@ impl Sys7Event {
     }
 }
 
+/// The width of the memory-mapped LSM control record: **11 octets** (Theben 0701
+/// Meteodata capture; every `MemoryWrite @0x0104` was `n=11`).
+pub const MEMORY_LSM_RECORD_SIZE: usize = 11;
+
+/// Decode the 11-octet memory-mapped LSM control record written to the control
+/// address into its `(lsm_index, 10-octet abstract event)` (spec §5).
+///
+/// The record layout (Theben 0701 Meteodata capture CONFIRMED) is:
+/// ```text
+/// [0] (lsm_index << 4) | event_opcode   [1] subtype   [2] 0x00 (addr high octet)
+/// [3..5] start:2 BE   [5..7] length:2 BE   [7..11] tail
+/// ```
+/// The LSM index lives in the high nibble of octet 0 (there is no separate
+/// `[lsm][00]` prefix), and the start address occupies 3 octets. This narrows the
+/// 3-octet address back to the 2-octet abstract form ([`Sys7Event::decode`]
+/// consumes a 2-octet address at `record[2..4]`), i.e. the exact inverse of the
+/// tool-side `wrap_memory_lsm_record`.
+pub fn decode_memory_lsm_record(record: &[u8]) -> Result<(u8, [u8; 10]), Sys7EventError> {
+    if record.len() < MEMORY_LSM_RECORD_SIZE {
+        return Err(Sys7EventError::TooShort(
+            record.first().copied().unwrap_or(0),
+        ));
+    }
+    let lsm_index = record[0] >> 4;
+    let event_opcode = record[0] & 0x0F;
+    let mut event = [0u8; 10];
+    event[0] = event_opcode;
+    event[1] = record[1]; // subtype
+    // Narrow the 3-octet start (record[2..5], high octet record[2] is 0x00) to the
+    // 2-octet abstract address, then copy length + tail verbatim.
+    event[2..10].copy_from_slice(&record[3..MEMORY_LSM_RECORD_SIZE]);
+    Ok((lsm_index, event))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,6 +170,43 @@ mod tests {
         assert_eq!(Sys7Event::decode(&[0x02]), Ok(Sys7Event::LoadCompleted));
         assert_eq!(Sys7Event::decode(&[0x04]), Ok(Sys7Event::Unload));
         assert_eq!(Sys7Event::decode(&[]), Err(Sys7EventError::Empty));
+    }
+
+    #[test]
+    fn test_decode_memory_lsm_record_theben_bytes() {
+        // Theben 0701 Meteodata capture: alloc LSM1 0x4000 len 0x1D EEPROM
+        // `13 00 00 40 00 00 1d f2 03 80 00` -> LSM 1, decodes to an alloc at
+        // 0x4000 length 0x1D (the 3-octet address narrowed to 2).
+        let rec = [
+            0x13, 0x00, 0x00, 0x40, 0x00, 0x00, 0x1D, 0xF2, 0x03, 0x80, 0x00,
+        ];
+        let (lsm, event) = decode_memory_lsm_record(&rec).expect("decodes");
+        assert_eq!(lsm, 1, "LSM index from the high nibble of octet 0");
+        assert_eq!(
+            Sys7Event::decode(&event),
+            Ok(Sys7Event::AllocAbsSegment {
+                start: 0x4000,
+                length: 0x1D,
+                subtype: 0x00,
+            })
+        );
+
+        // TaskCtrl1 LSM3 `33 04 00 46 eb 01 …` -> LSM 3, addr 0x46EB count 1.
+        let tc = [
+            0x33, 0x04, 0x00, 0x46, 0xEB, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        let (lsm, event) = decode_memory_lsm_record(&tc).expect("decodes");
+        assert_eq!(lsm, 3);
+        assert_eq!(
+            Sys7Event::decode(&event),
+            Ok(Sys7Event::TaskCtrl1 {
+                address: 0x46EB,
+                count: 1,
+            })
+        );
+
+        // A short record is refused.
+        assert!(decode_memory_lsm_record(&[0x13, 0x00]).is_err());
     }
 
     #[test]

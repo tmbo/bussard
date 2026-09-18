@@ -7,9 +7,10 @@
 # property-based) and the Jung MCB / TaskCtrl1 download path.
 #
 # Devices (all mask 0705):
-#   1.1.5  MDT  M-0083_A-000E   memory-mapped LSM      [BUSSARD_FLASH_SYS7_LSM=memory]
-#   1.1.6  MDT  M-0083_A-000E   property (PID-5) LSM    (bussard's default)
-#   1.1.7  Jung M-0004_A-A011   per-object MCB (PID 27) + TaskCtrl1, property (default)
+#   1.1.5  MDT   M-0083_A-000E  memory-mapped LSM      [BUSSARD_FLASH_SYS7_LSM=memory]
+#   1.1.6  MDT   M-0083_A-000E  property (PID-5) LSM    (bussard's 0705 default)
+#   1.1.7  Jung  M-0004_A-A011  per-object MCB (PID 27) + TaskCtrl1, property (0705 default)
+#   1.1.8  Theben M-0048_A-4947 (0701) memory-mapped 11-octet records (0701 default)
 #
 # Property is bussard's default LSM realisation (M2 Jung 0705 capture, issue #70):
 # 1.1.6 and 1.1.7 are flashed with no env override; 1.1.5 is pointed at the
@@ -58,6 +59,7 @@ ok "built bussard and knx-sim"
 declare -a NEEDED=(
   "MDT_KP_AKK_03_Switch_Actuator_V23.knxprod"
   "de_3361-1m_V1.3_2020-05.knxprod"
+  "T4940275_KNX_FIX2_Dimmaktor_V1.0_ETS4.knxprod"
 )
 CORPUS="$REPO/tests-support/product-corpus/cache/vendor"
 mkdir -p "$PRODUCTS"
@@ -132,6 +134,9 @@ flash_dev 1.1.5 MDT_KP_AKK_03_Switch_Actuator_V23 M-0083_A-000E-23-2274 BUSSARD_
 flash_dev 1.1.6 MDT_KP_AKK_03_Switch_Actuator_V23 M-0083_A-000E-23-2274
 # 1.1.7 — Jung: per-object MCB (LoadImageProp PID 27) + TaskCtrl1, property (default).
 flash_dev 1.1.7 de_3361-1m_V1.3_2020-05 M-0004_A-A011-13-60BC-O000A
+# 1.1.8 — Theben 0701: memory-mapped 11-octet records. bussard picks memory-mapped
+# from its 0701 mask-family default (no env override).
+flash_dev 1.1.8 T4940275_KNX_FIX2_Dimmaktor_V1.0_ETS4 M-0048_A-4947-10-4918
 
 rm -f "$SIM_LOG"
 

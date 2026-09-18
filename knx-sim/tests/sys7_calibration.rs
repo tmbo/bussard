@@ -159,12 +159,15 @@ trait LsmDriver {
     fn send_event(driver: &mut Driver, lsm: u8, event: &[u8; 10]);
 }
 
-/// Memory-mapped: a 12-octet record `[lsm][00][event 10]` at the control addr.
+/// Memory-mapped: the 11-octet record at the control addr (Theben 0701 form).
+/// LSM folds into the high nibble of octet 0; the 2-octet abstract address is
+/// widened to 3 octets. This mirrors the tool-side `wrap_memory_lsm_record`.
 struct MemMapped;
 impl LsmDriver for MemMapped {
     fn send_event(driver: &mut Driver, lsm: u8, event: &[u8; 10]) {
-        let mut rec = vec![lsm, 0x00];
-        rec.extend_from_slice(event);
+        let mut rec = vec![(lsm << 4) | (event[0] & 0x0F), event[1], 0x00];
+        rec.extend_from_slice(&event[2..10]);
+        assert_eq!(rec.len(), 11, "memory-mapped LSM record is 11 octets");
         driver.mem_write(0x0104, &rec);
     }
 }
