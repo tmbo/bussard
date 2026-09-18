@@ -77,6 +77,12 @@ ITR902-0001      # ITR902 KNX IP router (091A; .knxproj-extension container)
 4007841056339    # True Presence presence detector (0705)
 4007841056353    # True Presence Multisensor (0705)
 
+# --- Berker (M-0006) ---
+754411           # room thermostat w/ push-button interface (0705)
+75492001         # brightness and temperature sensor (0012)
+75730010         # alarm control panel (0701)
+7574001          # Master Control central controller (0701)
+
 # --- B.E.G. Brück Electronic (M-00C8) ---
 92432            # Luxomat PD2 dimming presence detector (0705)
 92448            # Luxomat PD2 switching presence detector (0025)
