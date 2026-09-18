@@ -7810,6 +7810,84 @@
       "redistributable": false,
       "notes": "Zennio product database. Masks: 07B0. 1 application program(s). App refs: M-0071_A-41C1-21-66B8 (07B0). Verified by download 2026-09-18 (import-product parse OK).",
       "application_ref": "M-0071_A-41C1-21-66B8"
+    },
+    {
+      "manufacturer": "Albrecht Jung",
+      "manufacturer_id": "M-0004",
+      "order_numbers": [
+        "230241SR",
+        "2302.41 S R"
+      ],
+      "name": "Jung Switch actuator 24-gang / Blinds actuator 12-gang REG (2302.41 S R, System B)",
+      "url": "https://downloads.jung.de/Downloads/Produktdownloads/Datenbank%20ETS5%20-%20ETS6%20Secure/KNX/all_230xx1SR_V2-6_20250226.zip",
+      "sha256": "b516dc05b01423b53e931f39274e65d13bf4d37ea8d62144199d73ec4e48a43c",
+      "size": 19579635,
+      "filename": "all_230xx1SR_V2-6_20250226.zip",
+      "application_ref": "M-0004_A-20D7-26-053C-O000A",
+      "redistributable": false,
+      "notes": "Jung switch/blind actuator family 230xx1SR. Login-free download; a ZIP wrapper bundling several archived versions plus the current DB, so import with --inner all_230xx1SR_V2-6_20241213.knxprod. Mask 07B0 (System B). Inner app M-0004_A-20D7-26-053C-O000A matches the ETS capture for IA 1.1.4 exactly. Verified by download 2026-09-18."
+    },
+    {
+      "manufacturer": "Albrecht Jung",
+      "manufacturer_id": "M-0004",
+      "order_numbers": [
+        "52921ST",
+        "LS 52921 ST"
+      ],
+      "name": "Jung Universal push-button module 2-gang F50 Secure (52921 ST)",
+      "url": "https://downloads.jung.de/Downloads/Produktdownloads/Datenbank%20ETS5%20-%20ETS6%20Secure/KNX/all_529x1ST_2v1_2v2_20250331.zip",
+      "sha256": "1c51f1f940f8d804ef3ce99febacae5a8d419b0432934b8acaefd6d012ddcad4",
+      "size": 10044751,
+      "filename": "all_529x1ST_2v1_2v2_20250331.zip",
+      "application_ref": "M-0004_A-D142-21-8848-O000A",
+      "redistributable": false,
+      "notes": "Jung Tastsensor-Modul Universal 2fach F50 Secure. Login-free download; a ZIP wrapper holding two versions (2v1 = app A-D142-21, 2v2 = app A-D142-22), so import with --inner Tastsensoren_Universal_F50_Secure_2v1_Jung_DE_EN_FR_NL_ES_RU_IT.knxprod for the capture version. Mask 07B0. Inner app M-0004_A-D142-21-8848-O000A matches the ETS capture for IA 1.1.18 exactly. Verified by download 2026-09-18."
+    },
+    {
+      "manufacturer": "Helios Ventilatoren",
+      "manufacturer_id": "M-0112",
+      "order_numbers": [
+        "20253-001"
+      ],
+      "name": "Helios KWL-KNX Connect (easyControls 3.0 KNX bus unit)",
+      "url": "https://www.heliosventilatoren.de/de/service/info-center/software?download=4:knx-produktdatenbank-fuer-easycontrols-3-0-kwl-knx-connect",
+      "sha256": "c600919b6ea7df12d8ac1a92038ab9e9b4844153b019ab9e5a78e16bf7441c2e",
+      "size": 43734,
+      "filename": "helios_kwl_knx_connect.knxprod",
+      "application_ref": "M-0112_A-0003-10-8AB9-O0115",
+      "redistributable": false,
+      "notes": "Helios KWL-KNX Connect ventilation gateway. Login-free from the Helios Info-Center software page; served as a ZIP wrapping a single inner .knxprod (MV_KNX-Bus-Einheit_OEM_2020-11-17_cert.knxprod), auto-unwrapped on import. Mask 07B0, order 20253-001. CAVEAT: this 2020-dated build exposes app M-0112_A-0003-10-8AB9-O0115; the ETS capture for IA 1.1.45 uses M-0112_A-0003-10-D375-O0115 (same app A-0003 version 10, different build hash), so it will NOT byte-match the capture image. Verified by download 2026-09-18."
+    },
+    {
+      "manufacturer": "Theben AG",
+      "manufacturer_id": "M-0048",
+      "order_numbers": [
+        "1409207"
+      ],
+      "name": "Theben Meteodata 140 S KNX weather station",
+      "url": "https://www.theben.de/ocsmedia/optimized/full/o5646v53_KNX_DB_Meteodata_140_S_KNX_KNXDatenbank.zip",
+      "sha256": "1b12f2e74e56406531c0c0aa3c2368b2b5e0ab317a1663cc18b3cec60c5c231d",
+      "size": 428165,
+      "filename": "o5646v53_KNX_DB_Meteodata_140_S_KNX_KNXDatenbank.zip",
+      "application_ref": "M-0048_A-140C-14-A512",
+      "redistributable": false,
+      "notes": "Theben Meteodata 140 S KNX. Login-free from theben.de; ZIP wrapping a single inner .knxprod (KNX_DB_D_GB_E_F_I_NL_METEODATA_140_S_V1_4_knxprod_2206.knxprod), auto-unwrapped on import. Mask 0701, order 1409207. CAVEAT: this V1.4 build exposes app M-0048_A-140C-14-A512; the ETS capture for IA 1.1.202 uses M-0048_A-140C-14-EB70 (same app A-140C version 14, different build hash), so it will NOT byte-match the capture image. Verified by download 2026-09-18."
+    },
+    {
+      "manufacturer": "Albrecht Jung",
+      "manufacturer_id": "M-0004",
+      "order_numbers": [
+        "3181",
+        "LS 3181"
+      ],
+      "name": "Jung Automatikschalter Standard 1-10 m (LS 3181)",
+      "url": "https://downloads.jung.de/Downloads/Produktdownloads/Datenbank%20ETS4%20-%20ETS5/KNX/de_3x81_24112017.knxprod",
+      "sha256": "76bc9aa466120f604198003c39cffd9f6817da7d286181077df6f7779a995896",
+      "size": 490256,
+      "filename": "de_3x81_24112017.knxprod",
+      "application_ref": "M-0004_A-A033-12-6E08-O000A",
+      "redistributable": false,
+      "notes": "Jung Automatikschalter Standard 1-10 m, family 3x81. Login-free direct .knxprod (ETS4-ETS5 database, dated 2017-11-24). Mask 0705, order 3181. CAVEAT: this build exposes app M-0004_A-A033-12-6E08-O000A; the ETS capture for IA 1.1.46 uses M-0004_A-A033-12-83F3-O000A (same app A-A033 version 12, different build hash), so it will NOT byte-match the capture image. Verified by download 2026-09-18."
     }
   ]
 }
