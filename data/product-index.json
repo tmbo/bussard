@@ -4078,6 +4078,168 @@
       "redistributable": false,
       "notes": "Enertex product database (ZIP-wrapped ETS4 .knxprod, unwrapped by import-product). Masks: 07B0. 1 application program(s). App refs: M-00A6_A-0026-10-39D6 (07B0). Verified by download 2026-09-18 (URL fetch sha256 matches, import-product parse OK).",
       "application_ref": "M-00A6_A-0026-10-39D6"
+    },
+    {
+      "manufacturer": "Gira",
+      "manufacturer_id": "M-0006",
+      "order_numbers": [
+        "2167 00"
+      ],
+      "name": "KNX IP-Router V4",
+      "url": "https://partner.gira.de/data3/21679600.zip",
+      "sha256": "96768fda99851b6c6f08f0806ef6f2489a1d3cdd6b33966b6be8f8becb6c86cb",
+      "size": 189403,
+      "filename": "21679600.zip",
+      "redistributable": false,
+      "notes": "Gira product database. Masks: 091A. 1 application program(s). App refs: M-0008_A-901B-40-DAE0 (091A). Verified by download 2026-09-18 (URL fetch sha256 matches parsed file, import-product parse OK).",
+      "application_ref": "M-0008_A-901B-40-DAE0"
+    },
+    {
+      "manufacturer": "Gira",
+      "manufacturer_id": "M-0006",
+      "order_numbers": [
+        "5001 ..",
+        "5002 ..",
+        "5004 .."
+      ],
+      "name": "Push button sensor 4 comfort 1-gang 114124",
+      "url": "https://partner.gira.de/data3/50019400.zip",
+      "sha256": "5ccebe6b035742990e21932f0325d773a150fef56a92d31b569d444e23f3dec7",
+      "size": 4909723,
+      "filename": "50019400.zip",
+      "redistributable": false,
+      "notes": "Gira product database. Masks: 07B0. 3 application program(s). App refs: M-0008_A-1141-24-3E94-O000A (07B0); M-0008_A-1142-24-B5DF-O000A (07B0); M-0008_A-1144-24-CE65-O000A (07B0). Verified by download 2026-09-18 (URL fetch sha256 matches parsed file, import-product parse OK).",
+      "application_ref": "M-0008_A-1141-24-3E94-O000A"
+    },
+    {
+      "manufacturer": "Eelectron",
+      "manufacturer_id": "M-006C",
+      "order_numbers": [
+        "PD00E01KNX"
+      ],
+      "name": "PD00E01KNX Presence Detector STANDARD Sensor",
+      "url": "https://www.eelectron.com/wp-content/uploads/2026/03/PD00E01KNXRS00010107.zip",
+      "sha256": "532a9d2f01f0313af69e1e676d861bab9cf4502161f71b30cbc20e4c8309c013",
+      "size": 620478,
+      "filename": "PD00E01KNXRS00010107.zip",
+      "redistributable": false,
+      "notes": "Eelectron product database. Masks: 0021. 1 application program(s). App refs: M-006C_A-0781-11-43A3 (0021). Verified by download 2026-09-18 (URL fetch sha256 matches parsed file, import-product parse OK).",
+      "application_ref": "M-006C_A-0781-11-43A3"
+    },
+    {
+      "manufacturer": "Eelectron",
+      "manufacturer_id": "M-006C",
+      "order_numbers": [
+        "PD00E02KNX"
+      ],
+      "name": "PD00E02KNX Presence Detector MULTI Sensor",
+      "url": "https://www.eelectron.com/wp-content/uploads/2026/03/PD00E02KNXRS00010107.zip",
+      "sha256": "b2e44612d4ad3fcdda14951823684497a08e1faf3e7d8686479639880e5a96ea",
+      "size": 663471,
+      "filename": "PD00E02KNXRS00010107.zip",
+      "redistributable": false,
+      "notes": "Eelectron product database. Masks: 0021. 1 application program(s). App refs: M-006C_A-0782-11-D2BA (0021). Verified by download 2026-09-18 (URL fetch sha256 matches parsed file, import-product parse OK).",
+      "application_ref": "M-006C_A-0782-11-D2BA"
+    },
+    {
+      "manufacturer": "Arcus-EDS",
+      "manufacturer_id": "M-0076",
+      "order_numbers": [
+        "30801XXX",
+        "30802XXX",
+        "30803XXX",
+        "30804XXX",
+        "3080500X",
+        "3080502X",
+        "30806XXX",
+        "30807XXX",
+        "3080XXXX"
+      ],
+      "name": "S8-AN2",
+      "url": "https://www.arcus-eds.de/fileadmin/download.arcus-eds.de/3000_S8_Spezielle_Sensorik/3000_S8_allgemein/Arc_S8_knxprod.zip",
+      "sha256": "3fa1361eb4dc6c1ce5fb0ba9887a5043928bac67b65f2eaf49edb4ee629d23e5",
+      "size": 191765,
+      "filename": "Arc_S8_knxprod.zip",
+      "redistributable": false,
+      "notes": "Arcus-EDS product database. Masks: 0701. 9 application program(s). App refs: M-0076_A-0022-15-D6FE (0701); M-0076_A-0023-15-9526 (0701); M-0076_A-0024-15-6DCD (0701); M-0076_A-0025-15-0DA9 (0701); M-0076_A-0026-15-002D (0701); M-0076_A-0027-15-68F0 (0701). Verified by download 2026-09-18 (URL fetch sha256 matches parsed file, import-product parse OK).",
+      "application_ref": "M-0076_A-0022-15-D6FE"
+    },
+    {
+      "manufacturer": "Arcus-EDS",
+      "manufacturer_id": "M-0076",
+      "order_numbers": [
+        "305xxxxFC",
+        "305xxxxx"
+      ],
+      "name": "HLK305",
+      "url": "https://www.arcus-eds.de/fileadmin/download.arcus-eds.de/2000_HLK/2000_HLK305_APP/HLK305_v10.zip",
+      "sha256": "07dc97614f6872fee3170a2e97bfd4cc052acbe0d8e1b97f255531eefe013d01",
+      "size": 3091448,
+      "filename": "HLK305_v10.zip",
+      "redistributable": false,
+      "notes": "Arcus-EDS product database. Masks: 0701. 2 application program(s). App refs: M-0076_A-00E9-07-8699 (0701); M-0076_A-00E9-08-C085 (0701). Verified by download 2026-09-18 (URL fetch sha256 matches parsed file, import-product parse OK).",
+      "application_ref": "M-0076_A-00E9-07-8699"
+    },
+    {
+      "manufacturer": "Ekinex",
+      "manufacturer_id": "M-00B6",
+      "order_numbers": [
+        "EK-EH2-TP",
+        "EK-EH2-TP-RW"
+      ],
+      "name": "APEKEH2TP",
+      "url": "https://www.ekinex.com/download_file.asp?file=/doc/APEKEH2TP01.knxprod",
+      "sha256": "f2436689d64e2c8098a3619ed0a5046c9fddf0e9f50108bff0ea602cdd6b5ec7",
+      "size": 575200,
+      "filename": "APEKEH2TP01.knxprod",
+      "redistributable": false,
+      "notes": "Ekinex product database. Masks: 0705. 1 application program(s). App refs: M-00B6_A-4548-01-884E (0705). Verified by download 2026-09-18 (URL fetch sha256 matches parsed file, import-product parse OK).",
+      "application_ref": "M-00B6_A-4548-01-884E"
+    },
+    {
+      "manufacturer": "Ekinex",
+      "manufacturer_id": "M-00B6",
+      "order_numbers": [
+        "EK-EI2-TP-4"
+      ],
+      "name": "APEKEI2TP4",
+      "url": "https://www.ekinex.com/download_file.asp?file=/doc/APEKEI2TP411.knxprod",
+      "sha256": "d1b761faab2bee8db9514106efde22e07428f723284f35436727c8c3bb0cf233",
+      "size": 1836593,
+      "filename": "APEKEI2TP411.knxprod",
+      "redistributable": false,
+      "notes": "Ekinex product database. Masks: 07B0. 1 application program(s). App refs: M-00B6_A-4549-11-0661-O0085 (07B0). Verified by download 2026-09-18 (URL fetch sha256 matches parsed file, import-product parse OK).",
+      "application_ref": "M-00B6_A-4549-11-0661-O0085"
+    },
+    {
+      "manufacturer": "Ekinex",
+      "manufacturer_id": "M-00B6",
+      "order_numbers": [
+        "EK-HE1-TP"
+      ],
+      "name": "APEKHE1TP",
+      "url": "https://www.ekinex.com/download_file.asp?file=/doc/APEKHE1TP01.knxprod",
+      "sha256": "0f973c40459926a09aaf87cc652944fb1dae99a75d1a23d85c2dc0dc38625803",
+      "size": 172780,
+      "filename": "APEKHE1TP01.knxprod",
+      "redistributable": false,
+      "notes": "Ekinex product database. Masks: 0705. 1 application program(s). App refs: M-00B6_A-4845-01-CAC3 (0705). Verified by download 2026-09-18 (URL fetch sha256 matches parsed file, import-product parse OK).",
+      "application_ref": "M-00B6_A-4845-01-CAC3"
+    },
+    {
+      "manufacturer": "Interra",
+      "manufacturer_id": "M-0107",
+      "order_numbers": [
+        "ITR901-002"
+      ],
+      "name": "ITR901-002 - KNX Line Coupler",
+      "url": "https://interratechnology.com/storage/products/documents/ets-database-67f8fb1befddb.knxprod",
+      "sha256": "f29365abff21e6922d83db918036b41f1a4be750ab904b790e07718c437753db",
+      "size": 88454,
+      "filename": "ITR901-0002_ets-database.knxprod",
+      "redistributable": false,
+      "notes": "Interra product database. Masks: 0912. 1 application program(s). App refs: M-0107_A-1092-31-8751-O0072 (0912). Verified by download 2026-09-18 (URL fetch sha256 matches parsed file, import-product parse OK).",
+      "application_ref": "M-0107_A-1092-31-8751-O0072"
     }
   ]
 }
