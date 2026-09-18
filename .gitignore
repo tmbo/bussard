@@ -27,3 +27,6 @@ fixtures/private/
 
 # Parallels/VM share for exe round-trips — never commit binaries
 shared-with-windows/
+
+# Session scratch + vendor-derived analysis dumps (never commit)
+/scratchpad/
