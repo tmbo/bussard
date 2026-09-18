@@ -268,14 +268,17 @@ pub enum LsmRealisation {
     /// `A_Memory_Write` to a control address (default `0x0104`), with status
     /// polled by `A_Memory_Read` at a status address (default `0xB6EA`). This is
     /// what both the corpus and the first-party BIM-M112 evidence show for the
-    /// real 0705 devices bussard must flash `[system7-spec §5]`.
+    /// real 0705 devices bussard must flash `[system7-spec §5]`. **Confirmed** by
+    /// the Jung 3361-1M MV-0705 `HawkConfigurationData` (parsed in `bussard-ets`):
+    /// `GroupAddressTableLoadControl` at `StandardMemory` `260` (`0x0104`),
+    /// `Length=12`, `Flavour="LoadControl_M112"`, and the per-LSM load-status
+    /// bytes at `0xB6EA`/`0xB6EB`/`0xB6EC`.
     MemoryMapped {
-        /// The LSM-control write address (default `0x0104`). `S7-CAL: confirm the
-        /// LSM control address against a live 0705 capture`.
+        /// The LSM-control write address (default `0x0104`; Jung MV-0705 confirms).
         control_addr: u16,
         /// The LSM status-poll base address (default `0xB6EA`); the status of LSM
-        /// `n` is read relative to this. `S7-CAL: confirm the 0xB6EA+ status
-        /// address and its per-LSM stride`.
+        /// `n` is read at `status_addr + (n - 1)` — the +1 per-LSM stride the Jung
+        /// MV-0705 Hawk block confirms (`0xB6EA`/`0xB6EB`/`0xB6EC` for LSM 1/2/3).
         status_addr: u16,
     },
     /// **Property-based**: load events written to `PID_LOAD_STATE_CONTROL` (PID 5)
