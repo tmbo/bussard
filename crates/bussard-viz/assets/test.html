@@ -218,6 +218,46 @@
     check("partners: excludes self", p1.every((p) => p.device !== "1.1.1"));
     check("partners: unknown device -> empty", store.communicationPartners("9.9.9").length === 0);
 
+    // Direction (item 6): 1.1.1 SENDS 1/1/1 and 1.1.2 LISTENS to it, so data
+    // flows OUT of 1.1.1 to 1.1.2 (outgoing) and INTO 1.1.2 from 1.1.1 (incoming).
+    check("partners: direction outgoing for 1.1.1's partner", p1[0].direction === "outgoing");
+    check("partners: direction incoming for 1.1.2's partner", p2[0].direction === "incoming");
+    // A device that both sends and listens on GAs shared with one partner is `both`.
+    const dualStore = new Store({
+      ranges: [], stats: {},
+      devices: [
+        { address: "1.1.1", name: "A", com_objects: [
+          { number: 0, send: "1/0/1", listen: ["1/0/2"] } ] },
+        { address: "1.1.2", name: "B", com_objects: [
+          { number: 0, send: "1/0/2", listen: ["1/0/1"] } ] },
+      ],
+      groups: [
+        { address: "1/0/1", name: "x", senders: [{ device: "1.1.1", object: 0 }],
+          listeners: [{ device: "1.1.2", object: 0 }] },
+        { address: "1/0/2", name: "y", senders: [{ device: "1.1.2", object: 0 }],
+          listeners: [{ device: "1.1.1", object: 0 }] },
+      ],
+    });
+    const dp = dualStore.communicationPartners("1.1.1");
+    check("partners: bidirectional partner is 'both'",
+      dp.length === 1 && dp[0].device === "1.1.2" && dp[0].direction === "both");
+
+    // gaDirections (item 6): sender 1.1.1 -> outgoing, listener 1.1.2 -> incoming.
+    const gd = store.gaDirections("1/1/1");
+    check("gaDirections: sender is outgoing", gd.get("1.1.1") === "outgoing");
+    check("gaDirections: listener is incoming", gd.get("1.1.2") === "incoming");
+    // A device that both sends and listens on the SAME GA is classified 'both'.
+    const bothStore = new Store({
+      ranges: [], stats: {},
+      devices: [{ address: "1.1.5", name: "SL", com_objects: [
+        { number: 0, send: "3/0/0", listen: ["3/0/0"] } ] }],
+      groups: [{ address: "3/0/0", name: "z",
+        senders: [{ device: "1.1.5", object: 0 }],
+        listeners: [{ device: "1.1.5", object: 0 }] }],
+    });
+    check("gaDirections: send+listen device is 'both'",
+      bothStore.gaDirections("3/0/0").get("1.1.5") === "both");
+
     // A device that only touches an unshared GA has no partners. 1/1/2 has
     // sender 1.1.1 but no listeners, so 1.1.1 gains no partner from it.
     const gaPartic = store.gaParticipants("1/1/1");
