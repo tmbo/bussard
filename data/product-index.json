@@ -98,7 +98,7 @@
       "filename": "MDT_KP_AKH_03_Heating_Actuator_V34.knxprod",
       "application_ref": "M-0083_A-013B-34-09EC",
       "redistributable": false,
-      "notes": "Heating actuator. Database V3.4. All three apps are 07B0 (System B) \u2014 flashable target. NOTE: hosted on the shorter /fileadmin/user_upload/ path (the /user_upload/user_upload/download/ variant 404s). Verified by download 2026-09-16."
+      "notes": "Heating actuator. Database V3.4. All three apps are 07B0 (System B) — flashable target. NOTE: hosted on the shorter /fileadmin/user_upload/ path (the /user_upload/user_upload/download/ variant 404s). Verified by download 2026-09-16."
     },
     {
       "manufacturer": "MDT",
@@ -171,7 +171,7 @@
       "filename": "SCN-DA64x-04_MDT_KP_V40a.knxprod",
       "application_ref": "M-0083_A-0155-40-4D9F-O00EF",
       "redistributable": false,
-      "notes": "DALI gateway (lighting/dimming). Database V4.0a. Both apps 07B0 (System B) \u2014 flashable target. Verified by download 2026-09-16."
+      "notes": "DALI gateway (lighting/dimming). Database V4.0a. Both apps 07B0 (System B) — flashable target. Verified by download 2026-09-16."
     },
     {
       "manufacturer": "MDT",
@@ -209,7 +209,7 @@
       "filename": "Flat_1_1.4_EIFAItRS_Cert_ETS5.knxprod",
       "application_ref": "M-0071_A-5711-14-9233",
       "redistributable": false,
-      "notes": "Capacitive push button / touch panel. App V1.4, 07B0 (System B) \u2014 flashable target. Hosted on Zennio's CDN (assets.zennio.com/application_program/). Verified by download 2026-09-16."
+      "notes": "Capacitive push button / touch panel. App V1.4, 07B0 (System B) — flashable target. Hosted on Zennio's CDN (assets.zennio.com/application_program/). Verified by download 2026-09-16."
     },
     {
       "manufacturer": "Zennio",
@@ -224,7 +224,7 @@
       "filename": "MAXinBOX_16_v3_1.2_EIFAItRS_ETS5_CERT.knxprod",
       "application_ref": "M-0071_A-4911-12-740E",
       "redistributable": false,
-      "notes": "16-channel switch actuator. App V1.2, 07B0 (System B) \u2014 flashable target. Verified by download 2026-09-16."
+      "notes": "16-channel switch actuator. App V1.2, 07B0 (System B) — flashable target. Verified by download 2026-09-16."
     },
     {
       "manufacturer": "Zennio",
@@ -239,7 +239,7 @@
       "filename": "ALLinBOX_1612_1.0_EIFAItRS_ETS5.knxprod",
       "application_ref": "M-0071_A-4A11-10-D638",
       "redistributable": false,
-      "notes": "Multifunction actuator (switch/blind/dimming). App V1.0, 07B0 (System B) \u2014 flashable target. Verified by download 2026-09-16."
+      "notes": "Multifunction actuator (switch/blind/dimming). App V1.0, 07B0 (System B) — flashable target. Verified by download 2026-09-16."
     },
     {
       "manufacturer": "Zennio",
@@ -254,7 +254,7 @@
       "filename": "DIMinBOX_DX1_1.2_EIFAItRS_Cert_ETS5.knxprod",
       "application_ref": "M-0071_A-3171-12-19F2",
       "redistributable": false,
-      "notes": "Universal dimmer. App V1.2, 07B0 (System B) \u2014 flashable target. Verified by download 2026-09-16."
+      "notes": "Universal dimmer. App V1.2, 07B0 (System B) — flashable target. Verified by download 2026-09-16."
     },
     {
       "manufacturer": "Zennio",
@@ -269,7 +269,7 @@
       "filename": "BIN_44_v2_1.0_EIFAItR_Cert.knxprod",
       "application_ref": "M-0071_A-4641-10-CC6E",
       "redistributable": false,
-      "notes": "4-fold binary input. App V1.0, 07B0 (System B) \u2014 flashable target. Verified by download 2026-09-16."
+      "notes": "4-fold binary input. App V1.0, 07B0 (System B) — flashable target. Verified by download 2026-09-16."
     },
     {
       "manufacturer": "Zennio",
@@ -284,7 +284,7 @@
       "filename": "MAXinBOX_FANCOIL_4CH2P_v2_1.2_EIFAItRS_ETS5_CERT.knxprod",
       "application_ref": "M-0071_A-43C1-12-4D7D",
       "redistributable": false,
-      "notes": "Fan-coil actuator / thermostat (heating/cooling). App V1.2, 07B0 (System B) \u2014 flashable target. Verified by download 2026-09-16."
+      "notes": "Fan-coil actuator / thermostat (heating/cooling). App V1.2, 07B0 (System B) — flashable target. Verified by download 2026-09-16."
     },
     {
       "manufacturer": "Zennio",
@@ -299,7 +299,7 @@
       "filename": "EyeZen_TP_1.3_EIFAItR_ETS5_Cert.knxprod",
       "application_ref": "M-0071_A-44B1-13-98C1",
       "redistributable": false,
-      "notes": "Presence / luminosity sensor. App V1.3, 07B0 (System B) \u2014 flashable target. Verified by download 2026-09-16."
+      "notes": "Presence / luminosity sensor. App V1.3, 07B0 (System B) — flashable target. Verified by download 2026-09-16."
     },
     {
       "manufacturer": "Zennio",
@@ -516,7 +516,7 @@
       "filename": "Z70_v2_4.0_EIFAItRUk_Cert.knxprod",
       "application_ref": "M-0071_A-5531-40-A703",
       "redistributable": false,
-      "notes": "Capacitive touch panel. Database V4.0, mask 07B0 (System B). NOTE: this app REFUSES at flash pre-flight \u2014 an enum parameter's default value is not a declared member (UnresolvableImage). Kept as a deliberate regression pointer. Verified by download 2026-09-16."
+      "notes": "Capacitive touch panel. Database V4.0, mask 07B0 (System B). NOTE: this app REFUSES at flash pre-flight — an enum parameter's default value is not a declared member (UnresolvableImage). Kept as a deliberate regression pointer. Verified by download 2026-09-16."
     },
     {
       "manufacturer": "Zennio",
@@ -592,6 +592,156 @@
       "application_ref": "M-0048_A-107C-11-FCE0",
       "redistributable": false,
       "notes": "Motion detector. Database V1.1, mask 0012 (System 2 / BCU2, an older mask family). Hosted on siblik.com (distributor mirror). Verified by download 2026-09-16."
+    },
+    {
+      "manufacturer": "Theben",
+      "manufacturer_id": "M-0048",
+      "order_numbers": [
+        "4940200"
+      ],
+      "name": "Theben FIX1 8-fold switch / 4-fold blind actuator",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Theben/T4940/T4940200_KNX_8-fach_FIX1_Schalt-_oder_4-fach_Jalousieaktor_V1.0_ETS4.knxprod",
+      "sha256": "29d15a0d56da524eeb472bbbc5bf9188dba9e398cfcf1fa238d505eae3d90e61",
+      "size": 288032,
+      "filename": "T4940200_KNX_8-fach_FIX1_Schalt-_oder_4-fach_Jalousieaktor_V1.0_ETS4.knxprod",
+      "application_ref": "M-0048_A-4946-10-A280",
+      "redistributable": false,
+      "notes": "FIX1 combined switch/blind actuator (8x switch or 4x blind). Database V1.0 (ETS4). Mask 0701 (System 7). Hosted in the Siblik Theben KNX-database archive. Verified by download 2026-09-18."
+    },
+    {
+      "manufacturer": "Theben",
+      "manufacturer_id": "M-0048",
+      "order_numbers": [
+        "4940205"
+      ],
+      "name": "Theben FIX2 16-fold switch / 8-fold blind actuator",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Theben/T4940/T4940205_KNX_16-fach_FIX2_Schalt-_oder_8-fach_Jalousieaktor_V1.0_ETS4.knxprod",
+      "sha256": "4e2047991dc1e18f366c9c9ce9b8786ee21a1d39c22be2994ad1cf59215450e5",
+      "size": 465100,
+      "filename": "T4940205_KNX_16-fach_FIX2_Schalt-_oder_8-fach_Jalousieaktor_V1.0_ETS4.knxprod",
+      "application_ref": "M-0048_A-4940-10-E134",
+      "redistributable": false,
+      "notes": "FIX2 combined switch/blind actuator (16x switch or 8x blind). Database V1.0 (ETS4). Mask 0701 (System 7). Hosted in the Siblik Theben KNX-database archive. Verified by download 2026-09-18."
+    },
+    {
+      "manufacturer": "Theben",
+      "manufacturer_id": "M-0048",
+      "order_numbers": [
+        "4940245"
+      ],
+      "name": "Theben FIX2 12-fold heating actuator",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Theben/T4940/T4940245_KNX_12-fach_FIX2_Heizungsaktor_V1.0_ETS4.knxprod",
+      "sha256": "4960f64f10e227f7f9132dd6cfeea5f1aa3a64fdd15ffe224f962511b8f8e332",
+      "size": 251775,
+      "filename": "T4940245_KNX_12-fach_FIX2_Heizungsaktor_V1.0_ETS4.knxprod",
+      "application_ref": "M-0048_A-4944-10-B9D8",
+      "redistributable": false,
+      "notes": "FIX2 12-fold heating actuator. Database V1.0 (ETS4). Mask 0701 (System 7). Hosted in the Siblik Theben KNX-database archive. Verified by download 2026-09-18."
+    },
+    {
+      "manufacturer": "Theben",
+      "manufacturer_id": "M-0048",
+      "order_numbers": [
+        "4900250"
+      ],
+      "name": "Theben JMG 4 4-channel blind actuator",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Theben/T4900/T4900250_JMG_4__4-Kanal_Jalousieaktor_V1.4.knxprod",
+      "sha256": "987a1e1a5251b197d6d719ef75d99820ee372264349af93fcc092841c54abf0b",
+      "size": 70528,
+      "filename": "T4900250_JMG_4__4-Kanal_Jalousieaktor_V1.4.knxprod",
+      "application_ref": "M-0048_A-491B-14-18F8",
+      "redistributable": false,
+      "notes": "JMG 4 4-channel blind/shutter actuator. Database V1.4. Mask 0020 (older BCU2 family, previously zero coverage in the index). Hosted in the Siblik Theben KNX-database archive. Verified by download 2026-09-18."
+    },
+    {
+      "manufacturer": "Theben",
+      "manufacturer_id": "M-0048",
+      "order_numbers": [
+        "4900240"
+      ],
+      "name": "Theben RM 4 switch actuator",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Theben/T4900/T4900240_RM_4_Schaltaktor_V0.0_bis_V0.2.knxprod",
+      "sha256": "69a2e2fa913572706160dc175f9e5bdbc3b14472d46067f9f2c1cc7fa4991809",
+      "size": 111046,
+      "filename": "T4900240_RM_4_Schaltaktor_V0.0_bis_V0.2.knxprod",
+      "application_ref": "M-0048_A-4908-10-E43F",
+      "redistributable": false,
+      "notes": "RM 4 switch actuator (database V0.0-V0.2). Multi-application file: eight application programs spanning mask 0011 and mask 0012 (older BCU1/BCU2 EIB families, previously zero 0011 coverage). Hosted in the Siblik Theben KNX-database archive. Verified by download 2026-09-18."
+    },
+    {
+      "manufacturer": "Theben",
+      "manufacturer_id": "M-0048",
+      "order_numbers": [
+        "1079201"
+      ],
+      "name": "Theben Sphinx 395 1-channel presence detector",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Theben/T1079/T1079201_Sphinx_395_1-Kanal_PrNsenzmelder_V1.0.knxprod",
+      "sha256": "f872cc50ead62e79543e62e4a6597a891cd03e8deac917935f9b29ccca5b9eac",
+      "size": 43506,
+      "filename": "T1079201_Sphinx_395_1-Kanal_PrNsenzmelder_V1.0.knxprod",
+      "application_ref": "M-0048_A-107B-10-27E1",
+      "redistributable": false,
+      "notes": "Sphinx 395 1-channel presence detector. Database V1.0. Mask 0012 (System 2). Hosted in the Siblik Theben KNX-database archive. Verified by download 2026-09-18."
+    },
+    {
+      "manufacturer": "Theben",
+      "manufacturer_id": "M-0048",
+      "order_numbers": [
+        "1079212"
+      ],
+      "name": "Theben Sphinx 332 2-channel motion detector with light control",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Theben/T1079/T1079212_Theben_Sphinx_332_2-Kanal_Bewegungsmelder_mit_Lichtregelung_V1.2.knxprod",
+      "sha256": "67a3eef9041a40579e08b548e6b8db4eb1667a092bbbd6e9b4f05a464b4f5e61",
+      "size": 62956,
+      "filename": "T1079212_Theben_Sphinx_332_2-Kanal_Bewegungsmelder_mit_Lichtregelung_V1.2.knxprod",
+      "application_ref": "M-0048_A-107D-12-FC9D",
+      "redistributable": false,
+      "notes": "Sphinx 332 2-channel motion detector with light control. Database V1.2. Mask 0012 (System 2). Hosted in the Siblik Theben KNX-database archive. Verified by download 2026-09-18."
+    },
+    {
+      "manufacturer": "Theben",
+      "manufacturer_id": "M-0048",
+      "order_numbers": [
+        "7109202"
+      ],
+      "name": "Theben RAM 710 Venkon fan-coil controller",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Theben/T7109/T7109202_RAM_710_Venkon_2-_u._4_Rohr_Venkon_V1.1.knxprod",
+      "sha256": "e29bff36f7cc693abab55d95842ce762a472e11369e0f16ccc32d23b3a23d572",
+      "size": 53905,
+      "filename": "T7109202_RAM_710_Venkon_2-_u._4_Rohr_Venkon_V1.1.knxprod",
+      "application_ref": "M-0048_A-710D-11-8BB8",
+      "redistributable": false,
+      "notes": "RAM 710 Venkon fan-coil room controller (2- and 4-pipe). Database V1.1. Two application programs, both mask 0011 (older BCU1 EIB family). Hosted in the Siblik Theben KNX-database archive. Verified by download 2026-09-18."
+    },
+    {
+      "manufacturer": "Theben",
+      "manufacturer_id": "M-0048",
+      "order_numbers": [
+        "7139201"
+      ],
+      "name": "Theben RAM 713 S room temperature controller",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Theben/T7139/T7139201_RAM_713_S_Raumtemperaturregler_V1.2.knxprod",
+      "sha256": "53ce69227c08f1cb6d61423e581cc7d9cb39b7bcfdb00d7fb88f5b9dd8b75796",
+      "size": 78868,
+      "filename": "T7139201_RAM_713_S_Raumtemperaturregler_V1.2.knxprod",
+      "application_ref": "M-0048_A-1A73-12-AA8C",
+      "redistributable": false,
+      "notes": "RAM 713 S room temperature controller. Database V1.2. Mask 0012 (System 2). Hosted in the Siblik Theben KNX-database archive. Verified by download 2026-09-18."
+    },
+    {
+      "manufacturer": "Theben",
+      "manufacturer_id": "M-0048",
+      "order_numbers": [
+        "7139202"
+      ],
+      "name": "Theben RAM 713 fan-coil room temperature controller",
+      "url": "https://www.siblik.com/fileadmin/user_upload/03_Support/Downloads/03_KNX_Datenbanken/Theben/T7139/T7139202_RAM_713_FAN_Coil_Raumtemperaturregler_V1.2.knxprod",
+      "sha256": "c9191e4a4e14ae160459d8eac53f23e9b4a497fa3353769e03ea486608d40e1d",
+      "size": 79002,
+      "filename": "T7139202_RAM_713_FAN_Coil_Raumtemperaturregler_V1.2.knxprod",
+      "application_ref": "M-0048_A-1B73-12-D068",
+      "redistributable": false,
+      "notes": "RAM 713 fan-coil room temperature controller. Database V1.2. Mask 0012 (System 2). Hosted in the Siblik Theben KNX-database archive. Verified by download 2026-09-18."
     },
     {
       "manufacturer": "Jung",
