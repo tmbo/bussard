@@ -98,6 +98,12 @@ pub struct ProductData {
     pub load_procedures: Vec<LoadProcedure>,
     /// The relative segments, keyed by LSM index.
     pub segments: Vec<RelativeSegment>,
+    /// The 10-octet object-0 PID 78 (`PID_HARDWARE_TYPE`) value this
+    /// application's own `LdCtrlCompareProp` preflight expects. A factory
+    /// device holds exactly this value (otherwise its own vendor procedure
+    /// could never pass), so the simulated device seeds PID 78 from it.
+    /// `None` when the procedure carries no such compare.
+    pub hardware_type_marker: Option<Vec<u8>>,
 }
 
 impl ProductData {
