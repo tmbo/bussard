@@ -288,3 +288,13 @@ ZDIIBD16               # inBOX DALI 16 1.4 (07B0)
 92456AT                # BEG_DIM_HKL_AT_V4.0 (0705)
 92461AT                # BEG_DIM_HKL_AT_V4.0 (0705)
 97052/3AT              # BEG_DIM_HKL_AT_V4.0 (0705)
+
+# --- Weinzierl (M-00C5) — weinzierl.de, ZIP-wrapped ETS4 db ---
+KNX IP Interface 731     # KNX IP Interface 731 (0701)
+KNX IP Router 751        # KNX IP Router 751 (091A)
+KNX IP BAOS 774          # KNX IP BAOS 774 (07B0)
+
+# --- Enertex (M-00A6) — enertex.de, ZIP-wrapped ETS db ---
+1177-01                  # Enertex MeTa² KNX Standard/Premium (07B0)
+1174-DK                  # LED Dimmsequenzer 20A/5x REG/DK (07B0)
+1152-3                   # Enertex KNX PowerSupply (07B0)

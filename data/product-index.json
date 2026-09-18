@@ -3985,6 +3985,99 @@
       "redistributable": false,
       "notes": "B.E.G. Brück Electronic product database. Masks: 0705. 1 application program(s). App refs: M-00C8_A-2720-40-090B-O00C5 (0705). Verified by download 2026-09-18 (import-product parse OK).",
       "application_ref": "M-00C8_A-2720-40-090B-O00C5"
+    },
+    {
+      "manufacturer": "Weinzierl",
+      "manufacturer_id": "M-00C5",
+      "order_numbers": [
+        "KNX IP Interface 731"
+      ],
+      "name": "KNX IP Interface 731",
+      "url": "https://weinzierl.de/images/download/products/731/weinzierl-731-knx-ip-interface-5242-ets4.zip",
+      "sha256": "cd0f5871e6f352061466006559bc19f15d7622e345783e9da4f606353ede7ce8",
+      "size": 41537,
+      "filename": "weinzierl-731-knx-ip-interface-5242-ets4.zip",
+      "redistributable": false,
+      "notes": "Weinzierl product database (ZIP-wrapped ETS4 .knxprod, unwrapped by import-product). Masks: 0701. 1 application program(s). App refs: M-00C5_A-070E-11-4390 (0701). Verified by download 2026-09-18 (URL fetch sha256 matches, import-product parse OK).",
+      "application_ref": "M-00C5_A-070E-11-4390"
+    },
+    {
+      "manufacturer": "Weinzierl",
+      "manufacturer_id": "M-00C5",
+      "order_numbers": [
+        "KNX IP Router 751"
+      ],
+      "name": "KNX IP Router 751",
+      "url": "https://weinzierl.de/images/download/products/751/weinzierl-751-knx-ip-router-5243-ets4.zip",
+      "sha256": "90e53c6b2c2fa35f22e72123e2ec27342dcd763c31a4cb475bcab5163e9ee7a0",
+      "size": 42838,
+      "filename": "weinzierl-751-knx-ip-router-5243-ets4.zip",
+      "redistributable": false,
+      "notes": "Weinzierl product database (ZIP-wrapped ETS4 .knxprod, unwrapped by import-product). Masks: 091A. 1 application program(s). App refs: M-00C5_A-070F-11-D490 (091A). Verified by download 2026-09-18 (URL fetch sha256 matches, import-product parse OK).",
+      "application_ref": "M-00C5_A-070F-11-D490"
+    },
+    {
+      "manufacturer": "Weinzierl",
+      "manufacturer_id": "M-00C5",
+      "order_numbers": [
+        "KNX IP BAOS 774"
+      ],
+      "name": "KNX IP BAOS 774",
+      "url": "https://weinzierl.de/images/download/products/774/weinzierl-774-knx-ip-baos-5263-ets4.zip",
+      "sha256": "118db7a67441ea8f9dd39c20442ed420d8a3da24a685fdf0b3effdef9c6c09c2",
+      "size": 1331677,
+      "filename": "weinzierl-774-knx-ip-baos-5263-ets4.zip",
+      "redistributable": false,
+      "notes": "Weinzierl product database (ZIP-wrapped ETS4 .knxprod, unwrapped by import-product). Masks: 07B0. 1 application program(s). App refs: M-00C5_A-0715-10-5453 (07B0). Verified by download 2026-09-18 (URL fetch sha256 matches, import-product parse OK).",
+      "application_ref": "M-00C5_A-0715-10-5453"
+    },
+    {
+      "manufacturer": "Enertex",
+      "manufacturer_id": "M-00A6",
+      "order_numbers": [
+        "1177-01",
+        "1177-02"
+      ],
+      "name": "Enertex MeTa² KNX Standard/Premium",
+      "url": "https://www.enertex.de/downloads/1177/1177-ETS-MeTaV2.zip",
+      "sha256": "7fadf0de5fde07d91d7082375fd92632e5bd8eab56c8bf32616af8a6fc85af2c",
+      "size": 1996877,
+      "filename": "1177-ETS-MeTaV2.zip",
+      "redistributable": false,
+      "notes": "Enertex product database (ZIP-wrapped ETS4 .knxprod, unwrapped by import-product). Masks: 07B0. 1 application program(s). App refs: M-00A6_A-0031-30-EE6B (07B0). Verified by download 2026-09-18 (URL fetch sha256 matches, import-product parse OK).",
+      "application_ref": "M-00A6_A-0031-30-EE6B"
+    },
+    {
+      "manufacturer": "Enertex",
+      "manufacturer_id": "M-00A6",
+      "order_numbers": [
+        "1174-DK",
+        "1174-REG"
+      ],
+      "name": "LED Dimmsequenzer 20A/5x REG/DK",
+      "url": "https://www.enertex.de/downloads/1174/1174-ETS-DimmerV2.zip",
+      "sha256": "e29371c4c93b66524ce862c4afbae7c0db39b8b6754500983a23190ff4f8bb94",
+      "size": 508912,
+      "filename": "1174-ETS-DimmerV2.zip",
+      "redistributable": false,
+      "notes": "Enertex product database (ZIP-wrapped ETS4 .knxprod, unwrapped by import-product). Masks: 07B0. 1 application program(s). App refs: M-00A6_A-002B-25-6EBB (07B0). Verified by download 2026-09-18 (URL fetch sha256 matches, import-product parse OK).",
+      "application_ref": "M-00A6_A-002B-25-6EBB"
+    },
+    {
+      "manufacturer": "Enertex",
+      "manufacturer_id": "M-00A6",
+      "order_numbers": [
+        "1152-3",
+        "1173"
+      ],
+      "name": "Enertex KNX PowerSupply",
+      "url": "https://www.enertex.de/downloads/1152/1152-ETS-PowerSupply960-V3.zip",
+      "sha256": "703185e2083df7a1975116f0de85eecdc52e53c77d829198fe4796b9686713e8",
+      "size": 249562,
+      "filename": "1152-ETS-PowerSupply960-V3.zip",
+      "redistributable": false,
+      "notes": "Enertex product database (ZIP-wrapped ETS4 .knxprod, unwrapped by import-product). Masks: 07B0. 1 application program(s). App refs: M-00A6_A-0026-10-39D6 (07B0). Verified by download 2026-09-18 (URL fetch sha256 matches, import-product parse OK).",
+      "application_ref": "M-00A6_A-0026-10-39D6"
     }
   ]
 }
