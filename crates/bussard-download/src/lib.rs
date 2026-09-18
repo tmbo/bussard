@@ -18,6 +18,7 @@
 
 pub mod apply;
 pub mod compute;
+pub mod compute_sys7;
 pub mod flash;
 pub mod plan;
 
@@ -29,9 +30,13 @@ pub use compute::{
     compute_group_object_table, compute_tables, descriptors_for_linked_objects,
     expand_group_object_descriptors, size_code_from_object_size, table_image_with_count,
 };
+pub use compute_sys7::{
+    Sys7GroupObject, sys7_address_table, sys7_association_table, sys7_config_byte,
+    sys7_group_object_table, sys7_group_objects,
+};
 pub use flash::{
     AppIdentity, Connector, FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, ImageRef,
-    PlanError, Progress, Session, SingleConnector, discover_application_object, flash, plan_flash,
-    select_application, trace,
+    PlanError, Progress, Session, SingleConnector, Sys7Context, discover_application_object, flash,
+    plan_flash, plan_flash_sys7_with_hawk, select_application, sys7_profile_from_hawk, trace,
 };
 pub use plan::{LoadStep, ObjectGa, PlanReport, plan};

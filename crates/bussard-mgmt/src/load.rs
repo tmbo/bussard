@@ -493,12 +493,20 @@ pub async fn read_load_state<Ch: L4Channel>(
 
 /// Interprets an `A_Restart_Response` error code into a human-readable reason,
 /// per the KNX spec master-reset error codes.
+///
+/// The mapping is `0x00` = success, `0x01` = access denied, `0x02` = unsupported
+/// erase code, `0x03` = invalid channel number (KNX 3/5/2 / XKNX reference). The
+/// earlier bussard mapping was off by one (`2/3/4`); the issue #49 errata fixed
+/// it. The DA.tp capture (`shared-with-windows/dumpfile.pcap`) only ever showed a
+/// `0x00` (success) response, so the non-zero codes could not be settled from the
+/// capture and stay spec-derived. `S7-CAL: master-reset error-code mapping —
+/// capture a rejected master reset on a real device to confirm 0x01/0x02/0x03`.
 fn master_reset_error_reason(code: u8) -> &'static str {
     match code {
         0 => "success",
-        2 => "access denied",
-        3 => "unsupported erase code",
-        4 => "invalid channel number",
+        1 => "access denied",
+        2 => "unsupported erase code",
+        3 => "invalid channel number",
         _ => "device-defined error",
     }
 }
