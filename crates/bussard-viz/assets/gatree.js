@@ -176,17 +176,18 @@ export class GaTree {
   }
 
   _isOrphan(g) {
-    const noSender = !(g.senders && g.senders.length);
-    const noListener = !(g.listeners && g.listeners.length);
-    return noSender || noListener;
+    // Only one-sided *linked* GAs are flagged. A fully-unlinked GA (no sender and
+    // no listener) is a reserve address, which is normal in KNX and not flagged.
+    const hasSender = !!(g.senders && g.senders.length);
+    const hasListener = !!(g.listeners && g.listeners.length);
+    return (hasSender && !hasListener) || (hasListener && !hasSender);
   }
 
   _orphanReason(g) {
-    const noSender = !(g.senders && g.senders.length);
-    const noListener = !(g.listeners && g.listeners.length);
-    if (noSender && noListener) return "no sender and no listener";
-    if (noSender) return "no sender";
-    return "no listener";
+    const hasSender = !!(g.senders && g.senders.length);
+    const hasListener = !!(g.listeners && g.listeners.length);
+    if (hasSender && !hasListener) return "senders but no listener";
+    return "listeners but no sender";
   }
 
   // --- live updates -------------------------------------------------------

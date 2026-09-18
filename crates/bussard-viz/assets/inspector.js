@@ -95,71 +95,169 @@ class Inspector {
     }
     if (d.description) meta.appendChild(el("span", "insp-desc", d.description));
 
-    // Channels.
-    const chSection = view.querySelector("[data-field=channels]");
-    const channels = d.channels || [];
-    if (channels.length) {
-      chSection.appendChild(el("h3", "insp-h3", `Channels (${channels.length})`));
-      const list = el("div", "insp-channels");
-      for (const c of channels) {
-        const chip = el("span", "insp-chip mono", c.key);
-        if (c.name) chip.title = c.name;
-        chip.append(document.createTextNode(c.name ? ` ${c.name}` : ""));
-        list.appendChild(chip);
-      }
-      chSection.appendChild(list);
-    }
-
-    // Com-object table.
+    // Com-object table, grouped by channel (the standalone channels list is
+    // gone: the channel is now the grouping key inside the table).
     const coSection = view.querySelector("[data-field=comobjects]");
     const cos = d.com_objects || [];
     coSection.appendChild(el("h3", "insp-h3", `Com objects (${cos.length})`));
-    coSection.appendChild(this._comObjectTable(cos));
+    coSection.appendChild(this._comObjectTable(d, cos));
 
     this.root.appendChild(view);
   }
 
-  _comObjectTable(cos) {
+  /**
+   * Build the com-object table, grouped by channel. Each channel gets a subtle
+   * group-header row (channel name, falling back to the channel key); com objects
+   * without a channel fall under a trailing "General" group. Send/listen cells
+   * show the GA chip plus a secondary line of the resolved remote devices.
+   * @param {Object} d - device record.
+   * @param {Array<Object>} cos - com objects.
+   * @returns {HTMLElement}
+   */
+  _comObjectTable(d, cos) {
     const table = el("table", "insp-table co-table");
     const thead = el("thead");
     const hr = el("tr");
-    for (const h of ["#", "Name", "DPT", "Flags", "Ch", "Send", "Listen"]) {
+    for (const h of ["#", "Name", "DPT", "Flags", "Send", "Listen"]) {
       hr.appendChild(el("th", null, h));
     }
     thead.appendChild(hr);
     table.appendChild(thead);
 
-    const tbody = el("tbody");
+    // Map channel key -> display name for group headers.
+    const channelName = new Map();
+    for (const c of d.channels || []) channelName.set(c.key, c.name || c.key);
+
+    // Bucket com objects by channel key, preserving order. Objects with no
+    // channel go into a trailing "General" bucket (key = "").
+    const order = [];
+    const buckets = new Map();
     for (const co of cos) {
-      const tr = el("tr");
-      const noLink = !co.send && !(co.listen && co.listen.length);
-      if (noLink) tr.classList.add("unlinked");
-      tr.appendChild(el("td", "mono", String(co.number)));
-      tr.appendChild(el("td", null, co.name || "—"));
-      tr.appendChild(el("td", "mono dim", co.dpt || "—"));
-      tr.appendChild(el("td", "mono dim", co.flags || "—"));
-      tr.appendChild(el("td", "mono dim", co.channel || "—"));
-
-      // Send GA chip (clickable -> select the GA).
-      const sendTd = el("td");
-      if (co.send) sendTd.appendChild(this._gaChip(co.send));
-      else sendTd.textContent = "—";
-      tr.appendChild(sendTd);
-
-      // Listen GA chips.
-      const listenTd = el("td", "listen-cell");
-      const listen = co.listen || [];
-      if (listen.length) {
-        for (const ga of listen) listenTd.appendChild(this._gaChip(ga));
-      } else {
-        listenTd.textContent = "—";
+      const key = co.channel || "";
+      if (!buckets.has(key)) {
+        buckets.set(key, []);
+        order.push(key);
       }
-      tr.appendChild(listenTd);
+      buckets.get(key).push(co);
+    }
+    // Ensure the "General" (no-channel) group renders last.
+    order.sort((a, b) => (a === "" ? 1 : 0) - (b === "" ? 1 : 0));
 
-      tbody.appendChild(tr);
+    const tbody = el("tbody");
+    const COL_COUNT = 6;
+    for (const key of order) {
+      const label = key === "" ? "General" : channelName.get(key) || key;
+      const hRow = el("tr", "co-group");
+      const hCell = el("td", null, label);
+      hCell.colSpan = COL_COUNT;
+      hRow.appendChild(hCell);
+      tbody.appendChild(hRow);
+
+      for (const co of buckets.get(key)) this._appendComObjectRow(tbody, d, co);
     }
     table.appendChild(tbody);
     return table;
+  }
+
+  /**
+   * Append one com-object row to a tbody. Send/listen cells carry the GA chip
+   * plus a secondary line naming the remote devices on that GA (the send GA's
+   * listeners, or the listen GA's senders), excluding this device itself.
+   * @param {HTMLElement} tbody
+   * @param {Object} d - the owning device.
+   * @param {Object} co - the com object.
+   */
+  _appendComObjectRow(tbody, d, co) {
+    const tr = el("tr");
+    const noLink = !co.send && !(co.listen && co.listen.length);
+    if (noLink) tr.classList.add("unlinked");
+    tr.appendChild(el("td", "mono", String(co.number)));
+    tr.appendChild(el("td", null, co.name || "—"));
+    tr.appendChild(el("td", "mono dim", co.dpt || "—"));
+    tr.appendChild(el("td", "mono dim", co.flags || "—"));
+
+    // Send GA: chip + the GA's listeners (the devices this send reaches).
+    const sendTd = el("td", "link-cell");
+    if (co.send) {
+      sendTd.appendChild(this._gaLinkCell(co.send, "listeners", d.address, "→"));
+    } else {
+      sendTd.textContent = "—";
+    }
+    tr.appendChild(sendTd);
+
+    // Listen GA(s): chip + each GA's senders (the devices that drive this listen).
+    const listenTd = el("td", "link-cell");
+    const listen = co.listen || [];
+    if (listen.length) {
+      for (const ga of listen) {
+        listenTd.appendChild(this._gaLinkCell(ga, "senders", d.address, "←"));
+      }
+    } else {
+      listenTd.textContent = "—";
+    }
+    tr.appendChild(listenTd);
+
+    tbody.appendChild(tr);
+  }
+
+  /**
+   * A GA chip plus a secondary line naming the remote devices on that GA. `side`
+   * selects which endpoints to resolve: "listeners" for a send GA, "senders" for
+   * a listen GA. The owning device is excluded. The inline list is capped at
+   * ~3 devices with a clickable "+N more" that expands the rest.
+   * @param {string} ga
+   * @param {"listeners"|"senders"} side
+   * @param {string} selfAddr - the owning device address (excluded from the list).
+   * @param {string} arrow - direction glyph shown before the remote devices.
+   * @returns {HTMLElement}
+   */
+  _gaLinkCell(ga, side, selfAddr, arrow) {
+    const CAP = 3;
+    const wrap = el("div", "ga-link");
+    wrap.appendChild(this._gaChip(ga));
+
+    const refs = (side === "listeners" ? this.store.gaListeners : this.store.gaSenders).get(ga) || [];
+    // Deduplicate by device address and drop the owning device.
+    const seen = new Set();
+    const devices = [];
+    for (const r of refs) {
+      if (!r || !r.device || r.device === selfAddr || seen.has(r.device)) continue;
+      seen.add(r.device);
+      devices.push(r);
+    }
+    if (!devices.length) return wrap;
+
+    const line = el("div", "ga-remotes");
+    line.appendChild(el("span", "ga-arrow", arrow));
+    const shown = devices.slice(0, CAP);
+    for (const r of shown) line.appendChild(this._remoteDeviceChip(r));
+    if (devices.length > CAP) {
+      const more = el("button", "more-btn", `+${devices.length - CAP} more`);
+      more.type = "button";
+      more.addEventListener("click", () => {
+        more.remove();
+        for (const r of devices.slice(CAP)) line.appendChild(this._remoteDeviceChip(r));
+      });
+      line.appendChild(more);
+    }
+    wrap.appendChild(line);
+    return wrap;
+  }
+
+  /**
+   * A compact clickable device name (selects the device on click). Shows the
+   * device name with its address, e.g. "Schaltaktor UV (1.1.7)".
+   * @param {{device:string, device_name?:string}} ref
+   * @returns {HTMLElement}
+   */
+  _remoteDeviceChip(ref) {
+    const d = this.store.deviceByAddr.get(ref.device);
+    const name = ref.device_name || (d && d.name) || ref.device;
+    const btn = el("button", "remote-dev", `${name} (${ref.device})`);
+    btn.type = "button";
+    btn.title = `${name} (${ref.device})`;
+    btn.addEventListener("click", () => this.store.select("device", ref.device));
+    return btn;
   }
 
   /**
@@ -688,43 +786,52 @@ class Inspector {
     panel.appendChild(el("div", "pp-head", `${problems.length} problems (P5)`));
     if (!problems.length) {
       panel.appendChild(el("p", "insp-none", "No problems detected."));
-      return;
+    } else {
+      // Group by type for readability. Only one-sided linked GAs are problems:
+      // unlinked com objects and fully-unlinked GAs are normal in KNX.
+      const groups = {
+        "ga-no-listener": [],
+        "ga-no-sender": [],
+      };
+      for (const p of problems) (groups[p.type] || (groups[p.type] = [])).push(p);
+
+      const titles = {
+        "ga-no-listener": "Group addresses with senders but no listener",
+        "ga-no-sender": "Group addresses with listeners but no sender",
+      };
+
+      for (const type of Object.keys(groups)) {
+        const items = groups[type];
+        if (!items.length) continue;
+        panel.appendChild(el("div", "pp-group", `${titles[type] || type} (${items.length})`));
+        const list = el("div", "pp-list");
+        for (const p of items) {
+          const jump = el("button", "pp-item", null);
+          jump.type = "button";
+          jump.appendChild(el("span", "pp-msg", p.message));
+          jump.addEventListener("click", () => {
+            panel.hidden = true;
+            this._selectGa(p.ga);
+          });
+          list.appendChild(jump);
+        }
+        panel.appendChild(list);
+      }
     }
 
-    // Group by type for readability.
-    const groups = {
-      "unlinked-object": [],
-      "ga-no-sender": [],
-      "ga-no-listener": [],
-    };
-    for (const p of problems) (groups[p.type] || (groups[p.type] = [])).push(p);
-
-    const titles = {
-      "unlinked-object": "Unlinked com objects",
-      "ga-no-sender": "Group addresses with no sender",
-      "ga-no-listener": "Group addresses with no listener",
-    };
-
-    for (const type of Object.keys(groups)) {
-      const items = groups[type];
-      if (!items.length) continue;
-      panel.appendChild(el("div", "pp-group", `${titles[type] || type} (${items.length})`));
-      const list = el("div", "pp-list");
-      for (const p of items) {
-        const jump = el("button", "pp-item", null);
-        jump.type = "button";
-        jump.appendChild(el("span", "pp-msg", p.message));
-        jump.addEventListener("click", () => {
-          panel.hidden = true;
-          if (p.type === "unlinked-object") {
-            this.store.select("device", p.device);
-          } else {
-            this._selectGa(p.ga);
-          }
-        });
-        list.appendChild(jump);
-      }
-      panel.appendChild(list);
+    // Neutral info footer: unused com objects / group addresses are normal, so
+    // they are shown as plain counts with no warning styling and no per-item list.
+    const info = this.store.info || { unusedComObjects: 0, unusedGroupAddresses: 0 };
+    if (info.unusedComObjects || info.unusedGroupAddresses) {
+      const footer = el("div", "pp-info");
+      footer.appendChild(
+        el(
+          "span",
+          null,
+          `${info.unusedComObjects} unused com objects · ${info.unusedGroupAddresses} unused group addresses`,
+        ),
+      );
+      panel.appendChild(footer);
     }
   }
 }
