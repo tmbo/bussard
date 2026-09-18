@@ -15,6 +15,16 @@
   --text-faint: #5a6472;
   --accent: #4aa3ff;
   --accent-dim: #2b6cb0;
+  /* Selection type accents (item 5): used consistently everywhere a device or a
+     group address is highlighted — card/tree selection tint, filter banner,
+     edges, inspector badge, tab. DEVICE = blue (keeps the existing card style),
+     GROUP ADDRESS = amber-gold, clearly distinct. */
+  --accent-device: #4aa3ff;
+  --accent-device-soft: rgba(74, 163, 255, 0.16);
+  --accent-ga: #e0a83a;
+  --accent-ga-soft: rgba(224, 168, 58, 0.16);
+  --partner: #35c9b0;
+  --partner-soft: rgba(53, 201, 176, 0.16);
   --ok: #3fb950;
   --warn: #d29922;
   --bad: #f85149;
@@ -217,6 +227,9 @@ body {
   font-size: 13px;
 }
 .tab.active { color: var(--text); border-bottom-color: var(--accent); }
+/* Inspector tab reflects the selection type (item 5). */
+.tab.type-device.active { border-bottom-color: var(--accent-device); }
+.tab.type-ga.active { border-bottom-color: var(--accent-ga); }
 .tab-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 .tab-body[hidden] { display: none; }
 .empty-hint { color: var(--text-faint); padding: 14px; font-size: 12px; }
@@ -283,7 +296,10 @@ body {
 .ga-middle { background: var(--bg-raised); padding-left: 20px; }
 .ga-sub { padding-left: 34px; }
 .ga-row:hover { background: var(--panel); }
-.ga-sub.selected { background: rgba(74, 163, 255, 0.14); box-shadow: inset 2px 0 0 var(--accent); }
+.ga-sub.selected { background: var(--accent-ga-soft); box-shadow: inset 2px 0 0 var(--accent-ga); }
+/* GAs shared with a selected device's communication partners (item 3). */
+.ga-sub.partner-ga { box-shadow: inset 2px 0 0 var(--partner); }
+.ga-sub.partner-ga .ga-addr { color: var(--partner); }
 
 .ga-twist::before { content: "▾"; color: var(--text-faint); font-size: 10px; }
 .ga-row.collapsed .ga-twist::before { content: "▸"; }
@@ -353,6 +369,22 @@ body {
 .log-btn.active { color: var(--accent); border-color: var(--accent-dim); }
 .log-newcount { color: var(--warn); font-family: var(--mono); font-size: 12px; }
 
+/* Flash-effects toggle (item 1): a small pulse-icon button. Active = highlights
+   on (accent glow); inactive = muted with a slash so the off state reads. */
+.flash-toggle { font-size: 13px; line-height: 1; padding: 3px 8px; }
+.flash-toggle.active { color: var(--flash); border-color: var(--flash); }
+.flash-toggle:not(.active) { color: var(--text-faint); position: relative; }
+.flash-toggle:not(.active)::after {
+  content: "";
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  top: 50%;
+  height: 1px;
+  background: var(--text-faint);
+  transform: rotate(-20deg);
+}
+
 .log-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -396,21 +428,34 @@ body.query-active .ga-sub:not(.match) { opacity: 0.35; }
 
 /* --- flash / pulse animations --------------------------------------------- */
 
+/* Longer glow-out (item 1): a bright peak that holds briefly then fades over
+   ~1s so an incoming telegram is clearly noticeable. Re-adding the class after
+   a reflow restarts it, so rapid repeats re-trigger cleanly. */
 @keyframes glow-out {
-  0% { background-color: rgba(255, 207, 90, 0.55); box-shadow: 0 0 8px var(--flash); }
+  0% { background-color: rgba(255, 207, 90, 0.6); box-shadow: 0 0 10px var(--flash); }
+  20% { background-color: rgba(255, 207, 90, 0.55); box-shadow: 0 0 9px var(--flash); }
   100% { background-color: transparent; box-shadow: none; }
 }
 @keyframes glow-out-suspicious {
-  0% { background-color: rgba(219, 97, 255, 0.5); box-shadow: 0 0 8px var(--suspicious); }
+  0% { background-color: rgba(219, 97, 255, 0.55); box-shadow: 0 0 10px var(--suspicious); }
+  20% { background-color: rgba(219, 97, 255, 0.5); box-shadow: 0 0 9px var(--suspicious); }
   100% { background-color: transparent; box-shadow: none; }
+}
+/* Recent-activity tint (item 1): a subtle background that lingers for a few
+   seconds after the flash and decays, so a just-active card/badge stays
+   distinguishable without the bright glow. */
+@keyframes recent-decay {
+  0% { background-color: rgba(255, 207, 90, 0.22); }
+  100% { background-color: transparent; }
 }
 @keyframes pulse-travel {
   0% { transform: scale(0.6); opacity: 0.9; }
   100% { transform: scale(1); opacity: 0; }
 }
 
-.flash { animation: glow-out 200ms ease-out; }
-.flash-suspicious { animation: glow-out-suspicious 200ms ease-out; }
+.flash { animation: glow-out 1000ms ease-out; }
+.flash-suspicious { animation: glow-out-suspicious 1000ms ease-out; }
+.recent { animation: recent-decay 3500ms ease-out forwards; }
 
 .suspicious { color: var(--suspicious) !important; }
 .log-row.suspicious .lr-dest { color: var(--suspicious); }
@@ -439,6 +484,8 @@ body.query-active .ga-sub:not(.match) { opacity: 0.35; }
     background-color: rgba(255, 207, 90, 0.35);
   }
   .flash-suspicious { background-color: rgba(219, 97, 255, 0.35); }
+  /* Reduced motion wins: the flash toggle cannot re-enable these. */
+  .recent, .device-card.recent, .device-card.locate { animation: none; }
   .pulse-circle { display: none; }
   * { scroll-behavior: auto !important; }
 }
@@ -476,14 +523,130 @@ body.query-active .ga-sub:not(.match) { opacity: 0.35; }
   margin: 0 0 6px 4px;
 }
 .device-card.dimmed { opacity: 0.3; }
-.device-card.flash { animation: glow-out 200ms ease-out; }
-.device-card.flash-suspicious { animation: glow-out-suspicious 200ms ease-out; }
+.device-card.flash { animation: glow-out 1000ms ease-out; }
+.device-card.flash-suspicious { animation: glow-out-suspicious 1000ms ease-out; }
+.device-card.recent { animation: recent-decay 3500ms ease-out forwards; }
+
+/* Locate flash (item 2): a one-shot ring pulse when a selection scrolls a card
+   into view, so the eye lands on it. Independent of the live-effects toggle. */
+@keyframes locate-ring {
+  0% { box-shadow: 0 0 0 3px var(--accent); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.device-card.locate { animation: locate-ring 700ms ease-out; }
+
+/* --- item 3: device selection — partners + dimming ------------------------ */
+
+/* Selected device keeps the existing selection style (blue). Its communication
+   partners get a distinct teal highlight; non-partners are dimmed. */
+.device-card.partner {
+  border-color: var(--partner);
+  box-shadow: 0 0 0 1px var(--partner);
+}
+.device-card.partner-dimmed { opacity: 0.32; }
+
+/* --- item 4: GA focus mode ------------------------------------------------ */
+
+/* Participating cards in ga-focus mode get the GA accent ring. */
+.device-card.focus-part {
+  border-color: var(--accent-ga);
+  box-shadow: 0 0 0 1px var(--accent-ga);
+}
+/* Hidden by focus mode: cards, room blocks and floor labels with no participant. */
+.device-card.focus-hidden,
+.room-block.focus-hidden,
+.floor-label.focus-hidden { display: none; }
+
+/* Filter banner pinned to the top of the topology pane. */
+.topo-filter-banner {
+  position: sticky;
+  top: -16px; /* cancel the pane's 16px padding so it hugs the top edge */
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: -16px -16px 14px -16px;
+  padding: 8px 14px;
+  background: var(--accent-ga-soft);
+  border-bottom: 1px solid var(--accent-ga);
+  color: var(--text);
+  font-size: 12px;
+}
+.topo-filter-banner[hidden] { display: none; }
+.tfb-label { font-weight: 500; }
+.tfb-label::before {
+  content: "▾ filter";
+  margin-right: 8px;
+  color: var(--accent-ga);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+.tfb-close {
+  margin-left: auto;
+  padding: 0 6px;
+  background: none;
+  border: 1px solid var(--accent-ga);
+  border-radius: 4px;
+  color: var(--accent-ga);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.4;
+}
+.tfb-close:hover { background: var(--accent-ga); color: #1a1200; }
+
+/* GA node drawn on the spine in focus mode. */
+.ga-node-dot { fill: var(--accent-ga); stroke: var(--bg); stroke-width: 2; }
+.ga-node-label { font-family: var(--sans); font-size: 12px; }
+.ga-node-addr { fill: var(--accent-ga); font-family: var(--mono); font-weight: 600; }
+.ga-node-name { fill: var(--text); }
+.ga-node-dpt { fill: var(--text-dim); font-family: var(--mono); font-size: 10px; }
+.topo-arrow-head { fill: var(--text-dim); }
+.sel-edge.focus-edge.sender { stroke: var(--accent-device); }
+.sel-edge.focus-edge.listener { stroke: var(--ok); }
+.sel-edge.partner-edge { stroke: var(--partner); stroke-width: 1.5; opacity: 0.9; }
 
 /* --- inspector (wave 2) --------------------------------------------------- */
 
 .insp { padding: 12px 14px; }
+
+/* --- item 5: typed inspector header --------------------------------------- */
+
+/* A strong typed header so the user always knows whether they are looking at a
+   device or a group address. A colored type badge (DEVICE vs GROUP ADDRESS),
+   the address in monospace, the name prominent, and a subtitle line
+   (floor/room for devices, range path for GAs). */
+.insp-typehead {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.insp-typehead-device { border-bottom-color: var(--accent-device); }
+.insp-typehead-ga { border-bottom-color: var(--accent-ga); }
+.insp-badge {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  color: #0a0d12;
+  white-space: nowrap;
+}
+.badge-device { background: var(--accent-device); }
+.badge-ga { background: var(--accent-ga); }
+.insp-titleblock { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.insp-titlerow { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.insp-subtitle { color: var(--text-dim); font-size: 12px; }
+
 .insp-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
 .insp-addr { font-family: var(--mono); color: var(--accent); font-size: 13px; }
+.insp-typehead-device .insp-addr { color: var(--accent-device); }
+.insp-typehead-ga .insp-addr { color: var(--accent-ga); }
 .insp-name { font-weight: 600; font-size: 14px; }
 .insp-dpt {
   font-family: var(--mono);
