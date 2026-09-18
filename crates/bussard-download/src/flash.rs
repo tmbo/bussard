@@ -1536,7 +1536,9 @@ pub fn plan_flash(
                 let len = bytes.len();
                 let offset = offset.unwrap_or(0);
                 let end = u64::from(offset).saturating_add(len as u64);
-                if len as u64 > MAX_WRITE_SPAN || u64::from(offset) > MAX_WRITE_SPAN || end > MAX_MEMORY_END
+                if len as u64 > MAX_WRITE_SPAN
+                    || u64::from(offset) > MAX_WRITE_SPAN
+                    || end > MAX_MEMORY_END
                 {
                     return Err(PlanError::AddressOutOfRange {
                         step: step_no,
@@ -1586,7 +1588,9 @@ pub fn plan_flash(
                 // offset+len does. Refuse here rather than truncate later. Also
                 // reject an absurd offset/len before any allocation.
                 let end = u64::from(offset).saturating_add(len as u64);
-                if len as u64 > MAX_WRITE_SPAN || u64::from(offset) > MAX_WRITE_SPAN || end > MAX_MEMORY_END
+                if len as u64 > MAX_WRITE_SPAN
+                    || u64::from(offset) > MAX_WRITE_SPAN
+                    || end > MAX_MEMORY_END
                 {
                     return Err(PlanError::AddressOutOfRange {
                         step: step_no,
@@ -1764,7 +1768,10 @@ pub fn plan_flash(
                     .map(|d| d.len() as u64)
                     .unwrap_or_else(|| u64::from(size.unwrap_or(0)));
                 let end = u64::from(offset).saturating_add(read_len);
-                if read_len > MAX_WRITE_SPAN || u64::from(offset) > MAX_WRITE_SPAN || end > MAX_MEMORY_END {
+                if read_len > MAX_WRITE_SPAN
+                    || u64::from(offset) > MAX_WRITE_SPAN
+                    || end > MAX_MEMORY_END
+                {
                     return Err(PlanError::AddressOutOfRange {
                         step: step_no,
                         size: read_len,
@@ -5137,7 +5144,10 @@ mod tests {
         .unwrap_err();
         match err {
             PlanError::AddressOutOfRange { end, .. } => {
-                assert!(end > MAX_MEMORY_END, "end {end} must exceed the 24-bit space");
+                assert!(
+                    end > MAX_MEMORY_END,
+                    "end {end} must exceed the 24-bit space"
+                );
             }
             other => panic!("expected AddressOutOfRange, got {other:?}"),
         }
