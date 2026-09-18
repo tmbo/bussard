@@ -58,6 +58,12 @@ const A_PROPERTY_VALUE_WRITE: u16 = 0x3D7;
 const A_MEMORY_READ_SEL: u16 = 0x200;
 const A_MEMORY_RESPONSE: u16 = 0x240;
 const A_MEMORY_WRITE_SEL: u16 = 0x280;
+// A_MemoryExtended_* (System B, 24-bit address): the services ETS drives a
+// capable 07B0 device with. Full 10-bit APCIs (no low-6-bit count field).
+const A_MEMORY_EXTENDED_WRITE: u16 = 0x1FB;
+const A_MEMORY_EXTENDED_WRITE_RESPONSE: u16 = 0x1FC;
+const A_MEMORY_EXTENDED_READ: u16 = 0x1FD;
+const A_MEMORY_EXTENDED_READ_RESPONSE: u16 = 0x1FE;
 // A_Authorize_Request/Response (issue #52 finding #1): ETS presents a key before
 // any configuration access. De-mirrored from the spec here so the mock models an
 // authorization gate — config writes are refused until an authorize is granted.
@@ -78,6 +84,7 @@ const PID_OBJECT_TYPE: u8 = 1;
 const PID_LOAD_STATE_CONTROL: u8 = 5;
 const PID_TABLE_REFERENCE: u8 = 7;
 const PID_MCB_TABLE: u8 = 27;
+const PID_MAX_APDU_LENGTH: u8 = 56;
 
 /// CRC16-CCITT (poly 0x1021, init 0xFFFF, no reflection, no final XOR), the CRC
 /// the KNX `PID_MCB_TABLE` uses. De-mirrored from the KNX spec here so the mock
@@ -172,7 +179,7 @@ struct DeviceState {
     /// Per-object allocated segment bases, keyed by object index, for the
     /// multi-object flash (each object's `PID_TABLE_REFERENCE` reports its own
     /// base). Empty for single-object tests (they use `last_segment_base`).
-    object_segment_bases: HashMap<u8, u16>,
+    object_segment_bases: HashMap<u8, u32>,
     /// Per-object allocated segment sizes, keyed by object index.
     object_segment_sizes: HashMap<u8, u32>,
     /// Whether this device models the multi-object (master-template) flash. When
@@ -180,16 +187,18 @@ struct DeviceState {
     /// object index (`object_load_states`/`object_segment_bases`) instead of the
     /// single `app_load_state`. Off by default (single-object tests unchanged).
     multi_object: bool,
-    /// Device-placed segment base address, chosen on the first RelSegment.
-    next_segment_base: u16,
+    /// Device-placed segment base address, chosen on the first RelSegment. A
+    /// 24-bit cursor: a capable 07B0 device places its segment above 0xFFFF and a
+    /// tool must address it via the extended memory service.
+    next_segment_base: u32,
     /// The base of the most-recently allocated segment (reported via
     /// `PID_TABLE_REFERENCE`).
-    last_segment_base: u16,
+    last_segment_base: u32,
     /// The size (octets) of the most-recently allocated segment, so a
     /// `PID_MCB_TABLE` read can CRC exactly the segment the device stored.
     last_segment_size: u32,
-    /// Sparse device memory: address → octet.
-    memory: HashMap<u16, u8>,
+    /// Sparse device memory: 24-bit address → octet.
+    memory: HashMap<u32, u8>,
     fault: Fault,
     /// Count of load-control writes seen (plan-only must be zero).
     control_writes: usize,
@@ -231,6 +240,18 @@ struct DeviceState {
     /// download, so a test can assert the write was actually driven to completion
     /// (every source byte written at least once) across all the windows.
     memory_writes_seen: usize,
+    /// Count of `A_MemoryExtended_Write` frames seen — a test asserts the extended
+    /// service (not the plain `A_Memory_Write`) carried the >0xFFFF segment.
+    extended_writes_seen: usize,
+    /// If set, the device answers `PID_MAX_APDU_LENGTH` (PID 56 on obj0) with this
+    /// value, so the tool scales its extended-write chunks to it (e.g. 233 -> 228).
+    /// `None` (the default) leaves the property absent — the tool falls back to the
+    /// conservative chunk, exactly as before, so existing tests are unaffected.
+    max_apdu: Option<u16>,
+    /// If set, the first `RelSegment` allocation is placed at this 24-bit base
+    /// instead of `next_segment_base`, so a test can drive a segment above 0xFFFF
+    /// (the real 07B0 actuators) through the extended service.
+    segment_base_override: Option<u32>,
     /// If set, the device drops the application object out of `Loading` (back to
     /// `Unloaded`) the first time it is reconnected mid-download — modelling a peer
     /// that does not persist the intermediate state across a graceful window. The
@@ -539,12 +560,62 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
         let addr = u16::from_be_bytes([data[0], data[1]]);
         let mut out = Vec::with_capacity(count);
         for i in 0..count {
-            let a = addr.wrapping_add(i as u16);
+            let a = u32::from(addr).wrapping_add(i as u32);
             out.push(*s.memory.get(&a).unwrap_or(&0));
         }
         let mut payload = addr.to_be_bytes().to_vec();
         payload.extend_from_slice(&out);
         return Reaction::Answer(A_MEMORY_RESPONSE | (count as u16 & 0x3f), payload);
+    }
+
+    // Extended memory read: [count][addr:3 BE]. Answer with an
+    // A_MemoryExtended_Read_Response [return_code=0][addr:3][data].
+    if req_apci == A_MEMORY_EXTENDED_READ {
+        if data.len() < 4 {
+            return Reaction::Nak;
+        }
+        let count = data[0] as usize;
+        let addr = u32::from_be_bytes([0, data[1], data[2], data[3]]);
+        let mut payload = vec![0x00, data[1], data[2], data[3]];
+        for i in 0..count {
+            payload.push(*s.memory.get(&addr.wrapping_add(i as u32)).unwrap_or(&0));
+        }
+        return Reaction::Answer(A_MEMORY_EXTENDED_READ_RESPONSE, payload);
+    }
+
+    // Extended memory write: [count][addr:3 BE][data]. Store the bytes at the
+    // 24-bit address and confirm inline with an A_MemoryExtended_Write_Response
+    // [return_code=0][addr:3]. Same authorization gate as the plain write.
+    if req_apci == A_MEMORY_EXTENDED_WRITE {
+        if !s.authorized && !s.authorize_unsupported {
+            return Reaction::Nak;
+        }
+        if s.app_erased_by_master_reset {
+            return Reaction::Nak;
+        }
+        if s.fault == Fault::NakMemoryWrite {
+            return Reaction::Nak;
+        }
+        if data.len() < 4 {
+            return Reaction::Nak;
+        }
+        let count = data[0] as usize;
+        let addr = u32::from_be_bytes([0, data[1], data[2], data[3]]);
+        if data.len() < 4 + count {
+            return Reaction::Nak;
+        }
+        for (i, b) in data[4..4 + count].iter().enumerate() {
+            s.memory.insert(addr.wrapping_add(i as u32), *b);
+        }
+        s.memory_writes_seen += 1;
+        s.extended_writes_seen += 1;
+        if s.write_phase_exchanges.is_none() {
+            s.write_phase_exchanges = Some(0);
+        }
+        return Reaction::Answer(
+            A_MEMORY_EXTENDED_WRITE_RESPONSE,
+            vec![0x00, data[1], data[2], data[3]],
+        );
     }
 
     // Memory write: [addr_hi, addr_lo, data…], count in APCI low bits.
@@ -570,7 +641,7 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
         }
         let addr = u16::from_be_bytes([data[0], data[1]]);
         for (i, b) in data[2..].iter().enumerate() {
-            s.memory.insert(addr.wrapping_add(i as u16), *b);
+            s.memory.insert(u32::from(addr).wrapping_add(i as u32), *b);
         }
         s.memory_writes_seen += 1;
         // Arm the write-phase death counter on the first memory write of the
@@ -619,10 +690,10 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
             // Report the object's allocated base as a big-endian u32. In the
             // multi-object flash each object has its own base; otherwise the
             // single last-allocated base.
-            let base = if s.multi_object {
-                *s.object_segment_bases.get(&oi).unwrap_or(&0) as u32
+            let base: u32 = if s.multi_object {
+                *s.object_segment_bases.get(&oi).unwrap_or(&0)
             } else {
-                s.last_segment_base as u32
+                s.last_segment_base
             };
             return Reaction::Answer(
                 A_PROPERTY_VALUE_RESPONSE,
@@ -644,7 +715,7 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
             let base = s.last_segment_base;
             let size = s.last_segment_size;
             let segment: Vec<u8> = (0..size)
-                .map(|i| *s.memory.get(&base.wrapping_add(i as u16)).unwrap_or(&0))
+                .map(|i| *s.memory.get(&base.wrapping_add(i)).unwrap_or(&0))
                 .collect();
             let crc = crc16_ccitt(&segment);
             let mut entry = size.to_be_bytes().to_vec();
@@ -655,6 +726,20 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
                 A_PROPERTY_VALUE_RESPONSE,
                 prop_response(oi, pid, 1, start, &entry),
             );
+        }
+        // PID_MAX_APDU_LENGTH (obj0): advertise the device's max APDU so the tool
+        // scales its extended-write chunks to it. Absent unless a test sets it.
+        if pid == PID_MAX_APDU_LENGTH && oi == 0 {
+            return match s.max_apdu {
+                Some(v) => Reaction::Answer(
+                    A_PROPERTY_VALUE_RESPONSE,
+                    prop_response(oi, pid, 1, start, &v.to_be_bytes()),
+                ),
+                None => Reaction::Answer(
+                    A_PROPERTY_VALUE_RESPONSE,
+                    prop_response(oi, pid, 0, start, &[]),
+                ),
+            };
         }
         // A stored property a LdCtrlCompareProp reads back, if configured.
         if let Some(value) = s.compare_props.get(&(oi, pid)) {
@@ -701,14 +786,17 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
                     } else {
                         0
                     };
-                    let base = s.next_segment_base;
+                    let base = s
+                        .segment_base_override
+                        .take()
+                        .unwrap_or(s.next_segment_base);
                     s.object_segment_bases.insert(oi, base);
                     s.object_segment_sizes.insert(oi, size);
                     // Mirror into the single-object fields too so the MCB handler
                     // (which reads last_segment_*) still works for the app object.
                     s.last_segment_base = base;
                     s.last_segment_size = size;
-                    s.next_segment_base = base.wrapping_add(size.max(1) as u16);
+                    s.next_segment_base = base.wrapping_add(size.max(1));
                     let st = *s.object_load_states.get(&oi).unwrap_or(&LS_LOADING);
                     return Reaction::Answer(
                         A_PROPERTY_VALUE_RESPONSE,
@@ -744,10 +832,13 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
                 } else {
                     0
                 };
-                let base = s.next_segment_base;
+                let base = s
+                    .segment_base_override
+                    .take()
+                    .unwrap_or(s.next_segment_base);
                 s.last_segment_base = base;
                 s.last_segment_size = size;
-                s.next_segment_base = base.wrapping_add(size.max(1) as u16);
+                s.next_segment_base = base.wrapping_add(size.max(1));
                 // Normally stays in Loading; the LoadedOnAllocate fault drops to
                 // Loaded here, so the allocate's own re-read trips the strict check.
                 if fault == Fault::LoadedOnAllocate && is_app {
@@ -1088,6 +1179,9 @@ fn fresh_device(fault: Fault) -> Shared {
         die_after_write_exchanges: None,
         write_phase_exchanges: None,
         memory_writes_seen: 0,
+        extended_writes_seen: 0,
+        max_apdu: None,
+        segment_base_override: None,
         drop_loading_on_reconnect: false,
         was_loading_at_disconnect: false,
         authorized: false,
@@ -1374,7 +1468,7 @@ async fn flash_happy_path_loads_and_verifies() {
     // image at the second base (0x4000 + 6 = 0x4006).
     let s = state.lock().unwrap();
     let code: Vec<u8> = (0x4000u16..0x4006)
-        .map(|a| *s.memory.get(&a).unwrap_or(&0))
+        .map(|a| *s.memory.get(&u32::from(a)).unwrap_or(&0))
         .collect();
     assert_eq!(code, vec![0, 1, 2, 3, 4, 5]);
     assert_eq!(*s.memory.get(&0x4006).unwrap_or(&0), 7); // parameter default 7
@@ -1434,7 +1528,7 @@ async fn flash_with_image_prop_loads_and_verifies_mcb() {
     // The code image landed at the segment base.
     let s = state.lock().unwrap();
     let code: Vec<u8> = (0x4000u16..0x4006)
-        .map(|a| *s.memory.get(&a).unwrap_or(&0))
+        .map(|a| *s.memory.get(&u32::from(a)).unwrap_or(&0))
         .collect();
     assert_eq!(code, vec![0, 1, 2, 3, 4, 5]);
     handle.abort();
@@ -2498,7 +2592,7 @@ async fn flash_master_reset_reconnects_and_reaches_loaded() {
         // the code image there — proving it re-established the segment and updated
         // `segment_base` rather than reusing the stale pre-reset value.
         let fresh: Vec<u8> = (0x4006u16..0x400C)
-            .map(|a| *s.memory.get(&a).unwrap_or(&0))
+            .map(|a| *s.memory.get(&u32::from(a)).unwrap_or(&0))
             .collect();
         assert_eq!(
             fresh,
@@ -2512,7 +2606,7 @@ async fn flash_master_reset_reconnects_and_reaches_loaded() {
         // would have failed on the NAK; asserting the stale base is empty pins the
         // fix to re-establishing the segment before the resumed write.
         let stale: Vec<u8> = (0x4000u16..0x4006)
-            .map(|a| *s.memory.get(&a).unwrap_or(&0))
+            .map(|a| *s.memory.get(&u32::from(a)).unwrap_or(&0))
             .collect();
         assert_eq!(
             stale,
@@ -2887,7 +2981,7 @@ async fn flash_resumes_when_connection_drops_inside_a_write() {
         );
         // The whole 256-byte segment landed at the segment base despite the drop.
         let full: Vec<u8> = (0x4000u16..0x4000 + 256)
-            .map(|a| *s.memory.get(&a).unwrap_or(&0))
+            .map(|a| *s.memory.get(&u32::from(a)).unwrap_or(&0))
             .collect();
         assert_eq!(
             full,
@@ -3308,7 +3402,7 @@ async fn flash_targets_the_obj_idx_object_not_the_type_object() {
     // The app segment image landed at object 4's segment base (0x4000, the mock's
     // first allocation base), proving the write used obj4's PID7 base.
     let code: Vec<u8> = (0x4000u16..0x4006)
-        .map(|a| *s.memory.get(&a).unwrap_or(&0))
+        .map(|a| *s.memory.get(&u32::from(a)).unwrap_or(&0))
         .collect();
     assert_eq!(
         code,
@@ -3553,14 +3647,14 @@ async fn flash_da_tp_programs_all_four_objects() {
         }
         // The obj3 group-object image landed at obj3's own allocated base.
         let obj3_base = *s.object_segment_bases.get(&3).unwrap();
-        let obj3_written: Vec<u8> = (0..obj3.len() as u16)
+        let obj3_written: Vec<u8> = (0..obj3.len() as u32)
             .map(|i| *s.memory.get(&obj3_base.wrapping_add(i)).unwrap_or(&0))
             .collect();
         assert_eq!(obj3_written, obj3, "obj3 table body landed at obj3's base");
         // The obj1 address image landed at obj1's own base.
         let obj1_base = *s.object_segment_bases.get(&1).unwrap();
         let obj1_img = &table_images[&1];
-        let obj1_written: Vec<u8> = (0..obj1_img.len() as u16)
+        let obj1_written: Vec<u8> = (0..obj1_img.len() as u32)
             .map(|i| *s.memory.get(&obj1_base.wrapping_add(i)).unwrap_or(&0))
             .collect();
         assert_eq!(
@@ -3598,4 +3692,203 @@ async fn flash_da_tp_without_table_images_refuses() {
         "a template that writes obj1/2/3 with no table images must refuse, not \
          silently write the app segment to a table object"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Extended-memory (System B, 24-bit address) flash: a capable 07B0 device whose
+// segment lives above 0x10000 is streamed with A_MemoryExtended_Write and
+// verified to Loaded. The ETS captures (scratchpad/ets-analysis/sysb-{a,c}.md)
+// show ETS drives exactly these devices with the extended service in chunks
+// scaled to PID_MAX_APDU (233 -> 228). A small-image (<=0xFFFF) device must keep
+// using the plain A_Memory_Write path (asserted alongside), byte-identically.
+// ---------------------------------------------------------------------------
+
+/// Standard-alphabet base64 encoder (no external crate; the download crate does
+/// not depend on `base64`). Enough to embed a code-segment `<Data>` payload.
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPHABET[((n >> 18) & 0x3F) as usize] as char);
+        out.push(ALPHABET[((n >> 12) & 0x3F) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            ALPHABET[((n >> 6) & 0x3F) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            ALPHABET[(n & 0x3F) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// A single-object 07B0 app whose one relative code segment is `size` octets, so
+/// a flash chunks it (with the extended service, into ~228-octet pieces). The
+/// data is a deterministic ramp so a test can byte-compare what landed.
+fn app_with_segment_of(size: usize) -> (ApplicationProgram, Vec<u8>) {
+    let data: Vec<u8> = (0..size).map(|i| (i as u8).wrapping_mul(3)).collect();
+    let b64 = base64_encode(&data);
+    let xml = format!(
+        r#"<KNX xmlns="http://knx.org/xml/project/23">
+     <ApplicationProgram Id="M-1_A-EXT" ApplicationNumber="1" ApplicationVersion="1"
+        MaskVersion="MV-07B0" Name="Ext" LoadProcedureStyle="ProductDefault">
+      <Static>
+       <Code>
+        <RelativeSegment Id="M-1_A-EXT_RS-1" Size="{size}" LoadStateMachine="4" Offset="0"><Data>{b64}</Data></RelativeSegment>
+       </Code>
+       <LoadProcedures>
+        <LoadProcedure>
+         <LdCtrlConnect />
+         <LdCtrlUnload LsmIdx="4" />
+         <LdCtrlLoad LsmIdx="4" />
+         <LdCtrlRelSegment LsmIdx="4" Size="{size}" AppliesTo="full" />
+         <LdCtrlWriteRelMem ObjIdx="0" Offset="0" Size="{size}" AppliesTo="full" />
+         <LdCtrlLoadCompleted LsmIdx="4" />
+         <LdCtrlRestart />
+         <LdCtrlDisconnect />
+        </LoadProcedure>
+       </LoadProcedures>
+      </Static>
+     </ApplicationProgram></KNX>"#
+    );
+    (
+        parse_application_program("M-1_A-EXT", xml.as_bytes()).unwrap(),
+        data,
+    )
+}
+
+#[tokio::test]
+async fn flash_extended_memory_segment_above_64k_loads_and_verifies() {
+    // A 400-octet segment placed at base 0x016000 (top address 0x01618F, well
+    // above 0xFFFF): the whole segment must stream via A_MemoryExtended_Write in
+    // 228-octet chunks (PID_MAX_APDU=233), confirm to Loaded, and land verbatim.
+    let (mut bus, state, handle) = setup(Fault::None).await;
+    {
+        let mut s = state.lock().unwrap();
+        s.max_apdu = Some(233);
+        s.segment_base_override = Some(0x01_6000);
+    }
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+
+    let (app, data) = app_with_segment_of(400);
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    // Negotiate PID_MAX_APDU on the connection so extended writes scale to 228,
+    // exactly as `Session::open` does for the real connector-backed flow.
+    let negotiated = l4.negotiate_max_apdu().await.unwrap();
+    assert_eq!(
+        negotiated,
+        Some(233),
+        "the mock advertises PID_MAX_APDU=233"
+    );
+    let mut session = authed_session(l4).await;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .unwrap();
+    let _ = session.into_disconnect().await;
+
+    assert!(
+        outcome.ok(),
+        "extended-memory flash must verify: {outcome:?}"
+    );
+    assert_eq!(outcome.load_state, LoadState::Loaded);
+    assert!(outcome.spot_checks_match);
+
+    let s = state.lock().unwrap();
+    // The segment was streamed with the extended service, NOT the plain write.
+    assert!(
+        s.extended_writes_seen > 0,
+        "a >0xFFFF segment must use A_MemoryExtended_Write"
+    );
+    // 400 octets at a 228-octet extended chunk = 2 frames (228 + 172).
+    assert_eq!(
+        s.extended_writes_seen, 2,
+        "400 octets at PID_MAX_APDU=233 (228-octet chunks) is two extended writes"
+    );
+    // Every byte landed at its 24-bit address.
+    let landed: Vec<u8> = (0..data.len() as u32)
+        .map(|i| *s.memory.get(&(0x01_6000u32 + i)).unwrap_or(&0))
+        .collect();
+    assert_eq!(landed, data, "the image landed verbatim at 0x016000");
+    handle.abort();
+}
+
+#[tokio::test]
+async fn flash_small_image_stays_on_the_plain_write_path() {
+    // The byte-identical guarantee: a device whose segment fits 0xFFFF (base
+    // 0x4000, the historical placement) is flashed with the plain A_Memory_Write
+    // service and NO extended write is ever emitted, even when PID_MAX_APDU is
+    // advertised. This is the small-image path the KV/DA.tp oracle depends on.
+    let (mut bus, state, handle) = setup(Fault::None).await;
+    {
+        let mut s = state.lock().unwrap();
+        s.max_apdu = Some(233);
+        // No base override: the mock places the segment at 0x4000 (<=0xFFFF).
+    }
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+
+    let app = fabricated_app();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+
+    let l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    let mut session = authed_session(l4).await;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .unwrap();
+    let _ = session.into_disconnect().await;
+
+    assert!(outcome.ok(), "small-image flash must verify: {outcome:?}");
+    assert_eq!(outcome.load_state, LoadState::Loaded);
+    let s = state.lock().unwrap();
+    assert_eq!(
+        s.extended_writes_seen, 0,
+        "a <=0xFFFF segment must NEVER use the extended service (byte-identical plain path)"
+    );
+    assert!(
+        s.memory_writes_seen > 0,
+        "the small image is streamed with the plain A_Memory_Write"
+    );
+    handle.abort();
 }

@@ -1624,6 +1624,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn select_extended_memory_picks_the_service_by_top_address() {
+        // A whole access that fits 0xFFFF stays on the plain service — the
+        // byte-identical KV/DA.tp/Steinel path.
+        assert!(!select_extended_memory(0x4000, 63));
+        assert!(!select_extended_memory(0xFFC0, 64)); // ends exactly at 0xFFFF
+        assert!(!select_extended_memory(0x0000, 1));
+        // An access whose top address crosses 0xFFFF uses the extended service —
+        // the real 07B0 actuators (bases 0xf000..0x16000, ends to 0x1aad3).
+        assert!(select_extended_memory(0xFFFF, 2)); // 0xFFFF..0x10000
+        assert!(select_extended_memory(0x01_6000, 6));
+        assert!(select_extended_memory(0x0F_000, 0x8000)); // 0xf000 base, big span
+        // A zero-length access is treated as one octet at `addr`.
+        assert!(!select_extended_memory(0xFFFF, 0));
+        assert!(select_extended_memory(0x1_0000, 0));
+    }
+
+    #[test]
     fn load_state_round_trips_octets() {
         for (v, s) in [
             (0, LoadState::Unloaded),
