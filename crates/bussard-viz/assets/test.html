@@ -207,6 +207,63 @@
     store.select("ga", "1/2/0");
     check("pub/sub unsubscribe works", got.id === "1/1/1");
 
+    // --- communication partners (item 3) ---------------------------------
+    // 1.1.1 sends 1/1/1 (heard by 1.1.2); 1.1.2 listens on 1/1/1 (driven by
+    // 1.1.1). So 1.1.1 and 1.1.2 are each other's only partner, sharing 1/1/1.
+    const p1 = store.communicationPartners("1.1.1");
+    check("partners: one partner for 1.1.1", p1.length === 1 && p1[0].device === "1.1.2");
+    check("partners: shared GA listed", p1.length === 1 && p1[0].gas.includes("1/1/1"));
+    const p2 = store.communicationPartners("1.1.2");
+    check("partners: mirror partner for 1.1.2", p2.length === 1 && p2[0].device === "1.1.1");
+    check("partners: excludes self", p1.every((p) => p.device !== "1.1.1"));
+    check("partners: unknown device -> empty", store.communicationPartners("9.9.9").length === 0);
+
+    // A device that only touches an unshared GA has no partners. 1/1/2 has
+    // sender 1.1.1 but no listeners, so 1.1.1 gains no partner from it.
+    const gaPartic = store.gaParticipants("1/1/1");
+    check("gaParticipants union of sender+listener",
+      gaPartic.length === 2 && gaPartic.includes("1.1.1") && gaPartic.includes("1.1.2"));
+    check("gaParticipants of no-listener GA is sender only",
+      JSON.stringify(store.gaParticipants("1/1/2")) === JSON.stringify(["1.1.1"]));
+
+    // --- view-state transitions (item 6) ---------------------------------
+    // A fresh store starts in 'all'.
+    const vStore = new Store(fixture);
+    check("view starts in 'all'", vStore.view.mode === "all");
+    vStore.select("device", "1.1.1");
+    check("device selection -> device-partners", vStore.view.mode === "device-partners");
+    check("device-partners carries partner set",
+      vStore.view.partners.length === 1 && vStore.view.partners[0].device === "1.1.2");
+    check("device-partners kind/id set",
+      vStore.view.kind === "device" && vStore.view.id === "1.1.1");
+    vStore.select("ga", "1/1/1");
+    check("ga selection -> ga-focus", vStore.view.mode === "ga-focus");
+    check("ga-focus carries focus devices",
+      vStore.view.focusDevices.length === 2);
+    check("ga-focus kind/id set",
+      vStore.view.kind === "ga" && vStore.view.id === "1/1/1");
+    vStore.deselect();
+    check("deselect -> all", vStore.view.mode === "all" &&
+      vStore.view.partners.length === 0 && vStore.view.focusDevices.length === 0);
+
+    // The 'view' topic fires alongside 'selection'.
+    let vSeen = null;
+    const offView = vStore.on("view", (v) => { vSeen = v; });
+    vStore.select("device", "1.1.2");
+    check("view event emitted on select", vSeen && vSeen.mode === "device-partners");
+    offView();
+
+    // --- flash-effects toggle (item 1) -----------------------------------
+    // Clear any persisted preference so the default-on assertion is deterministic.
+    try { localStorage.removeItem("bussard-viz.flash-effects"); } catch {}
+    const fStore = new Store(fixture);
+    check("flashEnabled defaults on", fStore.flashEnabled === true);
+    let fSeen = null;
+    fStore.on("flash-enabled", (on) => { fSeen = on; });
+    check("setFlashEnabled(false) turns off", fStore.setFlashEnabled(false) === false);
+    check("flash-enabled event fired", fSeen === false);
+    check("toggle flips back on", fStore.setFlashEnabled() === true);
+
     // --- report -----------------------------------------------------------
     const result = document.getElementById("result");
     const summary = `PASS ${pass} / FAIL ${fail}`;
