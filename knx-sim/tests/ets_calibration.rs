@@ -144,6 +144,63 @@ fn test_sim_accepts_ets_flash_and_reaches_loaded() {
 }
 
 #[test]
+fn test_sim_models_mcb_for_redownload_skip_both_branches() {
+    // Issue #73 item 2: the sim must model PID_MCB_TABLE so bussard's MCB-CRC
+    // re-download skip is testable on BOTH branches.
+    //
+    // Match branch: after a full ETS flash, a loaded object's MCB entry reports
+    // the resident segment's size and a CRC over exactly the stored bytes — so a
+    // tool that computes the same size+CRC over the image it would re-stream sees
+    // the match and can skip the re-stream.
+    let sink = Arc::new(RecordingSink::new());
+    let mut bus = bus_or_skip!(sink.clone());
+    let addr = IndividualAddress::new(1, 1, 2);
+    for (src, dst, tpdu) in parse_requests() {
+        let _ = bus.deliver_from_tool(&cemi(src, dst, tpdu));
+    }
+    let dev = bus.device(addr).expect("device present");
+
+    // obj4 (the application segment at 0x6000) is loaded; its MCB entry covers the
+    // resident image the flash wrote.
+    let entry = dev
+        .mcb_entry(4)
+        .expect("a loaded object must report an MCB entry");
+    assert_eq!(entry.len(), 8, "an MCB entry is 8 octets");
+    let reported_size = u32::from_be_bytes([entry[0], entry[1], entry[2], entry[3]]);
+    let reported_crc = u16::from_be_bytes([entry[6], entry[7]]);
+    // The size and CRC must equal a fresh computation over the exact resident
+    // bytes — i.e. a tool re-streaming the identical image would match and skip.
+    let resident = dev.memory().read(0x6000, reported_size as usize);
+    assert_eq!(
+        reported_size as usize,
+        resident.len(),
+        "MCB size must equal the resident segment length"
+    );
+    assert_eq!(
+        reported_crc,
+        knx_sim::device::crc16_aug_ccitt(&resident),
+        "MCB CRC must be computed over exactly the resident bytes (match branch)"
+    );
+
+    // Mismatch/full-write branch: a fresh (unflashed) device has no written
+    // segment, so it reports no MCB entry — a tool then never skips and
+    // full-streams. Build a blank device (starting Unloaded) and confirm.
+    let fixture = knx_sim::testfixtures::da_tp_knxprod().expect("fixture present (checked above)");
+    let pd =
+        read_knxprod_bytes(&fixture, Some("M-00FA_A-2500-10-51CB")).expect("read DA.tp product");
+    let blank = Device::from_product(
+        IndividualAddress::new(1, 1, 3),
+        &pd,
+        LoadState::Unloaded,
+        sink.clone(),
+    );
+    assert!(
+        blank.mcb_entry(4).is_none(),
+        "a blank device must report no MCB entry so the skip is never taken"
+    );
+}
+
+#[test]
 fn test_sim_rejects_memory_write_to_wrong_object() {
     // Take the real flash prefix up to the point object 4 is allocated at
     // 0x6000, then inject a memory write to 0x8000 (a different object's base)

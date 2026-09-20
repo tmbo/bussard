@@ -1005,6 +1005,7 @@ async fn run_flash_with_reboot(
     let options = bussard_download::FlashOptions {
         bcu_key: None,
         verify_after_restart: true,
+        ..Default::default()
     };
     let result = flash(&mut session, &plan, options, |_p| {}).await;
     gw.abort();
