@@ -673,6 +673,7 @@ mod tests {
                 parameters: BTreeMap::new(),
                 module_bases: BTreeMap::new(),
                 com_objects: objs.into_iter().collect(),
+                security: None,
             },
             file_stem: stem.to_string(),
         }
@@ -1007,6 +1008,7 @@ mod tests {
             parameters,
             module_bases: BTreeMap::new(),
             com_objects: BTreeMap::new(),
+            security: None,
         };
         let mut devices = BTreeMap::new();
         devices.insert(

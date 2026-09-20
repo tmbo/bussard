@@ -624,6 +624,7 @@ mod tests {
             parameters: BTreeMap::new(),
             module_bases: BTreeMap::new(),
             com_objects,
+            security: None,
         };
 
         let mut devices = BTreeMap::new();
