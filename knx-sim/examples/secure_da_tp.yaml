@@ -1,0 +1,36 @@
+# Example knx-sim installation: one KNX Data Secure-ACTIVATED System B device.
+#
+# Run:  knx-sim examples/secure_da_tp.yaml
+# then point a KNX Data Secure tool at 127.0.0.1:3671.
+#
+# This is the conformance peer for a tool's KNX Data Secure Phase A tool-access
+# path (docs/knx-secure-spec.md §12.2). With the `security` block the device is
+# security-activated: every management access must ride A_SecureData (APCI
+# 0x3F1), wrong-MAC / replayed / stale-sequence frames are refused, and a PLAIN
+# (unwrapped) access to a protected function is refused exactly as a real
+# activated device behaves.
+#
+# The tool key below is SYNTHETIC (32 hex chars = 16 bytes). It is NOT a real
+# key and never comes from a user's key files. A tool under test must present the
+# same key to be accepted.
+
+gateway:
+  host: "127.0.0.1"
+  port: 3671
+
+devices:
+  - address: "1.1.2"
+    knxprod: "../tests/fixtures/KNX_Virtual_M-00FA.knxprod"
+    application: "M-00FA_A-2500-10-51CB"
+    initial_state: unloaded
+    security:
+      # `activated` secures the device; omit the whole block (or use `plain`) to
+      # keep the device plain (the default).
+      status: activated
+      # Synthetic 16-byte tool key (32 hex characters).
+      tool_key: "0102030405060708090a0b0c0d0e0f10"
+      # The device's own starting send sequence (ms since 2018-01-05, spec §5.8).
+      initial_tx_seq: 200
+      # The receive-freshness floor: a first inbound frame must strictly exceed
+      # this, so a tool replaying an old sequence is rejected (spec §5.9).
+      initial_rx_seq: 1000

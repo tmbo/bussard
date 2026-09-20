@@ -41,6 +41,7 @@ impl Driver {
                 lsm_access,
                 bcu_key: None,
                 prog_mode: false,
+                secure: None,
             },
             sink.clone(),
         )
@@ -463,6 +464,7 @@ fn test_sys7_unauthorized_memory_write_is_refused() {
             lsm_access: LsmAccess::MemoryMapped,
             bcu_key: Some(0x1234_5678),
             prog_mode: false,
+            secure: None,
         },
         sink.clone(),
     )
