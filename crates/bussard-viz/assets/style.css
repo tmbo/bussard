@@ -275,9 +275,50 @@ body {
 .dc-meta { display: flex; gap: 8px; margin-top: 4px; color: var(--text-faint); font-size: 11px; }
 .dc-orphan { position: absolute; top: 6px; right: 8px; color: var(--warn); }
 
+/* --- item 4: programming-mode treatment ---------------------------------- */
+
+/* KNX programming LEDs are RED, so a device in programming mode gets a red
+   pulsing glow + a small red PROG badge. Composes with selection/partner/focus:
+   the badge is always visible and the red glow overrides dimming. */
+@keyframes prog-pulse {
+  0%, 100% { box-shadow: 0 0 0 1px var(--bad), 0 0 6px rgba(248, 81, 73, 0.5); }
+  50% { box-shadow: 0 0 0 2px var(--bad), 0 0 12px rgba(248, 81, 73, 0.85); }
+}
+.device-card.prog {
+  border-color: var(--bad);
+  animation: prog-pulse 1s ease-in-out infinite;
+}
+/* The red glow beats dimming: a prog card is never faded out. */
+.device-card.prog.dimmed,
+.device-card.prog.partner-dimmed { opacity: 1; }
+.dc-prog {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--bad);
+  color: #1a0000;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  line-height: 1.5;
+}
+.dc-prog[hidden] { display: none; }
+/* When a prog card also carries the dual-role ⇄ badge, nudge PROG left so both
+   fit in the top-right corner without overlapping. */
+.device-card.prog.dir-both .dc-dual { right: 44px; }
+
+/* The cabinet cluster must NOT paint an opaque background: the SVG wiring
+   underlay (spine feeders + card drops) sits behind .topo-cards, so an opaque
+   fill here occludes every feeder/drop that falls inside the cabinet's box
+   (that is why cabinet devices showed no feeder line while non-cabinet ones did:
+   their floor-body is transparent). A translucent tint keeps the distribution-
+   cabinet look while letting the underlay wiring show through. */
 .cabinet-cluster {
   padding: 10px;
-  background: var(--bg-inset);
+  background: rgba(10, 13, 18, 0.55);
   border: 1px dashed var(--border);
   border-radius: 8px;
 }
@@ -519,6 +560,12 @@ body.query-active .ga-sub:not(.match) { opacity: 0.35; }
   .device-card.flash-in { background-color: var(--color-incoming-soft); }
   /* Reduced motion wins: the flash toggle cannot re-enable these. */
   .recent, .device-card.recent, .device-card.locate { animation: none; }
+  /* Programming mode stays visible but static (no pulse) under reduced motion:
+     a solid red ring instead of the 1s glow pulse. */
+  .device-card.prog {
+    animation: none;
+    box-shadow: 0 0 0 2px var(--bad), 0 0 8px rgba(248, 81, 73, 0.7);
+  }
   .pulse-circle { display: none; }
   * { scroll-behavior: auto !important; }
 }
@@ -550,6 +597,12 @@ body.query-active .ga-sub:not(.match) { opacity: 0.35; }
 .sel-edge { fill: none; stroke-width: 1.6; opacity: 0.9; }
 .sel-edge.dir-incoming { stroke: var(--color-incoming); }
 .sel-edge.dir-outgoing { stroke: var(--color-outgoing); }
+/* Focus-mode direction arrow: a standalone glyph riding mid-feeder (S10/1b), so
+   it never piles onto the GA dot at the spine junction. Filled in the flow
+   colour; no stroke. */
+.focus-arrow { stroke: none; opacity: 0.95; }
+.focus-arrow.dir-incoming { fill: var(--color-incoming); }
+.focus-arrow.dir-outgoing { fill: var(--color-outgoing); }
 .topo-pulse { fill: var(--flash); filter: drop-shadow(0 0 4px var(--flash)); }
 .topo-pulse.suspicious { fill: var(--suspicious); filter: drop-shadow(0 0 4px var(--suspicious)); }
 
@@ -593,13 +646,31 @@ body.query-active .ga-sub:not(.match) { opacity: 0.35; }
   box-shadow: 0 0 0 1px var(--color-outgoing);
   background: var(--color-outgoing-soft);
 }
-.device-card.partner.dir-both {
-  /* Split border: incoming on the left half, outgoing on the right. */
-  border-color: var(--color-incoming);
-  border-right-color: var(--color-outgoing);
-  border-bottom-color: var(--color-outgoing);
-  box-shadow: 0 0 0 1px var(--color-incoming);
+/* Dual-role cards (a partner that both sends and receives, S10/1c). The old
+   diagonal split border read as an accidental muddle of green+orange. Instead
+   give it a deliberate, neutral-but-strong slate border and a small ⇄ badge in
+   each direction colour, so the two-way relationship is unmistakable at a glance
+   without smearing the two hues into one border. */
+.device-card.partner.dir-both,
+.device-card.focus-part.dir-both {
+  border-color: var(--text-dim);
+  box-shadow: 0 0 0 1px var(--text-dim);
+  background: var(--bg-raised);
 }
+.device-card.dir-both .dc-dual {
+  display: flex;
+  gap: 0;
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: -1px;
+}
+.device-card.dir-both .dc-dual .dual-in { color: var(--color-incoming); }
+.device-card.dir-both .dc-dual .dual-out { color: var(--color-outgoing); }
+/* The badge only shows on dual-role cards; hidden otherwise. */
+.dc-dual { display: none; }
 .device-card.partner-dimmed { opacity: 0.32; }
 
 /* --- item 4: GA focus mode ------------------------------------------------ */
@@ -617,12 +688,8 @@ body.query-active .ga-sub:not(.match) { opacity: 0.35; }
   box-shadow: 0 0 0 1px var(--color-incoming);
   background: var(--color-incoming-soft);
 }
-.device-card.focus-part.dir-both {
-  border-color: var(--color-incoming);
-  border-right-color: var(--color-outgoing);
-  border-bottom-color: var(--color-outgoing);
-  box-shadow: 0 0 0 1px var(--color-incoming);
-}
+/* focus-part.dir-both uses the shared dual-role treatment above (neutral border
+   + ⇄ badge), so no split-border rule is needed here. */
 /* Hidden by focus mode: cards, room blocks and floor labels with no participant. */
 .device-card.focus-hidden,
 .room-block.focus-hidden,
@@ -640,7 +707,13 @@ body.query-active .ga-sub:not(.match) { opacity: 0.35; }
   gap: 10px;
   margin: -16px -16px 16px -16px;
   padding: 10px 14px;
-  background: var(--accent-ga-soft);
+  /* Opaque base + amber tint on top: the banner spans the full pane width and
+     paints cleanly OVER the top of the bus spine, so the spine visually begins
+     below the banner's bottom border instead of the spine head poking through
+     the translucent tint (S10/1a). */
+  background:
+    linear-gradient(var(--accent-ga-soft), var(--accent-ga-soft)),
+    var(--bg);
   border-bottom: 2px solid var(--accent-ga);
   color: var(--text);
   font-size: 13px;
@@ -732,6 +805,18 @@ body.query-active .ga-sub:not(.match) { opacity: 0.35; }
 .insp-typehead-device .insp-addr { color: var(--accent-device); }
 .insp-typehead-ga .insp-addr { color: var(--accent-ga); }
 .insp-name { font-weight: 600; font-size: 14px; }
+/* Device-header programming-mode badge (item 4): red, matching the KNX prog LED
+   and the card's PROG badge in the topology. */
+.insp-prog-badge {
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--bad);
+  color: #1a0000;
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
 .insp-dpt {
   font-family: var(--mono);
   font-size: 10px;
@@ -806,14 +891,23 @@ body.query-active .ga-sub:not(.match) { opacity: 0.35; }
   padding-left: 4px;
 }
 .ga-arrow { font-family: var(--mono); }
-.ga-link.dir-outgoing .ga-arrow { color: var(--color-outgoing); }
-.ga-link.dir-incoming .ga-arrow { color: var(--color-incoming); }
-/* The GA chip border adopts the direction color so the send/listen cells read
-   as outgoing/incoming (item 6). Suspicious still overrides (below). */
-.ga-link.dir-outgoing > .ga-chip:not(.suspicious) { border-color: var(--color-outgoing); }
-.ga-link.dir-incoming > .ga-chip:not(.suspicious) { border-color: var(--color-incoming); }
+/* Remote-device secondary line stays NEUTRAL (S11/2b): the direction is already
+   conveyed by the chip above it, so the arrow here is muted like the rest of the
+   secondary text (no green/orange arrow competing for attention). */
+.ga-remotes .ga-arrow { color: var(--text-faint); }
+/* The GA chip text AND border both adopt the direction colour so the chip reads
+   as one coherent outgoing/incoming token (S11/2a) instead of blue text in a
+   coloured frame. Suspicious is folded into the direction system: the chip keeps
+   its direction colour and gains a ⚠ marker (below) rather than turning purple. */
+/* !important defeats the global `.suspicious { color: ... !important }` (used by
+   log rows) so a suspicious GA chip inside a send/listen cell keeps its DIRECTION
+   colour rather than the purple suspicious accent (S11/2a). The ⚠ below still
+   flags it. */
+.ga-link.dir-outgoing > .ga-chip { color: var(--color-outgoing) !important; border-color: var(--color-outgoing); }
+.ga-link.dir-incoming > .ga-chip { color: var(--color-incoming) !important; border-color: var(--color-incoming); }
 /* Remote-device reference: address-first (item 4). Arrow + monospace address on
-   the first line, the name below capped with an ellipsis. */
+   the first line, the name below capped with an ellipsis. All neutral (S11/2b):
+   the address is muted, not link-blue; colour lives on the chip only. */
 .remote-dev {
   display: inline-flex;
   flex-direction: column;
@@ -826,7 +920,7 @@ body.query-active .ga-sub:not(.match) { opacity: 0.35; }
   text-align: left;
 }
 .remote-dev-top { display: flex; align-items: baseline; gap: 4px; }
-.remote-dev-addr { font-size: 11px; color: var(--accent-device); }
+.remote-dev-addr { font-size: 11px; color: var(--text-dim); }
 .remote-dev-name {
   font-family: var(--sans);
   font-size: 11px;
@@ -835,6 +929,8 @@ body.query-active .ga-sub:not(.match) { opacity: 0.35; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Hover reveals the clickable affordance on the otherwise-neutral line. */
+.remote-dev:hover .remote-dev-addr,
 .remote-dev:hover .remote-dev-name { color: var(--accent); text-decoration: underline; }
 .more-btn {
   padding: 0 4px;
@@ -858,8 +954,14 @@ body.query-active .ga-sub:not(.match) { opacity: 0.35; }
   color: var(--accent);
   cursor: pointer;
 }
-.ga-chip:hover { border-color: var(--accent); }
+.ga-chip:hover { filter: brightness(1.25); }
+/* Suspicious GAs inside a send/listen cell keep their DIRECTION colour (the
+   purple that used to hijack the chip is gone, S11/2a) and instead flag the
+   problem with a trailing ⚠, so a one-sided GA still stands out without breaking
+   the incoming/outgoing colour language. Standalone chips (not in a .ga-link,
+   e.g. future contexts) still fall back to the suspicious accent. */
 .ga-chip.suspicious { color: var(--suspicious); border-color: var(--suspicious); }
+.ga-link .ga-chip.suspicious::after { content: " ⚠"; }
 
 /* GA sender/listener rows (item 5): compact, address-first, with a subordinate
    com-object line. Accented by data-flow direction on the left edge (item 6):

@@ -50,6 +50,13 @@ class Inspector {
 
     store.on("selection", (sel) => this.render(sel));
     store.on("ga-value", ({ ga, record }) => this._onLiveValue(ga, record));
+    // Re-render on programming-mode changes so the device header's PROG badge
+    // appears/clears live (item 4). Only matters while a device is selected.
+    store.on("prog", () => {
+      if (this.store.selection && this.store.selection.kind === "device") {
+        this.render(this.store.selection);
+      }
+    });
     // Echo confirmation for optimistic sends arrives on the telegram topic.
     store.on("telegram", (t) => this._onTelegram(t));
 
@@ -84,6 +91,13 @@ class Inspector {
     const view = cloneTpl("tpl-inspector-device");
     view.querySelector("[data-field=addr]").textContent = d.address;
     view.querySelector("[data-field=name]").textContent = d.name || d.address;
+
+    // Programming-mode badge (item 4): a red PROG marker in the header when this
+    // device's prog LED is on. KNX prog LEDs are red.
+    if (this.store.isProg(d.address)) {
+      const titleRow = view.querySelector(".insp-titlerow");
+      if (titleRow) titleRow.appendChild(el("span", "insp-prog-badge", "PROG"));
+    }
 
     // Subtitle: floor/room location (device-specific), on the typed header line.
     const loc = [d.floor, d.room].filter(Boolean).join(" · ");

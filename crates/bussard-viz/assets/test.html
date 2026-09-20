@@ -304,6 +304,31 @@
     check("flash-enabled event fired", fSeen === false);
     check("toggle flips back on", fStore.setFlashEnabled() === true);
 
+    // --- programming mode (item 4) ---------------------------------------
+    const progStore = new Store(fixture);
+    check("progDevices empty by default", progStore.progDevices.size === 0);
+    check("isProg false by default", !progStore.isProg("1.1.2"));
+    let progSeen = null;
+    const offProg = progStore.on("prog", (set) => { progSeen = set; });
+    progStore.setProgDevices(["1.1.2"]);
+    check("setProgDevices adds device", progStore.isProg("1.1.2"));
+    check("prog event fired with a Set", progSeen instanceof Set && progSeen.has("1.1.2"));
+    check("progDevices size is 1", progStore.progDevices.size === 1);
+    // A second update replaces the set (not additive).
+    progStore.setProgDevices(["1.1.1"]);
+    check("setProgDevices replaces set", progStore.isProg("1.1.1") && !progStore.isProg("1.1.2"));
+    // Clearing via empty/null.
+    progStore.setProgDevices([]);
+    check("setProgDevices([]) clears", progStore.progDevices.size === 0);
+    progStore.setProgDevices(["1.1.2"]);
+    progStore.setProgDevices(null);
+    check("setProgDevices(null) clears", progStore.progDevices.size === 0);
+    // Coerces address values to strings and skips falsy entries.
+    progStore.setProgDevices(["1.1.9", "", null, "1.1.3"]);
+    check("setProgDevices skips falsy", progStore.progDevices.size === 2 &&
+      progStore.isProg("1.1.9") && progStore.isProg("1.1.3"));
+    offProg();
+
     // --- report -----------------------------------------------------------
     const result = document.getElementById("result");
     const summary = `PASS ${pass} / FAIL ${fail}`;

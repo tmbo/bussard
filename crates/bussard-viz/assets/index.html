@@ -102,6 +102,13 @@
         <span class="dc-room" data-field="room"></span>
       </div>
       <span class="dc-orphan" data-field="orphan" hidden>⚠</span>
+      <!-- Dual-role direction badge (S10/1c): shown only on cards classified
+           'both' in device-partners / ga-focus mode. Two arrows in the incoming
+           (green) and outgoing (orange) colours. -->
+      <span class="dc-dual" aria-hidden="true"><span class="dual-in">←</span><span class="dual-out">→</span></span>
+      <!-- Programming-mode badge (item 4): KNX prog LEDs are red. Shown only
+           when this device is in the store's prog set. -->
+      <span class="dc-prog" data-field="prog" hidden>PROG</span>
     </article>
   </template>
 

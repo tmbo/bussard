@@ -101,7 +101,7 @@ export async function groupWrite(address, value, opts = {}) {
  *
  * @param {(telegram:Object)=>void} onTelegram — called per new telegram row.
  * @param {(status:Object)=>void} onStatus — called on bus state changes.
- * @param {{backlog?:number, onGap?:(info:Object)=>void, onModel?:(info:Object)=>void}} [opts]
+ * @param {{backlog?:number, onGap?:(info:Object)=>void, onModel?:(info:Object)=>void, onProg?:(devices:Array<string>)=>void}} [opts]
  * @returns {{close:()=>void, source:EventSource}}
  */
 export function connectTraffic(onTelegram, onStatus, opts = {}) {
@@ -144,6 +144,18 @@ export function connectTraffic(onTelegram, onStatus, opts = {}) {
       }
       opts.onModel(msg);
     }
+  });
+
+  source.addEventListener("prog", (ev) => {
+    if (!opts.onProg) return;
+    let msg = {};
+    try {
+      msg = JSON.parse(ev.data);
+    } catch {
+      // Malformed prog event; treat as "no devices in programming mode".
+    }
+    // Contract: { "devices": ["1.1.2", ...] }. Absent/empty => none.
+    onProg(Array.isArray(msg.devices) ? msg.devices : []);
   });
 
   source.addEventListener("gap", (ev) => {
