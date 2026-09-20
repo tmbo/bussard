@@ -81,12 +81,19 @@ Package managers (Homebrew, winget, `curl | sh`) are planned.
 
 ## Safety
 
+`bussard` writes to physical building infrastructure. **Read
+[docs/SAFETY.md](docs/SAFETY.md) before your first write** — it is the single
+read-before-your-first-write guide (which bus you are hitting, the real-gateway
+gate, backups, flash recovery, protected GAs, supported masks). The essentials:
+
+- Writes to a non-loopback gateway are refused unless you opt in with `--allow-remote-gateway` (or `BUSSARD_ALLOW_REAL_GATEWAY=1`), and every write confirmation names the resolved gateway. Do your first real writes against a spare device or the simulator.
 - A GA marked `protected: true` (wind alarm or central functions) is refused: the CLI needs `--force`. An LLM connecting to bussard over MCP has no override at all and cannot modify protected GAs.
-- Every device write is plan-before-apply: bussard reads the live state, shows the diff, asks for confirmation, backs up, writes, and verifies.
+- Every device write is plan-before-apply: bussard reads the live state, shows the diff, asks for confirmation, backs up (except `flash`), writes, and verifies.
 - The MCP server has three tiers: passive (never transmits), read (default, rate-limited), write (opt-in via `--allow-writes`).
 
 ## Documentation
 
+- [Safety](docs/SAFETY.md): read this before your first write.
 - [Reference](docs/reference.md): every command, flag, YAML field, and MCP tool.
 - [How do I ...](docs/howto.md): recipes, from watching the bus to flashing a device.
 - [Design](docs/DESIGN.md): architecture, feasibility, roadmap.
