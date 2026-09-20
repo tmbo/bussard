@@ -242,6 +242,47 @@ pub struct Device {
     /// Generated com-object table, keyed by com-object number.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub com_objects: BTreeMap<u16, ComObject>,
+    /// KNX Secure status flags (issue #71, spec §11). **Flags and seqnum state
+    /// only** — the committed YAML NEVER carries a key, FDSK, or password
+    /// (spec §2.2). Absent (`None`) for a plain, non-secure-capable device so
+    /// existing device files are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub security: Option<DeviceSecurity>,
+}
+
+/// The KNX Secure status of a device, recorded as flags-only in the committed
+/// YAML model (issue #71, spec §11 / §2.2).
+///
+/// This carries **no key material**: it records whether the device's application
+/// is Data-Secure-capable, whether a factory device certificate (FDSK) was
+/// present in the imported knxproj, and the ETS-tracked Data Secure sequence
+/// state. Key bytes (FDSK, tool key, group key, passwords) live only in a
+/// separate, gitignored local keystore / the in-memory keyring, never here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct DeviceSecurity {
+    /// The device's application declares `IsSecureEnabled="true"`: it can run KNX
+    /// Data Secure (spec §11). Capability, not activation.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub secure_capable: bool,
+    /// Security has been **activated** on the device (ETS commissioned it with a
+    /// tool key). When true, all management access must go behind A_SecureData
+    /// tool-access (spec §6.4). Inferred from a non-empty `<Security>` state /
+    /// keyring tool key; the house's 25 capable devices are all `false` today
+    /// (spec §1.1). SEC-CAL: confirm the exact activation signal from a live ETS
+    /// activation (spec §12.4).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub activated: bool,
+    /// A factory `<DeviceCertificate FDSK=…>` was present in the imported
+    /// knxproj (spec §11). Presence only — the FDSK value is never stored here.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub has_fdsk_certificate: bool,
+    /// The ETS-tracked Data Secure sequence number for this device, if the
+    /// knxproj `<Security SequenceNumber>` carried one (spec §5.9 / §11). Machine
+    /// state used to seed the send sequence so a new run does not replay a stale
+    /// value; not a secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sequence_number: Option<u64>,
 }
 
 /// A device's physical location.
