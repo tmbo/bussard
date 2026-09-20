@@ -1760,6 +1760,13 @@ mod tests {
         assert_eq!(&v[2..6], &[0x00, 0x00, 0x00, 0x10]);
         assert_eq!(v[6], 0x00);
         assert_eq!(v[7], 0x00);
+
+        // The Jung LED A-3030 obj4 code-segment allocation is captured as
+        // `030b000028c1 01 00 0000`: size 0x28c1, fill flag 0x01, fill byte 0x00.
+        // A `Fill="1"` (FillByte default 0) allocation must encode to exactly
+        // those first 8 octets, byte-for-byte with the ETS capture.
+        let v = encode_rel_segment(0x0000_28C1, Some(0x00));
+        assert_eq!(&v[0..8], &[0x03, 0x0B, 0x00, 0x00, 0x28, 0xC1, 0x01, 0x00]);
     }
 
     #[test]
