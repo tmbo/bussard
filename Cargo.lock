@@ -206,6 +206,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "block-padding"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a8894febbff9f758034a5b8e12d87918f56dfc64a8e1fe757d65e29041538d93"
+dependencies = [
+ "generic-array",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -237,6 +246,7 @@ dependencies = [
  "bussard-monitor",
  "bussard-prod",
  "bussard-project",
+ "bussard-secure",
  "bussard-transport",
  "bussard-viz",
  "clap",
@@ -315,6 +325,7 @@ version = "0.1.0"
 dependencies = [
  "bussard-bus",
  "bussard-model",
+ "bussard-secure",
  "bussard-transport",
  "thiserror",
  "tokio",
@@ -374,6 +385,7 @@ dependencies = [
  "base64 0.22.1",
  "bussard-ets",
  "bussard-model",
+ "bussard-secure",
  "hmac",
  "pbkdf2",
  "quick-xml",
@@ -385,6 +397,21 @@ dependencies = [
  "thiserror",
  "tracing",
  "zip",
+]
+
+[[package]]
+name = "bussard-secure"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "base64 0.22.1",
+ "cbc",
+ "ctr",
+ "hmac",
+ "pbkdf2",
+ "sha2",
+ "thiserror",
+ "zeroize",
 ]
 
 [[package]]
@@ -426,6 +453,15 @@ name = "bytes"
 version = "1.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
+
+[[package]]
+name = "cbc"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "26b52a9543ae338f279b96b0b9fed9c8093744685043739079ce85cd58f289a6"
+dependencies = [
+ "cipher",
+]
 
 [[package]]
 name = "cc"
@@ -574,6 +610,15 @@ checksum = "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a"
 dependencies = [
  "generic-array",
  "typenum",
+]
+
+[[package]]
+name = "ctr"
+version = "0.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0369ee1ad671834580515889b80f2ea915f23b8be8d0daa4bbaf2ac5c7590835"
+dependencies = [
+ "cipher",
 ]
 
 [[package]]
@@ -1129,6 +1174,7 @@ version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01"
 dependencies = [
+ "block-padding",
  "generic-array",
 ]
 

@@ -16,6 +16,7 @@ members = [
     "crates/bussard-ets",
     "crates/bussard-bus",
     "crates/bussard-download",
+    "crates/bussard-secure",
     "crates/bussard-viz",
     "crates/bussard-cli",
 ]
@@ -41,6 +42,7 @@ bussard-prod = { path = "crates/bussard-prod", version = "0.1.0" }
 bussard-ets = { path = "crates/bussard-ets", version = "0.1.0" }
 bussard-ha = { path = "crates/bussard-ha", version = "0.1.0" }
 bussard-download = { path = "crates/bussard-download", version = "0.1.0" }
+bussard-secure = { path = "crates/bussard-secure", version = "0.1.0" }
 bussard-viz = { path = "crates/bussard-viz", version = "0.1.0" }
 
 # Third-party (all MIT and/or Apache-2.0)
@@ -82,6 +84,32 @@ zip = { version = "2.4", default-features = false, features = ["deflate"] }
 # quick-xml: streaming XML (never builds a DOM) so 20+ MB application-program
 # files parse with bounded memory. MIT licensed.
 quick-xml = "0.41"
+# --- KNX Secure crypto (issue #71, Phase A) ---
+# aes: AES-128 block cipher, the core of KNX Secure's decomposed AES-CCM
+# (AES-CBC-MAC + AES-CTR, spec §3). Promoted from a transitive dep (via `zip`)
+# to a direct workspace dep. MIT OR Apache-2.0.
+aes = "0.8"
+# cbc: CBC block mode, used to build the KNX Secure CBC-MAC (the CCM tag,
+# spec §3.2). cipher-0.4 generation to match `aes 0.8` (0.2 is cipher-0.5 and
+# must NOT be mixed). MIT OR Apache-2.0.
+cbc = "0.1"
+# ctr: CTR stream mode, used to encrypt the CCM tag and payload (spec §3.3).
+# cipher-0.4 generation to match `aes 0.8` (0.10 is cipher-0.5). MIT OR
+# Apache-2.0.
+ctr = "0.9"
+# pbkdf2: PBKDF2-HMAC-SHA256 key derivation for the keyring/IP-handshake key
+# schedule (spec §3.4). Already used by bussard-project for the ETS6 zip
+# password; promoted to a workspace dep so bussard-secure shares it. MIT OR
+# Apache-2.0.
+pbkdf2 = "0.12"
+# sha2 / hmac: SHA-256 and HMAC-SHA256 primitives underpinning PBKDF2 and the
+# keyring IV/signature (spec §4). MIT OR Apache-2.0.
+sha2 = "0.10"
+hmac = "0.12"
+# zeroize: zeroizes raw 16-byte key buffers on drop so key material does not
+# linger in freed memory (spec §2.3). The `derive` feature provides the
+# `Zeroize`/`ZeroizeOnDrop` derive macros. MIT OR Apache-2.0.
+zeroize = { version = "1", features = ["derive"] }
 
 # ---------------------------------------------------------------------------
 # Build profiles tuned for test iteration speed.
