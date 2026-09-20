@@ -11,7 +11,8 @@ use bussard_model::IndividualAddress;
 
 use crate::apci;
 use crate::connection::{
-    AuthorizeOutcome, L4Channel, Layer4Connection, Timeouts, property_request,
+    AuthorizeOutcome, L4Channel, Layer4Connection, PropertyDesc, Timeouts,
+    describe_object_properties, property_description_request, property_request,
     property_write_request,
 };
 use crate::error::{MgmtError, Result, descriptor_response_reason, raw_response_detail};
@@ -170,6 +171,42 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
             .write_property(apci::DEVICE_OBJECT_INDEX, apci::PID_PROGMODE, 1, 1, &[0x00])
             .await?;
         Ok(echoed.first() == Some(&0x00))
+    }
+
+    /// Reads the *description* of one property (issue #72): its data type,
+    /// element count and access levels, rather than its value.
+    ///
+    /// Sends `A_PropertyDescription_Read` for the property `property_id` of the
+    /// interface object at `object_index` and returns the decoded
+    /// [`PropertyDesc`]. Pass `property_id = 0` to address the property at a given
+    /// index instead (the enumeration form — see
+    /// [`describe_object`](Self::describe_object)). Read-only on the bus.
+    pub async fn describe_property(
+        &mut self,
+        object_index: u8,
+        property_id: u8,
+        property_index: u8,
+    ) -> Result<PropertyDesc> {
+        let desc = property_description_request(
+            &mut self.inner,
+            object_index,
+            property_id,
+            property_index,
+        )
+        .await?;
+        Ok(desc.into())
+    }
+
+    /// Enumerates every property of one interface object by walking the property
+    /// index until the device reports none (issue #72).
+    ///
+    /// Drives [`describe_object_properties`], returning one [`PropertyDesc`] per
+    /// property the object exposes. The introspection value: describing an
+    /// unknown device's property set without knowing its PIDs in advance.
+    /// Read-only on the bus; a device that does not implement the description
+    /// service yields an empty list rather than an error.
+    pub async fn describe_object(&mut self, object_index: u8) -> Result<Vec<PropertyDesc>> {
+        describe_object_properties(&mut self.inner, object_index).await
     }
 
     /// Reads `len` octets of device memory starting at `addr`.

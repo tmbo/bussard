@@ -64,6 +64,27 @@ pub const A_PROPERTY_VALUE_RESPONSE: u16 = 0x3D6;
 /// writer validates by comparing the echoed octets to what it sent.
 pub const A_PROPERTY_VALUE_WRITE: u16 = 0x3D7;
 
+/// `A_PropertyDescription_Read` — read the *description* of one property of an
+/// interface object (not its value): its data type, element count and access
+/// levels.
+///
+/// This is the introspection counterpart of [`A_PROPERTY_VALUE_READ`]. Where a
+/// value read needs the caller to already know a PID, a description read lets a
+/// tool *enumerate* an object's properties by walking the **property index**
+/// `1..N` until the device returns none — describing an unknown device's
+/// property set (issue #72). The 3-octet request addresses either a specific PID
+/// or, when `property_id == 0`, the property at `property_index` (KNX 3/4/1
+/// "Interface Objects", property services). See [`encode_property_description_read`].
+pub const A_PROPERTY_DESCRIPTION_READ: u16 = 0x3D8;
+/// `A_PropertyDescription_Response` — the device's answer to
+/// [`A_PROPERTY_DESCRIPTION_READ`], carrying the property's descriptor: object
+/// index, PID, property index, data-type code (with the write-enable flag in the
+/// top bit), maximum element count, and read/write access levels. Decoded by
+/// [`decode_property_description_response`]; a `max_elements == 0` answer means
+/// the property/object does not exist (the terminating signal for an enumeration
+/// walk).
+pub const A_PROPERTY_DESCRIPTION_RESPONSE: u16 = 0x3D9;
+
 /// `A_Memory_Read` — read device memory.
 pub const A_MEMORY_READ: u16 = 0x200;
 /// `A_Memory_Response`.
@@ -408,6 +429,132 @@ pub fn decode_property_value_response(payload: &[u8]) -> Option<PropertyValueRes
         count,
         start,
         data: payload[4..].to_vec(),
+    })
+}
+
+/// Encodes an `A_PropertyDescription_Read` payload.
+///
+/// Layout (KNX 3/4/1 property services): `[object_index] [property_id]
+/// [property_index]` — 3 octets. Two addressing modes share the wire form:
+///
+/// - by **PID**: `property_id != 0` names the property directly; the device
+///   echoes the same PID in its response and fills in the `property_index` it
+///   occupies.
+/// - by **index**: `property_id == 0` asks for whichever property sits at
+///   `property_index`, so a tool can *enumerate* an object's properties by
+///   walking the index `1..N` (each answer carries the real PID). This is the
+///   path [`crate::connection`]'s enumeration helper drives.
+pub fn encode_property_description_read(
+    object_index: u8,
+    property_id: u8,
+    property_index: u8,
+) -> Vec<u8> {
+    vec![object_index, property_id, property_index]
+}
+
+/// A parsed `A_PropertyDescription_Read` request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropertyDescriptionRead {
+    /// Interface object index.
+    pub object_index: u8,
+    /// Property id (`0` asks by property index instead).
+    pub property_id: u8,
+    /// Property index (used when `property_id == 0`, or echoed otherwise).
+    pub property_index: u8,
+}
+
+/// Decodes an `A_PropertyDescription_Read` request payload (3 octets). Returns
+/// `None` if shorter than the 3-octet header. The device side / tests use this
+/// to interpret a request; the client builds requests with
+/// [`encode_property_description_read`].
+pub fn decode_property_description_read(payload: &[u8]) -> Option<PropertyDescriptionRead> {
+    if payload.len() < 3 {
+        return None;
+    }
+    Some(PropertyDescriptionRead {
+        object_index: payload[0],
+        property_id: payload[1],
+        property_index: payload[2],
+    })
+}
+
+/// The write-enable flag carried in the top bit of the `A_PropertyDescription_Response`
+/// type octet. When set, the property is writable; the low 6 bits are the
+/// property data type (PDT) code.
+pub const PROPERTY_DESCRIPTION_WRITE_ENABLE: u8 = 0x80;
+/// Mask selecting the property data type (PDT) code from the response type octet
+/// (the low 6 bits; bit 7 is the write-enable flag, bit 6 is reserved).
+pub const PROPERTY_DESCRIPTION_PDT_MASK: u8 = 0x3F;
+
+/// A parsed `A_PropertyDescription_Response`: one property's full descriptor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropertyDescription {
+    /// Interface object index echoed back.
+    pub object_index: u8,
+    /// The property id (the real PID, even when the request addressed by index).
+    pub property_id: u8,
+    /// The property index this PID occupies within the object.
+    pub property_index: u8,
+    /// Whether the property is writable (the top bit of the type octet).
+    pub writable: bool,
+    /// The property data type (PDT) code (the low 6 bits of the type octet).
+    pub pdt: u8,
+    /// The maximum number of elements (array length); `0` means the property or
+    /// object does not exist — the terminating signal for an enumeration walk.
+    pub max_elements: u16,
+    /// The access level required to **read** the property (0 = highest access).
+    pub read_level: u8,
+    /// The access level required to **write** the property (0 = highest access).
+    pub write_level: u8,
+}
+
+/// Encodes an `A_PropertyDescription_Response` payload from a
+/// [`PropertyDescription`].
+///
+/// Layout (KNX 3/4/1 property services), 7 octets:
+/// `[object_index] [property_id] [property_index] [type] [max_hi] [max_lo]
+/// [access]`, where `type` is `write_enable(0x80) | pdt(0x3F)`, `max` is a
+/// big-endian element count (low 12 bits significant), and `access` packs the
+/// read level in the high nibble and the write level in the low nibble. Used by
+/// device-side mocks/sims and the round-trip tests.
+pub fn encode_property_description_response(desc: &PropertyDescription) -> Vec<u8> {
+    let type_octet = (if desc.writable {
+        PROPERTY_DESCRIPTION_WRITE_ENABLE
+    } else {
+        0
+    }) | (desc.pdt & PROPERTY_DESCRIPTION_PDT_MASK);
+    let max = desc.max_elements & 0x0FFF;
+    let access = ((desc.read_level & 0x0F) << 4) | (desc.write_level & 0x0F);
+    vec![
+        desc.object_index,
+        desc.property_id,
+        desc.property_index,
+        type_octet,
+        (max >> 8) as u8,
+        (max & 0xFF) as u8,
+        access,
+    ]
+}
+
+/// Decodes an `A_PropertyDescription_Response` payload into a
+/// [`PropertyDescription`].
+///
+/// Returns `None` if the payload is shorter than the 7-octet descriptor. See
+/// [`encode_property_description_response`] for the field layout.
+pub fn decode_property_description_response(payload: &[u8]) -> Option<PropertyDescription> {
+    if payload.len() < 7 {
+        return None;
+    }
+    let type_octet = payload[3];
+    Some(PropertyDescription {
+        object_index: payload[0],
+        property_id: payload[1],
+        property_index: payload[2],
+        writable: type_octet & PROPERTY_DESCRIPTION_WRITE_ENABLE != 0,
+        pdt: type_octet & PROPERTY_DESCRIPTION_PDT_MASK,
+        max_elements: (u16::from(payload[4]) << 8 | u16::from(payload[5])) & 0x0FFF,
+        read_level: (payload[6] >> 4) & 0x0F,
+        write_level: payload[6] & 0x0F,
     })
 }
 
@@ -804,6 +951,87 @@ mod tests {
         assert_eq!(parsed.count, 1);
         assert_eq!(parsed.start, 1);
         assert_eq!(parsed.data, vec![0x12, 0x34]);
+    }
+
+    #[test]
+    fn property_description_read_encodes_three_octet_header() {
+        // By PID: object 3, PID 51, index 0.
+        let req = encode_property_description_read(3, 51, 0);
+        assert_eq!(req, vec![0x03, 51, 0x00]);
+        // By index (PID 0): object 3, index 5.
+        let req = encode_property_description_read(3, 0, 5);
+        assert_eq!(req, vec![0x03, 0x00, 0x05]);
+        // Decode round-trips.
+        let parsed = decode_property_description_read(&req).unwrap();
+        assert_eq!(
+            parsed,
+            PropertyDescriptionRead {
+                object_index: 3,
+                property_id: 0,
+                property_index: 5,
+            }
+        );
+        // Too short is None.
+        assert!(decode_property_description_read(&[0x03, 0x00]).is_none());
+    }
+
+    #[test]
+    fn property_description_response_roundtrips() {
+        let desc = PropertyDescription {
+            object_index: 0,
+            property_id: PID_MAX_APDU_LENGTH,
+            property_index: 7,
+            writable: false,
+            pdt: 0x07, // PDT_UNSIGNED_INT
+            max_elements: 1,
+            read_level: 3,
+            write_level: 15,
+        };
+        let payload = encode_property_description_response(&desc);
+        // type octet: not writable, pdt 0x07 -> 0x07. access: read 3, write 15 -> 0x3F.
+        assert_eq!(
+            payload,
+            vec![0x00, PID_MAX_APDU_LENGTH, 0x07, 0x07, 0x00, 0x01, 0x3F]
+        );
+        let parsed = decode_property_description_response(&payload).unwrap();
+        assert_eq!(parsed, desc);
+    }
+
+    #[test]
+    fn property_description_response_write_enable_and_max_clamp() {
+        // Writable, PDT 0x05, a large array count that fits the 12-bit field.
+        let desc = PropertyDescription {
+            object_index: 1,
+            property_id: 23,
+            property_index: 1,
+            writable: true,
+            pdt: 0x05,
+            max_elements: 0x0ABC,
+            read_level: 0,
+            write_level: 2,
+        };
+        let payload = encode_property_description_response(&desc);
+        // type octet: 0x80 | 0x05 = 0x85. max 0x0ABC -> 0x0A 0xBC. access 0x02.
+        assert_eq!(payload[3], 0x85);
+        assert_eq!(&payload[4..6], &[0x0A, 0xBC]);
+        assert_eq!(payload[6], 0x02);
+        let parsed = decode_property_description_response(&payload).unwrap();
+        assert!(parsed.writable);
+        assert_eq!(parsed.pdt, 0x05);
+        assert_eq!(parsed.max_elements, 0x0ABC);
+        assert_eq!(parsed.read_level, 0);
+        assert_eq!(parsed.write_level, 2);
+    }
+
+    #[test]
+    fn property_description_response_zero_max_means_absent() {
+        // A device reports max_elements 0 for a non-existent property/index.
+        let payload = vec![0x02, 0x00, 0x09, 0x00, 0x00, 0x00, 0x00];
+        let parsed = decode_property_description_response(&payload).unwrap();
+        assert_eq!(parsed.max_elements, 0);
+        assert_eq!(parsed.property_id, 0);
+        // Too short is None.
+        assert!(decode_property_description_response(&payload[..6]).is_none());
     }
 
     #[test]
