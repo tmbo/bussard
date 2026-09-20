@@ -8,7 +8,7 @@ Three KNX terms the recipes rely on:
 - An individual address (IA, `1.1.4`, area.line.device) is a device's unique bus address, used for commissioning and diagnosis.
 - A com object is one input or output slot of a device, such as "channel A: move up/down" on a blind actuator. Linking it to a GA in `links.yaml` makes the device send on or listen to that address. In the compact `CRWTUI` flag string, W means the object accepts writes (a command input) and T means it transmits (a status output).
 
-A word on safety before the writing recipes: every bus-writing command reads the live state first, shows a plan, confirms on a terminal (`y/N`), writes, then verifies by reading back. `apply` also backs up first. `plan`, `apply`, `reconstruct` and `flash` support System B (mask `07B0`) devices for now and refuse anything else before writing. Do the first real writes against a spare device, not a live installation.
+A word on safety before the writing recipes: every bus-writing command reads the live state first, shows a plan, confirms on a terminal (`y/N`), writes, then verifies by reading back. `apply` also backs up first. `plan`, `apply`, `reconstruct` and `flash` support System B (mask `07B0`) devices for now (plus System 7 for `flash`) and refuse anything else before writing. A write to a non-loopback gateway is refused unless you opt in with `--allow-remote-gateway`. Do the first real writes against a spare device or the simulator, not a live installation. Read [SAFETY.md](SAFETY.md) once before you start writing.
 
 ## ... watch and decode the bus?
 
