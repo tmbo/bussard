@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FABRICATED fixture. Reproduces the SHAPE of the Interra "extension-lie": an
+     application whose declared schema/namespace version disagrees with the body
+     it actually ships (here the KNX namespace claims project/14 but the file uses
+     a project/20-era MergedProcedure LoadProcedureStyle). The parser must be
+     tolerant of the declared-vs-actual mismatch and still parse + classify the
+     app rather than erroring. No vendor content is copied.
+
+     Expected sweep bucket: parse ok, image ok, plan executable (mask 07B0). The
+     regression guard is that the version disagreement does not cause a parse
+     failure or a panic. -->
+<KNX xmlns="http://knx.org/xml/project/14">
+ <ManufacturerData><Manufacturer RefId="M-00C8"><ApplicationPrograms>
+  <ApplicationProgram Id="M-00C8_A-00C8-14-C0DE-O000A" ApplicationNumber="200" ApplicationVersion="14" MaskVersion="MV-07B0" Name="Extension Lie Fixture" LoadProcedureStyle="MergedProcedure">
+   <Static>
+    <Code>
+     <RelativeSegment Id="M-00C8_A-00C8-14-C0DE-O000A_RS-4" Size="4" LoadStateMachine="4" />
+    </Code>
+    <ParameterTypes>
+     <ParameterType Id="M-00C8_A-00C8-14-C0DE-O000A_PT-Byte" Name="Byte">
+      <TypeNumber Type="unsignedInt" SizeInBit="8" minInclusive="0" maxInclusive="255" />
+     </ParameterType>
+    </ParameterTypes>
+    <Parameters>
+     <Parameter Id="M-00C8_A-00C8-14-C0DE-O000A_P-1" Name="Level" Text="Level" ParameterType="M-00C8_A-00C8-14-C0DE-O000A_PT-Byte" Value="7">
+      <Memory CodeSegment="M-00C8_A-00C8-14-C0DE-O000A_RS-4" Offset="0" BitOffset="0" />
+     </Parameter>
+    </Parameters>
+    <ComObjectTable>
+     <ComObject Id="M-00C8_A-00C8-14-C0DE-O000A_O-0" Number="0" Text="Switch" ObjectSize="1 Bit" CommunicationFlag="Enabled" WriteFlag="Enabled" />
+    </ComObjectTable>
+    <ComObjectRefs>
+     <ComObjectRef Id="M-00C8_A-00C8-14-C0DE-O000A_O-0_R-1" RefId="M-00C8_A-00C8-14-C0DE-O000A_O-0" DatapointType="DPST-1-1" />
+    </ComObjectRefs>
+   </Static>
+   <LoadProcedures>
+    <LoadProcedure MergeId="4">
+     <LdCtrlConnect />
+     <LdCtrlUnload LsmIdx="4" />
+     <LdCtrlLoad LsmIdx="4" />
+     <LdCtrlRelSegment LsmIdx="4" Size="4" AppliesTo="full,par" />
+     <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="4" AppliesTo="par" />
+     <LdCtrlLoadCompleted LsmIdx="4" />
+     <LdCtrlRestart />
+     <LdCtrlDisconnect />
+    </LoadProcedure>
+   </LoadProcedures>
+  </ApplicationProgram>
+ </ApplicationPrograms></Manufacturer></ManufacturerData>
+</KNX>

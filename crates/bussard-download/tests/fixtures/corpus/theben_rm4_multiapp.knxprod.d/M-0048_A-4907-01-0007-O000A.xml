@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FABRICATED app 7 of the multi-app Theben-RM4-shaped fixture. Mask
+     MV-0701 (System 7); the sweep classifies it not-supported-family. -->
+<KNX xmlns="http://knx.org/xml/project/20">
+ <ManufacturerData><Manufacturer RefId="M-0048"><ApplicationPrograms>
+  <ApplicationProgram Id="M-0048_A-4907-01-0007-O000A" ApplicationNumber="18695" ApplicationVersion="01" MaskVersion="MV-0701" Name="RM4 Fixture G" LoadProcedureStyle="ProductDefault">
+   <Static>
+    <ComObjectTable>
+     <ComObject Id="M-0048_A-4907-01-0007-O000A_O-0" Number="0" Text="Ch7" ObjectSize="1 Bit" CommunicationFlag="Enabled" WriteFlag="Enabled" />
+    </ComObjectTable>
+    <ComObjectRefs>
+     <ComObjectRef Id="M-0048_A-4907-01-0007-O000A_O-0_R-1" RefId="M-0048_A-4907-01-0007-O000A_O-0" DatapointType="DPST-1-1" />
+    </ComObjectRefs>
+   </Static>
+   <LoadProcedures>
+    <LoadProcedure><LdCtrlConnect /><LdCtrlRestart /><LdCtrlDisconnect /></LoadProcedure>
+   </LoadProcedures>
+  </ApplicationProgram>
+ </ApplicationPrograms></Manufacturer></ManufacturerData>
+</KNX>
