@@ -11,6 +11,7 @@ publish.workspace = true
 bussard-model = { path = "../bussard-model" }
 bussard-transport = { path = "../bussard-transport" }
 bussard-bus = { path = "../bussard-bus" }
+bussard-secure = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }

@@ -252,6 +252,12 @@ pub struct Layer4Connection<Ch: L4Channel> {
     /// Set once the peer disconnects or a protocol error occurs, so a stale
     /// `disconnect()` is a no-op.
     closed: bool,
+    /// The KNX Data Secure wrapping layer (issue #71, spec §6.1). Plain by
+    /// default (`SecureLayer::plain()`), so the send/receive paths are
+    /// byte-identical to the pre-Secure behaviour; when the device is
+    /// security-activated this holds a `DataSecureSession` and every management
+    /// APDU is transparently wrapped/unwrapped.
+    secure: crate::secure::SecureLayer,
 }
 
 impl<Ch: L4Channel> Layer4Connection<Ch> {
@@ -272,10 +278,36 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
 
     /// Like [`connect`](Self::connect) but with an explicit timeout budget.
     pub async fn connect_with(
+        conn: Ch,
+        target: IndividualAddress,
+        source: IndividualAddress,
+        timeouts: Timeouts,
+    ) -> Result<Layer4Connection<Ch>> {
+        Self::connect_with_secure(
+            conn,
+            target,
+            source,
+            timeouts,
+            crate::secure::SecureLayer::plain(),
+        )
+        .await
+    }
+
+    /// Like [`connect_with`](Self::connect_with) but with an explicit KNX Data
+    /// Secure layer (issue #71, spec §6.1).
+    ///
+    /// Pass [`SecureLayer::plain`](crate::secure::SecureLayer::plain) for the
+    /// unchanged plain path, or
+    /// [`SecureLayer::activated`](crate::secure::SecureLayer::activated) with a
+    /// `DataSecureSession` to wrap every management APDU for a security-activated
+    /// device. This is the single seam that turns a plain management connection
+    /// into a secure one; the state machine above it is unchanged.
+    pub async fn connect_with_secure(
         mut conn: Ch,
         target: IndividualAddress,
         source: IndividualAddress,
         timeouts: Timeouts,
+        secure: crate::secure::SecureLayer,
     ) -> Result<Layer4Connection<Ch>> {
         let frame = CemiFrame::t_control(target, source, tpci::T_CONNECT);
         conn.send(frame).await?;
@@ -291,6 +323,7 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
             pending_response: None,
             max_apdu: None,
             closed: false,
+            secure,
         })
     }
 
@@ -308,7 +341,19 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
         self.last_send_apci = apci;
         let seq = self.send_seq;
         let tpci_octet = tpci::ndt(seq);
-        let frame = CemiFrame::t_data_connected(self.target, self.source, tpci_octet, apci, data);
+        // KNX Data Secure seam (spec §6.1): on a plain layer this returns
+        // `(apci, data)` untouched (byte-identical plain path); on an activated
+        // layer it wraps the APDU into an A_SecureData (0x03F1) ASDU.
+        let (wire_apci, wire_data) =
+            self.secure
+                .wrap_outgoing(self.target, self.source, tpci_octet, apci, data)?;
+        let frame = CemiFrame::t_data_connected(
+            self.target,
+            self.source,
+            tpci_octet,
+            wire_apci,
+            &wire_data,
+        );
 
         let mut attempt = 0;
         loop {
@@ -376,6 +421,21 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
             && (self.last_send_apci & crate::apci::APCI_SELECTOR_MASK) != crate::apci::A_MEMORY_READ
     }
 
+    /// Extracts the inbound `(apci, data)` from `frame`, applying the KNX Data
+    /// Secure unwrap when this connection is security-activated (spec §6.1).
+    ///
+    /// On a plain layer this is exactly [`extract_apdu`] — the byte-identical
+    /// plain path. On an activated layer an `A_SecureData` (`0x03F1`) frame is
+    /// MAC-verified, freshness-checked, and unwrapped to its inner management
+    /// APDU; a non-secured frame passes through unchanged. A MAC mismatch or a
+    /// stale sequence surfaces as [`MgmtError::Secure`].
+    fn unwrap_apdu(&mut self, frame: &CemiFrame) -> Result<(u16, Vec<u8>)> {
+        let (apci, data) = extract_apdu(frame);
+        let dest = frame.individual_destination().unwrap_or(self.source);
+        self.secure
+            .unwrap_incoming(frame.source, dest, frame.tpci_octet(), apci, &data)
+    }
+
     /// Sends a management request as a numbered data telegram **without** waiting
     /// for the device's `T_ACK`.
     ///
@@ -393,7 +453,17 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
         self.last_send_apci = apci;
         let seq = self.send_seq;
         let tpci_octet = tpci::ndt(seq);
-        let frame = CemiFrame::t_data_connected(self.target, self.source, tpci_octet, apci, data);
+        // KNX Data Secure seam (spec §6.1); plain layer is a no-op passthrough.
+        let (wire_apci, wire_data) =
+            self.secure
+                .wrap_outgoing(self.target, self.source, tpci_octet, apci, data)?;
+        let frame = CemiFrame::t_data_connected(
+            self.target,
+            self.source,
+            tpci_octet,
+            wire_apci,
+            &wire_data,
+        );
         self.conn.send(frame).await?;
         self.send_seq = (self.send_seq + 1) & 0x0f;
         self.numbered_exchanges = self.numbered_exchanges.saturating_add(1);
@@ -452,7 +522,7 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
                         // verify-mode memory echo) deliver.
                         self.send_control(tpci::t_ack(seq)).await?;
                         self.recv_seq = (self.recv_seq + 1) & 0x0f;
-                        let (apci, data) = extract_apdu(&frame);
+                        let (apci, data) = self.unwrap_apdu(&frame)?;
                         if self.is_stale_memory_echo(apci) {
                             continue;
                         }
@@ -798,7 +868,22 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
                     // NDT that never comes (permanent desync).
                     let _ = self.send_control(tpci::t_ack(nseq)).await;
                     self.recv_seq = (self.recv_seq + 1) & 0x0f;
-                    let (apci, data) = extract_apdu(&frame);
+                    // KNX Data Secure unwrap (spec §6.1). A folded response that
+                    // fails MAC verification / freshness on an activated layer is
+                    // not a usable answer: drop it (it was already ACKed) and keep
+                    // waiting for the real T_ACK rather than accepting a forged or
+                    // replayed frame.
+                    let (apci, data) = match self.unwrap_apdu(&frame) {
+                        Ok(pair) => pair,
+                        Err(err) => {
+                            tracing::debug!(
+                                target = %self.target,
+                                error = %err,
+                                "dropping folded response that failed Data Secure verification"
+                            );
+                            continue;
+                        }
+                    };
                     if self.is_stale_memory_echo(apci) {
                         // A verify-mode write echo (from THIS or a prior write),
                         // not the current request's answer: drained (ACKed above),
@@ -1552,6 +1637,157 @@ mod tests {
         assert!(
             matches!(outcome, AuthorizeOutcome::Unsupported { .. }),
             "got {outcome:?}"
+        );
+    }
+
+    // --- KNX Data Secure seam (issue #71, spec §6) ---
+
+    use bussard_secure::{A_SECURE_DATA, DataSecureSession, Key16, Sequence, TpAddressing, asdu};
+
+    /// The addressing context for a device→tool response frame (source = device,
+    /// dest = tool), matching what the connection reconstructs on receive.
+    fn dev_to_tool_addr(tpci: u8) -> TpAddressing {
+        TpAddressing {
+            source: dev().raw(),
+            destination: tool().raw(),
+            address_type_group: false,
+            extended_frame_format: 0,
+            tpci,
+        }
+    }
+
+    /// PLAIN PATH BYTE-IDENTITY: a plain connection emits NO A_SecureData
+    /// (`0x03F1`) anywhere on the wire — the sent APDU is exactly the caller's.
+    #[tokio::test]
+    async fn plain_path_emits_no_secure_data() {
+        let inbox = vec![
+            control_from_dev(tpci::t_ack(0)),
+            ndt_from_dev(0, 0x340, &[0x07, 0xB0]),
+        ];
+        let mut bus = ScriptedBus::new(inbox);
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool())
+            .await
+            .unwrap();
+        let (apci, data) = l4.request(0x300, &[0x00]).await.unwrap();
+        assert_eq!(apci, 0x340);
+        assert_eq!(data, vec![0x07, 0xB0]);
+        // No frame we sent carries the A_SecureData APCI, and the request NDT's
+        // APCI is the plain 0x300 the caller asked for.
+        for f in &bus.sent {
+            if let (Tpci::Other(_), Apdu::Other { apci, .. }) = (&f.tpci, &f.apdu) {
+                assert_ne!(*apci, A_SECURE_DATA, "plain path must never emit 0x03F1");
+            }
+        }
+    }
+
+    /// ACTIVATED PATH: a secure connection wraps every management APDU in an
+    /// A_SecureData (`0x03F1`) with a valid SCF, 6-byte sequence, and MAC; the
+    /// device (a peer session with the same tool key) decodes it exactly.
+    #[tokio::test]
+    async fn activated_path_wraps_management_apdu() {
+        let key = [0x24u8; 16];
+        // Device-side session that will unwrap the tool's request and build the
+        // secured response, sharing the tool key.
+        let mut device = DataSecureSession::new(Key16::new(key));
+
+        // The tool's secure layer with a fixed starting sequence.
+        let tool_session =
+            DataSecureSession::new(Key16::new(key)).with_send_sequence(Sequence::new(1000));
+        let secure = crate::secure::SecureLayer::activated(tool_session);
+
+        // Build the secured RESPONSE the device will send back (inner =
+        // A_DeviceDescriptor_Response 0x340, data 07B0), from the device's own
+        // session, addressed device→tool at recv-seq 0's TPCI.
+        let resp_tpci = tpci::ndt(0);
+        let (resp_apci, resp_asdu) = {
+            // Wrap from the device session; addressing is device→tool.
+            let addr = dev_to_tool_addr(resp_tpci);
+            device.wrap(&addr, 0x340, &[0x07, 0xB0]).unwrap()
+        };
+        assert_eq!(resp_apci, A_SECURE_DATA);
+
+        let inbox = vec![
+            control_from_dev(tpci::t_ack(0)),
+            ndt_from_dev(0, resp_apci, &resp_asdu),
+        ];
+        let mut bus = ScriptedBus::new(inbox);
+        let mut l4 = Layer4Connection::connect_with_secure(
+            &mut bus,
+            dev(),
+            tool(),
+            Timeouts::default(),
+            secure,
+        )
+        .await
+        .unwrap();
+
+        // Send a plain-looking request; it must go out wrapped.
+        let (apci, data) = l4.request(0x300, &[0x00]).await.unwrap();
+        // The response is transparently unwrapped back to the inner APDU.
+        assert_eq!(apci, 0x340);
+        assert_eq!(data, vec![0x07, 0xB0]);
+
+        // The request NDT on the wire is an A_SecureData, not the plain 0x300.
+        let request_ndt = bus
+            .sent
+            .iter()
+            .find(|f| matches!(tpci::classify(f.tpci_octet()), TpciKind::NumberedData(_)))
+            .expect("a numbered request was sent");
+        let (wire_apci, wire_data) = match (&request_ndt.tpci, &request_ndt.apdu) {
+            (Tpci::Other(_), Apdu::Other { apci, data }) => (*apci, data.clone()),
+            other => panic!("expected Apdu::Other, got {other:?}"),
+        };
+        assert_eq!(wire_apci, A_SECURE_DATA, "activated path must emit 0x03F1");
+
+        // Decode the wrapped request from the device side and confirm the SCF,
+        // sequence and inner APDU are correct.
+        let req_addr = TpAddressing {
+            source: tool().raw(),
+            destination: dev().raw(),
+            address_type_group: false,
+            extended_frame_format: 0,
+            tpci: request_ndt.tpci_octet(),
+        };
+        let decoded = asdu::decode(&Key16::new(key), &wire_data, &req_addr).unwrap();
+        assert!(decoded.scf.tool_access, "tool-access SCF bit set");
+        assert_eq!(decoded.sequence, Sequence::new(1000), "the seeded sequence");
+        assert_eq!(decoded.apci, 0x300);
+        assert_eq!(decoded.data, vec![0x00]);
+    }
+
+    /// ACTIVATED PATH REJECTS A WRONG MAC: a secured response whose MAC does not
+    /// verify (built with the wrong key) is rejected as an MgmtError::Secure, not
+    /// accepted as an answer.
+    #[tokio::test]
+    async fn activated_path_rejects_wrong_mac_response() {
+        let key = [0x24u8; 16];
+        // The device builds its response with the WRONG key.
+        let mut evil = DataSecureSession::new(Key16::new([0x99u8; 16]));
+        let tool_session =
+            DataSecureSession::new(Key16::new(key)).with_send_sequence(Sequence::new(1000));
+        let secure = crate::secure::SecureLayer::activated(tool_session);
+
+        let resp_tpci = tpci::ndt(0);
+        let (resp_apci, resp_asdu) = {
+            let addr = dev_to_tool_addr(resp_tpci);
+            evil.wrap(&addr, 0x340, &[0x07, 0xB0]).unwrap()
+        };
+
+        let inbox = vec![
+            control_from_dev(tpci::t_ack(0)),
+            ndt_from_dev(0, resp_apci, &resp_asdu),
+            // After the bad response is rejected, the connection times out waiting
+            // for a real one (empty inbox), which is fine for this assertion.
+        ];
+        let mut bus = ScriptedBus::new(inbox);
+        let mut l4 = Layer4Connection::connect_with_secure(&mut bus, dev(), tool(), fast(), secure)
+            .await
+            .unwrap();
+
+        let err = l4.request(0x300, &[0x00]).await.unwrap_err();
+        assert!(
+            matches!(err, MgmtError::Secure { .. }),
+            "a wrong-MAC secured response must be rejected, got {err:?}"
         );
     }
 }

@@ -56,6 +56,7 @@ pub mod error;
 pub mod load;
 pub mod manufacturers;
 pub mod profile;
+pub mod secure;
 pub mod sys7;
 pub mod tables;
 
@@ -79,6 +80,7 @@ pub use load::{
     write_memory_verified, write_property, write_table,
 };
 pub use profile::{KnxMedium, LsmRealisation, MaskFamily, MaskProfile, Sys7Profile};
+pub use secure::SecureLayer;
 pub use sys7::{
     LsmAccess, alloc_attr_octets, encode_alloc_segment, encode_task_ctrl1, encode_task_segment,
     lsm_access_from_profile, task_segment_marker,
