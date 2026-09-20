@@ -1,5 +1,5 @@
 # Release builds: pushing a version tag (e.g. `0.1.0` or `v0.1.0`) creates a
-# GitHub Release with prebuilt binaries for the three platforms attached.
+# GitHub Release with prebuilt binaries for five platform/arch pairs attached.
 # The README links to the releases page for downloads.
 name: Release
 
@@ -54,7 +54,7 @@ jobs:
               --title "bussard ${{ github.ref_name }}"
 
   build:
-    name: build (${{ matrix.os }})
+    name: build (${{ matrix.asset }})
     needs: create-release
     runs-on: ${{ matrix.os }}
     strategy:
@@ -70,8 +70,21 @@ jobs:
           - os: macos-latest
             asset: bussard-macos-arm64
             path: target/release/bussard
+          # macos-latest is Apple silicon; the Xcode toolchain cross-compiles
+          # x86_64 out of the box, so Intel Macs get a binary without needing a
+          # (shrinking, soon-retired) Intel macOS runner.
+          - os: macos-latest
+            asset: bussard-macos-x64
+            target: x86_64-apple-darwin
+            path: target/x86_64-apple-darwin/release/bussard
           - os: ubuntu-latest
             asset: bussard-linux-x64
+            path: target/release/bussard
+          # Native arm64 Linux runner (free on public repos): rusqlite's bundled
+          # SQLite and ring both compile C/asm, so a native runner is simpler and
+          # greener than wrangling a cross C toolchain.
+          - os: ubuntu-24.04-arm
+            asset: bussard-linux-arm64
             path: target/release/bussard
     steps:
       - uses: actions/checkout@v5
@@ -79,14 +92,18 @@ jobs:
           fetch-depth: 1
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target || '' }}
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          key: release-build
+          key: release-build-${{ matrix.asset }}
       - name: Build
         env:
           RUSTFLAGS: ${{ matrix.rustflags || '' }}
-        run: cargo build --release -p bussard-cli
+        run: |
+          cargo build --release -p bussard-cli \
+            ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
       - name: Upload release asset
         env:
           GH_TOKEN: ${{ github.token }}
