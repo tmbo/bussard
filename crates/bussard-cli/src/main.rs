@@ -7,6 +7,7 @@ mod apply_cmd;
 mod assign_cmd;
 mod capture_cmd;
 mod conn_cmd;
+mod describe_cmd;
 mod flash_cmd;
 mod ha_config_cmd;
 mod import_cmd;
@@ -146,6 +147,25 @@ enum Command {
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// Emit JSON instead of the report format.
+        #[arg(long)]
+        json: bool,
+        /// Override the gateway `host[:port]` for tunneling.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Force KNXnet/IP routing (multicast) transport.
+        #[arg(long)]
+        routing: bool,
+    },
+    /// Introspect a device: enumerate its interface objects and each property's
+    /// description (PID, type, element count, access levels) over the bus.
+    Describe {
+        /// The device to introspect, e.g. `1.1.4`.
+        #[arg(value_name = "ADDRESS")]
+        address: String,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Emit JSON instead of the table format.
         #[arg(long)]
         json: bool,
         /// Override the gateway `host[:port]` for tunneling.
@@ -491,6 +511,18 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
                 }
             }
         }
+        Command::Describe {
+            address,
+            dir,
+            json,
+            gateway,
+            routing,
+        } => describe_cmd::run(
+            &address,
+            &dir,
+            json,
+            conn_cmd::ConnOverrides { gateway, routing },
+        ),
         Command::ImportProduct {
             file,
             dir,
