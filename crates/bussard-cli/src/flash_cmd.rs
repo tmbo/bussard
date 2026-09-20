@@ -581,6 +581,13 @@ struct LeaseConnector<'a> {
     handle: &'a BusHandle,
     target: IndividualAddress,
     source: IndividualAddress,
+    /// The KNX Data Secure tool key for the target, when the device is
+    /// security-activated (issue #71, spec §6.2). `None` is the plain,
+    /// byte-identical path; `Some` wraps every management APDU behind
+    /// A_SecureData. The key is cloned to build a fresh `DataSecureSession` on
+    /// each (re)connect — the send sequence is clock-seeded and monotonic, so a
+    /// reconnect after a master reset never replays a stale sequence.
+    secure_tool_key: Option<bussard_secure::Key16>,
 }
 
 /// Environment variable that overrides the flash's per-attempt L4 ACK/response
@@ -617,11 +624,19 @@ impl bussard_download::Connector for LeaseConnector<'_> {
             ))
         })?;
         let channel = LeaseChannel::new(lease);
-        match flash_l4_timeouts() {
-            Some(t) => Layer4Connection::connect_with(channel, self.target, self.source, t).await,
-            None => Layer4Connection::connect(channel, self.target, self.source).await,
-        }
-        .map_err(WriteError::Mgmt)
+        // KNX Data Secure seam (spec §6.1/§6.2): a plain connection when no tool
+        // key is set (byte-identical to today), or a wrapped one when the device
+        // is security-activated.
+        let secure = match &self.secure_tool_key {
+            None => bussard_mgmt::SecureLayer::plain(),
+            Some(key) => bussard_mgmt::SecureLayer::activated(
+                bussard_secure::DataSecureSession::new(key.clone()),
+            ),
+        };
+        let timeouts = flash_l4_timeouts().unwrap_or_default();
+        Layer4Connection::connect_with_secure(channel, self.target, self.source, timeouts, secure)
+            .await
+            .map_err(WriteError::Mgmt)
     }
 }
 
@@ -637,6 +652,11 @@ async fn execute(
         handle,
         target,
         source,
+        // Phase A default: plain management. A future CLI surface will populate
+        // this from the keyring/knxproj when the device is security-activated
+        // (issue #71, spec §6.2). SEC-CAL: wire the tool key from the keyring
+        // here once secure activation is surfaced on the model.
+        secure_tool_key: None,
     };
     // Authorize the management connect with the project BCU key (or free access
     // when unset) — issue #52 finding #1.
@@ -796,6 +816,7 @@ mod tests {
                 .collect(),
             module_bases: Default::default(),
             com_objects: Default::default(),
+            security: None,
         };
         let mut devices = std::collections::BTreeMap::new();
         devices.insert(

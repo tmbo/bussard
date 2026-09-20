@@ -489,6 +489,9 @@ fn build_device(
         parameters: Default::default(),
         module_bases: Default::default(),
         com_objects,
+        // KNX Secure state is populated only by the knxproj importer (issue #71);
+        // an adopted-from-bus device carries none.
+        security: None,
     }
 }
 
@@ -1188,6 +1191,7 @@ mod tests {
                         parameters: Default::default(),
                         module_bases: Default::default(),
                         com_objects: Default::default(),
+                        security: None,
                     },
                     file_stem: format!("{addr}-d"),
                 },

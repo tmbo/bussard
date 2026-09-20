@@ -475,6 +475,7 @@ mod tests {
                         parameters: BTreeMap::new(),
                         module_bases: Default::default(),
                         com_objects: BTreeMap::new(),
+                        security: None,
                     },
                     file_stem: a.to_string(),
                 },
