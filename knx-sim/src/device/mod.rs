@@ -110,6 +110,11 @@ pub enum DeviceError {
         /// What constraint was violated.
         detail: String,
     },
+    /// A KNX Data Secure frame was refused by an activated device (wrong MAC,
+    /// stale/replayed sequence, or a plain access to a protected function).
+    /// A real activated device drops such a frame (spec §12.2).
+    #[error("secure refused: {0}")]
+    Secure(#[from] crate::secure::SecureError),
 }
 
 /// One loadable object's runtime state: its LSM plus its assigned segment base.
@@ -144,6 +149,24 @@ pub struct ProfileOverrides {
     /// Defaults to `false` (a normal, un-programmed device is silent to the
     /// broadcast read).
     pub prog_mode: bool,
+    /// KNX Data Secure activation. `None` (the default) leaves the device plain
+    /// (existing devices unaffected). `Some` marks the device security-ACTIVATED
+    /// with a synthetic tool key and starting sequence numbers, so all management
+    /// access must ride A_SecureData (spec §6.4, §12.2).
+    pub secure: Option<SecureActivation>,
+}
+
+/// Per-device KNX Data Secure activation parameters (spec §12.2). All key
+/// material is synthetic; it never comes from a user file.
+#[derive(Debug, Clone)]
+pub struct SecureActivation {
+    /// The synthetic 16-byte tool key.
+    pub tool_key: crate::secure::Key16,
+    /// The device's initial send sequence (for wrapping responses, spec §5.8).
+    pub initial_tx_seq: u64,
+    /// The device's initial receive-freshness floor (spec §5.9): a first inbound
+    /// frame must strictly exceed this.
+    pub initial_rx_seq: u64,
 }
 
 /// The runtime state of a System 7 device's three parallel load-state machines
@@ -201,6 +224,12 @@ pub struct Device {
     /// that property (as ETS/`bussard assign` do) flips this bit, and the
     /// initial value comes from [`ProfileOverrides::prog_mode`].
     prog_mode: bool,
+    /// The per-device KNX Data Secure session when the device is
+    /// security-ACTIVATED (spec §6.1). `None` = plain device (the default), which
+    /// leaves every existing device and test unchanged. `Some` = every management
+    /// access must ride A_SecureData; a plain access to a protected function is
+    /// refused (spec §6.4, §12.2).
+    secure: Option<crate::secure::DataSecureSession>,
     events: std::sync::Arc<dyn EventSink>,
 }
 
@@ -412,6 +441,11 @@ impl Device {
                 ));
             }
         };
+        // Build the Data Secure session up front (spec §6.1): `None` keeps the
+        // device plain (the default), `Some` marks it security-ACTIVATED.
+        let secure = overrides.secure.map(|a| {
+            crate::secure::DataSecureSession::new(a.tool_key, a.initial_tx_seq, a.initial_rx_seq)
+        });
         if profile.is_system7() {
             Ok(Self::build_system7(
                 address,
@@ -419,6 +453,7 @@ impl Device {
                 initial_state,
                 profile,
                 overrides.prog_mode,
+                secure,
                 events,
             ))
         } else {
@@ -428,6 +463,7 @@ impl Device {
                 initial_state,
                 profile,
                 overrides.prog_mode,
+                secure,
                 events,
             ))
         }
@@ -440,6 +476,7 @@ impl Device {
         initial_state: LoadState,
         profile: Profile,
         prog_mode: bool,
+        secure: Option<crate::secure::DataSecureSession>,
         events: std::sync::Arc<dyn EventSink>,
     ) -> Self {
         let mut objects: BTreeMap<u8, InterfaceObject> = BTreeMap::new();
@@ -561,6 +598,7 @@ impl Device {
             l4_exchanges: 0,
             group_comm: None,
             prog_mode,
+            secure,
             events,
         };
         // A device constructed already `Loaded` (a previously-programmed device)
@@ -581,6 +619,7 @@ impl Device {
         initial_state: LoadState,
         profile: Profile,
         prog_mode: bool,
+        secure: Option<crate::secure::DataSecureSession>,
         events: std::sync::Arc<dyn EventSink>,
     ) -> Self {
         let s7 = profile
@@ -687,6 +726,7 @@ impl Device {
             l4_exchanges: 0,
             group_comm: None,
             prog_mode,
+            secure,
             events,
         };
         device.refresh_group_comm();
@@ -1137,8 +1177,51 @@ impl Device {
         }
     }
 
-    /// Dispatch a management APDU. Returns response telegrams.
+    /// Handle a management APDU, applying the KNX Data Secure interception before
+    /// ordinary dispatch (spec §5, §6, §12.2). On an activated device:
+    ///  - A_SecureData (APCI 0x3F1) → unwrap (verify MAC + sequence), dispatch the
+    ///    inner APDU, and re-wrap each response with the device's own sequence.
+    ///  - a PLAIN access to a protected function → refused, exactly as a real
+    ///    activated device behaves (spec §6.4). Bare transport verbs and the
+    ///    broadcast individual-address services are not "protected functions", so
+    ///    they still flow (they carry no management payload to protect).
+    ///
+    /// This is the single interception point; the inner (unwrapped) APDU is
+    /// dispatched via [`Device::dispatch_apdu`], which does NOT re-apply the
+    /// secure check, so the inner management verb runs exactly as on a plain
+    /// device once authenticated.
     fn handle_apdu(
+        &mut self,
+        cemi: &CemiLData,
+        apdu: &Apdu,
+    ) -> Result<DeviceReaction, DeviceError> {
+        if self.secure.is_some() {
+            if apdu.apci_raw == crate::secure::A_SECURE_DATA_APCI {
+                if !self.connected {
+                    return Err(DeviceError::NotConnected);
+                }
+                return self.handle_secure_data(cemi, apdu);
+            }
+            if Self::is_protected_function(apdu.apci) {
+                self.emit(Event::SecureFrame {
+                    device: self.address,
+                    summary: format!(
+                        "PLAIN access to protected {:?} refused (device requires KNX Data Secure)",
+                        apdu.apci
+                    ),
+                });
+                return Err(DeviceError::Secure(
+                    crate::secure::SecureError::PlainAccessRefused,
+                ));
+            }
+        }
+        self.dispatch_apdu(cemi, apdu)
+    }
+
+    /// Dispatch a management APDU to its handler (no secure interception). Called
+    /// directly for a plain device and for the unwrapped inner APDU of an
+    /// A_SecureData frame. Returns response telegrams.
+    fn dispatch_apdu(
         &mut self,
         cemi: &CemiLData,
         apdu: &Apdu,
@@ -1147,6 +1230,7 @@ impl Device {
             return Err(DeviceError::NotConnected);
         }
         let tool = cemi.source;
+
         // System 7 wire strictness (spec section 6): a memory op to a System 7
         // device must ride a STANDARD frame and carry at most 12 data octets. An
         // extended cEMI frame or a >12-octet memory op is exactly the trap that
@@ -1188,6 +1272,164 @@ impl Device {
             Apci::PropertyDescriptionRead => self.on_property_description_read(tool, apdu),
             _ => Ok(DeviceReaction::default()),
         }
+    }
+
+    /// Whether an APCI names a "protected function" that a security-activated
+    /// device requires to ride A_SecureData (spec §6.4). The management verbs
+    /// (authorize, property/memory read/write, restart, device-descriptor) are
+    /// protected; group-value and the broadcast individual-address services are
+    /// not (they are the plain-coexistence surface, spec §6.4).
+    fn is_protected_function(apci: Apci) -> bool {
+        matches!(
+            apci,
+            Apci::AuthorizeRequest
+                | Apci::PropertyValueRead
+                | Apci::PropertyValueWrite
+                | Apci::PropertyDescriptionRead
+                | Apci::MemoryRead(_)
+                | Apci::MemoryWrite(_)
+                | Apci::MemoryExtendedRead
+                | Apci::MemoryExtendedWrite
+                | Apci::DeviceDescriptorRead(_)
+                | Apci::Restart
+                | Apci::RestartResponse
+        )
+    }
+
+    /// The transport-control "tpci_int" the CCM nonce folds in (spec §5.4): the
+    /// carrier telegram's TPCI top bits shifted down. For an unnumbered data
+    /// telegram this is 0; for a connected data telegram it is the sequence-
+    /// bearing value. Extracted from the carrier's first TPDU byte.
+    fn carrier_tpci_int(cemi: &CemiLData) -> u8 {
+        match cemi.tpdu.first() {
+            // Connected data (01ssssxx): the 6-bit TPCI value above the 2 APCI
+            // bits, i.e. the top 6 bits of the byte.
+            Some(b) if b & 0xC0 == 0x40 => (b >> 2) & 0x3F,
+            // Unnumbered data (00xxxxxx): no sequence, tpci_int = 0.
+            _ => 0,
+        }
+    }
+
+    /// Handle an inbound A_SecureData (spec §5, §6): unwrap and verify, dispatch
+    /// the inner APDU through the normal management path, then re-wrap each
+    /// response into A_SecureData with the device's own sequence.
+    ///
+    /// A wrong MAC, a stale/replayed sequence, or a malformed ASDU is refused —
+    /// the device drops the frame (returns an error, no response), exactly as a
+    /// real activated device does (spec §12.2).
+    fn handle_secure_data(
+        &mut self,
+        cemi: &CemiLData,
+        apdu: &Apdu,
+    ) -> Result<DeviceReaction, DeviceError> {
+        let tpci_int = Self::carrier_tpci_int(cemi);
+        // The ASDU is the bytes after the two APCI bytes, i.e. apdu.data.
+        let unwrapped = {
+            let session = self
+                .secure
+                .as_mut()
+                .expect("handle_secure_data requires an activated session");
+            session.unwrap_incoming(cemi, tpci_int, &apdu.data)?
+        };
+        // Observe the decoded frame (key-free, plaintext-free).
+        self.emit(Event::SecureFrame {
+            device: self.address,
+            summary: crate::secure::DataSecureSession::describe_frame(
+                "recv",
+                unwrapped.scf,
+                &unwrapped.seq,
+                &unwrapped.inner_tpdu,
+            ),
+        });
+        // The reply algorithm mirrors the request's (auth-only stays auth-only;
+        // auth+enc stays auth+enc), matching a real device that answers in kind.
+        let reply_alg = unwrapped.scf.algorithm;
+
+        // Parse and dispatch the inner APDU through the ordinary management path.
+        let inner = Apdu::parse(&unwrapped.inner_tpdu).ok_or(DeviceError::Malformed {
+            service: "A_SecureData inner APDU".into(),
+            detail: "too short".into(),
+        })?;
+        // Dispatch the unwrapped inner APDU directly (bypassing the secure
+        // interception, which would otherwise refuse the now-authenticated
+        // protected function).
+        let reaction = self.dispatch_apdu(cemi, &inner)?;
+
+        // Re-wrap each response's inner APDU into A_SecureData. A response is a
+        // connected data telegram whose TPDU is [TPCI/APCI][APCI][data]; we take
+        // its inner TPDU, wrap it, and rebuild the carrier TPDU as an unnumbered
+        // A_SecureData carrying the ASDU. The transport sequence is dropped in the
+        // re-wrap (the secure layer's own 6-byte sequence supersedes it here); the
+        // response still rides back to the tool as a connected NDT via `respond`.
+        let mut secured = Vec::with_capacity(reaction.responses.len());
+        for resp in reaction.responses {
+            // A pure transport ACK carries no APDU to secure; forward as-is.
+            if Apdu::parse(&resp.tpdu).is_none() {
+                secured.push(resp);
+                continue;
+            }
+            // The inner TPDU minus the transport-sequence bits: rebuild the APCI
+            // header without the connected-sequence nibble so the wrapped inner is
+            // the pure application PDU.
+            let inner_tpdu = Self::strip_transport_seq(&resp.tpdu);
+            // Wrap with the RESPONSE carrier's own tpci_int (derived from the
+            // response TPDU) so the receiving tool can reconstruct the identical
+            // CCM nonce from the response frame alone.
+            let resp_tpci_int = Self::carrier_tpci_int(&resp);
+            let (asdu, seq) = {
+                let session = self
+                    .secure
+                    .as_mut()
+                    .expect("activated session present for wrap");
+                session.wrap_outgoing(&resp, resp_tpci_int, reply_alg, &inner_tpdu)
+            };
+            let scf = crate::secure::Scf {
+                tool_access: true,
+                algorithm: reply_alg,
+                system_broadcast: false,
+                service: crate::secure::SecService::Data,
+            };
+            self.emit(Event::SecureFrame {
+                device: self.address,
+                summary: crate::secure::DataSecureSession::describe_frame(
+                    "send",
+                    scf,
+                    &seq,
+                    &inner_tpdu,
+                ),
+            });
+            // Rebuild the response carrier: same transport framing (connected NDT
+            // with the response's own sequence bits), APCI = A_SecureData (0x3F1),
+            // payload = the ASDU.
+            let tx_seq = (resp.tpdu[0] >> 2) & 0x0F;
+            let apci10 = crate::secure::A_SECURE_DATA_APCI;
+            let mut tpdu = vec![
+                0x40 | ((tx_seq & 0x0F) << 2) | ((apci10 >> 8) as u8 & 0x03),
+                (apci10 & 0xFF) as u8,
+            ];
+            tpdu.extend_from_slice(&asdu);
+            secured.push(CemiLData { tpdu, ..resp });
+        }
+        Ok(DeviceReaction {
+            responses: secured,
+            did_master_reset: reaction.did_master_reset,
+        })
+    }
+
+    /// Strip the connected-transport sequence bits from a response TPDU, leaving
+    /// the pure application PDU (`[APCI-high bits only][APCI low][data...]`). The
+    /// first byte keeps only the two APCI high bits (transport type reset to
+    /// unnumbered-data form) so the wrapped inner is transport-agnostic, matching
+    /// how the secured APDU is authenticated (spec §5.4 protects only the inner
+    /// APCI, not the carrier transport sequence).
+    fn strip_transport_seq(tpdu: &[u8]) -> Vec<u8> {
+        if tpdu.is_empty() {
+            return Vec::new();
+        }
+        let mut out = tpdu.to_vec();
+        // Keep only the two APCI high bits; clear the transport-control bits.
+        out[0] &= 0x03;
+        out
     }
 
     fn on_authorize(
@@ -2513,6 +2755,7 @@ mod tests {
                     lsm_access: access,
                     bcu_key: None,
                     prog_mode: false,
+                    secure: None,
                 },
                 std::sync::Arc::new(RecordingSink::new()),
             )

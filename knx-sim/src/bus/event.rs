@@ -79,6 +79,17 @@ pub enum Event {
         /// Whether programming mode is now on.
         on: bool,
     },
+    /// A KNX Data Secure frame was decoded at a device (spec §12.2
+    /// observability). The `summary` names the direction, SCF, sequence and the
+    /// inner APCI NAME only — it NEVER carries the key or the decrypted plaintext
+    /// of a key-bearing payload (built by
+    /// [`crate::secure::DataSecureSession::describe_frame`]).
+    SecureFrame {
+        /// The device address.
+        device: IndividualAddress,
+        /// A key-free, plaintext-free one-line description.
+        summary: String,
+    },
     /// A device updated a com-object's value from an inbound group write it
     /// listens to (the runtime group-communication path).
     GroupObjectUpdated {
@@ -130,6 +141,9 @@ impl EventSink for TracingSink {
             }
             Event::ProgModeChanged { device, on } => {
                 tracing::info!(%device, on, "programming mode changed")
+            }
+            Event::SecureFrame { device, summary } => {
+                tracing::info!(%device, "{summary}")
             }
             Event::GroupObjectUpdated { device, object, ga } => {
                 tracing::info!(%device, object, ga = format!("0x{ga:04x}"), "group object updated")
