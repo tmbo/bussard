@@ -13,6 +13,10 @@ bussard-model = { workspace = true }
 bussard-transport = { workspace = true }
 bussard-monitor = { workspace = true }
 bussard-bus = { workspace = true }
+# The programming-mode watch reuses the assign broadcast-read op
+# (bussard_mgmt::broadcast::devices_in_programming_mode_within) over the shared
+# BusHandle lease, rather than reimplementing the A_IndividualAddress_Read probe.
+bussard-mgmt = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tracing = { workspace = true }

@@ -77,6 +77,7 @@ fn jung_bus(sink: Arc<RecordingSink>) -> Option<Bus> {
             mask: None, // MV-0705 from the product
             lsm_access: LsmAccess::Property,
             bcu_key: None,
+            prog_mode: false,
         },
         sink.clone(),
     )

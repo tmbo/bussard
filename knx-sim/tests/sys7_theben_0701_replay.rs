@@ -79,6 +79,7 @@ fn theben_0701_bus(sink: Arc<RecordingSink>) -> Bus {
             mask: Some("0701".into()),
             lsm_access: LsmAccess::MemoryMapped,
             bcu_key: None,
+            prog_mode: false,
         },
         sink.clone(),
     )

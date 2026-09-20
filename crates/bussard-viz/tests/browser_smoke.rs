@@ -244,8 +244,9 @@ async fn browser_smoke_dom_renders() -> Result<(), Box<dyn Error + Send + Sync>>
         dir: dir.clone(),
         listen: SocketAddr::from(([127, 0, 0, 1], 0)),
         connection: None, // model-only mode: no bus, reads still work
+        watch_prog: false,
     };
-    let (state, handle) = bussard_viz::build_state(&config)?;
+    let (state, handle, _watch) = bussard_viz::build_state(&config)?;
     assert!(handle.is_none(), "model-only mode must not open a bus");
     let app = bussard_viz::router(state).layer(middleware::from_fn(neutralize_sse));
     let listener = tokio::net::TcpListener::bind(config.listen).await?;

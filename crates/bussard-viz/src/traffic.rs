@@ -11,17 +11,30 @@
 //! emits a `bus` event whenever the connection state changes, and updates the
 //! per-GA state map from Write/Response telegrams on group destinations.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, RwLock};
+use std::time::Duration;
 
-use bussard_bus::{BusHandle, BusState};
-use bussard_model::GroupAddress;
+use bussard_bus::{BusHandle, BusState, ops};
+use bussard_mgmt::LeaseChannel;
+use bussard_mgmt::broadcast::devices_in_programming_mode_within;
+use bussard_model::{GroupAddress, IndividualAddress};
 use bussard_monitor::decode::{ApciKind, DestinationRef};
 use bussard_monitor::{DecodedTelegram, json_value};
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
 
 use crate::state::{BusStatus, ModelHandle};
+
+/// How often the programming-mode watch probes the bus with a broadcast
+/// `A_IndividualAddress_Read`. Chosen so the red-prog-LED highlight tracks a
+/// button press within a couple of seconds without flooding the bus.
+pub const PROG_PROBE_INTERVAL: Duration = Duration::from_secs(3);
+
+/// The per-probe window for collecting `A_IndividualAddress_Response` frames.
+/// Mirrors the assign flow's collection window: a device in programming mode
+/// answers within a fraction of a second, so ~1s is ample.
+pub const PROG_COLLECTION_WINDOW: Duration = Duration::from_secs(1);
 
 /// The depth of the SSE broadcast channel. A subscriber that falls this far
 /// behind receives a `gap` event and must reconcile via a fresh snapshot.
@@ -49,6 +62,11 @@ pub enum HubEvent {
     /// A model reload: the model was swapped, so connected pages should refetch
     /// `/api/model`. Carries `{ "model_version": N, "stats": { … } }`.
     Model(Value),
+    /// The observed programming-mode set CHANGED. Carries
+    /// `{ "devices": ["1.1.2", …] }` — the current set of individual addresses
+    /// answering the broadcast `A_IndividualAddress_Read`. Emitted only on a
+    /// change (including back to empty), never on every probe tick.
+    Prog(Value),
     /// A broadcast-lag signal: the subscriber missed `count` events.
     Gap {
         /// How many broadcast messages were skipped.
@@ -108,6 +126,10 @@ struct Inner {
     tx: broadcast::Sender<HubEvent>,
     /// The last value seen per group address, for `GET /api/state`.
     ga_state: RwLock<BTreeMap<GroupAddress, GaState>>,
+    /// The individual addresses currently observed in programming mode, for
+    /// `GET /api/state`. Empty when none are, or when the watch is disabled
+    /// (the watch never runs, so the set stays empty).
+    prog: RwLock<BTreeSet<IndividualAddress>>,
 }
 
 /// The sequence counter and the retained telegram backlog.
@@ -137,6 +159,7 @@ impl TrafficHub {
                 }),
                 tx,
                 ga_state: RwLock::new(BTreeMap::new()),
+                prog: RwLock::new(BTreeSet::new()),
             }),
         }
     }
@@ -187,6 +210,37 @@ impl TrafficHub {
     /// pages refetch `/api/model`. `data` is `{ "model_version", "stats" }`.
     pub fn publish_model(&self, data: Value) {
         let _ = self.inner.tx.send(HubEvent::Model(data));
+    }
+
+    /// The current programming-mode set as a JSON array of IA strings, for
+    /// `GET /api/state`'s `prog` field. Empty when none are observed or the
+    /// watch is disabled.
+    pub fn prog_values(&self) -> Value {
+        let set = self.inner.prog.read().unwrap_or_else(|p| p.into_inner());
+        Value::Array(set.iter().map(|ia| Value::from(ia.to_string())).collect())
+    }
+
+    /// Replaces the observed programming-mode set with `next`. If it differs
+    /// from the previous set, stores it and broadcasts a [`HubEvent::Prog`]
+    /// carrying the new set, then returns `true`. On no change, does nothing and
+    /// returns `false` (so the watch publishes only on a genuine transition).
+    pub fn set_prog_if_changed(&self, next: BTreeSet<IndividualAddress>) -> bool {
+        {
+            let current = self.inner.prog.read().unwrap_or_else(|p| p.into_inner());
+            if *current == next {
+                return false;
+            }
+        }
+        let devices: Vec<Value> = next.iter().map(|ia| Value::from(ia.to_string())).collect();
+        {
+            let mut current = self.inner.prog.write().unwrap_or_else(|p| p.into_inner());
+            *current = next;
+        }
+        let _ = self
+            .inner
+            .tx
+            .send(HubEvent::Prog(json!({ "devices": devices })));
+        true
     }
 
     /// Broadcasts [`HubEvent::Shutdown`], ending every live SSE stream.
@@ -330,10 +384,64 @@ pub async fn feed(hub: TrafficHub, handle: BusHandle, model: ModelHandle, status
     }
 }
 
+/// Probes the bus for devices in programming mode on a fixed cadence, updating
+/// the hub's programming-mode set and emitting a `prog` event on every change.
+///
+/// This runs only when `bussard viz --watch-prog` is set: the probe puts a
+/// broadcast `A_IndividualAddress_Read` on the bus every [`PROG_PROBE_INTERVAL`],
+/// which is active traffic and must never happen unnoticed against a real
+/// installation. Each probe leases the shared bus (the same lease `assign` uses)
+/// so it never opens a second tunnel, collects responders for
+/// [`PROG_COLLECTION_WINDOW`], and diffs the responding-IA set against the last
+/// one via [`TrafficHub::set_prog_if_changed`].
+///
+/// Connection state is respected: probes are skipped while the bus is not
+/// connected, and the observed set is cleared (emitting a change if it was
+/// non-empty) on a drop, so a stale highlight never lingers after the gateway
+/// goes away. When the bus reconnects, probing resumes.
+///
+/// The task loops until the actor shuts down (a lease error) or the caller
+/// aborts its `JoinHandle` on shutdown, exactly as the feeder is torn down.
+pub async fn watch_prog(hub: TrafficHub, handle: BusHandle) {
+    let mut ticker = tokio::time::interval(PROG_PROBE_INTERVAL);
+    // Skip missed ticks rather than bursting to catch up after a slow probe.
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    loop {
+        ticker.tick().await;
+
+        // Only probe while connected. When not connected, clear any stale set so
+        // the UI stops highlighting a device we can no longer observe.
+        if handle.status() != BusState::Connected {
+            hub.set_prog_if_changed(BTreeSet::new());
+            continue;
+        }
+
+        let source = ops::group_source(&handle);
+        let lease = match handle.lease().await {
+            Ok(lease) => lease,
+            // The actor is gone; stop watching.
+            Err(_) => break,
+        };
+        let channel = LeaseChannel::new(lease);
+        match devices_in_programming_mode_within(channel, source, PROG_COLLECTION_WINDOW).await {
+            Ok(found) => {
+                let set: BTreeSet<IndividualAddress> = found.into_iter().collect();
+                hub.set_prog_if_changed(set);
+            }
+            // A transient probe error (e.g. a momentary disconnect mid-window) is
+            // not fatal: skip this tick and try again on the next one.
+            Err(err) => {
+                tracing::debug!("programming-mode probe failed: {err}");
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{Duration, SystemTime};
+    use std::time::SystemTime;
 
     use bussard_model::IndividualAddress;
     use bussard_model::codec::TypedValue;
@@ -489,6 +597,79 @@ mod tests {
         let values = hub.state_values();
         assert_eq!(values["3/2/0"]["value"], "No alarm");
         assert_eq!(values["3/2/0"]["apci"], "response");
+    }
+
+    /// Builds a programming-mode set from IA strings.
+    fn prog_set(addrs: &[&str]) -> BTreeSet<IndividualAddress> {
+        addrs.iter().map(|s| ia(s)).collect()
+    }
+
+    #[test]
+    fn test_prog_values_empty_by_default() {
+        // A fresh hub (watch never ran) reports an empty prog array, not absent.
+        let hub = TrafficHub::new();
+        assert_eq!(hub.prog_values(), json!([]));
+    }
+
+    #[test]
+    fn test_set_prog_if_changed_reports_and_stores_change() {
+        let hub = TrafficHub::new();
+        // First non-empty set is a change; it is stored and reported.
+        assert!(hub.set_prog_if_changed(prog_set(&["1.1.2"])));
+        assert_eq!(hub.prog_values(), json!(["1.1.2"]));
+    }
+
+    #[test]
+    fn test_set_prog_if_changed_is_noop_when_unchanged() {
+        let hub = TrafficHub::new();
+        assert!(hub.set_prog_if_changed(prog_set(&["1.1.2", "1.1.5"])));
+        // The same set (order-independent, since it is a BTreeSet) is no change.
+        assert!(!hub.set_prog_if_changed(prog_set(&["1.1.5", "1.1.2"])));
+        // The stored value is unchanged and sorted (BTreeSet order).
+        assert_eq!(hub.prog_values(), json!(["1.1.2", "1.1.5"]));
+    }
+
+    #[test]
+    fn test_set_prog_if_changed_clear_to_empty_is_a_change() {
+        let hub = TrafficHub::new();
+        assert!(hub.set_prog_if_changed(prog_set(&["1.1.2"])));
+        // Clearing a non-empty set back to empty is a genuine change.
+        assert!(hub.set_prog_if_changed(BTreeSet::new()));
+        assert_eq!(hub.prog_values(), json!([]));
+        // Clearing an already-empty set is not.
+        assert!(!hub.set_prog_if_changed(BTreeSet::new()));
+    }
+
+    #[test]
+    fn test_set_prog_if_changed_publishes_prog_event() {
+        // A change broadcasts a `prog` HubEvent carrying the new device list.
+        let hub = TrafficHub::new();
+        let mut rx = hub.subscribe();
+        assert!(hub.set_prog_if_changed(prog_set(&["1.1.2", "1.1.7"])));
+
+        let mut event = None;
+        while let Ok(ev) = rx.try_recv() {
+            if let HubEvent::Prog(v) = ev {
+                event = Some(v);
+                break;
+            }
+        }
+        let v = event.expect("a prog event was published");
+        assert_eq!(v, json!({ "devices": ["1.1.2", "1.1.7"] }));
+    }
+
+    #[test]
+    fn test_set_prog_if_changed_noop_publishes_nothing() {
+        // A no-op update must NOT broadcast a prog event.
+        let hub = TrafficHub::new();
+        assert!(hub.set_prog_if_changed(prog_set(&["1.1.2"])));
+        let mut rx = hub.subscribe();
+        assert!(!hub.set_prog_if_changed(prog_set(&["1.1.2"])));
+        // Nothing new is queued for a fresh subscriber.
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
     }
 
     #[test]

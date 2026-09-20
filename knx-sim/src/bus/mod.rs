@@ -55,6 +55,14 @@ impl Bus {
             summary: summarize(cemi),
         });
 
+        // A broadcast A_IndividualAddress_Read (a group frame to 0/0/0) is
+        // answered by every device currently in programming mode, each with an
+        // A_IndividualAddress_Response carrying its own address. This is the
+        // discovery step `bussard assign` and `bussard viz --watch-prog` rely on.
+        if is_individual_address_read(cemi) {
+            return self.deliver_individual_address_read();
+        }
+
         if cemi.is_group() {
             return self.deliver_group(cemi);
         }
@@ -159,6 +167,26 @@ impl Bus {
             out.push(reply);
         }
         out
+    }
+
+    /// Answer a broadcast `A_IndividualAddress_Read`: collect an
+    /// `A_IndividualAddress_Response` from every device currently in programming
+    /// mode, emit each toward the tool, and return them for the tunnel to
+    /// forward. A device not in programming mode stays silent, so the usual case
+    /// (nobody programming) returns an empty vec.
+    fn deliver_individual_address_read(&mut self) -> Vec<CemiLData> {
+        let mut responses = Vec::new();
+        for dev in self.devices.values() {
+            if let Some(resp) = dev.individual_address_response() {
+                self.events.emit(Event::Telegram {
+                    direction: Direction::ToTool,
+                    cemi: resp.encode(),
+                    summary: summarize(&resp),
+                });
+                responses.push(resp);
+            }
+        }
+        responses
     }
 
     /// Broadcast a device-originated group telegram (e.g. scripted stimulus) onto
@@ -284,6 +312,17 @@ fn decode_group(cemi: &CemiLData) -> Option<(Apci, GroupAddress, Vec<u8>)> {
     Some((apci, cemi.dest_group(), payload))
 }
 
+/// Whether a telegram is a broadcast `A_IndividualAddress_Read`: a group frame
+/// to the broadcast group address `0/0/0` whose APCI decodes to
+/// [`Apci::IndividualAddressRead`].
+fn is_individual_address_read(cemi: &CemiLData) -> bool {
+    if !cemi.is_group() || cemi.dest != 0x0000 || cemi.tpdu.len() < 2 {
+        return false;
+    }
+    let apci10 = ((cemi.tpdu[0] as u16 & 0x03) << 8) | cemi.tpdu[1] as u16;
+    Apci::from_u10(apci10) == Apci::IndividualAddressRead
+}
+
 /// A short human summary of a telegram for the event log.
 fn summarize(cemi: &CemiLData) -> String {
     let src = cemi.source;
@@ -322,9 +361,82 @@ fn hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::bus::event::RecordingSink;
-    use crate::device::LoadState;
+    use crate::device::{LoadState, ProfileOverrides};
     use crate::prod::read_knxprod_bytes;
     use crate::wire::MessageCode;
+
+    /// A broadcast `A_IndividualAddress_Read` from the tool: a group frame to the
+    /// broadcast group address `0/0/0`, TPCI unnumbered + the read APCI, no data.
+    fn individual_address_read() -> CemiLData {
+        let apci10 = Apci::IndividualAddressRead.to_u10();
+        CemiLData {
+            message_code: MessageCode::LDataReq,
+            ctrl1: 0xbc,
+            ctrl2: 0xe0, // group destination bit set (broadcast)
+            source: IndividualAddress::new(0, 0, 255),
+            dest: 0x0000,
+            tpdu: vec![(apci10 >> 8) as u8 & 0x03, (apci10 & 0xFF) as u8],
+        }
+    }
+
+    /// Build a fixture-free System 7 device (synthetic product) at `address`,
+    /// optionally starting in programming mode.
+    fn prog_device(
+        address: IndividualAddress,
+        prog_mode: bool,
+        sink: Arc<dyn EventSink>,
+    ) -> Result<Device, String> {
+        let pd = crate::testfixtures::synthetic_mdt_sys7_product();
+        Device::from_product_with_overrides(
+            address,
+            &pd,
+            LoadState::Loaded,
+            ProfileOverrides {
+                prog_mode,
+                ..Default::default()
+            },
+            sink,
+        )
+    }
+
+    #[test]
+    fn test_broadcast_individual_address_read_answered_by_prog_mode_devices()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Two devices: one in programming mode, one not. A broadcast
+        // A_IndividualAddress_Read draws exactly one response, from the
+        // programming-mode device, carrying its own address as the source.
+        let sink = Arc::new(RecordingSink::new());
+        let programming = IndividualAddress::new(1, 1, 2);
+        let quiet = IndividualAddress::new(1, 1, 3);
+        let mut bus = Bus::new(sink.clone());
+        bus.add_device(prog_device(programming, true, sink.clone())?);
+        bus.add_device(prog_device(quiet, false, sink.clone())?);
+
+        let responses = bus.deliver_from_tool(&individual_address_read());
+        assert_eq!(responses.len(), 1, "only the prog-mode device answers");
+        let resp = &responses[0];
+        assert_eq!(resp.source, programming);
+        assert_eq!(resp.dest, 0x0000);
+        let apci10 = ((resp.tpdu[0] as u16 & 0x03) << 8) | resp.tpdu[1] as u16;
+        assert_eq!(Apci::from_u10(apci10), Apci::IndividualAddressResponse);
+        Ok(())
+    }
+
+    #[test]
+    fn test_broadcast_individual_address_read_silent_when_none_programming()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // No device in programming mode: the broadcast read draws no response.
+        let sink = Arc::new(RecordingSink::new());
+        let mut bus = Bus::new(sink.clone());
+        bus.add_device(prog_device(
+            IndividualAddress::new(1, 1, 2),
+            false,
+            sink.clone(),
+        )?);
+        let responses = bus.deliver_from_tool(&individual_address_read());
+        assert!(responses.is_empty(), "no responders when none programming");
+        Ok(())
+    }
 
     #[test]
     fn test_bus_dispatches_and_records() -> Result<(), Box<dyn std::error::Error>> {

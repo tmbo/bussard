@@ -452,6 +452,12 @@ enum Command {
         /// Force KNXnet/IP routing (multicast) transport.
         #[arg(long)]
         routing: bool,
+        /// Watch for devices in KNX programming mode and highlight them in the
+        /// UI. This periodically broadcasts `A_IndividualAddress_Read` on the
+        /// bus (active traffic), so it is off by default and must be enabled
+        /// explicitly — never point it at a real installation unattended.
+        #[arg(long)]
+        watch_prog: bool,
     },
     /// Run the read-only MCP server over stdio.
     Mcp {
@@ -732,7 +738,13 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             dir,
             gateway,
             routing,
-        } => viz_cmd::run(listen, &dir, conn_cmd::ConnOverrides { gateway, routing }),
+            watch_prog,
+        } => viz_cmd::run(
+            listen,
+            &dir,
+            conn_cmd::ConnOverrides { gateway, routing },
+            watch_prog,
+        ),
         Command::Mcp {
             dir,
             gateway,
