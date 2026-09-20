@@ -1,8 +1,9 @@
 //! The rmcp server handler and its tools.
 //!
-//! [`BussardMcp`] holds the shared state and exposes the read-only tools (eight
-//! by default, seven in `--passive` mode) plus, with `--allow-writes`, the
-//! `knx_write_group` write tool (nine total) over the Model Context Protocol.
+//! [`BussardMcp`] holds the shared state and exposes the read-only tools (nine
+//! by default, seven in `--passive` mode — `knx_read_group` and
+//! `knx_describe_device` both touch the bus) plus, with `--allow-writes`, the
+//! `knx_write_group` write tool (ten total) over the Model Context Protocol.
 //! Each `#[tool]`
 //! method is a thin adapter: it parses arguments, calls the pure logic in
 //! [`crate::tools`], and boxes the JSON in a `CallToolResult::structured`.
@@ -44,6 +45,9 @@ impl BussardMcp {
         let mut tool_router = Self::tool_router();
         if state.passive {
             tool_router.remove_route("knx_read_group");
+            // Introspection actively transmits management traffic, so it is a
+            // bus-touching tool: unavailable in passive (observe-only) mode.
+            tool_router.remove_route("knx_describe_device");
         }
         if !state.allow_writes || state.passive {
             tool_router.remove_route("knx_write_group");
@@ -94,6 +98,14 @@ pub struct WriteArgs {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DeviceArgs {
     /// An individual (physical) address like `"1.1.4"`.
+    pub address: String,
+}
+
+/// Arguments for `knx_describe_device`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DescribeArgs {
+    /// The individual (physical) address of the device to introspect, e.g.
+    /// `"1.1.4"`.
     pub address: String,
 }
 
@@ -379,6 +391,104 @@ impl BussardMcp {
         }
     }
 
+    /// `knx_describe_device` (omitted in passive mode).
+    #[tool(
+        description = "Introspect a physical device over the KNX bus (issue #72): enumerate its \
+        interface objects and, for each, every property's DESCRIPTION — PID (with a name when \
+        known), data type, element count and read/write access levels. This is READ-ONLY on the \
+        bus (it sends A_DeviceDescriptor_Read, A_PropertyValue_Read for object discovery, and \
+        A_PropertyDescription_Read; it never writes). Use it to describe an unknown device's \
+        property set. Rate-limited and only available when the server is NOT in passive mode, \
+        since it actively transmits management traffic on the bus."
+    )]
+    async fn knx_describe_device(
+        &self,
+        Parameters(args): Parameters<DescribeArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        // Passive mode: the tool is unregistered, but guard anyway.
+        if self.state.passive {
+            return ok(json!({
+                "address": args.address,
+                "ok": false,
+                "reason": "server is in passive mode; bus management traffic is disabled",
+            }));
+        }
+
+        let target: IndividualAddress = args
+            .address
+            .parse()
+            .map_err(|_| invalid(format!("invalid individual address {:?}", args.address)))?;
+
+        let Some(handle) = self.state.bus.handle() else {
+            return ok(json!({
+                "address": target.to_string(),
+                "ok": false,
+                "reason": "bus is not wired",
+                "bus": self.state.bus.to_json(),
+            }));
+        };
+        if self.state.bus.state() != ConnState::Connected {
+            return ok(json!({
+                "address": target.to_string(),
+                "ok": false,
+                "reason": "bus is not connected",
+                "bus": self.state.bus.to_json(),
+            }));
+        }
+
+        // Rate limit + concurrency cap, shared with the group read/write tools:
+        // a full introspection is a burst of management round-trips, so hold the
+        // permit across the whole session.
+        let _permit = self.state.read_limiter.acquire().await;
+
+        let source = ops::group_source(handle);
+        let lease = match handle.lease().await {
+            Ok(lease) => lease,
+            Err(err) => {
+                return ok(json!({
+                    "address": target.to_string(),
+                    "ok": false,
+                    "reason": format!("could not lease the bus: {err}"),
+                }));
+            }
+        };
+        let channel = bussard_mgmt::LeaseChannel::new(lease);
+        let mut l4 = match bussard_mgmt::Layer4Connection::connect(channel, target, source).await {
+            Ok(l4) => l4,
+            Err(err) => {
+                return ok(json!({
+                    "address": target.to_string(),
+                    "ok": false,
+                    "reason": format!("could not connect: {err}"),
+                }));
+            }
+        };
+        // Authorize (free access) as ETS does before configuration access; a
+        // best-effort read tolerates a device without authorize.
+        if let Err(err) = l4
+            .authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY)
+            .await
+        {
+            tracing::debug!("{target} authorize (free access) did not grant: {err}");
+        }
+
+        let result = describe_over_l4(&mut l4).await;
+        let _ = l4.disconnect().await;
+
+        match result {
+            Ok(objects) => ok(json!({
+                "address": target.to_string(),
+                "ok": true,
+                "objects": objects,
+            })),
+            Err(reason) => ok(json!({
+                "address": target.to_string(),
+                "ok": false,
+                "reason": reason,
+            })),
+        }
+    }
+
     /// `knx_write_group` (registered only with `--allow-writes`, never in passive
     /// mode).
     #[tool(
@@ -527,6 +637,30 @@ impl BussardMcp {
     }
 }
 
+/// Discovers a device's interface objects and enumerates each one's property
+/// descriptions over the L4 session, returning the JSON array the
+/// `knx_describe_device` tool reports. Read-only on the bus.
+///
+/// A failure to read the descriptor or discover objects is returned as a human
+/// reason string (the tool surfaces it as `ok:false`), never a panic.
+async fn describe_over_l4<Ch: bussard_mgmt::L4Channel>(
+    l4: &mut bussard_mgmt::Layer4Connection<Ch>,
+) -> Result<Vec<Value>, String> {
+    // Scale property reads to the device's max APDU when it exposes it.
+    let _ = l4.negotiate_max_apdu().await;
+    let objects = bussard_mgmt::tables::discover_interface_objects(l4)
+        .await
+        .map_err(|e| format!("discovering interface objects: {e}"))?;
+    let mut out = Vec::with_capacity(objects.len());
+    for (index, object_type) in objects {
+        let props = bussard_mgmt::describe_object_properties(l4, index)
+            .await
+            .map_err(|e| format!("enumerating properties of object {index}: {e}"))?;
+        out.push(tools::describe_object_json(index, object_type, &props));
+    }
+    Ok(out)
+}
+
 /// A dedup key for a telegram: the fields that uniquely identify one bus event.
 /// Used to drop capture-store rows that duplicate rows already in the ring.
 type TelegramKey = (SystemTime, String, String, Vec<u8>);
@@ -624,8 +758,10 @@ impl ServerHandler for BussardMcp {
                  observes the bus. Start with knx_project_summary, then knx_model_lookup / \
                  knx_get_group / knx_get_device to explore, knx_recent_telegrams and \
                  knx_wait_for_telegram to observe live traffic (the latter enables 'press the \
-                 button now' debugging), knx_validate to check the model, and knx_read_group to \
-                 actively read a value (unless the server is in passive mode). When started with \
+                 button now' debugging), knx_validate to check the model, knx_read_group to \
+                 actively read a value, and knx_describe_device to introspect a device's interface \
+                 objects and property descriptions over the bus (both unless the server is in \
+                 passive mode). When started with \
                  --allow-writes the knx_write_group tool is also available; it writes to the \
                  physical bus (actuators move) and refuses protected group addresses — prefer \
                  asking the human when a write's intent or safety is unclear.",

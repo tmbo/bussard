@@ -86,6 +86,18 @@ Read a device's tables back over the bus and diff them against the model, or (wi
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
 
+### `bussard describe <ADDRESS>`
+
+Introspect a device over the bus: discover its interface objects and, for each, enumerate every property's description (PID with a name when known, data type, element count, and read/write access levels) as a table. Read-only on the bus — it sends `A_DeviceDescriptor_Read`, `A_PropertyValue_Read` (object discovery) and `A_PropertyDescription_Read`, never a write. Unlike `reconstruct` it does not resolve group tables; it describes the device's raw property set, which is useful for commissioning and diagnostics on an unknown device.
+
+| Flag / arg | Default | Meaning |
+|---|---|---|
+| `<ADDRESS>` | | The device to introspect, e.g. `1.1.4`. |
+| `--dir <DIR>` | `knx` | The model directory (connection defaults). |
+| `--json` | off | Emit JSON instead of the table format. |
+| `--gateway <HOST>` | | Gateway override. |
+| `--routing` | off | Force routing transport. |
+
 ### `bussard import-product [FILE]`
 
 Import vendor product data (`.knxprod`): cache it under `<dir>/vendor/` and generate one model file per application program under `<dir>/models/`. Three modes: a local file (positional), `--order-number` to look the file up in the pointer index and download it, or `--list` to show the index. Details in [product-data.md](product-data.md).
@@ -458,7 +470,7 @@ CREATE INDEX idx_telegrams_dest_ts ON telegrams (destination, ts_utc);
 
 | Tier | Flag | On the bus |
 |---|---|---|
-| Passive | `--passive` | Never transmits. `knx_read_group` is not registered. |
+| Passive | `--passive` | Never transmits. The bus-touching read tools (`knx_read_group`, `knx_describe_device`) are not registered. |
 | Read (default) | none | May send GroupValueReads, rate-limited. |
 | Write | `--allow-writes` | Adds `knx_write_group`. |
 
@@ -476,6 +488,7 @@ Bus operations share one rate limiter (minimum 250 ms between operations, at mos
 | `knx_wait_for_telegram` | `timeout_seconds` (max 300), `ga`, `source` (optional) | Blocks until a matching telegram arrives or the timeout elapses. A timeout is a normal result, not an error. Enables "press the button now" debugging. |
 | `knx_validate` | none | Every diagnostic (code, severity, message, location) plus counts. |
 | `knx_read_group` | `ga` | Transmits a GroupValueRead and returns the decoded response. Omitted in `--passive` mode. |
+| `knx_describe_device` | `address` | Introspects a device: enumerates its interface objects and each property's description (PID, type, element count, access levels). Read-only on the bus. Omitted in `--passive` mode. |
 | `knx_write_group` | `ga`, `value` (human-typed), `dpt` (optional override) | A GroupValueWrite. Registered only with `--allow-writes`; refuses protected GAs outright. |
 
 ## The viz server
