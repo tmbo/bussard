@@ -112,6 +112,63 @@ jobs:
       - name: Doc-tests
         run: cargo test --workspace --doc
 
+  # Corpus-driven conformance gate. Runs the product-corpus conformance sweep
+  # (parse -> image-synthesis -> plan-lowering, bucketed and ranked) and fails on
+  # a REGRESSION — a new refusal or any panic — vs the checked-in baseline.
+  #
+  # Two tiers, mirroring the existing BUSSARD_PRODUCT_CORPUS gating so a runner
+  # without the large, git-ignored vendor cache still passes:
+  #
+  #   * Always: the committed-fixture sweep + golden images + the sweep module's
+  #     unit tests. These run against fabricated fixtures (no vendor data), so
+  #     they exercise the real read_knxprod + sweep pipeline in stock CI and lock
+  #     the checked-in fixture-conformance baseline against drift.
+  #   * Opt-in: if BUSSARD_PRODUCT_CORPUS points at a populated cache (a
+  #     manually-dispatched run, or a runner that has fetched the corpus), the
+  #     env-gated full-corpus sweep also runs and diffs against the real-corpus
+  #     baseline. Absent a cache it skips green, exactly like the local repro.
+  #
+  # Kept as its own job name so the conformance check is visible on every PR.
+  corpus-sweep:
+    name: corpus-sweep (ubuntu, conformance)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Reuse the ubuntu build graph warmed by lint/test.
+          shared-key: rust-ubuntu
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      # The committed-fixture conformance sweep, golden images, and the sweep
+      # module unit tests — no cache needed. These fail if the fabricated-fixture
+      # buckets drift from tests-support/product-corpus/fixture-conformance.json.
+      - name: Conformance sweep (committed fixtures)
+        run: |
+          cargo nextest run -p bussard-download --profile ci \
+            -E 'test(sweep) + test(golden) + test(corpus)'
+
+      # Full 500-product sweep, only when a corpus cache is present. CI does not
+      # set BUSSARD_PRODUCT_CORPUS (the cache is large + copyrighted, never
+      # committed), so this step no-ops on a normal run and the env-gated tests
+      # skip green. A dispatched run may set it to run the real regression gate.
+      - name: Conformance sweep (full corpus, if cached)
+        if: ${{ env.BUSSARD_PRODUCT_CORPUS != '' }}
+        env:
+          BUSSARD_PRODUCT_CORPUS: ${{ env.BUSSARD_PRODUCT_CORPUS }}
+        run: |
+          cargo test -p bussard-download --test flash_corpus -- --nocapture
+
   # cargo-deny is the automated guard for bussard's central "never GPL"
   # constraint: the license allow-list in deny.toml fails this job if any crate
   # in the dependency tree carries a copyleft (or otherwise unapproved) license.
