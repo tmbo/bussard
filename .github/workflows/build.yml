@@ -12,7 +12,7 @@ env:
 
 jobs:
   build:
-    name: build (${{ matrix.os }})
+    name: build (${{ matrix.artifact }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -27,8 +27,18 @@ jobs:
           - os: macos-latest
             artifact: bussard-macos-arm64
             path: target/release/bussard
+          # macos-latest is Apple silicon; cross-compile the Intel Mac binary
+          # here so release.yml's x86_64-apple-darwin row can't break in secret.
+          - os: macos-latest
+            artifact: bussard-macos-x64
+            target: x86_64-apple-darwin
+            path: target/x86_64-apple-darwin/release/bussard
           - os: ubuntu-latest
             artifact: bussard-linux-x64
+            path: target/release/bussard
+          # Native arm64 Linux runner (free on public repos), mirroring release.yml.
+          - os: ubuntu-24.04-arm
+            artifact: bussard-linux-arm64
             path: target/release/bussard
     steps:
       - uses: actions/checkout@v5
@@ -36,14 +46,18 @@ jobs:
           fetch-depth: 1
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target || '' }}
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          key: release-build
+          key: release-build-${{ matrix.artifact }}
       - name: Build
         env:
           RUSTFLAGS: ${{ matrix.rustflags || '' }}
-        run: cargo build --release -p bussard-cli
+        run: |
+          cargo build --release -p bussard-cli \
+            ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
       - name: Upload artifact
         uses: actions/upload-artifact@v5
         with:

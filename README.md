@@ -70,8 +70,8 @@ You will need a KNXnet/IP gateway (tunneling or routing). Optional but nice: you
 
 Grab a prebuilt binary from the
 [latest release](https://github.com/tmbo/bussard/releases/latest)
-(Linux x64, macOS arm64, Windows x64, each with a `.sha256` checksum), or build
-from source:
+(Linux x64, Linux arm64, macOS arm64, macOS x64, Windows x64, each with a
+`.sha256` checksum), or build from source:
 
 ```console
 $ cargo install --path crates/bussard-cli
