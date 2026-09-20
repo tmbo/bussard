@@ -80,6 +80,7 @@ fn theben_0701_bus(sink: Arc<RecordingSink>) -> Bus {
             lsm_access: LsmAccess::MemoryMapped,
             bcu_key: None,
             prog_mode: false,
+            secure: None,
         },
         sink.clone(),
     )
