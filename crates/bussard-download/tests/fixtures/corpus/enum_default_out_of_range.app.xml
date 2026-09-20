@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FABRICATED fixture. Reproduces the SHAPE of the Zennio Z40/Z70 v2 panels: an
+     enum parameter whose declared default Value is NOT one of its own
+     enumeration members. bussard's leniency rule passes a vendor's own default
+     through verbatim (only a USER override outside the enum stays strict), so the
+     image builds and the plan lowers. No vendor content is copied: the enum
+     declares members {1,2} and the default is 3.
+
+     Expected sweep bucket: image ok (leniency), plan executable (mask 07B0).
+     The regression guard is that the vendor's out-of-enum default does not
+     refuse or panic the sweep. -->
+<KNX xmlns="http://knx.org/xml/project/20">
+ <ManufacturerData><Manufacturer RefId="M-0071"><ApplicationPrograms>
+  <ApplicationProgram Id="M-0071_A-7002-10-BEEF-O000A" ApplicationNumber="28674" ApplicationVersion="10" MaskVersion="MV-07B0" Name="Enum Leniency Fixture" LoadProcedureStyle="MergedProcedure">
+   <Static>
+    <Code>
+     <RelativeSegment Id="M-0071_A-7002-10-BEEF-O000A_RS-4" Size="4" LoadStateMachine="4" />
+    </Code>
+    <ParameterTypes>
+     <ParameterType Id="M-0071_A-7002-10-BEEF-O000A_PT-Mode" Name="Mode">
+      <TypeRestriction Base="Value" SizeInBit="8">
+       <Enumeration Text="Low" Value="1" Id="M-0071_A-7002-10-BEEF-O000A_PT-Mode_EN-1" />
+       <Enumeration Text="High" Value="2" Id="M-0071_A-7002-10-BEEF-O000A_PT-Mode_EN-2" />
+      </TypeRestriction>
+     </ParameterType>
+    </ParameterTypes>
+    <Parameters>
+     <Parameter Id="M-0071_A-7002-10-BEEF-O000A_P-1" Name="Mode" Text="Mode" ParameterType="M-0071_A-7002-10-BEEF-O000A_PT-Mode" Value="3">
+      <Memory CodeSegment="M-0071_A-7002-10-BEEF-O000A_RS-4" Offset="0" BitOffset="0" />
+     </Parameter>
+    </Parameters>
+    <ComObjectTable>
+     <ComObject Id="M-0071_A-7002-10-BEEF-O000A_O-0" Number="0" Text="Switch" ObjectSize="1 Bit" CommunicationFlag="Enabled" WriteFlag="Enabled" />
+    </ComObjectTable>
+    <ComObjectRefs>
+     <ComObjectRef Id="M-0071_A-7002-10-BEEF-O000A_O-0_R-1" RefId="M-0071_A-7002-10-BEEF-O000A_O-0" DatapointType="DPST-1-1" />
+    </ComObjectRefs>
+   </Static>
+   <LoadProcedures>
+    <LoadProcedure MergeId="4">
+     <LdCtrlConnect />
+     <LdCtrlUnload LsmIdx="4" />
+     <LdCtrlLoad LsmIdx="4" />
+     <LdCtrlRelSegment LsmIdx="4" Size="4" AppliesTo="full,par" />
+     <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="4" AppliesTo="par" />
+     <LdCtrlLoadCompleted LsmIdx="4" />
+     <LdCtrlRestart />
+     <LdCtrlDisconnect />
+    </LoadProcedure>
+   </LoadProcedures>
+  </ApplicationProgram>
+ </ApplicationPrograms></Manufacturer></ManufacturerData>
+</KNX>
