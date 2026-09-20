@@ -39,6 +39,12 @@ enum Behavior {
         /// property with `v`; `None` returns an empty answer (models a device
         /// that does not expose it, exercising the conservative fallback).
         max_apdu: Option<u16>,
+        /// The property descriptions this device answers to
+        /// `A_PropertyDescription_Read` on object 0, keyed by 1-based property
+        /// index. Each entry is `(pid, pdt, writable, max_elements, read_level,
+        /// write_level)`. An empty map models a device that does not implement
+        /// the description service (issue #72).
+        descriptions: Vec<(u8, u8, bool, u16, u8, u8)>,
     },
     /// Accepts the connection but `T_NAK`s the first numbered data telegram.
     Nak,
@@ -374,6 +380,7 @@ fn device_response(behavior: &Behavior, cemi: &CemiFrame) -> Option<(u16, Vec<u8
         order,
         memory,
         max_apdu,
+        descriptions,
     } = behavior
     else {
         return None;
@@ -437,6 +444,49 @@ fn device_response(behavior: &Behavior, cemi: &CemiFrame) -> Option<(u16, Vec<u8
             resp.extend_from_slice(&value);
             Some((apci::A_PROPERTY_VALUE_RESPONSE, resp))
         }
+        apci::A_PROPERTY_DESCRIPTION_READ => {
+            let pd = apci::decode_property_description_read(&data)?;
+            // The mock exposes descriptions only on object 0, addressed by index
+            // (PID 0). A request with no descriptions configured, an unknown
+            // object, or an index past the list is answered with a zero-max
+            // descriptor — the spec's "no property here" signal.
+            let absent = apci::PropertyDescription {
+                object_index: pd.object_index,
+                property_id: 0,
+                property_index: pd.property_index,
+                writable: false,
+                pdt: 0,
+                max_elements: 0,
+                read_level: 0,
+                write_level: 0,
+            };
+            if pd.object_index != apci::DEVICE_OBJECT_INDEX || pd.property_index == 0 {
+                return Some((
+                    apci::A_PROPERTY_DESCRIPTION_RESPONSE,
+                    apci::encode_property_description_response(&absent),
+                ));
+            }
+            let entry = descriptions.get(usize::from(pd.property_index - 1));
+            let desc = match entry {
+                Some(&(pid, pdt, writable, max_elements, read_level, write_level)) => {
+                    apci::PropertyDescription {
+                        object_index: pd.object_index,
+                        property_id: pid,
+                        property_index: pd.property_index,
+                        writable,
+                        pdt,
+                        max_elements,
+                        read_level,
+                        write_level,
+                    }
+                }
+                None => absent,
+            };
+            Some((
+                apci::A_PROPERTY_DESCRIPTION_RESPONSE,
+                apci::encode_property_description_response(&desc),
+            ))
+        }
         _ => None,
     }
 }
@@ -454,6 +504,19 @@ fn responder_with_apdu(
     manufacturer: u16,
     max_apdu: Option<u16>,
 ) -> MockDevice {
+    responder_with_apdu_and_descriptions(addr, mask, manufacturer, max_apdu, Vec::new())
+}
+
+/// Like [`responder_with_apdu`] but also seeds the property descriptions the
+/// device answers to `A_PropertyDescription_Read` on object 0 (issue #72). Each
+/// entry is `(pid, pdt, writable, max_elements, read_level, write_level)`.
+fn responder_with_apdu_and_descriptions(
+    addr: &str,
+    mask: u16,
+    manufacturer: u16,
+    max_apdu: Option<u16>,
+    descriptions: Vec<(u8, u8, bool, u16, u8, u8)>,
+) -> MockDevice {
     let mut memory = HashMap::new();
     memory.insert(0x0060u16, vec![0xDE, 0xAD, 0xBE, 0xEF]);
     MockDevice {
@@ -465,6 +528,7 @@ fn responder_with_apdu(
             order: b"MDT-JAL0410".to_vec(),
             memory,
             max_apdu,
+            descriptions,
         },
     }
 }
@@ -857,5 +921,124 @@ async fn silent_device_is_absent() {
     let err = dev.device_descriptor().await.unwrap_err();
     assert!(matches!(err, MgmtError::NoResponse { .. }), "got {err:?}");
     assert!(!err.device_present(), "silence means the device is absent");
+    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+}
+
+#[tokio::test]
+async fn describe_property_reads_one_descriptor() {
+    // A device that exposes property descriptions on object 0 answers a
+    // single-PID-by-index A_PropertyDescription_Read with the full descriptor.
+    let (addr, gw) = bind_mock().await;
+    let devices = vec![responder_with_apdu_and_descriptions(
+        "1.1.4",
+        0x07B0,
+        0x0083,
+        Some(66),
+        vec![
+            // (pid, pdt, writable, max_elements, read_level, write_level)
+            (1u8, 0x03, false, 1, 3, 15),
+            (apci::PID_SERIAL_NUMBER, 0x04, false, 1, 3, 15),
+        ],
+    )];
+    let gw_task = tokio::spawn(run_mock(gw, devices));
+
+    let mut bus = open_bus(addr).await;
+    let target: IndividualAddress = "1.1.4".parse().unwrap();
+    let source: IndividualAddress = "0.0.255".parse().unwrap();
+    let mut dev = DeviceConnection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+
+    // By index (PID 0): index 1 is the object-type property.
+    let desc = dev
+        .describe_property(apci::DEVICE_OBJECT_INDEX, 0, 1)
+        .await
+        .unwrap();
+    assert_eq!(desc.property_id, 1u8);
+    assert_eq!(desc.property_index, 1);
+    assert_eq!(desc.pdt, 0x03);
+    assert!(!desc.writable);
+    assert_eq!(desc.max_elements, 1);
+    assert_eq!(desc.read_level, 3);
+    assert_eq!(desc.write_level, 15);
+
+    dev.disconnect().await.unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+}
+
+#[tokio::test]
+async fn describe_object_enumerates_all_properties_and_terminates() {
+    // Walking object 0 yields every seeded property in index order and stops
+    // cleanly at the first absent index (the device returns max_elements == 0).
+    let (addr, gw) = bind_mock().await;
+    let seeded = vec![
+        (1u8, 0x03, false, 1, 3, 15),
+        (apci::PID_SERIAL_NUMBER, 0x04, false, 1, 3, 15),
+        (apci::PID_MANUFACTURER_ID, 0x04, false, 1, 3, 15),
+        (apci::PID_PROGMODE, 0x10, true, 1, 3, 0),
+    ];
+    let devices = vec![responder_with_apdu_and_descriptions(
+        "1.1.4",
+        0x07B0,
+        0x0083,
+        Some(66),
+        seeded.clone(),
+    )];
+    let gw_task = tokio::spawn(run_mock(gw, devices));
+
+    let mut bus = open_bus(addr).await;
+    let target: IndividualAddress = "1.1.4".parse().unwrap();
+    let source: IndividualAddress = "0.0.255".parse().unwrap();
+    let mut dev = DeviceConnection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+
+    let props = dev
+        .describe_object(apci::DEVICE_OBJECT_INDEX)
+        .await
+        .unwrap();
+    assert_eq!(
+        props.len(),
+        seeded.len(),
+        "every seeded property enumerated"
+    );
+    // Order and identity match the seeding, 1-based indices.
+    for (i, (pid, pdt, writable, max, rl, wl)) in seeded.iter().enumerate() {
+        assert_eq!(props[i].property_id, *pid);
+        assert_eq!(props[i].property_index as usize, i + 1);
+        assert_eq!(props[i].pdt, *pdt);
+        assert_eq!(props[i].writable, *writable);
+        assert_eq!(props[i].max_elements, *max);
+        assert_eq!(props[i].read_level, *rl);
+        assert_eq!(props[i].write_level, *wl);
+    }
+
+    dev.disconnect().await.unwrap();
+    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+}
+
+#[tokio::test]
+async fn describe_object_on_device_without_descriptions_is_empty() {
+    // A device that does not implement the description service (no descriptions
+    // seeded → every index answers max_elements == 0) yields an empty list, not
+    // an error: enumeration terminates cleanly at index 1.
+    let (addr, gw) = bind_mock().await;
+    let devices = vec![responder("1.1.4", 0x07B0, 0x0083)];
+    let gw_task = tokio::spawn(run_mock(gw, devices));
+
+    let mut bus = open_bus(addr).await;
+    let target: IndividualAddress = "1.1.4".parse().unwrap();
+    let source: IndividualAddress = "0.0.255".parse().unwrap();
+    let mut dev = DeviceConnection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+
+    let props = dev
+        .describe_object(apci::DEVICE_OBJECT_INDEX)
+        .await
+        .unwrap();
+    assert!(props.is_empty(), "no descriptions → empty enumeration");
+
+    dev.disconnect().await.unwrap();
     let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
 }

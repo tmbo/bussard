@@ -13,6 +13,7 @@ bussard-model = { workspace = true }
 bussard-transport = { workspace = true }
 bussard-monitor = { workspace = true }
 bussard-bus = { workspace = true }
+bussard-mgmt = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }

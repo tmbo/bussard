@@ -17,8 +17,8 @@ pub mod sys7_lsm;
 
 pub use group_comm::{ComObject, GroupComm, flag};
 pub use interface_object::{
-    InterfaceObject, PID_LOAD_STATE_CONTROL, PID_MCB_TABLE, PID_OBJECT_TYPE, PID_PROGMODE,
-    PID_RUN_STATE_CONTROL, PID_TABLE_REFERENCE, Property, iot,
+    InterfaceObject, PDT_GENERIC_01, PID_LOAD_STATE_CONTROL, PID_MCB_TABLE, PID_OBJECT_TYPE,
+    PID_PROGMODE, PID_RUN_STATE_CONTROL, PID_TABLE_REFERENCE, Property, PropertyDescription, iot,
 };
 pub use lsm::{
     LoadEvent, LoadState, LoadStateMachine, Sys7LoadStateMachine, Sys7Step, Sys7TransitionError,
@@ -1104,9 +1104,10 @@ impl Device {
             // A_RestartMasterReset (0x381) decodes as RestartResponse in the raw
             // APCI table; route it to the restart handler too.
             Apci::RestartResponse => self.on_restart(tool, apdu),
-            // A property-description read: answer with a minimal descriptor so a
-            // tool that probes before writing does not stall. Not load-critical.
-            Apci::PropertyDescriptionRead => Ok(DeviceReaction::default()),
+            // A property-description read: answer with the property's descriptor
+            // (type, element count, access levels) so a tool can introspect and
+            // enumerate the device's property set (issue #72).
+            Apci::PropertyDescriptionRead => self.on_property_description_read(tool, apdu),
             _ => Ok(DeviceReaction::default()),
         }
     }
@@ -1161,6 +1162,84 @@ impl Device {
         let count = apdu.data[2] >> 4;
         let start = (((apdu.data[2] & 0x0F) as u16) << 8) | apdu.data[3] as u16;
         Ok((object, pid, count, start, 4))
+    }
+
+    /// Answer an `A_PropertyDescription_Read` (issue #72).
+    ///
+    /// Request payload: `[object_index][property_id][property_index]`. A
+    /// `property_id` of 0 addresses the property **by index** (the enumeration
+    /// path — a tool walks the index `1..N`); a non-zero `property_id` addresses
+    /// it by PID. The response echoes the object index, the real PID, and the
+    /// property index, then the descriptor: a type octet (write-enable bit |
+    /// PDT), a 2-octet big-endian element count, and an access octet (read level
+    /// in the high nibble, write level in the low nibble).
+    ///
+    /// A request for a property or index the object does not define is answered
+    /// with a `max_elements == 0` descriptor — the spec's "no property here"
+    /// signal that terminates an enumeration walk, exactly as the value-read path
+    /// answers an unknown PID with `nr_of_elem == 0` rather than going silent.
+    fn on_property_description_read(
+        &mut self,
+        tool: IndividualAddress,
+        apdu: &Apdu,
+    ) -> Result<DeviceReaction, DeviceError> {
+        if apdu.data.len() < 3 {
+            return Err(DeviceError::Malformed {
+                service: "A_PropertyDescription_Read".into(),
+                detail: "header too short".into(),
+            });
+        }
+        let object = apdu.data[0];
+        let req_pid = apdu.data[1];
+        let req_index = apdu.data[2];
+
+        let desc = self.objects.get(&object).and_then(|io| {
+            if req_pid != 0 {
+                io.describe_pid(req_pid)
+            } else {
+                io.describe_at_index(req_index)
+            }
+        });
+
+        // The 7-octet response payload. On absence, echo the addressing with a
+        // zero type / zero count / zero access — a real "no property" descriptor.
+        let data = match desc {
+            Some(d) => {
+                let type_octet = (if d.writable { 0x80u8 } else { 0 }) | (d.pdt & 0x3F);
+                let max = d.max_elements & 0x0FFF;
+                let access = ((d.read_level & 0x0F) << 4) | (d.write_level & 0x0F);
+                vec![
+                    object,
+                    d.pid,
+                    // Echo the property index the tool asked for when addressing by
+                    // index; when addressing by PID the request index is 0, so
+                    // report the PID's own index (its 1-based position).
+                    if req_pid != 0 {
+                        self.objects
+                            .get(&object)
+                            .map(|io| {
+                                io.pids()
+                                    .iter()
+                                    .position(|&p| p == d.pid)
+                                    .map_or(0, |i| i as u8 + 1)
+                            })
+                            .unwrap_or(0)
+                    } else {
+                        req_index
+                    },
+                    type_octet,
+                    (max >> 8) as u8,
+                    (max & 0xFF) as u8,
+                    access,
+                ]
+            }
+            None => vec![object, req_pid, req_index, 0x00, 0x00, 0x00, 0x00],
+        };
+        let resp = self.respond(tool, Apci::PropertyDescriptionResponse.to_u10(), &data);
+        Ok(DeviceReaction {
+            responses: vec![resp],
+            did_master_reset: false,
+        })
     }
 
     fn on_property_read(
@@ -1896,6 +1975,85 @@ mod tests {
         let count = resp.tpdu[4] >> 4;
         assert_eq!(count, 0, "unknown property must report nr_of_elem = 0");
         assert_eq!(resp.tpdu.len(), 6, "error signal carries no value bytes");
+        Ok(())
+    }
+
+    #[test]
+    fn test_property_description_read_by_index_and_terminates()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A_PropertyDescription_Read on object 0 by index (PID 0): the device
+        // answers each index with a 7-octet descriptor and reports the first
+        // absent index with max_elements == 0 (the enumeration terminator).
+        let Some(mut dev) = da_tp_device()? else {
+            return Ok(());
+        };
+        connect(&mut dev)?;
+        // Object 0 exposes several device-object properties; index 1 is PID 1
+        // (PID_OBJECT_TYPE) since the property map is PID-sorted.
+        let r = dev.handle_cemi(&data(&dev, 0x3D8, &[0x00, 0x00, 0x01]))?;
+        assert_eq!(r.responses.len(), 1, "must respond to a description read");
+        let resp = &r.responses[0];
+        // TPDU: [tpci][apci_lo][obj][pid][index][type][max_hi][max_lo][access].
+        let payload = &resp.tpdu[2..];
+        assert_eq!(payload[0], 0x00, "object index echoed");
+        assert_eq!(payload[1], PID_OBJECT_TYPE, "index 1 is PID_OBJECT_TYPE");
+        assert_eq!(payload[2], 0x01, "property index echoed");
+        // PID_OBJECT_TYPE is read-only → write-enable bit clear, PDT generic.
+        assert_eq!(payload[3] & 0x80, 0, "read-only property");
+        assert_eq!(payload[3] & 0x3F, PDT_GENERIC_01);
+        let max = u16::from_be_bytes([payload[4], payload[5]]);
+        assert_eq!(max, 1, "one element");
+        // read level 3 (high nibble), write level 15 (read-only, low nibble).
+        assert_eq!(payload[6] >> 4, 3);
+        assert_eq!(payload[6] & 0x0F, 15);
+
+        // Walk indices until absence: the device reports max_elements == 0 once
+        // the index runs past the object's property list.
+        let mut last_present = 0u8;
+        for index in 1u8..=32 {
+            let r = dev.handle_cemi(&data(&dev, 0x3D8, &[0x00, 0x00, index]))?;
+            let payload = &r.responses[0].tpdu[2..];
+            let max = u16::from_be_bytes([payload[4], payload[5]]);
+            if max == 0 {
+                break;
+            }
+            last_present = index;
+        }
+        assert!(last_present >= 1, "object 0 has at least one property");
+        Ok(())
+    }
+
+    #[test]
+    fn test_property_description_read_by_pid() -> Result<(), Box<dyn std::error::Error>> {
+        // Addressing by PID (non-zero property_id) returns that PID's descriptor
+        // and reports its 1-based property index. PID_PROGMODE is writable.
+        let Some(mut dev) = da_tp_device()? else {
+            return Ok(());
+        };
+        connect(&mut dev)?;
+        let r = dev.handle_cemi(&data(&dev, 0x3D8, &[0x00, PID_PROGMODE, 0x00]))?;
+        let payload = &r.responses[0].tpdu[2..];
+        assert_eq!(payload[1], PID_PROGMODE, "PID echoed");
+        assert!(payload[2] >= 1, "a real 1-based property index reported");
+        assert_eq!(payload[3] & 0x80, 0x80, "PID_PROGMODE is writable");
+        assert_eq!(payload[6] & 0x0F, 0, "writable → write level 0");
+        Ok(())
+    }
+
+    #[test]
+    fn test_property_description_read_unknown_reports_zero_max()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A description read for an object that does not exist is answered with a
+        // zero-max descriptor (not silence), matching the value-read error signal.
+        let Some(mut dev) = da_tp_device()? else {
+            return Ok(());
+        };
+        connect(&mut dev)?;
+        let r = dev.handle_cemi(&data(&dev, 0x3D8, &[0x40, 0x00, 0x01]))?;
+        assert_eq!(r.responses.len(), 1, "must respond, not drop");
+        let payload = &r.responses[0].tpdu[2..];
+        let max = u16::from_be_bytes([payload[4], payload[5]]);
+        assert_eq!(max, 0, "unknown object → max_elements 0");
         Ok(())
     }
 

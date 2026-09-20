@@ -76,6 +76,35 @@ pub mod iot {
     pub const GROUP_OBJECT_TABLE: u16 = 9;
 }
 
+/// `PDT_GENERIC_01` — the generic 1-octet property data type. The simulator
+/// reports this for every property it exposes: it stores each property as opaque
+/// bytes (see the module docs), so it does not track the real KNX PDT per PID and
+/// answers `A_PropertyDescription_Read` with a plausible generic type rather than
+/// inventing a specific one. A tool that introspects the device sees the property
+/// exists, its element count and access levels — the load-bearing facts — without
+/// the sim overclaiming a precise data type it does not model.
+pub const PDT_GENERIC_01: u8 = 0x10;
+
+/// A property's on-the-wire *description* — what a device reports in an
+/// `A_PropertyDescription_Response` (issue #72): the PID, its data type and
+/// writability, its element count and its read/write access levels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PropertyDescription {
+    /// The property id (PID).
+    pub pid: u8,
+    /// The property data type (PDT) code.
+    pub pdt: u8,
+    /// Whether the property is writable.
+    pub writable: bool,
+    /// The maximum number of elements (array length).
+    pub max_elements: u16,
+    /// The access level required to read (0 = highest access).
+    pub read_level: u8,
+    /// The access level required to write (0 = highest access; 15 for a
+    /// read-only property, which no access level can write).
+    pub write_level: u8,
+}
+
 /// One property: raw value bytes plus a read-only flag.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Property {
@@ -134,6 +163,48 @@ impl InterfaceObject {
     pub fn has_property(&self, pid: u8) -> bool {
         self.properties.contains_key(&pid)
     }
+
+    /// The PIDs this object defines, in ascending (property-index) order.
+    ///
+    /// A management tool enumerates an object's properties with
+    /// `A_PropertyDescription_Read` by walking the **property index** `1..N`; the
+    /// simulator maps 1-based property index `i` to the `i`-th PID in this order.
+    /// The device object 0's PID_OBJECT_TYPE (PID 1) sorts first, matching a real
+    /// device's convention that the object-type property leads the list.
+    pub fn pids(&self) -> Vec<u8> {
+        self.properties.keys().copied().collect()
+    }
+
+    /// The description of the property at 1-based `property_index`, if any.
+    ///
+    /// Returns `None` once the index runs past the object's property list — the
+    /// terminating signal an enumerating tool reads as `max_elements == 0`. The
+    /// simulator reports every property as [`PDT_GENERIC_01`] with a single
+    /// element (it stores opaque bytes, so it does not model per-PID arrays), a
+    /// read level of 3 (the ETS free-access default), and a write level of 0 for a
+    /// writable property or 15 for a read-only one.
+    pub fn describe_at_index(&self, property_index: u8) -> Option<PropertyDescription> {
+        if property_index == 0 {
+            return None;
+        }
+        let pid = *self.pids().get(usize::from(property_index - 1))?;
+        let prop = self.property(pid)?;
+        Some(PropertyDescription {
+            pid,
+            pdt: PDT_GENERIC_01,
+            writable: !prop.read_only,
+            max_elements: 1,
+            read_level: 3,
+            write_level: if prop.read_only { 15 } else { 0 },
+        })
+    }
+
+    /// The description of a specific PID, if this object defines it. Used to
+    /// answer an `A_PropertyDescription_Read` addressed by PID rather than index.
+    pub fn describe_pid(&self, pid: u8) -> Option<PropertyDescription> {
+        let index = self.pids().iter().position(|&p| p == pid)? as u8;
+        self.describe_at_index(index + 1)
+    }
 }
 
 #[cfg(test)]
@@ -157,5 +228,42 @@ mod tests {
                 .map(|p| p.read_only)
                 .unwrap_or(false)
         );
+    }
+
+    #[test]
+    fn test_describe_at_index_walks_pids_in_order_and_terminates() {
+        let mut obj = InterfaceObject::new();
+        // PID map is BTreeMap-ordered, so index 1 → PID 1, index 2 → PID 5.
+        obj.set_property(PID_OBJECT_TYPE, Property::read_only(vec![0x00, 0x00]));
+        obj.set_property(PID_LOAD_STATE_CONTROL, Property::writable(vec![0x00]));
+
+        let d1 = obj.describe_at_index(1).expect("index 1 present");
+        assert_eq!(d1.pid, PID_OBJECT_TYPE);
+        assert_eq!(d1.pdt, PDT_GENERIC_01);
+        assert!(!d1.writable);
+        assert_eq!(d1.max_elements, 1);
+        assert_eq!(d1.read_level, 3);
+        assert_eq!(d1.write_level, 15, "read-only → unwritable level 15");
+
+        let d2 = obj.describe_at_index(2).expect("index 2 present");
+        assert_eq!(d2.pid, PID_LOAD_STATE_CONTROL);
+        assert!(d2.writable);
+        assert_eq!(d2.write_level, 0, "writable → write level 0");
+
+        // Past the end terminates; index 0 is invalid.
+        assert!(obj.describe_at_index(3).is_none());
+        assert!(obj.describe_at_index(0).is_none());
+    }
+
+    #[test]
+    fn test_describe_pid_reports_index() {
+        let mut obj = InterfaceObject::new();
+        obj.set_property(PID_OBJECT_TYPE, Property::read_only(vec![0x00, 0x00]));
+        obj.set_property(PID_PROGMODE, Property::writable(vec![0x00]));
+        // PID_PROGMODE (0x36) sorts after PID_OBJECT_TYPE (1), so it is index 2.
+        let d = obj.describe_pid(PID_PROGMODE).expect("PID present");
+        assert_eq!(d.pid, PID_PROGMODE);
+        assert!(d.writable);
+        assert!(obj.describe_pid(0x99).is_none(), "unknown PID → None");
     }
 }

@@ -8,6 +8,7 @@
 
 use std::time::SystemTime;
 
+use bussard_mgmt::PropertyDesc;
 use bussard_model::codec::TypedValue;
 use bussard_model::{Dpt, GroupAddress, IndividualAddress, Model};
 use bussard_monitor::{DecodedTelegram, DestinationRef, Filter, TelegramRing, json_line};
@@ -326,6 +327,64 @@ pub fn decode_for_dpt(dpt: Option<Dpt>, payload: &[u8]) -> (Option<String>, Valu
         }
         None => (None, Value::Null),
     }
+}
+
+/// A human name for a well-known standardised interface-object type (KNX 3/5/1),
+/// or `"?"`.
+pub fn object_type_name(object_type: u16) -> &'static str {
+    match object_type {
+        0 => "device",
+        1 => "address table",
+        2 => "association table",
+        3 => "application program",
+        9 => "group object table",
+        _ => "?",
+    }
+}
+
+/// A human name for a well-known standardised PID, or `"?"`. Mirrors the CLI
+/// `describe` naming so the MCP and CLI surfaces agree.
+pub fn pid_name(pid: u8) -> &'static str {
+    match pid {
+        1 => "PID_OBJECT_TYPE",
+        5 => "PID_LOAD_STATE_CONTROL",
+        7 => "PID_TABLE_REFERENCE",
+        11 => "PID_SERIAL_NUMBER",
+        12 => "PID_MANUFACTURER_ID",
+        15 => "PID_ORDER_INFO",
+        23 => "PID_TABLE",
+        27 => "PID_MCB_TABLE",
+        54 => "PID_PROGMODE",
+        56 => "PID_MAX_APDU_LENGTH",
+        78 => "PID_HARDWARE_TYPE",
+        _ => "?",
+    }
+}
+
+/// Renders one enumerated interface object and its property descriptions to the
+/// JSON shape the `knx_describe_device` tool returns (issue #72).
+pub fn describe_object_json(index: u8, object_type: u16, properties: &[PropertyDesc]) -> Value {
+    let props: Vec<Value> = properties
+        .iter()
+        .map(|p| {
+            json!({
+                "index": p.property_index,
+                "pid": p.property_id,
+                "name": pid_name(p.property_id),
+                "pdt": format!("0x{:02X}", p.pdt),
+                "writable": p.writable,
+                "max_elements": p.max_elements,
+                "read_level": p.read_level,
+                "write_level": p.write_level,
+            })
+        })
+        .collect();
+    json!({
+        "index": index,
+        "object_type": object_type,
+        "object_type_name": object_type_name(object_type),
+        "properties": props,
+    })
 }
 
 /// A structured JSON rendering of a [`TypedValue`] for tool responses.
