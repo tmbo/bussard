@@ -724,6 +724,19 @@ impl Device {
         self.loadables.get(&lsm_index).map(|o| o.base as u16)
     }
 
+    /// The 8-octet `PID_MCB_TABLE` entry a loadable object reports over its
+    /// resident segment, for tests/observability — the same bytes the wire PID 27
+    /// read answers (see [`Device::mcb_entry_for`]). `None` when the object has no
+    /// written segment (a blank object answers "no MCB entry").
+    ///
+    /// This is what the MCB-CRC re-download skip reads: a tool that computes the
+    /// same size+CRC over the image it is about to stream can compare it here and
+    /// skip the re-stream when they match. A blank device returns `None`, so the
+    /// skip is never taken and the object full-streams.
+    pub fn mcb_entry(&self, object: u8) -> Option<Vec<u8>> {
+        self.mcb_entry_for(object)
+    }
+
     /// The 8-octet `PID_MCB_TABLE` entry this object would report: an integrity
     /// block over the bytes currently stored in the object's allocated segment.
     ///
