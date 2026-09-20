@@ -21,6 +21,7 @@ pub mod compute;
 pub mod compute_sys7;
 pub mod flash;
 pub mod plan;
+pub mod sweep;
 
 pub use apply::{
     TableObjectIndexes, VerifyOutcome, apply_tables, discover_table_objects, read_states,
@@ -40,3 +41,8 @@ pub use flash::{
     plan_flash, plan_flash_sys7_with_hawk, select_application, sys7_profile_from_hawk, trace,
 };
 pub use plan::{LoadStep, ObjectGa, PlanReport, plan};
+pub use sweep::{
+    AppSweep, FamilyCoverage, ImageClass, ParseClass, PlanClass, ProductSweep, RankedReason,
+    SweepManifest, SweepTotals, classify_application, family_label, manifest_from_products,
+    sweep_corpus, sweep_file,
+};

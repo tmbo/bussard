@@ -16,10 +16,20 @@ bussard-transport = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+# The corpus conformance sweep (`sweep` module) buckets every application in a
+# product corpus and serializes a stable, diffable manifest. serde/serde_json
+# are library deps because the manifest types are public and used by both the
+# env-gated corpus test and any tooling that regenerates the checked-in baseline.
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
 # For the env-gated dry-run trace test that reads the developer's local
-# `home_test.knxproj` (a plain-zip container). Not committed data; the test skips
-# when absent, so CI is unaffected. Matches bussard-prod's dev-dependency.
+# `home_test.knxproj` (a plain-zip container) and for the committed-fixture sweep
+# test, which assembles fabricated `.app.xml` fixtures into `.knxprod` ZIPs in a
+# temp dir. Not committed data; the trace test skips when absent, so CI is
+# unaffected. Matches bussard-prod's dev-dependency.
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
+# The fixture sweep test builds throwaway `.knxprod` containers in a temp dir.
+tempfile = "3"
