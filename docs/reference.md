@@ -9,7 +9,15 @@ The complete surface of `bussard`: every command and flag, the environment varia
 - `--gateway <HOST>`: override the gateway `host[:port]` for tunneling (port defaults to 3671).
 - `--routing`: force KNXnet/IP routing (multicast) instead of tunneling.
 - Filters (`monitor --filter`, `capture --filter`): a comma-separated list of GAs (`3/2/0`), GA prefixes (`3/` or `3/2/`), or IAs (`1.1.30`).
-- Confirmation: commands that write to devices confirm on a terminal (`y/N`). Without a TTY they refuse unless `--yes` is passed (`--yes-download` for `import-product`).
+- Confirmation: commands that write to devices confirm on a terminal (`y/N`), naming the resolved gateway (`host:port`). Without a TTY they refuse unless `--yes` is passed (`--yes-download` for `import-product`). This covers `write`, `flash`, `apply`, `assign` and `adopt`.
+- Real-gateway safety: a write command whose resolved gateway is **not** loopback (not `127.0.0.0/8` or `::1`) refuses to run unless you opt in with `--allow-remote-gateway` or `BUSSARD_ALLOW_REAL_GATEWAY=1`. Loopback gateways (the local simulator, the test suite) are always allowed. Reads (`monitor`, `read`, `scan`, `plan`, `reconstruct`) are never gated.
+
+### Global flags
+
+These apply to every subcommand:
+
+- `-v` / `--verbose` (repeatable): raise log verbosity. `-v` = `info`, `-vv` = `debug`, `-vvv` = `trace`. The default (no flag) is `warn`. An explicit `RUST_LOG` overrides this entirely, so `RUST_LOG=bussard_transport=trace` still works for targeted tracing.
+- `--timing`: print the invocation's wall-clock time to stderr on exit (e.g. `took 1.23s`). Off by default.
 
 ### Exit codes
 
@@ -61,14 +69,16 @@ Scan a line for devices: mask version, manufacturer, order number, and the delta
 
 ### `bussard assign [ADDRESS]`
 
-Assign an individual address to the device in programming mode. Refuses when more than one device is in programming mode.
+Assign an individual address to the device in programming mode. Refuses when more than one device is in programming mode. Confirms on a terminal (naming the gateway); a non-TTY needs `--yes` (an explicit address is not itself consent).
 
 | Flag / arg | Default | Meaning |
 |---|---|---|
 | `[ADDRESS]` | next free on the line | The address to assign, e.g. `1.1.47`. |
+| `--yes` | off | Skip the confirmation prompt (required for a non-TTY assign). |
 | `--dir <DIR>` | `knx` | The model directory. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
+| `--allow-remote-gateway` | off | Permit a write to a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
 
 ### `bussard reconstruct [ADDRESS]`
 
@@ -107,9 +117,11 @@ Guide a new device from programming mode into the model: product data, address a
 | Flag | Default | Meaning |
 |---|---|---|
 | `--product <FILE>` | cached model | The vendor `.knxprod` for the new device. |
+| `--yes` | off | Skip the confirmation prompt (required for a non-TTY, scripted adopt). |
 | `--dir <DIR>` | `knx` | The model directory. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
+| `--allow-remote-gateway` | off | Permit a write to a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
 
 ### `bussard flash --product <FILE> <ADDRESS>`
 
@@ -124,8 +136,11 @@ Flash an application program from vendor product data into a device (the ETS-fre
 | `--dir <DIR>` | `knx` | The model directory. |
 | `--yes` | off | Skip the interactive confirmation (dangerous; for scripts). |
 | `--bcu-key <HEX>` | free access | The device's BCU access key, in hex (`FFFFFFFF` or `0x11223344`), presented with A_Authorize on every management connect. Unset presents the free-access key (`FFFFFFFF`), correct for an unkeyed device; a keyed device needs its project key here or it denies access. |
+| `--allow-remote-gateway` | off | Permit a flash to a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
+
+The confirmation names the resolved gateway (`flash <app> to <target> via <host:port>?`).
 
 Supported load-procedure operations: `Unload`, `Load`, `LoadCompleted`, `RelSegment`, `WriteRelMem`, `WriteMem`, `WriteProp`, `CompareProp`, `LoadImageProp`, `Restart` on a single-LSM System B device. Procedures containing `LdCtrlAbsSegment`, `LdCtrlTaskSegment`, `LdCtrlTaskCtrl1`, or unrecognized ops (e.g. `LdCtrlCompareRelMem`) are refused whole, before any write. After writing, `flash` verifies the application reads back as `Loaded` and spot-checks written segments byte-for-byte.
 
@@ -152,6 +167,7 @@ Apply the model's link tables to a device: plan, confirm, back up, write, verify
 | `<ADDRESS>` | | The device to program, e.g. `1.1.4`. |
 | `--dir <DIR>` | `knx` | The model directory. |
 | `--yes` | off | Skip the interactive confirmation (dangerous; for scripts). |
+| `--allow-remote-gateway` | off | Permit a write to a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
 
@@ -201,7 +217,7 @@ Read a group value from the bus: send a GroupValueRead, print the typed response
 
 ### `bussard write <GA> <VALUE>`
 
-Write a group value to the bus. The value is human-typed (`on`/`off`, `up`/`down`, a number, a percentage like `75%`) and encoded against the GA's DPT from `groups.yaml`.
+Write a group value to the bus. The value is human-typed (`on`/`off`, `up`/`down`, a number, a percentage like `75%`) and encoded against the GA's DPT from `groups.yaml`. Confirms on a terminal, naming the GA, value and resolved gateway; a non-TTY needs `--yes`.
 
 | Flag / arg | Default | Meaning |
 |---|---|---|
@@ -209,9 +225,11 @@ Write a group value to the bus. The value is human-typed (`on`/`off`, `up`/`down
 | `<VALUE>` | | The value to encode. |
 | `--dpt <DPT>` | the GA's DPT | The DPT to encode as. |
 | `--force` | off | Write even if the GA is marked `protected: true` in the model. |
+| `--yes` | off | Skip the confirmation prompt (required for a non-TTY write). |
 | `--dir <DIR>` | `knx` | The model directory. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
+| `--allow-remote-gateway` | off | Permit a write to a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
 
 ### `bussard ha-config`
 
@@ -251,6 +269,8 @@ Serve the network-visualization website: an HTTP server that renders the model a
 | Variable | Meaning |
 |---|---|
 | `BUSSARD_PROJECT_PASSWORD` | Password for a protected `.knxproj` when `--password` is not given. Keep it in an untracked `.env`, never in the repo. |
+| `BUSSARD_ALLOW_REAL_GATEWAY` | Set to `1` to permit a write command against a non-loopback (real) gateway, equivalent to `--allow-remote-gateway`. Loopback gateways never need it. |
+| `RUST_LOG` | Log filter (e.g. `debug`, `bussard_transport=trace`). Overrides `-v`/`--verbose` when set. |
 | `BUSSARD_ADOPT_ADDRESS` | The target address for `adopt`, for driving the wizard from a script or test (together with `--product`). |
 | `BUSSARD_ASSIGN_WAIT_MS` | Test knob: shrinks the programming-mode wait budget of `assign` and `adopt`. Unset in normal use. |
 | `BUSSARD_SCAN_DISCOVERY_MS` | Test knob: shrinks the per-address probe timeout of `scan` and `reconstruct --line`. Unset in normal use. |
