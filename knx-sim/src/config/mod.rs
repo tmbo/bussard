@@ -123,6 +123,15 @@ pub struct DeviceConfig {
     /// `KNX_SIM_L4_BUDGET` environment variable overrides this for every device.
     #[serde(default)]
     pub l4_exchange_budget: Option<u32>,
+    /// Whether the device starts in KNX programming mode (default `false`). A
+    /// device in programming mode answers the broadcast `A_IndividualAddress_Read`
+    /// — the discovery step `bussard assign` and `bussard viz --watch-prog` use.
+    /// The `KNX_SIM_PROG_MODE` environment variable (a comma-separated list of
+    /// individual addresses) forces this on for the listed devices, so a human can
+    /// start a running sim with a device already in programming mode without
+    /// editing the config.
+    #[serde(default)]
+    pub prog_mode: bool,
 }
 
 fn default_initial_state() -> InitialState {
@@ -145,6 +154,31 @@ fn effective_l4_budget(config_value: Option<u32>) -> Option<u32> {
         .ok()
         .and_then(|s| s.trim().parse::<u32>().ok())
         .or(config_value)
+}
+
+/// Environment variable that forces programming mode on for specific devices.
+///
+/// A comma-separated list of individual addresses (e.g. `1.1.2,1.1.5`). Any
+/// device whose address is listed starts in programming mode regardless of its
+/// config `prog_mode` value — a convenient way to bring a running sim's device
+/// into programming mode for `bussard assign` / `bussard viz --watch-prog`
+/// without editing the config. Unset (the default) leaves each device's config
+/// value in force.
+const PROG_MODE_ENV: &str = "KNX_SIM_PROG_MODE";
+
+/// The effective initial programming-mode flag for a device: `true` when the
+/// [`PROG_MODE_ENV`] list names this `address`, else the device's config value.
+fn effective_prog_mode(address: &str, config_value: bool) -> bool {
+    match std::env::var(PROG_MODE_ENV) {
+        Ok(list) => {
+            config_value
+                || list
+                    .split(',')
+                    .map(str::trim)
+                    .any(|entry| !entry.is_empty() && entry == address.trim())
+        }
+        Err(_) => config_value,
+    }
 }
 
 /// One scripted stimulus entry: a device periodically transmits a value on one
@@ -302,6 +336,7 @@ impl SimConfig {
                 mask: dc.mask.clone(),
                 lsm_access: dc.lsm_access.into(),
                 bcu_key,
+                prog_mode: effective_prog_mode(&dc.address, dc.prog_mode),
             };
             let device = Device::from_product_with_overrides(
                 address,
@@ -403,6 +438,35 @@ devices:
         let cfg = SimConfig::from_yaml(yaml)?;
         assert_eq!(cfg.devices[0].l4_exchange_budget, Some(25));
         Ok(())
+    }
+
+    #[test]
+    fn test_parse_config_prog_mode() -> Result<(), ConfigError> {
+        // A device may declare `prog_mode: true` to start in programming mode;
+        // omitting it defaults to false.
+        let yaml = r#"
+gateway:
+  host: "127.0.0.1"
+  port: 3671
+devices:
+  - address: "1.1.2"
+    knxprod: "x.knxprod"
+    prog_mode: true
+  - address: "1.1.3"
+    knxprod: "y.knxprod"
+"#;
+        let cfg = SimConfig::from_yaml(yaml)?;
+        assert!(cfg.devices[0].prog_mode, "explicit prog_mode: true parses");
+        assert!(!cfg.devices[1].prog_mode, "prog_mode defaults to false");
+        Ok(())
+    }
+
+    #[test]
+    fn test_effective_prog_mode_config_value() {
+        // With the env unset (nextest runs each test in its own process, so this
+        // is deterministic), the config value is used verbatim.
+        assert!(super::effective_prog_mode("1.1.2", true));
+        assert!(!super::effective_prog_mode("1.1.2", false));
     }
 
     #[test]

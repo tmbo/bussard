@@ -40,6 +40,7 @@ impl Driver {
                 mask: None, // mask comes from the product (MV-0705)
                 lsm_access,
                 bcu_key: None,
+                prog_mode: false,
             },
             sink.clone(),
         )
@@ -461,6 +462,7 @@ fn test_sys7_unauthorized_memory_write_is_refused() {
             mask: None,
             lsm_access: LsmAccess::MemoryMapped,
             bcu_key: Some(0x1234_5678),
+            prog_mode: false,
         },
         sink.clone(),
     )

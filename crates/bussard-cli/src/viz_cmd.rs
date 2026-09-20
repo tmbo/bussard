@@ -17,7 +17,18 @@ use bussard_viz::VizConfig;
 use crate::conn_cmd::{ConnOverrides, resolve_config};
 
 /// Runs `bussard viz`.
-pub fn run(listen: SocketAddr, dir: &Path, overrides: ConnOverrides) -> anyhow::Result<ExitCode> {
+///
+/// `watch_prog` enables the programming-mode watch: a background task that puts
+/// a broadcast `A_IndividualAddress_Read` on the bus periodically and surfaces
+/// responders in `/api/state` and the `prog` SSE event. It defaults off and only
+/// takes effect when a bus is configured, because it generates active bus
+/// traffic that must never run unnoticed against a real installation.
+pub fn run(
+    listen: SocketAddr,
+    dir: &Path,
+    overrides: ConnOverrides,
+    watch_prog: bool,
+) -> anyhow::Result<ExitCode> {
     if !dir.exists() {
         anyhow::bail!(
             "model directory {} not found; the viz server needs a loaded model (pass --dir)",
@@ -44,6 +55,7 @@ pub fn run(listen: SocketAddr, dir: &Path, overrides: ConnOverrides) -> anyhow::
         dir: dir.to_path_buf(),
         listen,
         connection,
+        watch_prog,
     };
 
     let runtime = tokio::runtime::Runtime::new()?;
@@ -64,7 +76,7 @@ async fn serve_with_ctrl_c(config: VizConfig) -> anyhow::Result<()> {
     /// How long the graceful path gets before the backstop gives up on it.
     const GRACE: std::time::Duration = std::time::Duration::from_secs(3);
 
-    let (state, handle) = bussard_viz::build_state(&config)?;
+    let (state, handle, watch) = bussard_viz::build_state(&config)?;
     let hub = state.hub.clone();
     let app = bussard_viz::router(state);
 
@@ -104,7 +116,11 @@ async fn serve_with_ctrl_c(config: VizConfig) -> anyhow::Result<()> {
         _ = force => Ok(()),
     };
 
-    // Free the tunnel slot on the way out.
+    // Stop the programming-mode watch task (like the feeder, it is torn down on
+    // shutdown), then free the tunnel slot on the way out.
+    if let Some(w) = watch {
+        w.abort();
+    }
     if let Some(h) = handle {
         let _ = h.close().await;
     }

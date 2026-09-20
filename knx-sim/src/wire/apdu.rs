@@ -84,6 +84,17 @@ pub enum Apci {
     GroupValueResponse,
     /// `A_GroupValue_Write` (0x080) — a push of a group value.
     GroupValueWrite,
+    /// `A_IndividualAddress_Write` (0x0C0) — a broadcast that sets the
+    /// individual address of the (single) device currently in programming mode.
+    /// Carries the 2-octet new address.
+    IndividualAddressWrite,
+    /// `A_IndividualAddress_Read` (0x100) — a broadcast query; every device in
+    /// programming mode answers with [`Apci::IndividualAddressResponse`]. No
+    /// payload.
+    IndividualAddressRead,
+    /// `A_IndividualAddress_Response` (0x140) — a device in programming mode
+    /// announcing its own individual address (in the frame's source). No payload.
+    IndividualAddressResponse,
     /// `A_Memory_Read` with byte count.
     MemoryRead(u8),
     /// `A_Memory_Response` with byte count.
@@ -147,6 +158,12 @@ impl Apci {
             return Apci::DeviceDescriptorResponse((apci & 0x3F) as u8);
         }
         match apci {
+            // Broadcast individual-address services: exact 10-bit values that do
+            // not collide with the group (0x000/0x040/0x080) or memory
+            // (0x200/0x240/0x280) selector families masked above.
+            0x0C0 => Apci::IndividualAddressWrite,
+            0x100 => Apci::IndividualAddressRead,
+            0x140 => Apci::IndividualAddressResponse,
             0x1FB => Apci::MemoryExtendedWrite,
             0x1FC => Apci::MemoryExtendedWriteResponse,
             0x1FD => Apci::MemoryExtendedRead,
@@ -171,6 +188,9 @@ impl Apci {
             Apci::GroupValueRead => 0x000,
             Apci::GroupValueResponse => 0x040,
             Apci::GroupValueWrite => 0x080,
+            Apci::IndividualAddressWrite => 0x0C0,
+            Apci::IndividualAddressRead => 0x100,
+            Apci::IndividualAddressResponse => 0x140,
             Apci::MemoryRead(n) => 0x200 | (n as u16 & 0x3F),
             Apci::MemoryResponse(n) => 0x240 | (n as u16 & 0x3F),
             Apci::MemoryWrite(n) => 0x280 | (n as u16 & 0x3F),
@@ -293,6 +313,23 @@ mod tests {
         assert_eq!(Apci::MemoryExtendedReadResponse.to_u10(), 0x1FE);
         // The extended selectors do NOT collide with the plain memory family.
         assert!(matches!(Apci::from_u10(0x280), Apci::MemoryWrite(_)));
+    }
+
+    #[test]
+    fn test_apci_individual_address_services() {
+        // The three broadcast individual-address services decode to their own
+        // variants and round-trip through to_u10.
+        assert_eq!(Apci::from_u10(0x0C0), Apci::IndividualAddressWrite);
+        assert_eq!(Apci::from_u10(0x100), Apci::IndividualAddressRead);
+        assert_eq!(Apci::from_u10(0x140), Apci::IndividualAddressResponse);
+        assert_eq!(Apci::IndividualAddressWrite.to_u10(), 0x0C0);
+        assert_eq!(Apci::IndividualAddressRead.to_u10(), 0x100);
+        assert_eq!(Apci::IndividualAddressResponse.to_u10(), 0x140);
+        // Crucially they must NOT be misclassified as the group-value family
+        // (whose selectors are 0x000/0x040/0x080).
+        assert!(!matches!(Apci::from_u10(0x0C0), Apci::GroupValueWrite));
+        assert!(!matches!(Apci::from_u10(0x100), Apci::GroupValueRead));
+        assert!(!matches!(Apci::from_u10(0x140), Apci::GroupValueResponse));
     }
 
     #[test]

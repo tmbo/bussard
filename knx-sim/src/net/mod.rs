@@ -9,6 +9,7 @@
 //! behind a thin boundary so a `RoutingServer` can be added alongside it and
 //! feed the same bus.
 
+use std::collections::BTreeMap;
 use std::net::{SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
 
@@ -21,8 +22,14 @@ pub struct KnxnetIpServer {
     socket: UdpSocket,
     bus: Bus,
     channel: u8,
-    /// Sequence counter for TUNNELLING_REQUESTs we send toward the tool.
-    tx_seq: u8,
+    /// Per-client sequence counters for TUNNELLING_REQUESTs we send toward each
+    /// tool, keyed by the client's UDP endpoint and reset to 0 on its
+    /// CONNECT_REQUEST. The KNXnet/IP tunnelling sequence counter is **per
+    /// connection** (a client silently discards an out-of-window sequence, per
+    /// the spec's discard rule), so a single global counter would desync every
+    /// other client whenever two tunnels are open at once — e.g. a `viz`
+    /// session watching the bus while a second tool toggles programming mode.
+    tx_seqs: BTreeMap<SocketAddr, u8>,
     /// The currently-connected tunnel client (peer address + channel), if any.
     /// Device-originated telegrams (scripted stimulus, group responses fanned to
     /// the tool) are forwarded here so the connected monitor/read sees them.
@@ -47,7 +54,7 @@ impl KnxnetIpServer {
             socket,
             bus,
             channel: 1,
-            tx_seq: 0,
+            tx_seqs: BTreeMap::new(),
             peer: None,
             started: Instant::now(),
         })
@@ -157,6 +164,9 @@ impl KnxnetIpServer {
         // Remember the client so device-originated telegrams (stimulus, fanned
         // group responses) are forwarded to it.
         self.peer = Some(peer);
+        // A fresh connection starts its tunnelling sequence counter at 0, as the
+        // spec requires (the counter is per connection, not per gateway).
+        self.tx_seqs.insert(peer, 0);
         // CONNECT_RESPONSE body: channel, status, data-endpoint HPAI (8),
         // connection-response data block (CRD): len(1), type(1) + KNX addr(2).
         let mut body = Vec::new();
@@ -192,6 +202,12 @@ impl KnxnetIpServer {
         let channel = body.first().copied().unwrap_or(self.channel);
         let resp = KnxnetIpFrame::encode(service::DISCONNECT_RESPONSE, &[channel, 0x00]);
         self.socket.send_to(&resp, peer)?;
+        // The connection is over; drop its per-connection sequence counter and
+        // stop forwarding device-originated telegrams to it.
+        self.tx_seqs.remove(&peer);
+        if self.peer == Some(peer) {
+            self.peer = None;
+        }
         Ok(())
     }
 
@@ -233,8 +249,12 @@ impl KnxnetIpServer {
         channel: u8,
         peer: SocketAddr,
     ) -> Result<(), ServerError> {
-        let seq = self.tx_seq;
-        self.tx_seq = self.tx_seq.wrapping_add(1);
+        // Use (and advance) THIS client's sequence counter. A client that never
+        // sent a CONNECT_REQUEST (drove tunnelling directly, as some tests do)
+        // starts at 0.
+        let counter = self.tx_seqs.entry(peer).or_insert(0);
+        let seq = *counter;
+        *counter = counter.wrapping_add(1);
         let mut body = ConnectionHeader {
             channel,
             seq,
