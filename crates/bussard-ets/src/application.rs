@@ -470,6 +470,15 @@ pub enum LoadOp {
         size: Option<u32>,
         /// `AppliesTo` filter (e.g. `"full"`, `"par"`, `"full,par"`).
         applies_to: Option<String>,
+        /// The device-side pre-fill the allocation requests, decoded from the
+        /// op's `Fill` / `FillByte` attributes. `Some(b)` means the ETS
+        /// procedure sets `Fill="1"` — the device pre-fills the freshly
+        /// allocated segment with `b` before the writes land (the app-code
+        /// segment on some products, e.g. Jung LED A-3030 obj4 alloc
+        /// `030b000028c1 01 00 0000`). `None` means `Fill` is absent or `"0"` —
+        /// no pre-fill, the DA.tp behaviour bussard has always emitted.
+        /// `FillByte` defaults to `0` when `Fill` is set but `FillByte` absent.
+        fill: Option<u8>,
     },
     /// `<LdCtrlAbsSegment …>`: an absolute-segment control op.
     AbsSegment {
@@ -1498,6 +1507,35 @@ fn decode_hex_bytes(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// Decodes a `LdCtrlRelSegment`'s `Fill` / `FillByte` attributes into the
+/// pre-fill value to request.
+///
+/// `Fill` is truthy when it is `"1"` or `"true"` (ETS writes `"0"`/`"1"`); any
+/// other value — including the attribute being absent — means no pre-fill. When
+/// `Fill` is set the fill byte comes from `FillByte` (a `u8`, decimal or `0x`
+/// hex), defaulting to `0` when that attribute is absent or unparseable. This
+/// keeps the DA.tp shape (`Fill` absent → `None` → the historical no-fill
+/// allocation) byte-identical while letting a product whose procedure sets
+/// `Fill="1"` (e.g. Jung LED A-3030 obj4) request the pre-fill ETS emits.
+fn parse_fill(m: &Attrs) -> Option<u8> {
+    let raw = get(m, b"Fill")?;
+    let on = matches!(raw.trim(), "1" | "true" | "True" | "TRUE");
+    if !on {
+        return None;
+    }
+    let byte = get(m, b"FillByte")
+        .and_then(|s| {
+            let s = s.trim();
+            if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+                u8::from_str_radix(hex, 16).ok()
+            } else {
+                s.parse::<u8>().ok()
+            }
+        })
+        .unwrap_or(0);
+    Some(byte)
+}
+
 /// Parses one `LdCtrl*` element into a typed [`LoadOp`], appending to the
 /// current load procedure (if any).
 pub(crate) fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m: &Attrs) {
@@ -1539,6 +1577,7 @@ pub(crate) fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m
             lsm_idx: u(b"LsmIdx"),
             size: u(b"Size"),
             applies_to: s(b"AppliesTo"),
+            fill: parse_fill(m),
         },
         b"LdCtrlAbsSegment" => LoadOp::AbsSegment {
             lsm_idx: u(b"LsmIdx"),
@@ -1947,6 +1986,47 @@ mod tests {
             }
         ));
         assert!(matches!(ops[2], LoadOp::WriteRelMem { .. }));
+    }
+
+    #[test]
+    fn test_push_load_op_rel_segment_fill_flag() {
+        // The Jung LED A-3030 shape: the code segment (obj4) sets Fill="1" so the
+        // device pre-fills the allocation (obj4 alloc `030b000028c1 01 00 0000`),
+        // while the table objects keep Fill="0". A procedure with no `Fill`
+        // attribute (the DA.tp shape) parses to `None` so the historical no-fill
+        // allocation is byte-identical.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-1" Name="x">
+          <LoadProcedures><LoadProcedure MergeId="1">
+           <LdCtrlRelSegment LsmIdx="4" Size="10433" AppliesTo="full" Fill="1" />
+           <LdCtrlRelSegment LsmIdx="3" Size="2" AppliesTo="full" Fill="0" />
+           <LdCtrlRelSegment LsmIdx="2" Size="2" AppliesTo="full" />
+           <LdCtrlRelSegment LsmIdx="1" Size="2" AppliesTo="full" Fill="1" FillByte="0xAB" />
+          </LoadProcedure></LoadProcedures>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program_str("M-1_A-1", xml).unwrap();
+        let ops = &app.load_procedures[0].ops;
+        // Fill="1" with no FillByte → Some(0) (the Jung LED A-3030 code segment).
+        assert!(matches!(
+            ops[0],
+            LoadOp::RelSegment {
+                fill: Some(0),
+                lsm_idx: Some(4),
+                ..
+            }
+        ));
+        // Fill="0" → None (no pre-fill).
+        assert!(matches!(ops[1], LoadOp::RelSegment { fill: None, .. }));
+        // Fill absent → None (the DA.tp default).
+        assert!(matches!(ops[2], LoadOp::RelSegment { fill: None, .. }));
+        // Fill="1" with an explicit hex FillByte.
+        assert!(matches!(
+            ops[3],
+            LoadOp::RelSegment {
+                fill: Some(0xAB),
+                ..
+            }
+        ));
     }
 
     #[test]

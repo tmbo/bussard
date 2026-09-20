@@ -99,6 +99,14 @@ pub enum FlashStep {
         /// allocation runs against — and reads `PID_TABLE_REFERENCE` (PID7,
         /// the per-object base) from — this object.
         target: Option<u32>,
+        /// The device-side pre-fill the allocation requests, from the source
+        /// `LdCtrlRelSegment`'s `Fill`/`FillByte` (see
+        /// [`bussard_ets::LoadOp::RelSegment::fill`]). `Some(b)` sets the
+        /// relative-segment structure's fill flag with byte `b`; `None` (the
+        /// DA.tp default) leaves it clear, byte-identical to the historical
+        /// no-fill allocation. Threaded into
+        /// [`bussard_mgmt::encode_rel_segment`]'s `fill_byte` argument.
+        fill: Option<u8>,
     },
     /// Write a relative-memory image at `segment base + offset` (`LdCtrlWriteRelMem`).
     WriteRelMem {
@@ -1424,9 +1432,14 @@ pub fn plan_flash(
                         detail: format!("table object {idx} allocation size {size}"),
                     });
                 }
+                // Table objects always allocate no-fill (`Fill=0` in every
+                // observed procedure, including the products that set `Fill=1`
+                // on the code segment). Preserve that unconditionally so the
+                // fill flag never leaks onto a table allocation.
                 steps.push(FlashStep::AllocateSegment {
                     size,
                     target: Some(*idx),
+                    fill: None,
                 });
             }
 
@@ -1434,6 +1447,7 @@ pub fn plan_flash(
                 size,
                 applies_to,
                 lsm_idx,
+                fill,
                 ..
             } => {
                 // Bind this allocation to the segment whose code image we will
@@ -1504,9 +1518,15 @@ pub fn plan_flash(
                 let is_duplicate = same_segment
                     && matches!(steps.last(), Some(FlashStep::AllocateSegment { size: prev, .. }) if *prev == size);
                 if !is_duplicate {
+                    // Thread the source procedure's `Fill`/`FillByte` through:
+                    // `None` (the DA.tp default) keeps the historical no-fill
+                    // allocation byte-identical; `Some(b)` requests the device
+                    // pre-fill the segment (the code-segment behaviour on
+                    // products like Jung LED A-3030).
                     steps.push(FlashStep::AllocateSegment {
                         size,
                         target: *lsm_idx,
+                        fill: *fill,
                     });
                 }
             }
@@ -2696,13 +2716,18 @@ async fn start_loading<Ch: L4Channel>(
 /// segment allocation (e.g. it reports `Loaded`, meaning it lacks memory for this
 /// application). This folds the targeted object's discovered interface-object type
 /// and the full discovered object table into any such failure so it is actionable.
+///
+/// `fill` mirrors the source `LdCtrlRelSegment`'s `Fill`/`FillByte`: `None` (the
+/// DA.tp default) asks for a no-fill allocation, byte-identical to before;
+/// `Some(b)` requests the device pre-fill the segment with `b`.
 async fn allocate_with_context<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     app_obj: u8,
     size: u32,
+    fill: Option<u8>,
     object_table: &[(u8, u16)],
 ) -> Result<bussard_mgmt::SegmentAllocation, WriteError> {
-    match allocate_segment(l4, app_obj, size, None).await {
+    match allocate_segment(l4, app_obj, size, fill).await {
         Err(WriteError::UnexpectedLoadState {
             address,
             object_index,
@@ -2794,11 +2819,12 @@ async fn allocate_with_context_resumable<C: Connector>(
     session: &mut Session<C>,
     obj: u8,
     size: u32,
+    fill: Option<u8>,
     object_table: &[(u8, u16)],
 ) -> Result<bussard_mgmt::SegmentAllocation, WriteError> {
     resume!(
         session,
-        allocate_with_context(session.l4(), obj, size, object_table).await
+        allocate_with_context(session.l4(), obj, size, fill, object_table).await
     )
 }
 
@@ -2876,6 +2902,11 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
     // address — before the resumed `WriteRelMem` targets it. `None` until the
     // first `AllocateSegment`.
     let mut last_alloc_size: Option<u32> = None;
+    // The pre-fill (`Fill`/`FillByte`) the most-recent `AllocateSegment`
+    // requested, so a `MasterReset` re-allocation reproduces the same fill flag
+    // as the original op rather than silently dropping it. `None` = no-fill (the
+    // DA.tp default).
+    let mut last_alloc_fill: Option<u8> = None;
     // The object index the most-recent `AllocateSegment` targeted, so a
     // `MasterReset` re-opens and re-allocates *that* object (the one whose segment
     // the reset dropped) rather than the type-discovered application object. On
@@ -2970,7 +3001,7 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                         };
                         start_loading_resumable(session, obj, &object_table).await?;
                     }
-                    FlashStep::AllocateSegment { size, target } => {
+                    FlashStep::AllocateSegment { size, target, fill } => {
                         // Allocate against — and read PID7 (the per-object base) from — the
                         // object the op names by index. On KNX Virtual this is the ObjIdx
                         // (e.g. obj4 → base 0x6000); allocate_segment reads that object's
@@ -2984,12 +3015,18 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                         ) else {
                             return Ok(());
                         };
-                        let alloc =
-                            allocate_with_context_resumable(session, obj, *size, &object_table)
-                                .await?;
+                        let alloc = allocate_with_context_resumable(
+                            session,
+                            obj,
+                            *size,
+                            *fill,
+                            &object_table,
+                        )
+                        .await?;
                         segment_base = Some(alloc.address);
                         segment_bases.insert(obj, alloc.address);
                         last_alloc_size = Some(*size);
+                        last_alloc_fill = *fill;
                         last_alloc_target = Some(obj);
                     }
                     FlashStep::WriteRelMem {
@@ -3277,6 +3314,7 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                                 session,
                                 reset_obj,
                                 size,
+                                last_alloc_fill,
                                 &object_table,
                             )
                             .await?;
@@ -4004,8 +4042,15 @@ fn step_label(step: &FlashStep) -> String {
         FlashStep::StartLoading { target } => {
             format!("open for loading{}", target_suffix(*target))
         }
-        FlashStep::AllocateSegment { size, target } => {
-            format!("allocate segment ({size} bytes){}", target_suffix(*target))
+        FlashStep::AllocateSegment { size, target, fill } => {
+            let fill_note = match fill {
+                Some(b) => format!(", fill 0x{b:02X}"),
+                None => String::new(),
+            };
+            format!(
+                "allocate segment ({size} bytes{fill_note}){}",
+                target_suffix(*target)
+            )
         }
         FlashStep::WriteRelMem {
             offset,
@@ -4503,6 +4548,7 @@ mod tests {
                 FlashStep::AllocateSegment {
                     size: 6,
                     target: Some(4),
+                    fill: None,
                 },
                 FlashStep::WriteRelMem {
                     offset: 0,
@@ -4516,6 +4562,7 @@ mod tests {
                 FlashStep::AllocateSegment {
                     size: 1,
                     target: Some(4),
+                    fill: None,
                 },
                 FlashStep::WriteRelMem {
                     offset: 0,
@@ -4665,6 +4712,99 @@ mod tests {
         );
         // The trace names the reconnect-and-resume master-reset step.
         assert!(trace(&plan).iter().any(|l| l.contains("master reset")));
+    }
+
+    #[test]
+    fn plan_threads_rel_segment_fill_flag_data_driven() {
+        // Item 1 (issue #73): the `LdCtrlRelSegment` `Fill`/`FillByte` is
+        // per-product, not a blanket rule. A procedure that sets `Fill="1"` on the
+        // code segment (the Jung LED A-3030 shape, obj4 alloc
+        // `030b000028c1 01 00 0000`) must lower to `AllocateSegment { fill:
+        // Some(0) }`; a DA.tp-shape procedure with no `Fill` attribute must stay
+        // `fill: None` so its allocation is byte-identical to before.
+        let fill_xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-FILL" MaskVersion="MV-07B0" Name="Fill"
+            LoadProcedureStyle="ProductDefault">
+          <Static>
+           <Code><RelativeSegment Id="M-1_A-FILL_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment></Code>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlUnload LsmIdx="4" />
+             <LdCtrlLoad LsmIdx="4" />
+             <LdCtrlRelSegment LsmIdx="4" Size="6" AppliesTo="full" Fill="1" />
+             <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="6" AppliesTo="full" />
+             <LdCtrlLoadCompleted LsmIdx="4" />
+             <LdCtrlRestart />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-1_A-FILL", fill_xml.as_bytes()).unwrap();
+        let plan = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let fill = plan
+            .steps
+            .iter()
+            .find_map(|s| match s {
+                FlashStep::AllocateSegment { fill, .. } => Some(*fill),
+                _ => None,
+            })
+            .expect("the procedure lowers an AllocateSegment");
+        assert_eq!(
+            fill,
+            Some(0),
+            "a Fill=\"1\" code-segment allocation must carry the pre-fill flag"
+        );
+
+        // The DA.tp shape (no `Fill`) must keep the historical no-fill allocation.
+        let da_tp_xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-DATP" MaskVersion="MV-07B0" Name="DaTp"
+            LoadProcedureStyle="ProductDefault">
+          <Static>
+           <Code><RelativeSegment Id="M-1_A-DATP_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment></Code>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlUnload LsmIdx="4" />
+             <LdCtrlLoad LsmIdx="4" />
+             <LdCtrlRelSegment LsmIdx="4" Size="6" AppliesTo="full" />
+             <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="6" AppliesTo="full" />
+             <LdCtrlLoadCompleted LsmIdx="4" />
+             <LdCtrlRestart />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-1_A-DATP", da_tp_xml.as_bytes()).unwrap();
+        let plan = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let fill = plan
+            .steps
+            .iter()
+            .find_map(|s| match s {
+                FlashStep::AllocateSegment { fill, .. } => Some(*fill),
+                _ => None,
+            })
+            .expect("the procedure lowers an AllocateSegment");
+        assert_eq!(
+            fill, None,
+            "a DA.tp-shape allocation (no Fill) must stay no-fill (byte-identical)"
+        );
     }
 
     #[test]
