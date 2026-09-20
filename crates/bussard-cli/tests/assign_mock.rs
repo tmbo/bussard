@@ -345,6 +345,7 @@ fn assign_writes_address_and_stub_file() {
         .args([
             "assign",
             "1.1.7",
+            "--yes",
             "--dir",
             model_dir.to_str().unwrap(),
             "--gateway",
@@ -430,6 +431,7 @@ fn assign_clears_programming_mode_like_ets() {
         .args([
             "assign",
             "1.1.7",
+            "--yes",
             "--dir",
             model_dir.to_str().unwrap(),
             "--gateway",
@@ -561,6 +563,7 @@ fn assign_warns_when_device_stays_in_programming_mode() {
         .args([
             "assign",
             "1.1.7",
+            "--yes",
             "--dir",
             model_dir.to_str().unwrap(),
             "--gateway",

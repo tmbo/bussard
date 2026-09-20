@@ -37,7 +37,9 @@ use bussard_mgmt::{DeviceConnection, Layer4Connection, LeaseChannel, MgmtError, 
 use bussard_model::IndividualAddress;
 use bussard_prod::{ApplicationProgram, ProductData, normalize_order_number};
 
-use crate::conn_cmd::{ConnOverrides, load_model_required, resolve_config};
+use crate::conn_cmd::{
+    ConnOverrides, enforce_write_gate, gateway_display, load_model_required, resolve_config,
+};
 
 /// Flashes an application program from vendor product data into a device.
 ///
@@ -51,6 +53,7 @@ pub fn run(
     order_number: Option<&str>,
     dir: &Path,
     yes: bool,
+    allow_remote_gateway: bool,
     bcu_key: Option<&str>,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
@@ -104,6 +107,10 @@ pub fn run(
     // error (its parameter overrides drive what is written to the device).
     let model = load_model_required(dir)?;
     let config = resolve_config(model.as_ref(), &overrides)?;
+    // Safety envelope (issue #74): refuse a flash to a real (non-loopback)
+    // gateway unless the operator opted in.
+    enforce_write_gate(&config, allow_remote_gateway)?;
+    let gateway = gateway_display(&config);
     let overrides_map = collect_parameter_overrides(model.as_ref(), target);
     // Module-instance base offsets persisted by the importer (issue #48): the
     // keys are module-instance selectors, byte-identical to what
@@ -209,7 +216,7 @@ pub fn run(
     );
 
     // Confirm unless --yes.
-    if !confirm(target, yes, &plan)? {
+    if !confirm(target, &gateway, yes, &plan)? {
         eprintln!("aborted — nothing written.");
         return Ok(ExitCode::FAILURE);
     }
@@ -714,8 +721,14 @@ fn print_plan(
     }
 }
 
-/// Confirms on a TTY (y/N). Non-interactive without `--yes` is refused.
-fn confirm(target: IndividualAddress, yes: bool, plan: &FlashPlan) -> anyhow::Result<bool> {
+/// Confirms on a TTY (y/N), naming the resolved gateway (issue #74).
+/// Non-interactive without `--yes` is refused.
+fn confirm(
+    target: IndividualAddress,
+    gateway: &str,
+    yes: bool,
+    plan: &FlashPlan,
+) -> anyhow::Result<bool> {
     if yes {
         return Ok(true);
     }
@@ -737,7 +750,7 @@ fn confirm(target: IndividualAddress, yes: bool, plan: &FlashPlan) -> anyhow::Re
         })
         .count();
     eprint!(
-        "flash {} ({writes} memory write(s)) to {target}? [y/N] ",
+        "flash {} ({writes} memory write(s)) to {target} via {gateway}? [y/N] ",
         plan.identity.id
     );
     let _ = std::io::stderr().flush();
