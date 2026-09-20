@@ -11,6 +11,9 @@ description = ".knxproj import for bussard: AES zip + streaming XML into the mod
 [dependencies]
 bussard-model = { workspace = true }
 bussard-ets = { path = "../bussard-ets" }
+# KNX Secure crypto primitives: PBKDF2 key schedule, AES-CBC decrypt, and the
+# zeroizing Key16 wrapper the `.knxkeys` keyring parser needs (issue #71 §4).
+bussard-secure = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

@@ -212,6 +212,8 @@ pub fn model_from_json(json: &str) -> Result<Model> {
             // The JSON (xknxproject) path carries no ModuleInstance base data.
             module_bases: BTreeMap::new(),
             com_objects: BTreeMap::new(),
+            // The JSON (xknxproject) dump carries no KNX Secure state.
+            security: None,
         };
         let file_stem = format!("{address}-{}", crate::build::slugify(&device.name));
         devices.insert(address, LoadedDevice { device, file_stem });
