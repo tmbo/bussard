@@ -24,13 +24,15 @@
 //! | `knx_wait_for_telegram` | Block for the next matching telegram ("press the button now"). |
 //! | `knx_validate` | Model validation diagnostics as JSON. |
 //! | `knx_read_group` | Send a GroupValueRead and return the value (omitted in `--passive`). |
+//! | `knx_describe_device` | Introspect a device: enumerate its interface objects and each property's description (omitted in `--passive`). |
 //! | `knx_write_group` | Send a GroupValueWrite (registered only with `--allow-writes`). |
 //!
-//! In `--passive` mode `knx_read_group` is unregistered, so `tools/list`
-//! contains seven tools instead of eight and the server never transmits.
-//! `knx_write_group` is registered only when the server is started with
-//! `--allow-writes` (which conflicts with `--passive`), making nine tools; it
-//! writes to the physical bus and hard-refuses `protected` GAs.
+//! In `--passive` mode the two bus-touching read tools (`knx_read_group` and
+//! `knx_describe_device`) are unregistered, so `tools/list` contains seven tools
+//! instead of nine and the server never transmits. `knx_write_group` is
+//! registered only when the server is started with `--allow-writes` (which
+//! conflicts with `--passive`), making ten tools; it writes to the physical bus
+//! and hard-refuses `protected` GAs.
 //!
 //! # Connecting this to Claude Code
 //!
@@ -167,9 +169,10 @@ pub async fn run(config: &McpConfig) -> anyhow::Result<()> {
 
 /// The set of tool names exposed, in registration order. Used by tests and docs.
 ///
-/// - passive mode: 7 tools (no `knx_read_group`, no `knx_write_group`).
-/// - default mode: 8 tools (adds `knx_read_group`).
-/// - `--allow-writes`: 9 tools (adds `knx_write_group`).
+/// - passive mode: 7 tools (no bus-touching tools: no `knx_read_group`, no
+///   `knx_describe_device`, no `knx_write_group`).
+/// - default mode: 9 tools (adds `knx_read_group` and `knx_describe_device`).
+/// - `--allow-writes`: 10 tools (adds `knx_write_group`).
 pub fn tool_names(passive: bool, allow_writes: bool) -> Vec<&'static str> {
     let mut names = vec![
         "knx_project_summary",
@@ -182,6 +185,7 @@ pub fn tool_names(passive: bool, allow_writes: bool) -> Vec<&'static str> {
     ];
     if !passive {
         names.push("knx_read_group");
+        names.push("knx_describe_device");
     }
     if allow_writes && !passive {
         names.push("knx_write_group");

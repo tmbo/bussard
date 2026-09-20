@@ -64,7 +64,10 @@ pub use broadcast::{
     read_individual_address_by_serial, read_individual_address_by_serial_within,
     write_individual_address, write_individual_address_by_serial,
 };
-pub use connection::{AuthorizeOutcome, L4Channel, Layer4Connection, LeaseChannel, Timeouts};
+pub use connection::{
+    AuthorizeOutcome, L4Channel, Layer4Connection, LeaseChannel, PropertyDesc, Timeouts,
+    describe_object_properties,
+};
 pub use device::DeviceConnection;
 pub use error::{MgmtError, Result, SilenceKind};
 pub use load::{

@@ -12,7 +12,7 @@ use knx_sim::bus::event::TracingSink;
 use knx_sim::bus::{Bus, StimulusJob};
 use knx_sim::device::{Device, LoadState, flag};
 use knx_sim::net::KnxnetIpServer;
-use knx_sim::prod::read_knxprod_bytes;
+use knx_sim::prod::{LoadableObject, ProductData, read_knxprod_bytes};
 use knx_sim::wire::knxnetip::{ConnectionHeader, KnxnetIpFrame, service};
 use knx_sim::wire::{Apci, CemiLData, GroupAddress, IndividualAddress, MessageCode, Tpci};
 
@@ -32,6 +32,125 @@ fn build_server() -> Option<KnxnetIpServer> {
     // Bind to an ephemeral loopback port for test isolation (nextest runs each
     // test in its own process, but 127.0.0.1:0 keeps it robust regardless).
     Some(KnxnetIpServer::bind("127.0.0.1:0".parse().expect("addr"), bus).expect("bind"))
+}
+
+/// A synthetic System B `ProductData` with a single application-program object,
+/// so an end-to-end test needs no (un-committed) vendor `.knxprod` fixture. The
+/// mask is `MV-07B0` (System B), which is all the property-description path
+/// depends on.
+fn synthetic_system_b_product() -> ProductData {
+    ProductData {
+        application_id: "M-0083_A-0001-01-0000".into(),
+        application_number: 1,
+        application_version: 1,
+        mask_version: "MV-07B0".into(),
+        objects: vec![LoadableObject {
+            lsm_index: 4,
+            name: "application program".into(),
+            max_size: None,
+            image: Vec::new(),
+        }],
+        load_procedures: Vec::new(),
+        segments: Vec::new(),
+        hardware_type_marker: None,
+    }
+}
+
+/// Build a sim server around one synthetic System B device at `1.1.2` — no
+/// vendor fixture required, so this always runs in CI.
+fn build_synthetic_server() -> KnxnetIpServer {
+    let sink = Arc::new(TracingSink);
+    let pd = synthetic_system_b_product();
+    let dev = Device::from_product(
+        IndividualAddress::new(1, 1, 2),
+        &pd,
+        LoadState::Loaded,
+        sink.clone(),
+    );
+    let mut bus = Bus::new(sink);
+    bus.add_device(dev);
+    KnxnetIpServer::bind("127.0.0.1:0".parse().expect("addr"), bus).expect("bind")
+}
+
+/// An `A_PropertyDescription_Read` for object `obj`, PID `pid`, property index
+/// `index` toward `1.1.2` at connected sequence 1 (following the T_Connect at 0).
+fn property_description_read(seq: u8, obj: u8, pid: u8, index: u8) -> CemiLData {
+    // TPCI: connected-data with `seq`, plus the APCI high bits (0x3D8 → hi 0x03).
+    let apci10: u16 = 0x3D8;
+    CemiLData {
+        message_code: MessageCode::LDataReq,
+        ctrl1: 0xbc,
+        ctrl2: 0x60,
+        source: IndividualAddress::new(0, 0, 0),
+        dest: IndividualAddress::new(1, 1, 2).raw(),
+        tpdu: vec![
+            0x40 | ((seq & 0x0F) << 2) | ((apci10 >> 8) as u8 & 0x03),
+            (apci10 & 0xFF) as u8,
+            obj,
+            pid,
+            index,
+        ],
+    }
+}
+
+#[test]
+fn test_property_description_read_over_udp() -> Result<(), Box<dyn std::error::Error>> {
+    // End-to-end (issue #72): a tunnel client sends A_PropertyDescription_Read by
+    // index on the device object and gets back a well-formed descriptor over the
+    // wire — the same path `bussard describe` drives.
+    let mut server = build_synthetic_server();
+    let server_addr = server.local_addr()?;
+
+    let client = UdpSocket::bind("127.0.0.1:0")?;
+    client.set_read_timeout(Some(std::time::Duration::from_secs(2)))?;
+
+    // CONNECT + T_Connect + the description read = 3 inbound datagrams.
+    let handle = std::thread::spawn(move || {
+        server.serve_n(3).expect("serve");
+        server
+    });
+
+    let connect = KnxnetIpFrame::encode(service::CONNECT_REQUEST, &[0x00; 10]);
+    client.send_to(&connect, server_addr)?;
+    let mut buf = [0u8; 1024];
+    let (n, _) = client.recv_from(&mut buf)?;
+    let resp = KnxnetIpFrame::decode(&buf[..n])?;
+    let channel = resp.body[0];
+
+    // T_Connect, then the property-description read at connected seq 0.
+    send_tunnel(&client, server_addr, channel, 0, &tconnect())?;
+    expect_ack(&client)?;
+    send_tunnel(
+        &client,
+        server_addr,
+        channel,
+        1,
+        &property_description_read(0, 0, 0, 1),
+    )?;
+    expect_ack(&client)?;
+
+    // The device answers with a TUNNELLING_REQUEST carrying the response cEMI.
+    let (n, _) = client.recv_from(&mut buf)?;
+    let reply = KnxnetIpFrame::decode(&buf[..n])?;
+    assert_eq!(reply.service, service::TUNNELLING_REQUEST);
+    let cemi = CemiLData::decode(&reply.body[4..])?;
+    let apci10 = ((cemi.tpdu[0] as u16 & 0x03) << 8) | cemi.tpdu[1] as u16;
+    assert_eq!(
+        Apci::from_u10(apci10),
+        Apci::PropertyDescriptionResponse,
+        "device answered with A_PropertyDescription_Response"
+    );
+    // Response payload: [obj][pid][index][type][max_hi][max_lo][access].
+    let payload = &cemi.tpdu[2..];
+    assert_eq!(payload[0], 0x00, "device object echoed");
+    assert_eq!(payload[2], 0x01, "property index 1 echoed");
+    let max = u16::from_be_bytes([payload[4], payload[5]]);
+    assert_eq!(max, 1, "one element for the object-type property");
+    // A real PID is reported for index 1 (the object object-type PID is 1).
+    assert_eq!(payload[1], 0x01, "index 1 is PID_OBJECT_TYPE");
+
+    let _server = handle.join().expect("join");
+    Ok(())
 }
 
 #[test]

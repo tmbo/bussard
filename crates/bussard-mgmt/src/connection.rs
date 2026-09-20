@@ -933,6 +933,144 @@ pub(crate) async fn property_write_request<Ch: L4Channel>(
     decode_property_response(l4.target(), resp_apci, &data)
 }
 
+/// One property's description as read over the bus with
+/// `A_PropertyDescription_Read` (issue #72).
+///
+/// This is the mgmt-layer typed struct the introspection surface returns: the
+/// PID and the property index it occupies, its data-type code and writability,
+/// its maximum element count, and the read/write access levels. It is a thin,
+/// stable projection of [`crate::apci::PropertyDescription`] that callers (the
+/// CLI `describe` table, the MCP tool) render without touching APCI types.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropertyDesc {
+    /// Interface object index the property lives on.
+    pub object_index: u8,
+    /// The property id (PID).
+    pub property_id: u8,
+    /// The property index this PID occupies within the object (1-based).
+    pub property_index: u8,
+    /// The property data type (PDT) code (KNX 3/5/1 property data types).
+    pub pdt: u8,
+    /// Whether the property is writable.
+    pub writable: bool,
+    /// The maximum number of elements (array length).
+    pub max_elements: u16,
+    /// The access level required to read the property (0 = highest access).
+    pub read_level: u8,
+    /// The access level required to write the property (0 = highest access).
+    pub write_level: u8,
+}
+
+impl From<crate::apci::PropertyDescription> for PropertyDesc {
+    fn from(d: crate::apci::PropertyDescription) -> Self {
+        PropertyDesc {
+            object_index: d.object_index,
+            property_id: d.property_id,
+            property_index: d.property_index,
+            pdt: d.pdt,
+            writable: d.writable,
+            max_elements: d.max_elements,
+            read_level: d.read_level,
+            write_level: d.write_level,
+        }
+    }
+}
+
+/// Sends an `A_PropertyDescription_Read` and returns the decoded
+/// [`PropertyDescription`](crate::apci::PropertyDescription), validating the
+/// response service and the 7-octet descriptor.
+///
+/// Addresses either a specific PID (`property_id != 0`, `property_index` ignored
+/// by the device) or a property **by index** (`property_id == 0`), the latter
+/// being the enumeration path — see [`describe_object_properties`]. The shared
+/// request/validate/decode seam so the mgmt method and the enumeration helper
+/// agree on the wire form.
+pub(crate) async fn property_description_request<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    object_index: u8,
+    property_id: u8,
+    property_index: u8,
+) -> Result<crate::apci::PropertyDescription> {
+    let payload =
+        crate::apci::encode_property_description_read(object_index, property_id, property_index);
+    let (resp_apci, data) = l4
+        .request(crate::apci::A_PROPERTY_DESCRIPTION_READ, &payload)
+        .await?;
+    if resp_apci != crate::apci::A_PROPERTY_DESCRIPTION_RESPONSE {
+        return Err(MgmtError::MalformedResponse {
+            address: l4.target(),
+            reason: format!(
+                "expected A_PropertyDescription_Response ({})",
+                crate::error::raw_response_detail(resp_apci, &data)
+            ),
+        });
+    }
+    crate::apci::decode_property_description_response(&data).ok_or_else(|| {
+        MgmtError::MalformedResponse {
+            address: l4.target(),
+            reason: format!(
+                "property description response too short ({})",
+                crate::error::raw_response_detail(resp_apci, &data)
+            ),
+        }
+    })
+}
+
+/// Enumerates the properties of one interface object by walking the property
+/// index `1..` until the device reports none (issue #72).
+///
+/// Sends an `A_PropertyDescription_Read` by **index** (PID 0) for each index
+/// from 1 upward and collects the descriptors, stopping cleanly when the device
+/// answers with `max_elements == 0` (no property at that index — the end of the
+/// object's property list) or with a duplicate/decreasing index (a device that
+/// clamps rather than reporting absence). The value is describing an unknown
+/// device's property set. Read-only on the bus.
+///
+/// A `NoResponse`/`MalformedResponse` from the device (it does not implement the
+/// description service, or answers off-service) terminates the walk cleanly with
+/// whatever was collected so far, rather than failing — an older/simpler device
+/// that does not support the service still yields an empty list. A genuine
+/// transport/connection death propagates as `Err`.
+pub async fn describe_object_properties<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    object_index: u8,
+) -> Result<Vec<PropertyDesc>> {
+    /// The most property indices to probe on one object before giving up. A real
+    /// interface object exposes far fewer than this; the cap bounds a device that
+    /// never reports absence.
+    const MAX_PROPERTY_INDEX: u8 = 64;
+
+    let mut out: Vec<PropertyDesc> = Vec::new();
+    let mut index: u8 = 1;
+    while index <= MAX_PROPERTY_INDEX {
+        let desc = match property_description_request(l4, object_index, 0, index).await {
+            Ok(desc) => desc,
+            // The device does not implement the service, or answered off-service /
+            // not at all: end the walk cleanly with what we have. A transport
+            // death still propagates.
+            Err(MgmtError::MalformedResponse { .. }) | Err(MgmtError::NoResponse { .. }) => break,
+            Err(MgmtError::MidSessionSilence {
+                kind: SilenceKind::NoResponse,
+                ..
+            }) => break,
+            Err(other) => return Err(other),
+        };
+        // max_elements == 0 is the spec's "no property here" signal: the object's
+        // property list has ended.
+        if desc.max_elements == 0 {
+            break;
+        }
+        // Guard against a device that clamps the index rather than reporting
+        // absence: if it keeps echoing the same/earlier property index, stop.
+        if out.iter().any(|d| d.property_index == desc.property_index) {
+            break;
+        }
+        out.push(desc.into());
+        index += 1;
+    }
+    Ok(out)
+}
+
 /// Validates that `(resp_apci, data)` is a well-formed `A_PropertyValue_Response`
 /// and decodes it, shared by [`property_request`] and [`property_write_request`].
 fn decode_property_response(

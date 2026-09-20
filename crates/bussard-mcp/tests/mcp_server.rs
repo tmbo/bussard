@@ -118,31 +118,32 @@ async fn connect_client(
 }
 
 #[tokio::test]
-async fn tools_list_has_eight_tools_by_default() {
+async fn tools_list_has_nine_tools_by_default() {
     let (client, server_task) = connect_client(build_server(false)).await;
     let tools = client.list_all_tools().await.unwrap();
     let mut names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
     names.sort();
     let mut expected = bussard_mcp::tool_names(false, false);
     expected.sort();
-    assert_eq!(names, expected, "default mode exposes 8 tools");
-    assert_eq!(tools.len(), 8);
+    assert_eq!(names, expected, "default mode exposes 9 tools");
+    assert_eq!(tools.len(), 9);
     assert!(!names.contains(&"knx_write_group".to_string()));
+    assert!(names.contains(&"knx_describe_device".to_string()));
 
     client.cancel().await.unwrap();
     server_task.abort();
 }
 
 #[tokio::test]
-async fn tools_list_has_nine_tools_with_allow_writes() {
+async fn tools_list_has_ten_tools_with_allow_writes() {
     let (client, server_task) = connect_client(build_server_modes(false, true)).await;
     let tools = client.list_all_tools().await.unwrap();
     let mut names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
     names.sort();
     let mut expected = bussard_mcp::tool_names(false, true);
     expected.sort();
-    assert_eq!(names, expected, "--allow-writes exposes 9 tools");
-    assert_eq!(tools.len(), 9);
+    assert_eq!(names, expected, "--allow-writes exposes 10 tools");
+    assert_eq!(tools.len(), 10);
     assert!(names.contains(&"knx_write_group".to_string()));
     assert!(names.contains(&"knx_read_group".to_string()));
 
@@ -155,8 +156,13 @@ async fn tools_list_has_seven_tools_in_passive_mode() {
     let (client, server_task) = connect_client(build_server(true)).await;
     let tools = client.list_all_tools().await.unwrap();
     let names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
-    assert_eq!(tools.len(), 7, "passive mode omits knx_read_group");
+    assert_eq!(
+        tools.len(),
+        7,
+        "passive mode omits knx_read_group and knx_describe_device"
+    );
     assert!(!names.contains(&"knx_read_group".to_string()));
+    assert!(!names.contains(&"knx_describe_device".to_string()));
     assert!(names.contains(&"knx_project_summary".to_string()));
 
     client.cancel().await.unwrap();
@@ -399,6 +405,58 @@ async fn recent_telegrams_db_fallback_prefix_filters_and_dedupes() {
     );
     // Expected matching set: DB 3/2/1, 3/2/2, dup 3/2/9, ring 3/2/3 = 4 rows.
     assert_eq!(s["count"], 4, "matched rows: {dests:?}");
+
+    client.cancel().await.unwrap();
+    server_task.abort();
+}
+
+#[tokio::test]
+async fn describe_device_without_a_bus_reports_not_wired() {
+    // In default mode the tool is registered; without a wired bus it returns a
+    // structured ok:false ("bus is not wired") rather than erroring or hanging.
+    let (client, server_task) = connect_client(build_server(false)).await;
+    let mut args = serde_json::Map::new();
+    args.insert("address".to_string(), serde_json::json!("1.1.4"));
+    let res = client
+        .call_tool(CallToolRequestParams::new("knx_describe_device").with_arguments(args))
+        .await
+        .expect("describe returns a result");
+    let s = res.structured_content.expect("structured");
+    assert_eq!(s["address"], "1.1.4");
+    assert_eq!(s["ok"], false, "no bus wired → ok:false; was {s:?}");
+
+    client.cancel().await.unwrap();
+    server_task.abort();
+}
+
+#[tokio::test]
+async fn describe_device_rejects_a_bad_address() {
+    // A malformed individual address is an invalid-params protocol error.
+    let (client, server_task) = connect_client(build_server(false)).await;
+    let mut args = serde_json::Map::new();
+    args.insert("address".to_string(), serde_json::json!("not-an-address"));
+    let res = client
+        .call_tool(CallToolRequestParams::new("knx_describe_device").with_arguments(args))
+        .await;
+    assert!(res.is_err(), "a bad address must be rejected");
+
+    client.cancel().await.unwrap();
+    server_task.abort();
+}
+
+#[tokio::test]
+async fn describe_device_in_passive_mode_is_absent() {
+    // Introspection transmits management traffic, so passive mode unregisters it.
+    let (client, server_task) = connect_client(build_server(true)).await;
+    let mut args = serde_json::Map::new();
+    args.insert("address".to_string(), serde_json::json!("1.1.4"));
+    let res = client
+        .call_tool(CallToolRequestParams::new("knx_describe_device").with_arguments(args))
+        .await;
+    assert!(
+        res.is_err(),
+        "knx_describe_device must not exist in passive mode"
+    );
 
     client.cancel().await.unwrap();
     server_task.abort();
