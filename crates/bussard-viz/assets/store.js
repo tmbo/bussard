@@ -105,6 +105,14 @@ export class Store {
     this.flashEnabled = this._loadFlashEnabled();
     /** @type {Map<string, Object>} ga -> last value record */
     this.lastValue = new Map();
+    /**
+     * Individual addresses currently in KNX programming mode (prog LED on).
+     * Fed from the /api/state `prog` array and live `prog` SSE events. Empty
+     * (the default) means none, so the feature is harmless when the backend
+     * never reports it.
+     * @type {Set<string>}
+     */
+    this.progDevices = new Set();
     /** @type {boolean} log paused */
     this.paused = false;
     /** @type {string} raw log filter text */
@@ -484,6 +492,32 @@ export class Store {
   }
 
   /**
+   * Replace the set of devices in programming mode and notify listeners. Accepts
+   * any iterable of individual addresses (array from the state fetch or the
+   * `prog` SSE event). A null/undefined/empty list clears the set. Idempotent-
+   * safe: always emits so views resync even on a repeated identical set.
+   * @param {?Iterable<string>} devices - individual addresses in prog mode.
+   * @returns {Set<string>} the new prog set
+   */
+  setProgDevices(devices) {
+    this.progDevices = new Set();
+    if (devices) {
+      for (const a of devices) if (a) this.progDevices.add(String(a));
+    }
+    this.emit("prog", this.progDevices);
+    return this.progDevices;
+  }
+
+  /**
+   * Whether an individual address is currently in programming mode.
+   * @param {string} addr
+   * @returns {boolean}
+   */
+  isProg(addr) {
+    return this.progDevices.has(addr);
+  }
+
+  /**
    * Set the bus status and notify listeners.
    * @param {{state:string, connected:boolean, transport?:string}} status
    */
@@ -521,7 +555,7 @@ export class Store {
   /**
    * Subscribe to a topic. Returns an unsubscribe function.
    * Topics: selection, view, ga-value, telegram, bus-status, filter, paused,
-   * flash-enabled.
+   * flash-enabled, prog.
    * @param {string} topic
    * @param {Function} fn
    * @returns {Function} unsubscribe

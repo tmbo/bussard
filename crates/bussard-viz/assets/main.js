@@ -128,6 +128,9 @@ function applyState(store, state) {
   for (const ga of Object.keys(values)) {
     store.setValue(ga, values[ga]);
   }
+  // Programming-mode set: absent/empty means none (feature off or nobody in
+  // prog mode). Harmless when the backend never sends it.
+  store.setProgDevices(Array.isArray(state.prog) ? state.prog : []);
 }
 
 // --- search ---------------------------------------------------------------
@@ -390,9 +393,14 @@ function connectTrafficStream() {
     // The server swapped the model; refetch and rebuild the views.
     rebuildFromServer();
   };
+  const onProg = (devices) => {
+    // Live programming-mode update (SSE `prog` event). Route to the current
+    // store so topology + inspector repaint their prog treatment.
+    app.store.setProgDevices(devices);
+  };
   try {
     if (typeof EventSource !== "undefined") {
-      connectTraffic(onTelegram, onStatus, { backlog: 50, onModel });
+      connectTraffic(onTelegram, onStatus, { backlog: 50, onModel, onProg });
     }
   } catch {
     // No live stream available (standalone dev); page stays static.
@@ -408,6 +416,10 @@ function connectTrafficStream() {
 async function rebuildFromServer() {
   const model = await loadModel();
   const previousBus = app.store ? app.store.busStatus : null;
+  // Carry live programming-mode state across the rebuild (it is transient and
+  // model-independent; the next `prog` SSE tick would refresh it anyway, but
+  // this avoids a flicker where prog badges vanish on reload).
+  const previousProg = app.store ? [...app.store.progDevices] : [];
   buildViews(model);
   // Re-attach the long-lived subscriptions that live on the store instance.
   subscribeBusStatus();
@@ -416,6 +428,8 @@ async function rebuildFromServer() {
   if (app._applyFlash) app._applyFlash(app.store.flashEnabled);
   // Carry the last-known bus status onto the fresh store's header.
   if (previousBus) app.store.setBusStatus(previousBus);
+  // Re-apply the carried programming-mode set to the fresh store.
+  if (previousProg.length) app.store.setProgDevices(previousProg);
   window.__debug.wave2 = app.wave2;
 }
 
