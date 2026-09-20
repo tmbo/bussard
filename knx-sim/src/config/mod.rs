@@ -84,6 +84,61 @@ fn default_lsm_access() -> LsmAccessConfig {
     LsmAccessConfig::Property
 }
 
+/// Per-device KNX Data Secure configuration (spec §12.2). A device with a
+/// `security:` block is treated as security-ACTIVATED: all management access
+/// must ride A_SecureData, and a plain access to a protected function is refused.
+/// Omitting the block leaves the device plain (the default), so existing configs
+/// and devices are unaffected.
+///
+/// All key material is SYNTHETIC and lives only in this config; it is never read
+/// from a user's real key files. The `tool_key` is 32 hex characters (16 raw
+/// bytes).
+#[derive(Debug, Clone, Deserialize)]
+pub struct SecurityConfig {
+    /// The activation flag. Must be `activated` to secure the device; any other
+    /// value (or omitting the whole block) leaves it plain.
+    pub status: SecurityStatus,
+    /// The synthetic tool key as 32 hex characters (16 bytes). Required when
+    /// `status: activated`.
+    pub tool_key: String,
+    /// The device's initial send sequence (spec §5.8), for wrapping responses.
+    /// Defaults to 0.
+    #[serde(default)]
+    pub initial_tx_seq: u64,
+    /// The device's initial receive-freshness floor (spec §5.9): a first inbound
+    /// frame must strictly exceed this. Defaults to 0.
+    #[serde(default)]
+    pub initial_rx_seq: u64,
+}
+
+/// The activation status of a device's KNX Data Secure block.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum SecurityStatus {
+    /// The device is security-activated: management access must be secured.
+    Activated,
+    /// The device is plain (the default when the block is omitted).
+    Plain,
+}
+
+impl SecurityConfig {
+    /// Convert to the device-layer activation, parsing the synthetic tool key.
+    /// Returns a plain (`None`) activation only when `status: plain`; an
+    /// `activated` block with a bad key is an error.
+    fn to_activation(&self) -> Result<crate::device::SecureActivation, String> {
+        if self.status != SecurityStatus::Activated {
+            return Err("security block present but status is not `activated`".into());
+        }
+        let tool_key = crate::secure::Key16::from_hex(&self.tool_key)
+            .ok_or_else(|| "tool_key must be 32 hex characters (16 bytes)".to_string())?;
+        Ok(crate::device::SecureActivation {
+            tool_key,
+            initial_tx_seq: self.initial_tx_seq,
+            initial_rx_seq: self.initial_rx_seq,
+        })
+    }
+}
+
 /// One device entry in the config.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DeviceConfig {
@@ -132,6 +187,11 @@ pub struct DeviceConfig {
     /// editing the config.
     #[serde(default)]
     pub prog_mode: bool,
+    /// KNX Data Secure activation (spec §12.2). Omit to keep the device plain
+    /// (the default). A `security: { status: activated, tool_key: <32 hex> }`
+    /// block marks the device security-activated with a SYNTHETIC tool key.
+    #[serde(default)]
+    pub security: Option<SecurityConfig>,
 }
 
 fn default_initial_state() -> InitialState {
@@ -332,11 +392,24 @@ impl SimConfig {
                 ),
                 None => None,
             };
+            // Only an `activated` security block produces a session; a `plain`
+            // block (or an absent one) leaves the device plain (spec §6.4).
+            let secure = match &dc.security {
+                Some(sec) if sec.status == SecurityStatus::Activated => Some(
+                    sec.to_activation()
+                        .map_err(|reason| ConfigError::BadDeviceOption {
+                            device: dc.address.clone(),
+                            reason,
+                        })?,
+                ),
+                _ => None,
+            };
             let overrides = crate::device::ProfileOverrides {
                 mask: dc.mask.clone(),
                 lsm_access: dc.lsm_access.into(),
                 bcu_key,
                 prog_mode: effective_prog_mode(&dc.address, dc.prog_mode),
+                secure,
             };
             let device = Device::from_product_with_overrides(
                 address,
@@ -497,6 +570,49 @@ devices:
         assert_eq!(cfg.devices[1].lsm_access, LsmAccessConfig::Property);
         assert_eq!(cfg.devices[1].bcu_key, None);
         Ok(())
+    }
+
+    #[test]
+    fn test_parse_config_security_activated() -> Result<(), ConfigError> {
+        // A device may declare a KNX Data Secure activation block with a synthetic
+        // tool key and starting sequences. Omitting it leaves the device plain.
+        let yaml = r#"
+gateway:
+  host: "127.0.0.1"
+  port: 3671
+devices:
+  - address: "1.1.2"
+    knxprod: "x.knxprod"
+    security:
+      status: activated
+      tool_key: "0102030405060708090a0b0c0d0e0f10"
+      initial_tx_seq: 200
+      initial_rx_seq: 1000
+  - address: "1.1.3"
+    knxprod: "y.knxprod"
+"#;
+        let cfg = SimConfig::from_yaml(yaml)?;
+        let sec = cfg.devices[0].security.as_ref().expect("security parses");
+        assert_eq!(sec.status, SecurityStatus::Activated);
+        assert_eq!(sec.tool_key, "0102030405060708090a0b0c0d0e0f10");
+        assert_eq!(sec.initial_tx_seq, 200);
+        assert_eq!(sec.initial_rx_seq, 1000);
+        // The synthetic key parses into a valid activation.
+        assert!(sec.to_activation().is_ok());
+        // The second device has no security block (plain, the default).
+        assert!(cfg.devices[1].security.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_security_bad_tool_key_rejected() {
+        let sec = SecurityConfig {
+            status: SecurityStatus::Activated,
+            tool_key: "not-hex".into(),
+            initial_tx_seq: 0,
+            initial_rx_seq: 0,
+        };
+        assert!(sec.to_activation().is_err(), "a bad tool key is rejected");
     }
 
     #[test]
