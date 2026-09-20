@@ -435,6 +435,7 @@ fn adopt_happy_path_writes_rich_device_file() {
     let output = Command::new(env!("CARGO_BIN_EXE_bussard"))
         .args([
             "adopt",
+            "--yes",
             "--product",
             knxprod.to_str().unwrap(),
             "--dir",
@@ -525,6 +526,7 @@ fn adopt_warns_on_order_number_mismatch() {
     let output = Command::new(env!("CARGO_BIN_EXE_bussard"))
         .args([
             "adopt",
+            "--yes",
             "--product",
             knxprod.to_str().unwrap(),
             "--dir",
@@ -576,6 +578,7 @@ fn adopt_times_out_with_no_device() {
     let output = Command::new(env!("CARGO_BIN_EXE_bussard"))
         .args([
             "adopt",
+            "--yes",
             "--product",
             knxprod.to_str().unwrap(),
             "--dir",

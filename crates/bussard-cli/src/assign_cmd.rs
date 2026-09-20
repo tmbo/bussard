@@ -28,7 +28,7 @@ use bussard_mgmt::{
 use bussard_model::schema::{Device, Product};
 use bussard_model::{IndividualAddress, LoadedDevice, Model};
 
-use crate::conn_cmd::{ConnOverrides, resolve_config};
+use crate::conn_cmd::{ConnOverrides, enforce_write_gate, gateway_display, resolve_config};
 
 /// The line to allocate on when the model has no devices to infer one from.
 const FALLBACK_LINE: (u8, u8) = (1, 1);
@@ -51,12 +51,28 @@ const WAIT_MS_ENV: &str = "BUSSARD_ASSIGN_WAIT_MS";
 pub fn run(
     address: Option<&str>,
     dir: &Path,
+    yes: bool,
+    allow_remote_gateway: bool,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
+    // Safety envelope (issue #74): a non-TTY assign must opt in with --yes; an
+    // explicit address is not consent. Refuse up front, before touching the bus,
+    // so a scripted re-address fails fast rather than after the discovery wait.
+    if !yes && !std::io::stdin().is_terminal() {
+        bail!(
+            "refusing to assign without a terminal to confirm on; pass --yes to assign \
+             non-interactively (an explicit address is not itself consent — issue #74)"
+        );
+    }
+
     // 1. Load the model. Address allocation needs it; an explicit --address on an
     //    empty/missing model is allowed with a warning.
     let model = load_model_for_assign(dir, address.is_some())?;
     let config = resolve_config(model.as_ref(), &overrides)?;
+    // Safety envelope (issue #74): refuse a write to a real (non-loopback)
+    // gateway unless the operator opted in.
+    enforce_write_gate(&config, allow_remote_gateway)?;
+    let gateway = gateway_display(&config);
 
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
@@ -71,7 +87,7 @@ pub fn run(
         // clean `handle.close()` so the gateway tunnel slot is released rather
         // than leaked — see issue #31.
         let result = tokio::select! {
-            result = assign_flow(&handle, source, address, model.as_ref(), dir) => result,
+            result = assign_flow(&handle, source, address, yes, &gateway, model.as_ref(), dir) => result,
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\ninterrupted; closing the bus connection");
                 Err(anyhow!("assign interrupted by Ctrl-C"))
@@ -127,6 +143,8 @@ async fn assign_flow(
     handle: &BusHandle,
     source: IndividualAddress,
     address: Option<&str>,
+    yes: bool,
+    gateway: &str,
     model: Option<&Model>,
     dir: &Path,
 ) -> anyhow::Result<ExitCode> {
@@ -138,7 +156,6 @@ async fn assign_flow(
     eprintln!("device in programming mode: {current} (its current address)");
 
     // 3. Decide the target address.
-    let explicit = address.is_some();
     let target = match address {
         Some(s) => validate_explicit_address(s, model)?,
         None => match allocate_address(model) {
@@ -151,7 +168,7 @@ async fn assign_flow(
     };
 
     // 4. Confirm.
-    if !confirm_assignment(current, target, explicit)? {
+    if !confirm_assignment(current, target, yes, gateway)? {
         eprintln!("aborted; no address was written.");
         return Ok(ExitCode::FAILURE);
     }
@@ -379,28 +396,30 @@ fn model_lines(model: &Model) -> BTreeSet<(u8, u8)> {
         .collect()
 }
 
-/// Confirms the assignment on a TTY (y/N). On a non-TTY, an implicit allocation
-/// is refused for safety (a wrong write re-addresses a device); an explicit
-/// address is accepted without prompting.
+/// Confirms the assignment on a TTY (y/N), naming the resolved gateway. `--yes`
+/// (`yes = true`) skips the prompt. The non-TTY-without-`--yes` case is refused
+/// up front in [`run`] (issue #74), so this is only reached on a TTY or with
+/// `--yes`.
 fn confirm_assignment(
     current: IndividualAddress,
     target: IndividualAddress,
-    explicit: bool,
+    yes: bool,
+    gateway: &str,
 ) -> anyhow::Result<bool> {
+    if yes {
+        return Ok(true);
+    }
     let stdin = std::io::stdin();
     if !stdin.is_terminal() {
-        if explicit {
-            eprintln!("non-interactive: assigning {current} → {target} (address was explicit).");
-            return Ok(true);
-        }
+        // Defensive: `run` already refused this shape. Fail loudly rather than
+        // proceed if the invariant is ever broken.
         bail!(
-            "refusing to assign an automatically-chosen address ({target}) without a terminal to \
-             confirm on; pass the address explicitly (e.g. `bussard assign {target}`) to proceed \
-             non-interactively"
+            "refusing to assign {current} → {target} via {gateway} without a terminal to confirm \
+             on; pass --yes to assign non-interactively"
         );
     }
 
-    eprint!("assign {current} → {target}? [y/N] ");
+    eprint!("assign {current} → {target} via {gateway}? [y/N] ");
     let _ = std::io::stderr().flush();
     let mut line = String::new();
     std::io::stdin()

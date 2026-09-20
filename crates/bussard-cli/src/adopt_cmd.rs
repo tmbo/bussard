@@ -41,7 +41,7 @@ use bussard_model::schema::{ComObject, Device, Product};
 use bussard_model::{Dpt, Flags, IndividualAddress, LoadedDevice, Model};
 use bussard_prod::{ApplicationProgram, ProductData, ResolvedComObject};
 
-use crate::conn_cmd::{ConnOverrides, resolve_config};
+use crate::conn_cmd::{ConnOverrides, enforce_write_gate, gateway_display, resolve_config};
 
 /// The line to allocate on when the model has no devices to infer one from.
 // DUP: mirrors `assign_cmd::FALLBACK_LINE`; promote to a shared allocation helper.
@@ -70,12 +70,16 @@ pub const ADOPT_ADDRESS_ENV: &str = "BUSSARD_ADOPT_ADDRESS";
 pub fn run(
     product: Option<&Path>,
     dir: &Path,
+    yes: bool,
+    allow_remote_gateway: bool,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
     let interactive = std::io::stdin().is_terminal();
 
     // Non-TTY gate: a wizard needs inputs. We allow exactly one scripted shape —
-    // a product file plus an explicit address via the documented env hook.
+    // a product file plus an explicit address via the documented env hook, AND an
+    // explicit `--yes` (issue #74: a re-address in a script must opt in, an
+    // explicit address is not itself consent).
     let scripted_address = std::env::var(ADOPT_ADDRESS_ENV)
         .ok()
         .filter(|s| !s.is_empty());
@@ -85,6 +89,12 @@ pub fn run(
              To drive it non-interactively (e.g. from a test or a script), supply BOTH a product \
              file (`--product <file.knxprod>`) and an explicit target address via the {ADOPT_ADDRESS_ENV} \
              environment variable."
+        );
+    }
+    if !interactive && !yes {
+        bail!(
+            "refusing to adopt non-interactively without --yes: an explicit address is not \
+             consent to write to the bus. Re-run with --yes to confirm."
         );
     }
 
@@ -108,6 +118,10 @@ pub fn run(
     let have_explicit = scripted_address.is_some();
     let model = load_model_for_adopt(dir, have_explicit)?;
     let config = resolve_config(model.as_ref(), &overrides)?;
+    // Safety envelope (issue #74): refuse a write to a real (non-loopback)
+    // gateway unless the operator opted in.
+    enforce_write_gate(&config, allow_remote_gateway)?;
+    let gateway = gateway_display(&config);
 
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
@@ -126,6 +140,7 @@ pub fn run(
                 selected.as_ref(),
                 scripted_address.as_deref(),
                 interactive,
+                &gateway,
             ) => result,
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\ninterrupted; closing the bus connection");
@@ -335,6 +350,7 @@ fn shape_one(rc: &ResolvedComObject<'_>) -> ComObjectShape {
 
 /// The end-to-end adopt flow over the bus actor. Each broadcast and each
 /// connected verify leases the bus for the duration of that step.
+#[allow(clippy::too_many_arguments)]
 async fn adopt_flow(
     handle: &BusHandle,
     source: IndividualAddress,
@@ -343,6 +359,7 @@ async fn adopt_flow(
     selected: Option<&SelectedProduct>,
     scripted_address: Option<&str>,
     interactive: bool,
+    gateway: &str,
 ) -> anyhow::Result<ExitCode> {
     println!("  step 2/5  assign an address");
 
@@ -367,7 +384,7 @@ async fn adopt_flow(
     };
 
     // Confirm.
-    if !confirm_assignment(current, target, explicit, interactive)? {
+    if !confirm_assignment(current, target, explicit, interactive, gateway)? {
         eprintln!("aborted; no address was written.");
         return Ok(ExitCode::FAILURE);
     }
@@ -829,10 +846,15 @@ fn confirm_assignment(
     target: IndividualAddress,
     explicit: bool,
     interactive: bool,
+    gateway: &str,
 ) -> anyhow::Result<bool> {
     if !interactive {
         if explicit {
-            eprintln!("non-interactive: adopting {current} → {target} (address was explicit).");
+            // The run() gate already required --yes for this non-interactive path
+            // (issue #74), so an explicit address here is genuinely confirmed.
+            eprintln!(
+                "non-interactive: adopting {current} → {target} via {gateway} (confirmed with --yes)."
+            );
             return Ok(true);
         }
         // Unreachable given the run() gate, but fail loudly rather than guess.
@@ -842,7 +864,7 @@ fn confirm_assignment(
         );
     }
 
-    eprint!("adopt {current} → {target}? [y/N] ");
+    eprint!("adopt {current} → {target} via {gateway}? [y/N] ");
     let _ = std::io::stderr().flush();
     let mut line = String::new();
     std::io::stdin()
