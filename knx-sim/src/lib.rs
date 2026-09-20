@@ -22,5 +22,6 @@ pub mod device;
 pub mod net;
 pub mod prod;
 pub mod run;
+pub mod secure;
 pub mod testfixtures;
 pub mod wire;
