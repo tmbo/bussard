@@ -129,9 +129,16 @@ class Topology {
     store.on("view", (v) => this._applyView(v));
     // Search dimming: main.js sets store.filterText and toggles body.query-active.
     store.on("filter", (q) => this._applyDimming(q));
+    // Programming-mode set (item 4): cards whose IA is in the set get a red
+    // pulsing glow + PROG badge. Composes with selection/partner/focus styling.
+    store.on("prog", (set) => this._applyProg(set));
     // Live-effects toggle: when off, suppress all card/tree/GA flashes and
     // spine pulses. Log is never affected (that wiring is in log.js).
     store.on("flash-enabled", () => {});
+
+    // Apply any programming-mode set already present on the store (e.g. after a
+    // model reload that carried it across).
+    this._applyProg(store.progDevices);
 
     // Lay out once the cards have real geometry.
     requestAnimationFrame(() => this.relayout());
@@ -690,9 +697,10 @@ class Topology {
     if (!node) return;
     const senders = this.store.gaSenders.get(v.id) || [];
     const listeners = this.store.gaListeners.get(v.id) || [];
-    // Terminate/originate edges a few px off the marker so the arrowhead does
-    // not overlap the GA dot (item 1 / S1). Senders approaching from above land
-    // just above the dot; from below, just below it.
+    // Terminate/originate edges a few px off the marker so no edge line pierces
+    // the GA dot (S10/1b). The direction arrowhead no longer sits at the spine
+    // junction: it rides mid-feeder instead (see _appendFocusEdge), so the
+    // junction stays clean (green line-end + amber dot only, no arrow pile-up).
     const nodeAnchor = (fromY) => ({
       x: node.x,
       y: fromY <= node.y ? node.y - 11 : node.y + 11,
@@ -704,7 +712,8 @@ class Topology {
       seenS.add(s.device);
       const pt = this.dropPoints.get(s.device);
       if (!pt) continue;
-      // Sender emits ONTO the GA: outgoing (from the sender's perspective).
+      // Sender emits ONTO the GA: outgoing (from the sender's perspective). Data
+      // flows card -> spine, so the mid-feeder arrow points toward the spine.
       this._appendFocusEdge(pt, nodeAnchor(pt.feederY), "outgoing");
       count += 1;
     }
@@ -715,7 +724,9 @@ class Topology {
       seenL.add(l.device);
       const pt = this.dropPoints.get(l.device);
       if (!pt) continue;
-      // Listener receives FROM the GA: incoming (from the listener's perspective).
+      // Listener receives FROM the GA: incoming (from the listener's
+      // perspective). Data flows spine -> card, so the mid-feeder arrow points
+      // toward the card.
       this._appendFocusEdge(nodeAnchor(pt.feederY), pt, "incoming");
       count += 1;
     }
@@ -723,7 +734,10 @@ class Topology {
 
   /**
    * Append a focus-mode direction edge. `from`/`to` are wiring anchors or the
-   * GA-node point on the spine; `dir` is `outgoing` or `incoming`.
+   * GA-node point on the spine; `dir` is `outgoing` or `incoming`. The direction
+   * arrowhead is placed MID-FEEDER (via a marker-mid vertex) rather than at the
+   * spine junction, so it never overlaps the GA dot (S10/1b). Whichever endpoint
+   * is a card contributes the feeder segment that carries the arrow.
    * @param {{x:number, y:number, feederY?:number, dropY?:number}} from
    * @param {{x:number, y:number, feederY?:number, dropY?:number}} to
    * @param {'incoming'|'outgoing'} dir
@@ -731,9 +745,28 @@ class Topology {
   _appendFocusEdge(from, to, dir) {
     const path = document.createElementNS(SVG_NS, "path");
     path.setAttribute("class", `sel-edge focus-edge dir-${dir}`);
-    path.setAttribute("marker-end", "url(#topo-arrow)");
+    // No junction arrow: the line runs clean into the spine (S10/1b). The
+    // direction is carried by a standalone arrow glyph placed mid-feeder below.
     path.setAttribute("d", this._wirePath(from, to));
     this.edgeLayer.appendChild(path);
+
+    // Place a standalone arrowhead at the midpoint of the CARD's feeder segment,
+    // pointing along the data-flow direction. For outgoing (card -> spine) the
+    // card is `from`; for incoming (spine -> card) the card is `to`. The arrow
+    // points left (toward the spine) for outgoing, right (toward the card) for
+    // incoming, so both read as "away from the GA marker".
+    const card = from.dropY != null ? from : to.dropY != null ? to : null;
+    if (!card) return;
+    const midX = (card.x + this.spineX) / 2;
+    // Outgoing: flow toward the spine (leftward => angle 180). Incoming: flow
+    // toward the card (rightward => angle 0).
+    const angle = dir === "outgoing" ? 180 : 0;
+    const arrow = document.createElementNS(SVG_NS, "path");
+    arrow.setAttribute("class", `focus-arrow dir-${dir}`);
+    // A small triangle centred on the feeder midpoint, rotated to the flow.
+    arrow.setAttribute("d", "M -4 -4 L 4 0 L -4 4 z");
+    arrow.setAttribute("transform", `translate(${midX} ${card.feederY}) rotate(${angle})`);
+    this.edgeLayer.appendChild(arrow);
   }
 
   /**
@@ -888,6 +921,25 @@ class Topology {
         .toLowerCase();
       const match = terms.every((t) => hay.includes(t));
       card.classList.toggle("dimmed", !match);
+    }
+  }
+
+  // --- programming mode (item 4) -------------------------------------------
+
+  /**
+   * Apply the programming-mode set: cards whose device is in `set` get the
+   * `prog` class (red pulsing glow) and reveal their PROG badge; all others
+   * clear it. The treatment composes with selection/partner/focus classes
+   * (the CSS ensures the red glow beats dimming and the badge stays visible).
+   * @param {Set<string>|Iterable<string>} set - device addresses in prog mode.
+   */
+  _applyProg(set) {
+    const prog = set instanceof Set ? set : new Set(set || []);
+    for (const [addr, card] of this.cardByDevice) {
+      const on = prog.has(addr);
+      card.classList.toggle("prog", on);
+      const badge = card.querySelector("[data-field=prog]");
+      if (badge) badge.hidden = !on;
     }
   }
 
