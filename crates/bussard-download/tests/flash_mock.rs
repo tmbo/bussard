@@ -1534,6 +1534,176 @@ async fn flash_with_image_prop_loads_and_verifies_mcb() {
     handle.abort();
 }
 
+/// A device whose application object is already Loaded and holds `image` in its
+/// segment at `0x4000`, with `PID_MCB_TABLE` reporting that resident segment —
+/// so a pre-download MCB read (issue #73 item 2) sees the resident size+CRC and
+/// can skip the re-stream. Model of a re-download onto an unchanged install.
+fn preloaded_device(image: &[u8]) -> Shared {
+    let state = fresh_device(Fault::None);
+    {
+        let mut s = state.lock().unwrap();
+        s.app_load_state = LS_LOADED;
+        s.last_segment_base = 0x4000;
+        s.last_segment_size = image.len() as u32;
+        for (i, b) in image.iter().enumerate() {
+            s.memory.insert(0x4000u32 + i as u32, *b);
+        }
+    }
+    state
+}
+
+#[tokio::test]
+async fn flash_skips_restream_when_resident_mcb_matches() {
+    // Item 2 (issue #73), match→skip branch: the device already holds the exact
+    // image bussard would stream (resident MCB size+CRC match). With
+    // `skip_matching_mcb` on, the pre-pass reads PID 27, sees the match and skips
+    // the object's re-load — ZERO body bytes stream — yet the flash still reaches
+    // Loaded and the LoadImageProp MCB re-verify passes.
+    let image = [0u8, 1, 2, 3, 4, 5];
+    let state = preloaded_device(&image);
+    let (mut bus, state, handle) = setup_device(state).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+
+    let app = app_with_image_prop();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+
+    let l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    let mut session = authed_session(l4).await;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions {
+            skip_matching_mcb: true,
+            ..Default::default()
+        },
+        |_| {},
+    )
+    .await
+    .unwrap();
+    let _ = session.into_disconnect().await;
+
+    assert!(
+        outcome.ok(),
+        "a resident-match re-download must still verify Loaded: {outcome:?}"
+    );
+    let s = state.lock().unwrap();
+    assert_eq!(
+        s.memory_writes_seen, 0,
+        "a resident-MCB match must stream ZERO body bytes"
+    );
+    handle.abort();
+}
+
+#[tokio::test]
+async fn flash_full_streams_when_resident_mcb_absent_even_with_skip_on() {
+    // Item 2 (issue #73), mismatch→write branch: a fresh/blank device answers no
+    // MCB entry, so even with `skip_matching_mcb` on the pre-pass finds no match
+    // and the object full-streams exactly as before — a needed write is NEVER
+    // skipped. Contrast with the match case above.
+    let (mut bus, state, handle) = setup(Fault::None).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+
+    let app = app_with_image_prop();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+
+    let l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    let mut session = authed_session(l4).await;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions {
+            skip_matching_mcb: true,
+            ..Default::default()
+        },
+        |_| {},
+    )
+    .await
+    .unwrap();
+    let _ = session.into_disconnect().await;
+
+    assert!(outcome.ok(), "a blank device must full-stream: {outcome:?}");
+    let s = state.lock().unwrap();
+    assert!(
+        s.memory_writes_seen > 0,
+        "a blank device (no resident MCB) must full-stream even with skip on"
+    );
+    let code: Vec<u8> = (0x4000u16..0x4006)
+        .map(|a| *s.memory.get(&u32::from(a)).unwrap_or(&0))
+        .collect();
+    assert_eq!(code, vec![0, 1, 2, 3, 4, 5]);
+    handle.abort();
+}
+
+#[tokio::test]
+async fn flash_full_streams_when_resident_mcb_matches_but_skip_off() {
+    // Item 2 (issue #73), default-off guard: with `skip_matching_mcb` OFF (the
+    // default, and the DA.tp-validated path), even a resident-match device
+    // full-streams — the skip is opt-in, so no existing path changes byte-for-byte.
+    let image = [0u8, 1, 2, 3, 4, 5];
+    let state = preloaded_device(&image);
+    let (mut bus, state, handle) = setup_device(state).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+
+    let app = app_with_image_prop();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+
+    let l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    let mut session = authed_session(l4).await;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .unwrap();
+    let _ = session.into_disconnect().await;
+
+    assert!(outcome.ok(), "default-off must still verify: {outcome:?}");
+    let s = state.lock().unwrap();
+    assert!(
+        s.memory_writes_seen > 0,
+        "skip OFF must full-stream even when the resident MCB would match"
+    );
+    handle.abort();
+}
+
 #[tokio::test]
 async fn flash_image_prop_catches_corrupted_stored_image() {
     // The device stores a corrupted segment (one octet flipped after the load
@@ -3190,6 +3360,7 @@ async fn flash_verifies_after_terminal_restart_when_it_can_reconnect() {
         bussard_download::FlashOptions {
             bcu_key: None,
             verify_after_restart: true,
+            ..Default::default()
         },
         |_| {},
     )
@@ -3265,6 +3436,7 @@ async fn flash_fails_when_load_does_not_persist_across_the_restart() {
         bussard_download::FlashOptions {
             bcu_key: None,
             verify_after_restart: true,
+            ..Default::default()
         },
         |_| {},
     )

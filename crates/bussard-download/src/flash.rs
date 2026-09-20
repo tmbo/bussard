@@ -59,7 +59,7 @@
 //! write is read-back-verified and every property/load-control write is
 //! confirmed, so a device that drops or refuses a write fails loudly at that op.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use bussard_mgmt::MgmtError;
 use bussard_mgmt::connection::{L4Channel, Layer4Connection};
@@ -99,6 +99,14 @@ pub enum FlashStep {
         /// allocation runs against — and reads `PID_TABLE_REFERENCE` (PID7,
         /// the per-object base) from — this object.
         target: Option<u32>,
+        /// The device-side pre-fill the allocation requests, from the source
+        /// `LdCtrlRelSegment`'s `Fill`/`FillByte` (see
+        /// [`bussard_ets::LoadOp::RelSegment::fill`]). `Some(b)` sets the
+        /// relative-segment structure's fill flag with byte `b`; `None` (the
+        /// DA.tp default) leaves it clear, byte-identical to the historical
+        /// no-fill allocation. Threaded into
+        /// [`bussard_mgmt::encode_rel_segment`]'s `fill_byte` argument.
+        fill: Option<u8>,
     },
     /// Write a relative-memory image at `segment base + offset` (`LdCtrlWriteRelMem`).
     WriteRelMem {
@@ -843,6 +851,27 @@ pub struct FlashOptions {
     /// do not reboot-and-return), the load state is read over the still-open
     /// connection before the restart, as before.
     pub verify_after_restart: bool,
+
+    /// Skip re-downloading an object whose resident image already matches
+    /// (issue #73 item 2 — the MCB-CRC re-download skip).
+    ///
+    /// ETS's group-B re-download captures streamed ZERO body bytes: before
+    /// touching an object, ETS read its `PID_MCB_TABLE` (PID 27), saw the
+    /// resident image's size and CRC already matched the image it was about to
+    /// stream, and skipped the object's whole re-load (an app-unload flips load
+    /// state without erasing flash, so the resident image is intact). When this
+    /// is `true`, bussard does the same: a pre-pass reads each to-be-written
+    /// object's resident MCB and, on a size+CRC match, skips that object's
+    /// `Unload`/`StartLoading`/`AllocateSegment`/`WriteRelMem`/`LoadCompleted`
+    /// steps — leaving the intact resident load untouched — while still running
+    /// its `LoadImageProp` MCB re-verify.
+    ///
+    /// It NEVER skips a genuinely-needed write: a fresh/blank device (no MCB
+    /// entry) or any object whose resident size or CRC differs full-streams
+    /// exactly as before. When `false` (the conservative default, and every
+    /// path validated byte-for-byte against DA.tp, which was a fresh flash whose
+    /// blank device never matches) every object is always full-streamed.
+    pub skip_matching_mcb: bool,
 }
 
 /// A progress event emitted as [`flash`] executes, for the CLI to render.
@@ -1424,9 +1453,14 @@ pub fn plan_flash(
                         detail: format!("table object {idx} allocation size {size}"),
                     });
                 }
+                // Table objects always allocate no-fill (`Fill=0` in every
+                // observed procedure, including the products that set `Fill=1`
+                // on the code segment). Preserve that unconditionally so the
+                // fill flag never leaks onto a table allocation.
                 steps.push(FlashStep::AllocateSegment {
                     size,
                     target: Some(*idx),
+                    fill: None,
                 });
             }
 
@@ -1434,6 +1468,7 @@ pub fn plan_flash(
                 size,
                 applies_to,
                 lsm_idx,
+                fill,
                 ..
             } => {
                 // Bind this allocation to the segment whose code image we will
@@ -1504,9 +1539,15 @@ pub fn plan_flash(
                 let is_duplicate = same_segment
                     && matches!(steps.last(), Some(FlashStep::AllocateSegment { size: prev, .. }) if *prev == size);
                 if !is_duplicate {
+                    // Thread the source procedure's `Fill`/`FillByte` through:
+                    // `None` (the DA.tp default) keeps the historical no-fill
+                    // allocation byte-identical; `Some(b)` requests the device
+                    // pre-fill the segment (the code-segment behaviour on
+                    // products like Jung LED A-3030).
                     steps.push(FlashStep::AllocateSegment {
                         size,
                         target: *lsm_idx,
+                        fill: *fill,
                     });
                 }
             }
@@ -2641,6 +2682,137 @@ fn resolve_object_target_opt(
     }
 }
 
+/// The device object index whose re-load a step belongs to, for the MCB-skip
+/// gate (issue #73 item 2) — or `None` if the step is not part of a per-object
+/// re-load that a resident-MCB match may skip.
+///
+/// Only the load-state and segment-write steps of a single object are skippable:
+/// `Unload`/`StartLoading`/`AllocateSegment`/`WriteRelMem`/`LoadCompleted`. The
+/// `LoadImageProp` verify is deliberately excluded (it is a read-only confirm
+/// that must still run against the skipped object's resident MCB), as is every
+/// non-per-object step (`WriteMem`, `CompareProp`, `Restart`, `MasterReset`, all
+/// System 7 steps). Resolution uses the same index rules as execution.
+fn mcb_skip_target(
+    step: &FlashStep,
+    object_table: &[(u8, u16)],
+    app_obj: u8,
+    plan: &FlashPlan,
+) -> Option<u8> {
+    let target = match step {
+        FlashStep::Unload { target }
+        | FlashStep::StartLoading { target }
+        | FlashStep::AllocateSegment { target, .. }
+        | FlashStep::LoadCompleted { target } => *target,
+        FlashStep::WriteRelMem { target, .. } => *target,
+        _ => return None,
+    };
+    resolve_object_target_opt(target, object_table, app_obj, plan.spliced_from_template)
+}
+
+/// The single whole-segment image a `WriteRelMem` streams into `obj`, if the
+/// object has exactly one such write and it starts at offset 0.
+///
+/// The MCB CRC the device reports covers the whole stored segment, so a skip is
+/// only sound when a single write covers that segment from its base. An object
+/// with several writes (e.g. a `full` then a `par` write at different offsets),
+/// or a write at a non-zero offset, is treated as *uncertain* and never skipped
+/// — the conservative choice the issue mandates ("never skip a write on an
+/// uncertain match"). Returns the streamed bytes, or `None` when no single
+/// offset-0 write resolves onto `obj`. Resolution uses the same object-index
+/// rules as execution, so `obj` must be the executor-resolved index.
+fn sole_object_image<'a>(
+    plan: &'a FlashPlan,
+    obj: u8,
+    app_obj: u8,
+    object_table: &[(u8, u16)],
+) -> Option<&'a [u8]> {
+    let mut found: Option<&str> = None;
+    for step in &plan.steps {
+        if let FlashStep::WriteRelMem {
+            offset,
+            image,
+            target,
+        } = step
+        {
+            let resolved = resolve_object_target_opt(
+                *target,
+                object_table,
+                app_obj,
+                plan.spliced_from_template,
+            );
+            if resolved != Some(obj) {
+                continue;
+            }
+            if *offset != 0 || found.is_some() {
+                // A non-zero-offset write, or a second write into this object:
+                // uncertain, so never skip it.
+                return None;
+            }
+            found = Some(&image.segment_id);
+        }
+    }
+    let segment_id = found?;
+    plan.images.get(segment_id).map(|v| v.as_slice())
+}
+
+/// Reads each to-be-written object's resident `PID_MCB_TABLE` and returns the
+/// set of object indices whose resident image already matches what bussard would
+/// stream — the objects whose re-load the executor may skip (issue #73 item 2).
+///
+/// For every object that a single offset-0 `WriteRelMem` would fill (see
+/// [`sole_object_image`]), this reads the object's MCB *before* any step touches
+/// it. A match requires the device to report an entry whose `segment_size`
+/// equals the image length AND whose `crc16` equals the CRC over the image
+/// bytes. A device that answers no MCB entry (a fresh/blank object), a differing
+/// size, or a differing CRC is NOT added — that object full-streams. Any read
+/// error is treated as "cannot confirm a match" and the object full-streams,
+/// so an unreadable MCB never causes a needed write to be skipped.
+async fn resident_match_objects<C: Connector>(
+    session: &mut Session<C>,
+    plan: &FlashPlan,
+    app_obj: u8,
+    object_table: &[(u8, u16)],
+) -> Result<BTreeSet<u8>, WriteError> {
+    // The candidate objects: those the executor would resolve a WriteRelMem onto.
+    let mut candidates: BTreeSet<u8> = BTreeSet::new();
+    for step in &plan.steps {
+        if let FlashStep::WriteRelMem { target, .. } = step {
+            if let Some(obj) = resolve_object_target_opt(
+                *target,
+                object_table,
+                app_obj,
+                plan.spliced_from_template,
+            ) {
+                candidates.insert(obj);
+            }
+        }
+    }
+
+    let mut matches = BTreeSet::new();
+    for obj in candidates {
+        let Some(image) = sole_object_image(plan, obj, app_obj, object_table) else {
+            // Several writes / a non-zero offset: uncertain, never skip.
+            continue;
+        };
+        // Read the resident MCB WITHOUT asserting (expected = None), so a
+        // mismatch is a value to compare, not an error. Any read failure means
+        // we cannot confirm a match — leave the object out (it full-streams).
+        let entries = match read_mcb_table(session.l4(), obj, 0, 1, None).await {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let Some(entry) = entries.first() else {
+            continue;
+        };
+        let want_size = image.len() as u32;
+        let want_crc = bussard_mgmt::crc16_ccitt(image);
+        if entry.segment_size == want_size && entry.crc16 == want_crc {
+            matches.insert(obj);
+        }
+    }
+    Ok(matches)
+}
+
 /// Drives a `StartLoading` on the application object, enriching a non-conformant
 /// load-state failure with discovery context.
 ///
@@ -2696,13 +2868,18 @@ async fn start_loading<Ch: L4Channel>(
 /// segment allocation (e.g. it reports `Loaded`, meaning it lacks memory for this
 /// application). This folds the targeted object's discovered interface-object type
 /// and the full discovered object table into any such failure so it is actionable.
+///
+/// `fill` mirrors the source `LdCtrlRelSegment`'s `Fill`/`FillByte`: `None` (the
+/// DA.tp default) asks for a no-fill allocation, byte-identical to before;
+/// `Some(b)` requests the device pre-fill the segment with `b`.
 async fn allocate_with_context<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     app_obj: u8,
     size: u32,
+    fill: Option<u8>,
     object_table: &[(u8, u16)],
 ) -> Result<bussard_mgmt::SegmentAllocation, WriteError> {
-    match allocate_segment(l4, app_obj, size, None).await {
+    match allocate_segment(l4, app_obj, size, fill).await {
         Err(WriteError::UnexpectedLoadState {
             address,
             object_index,
@@ -2794,11 +2971,12 @@ async fn allocate_with_context_resumable<C: Connector>(
     session: &mut Session<C>,
     obj: u8,
     size: u32,
+    fill: Option<u8>,
     object_table: &[(u8, u16)],
 ) -> Result<bussard_mgmt::SegmentAllocation, WriteError> {
     resume!(
         session,
-        allocate_with_context(session.l4(), obj, size, object_table).await
+        allocate_with_context(session.l4(), obj, size, fill, object_table).await
     )
 }
 
@@ -2876,6 +3054,11 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
     // address — before the resumed `WriteRelMem` targets it. `None` until the
     // first `AllocateSegment`.
     let mut last_alloc_size: Option<u32> = None;
+    // The pre-fill (`Fill`/`FillByte`) the most-recent `AllocateSegment`
+    // requested, so a `MasterReset` re-allocation reproduces the same fill flag
+    // as the original op rather than silently dropping it. `None` = no-fill (the
+    // DA.tp default).
+    let mut last_alloc_fill: Option<u8> = None;
     // The object index the most-recent `AllocateSegment` targeted, so a
     // `MasterReset` re-opens and re-allocates *that* object (the one whose segment
     // the reset dropped) rather than the type-discovered application object. On
@@ -2896,7 +3079,43 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
     // The proactive-reconnect exchange threshold (0 = disabled), read once.
     let reconnect_threshold = reconnect_exchange_threshold();
 
+    // Item 2 (issue #73): the MCB-CRC re-download skip. When enabled, read each
+    // to-be-written object's resident `PID_MCB_TABLE` *before* any step touches
+    // it and, on a size+CRC match against the image bussard would stream, mark
+    // that object skippable. The skip drops the object's re-load steps (so no
+    // body bytes stream and the intact resident load is left untouched) but is
+    // NEVER taken on a fresh/blank device (no MCB entry) or a size/CRC mismatch —
+    // those full-stream exactly as before. Disabled by default, so DA.tp and
+    // every mock path are byte-identical.
+    let skip_objects: BTreeSet<u8> = if options.skip_matching_mcb {
+        resident_match_objects(session, plan, app_obj, &object_table).await?
+    } else {
+        BTreeSet::new()
+    };
+
     for (i, step) in plan.steps.iter().enumerate() {
+        // A resident-match object (its MCB already matched the image bussard
+        // would stream) skips its whole re-load: the `Unload`/`StartLoading`/
+        // `AllocateSegment`/`WriteRelMem`/`LoadCompleted` for it are dropped so
+        // the intact resident load is untouched and ZERO body bytes stream
+        // (matching ETS's group-B captures). Its `LoadImageProp` MCB re-verify is
+        // kept (a read-only confirm that passes by construction). The object is
+        // still recorded as completed so the post-flash verify covers it.
+        if let Some(skip_obj) = mcb_skip_target(step, &object_table, app_obj, plan) {
+            if skip_objects.contains(&skip_obj) {
+                if let FlashStep::LoadCompleted { .. } = step {
+                    if !completed_objects.contains(&skip_obj) {
+                        completed_objects.push(skip_obj);
+                    }
+                }
+                progress(Progress::Step {
+                    index: i + 1,
+                    total,
+                    label: format!("skip {} (resident MCB matches)", step_label(step)),
+                });
+                continue;
+            }
+        }
         // Proactive periodic L4 reconnection (the ETS pattern): before starting a
         // step, if this connection's numbered-exchange count has reached the
         // threshold, cycle the connection (graceful T_Disconnect / T_Connect +
@@ -2970,7 +3189,7 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                         };
                         start_loading_resumable(session, obj, &object_table).await?;
                     }
-                    FlashStep::AllocateSegment { size, target } => {
+                    FlashStep::AllocateSegment { size, target, fill } => {
                         // Allocate against — and read PID7 (the per-object base) from — the
                         // object the op names by index. On KNX Virtual this is the ObjIdx
                         // (e.g. obj4 → base 0x6000); allocate_segment reads that object's
@@ -2984,12 +3203,18 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                         ) else {
                             return Ok(());
                         };
-                        let alloc =
-                            allocate_with_context_resumable(session, obj, *size, &object_table)
-                                .await?;
+                        let alloc = allocate_with_context_resumable(
+                            session,
+                            obj,
+                            *size,
+                            *fill,
+                            &object_table,
+                        )
+                        .await?;
                         segment_base = Some(alloc.address);
                         segment_bases.insert(obj, alloc.address);
                         last_alloc_size = Some(*size);
+                        last_alloc_fill = *fill;
                         last_alloc_target = Some(obj);
                     }
                     FlashStep::WriteRelMem {
@@ -3277,6 +3502,7 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                                 session,
                                 reset_obj,
                                 size,
+                                last_alloc_fill,
                                 &object_table,
                             )
                             .await?;
@@ -4004,8 +4230,15 @@ fn step_label(step: &FlashStep) -> String {
         FlashStep::StartLoading { target } => {
             format!("open for loading{}", target_suffix(*target))
         }
-        FlashStep::AllocateSegment { size, target } => {
-            format!("allocate segment ({size} bytes){}", target_suffix(*target))
+        FlashStep::AllocateSegment { size, target, fill } => {
+            let fill_note = match fill {
+                Some(b) => format!(", fill 0x{b:02X}"),
+                None => String::new(),
+            };
+            format!(
+                "allocate segment ({size} bytes{fill_note}){}",
+                target_suffix(*target)
+            )
         }
         FlashStep::WriteRelMem {
             offset,
@@ -4503,6 +4736,7 @@ mod tests {
                 FlashStep::AllocateSegment {
                     size: 6,
                     target: Some(4),
+                    fill: None,
                 },
                 FlashStep::WriteRelMem {
                     offset: 0,
@@ -4516,6 +4750,7 @@ mod tests {
                 FlashStep::AllocateSegment {
                     size: 1,
                     target: Some(4),
+                    fill: None,
                 },
                 FlashStep::WriteRelMem {
                     offset: 0,
@@ -4665,6 +4900,99 @@ mod tests {
         );
         // The trace names the reconnect-and-resume master-reset step.
         assert!(trace(&plan).iter().any(|l| l.contains("master reset")));
+    }
+
+    #[test]
+    fn plan_threads_rel_segment_fill_flag_data_driven() {
+        // Item 1 (issue #73): the `LdCtrlRelSegment` `Fill`/`FillByte` is
+        // per-product, not a blanket rule. A procedure that sets `Fill="1"` on the
+        // code segment (the Jung LED A-3030 shape, obj4 alloc
+        // `030b000028c1 01 00 0000`) must lower to `AllocateSegment { fill:
+        // Some(0) }`; a DA.tp-shape procedure with no `Fill` attribute must stay
+        // `fill: None` so its allocation is byte-identical to before.
+        let fill_xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-FILL" MaskVersion="MV-07B0" Name="Fill"
+            LoadProcedureStyle="ProductDefault">
+          <Static>
+           <Code><RelativeSegment Id="M-1_A-FILL_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment></Code>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlUnload LsmIdx="4" />
+             <LdCtrlLoad LsmIdx="4" />
+             <LdCtrlRelSegment LsmIdx="4" Size="6" AppliesTo="full" Fill="1" />
+             <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="6" AppliesTo="full" />
+             <LdCtrlLoadCompleted LsmIdx="4" />
+             <LdCtrlRestart />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-1_A-FILL", fill_xml.as_bytes()).unwrap();
+        let plan = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let fill = plan
+            .steps
+            .iter()
+            .find_map(|s| match s {
+                FlashStep::AllocateSegment { fill, .. } => Some(*fill),
+                _ => None,
+            })
+            .expect("the procedure lowers an AllocateSegment");
+        assert_eq!(
+            fill,
+            Some(0),
+            "a Fill=\"1\" code-segment allocation must carry the pre-fill flag"
+        );
+
+        // The DA.tp shape (no `Fill`) must keep the historical no-fill allocation.
+        let da_tp_xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-DATP" MaskVersion="MV-07B0" Name="DaTp"
+            LoadProcedureStyle="ProductDefault">
+          <Static>
+           <Code><RelativeSegment Id="M-1_A-DATP_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment></Code>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlUnload LsmIdx="4" />
+             <LdCtrlLoad LsmIdx="4" />
+             <LdCtrlRelSegment LsmIdx="4" Size="6" AppliesTo="full" />
+             <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="6" AppliesTo="full" />
+             <LdCtrlLoadCompleted LsmIdx="4" />
+             <LdCtrlRestart />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-1_A-DATP", da_tp_xml.as_bytes()).unwrap();
+        let plan = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+        let fill = plan
+            .steps
+            .iter()
+            .find_map(|s| match s {
+                FlashStep::AllocateSegment { fill, .. } => Some(*fill),
+                _ => None,
+            })
+            .expect("the procedure lowers an AllocateSegment");
+        assert_eq!(
+            fill, None,
+            "a DA.tp-shape allocation (no Fill) must stay no-fill (byte-identical)"
+        );
     }
 
     #[test]

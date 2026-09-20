@@ -223,6 +223,7 @@ pub fn run(
     let options = bussard_download::FlashOptions {
         bcu_key,
         verify_after_restart: true,
+        ..Default::default()
     };
     let outcome = runtime.block_on(async move {
         let (handle, _task) = Bus::connect(config);
