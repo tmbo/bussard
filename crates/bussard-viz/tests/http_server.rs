@@ -66,10 +66,13 @@ async fn model_only_degradation_over_real_http() -> Result<(), Box<dyn std::erro
         dir: dir.clone(),
         listen: SocketAddr::from(([127, 0, 0, 1], 0)),
         connection: Some(connection),
+        // The programming-mode watch is off here: this test exercises the
+        // read/state endpoints, not the probe.
+        watch_prog: false,
     };
 
     // Build the state and router, bind an ephemeral port, and serve on a task.
-    let (state, handle) = bussard_viz::build_state(&config)?;
+    let (state, handle, _watch) = bussard_viz::build_state(&config)?;
     let app = bussard_viz::router(state);
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
     let addr = listener.local_addr()?;
@@ -120,9 +123,11 @@ async fn model_only_mode_with_no_connection() -> Result<(), Box<dyn std::error::
         dir: dir.clone(),
         listen: SocketAddr::from(([127, 0, 0, 1], 0)),
         connection: None,
+        watch_prog: false,
     };
-    let (state, handle) = bussard_viz::build_state(&config)?;
+    let (state, handle, watch) = bussard_viz::build_state(&config)?;
     assert!(handle.is_none(), "no bus handle in model-only mode");
+    assert!(watch.is_none(), "no watch task in model-only mode");
     let app = bussard_viz::router(state);
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
     let addr = listener.local_addr()?;
