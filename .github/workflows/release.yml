@@ -24,6 +24,27 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 1
+      - name: Verify the tag matches the crate version
+        shell: bash
+        run: |
+          # Guard against a mistagged release shipping a binary that misreports
+          # --version (issue #75). Compare the pushed tag (minus a leading `v`)
+          # to the workspace version from cargo metadata.
+          tag="${{ github.ref_name }}"
+          tag="${tag#v}"
+          version="$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name=="bussard-cli") | .version')"
+          echo "tag=$tag crate version=$version"
+          if [ -z "$version" ]; then
+            echo "::error::could not read bussard-cli version from cargo metadata"
+            exit 1
+          fi
+          if [ "$tag" != "$version" ]; then
+            echo "::error::tag '$tag' does not match crate version '$version'; \
+          refusing to release a binary that would misreport --version. \
+          Bump the version in Cargo.toml or push a matching tag."
+            exit 1
+          fi
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
