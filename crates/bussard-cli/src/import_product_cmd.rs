@@ -617,11 +617,14 @@ fn load_op_summary(op: &LoadOp) -> String {
             lsm_idx,
             size,
             applies_to,
+            fill,
         } => format!(
-            "rel_segment lsm={} size={} applies_to={}",
+            "rel_segment lsm={} size={} applies_to={} fill={}",
             opt(lsm_idx),
             opt(size),
-            applies_to.as_deref().unwrap_or("-")
+            applies_to.as_deref().unwrap_or("-"),
+            fill.map(|b| format!("0x{b:02X}"))
+                .unwrap_or_else(|| "-".to_string())
         ),
         LoadOp::AbsSegment {
             lsm_idx,
