@@ -22,6 +22,8 @@ bussard-bus = { workspace = true }
 bussard-mcp = { workspace = true }
 bussard-mgmt = { path = "../bussard-mgmt" }
 bussard-download = { path = "../bussard-download" }
+# KNX Secure (issue #71): the Data Secure tool key / session for the flash seam.
+bussard-secure = { workspace = true }
 bussard-ha = { path = "../bussard-ha" }
 bussard-viz = { workspace = true }
 # axum: drives the `bussard viz` HTTP server (serve + graceful shutdown). MIT.

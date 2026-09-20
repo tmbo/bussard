@@ -24,6 +24,7 @@ mod error;
 mod flag_map;
 mod from_json;
 mod hardware;
+mod keyring;
 mod knx_master;
 mod manufacturer;
 mod password;
@@ -34,6 +35,7 @@ use std::path::Path;
 
 pub use bussard_model::loader::Model;
 pub use error::ImportError;
+pub use keyring::{Backbone, Device, Interface, Keyring, KeyringError, parse_keyring};
 pub use password::derive_zip_password;
 
 use container::Container;

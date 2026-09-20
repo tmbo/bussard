@@ -91,6 +91,14 @@ pub struct RawDevice {
     /// recorded — an absent `Value` means the ref/type default applies and there
     /// is nothing to store.
     pub parameters: Vec<(String, String)>,
+    /// The ETS-tracked KNX Data Secure sequence number from the device's
+    /// `<Security SequenceNumber="…">` child, if present (issue #71, spec §11).
+    /// Flags/state only — never a key.
+    pub secure_sequence_number: Option<u64>,
+    /// Whether a `<DeviceCertificate>` (the factory FDSK certificate) was present
+    /// for this device in the knxproj (issue #71, spec §11). Presence only; the
+    /// FDSK value is deliberately NOT captured (spec §2.2).
+    pub has_device_certificate: bool,
 }
 
 /// A device's location within the building.
@@ -369,6 +377,19 @@ pub fn parse_project(xml: &str, schema: SchemaVersion) -> Result<RawProject> {
                         let name = attr(&e, b"Name", context)?;
                         space_stack.push((ty, name));
                     }
+                    // KNX Secure state (issue #71, spec §11): a `<Security>` start
+                    // tag (it may carry children) still carries the sequence
+                    // number attribute. Flags/state only, never a key.
+                    b"Security" => {
+                        if let Some(dev) = current_device.as_mut() {
+                            if let Some(seq) = attr(&e, b"SequenceNumber", context)?
+                                .as_deref()
+                                .and_then(|s| s.parse::<u64>().ok())
+                            {
+                                dev.secure_sequence_number = Some(seq);
+                            }
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -432,6 +453,26 @@ pub fn parse_project(xml: &str, schema: SchemaVersion) -> Result<RawProject> {
                         if let Some(ref_id) = attr(&e, b"RefId", context)? {
                             let loc = current_location(&space_stack);
                             project.locations.insert(ref_id, loc);
+                        }
+                    }
+                    // KNX Secure state (issue #71, spec §11): the ETS-tracked
+                    // Data Secure sequence number, if the device carries a
+                    // `<Security SequenceNumber="…">` child. Flags/state only.
+                    b"Security" => {
+                        if let Some(dev) = current_device.as_mut() {
+                            if let Some(seq) = attr(&e, b"SequenceNumber", context)?
+                                .as_deref()
+                                .and_then(|s| s.parse::<u64>().ok())
+                            {
+                                dev.secure_sequence_number = Some(seq);
+                            }
+                        }
+                    }
+                    // Factory FDSK certificate presence (spec §11 / §2.2): record
+                    // ONLY that a certificate exists — never the FDSK value.
+                    b"DeviceCertificate" => {
+                        if let Some(dev) = current_device.as_mut() {
+                            dev.has_device_certificate = true;
                         }
                     }
                     // A self-closing DeviceInstance (no com-objects): finalize.
@@ -524,6 +565,8 @@ fn parse_device_start(
         com_objects: Vec::new(),
         module_instances: HashMap::new(),
         parameters: Vec::new(),
+        secure_sequence_number: None,
+        has_device_certificate: false,
     }))
 }
 

@@ -377,6 +377,28 @@ pub fn build_model(project: RawProject, container: &mut Container) -> Result<Mod
             })
             .filter(|l| l.floor.is_some() || l.room.is_some());
 
+        // KNX Secure status (issue #71, spec §11): flags + seqnum state ONLY.
+        // No key material ever reaches the committed YAML model (spec §2.2).
+        let secure_capable = primary_app.map(|a| a.is_secure_enabled).unwrap_or(false);
+        let security = if secure_capable
+            || raw_dev.has_device_certificate
+            || raw_dev.secure_sequence_number.is_some()
+        {
+            Some(bussard_model::schema::DeviceSecurity {
+                secure_capable,
+                // A device is treated as activated only once a keyring/knxproj
+                // signal says so; the knxproj alone (FDSK + seqnum, no tool key)
+                // means capable-but-not-activated — the state of the house today
+                // (spec §1.1). SEC-CAL: confirm the activation signal from a live
+                // ETS activation capture (spec §12.4).
+                activated: false,
+                has_fdsk_certificate: raw_dev.has_device_certificate,
+                sequence_number: raw_dev.secure_sequence_number,
+            })
+        } else {
+            None
+        };
+
         let device = Device {
             address: raw_dev.address,
             name,
@@ -387,6 +409,7 @@ pub fn build_model(project: RawProject, container: &mut Container) -> Result<Mod
             parameters,
             module_bases,
             com_objects,
+            security,
         };
 
         let file_stem = format!("{}-{}", raw_dev.address, slugify(&device.name));
@@ -1158,6 +1181,8 @@ mod tests {
             com_objects: Vec::new(),
             module_instances,
             parameters: Vec::new(),
+            secure_sequence_number: None,
+            has_device_certificate: false,
         }
     }
 

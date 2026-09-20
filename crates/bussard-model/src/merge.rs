@@ -399,6 +399,7 @@ mod tests {
             parameters: BTreeMap::new(),
             module_bases: BTreeMap::new(),
             com_objects: BTreeMap::new(),
+            security: None,
         }
     }
 

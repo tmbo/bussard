@@ -55,6 +55,27 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
         Ok(DeviceConnection { inner })
     }
 
+    /// Like [`connect_with`](Self::connect_with) but with an explicit KNX Data
+    /// Secure layer (issue #71, spec §6.1).
+    ///
+    /// Pass [`SecureLayer::plain`](crate::secure::SecureLayer::plain) for the
+    /// unchanged plain path, or
+    /// [`SecureLayer::activated`](crate::secure::SecureLayer::activated) with a
+    /// `DataSecureSession` to transparently wrap every management APDU to a
+    /// security-activated device. The typed procedures below are unchanged; they
+    /// do not know whether the connection is secure.
+    pub async fn connect_with_secure(
+        conn: Ch,
+        target: IndividualAddress,
+        source: IndividualAddress,
+        timeouts: Timeouts,
+        secure: crate::secure::SecureLayer,
+    ) -> Result<DeviceConnection<Ch>> {
+        let inner =
+            Layer4Connection::connect_with_secure(conn, target, source, timeouts, secure).await?;
+        Ok(DeviceConnection { inner })
+    }
+
     /// The device this connection targets.
     pub fn target(&self) -> IndividualAddress {
         self.inner.target()

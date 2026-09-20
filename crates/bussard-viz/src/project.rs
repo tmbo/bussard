@@ -416,6 +416,7 @@ mod tests {
             parameters: BTreeMap::new(),
             module_bases: BTreeMap::new(),
             com_objects,
+            security: None,
         };
 
         // Device 1.1.4: listener, no product/location.
@@ -429,6 +430,7 @@ mod tests {
             parameters: BTreeMap::new(),
             module_bases: BTreeMap::new(),
             com_objects: BTreeMap::new(),
+            security: None,
         };
 
         let mut devices = BTreeMap::new();

@@ -63,6 +63,7 @@ fn device_with_comobject(addr: &str, name: &str, dpt: Dpt) -> LoadedDevice {
         parameters: BTreeMap::new(),
         module_bases: BTreeMap::new(),
         com_objects,
+        security: None,
     };
     let file_stem = format!("{addr}-{}", name.to_lowercase().replace(' ', "-"));
     LoadedDevice { device, file_stem }

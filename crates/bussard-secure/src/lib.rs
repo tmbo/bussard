@@ -1,0 +1,42 @@
+//! KNX Secure crypto primitives and the Data Secure ASDU codec (issue #71,
+//! Phase A).
+//!
+//! This crate is the clean-room, GPL-free home of everything KNX Secure needs
+//! below the management/transport layers:
+//!
+//! - [`key`]: the zeroizing, non-`Debug`-leaking, non-`Serialize` [`Key16`]
+//!   wrapper for all 128-bit key material (spec §2.3).
+//! - [`crypto`]: the decomposed AES-CCM (AES-CBC-MAC + AES-CTR) and the PBKDF2
+//!   key schedule with the KNX Secure salts (spec §3).
+//! - [`sequence`]: the 6-byte "milliseconds since 2018-01-05" Data Secure
+//!   sequence number (spec §5.8).
+//! - [`asdu`]: the A_SecureData (`0x03F1`) wire codec — SCF, nonce assembly,
+//!   MAC-only and MAC+encrypt modes (spec §5).
+//! - [`session`]: the stateful per-device [`DataSecureSession`] that owns the
+//!   tool key, the send sequence, and the replay-protection table (spec §6.1).
+//!
+//! The IP Secure session layer (Phase B, spec §7-§9) is out of scope here; only
+//! the Data Secure (tool-access management) path is implemented. Both bussard and
+//! the knx-sim converge on these bytes from the spec alone — no code is shared.
+//!
+//! # Key hygiene
+//!
+//! Key material never leaves this crate as raw bytes except through the
+//! controlled [`Key16::bytes`] accessor at the crypto boundary. Nothing here
+//! prints, logs, or serializes a key (spec §2.3).
+
+#![forbid(unsafe_code)]
+
+pub mod asdu;
+pub mod crypto;
+pub mod key;
+pub mod sequence;
+pub mod session;
+
+pub use asdu::{
+    A_SECURE_DATA, AsduError, DecodedInner, Scf, SecureService, SecurityAlgorithm, TpAddressing,
+};
+pub use crypto::{CryptoError, aes_cbc_decrypt, aes_cbc_encrypt, pbkdf2_key, salt};
+pub use key::Key16;
+pub use sequence::Sequence;
+pub use session::{DataSecureSession, UnwrapOutcome};
