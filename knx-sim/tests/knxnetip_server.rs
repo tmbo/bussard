@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use knx_sim::bus::event::TracingSink;
 use knx_sim::bus::{Bus, StimulusJob};
-use knx_sim::device::{Device, LoadState, flag};
+use knx_sim::device::{Device, LoadState, ProfileOverrides, flag};
 use knx_sim::net::KnxnetIpServer;
 use knx_sim::prod::read_knxprod_bytes;
 use knx_sim::wire::knxnetip::{ConnectionHeader, KnxnetIpFrame, service};
@@ -127,6 +127,161 @@ fn test_group_write_is_echoed_to_the_tunnel_client() -> Result<(), Box<dyn std::
     let apci10 = ((cemi.tpdu[0] as u16 & 0x03) << 8) | cemi.tpdu[1] as u16;
     assert_eq!(Apci::from_u10(apci10), Apci::GroupValueWrite);
     assert_eq!((apci10 & 0x3f) as u8, 0x01);
+
+    let _server = handle.join().expect("join");
+    Ok(())
+}
+
+#[test]
+fn test_programming_mode_device_answers_broadcast_read() -> Result<(), Box<dyn std::error::Error>> {
+    // A device in programming mode answers a broadcast A_IndividualAddress_Read
+    // (0/0/0) with an A_IndividualAddress_Response carrying its own address —
+    // the discovery step `bussard assign` and `bussard viz --watch-prog` use.
+    // Built from the synthetic System 7 product so this needs no vendor fixture.
+    let sink = Arc::new(TracingSink);
+    let addr = IndividualAddress::new(1, 1, 2);
+    let pd = knx_sim::testfixtures::synthetic_mdt_sys7_product();
+    let dev = Device::from_product_with_overrides(
+        addr,
+        &pd,
+        LoadState::Loaded,
+        ProfileOverrides {
+            prog_mode: true,
+            ..Default::default()
+        },
+        sink.clone(),
+    )
+    .map_err(|e| format!("build device: {e}"))?;
+    let mut bus = Bus::new(sink);
+    bus.add_device(dev);
+
+    let mut server = KnxnetIpServer::bind("127.0.0.1:0".parse()?, bus)?;
+    let server_addr = server.local_addr()?;
+    let client = UdpSocket::bind("127.0.0.1:0")?;
+    client.set_read_timeout(Some(std::time::Duration::from_secs(2)))?;
+
+    // CONNECT + one TUNNELLING (the broadcast read) = 2 inbound datagrams.
+    let handle = std::thread::spawn(move || {
+        server.serve_n(2).expect("serve");
+        server
+    });
+
+    let connect = KnxnetIpFrame::encode(service::CONNECT_REQUEST, &[0x00; 10]);
+    client.send_to(&connect, server_addr)?;
+    let mut buf = [0u8; 1024];
+    let (n, _) = client.recv_from(&mut buf)?;
+    let resp = KnxnetIpFrame::decode(&buf[..n])?;
+    let channel = resp.body[0];
+
+    // Broadcast A_IndividualAddress_Read to 0/0/0.
+    send_tunnel(&client, server_addr, channel, 0, &individual_address_read())?;
+    expect_ack(&client)?;
+
+    // The device answers over the tunnel with an A_IndividualAddress_Response
+    // whose source is the device's own address.
+    let (n, _) = client.recv_from(&mut buf)?;
+    let frame = KnxnetIpFrame::decode(&buf[..n])?;
+    assert_eq!(frame.service, service::TUNNELLING_REQUEST);
+    let cemi = CemiLData::decode(&frame.body[4..])?;
+    assert_eq!(cemi.message_code, MessageCode::LDataInd);
+    assert_eq!(
+        cemi.source, addr,
+        "response carries the device's own address"
+    );
+    let apci10 = ((cemi.tpdu[0] as u16 & 0x03) << 8) | cemi.tpdu[1] as u16;
+    assert_eq!(Apci::from_u10(apci10), Apci::IndividualAddressResponse);
+
+    let _server = handle.join().expect("join");
+    Ok(())
+}
+
+#[test]
+fn test_tunnelling_sequence_counters_are_per_client() -> Result<(), Box<dyn std::error::Error>> {
+    // The KNXnet/IP tunnelling sequence counter is per CONNECTION: each client's
+    // TUNNELLING_REQUESTs from the gateway must start at 0 and increment
+    // independently. With a single global counter, a second tool's session (e.g.
+    // toggling programming mode) would silently desync a concurrently connected
+    // monitor/viz, whose transport discards out-of-window sequence numbers.
+    let sink = Arc::new(TracingSink);
+    let addr = IndividualAddress::new(1, 1, 2);
+    let pd = knx_sim::testfixtures::synthetic_mdt_sys7_product();
+    let dev = Device::from_product_with_overrides(
+        addr,
+        &pd,
+        LoadState::Loaded,
+        ProfileOverrides {
+            prog_mode: true,
+            ..Default::default()
+        },
+        sink.clone(),
+    )
+    .map_err(|e| format!("build device: {e}"))?;
+    let mut bus = Bus::new(sink);
+    bus.add_device(dev);
+
+    let mut server = KnxnetIpServer::bind("127.0.0.1:0".parse()?, bus)?;
+    let server_addr = server.local_addr()?;
+    let client_a = UdpSocket::bind("127.0.0.1:0")?;
+    let client_b = UdpSocket::bind("127.0.0.1:0")?;
+    for c in [&client_a, &client_b] {
+        c.set_read_timeout(Some(std::time::Duration::from_secs(2)))?;
+    }
+
+    // 2 CONNECTs + 3 TUNNELLINGs = 5 inbound datagrams.
+    let handle = std::thread::spawn(move || {
+        server.serve_n(5).expect("serve");
+        server
+    });
+
+    // Both clients connect (each gets its own zeroed gateway-side counter).
+    let mut buf = [0u8; 1024];
+    let connect = KnxnetIpFrame::encode(service::CONNECT_REQUEST, &[0x00; 10]);
+    client_a.send_to(&connect, server_addr)?;
+    let (n, _) = client_a.recv_from(&mut buf)?;
+    let channel_a = KnxnetIpFrame::decode(&buf[..n])?.body[0];
+    client_b.send_to(&connect, server_addr)?;
+    let (n, _) = client_b.recv_from(&mut buf)?;
+    let channel_b = KnxnetIpFrame::decode(&buf[..n])?.body[0];
+
+    // Each broadcast read draws one IndividualAddress_Response tunnelling frame;
+    // the connection-header seq of that frame must be per-client.
+    let reply_seq = |client: &UdpSocket| -> Result<u8, Box<dyn std::error::Error>> {
+        expect_ack(client)?;
+        let mut buf = [0u8; 1024];
+        let (n, _) = client.recv_from(&mut buf)?;
+        let frame = KnxnetIpFrame::decode(&buf[..n])?;
+        assert_eq!(frame.service, service::TUNNELLING_REQUEST);
+        let hdr = ConnectionHeader::parse(&frame.body).ok_or("short connection header")?;
+        Ok(hdr.seq)
+    };
+
+    // A's first frame: seq 0.
+    send_tunnel(
+        &client_a,
+        server_addr,
+        channel_a,
+        0,
+        &individual_address_read(),
+    )?;
+    assert_eq!(reply_seq(&client_a)?, 0, "client A starts at seq 0");
+    // B's first frame: also seq 0 (a global counter would make this 1).
+    send_tunnel(
+        &client_b,
+        server_addr,
+        channel_b,
+        0,
+        &individual_address_read(),
+    )?;
+    assert_eq!(reply_seq(&client_b)?, 0, "client B starts at seq 0");
+    // A's second frame: seq 1 (unaffected by B's session).
+    send_tunnel(
+        &client_a,
+        server_addr,
+        channel_a,
+        1,
+        &individual_address_read(),
+    )?;
+    assert_eq!(reply_seq(&client_a)?, 1, "client A advances independently");
 
     let _server = handle.join().expect("join");
     Ok(())
@@ -304,6 +459,20 @@ fn group_read(ga: GroupAddress) -> CemiLData {
         ctrl2: 0xe0,
         source: IndividualAddress::new(0, 0, 15),
         dest: ga.raw(),
+        tpdu: vec![(apci10 >> 8) as u8 & 0x03, (apci10 & 0xff) as u8],
+    }
+}
+
+/// A broadcast `A_IndividualAddress_Read` to the broadcast group `0/0/0` (no
+/// payload), exactly as `bussard assign`/`viz --watch-prog` put it on the bus.
+fn individual_address_read() -> CemiLData {
+    let apci10 = Apci::IndividualAddressRead.to_u10();
+    CemiLData {
+        message_code: MessageCode::LDataReq,
+        ctrl1: 0xbc,
+        ctrl2: 0xe0, // group destination bit set (broadcast)
+        source: IndividualAddress::new(0, 0, 255),
+        dest: 0x0000,
         tpdu: vec![(apci10 >> 8) as u8 & 0x03, (apci10 & 0xff) as u8],
     }
 }

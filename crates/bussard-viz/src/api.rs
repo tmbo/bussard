@@ -36,12 +36,18 @@ pub async fn get_model(State(state): State<AppState>) -> Json<Value> {
     Json(state.model.current().json.as_ref().clone())
 }
 
-/// `GET /api/state` — the bus status, current seq, and last value per GA.
+/// `GET /api/state` — the bus status, current seq, last value per GA, and the
+/// individual addresses currently observed in programming mode.
+///
+/// `prog` is an array of IA strings; it is empty when none are in programming
+/// mode or when `--watch-prog` is off (the watch never runs, so the set stays
+/// empty). See the `prog` SSE event for live updates.
 pub async fn get_state(State(state): State<AppState>) -> Json<Value> {
     Json(json!({
         "bus": state.bus.to_json(),
         "seq": state.hub.current_seq(),
         "values": state.hub.state_values(),
+        "prog": state.hub.prog_values(),
     }))
 }
 
@@ -125,6 +131,7 @@ fn to_sse(event: HubEvent) -> Event {
             .data(data.to_string()),
         HubEvent::Bus(status) => Event::default().event("bus").data(status.to_string()),
         HubEvent::Model(data) => Event::default().event("model").data(data.to_string()),
+        HubEvent::Prog(data) => Event::default().event("prog").data(data.to_string()),
         HubEvent::Gap { count } => Event::default()
             .event("gap")
             .data(json!({ "count": count }).to_string()),

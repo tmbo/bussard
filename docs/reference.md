@@ -245,6 +245,7 @@ Serve the network-visualization website: an HTTP server that renders the model a
 | `--dir <DIR>` | `knx` | The model directory (required; a bad model is a hard error so the protected-GA gate never fails open). |
 | `--gateway <HOST>` | | Gateway override. On connect failure the server degrades to model-only mode. |
 | `--routing` | off | Force routing transport. |
+| `--watch-prog` | off | Watch for devices in KNX programming mode and highlight them in the UI. Periodically broadcasts `A_IndividualAddress_Read` on the bus and surfaces the responders in `/api/state`'s `prog` field and the `prog` SSE event. This is active bus traffic, so it is off by default and must be enabled explicitly; never point it at a real installation unattended. Takes effect only when a bus is connected. |
 
 ## Environment variables
 
@@ -500,8 +501,8 @@ The website is driven by a small JSON/SSE API on the same listen address.
 |---|---|
 | `GET /` | The website shell. `GET /assets/{file}` serves the embedded JS/CSS modules. |
 | `GET /api/model` | The precomputed model projection (devices, groups, ranges, links, senders/listeners). Rebuilt in place by `POST /api/reload`. |
-| `GET /api/state` | `{bus: {state, transport, connected}, seq, values}`, where `values` is the last value, payload, DPT, and source per GA. |
-| `GET /api/traffic` | Server-Sent Events. `event: bus` (connection state, always sent first), `event: telegram` (`id:` is the seq, `data:` is the [telegram JSON](#telegram-json-contract) plus `seq`), `event: model` (the model was reloaded, `data:` is `{model_version, stats}`, so the page refetches `/api/model`), `event: gap` (the subscriber fell behind and should re-snapshot). `?backlog=N` (default 50) replays recent telegrams; a reconnect with `Last-Event-ID` resumes with no duplicates and no gaps. |
+| `GET /api/state` | `{bus: {state, transport, connected}, seq, values, prog}`, where `values` is the last value, payload, DPT, and source per GA, and `prog` is an array of the individual addresses currently observed in programming mode (empty when none, or when `--watch-prog` is off). |
+| `GET /api/traffic` | Server-Sent Events. `event: bus` (connection state, always sent first), `event: telegram` (`id:` is the seq, `data:` is the [telegram JSON](#telegram-json-contract) plus `seq`), `event: model` (the model was reloaded, `data:` is `{model_version, stats}`, so the page refetches `/api/model`), `event: prog` (the programming-mode set changed, `data:` is `{devices: [ia, ...]}`; only emitted with `--watch-prog`), `event: gap` (the subscriber fell behind and should re-snapshot). `?backlog=N` (default 50) replays recent telegrams; a reconnect with `Last-Event-ID` resumes with no duplicates and no gaps. |
 | `POST /api/group-write` | `{address, value?, payload?, dpt?, force?}`. Encodes and sends a GroupValueWrite; returns `200` with an echo of what was written. |
 | `POST /api/reload` | Reloads the model from disk and swaps it in atomically. Returns `200` with `{model_version, stats}` on success, or `422` `model_invalid` (keeping the old model) when the model on disk is broken. |
 
@@ -514,6 +515,12 @@ The write policy matches `bussard write`: `400` for a bad address, an un-encodab
 The `knx/` YAML is meant to be edited by hand and by LLMs; `POST /api/reload` picks up those edits without restarting the server. It re-runs `Model::load` on the model directory and swaps the shared model plus its precomputed `/api/model` projection in one atomic move, bumping a `model_version` counter (the initial model is version 1). The reload button in the page header (next to the bus status dot) calls it and surfaces any error inline.
 
 The load-failure semantics are the point: a broken model never replaces a good one. On success the endpoint returns `200` with `{ok, model_version, stats}` (`stats` is `{devices, groups, links}`) and emits a `model` event on the SSE stream carrying `{model_version, stats}`, so every connected page refetches `/api/model` and rebuilds its views. On a load error it returns `422` `{"error": {"code": "model_invalid", "message": <the LoadError, naming the offending file>}}` and keeps serving the previous model unchanged, with no swap and no SSE event. The protected-GA write gate and the live decoder both read the current model, so a reload's newly protected GAs are enforced and its renamed addresses resolve on the very next write and telegram.
+
+### Watching programming mode
+
+With `--watch-prog` the server runs a background probe that puts a broadcast `A_IndividualAddress_Read` on the bus every few seconds and collects the responders for about a second, exactly as `bussard assign` does. Every device in KNX programming mode answers with its own individual address (the software equivalent of the red programming LED on real hardware). The responding set is reported in `/api/state`'s `prog` array and, whenever it changes, on the SSE stream as a `prog` event carrying `{devices: [ia, ...]}`, so the UI can highlight a device the moment its programming button is pressed and drop the highlight when it is released.
+
+This is opt-in because the probe generates active bus traffic: it must never run unnoticed against a real installation. It is off by default, takes effect only when the bus is connected, and reuses the server's single tunnel (it never opens a second connection). While the bus is disconnected the set is cleared and probing pauses; it resumes on reconnect.
 
 ### Degraded and offline modes
 

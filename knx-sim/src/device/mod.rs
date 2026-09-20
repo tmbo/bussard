@@ -138,6 +138,12 @@ pub struct ProfileOverrides {
     /// The System 7 BCU key required for memory access, or `None` for free
     /// access.
     pub bcu_key: Option<u32>,
+    /// Whether the device starts in KNX programming mode. A device in
+    /// programming mode answers the broadcast `A_IndividualAddress_Read`, which
+    /// is how `bussard assign` and `bussard viz --watch-prog` discover it.
+    /// Defaults to `false` (a normal, un-programmed device is silent to the
+    /// broadcast read).
+    pub prog_mode: bool,
 }
 
 /// The runtime state of a System 7 device's three parallel load-state machines
@@ -189,6 +195,12 @@ pub struct Device {
     /// while the device is not fully loaded (an unloaded device is silent on the
     /// group side). Rebuilt after each successful download.
     group_comm: Option<group_comm::GroupComm>,
+    /// Whether the device is in KNX programming mode. When `true` the device
+    /// answers the broadcast `A_IndividualAddress_Read` with its own address.
+    /// Kept in sync with the object-0 `PID_PROGMODE` property: a tool writing
+    /// that property (as ETS/`bussard assign` do) flips this bit, and the
+    /// initial value comes from [`ProfileOverrides::prog_mode`].
+    prog_mode: bool,
     events: std::sync::Arc<dyn EventSink>,
 }
 
@@ -406,6 +418,7 @@ impl Device {
                 product,
                 initial_state,
                 profile,
+                overrides.prog_mode,
                 events,
             ))
         } else {
@@ -414,6 +427,7 @@ impl Device {
                 product,
                 initial_state,
                 profile,
+                overrides.prog_mode,
                 events,
             ))
         }
@@ -425,6 +439,7 @@ impl Device {
         product: &ProductData,
         initial_state: LoadState,
         profile: Profile,
+        prog_mode: bool,
         events: std::sync::Arc<dyn EventSink>,
     ) -> Self {
         let mut objects: BTreeMap<u8, InterfaceObject> = BTreeMap::new();
@@ -450,7 +465,9 @@ impl Device {
             PID_OBJECT_TYPE,
             Property::read_only(object_type_for(0).to_be_bytes().to_vec()),
         );
-        device_object.set_property(PID_PROGMODE, Property::writable(vec![0x00]));
+        // Seed PID_PROGMODE consistent with the initial programming-mode bit so a
+        // property read agrees with the broadcast-read behaviour.
+        device_object.set_property(PID_PROGMODE, Property::writable(vec![u8::from(prog_mode)]));
         device_object.set_property(
             0x0B,
             Property::read_only(vec![0x00, 0xfa, 0x00, 0x25, 0x00, 0x00]),
@@ -543,6 +560,7 @@ impl Device {
             l4_exchange_budget: None,
             l4_exchanges: 0,
             group_comm: None,
+            prog_mode,
             events,
         };
         // A device constructed already `Loaded` (a previously-programmed device)
@@ -562,6 +580,7 @@ impl Device {
         product: &ProductData,
         initial_state: LoadState,
         profile: Profile,
+        prog_mode: bool,
         events: std::sync::Arc<dyn EventSink>,
     ) -> Self {
         let s7 = profile
@@ -580,7 +599,7 @@ impl Device {
             PID_OBJECT_TYPE,
             Property::read_only(object_type_for(0).to_be_bytes().to_vec()),
         );
-        device_object.set_property(PID_PROGMODE, Property::writable(vec![0x00]));
+        device_object.set_property(PID_PROGMODE, Property::writable(vec![u8::from(prog_mode)]));
         let mfr = manufacturer_id_from_app(&product.application_id).unwrap_or(0x0083);
         device_object.set_property(0x0C, Property::read_only(mfr.to_be_bytes().to_vec()));
         device_object.set_property(
@@ -667,6 +686,7 @@ impl Device {
             l4_exchange_budget: None,
             l4_exchanges: 0,
             group_comm: None,
+            prog_mode,
             events,
         };
         device.refresh_group_comm();
@@ -687,6 +707,64 @@ impl Device {
     /// The device's individual address.
     pub fn address(&self) -> IndividualAddress {
         self.address
+    }
+
+    /// Whether the device is currently in KNX programming mode.
+    pub fn prog_mode(&self) -> bool {
+        self.prog_mode
+    }
+
+    /// Set the device's programming-mode bit at runtime and keep the object-0
+    /// `PID_PROGMODE` property in sync so a subsequent property read agrees. This
+    /// is the programmatic toggle a test or embedding harness uses; the wire path
+    /// (a tool writing `PID_PROGMODE`) flows through the same state via
+    /// [`Device::on_property_write`].
+    pub fn set_prog_mode(&mut self, on: bool) {
+        self.sync_prog_mode(on);
+    }
+
+    /// Update the programming-mode bit and the object-0 `PID_PROGMODE` property
+    /// together, emitting a [`Event::ProgModeChanged`] only on an actual change.
+    fn sync_prog_mode(&mut self, on: bool) {
+        if let Some(device_object) = self.objects.get_mut(&0) {
+            if let Some(prop) = device_object.property_mut(PID_PROGMODE) {
+                prop.value = vec![u8::from(on)];
+            }
+        }
+        if self.prog_mode != on {
+            self.prog_mode = on;
+            self.emit(Event::ProgModeChanged {
+                device: self.address,
+                on,
+            });
+        }
+    }
+
+    /// The device's answer to a broadcast `A_IndividualAddress_Read`: an
+    /// `A_IndividualAddress_Response` whose **source** is the device's own
+    /// address and which carries no payload, framed as an `L_Data.ind` to the
+    /// broadcast group address `0/0/0`.
+    ///
+    /// Returns `None` unless the device is in programming mode — only a device
+    /// in programming mode answers the broadcast read (spec: individual-address
+    /// read/response service).
+    pub fn individual_address_response(&self) -> Option<CemiLData> {
+        if !self.prog_mode {
+            return None;
+        }
+        let apci10 = Apci::IndividualAddressResponse.to_u10();
+        Some(CemiLData {
+            message_code: MessageCode::LDataInd,
+            ctrl1: 0xbc,
+            // Broadcast: group destination bit set (bit 7) + hop count 6.
+            ctrl2: 0xe0,
+            source: self.address,
+            // The broadcast group address 0/0/0.
+            dest: 0x0000,
+            // TPCI unnumbered data (00) with the APCI high bits, then the APCI
+            // low byte; no payload.
+            tpdu: vec![(apci10 >> 8) as u8 & 0x03, (apci10 & 0xFF) as u8],
+        })
     }
 
     /// The current load state of a loadable object (by LSM index). On a System 7
@@ -1276,6 +1354,14 @@ impl Device {
             object,
             pid,
         });
+        // A write of PID_PROGMODE on the device object (index 0) enters (value
+        // != 0) or leaves (0) programming mode, exactly as ETS/`bussard assign`
+        // toggle it. Keep the runtime bit in sync so the broadcast-read answer
+        // tracks the property. (`prop.value` above already stored the byte; this
+        // re-affirms it and flips the bit / emits the change event.)
+        if object == 0 && pid == PID_PROGMODE {
+            self.sync_prog_mode(value.first().copied().unwrap_or(0) != 0);
+        }
         // Response echoes obj/pid/count/start + the written value.
         let mut data = vec![
             object,
@@ -1820,6 +1906,86 @@ mod tests {
         Ok(())
     }
 
+    /// Build a fixture-free System 7 device (from the synthetic MDT product) at
+    /// `1.1.2`, optionally starting in programming mode.
+    fn prog_device(prog_mode: bool) -> Result<Device, String> {
+        let pd = crate::testfixtures::synthetic_mdt_sys7_product();
+        let sink = std::sync::Arc::new(RecordingSink::new());
+        Device::from_product_with_overrides(
+            IndividualAddress::new(1, 1, 2),
+            &pd,
+            LoadState::Loaded,
+            ProfileOverrides {
+                prog_mode,
+                ..Default::default()
+            },
+            sink,
+        )
+    }
+
+    #[test]
+    fn test_individual_address_response_only_when_in_prog_mode()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A device NOT in programming mode is silent to the broadcast read.
+        let quiet = prog_device(false)?;
+        assert!(quiet.individual_address_response().is_none());
+
+        // A device in programming mode answers with an A_IndividualAddress_Response
+        // whose source is its own address and dest is the broadcast group 0/0/0.
+        let programming = prog_device(true)?;
+        let resp = programming
+            .individual_address_response()
+            .ok_or("device in prog mode must answer")?;
+        assert_eq!(resp.message_code, MessageCode::LDataInd);
+        assert_eq!(resp.source, IndividualAddress::new(1, 1, 2));
+        assert_eq!(resp.dest, 0x0000);
+        assert!(resp.is_group(), "broadcast frames carry the group bit");
+        let apci10 = ((resp.tpdu[0] as u16 & 0x03) << 8) | resp.tpdu[1] as u16;
+        assert_eq!(Apci::from_u10(apci10), Apci::IndividualAddressResponse);
+        Ok(())
+    }
+
+    #[test]
+    fn test_pid_progmode_write_toggles_prog_mode() -> Result<(), Box<dyn std::error::Error>> {
+        // Writing PID_PROGMODE over the wire (as ETS/`bussard assign` do) flips the
+        // runtime bit: 1 enters programming mode, 0 leaves it.
+        let mut dev = prog_device(false)?;
+        connect(&mut dev)?;
+        // Authorize (free access) so property writes are accepted.
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+        assert!(!dev.prog_mode());
+
+        // A_PropertyValue_Write obj0 PID_PROGMODE count=1 start=1 value=01.
+        dev.handle_cemi(&data(&dev, 0x3D7, &[0x00, PID_PROGMODE, 0x10, 0x01, 0x01]))?;
+        assert!(dev.prog_mode(), "writing PID_PROGMODE=1 enters prog mode");
+        assert!(
+            dev.individual_address_response().is_some(),
+            "now answers the broadcast read"
+        );
+
+        // Writing 0 leaves programming mode again (how `assign` clears it).
+        dev.handle_cemi(&data(&dev, 0x3D7, &[0x00, PID_PROGMODE, 0x10, 0x01, 0x00]))?;
+        assert!(!dev.prog_mode(), "writing PID_PROGMODE=0 leaves prog mode");
+        assert!(dev.individual_address_response().is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_set_prog_mode_syncs_property() -> Result<(), Box<dyn std::error::Error>> {
+        // The programmatic toggle updates both the bit and the PID_PROGMODE
+        // property value so a subsequent property read agrees.
+        let mut dev = prog_device(false)?;
+        dev.set_prog_mode(true);
+        assert!(dev.prog_mode());
+        let prop = dev
+            .objects
+            .get(&0)
+            .and_then(|io| io.property(PID_PROGMODE))
+            .ok_or("device object has PID_PROGMODE")?;
+        assert_eq!(prop.value, vec![0x01]);
+        Ok(())
+    }
+
     /// Extract the value bytes from a single A_PropertyValue_Response reaction:
     /// the payload after the 4-byte obj/pid/(count|start_hi)/start_lo header.
     fn prop_response_value(reaction: &DeviceReaction) -> Vec<u8> {
@@ -2175,6 +2341,7 @@ mod tests {
                     mask: None,
                     lsm_access: access,
                     bcu_key: None,
+                    prog_mode: false,
                 },
                 std::sync::Arc::new(RecordingSink::new()),
             )

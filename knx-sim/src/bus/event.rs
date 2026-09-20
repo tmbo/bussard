@@ -70,6 +70,15 @@ pub enum Event {
         /// The new access level (0 = highest).
         level: u8,
     },
+    /// A device entered or left KNX programming mode (its `PID_PROGMODE` bit).
+    /// While in programming mode the device answers the broadcast
+    /// `A_IndividualAddress_Read`.
+    ProgModeChanged {
+        /// The device address.
+        device: IndividualAddress,
+        /// Whether programming mode is now on.
+        on: bool,
+    },
     /// A device updated a com-object's value from an inbound group write it
     /// listens to (the runtime group-communication path).
     GroupObjectUpdated {
@@ -118,6 +127,9 @@ impl EventSink for TracingSink {
             } => tracing::info!(%device, master_reset, "device restarted"),
             Event::AuthChanged { device, level } => {
                 tracing::info!(%device, level, "authorization changed")
+            }
+            Event::ProgModeChanged { device, on } => {
+                tracing::info!(%device, on, "programming mode changed")
             }
             Event::GroupObjectUpdated { device, object, ga } => {
                 tracing::info!(%device, object, ga = format!("0x{ga:04x}"), "group object updated")

@@ -56,6 +56,13 @@ pub struct VizConfig {
     pub listen: SocketAddr,
     /// The resolved bus connection, or `None` for model-only (degraded) mode.
     pub connection: Option<ConnectionConfig>,
+    /// Whether to run the programming-mode watch: a background probe that puts a
+    /// broadcast `A_IndividualAddress_Read` on the bus every few seconds and
+    /// surfaces responders in `/api/state`'s `prog` field and the `prog` SSE
+    /// event. DEFAULT OFF — the probe generates active bus traffic and must never
+    /// run unnoticed against a real installation. Only takes effect when a bus is
+    /// configured.
+    pub watch_prog: bool,
 }
 
 /// Errors surfaced while starting the viz server.
@@ -121,14 +128,23 @@ async fn serve_asset(Path(file): Path<String>, State(_): State<AppState>) -> Res
     }
 }
 
+/// What [`build_state`] returns: the shared [`AppState`], the optional bus handle
+/// (the caller closes it on shutdown to free the tunnel slot), and the optional
+/// [`JoinHandle`](tokio::task::JoinHandle) for the programming-mode watch task
+/// (the caller aborts it on shutdown, like the feeder is torn down). Both
+/// optionals are `None` in model-only mode.
+pub type BuiltState = (
+    AppState,
+    Option<bussard_bus::BusHandle>,
+    Option<tokio::task::JoinHandle<()>>,
+);
+
 /// Loads the model and builds the shared [`AppState`], spawning the bus feeder
-/// when a connection is configured. Returns the state plus an optional bus
-/// handle (the caller closes it on shutdown to free the tunnel slot).
+/// (and, when `watch_prog` is set, the programming-mode watch) when a connection
+/// is configured. See [`BuiltState`] for the returned handles.
 ///
 /// The model load is a hard error: the server must never run without one.
-pub fn build_state(
-    config: &VizConfig,
-) -> Result<(AppState, Option<bussard_bus::BusHandle>), VizError> {
+pub fn build_state(config: &VizConfig) -> Result<BuiltState, VizError> {
     let model = Model::load(&config.dir).map_err(|source| VizError::ModelLoad {
         dir: config.dir.display().to_string(),
         source,
@@ -136,7 +152,7 @@ pub fn build_state(
     let model = ModelHandle::new(model);
     let hub = TrafficHub::new();
 
-    let (bus, handle) = match &config.connection {
+    let (bus, handle, watch) = match &config.connection {
         Some(conn) => {
             let (handle, _task) = Bus::connect(conn.clone());
             let bus = BusStatus::connected(conn.transport.clone(), handle.clone());
@@ -149,9 +165,21 @@ pub fn build_state(
                 model.clone(),
                 bus.clone(),
             ));
-            (bus, Some(handle))
+            // Spawn the programming-mode watch only when explicitly enabled: it
+            // puts active broadcast reads on the bus, so it is opt-in via
+            // `--watch-prog` and must never run unnoticed against a real
+            // installation.
+            let watch = if config.watch_prog {
+                Some(tokio::spawn(traffic::watch_prog(
+                    hub.clone(),
+                    handle.clone(),
+                )))
+            } else {
+                None
+            };
+            (bus, Some(handle), watch)
         }
-        None => (BusStatus::none(), None),
+        None => (BusStatus::none(), None, None),
     };
 
     let state = AppState {
@@ -160,7 +188,7 @@ pub fn build_state(
         hub,
         bus,
     };
-    Ok((state, handle))
+    Ok((state, handle, watch))
 }
 
 /// Loads the model, wires the bus, and serves the HTTP API until the process is
@@ -170,7 +198,7 @@ pub fn build_state(
 /// listener closes. Binaries that need a Ctrl-C hook use [`build_state`] +
 /// [`router`] and axum's `serve` directly.
 pub async fn serve(config: VizConfig) -> Result<(), VizError> {
-    let (state, handle) = build_state(&config)?;
+    let (state, handle, watch) = build_state(&config)?;
     let app = router(state);
 
     let listener = tokio::net::TcpListener::bind(config.listen)
@@ -182,7 +210,10 @@ pub async fn serve(config: VizConfig) -> Result<(), VizError> {
 
     let result = axum::serve(listener, app).await.map_err(VizError::Serve);
 
-    // Free the tunnel slot on the way out.
+    // Stop the programming-mode watch, then free the tunnel slot on the way out.
+    if let Some(w) = watch {
+        w.abort();
+    }
     if let Some(h) = handle {
         let _ = h.close().await;
     }
@@ -315,6 +346,33 @@ mod tests {
         assert_eq!(v["bus"]["state"], "disconnected");
         assert_eq!(v["bus"]["connected"], false);
         assert_eq!(v["seq"], 0);
+        // With no watch running the prog set is an empty array (never absent).
+        assert_eq!(v["prog"], serde_json::json!([]));
+    }
+
+    #[tokio::test]
+    async fn test_state_endpoint_reports_prog_set() {
+        // With devices observed in programming mode, /api/state.prog carries
+        // their individual addresses (sorted, BTreeSet order).
+        use bussard_model::IndividualAddress;
+        let state = empty_state();
+        let set: std::collections::BTreeSet<IndividualAddress> = ["1.1.7", "1.1.2"]
+            .iter()
+            .map(|s| s.parse().expect("ia"))
+            .collect();
+        assert!(state.hub.set_prog_if_changed(set));
+
+        let (status, body) = call(
+            state,
+            Request::builder()
+                .uri("/api/state")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let v = json(&body);
+        assert_eq!(v["prog"], serde_json::json!(["1.1.2", "1.1.7"]));
     }
 
     /// Builds a POST /api/group-write request from a JSON body.
