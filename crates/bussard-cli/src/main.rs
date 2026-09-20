@@ -33,8 +33,30 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[derive(Debug, Parser)]
 #[command(name = "bussard", version, about, long_about = None)]
 struct Cli {
+    /// Increase log verbosity: `-v` = info, `-vv` = debug, `-vvv` = trace.
+    /// An explicit `RUST_LOG` overrides this. Default (no flag) is `warn`.
+    #[arg(short, long, action = clap::ArgAction::Count, global = true)]
+    verbose: u8,
+    /// Print the invocation's wall-clock time to stderr on exit.
+    #[arg(long, global = true)]
+    timing: bool,
     #[command(subcommand)]
     command: Command,
+}
+
+/// Maps a `-v` repeat count to a tracing `EnvFilter` directive string, unless an
+/// explicit `RUST_LOG` is set (which always wins). `0` → `warn` (the default).
+fn verbosity_filter(verbose: u8) -> tracing_subscriber::EnvFilter {
+    if let Ok(filter) = tracing_subscriber::EnvFilter::try_from_default_env() {
+        return filter;
+    }
+    let level = match verbose {
+        0 => "warn",
+        1 => "info",
+        2 => "debug",
+        _ => "trace",
+    };
+    tracing_subscriber::EnvFilter::new(level)
 }
 
 /// The output format for machine-readable commands.
@@ -114,12 +136,19 @@ enum Command {
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
+        /// Skip the interactive confirmation (dangerous; for scripts).
+        #[arg(long)]
+        yes: bool,
         /// Override the gateway `host[:port]` for tunneling.
         #[arg(long, value_name = "HOST")]
         gateway: Option<String>,
         /// Force KNXnet/IP routing (multicast) transport.
         #[arg(long)]
         routing: bool,
+        /// Permit a write to a non-loopback (real) gateway. Required for any
+        /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
+        #[arg(long)]
+        allow_remote_gateway: bool,
     },
     /// Read a device's tables back over the bus and diff them against the model,
     /// or (with `--line`) sweep a whole line and synthesize a fresh model.
@@ -213,12 +242,19 @@ enum Command {
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
+        /// Skip the interactive confirmation (dangerous; for scripts).
+        #[arg(long)]
+        yes: bool,
         /// Override the gateway `host[:port]` for tunneling.
         #[arg(long, value_name = "HOST")]
         gateway: Option<String>,
         /// Force KNXnet/IP routing (multicast) transport.
         #[arg(long)]
         routing: bool,
+        /// Permit a write to a non-loopback (real) gateway. Required for any
+        /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
+        #[arg(long)]
+        allow_remote_gateway: bool,
     },
     /// Flash an application program from vendor product data into a device.
     Flash {
@@ -242,6 +278,10 @@ enum Command {
         /// Skip the interactive confirmation (dangerous; for scripts).
         #[arg(long)]
         yes: bool,
+        /// Permit a write to a non-loopback (real) gateway. Required for any
+        /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
+        #[arg(long)]
+        allow_remote_gateway: bool,
         /// The device's BCU access key, in hex (e.g. `FFFFFFFF` or `0x11223344`),
         /// presented with A_Authorize on every management connect (issue #52).
         /// Unset presents the free-access key (FFFFFFFF) — correct for an unkeyed
@@ -291,6 +331,10 @@ enum Command {
         /// Force KNXnet/IP routing (multicast) transport.
         #[arg(long)]
         routing: bool,
+        /// Permit a write to a non-loopback (real) gateway. Required for any
+        /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
+        #[arg(long)]
+        allow_remote_gateway: bool,
     },
     /// Validate the YAML model and report diagnostics.
     Validate {
@@ -368,6 +412,9 @@ enum Command {
         /// Write even if the GA is marked `protected: true` in the model.
         #[arg(long)]
         force: bool,
+        /// Skip the interactive confirmation (dangerous; for scripts).
+        #[arg(long)]
+        yes: bool,
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
@@ -377,6 +424,10 @@ enum Command {
         /// Force KNXnet/IP routing (multicast) transport.
         #[arg(long)]
         routing: bool,
+        /// Permit a write to a non-loopback (real) gateway. Required for any
+        /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
+        #[arg(long)]
+        allow_remote_gateway: bool,
     },
     /// Generate the Home Assistant KNX integration YAML from the model.
     HaConfig {
@@ -429,18 +480,16 @@ enum Command {
 }
 
 fn main() -> ExitCode {
+    let cli = Cli::parse();
+
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
+        .with_env_filter(verbosity_filter(cli.verbose))
         .with_writer(std::io::stderr)
         .init();
 
-    let cli = Cli::parse();
-    // Temporary speed telemetry: every invocation reports its wall time on
-    // stderr. Speed is a core project goal; this keeps regressions visible
-    // during development and will be removed (or demoted to --timing) later.
+    // Opt-in wall-clock telemetry (issue #78): `--timing` reports the
+    // invocation's elapsed time on stderr. Speed is a project goal, so this stays
+    // available for regression spotting, but a plain 0.1.0 run is quiet.
     let started = std::time::Instant::now();
     let code = match run(cli.command) {
         Ok(code) => code,
@@ -449,7 +498,9 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     };
-    eprintln!("took {:.2?}", started.elapsed());
+    if cli.timing {
+        eprintln!("took {:.2?}", started.elapsed());
+    }
     code
 }
 
@@ -475,11 +526,15 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
         Command::Assign {
             address,
             dir,
+            yes,
             gateway,
             routing,
+            allow_remote_gateway,
         } => assign_cmd::run(
             address.as_deref(),
             &dir,
+            yes,
+            allow_remote_gateway,
             conn_cmd::ConnOverrides { gateway, routing },
         ),
         Command::Reconstruct {
@@ -541,11 +596,15 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
         Command::Adopt {
             product,
             dir,
+            yes,
             gateway,
             routing,
+            allow_remote_gateway,
         } => adopt_cmd::run(
             product.as_deref(),
             &dir,
+            yes,
+            allow_remote_gateway,
             conn_cmd::ConnOverrides { gateway, routing },
         ),
         Command::Flash {
@@ -555,6 +614,7 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             order_number,
             dir,
             yes,
+            allow_remote_gateway,
             bcu_key,
             gateway,
             routing,
@@ -565,6 +625,7 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             order_number.as_deref(),
             &dir,
             yes,
+            allow_remote_gateway,
             bcu_key.as_deref(),
             conn_cmd::ConnOverrides { gateway, routing },
         ),
@@ -586,10 +647,12 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             yes,
             gateway,
             routing,
+            allow_remote_gateway,
         } => apply_cmd::run(
             &address,
             &dir,
             yes,
+            allow_remote_gateway,
             conn_cmd::ConnOverrides { gateway, routing },
         ),
         Command::Validate { dir, format } => validate_cmd::run(&dir, format == Format::Json),
@@ -648,14 +711,18 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             value,
             dpt,
             force,
+            yes,
             dir,
             gateway,
             routing,
+            allow_remote_gateway,
         } => write_cmd::run(
             &ga,
             &value,
             dpt.as_deref(),
             force,
+            yes,
+            allow_remote_gateway,
             &dir,
             conn_cmd::ConnOverrides { gateway, routing },
         ),

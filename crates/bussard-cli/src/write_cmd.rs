@@ -11,6 +11,7 @@
 //! `--force` is given (see the design document §8). That policy stays at this
 //! edge; `ops` transmits whatever it is handed.
 
+use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -19,18 +20,26 @@ use bussard_bus::ops::{self, WriteOptions};
 use bussard_bus::{Bus, BusError};
 use bussard_model::{Dpt, GroupAddress, Model, encode, parse_value};
 
-use crate::conn_cmd::{ConnOverrides, load_model_required, resolve_config};
+use crate::conn_cmd::{
+    ConnOverrides, enforce_write_gate, gateway_display, load_model_required, resolve_config,
+};
 
 /// Sends a `GroupValueWrite` to the bus.
 ///
 /// Resolves the DPT (`--dpt` wins, else the GA's DPT from the model), refuses
 /// protected GAs without `--force`, encodes the human value, transmits, and
 /// confirms. Returns a failure exit code on parse/encode/connect/send errors.
+///
+/// The argument list mirrors the `write` subcommand's flags 1:1; bundling them
+/// would only obscure that mapping, so the clippy arity lint is allowed here.
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     ga_str: &str,
     value: &str,
     dpt_override: Option<&str>,
     force: bool,
+    yes: bool,
+    allow_remote_gateway: bool,
     dir: &Path,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
@@ -64,6 +73,21 @@ pub fn run(
         .map(|g| g.name.clone());
 
     let config = resolve_config(model.as_ref(), &overrides)?;
+    let gateway = gateway_display(&config);
+
+    // Safety envelope (issue #74): refuse a write to a real (non-loopback)
+    // gateway unless the operator opted in, and always name the resolved gateway
+    // on stderr before acting so a scripted write cannot hit the real house
+    // silently.
+    enforce_write_gate(&config, allow_remote_gateway)?;
+    eprintln!("gateway: {gateway}");
+
+    // Confirmation naming the GA, value, and gateway. `--yes` skips the prompt.
+    let value_preview = typed.to_string();
+    if !confirm_write(ga, &ga_name, &value_preview, &dpt, &gateway, yes)? {
+        eprintln!("aborted; nothing was written.");
+        return Ok(ExitCode::FAILURE);
+    }
 
     let runtime = tokio::runtime::Runtime::new()?;
     let outcome = runtime.block_on(async move {
@@ -79,7 +103,7 @@ pub fn run(
         result
     });
 
-    let value_display = typed.to_string();
+    let value_display = &value_preview;
     match outcome {
         Ok(write) => {
             // Confirmation line, e.g.
@@ -106,6 +130,40 @@ pub fn run(
             Ok(ExitCode::FAILURE)
         }
     }
+}
+
+/// Confirms a group write on a TTY, naming the GA, value, and resolved gateway
+/// (issue #74). `--yes` (`yes = true`) skips the prompt. A non-TTY without
+/// `--yes` is refused: a scripted write must opt in explicitly rather than fire
+/// blind at whatever gateway `bussard.yaml` names.
+fn confirm_write(
+    ga: GroupAddress,
+    ga_name: &Option<String>,
+    value_display: &str,
+    dpt: &Dpt,
+    gateway: &str,
+    yes: bool,
+) -> anyhow::Result<bool> {
+    if yes {
+        return Ok(true);
+    }
+    let ga_label = match ga_name {
+        Some(name) => format!("{ga} {name}"),
+        None => ga.to_string(),
+    };
+    if !std::io::stdin().is_terminal() {
+        bail!(
+            "refusing to write {ga_label} ← {value_display} ({dpt}) via {gateway} without a \
+             terminal to confirm on; pass --yes to write non-interactively"
+        );
+    }
+    eprint!("write {ga_label} ← {value_display} ({dpt}) via {gateway}? [y/N] ");
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    std::io::stdin()
+        .read_line(&mut line)
+        .context("reading confirmation")?;
+    Ok(matches!(line.trim(), "y" | "Y" | "yes" | "Yes"))
 }
 
 /// Returns a refusal message if `ga` is protected in the model and `force` is

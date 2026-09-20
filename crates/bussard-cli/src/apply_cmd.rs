@@ -32,7 +32,9 @@ use bussard_mgmt::tables::{DeviceTables, TablesError, read_tables};
 use bussard_mgmt::{Layer4Connection, LeaseChannel, system_type};
 use bussard_model::IndividualAddress;
 
-use crate::conn_cmd::{ConnOverrides, load_model_required, resolve_config};
+use crate::conn_cmd::{
+    ConnOverrides, enforce_write_gate, gateway_display, load_model_required, resolve_config,
+};
 use crate::plan_cmd;
 
 /// Applies the model's link tables to a device (plan, confirm, write, verify).
@@ -40,6 +42,7 @@ pub fn run(
     address: &str,
     dir: &Path,
     yes: bool,
+    allow_remote_gateway: bool,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
     let target: IndividualAddress = address
@@ -56,6 +59,10 @@ pub fn run(
         );
     };
     let config = resolve_config(Some(&model), &overrides)?;
+    // Safety envelope (issue #74): refuse a write to a real (non-loopback)
+    // gateway unless the operator opted in.
+    enforce_write_gate(&config, allow_remote_gateway)?;
+    let gateway = gateway_display(&config);
     let desired = plan_cmd::compute_desired(&model, target)?;
 
     // Phase A (read-only): read the live tables and build the plan.
@@ -124,7 +131,7 @@ pub fn run(
     }
 
     // Confirm unless --yes.
-    if !confirm(target, yes, &report)? {
+    if !confirm(target, &gateway, yes, &report)? {
         eprintln!("aborted — no changes written.");
         return Ok(ExitCode::FAILURE);
     }
@@ -196,8 +203,14 @@ async fn execute(
     result
 }
 
-/// Confirms on a TTY (y/N). Non-interactive without `--yes` is refused.
-fn confirm(target: IndividualAddress, yes: bool, report: &PlanReport) -> anyhow::Result<bool> {
+/// Confirms on a TTY (y/N), naming the resolved gateway (issue #74).
+/// Non-interactive without `--yes` is refused.
+fn confirm(
+    target: IndividualAddress,
+    gateway: &str,
+    yes: bool,
+    report: &PlanReport,
+) -> anyhow::Result<bool> {
     if yes {
         return Ok(true);
     }
@@ -209,7 +222,7 @@ fn confirm(target: IndividualAddress, yes: bool, report: &PlanReport) -> anyhow:
         );
     }
     eprint!(
-        "apply {} change(s) to {target}? [y/N] ",
+        "apply {} change(s) to {target} via {gateway}? [y/N] ",
         report.additions.len() + report.removals.len()
     );
     let _ = std::io::stderr().flush();
