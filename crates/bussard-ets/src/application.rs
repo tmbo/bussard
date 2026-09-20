@@ -648,6 +648,9 @@ pub struct ApplicationProgram {
     pub name: Option<String>,
     /// The declared `LoadProcedureStyle`.
     pub load_procedure_style: Option<String>,
+    /// Whether the application declares `IsSecureEnabled="true"`: it is KNX
+    /// Data-Secure-capable (issue #71, spec §11). Capability, not activation.
+    pub is_secure_enabled: bool,
     /// The XML schema version this file declared, e.g. `"20"`, `"21"`, `"23"`.
     pub schema_version: Option<String>,
     /// Base com-objects, keyed by full `Id`.
@@ -1009,6 +1012,12 @@ fn handle_start(
             }
             app.name = get(m, b"Name").map(str::to_string);
             app.load_procedure_style = get(m, b"LoadProcedureStyle").map(str::to_string);
+            // KNX Secure capability (issue #71, spec §11): the application
+            // declares whether it can run Data Secure. Preserve it (previously
+            // dropped); it is a capability flag, not key material.
+            app.is_secure_enabled = get(m, b"IsSecureEnabled")
+                .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+                .unwrap_or(false);
         }
         b"RelativeSegment" => insert_segment(app, m, SegmentKind::Relative),
         b"AbsoluteSegment" => insert_segment(app, m, SegmentKind::Absolute),

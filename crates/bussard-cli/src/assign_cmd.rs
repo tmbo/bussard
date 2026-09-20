@@ -601,6 +601,8 @@ fn build_stub_device(address: IndividualAddress, v: &Verified) -> Device {
         parameters: Default::default(),
         module_bases: Default::default(),
         com_objects: Default::default(),
+        // KNX Secure state comes only from the knxproj importer (issue #71).
+        security: None,
     }
 }
 
@@ -704,6 +706,7 @@ mod tests {
                         parameters: Default::default(),
                         module_bases: Default::default(),
                         com_objects: Default::default(),
+                        security: None,
                     },
                     file_stem: format!("{addr}-d"),
                 },

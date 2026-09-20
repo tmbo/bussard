@@ -13,6 +13,7 @@ mod ha_config_cmd;
 mod import_cmd;
 mod import_product_cmd;
 mod init_cmd;
+mod keyring_cmd;
 mod mcp_cmd;
 mod monitor_cmd;
 mod plan_cmd;
@@ -203,6 +204,20 @@ enum Command {
         /// Force KNXnet/IP routing (multicast) transport.
         #[arg(long)]
         routing: bool,
+    },
+    /// Inspect a KNX Secure keyring (`.knxkeys`): list the devices, interfaces
+    /// and group addresses it carries (issue #71). Key material is NEVER printed.
+    ///
+    /// The keyring password is read from the `BUSSARD_KEYRING_PASSWORD`
+    /// environment variable (mirroring `BUSSARD_PROJECT_PASSWORD`), never a CLI
+    /// argument (spec §2.2).
+    Keyring {
+        /// The `.knxkeys` file to inspect.
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+        /// Emit JSON instead of the text summary.
+        #[arg(long)]
+        json: bool,
     },
     /// Import vendor product data (`.knxprod`): cache it and generate a model.
     ///
@@ -584,6 +599,7 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             json,
             conn_cmd::ConnOverrides { gateway, routing },
         ),
+        Command::Keyring { file, json } => keyring_cmd::run(&file, json),
         Command::ImportProduct {
             file,
             dir,

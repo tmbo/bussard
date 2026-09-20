@@ -120,6 +120,18 @@ pub enum MgmtError {
         level: u8,
     },
 
+    /// A KNX Data Secure operation failed for `address`: the outgoing APDU could
+    /// not be wrapped, or an incoming secured frame failed MAC verification or
+    /// was a stale (replayed) sequence. A wrong-MAC response is rejected here
+    /// rather than silently accepted (issue #71, spec §6).
+    #[error("{address}: KNX Data Secure error: {source}")]
+    Secure {
+        /// The device the secure operation concerned.
+        address: IndividualAddress,
+        /// The underlying Data Secure ASDU/session error.
+        source: bussard_secure::AsduError,
+    },
+
     /// An underlying transport error (socket, gateway, framing).
     #[error(transparent)]
     Transport(#[from] TransportError),
