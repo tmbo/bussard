@@ -752,6 +752,8 @@ fn synthesize_model(found: &[LineDevice], overrides: &ConnOverrides, dir: &Path)
             parameters: BTreeMap::new(),
             module_bases: BTreeMap::new(),
             com_objects,
+            // KNX Secure state comes only from the knxproj importer (issue #71).
+            security: None,
         };
         devices.insert(
             dev.address,

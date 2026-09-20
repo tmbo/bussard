@@ -73,6 +73,25 @@ struct Report {
     system_type: String,
     /// The interface objects and their properties.
     objects: Vec<ObjectReport>,
+    /// KNX Secure status from the model, when the device is secure-capable
+    /// (issue #71). `None` for a plain device (no secure block in the model).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    secure: Option<SecureReport>,
+}
+
+/// The KNX Secure status surfaced from the committed model (issue #71, spec §5
+/// CLI surface). Flags only — never any key material.
+#[derive(Debug, serde::Serialize)]
+struct SecureReport {
+    /// The device's application is Data-Secure-capable (`IsSecureEnabled`).
+    secure_capable: bool,
+    /// Security has been activated (management goes behind A_SecureData).
+    activated: bool,
+    /// A factory FDSK certificate was present in the imported knxproj.
+    has_fdsk_certificate: bool,
+    /// The ETS-tracked Data Secure sequence number, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sequence_number: Option<u64>,
 }
 
 /// Runs `bussard describe`.
@@ -122,6 +141,21 @@ pub fn run(
         let _ = handle.close().await;
         outcome
     })?;
+
+    let mut result = result;
+    // Surface KNX Secure status from the model (issue #71, spec §5). Flags only.
+    if let Some(sec) = model
+        .as_ref()
+        .and_then(|m| m.devices.get(&target))
+        .and_then(|d| d.device.security.as_ref())
+    {
+        result.secure = Some(SecureReport {
+            secure_capable: sec.secure_capable,
+            activated: sec.activated,
+            has_fdsk_certificate: sec.has_fdsk_certificate,
+            sequence_number: sec.sequence_number,
+        });
+    }
 
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);
@@ -178,6 +212,8 @@ async fn introspect<Ch: bussard_mgmt::L4Channel>(
         mask: format!("{mask:04X}"),
         system_type: system_type(mask).to_string(),
         objects: object_reports,
+        // Filled in by `run` from the model (introspect has no model handle).
+        secure: None,
     })
 }
 
@@ -234,6 +270,23 @@ fn print_text(report: &Report) {
         "device {} — mask {} ({})",
         report.address, report.mask, report.system_type
     );
+    if let Some(sec) = &report.secure {
+        let state = if sec.activated {
+            "activated (management requires KNX Data Secure)"
+        } else if sec.secure_capable {
+            "capable, not activated"
+        } else {
+            "not secure-capable"
+        };
+        print!("  KNX Secure: {state}");
+        if sec.has_fdsk_certificate {
+            print!("; FDSK certificate present");
+        }
+        if let Some(seq) = sec.sequence_number {
+            print!("; seqnum {seq}");
+        }
+        println!();
+    }
     if report.objects.is_empty() {
         println!("  no interface objects discoverable");
         return;
