@@ -1,0 +1,219 @@
+{
+  "note": "Corpus-driven conformance sweep. Buckets every application in every product through parse -> image-synthesis -> plan-lowering, ranked by refusal reason and mask family. A new refusal or panic is a regression the checked-in baseline catches. Regenerate with the env-gated corpus test (BUSSARD_PRODUCT_CORPUS set, BUSSARD_UPDATE_SWEEP_MANIFEST=1). No vendor product data is committed here — only outcome labels and file names.",
+  "totals": {
+    "products": 5,
+    "parse_ok": 4,
+    "parse_failed": 1,
+    "parse_panicked": 0,
+    "apps": 11,
+    "image_ok": 11,
+    "image_refused": 0,
+    "image_panicked": 0,
+    "plan_executable": 11,
+    "plan_refused": 0,
+    "plan_not_supported_family": 0,
+    "plan_panicked": 0
+  },
+  "plan_refusal_ranking": [],
+  "image_refusal_ranking": [],
+  "parse_failure_ranking": [
+    {
+      "reason": "parsing application program M-00FF_A-00FF-10-DEAD-O000A",
+      "count": 1
+    }
+  ],
+  "family_coverage": {
+    "System 7": {
+      "apps": 8,
+      "executable": 8,
+      "refused": 0,
+      "not_supported_family": 0,
+      "panicked": 0
+    },
+    "System B": {
+      "apps": 3,
+      "executable": 3,
+      "refused": 0,
+      "not_supported_family": 0,
+      "panicked": 0
+    }
+  },
+  "products": [
+    {
+      "file": "enum_default_out_of_range.knxprod",
+      "parse": {
+        "parse": "ok",
+        "apps": 1
+      },
+      "apps": [
+        {
+          "id": "M-0071_A-7002-10-BEEF-O000A",
+          "mask": "07B0",
+          "image": {
+            "image": "ok",
+            "segments": 1
+          },
+          "plan": {
+            "plan": "executable",
+            "steps": 6
+          }
+        }
+      ]
+    },
+    {
+      "file": "interra_extension_lie.knxprod",
+      "parse": {
+        "parse": "ok",
+        "apps": 1
+      },
+      "apps": [
+        {
+          "id": "M-00C8_A-00C8-14-C0DE-O000A",
+          "mask": "07B0",
+          "image": {
+            "image": "ok",
+            "segments": 1
+          },
+          "plan": {
+            "plan": "executable",
+            "steps": 6
+          }
+        }
+      ]
+    },
+    {
+      "file": "theben_rm4_multiapp.knxprod",
+      "parse": {
+        "parse": "ok",
+        "apps": 8
+      },
+      "apps": [
+        {
+          "id": "M-0048_A-4901-05-0001-O000A",
+          "mask": "0705",
+          "image": {
+            "image": "ok",
+            "segments": 0
+          },
+          "plan": {
+            "plan": "executable",
+            "steps": 1
+          }
+        },
+        {
+          "id": "M-0048_A-4902-05-0002-O000A",
+          "mask": "0705",
+          "image": {
+            "image": "ok",
+            "segments": 0
+          },
+          "plan": {
+            "plan": "executable",
+            "steps": 1
+          }
+        },
+        {
+          "id": "M-0048_A-4903-05-0003-O000A",
+          "mask": "0705",
+          "image": {
+            "image": "ok",
+            "segments": 0
+          },
+          "plan": {
+            "plan": "executable",
+            "steps": 1
+          }
+        },
+        {
+          "id": "M-0048_A-4904-05-0004-O000A",
+          "mask": "0705",
+          "image": {
+            "image": "ok",
+            "segments": 0
+          },
+          "plan": {
+            "plan": "executable",
+            "steps": 1
+          }
+        },
+        {
+          "id": "M-0048_A-4905-01-0005-O000A",
+          "mask": "0701",
+          "image": {
+            "image": "ok",
+            "segments": 0
+          },
+          "plan": {
+            "plan": "executable",
+            "steps": 1
+          }
+        },
+        {
+          "id": "M-0048_A-4906-01-0006-O000A",
+          "mask": "0701",
+          "image": {
+            "image": "ok",
+            "segments": 0
+          },
+          "plan": {
+            "plan": "executable",
+            "steps": 1
+          }
+        },
+        {
+          "id": "M-0048_A-4907-01-0007-O000A",
+          "mask": "0701",
+          "image": {
+            "image": "ok",
+            "segments": 0
+          },
+          "plan": {
+            "plan": "executable",
+            "steps": 1
+          }
+        },
+        {
+          "id": "M-0048_A-4908-01-0008-O000A",
+          "mask": "0701",
+          "image": {
+            "image": "ok",
+            "segments": 0
+          },
+          "plan": {
+            "plan": "executable",
+            "steps": 1
+          }
+        }
+      ]
+    },
+    {
+      "file": "truncated.knxprod",
+      "parse": {
+        "parse": "failed",
+        "reason": "parsing application program M-00FF_A-00FF-10-DEAD-O000A"
+      },
+      "apps": []
+    },
+    {
+      "file": "zennio_union.knxprod",
+      "parse": {
+        "parse": "ok",
+        "apps": 1
+      },
+      "apps": [
+        {
+          "id": "M-0071_A-7001-10-FADE-O000A",
+          "mask": "07B0",
+          "image": {
+            "image": "ok",
+            "segments": 1
+          },
+          "plan": {
+            "plan": "executable",
+            "steps": 6
+          }
+        }
+      ]
+    }
+  ]
+}

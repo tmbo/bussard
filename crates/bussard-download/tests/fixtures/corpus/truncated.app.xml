@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FABRICATED fixture: a TRUNCATED application XML (the corpus sweep found real
+     files that stop mid-stream). The <ApplicationProgram> start tag is never
+     closed and the document ends abruptly. read_knxprod must classify this as a
+     parse-failure bucket (a clean Err), NEVER a panic. No vendor content. -->
+<KNX xmlns="http://knx.org/xml/project/20">
+ <ManufacturerData><Manufacturer RefId="M-00FF"><ApplicationPrograms>
+  <ApplicationProgram Id="M-00FF_A-00FF-10-DEAD-O000A" ApplicationNumber="255" ApplicationVersion="10" MaskVersion="MV-07B0" Name="Truncated Fixture" LoadProcedureStyle="MergedProcedure">
+   <Static>
+    <Code>
+     <RelativeSegment Id="M-00FF_A-00FF-10-DEAD-O000A_RS-4" Size="4" LoadStateMachine="4" />
+    </Code>
+    <ParameterTypes>
+     <ParameterType Id="M-00FF_A-00FF-10-DEAD-O000A_PT-Byte" Name="Byte">
+      <TypeNumber Type="unsignedInt" SizeInBit="8" minInclusive="0" maxInclusive="255

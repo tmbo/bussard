@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FABRICATED. Hardware catalogue for the multi-app/multi-mask fixture that
+     stands in for the Theben RM 4 (8 application programs across two masks,
+     0705 and 0701, bundled in one product file). No vendor content. -->
+<KNX xmlns="http://knx.org/xml/project/20">
+ <ManufacturerData><Manufacturer RefId="M-0048">
+  <Hardware>
+   <Products><Product OrderNumber="RM4-FIX" /></Products>
+   <Hardware2Programs><Hardware2Program>
+    <ApplicationProgramRef RefId="M-0048_A-4901-05-0001-O000A" />
+    <ApplicationProgramRef RefId="M-0048_A-4902-05-0002-O000A" />
+    <ApplicationProgramRef RefId="M-0048_A-4903-05-0003-O000A" />
+    <ApplicationProgramRef RefId="M-0048_A-4904-05-0004-O000A" />
+    <ApplicationProgramRef RefId="M-0048_A-4905-01-0005-O000A" />
+    <ApplicationProgramRef RefId="M-0048_A-4906-01-0006-O000A" />
+    <ApplicationProgramRef RefId="M-0048_A-4907-01-0007-O000A" />
+    <ApplicationProgramRef RefId="M-0048_A-4908-01-0008-O000A" />
+   </Hardware2Program></Hardware2Programs>
+  </Hardware>
+ </Manufacturer></ManufacturerData>
+</KNX>

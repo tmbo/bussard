@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FABRICATED fixture. Reproduces the SHAPE of a union-heavy Zennio System B
+     application: a <Union> block overlaying several member parameters onto one
+     shared memory region, with a DefaultUnionParameter member whose value the
+     image builder lays into the shared bytes. No vendor content is copied; ids,
+     offsets, and values are invented.
+
+     Expected sweep bucket: image ok (the union's default member is laid down),
+     plan executable (mask 07B0 = System B, a simple RelSegment/WriteRelMem
+     merged procedure). This is the regression guard that union image synthesis
+     does not refuse or panic. -->
+<KNX xmlns="http://knx.org/xml/project/20">
+ <ManufacturerData><Manufacturer RefId="M-0071"><ApplicationPrograms>
+  <ApplicationProgram Id="M-0071_A-7001-10-FADE-O000A" ApplicationNumber="28673" ApplicationVersion="10" MaskVersion="MV-07B0" Name="Union Fixture" LoadProcedureStyle="MergedProcedure">
+   <Static>
+    <Code>
+     <RelativeSegment Id="M-0071_A-7001-10-FADE-O000A_RS-4" Size="8" LoadStateMachine="4" />
+    </Code>
+    <ParameterTypes>
+     <ParameterType Id="M-0071_A-7001-10-FADE-O000A_PT-Mode" Name="Mode">
+      <TypeRestriction Base="Value" SizeInBit="8">
+       <Enumeration Text="Off" Value="0" Id="M-0071_A-7001-10-FADE-O000A_PT-Mode_EN-0" />
+       <Enumeration Text="On" Value="1" Id="M-0071_A-7001-10-FADE-O000A_PT-Mode_EN-1" />
+      </TypeRestriction>
+     </ParameterType>
+     <ParameterType Id="M-0071_A-7001-10-FADE-O000A_PT-Byte" Name="Byte">
+      <TypeNumber Type="unsignedInt" SizeInBit="8" minInclusive="0" maxInclusive="255" />
+     </ParameterType>
+    </ParameterTypes>
+    <Parameters>
+     <Union SizeInBit="16" DefaultUnionParameter="M-0071_A-7001-10-FADE-O000A_P-2">
+      <Memory CodeSegment="M-0071_A-7001-10-FADE-O000A_RS-4" Offset="0" BitOffset="0" />
+      <Parameter Id="M-0071_A-7001-10-FADE-O000A_P-1" Name="ModeMember" Text="Mode" ParameterType="M-0071_A-7001-10-FADE-O000A_PT-Mode" Value="1">
+       <Memory CodeSegment="M-0071_A-7001-10-FADE-O000A_RS-4" Offset="0" BitOffset="0" />
+      </Parameter>
+      <Parameter Id="M-0071_A-7001-10-FADE-O000A_P-2" Name="ByteMember" Text="Byte" ParameterType="M-0071_A-7001-10-FADE-O000A_PT-Byte" Value="42">
+       <Memory CodeSegment="M-0071_A-7001-10-FADE-O000A_RS-4" Offset="1" BitOffset="0" />
+      </Parameter>
+     </Union>
+    </Parameters>
+    <ComObjectTable>
+     <ComObject Id="M-0071_A-7001-10-FADE-O000A_O-0" Number="0" Text="Switch" ObjectSize="1 Bit" CommunicationFlag="Enabled" WriteFlag="Enabled" />
+    </ComObjectTable>
+    <ComObjectRefs>
+     <ComObjectRef Id="M-0071_A-7001-10-FADE-O000A_O-0_R-1" RefId="M-0071_A-7001-10-FADE-O000A_O-0" DatapointType="DPST-1-1" />
+    </ComObjectRefs>
+   </Static>
+   <LoadProcedures>
+    <LoadProcedure MergeId="4">
+     <LdCtrlConnect />
+     <LdCtrlUnload LsmIdx="4" />
+     <LdCtrlLoad LsmIdx="4" />
+     <LdCtrlRelSegment LsmIdx="4" Size="8" AppliesTo="full,par" />
+     <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="8" AppliesTo="par" />
+     <LdCtrlLoadCompleted LsmIdx="4" />
+     <LdCtrlRestart />
+     <LdCtrlDisconnect />
+    </LoadProcedure>
+   </LoadProcedures>
+  </ApplicationProgram>
+ </ApplicationPrograms></Manufacturer></ManufacturerData>
+</KNX>
