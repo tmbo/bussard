@@ -38,5 +38,5 @@ pub use asdu::{
 };
 pub use crypto::{CryptoError, aes_cbc_decrypt, aes_cbc_encrypt, pbkdf2_key, salt};
 pub use key::Key16;
-pub use sequence::Sequence;
+pub use sequence::{Sequence, SequenceHighWater};
 pub use session::{DataSecureSession, UnwrapOutcome};

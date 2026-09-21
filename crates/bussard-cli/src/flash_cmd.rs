@@ -61,11 +61,21 @@ pub fn run(
     force: bool,
     allow_remote_gateway: bool,
     bcu_key: Option<&str>,
+    tool_key_source: crate::secure_key::ToolKeySource<'_>,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
     let target: IndividualAddress = address
         .parse()
         .with_context(|| format!("parsing device address {address:?}"))?;
+
+    // KNX Data Secure (issue #71, spec §6.2): the target's tool key, from the
+    // keyring (the real flow) or a raw `--tool-key` (test/bench). `None` is the
+    // plain, byte-identical path. The key is never printed or logged (§2.3).
+    let tool_key = crate::secure_key::resolve(target, tool_key_source)?;
+    // One send-sequence high-water mark for the whole command (spec §5.9): the
+    // pre-flight probe, the flash, and every mid-flash reconnect share it, so no
+    // session ever replays a sequence the device already accepted.
+    let secure_seq = bussard_secure::SequenceHighWater::new();
 
     // Parse the optional BCU access key (hex, e.g. `FFFFFFFF` or `0x11223344`).
     // Unset means present the free-access key on every management connect — the
@@ -132,8 +142,11 @@ pub fn run(
     // resident on the device (issue #79). Both run over one connection; neither
     // writes anything.
     let runtime = tokio::runtime::Runtime::new()?;
+    let secure_probe = tool_key.is_some();
     let probe = {
         let config = config.clone();
+        let probe_key = tool_key.clone();
+        let probe_seq = secure_seq.clone();
         runtime.block_on(async move {
             let (handle, _task) = Bus::connect(config);
             if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
@@ -145,34 +158,44 @@ pub fn run(
             // Track whether the T_Connect established before the first read: a
             // connect-then-disconnect on the descriptor read is the diagnostic
             // pattern (see `descriptor_read_error`).
-            let (connected, result, resident) =
-                match DeviceConnection::connect(channel, target, source).await {
-                    Ok(mut dev) => {
-                        // Authorize the read-only descriptor probe too (best-effort):
-                        // ETS authorizes every management session, so a keyed device
-                        // that would otherwise drop the descriptor read is unlocked
-                        // first. Tolerate a device that does not implement authorize.
-                        let key = bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY);
-                        let r = match dev.authorize(key).await {
-                            Ok(_) => dev.device_descriptor().await,
-                            Err(err) => Err(err),
-                        };
-                        // The factory-freshness probe (issue #79): read the load
-                        // state (and, on System B, the resident application id) of
-                        // the objects this flash would unload and rewrite. Purely
-                        // read-only, and only once the mask is known — it is the
-                        // mask that decides System B objects vs System 7 LSMs.
-                        let resident = match &r {
-                            Ok(mask) => {
-                                Some(probe_resident_state(dev.l4_mut(), *mask, None).await)
-                            }
-                            Err(_) => None,
-                        };
-                        let _ = dev.disconnect().await;
-                        (true, r, resident)
-                    }
-                    Err(err) => (false, Err(err), None),
-                };
+            // The descriptor read is a protected function on a security-
+            // activated device (spec §6.4): probe it through the same secure
+            // layer the flash will use, or plain when no tool key was given.
+            let secure = crate::secure_key::layer(&probe_key, &probe_seq);
+            let (connected, result, resident) = match DeviceConnection::connect_with_secure(
+                channel,
+                target,
+                source,
+                Timeouts::default(),
+                secure,
+            )
+            .await
+            {
+                Ok(mut dev) => {
+                    // Authorize the read-only descriptor probe too (best-effort):
+                    // ETS authorizes every management session, so a keyed device
+                    // that would otherwise drop the descriptor read is unlocked
+                    // first. Tolerate a device that does not implement authorize.
+                    let key = bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY);
+                    let r = match dev.authorize(key).await {
+                        Ok(_) => dev.device_descriptor().await,
+                        Err(err) => Err(err),
+                    };
+                    // The factory-freshness probe (issue #79): read the load
+                    // state (and, on System B, the resident application id) of
+                    // the objects this flash would unload and rewrite. Purely
+                    // read-only, and only once the mask is known — it is the
+                    // mask that decides System B objects vs System 7 LSMs. It
+                    // rides the same (possibly secured) connection.
+                    let resident = match &r {
+                        Ok(mask) => Some(probe_resident_state(dev.l4_mut(), *mask, None).await),
+                        Err(_) => None,
+                    };
+                    let _ = dev.disconnect().await;
+                    (true, r, resident)
+                }
+                Err(err) => (false, Err(err), None),
+            };
             let _ = handle.close().await;
             anyhow::Ok((connected, result, resident))
         })?
@@ -182,7 +205,7 @@ pub fn run(
     let device_mask = match device_mask {
         Ok(mask) => mask,
         Err(err) => {
-            return Err(descriptor_read_error(target, connected, err));
+            return Err(descriptor_read_error(target, connected, secure_probe, err));
         }
     };
 
@@ -275,7 +298,16 @@ pub fn run(
             eprintln!("warning: bus not connected yet; management traffic may use the 0.0.255 fallback source");
         }
         let source = ops::group_source(&handle);
-        let result = execute(&handle, target, source, plan_ref, options).await;
+        let result = execute(
+            &handle,
+            target,
+            source,
+            plan_ref,
+            options,
+            tool_key,
+            secure_seq,
+        )
+        .await;
         let _ = handle.close().await;
         anyhow::Ok(result)
     })?;
@@ -585,15 +617,50 @@ fn parse_bcu_key(raw: &str) -> anyhow::Result<u32> {
 fn descriptor_read_error(
     target: IndividualAddress,
     connected: bool,
+    secure: bool,
     err: MgmtError,
 ) -> anyhow::Error {
+    // KNX Data Secure (issue #71, spec §6.4): an activated device silently drops
+    // a management APDU it cannot accept — a wrong tool key fails the MAC, and a
+    // plain (unwrapped) access to a protected function is refused outright. Both
+    // reach bussard as "the device accepted the connection and then said
+    // nothing", so the guidance has to name the secure cause before the
+    // (identical-looking) IP-medium pattern below.
+    if connected
+        && matches!(
+            err,
+            MgmtError::Disconnected { .. } | MgmtError::NoResponse { .. }
+        )
+    {
+        if secure {
+            return anyhow::anyhow!(
+                "{target} accepted the connection but never answered the SECURED management \
+                 access. A KNX Data Secure device drops a frame it cannot authenticate, so \
+                 either the tool key is not this device's key (the MAC does not verify), or the \
+                 device is not security-activated at all and ignores A_SecureData — in which \
+                 case flash it without --keyring/--tool-key. Nothing was written."
+            );
+        }
+        if matches!(err, MgmtError::NoResponse { .. }) {
+            return anyhow::anyhow!(
+                "{target} accepted the connection but never answered the plain management \
+                 access. If this device is KNX Data Secure-activated it refuses unsecured \
+                 management: pass its tool key with --keyring <file.knxkeys> (password in \
+                 BUSSARD_KEYRING_PASSWORD), or --tool-key <32 hex> for a test device. Nothing \
+                 was written."
+            );
+        }
+    }
     if connected && matches!(err, MgmtError::Disconnected { .. }) {
         return anyhow::anyhow!(
             "{target} accepted the connection but disconnected on the first read: typical for \
              devices whose management is gated on a loaded application or a different medium \
              profile (e.g. KNX Virtual IP-medium `*.ip` devices, which disconnect on descriptor \
              reads while their `*.tp` siblings answer). Flash targets the application download, \
-             which this device is not accepting management for over this connection."
+             which this device is not accepting management for over this connection. It is also \
+             what a KNX Data Secure-activated device does to unsecured management: if this \
+             device is activated, pass its tool key with --keyring <file.knxkeys> (password in \
+             BUSSARD_KEYRING_PASSWORD), or --tool-key <32 hex> for a test device."
         );
     }
     anyhow::Error::new(err).context("reading the device descriptor")
@@ -622,9 +689,16 @@ struct LeaseConnector<'a> {
     /// security-activated (issue #71, spec §6.2). `None` is the plain,
     /// byte-identical path; `Some` wraps every management APDU behind
     /// A_SecureData. The key is cloned to build a fresh `DataSecureSession` on
-    /// each (re)connect — the send sequence is clock-seeded and monotonic, so a
-    /// reconnect after a master reset never replays a stale sequence.
+    /// each (re)connect; the send sequence continues from `secure_seq` so a
+    /// reconnect after a master reset never replays a sequence the device has
+    /// already accepted.
     secure_tool_key: Option<bussard_secure::Key16>,
+    /// The send-sequence high-water mark shared with every other session against
+    /// this device (spec §5.9). A flash reconnects — on a master reset, on a
+    /// dropped L4 — and an activated device refuses any sequence it has already
+    /// accepted, so each reconnect must continue the counter, not reseed it from
+    /// the clock.
+    secure_seq: bussard_secure::SequenceHighWater,
 }
 
 /// Environment variable that overrides the flash's per-attempt L4 ACK/response
@@ -664,12 +738,7 @@ impl bussard_download::Connector for LeaseConnector<'_> {
         // KNX Data Secure seam (spec §6.1/§6.2): a plain connection when no tool
         // key is set (byte-identical to today), or a wrapped one when the device
         // is security-activated.
-        let secure = match &self.secure_tool_key {
-            None => bussard_mgmt::SecureLayer::plain(),
-            Some(key) => bussard_mgmt::SecureLayer::activated(
-                bussard_secure::DataSecureSession::new(key.clone()),
-            ),
-        };
+        let secure = crate::secure_key::layer(&self.secure_tool_key, &self.secure_seq);
         let timeouts = flash_l4_timeouts().unwrap_or_default();
         Layer4Connection::connect_with_secure(channel, self.target, self.source, timeouts, secure)
             .await
@@ -684,16 +753,18 @@ async fn execute(
     source: IndividualAddress,
     plan: &FlashPlan,
     options: bussard_download::FlashOptions,
+    secure_tool_key: Option<bussard_secure::Key16>,
+    secure_seq: bussard_secure::SequenceHighWater,
 ) -> Result<bussard_download::FlashOutcome, WriteError> {
     let connector = LeaseConnector {
         handle,
         target,
         source,
-        // Phase A default: plain management. A future CLI surface will populate
-        // this from the keyring/knxproj when the device is security-activated
-        // (issue #71, spec §6.2). SEC-CAL: wire the tool key from the keyring
-        // here once secure activation is surfaced on the model.
-        secure_tool_key: None,
+        secure_seq,
+        // KNX Data Secure (issue #71, spec §6.2): `None` is the plain,
+        // byte-identical path; `Some` wraps every management APDU behind
+        // A_SecureData with the target's tool key (`--keyring` / `--tool-key`).
+        secure_tool_key,
     };
     // Authorize the management connect with the project BCU key (or free access
     // when unset) — issue #52 finding #1.
@@ -1164,6 +1235,7 @@ mod tests {
         let err = descriptor_read_error(
             target,
             true, // the T_Connect established before the read
+            false,
             MgmtError::Disconnected { address: target },
         );
         let msg = err.to_string();
@@ -1179,7 +1251,12 @@ mod tests {
         // A disconnect that happened before the connection established is not the
         // IP-medium pattern; it passes through with the generic context.
         let target: IndividualAddress = "1.0.10".parse().unwrap();
-        let err = descriptor_read_error(target, false, MgmtError::Disconnected { address: target });
+        let err = descriptor_read_error(
+            target,
+            false,
+            false,
+            MgmtError::Disconnected { address: target },
+        );
         let msg = err.to_string();
         assert!(msg.contains("reading the device descriptor"), "{msg}");
         assert!(
@@ -1191,9 +1268,44 @@ mod tests {
     #[test]
     fn descriptor_other_error_is_passed_through() {
         let target: IndividualAddress = "1.0.10".parse().unwrap();
-        let err = descriptor_read_error(target, true, MgmtError::NoResponse { address: target });
+        let err = descriptor_read_error(target, true, false, MgmtError::Nak { address: target });
         let msg = err.to_string();
         assert!(msg.contains("reading the device descriptor"), "{msg}");
+    }
+
+    /// A silent activated device (wrong tool key, or a plain device ignoring the
+    /// wrapper) names the KNX Data Secure cause, not the IP-medium pattern.
+    #[test]
+    fn descriptor_silence_on_a_secure_connection_names_the_tool_key() {
+        let target: IndividualAddress = "1.1.2".parse().unwrap();
+        for err in [
+            MgmtError::Disconnected { address: target },
+            MgmtError::NoResponse { address: target },
+        ] {
+            let msg = descriptor_read_error(target, true, true, err).to_string();
+            assert!(msg.contains("SECURED management access"), "{msg}");
+            assert!(msg.contains("tool key"), "{msg}");
+            assert!(msg.contains("Nothing was written"), "{msg}");
+            assert!(
+                !msg.contains("*.ip"),
+                "the IP-medium guidance is wrong here: {msg}"
+            );
+        }
+    }
+
+    /// A silent PLAIN connection points at the keyring: an activated device
+    /// refuses unsecured management (spec §6.4).
+    #[test]
+    fn descriptor_silence_on_a_plain_connection_suggests_the_keyring() {
+        let target: IndividualAddress = "1.1.2".parse().unwrap();
+        for err in [
+            MgmtError::NoResponse { address: target },
+            MgmtError::Disconnected { address: target },
+        ] {
+            let msg = descriptor_read_error(target, true, false, err).to_string();
+            assert!(msg.contains("--keyring"), "{msg}");
+            assert!(msg.contains("KNX Data Secure"), "{msg}");
+        }
     }
 
     #[test]

@@ -443,3 +443,61 @@ fn test_secure_error_variants() {
     let err = dev.unwrap_incoming(&carrier, 0, &[0x90, 0x00]).unwrap_err();
     assert!(matches!(err, SecureError::TooShort { .. }));
 }
+
+/// SHARED KNOWN-ANSWER VECTOR (spec §12.1).
+///
+/// bussard's independent Data Secure implementation encodes the same inputs in
+/// `crates/bussard-secure/src/asdu.rs` (`test_known_answer_vector_matches_the_sim`)
+/// and must produce these exact bytes. Keeping the literal on both sides makes a
+/// CCM/nonce divergence fail a plain `cargo test` on whichever side drifted,
+/// without the other implementation being present — it is what the #71
+/// conformance loop found the hard way (the `block_0` TPCI octet of §5.4, and
+/// the auth-only payload-length field).
+///
+/// Inputs: synthetic tool key `000102…0F`, sequence 42, a numbered data telegram
+/// 1.1.1 → 1.1.2 (TPCI octet `0x42`, i.e. `tpci_int` `0x10`), inner APDU
+/// `A_Authorize_Request` (`0x3D1`) with the free-access key.
+#[test]
+fn test_shared_known_answer_vector() {
+    const KAT_KEY_HEX: &str = "000102030405060708090a0b0c0d0e0f";
+    const SRC: u16 = 0x1101; // 1.1.1
+    const DST: u16 = 0x1102; // 1.1.2
+    /// The inner APDU as it is authenticated: APCI high bits only in octet 0 (the
+    /// carrier's transport-control bits are not part of the secured APDU).
+    const KAT_INNER: [u8; 7] = [0x03, 0xD1, 0x00, 0xFF, 0xFF, 0xFF, 0xFF];
+    const KAT_AUTH_ENC: [u8; 18] = [
+        0x90, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2A, 0x08, 0x7D, 0x2A, 0xF4, 0x87, 0x75, 0xC3, 0x98,
+        0xA5, 0x3D, 0xA2,
+    ];
+    const KAT_AUTH_ONLY: [u8; 18] = [
+        0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2A, 0x03, 0xD1, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xB5,
+        0xA4, 0x6C, 0x9F,
+    ];
+    // The carrier's TPCI octet 0x42 (numbered data, sequence 0) is `tpci_int`
+    // 0x10 in the nonce (spec §5.4's `(tpci_int << 2) + 0x03`).
+    const TPCI_INT: u8 = 0x42 >> 2;
+
+    let carrier = cemi_std(SRC, DST, vec![0x42, 0xF1]);
+    for (alg, expected) in [
+        (SecAlgorithm::AuthEnc, KAT_AUTH_ENC),
+        (SecAlgorithm::AuthOnly, KAT_AUTH_ONLY),
+    ] {
+        // A session whose send sequence starts exactly at the vector's 42.
+        let mut tool =
+            DataSecureSession::new(Key16::from_hex(KAT_KEY_HEX).expect("synthetic key"), 42, 0);
+        let (asdu, seq) = tool.wrap_outgoing(&carrier, TPCI_INT, alg, &KAT_INNER);
+        assert_eq!(seq, [0, 0, 0, 0, 0, 42], "the vector's sequence");
+        assert_eq!(
+            asdu,
+            expected.to_vec(),
+            "{alg:?} A_SecureData bytes diverged from the shared vector"
+        );
+        // And the vector verifies and unwraps on the device side.
+        let mut dev =
+            DataSecureSession::new(Key16::from_hex(KAT_KEY_HEX).expect("synthetic key"), 1, 0);
+        let un = dev
+            .unwrap_incoming(&carrier, TPCI_INT, &expected)
+            .expect("the vector verifies");
+        assert_eq!(un.inner_tpdu, KAT_INNER.to_vec());
+    }
+}

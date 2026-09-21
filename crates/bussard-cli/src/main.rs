@@ -20,6 +20,7 @@ mod plan_cmd;
 mod read_cmd;
 mod reconstruct_cmd;
 mod scan_cmd;
+mod secure_key;
 mod validate_cmd;
 mod viz_cmd;
 mod write_cmd;
@@ -198,6 +199,17 @@ enum Command {
         /// Emit JSON instead of the table format.
         #[arg(long)]
         json: bool,
+        /// The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool
+        /// key (issue #71). Required for a security-activated device; the keyring
+        /// password comes from `BUSSARD_KEYRING_PASSWORD`, never a CLI argument.
+        #[arg(long, value_name = "FILE")]
+        keyring: Option<PathBuf>,
+        /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
+        /// escape hatch for a simulator or a device with a synthetic key. Prefer
+        /// `--keyring` for a real installation: a process argument is visible to
+        /// other users on the machine.
+        #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
+        tool_key: Option<String>,
         /// Override the gateway `host[:port]` for tunneling.
         #[arg(long, value_name = "HOST")]
         gateway: Option<String>,
@@ -311,6 +323,17 @@ enum Command {
         /// project key here or it will deny access.
         #[arg(long, value_name = "HEX")]
         bcu_key: Option<String>,
+        /// The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool
+        /// key (issue #71). Required for a security-activated device; the keyring
+        /// password comes from `BUSSARD_KEYRING_PASSWORD`, never a CLI argument.
+        #[arg(long, value_name = "FILE")]
+        keyring: Option<PathBuf>,
+        /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
+        /// escape hatch for a simulator or a device with a synthetic key. Prefer
+        /// `--keyring` for a real installation: a process argument is visible to
+        /// other users on the machine.
+        #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
+        tool_key: Option<String>,
         /// Override the gateway `host[:port]` for tunneling.
         #[arg(long, value_name = "HOST")]
         gateway: Option<String>,
@@ -347,6 +370,17 @@ enum Command {
         /// Skip the interactive confirmation (dangerous; for scripts).
         #[arg(long)]
         yes: bool,
+        /// The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool
+        /// key (issue #71). Required for a security-activated device; the keyring
+        /// password comes from `BUSSARD_KEYRING_PASSWORD`, never a CLI argument.
+        #[arg(long, value_name = "FILE")]
+        keyring: Option<PathBuf>,
+        /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
+        /// escape hatch for a simulator or a device with a synthetic key. Prefer
+        /// `--keyring` for a real installation: a process argument is visible to
+        /// other users on the machine.
+        #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
+        tool_key: Option<String>,
         /// Override the gateway `host[:port]` for tunneling.
         #[arg(long, value_name = "HOST")]
         gateway: Option<String>,
@@ -598,12 +632,18 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             address,
             dir,
             json,
+            keyring,
+            tool_key,
             gateway,
             routing,
         } => describe_cmd::run(
             &address,
             &dir,
             json,
+            secure_key::ToolKeySource {
+                keyring: keyring.as_deref(),
+                tool_key: tool_key.as_deref(),
+            },
             conn_cmd::ConnOverrides { gateway, routing },
         ),
         Command::Keyring { file, json } => keyring_cmd::run(&file, json),
@@ -646,6 +686,8 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             force,
             allow_remote_gateway,
             bcu_key,
+            keyring,
+            tool_key,
             gateway,
             routing,
         } => flash_cmd::run(
@@ -658,6 +700,10 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             force,
             allow_remote_gateway,
             bcu_key.as_deref(),
+            secure_key::ToolKeySource {
+                keyring: keyring.as_deref(),
+                tool_key: tool_key.as_deref(),
+            },
             conn_cmd::ConnOverrides { gateway, routing },
         ),
         Command::Plan {
@@ -676,6 +722,8 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             address,
             dir,
             yes,
+            keyring,
+            tool_key,
             gateway,
             routing,
             allow_remote_gateway,
@@ -684,6 +732,10 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             &dir,
             yes,
             allow_remote_gateway,
+            secure_key::ToolKeySource {
+                keyring: keyring.as_deref(),
+                tool_key: tool_key.as_deref(),
+            },
             conn_cmd::ConnOverrides { gateway, routing },
         ),
         Command::Validate { dir, format } => validate_cmd::run(&dir, format == Format::Json),
