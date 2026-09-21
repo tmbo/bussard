@@ -42,6 +42,9 @@ pub const TUNNEL_CONNECTION: u8 = 0x04;
 pub const HEADER_LEN: u8 = 0x06;
 /// KNXnet/IP protocol version 1.0.
 pub const PROTOCOL_V10: u8 = 0x10;
+/// KNXnet/IP error status `E_CONNECTION_ID`: the frame named a communication
+/// channel that is not open on this gateway.
+pub const E_CONNECTION_ID: u8 = 0x21;
 
 /// A minimally-parsed KNXnet/IP frame: service type + body bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +69,13 @@ pub enum FrameError {
     /// Header length / version bytes were not `06 10`.
     #[error("bad KNXnet/IP header: {0:02x?}")]
     BadHeader([u8; 2]),
+    /// The header's `total_len` field is smaller than the 6-byte header it
+    /// counts, so the body length would be negative.
+    #[error("bad KNXnet/IP total length: {total_len} < 6")]
+    BadLength {
+        /// The bogus total-length field.
+        total_len: usize,
+    },
 }
 
 impl KnxnetIpFrame {
@@ -82,6 +92,13 @@ impl KnxnetIpFrame {
         }
         let service = u16::from_be_bytes([buf[2], buf[3]]);
         let total_len = u16::from_be_bytes([buf[4], buf[5]]) as usize;
+        // `total_len` counts the header too, so anything below 6 is malformed.
+        // Without this check the `buf[6..total_len]` slice below panics on a
+        // frame that claims a shorter-than-header length — a remote panic
+        // reachable from any peer that can put a datagram on the socket.
+        if total_len < usize::from(HEADER_LEN) {
+            return Err(FrameError::BadLength { total_len });
+        }
         if buf.len() < total_len {
             return Err(FrameError::Truncated {
                 need: total_len,
@@ -165,6 +182,54 @@ mod tests {
             KnxnetIpFrame::decode(&[0x07, 0x10, 0, 0, 0, 6]),
             Err(FrameError::BadHeader(_))
         ));
+    }
+
+    #[test]
+    fn test_decode_total_len_below_header_is_rejected() {
+        // A 6-byte datagram claiming total_len = 0 used to slice `buf[6..0]`
+        // and panic, killing the single-threaded server loop.
+        for total_len in 0u16..6 {
+            let mut buf = vec![0x06, 0x10, 0x04, 0x20, 0, 0];
+            buf[4..6].copy_from_slice(&total_len.to_be_bytes());
+            assert_eq!(
+                KnxnetIpFrame::decode(&buf),
+                Err(FrameError::BadLength {
+                    total_len: usize::from(total_len)
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn test_decode_truncated_body_is_rejected() {
+        // `total_len` claims more than the datagram actually carries.
+        assert!(matches!(
+            KnxnetIpFrame::decode(&[0x06, 0x10, 0x04, 0x20, 0x00, 0x20]),
+            Err(FrameError::Truncated { need: 32, have: 6 })
+        ));
+    }
+
+    #[test]
+    fn test_decode_never_panics_on_arbitrary_input() {
+        // Sweep short datagrams over every interesting header byte: decoding
+        // must always terminate with Ok or Err, never panic.
+        for len in 0usize..12 {
+            for a in [0x00u8, 0x06, 0xff] {
+                for b in [0x00u8, 0x10, 0xff] {
+                    for tail in [0x00u8, 0x01, 0xff] {
+                        let mut buf = vec![tail; len];
+                        if len > 0 {
+                            buf[0] = a;
+                        }
+                        if len > 1 {
+                            buf[1] = b;
+                        }
+                        let _ = KnxnetIpFrame::decode(&buf);
+                        let _ = ConnectionHeader::parse(&buf);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

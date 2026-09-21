@@ -79,6 +79,14 @@ pub enum Event {
         /// Whether programming mode is now on.
         on: bool,
     },
+    /// A device adopted a new individual address from a broadcast
+    /// `A_IndividualAddress_Write` while in programming mode.
+    AddressChanged {
+        /// The address the device had before.
+        device: IndividualAddress,
+        /// The address it adopted.
+        new_address: IndividualAddress,
+    },
     /// A KNX Data Secure frame was decoded at a device (spec §12.2
     /// observability). The `summary` names the direction, SCF, sequence and the
     /// inner APCI NAME only — it NEVER carries the key or the decrypted plaintext
@@ -142,6 +150,10 @@ impl EventSink for TracingSink {
             Event::ProgModeChanged { device, on } => {
                 tracing::info!(%device, on, "programming mode changed")
             }
+            Event::AddressChanged {
+                device,
+                new_address,
+            } => tracing::info!(%device, %new_address, "individual address changed"),
             Event::SecureFrame { device, summary } => {
                 tracing::info!(%device, "{summary}")
             }

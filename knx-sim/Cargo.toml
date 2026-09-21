@@ -12,13 +12,29 @@ rust-version = "1.85"
 description = "An independent, strict KNX device + bus simulator for cross-checking flashing tools on the wire."
 authors = ["Tom Bocklisch"]
 repository = "https://github.com/tmbo/bussard"
+license = "MIT OR Apache-2.0"
+# A test/development tool, never published to crates.io. Stated explicitly so an
+# accidental `cargo publish` is refused, and so cargo-deny's `private = { ignore
+# = true }` treats this crate's own licensing as out of scope (the gate exists to
+# police THIRD-PARTY licenses).
+publish = false
+
+# Matches the bussard workspace posture: the CLAUDE.md rules ("all public items
+# must have doc comments") are enforced here rather than left to CI's
+# `-D warnings` alone, which adds nothing over warn-by-default.
+[lints.rust]
+missing_docs = "warn"
 
 [dependencies]
 # ZIP reader for the .knxprod container (a plain, unencrypted ZIP unlike the
 # .knxproj). MIT OR Apache-2.0.
 zip = { version = "2", default-features = false, features = ["deflate"] }
-# Streaming XML pull-parser for the product-data XML. MIT.
-quick-xml = "0.36"
+# Streaming XML pull-parser for the product-data XML. MIT. 0.41 is the first
+# release that caps namespace declarations per element (RUSTSEC advisory on
+# `NamespaceResolver::push`); this crate uses the plain `Reader`, which the
+# advisory does not affect, but the `cargo deny` gate rightly fails the older
+# version.
+quick-xml = "0.41"
 # base64 decoder for the RelativeSegment <Data> application image. MIT/Apache-2.0.
 base64 = "0.22"
 # KNX Data Secure crypto, per docs/knx-secure-spec.md §3: AES-CCM is decomposed

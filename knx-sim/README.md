@@ -73,3 +73,13 @@ vendor product data.
 crates.io dependencies only; no GPL, no `bussard` crates. This project is a
 standalone Cargo workspace (it has its own `[workspace]`), cleanly extractable to
 its own repository.
+
+That is enforced, not just asserted:
+
+- `tests/independence.rs` reads `Cargo.toml` and `Cargo.lock` and fails on any
+  `path`/`git` dependency, any `bussard` package, or a non-crates.io source.
+- `knx-sim/deny.toml` carries the same licence allow-list as the root project.
+  `cargo deny --manifest-path knx-sim/Cargo.toml check` runs in CI, so a copyleft
+  dependency fails the build here too. `Cargo.lock` is committed for it to read.
+- The `knx-sim` CI job runs `cargo fmt --check`, `cargo clippy --all-targets -D
+  warnings` and `cargo test` against this manifest on every push.

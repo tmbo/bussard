@@ -807,6 +807,30 @@ impl Device {
         })
     }
 
+    /// Adopt `new_address` from a broadcast `A_IndividualAddress_Write`.
+    ///
+    /// Per the individual-address write service, **only a device in programming
+    /// mode** applies the broadcast; every other device ignores it. Returns
+    /// whether this device adopted the address. The service defines no response,
+    /// so the caller sends nothing back — the tool verifies by connecting to the
+    /// new address (which is what `bussard assign` does).
+    ///
+    /// The device stays in programming mode afterwards, as a real device does:
+    /// the tool clears it explicitly by writing `PID_PROGMODE = 0`.
+    pub fn adopt_individual_address(&mut self, new_address: IndividualAddress) -> bool {
+        if !self.prog_mode {
+            return false;
+        }
+        if self.address != new_address {
+            self.emit(Event::AddressChanged {
+                device: self.address,
+                new_address,
+            });
+            self.address = new_address;
+        }
+        true
+    }
+
     /// The current load state of a loadable object (by LSM index). On a System 7
     /// device the state lives in the parallel System 7 LSM; on System B it lives
     /// in the object's `LoadStateMachine`.
