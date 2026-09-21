@@ -180,6 +180,17 @@ pub enum SecureError {
     /// activated device (spec §6.4 / §12.2).
     #[error("plain access refused: device requires KNX Data Secure")]
     PlainAccessRefused,
+    /// An `A_SecureData` frame reached a device that is NOT security-activated,
+    /// so it holds no tool key and cannot authenticate anything.
+    ///
+    /// Spec §6.4 states the activated→plain direction ("a device that requires
+    /// secure but is addressed plain will refuse") but not this converse. The
+    /// sim takes the best-evidence reading: a non-activated device does not
+    /// implement the secure application service, so the frame is dropped
+    /// unanswered — the same observable outcome as an ignored unknown APCI, but
+    /// surfaced on the event log so the reason is never silent.
+    #[error("secure access refused: device is not security-activated (no tool key)")]
+    NotActivated,
 }
 
 /// The parts of a cEMI frame that the TP nonce protects (spec §5.4). Only the
