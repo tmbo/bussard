@@ -100,6 +100,7 @@ gate, backups, flash recovery, protected GAs, supported masks). The essentials:
 - [Design](docs/DESIGN.md): architecture, feasibility, roadmap.
 - [Home Assistant](docs/ha-config.md): how `ha-config` derives entities.
 - [Product data](docs/product-data.md): `.knxprod` handling and the pointer index.
+- [Personas](docs/personas/README.md): who bussard is for, their journeys step by step, and the gaps as issue drafts.
 
 ## Legal notes
 
