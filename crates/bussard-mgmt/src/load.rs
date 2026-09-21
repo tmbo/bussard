@@ -72,6 +72,16 @@ use bussard_model::IndividualAddress;
 /// [`LoadControl`] event.
 pub const PID_LOAD_STATE_CONTROL: u8 = 5;
 
+/// `PID_PROGRAM_VERSION` (13) — the resident application-program id of a
+/// loadable interface object.
+///
+/// A download stamps it at the end of the load procedure (ETS writes the
+/// 5-octet `[manufacturer:2][application number:2][version:1]` value to the
+/// application object); reading it back says *which* application a device
+/// currently runs. `bussard flash` reads it in its pre-flight to tell a
+/// factory-fresh device from a programmed one (issue #79).
+pub const PID_PROGRAM_VERSION: u8 = 13;
+
 /// The load state of a loadable interface object, as read from
 /// `PID_LOAD_STATE_CONTROL`.
 ///
@@ -511,6 +521,26 @@ pub async fn read_load_state<Ch: L4Channel>(
         }));
     }
     Ok(LoadState::from_octet(resp.data[0]))
+}
+
+/// Reads the resident application-program id (`PID_PROGRAM_VERSION`, element 1)
+/// of a loadable object.
+///
+/// `Ok(None)` means the device answered the read but reports no such property
+/// (zero elements, or an empty value) — common on objects that never carry an
+/// application id. `Ok(Some(bytes))` is the stored value verbatim; ETS's 5-octet
+/// `[manufacturer:2][application number:2][version:1]` layout is the usual shape,
+/// but the octets are returned raw so a device with its own length still reads
+/// back. A transport failure propagates as [`WriteError`].
+pub async fn read_program_version<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    object_index: u8,
+) -> Result<Option<Vec<u8>>> {
+    let resp = property_request(l4, object_index, PID_PROGRAM_VERSION, 1, 1).await?;
+    if resp.count == 0 || resp.data.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(resp.data))
 }
 
 /// Interprets an `A_Restart_Response` error code into a human-readable reason,

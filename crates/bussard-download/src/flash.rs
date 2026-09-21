@@ -647,7 +647,7 @@ const SYS7_LSM_OVERRIDE_ENV: &str = "BUSSARD_FLASH_SYS7_LSM";
 /// The System 7 LSM-realisation override from [`SYS7_LSM_OVERRIDE_ENV`], or `None`
 /// to keep the product-driven realisation. `memory` keeps the memory-mapped record
 /// at the profile's control/status addresses; `property` drives PID 5.
-fn sys7_lsm_override() -> Option<bussard_mgmt::LsmRealisation> {
+pub(crate) fn sys7_lsm_override() -> Option<bussard_mgmt::LsmRealisation> {
     match std::env::var(SYS7_LSM_OVERRIDE_ENV)
         .ok()?
         .trim()
@@ -699,6 +699,23 @@ pub struct AppIdentity {
     pub application_version: Option<u32>,
     /// The mask version, e.g. `"07B0"`.
     pub mask_version: String,
+}
+
+impl AppIdentity {
+    /// The 5-octet `PID_PROGRAM_VERSION` value a completed flash of this
+    /// application stamps on the device (`[manufacturer:2][number:2][version:1]`),
+    /// or `None` when the identity is too incomplete to build one.
+    ///
+    /// This is the id the pre-flight compares against what a device already
+    /// carries, to tell a re-flash of the *same* application (allowed) from a
+    /// flash over a *different* one (refused without `--force`) — issue #79.
+    pub fn program_version(&self) -> Option<[u8; 5]> {
+        Some(crate::compute::app_program_version(
+            manufacturer_from_app_id(&self.id)?,
+            u16::try_from(self.application_number? & 0xFFFF).ok()?,
+            u8::try_from(self.application_version? & 0xFF).ok()?,
+        ))
+    }
 }
 
 /// A validated, executable flash: the application identity, the device mask it
@@ -763,6 +780,18 @@ impl FlashPlan {
     /// (M2 Jung 0705 capture, `[system7-spec §5]`).
     pub fn sys7_lsm(&self) -> Option<bussard_mgmt::LsmRealisation> {
         self.sys7.as_ref().map(|s| s.profile.lsm)
+    }
+
+    /// The System 7 LSM access seam this plan will drive, or `None` for a System
+    /// B plan.
+    ///
+    /// The pre-flight state probe ([`crate::preflight`]) reads the device's
+    /// load-state machines through exactly this realisation, so what it reads is
+    /// what the flash would overwrite.
+    pub fn sys7_lsm_access(&self) -> Option<bussard_mgmt::LsmAccess> {
+        self.sys7
+            .as_ref()
+            .map(|s| bussard_mgmt::lsm_access_from_profile(&s.profile))
     }
 
     /// Total octets written to device memory across all memory-write steps.
@@ -2524,8 +2553,39 @@ pub async fn discover_application_object<Ch: L4Channel>(
 async fn discover_object_table<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
 ) -> Result<(u8, Vec<(u8, u16)>), WriteError> {
+    let table = probe_object_types(l4).await?;
+    match table
+        .iter()
+        .find(|(_, ot)| *ot == OT_APPLICATION_PROGRAM)
+        .map(|(index, _)| *index)
+    {
+        Some(index) => Ok((index, table)),
+        None => Err(WriteError::Mgmt(
+            bussard_mgmt::MgmtError::MalformedResponse {
+                address: l4.target(),
+                reason: "device is missing the application-program interface object".to_string(),
+            },
+        )),
+    }
+}
+
+/// Walks `PID_OBJECT_TYPE` from index 0 and returns the `(index, object type)`
+/// table the device exposes.
+///
+/// The walk is deliberately **tolerant** at its end: an index answered with a
+/// non-property service, an undecodable response, zero elements or a short value
+/// all mean "no object here" and simply stop the sweep with what was read so
+/// far. Only a genuine transport failure propagates. That tolerance is what lets
+/// it run against real devices (KNX Virtual, the thelsing demo) whose answer for
+/// an out-of-range object index is not uniform.
+///
+/// Shared by the flash's own discovery ([`discover_object_table`]) and the
+/// read-only freshness probe ([`crate::preflight`]), so both see the same device
+/// picture.
+pub(crate) async fn probe_object_types<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+) -> Result<Vec<(u8, u16)>, WriteError> {
     let mut table: Vec<(u8, u16)> = Vec::new();
-    let mut app_obj: Option<u8> = None;
     for index in 0..16u8 {
         let payload = bussard_mgmt::apci::encode_property_value_read(index, PID_OBJECT_TYPE, 1, 1);
         let (resp_apci, data) = l4
@@ -2540,21 +2600,9 @@ async fn discover_object_table<Ch: L4Channel>(
         if resp.count == 0 || resp.data.len() < 2 {
             break;
         }
-        let ot = u16::from_be_bytes([resp.data[0], resp.data[1]]);
-        table.push((index, ot));
-        if ot == OT_APPLICATION_PROGRAM && app_obj.is_none() {
-            app_obj = Some(index);
-        }
+        table.push((index, u16::from_be_bytes([resp.data[0], resp.data[1]])));
     }
-    match app_obj {
-        Some(index) => Ok((index, table)),
-        None => Err(WriteError::Mgmt(
-            bussard_mgmt::MgmtError::MalformedResponse {
-                address: l4.target(),
-                reason: "device is missing the application-program interface object".to_string(),
-            },
-        )),
-    }
+    Ok(table)
 }
 
 /// Discovers the object table like [`discover_object_table`], but **resumable at

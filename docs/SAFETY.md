@@ -84,9 +84,9 @@ from the model, or reconstruct the earlier state from the backup JSON.
 **`flash --product <FILE> <ADDRESS>`** downloads an application program from
 vendor product data (the ETS-free application download). It runs a pre-flight
 plan, then writes, then verifies the application reads back as `Loaded` and
-spot-checks written segments. A flash assumes the device is **factory-fresh**
-and takes **no backup**, because a fresh device has no prior application to
-save. The command states this plainly before it writes:
+spot-checks written segments. A flash takes **no backup**, because a
+factory-fresh device has no prior application to save. The command states this
+plainly before it writes:
 
 ```
 NOTE: a first flash assumes the device is factory-fresh; no backup is
@@ -94,11 +94,38 @@ possible (there is no prior application to save). Recovery from a failed
 flash is re-running `bussard flash`.
 ```
 
-Note that today `flash` does not check whether the device is actually
-factory-fresh; flashing a device that already carries an application overwrites
-it with no backup. Refusing (or requiring `--force`) in that case is tracked in
-[issue #79](https://github.com/tmbo/bussard/issues/79). Until then, be sure the
-target is fresh, or accept that you are overwriting it.
+**The factory-freshness check.** Because there is no backup, `flash` verifies
+that assumption before it writes anything. In its read-only pre-flight it reads
+the load state of every object the download would rewrite: on System B each
+interface object's `PID_LOAD_STATE_CONTROL` plus the resident application id in
+`PID_PROGRAM_VERSION`, on System 7 each load-state machine. Then:
+
+| What the device reports | What `flash` does |
+| --- | --- |
+| No application loaded | Proceeds (the device is factory-fresh). |
+| An object left `Loading` or in `Error` by an interrupted flash | Proceeds; re-flashing is the recovery path. |
+| The **same** application already loaded | Proceeds without `--force`, with a notice. |
+| A **different** application loaded | **Refuses**; `--force` overrides. |
+| An application loaded that it cannot identify | **Refuses**; `--force` overrides. |
+| A load state it cannot read at all | **Refuses** as unknown; `--force` overrides. |
+
+A refusal names the device, the resident application and the two ways forward:
+capture what is on the device first (`reconstruct` reads its links into the
+model, and `apply` backs the tables up to `captures/backups/` before writing),
+or re-run with `--force` to overwrite it anyway. `--force` prints a single loud
+line naming the device, the gateway and what is being destroyed, and the
+confirmation prompt repeats it, so a `y` is typed against the real consequence.
+
+Two details worth knowing. **Unreadable is not fresh**: if the device refuses
+the state reads, `flash` refuses too, and says the state was unreadable rather
+than `Loaded`, because a write with no backup must not be what finds out. And
+**re-flashing the same application is deliberately allowed**, because the
+failure messages tell you to re-run `flash` after an interrupted one. It is
+still a full rewrite: the parameters are reset to the vendor defaults plus the
+device file's `parameters:` overrides, and the address, association and
+group-object tables are rewritten from the model's links. On System 7 there is
+no application-id property, so a loaded device can never be recognised as "the
+same application": any loaded System 7 device needs `--force`.
 
 **Recovery from a failed or interrupted flash.** The download is idempotent: it
 re-unloads and rewrites the whole application, so the fix for a partial flash is
@@ -161,9 +188,6 @@ rolled back.
   Data Secure. The roadmap decision is tracked in
   [issue #71](https://github.com/tmbo/bussard/issues/71). Do not point `bussard`
   at a Secure installation expecting it to write.
-- **`flash` does not yet verify factory-freshness**
-  ([issue #79](https://github.com/tmbo/bussard/issues/79)); see the flash
-  section above.
 
 ## See also
 

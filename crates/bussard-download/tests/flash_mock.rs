@@ -4064,3 +4064,281 @@ async fn flash_small_image_stays_on_the_plain_write_path() {
     );
     handle.abort();
 }
+
+// --- Pre-flight factory-freshness probe (issue #79) -------------------------
+//
+// `flash` takes no backup, so before it writes anything the CLI reads what the
+// device already carries: every interface object's load state, and the resident
+// application id (`PID_PROGRAM_VERSION`, PID 13) of the application objects. The
+// probe is READ-ONLY — these tests assert the device saw no load control and no
+// memory write — and the verdict drives the refusal: a *different* resident
+// application needs `--force`, the *same* one is the documented re-flash
+// recovery path, and an unreadable state is refused as unknown (not "fresh").
+
+/// An app whose id carries a parseable `M-XXXX` manufacturer prefix, so its
+/// identity yields the 5-octet `PID_PROGRAM_VERSION` value a completed flash
+/// stamps on the device: KNX Virtual DA.tp's `00 FA 25 00 10` (manufacturer
+/// `0x00FA`, application number 9472, version 16).
+fn identified_app() -> ApplicationProgram {
+    let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+     <ApplicationProgram Id="M-00FA_A-2500-10-51CB" ApplicationNumber="9472" ApplicationVersion="16"
+        MaskVersion="MV-07B0" Name="DA.tp" LoadProcedureStyle="ProductDefault">
+      <Static>
+       <Code>
+        <RelativeSegment Id="M-00FA_A-2500-10-51CB_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment>
+       </Code>
+       <LoadProcedures>
+        <LoadProcedure>
+         <LdCtrlConnect />
+         <LdCtrlUnload LsmIdx="4" />
+         <LdCtrlLoad LsmIdx="4" />
+         <LdCtrlRelSegment LsmIdx="4" Size="6" AppliesTo="full" />
+         <LdCtrlWriteRelMem ObjIdx="0" Offset="0" Size="6" AppliesTo="full" />
+         <LdCtrlLoadCompleted LsmIdx="4" />
+         <LdCtrlRestart />
+         <LdCtrlDisconnect />
+        </LoadProcedure>
+       </LoadProcedures>
+      </Static>
+     </ApplicationProgram></KNX>"#;
+    parse_application_program("M-00FA_A-2500-10-51CB", xml.as_bytes()).unwrap()
+}
+
+/// Plans the identified app against a 07B0 device.
+fn identified_plan(app: &ApplicationProgram) -> bussard_download::FlashPlan {
+    plan_flash(
+        app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap()
+}
+
+/// Opens an authorized connection and runs the read-only pre-flight probe,
+/// exactly as `bussard flash`'s phase A does.
+async fn probe(bus: &mut Transport) -> bussard_download::ResidentState {
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+    let mut l4 = Layer4Connection::connect(bus, target, source)
+        .await
+        .unwrap();
+    l4.authorize_or_fail(0xFFFF_FFFF).await.unwrap();
+    let resident = bussard_download::probe_resident_state(&mut l4, 0x07B0, None).await;
+    let _ = l4.disconnect().await;
+    resident
+}
+
+/// Asserts the probe wrote nothing: no load control, no memory, no property.
+fn assert_probe_wrote_nothing(state: &Shared) {
+    let s = state.lock().unwrap();
+    assert_eq!(s.control_writes, 0, "the probe must write no load control");
+    assert_eq!(s.memory_writes_seen, 0, "the probe must write no memory");
+    assert!(s.prop_writes.is_empty(), "the probe must write no property");
+}
+
+#[tokio::test]
+async fn test_probe_resident_state_factory_fresh_device_is_fresh() {
+    let (mut bus, state, handle) = setup(Fault::None).await;
+    let app = identified_app();
+    let plan = identified_plan(&app);
+
+    let resident = probe(&mut bus).await;
+
+    assert!(resident.unreadable.is_none(), "{resident:?}");
+    // The three loadable objects answered; the device object (type 0) carries no
+    // load-state machine and is not probed.
+    assert_eq!(resident.objects.len(), 3, "{resident:?}");
+    assert!(
+        resident
+            .objects
+            .iter()
+            .all(|o| o.state == LoadState::Unloaded),
+        "a factory-fresh device reports every object Unloaded: {resident:?}"
+    );
+    assert!(
+        resident.app_id.is_none(),
+        "nothing stamped an application id"
+    );
+    assert_eq!(
+        bussard_download::assess_freshness(&resident, &plan.identity),
+        bussard_download::Freshness::Fresh
+    );
+    assert_probe_wrote_nothing(&state);
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_probe_resident_state_other_application_is_refused() {
+    // The device runs MDT A-0007 v35 (`00 83 00 07 23`) and we are about to flash
+    // DA.tp: a different application, so the verdict refuses and names what is
+    // resident. Nothing is written — the CLI never gets as far as `flash`.
+    let (mut bus, state, handle) = setup(Fault::None).await;
+    {
+        let mut s = state.lock().unwrap();
+        s.app_load_state = LS_LOADED;
+        s.compare_props
+            .insert((3, 13), vec![0x00, 0x83, 0x00, 0x07, 0x23]);
+    }
+    let app = identified_app();
+    let plan = identified_plan(&app);
+
+    let resident = probe(&mut bus).await;
+
+    assert_eq!(
+        resident.app_id_display().as_deref(),
+        Some("M-0083 A-0007 v35")
+    );
+    assert!(resident.has_loaded_application());
+    match bussard_download::assess_freshness(&resident, &plan.identity) {
+        bussard_download::Freshness::Resident { resident, objects } => {
+            assert_eq!(resident.as_deref(), Some("M-0083 A-0007 v35"));
+            assert_eq!(objects, vec!["object 3 (application program)".to_string()]);
+        }
+        other => panic!("expected a refusal verdict, got {other:?}"),
+    }
+    assert_probe_wrote_nothing(&state);
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_probe_resident_state_same_application_allows_reflash() {
+    // The device already runs the very application being flashed (DA.tp's
+    // `00 FA 25 00 10`). Re-flashing it is the documented recovery path for an
+    // interrupted flash, so the verdict allows it without --force.
+    let (mut bus, state, handle) = setup(Fault::None).await;
+    {
+        let mut s = state.lock().unwrap();
+        s.app_load_state = LS_LOADED;
+        s.compare_props
+            .insert((3, 13), vec![0x00, 0xFA, 0x25, 0x00, 0x10]);
+    }
+    let app = identified_app();
+    let plan = identified_plan(&app);
+
+    let resident = probe(&mut bus).await;
+
+    let verdict = bussard_download::assess_freshness(&resident, &plan.identity);
+    assert_eq!(
+        verdict,
+        bussard_download::Freshness::SameApplication {
+            resident: "M-00FA A-2500 v16".to_string()
+        }
+    );
+    assert!(verdict.allows_flash());
+    assert_probe_wrote_nothing(&state);
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_probe_resident_state_loaded_without_app_id_is_refused() {
+    // Loaded, but nothing answers PID 13 (the mock reports no such property):
+    // the resident application cannot be identified, which must NOT be read as
+    // "fresh" — it is refused, and the message says it could not be identified.
+    let (mut bus, state, handle) = setup(Fault::None).await;
+    state.lock().unwrap().app_load_state = LS_LOADED;
+    let app = identified_app();
+    let plan = identified_plan(&app);
+
+    let resident = probe(&mut bus).await;
+
+    assert!(resident.app_id.is_none());
+    match bussard_download::assess_freshness(&resident, &plan.identity) {
+        bussard_download::Freshness::Resident { resident, objects } => {
+            assert!(resident.is_none(), "unidentifiable resident application");
+            assert_eq!(objects, vec!["object 3 (application program)".to_string()]);
+        }
+        other => panic!("expected a refusal verdict, got {other:?}"),
+    }
+    assert_probe_wrote_nothing(&state);
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_probe_resident_state_unreadable_device_is_unknown() {
+    // A device that answers no interface object at all: the load state is
+    // unreadable, which is reported as unknown (not fresh) and refused without
+    // --force. The message says it was unreadable, not Loaded.
+    let (mut bus, state, handle) = setup(Fault::None).await;
+    state.lock().unwrap().object_types = Vec::new();
+    let app = identified_app();
+    let plan = identified_plan(&app);
+
+    let resident = probe(&mut bus).await;
+
+    assert!(resident.objects.is_empty());
+    match bussard_download::assess_freshness(&resident, &plan.identity) {
+        bussard_download::Freshness::Unknown { reason } => {
+            assert!(
+                reason.contains("interface object"),
+                "the reason names the unreadable read: {reason}"
+            );
+        }
+        other => panic!("expected an unknown verdict, got {other:?}"),
+    }
+    assert_probe_wrote_nothing(&state);
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_probe_resident_state_interrupted_flash_still_flashes() {
+    // An object left mid-`Loading` by an interrupted flash is not a programmed
+    // device: re-running `flash` is the documented recovery, so the verdict is
+    // Fresh and no --force is needed.
+    let (mut bus, state, handle) = setup(Fault::None).await;
+    state.lock().unwrap().app_load_state = LS_LOADING;
+    let app = identified_app();
+    let plan = identified_plan(&app);
+
+    let resident = probe(&mut bus).await;
+
+    assert_eq!(
+        bussard_download::assess_freshness(&resident, &plan.identity),
+        bussard_download::Freshness::Fresh
+    );
+    assert_probe_wrote_nothing(&state);
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_flash_after_a_fresh_probe_is_unchanged() {
+    // The probe is a separate read-only pass: a flash that follows it writes
+    // exactly what it always did (the byte-path is untouched — this is the
+    // end-to-end proof next to the byte-for-byte corpus tests).
+    let (mut bus, state, handle) = setup(Fault::None).await;
+    let app = identified_app();
+    let plan = identified_plan(&app);
+
+    let resident = probe(&mut bus).await;
+    assert_eq!(
+        bussard_download::assess_freshness(&resident, &plan.identity),
+        bussard_download::Freshness::Fresh
+    );
+
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+    let l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    let mut session = authed_session(l4).await;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .unwrap();
+    let _ = session.into_disconnect().await;
+
+    assert!(outcome.ok(), "flash must verify after a probe: {outcome:?}");
+    let s = state.lock().unwrap();
+    let code: Vec<u8> = (0x4000u16..0x4006)
+        .map(|a| *s.memory.get(&u32::from(a)).unwrap_or(&0))
+        .collect();
+    assert_eq!(code, vec![0, 1, 2, 3, 4, 5]);
+    handle.abort();
+}

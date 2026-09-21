@@ -1176,3 +1176,170 @@ async fn flash_system7_memory_mapped_post_restart_lsm5_reaches_loaded()
     let _ = session.into_disconnect().await;
     Ok(())
 }
+
+// --- Pre-flight factory-freshness probe (issue #79) -------------------------
+//
+// System 7's load-state machines are read through the same `LsmAccess` seam the
+// flash drives, so what the probe reads is what the flash would overwrite. A
+// System 7 device exposes no application-id property, so a loaded LSM can never
+// be identified as "the same application": it is always a refusal that `--force`
+// overrides. The probe is read-only — these tests assert the device saw no
+// memory write and no LSM event.
+
+/// Plans the MDT canonical System 7 app against the mock's mask.
+fn sys7_plan() -> Result<bussard_download::FlashPlan, Box<dyn std::error::Error>> {
+    let app = mdt_canonical_app();
+    Ok(plan_flash(
+        &app,
+        "1.1.99",
+        MASK_0705,
+        &no_overrides(),
+        &std::collections::BTreeMap::new(),
+        None,
+        &std::collections::BTreeMap::new(),
+    )?)
+}
+
+/// Opens an authorized connection and runs the read-only pre-flight probe
+/// through the realisation `plan` will drive, as `bussard flash`'s phase A does.
+async fn sys7_probe(
+    bus: &mut Transport,
+    plan: &bussard_download::FlashPlan,
+) -> Result<bussard_download::ResidentState, Box<dyn std::error::Error>> {
+    let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
+    let mut l4 = Layer4Connection::connect(bus, target, source).await?;
+    l4.authorize_or_fail(0xFFFF_FFFF).await?;
+    let resident =
+        bussard_download::probe_resident_state(&mut l4, MASK_0705, plan.sys7_lsm_access().as_ref())
+            .await;
+    let _ = l4.disconnect().await;
+    Ok(resident)
+}
+
+async fn probe_fresh_sys7_device(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>> {
+    set_sys7_lsm_env(mode);
+    let (mut bus, state, handle) = setup(mode, Fault::None).await;
+    let plan = sys7_plan()?;
+
+    let resident = sys7_probe(&mut bus, &plan).await?;
+
+    assert!(resident.unreadable.is_none(), "{resident:?}");
+    assert!(
+        resident
+            .objects
+            .iter()
+            .all(|o| o.state == LoadState::Unloaded),
+        "a fresh System 7 device reports every LSM Unloaded: {resident:?}"
+    );
+    assert_eq!(
+        bussard_download::assess_freshness(&resident, &plan.identity),
+        bussard_download::Freshness::Fresh
+    );
+    {
+        let s = state.lock().unwrap();
+        assert_eq!(s.memory_writes_seen, 0, "the probe must write no memory");
+        for lsm in [1u8, 2, 3] {
+            assert_eq!(s.lsm_state(lsm), LS_UNLOADED, "the probe drove no LSM");
+        }
+    }
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_probe_resident_state_sys7_memory_mapped_fresh_device_is_fresh()
+-> Result<(), Box<dyn std::error::Error>> {
+    probe_fresh_sys7_device(LsmMode::MemoryMapped).await
+}
+
+#[tokio::test]
+async fn test_probe_resident_state_sys7_property_fresh_device_is_fresh()
+-> Result<(), Box<dyn std::error::Error>> {
+    probe_fresh_sys7_device(LsmMode::Property).await
+}
+
+async fn probe_loaded_sys7_device(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>> {
+    set_sys7_lsm_env(mode);
+    let (mut bus, state, handle) = setup(mode, Fault::None).await;
+    {
+        // A previously-programmed device: its application LSM is Loaded.
+        let mut s = state.lock().unwrap();
+        s.lsm_states.insert(3, LS_LOADED);
+    }
+    let plan = sys7_plan()?;
+
+    let resident = sys7_probe(&mut bus, &plan).await?;
+
+    assert!(resident.has_loaded_application(), "{resident:?}");
+    match bussard_download::assess_freshness(&resident, &plan.identity) {
+        bussard_download::Freshness::Resident { resident, objects } => {
+            // System 7 has no application-id property: the resident application
+            // exists but cannot be named, which is still a refusal.
+            assert!(
+                resident.is_none(),
+                "System 7 cannot identify the resident app"
+            );
+            assert!(objects.contains(&"LSM 3".to_string()), "{objects:?}");
+        }
+        other => panic!("expected a refusal verdict, got {other:?}"),
+    }
+    {
+        let s = state.lock().unwrap();
+        assert_eq!(s.memory_writes_seen, 0, "the probe must write no memory");
+        assert_eq!(s.lsm_state(3), LS_LOADED, "the probe left the LSM alone");
+        assert_eq!(s.lsm_state(1), LS_UNLOADED, "the probe drove no other LSM");
+    }
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_probe_resident_state_sys7_memory_mapped_loaded_device_is_refused()
+-> Result<(), Box<dyn std::error::Error>> {
+    probe_loaded_sys7_device(LsmMode::MemoryMapped).await
+}
+
+#[tokio::test]
+async fn test_probe_resident_state_sys7_property_loaded_device_is_refused()
+-> Result<(), Box<dyn std::error::Error>> {
+    probe_loaded_sys7_device(LsmMode::Property).await
+}
+
+#[tokio::test]
+async fn test_probe_resident_state_sys7_without_a_plan_follows_the_env_realisation()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Passing no explicit `LsmAccess` (what the CLI's phase A does, before the
+    // plan exists) must resolve the same realisation the plan will: the mask
+    // default plus the `BUSSARD_FLASH_SYS7_LSM` override. Against a
+    // memory-mapped device that means the status region, not PID 5.
+    set_sys7_lsm_env(LsmMode::MemoryMapped);
+    let (mut bus, state, handle) = setup(LsmMode::MemoryMapped, Fault::None).await;
+    state.lock().unwrap().lsm_states.insert(3, LS_LOADED);
+    let plan = sys7_plan()?;
+
+    let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    l4.authorize_or_fail(0xFFFF_FFFF).await?;
+    let resident = bussard_download::probe_resident_state(&mut l4, MASK_0705, None).await;
+    let _ = l4.disconnect().await;
+
+    assert!(
+        resident.has_loaded_application(),
+        "the mask+env realisation must read the loaded LSM: {resident:?}"
+    );
+    assert!(
+        !bussard_download::assess_freshness(&resident, &plan.identity).allows_flash(),
+        "a loaded System 7 device is refused without --force"
+    );
+    {
+        let s = state.lock().unwrap();
+        assert_eq!(
+            s.lsm5_property_accesses, 0,
+            "a memory-mapped probe must not touch PID 5"
+        );
+    }
+    handle.abort();
+    Ok(())
+}
