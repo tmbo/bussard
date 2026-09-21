@@ -218,6 +218,122 @@ jobs:
       - name: cargo check (workspace)
         run: cargo check --workspace
 
+  # knx-sim is a SEPARATE Cargo workspace (it has its own `[workspace]` table and
+  # the root manifest excludes it), so every job above — lint, test, deny, msrv —
+  # walks straight past it. Nothing built, linted, tested or licence-gated it.
+  # This job is that gate, run against knx-sim's own manifest.
+  #
+  # It is deliberately its own job rather than extra steps on `lint`/`test`: the
+  # point of knx-sim is that it is an INDEPENDENT second implementation, and a
+  # job that only ever touches `knx-sim/` keeps that boundary visible (and the
+  # job cleanly liftable if the simulator is ever extracted to its own repo).
+  knx-sim:
+    name: knx-sim (ubuntu, independent workspace)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: knx-sim
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Own cache key and workspace root: knx-sim shares no build graph with
+          # the bussard workspace, which is the whole point.
+          workspaces: knx-sim
+          shared-key: rust-knx-sim
+
+      - name: Check formatting
+        run: cargo fmt --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      # Plain `cargo test` (not nextest): knx-sim must stay runnable with a stock
+      # toolchain and nothing else, so its CI command is the one the README tells
+      # a contributor to run. `tests/independence.rs` runs here too — it fails if
+      # anyone ever adds a path/git dependency or a `bussard` crate.
+      - name: Test
+        run: cargo test
+
+      # The second licence gate. knx-sim has its own dependency set and its own
+      # deny.toml (same allow-list as the root), so the "never take on a copyleft
+      # dependency" rule is enforced here as well as in the `deny` job.
+      - name: cargo-deny (knx-sim manifest)
+        uses: EmbarkStudios/cargo-deny-action@v2.1.1
+        with:
+          command: check
+          manifest-path: knx-sim/Cargo.toml
+
+  # The conformance loop between the two implementations, guarded on every push.
+  #
+  # The full end-to-end demos (`knx-sim/examples/small-installation/run.sh` and
+  # `knx-sim/examples/system7/run.sh`) drive a real `bussard flash` against a
+  # running simulator, but they need vendor `.knxprod` files that are copyrighted
+  # and git-ignored, so they cannot run here. Their fixture-backed equivalents
+  # can: the sim replays the exact captured management sequences, and bussard's
+  # mock-gateway flash suites drive the same ladder against a mock device. Both
+  # sides of the loop therefore stay covered even though the demo scripts do not
+  # run in CI.
+  sim-conformance:
+    name: sim-conformance (ubuntu, both sides of the loop)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Two workspaces in one job: the bussard root and knx-sim.
+          workspaces: |
+            .
+            knx-sim
+          shared-key: rust-sim-conformance
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      # The sim side: the System 7 calibration plus the two capture replays
+      # (Jung M2 property LSM, Theben 0701 memory-mapped), the group runtime, and
+      # the KNXnet/IP frontend. `ets_calibration` is listed too: it skips cleanly
+      # without the git-ignored DA.tp fixture, but running it proves the skip
+      # path itself still compiles and passes.
+      - name: knx-sim conformance (calibration + replays)
+        run: |
+          cargo test --manifest-path knx-sim/Cargo.toml \
+            --test sys7_calibration \
+            --test sys7_jung_m2_replay \
+            --test sys7_theben_0701_replay \
+            --test ets_calibration \
+            --test group_runtime \
+            --test knxnetip_server
+
+      # The bussard side: the mock-gateway flash suites that the example scripts
+      # exercise for real against the simulator. Named explicitly (rather than
+      # relying on the `test` job's whole-workspace run) so the pairing with the
+      # sim replays above is visible and cannot be dropped unnoticed.
+      - name: bussard mock-flash conformance
+        run: |
+          cargo nextest run -p bussard-download --profile ci \
+            -E 'binary(flash_mock) + binary(flash_mock_system7) + binary(sys7_jung_m2_plan) + binary(sys7_theben_0701_plan)'
+
   # Optional interop job: build thelsing/knx's knx-linux-ip demo as an EXTERNAL
   # process and drive bussard's management ladder against it over KNXnet/IP
   # routing multicast. Ubuntu-only (the demo is #ifdef __linux__), and kept OFF

@@ -24,6 +24,14 @@
 # resolves them from the product-corpus cache under
 # tests-support/product-corpus/cache/vendor. If a product is missing it prints
 # where to place it and exits non-zero.
+#
+# CI therefore cannot run this script — no vendor products on the runner. The
+# `sim-conformance` job in .github/workflows/ci.yml runs the fixture-backed
+# equivalent of both sides of this loop instead: the sim's sys7 calibration and
+# the two capture replays (Jung M2 property LSM, Theben 0701 memory-mapped), plus
+# bussard's mock-gateway flash suites and the matching plan suites. Keep this
+# script working, but do not rely on it to catch a regression: the CI job is what
+# guards the loop on every push.
 
 set -uo pipefail
 
