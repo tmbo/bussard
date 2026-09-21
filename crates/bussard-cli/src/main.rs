@@ -95,12 +95,6 @@ enum Command {
         /// Project password (else `BUSSARD_PROJECT_PASSWORD`, else prompt).
         #[arg(long)]
         password: Option<String>,
-        /// On a re-import, take the project's values for generated sections
-        /// (com-object tables, link wiring, parameters) silently. This is the
-        /// default; hand-authored fields (names, locations, DPTs, `protected:`)
-        /// are always preserved and any difference is reported, never overwritten.
-        #[arg(long, default_value_t = true)]
-        force_generated: bool,
         /// The model directory to write (aligned with every other command).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
@@ -706,13 +700,12 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             project,
             from_json,
             password,
-            force_generated,
             dir,
         } => {
             if let Some(json) = from_json {
-                import_cmd::run_json(&json, &dir, force_generated)
+                import_cmd::run_json(&json, &dir)
             } else if let Some(project) = project {
-                import_cmd::run_knxproj(&project, &dir, password, force_generated)
+                import_cmd::run_knxproj(&project, &dir, password)
             } else {
                 anyhow::bail!("provide a .knxproj path or --from-json <file>")
             }
