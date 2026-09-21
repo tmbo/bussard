@@ -99,11 +99,17 @@ pub fn run(
     address: &str,
     dir: &Path,
     json: bool,
+    tool_key_source: crate::secure_key::ToolKeySource<'_>,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
     let target: IndividualAddress = address
         .parse()
         .with_context(|| format!("parsing device address {address:?}"))?;
+    // KNX Data Secure (issue #71, spec §6.2): a security-activated device refuses
+    // the plain reads below, so `describe` takes the same tool-key surfaces as
+    // `flash`. `None` is the plain, byte-identical path.
+    let tool_key = crate::secure_key::resolve(target, tool_key_source)?;
+    let secure_seq = bussard_secure::SequenceHighWater::new();
     // A management command: a present-but-broken model is a hard error.
     let model = load_model_required(dir)?;
     let config = resolve_config(model.as_ref(), &overrides)?;
@@ -122,7 +128,16 @@ pub fn run(
         let source = ops::group_source(&handle);
         let lease = handle.lease().await.context("leasing the bus")?;
         let channel = LeaseChannel::new(lease);
-        let outcome = match Layer4Connection::connect(channel, target, source).await {
+        let secure = crate::secure_key::layer(&tool_key, &secure_seq);
+        let outcome = match Layer4Connection::connect_with_secure(
+            channel,
+            target,
+            source,
+            bussard_mgmt::Timeouts::default(),
+            secure,
+        )
+        .await
+        {
             Ok(mut l4) => {
                 // Authorize (free access) as ETS does before configuration access
                 // (issue #52 finding #1). Best-effort for a read.
