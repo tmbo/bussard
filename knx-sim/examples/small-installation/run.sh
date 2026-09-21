@@ -14,6 +14,13 @@
 # the product-corpus cache under the repo's `tests-support/product-corpus/cache`,
 # plus the DA.tp fixture under `knx-sim/tests/fixtures`. If a product is missing
 # it prints where to place it and exits non-zero.
+#
+# CI therefore cannot run this script — no vendor products on the runner. The
+# `sim-conformance` job in .github/workflows/ci.yml runs the fixture-backed
+# equivalent of both sides of this loop instead: the sim's calibration and
+# capture-replay suites, and bussard's mock-gateway flash suites. Keep this
+# script working, but do not rely on it to catch a regression: the CI job is what
+# guards the loop on every push.
 
 set -uo pipefail
 
