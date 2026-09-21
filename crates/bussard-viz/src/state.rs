@@ -70,7 +70,7 @@ impl BusStatus {
     /// A status with a live bus handle (normal connected/reconnecting mode).
     ///
     /// `gateway` is the resolved endpoint as the operator would read it
-    /// (`192.168.1.10:3671`, or `multicast 224.0.23.12:3671` for routing) and
+    /// (`192.0.2.10:3671`, or `multicast 224.0.23.12:3671` for routing) and
     /// `loopback` says whether that endpoint is a loopback address. Both are
     /// reported in `/api/state` so the page can name the bus it is about to
     /// write to, which `docs/SAFETY.md` promises of every write path.

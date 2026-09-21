@@ -300,10 +300,10 @@ fn bussard_yaml(resolution: &Resolution) -> String {
         ),
         Resolution::Placeholder => format!(
             "{header}connection:\n  transport: tunnel\n  \
-             # TODO: set your gateway's IP, e.g. \"192.168.1.10:3671\".\n  \
+             # TODO: set your gateway's IP, e.g. \"192.0.2.10:3671\".\n  \
              # Find it in your router or Home Assistant KNX config, then run\n  \
              # `bussard validate --dir knx` to check it.\n  \
-             gateway: \"192.168.1.10:3671\"\n"
+             gateway: \"192.0.2.10:3671\"\n"
         ),
     }
 }
@@ -428,7 +428,7 @@ mod tests {
 
     fn one_gateway() -> anyhow::Result<Vec<GatewayInfo>> {
         Ok(vec![gw(
-            [192, 168, 1, 10],
+            [192, 0, 2, 10],
             3671,
             Some(0x1100),
             Some("MDT IP"),
@@ -480,12 +480,12 @@ mod tests {
         fn boom() -> anyhow::Result<Vec<GatewayInfo>> {
             panic!("discovery must not run when --gateway is given");
         }
-        let code = run_with(&dir, Some("192.168.1.50"), false, boom, no_probe).unwrap();
+        let code = run_with(&dir, Some("192.0.2.50"), false, boom, no_probe).unwrap();
         assert_eq!(code, ExitCode::SUCCESS);
 
         let yaml = std::fs::read_to_string(dir.join("bussard.yaml")).unwrap();
         assert!(yaml.contains("transport: tunnel"), "{yaml}");
-        assert!(yaml.contains("192.168.1.50:3671"), "{yaml}");
+        assert!(yaml.contains("192.0.2.50:3671"), "{yaml}");
         assert_validates(&dir);
 
         std::fs::remove_dir_all(&dir).ok();
@@ -508,11 +508,11 @@ mod tests {
         }
 
         let dir = temp_dir("gateway-probe");
-        let code = run_with(&dir, Some("192.168.1.50:3671"), false, boom, record_probe).unwrap();
+        let code = run_with(&dir, Some("192.0.2.50:3671"), false, boom, record_probe).unwrap();
         assert_eq!(code, ExitCode::SUCCESS);
         assert_eq!(
             PROBED.with(|p| p.get()),
-            Some(SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 50), 3671)),
+            Some(SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 50), 3671)),
             "the reachability probe must run once against the parsed endpoint"
         );
 
@@ -541,7 +541,7 @@ mod tests {
 
         let yaml = std::fs::read_to_string(dir.join("bussard.yaml")).unwrap();
         assert!(yaml.contains("transport: tunnel"), "{yaml}");
-        assert!(yaml.contains("192.168.1.10:3671"), "{yaml}");
+        assert!(yaml.contains("192.0.2.10:3671"), "{yaml}");
         assert_validates(&dir);
 
         std::fs::remove_dir_all(&dir).ok();
@@ -592,21 +592,18 @@ mod tests {
 
     #[test]
     fn parse_gateway_defaults_port() {
-        let addr = parse_gateway("192.168.1.10").unwrap();
-        assert_eq!(
-            addr,
-            SocketAddrV4::new(Ipv4Addr::new(192, 168, 1, 10), 3671)
-        );
-        let addr = parse_gateway("192.168.1.10:3672").unwrap();
+        let addr = parse_gateway("192.0.2.10").unwrap();
+        assert_eq!(addr, SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 10), 3671));
+        let addr = parse_gateway("192.0.2.10:3672").unwrap();
         assert_eq!(addr.port(), 3672);
     }
 
     #[test]
     fn describe_gateway_formats_ia() {
-        let g = gw([192, 168, 1, 10], 3671, Some(0x1104), Some("Gw"));
+        let g = gw([192, 0, 2, 10], 3671, Some(0x1104), Some("Gw"));
         let s = describe_gateway(&g);
         assert!(s.contains("Gw"), "{s}");
-        assert!(s.contains("192.168.1.10:3671"), "{s}");
+        assert!(s.contains("192.0.2.10:3671"), "{s}");
         assert!(s.contains("IA 1.1.4"), "{s}");
     }
 }

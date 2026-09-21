@@ -197,7 +197,7 @@ fn dimmer_channel_becomes_light_with_brightness() {
 
 #[test]
 fn sensor_typing_by_dpt() {
-    let model = ModelBuilder::new("1.1.202", "Wetterstation", Some("Dach"))
+    let model = ModelBuilder::new("1.1.202", "Weather Station", Some("Attic"))
         .group("4/1/0", "Temperatur", "9.001")
         .group("4/1/1", "Helligkeit", "9.004")
         .group("4/1/2", "Windgeschwindigkeit", "9.005")
@@ -216,8 +216,48 @@ fn sensor_typing_by_dpt() {
 }
 
 #[test]
+fn test_sensor_type_for_two_byte_power_and_temperature_difference() {
+    // Home Assistant's `power` type is the 4-byte DPT 14.056 and its
+    // `temperature` type is an absolute value; 9.024 and 9.002 are the 2-byte
+    // forms and need their own types, or HA decodes the wrong width / unit.
+    let model = ModelBuilder::new("1.1.203", "Meter", None)
+        .group("4/3/0", "Momentanleistung", "9.024")
+        .group("4/3/1", "Sollwertverschiebung", "9.002")
+        .object(0, "9.024", "CRT", None, Some("4/3/0"), &[])
+        .object(1, "9.002", "CRT", None, Some("4/3/1"), &[])
+        .build();
+
+    let yaml = generate(&model, &Overrides::default()).unwrap();
+    assert!(yaml.contains("type: power_2byte"), "{yaml}");
+    assert!(
+        yaml.contains("type: temperature_difference_2byte"),
+        "{yaml}"
+    );
+    assert!(!yaml.contains("type: power\n"), "{yaml}");
+}
+
+#[test]
+fn test_try_sensor_skips_write_only_command_objects() {
+    // A write-only input (CW) receives a setpoint; it never publishes one. A
+    // `sensor` on it would sit permanently unknown in Home Assistant.
+    let model = ModelBuilder::new("1.1.204", "Heizung", None)
+        .group("4/4/0", "Sollwert Vorgabe", "9.001")
+        .group("4/4/1", "Isttemperatur", "9.001")
+        .object(0, "9.001", "CW", None, None, &["4/4/0"])
+        .object(1, "9.001", "CRT", None, Some("4/4/1"), &[])
+        .build();
+
+    let yaml = generate(&model, &Overrides::default()).unwrap();
+    assert!(yaml.contains("state_address: 4/4/1"), "{yaml}");
+    assert!(
+        !yaml.contains("state_address: 4/4/0"),
+        "a write-only command object must not become a sensor:\n{yaml}"
+    );
+}
+
+#[test]
 fn binary_sensor_device_class_from_dpt_and_name() {
-    let model = ModelBuilder::new("1.1.30", "Wetterstation", None)
+    let model = ModelBuilder::new("1.1.30", "Weather Station", None)
         .group("3/2/0", "Windalarm", "1.005")
         .group("4/2/0", "Fenster Bathroom", "1.019")
         .object(3, "1.005", "CRT", None, Some("3/2/0"), &[])
