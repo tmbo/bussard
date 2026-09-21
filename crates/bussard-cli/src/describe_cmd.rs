@@ -110,6 +110,7 @@ pub fn run(
     // `flash`. `None` is the plain, byte-identical path.
     let tool_key = crate::secure_key::resolve(target, tool_key_source)?;
     let secure_seq = bussard_secure::SequenceHighWater::new();
+    let presented_tool_key = tool_key.is_some();
     // A management command: a present-but-broken model is a hard error.
     let model = load_model_required(dir)?;
     let config = resolve_config(model.as_ref(), &overrides)?;
@@ -155,7 +156,8 @@ pub fn run(
         };
         let _ = handle.close().await;
         outcome
-    })?;
+    })
+    .map_err(|err| secure_hint(target, presented_tool_key, err))?;
 
     let mut result = result;
     // Surface KNX Secure status from the model (issue #71, spec §5). Flags only.
@@ -178,6 +180,32 @@ pub fn run(
         print_text(&result);
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Adds KNX Data Secure guidance to a failed introspection (issue #71,
+/// spec §6.4).
+///
+/// An activated device drops a management APDU it cannot accept, which reaches
+/// us as a disconnect or a silence — identical for "no tool key" and "wrong tool
+/// key", so the hint names whichever cause is still open.
+fn secure_hint(
+    target: IndividualAddress,
+    presented_tool_key: bool,
+    err: anyhow::Error,
+) -> anyhow::Error {
+    if presented_tool_key {
+        err.context(format!(
+            "{target} did not answer the SECURED management access: either the tool key is not \
+             this device's key, or the device is not security-activated and ignores A_SecureData \
+             (retry without --keyring/--tool-key)"
+        ))
+    } else {
+        err.context(format!(
+            "{target} did not answer: if this device is KNX Data Secure-activated it refuses \
+             unsecured management — pass its tool key with --keyring <file.knxkeys> (password in \
+             BUSSARD_KEYRING_PASSWORD), or --tool-key <32 hex> for a test device"
+        ))
+    }
 }
 
 /// Reads the descriptor, discovers the interface objects and enumerates each
