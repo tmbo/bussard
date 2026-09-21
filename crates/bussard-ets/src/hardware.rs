@@ -38,7 +38,7 @@ use crate::translation::TranslationCollector;
 pub struct ProductInfo {
     /// The catalogue order number, e.g. `"2116REG"`.
     pub order_number: Option<String>,
-    /// The hardware display name, e.g. `"Binäreingang 6fach"` (en-US resolved).
+    /// The hardware display name, e.g. `"Beispielaktor 4fach"` (en-US resolved).
     pub hardware_name: Option<String>,
 }
 
@@ -227,14 +227,14 @@ mod tests {
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
           <Hardware Id="H-1" Name="Hardware name">
             <Products>
-              <Product Id="H-1_P-2116REG" OrderNumber="2116REG" Text="Binäreingang 6fach" />
+              <Product Id="H-1_P-2116REG" OrderNumber="2116REG" Text="Beispielaktor 4fach" />
             </Products>
           </Hardware>
         </KNX>"#;
         let hw = parse_hardware(xml).unwrap();
         let p = hw.products.get("H-1_P-2116REG").unwrap();
         assert_eq!(p.order_number.as_deref(), Some("2116REG"));
-        assert_eq!(p.hardware_name.as_deref(), Some("Binäreingang 6fach"));
+        assert_eq!(p.hardware_name.as_deref(), Some("Beispielaktor 4fach"));
     }
 
     #[test]

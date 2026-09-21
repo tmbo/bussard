@@ -31,7 +31,7 @@
 //!
 //! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 //! // Open a bus session (a tunnel to a gateway).
-//! let gateway = "192.168.1.10:3671".parse().unwrap();
+//! let gateway = "192.0.2.10:3671".parse().unwrap();
 //! let config = ConnectionConfig::tunnel(gateway);
 //! let mut bus = Transport::connect(&config).await?;
 //!
