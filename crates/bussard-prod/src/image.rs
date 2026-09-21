@@ -682,7 +682,7 @@ fn encode_value(
             let f: f32 = raw.trim().parse().map_err(|_| {
                 param_err(app, pname, &format!("float value `{raw}` is not a number"))
             })?;
-            let enc = encode_float16(f).map_err(|_| {
+            let enc = bussard_model::codec::encode_float16(f).map_err(|_| {
                 param_err(
                     app,
                     pname,
@@ -918,40 +918,6 @@ fn param_err(_app: &ApplicationProgram, pname: &str, reason: &str) -> ProdError 
         parameter: pname.to_string(),
         reason: reason.to_string(),
     }
-}
-
-// ---------------------------------------------------------------------------
-// KNX 2-byte float (DPT 9) encoding, self-contained for the clean-room boundary.
-// ---------------------------------------------------------------------------
-
-const FLOAT16_MIN: f32 = 0.01 * -2048.0 * 32768.0;
-const FLOAT16_MAX: f32 = 0.01 * 2047.0 * 32768.0;
-
-/// Encodes a value into a KNX 2-byte float (DPT 9.x), big-endian.
-fn encode_float16(value: f32) -> std::result::Result<[u8; 2], ()> {
-    if !value.is_finite() || !(FLOAT16_MIN..=FLOAT16_MAX).contains(&value) {
-        return Err(());
-    }
-    let mut mantissa = (value * 100.0).round() as i32;
-    let mut exponent = 0i32;
-    while !(-2048..=2047).contains(&mantissa) {
-        if exponent >= 15 {
-            return Err(());
-        }
-        mantissa = if mantissa >= 0 {
-            (mantissa + 1) / 2
-        } else {
-            (mantissa - 1) / 2
-        };
-        exponent += 1;
-    }
-    let (sign, mant_bits) = if mantissa < 0 {
-        (0x8000u16, (mantissa + 2048) as u16)
-    } else {
-        (0u16, mantissa as u16)
-    };
-    let raw = sign | ((exponent as u16) << 11) | (mant_bits & 0x07ff);
-    Ok([(raw >> 8) as u8, (raw & 0xff) as u8])
 }
 
 #[cfg(test)]
@@ -1221,6 +1187,40 @@ mod tests {
         let img = image_of(&app);
         // 21.0: mantissa=2100 needs exp=1 (1050), raw = (1<<11)|1050 = 0x0C1A.
         assert_eq!(&img[0..2], &[0x0C, 0x1A]);
+    }
+
+    /// Regression: `image.rs` carried its own copy of the DPT-9 encoder whose
+    /// `FLOAT16_MAX` used mantissa 2047 instead of 2046, so the top of its
+    /// accepted range rounded up onto the raw pattern `0x7FFF` — the DPT-9
+    /// "invalid data" marker the model encoder deliberately avoids (issue #62).
+    /// The copy is gone; prod now calls `bussard_model::codec::encode_float16`,
+    /// so the marker is unreachable and the top of the old range is refused.
+    #[test]
+    fn test_encode_value_float_dpt9_never_emits_the_invalid_marker() {
+        // 670433.28 (mantissa 2046, exponent 15) is the largest valid DPT-9
+        // value; it must encode to 0x7FFE, one step below the marker.
+        let app = app_with(&[(
+            "fmax",
+            r#"<TypeFloat Encoding="DPT 9" minInclusive="-671088" maxInclusive="670434" />"#,
+            Some("670433.28"),
+            0,
+            0,
+        )]);
+        let img = image_of(&app);
+        assert_eq!(&img[0..2], &[0x7F, 0xFE]);
+
+        // Anything above it (the old copy's 2047-mantissa range) is refused
+        // rather than written as 0x7FFF.
+        let app = app_with(&[(
+            "fover",
+            r#"<TypeFloat Encoding="DPT 9" minInclusive="-671088" maxInclusive="670761" />"#,
+            Some("670760.96"),
+            0,
+            0,
+        )]);
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
+            .expect_err("above the DPT-9 maximum");
+        assert!(err.to_string().contains("DPT-9 range"), "{err}");
     }
 
     #[test]

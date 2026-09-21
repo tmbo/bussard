@@ -21,7 +21,8 @@ pub mod validate;
 
 pub use address::{AddressParseError, GroupAddress, IndividualAddress};
 pub use codec::{
-    DateTime, EncodeError, HvacMode, ParseValueError, Rgbw, TypedValue, decode, encode, parse_value,
+    DateTime, EncodeError, Float16RangeError, HvacMode, ParseValueError, Rgbw, TypedValue, decode,
+    encode, encode_float16, parse_value,
 };
 pub use dpt::{ApduSize, Dpt, DptParseError};
 pub use flags::{Flags, FlagsParseError};

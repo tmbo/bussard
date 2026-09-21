@@ -470,21 +470,33 @@ fn decode_float16(hi: u8, lo: u8) -> f32 {
 const FLOAT16_MIN: f32 = 0.01 * -2048.0 * 32768.0;
 const FLOAT16_MAX: f32 = 0.01 * 2046.0 * 32768.0;
 
-/// Encodes a value into a KNX 2-byte float (DPT 9.x).
-fn encode_float16(value: f32) -> Result<[u8; 2], ()> {
+/// A value that is not representable as a KNX 2-byte float (DPT 9.x): either
+/// non-finite, or outside `-671088.64..=670433.28` (the maximum stops one
+/// mantissa step below the raw encoding ceiling of 670760.96 so a value can
+/// never round up onto `0x7FFF`, the DPT-9 "invalid data" marker).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("value is not representable as a KNX 2-byte float (DPT 9)")]
+pub struct Float16RangeError;
+
+/// Encodes a value into a KNX 2-byte float (DPT 9.x), big-endian.
+///
+/// This is the single DPT-9 encoder in the workspace: `bussard-prod` places
+/// `<TypeFloat Encoding="DPT 9">` parameter values into device images with it,
+/// so an image byte and a bus byte can never disagree.
+pub fn encode_float16(value: f32) -> Result<[u8; 2], Float16RangeError> {
     // Reject non-finite (NaN/±Inf) and anything outside the representable range
     // *before* any integer math: `(value * 100.0).round() as i32` otherwise
     // saturates to `i32::MAX`/`i32::MIN` for huge inputs and the mantissa-
     // halving loop below then overflows on `mantissa ± 1` (panic in debug).
     if !value.is_finite() || !(FLOAT16_MIN..=FLOAT16_MAX).contains(&value) {
-        return Err(());
+        return Err(Float16RangeError);
     }
     // Representable range of DPT 9: mantissa in -2048..=2047, exponent 0..=15.
     let mut mantissa = (value * 100.0).round() as i32;
     let mut exponent = 0i32;
     while !(-2048..=2047).contains(&mantissa) {
         if exponent >= 15 {
-            return Err(());
+            return Err(Float16RangeError);
         }
         // Round-halves-away division by two to keep precision reasonable.
         mantissa = if mantissa >= 0 {
@@ -505,7 +517,7 @@ fn encode_float16(value: f32) -> Result<[u8; 2], ()> {
     // unreachable for in-range inputs, but guard explicitly so a future change to
     // the range logic can never emit a payload that decodes as "invalid".
     if raw == 0x7FFF {
-        return Err(());
+        return Err(Float16RangeError);
     }
     Ok([(raw >> 8) as u8, (raw & 0xff) as u8])
 }
@@ -1177,7 +1189,7 @@ pub fn encode(dpt: &Dpt, value: &TypedValue) -> Result<Vec<u8>, EncodeError> {
             match value {
                 TypedValue::Float { value: v, .. } => encode_float16(*v)
                     .map(|b| b.to_vec())
-                    .map_err(|()| EncodeError::OutOfRange {
+                    .map_err(|_| EncodeError::OutOfRange {
                         dpt: dpt.to_string(),
                         value: value.to_string(),
                     }),
