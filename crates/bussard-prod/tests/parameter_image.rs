@@ -311,8 +311,8 @@ fn real_knxproj_smoke() {
 
 /// Env-gated real-product float-width regression: the ABB i-bus product data
 /// (`IBUS_ETS5_ABB_*.knxprod`) declares application `M-0002_A-A0B0-12-5788`
-/// with a run of `<TypeFloat Encoding="IEEE-754 Single">` parameters on segment
-/// `RS-04-00000` — `P-2050021823` (default 10.0) at offset 676 immediately
+/// with a run of `<TypeFloat Encoding="IEEE-754 Single">` parameters on its
+/// parameter segment — `P-2050021823` (default 10.0) at offset 676 immediately
 /// followed by `P-1814561109` (default 1.0) at offset 680. The 4-byte spacing is
 /// the vendor's own statement that the field is a 4-byte IEEE-754 single, so the
 /// image must carry `41 20 00 00` then `3F 80 00 00`.
@@ -320,12 +320,18 @@ fn real_knxproj_smoke() {
 /// Before the fix every float was written as 2 bytes of DPT 9, which put wrong
 /// bytes at 676-677 and left 678-679 at the base image's value.
 ///
+/// Reads the one application entry straight out of the archive rather than
+/// calling `read_knxprod`: this product ships 737 entries (~2.8 GB of XML
+/// uncompressed) and parsing all of them takes minutes in a debug build.
+///
 /// Set `BUSSARD_PRODUCT_CORPUS=<vendor-dir>` to run it; skipped when unset (the
 /// vendor file is copyrighted and never committed — the unit test
 /// `test_encode_value_float_honours_declared_encoding` covers the same rule on a
 /// synthetic fixture).
 #[test]
 fn real_abb_ieee754_single_parameters_are_four_bytes_wide() {
+    const APP_ID: &str = "M-0002_A-A0B0-12-5788";
+
     let Some(dir) = std::env::var_os("BUSSARD_PRODUCT_CORPUS") else {
         eprintln!("BUSSARD_PRODUCT_CORPUS unset; skipping the ABB IEEE-754 width check.");
         return;
@@ -347,15 +353,19 @@ fn real_abb_ieee754_single_parameters_are_four_bytes_wide() {
         return;
     };
 
-    let product = bussard_prod::read_knxprod(&path).expect("read the ABB product data");
-    let Some(app) = product
-        .applications
-        .iter()
-        .find(|a| a.id.starts_with("M-0002_A-A0B0-12-5788"))
-    else {
-        eprintln!("application M-0002_A-A0B0-12-5788 absent from this ABB release; skipping.");
+    let file = std::fs::File::open(&path).expect("open the ABB product data");
+    let mut zip = zip::ZipArchive::new(file).expect("the .knxprod is a zip");
+    let entry = format!("M-0002/{APP_ID}.xml");
+    let Ok(mut f) = zip.by_name(&entry) else {
+        eprintln!("application {APP_ID} absent from this ABB release; skipping.");
         return;
     };
+    let mut xml = Vec::new();
+    use std::io::Read as _;
+    f.read_to_end(&mut xml).expect("read the application xml");
+    drop(f);
+
+    let app = bussard_prod::parse_application_program(APP_ID, &xml).expect("parse the application");
 
     // The two parameters, read straight from the parsed product data so the test
     // fails loudly if a later release moves them.
@@ -377,7 +387,7 @@ fn real_abb_ieee754_single_parameters_are_four_bytes_wide() {
         "the vendor lays these two floats 4 bytes apart"
     );
 
-    let images = compute_parameter_image(app, &BTreeMap::new(), &BTreeMap::new())
+    let images = compute_parameter_image(&app, &BTreeMap::new(), &BTreeMap::new())
         .expect("ABB parameter image builds");
     let seg = mem10.code_segment.as_deref().expect("segment id");
     let img = &images[seg];
