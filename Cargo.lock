@@ -396,6 +396,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tracing",
+ "zeroize",
  "zip",
 ]
 
