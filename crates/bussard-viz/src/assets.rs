@@ -21,6 +21,12 @@ pub const INDEX_HTML: &str = include_str!("../assets/index.html");
 /// Returns the embedded body and its MIME type for a known asset, or `None` for
 /// an unknown name. The set is fixed (the agreed frontend module list plus the
 /// self-test page and the projection fixture).
+///
+/// `fixture-model.json` is the `/api/model` projection of the **synthetic**
+/// `fixtures/demo-model/` installation, used by `main.js` as the standalone
+/// development fallback when `/api/model` is unreachable. It must never be
+/// regenerated from a real `knx/` directory — it ships inside every release
+/// binary. See `tests/fixture_model.rs`.
 pub fn asset(name: &str) -> Option<Asset> {
     let (body, content_type) = match name {
         "index.html" => (INDEX_HTML, "text/html; charset=utf-8"),

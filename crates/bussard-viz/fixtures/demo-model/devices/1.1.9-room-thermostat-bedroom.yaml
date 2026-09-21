@@ -1,0 +1,33 @@
+address: 1.1.9
+name: Room Thermostat Bedroom
+description: Wall thermostat, sends the measured value and the setpoint
+location:
+  floor: First Floor
+  room: Bedroom
+product:
+  manufacturer: Acme Automation
+  order_number: RT-1
+channels:
+  CH-1:
+    name: Thermostat
+com_objects:
+  1:
+    dpt: '9.001'
+    flags: CRT
+    channel: CH-1
+  2:
+    dpt: '9.001'
+    flags: CRT
+    channel: CH-1
+  3:
+    dpt: '9.001'
+    flags: CWU
+    channel: CH-1
+  4:
+    dpt: '1.001'
+    flags: CRT
+    channel: CH-1
+  5:
+    dpt: '1.001'
+    flags: CWU
+    channel: CH-1

@@ -1,0 +1,4 @@
+# A bare device: no location, no product, no channels, no com-objects and no
+# links. It exercises the all-null branches of the projection.
+address: 1.1.10
+name: IP Interface
