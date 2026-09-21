@@ -293,6 +293,13 @@ enum Command {
         /// Skip the interactive confirmation (dangerous; for scripts).
         #[arg(long)]
         yes: bool,
+        /// Flash a device that is NOT factory-fresh (issue #79). A flash takes no
+        /// backup, so a device that already carries a different application is
+        /// refused by default; this overrides that refusal and destroys the
+        /// resident application, its parameters and its links. Re-flashing the
+        /// same application does not need it.
+        #[arg(long)]
+        force: bool,
         /// Permit a write to a non-loopback (real) gateway. Required for any
         /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
         #[arg(long)]
@@ -636,6 +643,7 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             order_number,
             dir,
             yes,
+            force,
             allow_remote_gateway,
             bcu_key,
             gateway,
@@ -647,6 +655,7 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             order_number.as_deref(),
             &dir,
             yes,
+            force,
             allow_remote_gateway,
             bcu_key.as_deref(),
             conn_cmd::ConnOverrides { gateway, routing },

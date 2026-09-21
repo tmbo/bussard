@@ -81,6 +81,18 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
         self.inner.target()
     }
 
+    /// The underlying [`Layer4Connection`], so a procedure that lives outside
+    /// this typed client can run over the same open session.
+    ///
+    /// The download engine's primitives (`load::read_load_state`,
+    /// `LsmAccess::read_state`, …) take the L4 connection directly; this is the
+    /// seam that lets a caller which already holds a `DeviceConnection` — the
+    /// `bussard flash` pre-flight, say — reuse it instead of opening a second
+    /// connection to the same device.
+    pub fn l4_mut(&mut self) -> &mut Layer4Connection<Ch> {
+        &mut self.inner
+    }
+
     /// Presents an access `key` with `A_Authorize_Request` and applies the
     /// tolerate-absence / fail-on-denied policy (issue #52 finding #1).
     ///
