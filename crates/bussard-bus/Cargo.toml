@@ -8,8 +8,8 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-bussard-model = { path = "../bussard-model" }
-bussard-transport = { path = "../bussard-transport" }
+bussard-model = { workspace = true }
+bussard-transport = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
