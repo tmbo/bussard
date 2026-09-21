@@ -8,9 +8,13 @@
 //! 2. Read the device descriptor (mask). Gate on System B (07B0); refuse others.
 //! 3. Build a pre-flight [`FlashPlan`] — this also refuses a mask mismatch or any
 //!    unsupported op — and show it. A refused plan exits non-zero before any write.
-//! 4. State that **no backup is possible** for a first flash (the device is
-//!    assumed factory-fresh; recovery is re-flashing) and confirm on a TTY unless
-//!    `--yes`.
+//! 4. Check the device is **factory-fresh** (issue #79): the read-only probe in
+//!    step 2 read the load state of every object this flash would rewrite, plus
+//!    the resident application id. A device carrying a *different* application is
+//!    refused unless `--force`; an unreadable state is refused as unknown;
+//!    re-flashing the *same* application is allowed (it is the documented
+//!    recovery path) with a notice. Then state that **no backup is possible** and
+//!    confirm on a TTY unless `--yes`.
 //! 5. Execute with a progress line, then verify: the application object must be
 //!    `Loaded`, and a sample of each written segment is read back.
 //! 6. On any failure, print recovery guidance and exit non-zero.
@@ -30,7 +34,8 @@ use std::process::ExitCode;
 use anyhow::{Context, bail};
 use bussard_bus::{Bus, BusHandle, ops};
 use bussard_download::{
-    FlashPlan, FlashStep, Progress, flash, plan_flash, select_application, trace,
+    FlashPlan, FlashStep, Freshness, Progress, assess_freshness, flash, plan_flash,
+    probe_resident_state, select_application, trace,
 };
 use bussard_mgmt::load::WriteError;
 use bussard_mgmt::{DeviceConnection, Layer4Connection, LeaseChannel, MgmtError, Timeouts};
@@ -53,6 +58,7 @@ pub fn run(
     order_number: Option<&str>,
     dir: &Path,
     yes: bool,
+    force: bool,
     allow_remote_gateway: bool,
     bcu_key: Option<&str>,
     overrides: ConnOverrides,
@@ -122,9 +128,11 @@ pub fn run(
         .map(|d| d.device.module_bases.clone())
         .unwrap_or_default();
 
-    // Phase A (read-only): read the device descriptor.
+    // Phase A (read-only): read the device descriptor and probe what is already
+    // resident on the device (issue #79). Both run over one connection; neither
+    // writes anything.
     let runtime = tokio::runtime::Runtime::new()?;
-    let device_mask = {
+    let probe = {
         let config = config.clone();
         runtime.block_on(async move {
             let (handle, _task) = Bus::connect(config);
@@ -137,29 +145,40 @@ pub fn run(
             // Track whether the T_Connect established before the first read: a
             // connect-then-disconnect on the descriptor read is the diagnostic
             // pattern (see `descriptor_read_error`).
-            let (connected, result) = match DeviceConnection::connect(channel, target, source).await
-            {
-                Ok(mut dev) => {
-                    // Authorize the read-only descriptor probe too (best-effort):
-                    // ETS authorizes every management session, so a keyed device
-                    // that would otherwise drop the descriptor read is unlocked
-                    // first. Tolerate a device that does not implement authorize.
-                    let key = bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY);
-                    let r = match dev.authorize(key).await {
-                        Ok(_) => dev.device_descriptor().await,
-                        Err(err) => Err(err),
-                    };
-                    let _ = dev.disconnect().await;
-                    (true, r)
-                }
-                Err(err) => (false, Err(err)),
-            };
+            let (connected, result, resident) =
+                match DeviceConnection::connect(channel, target, source).await {
+                    Ok(mut dev) => {
+                        // Authorize the read-only descriptor probe too (best-effort):
+                        // ETS authorizes every management session, so a keyed device
+                        // that would otherwise drop the descriptor read is unlocked
+                        // first. Tolerate a device that does not implement authorize.
+                        let key = bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY);
+                        let r = match dev.authorize(key).await {
+                            Ok(_) => dev.device_descriptor().await,
+                            Err(err) => Err(err),
+                        };
+                        // The factory-freshness probe (issue #79): read the load
+                        // state (and, on System B, the resident application id) of
+                        // the objects this flash would unload and rewrite. Purely
+                        // read-only, and only once the mask is known — it is the
+                        // mask that decides System B objects vs System 7 LSMs.
+                        let resident = match &r {
+                            Ok(mask) => {
+                                Some(probe_resident_state(dev.l4_mut(), *mask, None).await)
+                            }
+                            Err(_) => None,
+                        };
+                        let _ = dev.disconnect().await;
+                        (true, r, resident)
+                    }
+                    Err(err) => (false, Err(err), None),
+                };
             let _ = handle.close().await;
-            anyhow::Ok((connected, result))
+            anyhow::Ok((connected, result, resident))
         })?
     };
 
-    let (connected, device_mask) = device_mask;
+    let (connected, device_mask, resident) = probe;
     let device_mask = match device_mask {
         Ok(mask) => mask,
         Err(err) => {
@@ -208,15 +227,33 @@ pub fn run(
 
     print_plan(target, device_mask, &plan, &overrides_map);
 
-    // No backup is possible for a first flash — state it plainly.
-    eprintln!(
-        "\nNOTE: a first flash assumes the device is factory-fresh; no backup is \n\
-         possible (there is no prior application to save). Recovery from a failed \n\
-         flash is re-running `bussard flash`."
-    );
+    // The factory-freshness gate (issue #79): a flash takes no backup, so a
+    // device that already carries a *different* application is refused unless
+    // `--force`, and an unreadable state is refused too (unknown is not fresh).
+    // A re-flash of the same application — the documented recovery path — goes
+    // through with a notice.
+    let freshness = match &resident {
+        Some(state) => assess_freshness(state, &plan.identity),
+        // Unreachable in practice: the descriptor read succeeded above, so the
+        // probe ran. Treated as unknown rather than fresh all the same.
+        None => Freshness::Unknown {
+            reason: "the pre-flight probe did not run".to_string(),
+        },
+    };
+    let decision = decide_freshness(target, &gateway, dir, force, &freshness);
+    eprintln!("{}", decision.message);
+    if !decision.proceed {
+        return Ok(ExitCode::FAILURE);
+    }
 
     // Confirm unless --yes.
-    if !confirm(target, &gateway, yes, &plan)? {
+    if !confirm(
+        target,
+        &gateway,
+        yes,
+        &plan,
+        decision.prompt_note.as_deref(),
+    )? {
         eprintln!("aborted — nothing written.");
         return Ok(ExitCode::FAILURE);
     }
@@ -742,13 +779,158 @@ fn print_plan(
     }
 }
 
-/// Confirms on a TTY (y/N), naming the resolved gateway (issue #74).
+/// What the factory-freshness gate decided: what to tell the operator, whether
+/// the flash may go ahead, and the line the confirmation prompt carries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FreshnessDecision {
+    /// The paragraph printed after the plan, before the confirmation.
+    message: String,
+    /// Whether the flash continues. `false` is a refusal: nothing is written.
+    proceed: bool,
+    /// The one-line warning folded into the confirmation prompt when the device
+    /// is not factory-fresh, so a `y` is typed against what is being destroyed.
+    prompt_note: Option<String>,
+}
+
+/// Applies the factory-freshness rule (issue #79) to a probed verdict.
+///
+/// - [`Freshness::Fresh`] — proceed, restating that a first flash takes no
+///   backup (there is nothing to save).
+/// - [`Freshness::SameApplication`] — proceed **without** `--force`: re-flashing
+///   the same application is the documented recovery path for an interrupted
+///   flash (see `docs/SAFETY.md`). The notice still says what a re-flash resets.
+/// - [`Freshness::Resident`] — a *different* (or unidentifiable) application is
+///   loaded. Refused unless `force`, because the flash would destroy it with no
+///   backup; the message names the resident application and the two ways
+///   forward.
+/// - [`Freshness::Unknown`] — the state could not be read. Refused unless
+///   `force`: "unreadable" is not evidence of an empty device, and a flash with
+///   no backup must not be what finds out.
+///
+/// `force` proceeds in both refusal cases, printing a single loud line that
+/// names the device, the gateway and what is being destroyed.
+fn decide_freshness(
+    target: IndividualAddress,
+    gateway: &str,
+    dir: &Path,
+    force: bool,
+    freshness: &Freshness,
+) -> FreshnessDecision {
+    let dir = dir.display();
+    match freshness {
+        Freshness::Fresh => FreshnessDecision {
+            message: format!(
+                "\npre-flight: no application is loaded on {target} — the device is \
+                 factory-fresh.\n\n\
+                 NOTE: a first flash assumes the device is factory-fresh; no backup is\n\
+                 possible (there is no prior application to save). Recovery from a failed\n\
+                 flash is re-running `bussard flash`."
+            ),
+            proceed: true,
+            prompt_note: None,
+        },
+        Freshness::SameApplication { resident } => FreshnessDecision {
+            message: format!(
+                "\npre-flight: {target} already runs this application ({resident}).\n\n\
+                 NOTE: re-flashing the SAME application is allowed without --force — it is\n\
+                 the documented recovery path for an interrupted flash. It is still a full\n\
+                 rewrite and takes no backup: the parameters are reset to the vendor\n\
+                 defaults plus this model's `parameters:` overrides, and the address,\n\
+                 association and group-object tables are rewritten from the model's links."
+            ),
+            proceed: true,
+            prompt_note: Some(format!(
+                "{target} currently has {resident} Loaded; re-flashing the same application \
+                 resets its parameters and tables."
+            )),
+        },
+        Freshness::Resident { resident, objects } => {
+            let what = match resident {
+                Some(id) => format!("application {id}"),
+                None => "an application bussard could not identify (no readable \
+                         PID_PROGRAM_VERSION)"
+                    .to_string(),
+            };
+            let where_ = objects.join(", ");
+            if force {
+                return FreshnessDecision {
+                    message: format!(
+                        "\nWARNING: --force — {target} via {gateway} is NOT factory-fresh: it has \
+                         {what} Loaded ({where_}); this flash DESTROYS it, its parameters and its \
+                         links, and takes NO backup."
+                    ),
+                    proceed: true,
+                    prompt_note: Some(format!(
+                        "{target} currently has {what} Loaded; this flash DESTROYS it (no backup)."
+                    )),
+                };
+            }
+            FreshnessDecision {
+                message: format!(
+                    "\nREFUSING to flash {target}: it is not factory-fresh.\n\
+                     \x20 resident : {what}\n\
+                     \x20 loaded   : {where_}\n\
+                     A flash unloads and rewrites the application wholesale and takes NO backup,\n\
+                     so this would destroy the resident application, its parameters and its links.\n\
+                    \n\
+                     Two ways forward:\n\
+                     \x20 1. Capture what is on the device first: `bussard reconstruct {target} \
+                     --dir {dir}`\n\
+                     \x20    writes its links into the model, and `bussard apply {target}` backs \
+                     the tables\n\
+                     \x20    up to {dir}/captures/backups/ before it writes.\n\
+                     \x20 2. Re-run with --force to overwrite it anyway (destructive, no backup).\n\
+                    \n\
+                     Re-flashing the SAME application needs no --force; this device does not \
+                     report it."
+                ),
+                proceed: false,
+                prompt_note: None,
+            }
+        }
+        Freshness::Unknown { reason } => {
+            if force {
+                return FreshnessDecision {
+                    message: format!(
+                        "\nWARNING: --force — bussard could not read whether {target} via \
+                         {gateway} is factory-fresh ({reason}); flashing anyway DESTROYS any \
+                         application it carries, and takes NO backup."
+                    ),
+                    proceed: true,
+                    prompt_note: Some(format!(
+                        "{target}'s load state is unreadable; if it carries an application this \
+                         flash DESTROYS it (no backup)."
+                    )),
+                };
+            }
+            FreshnessDecision {
+                message: format!(
+                    "\nREFUSING to flash {target}: its load state is unreadable, so bussard \
+                     cannot tell\n\
+                     whether the device is factory-fresh ({reason}).\n\
+                     The device did NOT report an application as Loaded — the state is simply \
+                     unknown,\n\
+                     and a flash that takes no backup must not be what finds out.\n\
+                     Re-run once the device answers reliably, or with --force to flash anyway \
+                     (destructive\n\
+                     if it carries an application)."
+                ),
+                proceed: false,
+                prompt_note: None,
+            }
+        }
+    }
+}
+
+/// Confirms on a TTY (y/N), naming the resolved gateway (issue #74) and, when
+/// the device is not factory-fresh, what this flash destroys (issue #79).
 /// Non-interactive without `--yes` is refused.
 fn confirm(
     target: IndividualAddress,
     gateway: &str,
     yes: bool,
     plan: &FlashPlan,
+    prompt_note: Option<&str>,
 ) -> anyhow::Result<bool> {
     if yes {
         return Ok(true);
@@ -770,6 +952,9 @@ fn confirm(
             )
         })
         .count();
+    if let Some(note) = prompt_note {
+        eprintln!("{note}");
+    }
     eprint!(
         "flash {} ({writes} memory write(s)) to {target} via {gateway}? [y/N] ",
         plan.identity.id
@@ -1023,5 +1208,170 @@ mod tests {
         );
         let app = resolve_by_order_number(&data, "AKK-0216.03").unwrap();
         assert_eq!(app.id, "M-0083_A-1");
+    }
+
+    // --- The factory-freshness gate (issue #79) -----------------------------
+
+    /// A target, gateway and model dir for the gate messages.
+    fn gate(force: bool, freshness: &Freshness) -> FreshnessDecision {
+        let target: IndividualAddress = "1.0.2".parse().unwrap();
+        decide_freshness(target, "127.0.0.1:3671", Path::new("knx"), force, freshness)
+    }
+
+    fn resident_other() -> Freshness {
+        Freshness::Resident {
+            resident: Some("M-0083 A-0007 v35".to_string()),
+            objects: vec!["object 3 (application program)".to_string()],
+        }
+    }
+
+    #[test]
+    fn test_decide_freshness_fresh_device_proceeds_with_the_no_backup_note() {
+        let decision = gate(false, &Freshness::Fresh);
+        assert!(decision.proceed);
+        assert!(decision.prompt_note.is_none());
+        assert!(
+            decision
+                .message
+                .contains("no application is loaded on 1.0.2"),
+            "{}",
+            decision.message
+        );
+        // The long-standing no-backup note is still stated before the write.
+        assert!(
+            decision.message.contains("no backup is"),
+            "{}",
+            decision.message
+        );
+    }
+
+    #[test]
+    fn test_decide_freshness_same_application_proceeds_without_force() {
+        let decision = gate(
+            false,
+            &Freshness::SameApplication {
+                resident: "M-00FA A-2500 v16".to_string(),
+            },
+        );
+        assert!(
+            decision.proceed,
+            "a re-flash of the same app needs no --force"
+        );
+        assert!(
+            decision
+                .message
+                .contains("1.0.2 already runs this application (M-00FA A-2500 v16)"),
+            "{}",
+            decision.message
+        );
+        // It says what a re-flash resets, so "allowed" is not read as "harmless".
+        assert!(
+            decision.message.contains("reset to the vendor"),
+            "{}",
+            decision.message
+        );
+        let note = decision.prompt_note.expect("the prompt names the re-flash");
+        assert!(note.contains("M-00FA A-2500 v16"), "{note}");
+        assert!(note.contains("Loaded"), "{note}");
+    }
+
+    #[test]
+    fn test_decide_freshness_other_application_is_refused_without_force() {
+        let decision = gate(false, &resident_other());
+        assert!(
+            !decision.proceed,
+            "a different resident app must be refused"
+        );
+        let msg = &decision.message;
+        assert!(msg.contains("REFUSING to flash 1.0.2"), "{msg}");
+        // Names the resident application and where it is loaded.
+        assert!(msg.contains("M-0083 A-0007 v35"), "{msg}");
+        assert!(msg.contains("object 3 (application program)"), "{msg}");
+        // Names both ways forward.
+        assert!(msg.contains("--force"), "{msg}");
+        assert!(msg.contains("bussard reconstruct 1.0.2 --dir knx"), "{msg}");
+        assert!(msg.contains("bussard apply 1.0.2"), "{msg}");
+        // States the same-application rule explicitly.
+        assert!(msg.contains("Re-flashing the SAME application"), "{msg}");
+    }
+
+    #[test]
+    fn test_decide_freshness_force_proceeds_with_a_loud_warning() {
+        let decision = gate(true, &resident_other());
+        assert!(decision.proceed);
+        let msg = &decision.message;
+        assert!(msg.contains("WARNING: --force"), "{msg}");
+        // The warning names the device, the gateway and what is destroyed.
+        assert!(msg.contains("1.0.2"), "{msg}");
+        assert!(msg.contains("127.0.0.1:3671"), "{msg}");
+        assert!(msg.contains("M-0083 A-0007 v35"), "{msg}");
+        assert!(msg.contains("DESTROYS"), "{msg}");
+        let note = decision.prompt_note.expect("the prompt warns too");
+        assert!(note.contains("Loaded"), "{note}");
+        assert!(note.contains("DESTROYS it"), "{note}");
+    }
+
+    #[test]
+    fn test_decide_freshness_unidentified_resident_application_is_refused() {
+        let decision = gate(
+            false,
+            &Freshness::Resident {
+                resident: None,
+                objects: vec!["LSM 3".to_string()],
+            },
+        );
+        assert!(!decision.proceed);
+        assert!(
+            decision.message.contains("could not identify"),
+            "{}",
+            decision.message
+        );
+        assert!(decision.message.contains("LSM 3"), "{}", decision.message);
+    }
+
+    #[test]
+    fn test_decide_freshness_unreadable_state_is_refused_as_unknown() {
+        let decision = gate(
+            false,
+            &Freshness::Unknown {
+                reason: "no object reported a load state".to_string(),
+            },
+        );
+        assert!(
+            !decision.proceed,
+            "unknown is refused, not treated as fresh"
+        );
+        let msg = &decision.message;
+        assert!(msg.contains("load state is unreadable"), "{msg}");
+        assert!(msg.contains("no object reported a load state"), "{msg}");
+        // The message must not leave the operator thinking the device reported
+        // an application as Loaded.
+        assert!(
+            msg.contains("did NOT report an application as Loaded"),
+            "{msg}"
+        );
+        assert!(msg.contains("--force"), "{msg}");
+    }
+
+    #[test]
+    fn test_decide_freshness_unknown_with_force_proceeds() {
+        let decision = gate(
+            true,
+            &Freshness::Unknown {
+                reason: "device refused the read".to_string(),
+            },
+        );
+        assert!(decision.proceed);
+        assert!(
+            decision.message.contains("WARNING: --force"),
+            "{}",
+            decision.message
+        );
+        assert!(
+            decision.message.contains("127.0.0.1:3671"),
+            "{}",
+            decision.message
+        );
+        assert!(decision.prompt_note.is_some());
     }
 }
