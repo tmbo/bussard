@@ -434,7 +434,7 @@ pub(crate) mod test_fixtures {
         groups.insert(
             ga("3/0/4"),
             Group {
-                name: "Jalousie Auf/Ab".to_string(),
+                name: "Living Room Blind Move".to_string(),
                 dpt: Some("1.008".parse().unwrap()),
                 description: None,
                 protected: false,
@@ -483,7 +483,7 @@ pub(crate) mod test_fixtures {
             LoadedDevice {
                 device: Device {
                     address: ia("1.1.4"),
-                    name: "Jalousieaktor Wohnen".to_string(),
+                    name: "Blind Actuator 4-fold".to_string(),
                     description: None,
                     location: Some(Location {
                         floor: Some("EG".to_string()),
@@ -508,7 +508,7 @@ pub(crate) mod test_fixtures {
                     description: None,
                     location: Some(Location {
                         floor: Some("Dach".to_string()),
-                        room: Some("Aussen".to_string()),
+                        room: Some("Utility Room".to_string()),
                     }),
                     product: None,
                     channels: BTreeMap::new(),
@@ -650,7 +650,7 @@ mod tests {
         let m = model();
         let v = get_device(&m, ia("1.1.4"));
         assert_eq!(v["found"], true);
-        assert_eq!(v["device"]["name"], "Jalousieaktor Wohnen");
+        assert_eq!(v["device"]["name"], "Blind Actuator 4-fold");
         assert_eq!(v["device"]["location"]["room"], "Wohnzimmer");
         assert_eq!(v["links"].as_array().unwrap().len(), 1);
         assert_eq!(v["links"][0]["listen"][0], "3/0/4");

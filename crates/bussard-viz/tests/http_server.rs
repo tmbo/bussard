@@ -22,7 +22,7 @@ fn write_model(dir: &std::path::Path) -> std::io::Result<()> {
     )?;
     std::fs::write(
         dir.join("groups.yaml"),
-        "groups:\n  \"3/2/0\":\n    name: Windalarm\n    dpt: \"1.005\"\n",
+        "groups:\n  \"3/2/0\":\n    name: Wind Alarm\n    dpt: \"1.005\"\n",
     )?;
     std::fs::write(dir.join("links.yaml"), "links: {}\n")?;
     Ok(())

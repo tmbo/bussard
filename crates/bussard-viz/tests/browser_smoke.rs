@@ -101,9 +101,9 @@ fn write_model(dir: &Path) -> std::io::Result<()> {
         dir.join("groups.yaml"),
         concat!(
             "groups:\n",
-            "  \"1/0/1\":\n    name: Licht Flur\n    dpt: \"1.001\"\n",
-            "  \"1/0/2\":\n    name: Licht Küche\n    dpt: \"1.001\"\n",
-            "  \"2/1/0\":\n    name: Jalousie Süd\n    dpt: \"1.008\"\n",
+            "  \"1/0/1\":\n    name: Hallway Light\n    dpt: \"1.001\"\n",
+            "  \"1/0/2\":\n    name: Kitchen Light\n    dpt: \"1.001\"\n",
+            "  \"2/1/0\":\n    name: Living Room Blind\n    dpt: \"1.008\"\n",
         ),
     )?;
     std::fs::write(dir.join("links.yaml"), "links: {}\n")?;
@@ -113,9 +113,9 @@ fn write_model(dir: &Path) -> std::io::Result<()> {
     // A minimal device file is just `address` + `name` (see the bussard-model
     // loader tests). Three files → three cards.
     for (ia, name) in [
-        ("1.1.1", "Taster Flur"),
-        ("1.1.2", "Aktor Licht"),
-        ("1.1.3", "Jalousieaktor"),
+        ("1.1.1", "Push Button Hallway"),
+        ("1.1.2", "Switch Actuator"),
+        ("1.1.3", "Blind Actuator"),
     ] {
         std::fs::write(
             devices_dir.join(format!("{ia}.yaml")),

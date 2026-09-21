@@ -268,7 +268,7 @@ class Inspector {
    * Address-first to match the viz cards (item 4): a direction arrow + the
    * monospace address on the first line, the device name below it capped with an
    * ellipsis (the full name lives on the title attribute). e.g. "→ 1.1.1" /
-   * "Binäreingang 6fach".
+   * "Switch Actuator 8-fold".
    * @param {{device:string, device_name?:string}} ref
    * @param {string} [arrow] — direction glyph shown before the address.
    * @returns {HTMLElement}

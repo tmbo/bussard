@@ -135,10 +135,10 @@ fn cover_cluster_assembly() {
     // A jalousie channel: 1.008 up/down (W), 1.007 step/stop (W),
     // 5.001 position setpoint (W), 5.001 position status (T).
     let model = ModelBuilder::new("1.1.4", "Aktor", Some("Wohnzimmer"))
-        .group("1/2/0", "Raffstore Wohnen Auf/Ab", "1.008")
-        .group("1/2/1", "Raffstore Wohnen Schritt", "1.007")
-        .group("1/2/2", "Raffstore Wohnen Position", "5.001")
-        .group("1/2/3", "Raffstore Wohnen Position Status", "5.001")
+        .group("1/2/0", "Raffstore Living Room Auf/Ab", "1.008")
+        .group("1/2/1", "Raffstore Living Room Schritt", "1.007")
+        .group("1/2/2", "Raffstore Living Room Position", "5.001")
+        .group("1/2/3", "Raffstore Living Room Position Status", "5.001")
         .object(20, "1.008", "CWU", Some("A"), None, &["1/2/0"])
         .object(21, "1.007", "CWU", Some("A"), None, &["1/2/1"])
         .object(22, "5.001", "CWU", Some("A"), None, &["1/2/2"])
@@ -159,9 +159,9 @@ fn cover_cluster_assembly() {
 
 #[test]
 fn switch_with_status() {
-    let model = ModelBuilder::new("1.1.5", "Schaltaktor", Some("Küche"))
-        .group("0/0/1", "Licht Küche schalten", "1.001")
-        .group("0/0/2", "Licht Küche Status", "1.001")
+    let model = ModelBuilder::new("1.1.5", "Schaltaktor", Some("Kitchen"))
+        .group("0/0/1", "Licht Kitchen schalten", "1.001")
+        .group("0/0/2", "Licht Kitchen Status", "1.001")
         .object(1, "1.001", "CWU", Some("A"), None, &["0/0/1"])
         .object(2, "1.001", "CRTU", Some("A"), Some("0/0/2"), &[])
         .build();
@@ -177,7 +177,7 @@ fn switch_with_status() {
 fn dimmer_channel_becomes_light_with_brightness() {
     // 1.001 switch (W) + 1.001 status (T) + 5.001 brightness (W) + 5.001
     // brightness status (T) on one channel -> a light with brightness.
-    let model = ModelBuilder::new("1.1.8", "Dimmaktor", Some("Wohnen"))
+    let model = ModelBuilder::new("1.1.8", "Dimmaktor", Some("Living Room"))
         .group("1/1/0", "Licht schalten", "1.001")
         .group("1/1/1", "Licht Status", "1.001")
         .group("1/1/3", "Licht Helligkeit", "5.001")
@@ -219,7 +219,7 @@ fn sensor_typing_by_dpt() {
 fn binary_sensor_device_class_from_dpt_and_name() {
     let model = ModelBuilder::new("1.1.30", "Wetterstation", None)
         .group("3/2/0", "Windalarm", "1.005")
-        .group("4/2/0", "Fenster Bad", "1.019")
+        .group("4/2/0", "Fenster Bathroom", "1.019")
         .object(3, "1.005", "CRT", None, Some("3/2/0"), &[])
         .object(4, "1.019", "CRT", None, Some("4/2/0"), &[])
         .build();
@@ -306,7 +306,7 @@ fn unmapped_reporting() {
 
 #[test]
 fn determinism_two_runs_byte_equal() {
-    let model = ModelBuilder::new("1.1.5", "Aktor", Some("Küche"))
+    let model = ModelBuilder::new("1.1.5", "Aktor", Some("Kitchen"))
         .group("0/0/1", "Licht A", "1.001")
         .group("0/0/3", "Licht B", "1.001")
         .group("4/1/0", "Temp", "9.001")
@@ -387,7 +387,7 @@ fn no_duplicate_entity_for_shared_command_ga() {
 
 #[test]
 fn yaml_round_trips() {
-    let model = ModelBuilder::new("1.1.4", "Aktor", Some("Wohnen"))
+    let model = ModelBuilder::new("1.1.4", "Aktor", Some("Living Room"))
         .group("1/2/0", "Raffstore Auf/Ab", "1.008")
         .group("1/2/1", "Raffstore Schritt", "1.007")
         .group("4/1/0", "Temp", "9.001")
@@ -473,7 +473,7 @@ fn cover_requires_command_ga_not_a_button_sender() {
     // An actuator owns the cover channel: 1.008 up/down command (W). A separate
     // push-button *sends* 1.008 on a different GA (T-only). The button must not
     // anchor a cover of its own; only the actuator's cover is produced.
-    let mut model = ModelBuilder::new("1.1.4", "Jalousieaktor", Some("Wohnen"))
+    let mut model = ModelBuilder::new("1.1.4", "Jalousieaktor", Some("Living Room"))
         .group("1/2/0", "Raffstore Auf/Ab", "1.008")
         .object(20, "1.008", "CWU", Some("A"), None, &["1/2/0"])
         .build();
@@ -551,7 +551,7 @@ fn cover_wires_position_5001_and_angle_5003() {
     // A jalousie channel with a 5.001 position (command + state) AND a 5.003 slat
     // angle (command + state). Position and angle must land in their own slots,
     // never cross-mapped.
-    let model = ModelBuilder::new("1.1.4", "Aktor", Some("Wohnen"))
+    let model = ModelBuilder::new("1.1.4", "Aktor", Some("Living Room"))
         .group("1/2/0", "Raffstore Auf/Ab", "1.008")
         .group("1/2/2", "Raffstore Position", "5.001")
         .group("1/2/3", "Raffstore Position Status", "5.001")
@@ -614,7 +614,7 @@ fn climate_full_cluster_central_heating_mapping() {
     // temperature change).
     let model = climate_room(
         ModelBuilder::new("1.1.2", "Heizung", None),
-        "Büro UG",
+        "Study",
         "0/3/",
     )
     .build();
@@ -647,7 +647,7 @@ fn climate_full_cluster_central_heating_mapping() {
 fn climate_minimal_mode_only_anchors() {
     // A room with only an operation-mode command still anchors a climate entity.
     let model = ModelBuilder::new("1.1.2", "Heizung", None)
-        .group("0/3/2", "Büro UG Betriebsmodus Vorgabe", "20.102")
+        .group("0/3/2", "Study Betriebsmodus Vorgabe", "20.102")
         .build();
     let cs = only_climate(&model, &Overrides::default());
     assert_eq!(cs.len(), 1);
@@ -661,7 +661,7 @@ fn climate_setpoint_shift_alone_does_not_anchor() {
     // setpoint-shift GA alone (no operation mode) does NOT anchor a climate
     // entity — it falls through to the sensor pass.
     let model = ModelBuilder::new("1.1.2", "Heizung", None)
-        .group("0/3/5", "Büro UG Sollwertverschiebung", "9.002")
+        .group("0/3/5", "Study Sollwertverschiebung", "9.002")
         .object(1, "9.002", "CRT", None, Some("0/3/5"), &[])
         .build();
     assert!(only_climate(&model, &Overrides::default()).is_empty());
@@ -676,7 +676,7 @@ fn climate_lone_temperature_does_not_anchor() {
     // A room with only a temperature GA (no mode, no shift) is NOT a climate
     // entity; it falls through to the sensor pass.
     let model = ModelBuilder::new("1.1.2", "Fühler", None)
-        .group("0/3/0", "Küche Isttemperatur", "9.001")
+        .group("0/3/0", "Kitchen Isttemperatur", "9.001")
         .object(1, "9.001", "CRT", None, Some("0/3/0"), &[])
         .build();
     assert!(only_climate(&model, &Overrides::default()).is_empty());
@@ -692,16 +692,16 @@ fn climate_temperature_correlation_hit_and_miss() {
     // temperature that correlates by name. Room B has only a temperature (no
     // anchor) -> its temperature must NOT be pulled into room A.
     let model = ModelBuilder::new("1.1.2", "Heizung", None)
-        .group("0/3/2", "Büro UG Betriebsmodus Vorgabe", "20.102")
-        .group("0/3/0", "Büro UG Isttemperatur", "9.001")
-        .group("0/3/20", "Garage Isttemperatur", "9.001")
+        .group("0/3/2", "Study Betriebsmodus Vorgabe", "20.102")
+        .group("0/3/0", "Study Isttemperatur", "9.001")
+        .group("0/3/20", "Basement Isttemperatur", "9.001")
         .object(9, "9.001", "CRT", None, Some("0/3/20"), &[])
         .build();
     let cs = only_climate(&model, &Overrides::default());
     assert_eq!(cs.len(), 1);
-    // Correlation hit: Büro UG temperature wired.
+    // Correlation hit: Study temperature wired.
     assert_eq!(cs[0].temperature_address, Some(ga("0/3/0")));
-    // Correlation miss: Garage temperature is a different room -> not wired here.
+    // Correlation miss: Basement temperature is a different room -> not wired here.
     assert_ne!(cs[0].temperature_address, Some(ga("0/3/20")));
     // And it survives as its own sensor.
     let yaml = generate(&model, &Overrides::default()).unwrap();
@@ -714,8 +714,8 @@ fn climate_zwang_recognised_unwired_and_noted() {
     // left unwired (still counted as unmapped dpt-20) and surfaced as a footer
     // note.
     let model = ModelBuilder::new("1.1.2", "Heizung", None)
-        .group("0/3/2", "Büro UG Betriebsmodus Vorgabe", "20.102")
-        .group("0/3/3", "Büro UG Betriebsmodus Zwang", "20.102")
+        .group("0/3/2", "Study Betriebsmodus Vorgabe", "20.102")
+        .group("0/3/3", "Study Betriebsmodus Zwang", "20.102")
         .build();
     let d = derive(&model, &Overrides::default());
     // Zwang is not wired onto the climate entity.
@@ -737,7 +737,7 @@ fn climate_zwang_recognised_unwired_and_noted() {
     assert_eq!(d.unmapped.get(&Some(20)).copied(), Some(1));
     let yaml = generate(&model, &Overrides::default()).unwrap();
     assert!(
-        yaml.contains("# note: climate 'Büro UG': forced-mode"),
+        yaml.contains("# note: climate 'Study': forced-mode"),
         "{yaml}"
     );
     assert!(yaml.contains("dpt 20: 1"), "{yaml}");
@@ -749,8 +749,8 @@ fn climate_claims_valve_before_percent_sensor() {
     // climate pass it would become a `percent` sensor. Climate runs first and
     // claims it — no percent sensor on that GA.
     let model = ModelBuilder::new("1.1.2", "Heizaktor", None)
-        .group("0/3/2", "Büro UG Betriebsmodus Vorgabe", "20.102")
-        .group("0/3/6", "Büro UG Stellgröße Heizen/Kühlen", "5.001")
+        .group("0/3/2", "Study Betriebsmodus Vorgabe", "20.102")
+        .group("0/3/6", "Study Stellgröße Heizen/Kühlen", "5.001")
         .object(21, "5.001", "CRT", None, Some("0/3/6"), &[])
         .build();
     let d = derive(&model, &Overrides::default());
@@ -782,10 +782,10 @@ fn climate_determinism_multiple_rooms() {
     let model = climate_room(
         climate_room(
             ModelBuilder::new("1.1.2", "Heizung", None),
-            "Büro UG",
+            "Study",
             "0/3/",
         ),
-        "Schlafen",
+        "Bedroom",
         "1/4/",
     )
     .build();
@@ -801,7 +801,7 @@ fn climate_name_override_and_exclusion() {
     // the anchor GA drops the whole climate entity.
     let model = climate_room(
         ModelBuilder::new("1.1.2", "Heizung", None),
-        "Büro UG",
+        "Study",
         "0/3/",
     )
     .build();
@@ -827,8 +827,8 @@ fn climate_merge_wires_extra_state_ga() {
     // A mode-only room; merge an external target-temperature-state GA. It fills
     // the first free climate state slot (temperature) and drops from unmapped.
     let model = ModelBuilder::new("1.1.2", "Heizung", None)
-        .group("0/3/2", "Büro UG Betriebsmodus Vorgabe", "20.102")
-        .group("0/3/99", "Büro UG Fühler extern", "9.001")
+        .group("0/3/2", "Study Betriebsmodus Vorgabe", "20.102")
+        .group("0/3/99", "Study Fühler extern", "9.001")
         .build();
     let text = r#"
 entities:

@@ -316,7 +316,7 @@ const GROUPS_YAML: &str = "\
 #
 # groups:
 #   \"3/0/4\":
-#     name: \"Jalousie Wohnen Süd — Auf/Ab\"
+#     name: \"Living Room Blind Move\"
 #     dpt: \"1.008\"
 groups: {}
 ";

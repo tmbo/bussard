@@ -311,7 +311,7 @@ knx/
 ```yaml
 connection:
   transport: tunnel          # tunnel | routing
-  gateway: "192.168.1.74:3671"   # host:port for tunneling (optional)
+  gateway: "192.0.2.10:3671"   # host:port for tunneling (optional)
   multicast: "224.0.23.12:3671"  # addr:port for routing (optional; this is the default)
 ```
 
@@ -324,19 +324,19 @@ connection:
 ### `groups.yaml`
 
 ```yaml
-project: "Home"                 # optional metadata
-imported_from: "home.knxproj"   # optional provenance
+project: "Demo House"                 # optional metadata
+imported_from: "demo-house.knxproj"   # optional provenance
 ranges:
-  "3": { name: "Beschattung" }        # a main group
-  "3/2": { name: "Sicherheit" }       # a middle group
+  "3": { name: "Central" }            # a main group
+  "3/2": { name: "Alarms" }           # a middle group
 groups:
   "3/0/4":
-    name: "Jalousie Wohnen Süd — Auf/Ab"
+    name: "Living Room Blind Move"
     dpt: "1.008"
   "3/2/0":
-    name: "Windalarm"
+    name: "Wind Alarm"
     dpt: "1.005"
-    description: "Wetterstation → alle Raffstore-Kanäle"
+    description: "weather station -> every blind channel"
     protected: true
 ```
 
@@ -356,11 +356,11 @@ groups:
 links:
   "1.1.4":
     - object: 12
-      name: "A: Behang Auf/Ab"      # informational; refreshed on import
+      name: "A: Blind Up/Down"      # informational; refreshed on import
       listen: ["3/0/4"]
   "1.1.30":
     - object: 3
-      name: "Windalarm 1"
+      name: "Wind Alarm 1"
       send: "3/2/0"
 ```
 
@@ -378,17 +378,17 @@ links:
 
 ```yaml
 address: "1.1.4"
-name: "Jalousieaktor Wohnen"
-location: { floor: "EG", room: "Wohnzimmer" }
+name: "Blind Actuator 4-fold"
+location: { floor: "Ground Floor", room: "Utility Room" }
 product:
-  manufacturer: "Albrecht Jung"
-  order_number: "23024 1S R"
+  manufacturer: "Northwind Controls"
+  order_number: "BA-4"
   application_ref: "M-0004_A-20D6-25-D965"
   mask: "07B0"
 channels:
-  A: { name: "Raffstore Wohnen Süd 1" }
+  A: { name: "Blind 1 - Living Room" }
 parameters:
-  "windalarm-1@MD-1_M-3_MI-1_P-3_R-45": "1"
+  "wind-alarm-1@MD-1_M-3_MI-1_P-3_R-45": "1"
 # --- GENERATED: regenerated on re-import; hand edits here are lost. ---
 module_bases:
   MD-1_M-3_MI-1: 1797
