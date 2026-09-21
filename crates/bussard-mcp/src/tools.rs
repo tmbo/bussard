@@ -504,10 +504,10 @@ pub(crate) mod test_fixtures {
             LoadedDevice {
                 device: Device {
                     address: ia("1.1.30"),
-                    name: "Wetterstation".to_string(),
+                    name: "Weather Station".to_string(),
                     description: None,
                     location: Some(Location {
-                        floor: Some("Dach".to_string()),
+                        floor: Some("Attic".to_string()),
                         room: Some("Utility Room".to_string()),
                     }),
                     product: None,
@@ -539,7 +539,7 @@ pub(crate) mod test_fixtures {
         DecodedTelegram {
             timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(secs),
             source: ia("1.1.30"),
-            source_name: Some("Wetterstation".to_string()),
+            source_name: Some("Weather Station".to_string()),
             destination: DestinationRef::Group(ga(dest)),
             destination_name: Some("Windalarm".to_string()),
             apci: ApciKind::Write,
