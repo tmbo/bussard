@@ -1,0 +1,58 @@
+address: 1.1.3
+name: Switch Actuator 8-fold
+description: DIN-rail switch actuator driving the non-dimmed lights
+location:
+  floor: Ground Floor
+  room: Utility Room
+product:
+  manufacturer: Northwind Controls
+  order_number: SA-8-16A
+channels:
+  CH-A:
+    name: Output A - Hallway Light
+  CH-B:
+    name: Output B - Kitchen Light
+  CH-C:
+    name: Output C - Bedroom Light
+  CH-D:
+    name: Output D - Study Light
+com_objects:
+  1:
+    dpt: '1.001'
+    flags: CW
+    channel: CH-A
+  2:
+    dpt: '1.001'
+    flags: CRT
+    channel: CH-A
+  3:
+    dpt: '1.001'
+    flags: CW
+    channel: CH-B
+  4:
+    dpt: '1.001'
+    flags: CW
+    channel: CH-C
+  5:
+    dpt: '1.001'
+    flags: CRT
+    channel: CH-C
+  6:
+    dpt: '1.001'
+    flags: CW
+    channel: CH-D
+  7:
+    dpt: '1.001'
+    flags: CRT
+    channel: CH-D
+  8:
+    dpt: '12.001'
+    flags: CRT
+    channel: CH-A
+  9:
+    dpt: '1.011'
+    flags: CRT
+    channel: CH-B
+  30:
+    dpt: '5.010'
+    flags: CW

@@ -1,0 +1,34 @@
+address: 1.1.7
+name: Weather Station
+description: Combined temperature, wind and brightness sensor on the roof
+location:
+  floor: Outdoor
+  room: Roof
+product:
+  manufacturer: Meridian Sensors
+  order_number: WS-3
+channels:
+  CH-1:
+    name: Weather
+com_objects:
+  1:
+    dpt: '9.001'
+    flags: CRT
+    channel: CH-1
+  2:
+    dpt: '9.005'
+    flags: CRT
+    channel: CH-1
+  3:
+    dpt: '9.004'
+    flags: CRT
+    channel: CH-1
+  4:
+    dpt: '1.005'
+    flags: CRT
+    channel: CH-1
+  # Table-only: the rain output is wired in the device but not in the plan.
+  5:
+    dpt: '1.001'
+    flags: CRT
+    channel: CH-1

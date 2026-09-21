@@ -1,0 +1,1852 @@
+{
+  "devices": [
+    {
+      "address": "1.1.1",
+      "channels": [
+        {
+          "key": "CH-1",
+          "name": "Rocker 1 - Hallway Light"
+        },
+        {
+          "key": "CH-2",
+          "name": "Rocker 2 - Central"
+        }
+      ],
+      "com_objects": [
+        {
+          "channel": "CH-1",
+          "dpt": "1.001",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Hallway Light - Switch",
+          "number": 0,
+          "send": "0/0/0"
+        },
+        {
+          "channel": "CH-1",
+          "dpt": "1.001",
+          "flags": "CWU",
+          "listen": [
+            "0/0/1"
+          ],
+          "name": "Hallway Light - Status LED",
+          "number": 1,
+          "send": null
+        },
+        {
+          "channel": "CH-2",
+          "dpt": "1.001",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Central Off",
+          "number": 2,
+          "send": "3/0/1"
+        },
+        {
+          "channel": "CH-2",
+          "dpt": "1.008",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Bedroom Blind - Move",
+          "number": 3,
+          "send": "1/1/0"
+        },
+        {
+          "channel": "CH-2",
+          "dpt": "1.001",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Rocker 2 - Central",
+          "number": 4,
+          "send": null
+        },
+        {
+          "channel": null,
+          "dpt": null,
+          "flags": null,
+          "listen": [],
+          "name": "Spare Output",
+          "number": 40,
+          "send": "3/1/0"
+        }
+      ],
+      "description": "4-fold push button with status LEDs",
+      "floor": "Ground Floor",
+      "name": "Push Button Hallway",
+      "product": {
+        "manufacturer": "Acme Automation",
+        "order_number": "PB-4F"
+      },
+      "room": "Hallway"
+    },
+    {
+      "address": "1.1.2",
+      "channels": [
+        {
+          "key": "CH-1",
+          "name": "Rocker 1 - Living Room Light"
+        },
+        {
+          "key": "CH-2",
+          "name": "Rocker 2 - Blind"
+        },
+        {
+          "key": "CH-3",
+          "name": "Rocker 3 - Scenes"
+        }
+      ],
+      "com_objects": [
+        {
+          "channel": "CH-1",
+          "dpt": "1.001",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Living Room Light - Switch",
+          "number": 0,
+          "send": "0/0/2"
+        },
+        {
+          "channel": "CH-1",
+          "dpt": "1.001",
+          "flags": "CWU",
+          "listen": [
+            "0/0/5"
+          ],
+          "name": "Living Room Light - Status LED",
+          "number": 1,
+          "send": null
+        },
+        {
+          "channel": "CH-1",
+          "dpt": "3.007",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Living Room Light - Dim",
+          "number": 2,
+          "send": "0/0/3"
+        },
+        {
+          "channel": "CH-2",
+          "dpt": "1.008",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Living Room Blind - Move",
+          "number": 3,
+          "send": "0/1/0"
+        },
+        {
+          "channel": "CH-2",
+          "dpt": "1.007",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Living Room Blind - Stop",
+          "number": 4,
+          "send": "0/1/1"
+        },
+        {
+          "channel": "CH-3",
+          "dpt": "5.010",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Scene Central",
+          "number": 5,
+          "send": "3/0/3"
+        },
+        {
+          "channel": "CH-3",
+          "dpt": "1.001",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Kitchen Light - Switch",
+          "number": 6,
+          "send": "0/0/6"
+        },
+        {
+          "channel": "CH-1",
+          "dpt": "5.001",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Living Room Light - Brightness",
+          "number": 7,
+          "send": "0/0/4"
+        },
+        {
+          "channel": "CH-3",
+          "dpt": "20.102",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Living Room - Operating Mode",
+          "number": 8,
+          "send": "0/2/3"
+        },
+        {
+          "channel": "CH-3",
+          "dpt": "9.001",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Living Room - Measured Temperature",
+          "number": 9,
+          "send": "0/2/0"
+        },
+        {
+          "channel": "CH-3",
+          "dpt": "9.001",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Living Room - Setpoint",
+          "number": 10,
+          "send": "0/2/1"
+        },
+        {
+          "channel": "CH-2",
+          "dpt": "5.001",
+          "flags": "CWU",
+          "listen": [
+            "0/1/2"
+          ],
+          "name": "Living Room Blind - Position (display)",
+          "number": 11,
+          "send": null
+        },
+        {
+          "channel": "CH-3",
+          "dpt": "5.001",
+          "flags": "CWU",
+          "listen": [
+            "0/2/2"
+          ],
+          "name": "Living Room - Valve Position (display)",
+          "number": 12,
+          "send": null
+        }
+      ],
+      "description": "6-fold push button",
+      "floor": "Ground Floor",
+      "name": "Push Button Living Room",
+      "product": {
+        "manufacturer": "Acme Automation",
+        "order_number": "PB-6F"
+      },
+      "room": "Living Room"
+    },
+    {
+      "address": "1.1.3",
+      "channels": [
+        {
+          "key": "CH-A",
+          "name": "Output A - Hallway Light"
+        },
+        {
+          "key": "CH-B",
+          "name": "Output B - Kitchen Light"
+        },
+        {
+          "key": "CH-C",
+          "name": "Output C - Bedroom Light"
+        },
+        {
+          "key": "CH-D",
+          "name": "Output D - Study Light"
+        }
+      ],
+      "com_objects": [
+        {
+          "channel": "CH-A",
+          "dpt": "1.001",
+          "flags": "CW",
+          "listen": [
+            "0/0/0",
+            "3/0/1"
+          ],
+          "name": "Hallway Light - Switch",
+          "number": 1,
+          "send": null
+        },
+        {
+          "channel": "CH-A",
+          "dpt": "1.001",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Hallway Light - Status",
+          "number": 2,
+          "send": "0/0/1"
+        },
+        {
+          "channel": "CH-B",
+          "dpt": "1.001",
+          "flags": "CW",
+          "listen": [
+            "0/0/6",
+            "3/0/1"
+          ],
+          "name": "Kitchen Light - Switch",
+          "number": 3,
+          "send": null
+        },
+        {
+          "channel": "CH-C",
+          "dpt": "1.001",
+          "flags": "CW",
+          "listen": [
+            "1/0/0",
+            "3/0/1"
+          ],
+          "name": "Bedroom Light - Switch",
+          "number": 4,
+          "send": null
+        },
+        {
+          "channel": "CH-C",
+          "dpt": "1.001",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Bedroom Light - Status",
+          "number": 5,
+          "send": "1/0/1"
+        },
+        {
+          "channel": "CH-D",
+          "dpt": "1.001",
+          "flags": "CW",
+          "listen": [],
+          "name": "Output D - Study Light",
+          "number": 6,
+          "send": null
+        },
+        {
+          "channel": "CH-D",
+          "dpt": "1.001",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Output D - Study Light",
+          "number": 7,
+          "send": null
+        },
+        {
+          "channel": "CH-A",
+          "dpt": "12.001",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Output A - Hallway Light",
+          "number": 8,
+          "send": null
+        },
+        {
+          "channel": "CH-B",
+          "dpt": "1.011",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Output B - Kitchen Light",
+          "number": 9,
+          "send": null
+        },
+        {
+          "channel": null,
+          "dpt": "5.010",
+          "flags": "CW",
+          "listen": [
+            "3/0/3"
+          ],
+          "name": "Scene Central",
+          "number": 30,
+          "send": null
+        }
+      ],
+      "description": "DIN-rail switch actuator driving the non-dimmed lights",
+      "floor": "Ground Floor",
+      "name": "Switch Actuator 8-fold",
+      "product": {
+        "manufacturer": "Northwind Controls",
+        "order_number": "SA-8-16A"
+      },
+      "room": "Utility Room"
+    },
+    {
+      "address": "1.1.4",
+      "channels": [
+        {
+          "key": "CH-1",
+          "name": "Blind 1 - Living Room"
+        },
+        {
+          "key": "CH-2",
+          "name": "Blind 2 - Kitchen"
+        },
+        {
+          "key": "CH-3",
+          "name": "Blind 3 - Bedroom"
+        }
+      ],
+      "com_objects": [
+        {
+          "channel": "CH-1",
+          "dpt": "1.008",
+          "flags": "CW",
+          "listen": [
+            "0/1/0"
+          ],
+          "name": "Living Room Blind - Move",
+          "number": 1,
+          "send": null
+        },
+        {
+          "channel": "CH-1",
+          "dpt": "1.007",
+          "flags": "CW",
+          "listen": [
+            "0/1/1"
+          ],
+          "name": "Living Room Blind - Stop",
+          "number": 2,
+          "send": null
+        },
+        {
+          "channel": "CH-1",
+          "dpt": "5.001",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Living Room Blind - Position",
+          "number": 3,
+          "send": "0/1/2"
+        },
+        {
+          "channel": "CH-1",
+          "dpt": "1.005",
+          "flags": "CW",
+          "listen": [
+            "3/0/0"
+          ],
+          "name": "Living Room Blind - Wind Alarm",
+          "number": 4,
+          "send": null
+        },
+        {
+          "channel": "CH-2",
+          "dpt": "1.008",
+          "flags": "CW",
+          "listen": [
+            "0/1/3"
+          ],
+          "name": "Kitchen Blind - Move",
+          "number": 5,
+          "send": null
+        },
+        {
+          "channel": "CH-3",
+          "dpt": "1.008",
+          "flags": "CW",
+          "listen": [
+            "1/1/0"
+          ],
+          "name": "Bedroom Blind - Move",
+          "number": 6,
+          "send": null
+        },
+        {
+          "channel": "CH-3",
+          "dpt": "5.001",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Bedroom Blind - Position",
+          "number": 7,
+          "send": "1/1/1"
+        },
+        {
+          "channel": "CH-3",
+          "dpt": "1.005",
+          "flags": "CW",
+          "listen": [
+            "3/0/0"
+          ],
+          "name": "Bedroom Blind - Wind Alarm",
+          "number": 8,
+          "send": null
+        },
+        {
+          "channel": null,
+          "dpt": "9.005",
+          "flags": "CW",
+          "listen": [
+            "2/0/1"
+          ],
+          "name": "Wind Speed",
+          "number": 9,
+          "send": null
+        },
+        {
+          "channel": null,
+          "dpt": "9.004",
+          "flags": "CW",
+          "listen": [
+            "2/0/2"
+          ],
+          "name": "Brightness East",
+          "number": 10,
+          "send": null
+        }
+      ],
+      "description": "DIN-rail blind actuator with wind-alarm inputs",
+      "floor": "Ground Floor",
+      "name": "Blind Actuator 4-fold",
+      "product": {
+        "manufacturer": "Northwind Controls",
+        "order_number": "BA-4"
+      },
+      "room": "Utility Room"
+    },
+    {
+      "address": "1.1.5",
+      "channels": [
+        {
+          "key": "CH-1",
+          "name": "Dimmer 1 - Living Room"
+        }
+      ],
+      "com_objects": [
+        {
+          "channel": "CH-1",
+          "dpt": "1.001",
+          "flags": "CW",
+          "listen": [
+            "0/0/2",
+            "3/0/1"
+          ],
+          "name": "Living Room Light - Switch",
+          "number": 1,
+          "send": null
+        },
+        {
+          "channel": "CH-1",
+          "dpt": "3.007",
+          "flags": "CW",
+          "listen": [
+            "0/0/3"
+          ],
+          "name": "Living Room Light - Dim",
+          "number": 2,
+          "send": null
+        },
+        {
+          "channel": "CH-1",
+          "dpt": "5.001",
+          "flags": "CW",
+          "listen": [
+            "0/0/4"
+          ],
+          "name": "Living Room Light - Brightness",
+          "number": 3,
+          "send": null
+        },
+        {
+          "channel": "CH-1",
+          "dpt": "1.001",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Living Room Light - Status",
+          "number": 4,
+          "send": "0/0/5"
+        }
+      ],
+      "description": "Universal dimmer for the living-room light",
+      "floor": "Ground Floor",
+      "name": "Dimming Actuator 2-fold",
+      "product": {
+        "manufacturer": "Northwind Controls",
+        "order_number": "DA-2"
+      },
+      "room": "Utility Room"
+    },
+    {
+      "address": "1.1.6",
+      "channels": [
+        {
+          "key": "CH-1",
+          "name": "Valve 1 - Living Room"
+        },
+        {
+          "key": "CH-2",
+          "name": "Valve 2 - Bedroom"
+        }
+      ],
+      "com_objects": [
+        {
+          "channel": "CH-1",
+          "dpt": "9.001",
+          "flags": "CW",
+          "listen": [
+            "0/2/0"
+          ],
+          "name": "Living Room - Measured Temperature",
+          "number": 1,
+          "send": null
+        },
+        {
+          "channel": "CH-1",
+          "dpt": "9.001",
+          "flags": "CW",
+          "listen": [
+            "0/2/1"
+          ],
+          "name": "Living Room - Setpoint",
+          "number": 2,
+          "send": null
+        },
+        {
+          "channel": "CH-1",
+          "dpt": "5.001",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Living Room - Valve Position",
+          "number": 3,
+          "send": "0/2/2"
+        },
+        {
+          "channel": "CH-1",
+          "dpt": "20.102",
+          "flags": "CW",
+          "listen": [
+            "0/2/3"
+          ],
+          "name": "Living Room - Operating Mode",
+          "number": 4,
+          "send": null
+        },
+        {
+          "channel": "CH-2",
+          "dpt": "9.001",
+          "flags": "CW",
+          "listen": [
+            "1/2/0"
+          ],
+          "name": "Bedroom - Measured Temperature",
+          "number": 5,
+          "send": null
+        },
+        {
+          "channel": "CH-2",
+          "dpt": "9.001",
+          "flags": "CW",
+          "listen": [
+            "1/2/1"
+          ],
+          "name": "Bedroom - Setpoint",
+          "number": 6,
+          "send": null
+        }
+      ],
+      "description": "Valve actuator for the living-room and bedroom circuits",
+      "floor": "Ground Floor",
+      "name": "Heating Actuator 6-fold",
+      "product": {
+        "manufacturer": "Northwind Controls",
+        "order_number": "HA-6"
+      },
+      "room": "Utility Room"
+    },
+    {
+      "address": "1.1.7",
+      "channels": [
+        {
+          "key": "CH-1",
+          "name": "Weather"
+        }
+      ],
+      "com_objects": [
+        {
+          "channel": "CH-1",
+          "dpt": "9.001",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Outside Temperature",
+          "number": 1,
+          "send": "2/0/0"
+        },
+        {
+          "channel": "CH-1",
+          "dpt": "9.005",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Wind Speed",
+          "number": 2,
+          "send": "2/0/1"
+        },
+        {
+          "channel": "CH-1",
+          "dpt": "9.004",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Brightness East",
+          "number": 3,
+          "send": "2/0/2"
+        },
+        {
+          "channel": "CH-1",
+          "dpt": "1.005",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Wind Alarm",
+          "number": 4,
+          "send": "3/0/0"
+        },
+        {
+          "channel": "CH-1",
+          "dpt": "1.001",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Weather",
+          "number": 5,
+          "send": null
+        }
+      ],
+      "description": "Combined temperature, wind and brightness sensor on the roof",
+      "floor": "Outdoor",
+      "name": "Weather Station",
+      "product": {
+        "manufacturer": "Meridian Sensors",
+        "order_number": "WS-3"
+      },
+      "room": "Roof"
+    },
+    {
+      "address": "1.1.8",
+      "channels": [],
+      "com_objects": [
+        {
+          "channel": null,
+          "dpt": "1.018",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Presence",
+          "number": 1,
+          "send": "2/0/3"
+        },
+        {
+          "channel": null,
+          "dpt": "1.001",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Hallway Light - Switch",
+          "number": 2,
+          "send": "0/0/0"
+        },
+        {
+          "channel": null,
+          "dpt": "9.004",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Presence Detector Hallway",
+          "number": 3,
+          "send": null
+        }
+      ],
+      "description": "Ceiling presence detector with a brightness output",
+      "floor": "Ground Floor",
+      "name": "Presence Detector Hallway",
+      "product": {
+        "manufacturer": "Meridian Sensors",
+        "order_number": "PD-1"
+      },
+      "room": "Hallway"
+    },
+    {
+      "address": "1.1.9",
+      "channels": [
+        {
+          "key": "CH-1",
+          "name": "Thermostat"
+        }
+      ],
+      "com_objects": [
+        {
+          "channel": "CH-1",
+          "dpt": "9.001",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Bedroom - Measured Temperature",
+          "number": 1,
+          "send": "1/2/0"
+        },
+        {
+          "channel": "CH-1",
+          "dpt": "9.001",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Bedroom - Setpoint",
+          "number": 2,
+          "send": "1/2/1"
+        },
+        {
+          "channel": "CH-1",
+          "dpt": "9.001",
+          "flags": "CWU",
+          "listen": [
+            "2/0/0"
+          ],
+          "name": "Outside Temperature",
+          "number": 3,
+          "send": null
+        },
+        {
+          "channel": "CH-1",
+          "dpt": "1.001",
+          "flags": "CRT",
+          "listen": [],
+          "name": "Bedroom Light - Switch",
+          "number": 4,
+          "send": "1/0/0"
+        },
+        {
+          "channel": "CH-1",
+          "dpt": "1.001",
+          "flags": "CWU",
+          "listen": [
+            "1/0/1"
+          ],
+          "name": "Bedroom Light - Status LED",
+          "number": 5,
+          "send": null
+        }
+      ],
+      "description": "Wall thermostat, sends the measured value and the setpoint",
+      "floor": "First Floor",
+      "name": "Room Thermostat Bedroom",
+      "product": {
+        "manufacturer": "Acme Automation",
+        "order_number": "RT-1"
+      },
+      "room": "Bedroom"
+    },
+    {
+      "address": "1.1.10",
+      "channels": [],
+      "com_objects": [],
+      "description": null,
+      "floor": null,
+      "name": "IP Interface",
+      "product": null,
+      "room": null
+    }
+  ],
+  "groups": [
+    {
+      "address": "0/0/0",
+      "description": "Ceiling light in the hallway",
+      "dpt": "1.001",
+      "listeners": [
+        {
+          "device": "1.1.3",
+          "device_name": "Switch Actuator 8-fold",
+          "object": 1,
+          "object_name": "Hallway Light - Switch"
+        }
+      ],
+      "main": 0,
+      "middle": 0,
+      "name": "Hallway Light Switch",
+      "protected": false,
+      "range": {
+        "main": "Ground Floor",
+        "middle": "Lighting"
+      },
+      "senders": [
+        {
+          "device": "1.1.1",
+          "device_name": "Push Button Hallway",
+          "object": 0,
+          "object_name": "Hallway Light - Switch"
+        },
+        {
+          "device": "1.1.8",
+          "device_name": "Presence Detector Hallway",
+          "object": 2,
+          "object_name": "Hallway Light - Switch"
+        }
+      ],
+      "sub": 0
+    },
+    {
+      "address": "0/0/1",
+      "description": null,
+      "dpt": "1.001",
+      "listeners": [
+        {
+          "device": "1.1.1",
+          "device_name": "Push Button Hallway",
+          "object": 1,
+          "object_name": "Hallway Light - Status LED"
+        }
+      ],
+      "main": 0,
+      "middle": 0,
+      "name": "Hallway Light Status",
+      "protected": false,
+      "range": {
+        "main": "Ground Floor",
+        "middle": "Lighting"
+      },
+      "senders": [
+        {
+          "device": "1.1.3",
+          "device_name": "Switch Actuator 8-fold",
+          "object": 2,
+          "object_name": "Hallway Light - Status"
+        }
+      ],
+      "sub": 1
+    },
+    {
+      "address": "0/0/2",
+      "description": null,
+      "dpt": "1.001",
+      "listeners": [
+        {
+          "device": "1.1.5",
+          "device_name": "Dimming Actuator 2-fold",
+          "object": 1,
+          "object_name": "Living Room Light - Switch"
+        }
+      ],
+      "main": 0,
+      "middle": 0,
+      "name": "Living Room Light Switch",
+      "protected": false,
+      "range": {
+        "main": "Ground Floor",
+        "middle": "Lighting"
+      },
+      "senders": [
+        {
+          "device": "1.1.2",
+          "device_name": "Push Button Living Room",
+          "object": 0,
+          "object_name": "Living Room Light - Switch"
+        }
+      ],
+      "sub": 2
+    },
+    {
+      "address": "0/0/3",
+      "description": null,
+      "dpt": "3.007",
+      "listeners": [
+        {
+          "device": "1.1.5",
+          "device_name": "Dimming Actuator 2-fold",
+          "object": 2,
+          "object_name": "Living Room Light - Dim"
+        }
+      ],
+      "main": 0,
+      "middle": 0,
+      "name": "Living Room Light Dim",
+      "protected": false,
+      "range": {
+        "main": "Ground Floor",
+        "middle": "Lighting"
+      },
+      "senders": [
+        {
+          "device": "1.1.2",
+          "device_name": "Push Button Living Room",
+          "object": 2,
+          "object_name": "Living Room Light - Dim"
+        }
+      ],
+      "sub": 3
+    },
+    {
+      "address": "0/0/4",
+      "description": null,
+      "dpt": "5.001",
+      "listeners": [
+        {
+          "device": "1.1.5",
+          "device_name": "Dimming Actuator 2-fold",
+          "object": 3,
+          "object_name": "Living Room Light - Brightness"
+        }
+      ],
+      "main": 0,
+      "middle": 0,
+      "name": "Living Room Light Brightness",
+      "protected": false,
+      "range": {
+        "main": "Ground Floor",
+        "middle": "Lighting"
+      },
+      "senders": [
+        {
+          "device": "1.1.2",
+          "device_name": "Push Button Living Room",
+          "object": 7,
+          "object_name": "Living Room Light - Brightness"
+        }
+      ],
+      "sub": 4
+    },
+    {
+      "address": "0/0/5",
+      "description": null,
+      "dpt": "1.001",
+      "listeners": [
+        {
+          "device": "1.1.2",
+          "device_name": "Push Button Living Room",
+          "object": 1,
+          "object_name": "Living Room Light - Status LED"
+        }
+      ],
+      "main": 0,
+      "middle": 0,
+      "name": "Living Room Light Status",
+      "protected": false,
+      "range": {
+        "main": "Ground Floor",
+        "middle": "Lighting"
+      },
+      "senders": [
+        {
+          "device": "1.1.5",
+          "device_name": "Dimming Actuator 2-fold",
+          "object": 4,
+          "object_name": "Living Room Light - Status"
+        }
+      ],
+      "sub": 5
+    },
+    {
+      "address": "0/0/6",
+      "description": null,
+      "dpt": "1.001",
+      "listeners": [
+        {
+          "device": "1.1.3",
+          "device_name": "Switch Actuator 8-fold",
+          "object": 3,
+          "object_name": "Kitchen Light - Switch"
+        }
+      ],
+      "main": 0,
+      "middle": 0,
+      "name": "Kitchen Light Switch",
+      "protected": false,
+      "range": {
+        "main": "Ground Floor",
+        "middle": "Lighting"
+      },
+      "senders": [
+        {
+          "device": "1.1.2",
+          "device_name": "Push Button Living Room",
+          "object": 6,
+          "object_name": "Kitchen Light - Switch"
+        }
+      ],
+      "sub": 6
+    },
+    {
+      "address": "0/0/7",
+      "description": null,
+      "dpt": "1.001",
+      "listeners": [],
+      "main": 0,
+      "middle": 0,
+      "name": "Pantry Light Switch (reserve)",
+      "protected": false,
+      "range": {
+        "main": "Ground Floor",
+        "middle": "Lighting"
+      },
+      "senders": [],
+      "sub": 7
+    },
+    {
+      "address": "0/1/0",
+      "description": null,
+      "dpt": "1.008",
+      "listeners": [
+        {
+          "device": "1.1.4",
+          "device_name": "Blind Actuator 4-fold",
+          "object": 1,
+          "object_name": "Living Room Blind - Move"
+        }
+      ],
+      "main": 0,
+      "middle": 1,
+      "name": "Living Room Blind Move",
+      "protected": false,
+      "range": {
+        "main": "Ground Floor",
+        "middle": "Blinds"
+      },
+      "senders": [
+        {
+          "device": "1.1.2",
+          "device_name": "Push Button Living Room",
+          "object": 3,
+          "object_name": "Living Room Blind - Move"
+        }
+      ],
+      "sub": 0
+    },
+    {
+      "address": "0/1/1",
+      "description": null,
+      "dpt": "1.007",
+      "listeners": [
+        {
+          "device": "1.1.4",
+          "device_name": "Blind Actuator 4-fold",
+          "object": 2,
+          "object_name": "Living Room Blind - Stop"
+        }
+      ],
+      "main": 0,
+      "middle": 1,
+      "name": "Living Room Blind Stop",
+      "protected": false,
+      "range": {
+        "main": "Ground Floor",
+        "middle": "Blinds"
+      },
+      "senders": [
+        {
+          "device": "1.1.2",
+          "device_name": "Push Button Living Room",
+          "object": 4,
+          "object_name": "Living Room Blind - Stop"
+        }
+      ],
+      "sub": 1
+    },
+    {
+      "address": "0/1/2",
+      "description": null,
+      "dpt": "5.001",
+      "listeners": [
+        {
+          "device": "1.1.2",
+          "device_name": "Push Button Living Room",
+          "object": 11,
+          "object_name": "Living Room Blind - Position (display)"
+        }
+      ],
+      "main": 0,
+      "middle": 1,
+      "name": "Living Room Blind Position",
+      "protected": false,
+      "range": {
+        "main": "Ground Floor",
+        "middle": "Blinds"
+      },
+      "senders": [
+        {
+          "device": "1.1.4",
+          "device_name": "Blind Actuator 4-fold",
+          "object": 3,
+          "object_name": "Living Room Blind - Position"
+        }
+      ],
+      "sub": 2
+    },
+    {
+      "address": "0/1/3",
+      "description": null,
+      "dpt": "1.008",
+      "listeners": [
+        {
+          "device": "1.1.4",
+          "device_name": "Blind Actuator 4-fold",
+          "object": 5,
+          "object_name": "Kitchen Blind - Move"
+        }
+      ],
+      "main": 0,
+      "middle": 1,
+      "name": "Kitchen Blind Move",
+      "protected": false,
+      "range": {
+        "main": "Ground Floor",
+        "middle": "Blinds"
+      },
+      "senders": [],
+      "sub": 3
+    },
+    {
+      "address": "0/2/0",
+      "description": null,
+      "dpt": "9.001",
+      "listeners": [
+        {
+          "device": "1.1.6",
+          "device_name": "Heating Actuator 6-fold",
+          "object": 1,
+          "object_name": "Living Room - Measured Temperature"
+        }
+      ],
+      "main": 0,
+      "middle": 2,
+      "name": "Living Room Temperature",
+      "protected": false,
+      "range": {
+        "main": "Ground Floor",
+        "middle": "Climate"
+      },
+      "senders": [
+        {
+          "device": "1.1.2",
+          "device_name": "Push Button Living Room",
+          "object": 9,
+          "object_name": "Living Room - Measured Temperature"
+        }
+      ],
+      "sub": 0
+    },
+    {
+      "address": "0/2/1",
+      "description": null,
+      "dpt": "9.001",
+      "listeners": [
+        {
+          "device": "1.1.6",
+          "device_name": "Heating Actuator 6-fold",
+          "object": 2,
+          "object_name": "Living Room - Setpoint"
+        }
+      ],
+      "main": 0,
+      "middle": 2,
+      "name": "Living Room Setpoint",
+      "protected": false,
+      "range": {
+        "main": "Ground Floor",
+        "middle": "Climate"
+      },
+      "senders": [
+        {
+          "device": "1.1.2",
+          "device_name": "Push Button Living Room",
+          "object": 10,
+          "object_name": "Living Room - Setpoint"
+        }
+      ],
+      "sub": 1
+    },
+    {
+      "address": "0/2/2",
+      "description": null,
+      "dpt": "5.001",
+      "listeners": [
+        {
+          "device": "1.1.2",
+          "device_name": "Push Button Living Room",
+          "object": 12,
+          "object_name": "Living Room - Valve Position (display)"
+        }
+      ],
+      "main": 0,
+      "middle": 2,
+      "name": "Living Room Valve Position",
+      "protected": false,
+      "range": {
+        "main": "Ground Floor",
+        "middle": "Climate"
+      },
+      "senders": [
+        {
+          "device": "1.1.6",
+          "device_name": "Heating Actuator 6-fold",
+          "object": 3,
+          "object_name": "Living Room - Valve Position"
+        }
+      ],
+      "sub": 2
+    },
+    {
+      "address": "0/2/3",
+      "description": null,
+      "dpt": "20.102",
+      "listeners": [
+        {
+          "device": "1.1.6",
+          "device_name": "Heating Actuator 6-fold",
+          "object": 4,
+          "object_name": "Living Room - Operating Mode"
+        }
+      ],
+      "main": 0,
+      "middle": 2,
+      "name": "Living Room Operating Mode",
+      "protected": false,
+      "range": {
+        "main": "Ground Floor",
+        "middle": "Climate"
+      },
+      "senders": [
+        {
+          "device": "1.1.2",
+          "device_name": "Push Button Living Room",
+          "object": 8,
+          "object_name": "Living Room - Operating Mode"
+        }
+      ],
+      "sub": 3
+    },
+    {
+      "address": "1/0/0",
+      "description": null,
+      "dpt": "1.001",
+      "listeners": [
+        {
+          "device": "1.1.3",
+          "device_name": "Switch Actuator 8-fold",
+          "object": 4,
+          "object_name": "Bedroom Light - Switch"
+        }
+      ],
+      "main": 1,
+      "middle": 0,
+      "name": "Bedroom Light Switch",
+      "protected": false,
+      "range": {
+        "main": "First Floor",
+        "middle": "Lighting"
+      },
+      "senders": [
+        {
+          "device": "1.1.9",
+          "device_name": "Room Thermostat Bedroom",
+          "object": 4,
+          "object_name": "Bedroom Light - Switch"
+        }
+      ],
+      "sub": 0
+    },
+    {
+      "address": "1/0/1",
+      "description": null,
+      "dpt": "1.001",
+      "listeners": [
+        {
+          "device": "1.1.9",
+          "device_name": "Room Thermostat Bedroom",
+          "object": 5,
+          "object_name": "Bedroom Light - Status LED"
+        }
+      ],
+      "main": 1,
+      "middle": 0,
+      "name": "Bedroom Light Status",
+      "protected": false,
+      "range": {
+        "main": "First Floor",
+        "middle": "Lighting"
+      },
+      "senders": [
+        {
+          "device": "1.1.3",
+          "device_name": "Switch Actuator 8-fold",
+          "object": 5,
+          "object_name": "Bedroom Light - Status"
+        }
+      ],
+      "sub": 1
+    },
+    {
+      "address": "1/0/2",
+      "description": null,
+      "dpt": "1.001",
+      "listeners": [],
+      "main": 1,
+      "middle": 0,
+      "name": "Study Light Switch",
+      "protected": false,
+      "range": {
+        "main": "First Floor",
+        "middle": "Lighting"
+      },
+      "senders": [],
+      "sub": 2
+    },
+    {
+      "address": "1/0/3",
+      "description": null,
+      "dpt": "1.001",
+      "listeners": [],
+      "main": 1,
+      "middle": 0,
+      "name": "Study Light Status",
+      "protected": false,
+      "range": {
+        "main": "First Floor",
+        "middle": "Lighting"
+      },
+      "senders": [],
+      "sub": 3
+    },
+    {
+      "address": "1/1/0",
+      "description": null,
+      "dpt": "1.008",
+      "listeners": [
+        {
+          "device": "1.1.4",
+          "device_name": "Blind Actuator 4-fold",
+          "object": 6,
+          "object_name": "Bedroom Blind - Move"
+        }
+      ],
+      "main": 1,
+      "middle": 1,
+      "name": "Bedroom Blind Move",
+      "protected": false,
+      "range": {
+        "main": "First Floor",
+        "middle": "Blinds"
+      },
+      "senders": [
+        {
+          "device": "1.1.1",
+          "device_name": "Push Button Hallway",
+          "object": 3,
+          "object_name": "Bedroom Blind - Move"
+        }
+      ],
+      "sub": 0
+    },
+    {
+      "address": "1/1/1",
+      "description": null,
+      "dpt": "5.001",
+      "listeners": [],
+      "main": 1,
+      "middle": 1,
+      "name": "Bedroom Blind Position",
+      "protected": false,
+      "range": {
+        "main": "First Floor",
+        "middle": "Blinds"
+      },
+      "senders": [
+        {
+          "device": "1.1.4",
+          "device_name": "Blind Actuator 4-fold",
+          "object": 7,
+          "object_name": "Bedroom Blind - Position"
+        }
+      ],
+      "sub": 1
+    },
+    {
+      "address": "1/2/0",
+      "description": null,
+      "dpt": "9.001",
+      "listeners": [
+        {
+          "device": "1.1.6",
+          "device_name": "Heating Actuator 6-fold",
+          "object": 5,
+          "object_name": "Bedroom - Measured Temperature"
+        }
+      ],
+      "main": 1,
+      "middle": 2,
+      "name": "Bedroom Temperature",
+      "protected": false,
+      "range": {
+        "main": "First Floor",
+        "middle": null
+      },
+      "senders": [
+        {
+          "device": "1.1.9",
+          "device_name": "Room Thermostat Bedroom",
+          "object": 1,
+          "object_name": "Bedroom - Measured Temperature"
+        }
+      ],
+      "sub": 0
+    },
+    {
+      "address": "1/2/1",
+      "description": null,
+      "dpt": "9.001",
+      "listeners": [
+        {
+          "device": "1.1.6",
+          "device_name": "Heating Actuator 6-fold",
+          "object": 6,
+          "object_name": "Bedroom - Setpoint"
+        }
+      ],
+      "main": 1,
+      "middle": 2,
+      "name": "Bedroom Setpoint",
+      "protected": false,
+      "range": {
+        "main": "First Floor",
+        "middle": null
+      },
+      "senders": [
+        {
+          "device": "1.1.9",
+          "device_name": "Room Thermostat Bedroom",
+          "object": 2,
+          "object_name": "Bedroom - Setpoint"
+        }
+      ],
+      "sub": 1
+    },
+    {
+      "address": "2/0/0",
+      "description": null,
+      "dpt": "9.001",
+      "listeners": [
+        {
+          "device": "1.1.9",
+          "device_name": "Room Thermostat Bedroom",
+          "object": 3,
+          "object_name": "Outside Temperature"
+        }
+      ],
+      "main": 2,
+      "middle": 0,
+      "name": "Outside Temperature",
+      "protected": false,
+      "range": {
+        "main": "Outdoor",
+        "middle": null
+      },
+      "senders": [
+        {
+          "device": "1.1.7",
+          "device_name": "Weather Station",
+          "object": 1,
+          "object_name": "Outside Temperature"
+        }
+      ],
+      "sub": 0
+    },
+    {
+      "address": "2/0/1",
+      "description": null,
+      "dpt": "9.005",
+      "listeners": [
+        {
+          "device": "1.1.4",
+          "device_name": "Blind Actuator 4-fold",
+          "object": 9,
+          "object_name": "Wind Speed"
+        }
+      ],
+      "main": 2,
+      "middle": 0,
+      "name": "Wind Speed",
+      "protected": false,
+      "range": {
+        "main": "Outdoor",
+        "middle": null
+      },
+      "senders": [
+        {
+          "device": "1.1.7",
+          "device_name": "Weather Station",
+          "object": 2,
+          "object_name": "Wind Speed"
+        }
+      ],
+      "sub": 1
+    },
+    {
+      "address": "2/0/2",
+      "description": null,
+      "dpt": "9.004",
+      "listeners": [
+        {
+          "device": "1.1.4",
+          "device_name": "Blind Actuator 4-fold",
+          "object": 10,
+          "object_name": "Brightness East"
+        }
+      ],
+      "main": 2,
+      "middle": 0,
+      "name": "Brightness East",
+      "protected": false,
+      "range": {
+        "main": "Outdoor",
+        "middle": null
+      },
+      "senders": [
+        {
+          "device": "1.1.7",
+          "device_name": "Weather Station",
+          "object": 3,
+          "object_name": "Brightness East"
+        }
+      ],
+      "sub": 2
+    },
+    {
+      "address": "2/0/3",
+      "description": null,
+      "dpt": "1.018",
+      "listeners": [],
+      "main": 2,
+      "middle": 0,
+      "name": "Presence Hallway",
+      "protected": false,
+      "range": {
+        "main": "Outdoor",
+        "middle": null
+      },
+      "senders": [
+        {
+          "device": "1.1.8",
+          "device_name": "Presence Detector Hallway",
+          "object": 1,
+          "object_name": "Presence"
+        }
+      ],
+      "sub": 3
+    },
+    {
+      "address": "2/0/4",
+      "description": null,
+      "dpt": null,
+      "listeners": [],
+      "main": 2,
+      "middle": 0,
+      "name": "Rain Sensor (DPT unknown)",
+      "protected": false,
+      "range": {
+        "main": "Outdoor",
+        "middle": null
+      },
+      "senders": [],
+      "sub": 4
+    },
+    {
+      "address": "3/0/0",
+      "description": "Safety-critical. Raising it drives every blind to the safe position.",
+      "dpt": "1.005",
+      "listeners": [
+        {
+          "device": "1.1.4",
+          "device_name": "Blind Actuator 4-fold",
+          "object": 4,
+          "object_name": "Living Room Blind - Wind Alarm"
+        },
+        {
+          "device": "1.1.4",
+          "device_name": "Blind Actuator 4-fold",
+          "object": 8,
+          "object_name": "Bedroom Blind - Wind Alarm"
+        }
+      ],
+      "main": 3,
+      "middle": 0,
+      "name": "Wind Alarm",
+      "protected": true,
+      "range": {
+        "main": "Central",
+        "middle": "Alarms"
+      },
+      "senders": [
+        {
+          "device": "1.1.7",
+          "device_name": "Weather Station",
+          "object": 4,
+          "object_name": "Wind Alarm"
+        }
+      ],
+      "sub": 0
+    },
+    {
+      "address": "3/0/1",
+      "description": "Switches every light in the house off.",
+      "dpt": "1.001",
+      "listeners": [
+        {
+          "device": "1.1.3",
+          "device_name": "Switch Actuator 8-fold",
+          "object": 1,
+          "object_name": "Hallway Light - Switch"
+        },
+        {
+          "device": "1.1.3",
+          "device_name": "Switch Actuator 8-fold",
+          "object": 3,
+          "object_name": "Kitchen Light - Switch"
+        },
+        {
+          "device": "1.1.3",
+          "device_name": "Switch Actuator 8-fold",
+          "object": 4,
+          "object_name": "Bedroom Light - Switch"
+        },
+        {
+          "device": "1.1.5",
+          "device_name": "Dimming Actuator 2-fold",
+          "object": 1,
+          "object_name": "Living Room Light - Switch"
+        }
+      ],
+      "main": 3,
+      "middle": 0,
+      "name": "Central Off",
+      "protected": true,
+      "range": {
+        "main": "Central",
+        "middle": "Alarms"
+      },
+      "senders": [
+        {
+          "device": "1.1.1",
+          "device_name": "Push Button Hallway",
+          "object": 2,
+          "object_name": "Central Off"
+        }
+      ],
+      "sub": 1
+    },
+    {
+      "address": "3/0/2",
+      "description": null,
+      "dpt": "12.001",
+      "listeners": [],
+      "main": 3,
+      "middle": 0,
+      "name": "Operating Hours Hallway Light",
+      "protected": false,
+      "range": {
+        "main": "Central",
+        "middle": "Alarms"
+      },
+      "senders": [],
+      "sub": 2
+    },
+    {
+      "address": "3/0/3",
+      "description": null,
+      "dpt": "5.010",
+      "listeners": [
+        {
+          "device": "1.1.3",
+          "device_name": "Switch Actuator 8-fold",
+          "object": 30,
+          "object_name": "Scene Central"
+        }
+      ],
+      "main": 3,
+      "middle": 0,
+      "name": "Scene Central",
+      "protected": false,
+      "range": {
+        "main": "Central",
+        "middle": "Alarms"
+      },
+      "senders": [
+        {
+          "device": "1.1.2",
+          "device_name": "Push Button Living Room",
+          "object": 5,
+          "object_name": "Scene Central"
+        }
+      ],
+      "sub": 3
+    },
+    {
+      "address": "3/1/0",
+      "description": null,
+      "dpt": null,
+      "listeners": [],
+      "main": 3,
+      "middle": 1,
+      "name": null,
+      "protected": false,
+      "range": {
+        "main": "Central",
+        "middle": null
+      },
+      "senders": [
+        {
+          "device": "1.1.1",
+          "device_name": "Push Button Hallway",
+          "object": 40,
+          "object_name": "Spare Output"
+        }
+      ],
+      "sub": 0
+    }
+  ],
+  "project": "Demo House",
+  "ranges": [
+    {
+      "key": "0",
+      "main": 0,
+      "middle": null,
+      "name": "Ground Floor"
+    },
+    {
+      "key": "0/0",
+      "main": 0,
+      "middle": 0,
+      "name": "Lighting"
+    },
+    {
+      "key": "0/1",
+      "main": 0,
+      "middle": 1,
+      "name": "Blinds"
+    },
+    {
+      "key": "0/2",
+      "main": 0,
+      "middle": 2,
+      "name": "Climate"
+    },
+    {
+      "key": "1",
+      "main": 1,
+      "middle": null,
+      "name": "First Floor"
+    },
+    {
+      "key": "1/0",
+      "main": 1,
+      "middle": 0,
+      "name": "Lighting"
+    },
+    {
+      "key": "1/1",
+      "main": 1,
+      "middle": 1,
+      "name": "Blinds"
+    },
+    {
+      "key": "2",
+      "main": 2,
+      "middle": null,
+      "name": "Outdoor"
+    },
+    {
+      "key": "3",
+      "main": 3,
+      "middle": null,
+      "name": "Central"
+    },
+    {
+      "key": "3/0",
+      "main": 3,
+      "middle": 0,
+      "name": "Alarms"
+    }
+  ],
+  "stats": {
+    "devices": 10,
+    "groups": 33,
+    "links": 55
+  }
+}
