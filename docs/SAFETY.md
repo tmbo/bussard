@@ -10,6 +10,18 @@ Read commands (`monitor`, `read`, `scan`, `plan`, `reconstruct`) never transmit
 device programming and are never gated. Everything below is about the write
 commands: `write`, `apply`, `flash`, `assign`, `adopt`.
 
+Two long-running servers can also write, and they pass the same gate at
+startup rather than per command:
+
+- `bussard mcp --allow-writes`, which registers the `knx_write_group` tool and
+  hands an LLM the bus for the session.
+- `bussard viz --allow-writes` (arms `POST /api/group-write`) and
+  `bussard viz --watch-prog` (puts broadcast reads on the bus on a timer).
+
+Both default to off. A bare `bussard viz` is a viewer whose write endpoint
+answers `403`, and a bare `bussard mcp` has no write tool, so neither can
+transmit and neither is gated.
+
 ## The one rule: know which bus you are hitting
 
 The single most dangerous mistake is running a write against your live house
@@ -25,7 +37,10 @@ Two things protect you:
    you type `y`. If the address is not the one you expect, abort.
 
 2. **Non-loopback gateways are refused by default.** A write whose resolved
-   gateway is *not* loopback (not `127.0.0.0/8`, not `::1`) refuses to run:
+   gateway is *not* loopback (not `127.0.0.0/8`, not `::1`) refuses to run.
+   For the five write commands the check happens per invocation; for the two
+   servers it happens once, at startup, so a write-enabled server pointed at a
+   real gateway refuses to start at all:
 
    ```
    refusing to write to non-loopback gateway 192.0.2.10:3671: this looks
@@ -156,11 +171,15 @@ rolled back.
 
 ## Known limitations
 
-- **KNX Secure is not supported.** `bussard` speaks unencrypted management
-  sessions. It cannot program a device that requires KNXnet/IP Secure or KNX
-  Data Secure. The roadmap decision is tracked in
-  [issue #71](https://github.com/tmbo/bussard/issues/71). Do not point `bussard`
-  at a Secure installation expecting it to write.
+- **KNX Secure: inspection only, no Secure writes.** `bussard keyring` parses
+  an ETS `.knxkeys` export and `bussard describe` reports a device's Secure
+  status, so you can see what a Secure installation looks like. Programming it
+  is a different matter: `bussard` still speaks unencrypted management
+  sessions and has no way to present a tool key (there is no `--tool-key`
+  flag), so it cannot program a device that requires KNXnet/IP Secure or KNX
+  Data Secure. Phase A of
+  [issue #71](https://github.com/tmbo/bussard/issues/71) tracks the rest. Do
+  not point `bussard` at a Secure installation expecting it to write.
 - **`flash` does not yet verify factory-freshness**
   ([issue #79](https://github.com/tmbo/bussard/issues/79)); see the flash
   section above.

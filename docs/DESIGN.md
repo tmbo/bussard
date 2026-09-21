@@ -121,7 +121,9 @@ crates/
   bussard-mgmt/       # layer-4 connection-oriented transport, management procedures, table read
   bussard-download/   # LoadProcedure interpreter, table/memory image builder, plan/apply/flash
   bussard-ha/         # Home Assistant config generation (ha-config)
+  bussard-secure/     # KNX Secure primitives: .knxkeys keyring, Data Secure session
   bussard-mcp/        # MCP stdio server
+  bussard-viz/        # the `bussard viz` web server and its embedded frontend
   bussard-cli/        # clap binary
 ```
 

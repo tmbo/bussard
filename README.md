@@ -60,6 +60,7 @@ $ bussard read 4/1/11                # 21.4 °C (9.001)
 $ bussard write 3/0/4 down           # the blind moves
 $ bussard plan 1.1.5                 # diff the device's live tables vs the model
 $ bussard apply 1.1.5                # write them: confirm, backup, verify
+$ bussard viz                        # the whole network in a browser, live
 $ bussard ha-config --out ha.yaml    # Home Assistant config from the same model
 $ claude mcp add knx -- bussard mcp --dir knx    # let Claude debug your bus
 ```
