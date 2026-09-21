@@ -142,6 +142,13 @@ fn report_merge(report: &MergeReport, force_generated: bool) -> ExitCode {
         );
     }
 
+    // Informational notes: generated identity that moved with the project
+    // (application_ref / mask), channels that left, dangling channel references
+    // dropped. Not conflicts: nothing hand-authored was overridden.
+    for note in &report.notes {
+        println!("re-import: note: {note}");
+    }
+
     if !report.has_conflicts() {
         println!("re-import: generated sections refreshed; no hand-edited conflicts.");
         return ExitCode::SUCCESS;
