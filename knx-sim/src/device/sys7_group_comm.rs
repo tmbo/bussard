@@ -106,15 +106,45 @@ impl Sys7GroupComm {
     }
 }
 
-/// Parse the address table: `[CNT:1][own-IA:2][GA1:2]...`. Returns the raw
-/// 2-byte entries as [`GroupAddress`] values, index 0 = own IA, index k = TSAP k.
-fn parse_address_table(memory: &Memory, base: u16) -> Vec<GroupAddress> {
-    let base = u32::from(base);
-    let cnt = memory.read(base, 1)[0] as usize;
+/// Read the `[CNT:1]`-prefixed body of a System 7 table, **bounded to the
+/// allocated segment**: the count octet and the `cnt * elem_size` entry block
+/// must both lie wholly inside one allocated segment, or the table is refused
+/// (empty result).
+///
+/// Without the bound a count octet the tool never wrote — `0xFF` says 255
+/// entries — reads up to a kilobyte past the region the tool actually allocated
+/// and is accepted as routing. A real device has nothing there; refusing is the
+/// strictness that makes the mis-sized table visible.
+fn read_counted_body(memory: &Memory, base: u32, body_offset: u32, elem_size: usize) -> Vec<u8> {
+    let Some(cnt_byte) = memory.read_bounded(base, 1) else {
+        tracing::warn!(
+            base = format!("0x{base:04x}"),
+            "refusing System 7 table: its count octet is outside every allocated segment"
+        );
+        return Vec::new();
+    };
+    let cnt = usize::from(cnt_byte[0]);
     if cnt == 0 {
         return Vec::new();
     }
-    let bytes = memory.read(base.wrapping_add(1), cnt * 2);
+    match memory.read_bounded(base.wrapping_add(body_offset), cnt * elem_size) {
+        Some(bytes) => bytes,
+        None => {
+            tracing::warn!(
+                base = format!("0x{base:04x}"),
+                cnt,
+                elem_size,
+                "refusing System 7 table: the count octet runs past the allocated segment"
+            );
+            Vec::new()
+        }
+    }
+}
+
+/// Parse the address table: `[CNT:1][own-IA:2][GA1:2]...`. Returns the raw
+/// 2-byte entries as [`GroupAddress`] values, index 0 = own IA, index k = TSAP k.
+fn parse_address_table(memory: &Memory, base: u16) -> Vec<GroupAddress> {
+    let bytes = read_counted_body(memory, u32::from(base), 1, 2);
     bytes
         .chunks_exact(2)
         .map(|c| GroupAddress(u16::from_be_bytes([c[0], c[1]])))
@@ -124,12 +154,7 @@ fn parse_address_table(memory: &Memory, base: u16) -> Vec<GroupAddress> {
 /// Parse the association table: `[CNT:1][TSAP:1][ASAP:1]...`. Returns
 /// `(TSAP, ASAP)` pairs.
 fn parse_association_table(memory: &Memory, base: u16) -> Vec<(u8, u8)> {
-    let base = u32::from(base);
-    let cnt = memory.read(base, 1)[0] as usize;
-    if cnt == 0 {
-        return Vec::new();
-    }
-    let bytes = memory.read(base.wrapping_add(1), cnt * 2);
+    let bytes = read_counted_body(memory, u32::from(base), 1, 2);
     bytes.chunks_exact(2).map(|c| (c[0], c[1])).collect()
 }
 
@@ -137,15 +162,9 @@ fn parse_association_table(memory: &Memory, base: u16) -> Vec<(u8, u8)> {
 /// 4-byte descriptor `[data-ptr:2][CONFIG:1][TYPE:1]`. Returns per-object
 /// `(runtime flags, TYPE code)` indexed by ASAP (object number, 0-based).
 fn parse_group_object_table(memory: &Memory, base: u16) -> Vec<(u16, u8)> {
-    let base = u32::from(base);
-    let cnt = memory.read(base, 1)[0] as usize;
-    if cnt == 0 {
-        return Vec::new();
-    }
     // Skip the count octet and the 2-byte RAM-flags pointer, then read cnt
     // 4-byte descriptors.
-    let desc_base = base.wrapping_add(3);
-    let bytes = memory.read(desc_base, cnt * 4);
+    let bytes = read_counted_body(memory, u32::from(base), 3, 4);
     bytes
         .chunks_exact(4)
         .map(|c| {
@@ -245,6 +264,26 @@ mod tests {
         assert!(gc.object(0).expect("asap0").is_writable());
         assert!(gc.object(1).expect("asap1").is_readable());
         assert_eq!(gc.object(0).expect("asap0").gas, vec![GroupAddress(0x0801)]);
+    }
+
+    #[test]
+    fn test_tables_bounded_to_the_allocated_segment() {
+        // A count octet of 0xFF on the association table claims 255 pairs = 510
+        // bytes, far past the 16-byte region the tool actually allocated, so the
+        // table is refused and the device stays unlinked.
+        let mut mem = seeded_memory();
+        mem.allocate(2, 0x4201, 16);
+        mem.write(2, 0x4201, &[0xFF]).expect("count write");
+        assert!(parse_association_table(&mem, 0x4201).is_empty());
+        let gc = Sys7GroupComm::from_tables(&mem, 0x4000, 0x4201, 0x4100);
+        assert!(gc.is_empty(), "an oversized association count is refused");
+
+        // A base in no allocated segment at all is refused too, rather than read
+        // back as a zero-filled table.
+        let mem = seeded_memory();
+        assert!(parse_address_table(&mem, 0x1000).is_empty());
+        assert!(parse_group_object_table(&mem, 0x1000).is_empty());
+        assert!(parse_association_table(&mem, 0x1000).is_empty());
     }
 
     #[test]

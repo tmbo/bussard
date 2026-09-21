@@ -95,17 +95,32 @@ pub struct GroupComm {
 }
 
 /// Read a big-endian `u16` table (count word then entries) out of memory,
-/// returning the entry bytes (`count * elem_size`), or `None` if the count word
-/// is unreadable.
+/// returning the entry bytes (`count * elem_size`).
+///
+/// **Bounded to the allocated segment.** Both the count word and the entry
+/// block must lie wholly inside one allocated segment, or this returns `None`
+/// and the table is refused. A count word the tool never wrote (or wrote
+/// wrongly) — `0xFFFF` says 262 KB of associations — would otherwise be read
+/// straight past the segment and accepted as routing, which is exactly the
+/// class of tool bug this simulator exists to catch.
 fn read_counted_table(mem: &Memory, base: u16, elem_size: usize) -> Option<Vec<u8>> {
     let base = u32::from(base);
-    let count_bytes = mem.read(base, 2);
+    let count_bytes = mem.read_bounded(base, 2)?;
     let count = u16::from_be_bytes([count_bytes[0], count_bytes[1]]) as usize;
     if count == 0 {
         return Some(Vec::new());
     }
     let total = count * elem_size;
-    Some(mem.read(base.wrapping_add(2), total))
+    let entries = mem.read_bounded(base.wrapping_add(2), total);
+    if entries.is_none() {
+        tracing::warn!(
+            base = format!("0x{base:04x}"),
+            count,
+            elem_size,
+            "refusing table: the count word runs past the allocated segment"
+        );
+    }
+    entries
 }
 
 impl GroupComm {
@@ -299,6 +314,34 @@ mod tests {
         assert!(gc.object(1).expect("asap1").is_writable());
         assert!(gc.object(2).expect("asap2").is_readable());
         assert_eq!(gc.object(1).expect("asap1").gas, vec![GroupAddress(0x0801)]);
+    }
+
+    #[test]
+    fn test_from_tables_refuses_a_count_word_past_the_segment() {
+        // An association table claiming 0xFFFF entries would read 262 KB past
+        // the 64-byte segment the tool allocated. The table is refused, so the
+        // device stays unlinked instead of routing on garbage.
+        let mut mem = seeded_memory();
+        mem.write(2, 0xC000, &0xFFFFu16.to_be_bytes())
+            .expect("count write");
+        let gc = GroupComm::from_tables(&mem, 0xA000, 0xC000, 0x8000);
+        assert!(gc.is_empty(), "an oversized association count is refused");
+
+        // Same for the address table: no address resolves, so no object links.
+        let mut mem = seeded_memory();
+        mem.write(1, 0xA000, &0x0100u16.to_be_bytes())
+            .expect("count write");
+        let gc = GroupComm::from_tables(&mem, 0xA000, 0xC000, 0x8000);
+        assert!(gc.is_empty(), "an oversized address count is refused");
+    }
+
+    #[test]
+    fn test_from_tables_refuses_bases_outside_every_segment() {
+        // A table base the tool never allocated is refused outright rather than
+        // read back as a zero-filled table.
+        let mem = seeded_memory();
+        let gc = GroupComm::from_tables(&mem, 0x1000, 0x2000, 0x3000);
+        assert!(gc.is_empty());
     }
 
     #[test]
