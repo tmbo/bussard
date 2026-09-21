@@ -23,8 +23,8 @@
 //! use bussard_model::{GroupAddress, IndividualAddress};
 //!
 //! # async fn run() -> bussard_transport::Result<()> {
-//! // Open a tunnel to a gateway at 192.168.1.10:3671.
-//! let gateway = "192.168.1.10:3671".parse().unwrap();
+//! // Open a tunnel to a gateway at 192.0.2.10:3671.
+//! let gateway = "192.0.2.10:3671".parse().unwrap();
 //! let config = ConnectionConfig::tunnel(gateway);
 //! let mut conn = Transport::connect(&config).await?;
 //!

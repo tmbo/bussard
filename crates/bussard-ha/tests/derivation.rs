@@ -135,10 +135,10 @@ fn cover_cluster_assembly() {
     // A jalousie channel: 1.008 up/down (W), 1.007 step/stop (W),
     // 5.001 position setpoint (W), 5.001 position status (T).
     let model = ModelBuilder::new("1.1.4", "Aktor", Some("Wohnzimmer"))
-        .group("1/2/0", "Raffstore Wohnen Auf/Ab", "1.008")
-        .group("1/2/1", "Raffstore Wohnen Schritt", "1.007")
-        .group("1/2/2", "Raffstore Wohnen Position", "5.001")
-        .group("1/2/3", "Raffstore Wohnen Position Status", "5.001")
+        .group("1/2/0", "Raffstore Living Auf/Ab", "1.008")
+        .group("1/2/1", "Raffstore Living Schritt", "1.007")
+        .group("1/2/2", "Raffstore Living Position", "5.001")
+        .group("1/2/3", "Raffstore Living Position Status", "5.001")
         .object(20, "1.008", "CWU", Some("A"), None, &["1/2/0"])
         .object(21, "1.007", "CWU", Some("A"), None, &["1/2/1"])
         .object(22, "5.001", "CWU", Some("A"), None, &["1/2/2"])
@@ -159,9 +159,9 @@ fn cover_cluster_assembly() {
 
 #[test]
 fn switch_with_status() {
-    let model = ModelBuilder::new("1.1.5", "Schaltaktor", Some("Küche"))
-        .group("0/0/1", "Licht Küche schalten", "1.001")
-        .group("0/0/2", "Licht Küche Status", "1.001")
+    let model = ModelBuilder::new("1.1.5", "Schaltaktor", Some("Kitchen"))
+        .group("0/0/1", "Licht Kitchen schalten", "1.001")
+        .group("0/0/2", "Licht Kitchen Status", "1.001")
         .object(1, "1.001", "CWU", Some("A"), None, &["0/0/1"])
         .object(2, "1.001", "CRTU", Some("A"), Some("0/0/2"), &[])
         .build();
@@ -177,7 +177,7 @@ fn switch_with_status() {
 fn dimmer_channel_becomes_light_with_brightness() {
     // 1.001 switch (W) + 1.001 status (T) + 5.001 brightness (W) + 5.001
     // brightness status (T) on one channel -> a light with brightness.
-    let model = ModelBuilder::new("1.1.8", "Dimmaktor", Some("Wohnen"))
+    let model = ModelBuilder::new("1.1.8", "Dimmaktor", Some("Living"))
         .group("1/1/0", "Licht schalten", "1.001")
         .group("1/1/1", "Licht Status", "1.001")
         .group("1/1/3", "Licht Helligkeit", "5.001")
@@ -197,7 +197,7 @@ fn dimmer_channel_becomes_light_with_brightness() {
 
 #[test]
 fn sensor_typing_by_dpt() {
-    let model = ModelBuilder::new("1.1.202", "Wetterstation", Some("Dach"))
+    let model = ModelBuilder::new("1.1.202", "Wetterstation", Some("Attic"))
         .group("4/1/0", "Temperatur", "9.001")
         .group("4/1/1", "Helligkeit", "9.004")
         .group("4/1/2", "Windgeschwindigkeit", "9.005")
@@ -306,7 +306,7 @@ fn unmapped_reporting() {
 
 #[test]
 fn determinism_two_runs_byte_equal() {
-    let model = ModelBuilder::new("1.1.5", "Aktor", Some("Küche"))
+    let model = ModelBuilder::new("1.1.5", "Aktor", Some("Kitchen"))
         .group("0/0/1", "Licht A", "1.001")
         .group("0/0/3", "Licht B", "1.001")
         .group("4/1/0", "Temp", "9.001")
@@ -387,7 +387,7 @@ fn no_duplicate_entity_for_shared_command_ga() {
 
 #[test]
 fn yaml_round_trips() {
-    let model = ModelBuilder::new("1.1.4", "Aktor", Some("Wohnen"))
+    let model = ModelBuilder::new("1.1.4", "Aktor", Some("Living"))
         .group("1/2/0", "Raffstore Auf/Ab", "1.008")
         .group("1/2/1", "Raffstore Schritt", "1.007")
         .group("4/1/0", "Temp", "9.001")
@@ -473,7 +473,7 @@ fn cover_requires_command_ga_not_a_button_sender() {
     // An actuator owns the cover channel: 1.008 up/down command (W). A separate
     // push-button *sends* 1.008 on a different GA (T-only). The button must not
     // anchor a cover of its own; only the actuator's cover is produced.
-    let mut model = ModelBuilder::new("1.1.4", "Jalousieaktor", Some("Wohnen"))
+    let mut model = ModelBuilder::new("1.1.4", "Jalousieaktor", Some("Living"))
         .group("1/2/0", "Raffstore Auf/Ab", "1.008")
         .object(20, "1.008", "CWU", Some("A"), None, &["1/2/0"])
         .build();
@@ -551,7 +551,7 @@ fn cover_wires_position_5001_and_angle_5003() {
     // A jalousie channel with a 5.001 position (command + state) AND a 5.003 slat
     // angle (command + state). Position and angle must land in their own slots,
     // never cross-mapped.
-    let model = ModelBuilder::new("1.1.4", "Aktor", Some("Wohnen"))
+    let model = ModelBuilder::new("1.1.4", "Aktor", Some("Living"))
         .group("1/2/0", "Raffstore Auf/Ab", "1.008")
         .group("1/2/2", "Raffstore Position", "5.001")
         .group("1/2/3", "Raffstore Position Status", "5.001")
@@ -676,7 +676,7 @@ fn climate_lone_temperature_does_not_anchor() {
     // A room with only a temperature GA (no mode, no shift) is NOT a climate
     // entity; it falls through to the sensor pass.
     let model = ModelBuilder::new("1.1.2", "Fühler", None)
-        .group("0/3/0", "Küche Isttemperatur", "9.001")
+        .group("0/3/0", "Kitchen Isttemperatur", "9.001")
         .object(1, "9.001", "CRT", None, Some("0/3/0"), &[])
         .build();
     assert!(only_climate(&model, &Overrides::default()).is_empty());
@@ -785,7 +785,7 @@ fn climate_determinism_multiple_rooms() {
             "Büro UG",
             "0/3/",
         ),
-        "Schlafen",
+        "Bedroom",
         "1/4/",
     )
     .build();

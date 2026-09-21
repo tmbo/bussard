@@ -598,16 +598,16 @@ mod tests {
 
     #[test]
     fn connect_response_ok() {
-        // channel 0x15, status 0x00, data HPAI 192.168.1.10:3671, CRD tunnel IA 1.1.255.
+        // channel 0x15, status 0x00, data HPAI 192.0.2.10:3671, CRD tunnel IA 1.1.255.
         let hex: &[u8] = &[
             0x15, 0x00, // channel, status
-            0x08, 0x01, 192, 168, 1, 10, 0x0E, 0x57, // data HPAI :3671
+            0x08, 0x01, 192, 0, 2, 10, 0x0E, 0x57, // data HPAI :3671
             0x04, 0x04, 0x11, 0xFF, // CRD: len 4, tunnel, IA 1.1.255
         ];
         let r = parse_connect_response(hex).unwrap();
         assert_eq!(r.channel_id, 0x15);
         assert_eq!(r.status, 0);
-        assert_eq!(r.data_endpoint, Some(ip(192, 168, 1, 10, 3671)));
+        assert_eq!(r.data_endpoint, Some(ip(192, 0, 2, 10, 3671)));
         assert_eq!(r.assigned_ia, Some(0x11FF));
     }
 
