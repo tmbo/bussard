@@ -132,14 +132,169 @@ pub struct ChannelMembership {
     pub parameter_refs: Vec<String>,
 }
 
+/// The comparison a `<when test="!=0">`-style branch makes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompareOp {
+    /// `!=`
+    Ne,
+    /// `<`
+    Lt,
+    /// `<=`
+    Le,
+    /// `>`
+    Gt,
+    /// `>=`
+    Ge,
+}
+
+impl CompareOp {
+    /// Applies the comparison to a parameter value.
+    pub fn matches(self, value: i64, against: i64) -> bool {
+        match self {
+            CompareOp::Ne => value != against,
+            CompareOp::Lt => value < against,
+            CompareOp::Le => value <= against,
+            CompareOp::Gt => value > against,
+            CompareOp::Ge => value >= against,
+        }
+    }
+}
+
+/// The condition on one `<when>` branch of a `<choose>`.
+///
+/// ETS writes four shapes, all of which occur in real product data (counted over
+/// the 495-product corpus in `tests-support/product-corpus`):
+///
+/// * `test="1"` and `test="0 2"` — one or more exact values ([`WhenTest::Values`],
+///   8.2 M and 492 k occurrences). A value may be negative (`test="-1"`).
+/// * `test="!=0"`, `test=">=2"`, `test="<3"` — a comparison
+///   ([`WhenTest::Compare`], ~130 k).
+/// * `<when default="true">` — the branch taken when no sibling matched
+///   ([`WhenTest::Default`], 97 k).
+/// * anything else, preserved verbatim ([`WhenTest::Unknown`]) rather than
+///   silently dropped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WhenTest {
+    /// One or more exact values; the branch applies when the parameter takes any
+    /// of them.
+    Values(Vec<i64>),
+    /// A comparison against a single value.
+    Compare {
+        /// The comparison operator.
+        op: CompareOp,
+        /// The right-hand side.
+        value: i64,
+    },
+    /// `<when default="true">`: applies when no other branch of the `<choose>`
+    /// matched.
+    Default,
+    /// A `test` expression bussard does not understand, kept as written so it is
+    /// visible rather than silently treated as unconditional.
+    Unknown(String),
+}
+
+impl WhenTest {
+    /// Parses a `<when>` element's `test` / `default` attributes.
+    ///
+    /// `default="true"` wins over a `test` (a branch that declares both is the
+    /// default branch). An absent `test` with no `default` is [`WhenTest::Unknown`]
+    /// with an empty expression: it matches nothing, which is safer than the old
+    /// behaviour of treating the branch's members as unconditional.
+    pub fn parse(test: Option<&str>, default: Option<&str>) -> Self {
+        if matches!(default.map(str::trim), Some("true") | Some("1")) {
+            return WhenTest::Default;
+        }
+        let raw = test.unwrap_or("").trim();
+        if raw.is_empty() {
+            return WhenTest::Unknown(String::new());
+        }
+        // A comparison is a single token; an exact set is whitespace separated.
+        for (prefix, op) in [
+            ("!=", CompareOp::Ne),
+            ("<=", CompareOp::Le),
+            (">=", CompareOp::Ge),
+            ("<", CompareOp::Lt),
+            (">", CompareOp::Gt),
+        ] {
+            if let Some(rest) = raw.strip_prefix(prefix) {
+                return match rest.trim().parse::<i64>() {
+                    Ok(value) => WhenTest::Compare { op, value },
+                    Err(_) => WhenTest::Unknown(raw.to_string()),
+                };
+            }
+        }
+        let mut values = Vec::new();
+        for token in raw.split_whitespace() {
+            match token.parse::<i64>() {
+                Ok(v) => values.push(v),
+                Err(_) => return WhenTest::Unknown(raw.to_string()),
+            }
+        }
+        WhenTest::Values(values)
+    }
+
+    /// Whether this branch applies to a parameter value.
+    ///
+    /// [`WhenTest::Default`] and [`WhenTest::Unknown`] never match directly; the
+    /// default branch is chosen by [`ConditionalGroup::members_for`] when nothing
+    /// else matched.
+    pub fn matches(&self, value: i64) -> bool {
+        match self {
+            WhenTest::Values(vs) => vs.contains(&value),
+            WhenTest::Compare { op, value: against } => op.matches(value, *against),
+            WhenTest::Default | WhenTest::Unknown(_) => false,
+        }
+    }
+}
+
+/// One `<when>` branch of a `<choose>`: its condition and the com-object-ref ids
+/// it contributes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WhenBranch {
+    /// The branch condition.
+    pub test: WhenTest,
+    /// The com-object-ref ids collected directly inside this branch.
+    pub members: Vec<String>,
+}
+
 /// One `<choose>/<when>` conditional group inside a [`ChannelMembership`].
 #[derive(Debug, Clone, Default)]
 pub struct ConditionalGroup {
     /// The `ParameterRef` id (`ParamRefId`) whose value selects a `when` branch.
     pub param_ref_id: String,
-    /// Each `(when-value, com-object-ref ids)` branch. The branch whose value
-    /// equals the parameter's effective value contributes its members.
+    /// The exact-value branches, as `(when-value, com-object-ref ids)` pairs: the
+    /// branch whose value equals the parameter's effective value contributes its
+    /// members. A `test="0 2"` contributes one pair per listed value.
+    ///
+    /// This is the flattened view of the exact-match subset of [`Self::branches_all`],
+    /// kept because it is what the flash path selects on. Prefer
+    /// [`Self::members_for`], which also honours comparison and `default`
+    /// branches.
     pub branches: Vec<(i64, Vec<String>)>,
+    /// Every branch in document order with its full condition — comparisons and
+    /// the `default` branch included.
+    pub branches_all: Vec<WhenBranch>,
+}
+
+impl ConditionalGroup {
+    /// The com-object-ref ids this group contributes when its parameter takes
+    /// `value`.
+    ///
+    /// ETS semantics: the first `<when>` whose test matches wins; if none
+    /// matches, the `<when default>` branch (if any) does.
+    pub fn members_for(&self, value: i64) -> &[String] {
+        if let Some(b) = self.branches_all.iter().find(|b| b.test.matches(value)) {
+            return &b.members;
+        }
+        match self
+            .branches_all
+            .iter()
+            .find(|b| b.test == WhenTest::Default)
+        {
+            Some(b) => &b.members,
+            None => &[],
+        }
+    }
 }
 
 /// A resolved com-object: a ref merged onto its base.
@@ -790,22 +945,9 @@ pub fn parse_application_program(id: &str, xml: &[u8]) -> Result<ApplicationProg
     // en-US translations, applied after the main pass.
     let mut translations = TranslationCollector::new();
 
-    // The parameter-type currently being built (a <ParameterType> wraps one
-    // shape element, sometimes with child <Enumeration>s).
-    let mut cur_pt_id: Option<String> = None;
-    let mut cur_pt_name: Option<String> = None;
-    let mut cur_pt_kind: Option<ParameterType> = None;
-
-    // The load procedure currently being built.
-    let mut cur_lp: Option<LoadProcedure> = None;
-
-    // The parameter whose <Memory> child we are waiting for.
-    let mut cur_param_id: Option<String> = None;
-
-    // The `<Union>` currently being built. Its single `<Memory>` child gives the
-    // shared base location; member `<Parameter>`s that follow carry union-relative
-    // `Offset`/`BitOffset` attributes.
-    let mut cur_union: Option<Union> = None;
+    // Everything the element handlers accumulate across events (see
+    // [`ParseState`]).
+    let mut state = ParseState::default();
 
     // Streaming capture of a code segment's inline binary. When we enter a
     // `<RelativeSegment>`/`<AbsoluteSegment>` with children we record its id;
@@ -813,9 +955,6 @@ pub fn parse_application_program(id: &str, xml: &[u8]) -> Result<ApplicationProg
     let mut cur_segment_id: Option<String> = None;
     let mut seg_capture: Option<SegField> = None;
     let mut seg_buf = String::new();
-
-    // Dynamic-section module-instance / channel-membership accumulation state.
-    let mut dyn_state = DynamicState::default();
 
     // A single attribute buffer, reused for every element. Its heap allocations
     // (the pair list and each key/value buffer) are recycled across the whole
@@ -853,13 +992,7 @@ pub fn parse_application_program(id: &str, xml: &[u8]) -> Result<ApplicationProg
                     &mut app,
                     &mut translations,
                     &mut attrs,
-                    &mut cur_pt_id,
-                    &mut cur_pt_name,
-                    &mut cur_pt_kind,
-                    &mut cur_lp,
-                    &mut cur_param_id,
-                    &mut cur_union,
-                    &mut dyn_state,
+                    &mut state,
                 )?;
             }
             Event::Text(t) if seg_capture.is_some() => {
@@ -875,11 +1008,7 @@ pub fn parse_application_program(id: &str, xml: &[u8]) -> Result<ApplicationProg
                     &mut app,
                     &mut translations,
                     &mut attrs,
-                    &mut cur_pt_kind,
-                    &mut cur_lp,
-                    &cur_param_id,
-                    &mut cur_union,
-                    &mut dyn_state,
+                    &mut state,
                 )?;
             }
             Event::End(e) => match e.local_name().as_ref() {
@@ -900,63 +1029,74 @@ pub fn parse_application_program(id: &str, xml: &[u8]) -> Result<ApplicationProg
                 b"RelativeSegment" | b"AbsoluteSegment" => cur_segment_id = None,
                 b"Language" => translations.exit_language(),
                 b"TranslationElement" => translations.exit_element(),
-                b"Parameter" => cur_param_id = None,
+                b"Parameter" => state.param_id = None,
                 b"Union" => {
                     // Close a union: record its base location and members.
-                    if let Some(union) = cur_union.take() {
+                    if let Some(union) = state.union.take() {
                         app.unions.push(union);
                     }
                 }
                 b"ParameterType" => {
-                    if let (Some(pt_id), kind) = (cur_pt_id.take(), cur_pt_kind.take()) {
+                    if let (Some(pt_id), kind) = (state.pt_id.take(), state.pt_kind.take()) {
                         app.parameter_types.insert(
                             pt_id.clone(),
                             ParameterTypeDecl {
                                 id: pt_id,
-                                name: cur_pt_name.take(),
+                                name: state.pt_name.take(),
                                 kind: kind.unwrap_or(ParameterType::None),
                             },
                         );
                     }
-                    cur_pt_name = None;
+                    state.pt_name = None;
                 }
                 b"LoadProcedure" => {
-                    if let Some(lp) = cur_lp.take() {
+                    if let Some(lp) = state.lp.take() {
                         app.load_procedures.push(lp);
                     }
                 }
                 b"when" => {
-                    // Close the current `<when>` branch: attach its collected
-                    // com-object-ref ids to the open `<choose>` group.
-                    if let (Some(value), Some(choose)) =
-                        (dyn_state.cur_when.take(), dyn_state.cur_choose.as_mut())
-                    {
-                        let refs = std::mem::take(&mut dyn_state.cur_when_refs);
-                        choose.branches.push((value, refs));
+                    // Close the innermost `<when>`: attach its collected
+                    // com-object-ref ids to its own `<choose>` frame.
+                    if let Some(frame) = state.dynamic.choose_stack.last_mut() {
+                        if let Some(branch) = frame.when.take() {
+                            // Keep the flattened exact-value view in step: one
+                            // entry per listed value (`test="0 2"` yields two).
+                            if let WhenTest::Values(values) = &branch.test {
+                                for v in values {
+                                    frame.group.branches.push((*v, branch.members.clone()));
+                                }
+                            }
+                            frame.group.branches_all.push(branch);
+                        }
                     }
                 }
                 b"choose" => {
-                    // Close the current `<choose>`: attach it to the membership.
-                    if let (Some(choose), Some(mem)) = (
-                        dyn_state.cur_choose.take(),
-                        dyn_state.cur_membership.as_mut(),
-                    ) {
-                        mem.conditional.push(choose);
+                    // Pop the innermost `<choose>` and attach it to the
+                    // membership. A nested group is attached in its own right:
+                    // the flat membership cannot express "inner branch AND outer
+                    // branch", but each group keeps its own members.
+                    if let Some(frame) = state.dynamic.choose_stack.pop() {
+                        if let Some(mem) = state.dynamic.cur_membership.as_mut() {
+                            mem.conditional.push(frame.group);
+                        }
                     }
                 }
                 b"ParameterBlock" => {
                     // Close the channel parameter block: capture its membership
                     // once (a module template has a single channel/block).
-                    if let Some(mem) = dyn_state.cur_membership.take() {
-                        if !dyn_state.membership_captured {
+                    if let Some(mem) = state.dynamic.cur_membership.take() {
+                        if !state.dynamic.membership_captured {
                             app.channel_membership = Some(mem);
-                            dyn_state.membership_captured = true;
+                            state.dynamic.membership_captured = true;
                         }
                     }
+                    // A `<choose>` left open by malformed XML must not leak into
+                    // the next block's frames.
+                    state.dynamic.choose_stack.clear();
                 }
                 b"Module" => {
                     // Close a module instance: record its accumulated arg values.
-                    if let Some(module) = dyn_state.cur_module.take() {
+                    if let Some(module) = state.dynamic.cur_module.take() {
                         app.module_instances.push(module);
                     }
                 }
@@ -978,20 +1118,13 @@ pub fn parse_application_program_str(id: &str, xml: &str) -> Result<ApplicationP
 }
 
 /// Handles a `Start` event (elements that have children).
-#[allow(clippy::too_many_arguments)]
 fn handle_start(
     e: &BytesStart,
     context: &str,
     app: &mut ApplicationProgram,
     translations: &mut TranslationCollector,
     attrs: &mut Attrs,
-    cur_pt_id: &mut Option<String>,
-    cur_pt_name: &mut Option<String>,
-    cur_pt_kind: &mut Option<ParameterType>,
-    cur_lp: &mut Option<LoadProcedure>,
-    cur_param_id: &mut Option<String>,
-    cur_union: &mut Option<Union>,
-    dyn_state: &mut DynamicState,
+    state: &mut ParseState,
 ) -> Result<()> {
     attrs.parse_into(e, context)?;
     let m = &*attrs;
@@ -1028,42 +1161,42 @@ fn handle_start(
         b"Channel" => insert_channel(app, m),
         b"Argument" => insert_argument(app, m),
         b"ParameterType" => {
-            *cur_pt_id = get(m, b"Id").map(str::to_string);
-            *cur_pt_name = get(m, b"Name").map(str::to_string);
-            *cur_pt_kind = None;
+            state.pt_id = get(m, b"Id").map(str::to_string);
+            state.pt_name = get(m, b"Name").map(str::to_string);
+            state.pt_kind = None;
         }
         b"TypeRestriction" => {
-            *cur_pt_kind = Some(ParameterType::Enum {
+            state.pt_kind = Some(ParameterType::Enum {
                 size_bits: get(m, b"SizeInBit").and_then(|s| s.parse().ok()),
                 values: Vec::new(),
             });
         }
         b"Parameter" => {
-            *cur_param_id = insert_parameter_start(app, m);
+            state.param_id = insert_parameter_start(app, m);
             // A `<Parameter>` directly inside a `<Union>` is a member: record its
             // union-relative Offset/BitOffset and default flag.
-            if let (Some(union), Some(pid)) = (cur_union.as_mut(), cur_param_id.as_ref()) {
+            if let (Some(union), Some(pid)) = (state.union.as_mut(), state.param_id.as_ref()) {
                 union.members.push(union_member(pid, m));
             }
         }
         b"Union" => {
             // Begin a `<Union SizeInBit=..>`; its `<Memory>` child and member
             // `<Parameter>`s follow.
-            *cur_union = Some(Union {
+            state.union = Some(Union {
                 size_bits: get(m, b"SizeInBit").and_then(|s| s.parse().ok()),
                 memory: None,
                 members: Vec::new(),
             });
         }
         b"LoadProcedure" => {
-            *cur_lp = Some(LoadProcedure {
+            state.lp = Some(LoadProcedure {
                 merge_id: get(m, b"MergeId").map(str::to_string),
                 ops: Vec::new(),
             });
         }
         b"Module" => {
             // Begin accumulating a `<Module>` instance's argument values.
-            dyn_state.cur_module = Some(ModuleInstance {
+            state.dynamic.cur_module = Some(ModuleInstance {
                 module_def: get(m, b"RefId")
                     .and_then(|id| app_relative_id(id, &app.id))
                     .map(str::to_string)
@@ -1075,33 +1208,40 @@ fn handle_start(
             // Begin accumulating a channel parameter block's membership (only the
             // first is retained). A block inside `<Module>`/`<Channel>` describes
             // per-channel com-object membership.
-            if !dyn_state.membership_captured {
-                dyn_state.cur_membership = Some(ChannelMembership::default());
+            if !state.dynamic.membership_captured {
+                state.dynamic.cur_membership = Some(ChannelMembership::default());
             }
         }
         b"choose" => {
-            // Begin a `<choose ParamRefId=…>` conditional group.
-            if dyn_state.cur_membership.is_some() {
-                dyn_state.cur_choose = Some(ConditionalGroup {
-                    param_ref_id: get(m, b"ParamRefId")
-                        .and_then(|id| app_relative_id(id, &app.id))
-                        .map(str::to_string)
-                        .unwrap_or_default(),
-                    branches: Vec::new(),
+            // Push a `<choose ParamRefId=…>` conditional group. Nested chooses
+            // stack rather than replacing the enclosing one.
+            if state.dynamic.cur_membership.is_some() {
+                state.dynamic.choose_stack.push(ChooseFrame {
+                    group: ConditionalGroup {
+                        param_ref_id: get(m, b"ParamRefId")
+                            .and_then(|id| app_relative_id(id, &app.id))
+                            .map(str::to_string)
+                            .unwrap_or_default(),
+                        branches: Vec::new(),
+                        branches_all: Vec::new(),
+                    },
+                    when: None,
                 });
             }
         }
         b"when" => {
-            // Begin a `<when test=…>` branch; its `<ComObjectRefRef>`s collect
-            // into `cur_when_refs` until the branch closes.
-            if dyn_state.cur_choose.is_some() {
-                dyn_state.cur_when = get(m, b"test").and_then(|s| s.parse::<i64>().ok());
-                dyn_state.cur_when_refs.clear();
+            // Open a `<when>` branch on the innermost `<choose>`; its
+            // `<ComObjectRefRef>`s collect into this frame until it closes.
+            if let Some(frame) = state.dynamic.choose_stack.last_mut() {
+                frame.when = Some(WhenBranch {
+                    test: WhenTest::parse(get(m, b"test"), get(m, b"default")),
+                    members: Vec::new(),
+                });
             }
         }
         // A control op with children (e.g. LdCtrlCompareProp wrapping data).
         name if name.starts_with(b"LdCtrl") => {
-            push_load_op(cur_lp, e, m);
+            push_load_op(&mut state.lp, e, m);
         }
         _ => {}
     }
@@ -1114,18 +1254,13 @@ fn handle_start(
 }
 
 /// Handles an `Empty` (self-closing) event.
-#[allow(clippy::too_many_arguments)]
 fn handle_empty(
     e: &BytesStart,
     context: &str,
     app: &mut ApplicationProgram,
     translations: &mut TranslationCollector,
     attrs: &mut Attrs,
-    cur_pt_kind: &mut Option<ParameterType>,
-    cur_lp: &mut Option<LoadProcedure>,
-    cur_param_id: &Option<String>,
-    cur_union: &mut Option<Union>,
-    dyn_state: &mut DynamicState,
+    state: &mut ParseState,
 ) -> Result<()> {
     attrs.parse_into(e, context)?;
     let m = &*attrs;
@@ -1136,7 +1271,7 @@ fn handle_empty(
         b"Argument" => insert_argument(app, m),
         b"NumericArg" => {
             // A `<NumericArg RefId=arg-id Value=n>` of the current `<Module>`.
-            if let Some(module) = dyn_state.cur_module.as_mut() {
+            if let Some(module) = state.dynamic.cur_module.as_mut() {
                 if let (Some(arg_id), Some(value)) = (
                     get(m, b"RefId").and_then(|id| app_relative_id(id, &app.id)),
                     get(m, b"Value").and_then(|s| s.parse::<i64>().ok()),
@@ -1149,17 +1284,21 @@ fn handle_empty(
             // A channel's com-object membership entry. Inside a `<when>` it joins
             // that branch; directly under the parameter block it is unconditional.
             if let Some(ref_id) = get(m, b"RefId").and_then(|id| app_relative_id(id, &app.id)) {
-                if dyn_state.cur_when.is_some() {
-                    dyn_state.cur_when_refs.push(ref_id.to_string());
-                } else if let Some(mem) = dyn_state.cur_membership.as_mut() {
-                    mem.unconditional.push(ref_id.to_string());
+                let ref_id = ref_id.to_string();
+                match state.dynamic.open_when() {
+                    Some(branch) => branch.members.push(ref_id),
+                    None => {
+                        if let Some(mem) = state.dynamic.cur_membership.as_mut() {
+                            mem.unconditional.push(ref_id);
+                        }
+                    }
                 }
             }
         }
         b"ParameterRefRef" => {
             // A channel's referenced parameter (drives which module params ETS
             // writes for the channel).
-            if let Some(mem) = dyn_state.cur_membership.as_mut() {
+            if let Some(mem) = state.dynamic.cur_membership.as_mut() {
                 if let Some(ref_id) = get(m, b"RefId").and_then(|id| app_relative_id(id, &app.id)) {
                     mem.parameter_refs.push(ref_id.to_string());
                 }
@@ -1169,7 +1308,7 @@ fn handle_empty(
             // A parameter with no <Memory> child.
             let pid = insert_parameter_start(app, m);
             // A self-closing member `<Parameter>` inside a `<Union>`.
-            if let (Some(union), Some(pid)) = (cur_union.as_mut(), pid.as_ref()) {
+            if let (Some(union), Some(pid)) = (state.union.as_mut(), pid.as_ref()) {
                 union.members.push(union_member(pid, m));
             }
         }
@@ -1178,7 +1317,7 @@ fn handle_empty(
             // A union's single `<Memory>` child sets its base location; it always
             // precedes the member `<Parameter>`s, so route it there while the
             // union has no base yet. Otherwise it belongs to the open parameter.
-            match cur_union.as_mut() {
+            match state.union.as_mut() {
                 Some(union) if union.memory.is_none() => {
                     union.memory = Some(Memory {
                         code_segment: get(m, b"CodeSegment").map(str::to_string),
@@ -1187,14 +1326,14 @@ fn handle_empty(
                         base_offset: get(m, b"BaseOffset").map(str::to_string),
                     });
                 }
-                _ => attach_memory(app, cur_param_id, m),
+                _ => attach_memory(app, &state.param_id, m),
             }
         }
         b"TranslationElement" => translations.enter_element(get(m, b"RefId")),
         b"Translation" => translations.record(m, &["Name", "Text"]),
         // Parameter-type shapes (all self-closing except TypeRestriction).
         b"TypeNumber" => {
-            *cur_pt_kind = Some(ParameterType::Int {
+            state.pt_kind = Some(ParameterType::Int {
                 size_bits: get(m, b"SizeInBit").and_then(|s| s.parse().ok()),
                 min: get(m, b"minInclusive").and_then(|s| s.parse().ok()),
                 max: get(m, b"maxInclusive").and_then(|s| s.parse().ok()),
@@ -1202,20 +1341,20 @@ fn handle_empty(
             });
         }
         b"TypeText" => {
-            *cur_pt_kind = Some(ParameterType::Text {
+            state.pt_kind = Some(ParameterType::Text {
                 size_bits: get(m, b"SizeInBit").and_then(|s| s.parse().ok()),
             });
         }
         b"TypeFloat" => {
-            *cur_pt_kind = Some(ParameterType::Float {
+            state.pt_kind = Some(ParameterType::Float {
                 encoding: get(m, b"Encoding").map(str::to_string),
                 min: get(m, b"minInclusive").and_then(|s| s.parse().ok()),
                 max: get(m, b"maxInclusive").and_then(|s| s.parse().ok()),
             });
         }
-        b"TypeNone" => *cur_pt_kind = Some(ParameterType::None),
+        b"TypeNone" => state.pt_kind = Some(ParameterType::None),
         b"Enumeration" => {
-            if let Some(ParameterType::Enum { values, .. }) = cur_pt_kind.as_mut() {
+            if let Some(ParameterType::Enum { values, .. }) = state.pt_kind.as_mut() {
                 if let (Some(value), Some(text)) = (
                     get(m, b"Value").and_then(|s| s.parse::<i64>().ok()),
                     get(m, b"Text"),
@@ -1232,13 +1371,13 @@ fn handle_empty(
         name if name.starts_with(b"Type") => {
             // Other type shapes (TypeColor, TypeTime, TypePicture, TypeIPAddress…).
             let kind = String::from_utf8_lossy(name).into_owned();
-            *cur_pt_kind = Some(ParameterType::Other {
+            state.pt_kind = Some(ParameterType::Other {
                 kind,
                 size_bits: get(m, b"SizeInBit").and_then(|s| s.parse().ok()),
             });
         }
         name if name.starts_with(b"LdCtrl") => {
-            push_load_op(cur_lp, e, m);
+            push_load_op(&mut state.lp, e, m);
         }
         _ => {}
     }
@@ -1429,6 +1568,37 @@ fn insert_segment(app: &mut ApplicationProgram, m: &Attrs, kind: SegmentKind) {
     );
 }
 
+/// Everything the streaming element handlers accumulate between events.
+///
+/// The parser is a flat `quick-xml` event loop, so an element that is only
+/// complete once its children have been seen (a `<ParameterType>` and its shape,
+/// a `<LoadProcedure>` and its ops, a `<Parameter>` and its `<Memory>`, a
+/// `<Union>` and its members, the Dynamic section's modules and channel
+/// membership) parks its half-built value here. Grouping them in one struct is
+/// what keeps `handle_start`/`handle_empty` down to six parameters instead of
+/// twelve — they used to carry an unjustified
+/// `#[allow(clippy::too_many_arguments)]` each.
+#[derive(Debug, Default)]
+struct ParseState {
+    /// The `Id` of the `<ParameterType>` currently being built (the element
+    /// wraps one shape element, sometimes with child `<Enumeration>`s).
+    pt_id: Option<String>,
+    /// That parameter type's `Name`.
+    pt_name: Option<String>,
+    /// That parameter type's shape, once its child element has been seen.
+    pt_kind: Option<ParameterType>,
+    /// The `<LoadProcedure>` currently being built.
+    lp: Option<LoadProcedure>,
+    /// The `<Parameter>` whose `<Memory>` child we are waiting for.
+    param_id: Option<String>,
+    /// The `<Union>` currently being built. Its single `<Memory>` child gives the
+    /// shared base location; member `<Parameter>`s that follow carry
+    /// union-relative `Offset`/`BitOffset` attributes.
+    union: Option<Union>,
+    /// Dynamic-section module-instance / channel-membership accumulation.
+    dynamic: DynamicState,
+}
+
 /// Mutable state for parsing the Dynamic section's module instances and channel
 /// membership across streaming events.
 ///
@@ -1443,16 +1613,33 @@ struct DynamicState {
     cur_module: Option<ModuleInstance>,
     /// The channel `<ParameterBlock>` membership being accumulated, if inside one.
     cur_membership: Option<ChannelMembership>,
-    /// The `<choose>` group being accumulated, if inside one.
-    cur_choose: Option<ConditionalGroup>,
-    /// The `<when test=…>` value whose `<ComObjectRefRef>`s we are collecting,
-    /// if inside a `<when>` branch.
-    cur_when: Option<i64>,
-    /// The com-object-ref ids collected for the current `<when>` branch.
-    cur_when_refs: Vec<String>,
+    /// The open `<choose>` elements, outermost first.
+    ///
+    /// A `<choose>` nested inside a `<when>` is ubiquitous in real Dynamic
+    /// sections. With a single slot the inner group overwrote the outer one, the
+    /// inner `</when>` took the outer branch's collected refs, and the outer
+    /// `</choose>` then found nothing to attach — silently mis-attributing
+    /// conditional com-objects. A stack keeps each frame's refs its own.
+    choose_stack: Vec<ChooseFrame>,
     /// Whether the application already captured a channel membership (only the
     /// first module channel is captured — a module template has one channel).
     membership_captured: bool,
+}
+
+/// One open `<choose>` element and, while inside one, its open `<when>` branch.
+#[derive(Debug)]
+struct ChooseFrame {
+    /// The group being accumulated.
+    group: ConditionalGroup,
+    /// The `<when>` branch currently open inside this `<choose>`, if any.
+    when: Option<WhenBranch>,
+}
+
+impl DynamicState {
+    /// The innermost open `<when>` branch, if the parser is inside one.
+    fn open_when(&mut self) -> Option<&mut WhenBranch> {
+        self.choose_stack.last_mut()?.when.as_mut()
+    }
 }
 
 /// Which inline binary child of a code segment is currently being buffered.
@@ -2263,6 +2450,177 @@ mod tests {
         );
         assert_eq!(app.argument_id("ArgBeschriftung"), Some("MD-1_A-3"));
         assert_eq!(app.argument_id("ArgBeschriftungRelais"), Some("MD-1_A-5"));
+    }
+
+    /// A Dynamic section shaped like real product data: a channel parameter
+    /// block with an unconditional com-object, a `<choose>` whose branches use
+    /// every `test` spelling ETS emits (single value, space-separated list,
+    /// negative, comparison, `default`), and a **nested** `<choose>` inside one
+    /// of those branches.
+    const NESTED_CHOOSE_SAMPLE: &str = r#"<?xml version="1.0"?>
+<KNX xmlns="http://knx.org/xml/project/23">
+  <ApplicationProgram Id="M-1_A-1" MaskVersion="MV-07B0" Name="x">
+    <Dynamic>
+      <ParameterBlock>
+        <ComObjectRefRef RefId="M-1_A-1_MD-1_O-0_R-0" />
+        <choose ParamRefId="M-1_A-1_MD-1_P-1_R-1">
+          <when test="1">
+            <ComObjectRefRef RefId="M-1_A-1_MD-1_O-1_R-1" />
+            <choose ParamRefId="M-1_A-1_MD-1_P-2_R-2">
+              <when test="7">
+                <ComObjectRefRef RefId="M-1_A-1_MD-1_O-7_R-7" />
+              </when>
+              <when default="true">
+                <ComObjectRefRef RefId="M-1_A-1_MD-1_O-8_R-8" />
+              </when>
+            </choose>
+            <ComObjectRefRef RefId="M-1_A-1_MD-1_O-9_R-9" />
+          </when>
+          <when test="0 2">
+            <ComObjectRefRef RefId="M-1_A-1_MD-1_O-2_R-2" />
+          </when>
+          <when test="-1">
+            <ComObjectRefRef RefId="M-1_A-1_MD-1_O-3_R-3" />
+          </when>
+          <when test="!=0">
+            <ComObjectRefRef RefId="M-1_A-1_MD-1_O-4_R-4" />
+          </when>
+          <when default="true">
+            <ComObjectRefRef RefId="M-1_A-1_MD-1_O-5_R-5" />
+          </when>
+        </choose>
+      </ParameterBlock>
+    </Dynamic>
+  </ApplicationProgram>
+</KNX>"#;
+
+    /// Regression: `<choose>`/`<when>` were tracked in single slots, so a nested
+    /// `<choose>` (ubiquitous in real Dynamic sections) overwrote the enclosing
+    /// one — the inner `</when>` took the outer branch's collected refs and the
+    /// outer `</choose>` found nothing to attach. Each frame now keeps its own
+    /// refs.
+    #[test]
+    fn test_parse_application_program_nested_choose_keeps_frames_apart() -> Result<()> {
+        let app = parse_application_program_str("M-1_A-1", NESTED_CHOOSE_SAMPLE)?;
+        let mem = app.channel_membership.as_ref().expect("channel membership");
+
+        // Only the ref written directly under the block is unconditional; no
+        // branch member leaks up.
+        assert_eq!(mem.unconditional, vec!["MD-1_O-0_R-0".to_string()]);
+
+        // Two groups: the inner one closes first, then the outer.
+        assert_eq!(mem.conditional.len(), 2);
+        let inner = &mem.conditional[0];
+        let outer = &mem.conditional[1];
+        assert_eq!(inner.param_ref_id, "MD-1_P-2_R-2");
+        assert_eq!(outer.param_ref_id, "MD-1_P-1_R-1");
+
+        // The inner group keeps its own members...
+        assert_eq!(inner.members_for(7), ["MD-1_O-7_R-7".to_string()]);
+        // ...and its `<when default>` covers every other value.
+        assert_eq!(inner.members_for(3), ["MD-1_O-8_R-8".to_string()]);
+
+        // ...while the outer branch keeps the refs written around the nested
+        // `<choose>`, and nothing of the inner one.
+        let outer_branch_1 = outer
+            .branches_all
+            .iter()
+            .find(|b| b.test == WhenTest::Values(vec![1]))
+            .expect("the test=\"1\" branch");
+        assert_eq!(
+            outer_branch_1.members,
+            vec!["MD-1_O-1_R-1".to_string(), "MD-1_O-9_R-9".to_string()]
+        );
+        Ok(())
+    }
+
+    /// Every `test` spelling ETS writes: a single value, a space-separated list,
+    /// a negative value, a comparison and `default`. A list used to fail
+    /// `parse::<i64>()` and route its members to `unconditional` — "present on
+    /// every channel" — which is the opposite of conditional.
+    #[test]
+    fn test_parse_application_program_when_test_spellings() -> Result<()> {
+        let app = parse_application_program_str("M-1_A-1", NESTED_CHOOSE_SAMPLE)?;
+        let mem = app.channel_membership.as_ref().expect("channel membership");
+        let outer = &mem.conditional[1];
+
+        // The flattened exact-value view: `test="0 2"` contributes both values.
+        let exact: Vec<i64> = outer.branches.iter().map(|(v, _)| *v).collect();
+        assert_eq!(exact, vec![1, 0, 2, -1]);
+
+        // Selection honours every spelling.
+        assert_eq!(
+            outer.members_for(1),
+            ["MD-1_O-1_R-1".to_string(), "MD-1_O-9_R-9".to_string()]
+        );
+        assert_eq!(outer.members_for(2), ["MD-1_O-2_R-2".to_string()]);
+        assert_eq!(outer.members_for(-1), ["MD-1_O-3_R-3".to_string()]);
+        // 0 matches the `test="0 2"` branch before the `!=0` one.
+        assert_eq!(outer.members_for(0), ["MD-1_O-2_R-2".to_string()]);
+        // 5 matches nothing exact, so the first comparison branch that matches
+        // wins (`!=0`).
+        assert_eq!(outer.members_for(5), ["MD-1_O-4_R-4".to_string()]);
+        // And the `<when default>` is the fallback when nothing matched at all.
+        let fallback = ConditionalGroup {
+            param_ref_id: "p".to_string(),
+            branches: Vec::new(),
+            branches_all: vec![
+                WhenBranch {
+                    test: WhenTest::Values(vec![1]),
+                    members: vec!["a".to_string()],
+                },
+                WhenBranch {
+                    test: WhenTest::Default,
+                    members: vec!["b".to_string()],
+                },
+            ],
+        };
+        assert_eq!(fallback.members_for(9), ["b".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_when_test_parse_grammar() {
+        assert_eq!(WhenTest::parse(Some("1"), None), WhenTest::Values(vec![1]));
+        assert_eq!(
+            WhenTest::parse(Some(" 0 2 "), None),
+            WhenTest::Values(vec![0, 2])
+        );
+        assert_eq!(
+            WhenTest::parse(Some("-1"), None),
+            WhenTest::Values(vec![-1])
+        );
+        assert_eq!(
+            WhenTest::parse(Some("!=0"), None),
+            WhenTest::Compare {
+                op: CompareOp::Ne,
+                value: 0
+            }
+        );
+        assert_eq!(
+            WhenTest::parse(Some(">=2"), None),
+            WhenTest::Compare {
+                op: CompareOp::Ge,
+                value: 2
+            }
+        );
+        assert_eq!(
+            WhenTest::parse(Some("<3"), None),
+            WhenTest::Compare {
+                op: CompareOp::Lt,
+                value: 3
+            }
+        );
+        // `default="true"` wins over a test; `default="false"` does not.
+        assert_eq!(WhenTest::parse(Some("1"), Some("true")), WhenTest::Default);
+        assert_eq!(
+            WhenTest::parse(Some("1"), Some("false")),
+            WhenTest::Values(vec![1])
+        );
+        // Anything else is preserved, and matches nothing.
+        let unknown = WhenTest::parse(Some("$Arg > 2"), None);
+        assert_eq!(unknown, WhenTest::Unknown("$Arg > 2".to_string()));
+        assert!(!unknown.matches(3));
     }
 
     #[test]
