@@ -43,11 +43,19 @@ pub fn run(
     dir: &Path,
     yes: bool,
     allow_remote_gateway: bool,
+    tool_key_source: crate::secure_key::ToolKeySource<'_>,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
     let target: IndividualAddress = address
         .parse()
         .with_context(|| format!("parsing device address {address:?}"))?;
+    // KNX Data Secure (issue #71, spec §6.2): every management APDU below —
+    // the read pre-pass and the table writes — rides A_SecureData when the device
+    // is security-activated and a tool key is given. One high-water mark for the
+    // whole command keeps the send sequence monotonic across both connections
+    // (spec §5.9).
+    let tool_key = crate::secure_key::resolve(target, tool_key_source)?;
+    let secure_seq = bussard_secure::SequenceHighWater::new();
 
     // A parse error is a hard failure here (surfaced with the file detail); an
     // absent model still bails, since `apply` needs links.yaml.
@@ -69,6 +77,8 @@ pub fn run(
     let runtime = tokio::runtime::Runtime::new()?;
     let read = {
         let config = config.clone();
+        let read_key = tool_key.clone();
+        let read_seq = secure_seq.clone();
         runtime.block_on(async move {
             let (handle, _task) = Bus::connect(config);
         if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
@@ -77,7 +87,16 @@ pub fn run(
             let source = ops::group_source(&handle);
             let lease = handle.lease().await.context("leasing the bus")?;
             let channel = LeaseChannel::new(lease);
-            let result = match Layer4Connection::connect(channel, target, source).await {
+            let secure = crate::secure_key::layer(&read_key, &read_seq);
+            let result = match Layer4Connection::connect_with_secure(
+                channel,
+                target,
+                source,
+                bussard_mgmt::Timeouts::default(),
+                secure,
+            )
+            .await
+            {
                 Ok(mut l4) => {
                     // Authorize (free access) before reading, as ETS does (issue
                     // #52 finding #1). Best-effort on this read-only pre-pass.
@@ -150,7 +169,7 @@ pub fn run(
         let source = ops::group_source(&handle);
         let lease = handle.lease().await.context("leasing the bus")?;
         let channel = LeaseChannel::new(lease);
-        let result = execute(channel, target, source, &desired).await;
+        let result = execute(channel, target, source, &desired, &tool_key, &secure_seq).await;
         let _ = handle.close().await;
         anyhow::Ok(result)
     })?;
@@ -185,10 +204,19 @@ async fn execute(
     target: IndividualAddress,
     source: IndividualAddress,
     desired: &DesiredTables,
+    tool_key: &Option<bussard_secure::Key16>,
+    secure_seq: &bussard_secure::SequenceHighWater,
 ) -> Result<VerifyOutcome, bussard_mgmt::load::WriteError> {
-    let mut l4 = Layer4Connection::connect(channel, target, source)
-        .await
-        .map_err(bussard_mgmt::load::WriteError::Mgmt)?;
+    let secure = crate::secure_key::layer(tool_key, secure_seq);
+    let mut l4 = Layer4Connection::connect_with_secure(
+        channel,
+        target,
+        source,
+        bussard_mgmt::Timeouts::default(),
+        secure,
+    )
+    .await
+    .map_err(bussard_mgmt::load::WriteError::Mgmt)?;
     // Authorize the write session with the free-access key before any table
     // write, exactly as ETS does (issue #52 finding #1). This is the mutating
     // path, so fail loudly on an explicit access-denied (a keyed device needs its
