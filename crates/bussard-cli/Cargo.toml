@@ -15,16 +15,16 @@ path = "src/main.rs"
 [dependencies]
 bussard-model = { workspace = true }
 bussard-project = { workspace = true }
-bussard-prod = { path = "../bussard-prod" }
+bussard-prod = { workspace = true }
 bussard-transport = { workspace = true }
 bussard-monitor = { workspace = true }
 bussard-bus = { workspace = true }
 bussard-mcp = { workspace = true }
-bussard-mgmt = { path = "../bussard-mgmt" }
-bussard-download = { path = "../bussard-download" }
+bussard-mgmt = { workspace = true }
+bussard-download = { workspace = true }
 # KNX Secure (issue #71): the Data Secure tool key / session for the flash seam.
 bussard-secure = { workspace = true }
-bussard-ha = { path = "../bussard-ha" }
+bussard-ha = { workspace = true }
 bussard-viz = { workspace = true }
 # axum: drives the `bussard viz` HTTP server (serve + graceful shutdown). MIT.
 axum = { workspace = true }
