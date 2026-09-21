@@ -24,6 +24,9 @@
 //! known (< 11) or an unparseable namespace yields a clear diagnostic naming
 //! what was found.
 
+use quick_xml::Reader;
+use quick_xml::events::Event;
+
 use crate::error::ImportError;
 
 /// The lowest schema version bussard recognises (ETS 4.1/4.2).
@@ -150,42 +153,109 @@ impl Default for SchemaVersion {
     }
 }
 
+/// How much of `knx_master.xml` is scanned for the root element's namespace.
+///
+/// The root `<KNX>` element is the first element in the document, so a generous
+/// 64 KiB window always contains it (leading comments, processing instructions
+/// and a DOCTYPE included) while keeping the scan bounded for a huge file.
+const MAX_HEADER_SCAN: usize = 64 * 1024;
+
 /// Extracts the schema version from a `knx_master.xml` document by finding the
 /// `xmlns` (default namespace) on the root `KNX` element.
 ///
-/// ETS 4.1 puts the namespace on the first line; newer versions on the second.
-/// This scans for the first `xmlns="…knx.org/xml/project/N…"` in the document
-/// header without a full parse.
+/// The root element is read with quick-xml from the head of the document, so the
+/// namespace is found wherever the exporter put it: ETS 4.1 writes it on the
+/// first line, newer versions on the second, and pretty-printed or
+/// comment-prefixed exports push it further down still. (This used to look at
+/// the first four *lines* only, so anything below silently fell through to the
+/// ETS 6 default — the wrong password scheme and the wrong link encoding for an
+/// ETS 4/5 file, surfacing as `WrongPassword` or zero links.)
 ///
 /// Returns:
 /// * `Ok(Some(version))` when a recognised `knx.org/xml/project/<int>` namespace
 ///   is found;
 /// * `Ok(None)` when no such namespace is present at all — an unusual but
-///   tolerated case (e.g. a stripped-down fixture), where the caller falls back
-///   to the ETS 6 default rather than refusing the whole import;
+///   tolerated case (e.g. a stripped-down fixture), logged as a warning, where
+///   the caller falls back to the ETS 6 default rather than refusing the whole
+///   import;
 /// * `Err(UnsupportedSchemaVersion)` when a namespace *is* present but names a
 ///   version below the earliest bussard reads (< 11), so the user gets a clear
 ///   diagnostic instead of a silent mis-parse.
 pub fn detect_schema_version(knx_master_xml: &str) -> Result<Option<SchemaVersion>, ImportError> {
-    // Look at the document head only; the root element and its xmlns are always
-    // near the top. Scanning line by line avoids depending on a specific parser.
-    for line in knx_master_xml.lines().take(4) {
-        if let Some(ns) = extract_xmlns(line) {
-            if ns.contains("knx.org/xml/project/") {
-                return SchemaVersion::from_namespace(ns).map(Some);
-            }
+    let head = header(knx_master_xml);
+    match root_project_namespace(head) {
+        Some(ns) => SchemaVersion::from_namespace(&ns).map(Some),
+        None => {
+            tracing::warn!(
+                "knx_master.xml declares no http://knx.org/xml/project/<version> namespace; \
+                 assuming ETS 6 (schema {}). If this is an ETS 4/5 export the password scheme \
+                 and com-object link encoding will be wrong.",
+                SchemaVersion::default().version()
+            );
+            Ok(None)
         }
     }
-    // No project namespace at all: tolerate and let the caller default.
-    Ok(None)
 }
 
-/// Returns the value of the first `xmlns="…"` attribute in a line, if any.
-fn extract_xmlns(line: &str) -> Option<&str> {
-    let start = line.find("xmlns=\"")? + "xmlns=\"".len();
-    let rest = &line[start..];
-    let end = rest.find('"')?;
-    Some(&rest[..end])
+/// The leading [`MAX_HEADER_SCAN`] bytes of `xml`, trimmed back to a character
+/// boundary so the slice is always valid UTF-8.
+fn header(xml: &str) -> &str {
+    let mut cap = MAX_HEADER_SCAN.min(xml.len());
+    while !xml.is_char_boundary(cap) {
+        cap -= 1;
+    }
+    &xml[..cap]
+}
+
+/// Finds the project namespace on the first element of `head`.
+///
+/// Uses quick-xml so an `xmlns` spread across lines, re-ordered among other
+/// attributes, or preceded by comments is still found. If the (possibly
+/// truncated) head cannot be parsed as far as the first element, falls back to a
+/// plain text scan for an `xmlns="…knx.org/xml/project/…"` attribute.
+fn root_project_namespace(head: &str) -> Option<String> {
+    let mut reader = Reader::from_str(head);
+    reader.config_mut().trim_text(true);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e)) | Ok(Event::Empty(e)) => {
+                for a in e.attributes().flatten() {
+                    if a.key.as_ref() != b"xmlns" {
+                        continue;
+                    }
+                    let value = String::from_utf8_lossy(&a.value).into_owned();
+                    if value.contains(PROJECT_NAMESPACE_PREFIX) {
+                        return Some(value);
+                    }
+                }
+                // The root element carried no project namespace; nothing below
+                // it can be the root, so stop.
+                return None;
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+    }
+    // Truncated or malformed head: fall back to a raw scan.
+    text_scan_xmlns(head)
+}
+
+/// The marker that identifies a project namespace among any other `xmlns`.
+const PROJECT_NAMESPACE_PREFIX: &str = "knx.org/xml/project/";
+
+/// Scans raw text for the first `xmlns="…knx.org/xml/project/…"` value.
+fn text_scan_xmlns(head: &str) -> Option<String> {
+    let mut rest = head;
+    while let Some(start) = rest.find("xmlns=\"") {
+        let after = &rest[start + "xmlns=\"".len()..];
+        let end = after.find('"')?;
+        let value = &after[..end];
+        if value.contains(PROJECT_NAMESPACE_PREFIX) {
+            return Some(value.to_string());
+        }
+        rest = &after[end..];
+    }
+    None
 }
 
 #[cfg(test)]
@@ -289,6 +359,51 @@ mod tests {
         let v = detect_schema_version(ets4)
             .unwrap()
             .expect("version present");
+        assert_eq!(v.family(), EtsFamily::Ets4);
+    }
+
+    /// Regression: the scan read only the first four lines, so a namespace on
+    /// line 5+ (pretty-printed, comment-prefixed, or attribute-per-line exports)
+    /// went undetected and the import silently used the ETS 6 password scheme
+    /// and link encoding for an ETS 4/5 file.
+    #[test]
+    fn test_detect_schema_version_scans_past_the_first_lines() {
+        let padded = format!(
+            "{}\n<KNX xmlns=\"http://knx.org/xml/project/14\"><MasterData/></KNX>",
+            "<!-- an exporter comment line -->\n".repeat(12)
+        );
+        let v = detect_schema_version(&padded)
+            .expect("a well-formed header")
+            .expect("the namespace is found however far down it sits");
+        assert_eq!(v.version(), 14);
+        assert_eq!(v.family(), EtsFamily::Ets5);
+
+        // An attribute-per-line root element: the xmlns is not even on the same
+        // line as the element name.
+        let split = r#"<?xml version="1.0" encoding="utf-8"?>
+<KNX
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    CreatedBy="ETS5"
+    ToolVersion="5.7.1234"
+    xmlns="http://knx.org/xml/project/20">
+  <MasterData/>
+</KNX>"#;
+        let v = detect_schema_version(split)
+            .expect("a well-formed header")
+            .expect("the namespace is found among other attributes");
+        assert_eq!(v.version(), 20);
+        assert_eq!(v.family(), EtsFamily::Ets57);
+    }
+
+    /// A truncated head (the root element runs past the scan window, or the
+    /// document is malformed) still yields the namespace through the text-scan
+    /// fallback.
+    #[test]
+    fn test_detect_schema_version_survives_a_malformed_header() {
+        let truncated = r#"<KNX xmlns="http://knx.org/xml/project/11" Unclosed="#;
+        let v = detect_schema_version(truncated)
+            .expect("a namespace is present")
+            .expect("found by the text-scan fallback");
         assert_eq!(v.family(), EtsFamily::Ets4);
     }
 

@@ -10,11 +10,22 @@
 //!   group addresses and links. These are refreshed (theirs wins) — the device
 //!   banner and the GENERATED marker say so.
 //! * **Hand-authored** fields, owned by the human once written: a device's
-//!   `name`, `description`, `location`, `product` and `channels`; a group's
-//!   `name`, `dpt`, `description` and `protected`; a link's `name`. These are
-//!   **never** overwritten by a re-import. Where the fresh import disagrees with
-//!   the existing value, the difference is **reported** (path, field, ours vs
+//!   `name`, `description`, `location`, its product's `manufacturer` and
+//!   `order_number`, and its channel *names*; a group's `name`, `dpt`,
+//!   `description` and `protected`; a link's `name`. These are **never**
+//!   overwritten by a re-import. Where the fresh import disagrees with the
+//!   existing value, the difference is **reported** (path, field, ours vs
 //!   theirs) and the existing value is kept.
+//!
+//! The product's **identity** fields (`application_ref`, `mask`,
+//! `hardware_ref`, `manufacturer_ref`) and the **channel set** are generated,
+//! not hand-authored: they name the very application program the regenerated
+//! `parameters:`/`com_objects:` were read out of. Keeping them from `ours` while
+//! taking the tables from `theirs` produced a model that contradicted itself
+//! after an ETS application upgrade — new parameter keys under the old
+//! `application_ref`, so every key read E016 and the flasher resolved the wrong
+//! product model. They follow `theirs`, and a changed `application_ref`/`mask`
+//! is recorded in [`MergeReport::notes`].
 //!
 //! [`merge`] takes the existing on-disk model (`ours`) and the freshly-imported
 //! model (`theirs`) and returns the merged model plus a [`MergeReport`]. The
@@ -55,6 +66,12 @@ pub struct MergeReport {
     pub groups_added: usize,
     /// Group addresses on disk but absent from the fresh import.
     pub groups_removed: usize,
+    /// Informational lines about *generated* data the fresh import changed —
+    /// notably a device whose `product.application_ref` or `product.mask` moved
+    /// (an ETS application upgrade), or a channel that left the project. These
+    /// are not conflicts: the fresh value was applied. They are recorded because
+    /// they change what the regenerated parameter keys mean.
+    pub notes: Vec<String>,
 }
 
 impl MergeReport {
@@ -75,9 +92,15 @@ impl MergeReport {
 ///   `ours` but gone from `theirs` is dropped and counted as removed.
 /// * A device's generated tables (`com_objects`, `module_bases`, `parameters`)
 ///   are taken from `theirs`.
-/// * A device's hand-authored fields (`name`, `description`, `location`,
-///   `product`, `channels`) are taken from `ours`; a differing fresh value is
-///   recorded as a [`Conflict`] and *not* applied.
+/// * A device's hand-authored fields (`name`, `description`, `location`, the
+///   product's `manufacturer`/`order_number`, and channel *names*) are taken
+///   from `ours`; a differing fresh value is recorded as a [`Conflict`] and
+///   *not* applied.
+/// * A device's generated identity (`product.application_ref`, `product.mask`,
+///   `product.hardware_ref`, `product.manufacturer_ref`) and its channel *set*
+///   are taken from `theirs`, so they stay consistent with the regenerated
+///   `parameters:`/`com_objects:`; a changed application program or mask is
+///   recorded in [`MergeReport::notes`].
 /// * A group's hand-authored fields (`name`, `dpt`, `description`, `protected`)
 ///   are taken from `ours`, with differences reported.
 /// * A link's generated wiring (`send`, `listen`) is taken from `theirs`; its
@@ -290,29 +313,53 @@ fn overlay_device(
     report_opt(report, &path, "location.floor", our_floor, their_floor);
     report_opt(report, &path, "location.room", our_room, their_room);
 
-    // Product identity fields: hand-editable, kept from ours if set.
+    // Product: hand-authored halves kept from ours, generated identity from
+    // theirs (see `overlay_product`).
     overlay_product(&path, ours, theirs, report);
 
     // Channel names: keyed by channel key; report differing names, keep ours.
+    // The channel *set* is generated, so a channel ETS no longer has is dropped
+    // (noted) and a new one is taken as-is.
     for (key, our_ch) in &ours.channels {
-        if let Some(their_ch) = theirs.channels.get(key) {
-            if our_ch.name != their_ch.name {
-                report.conflicts.push(Conflict {
-                    path: path.clone(),
-                    field: format!("channels.{key}.name"),
-                    ours: our_ch.name.clone(),
-                    theirs: their_ch.name.clone(),
-                });
+        match theirs.channels.get_mut(key) {
+            Some(their_ch) => {
+                if our_ch.name != their_ch.name {
+                    report.conflicts.push(Conflict {
+                        path: path.clone(),
+                        field: format!("channels.{key}.name"),
+                        ours: our_ch.name.clone(),
+                        theirs: their_ch.name.clone(),
+                    });
+                }
+                // Hand-authored name wins, in the channel set theirs defines.
+                their_ch.name = our_ch.name.clone();
             }
+            None => report.notes.push(format!(
+                "{path}: channel `{key}` ({}) is gone from the project and was dropped",
+                our_ch.name
+            )),
         }
     }
 
-    // Keep ours for every hand-authored field; leave generated tables as theirs.
+    // Keep ours for every hand-authored field; leave generated tables (and the
+    // channel set overlaid above) as theirs.
     theirs.name = ours.name.clone();
     theirs.description = ours.description.clone();
     theirs.location = ours.location.clone();
-    theirs.product = ours.product.clone();
-    theirs.channels = ours.channels.clone();
+
+    // A com-object may name the channel it belongs to; after the merge that name
+    // must resolve, or the model points at a channel that does not exist.
+    for (number, co) in &mut theirs.com_objects {
+        if let Some(key) = co.channel.clone() {
+            if !theirs.channels.contains_key(&key) {
+                report.notes.push(format!(
+                    "{path}: com-object {number} referenced channel `{key}`, which the project \
+                     no longer defines; the reference was dropped"
+                ));
+                co.channel = None;
+            }
+        }
+    }
 }
 
 /// The (floor, room) of a device's optional location.
@@ -323,46 +370,72 @@ fn split_location(d: &Device) -> (Option<&str>, Option<&str>) {
     }
 }
 
-/// Reports each differing product-identity field, keeping ours.
-fn overlay_product(path: &str, ours: &Device, theirs: &Device, report: &mut MergeReport) {
+/// Merges the two halves of a device's `product` block.
+///
+/// `manufacturer` and `order_number` are hand-authored: kept from ours, with a
+/// difference reported as a [`Conflict`]. `manufacturer_ref`, `hardware_ref`,
+/// `application_ref` and `mask` are generated identity — they name the
+/// application program the regenerated `parameters:`/`com_objects:` came out of
+/// — so they follow theirs, and a moved `application_ref`/`mask` is noted.
+///
+/// A fresh import with no product at all (nothing in ETS to read) leaves ours
+/// untouched: there is no generated value to take.
+fn overlay_product(path: &str, ours: &Device, theirs: &mut Device, report: &mut MergeReport) {
     let op = ours.product.as_ref();
     let tp = theirs.product.as_ref();
     // `get` reads one field from an optional product; comparing per field
     // reports exactly which identity attribute diverged.
-    let pairs = [
+    let hand_authored = [
         (
             "product.manufacturer",
             field(op, |p| &p.manufacturer),
             field(tp, |p| &p.manufacturer),
         ),
         (
-            "product.manufacturer_ref",
-            field(op, |p| &p.manufacturer_ref),
-            field(tp, |p| &p.manufacturer_ref),
-        ),
-        (
             "product.order_number",
             field(op, |p| &p.order_number),
             field(tp, |p| &p.order_number),
         ),
+    ];
+    for (name, o, t) in hand_authored {
+        report_opt(report, path, name, o, t);
+    }
+
+    // Note the generated moves that change what the regenerated tables mean.
+    for (name, o, t) in [
         (
-            "product.hardware_ref",
-            field(op, |p| &p.hardware_ref),
-            field(tp, |p| &p.hardware_ref),
-        ),
-        (
-            "product.application_ref",
+            "application_ref",
             field(op, |p| &p.application_ref),
             field(tp, |p| &p.application_ref),
         ),
-        (
-            "product.mask",
-            field(op, |p| &p.mask),
-            field(tp, |p| &p.mask),
-        ),
-    ];
-    for (name, ours, theirs) in pairs {
-        report_opt(report, path, name, ours, theirs);
+        ("mask", field(op, |p| &p.mask), field(tp, |p| &p.mask)),
+    ] {
+        if let (Some(o), Some(t)) = (o, t) {
+            if o != t {
+                report.notes.push(format!(
+                    "{path}: product.{name} changed {o} -> {t}; parameters and com_objects were \
+                     regenerated for the new application program"
+                ));
+            }
+        }
+    }
+
+    // Keep ours for the hand-authored halves, inside the fresh product block.
+    let (our_manufacturer, our_order_number) = (
+        field(op, |p| &p.manufacturer).map(str::to_string),
+        field(op, |p| &p.order_number).map(str::to_string),
+    );
+    match theirs.product.as_mut() {
+        Some(tp) => {
+            if our_manufacturer.is_some() {
+                tp.manufacturer = our_manufacturer;
+            }
+            if our_order_number.is_some() {
+                tp.order_number = our_order_number;
+            }
+        }
+        // Nothing generated to take: keep what is on disk.
+        None => theirs.product = ours.product.clone(),
     }
 }
 

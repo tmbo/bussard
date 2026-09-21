@@ -25,9 +25,6 @@ pub struct Container {
     /// The decrypted (or plain) `project.xml`, if present. It carries the
     /// project name and group-address style; `0.xml` does not.
     project_info_xml: Option<String>,
-    /// The id of the project folder, e.g. `P-05E7`.
-    #[allow(dead_code)]
-    project_id: String,
     /// The detected ETS schema version, which selects the com-object link
     /// encoding downstream in [`crate::project`].
     schema: SchemaVersion,
@@ -53,8 +50,16 @@ impl Container {
         // inner archive and the com-object link encoding. If it can't be read,
         // fall back to the ETS 6 assumption bussard has always used.
         let schema = match read_entry_opt(&mut archive, "knx_master.xml")? {
+            // `detect_schema_version` warns when it finds no namespace at all.
             Some(bytes) => detect_schema_version(&strip_bom(bytes))?.unwrap_or_default(),
-            None => SchemaVersion::default(),
+            None => {
+                tracing::warn!(
+                    path = %path.display(),
+                    "the .knxproj has no knx_master.xml; assuming an ETS 6 export (schema {})",
+                    SchemaVersion::default().version()
+                );
+                SchemaVersion::default()
+            }
         };
 
         let project_id = find_project_id(&archive, path)?;
@@ -95,7 +100,6 @@ impl Container {
             archive,
             project_xml,
             project_info_xml,
-            project_id,
             schema,
         })
     }
@@ -255,7 +259,11 @@ fn read_inner_project_entry(
             .by_index_decrypt(idx, &zip_pw)
             .map_err(|_| ImportError::WrongPassword)?;
         // Cap the decrypted stream too: a hostile inner archive is untrusted.
-        bussard_ets::read_capped(file, &entry).map_err(|_| ImportError::WrongPassword)?
+        // The cap being hit is a zip-bomb signal, not a bad password, so it
+        // propagates as itself; anything else is a read failure on an entry the
+        // cipher already accepted (see `ImportError::DecryptedEntry`).
+        bussard_ets::read_capped(file, &entry)
+            .map_err(|source| decrypted_read_error(&entry, source))?
     } else {
         let file = inner.by_index(idx).map_err(|source| ImportError::Zip {
             path: PathBuf::from(&inner_name),
@@ -265,6 +273,26 @@ fn read_inner_project_entry(
     };
 
     Ok(Some(strip_bom(bytes)))
+}
+
+/// Classifies a failure to read an entry out of the *decrypted* inner project
+/// archive.
+///
+/// The cipher has already accepted the password by this point, so blaming the
+/// password for everything hid two unrelated failures: the zip-bomb cap
+/// ([`bussard_ets::EtsError::EntryTooLarge`]) and plain I/O errors both used to
+/// surface as "wrong password". The cap propagates as itself; anything else
+/// becomes [`ImportError::DecryptedEntry`], whose message still explains that an
+/// ETS 4/5 (traditional ZipCrypto) export fails this way on a wrong password
+/// because that cipher has no authentication tag.
+fn decrypted_read_error(entry: &str, source: bussard_ets::EtsError) -> ImportError {
+    match source {
+        e @ bussard_ets::EtsError::EntryTooLarge { .. } => ImportError::Ets(e),
+        source => ImportError::DecryptedEntry {
+            entry: entry.to_string(),
+            source: Box::new(source),
+        },
+    }
 }
 
 /// Helper: turn a missing entry into an error (if required) or `None`.
@@ -306,4 +334,39 @@ fn read_entry_to_string<R: Read + Seek>(
 /// Converts bytes to a `String`, dropping a leading UTF-8 BOM if present.
 fn strip_bom(bytes: Vec<u8>) -> String {
     bussard_ets::strip_bom(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: `EntryTooLarge` (the zip-bomb cap) and I/O errors on the
+    /// decrypted inner entry were both reported as `WrongPassword`, so a hostile
+    /// archive and a broken file both read as "you typed the wrong password".
+    #[test]
+    fn test_decrypted_read_error_keeps_the_cap_and_io_apart() {
+        let too_large = bussard_ets::EtsError::EntryTooLarge {
+            entry: "0.xml".to_string(),
+            cap: 1024,
+        };
+        assert!(
+            matches!(
+                decrypted_read_error("0.xml", too_large),
+                ImportError::Ets(bussard_ets::EtsError::EntryTooLarge { .. })
+            ),
+            "the decompression cap is a zip-bomb signal, not a bad password"
+        );
+
+        let io = bussard_ets::EtsError::Io {
+            entry: "0.xml".to_string(),
+            source: std::io::Error::new(std::io::ErrorKind::InvalidData, "crc mismatch"),
+        };
+        match decrypted_read_error("0.xml", io) {
+            ImportError::DecryptedEntry { entry, source } => {
+                assert_eq!(entry, "0.xml");
+                assert!(source.to_string().contains("crc mismatch"), "{source}");
+            }
+            other => panic!("expected DecryptedEntry, got {other:?}"),
+        }
+    }
 }

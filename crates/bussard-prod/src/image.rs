@@ -46,13 +46,17 @@ use bussard_ets::application::{ApplicationProgram, ParameterType};
 use crate::error::{ProdError, Result};
 
 /// The largest parameter-memory image bussard will ever build for a single
-/// segment when the segment declares no `Size`. A segment's image is a base
-/// image plus parameters placed by byte offset; both the offset and the payload
-/// length originate in untrusted vendor XML (a `<Memory Offset>` is a raw `u32`,
-/// so `0xFFFF_FFFF` would otherwise force a ~4 GiB `Vec` allocation at flash
-/// pre-flight). Real System B application segments are tens of KiB; 1 MiB is a
-/// generous ceiling that no legitimate segment reaches, so exceeding it is
-/// treated as corrupt/hostile input and refused rather than allocated.
+/// segment. A segment's image is a base image plus parameters placed by byte
+/// offset; the offset, the payload length and the segment's declared `Size` all
+/// originate in untrusted vendor XML (a `<Memory Offset>` and a `<Segment Size>`
+/// are raw `u32`s, so `0xFFFF_FFFF` would otherwise force a ~4 GiB `Vec`
+/// allocation at flash pre-flight). The cap therefore bounds the declared `Size`
+/// as well as the no-`Size` case: a segment declaring more than this is treated
+/// as corrupt/hostile input and refused rather than allocated.
+///
+/// 1 MiB clears real product data: the largest segment in the 495-product corpus
+/// (`tests-support/product-corpus`) declares `Size="1048575"` — the ABB i-bus
+/// application, one byte under the cap — and everything else is far smaller.
 const MAX_SEGMENT_IMAGE: u64 = 1024 * 1024;
 
 /// Builds the per-segment parameter memory images for `app`, applying
@@ -125,6 +129,21 @@ pub fn compute_parameter_image(
     seg_ids.sort();
     for seg_id in seg_ids {
         let seg = &app.code_segments[seg_id];
+        // A declared `Size` is bounded by the same cap as an absent one: it is
+        // what every `image.resize` below is allowed to grow to, so a hostile
+        // `Size="4294967295"` must not become a 4 GiB allocation.
+        if let Some(sz) = seg.size {
+            if u64::from(sz) > MAX_SEGMENT_IMAGE {
+                return Err(param_err(
+                    app,
+                    seg_id,
+                    &format!(
+                        "segment declares Size {sz}, above the {MAX_SEGMENT_IMAGE}-byte image cap \
+                         (refusing an over-sized segment image)"
+                    ),
+                ));
+            }
+        }
         let limit = match seg.size {
             Some(sz) => u64::from(sz),
             None => MAX_SEGMENT_IMAGE,
@@ -677,19 +696,8 @@ fn encode_value(
             buf[..bytes.len()].copy_from_slice(bytes);
             Ok(Placement::Bytes(buf))
         }
-        Some(ParameterType::Float { .. }) => {
-            let raw = value.unwrap_or("0");
-            let f: f32 = raw.trim().parse().map_err(|_| {
-                param_err(app, pname, &format!("float value `{raw}` is not a number"))
-            })?;
-            let enc = encode_float16(f).map_err(|_| {
-                param_err(
-                    app,
-                    pname,
-                    &format!("float value `{f}` is out of DPT-9 range"),
-                )
-            })?;
-            Ok(Placement::Bytes(enc.to_vec()))
+        Some(ParameterType::Float { encoding, .. }) => {
+            encode_float(app, pname, encoding.as_deref(), value)
         }
         Some(ParameterType::None) | None => Ok(Placement::Empty),
         Some(ParameterType::Other { size_bits, kind }) => {
@@ -705,6 +713,93 @@ fn encode_value(
                 }
                 _ => Ok(Placement::Empty),
             }
+        }
+    }
+}
+
+/// Encodes a `<TypeFloat>` value at the width its `Encoding` attribute declares.
+///
+/// ETS product data uses exactly three float encodings (counted across the
+/// 495-product corpus in `tests-support/product-corpus`: 3011 `"DPT 9"`, 571
+/// `"IEEE-754 Single"`, 109 `"IEEE-754 Double"`, and no `TypeFloat` without an
+/// `Encoding`):
+///
+/// * `"DPT 9"` — the KNX 2-byte float, encoded by the one workspace encoder in
+///   [`bussard_model::codec::encode_float16`];
+/// * `"IEEE-754 Single"` (and the equivalent `"DPT 14"` spelling) — a 4-byte
+///   big-endian `f32`;
+/// * `"IEEE-754 Double"` — an 8-byte big-endian `f64`.
+///
+/// Before this existed every float was written as 2 bytes of DPT 9, so an
+/// IEEE-754 parameter went into the device image at the wrong width *and* with
+/// the wrong bytes. An `Encoding` this function does not know is refused rather
+/// than guessed at; an absent one falls back to DPT 9 (by far the most common)
+/// with a warning.
+fn encode_float(
+    app: &ApplicationProgram,
+    pname: &str,
+    encoding: Option<&str>,
+    value: Option<&str>,
+) -> Result<Placement> {
+    let raw = value.unwrap_or("0");
+    let norm = encoding.map(|e| e.trim().to_ascii_lowercase());
+    match norm.as_deref() {
+        Some("ieee-754 single") | Some("ieee 754 single") | Some("dpt 14") | Some("dpt14") => {
+            let f: f32 = raw.trim().parse().map_err(|_| {
+                param_err(app, pname, &format!("float value `{raw}` is not a number"))
+            })?;
+            if !f.is_finite() {
+                return Err(param_err(
+                    app,
+                    pname,
+                    &format!("float value `{raw}` is not finite"),
+                ));
+            }
+            Ok(Placement::Bytes(f.to_be_bytes().to_vec()))
+        }
+        Some("ieee-754 double") | Some("ieee 754 double") => {
+            let f: f64 = raw.trim().parse().map_err(|_| {
+                param_err(app, pname, &format!("float value `{raw}` is not a number"))
+            })?;
+            if !f.is_finite() {
+                return Err(param_err(
+                    app,
+                    pname,
+                    &format!("float value `{raw}` is not finite"),
+                ));
+            }
+            Ok(Placement::Bytes(f.to_be_bytes().to_vec()))
+        }
+        other => {
+            if let Some(unknown) = other {
+                if unknown != "dpt 9" && unknown != "dpt9" {
+                    return Err(param_err(
+                        app,
+                        pname,
+                        &format!(
+                            "unsupported float Encoding `{}` (known: DPT 9, IEEE-754 Single, \
+                             IEEE-754 Double)",
+                            encoding.unwrap_or_default()
+                        ),
+                    ));
+                }
+            } else {
+                tracing::warn!(
+                    parameter = pname,
+                    "TypeFloat declares no Encoding; assuming the KNX 2-byte float (DPT 9)"
+                );
+            }
+            let f: f32 = raw.trim().parse().map_err(|_| {
+                param_err(app, pname, &format!("float value `{raw}` is not a number"))
+            })?;
+            let enc = bussard_model::codec::encode_float16(f).map_err(|_| {
+                param_err(
+                    app,
+                    pname,
+                    &format!("float value `{f}` is out of DPT-9 range"),
+                )
+            })?;
+            Ok(Placement::Bytes(enc.to_vec()))
         }
     }
 }
@@ -750,6 +845,11 @@ fn encode_int(
 
 /// Encodes an integer into a [`Placement`] of `bits` width, checking that the
 /// value fits. Signed values are two's-complement within the width.
+///
+/// `bits` comes straight from a vendor `SizeInBit`, so the wide-field case is
+/// settled **before** any bound arithmetic: a signed `SizeInBit="64"` used to
+/// compute `-(1i64 << 63)`, which overflows on negation (panic in debug, a wrong
+/// bound in release), and a signed width above 64 overflowed the shift itself.
 fn encode_int_bits(
     app: &ApplicationProgram,
     pname: &str,
@@ -760,11 +860,46 @@ fn encode_int_bits(
     if bits == 0 {
         return Ok(Placement::Empty);
     }
-    // Represent the value as an unsigned bit pattern of `bits` width.
+
+    if bits > 64 {
+        // Wide fields do occur: byte-aligned "object link" parameters (e.g. the
+        // Theben Meteodata's 472-bit `Objektlink`) are effectively fixed-size byte
+        // blobs whose default is a small value (usually 0). Lay the value down
+        // big-endian, sign-extended to the full width, matching the byte-multiple
+        // `Other` convention. A non-byte-aligned field this wide does not occur;
+        // refuse it rather than guess a bit placement.
+        if bits % 8 != 0 {
+            return Err(param_err(
+                app,
+                pname,
+                &format!("unsupported integer field width of {bits} bits (not byte-aligned)"),
+            ));
+        }
+        if !signed && n < 0 {
+            return Err(param_err(
+                app,
+                pname,
+                &format!("negative value {n} in an unsigned {bits}-bit field"),
+            ));
+        }
+        // Every `i64` fits a field wider than 64 bits; only the extension byte
+        // differs (0xFF for a negative two's-complement value, 0x00 otherwise).
+        let fill = if n < 0 { 0xFFu8 } else { 0x00 };
+        let mut buf = vec![fill; (bits / 8) as usize];
+        let v = n.to_be_bytes();
+        let at = buf.len() - v.len();
+        buf[at..].copy_from_slice(&v);
+        return Ok(Placement::Bytes(buf));
+    }
+
+    // Represent the value as an unsigned bit pattern of `bits` width. `bits` is
+    // 1..=64 here, so the `i128`/`u128` shifts below cannot overflow — including
+    // the 64-bit signed case, whose range is exactly `i64::MIN..=i64::MAX`.
     let unsigned: u64 = if signed {
-        let lo = -(1i64 << (bits - 1));
-        let hi = (1i64 << (bits - 1)) - 1;
-        if n < lo || n > hi {
+        let lo = -(1i128 << (bits - 1));
+        let hi = (1i128 << (bits - 1)) - 1;
+        let n128 = i128::from(n);
+        if n128 < lo || n128 > hi {
             return Err(param_err(
                 app,
                 pname,
@@ -772,7 +907,7 @@ fn encode_int_bits(
             ));
         }
         // Two's-complement truncated to `bits`.
-        (n as i128 as u128 & ((1u128 << bits) - 1)) as u64
+        (n128 as u128 & ((1u128 << bits) - 1)) as u64
     } else {
         if n < 0 {
             return Err(param_err(
@@ -796,26 +931,6 @@ fn encode_int_bits(
         n as u64
     };
 
-    if bits > 64 {
-        // Wide fields do occur: byte-aligned "object link" parameters (e.g. the
-        // Theben Meteodata's 472-bit `Objektlink`) are effectively fixed-size byte
-        // blobs whose default is a small value (usually 0). Lay the value down
-        // big-endian, zero-extended to the full width, matching the byte-multiple
-        // `Other` convention. A non-byte-aligned field this wide does not occur;
-        // refuse it rather than guess a bit placement.
-        if bits % 8 != 0 {
-            return Err(param_err(
-                app,
-                pname,
-                &format!("unsupported integer field width of {bits} bits (not byte-aligned)"),
-            ));
-        }
-        let mut buf = vec![0u8; (bits / 8) as usize];
-        let v = unsigned.to_be_bytes();
-        let start = buf.len() - v.len();
-        buf[start..].copy_from_slice(&v);
-        return Ok(Placement::Bytes(buf));
-    }
     // A general MSB-first bit field: `place` writes it into the byte image at
     // the parameter's `BitOffset`, spanning byte boundaries where needed (ETS
     // uses e.g. 15-bit fields at bit offset 1).
@@ -853,8 +968,10 @@ fn place_checked(
             start_bit.saturating_add(u64::from(*bits)).div_ceil(8)
         }
     };
+    // `compute_parameter_image` already refuses a segment whose declared `Size`
+    // exceeds the cap; clamp again here so this bound holds for any caller.
     let limit = match seg_size {
-        Some(sz) => u64::from(sz),
+        Some(sz) => u64::from(sz).min(MAX_SEGMENT_IMAGE),
         None => MAX_SEGMENT_IMAGE,
     };
     if end > limit {
@@ -918,40 +1035,6 @@ fn param_err(_app: &ApplicationProgram, pname: &str, reason: &str) -> ProdError 
         parameter: pname.to_string(),
         reason: reason.to_string(),
     }
-}
-
-// ---------------------------------------------------------------------------
-// KNX 2-byte float (DPT 9) encoding, self-contained for the clean-room boundary.
-// ---------------------------------------------------------------------------
-
-const FLOAT16_MIN: f32 = 0.01 * -2048.0 * 32768.0;
-const FLOAT16_MAX: f32 = 0.01 * 2047.0 * 32768.0;
-
-/// Encodes a value into a KNX 2-byte float (DPT 9.x), big-endian.
-fn encode_float16(value: f32) -> std::result::Result<[u8; 2], ()> {
-    if !value.is_finite() || !(FLOAT16_MIN..=FLOAT16_MAX).contains(&value) {
-        return Err(());
-    }
-    let mut mantissa = (value * 100.0).round() as i32;
-    let mut exponent = 0i32;
-    while !(-2048..=2047).contains(&mantissa) {
-        if exponent >= 15 {
-            return Err(());
-        }
-        mantissa = if mantissa >= 0 {
-            (mantissa + 1) / 2
-        } else {
-            (mantissa - 1) / 2
-        };
-        exponent += 1;
-    }
-    let (sign, mant_bits) = if mantissa < 0 {
-        (0x8000u16, (mantissa + 2048) as u16)
-    } else {
-        (0u16, mantissa as u16)
-    };
-    let raw = sign | ((exponent as u16) << 11) | (mant_bits & 0x07ff);
-    Ok([(raw >> 8) as u8, (raw & 0xff) as u8])
 }
 
 #[cfg(test)]
@@ -1178,6 +1261,88 @@ mod tests {
         assert_eq!(image_of(&app)[0], 0xFB);
     }
 
+    /// Regression: the signed bound was computed as `-(1i64 << (bits - 1))`
+    /// *before* the `bits > 64` branch, so a vendor `SizeInBit="64"` with
+    /// `Type="signedInt"` overflowed the negation (panic in debug) and a wider
+    /// signed field overflowed the shift. The width is settled first now, and a
+    /// 64-bit signed field spans exactly `i64::MIN..=i64::MAX`.
+    #[test]
+    fn test_encode_int_bits_signed_64_bit_field() {
+        // i64::MIN is representable: two's complement 0x8000_0000_0000_0000.
+        let app = app_with(&[(
+            "sixtyfour",
+            r#"<TypeNumber SizeInBit="64" Type="signedInt" />"#,
+            Some("-9223372036854775808"),
+            0,
+            0,
+        )]);
+        assert_eq!(image_of(&app), vec![0x80, 0, 0, 0, 0, 0, 0, 0]);
+
+        // -1 fills the whole field.
+        let app = app_with(&[(
+            "minusone",
+            r#"<TypeNumber SizeInBit="64" Type="signedInt" />"#,
+            Some("-1"),
+            0,
+            0,
+        )]);
+        assert_eq!(image_of(&app), vec![0xFF; 8]);
+
+        // i64::MAX is the top of the range.
+        let app = app_with(&[(
+            "maxi",
+            r#"<TypeNumber SizeInBit="64" Type="signedInt" />"#,
+            Some("9223372036854775807"),
+            0,
+            0,
+        )]);
+        assert_eq!(
+            image_of(&app),
+            vec![0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]
+        );
+    }
+
+    /// A signed field wider than 64 bits takes the byte-blob path (as the
+    /// unsigned wide "object link" parameters do), sign-extended.
+    #[test]
+    fn test_encode_int_bits_signed_wide_field() {
+        let app = app_with(&[(
+            "wide",
+            r#"<TypeNumber SizeInBit="96" Type="signedInt" />"#,
+            Some("-2"),
+            0,
+            0,
+        )]);
+        let mut expect = vec![0xFFu8; 12];
+        expect[11] = 0xFE;
+        assert_eq!(image_of(&app), expect);
+
+        // A positive value in the same field is zero-extended.
+        let app = app_with(&[(
+            "widepos",
+            r#"<TypeNumber SizeInBit="96" Type="signedInt" />"#,
+            Some("258"),
+            0,
+            0,
+        )]);
+        let mut expect = vec![0x00u8; 12];
+        expect[10] = 0x01;
+        expect[11] = 0x02;
+        assert_eq!(image_of(&app), expect);
+
+        // Not byte-aligned: still refused rather than guessed at.
+        let app = app_with(&[(
+            "oddwide",
+            r#"<TypeNumber SizeInBit="65" Type="signedInt" />"#,
+            Some("-1"),
+            0,
+            0,
+        )]);
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
+            .expect_err("a 65-bit field is not byte-aligned");
+        assert!(err.to_string().contains("byte-aligned"), "{err}");
+    }
+
     #[test]
     fn value_exceeding_width_errors_naming_param() {
         let app = app_with(&[(
@@ -1221,6 +1386,104 @@ mod tests {
         let img = image_of(&app);
         // 21.0: mantissa=2100 needs exp=1 (1050), raw = (1<<11)|1050 = 0x0C1A.
         assert_eq!(&img[0..2], &[0x0C, 0x1A]);
+    }
+
+    /// Regression: every `<TypeFloat>` was written as two bytes of DPT 9 no
+    /// matter what its `Encoding` said, so an `"IEEE-754 Single"` parameter
+    /// (571 of them in the 495-product corpus) went into the device image at
+    /// half its width with entirely wrong bytes.
+    #[test]
+    fn test_encode_value_float_honours_declared_encoding() {
+        // DPT 9: the KNX 2-byte float. 21.0 -> mantissa 2100, halved to 1050 at
+        // exponent 1 -> 0x0C1A.
+        let app = app_with(&[(
+            "dpt9",
+            r#"<TypeFloat Encoding="DPT 9" minInclusive="-273" maxInclusive="670760" />"#,
+            Some("21"),
+            0,
+            0,
+        )]);
+        assert_eq!(image_of(&app), vec![0x0C, 0x1A]);
+
+        // IEEE-754 Single: 4 bytes, big-endian f32.
+        let app = app_with(&[(
+            "single",
+            r#"<TypeFloat Encoding="IEEE-754 Single" minInclusive="0" maxInclusive="40" />"#,
+            Some("21"),
+            0,
+            0,
+        )]);
+        assert_eq!(image_of(&app), 21.0f32.to_be_bytes().to_vec());
+
+        // "DPT 14" is the same 4-byte IEEE-754 single on the wire.
+        let app = app_with(&[(
+            "dpt14",
+            r#"<TypeFloat Encoding="DPT 14" minInclusive="0" maxInclusive="40" />"#,
+            Some("21"),
+            0,
+            0,
+        )]);
+        assert_eq!(image_of(&app), 21.0f32.to_be_bytes().to_vec());
+
+        // IEEE-754 Double: 8 bytes, big-endian f64.
+        let app = app_with(&[(
+            "double",
+            r#"<TypeFloat Encoding="IEEE-754 Double" minInclusive="0" maxInclusive="268435456" />"#,
+            Some("21"),
+            0,
+            0,
+        )]);
+        assert_eq!(image_of(&app), 21.0f64.to_be_bytes().to_vec());
+    }
+
+    #[test]
+    fn test_encode_value_float_unknown_encoding_is_refused() {
+        let app = app_with(&[(
+            "weird",
+            r#"<TypeFloat Encoding="Posit-16" minInclusive="0" maxInclusive="40" />"#,
+            Some("21"),
+            0,
+            0,
+        )]);
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
+            .expect_err("an unknown float encoding is refused, never guessed");
+        let s = err.to_string();
+        assert!(s.contains("Encoding"), "{s}");
+        assert!(s.contains("Posit-16"), "{s}");
+    }
+
+    /// Regression: `image.rs` carried its own copy of the DPT-9 encoder whose
+    /// `FLOAT16_MAX` used mantissa 2047 instead of 2046, so the top of its
+    /// accepted range rounded up onto the raw pattern `0x7FFF` — the DPT-9
+    /// "invalid data" marker the model encoder deliberately avoids (issue #62).
+    /// The copy is gone; prod now calls `bussard_model::codec::encode_float16`,
+    /// so the marker is unreachable and the top of the old range is refused.
+    #[test]
+    fn test_encode_value_float_dpt9_never_emits_the_invalid_marker() {
+        // 670433.28 (mantissa 2046, exponent 15) is the largest valid DPT-9
+        // value; it must encode to 0x7FFE, one step below the marker.
+        let app = app_with(&[(
+            "fmax",
+            r#"<TypeFloat Encoding="DPT 9" minInclusive="-671088" maxInclusive="670434" />"#,
+            Some("670433.28"),
+            0,
+            0,
+        )]);
+        let img = image_of(&app);
+        assert_eq!(&img[0..2], &[0x7F, 0xFE]);
+
+        // Anything above it (the old copy's 2047-mantissa range) is refused
+        // rather than written as 0x7FFF.
+        let app = app_with(&[(
+            "fover",
+            r#"<TypeFloat Encoding="DPT 9" minInclusive="-671088" maxInclusive="670761" />"#,
+            Some("670760.96"),
+            0,
+            0,
+        )]);
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
+            .expect_err("above the DPT-9 maximum");
+        assert!(err.to_string().contains("DPT-9 range"), "{err}");
     }
 
     #[test]
@@ -1454,6 +1717,55 @@ mod tests {
             }
             other => panic!("expected ParameterImage, got {other:?}"),
         }
+    }
+
+    /// Regression: the 1 MiB image cap only applied when the segment declared no
+    /// `Size`. A vendor `Size="4294967295"` was taken at face value, so a
+    /// parameter near that offset drove `image.resize` toward a 4 GiB
+    /// allocation. A declared `Size` above the cap is refused up front now.
+    #[test]
+    fn test_compute_parameter_image_declared_size_above_cap_is_refused() {
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-1" Name="t"><Static>
+          <Code><RelativeSegment Id="M-1_A-1_RS-1" Size="4294967295" LoadStateMachine="4" Offset="0" /></Code>
+          <ParameterTypes><ParameterType Id="M-1_A-1_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType></ParameterTypes>
+          <Parameters><Parameter Id="M-1_A-1_P-0" Name="far" ParameterType="M-1_A-1_PT-0" Value="1"><Memory CodeSegment="M-1_A-1_RS-1" Offset="{}" BitOffset="0" /></Parameter></Parameters>
+         </Static></ApplicationProgram></KNX>"#,
+            4_000_000_000u32
+        );
+        let app = parse_application_program("M-1_A-1", xml.as_bytes())
+            .expect("the XML itself is well formed");
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
+            .expect_err("a segment declaring 4 GiB is refused, not allocated");
+        match err {
+            ProdError::ParameterImage { parameter, reason } => {
+                assert_eq!(parameter, "M-1_A-1_RS-1");
+                assert!(reason.contains("Size 4294967295"), "{reason}");
+                assert!(reason.contains("cap"), "{reason}");
+            }
+            other => panic!("expected ParameterImage, got {other:?}"),
+        }
+    }
+
+    /// A declared `Size` at the cap still builds: real product data reaches
+    /// within a byte of it (ABB i-bus declares `Size="1048575"`).
+    #[test]
+    fn test_compute_parameter_image_declared_size_at_cap_is_accepted() {
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-1" Name="t"><Static>
+          <Code><RelativeSegment Id="M-1_A-1_RS-1" Size="{}" LoadStateMachine="4" Offset="0" /></Code>
+          <ParameterTypes><ParameterType Id="M-1_A-1_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType></ParameterTypes>
+          <Parameters><Parameter Id="M-1_A-1_P-0" Name="near" ParameterType="M-1_A-1_PT-0" Value="7"><Memory CodeSegment="M-1_A-1_RS-1" Offset="3" BitOffset="0" /></Parameter></Parameters>
+         </Static></ApplicationProgram></KNX>"#,
+            MAX_SEGMENT_IMAGE - 1
+        );
+        let app = parse_application_program("M-1_A-1", xml.as_bytes())
+            .expect("the XML itself is well formed");
+        let images = compute_parameter_image(&app, &no_overrides(), &no_bases())
+            .expect("a segment just under the cap is legitimate product data");
+        assert_eq!(images["M-1_A-1_RS-1"], vec![0, 0, 0, 7]);
     }
 
     #[test]

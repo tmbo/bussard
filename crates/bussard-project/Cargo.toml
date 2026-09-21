@@ -10,7 +10,7 @@ description = ".knxproj import for bussard: AES zip + streaming XML into the mod
 
 [dependencies]
 bussard-model = { workspace = true }
-bussard-ets = { path = "../bussard-ets" }
+bussard-ets = { workspace = true }
 # KNX Secure crypto primitives: PBKDF2 key schedule, AES-CBC decrypt, and the
 # zeroizing Key16 wrapper the `.knxkeys` keyring parser needs (issue #71 §4).
 bussard-secure = { workspace = true }
@@ -19,15 +19,20 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 # Streaming XML: quick-xml never builds a DOM, so 20+ MB manufacturer files
-# are read with bounded memory. MIT licensed.
-quick-xml = "0.41"
-# WinZip-AES ZIP support (compression method 99). MIT licensed.
-zip = { version = "2.4", default-features = false, features = ["aes-crypto", "deflate"] }
+# are read with bounded memory. Version centralized in `[workspace.dependencies]`.
+quick-xml = { workspace = true }
+# WinZip-AES ZIP support (compression method 99) on top of the workspace's
+# deflate-only zip: unlike a `.knxprod`, a `.knxproj`'s inner project archive is
+# encrypted, so this crate (and only this crate) adds the `aes-crypto` feature.
+zip = { workspace = true, features = ["aes-crypto"] }
 # ETS6 zip-password derivation: PBKDF2-HMAC-SHA256 then base64. All MIT/Apache-2.0.
-pbkdf2 = "0.12"
-sha2 = "0.10"
-hmac = "0.12"
-base64 = "0.22"
+pbkdf2 = { workspace = true }
+sha2 = { workspace = true }
+base64 = { workspace = true }
+# zeroize: wipes decrypted keyring passwords (and the Latin-1 buffers derived
+# from them) once the keys are derived, matching the Key16 hygiene in
+# bussard-secure (issue #71 spec §2.3). MIT OR Apache-2.0.
+zeroize = { workspace = true }
 # Data-parallel parse of the distinct referenced ApplicationProgram XML files
 # during import (the XML parse dominates import wall time). MIT/Apache-2.0.
 rayon = { workspace = true }

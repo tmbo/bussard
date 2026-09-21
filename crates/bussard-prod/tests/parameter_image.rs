@@ -308,3 +308,104 @@ fn real_knxproj_smoke() {
         "Jung 23024 application not found in home_test.knxproj"
     );
 }
+
+/// Env-gated real-product float-width regression: the ABB i-bus product data
+/// (`IBUS_ETS5_ABB_*.knxprod`) declares application `M-0002_A-A0B0-12-5788`
+/// with a run of `<TypeFloat Encoding="IEEE-754 Single">` parameters on its
+/// parameter segment — `P-2050021823` (default 10.0) at offset 676 immediately
+/// followed by `P-1814561109` (default 1.0) at offset 680. The 4-byte spacing is
+/// the vendor's own statement that the field is a 4-byte IEEE-754 single, so the
+/// image must carry `41 20 00 00` then `3F 80 00 00`.
+///
+/// Before the fix every float was written as 2 bytes of DPT 9, which put wrong
+/// bytes at 676-677 and left 678-679 at the base image's value.
+///
+/// Reads the one application entry straight out of the archive rather than
+/// calling `read_knxprod`: this product ships 737 entries (~2.8 GB of XML
+/// uncompressed) and parsing all of them takes minutes in a debug build.
+///
+/// Set `BUSSARD_PRODUCT_CORPUS=<vendor-dir>` to run it; skipped when unset (the
+/// vendor file is copyrighted and never committed — the unit test
+/// `test_encode_value_float_honours_declared_encoding` covers the same rule on a
+/// synthetic fixture).
+#[test]
+fn real_abb_ieee754_single_parameters_are_four_bytes_wide() {
+    const APP_ID: &str = "M-0002_A-A0B0-12-5788";
+
+    let Some(dir) = std::env::var_os("BUSSARD_PRODUCT_CORPUS") else {
+        eprintln!("BUSSARD_PRODUCT_CORPUS unset; skipping the ABB IEEE-754 width check.");
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    let found = std::fs::read_dir(&dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("IBUS_ETS5_ABB_") && n.ends_with(".knxprod"))
+        });
+    let Some(path) = found else {
+        eprintln!("ABB i-bus product not in corpus dir; skipping.");
+        return;
+    };
+
+    let file = std::fs::File::open(&path).expect("open the ABB product data");
+    let mut zip = zip::ZipArchive::new(file).expect("the .knxprod is a zip");
+    let entry = format!("M-0002/{APP_ID}.xml");
+    let Ok(mut f) = zip.by_name(&entry) else {
+        eprintln!("application {APP_ID} absent from this ABB release; skipping.");
+        return;
+    };
+    let mut xml = Vec::new();
+    use std::io::Read as _;
+    f.read_to_end(&mut xml).expect("read the application xml");
+    drop(f);
+
+    let app = bussard_prod::parse_application_program(APP_ID, &xml).expect("parse the application");
+
+    // The two parameters, read straight from the parsed product data so the test
+    // fails loudly if a later release moves them.
+    let float_param = |id_suffix: &str| {
+        app.parameters
+            .values()
+            .find(|p| p.id.ends_with(id_suffix))
+            .unwrap_or_else(|| panic!("parameter {id_suffix} in the ABB application"))
+    };
+    let p10 = float_param("_P-2050021823");
+    let p1 = float_param("_P-1814561109");
+    let mem10 = p10.memory.as_ref().expect("P-2050021823 <Memory>");
+    let mem1 = p1.memory.as_ref().expect("P-1814561109 <Memory>");
+    let off10 = mem10.offset.expect("P-2050021823 <Memory Offset>");
+    let off1 = mem1.offset.expect("P-1814561109 <Memory Offset>");
+    assert_eq!(
+        off1 - off10,
+        4,
+        "the vendor lays these two floats 4 bytes apart"
+    );
+
+    let images = compute_parameter_image(&app, &BTreeMap::new(), &BTreeMap::new())
+        .expect("ABB parameter image builds");
+    let seg = mem10.code_segment.as_deref().expect("segment id");
+    let img = &images[seg];
+    let at = off10 as usize;
+    assert!(
+        img.len() >= at + 8,
+        "segment image too short: {}",
+        img.len()
+    );
+    assert_eq!(
+        &img[at..at + 4],
+        &10.0f32.to_be_bytes(),
+        "IEEE-754 Single default 10.0 at offset {at}"
+    );
+    assert_eq!(
+        &img[at + 4..at + 8],
+        &1.0f32.to_be_bytes(),
+        "IEEE-754 Single default 1.0 at offset {}",
+        at + 4
+    );
+}
