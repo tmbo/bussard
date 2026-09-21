@@ -455,11 +455,10 @@ pub fn expand_group_object_descriptors(
                 .copied()
                 .or_else(|| default_param_ref_value(app, &group.param_ref_id))
                 .unwrap_or(0);
-            for (when, members) in &group.branches {
-                if *when == selected {
-                    ref_ids.extend(members.iter().map(String::as_str));
-                }
-            }
+            // ETS semantics (first matching `<when>`, else the `default` branch):
+            // covers multi-value, comparison and default tests, not only exact
+            // integer matches.
+            ref_ids.extend(group.members_for(selected).iter().map(String::as_str));
         }
 
         for ref_rel_id in ref_ids {
