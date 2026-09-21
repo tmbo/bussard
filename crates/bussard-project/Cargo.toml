@@ -28,6 +28,10 @@ pbkdf2 = "0.12"
 sha2 = "0.10"
 hmac = "0.12"
 base64 = "0.22"
+# zeroize: wipes decrypted keyring passwords (and the Latin-1 buffers derived
+# from them) once the keys are derived, matching the Key16 hygiene in
+# bussard-secure (issue #71 spec §2.3). MIT OR Apache-2.0.
+zeroize = { workspace = true }
 # Data-parallel parse of the distinct referenced ApplicationProgram XML files
 # during import (the XML parse dominates import wall time). MIT/Apache-2.0.
 rayon = { workspace = true }

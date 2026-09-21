@@ -38,6 +38,8 @@ use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 use sha2::{Digest, Sha256};
 
+use zeroize::Zeroizing;
+
 use bussard_secure::crypto::latin1_bytes;
 use bussard_secure::{Key16, aes_cbc_decrypt, pbkdf2_key, salt};
 
@@ -49,6 +51,9 @@ const KEY_LEN: usize = 16;
 /// The number of leading bytes to skip when extracting a password from a
 /// decrypted blob (spec §4.3): an 8-byte salt/prefix.
 const EXTRACT_PREFIX_LEN: usize = 8;
+
+/// The AES block size, and so the largest legal PKCS#7 pad length.
+const AES_BLOCK_LEN: usize = 16;
 
 /// A parsed `.knxkeys` keyring (spec §4.6).
 ///
@@ -215,6 +220,15 @@ pub enum KeyringError {
         /// The attribute whose blob was too short.
         attribute: String,
     },
+    /// A decrypted attribute blob did not carry valid PKCS#7 padding, so the
+    /// plaintext is garbage — in practice the keyring password was wrong.
+    #[error("decrypted `{attribute}` blob in .knxkeys has invalid PKCS#7 padding ({reason})")]
+    BadPadding {
+        /// The attribute whose blob was mis-padded.
+        attribute: String,
+        /// What was wrong with the padding.
+        reason: String,
+    },
     /// The keyring signature did not match: the password is wrong or the keyring
     /// was tampered with.
     ///
@@ -243,7 +257,9 @@ pub enum KeyringError {
 /// document was tampered with), and the various decode/parse variants for
 /// malformed input.
 pub fn parse_keyring(xml: &str, password: &str) -> Result<Keyring, KeyringError> {
-    let keyring_key = pbkdf2_key(&latin1_bytes(password), salt::KEYRING);
+    // The caller's password in its Latin-1 form is key material too; wipe the
+    // intermediate buffer once the keyring key is derived (spec §2.3).
+    let keyring_key = pbkdf2_key(&Zeroizing::new(latin1_bytes(password)), salt::KEYRING);
 
     // The `Created` attribute is the IV seed for every encrypted attribute
     // (§4.2), so we need it before decrypting anything. Read it up front.
@@ -525,7 +541,10 @@ fn parse_interface(
     // The Password/Authentication attributes are encrypted; decrypt, extract the
     // password string, then derive the key with the appropriate salt (§4.5, §3.4).
     let password = decrypt_password(e, b"Password", "Interface/Password", keyring_key, iv)?;
-    let user_key = pbkdf2_key(&latin1_bytes(&password), salt::USER_PASSWORD);
+    let user_key = pbkdf2_key(
+        &Zeroizing::new(latin1_bytes(&password)),
+        salt::USER_PASSWORD,
+    );
 
     let auth = decrypt_password(
         e,
@@ -534,7 +553,10 @@ fn parse_interface(
         keyring_key,
         iv,
     )?;
-    let device_auth = pbkdf2_key(&latin1_bytes(&auth), salt::DEVICE_AUTHENTICATION_CODE);
+    let device_auth = pbkdf2_key(
+        &Zeroizing::new(latin1_bytes(&auth)),
+        salt::DEVICE_AUTHENTICATION_CODE,
+    );
 
     Ok(Interface {
         ia,
@@ -609,7 +631,7 @@ fn decrypt_password(
     attribute: &str,
     keyring_key: &Key16,
     iv: &[u8; KEY_LEN],
-) -> Result<String, KeyringError> {
+) -> Result<Zeroizing<String>, KeyringError> {
     let b64 = require(e, key, attribute)?;
     let ciphertext = BASE64
         .decode(b64.as_bytes())
@@ -617,22 +639,43 @@ fn decrypt_password(
             attribute: attribute.to_string(),
             source,
         })?;
-    let plaintext = aes_cbc_decrypt(keyring_key, iv, &ciphertext)?;
+    // The plaintext holds the password in the clear; wipe it on the way out
+    // (spec §2.3), as the derived `Key16`s already do.
+    let plaintext = Zeroizing::new(aes_cbc_decrypt(keyring_key, iv, &ciphertext)?);
     extract_password(&plaintext, attribute)
 }
 
 /// Extracts a password from a decrypted blob (spec §4.3).
 ///
-/// `length = data[data.len()-1]; return data[8..data.len()-length]`: skip the
-/// 8-byte salt/prefix, strip the PKCS#7-style trailing padding whose count is the
-/// final byte, and decode the remainder as UTF-8.
-fn extract_password(data: &[u8], attribute: &str) -> Result<String, KeyringError> {
+/// Skips the 8-byte salt/prefix, strips the PKCS#7 padding whose count is the
+/// final byte, and decodes the remainder as UTF-8.
+///
+/// The padding is **validated**, not trusted: a valid PKCS#7 tail is 1..=16
+/// bytes all equal to the count. A blob decrypted under the wrong key is
+/// essentially random, so its last byte is as likely to be `0` (which used to
+/// return the whole padded tail as the password) as anything else. Rejecting it
+/// here turns "garbage password derived from a garbage key" into a clean error.
+fn extract_password(data: &[u8], attribute: &str) -> Result<Zeroizing<String>, KeyringError> {
     if data.len() <= EXTRACT_PREFIX_LEN {
         return Err(KeyringError::ShortBlob {
             attribute: attribute.to_string(),
         });
     }
-    let pad = *data.last().expect("data is non-empty (checked above)") as usize;
+    let bad_padding = |reason: &str| KeyringError::BadPadding {
+        attribute: attribute.to_string(),
+        reason: reason.to_string(),
+    };
+    // `data` is non-empty (longer than the prefix), so `split_last` always
+    // yields — no `.expect()` needed to say so.
+    let (&last, _) = data
+        .split_last()
+        .ok_or_else(|| bad_padding("the blob is empty"))?;
+    let pad = usize::from(last);
+    if pad == 0 || pad > AES_BLOCK_LEN {
+        return Err(bad_padding(&format!(
+            "pad length {pad} is not 1..={AES_BLOCK_LEN}"
+        )));
+    }
     let end = data
         .len()
         .checked_sub(pad)
@@ -640,12 +683,16 @@ fn extract_password(data: &[u8], attribute: &str) -> Result<String, KeyringError
         .ok_or_else(|| KeyringError::ShortBlob {
             attribute: attribute.to_string(),
         })?;
-    String::from_utf8(data[EXTRACT_PREFIX_LEN..end].to_vec()).map_err(|_| {
-        KeyringError::InvalidAttribute {
+    if data[end..].iter().any(|&b| b != last) {
+        return Err(bad_padding("the padding bytes are not all equal"));
+    }
+    let bytes = Zeroizing::new(data[EXTRACT_PREFIX_LEN..end].to_vec());
+    String::from_utf8(bytes.to_vec())
+        .map(Zeroizing::new)
+        .map_err(|_| KeyringError::InvalidAttribute {
             attribute: attribute.to_string(),
             reason: "decrypted password is not valid UTF-8".to_string(),
-        }
-    })
+        })
 }
 
 /// Reads a single named attribute off an element as an owned `String`.
@@ -833,7 +880,78 @@ mod tests {
         let mut blob = vec![0u8; 8];
         blob.extend_from_slice(b"hi");
         blob.extend(std::iter::repeat_n(6u8, 6));
-        assert_eq!(extract_password(&blob, "test").unwrap(), "hi");
+        assert_eq!(
+            extract_password(&blob, "test")
+                .expect("valid padding")
+                .as_str(),
+            "hi"
+        );
+    }
+
+    /// Regression: the pad length was read with `.expect()` (the only
+    /// `.expect()` in library code) and then trusted. A blob decrypted under the
+    /// wrong key is random, so `pad = 0` — which returned the entire padded tail
+    /// as "the password" — and an inconsistent pad were both accepted, turning a
+    /// wrong password into a silently wrong derived key.
+    #[test]
+    fn test_extract_password_rejects_invalid_pkcs7_padding() {
+        let with_pad = |pad: &[u8]| {
+            let mut blob = vec![0u8; EXTRACT_PREFIX_LEN];
+            blob.extend_from_slice(b"hi");
+            blob.extend_from_slice(pad);
+            blob
+        };
+
+        // pad = 0 is never valid PKCS#7.
+        assert!(
+            matches!(
+                extract_password(&with_pad(&[0u8; 6]), "test"),
+                Err(KeyringError::BadPadding { .. })
+            ),
+            "pad 0 must be refused"
+        );
+        // pad > 16 is never valid either.
+        let mut over = vec![0u8; EXTRACT_PREFIX_LEN];
+        over.extend(std::iter::repeat_n(17u8, 17));
+        assert!(
+            matches!(
+                extract_password(&over, "test"),
+                Err(KeyringError::BadPadding { .. })
+            ),
+            "pad 17 must be refused"
+        );
+        assert!(
+            matches!(
+                extract_password(&with_pad(&[255u8; 6]), "test"),
+                Err(KeyringError::BadPadding { .. })
+            ),
+            "pad 255 must be refused"
+        );
+        // A pad length that is in range but whose bytes disagree.
+        assert!(
+            matches!(
+                extract_password(&with_pad(&[4, 4, 9, 4]), "test"),
+                Err(KeyringError::BadPadding { .. })
+            ),
+            "inconsistent padding bytes must be refused"
+        );
+        // A pad that runs back into the 8-byte prefix is still ShortBlob.
+        let mut short = vec![0u8; EXTRACT_PREFIX_LEN];
+        short.extend(std::iter::repeat_n(16u8, 10));
+        assert!(matches!(
+            extract_password(&short, "test"),
+            Err(KeyringError::ShortBlob { .. })
+        ));
+        // The boundary case that IS valid: a full 16-byte pad block.
+        let mut full = vec![0u8; EXTRACT_PREFIX_LEN];
+        full.extend_from_slice(b"hi");
+        full.extend(std::iter::repeat_n(16u8, 16));
+        assert_eq!(
+            extract_password(&full, "test")
+                .expect("a full pad block is valid")
+                .as_str(),
+            "hi"
+        );
     }
 
     #[test]
