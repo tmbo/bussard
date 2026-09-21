@@ -689,7 +689,13 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
                 scene: b & 0x3f,
             })
         }
-        20 => {
+        // DPT 20 is a whole *family* of unrelated 1-octet enumerations
+        // (20.001 SCLOMode, 20.102 HVACMode, 20.105 HVACContrMode, …). Only
+        // 20.102 carries the HVAC operating mode; decoding every 20.x as an
+        // HVAC mode rendered e.g. 20.105 value 1 as "Comfort". Other subtypes
+        // have no modelled label set, so they decode as the raw enumeration
+        // code (an unsigned byte) rather than a wrong name.
+        20 if dpt.sub == Some(102) => {
             let b = *payload.first()?;
             let mode = match b {
                 0 => HvacMode::Auto,
@@ -700,6 +706,13 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
                 other => HvacMode::Unknown(other),
             };
             Some(TypedValue::HvacMode(mode))
+        }
+        20 => {
+            let b = *payload.first()?;
+            Some(TypedValue::Unsigned {
+                value: u32::from(b),
+                unit: None,
+            })
         }
         19 => {
             // DPT 19.001 DateTime: 8 octets. Layout per KNX 03/07/02:
@@ -945,11 +958,26 @@ pub fn parse_value(dpt: &Dpt, input: &str) -> Result<TypedValue, ParseValueError
             }
             Ok(TypedValue::SceneControl { learn, scene: v })
         }
-        20 => {
+        20 if dpt.sub == Some(102) => {
             let mode = parse_hvac_mode(raw).ok_or_else(|| {
                 invalid("one of auto, comfort, standby, economy, building-protection")
             })?;
             Ok(TypedValue::HvacMode(mode))
+        }
+        // Any other 20.x enumeration: bussard models no label set for it, so
+        // only the raw enumeration code is accepted (see the decode arm).
+        20 => {
+            let v: u32 = raw
+                .trim()
+                .parse()
+                .map_err(|_| invalid("an enumeration code 0-255"))?;
+            if v > 255 {
+                return Err(out_of_range("0-255"));
+            }
+            Ok(TypedValue::Unsigned {
+                value: v,
+                unit: None,
+            })
         }
         _ => Err(ParseValueError::Unsupported {
             dpt: dpt.to_string(),
@@ -1195,7 +1223,9 @@ pub fn encode(dpt: &Dpt, value: &TypedValue) -> Result<Vec<u8>, EncodeError> {
             _ => Err(mismatch()),
         },
         20 => match value {
-            TypedValue::HvacMode(mode) => {
+            // The HVAC mode is 20.102's label set; refuse to write it under a
+            // different 20.x subtype, whose codes mean something else entirely.
+            TypedValue::HvacMode(mode) if dpt.sub == Some(102) => {
                 let code = match mode {
                     HvacMode::Auto => 0,
                     HvacMode::Comfort => 1,
@@ -1205,6 +1235,16 @@ pub fn encode(dpt: &Dpt, value: &TypedValue) -> Result<Vec<u8>, EncodeError> {
                     HvacMode::Unknown(v) => *v,
                 };
                 Ok(vec![code])
+            }
+            // A raw enumeration code, for the 20.x subtypes with no label set.
+            TypedValue::Unsigned { value: v, .. } if dpt.sub != Some(102) => {
+                if *v > 255 {
+                    return Err(EncodeError::OutOfRange {
+                        dpt: dpt.to_string(),
+                        value: value.to_string(),
+                    });
+                }
+                Ok(vec![*v as u8])
             }
             _ => Err(mismatch()),
         },
@@ -1779,6 +1819,71 @@ mod tests {
                 scene: 3
             }
         );
+    }
+
+    /// Regression: every DPT 20.x used to decode/parse/encode as the 20.102
+    /// HVAC operating mode, so e.g. 20.105 (HVAC controller mode) value 1
+    /// rendered as "Comfort". Only 20.102 carries that label set; other
+    /// subtypes fall back to the raw enumeration code.
+    #[test]
+    fn test_decode_dpt20_non_102_is_not_hvac_mode() {
+        // 20.102 keeps the HVAC labels.
+        assert_eq!(
+            decode(&dpt("20.102"), &[1]),
+            TypedValue::HvacMode(HvacMode::Comfort)
+        );
+        // 20.105 value 1 is "Heat" in its own enumeration, definitely not
+        // "Comfort"; bussard models no labels for it, so it stays a raw code.
+        assert_eq!(
+            decode(&dpt("20.105"), &[1]),
+            TypedValue::Unsigned {
+                value: 1,
+                unit: None
+            }
+        );
+        // A bare `20` with no subtype is equally unidentified.
+        assert_eq!(
+            decode(&dpt("20"), &[3]),
+            TypedValue::Unsigned {
+                value: 3,
+                unit: None
+            }
+        );
+    }
+
+    #[test]
+    fn test_parse_value_dpt20_non_102_takes_raw_code() -> Result<(), ParseValueError> {
+        assert_eq!(
+            parse_value(&dpt("20.105"), "1")?,
+            TypedValue::Unsigned {
+                value: 1,
+                unit: None
+            }
+        );
+        // The HVAC words are 20.102's, not a generic 20.x vocabulary.
+        assert!(parse_value(&dpt("20.105"), "comfort").is_err());
+        assert!(parse_value(&dpt("20.105"), "256").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_encode_dpt20_non_102_rejects_hvac_mode() -> Result<(), EncodeError> {
+        assert_eq!(
+            encode(
+                &dpt("20.105"),
+                &TypedValue::Unsigned {
+                    value: 1,
+                    unit: None
+                }
+            )?,
+            vec![1u8]
+        );
+        // Writing an HVAC mode under a non-HVAC 20.x subtype is a mistake.
+        assert!(matches!(
+            encode(&dpt("20.105"), &TypedValue::HvacMode(HvacMode::Comfort)),
+            Err(EncodeError::Mismatch { .. })
+        ));
+        Ok(())
     }
 
     #[test]
