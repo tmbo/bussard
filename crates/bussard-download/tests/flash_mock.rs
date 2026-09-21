@@ -362,6 +362,19 @@ struct DeviceState {
     /// The object index of every `PID_LOAD_STATE_CONTROL` write, in order — the
     /// StartLoading / allocate / LoadCompleted targets.
     load_control_targets: Vec<u8>,
+
+    // --- KNX Data Secure (issue #71, spec §5/§6) ---
+    /// When set, the device is security-ACTIVATED: every management APDU must
+    /// arrive as an `A_SecureData` (`0x03F1`) wrapped with this tool key, and
+    /// every response is wrapped back. `None` is the plain device (the default),
+    /// whose behaviour is byte-identical to a bussard without KNX Secure.
+    secure: Option<bussard_secure::DataSecureSession>,
+    /// Secured APDUs accepted (MAC verified, sequence fresh).
+    secure_frames_accepted: u32,
+    /// Secured APDUs refused (bad MAC, stale sequence): the device drops them.
+    secure_refusals: u32,
+    /// Plain management APDUs refused because the device is activated (spec §6.4).
+    plain_refusals: u32,
 }
 
 type Shared = Arc<Mutex<DeviceState>>;
@@ -918,6 +931,87 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
     Reaction::Nak
 }
 
+/// The tool key the secure mock device is activated with (synthetic — no key
+/// material in this repository is ever derived from a real installation).
+const MOCK_TOOL_KEY: [u8; 16] = [
+    0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F,
+];
+
+/// The addressing context of a frame, as both sides reconstruct it for the CCM
+/// nonce (spec §5.4): raw source/destination, individual addressing, standard
+/// frame format, and the carrier's TPCI octet.
+fn mock_addressing(
+    source: bussard_model::IndividualAddress,
+    dest: bussard_model::IndividualAddress,
+    tpci_octet: u8,
+) -> bussard_secure::TpAddressing {
+    bussard_secure::TpAddressing {
+        source: source.raw(),
+        destination: dest.raw(),
+        address_type_group: false,
+        extended_frame_format: 0,
+        tpci: tpci_octet,
+    }
+}
+
+/// The device side of the secure seam on receive: returns the inner `(apci,
+/// data)` to dispatch, or `None` when the frame must be dropped.
+///
+/// A plain device passes everything through untouched. An activated device
+/// refuses a plain management APDU (spec §6.4) and refuses a secured one whose
+/// MAC does not verify or whose sequence is stale (spec §5.9) — in both cases by
+/// dropping the frame, which is what a real device does.
+fn unwrap_secure(
+    state: &Shared,
+    tool: bussard_model::IndividualAddress,
+    address: bussard_model::IndividualAddress,
+    tpci_octet: u8,
+    apci: u16,
+    data: &[u8],
+) -> Option<(u16, Vec<u8>)> {
+    let mut s = state.lock().unwrap();
+    let Some(session) = s.secure.as_mut() else {
+        return Some((apci, data.to_vec()));
+    };
+    if apci != bussard_secure::A_SECURE_DATA {
+        s.plain_refusals += 1;
+        return None;
+    }
+    let addr = mock_addressing(tool, address, tpci_octet);
+    match session.unwrap(&addr, apci, data) {
+        Ok(bussard_secure::UnwrapOutcome::Secured { apci, data }) => {
+            s.secure_frames_accepted += 1;
+            Some((apci, data))
+        }
+        Ok(bussard_secure::UnwrapOutcome::Plain) | Err(_) => {
+            s.secure_refusals += 1;
+            None
+        }
+    }
+}
+
+/// The device side of the secure seam on send: wraps a response for an activated
+/// device, or returns it untouched on a plain one.
+fn wrap_secure(
+    state: &Shared,
+    address: bussard_model::IndividualAddress,
+    tool: bussard_model::IndividualAddress,
+    tpci_octet: u8,
+    apci: u16,
+    data: Vec<u8>,
+) -> (u16, Vec<u8>) {
+    let mut s = state.lock().unwrap();
+    match s.secure.as_mut() {
+        None => (apci, data),
+        Some(session) => {
+            let addr = mock_addressing(address, tool, tpci_octet);
+            session
+                .wrap(&addr, apci, &data)
+                .expect("the mock device wraps its response")
+        }
+    }
+}
+
 async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, state: Shared) {
     let mut gw_seq = 0u8;
     let mut dev_seq = 0u8;
@@ -1112,9 +1206,24 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
                                 }
                             }
                         }
-                        let (req_apci, payload) = match (&cemi.tpci, &cemi.apdu) {
+                        let (wire_apci, wire_payload) = match (&cemi.tpci, &cemi.apdu) {
                             (Tpci::Other(_), Apdu::Other { apci, data }) => (*apci, data.clone()),
                             _ => continue,
+                        };
+                        // KNX Data Secure (issue #71): an activated device unwraps
+                        // A_SecureData and refuses plain management outright. A
+                        // refused frame is DROPPED — no ACK, no response — exactly
+                        // as a real activated device (and the knx-sim) behaves.
+                        let (req_apci, payload) = match unwrap_secure(
+                            &state,
+                            tool,
+                            address,
+                            cemi.tpci_octet(),
+                            wire_apci,
+                            &wire_payload,
+                        ) {
+                            Some(inner) => inner,
+                            None => continue,
                         };
                         match handle_request(&state, req_apci, &payload) {
                             Reaction::Nak => {
@@ -1131,12 +1240,13 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
                                 let ack =
                                     CemiFrame::t_control(tool, address, tpci::t_ack(client_seq));
                                 push(&gw, from, &mut gw_seq, &ack).await;
+                                // An activated device answers in kind: the response
+                                // rides back inside A_SecureData under the same key.
+                                let resp_tpci = tpci::ndt(dev_seq);
+                                let (rapci, rdata) =
+                                    wrap_secure(&state, address, tool, resp_tpci, rapci, rdata);
                                 let resp = CemiFrame::t_data_connected(
-                                    tool,
-                                    address,
-                                    tpci::ndt(dev_seq),
-                                    rapci,
-                                    &rdata,
+                                    tool, address, resp_tpci, rapci, &rdata,
                                 );
                                 push(&gw, from, &mut gw_seq, &resp).await;
                                 dev_seq = (dev_seq + 1) & 0x0f;
@@ -1205,7 +1315,22 @@ fn fresh_device(fault: Fault) -> Shared {
         loadable_object_override: None,
         pid7_reads: Vec::new(),
         load_control_targets: Vec::new(),
+        secure: None,
+        secure_frames_accepted: 0,
+        secure_refusals: 0,
+        plain_refusals: 0,
     }))
+}
+
+/// A factory-fresh System B device that is ALSO security-ACTIVATED (issue #71):
+/// it holds [`MOCK_TOOL_KEY`] and refuses any management access that does not
+/// ride `A_SecureData`.
+fn secure_device(fault: Fault) -> Shared {
+    let state = fresh_device(fault);
+    state.lock().unwrap().secure = Some(bussard_secure::DataSecureSession::new(
+        bussard_secure::Key16::new(MOCK_TOOL_KEY),
+    ));
+    state
 }
 
 /// A minimal single-application System B app: code segment (6 bytes) + parameter
@@ -2603,6 +2728,46 @@ struct LeaseConnector {
     /// mid-write silence is detected in milliseconds rather than seconds, keeping
     /// the bounded-retry give-up test fast.
     timeouts: Option<bussard_mgmt::Timeouts>,
+    /// The KNX Data Secure tool key (issue #71), `None` for the plain path. Set,
+    /// every management APDU of every connection is wrapped in `A_SecureData`.
+    secure_tool_key: Option<bussard_secure::Key16>,
+    /// The send-sequence high-water mark shared across reconnects (spec §5.9).
+    /// Without it a reconnect reseeds from the clock and replays sequences the
+    /// device has already accepted, which an activated device refuses.
+    secure_seq: bussard_secure::SequenceHighWater,
+}
+
+impl LeaseConnector {
+    /// A plain connector (no KNX Secure), as every pre-#71 test uses.
+    fn plain(
+        handle: bussard_bus::BusHandle,
+        target: bussard_model::IndividualAddress,
+        source: bussard_model::IndividualAddress,
+        timeouts: Option<bussard_mgmt::Timeouts>,
+    ) -> Self {
+        LeaseConnector {
+            handle,
+            target,
+            source,
+            timeouts,
+            secure_tool_key: None,
+            secure_seq: bussard_secure::SequenceHighWater::new(),
+        }
+    }
+
+    /// A connector that presents `key` as the target's tool key.
+    fn secure(
+        handle: bussard_bus::BusHandle,
+        target: bussard_model::IndividualAddress,
+        source: bussard_model::IndividualAddress,
+        timeouts: Option<bussard_mgmt::Timeouts>,
+        key: [u8; 16],
+    ) -> Self {
+        LeaseConnector {
+            secure_tool_key: Some(bussard_secure::Key16::new(key)),
+            ..LeaseConnector::plain(handle, target, source, timeouts)
+        }
+    }
 }
 
 impl bussard_download::Connector for LeaseConnector {
@@ -2617,11 +2782,19 @@ impl bussard_download::Connector for LeaseConnector {
             ))
         })?;
         let channel = bussard_mgmt::LeaseChannel::new(lease);
-        match self.timeouts {
-            Some(t) => Layer4Connection::connect_with(channel, self.target, self.source, t).await,
-            None => Layer4Connection::connect(channel, self.target, self.source).await,
-        }
-        .map_err(bussard_mgmt::load::WriteError::Mgmt)
+        // KNX Data Secure seam (issue #71, spec §6.1), exactly as the CLI builds
+        // it: plain when no tool key is set, wrapped when one is.
+        let secure = match &self.secure_tool_key {
+            None => bussard_mgmt::SecureLayer::plain(),
+            Some(key) => bussard_mgmt::SecureLayer::activated(
+                bussard_secure::DataSecureSession::new(key.clone())
+                    .with_high_water(self.secure_seq.clone()),
+            ),
+        };
+        let timeouts = self.timeouts.unwrap_or_default();
+        Layer4Connection::connect_with_secure(channel, self.target, self.source, timeouts, secure)
+            .await
+            .map_err(bussard_mgmt::load::WriteError::Mgmt)
     }
 }
 
@@ -2629,9 +2802,16 @@ impl bussard_download::Connector for LeaseConnector {
 /// and shared device state. The caller drives the flash through a leasing
 /// [`Session`] so it can reconnect.
 async fn setup_bus(fault: Fault) -> (bussard_bus::BusHandle, Shared, tokio::task::JoinHandle<()>) {
+    setup_bus_with(fresh_device(fault)).await
+}
+
+/// [`setup_bus`] over a caller-built device, so a test can start from a
+/// security-activated mock ([`secure_device`]).
+async fn setup_bus_with(
+    state: Shared,
+) -> (bussard_bus::BusHandle, Shared, tokio::task::JoinHandle<()>) {
     let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let port = sock.local_addr().unwrap().port();
-    let state = fresh_device(fault);
     let addr: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
     let gw = tokio::spawn(run_gateway(sock, addr, Arc::clone(&state)));
     let (handle, _actor) = bussard_bus::Bus::connect(ConnectionConfig::tunnel(
@@ -2701,12 +2881,7 @@ async fn flash_master_reset_reconnects_and_reaches_loaded() {
         }
     ));
 
-    let connector = LeaseConnector {
-        handle: handle.clone(),
-        target,
-        source,
-        timeouts: None,
-    };
+    let connector = LeaseConnector::plain(handle.clone(), target, source, None);
     let mut session = Session::open_with_key(connector, None).await.unwrap();
     let outcome = flash(
         &mut session,
@@ -2856,12 +3031,7 @@ async fn flash_cycles_l4_connection_before_the_exchange_budget_and_reaches_loade
             &BTreeMap::new(),
         )
         .unwrap();
-        let connector = LeaseConnector {
-            handle: handle.clone(),
-            target,
-            source,
-            timeouts: None,
-        };
+        let connector = LeaseConnector::plain(handle.clone(), target, source, None);
         let mut session = Session::open_with_key(connector, None).await.unwrap();
         let outcome = flash(
             &mut session,
@@ -2909,12 +3079,7 @@ async fn flash_cycles_l4_connection_before_the_exchange_budget_and_reaches_loade
             &BTreeMap::new(),
         )
         .unwrap();
-        let connector = LeaseConnector {
-            handle: handle.clone(),
-            target,
-            source,
-            timeouts: None,
-        };
+        let connector = LeaseConnector::plain(handle.clone(), target, source, None);
         let mut session = Session::open_with_key(connector, None).await.unwrap();
         let outcome = flash(
             &mut session,
@@ -3000,12 +3165,7 @@ async fn authorize_is_cached_and_not_repeated_on_a_device_without_authorize() {
         &BTreeMap::new(),
     )
     .unwrap();
-    let connector = LeaseConnector {
-        handle: handle.clone(),
-        target,
-        source,
-        timeouts: None,
-    };
+    let connector = LeaseConnector::plain(handle.clone(), target, source, None);
     let mut session = Session::open_with_key(connector, None).await.unwrap();
     let outcome = flash(
         &mut session,
@@ -3118,12 +3278,7 @@ async fn flash_resumes_when_connection_drops_inside_a_write() {
         &BTreeMap::new(),
     )
     .unwrap();
-    let connector = LeaseConnector {
-        handle: handle.clone(),
-        target,
-        source,
-        timeouts: Some(fast_timeouts()),
-    };
+    let connector = LeaseConnector::plain(handle.clone(), target, source, Some(fast_timeouts()));
     let mut session = Session::open_with_key(connector, None).await.unwrap();
     let outcome = flash(
         &mut session,
@@ -3207,12 +3362,7 @@ async fn flash_gives_up_cleanly_when_a_device_never_makes_progress() {
         &BTreeMap::new(),
     )
     .unwrap();
-    let connector = LeaseConnector {
-        handle: handle.clone(),
-        target,
-        source,
-        timeouts: Some(fast_timeouts()),
-    };
+    let connector = LeaseConnector::plain(handle.clone(), target, source, Some(fast_timeouts()));
     let mut session = Session::open_with_key(connector, None).await.unwrap();
     // Bound the wall-clock so a regression that loops forever fails the test loudly
     // rather than hanging: the give-up must happen within a handful of reconnects.
@@ -3287,12 +3437,7 @@ async fn flash_final_restart_silence_is_success_not_failure() {
         "the fabricated procedure ends with a restart"
     );
 
-    let connector = LeaseConnector {
-        handle: handle.clone(),
-        target,
-        source,
-        timeouts: None,
-    };
+    let connector = LeaseConnector::plain(handle.clone(), target, source, None);
     let mut session = Session::open_with_key(connector, None).await.unwrap();
     let outcome = flash(
         &mut session,
@@ -3347,12 +3492,7 @@ async fn flash_verifies_after_terminal_restart_when_it_can_reconnect() {
     )
     .unwrap();
 
-    let connector = LeaseConnector {
-        handle: handle.clone(),
-        target,
-        source,
-        timeouts: None,
-    };
+    let connector = LeaseConnector::plain(handle.clone(), target, source, None);
     let mut session = Session::open_with_key(connector, None).await.unwrap();
     let outcome = flash(
         &mut session,
@@ -3423,12 +3563,7 @@ async fn flash_fails_when_load_does_not_persist_across_the_restart() {
     )
     .unwrap();
 
-    let connector = LeaseConnector {
-        handle: handle.clone(),
-        target,
-        source,
-        timeouts: None,
-    };
+    let connector = LeaseConnector::plain(handle.clone(), target, source, None);
     let mut session = Session::open_with_key(connector, None).await.unwrap();
     let outcome = flash(
         &mut session,
@@ -3762,12 +3897,7 @@ async fn flash_da_tp_programs_all_four_objects() {
     )
     .unwrap();
 
-    let connector = LeaseConnector {
-        handle: handle.clone(),
-        target,
-        source,
-        timeouts: None,
-    };
+    let connector = LeaseConnector::plain(handle.clone(), target, source, None);
     let mut session = Session::open_with_key(connector, None).await.unwrap();
     let outcome = flash(
         &mut session,
@@ -4063,4 +4193,247 @@ async fn flash_small_image_stays_on_the_plain_write_path() {
         "the small image is streamed with the plain A_Memory_Write"
     );
     handle.abort();
+}
+
+// ===========================================================================
+// KNX Data Secure (issue #71, spec §5/§6): flashing a security-ACTIVATED device
+// through A_SecureData tool-access.
+//
+// The mock device holds a synthetic tool key, unwraps every management APDU and
+// wraps every response; it refuses (drops) a plain APDU and one whose MAC does
+// not verify, exactly as the knx-sim's activated device and a real device do.
+// The cross-implementation half of this lives in `knx-sim/examples/secure/run.sh`
+// (bussard against the independent simulator); these tests keep the seam guarded
+// in `cargo nextest` without the external simulator.
+// ===========================================================================
+
+/// The acceptance case: a security-activated device is flashed to a verified
+/// `Loaded` with every management APDU wrapped in A_SecureData, and the device
+/// never sees a plain management APDU.
+#[tokio::test]
+async fn flash_secure_reaches_loaded_with_every_apdu_wrapped() {
+    let (handle, state, gw) = setup_bus_with(secure_device(Fault::None)).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source = bussard_bus::ops::group_source(&handle);
+
+    let app = fabricated_app();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+
+    let connector = LeaseConnector::secure(
+        handle.clone(),
+        target,
+        source,
+        Some(fast_timeouts()),
+        MOCK_TOOL_KEY,
+    );
+    let mut session = Session::open_with_key(connector, Some(0xFFFF_FFFF))
+        .await
+        .expect("the secure authorize is granted");
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .expect("the secure flash completes");
+    let _ = session.into_disconnect().await;
+
+    assert!(outcome.ok(), "secure flash must verify: {outcome:?}");
+    assert_eq!(outcome.load_state, LoadState::Loaded);
+    {
+        let s = state.lock().unwrap();
+        assert!(
+            s.secure_frames_accepted > 10,
+            "every management APDU must have been wrapped (accepted = {})",
+            s.secure_frames_accepted
+        );
+        assert_eq!(s.plain_refusals, 0, "no plain APDU may reach the device");
+        assert_eq!(s.secure_refusals, 0, "no secured APDU may be refused");
+        // The image really landed: the code segment is at the allocated base.
+        let code: Vec<u8> = (0x4000u32..0x4006)
+            .map(|a| *s.memory.get(&a).unwrap_or(&0))
+            .collect();
+        assert_eq!(code, vec![0, 1, 2, 3, 4, 5]);
+    }
+    gw.abort();
+}
+
+/// REGRESSION (spec §5.9): a flash that reconnects mid-procedure must CONTINUE
+/// its Data Secure send sequence, not reseed it from the clock. The send counter
+/// runs far ahead of the millisecond clock, so a clock-reseeded session replays
+/// sequences the device has already accepted and the device refuses every one of
+/// them — the divergence the knx-sim conformance loop caught.
+#[tokio::test]
+async fn flash_secure_master_reset_reconnect_keeps_the_sequence_monotonic() {
+    // Shorten the reboot wait so the test does not stall.
+    // SAFETY of env: this test binds its own socket/actor; the var only shortens
+    // a sleep and is read once per master-reset step.
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
+    }
+    let (handle, state, gw) = setup_bus_with(secure_device(Fault::None)).await;
+    state.lock().unwrap().wipe_app_on_master_reset = true;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source = bussard_bus::ops::group_source(&handle);
+
+    let app = app_with_master_reset();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+
+    // A short-but-not-tiny L4 budget: the happy path never waits on it, and a
+    // regression (a reconnect that replays sequences, which the device refuses by
+    // going silent) fails in seconds instead of minutes.
+    let budget = bussard_mgmt::Timeouts {
+        ack_timeout: Duration::from_millis(300),
+        max_repetitions: 1,
+        response_timeout: Duration::from_millis(300),
+    };
+    let connector =
+        LeaseConnector::secure(handle.clone(), target, source, Some(budget), MOCK_TOOL_KEY);
+    let mut session = Session::open_with_key(connector, Some(0xFFFF_FFFF))
+        .await
+        .expect("the secure authorize is granted");
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .expect("the secure flash survives the reconnect");
+    let _ = session.into_disconnect().await;
+
+    assert!(outcome.ok(), "secure flash must verify: {outcome:?}");
+    assert_eq!(outcome.load_state, LoadState::Loaded);
+    {
+        let s = state.lock().unwrap();
+        assert!(
+            s.connects >= 2,
+            "the master reset must have forced a reconnect (connects = {})",
+            s.connects
+        );
+        assert_eq!(
+            s.secure_refusals, 0,
+            "a reconnected session must not replay a stale sequence"
+        );
+    }
+    gw.abort();
+}
+
+/// NEGATIVE (spec §6.4): plain management against an activated device is refused
+/// outright — the device drops every frame, the flash fails, and nothing is
+/// written.
+#[tokio::test]
+async fn flash_plain_against_an_activated_device_is_refused() {
+    let (handle, state, gw) = setup_bus_with(secure_device(Fault::None)).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source = bussard_bus::ops::group_source(&handle);
+
+    let app = fabricated_app();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+
+    // A PLAIN connector against the activated device. The authorize itself is
+    // tolerated as "device does not implement authorize" (a silent device is
+    // indistinguishable from one without the service), so the refusal surfaces on
+    // the first real management step of the flash.
+    let connector = LeaseConnector::plain(handle.clone(), target, source, Some(fast_timeouts()));
+    let mut session = Session::open_with_key(connector, Some(0xFFFF_FFFF))
+        .await
+        .expect("the session opens; the device simply never answers");
+    let err = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .expect_err("a plain flash of an activated device must fail");
+    let _ = session.into_disconnect().await;
+    {
+        let s = state.lock().unwrap();
+        assert!(
+            s.plain_refusals > 0,
+            "the device must have refused the plain access"
+        );
+        assert!(s.memory.is_empty(), "nothing may be written: {err:?}");
+    }
+    gw.abort();
+}
+
+/// NEGATIVE (spec §5.6): a WRONG tool key fails the MAC on the device, which
+/// drops the frame. The flash fails cleanly and nothing is written.
+#[tokio::test]
+async fn flash_with_a_wrong_tool_key_is_refused() {
+    let (handle, state, gw) = setup_bus_with(secure_device(Fault::None)).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source = bussard_bus::ops::group_source(&handle);
+
+    let app = fabricated_app();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+
+    let connector = LeaseConnector::secure(
+        handle.clone(),
+        target,
+        source,
+        Some(fast_timeouts()),
+        [0xAA; 16], // NOT the device's tool key
+    );
+    let mut session = Session::open_with_key(connector, Some(0xFFFF_FFFF))
+        .await
+        .expect("the session opens; the device simply never answers");
+    let err = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .expect_err("a wrong tool key must fail the flash");
+    let _ = session.into_disconnect().await;
+    {
+        let s = state.lock().unwrap();
+        assert!(
+            s.secure_refusals > 0,
+            "the device must have refused the MAC"
+        );
+        assert_eq!(s.secure_frames_accepted, 0, "nothing may authenticate");
+        assert!(s.memory.is_empty(), "nothing may be written: {err:?}");
+    }
+    gw.abort();
 }
