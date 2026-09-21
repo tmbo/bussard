@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use crate::asdu::{self, AsduError, Scf, SecurityAlgorithm, TpAddressing};
 use crate::key::Key16;
-use crate::sequence::Sequence;
+use crate::sequence::{Sequence, SequenceHighWater};
 
 /// A live Data Secure session against one device, keyed by its tool key.
 ///
@@ -28,6 +28,9 @@ pub struct DataSecureSession {
     send_seq: Sequence,
     /// Last-seen sequence per source IA (raw 16-bit), for replay protection.
     last_seen: HashMap<u16, Sequence>,
+    /// The shared per-device send high-water mark, when the caller keeps one
+    /// across connections (spec §5.9). Updated on every wrap.
+    high_water: Option<SequenceHighWater>,
 }
 
 impl DataSecureSession {
@@ -40,7 +43,20 @@ impl DataSecureSession {
             algorithm: SecurityAlgorithm::AuthenticationEncryption,
             send_seq: Sequence::now(),
             last_seen: HashMap::new(),
+            high_water: None,
         }
+    }
+
+    /// Ties this session to a shared per-device send high-water mark (spec §5.9).
+    ///
+    /// The send sequence is seeded from `high_water.next_seed()` — i.e.
+    /// `max(clock, last_sent + 1)` — and every wrapped APDU is recorded back into
+    /// it. Give every session for the same device the same clone and a reconnect
+    /// can never replay a sequence the device has already accepted.
+    pub fn with_high_water(mut self, high_water: SequenceHighWater) -> Self {
+        self.send_seq = high_water.next_seed();
+        self.high_water = Some(high_water);
+        self
     }
 
     /// Sets the initial send sequence exactly (spec §5.9 send-side persistence).
@@ -84,6 +100,9 @@ impl DataSecureSession {
         let scf = Scf::tool_data(self.algorithm);
         let seq = self.send_seq;
         let asdu = asdu::encode(&self.tool_key, scf, seq, addr, apci, data)?;
+        if let Some(hw) = &self.high_water {
+            hw.observe(seq);
+        }
         self.send_seq = self.send_seq.next();
         Ok((asdu::A_SECURE_DATA, asdu))
     }
@@ -228,6 +247,27 @@ mod tests {
         let mut device = DataSecureSession::new(Key16::new([0u8; 16]));
         let outcome = device.unwrap(&addr(0x1101), 0x340, &[0x07, 0xB0]).unwrap();
         assert_eq!(outcome, UnwrapOutcome::Plain);
+    }
+
+    /// Spec §5.9: a second session for the same device continues above the first
+    /// one's sequences instead of reseeding from the clock (which an activated
+    /// device refuses as stale).
+    #[test]
+    fn test_high_water_makes_reconnects_monotonic() {
+        let hw = crate::sequence::SequenceHighWater::new();
+        let mut first = DataSecureSession::new(Key16::new([0x24; 16])).with_high_water(hw.clone());
+        let a = addr(0x1101);
+        // Burn a few hundred sequences, far faster than the clock advances.
+        for _ in 0..500 {
+            first.wrap(&a, 0x280, &[0x00, 0x10]).expect("wrap");
+        }
+        let after_first = hw.last_sent();
+        // A reconnect builds a fresh session from the same high-water mark.
+        let second = DataSecureSession::new(Key16::new([0x24; 16])).with_high_water(hw.clone());
+        assert!(
+            second.send_sequence().value() > after_first,
+            "a reconnect must not replay sequences the device already accepted"
+        );
     }
 
     #[test]

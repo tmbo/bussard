@@ -6,6 +6,8 @@
 //! than the last it accepted from that source, so a sender must never replay a
 //! lower value (spec §5.9).
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Milliseconds between the Unix epoch and the KNX Secure epoch
@@ -70,9 +72,84 @@ impl Sequence {
     }
 }
 
+/// A shared, monotonic high-water mark of the last sequence sent to one device
+/// (spec §5.9, send side).
+///
+/// A device refuses any sequence that is not strictly greater than the last it
+/// accepted, and the send counter runs ahead of the clock as soon as more than
+/// one APDU is sent per millisecond. So a *new* session — after a reconnect, a
+/// device restart, or simply a second management command in the same run —
+/// must NOT reseed from the clock alone: that replays values the device has
+/// already accepted and it refuses every one of them.
+///
+/// [`SequenceHighWater`] is the small piece of state that survives a connection:
+/// clone it into every [`DataSecureSession`](crate::session::DataSecureSession)
+/// for the same device and each new session seeds from
+/// `max(clock, last_sent + 1)`.
+///
+/// Cross-*process* monotonicity still rests on the clock (a later run starts
+/// with a later millisecond count) or, ultimately, on the Sync preamble of spec
+/// §6.3, which is not implemented yet; see the `SEC-CAL:` note there.
+#[derive(Debug, Clone, Default)]
+pub struct SequenceHighWater(Arc<AtomicU64>);
+
+impl SequenceHighWater {
+    /// A fresh high-water mark that has seen nothing yet.
+    pub fn new() -> Self {
+        SequenceHighWater(Arc::new(AtomicU64::new(0)))
+    }
+
+    /// The seed a new session should start from: `max(clock, last_sent + 1)`.
+    pub fn next_seed(&self) -> Sequence {
+        let last = self.0.load(Ordering::SeqCst);
+        let clock = Sequence::now().value();
+        Sequence::new(clock.max(last.saturating_add(1)))
+    }
+
+    /// Records a sequence that has been put on the wire. Never moves backwards.
+    pub fn observe(&self, seq: Sequence) {
+        self.0.fetch_max(seq.value(), Ordering::SeqCst);
+    }
+
+    /// The highest sequence recorded so far (`0` if none).
+    pub fn last_sent(&self) -> u64 {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A second session must never reuse a sequence the first one already sent:
+    /// the clock alone is not monotonic enough once the counter runs ahead of it.
+    #[test]
+    fn test_high_water_seeds_above_the_last_sent() {
+        let hw = SequenceHighWater::new();
+        // A first session that ran far ahead of the clock.
+        let ahead = Sequence::new(Sequence::now().value() + 5_000);
+        hw.observe(ahead);
+        assert!(
+            hw.next_seed() > ahead,
+            "a new session must seed strictly above the last sent sequence"
+        );
+    }
+
+    #[test]
+    fn test_high_water_falls_back_to_the_clock() {
+        let hw = SequenceHighWater::new();
+        // Nothing sent yet: the seed is the clock (spec §5.8).
+        assert!(hw.next_seed().value() >= Sequence::now().value().saturating_sub(1_000));
+        assert_eq!(hw.last_sent(), 0);
+    }
+
+    #[test]
+    fn test_high_water_never_moves_backwards() {
+        let hw = SequenceHighWater::new();
+        hw.observe(Sequence::new(500));
+        hw.observe(Sequence::new(100));
+        assert_eq!(hw.last_sent(), 500);
+    }
 
     #[test]
     fn test_epoch_constant() {
