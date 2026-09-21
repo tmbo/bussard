@@ -47,7 +47,7 @@ fn model() -> Model {
     groups.insert(
         ga("3/0/4"),
         Group {
-            name: "Jalousie Wohnen Süd — Auf/Ab".to_string(),
+            name: "Living Room Blind Move".to_string(),
             dpt: Some("1.008".parse().unwrap()),
             description: None,
             protected: false,

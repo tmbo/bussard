@@ -21,14 +21,14 @@ Two things protect you:
 
 1. **Every write names its gateway.** The confirmation prompt echoes the
    resolved gateway as `host:port` (for example
-   `write 3/0/4 <- down (1.008) via 192.168.1.74:3671? [y/N]`). Read it before
+   `write 3/0/4 <- down (1.008) via 192.0.2.10:3671? [y/N]`). Read it before
    you type `y`. If the address is not the one you expect, abort.
 
 2. **Non-loopback gateways are refused by default.** A write whose resolved
    gateway is *not* loopback (not `127.0.0.0/8`, not `::1`) refuses to run:
 
    ```
-   refusing to write to non-loopback gateway 192.168.1.74:3671: this looks
+   refusing to write to non-loopback gateway 192.0.2.10:3671: this looks
    like a real KNX bus. If you really mean to write to it, re-run with
    --allow-remote-gateway or set BUSSARD_ALLOW_REAL_GATEWAY=1.
    ```

@@ -33,20 +33,20 @@ All the configuration for your KNX setup is stored in YAML files, ready for your
 Have an ETS export? Import it and watch your bus decode itself:
 
 ```console
-$ bussard import home.knxproj
-imported 421 group addresses, 46 devices, 531 link entries → knx
+$ bussard import demo-house.knxproj
+imported 33 group addresses, 10 devices, 55 link entries → knx
 $ bussard validate
-0 errors, 51 warnings
+0 errors, 4 warnings
 $ bussard monitor
-12:03:44.809  1.1.12 Taster Flur EG  → 1/0/1 Licht Flur         = On (1.001, obj "Taste 1")
-12:03:44.981  1.1.7 Schaltaktor UV   → 1/0/2 Licht Flur Status  = On (1.001)
+12:03:44.809  1.1.1 Push Button Hallway → 0/0/0 Hallway Light Switch = On (1.001, obj "Rocker 1")
+12:03:44.981  1.1.3 Switch Actuator     → 0/0/1 Hallway Light Status = On (1.001)
 ```
 
 No ETS project? Start empty and adopt devices as you go:
 
 ```console
 $ bussard init
-Found gateway: KNX IP Interface (192.168.1.74:3671, IA 1.1.250)
+Found gateway: KNX IP Interface (192.0.2.10:3671, IA 1.1.250)
 Created a fresh KNX model in knx.
 $ bussard adopt --product actuator.knxprod    # press the programming button
 adopted 15.15.255 → 1.1.5

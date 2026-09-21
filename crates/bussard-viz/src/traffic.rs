@@ -457,9 +457,9 @@ mod tests {
         DecodedTelegram {
             timestamp: SystemTime::UNIX_EPOCH,
             source: ia("1.1.30"),
-            source_name: Some("Meteodata".to_string()),
+            source_name: Some("Weather Station".to_string()),
             destination: DestinationRef::Group(ga(dest)),
-            destination_name: Some("Windalarm".to_string()),
+            destination_name: Some("Wind Alarm".to_string()),
             apci,
             payload: vec![1],
             value,

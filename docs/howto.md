@@ -14,9 +14,9 @@ A word on safety before the writing recipes: every bus-writing command reads the
 
 ```console
 $ bussard monitor
-12:03:41.221  1.1.30 Meteodata          → 3/2/0 Windalarm            = Alarm (1.005, obj "Windalarm 1")
-12:03:44.809  1.1.12 Taster Flur EG     → 1/0/1 Licht Flur           = On (1.001, obj "Taste 1")
-12:03:44.981  1.1.7 Schaltaktor UV      → 1/0/2 Licht Flur Status    = On (1.001)
+12:03:41.221  1.1.7 Weather Station    → 3/0/0 Wind Alarm           = Alarm (1.005, obj "Wind Alarm")
+12:03:44.809  1.1.1 Push Button Hallway → 0/0/0 Hallway Light Switch = On (1.001, obj "Rocker 1")
+12:03:44.981  1.1.3 Switch Actuator     → 0/0/1 Hallway Light Status = On (1.001)
 ```
 
 Every telegram resolves to its GA name, the sending device, and a typed value. Flip a switch and watch it name itself. Narrow the stream with `--filter 3/2/0,1/0/` (GAs, GA prefixes, or sender IAs); `--json` emits one JSON object per line for tooling. GAs missing from the model show as raw hex; add them to `groups.yaml` with a `dpt:` and re-run.
@@ -144,7 +144,7 @@ The output is a complete `knx:` document; `!include` it or paste it into your Ho
 ```console
 $ bussard init
 Searching for KNXnet/IP gateways on the local network...
-Found gateway: KNX IP Interface (192.168.1.74:3671, IA 1.1.250)
+Found gateway: KNX IP Interface (192.0.2.10:3671, IA 1.1.250)
 
 Created a fresh KNX model in knx.
 ```
