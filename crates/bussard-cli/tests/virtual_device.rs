@@ -248,6 +248,11 @@ fn bussard(args: &[&str]) -> (bool, String, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_bussard"))
         .args(args)
         .arg("--routing")
+        // Routing counts as non-loopback for the write gate (issue #74): a
+        // multicast write does reach a real bus. Here it reaches only the veth
+        // namespace holding the interop device, so the harness opts in
+        // explicitly; without it every write refuses before it starts.
+        .env("BUSSARD_ALLOW_REAL_GATEWAY", "1")
         .env("BUSSARD_ASSIGN_WAIT_MS", assign_wait)
         .env("BUSSARD_SCAN_DISCOVERY_MS", scan_disc)
         .stdin(Stdio::null())
@@ -289,13 +294,14 @@ fn ladder_against_thelsing_knx_linux_ip() {
     std::thread::sleep(Duration::from_millis(1500));
 
     // --- Rung (a)+(b): assign finds the fresh device and writes its address ---
-    // `assign <addr> --routing` is non-interactive-safe with an explicit address
-    // (no TTY confirmation needed), so it drives cleanly from the test harness.
-    // It internally does the programming-mode broadcast read (rung a) and then the
-    // A_IndividualAddress_Write + descriptor-read verify (rung b).
+    // It internally does the programming-mode broadcast read (rung a) and then
+    // the A_IndividualAddress_Write + descriptor-read verify (rung b).
+    //
+    // `--yes` is required: an explicit address stopped being consent in issue
+    // #74, so a non-TTY assign without it refuses before touching the bus.
     let tmp = TmpDir::new("model").expect("model dir");
     let dir = tmp.path().join("knx");
-    let (ok, out, err) = bussard(&["assign", assigned, "--dir", dir.to_str().unwrap()]);
+    let (ok, out, err) = bussard(&["assign", assigned, "--yes", "--dir", dir.to_str().unwrap()]);
     eprintln!("--- assign stdout ---\n{out}\n--- assign stderr ---\n{err}");
     if !ok {
         device.dump_log();

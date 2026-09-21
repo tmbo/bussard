@@ -6,6 +6,17 @@ name: Build binaries
 on:
   workflow_dispatch:
 
+# Nothing here writes to the repository: it builds binaries and uploads them as
+# run artifacts, which needs no repository write scope.
+permissions:
+  contents: read
+
+# One build per ref at a time. A second dispatch supersedes the first rather
+# than racing it for the same artifact names.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
@@ -14,6 +25,7 @@ jobs:
   build:
     name: build (${{ matrix.artifact }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
