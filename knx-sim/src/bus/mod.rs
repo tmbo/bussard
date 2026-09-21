@@ -63,6 +63,13 @@ impl Bus {
             return self.deliver_individual_address_read();
         }
 
+        // A broadcast A_IndividualAddress_Write (a group frame to 0/0/0 carrying
+        // the new 2-byte address) is adopted by the device currently in
+        // programming mode. This is `bussard assign`'s write step.
+        if let Some(new_address) = individual_address_write_target(cemi) {
+            return self.deliver_individual_address_write(new_address);
+        }
+
         if cemi.is_group() {
             return self.deliver_group(cemi);
         }
@@ -187,6 +194,53 @@ impl Bus {
             }
         }
         responses
+    }
+
+    /// Apply a broadcast `A_IndividualAddress_Write`: the device currently in
+    /// programming mode adopts `new_address` and is re-keyed under it, so every
+    /// subsequent individually-addressed telegram reaches it at its new address.
+    /// The service defines no response, so this always returns no telegrams.
+    ///
+    /// Strictness: the write is refused (with a warning on the log) unless
+    /// **exactly one** device is in programming mode, and unless `new_address`
+    /// is free. Addressing two devices identically, or colliding with a device
+    /// that is already there, is precisely the mistake a tool must not make —
+    /// `bussard assign` guarantees a single responder before sending this — and
+    /// the bus keys devices by address, so silently letting one overwrite the
+    /// other would hide the bug instead of exposing it.
+    fn deliver_individual_address_write(
+        &mut self,
+        new_address: IndividualAddress,
+    ) -> Vec<CemiLData> {
+        let in_prog: Vec<IndividualAddress> = self
+            .devices
+            .iter()
+            .filter(|(_, dev)| dev.prog_mode())
+            .map(|(addr, _)| *addr)
+            .collect();
+        let [old_address] = in_prog[..] else {
+            if !in_prog.is_empty() {
+                tracing::warn!(
+                    count = in_prog.len(),
+                    %new_address,
+                    "refusing A_IndividualAddress_Write: more than one device is in programming mode"
+                );
+            }
+            return Vec::new();
+        };
+        if old_address != new_address && self.devices.contains_key(&new_address) {
+            tracing::warn!(
+                %old_address,
+                %new_address,
+                "refusing A_IndividualAddress_Write: another device already holds that address"
+            );
+            return Vec::new();
+        }
+        if let Some(mut dev) = self.devices.remove(&old_address) {
+            dev.adopt_individual_address(new_address);
+            self.devices.insert(dev.address(), dev);
+        }
+        Vec::new()
     }
 
     /// Broadcast a device-originated group telegram (e.g. scripted stimulus) onto
@@ -323,6 +377,24 @@ fn is_individual_address_read(cemi: &CemiLData) -> bool {
     Apci::from_u10(apci10) == Apci::IndividualAddressRead
 }
 
+/// The new individual address carried by a broadcast `A_IndividualAddress_Write`
+/// — a group frame to the broadcast group address `0/0/0` whose APCI decodes to
+/// [`Apci::IndividualAddressWrite`] and whose payload is the 2-byte raw address.
+/// `None` for anything else, including a write whose payload is too short.
+fn individual_address_write_target(cemi: &CemiLData) -> Option<IndividualAddress> {
+    if !cemi.is_group() || cemi.dest != 0x0000 || cemi.tpdu.len() < 4 {
+        return None;
+    }
+    let apci10 = ((cemi.tpdu[0] as u16 & 0x03) << 8) | cemi.tpdu[1] as u16;
+    if Apci::from_u10(apci10) != Apci::IndividualAddressWrite {
+        return None;
+    }
+    Some(IndividualAddress(u16::from_be_bytes([
+        cemi.tpdu[2],
+        cemi.tpdu[3],
+    ])))
+}
+
 /// A short human summary of a telegram for the event log.
 fn summarize(cemi: &CemiLData) -> String {
     let src = cemi.source;
@@ -419,6 +491,135 @@ mod tests {
         assert_eq!(resp.dest, 0x0000);
         let apci10 = ((resp.tpdu[0] as u16 & 0x03) << 8) | resp.tpdu[1] as u16;
         assert_eq!(Apci::from_u10(apci10), Apci::IndividualAddressResponse);
+        Ok(())
+    }
+
+    /// A broadcast `A_IndividualAddress_Write` from the tool, exactly as
+    /// `bussard assign` puts it on the bus: a group frame to `0/0/0` whose
+    /// payload is the raw 2-byte new address.
+    fn individual_address_write(new_address: IndividualAddress) -> CemiLData {
+        let apci10 = Apci::IndividualAddressWrite.to_u10();
+        let mut tpdu = vec![(apci10 >> 8) as u8 & 0x03, (apci10 & 0xFF) as u8];
+        tpdu.extend_from_slice(&new_address.raw().to_be_bytes());
+        CemiLData {
+            message_code: MessageCode::LDataReq,
+            ctrl1: 0xbc,
+            ctrl2: 0xe0, // group destination bit set (broadcast)
+            source: IndividualAddress::new(0, 0, 255),
+            dest: 0x0000,
+            tpdu,
+        }
+    }
+
+    #[test]
+    fn test_broadcast_individual_address_write_is_adopted_in_programming_mode()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // The device in programming mode adopts the broadcast address; the quiet
+        // one keeps its own. Afterwards the device answers at the NEW address and
+        // is gone from the old one — the property `bussard assign` verifies.
+        let sink = Arc::new(RecordingSink::new());
+        let old = IndividualAddress::new(15, 15, 255);
+        let quiet = IndividualAddress::new(1, 1, 3);
+        let new = IndividualAddress::new(1, 1, 9);
+        let mut bus = Bus::new(sink.clone());
+        bus.add_device(prog_device(old, true, sink.clone())?);
+        bus.add_device(prog_device(quiet, false, sink.clone())?);
+
+        let responses = bus.deliver_from_tool(&individual_address_write(new));
+        assert!(responses.is_empty(), "the service defines no response");
+        assert!(bus.device(old).is_none(), "the old address is vacated");
+        assert_eq!(bus.device(new).map(|d| d.address()), Some(new));
+        assert_eq!(
+            bus.device(quiet).map(|d| d.address()),
+            Some(quiet),
+            "a device not in programming mode ignores the broadcast"
+        );
+        // The discovery read now reports the new address.
+        let found = bus.deliver_from_tool(&individual_address_read());
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].source, new);
+        assert!(sink.events().iter().any(|e| matches!(
+            e,
+            Event::AddressChanged { device, new_address }
+                if *device == old && *new_address == new
+        )));
+        Ok(())
+    }
+
+    #[test]
+    fn test_broadcast_individual_address_write_ignored_when_none_programming()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let sink = Arc::new(RecordingSink::new());
+        let addr = IndividualAddress::new(1, 1, 2);
+        let mut bus = Bus::new(sink.clone());
+        bus.add_device(prog_device(addr, false, sink.clone())?);
+        bus.deliver_from_tool(&individual_address_write(IndividualAddress::new(1, 1, 9)));
+        assert_eq!(bus.device(addr).map(|d| d.address()), Some(addr));
+        assert!(bus.device(IndividualAddress::new(1, 1, 9)).is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_broadcast_individual_address_write_refused_with_two_responders()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Two devices in programming mode would be addressed identically. The sim
+        // refuses rather than silently merging them, so the tool bug is visible.
+        let sink = Arc::new(RecordingSink::new());
+        let a = IndividualAddress::new(15, 15, 254);
+        let b = IndividualAddress::new(15, 15, 255);
+        let mut bus = Bus::new(sink.clone());
+        bus.add_device(prog_device(a, true, sink.clone())?);
+        bus.add_device(prog_device(b, true, sink.clone())?);
+        bus.deliver_from_tool(&individual_address_write(IndividualAddress::new(1, 1, 9)));
+        assert_eq!(bus.device_count(), 2, "both devices still on the bus");
+        assert!(bus.device(a).is_some() && bus.device(b).is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn test_broadcast_individual_address_write_refused_on_collision()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // The requested address is already taken by another device: refuse, so
+        // the existing device is not evicted from the bus.
+        let sink = Arc::new(RecordingSink::new());
+        let programming = IndividualAddress::new(15, 15, 255);
+        let taken = IndividualAddress::new(1, 1, 9);
+        let mut bus = Bus::new(sink.clone());
+        bus.add_device(prog_device(programming, true, sink.clone())?);
+        bus.add_device(prog_device(taken, false, sink.clone())?);
+        bus.deliver_from_tool(&individual_address_write(taken));
+        assert_eq!(bus.device_count(), 2);
+        assert_eq!(
+            bus.device(programming).map(|d| d.address()),
+            Some(programming)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_broadcast_individual_address_write_ignores_short_payload()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A write with no (or a 1-byte) address payload is not an address write:
+        // it must be ignored, never read past the TPDU.
+        let sink = Arc::new(RecordingSink::new());
+        let addr = IndividualAddress::new(15, 15, 255);
+        let mut bus = Bus::new(sink.clone());
+        bus.add_device(prog_device(addr, true, sink.clone())?);
+        let apci10 = Apci::IndividualAddressWrite.to_u10();
+        for tail in [vec![], vec![0x11u8]] {
+            let mut tpdu = vec![(apci10 >> 8) as u8 & 0x03, (apci10 & 0xFF) as u8];
+            tpdu.extend_from_slice(&tail);
+            let cemi = CemiLData {
+                message_code: MessageCode::LDataReq,
+                ctrl1: 0xbc,
+                ctrl2: 0xe0,
+                source: IndividualAddress::new(0, 0, 255),
+                dest: 0x0000,
+                tpdu,
+            };
+            bus.deliver_from_tool(&cemi);
+            assert_eq!(bus.device(addr).map(|d| d.address()), Some(addr));
+        }
         Ok(())
     }
 

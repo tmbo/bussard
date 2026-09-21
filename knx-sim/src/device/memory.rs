@@ -130,6 +130,22 @@ impl Memory {
             .collect()
     }
 
+    /// Read `len` bytes at `addr` **bounded to one allocated segment**: `None`
+    /// unless `[addr, addr+len)` lies wholly inside a single allocated segment.
+    ///
+    /// [`Memory::read`] models the tool's verify-on-read and is deliberately
+    /// permissive (unwritten cells read back as zero). The device's own table
+    /// parsers must not be: a table whose count word says `0xFFFF` would
+    /// otherwise read hundreds of kilobytes past the segment the tool actually
+    /// allocated and accept the garbage as routing. Bounding the read to the
+    /// segment turns that into a refusal, which is what a real device does.
+    pub fn read_bounded(&self, addr: u32, len: usize) -> Option<Vec<u8>> {
+        self.segments
+            .iter()
+            .find(|s| s.contains(addr, len))
+            .map(|_| self.read(addr, len))
+    }
+
     /// Total number of written cells (for tests/observability).
     pub fn written_len(&self) -> usize {
         self.cells.len()
@@ -208,6 +224,22 @@ mod tests {
         let mut mem = Memory::new();
         mem.allocate(4, 0x6000, 4);
         assert!(mem.write(4, 0x6002, &[0, 0, 0, 0]).is_err());
+    }
+
+    #[test]
+    fn test_read_bounded_refuses_reads_past_the_segment() -> Result<(), MemoryError> {
+        let mut mem = Memory::new();
+        mem.allocate(1, 0xA000, 16);
+        mem.write(1, 0xA000, &[0xAB; 4])?;
+        assert_eq!(mem.read_bounded(0xA000, 4), Some(vec![0xAB; 4]));
+        // Exactly the segment: allowed. One byte past it: refused.
+        assert!(mem.read_bounded(0xA000, 16).is_some());
+        assert_eq!(mem.read_bounded(0xA000, 17), None);
+        // An absurd length (a 0xFFFF count word * 4) is refused outright.
+        assert_eq!(mem.read_bounded(0xA000, 0xFFFF * 4), None);
+        // An address in no segment at all is refused.
+        assert_eq!(mem.read_bounded(0x1000, 1), None);
+        Ok(())
     }
 
     #[test]

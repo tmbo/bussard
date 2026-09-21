@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 
 use crate::bus::Bus;
 use crate::wire::cemi::CemiLData;
-use crate::wire::knxnetip::{ConnectionHeader, KnxnetIpFrame, service};
+use crate::wire::knxnetip::{ConnectionHeader, E_CONNECTION_ID, KnxnetIpFrame, service};
 
 /// A blocking KNXnet/IP tunnelling gateway over UDP.
 pub struct KnxnetIpServer {
@@ -149,7 +149,13 @@ impl KnxnetIpServer {
     pub fn handle_datagram(&mut self, data: &[u8], peer: SocketAddr) -> Result<(), ServerError> {
         let frame = match KnxnetIpFrame::decode(data) {
             Ok(f) => f,
-            Err(_) => return Ok(()), // strict: ignore malformed framing
+            // Strict: a malformed datagram is logged and dropped, never fatal.
+            // The decoder is total (it returns an error for every truncated,
+            // oversized or garbage input), so no peer can take the loop down.
+            Err(e) => {
+                tracing::debug!(%peer, len = data.len(), "dropping malformed KNXnet/IP datagram: {e}");
+                return Ok(());
+            }
         };
         match frame.service {
             service::CONNECT_REQUEST => self.on_connect_request(&frame.body, peer),
@@ -215,6 +221,24 @@ impl KnxnetIpServer {
         let Some(hdr) = ConnectionHeader::parse(body) else {
             return Ok(());
         };
+        // Strict: only frames naming the channel this gateway handed out at
+        // CONNECT are served. A frame for any other channel is answered with a
+        // TUNNELLING_ACK carrying E_CONNECTION_ID and is neither delivered to
+        // the bus nor allowed to re-point the forwarding peer — otherwise any
+        // peer that can reach the socket hijacks the single-client path.
+        if hdr.channel != self.channel {
+            let nak = KnxnetIpFrame::encode(
+                service::TUNNELLING_ACK,
+                &ConnectionHeader {
+                    channel: hdr.channel,
+                    seq: hdr.seq,
+                    status: E_CONNECTION_ID,
+                }
+                .to_bytes(),
+            );
+            self.socket.send_to(&nak, peer)?;
+            return Ok(());
+        }
         // Track the active client for device-originated forwarding.
         self.peer = Some(peer);
         // ACK the request first.
@@ -233,7 +257,11 @@ impl KnxnetIpServer {
         let cemi_bytes = &body[4..];
         let cemi = match CemiLData::decode(cemi_bytes) {
             Ok(c) => c,
-            Err(_) => return Ok(()), // strict: drop malformed cEMI
+            // Strict: drop malformed cEMI (already ACKed at the tunnel layer).
+            Err(e) => {
+                tracing::debug!(%peer, "dropping malformed cEMI payload: {e}");
+                return Ok(());
+            }
         };
 
         let responses = self.bus.deliver_from_tool(&cemi);

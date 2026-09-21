@@ -1,0 +1,58 @@
+# cargo-deny configuration for knx-sim.
+#
+# knx-sim is its own Cargo workspace (the root bussard manifest excludes it), so
+# the root `deny.toml` never sees this dependency tree. Without this file the
+# simulator's 11 third-party crates are not licence-gated at all — a hole in the
+# hard rule in bussard's CLAUDE.md that no copyleft dependency may ever enter the
+# project. The allow-list below is deliberately the same one the root file uses.
+#
+# Run `cargo deny --manifest-path knx-sim/Cargo.toml check` after changing
+# dependencies. CI runs it in the `knx-sim` job.
+
+[graph]
+# Evaluate the full dependency graph for the host. Like the root config, targets
+# are deliberately unrestricted so the gate sees every platform-specific crate.
+all-features = true
+
+[licenses]
+# knx-sim itself is `publish = false`; this gate exists to police THIRD-PARTY
+# dependency licences, not the crate's own.
+private = { ignore = true }
+# Only these licences may appear anywhere in the dependency tree. Copyleft
+# licences (GPL, LGPL, AGPL, EPL, MPL, CDDL, ...) are deliberately absent, so
+# they FAIL the gate. Kept in sync with the root deny.toml.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Zlib",
+    "Unicode-3.0",
+    "BSL-1.0",
+    "Unlicense",
+    "ISC",
+    "CDLA-Permissive-2.0",
+]
+# Fail if a crate ships no detectable licence.
+confidence-threshold = 0.8
+
+[bans]
+# The licence gate is the primary policy; add specific bans here if needed.
+multiple-versions = "allow"
+wildcards = "allow"
+
+[advisories]
+# Hard-fail on known vulnerabilities; surface unmaintained/yanked crates without
+# blocking work.
+version = 2
+yanked = "warn"
+unmaintained = "workspace"
+
+[sources]
+# crates.io only. A git dependency is also the easiest way to smuggle copyleft
+# code past the licence gate, and it would break the "cleanly extractable,
+# crates.io-only" independence claim in the README.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -15,6 +15,9 @@
 //! - [`config`] — file-driven installation config.
 
 #![forbid(unsafe_code)]
+// Every public item carries a doc comment; the crate-level `[lints]` table in
+// Cargo.toml warns on a missing one, and CI's `-D warnings` makes it fail.
+#![warn(missing_docs)]
 
 pub mod bus;
 pub mod config;

@@ -13,7 +13,7 @@ use knx_sim::bus::{Bus, StimulusJob};
 use knx_sim::device::{Device, LoadState, ProfileOverrides, flag};
 use knx_sim::net::KnxnetIpServer;
 use knx_sim::prod::{LoadableObject, ProductData, read_knxprod_bytes};
-use knx_sim::wire::knxnetip::{ConnectionHeader, KnxnetIpFrame, service};
+use knx_sim::wire::knxnetip::{ConnectionHeader, E_CONNECTION_ID, KnxnetIpFrame, service};
 use knx_sim::wire::{Apci, CemiLData, GroupAddress, IndividualAddress, MessageCode, Tpci};
 
 // The DA.tp `.knxprod` is a vendor file that is NOT committed; loaded at runtime.
@@ -150,6 +150,217 @@ fn test_property_description_read_over_udp() -> Result<(), Box<dyn std::error::E
     assert_eq!(payload[1], 0x01, "index 1 is PID_OBJECT_TYPE");
 
     let _server = handle.join().expect("join");
+    Ok(())
+}
+
+/// Every malformed datagram class a peer can put on the socket. None of these
+/// may panic the server loop, and the loop must still serve a valid frame
+/// afterwards.
+fn malformed_datagrams() -> Vec<Vec<u8>> {
+    let mut out: Vec<Vec<u8>> = vec![
+        // Empty, and shorter than the 6-byte header.
+        vec![],
+        vec![0x06],
+        vec![0x06, 0x10],
+        vec![0x06, 0x10, 0x04, 0x20, 0x00],
+        // A 6-byte frame claiming total_len 0..5 — the `buf[6..total_len]` panic.
+        vec![0x06, 0x10, 0x04, 0x20, 0x00, 0x00],
+        vec![0x06, 0x10, 0x04, 0x20, 0x00, 0x01],
+        vec![0x06, 0x10, 0x04, 0x20, 0x00, 0x05],
+        // total_len larger than the datagram (truncated body).
+        vec![0x06, 0x10, 0x04, 0x20, 0xFF, 0xFF],
+        // Bad header length / version bytes.
+        vec![0x00; 8],
+        vec![0xFF; 16],
+        // A well-framed TUNNELLING_REQUEST with a truncated connection header.
+        vec![0x06, 0x10, 0x04, 0x20, 0x00, 0x08, 0x04, 0x01],
+        // A well-framed TUNNELLING_REQUEST whose connection header is valid but
+        // whose cEMI payload is garbage.
+        vec![
+            0x06, 0x10, 0x04, 0x20, 0x00, 0x0C, 0x04, 0x01, 0x00, 0x00, 0xFF, 0xFF,
+        ],
+        // A CONNECTIONSTATE_REQUEST and DISCONNECT_REQUEST with empty bodies.
+        vec![0x06, 0x10, 0x02, 0x07, 0x00, 0x06],
+        vec![0x06, 0x10, 0x02, 0x09, 0x00, 0x06],
+        // An unknown service type.
+        vec![0x06, 0x10, 0xAB, 0xCD, 0x00, 0x06],
+    ];
+    // An oversized datagram (beyond the server's 1024-byte receive buffer).
+    out.push(KnxnetIpFrame::encode(
+        service::TUNNELLING_REQUEST,
+        &vec![0xAA; 4096],
+    ));
+    out
+}
+
+#[test]
+fn test_malformed_datagrams_do_not_kill_the_server_loop() -> Result<(), Box<dyn std::error::Error>>
+{
+    // The gateway loop is single-threaded: one panicking decode takes the whole
+    // simulated installation down. Feed it every malformed frame class, then a
+    // valid CONNECT_REQUEST, and assert the loop is still there to answer it.
+    let mut server = build_synthetic_server();
+    let server_addr = server.local_addr()?;
+    let client = UdpSocket::bind("127.0.0.1:0")?;
+    client.set_read_timeout(Some(std::time::Duration::from_secs(2)))?;
+
+    let garbage = malformed_datagrams();
+    let count = garbage.len();
+    // The garbage datagrams plus the trailing CONNECT_REQUEST.
+    let handle = std::thread::spawn(move || {
+        server.serve_n(count + 1).expect("serve");
+        server
+    });
+
+    for datagram in &garbage {
+        client.send_to(datagram, server_addr)?;
+    }
+    // A valid CONNECT_REQUEST still gets a CONNECT_RESPONSE: the loop survived.
+    // Some of the garbage is well-framed enough to draw a reply of its own (an
+    // ACK, a connection-state response), so drain until the CONNECT_RESPONSE.
+    let connect = KnxnetIpFrame::encode(service::CONNECT_REQUEST, &[0x00; 10]);
+    client.send_to(&connect, server_addr)?;
+    let mut buf = [0u8; 1024];
+    let mut connected = None;
+    for _ in 0..(count + 1) {
+        let (n, _) = client.recv_from(&mut buf)?;
+        let resp = KnxnetIpFrame::decode(&buf[..n])?;
+        if resp.service == service::CONNECT_RESPONSE {
+            connected = Some(resp);
+            break;
+        }
+    }
+    let resp = connected.ok_or("no CONNECT_RESPONSE after the malformed datagrams")?;
+    assert_eq!(
+        resp.body[1], 0x00,
+        "connect still succeeds after {count} malformed datagrams"
+    );
+
+    let _server = handle.join().expect("join");
+    Ok(())
+}
+
+#[test]
+fn test_tunnelling_on_an_unknown_channel_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+    // A TUNNELLING_REQUEST naming a channel this gateway never handed out must
+    // be answered with E_CONNECTION_ID and must NOT reach the bus — otherwise
+    // any peer can drive the devices and hijack the forwarding path.
+    let mut server = build_synthetic_server();
+    let server_addr = server.local_addr()?;
+    let client = UdpSocket::bind("127.0.0.1:0")?;
+    client.set_read_timeout(Some(std::time::Duration::from_secs(2)))?;
+
+    // CONNECT + a wrong-channel tunnelling + a right-channel tunnelling.
+    let handle = std::thread::spawn(move || {
+        server.serve_n(3).expect("serve");
+        server
+    });
+
+    let connect = KnxnetIpFrame::encode(service::CONNECT_REQUEST, &[0x00; 10]);
+    client.send_to(&connect, server_addr)?;
+    let mut buf = [0u8; 1024];
+    let (n, _) = client.recv_from(&mut buf)?;
+    let channel = KnxnetIpFrame::decode(&buf[..n])?.body[0];
+
+    // Wrong channel: an ACK carrying E_CONNECTION_ID, and no device reply.
+    send_tunnel(
+        &client,
+        server_addr,
+        channel.wrapping_add(7),
+        0,
+        &tconnect(),
+    )?;
+    let (n, _) = client.recv_from(&mut buf)?;
+    let frame = KnxnetIpFrame::decode(&buf[..n])?;
+    assert_eq!(frame.service, service::TUNNELLING_ACK);
+    let hdr = ConnectionHeader::parse(&frame.body).ok_or("short connection header")?;
+    assert_eq!(
+        hdr.status, E_CONNECTION_ID,
+        "an unknown channel is refused with E_CONNECTION_ID"
+    );
+
+    // The right channel still works on the same connection.
+    send_tunnel(&client, server_addr, channel, 0, &tconnect())?;
+    let (n, _) = client.recv_from(&mut buf)?;
+    let frame = KnxnetIpFrame::decode(&buf[..n])?;
+    assert_eq!(frame.service, service::TUNNELLING_ACK);
+    let hdr = ConnectionHeader::parse(&frame.body).ok_or("short connection header")?;
+    assert_eq!(hdr.status, 0x00, "the open channel is served normally");
+
+    let _server = handle.join().expect("join");
+    Ok(())
+}
+
+#[test]
+fn test_individual_address_write_over_udp() -> Result<(), Box<dyn std::error::Error>> {
+    // End-to-end of `bussard assign`'s write step: a device in programming mode
+    // adopts the broadcast address and then answers the discovery read at its
+    // NEW address.
+    let sink = Arc::new(TracingSink);
+    let old = IndividualAddress::new(15, 15, 255);
+    let new = IndividualAddress::new(1, 1, 9);
+    let pd = knx_sim::testfixtures::synthetic_mdt_sys7_product();
+    let dev = Device::from_product_with_overrides(
+        old,
+        &pd,
+        LoadState::Loaded,
+        ProfileOverrides {
+            prog_mode: true,
+            ..Default::default()
+        },
+        sink.clone(),
+    )
+    .map_err(|e| format!("build device: {e}"))?;
+    let mut bus = Bus::new(sink);
+    bus.add_device(dev);
+
+    let mut server = KnxnetIpServer::bind("127.0.0.1:0".parse()?, bus)?;
+    let server_addr = server.local_addr()?;
+    let client = UdpSocket::bind("127.0.0.1:0")?;
+    client.set_read_timeout(Some(std::time::Duration::from_secs(2)))?;
+
+    // CONNECT + the address write + the verification read = 3 datagrams.
+    let handle = std::thread::spawn(move || {
+        server.serve_n(3).expect("serve");
+        server
+    });
+
+    let connect = KnxnetIpFrame::encode(service::CONNECT_REQUEST, &[0x00; 10]);
+    client.send_to(&connect, server_addr)?;
+    let mut buf = [0u8; 1024];
+    let (n, _) = client.recv_from(&mut buf)?;
+    let channel = KnxnetIpFrame::decode(&buf[..n])?.body[0];
+
+    // The write is ACKed; the service itself defines no response.
+    send_tunnel(
+        &client,
+        server_addr,
+        channel,
+        0,
+        &individual_address_write(new),
+    )?;
+    expect_ack(&client)?;
+
+    // The discovery read now reports the new address as the response source.
+    send_tunnel(&client, server_addr, channel, 1, &individual_address_read())?;
+    expect_ack(&client)?;
+    let (n, _) = client.recv_from(&mut buf)?;
+    let frame = KnxnetIpFrame::decode(&buf[..n])?;
+    assert_eq!(frame.service, service::TUNNELLING_REQUEST);
+    let cemi = CemiLData::decode(&frame.body[4..])?;
+    let apci10 = ((cemi.tpdu[0] as u16 & 0x03) << 8) | cemi.tpdu[1] as u16;
+    assert_eq!(Apci::from_u10(apci10), Apci::IndividualAddressResponse);
+    assert_eq!(cemi.source, new, "the device adopted the new address");
+
+    let server = handle.join().expect("join");
+    assert!(
+        server.bus().device(new).is_some(),
+        "the bus re-keyed the device under its new address"
+    );
+    assert!(
+        server.bus().device(old).is_none(),
+        "the old address is free"
+    );
     Ok(())
 }
 
@@ -593,6 +804,22 @@ fn individual_address_read() -> CemiLData {
         source: IndividualAddress::new(0, 0, 255),
         dest: 0x0000,
         tpdu: vec![(apci10 >> 8) as u8 & 0x03, (apci10 & 0xff) as u8],
+    }
+}
+
+/// A broadcast `A_IndividualAddress_Write` to `0/0/0` carrying the raw 2-byte
+/// new address, exactly as `bussard assign` puts it on the bus.
+fn individual_address_write(new_address: IndividualAddress) -> CemiLData {
+    let apci10 = Apci::IndividualAddressWrite.to_u10();
+    let mut tpdu = vec![(apci10 >> 8) as u8 & 0x03, (apci10 & 0xff) as u8];
+    tpdu.extend_from_slice(&new_address.raw().to_be_bytes());
+    CemiLData {
+        message_code: MessageCode::LDataReq,
+        ctrl1: 0xbc,
+        ctrl2: 0xe0, // group destination bit set (broadcast)
+        source: IndividualAddress::new(0, 0, 255),
+        dest: 0x0000,
+        tpdu,
     }
 }
 
