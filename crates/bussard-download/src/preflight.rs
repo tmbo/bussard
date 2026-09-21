@@ -40,11 +40,14 @@
 
 use bussard_mgmt::{
     L4Channel, Layer4Connection, LoadState, LsmAccess, MaskProfile, Sys7Profile,
-    lsm_access_from_profile, read_load_state, read_program_version,
+    is_connection_death, lsm_access_from_profile, read_load_state, read_program_version,
 };
 
 use crate::flash::AppIdentity;
 
+/// Interface-object type 0: the device object. It carries no load-state
+/// machine, so the probe does not read one from it.
+const OT_DEVICE: u16 = 0;
 /// Interface-object type 3: the application-program object.
 const OT_APPLICATION_PROGRAM: u16 = 3;
 /// Interface-object type 4: the interface-program (PEI) object. On the merged
@@ -85,7 +88,7 @@ impl ResidentObject {
     /// A short human label for the object: its index plus what it is.
     pub fn label(&self) -> String {
         let what = match self.object_type {
-            Some(0) => " (device object)",
+            Some(OT_DEVICE) => " (device object)",
             Some(1) => " (address table)",
             Some(2) => " (association table)",
             Some(OT_APPLICATION_PROGRAM) => " (application program)",
@@ -232,7 +235,9 @@ pub async fn probe_resident_state<Ch: L4Channel>(
 /// and read `PID_PROGRAM_VERSION` off the application objects.
 async fn probe_system_b<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> ResidentState {
     let mut state = ResidentState::default();
-    let objects = match bussard_mgmt::discover_interface_objects(l4).await {
+    // The same tolerant `PID_OBJECT_TYPE` walk the flash's own discovery uses,
+    // so the probe sees exactly the object table the download will act on.
+    let objects = match crate::flash::probe_object_types(l4).await {
         Ok(objects) => objects,
         Err(err) => {
             state.unreadable = Some(format!("interface objects are not discoverable: {err}"));
@@ -248,15 +253,28 @@ async fn probe_system_b<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Residen
 
     let mut failures: Vec<String> = Vec::new();
     for (index, object_type) in objects {
+        // The device object (type 0) carries no load-state machine; skip its
+        // read rather than spend an exchange proving it.
+        if object_type == OT_DEVICE {
+            continue;
+        }
         match read_load_state(l4, index).await {
             Ok(load_state) => state.objects.push(ResidentObject {
                 index,
                 object_type: Some(object_type),
                 state: load_state,
             }),
-            // An object with no load-state property is not a loadable object
-            // (the device object, say); that is normal, not a probe failure.
-            Err(err) => failures.push(format!("object {index}: {err}")),
+            // An object that does not expose a load-state property simply is not
+            // loadable; that is normal, not a probe failure. A dropped connection
+            // is different: every further read would burn its full timeout on a
+            // dead link, so stop and report what was read.
+            Err(err) => {
+                let dead = is_connection_death(&err);
+                failures.push(format!("object {index}: {err}"));
+                if dead {
+                    break;
+                }
+            }
         }
         // The application id lives on the application objects. Read it
         // best-effort: an object that does not carry one answers zero elements.
@@ -293,7 +311,15 @@ async fn probe_sys7<Ch: L4Channel>(
                 object_type: None,
                 state: load_state,
             }),
-            Err(err) => failures.push(format!("LSM {lsm}: {err}")),
+            // A device without this LSM simply does not answer for it; a dropped
+            // connection ends the probe (see the System B walk).
+            Err(err) => {
+                let dead = is_connection_death(&err);
+                failures.push(format!("LSM {lsm}: {err}"));
+                if dead {
+                    break;
+                }
+            }
         }
     }
     if state.objects.is_empty() {

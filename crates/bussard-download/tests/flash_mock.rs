@@ -4149,7 +4149,9 @@ async fn test_probe_resident_state_factory_fresh_device_is_fresh() {
     let resident = probe(&mut bus).await;
 
     assert!(resident.unreadable.is_none(), "{resident:?}");
-    assert_eq!(resident.objects.len(), 4, "all four objects answered");
+    // The three loadable objects answered; the device object (type 0) carries no
+    // load-state machine and is not probed.
+    assert_eq!(resident.objects.len(), 3, "{resident:?}");
     assert!(
         resident
             .objects
