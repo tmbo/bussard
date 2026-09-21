@@ -91,6 +91,22 @@ pub fn run(
         eprintln!("read-only: group writes return 403 (pass --allow-writes to enable them)");
     }
 
+    // A non-loopback bind puts an unauthenticated port on the network. The
+    // browser guard still blocks DNS rebinding and cross-origin writes, but
+    // anything that can reach the port can read the whole model, so say so.
+    if !listen.ip().is_loopback() {
+        eprintln!(
+            "warning: binding {listen}, which is reachable from the network. \
+             The port is unauthenticated: anyone who can reach it can read the \
+             whole model{}.",
+            if options.allow_writes {
+                " and write to the bus"
+            } else {
+                ""
+            }
+        );
+    }
+
     let config = VizConfig {
         dir: dir.to_path_buf(),
         listen,
