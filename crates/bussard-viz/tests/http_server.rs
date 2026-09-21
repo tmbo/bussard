@@ -22,7 +22,7 @@ fn write_model(dir: &std::path::Path) -> std::io::Result<()> {
     )?;
     std::fs::write(
         dir.join("groups.yaml"),
-        "groups:\n  \"3/2/0\":\n    name: Windalarm\n    dpt: \"1.005\"\n",
+        "groups:\n  \"3/2/0\":\n    name: Wind Alarm\n    dpt: \"1.005\"\n",
     )?;
     std::fs::write(dir.join("links.yaml"), "links: {}\n")?;
     Ok(())
@@ -69,6 +69,8 @@ async fn model_only_degradation_over_real_http() -> Result<(), Box<dyn std::erro
         // The programming-mode watch is off here: this test exercises the
         // read/state endpoints, not the probe.
         watch_prog: false,
+        allow_writes: false,
+        allowed_hosts: Vec::new(),
     };
 
     // Build the state and router, bind an ephemeral port, and serve on a task.
@@ -124,6 +126,8 @@ async fn model_only_mode_with_no_connection() -> Result<(), Box<dyn std::error::
         listen: SocketAddr::from(([127, 0, 0, 1], 0)),
         connection: None,
         watch_prog: false,
+        allow_writes: false,
+        allowed_hosts: Vec::new(),
     };
     let (state, handle, watch) = bussard_viz::build_state(&config)?;
     assert!(handle.is_none(), "no bus handle in model-only mode");

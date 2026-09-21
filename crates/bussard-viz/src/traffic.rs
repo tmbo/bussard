@@ -21,10 +21,23 @@ use bussard_mgmt::broadcast::devices_in_programming_mode_within;
 use bussard_model::{GroupAddress, IndividualAddress};
 use bussard_monitor::decode::{ApciKind, DestinationRef};
 use bussard_monitor::{DecodedTelegram, json_value};
+use bussard_transport::cemi::MessageCode;
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
 
 use crate::state::{BusStatus, ModelHandle};
+
+/// The short, stable tag for a cEMI message code in the SSE telegram contract.
+///
+/// `"ind"` is a telegram the gateway received from the bus; `"con"` is the
+/// gateway confirming a frame bussard itself sent; `"req"` is a request frame.
+fn message_code_tag(code: MessageCode) -> &'static str {
+    match code {
+        MessageCode::LDataInd => "ind",
+        MessageCode::LDataCon => "con",
+        MessageCode::LDataReq => "req",
+    }
+}
 
 /// How often the programming-mode watch probes the bus with a broadcast
 /// `A_IndividualAddress_Read`. Chosen so the red-prog-LED highlight tracks a
@@ -176,7 +189,27 @@ impl TrafficHub {
     /// backlog (evicting the oldest if full), updates the GA state, and
     /// broadcasts it. Returns the assigned seq.
     pub fn publish(&self, telegram: &DecodedTelegram) -> u64 {
+        self.publish_with_code(telegram, MessageCode::LDataInd)
+    }
+
+    /// Publishes a decoded telegram carrying its cEMI [`MessageCode`].
+    ///
+    /// The gateway echoes every frame bussard itself sends back as an
+    /// `L_Data.con` (a local "I transmitted this"), which is NOT a bus
+    /// indication: counting it as one double-counts viz's own writes in the
+    /// log and lets them set `/api/state` from an echo rather than from the
+    /// bus. So the code travels with the telegram, `message_code` is part of
+    /// the SSE telegram contract (`"ind"`, `"con"` or `"req"`), and only
+    /// `L_Data.ind` updates the GA state. This mirrors what the MCP feeder does
+    /// with `TelegramRing::push_with_code` (issue #32).
+    pub fn publish_with_code(&self, telegram: &DecodedTelegram, message_code: MessageCode) -> u64 {
         let mut data = json_value(telegram);
+        if let Value::Object(map) = &mut data {
+            map.insert(
+                "message_code".to_string(),
+                Value::from(message_code_tag(message_code)),
+            );
+        }
 
         let seq = {
             // Lock is poisoned only if a previous holder panicked while mutating;
@@ -194,7 +227,11 @@ impl TrafficHub {
             seq
         };
 
-        self.update_ga_state(telegram, seq);
+        // Only a genuine bus indication reflects the bus. A con-echo of our own
+        // write says the gateway transmitted it, not that anything answered.
+        if message_code == MessageCode::LDataInd {
+            self.update_ga_state(telegram, seq);
+        }
 
         // A send with no subscribers returns Err; that is expected and fine.
         let _ = self.inner.tx.send(HubEvent::Telegram { seq, data });
@@ -363,7 +400,10 @@ pub async fn feed(hub: TrafficHub, handle: BusHandle, model: ModelHandle, status
                             &frame.frame,
                             Some(snapshot.model.as_ref()),
                         );
-                        hub.publish(&decoded);
+                        // Carry the cEMI message code: the gateway's con-echo of
+                        // our own write must not be published as a bus
+                        // indication (issue #32).
+                        hub.publish_with_code(&decoded, frame.message_code);
                     }
                     // The actor shut down; stop feeding.
                     None => break,
@@ -457,9 +497,9 @@ mod tests {
         DecodedTelegram {
             timestamp: SystemTime::UNIX_EPOCH,
             source: ia("1.1.30"),
-            source_name: Some("Meteodata".to_string()),
+            source_name: Some("Weather Station".to_string()),
             destination: DestinationRef::Group(ga(dest)),
-            destination_name: Some("Windalarm".to_string()),
+            destination_name: Some("Wind Alarm".to_string()),
             apci,
             payload: vec![1],
             value,
@@ -478,6 +518,34 @@ mod tests {
                 label: "Alarm",
             }),
         )
+    }
+
+    #[test]
+    fn test_publish_with_code_tags_the_message_code() {
+        let hub = TrafficHub::new();
+        hub.publish(&write("3/2/0"));
+        hub.publish_with_code(&write("3/2/0"), MessageCode::LDataCon);
+        let (entries, _) = hub.backlog_since(0, 10);
+        assert_eq!(entries[0]["message_code"], "ind");
+        assert_eq!(entries[1]["message_code"], "con");
+    }
+
+    #[test]
+    fn test_con_echo_does_not_set_ga_state() {
+        // The gateway echoes viz's own write back as L_Data.con. That is not a
+        // bus indication, so it must not become the GA's last known value.
+        let hub = TrafficHub::new();
+        hub.publish_with_code(&write("3/2/0"), MessageCode::LDataCon);
+        assert!(
+            hub.state_values().as_object().is_none_or(|m| m.is_empty()),
+            "a con-echo must not populate /api/state"
+        );
+
+        hub.publish_with_code(&write("3/2/0"), MessageCode::LDataInd);
+        assert!(
+            hub.state_values().get("3/2/0").is_some(),
+            "an indication must populate /api/state"
+        );
     }
 
     #[test]
@@ -707,7 +775,12 @@ mod tests {
         // Connecting -> Reconnecting. ALWAYS 127.0.0.1 in tests.
         let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 1);
         let (handle, _task) = Bus::connect(ConnectionConfig::tunnel(addr));
-        let status = BusStatus::connected(bussard_transport::TransportKind::Tunnel, handle.clone());
+        let status = BusStatus::connected(
+            bussard_transport::TransportKind::Tunnel,
+            "127.0.0.1:3671".to_string(),
+            true,
+            handle.clone(),
+        );
 
         let hub = TrafficHub::new();
         // Subscribe before spawning the feeder so no `bus` event is missed.

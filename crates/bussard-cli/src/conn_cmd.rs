@@ -144,7 +144,7 @@ pub fn resolve_config(
 pub const ALLOW_REAL_GATEWAY_ENV: &str = "BUSSARD_ALLOW_REAL_GATEWAY";
 
 /// Renders the resolved gateway of a [`ConnectionConfig`] for a confirmation
-/// line, e.g. `192.168.1.10:3671` for a tunnel or `multicast 224.0.23.12:3671`
+/// line, e.g. `192.0.2.10:3671` for a tunnel or `multicast 224.0.23.12:3671`
 /// for routing.
 pub fn gateway_display(config: &ConnectionConfig) -> String {
     match (&config.transport, config.gateway) {
@@ -252,7 +252,7 @@ mod tests {
 
     #[test]
     fn is_loopback_gateway_false_for_real_host_and_routing() {
-        assert!(!is_loopback_gateway(&tunnel_to("192.168.1.10")));
+        assert!(!is_loopback_gateway(&tunnel_to("192.0.2.10")));
         let routing = resolve_config(
             None,
             &ConnOverrides {
@@ -277,12 +277,9 @@ mod tests {
         unsafe {
             std::env::remove_var(ALLOW_REAL_GATEWAY_ENV);
         }
-        let err = enforce_write_gate(&tunnel_to("192.168.1.10"), false).unwrap_err();
+        let err = enforce_write_gate(&tunnel_to("192.0.2.10"), false).unwrap_err();
         let msg = err.to_string();
-        assert!(
-            msg.contains("192.168.1.10"),
-            "must name the host; got {msg}"
-        );
+        assert!(msg.contains("192.0.2.10"), "must name the host; got {msg}");
         assert!(
             msg.contains("--allow-remote-gateway") && msg.contains(ALLOW_REAL_GATEWAY_ENV),
             "must state both ways to proceed; got {msg}"
@@ -291,7 +288,7 @@ mod tests {
 
     #[test]
     fn enforce_write_gate_allows_non_loopback_with_flag() {
-        enforce_write_gate(&tunnel_to("192.168.1.10"), true).unwrap();
+        enforce_write_gate(&tunnel_to("192.0.2.10"), true).unwrap();
     }
 
     #[test]
@@ -301,7 +298,7 @@ mod tests {
         unsafe {
             std::env::set_var(ALLOW_REAL_GATEWAY_ENV, "1");
         }
-        let out = enforce_write_gate(&tunnel_to("192.168.1.10"), false);
+        let out = enforce_write_gate(&tunnel_to("192.0.2.10"), false);
         unsafe {
             std::env::remove_var(ALLOW_REAL_GATEWAY_ENV);
         }
@@ -357,7 +354,7 @@ mod tests {
         let cfg = resolve_config(
             None,
             &ConnOverrides {
-                gateway: Some("192.168.1.10".to_string()),
+                gateway: Some("192.0.2.10".to_string()),
                 routing: false,
             },
         )

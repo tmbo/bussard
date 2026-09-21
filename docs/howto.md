@@ -14,9 +14,9 @@ A word on safety before the writing recipes: every bus-writing command reads the
 
 ```console
 $ bussard monitor
-12:03:41.221  1.1.30 Meteodata          → 3/2/0 Windalarm            = Alarm (1.005, obj "Windalarm 1")
-12:03:44.809  1.1.12 Taster Flur EG     → 1/0/1 Licht Flur           = On (1.001, obj "Taste 1")
-12:03:44.981  1.1.7 Schaltaktor UV      → 1/0/2 Licht Flur Status    = On (1.001)
+12:03:41.221  1.1.7 Weather Station    → 3/0/0 Wind Alarm           = Alarm (1.005, obj "Wind Alarm")
+12:03:44.809  1.1.1 Push Button Hallway → 0/0/0 Hallway Light Switch = On (1.001, obj "Rocker 1")
+12:03:44.981  1.1.3 Switch Actuator     → 0/0/1 Hallway Light Status = On (1.001)
 ```
 
 Every telegram resolves to its GA name, the sending device, and a typed value. Flip a switch and watch it name itself. Narrow the stream with `--filter 3/2/0,1/0/` (GAs, GA prefixes, or sender IAs); `--json` emits one JSON object per line for tooling. GAs missing from the model show as raw hex; add them to `groups.yaml` with a `dpt:` and re-run.
@@ -26,9 +26,12 @@ Every telegram resolves to its GA name, the sending device, and a typed value. F
 ```console
 $ bussard viz
 bussard viz serving on http://127.0.0.1:8080 (Ctrl-C to stop)
+read-only: group writes return 403 (pass --allow-writes to enable them)
 ```
 
-Open the address to get a bus-spine diagram of every device by floor and room, the group-address tree, and live telegrams pulsing along the spine as they happen. Select a device or GA to see its links, senders, and listeners. Per-DPT widgets send a test write (protected GAs need an explicit force); the confirmation is the echoed telegram on the live stream. With no reachable gateway the page still shows the model, just without live traffic. See [the viz server](reference.md#the-viz-server) for the endpoints.
+Open the address to get a bus-spine diagram of every device by floor and room, the group-address tree, and live telegrams pulsing along the spine as they happen. Select a device or GA to see its links, senders, and listeners. With no reachable gateway the page still shows the model, just without live traffic. See [the viz server](reference.md#the-viz-server) for the endpoints.
+
+A bare `bussard viz` is a viewer: it never transmits, so it is safe to point at the live installation. Add `--allow-writes` to arm the per-DPT test-write widgets, and then the same real-gateway gate as `bussard write` applies — against a non-loopback gateway the server refuses to start without `--allow-remote-gateway`. Every armed write asks for an explicit confirmation naming the GA and the gateway, and a `protected` GA needs the force checkbox on top of that.
 
 ## ... find out what devices are on my line?
 
@@ -144,7 +147,7 @@ The output is a complete `knx:` document; `!include` it or paste it into your Ho
 ```console
 $ bussard init
 Searching for KNXnet/IP gateways on the local network...
-Found gateway: KNX IP Interface (192.168.1.74:3671, IA 1.1.250)
+Found gateway: KNX IP Interface (192.0.2.10:3671, IA 1.1.250)
 
 Created a fresh KNX model in knx.
 ```
@@ -201,7 +204,7 @@ Register the MCP server once:
 $ claude mcp add knx -- bussard mcp --dir knx
 ```
 
-Then ask in plain language: "What devices are on my bus?", "Watch for telegrams while I press the kitchen switch", "Read the wind speed". The server exposes the model, live telegrams, a "press the button now" wait tool, and rate-limited bus reads ([the full tool list](reference.md#the-mcp-server)). Add `--passive` for a server that never transmits, or `--allow-writes` to let Claude write group values; protected GAs are refused over MCP with no override either way.
+Then ask in plain language: "What devices are on my bus?", "Watch for telegrams while I press the kitchen switch", "Read the wind speed". The server exposes the model, live telegrams, a "press the button now" wait tool, and rate-limited bus reads ([the full tool list](reference.md#the-mcp-server)). Add `--passive` for a server that never transmits, or `--allow-writes` to let Claude write group values. `--allow-writes` goes through the same real-gateway gate as `bussard write`: against a non-loopback gateway the server refuses to start without `--allow-remote-gateway`. Protected GAs are refused over MCP with no override either way, and a `dpt` that contradicts the model is refused too.
 
 The payoff is closing the loop between an intent and a reviewed change. "I added a presence detector in the hall, it should switch the hall light": Claude finds the detector's GA from recent telegrams, reads the light state, checks the model, and proposes the `links.yaml` edit. You review the diff, then run `plan` and `apply` yourself.
 

@@ -2,12 +2,26 @@ name: CI
 
 on:
   push:
-    # `ci/virtual-device-shakedown` is included temporarily so the interop job
-    # can be iterated on its own branch before it is re-blocked and merged.
     branches: [main]
   pull_request:
     branches: [main]
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      product_corpus:
+        description: >-
+          Path to a cached vendor product corpus on the runner. Set it to run
+          the full 500-product conformance sweep; empty (the default) runs only
+          the committed-fixture sweep. The corpus is large and copyrighted, so
+          it is never committed and a normal push/PR never has one.
+        required: false
+        default: ""
+
+# The default token is read-write. Nothing in this workflow writes to the
+# repository, and it does build and run third-party code (the GPL interop
+# device) and `sudo` network setup, so drop it to read-only. `release.yml`
+# keeps the `contents: write` it needs to publish a release.
+permissions:
+  contents: read
 
 # Cancel superseded runs on the same ref (e.g. force-pushes to a PR branch).
 # On main we still want every push to complete, so the group is keyed by ref.
@@ -36,6 +50,7 @@ jobs:
   lint:
     name: fmt + clippy (ubuntu)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
         with:
@@ -69,6 +84,7 @@ jobs:
   test:
     name: test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false # report all platforms' failures, not just the first
       matrix:
@@ -132,6 +148,14 @@ jobs:
   corpus-sweep:
     name: corpus-sweep (ubuntu, conformance)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Empty on a normal push/PR, so the full-corpus step below is skipped and
+      # the env-gated tests skip green. A `workflow_dispatch` run can supply a
+      # path, and a repository variable of the same name works for a runner that
+      # keeps a corpus around. This is what makes that step's `if:` live: it
+      # used to read a variable nothing ever defined, so it could never run.
+      BUSSARD_PRODUCT_CORPUS: ${{ inputs.product_corpus || vars.BUSSARD_PRODUCT_CORPUS }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -158,14 +182,12 @@ jobs:
           cargo nextest run -p bussard-download --profile ci \
             -E 'test(sweep) + test(golden) + test(corpus)'
 
-      # Full 500-product sweep, only when a corpus cache is present. CI does not
-      # set BUSSARD_PRODUCT_CORPUS (the cache is large + copyrighted, never
-      # committed), so this step no-ops on a normal run and the env-gated tests
-      # skip green. A dispatched run may set it to run the real regression gate.
+      # Full 500-product sweep, only when a corpus is available. The job-level
+      # `env` above sets BUSSARD_PRODUCT_CORPUS from the workflow_dispatch input
+      # or the repository variable; on a normal push/PR both are empty, so this
+      # step is skipped and the env-gated tests skip green.
       - name: Conformance sweep (full corpus, if cached)
         if: ${{ env.BUSSARD_PRODUCT_CORPUS != '' }}
-        env:
-          BUSSARD_PRODUCT_CORPUS: ${{ env.BUSSARD_PRODUCT_CORPUS }}
         run: |
           cargo test -p bussard-download --test flash_corpus -- --nocapture
 
@@ -176,9 +198,26 @@ jobs:
   #
   # This job does not compile the workspace (it only reads Cargo.lock + crate
   # metadata), so it is fast and needs no rustc/cargo cache.
+  # Private-data gate: the repo must never describe a real installation. Refuses
+  # gitignored-only paths that got tracked, a private LAN address, and any room /
+  # floor / location / custom device name from the maintainer's model (matched by
+  # sha256 against .house-markers.sha256; no plaintext in the repo). See
+  # docs/SAFETY.md, "Private data".
+  private-data:
+    name: private-data check (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+      - name: check tracked files for private installation data
+        run: scripts/check-no-house-data.sh --tracked
+
   deny:
     name: cargo-deny (ubuntu)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
         with:
@@ -199,6 +238,7 @@ jobs:
   msrv:
     name: MSRV 1.85 (cargo check)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v5
         with:
@@ -345,10 +385,16 @@ jobs:
   # stay copyleft-free, guarded by the `deny` job). This job compiles that GPL code into a
   # standalone binary at CI time and talks to it over a socket — no linkage.
   virtual-device:
-    name: virtual-device (ubuntu, interop)
+    name: virtual-device (advisory, ubuntu, interop)
     runs-on: ubuntu-latest
-    # First-execution shakedown in progress (same-host multicast delivery);
-    # non-blocking until the ladder is proven stable on runners.
+    timeout-minutes: 30
+    # Advisory (see the job name): a flake in an external GPL peer must not
+    # block a merge. It is named "advisory" because `continue-on-error` makes a
+    # red job show green on the run page, which hid two real regressions: the
+    # #74 write gate broke both interop harnesses (routing counts as
+    # non-loopback, and an explicit address stopped being consent), and nobody
+    # noticed for weeks. Both are fixed in the harnesses; if this job is red,
+    # something is actually wrong.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v5
@@ -539,8 +585,9 @@ jobs:
   # Kept OFF the required path (own job name, continue-on-error) so an interop
   # flake never blocks a merge.
   virtual-device-flash:
-    name: virtual-device-flash (ubuntu, interop)
+    name: virtual-device-flash (advisory, ubuntu, interop)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     continue-on-error: true
     steps:
       - uses: actions/checkout@v5
@@ -654,8 +701,9 @@ jobs:
   # crate was rejected by the `deny` gate (its build dep auto_generate_cdp is
   # GPL-3.0), so the test drives Chrome as a plain subprocess instead.
   browser-smoke:
-    name: browser-smoke (ubuntu, viz)
+    name: browser-smoke (advisory, ubuntu, viz)
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     # Non-blocking: an external-browser flake must not fail the required suite.
     continue-on-error: true
     steps:
@@ -681,5 +729,10 @@ jobs:
       - name: Show Chrome version
         run: google-chrome --version || echo "no google-chrome on PATH"
 
+      # `--profile ci` matches the required test job: no fail-fast, the same
+      # retry policy for flaky external dependencies, and the same per-test
+      # slow-timeout so a wedged Chrome cannot hold the runner.
       - name: Browser smoke test (viz)
-        run: cargo nextest run -p bussard-viz --features browser-tests -E 'test(browser)'
+        run: |
+          cargo nextest run -p bussard-viz --features browser-tests \
+            --profile ci -E 'test(browser)'

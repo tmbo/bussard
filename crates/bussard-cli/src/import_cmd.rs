@@ -27,14 +27,14 @@ const EXIT_CONFLICTS: u8 = 3;
 /// `BUSSARD_PROJECT_PASSWORD` environment variable, then an interactive prompt
 /// (only when stdin is a TTY).
 ///
-/// `force_generated` (the default) refreshes generated sections silently; it is
-/// accepted for symmetry and future extension. Hand-authored fields are always
-/// report-only on a re-import regardless of this flag.
+/// A re-import always refreshes the generated sections (com-object tables, link
+/// wiring, parameters) from the project and always preserves hand-authored
+/// fields, reporting any difference instead of overwriting it. There is no flag
+/// for that: it is the only behaviour the merge implements.
 pub fn run_knxproj(
     path: &Path,
     dir: &Path,
     password_flag: Option<String>,
-    force_generated: bool,
 ) -> anyhow::Result<ExitCode> {
     let password = resolve_password(password_flag);
 
@@ -55,13 +55,13 @@ pub fn run_knxproj(
         Err(e) => return Err(e.into()),
     };
 
-    write_model(model, dir, force_generated)
+    write_model(model, dir)
 }
 
 /// Runs `bussard import --from-json`.
-pub fn run_json(path: &Path, dir: &Path, force_generated: bool) -> anyhow::Result<ExitCode> {
+pub fn run_json(path: &Path, dir: &Path) -> anyhow::Result<ExitCode> {
     let model = bussard_project::import_from_json(path)?;
-    write_model(model, dir, force_generated)
+    write_model(model, dir)
 }
 
 /// Writes the freshly-imported `model` to `dir`.
@@ -73,7 +73,7 @@ pub fn run_json(path: &Path, dir: &Path, force_generated: bool) -> anyhow::Resul
 /// of being overwritten. Returns [`EXIT_CONFLICTS`] when conflicts were
 /// reported so the outcome is non-zero-ish while the on-disk hand edits stay
 /// intact.
-fn write_model(model: Model, dir: &Path, force_generated: bool) -> anyhow::Result<ExitCode> {
+fn write_model(model: Model, dir: &Path) -> anyhow::Result<ExitCode> {
     // A re-import is any target that already holds a loadable model.
     let existing = load_existing_model(dir);
 
@@ -101,7 +101,7 @@ fn write_model(model: Model, dir: &Path, force_generated: bool) -> anyhow::Resul
     }
 
     if let Some(merge) = merge_report {
-        return Ok(report_merge(&merge, force_generated));
+        return Ok(report_merge(&merge));
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -125,10 +125,7 @@ fn load_existing_model(dir: &Path) -> Option<Model> {
 }
 
 /// Prints the re-import merge outcome and returns the process exit code.
-fn report_merge(report: &MergeReport, force_generated: bool) -> ExitCode {
-    // Generated sections were refreshed from ETS truth (this is the default and
-    // the only behaviour; `--force-generated` names it explicitly).
-    let _ = force_generated;
+fn report_merge(report: &MergeReport) -> ExitCode {
     if report.groups_added + report.devices_added > 0 {
         println!(
             "re-import: added {} new device(s), {} new group address(es)",
