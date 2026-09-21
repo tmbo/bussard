@@ -647,7 +647,7 @@ const SYS7_LSM_OVERRIDE_ENV: &str = "BUSSARD_FLASH_SYS7_LSM";
 /// The System 7 LSM-realisation override from [`SYS7_LSM_OVERRIDE_ENV`], or `None`
 /// to keep the product-driven realisation. `memory` keeps the memory-mapped record
 /// at the profile's control/status addresses; `property` drives PID 5.
-fn sys7_lsm_override() -> Option<bussard_mgmt::LsmRealisation> {
+pub(crate) fn sys7_lsm_override() -> Option<bussard_mgmt::LsmRealisation> {
     match std::env::var(SYS7_LSM_OVERRIDE_ENV)
         .ok()?
         .trim()
@@ -699,6 +699,23 @@ pub struct AppIdentity {
     pub application_version: Option<u32>,
     /// The mask version, e.g. `"07B0"`.
     pub mask_version: String,
+}
+
+impl AppIdentity {
+    /// The 5-octet `PID_PROGRAM_VERSION` value a completed flash of this
+    /// application stamps on the device (`[manufacturer:2][number:2][version:1]`),
+    /// or `None` when the identity is too incomplete to build one.
+    ///
+    /// This is the id the pre-flight compares against what a device already
+    /// carries, to tell a re-flash of the *same* application (allowed) from a
+    /// flash over a *different* one (refused without `--force`) — issue #79.
+    pub fn program_version(&self) -> Option<[u8; 5]> {
+        Some(crate::compute::app_program_version(
+            manufacturer_from_app_id(&self.id)?,
+            u16::try_from(self.application_number? & 0xFFFF).ok()?,
+            u8::try_from(self.application_version? & 0xFF).ok()?,
+        ))
+    }
 }
 
 /// A validated, executable flash: the application identity, the device mask it
@@ -763,6 +780,18 @@ impl FlashPlan {
     /// (M2 Jung 0705 capture, `[system7-spec §5]`).
     pub fn sys7_lsm(&self) -> Option<bussard_mgmt::LsmRealisation> {
         self.sys7.as_ref().map(|s| s.profile.lsm)
+    }
+
+    /// The System 7 LSM access seam this plan will drive, or `None` for a System
+    /// B plan.
+    ///
+    /// The pre-flight state probe ([`crate::preflight`]) reads the device's
+    /// load-state machines through exactly this realisation, so what it reads is
+    /// what the flash would overwrite.
+    pub fn sys7_lsm_access(&self) -> Option<bussard_mgmt::LsmAccess> {
+        self.sys7
+            .as_ref()
+            .map(|s| bussard_mgmt::lsm_access_from_profile(&s.profile))
     }
 
     /// Total octets written to device memory across all memory-write steps.

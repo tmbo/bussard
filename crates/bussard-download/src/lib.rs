@@ -21,6 +21,7 @@ pub mod compute;
 pub mod compute_sys7;
 pub mod flash;
 pub mod plan;
+pub mod preflight;
 pub mod sweep;
 
 pub use apply::{
@@ -41,6 +42,9 @@ pub use flash::{
     plan_flash, plan_flash_sys7_with_hawk, select_application, sys7_profile_from_hawk, trace,
 };
 pub use plan::{LoadStep, ObjectGa, PlanReport, plan};
+pub use preflight::{
+    Freshness, ResidentObject, ResidentState, assess_freshness, format_app_id, probe_resident_state,
+};
 pub use sweep::{
     AppSweep, FamilyCoverage, ImageClass, ParseClass, PlanClass, ProductSweep, RankedReason,
     SweepManifest, SweepTotals, classify_application, family_label, manifest_from_products,
