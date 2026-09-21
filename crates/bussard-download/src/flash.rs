@@ -2553,8 +2553,39 @@ pub async fn discover_application_object<Ch: L4Channel>(
 async fn discover_object_table<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
 ) -> Result<(u8, Vec<(u8, u16)>), WriteError> {
+    let table = probe_object_types(l4).await?;
+    match table
+        .iter()
+        .find(|(_, ot)| *ot == OT_APPLICATION_PROGRAM)
+        .map(|(index, _)| *index)
+    {
+        Some(index) => Ok((index, table)),
+        None => Err(WriteError::Mgmt(
+            bussard_mgmt::MgmtError::MalformedResponse {
+                address: l4.target(),
+                reason: "device is missing the application-program interface object".to_string(),
+            },
+        )),
+    }
+}
+
+/// Walks `PID_OBJECT_TYPE` from index 0 and returns the `(index, object type)`
+/// table the device exposes.
+///
+/// The walk is deliberately **tolerant** at its end: an index answered with a
+/// non-property service, an undecodable response, zero elements or a short value
+/// all mean "no object here" and simply stop the sweep with what was read so
+/// far. Only a genuine transport failure propagates. That tolerance is what lets
+/// it run against real devices (KNX Virtual, the thelsing demo) whose answer for
+/// an out-of-range object index is not uniform.
+///
+/// Shared by the flash's own discovery ([`discover_object_table`]) and the
+/// read-only freshness probe ([`crate::preflight`]), so both see the same device
+/// picture.
+pub(crate) async fn probe_object_types<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+) -> Result<Vec<(u8, u16)>, WriteError> {
     let mut table: Vec<(u8, u16)> = Vec::new();
-    let mut app_obj: Option<u8> = None;
     for index in 0..16u8 {
         let payload = bussard_mgmt::apci::encode_property_value_read(index, PID_OBJECT_TYPE, 1, 1);
         let (resp_apci, data) = l4
@@ -2569,21 +2600,9 @@ async fn discover_object_table<Ch: L4Channel>(
         if resp.count == 0 || resp.data.len() < 2 {
             break;
         }
-        let ot = u16::from_be_bytes([resp.data[0], resp.data[1]]);
-        table.push((index, ot));
-        if ot == OT_APPLICATION_PROGRAM && app_obj.is_none() {
-            app_obj = Some(index);
-        }
+        table.push((index, u16::from_be_bytes([resp.data[0], resp.data[1]])));
     }
-    match app_obj {
-        Some(index) => Ok((index, table)),
-        None => Err(WriteError::Mgmt(
-            bussard_mgmt::MgmtError::MalformedResponse {
-                address: l4.target(),
-                reason: "device is missing the application-program interface object".to_string(),
-            },
-        )),
-    }
+    Ok(table)
 }
 
 /// Discovers the object table like [`discover_object_table`], but **resumable at
