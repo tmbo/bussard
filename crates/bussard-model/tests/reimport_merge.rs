@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
-use bussard_model::schema::{ComObject, Device, Group, Groups, Links};
+use bussard_model::schema::{Channel, ComObject, Device, Group, Groups, Links, Product};
 use bussard_model::{Dpt, Flags, GroupAddress, IndividualAddress, LoadedDevice, Model};
 
 /// A fresh unique temp dir.
@@ -205,6 +205,166 @@ fn test_reimport_preserves_hand_edits_and_refreshes_generated() -> anyhow::Resul
             .any(|c| c.field.contains("com_object")
                 || c.field.contains("dpt") && c.path.starts_with("devices/")),
         "generated com-object changes must not be reported as conflicts"
+    );
+
+    let _ = fs::remove_dir_all(&dir);
+    Ok(())
+}
+
+/// Regression: an ETS application upgrade left the model contradicting itself.
+/// `merge` took the regenerated `parameters:`/`com_objects:` from the fresh
+/// import but kept `product.application_ref`/`mask` (and the whole channel set)
+/// from disk, so every fresh parameter key was read against the *old*
+/// application program: `validate` reported E016 for all of them and the flasher
+/// resolved the wrong product model. The generated identity now follows the
+/// import, while the hand-authored name/order-number and channel names stay.
+#[test]
+fn test_reimport_takes_the_new_application_ref_with_the_new_tables() -> anyhow::Result<()> {
+    let dir = tmp("appref");
+
+    // On disk: the old application, a hand-named device and channel, and a
+    // hand-corrected manufacturer/order number.
+    let mut ours_dev = device_with_comobject("1.1.4", "Rollladen", Dpt::new(1, Some(8)));
+    ours_dev.device.product = Some(Product {
+        manufacturer: Some("Jung (corrected by hand)".to_string()),
+        manufacturer_ref: Some("M-0004".to_string()),
+        order_number: Some("2304.16REGHE".to_string()),
+        hardware_ref: Some("M-0004_H-OLD".to_string()),
+        application_ref: Some("M-0004_A-A011-12-OLD".to_string()),
+        mask: Some("07B0".to_string()),
+    });
+    ours_dev.device.channels.insert(
+        "ch1".to_string(),
+        Channel {
+            name: "Küche (hand-named)".to_string(),
+        },
+    );
+    ours_dev.device.channels.insert(
+        "ch9".to_string(),
+        Channel {
+            name: "Kanal der weggeht".to_string(),
+        },
+    );
+    ours_dev
+        .device
+        .parameters
+        .insert("windalarm@MD-1_P-3_R-7".to_string(), "1".to_string());
+    let ours = model(vec![ours_dev], Groups::default());
+    ours.save(&dir)?;
+
+    // The fresh import: ETS upgraded the application program, which renamed the
+    // parameter refs, moved the hardware, dropped a channel and added one.
+    let mut fresh_dev = device_with_comobject("1.1.4", "Switch Actuator", Dpt::new(1, Some(8)));
+    fresh_dev.device.product = Some(Product {
+        manufacturer: Some("Jung".to_string()),
+        manufacturer_ref: Some("M-0004".to_string()),
+        order_number: Some("2304.16REGHE".to_string()),
+        hardware_ref: Some("M-0004_H-NEW".to_string()),
+        application_ref: Some("M-0004_A-A011-13-NEW".to_string()),
+        mask: Some("27B0".to_string()),
+    });
+    fresh_dev.device.channels.insert(
+        "ch1".to_string(),
+        Channel {
+            name: "Channel 1".to_string(),
+        },
+    );
+    fresh_dev.device.channels.insert(
+        "ch2".to_string(),
+        Channel {
+            name: "Channel 2".to_string(),
+        },
+    );
+    fresh_dev
+        .device
+        .parameters
+        .insert("windalarm@MD-1_P-4_R-9".to_string(), "1".to_string());
+    // A com-object pointing at the channel the project dropped: after the merge
+    // it must not dangle.
+    fresh_dev.device.com_objects.insert(
+        7u16,
+        ComObject {
+            dpt: Some(Dpt::new(1, Some(8))),
+            size: None,
+            flags: Flags::default(),
+            reference: None,
+            channel: Some("ch9".to_string()),
+        },
+    );
+    let fresh = model(vec![fresh_dev], Groups::default());
+
+    let on_disk = Model::load(&dir)?;
+    let (merged, report) = bussard_model::merge(&on_disk, &fresh);
+
+    let dev = &merged.devices.get(&ia("1.1.4")).expect("device").device;
+    let product = dev.product.as_ref().expect("product");
+
+    // Generated identity follows the import — the tables were read out of it.
+    assert_eq!(
+        product.application_ref.as_deref(),
+        Some("M-0004_A-A011-13-NEW")
+    );
+    assert_eq!(product.mask.as_deref(), Some("27B0"));
+    assert_eq!(product.hardware_ref.as_deref(), Some("M-0004_H-NEW"));
+    assert!(dev.parameters.contains_key("windalarm@MD-1_P-4_R-9"));
+
+    // Hand-authored halves survive.
+    assert_eq!(dev.name, "Rollladen");
+    assert_eq!(
+        product.manufacturer.as_deref(),
+        Some("Jung (corrected by hand)")
+    );
+    assert_eq!(product.order_number.as_deref(), Some("2304.16REGHE"));
+
+    // The channel SET is the project's, with hand-authored names kept.
+    assert_eq!(
+        dev.channels.keys().collect::<Vec<_>>(),
+        vec!["ch1", "ch2"],
+        "the channel set is generated: ch9 left, ch2 arrived"
+    );
+    assert_eq!(dev.channels["ch1"].name, "Küche (hand-named)");
+    assert_eq!(dev.channels["ch2"].name, "Channel 2");
+
+    // No com-object may point at a channel that is gone.
+    for (number, co) in &dev.com_objects {
+        if let Some(key) = &co.channel {
+            assert!(
+                dev.channels.contains_key(key),
+                "com-object {number} points at missing channel {key}"
+            );
+        }
+    }
+
+    // The application move is reported as information, not as a kept conflict.
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n.contains("application_ref") && n.contains("M-0004_A-A011-13-NEW")),
+        "the application-program change should be reported: {:?}",
+        report.notes
+    );
+    assert!(
+        report.notes.iter().any(|n| n.contains("ch9")),
+        "the dropped channel should be reported: {:?}",
+        report.notes
+    );
+    assert!(
+        !report
+            .conflicts
+            .iter()
+            .any(|c| c.field.contains("application_ref") || c.field.contains("mask")),
+        "generated identity is not a hand-authored conflict: {:?}",
+        report.conflicts
+    );
+    // The hand-corrected manufacturer is still a conflict (kept from disk).
+    assert!(
+        report
+            .conflicts
+            .iter()
+            .any(|c| c.field == "product.manufacturer"),
+        "{:?}",
+        report.conflicts
     );
 
     let _ = fs::remove_dir_all(&dir);
