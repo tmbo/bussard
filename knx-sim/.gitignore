@@ -1,2 +1,6 @@
 /target
-Cargo.lock
+
+# Cargo.lock IS committed. knx-sim is its own workspace root and ships two
+# binaries (`knx-sim` and `serve`), so a reproducible, auditable dependency set
+# is part of the artifact — and `cargo deny check` reads the lockfile, so the
+# licence gate has nothing to check without it.
