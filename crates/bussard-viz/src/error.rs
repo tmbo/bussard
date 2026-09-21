@@ -25,6 +25,16 @@ pub enum ApiError {
     #[error("{0}")]
     Protected(String),
 
+    /// The request was refused by the browser guard: a `Host` this server does
+    /// not answer to, or a cross-origin state-changing request (403). See
+    /// [`crate::guard`].
+    #[error("{0}")]
+    Forbidden(String),
+
+    /// A group write while the server runs without `--allow-writes` (403).
+    #[error("{0}")]
+    WritesDisabled(String),
+
     /// No DPT could be resolved for the write (422).
     #[error("{0}")]
     NoDpt(String),
@@ -48,6 +58,8 @@ impl ApiError {
         match self {
             ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
             ApiError::Protected(_) => StatusCode::FORBIDDEN,
+            ApiError::Forbidden(_) => StatusCode::FORBIDDEN,
+            ApiError::WritesDisabled(_) => StatusCode::FORBIDDEN,
             ApiError::NoDpt(_) => StatusCode::UNPROCESSABLE_ENTITY,
             ApiError::ModelInvalid(_) => StatusCode::UNPROCESSABLE_ENTITY,
             ApiError::BusUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
@@ -60,6 +72,8 @@ impl ApiError {
         match self {
             ApiError::BadRequest(_) => "bad_request",
             ApiError::Protected(_) => "protected",
+            ApiError::Forbidden(_) => "forbidden",
+            ApiError::WritesDisabled(_) => "writes_disabled",
             ApiError::NoDpt(_) => "no_dpt",
             ApiError::ModelInvalid(_) => "model_invalid",
             ApiError::BusUnavailable(_) => "bus_unavailable",
@@ -109,6 +123,23 @@ mod tests {
         assert_eq!(
             ApiError::Internal("x".into()).status(),
             StatusCode::INTERNAL_SERVER_ERROR
+        );
+    }
+
+    #[test]
+    fn test_api_error_forbidden_variants() {
+        assert_eq!(
+            ApiError::Forbidden("x".into()).status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(ApiError::Forbidden("x".into()).code(), "forbidden");
+        assert_eq!(
+            ApiError::WritesDisabled("x".into()).status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            ApiError::WritesDisabled("x".into()).code(),
+            "writes_disabled"
         );
     }
 

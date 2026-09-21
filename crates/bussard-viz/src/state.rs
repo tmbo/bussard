@@ -62,14 +62,29 @@ impl ConnState {
 pub struct BusStatus {
     handle: Option<BusHandle>,
     transport: Option<TransportKind>,
+    gateway: Option<String>,
+    loopback: bool,
 }
 
 impl BusStatus {
     /// A status with a live bus handle (normal connected/reconnecting mode).
-    pub fn connected(transport: TransportKind, handle: BusHandle) -> Self {
+    ///
+    /// `gateway` is the resolved endpoint as the operator would read it
+    /// (`192.168.1.10:3671`, or `multicast 224.0.23.12:3671` for routing) and
+    /// `loopback` says whether that endpoint is a loopback address. Both are
+    /// reported in `/api/state` so the page can name the bus it is about to
+    /// write to, which `docs/SAFETY.md` promises of every write path.
+    pub fn connected(
+        transport: TransportKind,
+        gateway: String,
+        loopback: bool,
+        handle: BusHandle,
+    ) -> Self {
         BusStatus {
             handle: Some(handle),
             transport: Some(transport),
+            gateway: Some(gateway),
+            loopback,
         }
     }
 
@@ -78,6 +93,8 @@ impl BusStatus {
         BusStatus {
             handle: None,
             transport: None,
+            gateway: None,
+            loopback: false,
         }
     }
 
@@ -102,8 +119,8 @@ impl BusStatus {
     }
 
     /// A JSON object describing the bus status, matching the `state` endpoint's
-    /// `bus` block. With no bus the state is `disconnected` and `connected` is
-    /// false.
+    /// `bus` block. With no bus the state is `disconnected`, `connected` is
+    /// false and `gateway` is `null`.
     pub fn to_json(&self) -> Value {
         let state = match self.state() {
             Some(s) => s.tag(),
@@ -113,6 +130,8 @@ impl BusStatus {
             "state": state,
             "transport": self.transport_tag(),
             "connected": self.state() == Some(ConnState::Connected),
+            "gateway": self.gateway,
+            "loopback": self.loopback,
         })
     }
 }
@@ -186,6 +205,26 @@ impl ModelHandle {
     }
 }
 
+/// The browser-facing security policy of one viz server.
+///
+/// The viz server binds an unauthenticated HTTP port that can put telegrams on
+/// a real KNX bus, so two things guard it (see [`crate::guard`]):
+///
+/// * [`allow_writes`](Self::allow_writes) — `POST /api/group-write` answers
+///   `403` unless `bussard viz --allow-writes` was passed. A bare `bussard viz`
+///   is a viewer, not a controller.
+/// * [`allowed_hosts`](Self::allowed_hosts) — extra `Host` header values to
+///   accept beyond the always-allowed loopback names and bare IP literals. This
+///   is what stops DNS rebinding from making an attacker's page same-origin
+///   with `127.0.0.1:8080`.
+#[derive(Clone, Debug, Default)]
+pub struct Security {
+    /// Whether `POST /api/group-write` may put telegrams on the bus.
+    pub allow_writes: bool,
+    /// Extra `Host` values to accept, lowercased and without a port.
+    pub allowed_hosts: Arc<Vec<String>>,
+}
+
 /// The shared application state, cloned into every handler by axum.
 #[derive(Clone)]
 pub struct AppState {
@@ -197,6 +236,8 @@ pub struct AppState {
     pub hub: TrafficHub,
     /// The bus status (present in connected mode, `none` when degraded).
     pub bus: BusStatus,
+    /// The browser-facing security policy (write permission, `Host` allow-list).
+    pub security: Security,
 }
 
 #[cfg(test)]
@@ -299,7 +340,7 @@ mod tests {
         // The protected-GA gate reads through the handle, so a newly protected
         // GA must be visible immediately after a swap.
         let ga: GroupAddress = "3/0/4".parse().expect("ga");
-        let handle = ModelHandle::new(model_with("Jalousie", false));
+        let handle = ModelHandle::new(model_with("Living Room Blind", false));
         assert!(
             !handle
                 .current()
@@ -312,7 +353,7 @@ mod tests {
         );
 
         handle.swap(Arc::new(ModelSnapshot::new(
-            model_with("Jalousie", true),
+            model_with("Living Room Blind", true),
             2,
         )));
 

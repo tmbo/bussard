@@ -14,6 +14,19 @@
 //! return `503`. The frontend is embedded ([`assets`]) so the binary is
 //! self-contained and works offline.
 //!
+//! ## Who may write
+//!
+//! The port is unauthenticated, so two things stand between a browser and the
+//! bus:
+//!
+//! * `POST /api/group-write` answers `403 writes_disabled` unless
+//!   [`VizConfig::allow_writes`] is set (`bussard viz --allow-writes`). The CLI
+//!   runs the non-loopback write gate before setting it, so the viz write path
+//!   is gated exactly like `bussard write`.
+//! * [`guard`] rejects requests whose `Host` this server does not answer to
+//!   (DNS rebinding) and state-changing requests from a foreign `Origin`
+//!   (CSRF), both with `403 forbidden`.
+//!
 //! ## HTTP routes
 //!
 //! | Method | Path | Purpose |
@@ -29,6 +42,7 @@
 pub mod api;
 pub mod assets;
 pub mod error;
+pub mod guard;
 pub mod project;
 pub mod state;
 pub mod traffic;
@@ -45,7 +59,7 @@ use bussard_bus::Bus;
 use bussard_model::Model;
 use bussard_transport::ConnectionConfig;
 
-use crate::state::{AppState, BusStatus, ModelHandle};
+use crate::state::{AppState, BusStatus, ModelHandle, Security};
 use crate::traffic::TrafficHub;
 
 /// Configuration for the viz server.
@@ -63,6 +77,15 @@ pub struct VizConfig {
     /// run unnoticed against a real installation. Only takes effect when a bus is
     /// configured.
     pub watch_prog: bool,
+    /// Whether `POST /api/group-write` may put telegrams on the bus. DEFAULT
+    /// OFF: a bare `bussard viz` is a viewer, and the write endpoint answers
+    /// `403` until `--allow-writes` is passed. The CLI additionally runs the
+    /// non-loopback write gate (`--allow-remote-gateway`) before enabling this,
+    /// so the viz write path is gated exactly like `bussard write`.
+    pub allow_writes: bool,
+    /// Extra `Host` header values to accept beyond loopback names and IP
+    /// literals. Empty in the normal case; see [`guard`] for why this matters.
+    pub allowed_hosts: Vec<String>,
 }
 
 /// Errors surfaced while starting the viz server.
@@ -105,7 +128,42 @@ pub fn router(state: AppState) -> Router {
         .route("/api/traffic", get(api::get_traffic))
         .route("/api/group-write", post(api::post_group_write))
         .route("/api/reload", post(api::post_reload))
+        // The browser guard runs before every handler: a `Host` allow-list on
+        // all requests, an `Origin` check on the state-changing ones. See
+        // [`guard`] for the threat model it closes.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            guard::guard,
+        ))
         .with_state(state)
+}
+
+/// Renders a resolved connection's endpoint for the UI and the logs, e.g.
+/// `192.0.2.10:3671` for a tunnel or `multicast 224.0.23.12:3671` for routing.
+///
+/// Mirrors `bussard_cli::conn_cmd::gateway_display`; the viz crate must not
+/// depend on the CLI, and the two are a handful of lines each.
+fn gateway_display(config: &ConnectionConfig) -> String {
+    match (&config.transport, config.gateway) {
+        (bussard_transport::TransportKind::Tunnel, Some(gw)) => gw.to_string(),
+        (bussard_transport::TransportKind::Routing, _) => {
+            format!("multicast {}", config.multicast)
+        }
+        (bussard_transport::TransportKind::Tunnel, None) => "<no gateway>".to_string(),
+    }
+}
+
+/// Whether a resolved connection points at loopback. Routing (multicast)
+/// reaches the real bus, so it counts as non-loopback, exactly as the CLI's
+/// write gate treats it.
+fn is_loopback_gateway(config: &ConnectionConfig) -> bool {
+    match config.transport {
+        bussard_transport::TransportKind::Tunnel => config
+            .gateway
+            .map(|gw| gw.ip().is_loopback())
+            .unwrap_or(false),
+        bussard_transport::TransportKind::Routing => false,
+    }
 }
 
 /// `GET /` — the `index.html` shell.
@@ -155,7 +213,12 @@ pub fn build_state(config: &VizConfig) -> Result<BuiltState, VizError> {
     let (bus, handle, watch) = match &config.connection {
         Some(conn) => {
             let (handle, _task) = Bus::connect(conn.clone());
-            let bus = BusStatus::connected(conn.transport.clone(), handle.clone());
+            let bus = BusStatus::connected(
+                conn.transport.clone(),
+                gateway_display(conn),
+                is_loopback_gateway(conn),
+                handle.clone(),
+            );
             // Spawn the feeder: it fills the hub from the live bus and emits
             // `bus` events on state changes. It resolves names through the
             // `ModelHandle`, so a reload swap is reflected on the next telegram.
@@ -187,6 +250,17 @@ pub fn build_state(config: &VizConfig) -> Result<BuiltState, VizError> {
         dir: config.dir.clone(),
         hub,
         bus,
+        security: Security {
+            allow_writes: config.allow_writes,
+            allowed_hosts: std::sync::Arc::new(
+                config
+                    .allowed_hosts
+                    .iter()
+                    .map(|h| h.trim().to_ascii_lowercase())
+                    .filter(|h| !h.is_empty())
+                    .collect(),
+            ),
+        },
     };
     Ok((state, handle, watch))
 }
@@ -248,6 +322,12 @@ mod tests {
             dir: std::path::PathBuf::from("."),
             hub: TrafficHub::new(),
             bus: BusStatus::none(),
+            // Tests drive the handlers directly; writes are enabled so the
+            // write-path assertions below reach the gate they are about.
+            security: Security {
+                allow_writes: true,
+                allowed_hosts: std::sync::Arc::new(Vec::new()),
+            },
         }
     }
 
@@ -394,7 +474,7 @@ mod tests {
         groups.insert(
             ga,
             Group {
-                name: "Jalousie".to_string(),
+                name: "Living Room Blind".to_string(),
                 dpt: dpt.map(|d| d.parse().expect("dpt")),
                 description: None,
                 protected,
@@ -418,7 +498,130 @@ mod tests {
             dir: std::path::PathBuf::from("."),
             hub: TrafficHub::new(),
             bus: BusStatus::none(),
+            // Tests drive the handlers directly; writes are enabled so the
+            // write-path assertions below reach the gate they are about.
+            security: Security {
+                allow_writes: true,
+                allowed_hosts: std::sync::Arc::new(Vec::new()),
+            },
         }
+    }
+
+    // --- the browser guard (Host allow-list + Origin check) ------------------
+
+    /// The same single-GA state, but read-only (no `--allow-writes`).
+    fn read_only_state() -> AppState {
+        let mut state = state_with_ga(false, Some("1.008"));
+        state.security = Security {
+            allow_writes: false,
+            allowed_hosts: std::sync::Arc::new(Vec::new()),
+        };
+        state
+    }
+
+    #[tokio::test]
+    async fn test_group_write_without_allow_writes_is_403() {
+        let (status, body) = call(
+            read_only_state(),
+            write_req(serde_json::json!({"address": "3/0/4", "value": "down"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(json(&body)["error"]["code"], "writes_disabled");
+    }
+
+    #[tokio::test]
+    async fn test_foreign_host_is_refused() {
+        // A DNS-rebinding request carries the attacker's name in Host.
+        let req = Request::builder()
+            .uri("/api/model")
+            .header("host", "evil.example:8080")
+            .body(Body::empty())
+            .expect("request");
+        let (status, body) = call(empty_state(), req).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(json(&body)["error"]["code"], "forbidden");
+    }
+
+    #[tokio::test]
+    async fn test_loopback_hosts_are_accepted() {
+        for host in ["127.0.0.1:8080", "localhost:8080", "[::1]:8080"] {
+            let req = Request::builder()
+                .uri("/api/model")
+                .header("host", host)
+                .body(Body::empty())
+                .expect("request");
+            let (status, _) = call(empty_state(), req).await;
+            assert_eq!(status, StatusCode::OK, "Host {host} must be accepted");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_cross_origin_group_write_is_refused() {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/group-write")
+            .header("host", "127.0.0.1:8080")
+            .header("origin", "https://evil.example")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"address": "3/0/4", "value": "down"}).to_string(),
+            ))
+            .expect("request");
+        let (status, body) = call(state_with_ga(false, Some("1.008")), req).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(json(&body)["error"]["code"], "forbidden");
+    }
+
+    #[tokio::test]
+    async fn test_cross_origin_reload_is_refused() {
+        // `post_reload` takes no body, so it is reachable by a plain form POST
+        // from any page unless the Origin check stops it.
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/reload")
+            .header("host", "127.0.0.1:8080")
+            .header("origin", "https://evil.example")
+            .body(Body::empty())
+            .expect("request");
+        let (status, body) = call(empty_state(), req).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(json(&body)["error"]["code"], "forbidden");
+    }
+
+    #[tokio::test]
+    async fn test_same_origin_post_is_allowed_through_the_guard() {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/group-write")
+            .header("host", "127.0.0.1:8080")
+            .header("origin", "http://127.0.0.1:8080")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({"address": "3/0/4", "value": "down"}).to_string(),
+            ))
+            .expect("request");
+        let (status, _) = call(state_with_ga(false, Some("1.008")), req).await;
+        // The guard lets it through; the write itself fails on the absent bus.
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn test_state_names_the_gateway() {
+        let (status, body) = call(
+            empty_state(),
+            Request::builder()
+                .uri("/api/state")
+                .body(Body::empty())
+                .expect("request"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        // Model-only mode: no bus, so the gateway is explicitly null rather
+        // than absent (the field is part of the contract either way).
+        let v = json(&body);
+        assert!(v["bus"].get("gateway").is_some(), "gateway key present");
+        assert!(v["bus"]["gateway"].is_null());
     }
 
     #[tokio::test]
@@ -725,6 +928,12 @@ mod tests {
             dir: dir.to_path_buf(),
             hub: TrafficHub::new(),
             bus: BusStatus::none(),
+            // Tests drive the handlers directly; writes are enabled so the
+            // write-path assertions below reach the gate they are about.
+            security: Security {
+                allow_writes: true,
+                allowed_hosts: std::sync::Arc::new(Vec::new()),
+            },
         }
     }
 
@@ -734,7 +943,7 @@ mod tests {
         // A single declared group with a DPT and a name.
         writeln!(
             f,
-            "groups:\n  3/0/4:\n    name: Jalousie\n    dpt: \"1.008\""
+            "groups:\n  3/0/4:\n    name: Living Room Blind\n    dpt: \"1.008\""
         )
         .expect("write groups.yaml");
     }
