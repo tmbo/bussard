@@ -80,9 +80,15 @@ Roles come from the com-object flags:
 - binary_sensor: DPT `1.005` (alarm) → `problem`, `1.019` → `window`, and name hints for
   `motion` / `window` / `door` / `moisture` / `safety`.
 
-Sensor `type` per DPT sub: `9.001` → `temperature`, `9.004` → `illuminance`, `9.005` →
-`wind_speed_ms`, `9.007` → `humidity`, `9.008` → `ppm`, and so on (unknown `9.x` falls
-back to `2byte_float`).
+Sensor `type` per DPT sub: `9.001` → `temperature`, `9.002` →
+`temperature_difference_2byte`, `9.004` → `illuminance`, `9.005` → `wind_speed_ms`,
+`9.007` → `humidity`, `9.008` → `ppm`, `9.024` → `power_2byte`, and so on (unknown `9.x`
+falls back to `2byte_float`). The `_2byte` types matter: HA's plain `power` and
+`temperature` types decode four bytes, so a 2-byte KNX value mapped to them reads wrong.
+
+Only an object that publishes a value becomes a sensor: one with the Transmit flag, or a
+readable one that answers a `GroupValueRead`. A write-only command input (a setpoint an
+actuator receives) is skipped, because a read-only HA sensor on it would never update.
 
 ### Climate (room heating)
 

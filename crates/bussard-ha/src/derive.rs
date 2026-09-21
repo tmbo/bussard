@@ -816,6 +816,13 @@ fn try_sensor(
 ) -> Option<Entity> {
     let dpt = o.dpt()?;
     let sensor_type = sensor_type_for(dpt)?;
+    // A sensor needs an object that actually publishes a value: one that
+    // transmits it (T) or answers a read for it (R). A write-only command
+    // input carries nothing Home Assistant could observe, and turning one into
+    // a read-only `sensor` produced an entity that is permanently unknown.
+    if !o.obj.flags.intersects(Flags::TRANSMIT | Flags::READ) {
+        return None;
+    }
     // Sensors read a state address: prefer the sent GA, else any GA.
     let state = o.send.or_else(|| o.listen.first().copied())?;
     if overrides.is_excluded(state) || consumed.contains(&state) {
@@ -880,13 +887,18 @@ fn try_binary_sensor(
 fn sensor_type_for(dpt: Dpt) -> Option<String> {
     let t = match (dpt.main, dpt.sub) {
         (9, Some(1)) => "temperature",
-        (9, Some(2)) => "temperature", // temperature difference (Kelvin)
+        // 9.002 is a temperature *difference* in Kelvin, not an absolute
+        // temperature: HA has its own 2-byte type for it, and mapping it to
+        // `temperature` labels a +2 K offset as 2 °C.
+        (9, Some(2)) => "temperature_difference_2byte",
         (9, Some(4)) => "illuminance",
         (9, Some(5)) => "wind_speed_ms",
         (9, Some(6)) => "pressure_2byte",
         (9, Some(7)) => "humidity",
         (9, Some(8)) => "ppm",
-        (9, Some(24)) => "power",
+        // HA's `power` is the 4-byte DPT 14.056. 9.024 is the 2-byte float, so
+        // it needs `power_2byte`; `power` would decode four bytes from two.
+        (9, Some(24)) => "power_2byte",
         // Generic 2-byte float when the sub is unknown but the family is a value.
         (9, _) => "2byte_float",
         (5, Some(1)) => "percent",
