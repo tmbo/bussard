@@ -511,6 +511,27 @@ the device is activated. `SEC-CAL: Sync_Req/Sync_Res exact ASDU byte layout
 - A device that requires secure but is addressed plain will refuse (or ignore)
   the management APDU; bussard surfaces that as a "device requires KNX Data
   Secure" error, not a silent timeout.
+- **The converse direction (decided by the A2 conformance loop, issue #71):** a
+  secured APDU addressed to a device that is NOT security-activated is
+  **refused**, not answered plain. A non-activated device holds no tool key and
+  does not implement the secure application service, so it drops the frame the
+  way it drops any unknown APCI. Both implementations model exactly that: the
+  knx-sim logs the refusal (`SecureError::NotActivated`) rather than staying
+  silent, and bussard turns the resulting silence into a message that names both
+  possible causes (wrong tool key, or a device that is not activated). The
+  spec had no wording for this direction; this is the best-evidence reading.
+
+### 6.5 Send-sequence continuity across connections (A2 finding)
+
+The send sequence is seeded from the clock (§5.8) but advances **once per APDU**,
+so after a few hundred APDUs it is far ahead of the wall clock. A flash
+reconnects (a master reset, a dropped L4 link), and a session rebuilt from the
+clock therefore replays sequences the device has already accepted — the device
+refuses every one as stale. **A new session for the same device must seed from
+`max(clock, last_sent + 1)`**, i.e. the per-device high-water mark has to outlive
+the connection (`bussard_secure::SequenceHighWater`). Cross-*process*
+monotonicity still rests on the clock until either the state file of §5.9 or the
+Sync preamble of §6.3 lands.
 
 ---
 

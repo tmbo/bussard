@@ -1219,6 +1219,20 @@ impl Device {
         cemi: &CemiLData,
         apdu: &Apdu,
     ) -> Result<DeviceReaction, DeviceError> {
+        if apdu.apci_raw == crate::secure::A_SECURE_DATA_APCI && self.secure.is_none() {
+            // A_SecureData to a device that was never security-activated: it has
+            // no tool key, so it cannot authenticate the frame and drops it
+            // (spec §6.4, the converse direction — see `SecureError::NotActivated`).
+            self.emit(Event::SecureFrame {
+                device: self.address,
+                summary:
+                    "A_SecureData to a device that is NOT security-activated: dropped (no tool key)"
+                        .to_string(),
+            });
+            return Err(DeviceError::Secure(
+                crate::secure::SecureError::NotActivated,
+            ));
+        }
         if self.secure.is_some() {
             if apdu.apci_raw == crate::secure::A_SECURE_DATA_APCI {
                 if !self.connected {

@@ -171,8 +171,14 @@ pub struct TpAddressing {
     /// The extended frame-format nibble (Ctrl2 bits 3-0), `0` for standard
     /// frames.
     pub extended_frame_format: u8,
-    /// The TPCI value (the connection-control/sequence bits) of the carrying
-    /// frame, as an integer.
+    /// The **full TPCI octet** of the carrying frame — octet 6 of the telegram,
+    /// e.g. `0x40 | seq << 2` for a numbered data telegram (its low two bits are
+    /// the APCI high bits and are ignored here).
+    ///
+    /// Spec §5.4 writes the nonce octet as `(tpci_int << 2) + 0x03`, where
+    /// `tpci_int` is the 6-bit transport-control field; `tpci & 0xFC` is exactly
+    /// `tpci_int << 2`, so the octet is reconstructed as
+    /// `(tpci & 0xFC) | APCI_SEC_HIGH` whichever form the caller holds.
     pub tpci: u8,
 }
 
@@ -203,7 +209,10 @@ pub fn tp_block_0(seq: Sequence, addr: &TpAddressing, payload_len: u8) -> [u8; 1
     b[6..10].copy_from_slice(&addr.address_fields());
     b[10] = 0x00;
     b[11] = addr.ctrl2_byte();
-    b[12] = (addr.tpci << 2) | APCI_SEC_HIGH;
+    // Spec §5.4: `(tpci_int << 2) + 0x03`, i.e. the carrier's octet 6 with its
+    // APCI high bits forced to the A_SecureData 0x03. `tpci & 0xFC` is the 6-bit
+    // TPCI field back in place — never shift the already-positioned octet again.
+    b[12] = (addr.tpci & 0xFC) | APCI_SEC_HIGH;
     b[13] = APCI_SEC_LOW;
     b[14] = 0x00;
     b[15] = payload_len;
@@ -250,10 +259,18 @@ pub fn encode(
     inner_data: &[u8],
 ) -> Result<SecureAsdu, AsduError> {
     let apdu = inner_apdu_bytes(inner_apci, inner_data);
-    let payload_len =
-        u8::try_from(apdu.len()).map_err(|_| AsduError::PayloadTooLong(apdu.len()))?;
+    let full_len = u8::try_from(apdu.len()).map_err(|_| AsduError::PayloadTooLong(apdu.len()))?;
     let scf_byte = scf.to_byte();
 
+    // CCM's block_0 length field is the length of the *encrypted payload*, not of
+    // the additional data (RFC 3610 §2.2). In auth-only mode the APDU is
+    // additional data and the payload is empty, so the field is 0; in encrypt
+    // mode the APDU is the payload.
+    let payload_len = if scf.algorithm.encrypts() {
+        full_len
+    } else {
+        0
+    };
     let block_0 = tp_block_0(seq, addr, payload_len);
     let counter_0 = tp_counter_0(seq, addr);
 
@@ -321,8 +338,14 @@ pub fn decode(key: &Key16, asdu: &[u8], addr: &TpAddressing) -> Result<DecodedIn
     let secured_apdu = &asdu[7..asdu.len() - TP_MAC_LEN];
     let received_mac = &asdu[asdu.len() - TP_MAC_LEN..];
 
-    let payload_len = u8::try_from(secured_apdu.len())
-        .map_err(|_| AsduError::PayloadTooLong(secured_apdu.len()))?;
+    // See `encode`: the block_0 length field counts the CCM payload, which is
+    // the (encrypted) APDU in encrypt mode and empty in auth-only mode.
+    let payload_len = if scf.algorithm.encrypts() {
+        u8::try_from(secured_apdu.len())
+            .map_err(|_| AsduError::PayloadTooLong(secured_apdu.len()))?
+    } else {
+        0
+    };
     let block_0 = tp_block_0(seq, addr, payload_len);
     let counter_0 = tp_counter_0(seq, addr);
 
@@ -334,7 +357,8 @@ pub fn decode(key: &Key16, asdu: &[u8], addr: &TpAddressing) -> Result<DecodedIn
         // recompute the real MAC from the recovered apdu.
         let placeholder = [0u8; crypto::BLOCK];
         let (apdu, _discard) = crypto::decrypt_ctr(key, &counter_0, &placeholder, secured_apdu)?;
-        // Recompute the expected MAC over the recovered apdu.
+        // Recompute the expected MAC over the recovered apdu (same length as the
+        // ciphertext, so `block_0` above already carries the right length field).
         let mac_cbc = crypto::cbc_mac(key, &[scf_byte], &apdu, &block_0)?;
         let (_e, enc_mac) = crypto::encrypt_ctr(key, &counter_0, &mac_cbc, &[])?;
         if !crypto::constant_time_eq(&enc_mac[..TP_MAC_LEN], received_mac) {
@@ -483,7 +507,10 @@ mod tests {
         assert_eq!(&b[6..10], &[0x11, 0x01, 0x11, 0x0A]);
         assert_eq!(b[10], 0x00);
         assert_eq!(b[11], 0x00); // individual, ext-format 0
-        assert_eq!(b[12], (0x42 << 2) | 0x03);
+        // The carrier's TPCI octet 0x42 keeps its 6-bit field in place and the
+        // APCI high bits become 0x03 → 0x43 (spec §5.4's `(tpci_int<<2)+0x03`
+        // with tpci_int = 0x10).
+        assert_eq!(b[12], 0x43);
         assert_eq!(b[13], 0xF1);
         assert_eq!(b[14], 0x00);
         assert_eq!(b[15], 5);
@@ -555,6 +582,103 @@ mod tests {
         let decoded = decode(&key, &asdu, &a).unwrap();
         assert_eq!(decoded.apci, inner_apci);
         assert_eq!(decoded.data, inner_data);
+    }
+
+    /// SHARED KNOWN-ANSWER VECTOR (spec §12.1).
+    ///
+    /// The same inputs are encoded by the knx-sim's independent Data Secure
+    /// implementation in `knx-sim/tests/secure_conformance.rs`
+    /// (`test_shared_known_answer_vector`) and must yield these exact bytes. It is
+    /// the cheap standing guard for the two byte-level divergences the #71
+    /// conformance loop found — the `block_0` TPCI octet (§5.4) and the auth-only
+    /// payload-length field — without needing the simulator running.
+    ///
+    /// Inputs: tool key `000102…0F` (synthetic), sequence 42, frame 1.1.1 → 1.1.2
+    /// on a numbered data telegram (TPCI octet `0x42`, i.e. `tpci_int` `0x10`),
+    /// inner APDU `A_Authorize_Request` (`0x3D1`) with the free-access key.
+    const KAT_KEY: [u8; 16] = [
+        0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
+        0x0F,
+    ];
+    const KAT_INNER_APCI: u16 = 0x3D1;
+    const KAT_INNER_DATA: [u8; 5] = [0x00, 0xFF, 0xFF, 0xFF, 0xFF];
+    /// auth+encrypt (SCF 0x90): the inner APDU and the MAC are both encrypted.
+    const KAT_AUTH_ENC: [u8; 18] = [
+        0x90, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2A, 0x08, 0x7D, 0x2A, 0xF4, 0x87, 0x75, 0xC3, 0x98,
+        0xA5, 0x3D, 0xA2,
+    ];
+    /// auth-only (SCF 0x80): the inner APDU rides in the clear under the MAC.
+    const KAT_AUTH_ONLY: [u8; 18] = [
+        0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2A, 0x03, 0xD1, 0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xB5,
+        0xA4, 0x6C, 0x9F,
+    ];
+
+    fn kat_addr() -> TpAddressing {
+        TpAddressing {
+            source: 0x1101,      // 1.1.1
+            destination: 0x1102, // 1.1.2
+            address_type_group: false,
+            extended_frame_format: 0,
+            tpci: 0x42, // numbered data, sequence 0
+        }
+    }
+
+    #[test]
+    fn test_known_answer_vector_matches_the_sim() {
+        let key = Key16::new(KAT_KEY);
+        let seq = Sequence::new(42);
+        let a = kat_addr();
+        for (alg, expected) in [
+            (
+                SecurityAlgorithm::AuthenticationEncryption,
+                KAT_AUTH_ENC.as_slice(),
+            ),
+            (
+                SecurityAlgorithm::AuthenticationOnly,
+                KAT_AUTH_ONLY.as_slice(),
+            ),
+        ] {
+            let asdu = encode(
+                &key,
+                Scf::tool_data(alg),
+                seq,
+                &a,
+                KAT_INNER_APCI,
+                &KAT_INNER_DATA,
+            )
+            .expect("the vector encodes");
+            assert_eq!(
+                asdu, expected,
+                "{alg:?} A_SecureData bytes diverged from the shared vector"
+            );
+            // And the vector decodes back to the inner APDU.
+            let decoded = decode(&key, expected, &a).expect("the vector verifies");
+            assert_eq!(decoded.apci, KAT_INNER_APCI);
+            assert_eq!(decoded.data, KAT_INNER_DATA);
+            assert_eq!(decoded.sequence, seq);
+        }
+    }
+
+    /// The `block_0` TPCI octet is the carrier's octet 6 with the APCI high bits
+    /// forced to `0x03` — NOT the octet shifted again (the bug the sim caught).
+    #[test]
+    fn test_tp_block_0_tpci_octet_is_not_shifted_twice() {
+        let seq = Sequence::new(1);
+        for (octet, expected) in [
+            (0x42u8, 0x43u8), // numbered data, sequence 0
+            (0x46, 0x47),     // numbered data, sequence 1
+            (0x00, 0x03),     // unnumbered data
+        ] {
+            let a = TpAddressing {
+                tpci: octet,
+                ..kat_addr()
+            };
+            assert_eq!(
+                tp_block_0(seq, &a, 7)[12],
+                expected,
+                "TPCI octet {octet:#04x} must map to {expected:#04x}"
+            );
+        }
     }
 
     #[test]
