@@ -1,0 +1,37 @@
+address: 1.1.1
+name: Push Button Hallway
+description: 4-fold push button with status LEDs
+location:
+  floor: Ground Floor
+  room: Hallway
+product:
+  manufacturer: Acme Automation
+  order_number: PB-4F
+channels:
+  CH-1:
+    name: Rocker 1 - Hallway Light
+  CH-2:
+    name: Rocker 2 - Central
+com_objects:
+  0:
+    dpt: '1.001'
+    flags: CRT
+    channel: CH-1
+  1:
+    dpt: '1.001'
+    flags: CWU
+    channel: CH-1
+  2:
+    dpt: '1.001'
+    flags: CRT
+    channel: CH-2
+  3:
+    dpt: '1.008'
+    flags: CRT
+    channel: CH-2
+  # Table-only object: never linked, so it lands in the "unused com-object"
+  # info counter rather than the problems panel.
+  4:
+    dpt: '1.001'
+    flags: CRT
+    channel: CH-2

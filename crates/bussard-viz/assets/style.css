@@ -1052,6 +1052,13 @@ input[type="range"] { flex: 1 1 120px; min-width: 100px; accent-color: var(--acc
 .send-status.sent { color: var(--text-dim); }
 .send-status.confirmed { color: var(--ok); background: rgba(63, 185, 80, 0.12); }
 .send-status.error { color: var(--bad); background: rgba(248, 81, 73, 0.12); }
+/* The pre-write confirmation: names the GA and the gateway, then Send/Cancel. */
+.send-status.confirming {
+  display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  color: var(--warn); background: rgba(210, 153, 34, 0.12);
+}
+.send-status.confirming .confirm-text { flex: 1 1 100%; }
+.send-status .confirm-yes { border-color: var(--warn); }
 
 /* --- problems panel (P5) -------------------------------------------------- */
 

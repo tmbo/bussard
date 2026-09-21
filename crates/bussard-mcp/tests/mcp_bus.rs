@@ -47,7 +47,7 @@ fn model() -> Model {
     groups.insert(
         ga("3/0/4"),
         Group {
-            name: "Jalousie Wohnen Süd — Auf/Ab".to_string(),
+            name: "Living Room Blind Move".to_string(),
             dpt: Some("1.008".parse().unwrap()),
             description: None,
             protected: false,
@@ -101,7 +101,10 @@ fn connect_response_body(channel: u8, gw: &UdpSocket) -> Vec<u8> {
 /// Builds a live server state (no handle wired yet; the caller spawns the bus).
 fn state_for() -> Arc<SharedState> {
     Arc::new(SharedState {
-        model: model(),
+        model: bussard_mcp::model_handle::ModelHandle::new(
+            std::path::PathBuf::from("knx"),
+            model(),
+        ),
         dir: std::path::PathBuf::from("knx"),
         ring: bussard_monitor::TelegramRing::new(),
         bus: BusStatus::new(TransportKind::Tunnel),
@@ -136,8 +139,9 @@ async fn connect_client_over(
     let feeder = tokio::spawn(async move {
         let mut sub = feeder_handle.subscribe();
         while let Some(inbound) = sub.recv().await {
+            let current = model.current();
             let decoded =
-                bussard_monitor::DecodedTelegram::from_frame(&inbound.frame, Some(&model));
+                bussard_monitor::DecodedTelegram::from_frame(&inbound.frame, Some(&current));
             ring.push_with_code(decoded, inbound.message_code);
         }
     });

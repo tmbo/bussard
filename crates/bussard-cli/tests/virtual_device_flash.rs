@@ -225,10 +225,17 @@ fn build_knxprod(out_dir: &Path) -> Result<PathBuf, String> {
 
 /// Runs the built `bussard` binary with `--routing` and the given args, returning
 /// (success, stdout, stderr).
+///
+/// The interop device is reached over KNXnet/IP routing, and routing counts as
+/// non-loopback for the write gate (issue #74) because a multicast write does
+/// reach a real bus. Inside this job it reaches only the veth namespace holding
+/// the device, so the harness opts in explicitly; without it every write refuses
+/// before it starts.
 fn bussard(args: &[&str]) -> (bool, String, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_bussard"))
         .args(args)
         .arg("--routing")
+        .env("BUSSARD_ALLOW_REAL_GATEWAY", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

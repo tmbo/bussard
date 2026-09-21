@@ -1,17 +1,41 @@
 // topology.js - the bus-spine floor diagram (P1, P2, P3, P4, D2, D6).
 //
-// Renders devices as HTML cards grouped into floor swimlanes (UG, EG, DG,
-// Außenbereich) and rooms, with the 14-device Technik room drawn as a bordered
-// distribution cabinet. A single SVG underlay per scroll container carries the
+// Renders devices as HTML cards grouped into floor swimlanes and rooms, with
+// device-dense rooms (a distribution cabinet holds many DIN-rail devices) drawn
+// as a bordered cluster. A single SVG underlay per scroll container carries the
 // vertical bus spine, a drop-line per card and selection edges; it is laid out
 // in content coordinates from offsetLeft/offsetTop after the cards mount and on
 // resize. The animation scheduler flashes cards/tree rows and (when the browser
 // supports offset-path) sends a traveling pulse along the spine from sender to
 // listeners for each telegram.
 
-const FLOOR_ORDER = ["UG", "EG", "DG", "Außenbereich"];
-const CABINET_ROOMS = new Set(["Technik"]);
-const UNKNOWN_FLOOR = "Ohne Zuordnung"; // trailing section for unplaced devices
+// Floor ordering is data-driven: nothing here may depend on one installation's
+// room or floor names. Known storey abbreviations (German and English) get a
+// fixed rank so a house reads bottom-to-top; any other label sorts after them,
+// alphabetically. Matching is case-insensitive on the trimmed label.
+const FLOOR_RANK = new Map([
+  ["kg", -30],
+  ["ug", -20],
+  ["basement", -20],
+  ["eg", 0],
+  ["ground", 0],
+  ["ground floor", 0],
+  ["og", 10],
+  ["1. og", 10],
+  ["first floor", 10],
+  ["2. og", 20],
+  ["second floor", 20],
+  ["dg", 30],
+  ["attic", 30],
+  ["outdoor", 90],
+  ["roof", 95],
+]);
+const UNRANKED_FLOOR = 500; // any label the table does not know
+// A room holding at least this many devices is drawn as a distribution cabinet
+// (a bordered cluster anchoring its floor). Counting devices rather than
+// matching a room name keeps this independent of any one installation.
+const CABINET_MIN_DEVICES = 4;
+const UNKNOWN_FLOOR = "Unassigned"; // trailing section for unplaced devices
 const MAX_PULSES = 6; // concurrent traveling pulses
 const MAX_EDGE_LISTENERS = 12; // bound selection edges to avoid a hairball
 const MAX_PARTNER_EDGES = 24; // bound device-partner edges to avoid a hairball
@@ -38,6 +62,28 @@ const ROW_EPS = 8; // px tolerance when grouping cards into a visual row by top
 function iaKey(addr) {
   const p = String(addr).split(".").map((n) => parseInt(n, 10) || 0);
   return (p[0] || 0) * 0x10000 + (p[1] || 0) * 0x100 + (p[2] || 0);
+}
+
+/**
+ * Sort rank for a floor label: known storey abbreviations first (bottom to
+ * top), anything else after them. Case-insensitive on the trimmed label.
+ * @param {string} floor
+ * @returns {number}
+ */
+function floorRank(floor) {
+  const key = String(floor).trim().toLowerCase();
+  const rank = FLOOR_RANK.get(key);
+  return rank == null ? UNRANKED_FLOOR : rank;
+}
+
+/**
+ * Whether a room's device list is dense enough to draw as a distribution
+ * cabinet. Purely a count, so it holds for any installation.
+ * @param {Array<Object>} devices
+ * @returns {boolean}
+ */
+function isCabinetRoom(devices) {
+  return !!devices && devices.length >= CABINET_MIN_DEVICES;
 }
 
 /**
@@ -171,11 +217,13 @@ class Topology {
       rooms.get(room).push(d);
     }
 
-    // Ordered floor list: known order first, then any extras (incl. unknown).
-    const floorNames = [
-      ...FLOOR_ORDER.filter((f) => byFloor.has(f)),
-      ...[...byFloor.keys()].filter((f) => !FLOOR_ORDER.includes(f)),
-    ];
+    // Ordered floor list: ranked storeys bottom-to-top, then anything else
+    // alphabetically, with the unplaced-devices bucket last.
+    const floorNames = [...byFloor.keys()].sort((a, b) => {
+      if (a === UNKNOWN_FLOOR) return b === UNKNOWN_FLOOR ? 0 : 1;
+      if (b === UNKNOWN_FLOOR) return -1;
+      return floorRank(a) - floorRank(b) || a.localeCompare(b);
+    });
 
     for (const floor of floorNames) {
       const lane = document.createElement("section");
@@ -208,8 +256,8 @@ class Topology {
       const rooms = byFloor.get(floor);
       // Cabinet rooms first (they anchor the floor visually), then the rest.
       const roomNames = [...rooms.keys()].sort((a, b) => {
-        const ca = CABINET_ROOMS.has(a) ? 0 : 1;
-        const cb = CABINET_ROOMS.has(b) ? 0 : 1;
+        const ca = isCabinetRoom(rooms.get(a)) ? 0 : 1;
+        const cb = isCabinetRoom(rooms.get(b)) ? 0 : 1;
         return ca - cb || a.localeCompare(b);
       });
       for (const room of roomNames) {
@@ -220,7 +268,7 @@ class Topology {
 
   _buildRoom(parent, floor, room, devices) {
     devices.sort((a, b) => iaKey(a.address) - iaKey(b.address));
-    const isCabinet = CABINET_ROOMS.has(room);
+    const isCabinet = isCabinetRoom(devices);
 
     const block = document.createElement("div");
     block.className = isCabinet ? "room-block cabinet-cluster" : "room-block";
@@ -228,8 +276,8 @@ class Topology {
 
     const title = document.createElement("div");
     title.className = isCabinet ? "cabinet-title" : "room-title";
-    title.textContent = room === "—" ? "(kein Raum)" : room;
-    if (isCabinet) title.textContent = `${room} · ${devices.length} Geräte`;
+    title.textContent = room === "—" ? "(no room)" : room;
+    if (isCabinet) title.textContent = `${room} · ${devices.length} devices`;
     block.appendChild(title);
 
     const grid = document.createElement("div");

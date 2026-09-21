@@ -519,13 +519,21 @@ export class Store {
 
   /**
    * Set the bus status and notify listeners.
-   * @param {{state:string, connected:boolean, transport?:string}} status
+   *
+   * `gateway` is the resolved endpoint the server is talking to, e.g.
+   * `192.0.2.10:3671` or `multicast 224.0.23.12:3671`, and `loopback` says
+   * whether that is a loopback address (the simulator) rather than a real
+   * installation. The send widgets name both before every write.
+   *
+   * @param {{state:string, connected:boolean, transport?:string, gateway?:string, loopback?:boolean}} status
    */
   setBusStatus(status) {
     this.busStatus = {
       state: status.state,
       connected: !!status.connected,
       transport: status.transport || null,
+      gateway: status.gateway || null,
+      loopback: !!status.loopback,
     };
     this.emit("bus-status", this.busStatus);
   }

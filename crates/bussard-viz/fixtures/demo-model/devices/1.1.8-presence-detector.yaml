@@ -1,0 +1,19 @@
+address: 1.1.8
+name: Presence Detector Hallway
+description: Ceiling presence detector with a brightness output
+location:
+  floor: Ground Floor
+  room: Hallway
+product:
+  manufacturer: Meridian Sensors
+  order_number: PD-1
+com_objects:
+  1:
+    dpt: '1.018'
+    flags: CRT
+  2:
+    dpt: '1.001'
+    flags: CRT
+  3:
+    dpt: '9.004'
+    flags: CRT

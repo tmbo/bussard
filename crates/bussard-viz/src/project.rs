@@ -356,7 +356,7 @@ mod tests {
         groups.insert(
             ga("3/2/0"),
             Group {
-                name: "Windalarm".to_string(),
+                name: "Wind Alarm".to_string(),
                 dpt: Some("1.005".parse().expect("dpt")),
                 description: Some("wind alarm".to_string()),
                 protected: true,
@@ -367,13 +367,13 @@ mod tests {
         ranges.insert(
             "3".to_string(),
             Range {
-                name: "Wetter".to_string(),
+                name: "Outdoor".to_string(),
             },
         );
         ranges.insert(
             "3/2".to_string(),
             Range {
-                name: "Alarme".to_string(),
+                name: "Alarms".to_string(),
             },
         );
 
@@ -382,7 +382,7 @@ mod tests {
         ch.insert(
             "CH-1".to_string(),
             Channel {
-                name: "Kanal 1".to_string(),
+                name: "Channel 1".to_string(),
             },
         );
         let mut com_objects = BTreeMap::new();
@@ -398,16 +398,16 @@ mod tests {
         );
         let sender = Device {
             address: ia("1.1.30"),
-            name: "Meteodata".to_string(),
+            name: "Weather Station".to_string(),
             description: None,
             location: Some(Location {
-                floor: Some("EG".to_string()),
-                room: Some("Technik".to_string()),
+                floor: Some("Ground Floor".to_string()),
+                room: Some("Utility Room".to_string()),
             }),
             product: Some(Product {
-                manufacturer: Some("Elsner".to_string()),
+                manufacturer: Some("Meridian Sensors".to_string()),
                 manufacturer_ref: None,
-                order_number: Some("70158".to_string()),
+                order_number: Some("WS-3".to_string()),
                 hardware_ref: None,
                 application_ref: None,
                 mask: None,
@@ -422,7 +422,7 @@ mod tests {
         // Device 1.1.4: listener, no product/location.
         let listener = Device {
             address: ia("1.1.4"),
-            name: "Jalousie".to_string(),
+            name: "Living Room Blind".to_string(),
             description: None,
             location: None,
             product: None,
@@ -457,7 +457,7 @@ mod tests {
             vec![
                 Link {
                     object: 3,
-                    name: Some("Windalarm 1".to_string()),
+                    name: Some("Wind Alarm 1".to_string()),
                     send: Some(ga("3/2/0")),
                     listen: vec![],
                 },
@@ -473,7 +473,7 @@ mod tests {
             ia("1.1.4"),
             vec![Link {
                 object: 12,
-                name: Some("Auf/Ab".to_string()),
+                name: Some("Up/Down".to_string()),
                 send: None,
                 listen: vec![ga("3/2/0")],
             }],
@@ -510,7 +510,7 @@ mod tests {
         assert_eq!(ranges[0]["key"], "3");
         assert_eq!(ranges[0]["main"], 3);
         assert_eq!(ranges[0]["middle"], Value::Null);
-        assert_eq!(ranges[0]["name"], "Wetter");
+        assert_eq!(ranges[0]["name"], "Outdoor");
         assert_eq!(ranges[1]["key"], "3/2");
         assert_eq!(ranges[1]["main"], 3);
         assert_eq!(ranges[1]["middle"], 2);
@@ -529,13 +529,13 @@ mod tests {
 
         let meteo = &devices[1];
         assert_eq!(meteo["address"], "1.1.30");
-        assert_eq!(meteo["name"], "Meteodata");
-        assert_eq!(meteo["floor"], "EG");
-        assert_eq!(meteo["room"], "Technik");
-        assert_eq!(meteo["product"]["manufacturer"], "Elsner");
-        assert_eq!(meteo["product"]["order_number"], "70158");
+        assert_eq!(meteo["name"], "Weather Station");
+        assert_eq!(meteo["floor"], "Ground Floor");
+        assert_eq!(meteo["room"], "Utility Room");
+        assert_eq!(meteo["product"]["manufacturer"], "Meridian Sensors");
+        assert_eq!(meteo["product"]["order_number"], "WS-3");
         assert_eq!(meteo["channels"][0]["key"], "CH-1");
-        assert_eq!(meteo["channels"][0]["name"], "Kanal 1");
+        assert_eq!(meteo["channels"][0]["name"], "Channel 1");
     }
 
     #[test]
@@ -549,7 +549,7 @@ mod tests {
 
         let obj3 = &objs[0];
         assert_eq!(obj3["number"], 3);
-        assert_eq!(obj3["name"], "Windalarm 1");
+        assert_eq!(obj3["name"], "Wind Alarm 1");
         assert_eq!(obj3["dpt"], "1.005");
         assert_eq!(obj3["flags"], "CWT");
         assert_eq!(obj3["channel"], "CH-1");
@@ -573,22 +573,22 @@ mod tests {
         // Ordered by GA: 3/2/0 then the synthesized 4/0/0.
         let g = &groups[0];
         assert_eq!(g["address"], "3/2/0");
-        assert_eq!(g["name"], "Windalarm");
+        assert_eq!(g["name"], "Wind Alarm");
         assert_eq!(g["dpt"], "1.005");
         assert_eq!(g["description"], "wind alarm");
         assert_eq!(g["protected"], true);
         assert_eq!(g["main"], 3);
         assert_eq!(g["middle"], 2);
         assert_eq!(g["sub"], 0);
-        assert_eq!(g["range"]["main"], "Wetter");
-        assert_eq!(g["range"]["middle"], "Alarme");
+        assert_eq!(g["range"]["main"], "Outdoor");
+        assert_eq!(g["range"]["middle"], "Alarms");
 
         let senders = g["senders"].as_array().expect("senders");
         assert_eq!(senders.len(), 1);
         assert_eq!(senders[0]["device"], "1.1.30");
-        assert_eq!(senders[0]["device_name"], "Meteodata");
+        assert_eq!(senders[0]["device_name"], "Weather Station");
         assert_eq!(senders[0]["object"], 3);
-        assert_eq!(senders[0]["object_name"], "Windalarm 1");
+        assert_eq!(senders[0]["object_name"], "Wind Alarm 1");
 
         let listeners = g["listeners"].as_array().expect("listeners");
         assert_eq!(listeners.len(), 1);

@@ -12,6 +12,13 @@ on:
 permissions:
   contents: write
 
+# A retagged release must not race its own earlier run: two runs uploading the
+# same asset names with `--clobber` can interleave and leave a mixed set of
+# binaries on the release. Serialize per tag instead, and let the newer run win.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
@@ -20,6 +27,7 @@ jobs:
   create-release:
     name: create release
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
         with:
@@ -56,6 +64,7 @@ jobs:
   build:
     name: build (${{ matrix.asset }})
     needs: create-release
+    timeout-minutes: 45
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false

@@ -10,7 +10,7 @@ The complete surface of `bussard`: every command and flag, the environment varia
 - `--routing`: force KNXnet/IP routing (multicast) instead of tunneling.
 - Filters (`monitor --filter`, `capture --filter`): a comma-separated list of GAs (`3/2/0`), GA prefixes (`3/` or `3/2/`), or IAs (`1.1.30`).
 - Confirmation: commands that write to devices confirm on a terminal (`y/N`), naming the resolved gateway (`host:port`). Without a TTY they refuse unless `--yes` is passed (`--yes-download` for `import-product`). This covers `write`, `flash`, `apply`, `assign` and `adopt`.
-- Real-gateway safety: a write command whose resolved gateway is **not** loopback (not `127.0.0.0/8` or `::1`) refuses to run unless you opt in with `--allow-remote-gateway` or `BUSSARD_ALLOW_REAL_GATEWAY=1`. Loopback gateways (the local simulator, the test suite) are always allowed. Reads (`monitor`, `read`, `scan`, `plan`, `reconstruct`) are never gated. [SAFETY.md](SAFETY.md) is the read-before-your-first-write guide to all of this.
+- Real-gateway safety: a write command whose resolved gateway is **not** loopback (not `127.0.0.0/8` or `::1`) refuses to run unless you opt in with `--allow-remote-gateway` or `BUSSARD_ALLOW_REAL_GATEWAY=1`. Loopback gateways (the local simulator, the test suite) are always allowed. Reads (`monitor`, `read`, `scan`, `plan`, `reconstruct`) are never gated. The two long-running servers pass the same gate once, at startup, when they are able to transmit: `mcp --allow-writes`, `viz --allow-writes`, and `viz --watch-prog`. Without those flags neither server can write, so neither is gated. [SAFETY.md](SAFETY.md) is the read-before-your-first-write guide to all of this.
 
 ### Global flags
 
@@ -52,6 +52,8 @@ Import an existing `.knxproj` (or xknxproject JSON dump) into the model. Re-impo
 | `--from-json <FILE>` | | Import from an xknxproject JSON dump instead of a `.knxproj`. |
 | `--password <PASSWORD>` | | Project password. Falls back to `BUSSARD_PROJECT_PASSWORD`, then an interactive prompt. |
 | `--dir <DIR>` | `knx` | The model directory to write. |
+
+A re-import always takes the generated sections (com-object tables, link wiring, parameters) from the project and always preserves hand-authored fields, reporting every difference instead of overwriting it. There is no flag for that: it is the only behaviour the merge implements.
 
 ### `bussard scan [LINE]`
 
@@ -108,6 +110,19 @@ Introspect a device over the bus: discover its interface objects and, for each, 
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
 
+When the model marks the device secure-capable, the output carries a `KNX Secure:` line (and a `secure` object in `--json`, with `secure_capable` and the Data Secure state). That is inspection only: `bussard` cannot program a Secure device — see [SAFETY.md](SAFETY.md#known-limitations).
+
+### `bussard keyring <FILE>`
+
+Inspect an ETS KNX Secure keyring export (`.knxkeys`): print what it carries — the device individual addresses, the tunnel/management interface addresses, whether a backbone key is present, and how many group keys there are. **No key material is ever printed**, in text or JSON.
+
+| Flag / arg | Default | Meaning |
+|---|---|---|
+| `<FILE>` | | The `.knxkeys` file to inspect. |
+| `--json` | off | Emit JSON instead of the text summary. |
+
+The keyring password comes from `BUSSARD_KEYRING_PASSWORD` and is deliberately **not** a flag, so it never lands in shell history or a process listing. Reading a keyring does not enable Secure writes; see [SAFETY.md](SAFETY.md#known-limitations).
+
 ### `bussard import-product [FILE]`
 
 Import vendor product data (`.knxprod`): cache it under `<dir>/vendor/` and generate one model file per application program under `<dir>/models/`. Three modes: a local file (positional), `--order-number` to look the file up in the pointer index and download it, or `--list` to show the index. Details in [product-data.md](product-data.md).
@@ -118,6 +133,7 @@ Import vendor product data (`.knxprod`): cache it under `<dir>/vendor/` and gene
 | `--dir <DIR>` | `knx` | The model directory. |
 | `--order-number <ORDER>` | | Look the `.knxprod` up in the pointer index by order number and download it from the vendor (with confirmation). |
 | `--yes-download` | off | Skip the download confirmation prompt. Only meaningful with `--order-number`; required on a non-TTY. |
+| `--inner <NAME>` | | Import one named inner archive from a multi-product `.knxprod` instead of every one it contains. |
 | `--list` | | List the product-data pointer index and exit. |
 
 Downloads are verified against the index by byte size and SHA-256; a mismatch is a hard error. Order-number matching is case- and whitespace-insensitive but keeps interior separators (`AKK-0216.03` matches `akk-0216.03`, not `AKK021603`).
@@ -266,6 +282,7 @@ Run the MCP server over stdio (see [the MCP server](#the-mcp-server)).
 | `--routing` | off | Force routing transport. |
 | `--passive` | off | Never transmit on the bus; omits the `knx_read_group` tool. |
 | `--allow-writes` | off | Register the `knx_write_group` tool. Mutually exclusive with `--passive`. |
+| `--allow-remote-gateway` | off | Permit `--allow-writes` against a non-loopback (real) gateway. The same gate as `bussard write`; without it a write-enabled server pointed at a real gateway refuses to start. |
 | `--capture-db <PATH>` | | A `bussard capture` database to extend `knx_recent_telegrams` history beyond the in-memory ring. |
 
 ### `bussard viz`
@@ -274,22 +291,30 @@ Serve the network-visualization website: an HTTP server that renders the model a
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--listen <ADDR>` | `127.0.0.1:8080` | The address to bind the HTTP server to. |
+| `--listen <ADDR>` | `127.0.0.1:8080` | The address to bind the HTTP server to. A non-loopback bind is allowed but warns: the port is unauthenticated. |
 | `--dir <DIR>` | `knx` | The model directory (required; a bad model is a hard error so the protected-GA gate never fails open). |
 | `--gateway <HOST>` | | Gateway override. On connect failure the server degrades to model-only mode. |
 | `--routing` | off | Force routing transport. |
 | `--watch-prog` | off | Watch for devices in KNX programming mode and highlight them in the UI. Periodically broadcasts `A_IndividualAddress_Read` on the bus and surfaces the responders in `/api/state`'s `prog` field and the `prog` SSE event. This is active bus traffic, so it is off by default and must be enabled explicitly; never point it at a real installation unattended. Takes effect only when a bus is connected. |
+| `--allow-writes` | off | Arm `POST /api/group-write`. Off by default: a bare `bussard viz` is a viewer and the endpoint answers `403 writes_disabled`. |
+| `--allow-remote-gateway` | off | Permit `--allow-writes` or `--watch-prog` against a non-loopback (real) gateway. The same gate as `bussard write`; without it such a server refuses to start. |
+| `--allow-host <HOST>` | | Also answer requests whose `Host` header is this name (repeatable). Loopback names and bare IP literals are always accepted; any other name is refused, because that is how DNS rebinding reaches this port. |
 
 ## Environment variables
 
 | Variable | Meaning |
 |---|---|
 | `BUSSARD_PROJECT_PASSWORD` | Password for a protected `.knxproj` when `--password` is not given. Keep it in an untracked `.env`, never in the repo. |
+| `BUSSARD_KEYRING_PASSWORD` | Password for a `.knxkeys` keyring read by `bussard keyring`. There is deliberately no flag for it, so it never lands in shell history or a process listing. |
 | `BUSSARD_ALLOW_REAL_GATEWAY` | Set to `1` to permit a write command against a non-loopback (real) gateway, equivalent to `--allow-remote-gateway`. Loopback gateways never need it. |
 | `RUST_LOG` | Log filter (e.g. `debug`, `bussard_transport=trace`). Overrides `-v`/`--verbose` when set. |
 | `BUSSARD_ADOPT_ADDRESS` | The target address for `adopt`, for driving the wizard from a script or test (together with `--product`). |
 | `BUSSARD_ASSIGN_WAIT_MS` | Test knob: shrinks the programming-mode wait budget of `assign` and `adopt`. Unset in normal use. |
 | `BUSSARD_SCAN_DISCOVERY_MS` | Test knob: shrinks the per-address probe timeout of `scan` and `reconstruct --line`. Unset in normal use. |
+| `BUSSARD_WIRE_TRACE` | Set to `1` to log every KNXnet/IP datagram as hex on stderr. The diagnostic of last resort when a gateway behaves unexpectedly; very noisy. |
+| `BUSSARD_FLASH_L4_TIMEOUT_MS` | Flash knob: the per-exchange Layer 4 timeout. Raise it for a slow device or a lossy link. |
+| `BUSSARD_FLASH_REBOOT_WAIT_MS` | Flash knob: how long to wait for a device to come back after a restart. |
+| `BUSSARD_FLASH_RECONNECT_EXCHANGES` | Flash knob: how many exchanges to attempt while reconnecting after a restart. |
 
 Test-harness variables (`BUSSARD_VIRTUAL_DEVICE*`, `BUSSARD_TEST_MULTICAST`, `BUSSARD_PRODUCT_CORPUS`) gate the integration test suites, never the CLI; they are documented in the `tests-support/` READMEs.
 
@@ -314,7 +339,7 @@ knx/
 ```yaml
 connection:
   transport: tunnel          # tunnel | routing
-  gateway: "192.168.1.74:3671"   # host:port for tunneling (optional)
+  gateway: "192.0.2.10:3671"   # host:port for tunneling (optional)
   multicast: "224.0.23.12:3671"  # addr:port for routing (optional; this is the default)
 ```
 
@@ -327,19 +352,19 @@ connection:
 ### `groups.yaml`
 
 ```yaml
-project: "Home"                 # optional metadata
-imported_from: "home.knxproj"   # optional provenance
+project: "Demo House"                 # optional metadata
+imported_from: "demo-house.knxproj"   # optional provenance
 ranges:
-  "3": { name: "Beschattung" }        # a main group
-  "3/2": { name: "Sicherheit" }       # a middle group
+  "3": { name: "Central" }            # a main group
+  "3/2": { name: "Alarms" }           # a middle group
 groups:
   "3/0/4":
-    name: "Jalousie Wohnen Süd — Auf/Ab"
+    name: "Living Room Blind Move"
     dpt: "1.008"
   "3/2/0":
-    name: "Windalarm"
+    name: "Wind Alarm"
     dpt: "1.005"
-    description: "Wetterstation → alle Raffstore-Kanäle"
+    description: "weather station -> every blind channel"
     protected: true
 ```
 
@@ -359,11 +384,11 @@ groups:
 links:
   "1.1.4":
     - object: 12
-      name: "A: Behang Auf/Ab"      # informational; refreshed on import
+      name: "A: Blind Up/Down"      # informational; refreshed on import
       listen: ["3/0/4"]
   "1.1.30":
     - object: 3
-      name: "Windalarm 1"
+      name: "Wind Alarm 1"
       send: "3/2/0"
 ```
 
@@ -381,17 +406,17 @@ links:
 
 ```yaml
 address: "1.1.4"
-name: "Jalousieaktor Wohnen"
-location: { floor: "EG", room: "Wohnzimmer" }
+name: "Blind Actuator 4-fold"
+location: { floor: "Ground Floor", room: "Utility Room" }
 product:
-  manufacturer: "Albrecht Jung"
-  order_number: "23024 1S R"
+  manufacturer: "Northwind Controls"
+  order_number: "BA-4"
   application_ref: "M-0004_A-20D6-25-D965"
   mask: "07B0"
 channels:
-  A: { name: "Raffstore Wohnen Süd 1" }
+  A: { name: "Blind 1 - Living Room" }
 parameters:
-  "windalarm-1@MD-1_M-3_MI-1_P-3_R-45": "1"
+  "wind-alarm-1@MD-1_M-3_MI-1_P-3_R-45": "1"
 # --- GENERATED: regenerated on re-import; hand edits here are lost. ---
 module_bases:
   MD-1_M-3_MI-1: 1797
@@ -513,7 +538,9 @@ Bus operations share one rate limiter (minimum 250 ms between operations, at mos
 | `knx_validate` | none | Every diagnostic (code, severity, message, location) plus counts. |
 | `knx_read_group` | `ga` | Transmits a GroupValueRead and returns the decoded response. Omitted in `--passive` mode. |
 | `knx_describe_device` | `address` | Introspects a device: enumerates its interface objects and each property's description (PID, type, element count, access levels). Read-only on the bus. Omitted in `--passive` mode. |
-| `knx_write_group` | `ga`, `value` (human-typed), `dpt` (optional override) | A GroupValueWrite. Registered only with `--allow-writes`; refuses protected GAs outright. |
+| `knx_write_group` | `ga`, `value` (human-typed), `dpt` (optional override) | A GroupValueWrite. Registered only with `--allow-writes`; refuses protected GAs outright, and refuses a `dpt` that contradicts the GA's DPT in the model (the override is for GAs the model does not type). |
+
+The model is not frozen at startup: the server re-reads the model directory when its files change, so a `protected: true` or a corrected `dpt:` added to `groups.yaml` mid-session is in force on the next tool call. A model that fails to parse is not swapped in; the server keeps the last good one and warns on stderr.
 
 ## The viz server
 
@@ -527,7 +554,9 @@ The page shows:
 - **Problems.** Com objects with no link and GAs with no sender or no listener are surfaced for the P5 review.
 - **Test writes.** Per-DPT widgets send a GroupValueWrite from the page. A `protected` GA is disabled until you arm a force checkbox. The confirmation is the echoed telegram on the live stream.
 
-Structure is read-only: devices, groups, and links are edited in the YAML model, and the model is loaded once at startup, so a YAML edit needs a server restart to show up.
+Structure is read-only: devices, groups, and links are edited in the YAML model. An edit does not need a restart — `POST /api/reload` (the ⟳ button next to the bus status) re-reads the directory and swaps the model in place; see [reloading the model](#reloading-the-model).
+
+Writes are off by default. Without `--allow-writes` the send widgets are there but `POST /api/group-write` answers `403 writes_disabled`, so a bare `bussard viz` cannot put anything on the bus. With writes armed, every send asks for an explicit confirmation naming the GA and the resolved gateway before it goes out, and a `protected` GA additionally needs the force checkbox.
 
 ### API
 
@@ -537,14 +566,14 @@ The website is driven by a small JSON/SSE API on the same listen address.
 |---|---|
 | `GET /` | The website shell. `GET /assets/{file}` serves the embedded JS/CSS modules. |
 | `GET /api/model` | The precomputed model projection (devices, groups, ranges, links, senders/listeners). Rebuilt in place by `POST /api/reload`. |
-| `GET /api/state` | `{bus: {state, transport, connected}, seq, values, prog}`, where `values` is the last value, payload, DPT, and source per GA, and `prog` is an array of the individual addresses currently observed in programming mode (empty when none, or when `--watch-prog` is off). |
+| `GET /api/state` | `{bus: {state, transport, connected, gateway, loopback}, seq, values, prog}`, where `gateway` is the resolved endpoint (`192.0.2.10:3671`, or `multicast 224.0.23.12:3671`; `null` in model-only mode) and `loopback` says whether it is a loopback address, where `values` is the last value, payload, DPT, and source per GA, and `prog` is an array of the individual addresses currently observed in programming mode (empty when none, or when `--watch-prog` is off). |
 | `GET /api/traffic` | Server-Sent Events. `event: bus` (connection state, always sent first), `event: telegram` (`id:` is the seq, `data:` is the [telegram JSON](#telegram-json-contract) plus `seq`), `event: model` (the model was reloaded, `data:` is `{model_version, stats}`, so the page refetches `/api/model`), `event: prog` (the programming-mode set changed, `data:` is `{devices: [ia, ...]}`; only emitted with `--watch-prog`), `event: gap` (the subscriber fell behind and should re-snapshot). `?backlog=N` (default 50) replays recent telegrams; a reconnect with `Last-Event-ID` resumes with no duplicates and no gaps. |
 | `POST /api/group-write` | `{address, value?, payload?, dpt?, force?}`. Encodes and sends a GroupValueWrite; returns `200` with an echo of what was written. |
 | `POST /api/reload` | Reloads the model from disk and swaps it in atomically. Returns `200` with `{model_version, stats}` on success, or `422` `model_invalid` (keeping the old model) when the model on disk is broken. |
 
 `POST /api/group-write` takes exactly one of `value` or `payload`. `value` is a human string encoded through the same `parse_value` + `encode` stack as `bussard write` (`dpt` overrides the GA's modelled DPT). `payload` is raw bytes as hex (even length, upper- or lowercase, for example `"0b64"`) sent verbatim, for exotic DPTs with no string grammar. When a DPT is known for a `payload` write (from the model or `dpt`), the decoded byte length is checked against the DPT's expected size: a sub-byte (packable) DPT takes exactly one byte with value `<= 0x3f` and is sent packed into the 6-bit APDU exactly as the `value` path would; a byte-sized DPT takes that many whole octets. When no DPT is known anywhere, the raw write is still allowed but sent unpacked as a full data octet, because a lone 1-byte payload `<= 0x3f` is ambiguous between the packed 1-bit form and a byte-sized value and the full octet is the form every device reads correctly.
 
-The write policy matches `bussard write`: `400` for a bad address, an un-encodable value, bad hex, both or neither of `value`/`payload`, or a payload whose length does not match a known DPT; `403` for a `protected` GA without `force` (which applies to raw writes identically); `422` when no DPT can be resolved for a `value` write (supply `dpt`); and `503` when the bus is unavailable. The success echo carries `payload` (the hex bytes sent) and sets `value` to `null` for raw writes. Errors are `{"error": {"code", "message"}}`.
+The write policy matches `bussard write`: `403` `writes_disabled` for every write when the server was started without `--allow-writes`; `400` for a bad address, an un-encodable value, bad hex, both or neither of `value`/`payload`, or a payload whose length does not match a known DPT; `403` for a `protected` GA without `force` (which applies to raw writes identically); `422` when no DPT can be resolved for a `value` write (supply `dpt`); and `503` when the bus is unavailable. The success echo carries `payload` (the hex bytes sent) and sets `value` to `null` for raw writes. Errors are `{"error": {"code", "message"}}`.
 
 ### Reloading the model
 
@@ -557,6 +586,15 @@ The load-failure semantics are the point: a broken model never replaces a good o
 With `--watch-prog` the server runs a background probe that puts a broadcast `A_IndividualAddress_Read` on the bus every few seconds and collects the responders for about a second, exactly as `bussard assign` does. Every device in KNX programming mode answers with its own individual address (the software equivalent of the red programming LED on real hardware). The responding set is reported in `/api/state`'s `prog` array and, whenever it changes, on the SSE stream as a `prog` event carrying `{devices: [ia, ...]}`, so the UI can highlight a device the moment its programming button is pressed and drop the highlight when it is released.
 
 This is opt-in because the probe generates active bus traffic: it must never run unnoticed against a real installation. It is off by default, takes effect only when the bus is connected, and reuses the server's single tunnel (it never opens a second connection). While the bus is disconnected the set is cleared and probing pauses; it resumes on reconnect.
+
+### Who may reach the server
+
+The listen port is unauthenticated: anything that can open a TCP connection to it can read the whole model, and, with `--allow-writes`, write to the bus. Keep the default `127.0.0.1` bind unless you have a reason not to.
+
+Two browser-specific holes are closed regardless of the bind address:
+
+- **`Host` allow-list.** A request is served only when its `Host` header is a bare IP literal, `localhost` (or a `*.localhost` name), or a name passed with `--allow-host`. Anything else gets `403 forbidden`. Without this, an attacker page on `evil.example` can repoint its own DNS name at `127.0.0.1` and make the browser treat `http://evil.example:8080/api/...` as same-origin with the attacker's page, giving it full read (and write) access. The attacker cannot forge the `Host` header, and rebinding needs a *name*, which is why an IP literal is safe.
+- **`Origin` check.** Any state-changing request (`POST`) whose `Origin` is not itself an allowed host is refused with `403 forbidden`. This is what stops a plain cross-site form post at `POST /api/reload`, which takes no body and so is reachable without any preflight. A request with no `Origin` at all is allowed, because no browser omits it here; that is `curl`, not an attack.
 
 ### Degraded and offline modes
 

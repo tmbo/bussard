@@ -155,7 +155,7 @@ export function connectTraffic(onTelegram, onStatus, opts = {}) {
       // Malformed prog event; treat as "no devices in programming mode".
     }
     // Contract: { "devices": ["1.1.2", ...] }. Absent/empty => none.
-    onProg(Array.isArray(msg.devices) ? msg.devices : []);
+    opts.onProg(Array.isArray(msg.devices) ? msg.devices : []);
   });
 
   source.addEventListener("gap", (ev) => {

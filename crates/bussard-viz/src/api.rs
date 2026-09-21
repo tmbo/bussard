@@ -168,10 +168,12 @@ pub struct GroupWrite {
 /// Accepts either a human `value` (encoded through `parse_value` + `encode`) or
 /// raw hex `payload` bytes (sent verbatim); exactly one must be present.
 ///
-/// Refuses a protected GA without `force` (403), errors when no DPT can be
-/// resolved for a `value` write (422), errors on a bad address / un-encodable
-/// value / bad hex / DPT-size mismatch (400), and returns 503 when there is no
-/// bus. On success returns `200` with an echo of what was written.
+/// Refuses every write with `403 writes_disabled` when the server was started
+/// without `--allow-writes`, refuses a protected GA without `force` (403),
+/// errors when no DPT can be resolved for a `value` write (422), errors on a
+/// bad address / un-encodable value / bad hex / DPT-size mismatch (400), and
+/// returns 503 when there is no bus. On success returns `200` with an echo of
+/// what was written.
 ///
 /// ## Raw payload packing
 ///
@@ -189,6 +191,16 @@ pub async fn post_group_write(
     State(state): State<AppState>,
     Json(req): Json<GroupWrite>,
 ) -> Result<Json<Value>, ApiError> {
+    // Writes are opt-in. A bare `bussard viz` is a viewer: the endpoint exists
+    // (so the UI can explain itself) but never reaches the bus.
+    if !state.security.allow_writes {
+        return Err(ApiError::WritesDisabled(
+            "this viz server is read-only; restart it with `bussard viz --allow-writes` \
+             to enable group writes"
+                .to_string(),
+        ));
+    }
+
     let ga: GroupAddress = req
         .address
         .parse()
@@ -506,7 +518,7 @@ mod tests {
         groups.insert(
             ga("3/0/4"),
             Group {
-                name: "Jalousie".to_string(),
+                name: "Living Room Blind".to_string(),
                 dpt: dpt.map(|d| d.parse().expect("dpt")),
                 description: None,
                 protected,
@@ -532,7 +544,7 @@ mod tests {
         let m = model_with(true, Some("1.008"));
         let msg = protected_refusal(&m, ga("3/0/4"), false).expect("must refuse");
         assert!(msg.contains("protected"));
-        assert!(msg.contains("Jalousie"));
+        assert!(msg.contains("Living Room Blind"));
     }
 
     #[test]

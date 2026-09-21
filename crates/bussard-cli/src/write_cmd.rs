@@ -107,7 +107,7 @@ pub fn run(
     match outcome {
         Ok(write) => {
             // Confirmation line, e.g.
-            // `3/0/4 Jalousie Wohnen Süd — Auf/Ab ← Down (1.008)`.
+            // `3/0/4 Living Room Blind Move ← Down (1.008)`.
             match &ga_name {
                 Some(name) => println!("{ga} {name} ← {value_display} ({dpt})"),
                 None => println!("{ga} ← {value_display} ({dpt})"),
@@ -223,7 +223,7 @@ mod tests {
         groups.insert(
             ga("3/0/4"),
             Group {
-                name: "Jalousie Wohnen Süd — Auf/Ab".to_string(),
+                name: "Living Room Blind Move".to_string(),
                 dpt: dpt.map(|d| d.parse().unwrap()),
                 description: None,
                 protected,
@@ -250,7 +250,7 @@ mod tests {
         let msg = protected_refusal(Some(&m), ga("3/0/4"), false).expect("must refuse");
         assert!(msg.contains("protected"));
         assert!(msg.contains("--force"));
-        assert!(msg.contains("Jalousie"));
+        assert!(msg.contains("Living Room Blind"));
     }
 
     #[test]

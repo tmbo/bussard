@@ -122,6 +122,8 @@ function applyState(store, state) {
       state: state.bus.state,
       connected: state.bus.connected,
       transport: state.bus.transport,
+      gateway: state.bus.gateway,
+      loopback: state.bus.loopback,
     });
   }
   const values = state.values || {};
@@ -216,7 +218,15 @@ function initHeaderStatus() {
     if (dot) {
       dot.dataset.state = status.connected ? "connected" : status.state || "offline";
     }
-    if (label) label.textContent = status.connected ? "connected" : status.state || "offline";
+    if (!label) return;
+    const state = status.connected ? "connected" : status.state || "offline";
+    // Name the bus in the header: the operator should never have to guess
+    // which installation this page is pointed at (docs/SAFETY.md).
+    label.textContent = status.gateway ? `${state} · ${status.gateway}` : state;
+    label.title = status.gateway
+      ? `${status.gateway}${status.loopback ? " (loopback)" : " (real gateway)"}`
+      : "no bus configured (model-only mode)";
+    label.dataset.loopback = status.gateway ? String(!!status.loopback) : "";
   };
   // The store instance changes on reload, but the bus status is re-applied from
   // the live stream, so a subscription on the current store is refreshed each
@@ -387,7 +397,13 @@ function connectTrafficStream() {
     }
   };
   const onStatus = (s) => {
-    app.store.setBusStatus({ state: s.state, connected: s.connected, transport: s.transport });
+    app.store.setBusStatus({
+      state: s.state,
+      connected: s.connected,
+      transport: s.transport,
+      gateway: s.gateway,
+      loopback: s.loopback,
+    });
   };
   const onModel = () => {
     // The server swapped the model; refetch and rebuild the views.

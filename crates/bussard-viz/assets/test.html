@@ -51,36 +51,36 @@
     const fixture = {
       project: "T",
       stats: { devices: 2, groups: 3, links: 2 },
-      ranges: [{ key: "1", main: 1, middle: null, name: "Licht" }],
+      ranges: [{ key: "1", main: 1, middle: null, name: "Lighting" }],
       devices: [
         {
-          address: "1.1.1", name: "Taster Flur", floor: "EG", room: "Flur",
-          product: { manufacturer: "Gira", order_number: "5142" },
+          address: "1.1.1", name: "Push Button Hallway", floor: "Ground Floor", room: "Hallway",
+          product: { manufacturer: "Acme Automation", order_number: "PB-4F" },
           channels: [{ key: "CH-1", name: "A" }],
           com_objects: [
-            { number: 0, name: "Schalten", dpt: "1.001", flags: "C-WT--", channel: "CH-1", send: "1/1/1", listen: [] },
+            { number: 0, name: "Switch", dpt: "1.001", flags: "C-WT--", channel: "CH-1", send: "1/1/1", listen: [] },
             { number: 1, name: "Loose", dpt: "1.001", flags: "C-----", channel: "CH-1", send: null, listen: [] }
           ]
         },
         {
-          address: "1.1.2", name: "Aktor", floor: "EG", room: "Technik",
+          address: "1.1.2", name: "Switch Actuator", floor: "Ground Floor", room: "Utility Room",
           product: null, channels: [],
           com_objects: [
-            { number: 0, name: "Schalten", dpt: "1.001", flags: "C-W-U-", channel: null, send: null, listen: ["1/1/1"] }
+            { number: 0, name: "Switch", dpt: "1.001", flags: "C-W-U-", channel: null, send: null, listen: ["1/1/1"] }
           ]
         }
       ],
       groups: [
-        { address: "1/1/1", name: "Licht Flur", dpt: "1.001", protected: false, main: 1, middle: 1, sub: 1,
-          range: { main: "Licht", middle: null },
-          senders: [{ device: "1.1.1", device_name: "Taster Flur", object: 0, object_name: "Schalten" }],
-          listeners: [{ device: "1.1.2", device_name: "Aktor", object: 0, object_name: "Schalten" }] },
+        { address: "1/1/1", name: "Hallway Light", dpt: "1.001", protected: false, main: 1, middle: 1, sub: 1,
+          range: { main: "Lighting", middle: null },
+          senders: [{ device: "1.1.1", device_name: "Push Button Hallway", object: 0, object_name: "Switch" }],
+          listeners: [{ device: "1.1.2", device_name: "Switch Actuator", object: 0, object_name: "Switch" }] },
         { address: "1/1/2", name: "No listener", dpt: "1.001", protected: false, main: 1, middle: 1, sub: 2,
-          range: { main: "Licht", middle: null },
-          senders: [{ device: "1.1.1", device_name: "Taster Flur", object: 0, object_name: "Schalten" }],
+          range: { main: "Lighting", middle: null },
+          senders: [{ device: "1.1.1", device_name: "Push Button Hallway", object: 0, object_name: "Switch" }],
           listeners: [] },
         { address: "1/2/0", name: null, dpt: null, protected: true, main: 1, middle: 2, sub: 0,
-          range: { main: "Licht", middle: null },
+          range: { main: "Lighting", middle: null },
           senders: [], listeners: [] }
       ]
     };
@@ -88,8 +88,8 @@
     const store = new Store(fixture);
 
     // --- indexes ----------------------------------------------------------
-    check("deviceByAddr indexed", store.deviceByAddr.get("1.1.1").name === "Taster Flur");
-    check("groupByAddr indexed", store.groupByAddr.get("1/1/1").name === "Licht Flur");
+    check("deviceByAddr indexed", store.deviceByAddr.get("1.1.1").name === "Push Button Hallway");
+    check("groupByAddr indexed", store.groupByAddr.get("1/1/1").name === "Hallway Light");
     check("gaSenders index", store.gaSenders.get("1/1/1").length === 1);
     check("gaListeners index", store.gaListeners.get("1/1/1").length === 1);
     check("deviceGAs union", store.deviceGAs.get("1.1.1").has("1/1/1"));
@@ -126,15 +126,15 @@
     check("unknown GA is suspicious", store.isSuspiciousGa("7/7/7"));
 
     // --- search index -----------------------------------------------------
-    const r1 = store.search("flur");
+    const r1 = store.search("hallway");
     check("search hits device by room", r1.devices.some((e) => e.id === "1.1.1"));
-    const r2 = store.search("gira");
+    const r2 = store.search("acme");
     check("search hits by manufacturer", r2.devices.some((e) => e.id === "1.1.1"));
     const r3 = store.search("1/1/1");
     check("search hits GA by address", r3.groups.some((e) => e.id === "1/1/1"));
-    const r4 = store.search("taster flur");
+    const r4 = store.search("push hallway");
     check("search ANDs terms", r4.devices.length === 1 && r4.devices[0].id === "1.1.1");
-    const r5 = store.search("taster aktor");
+    const r5 = store.search("push actuator");
     check("search AND with no match", r5.devices.length === 0);
 
     // --- filter grammar ---------------------------------------------------
@@ -168,9 +168,9 @@
     check("filter is:suspicious match", isS(mk({ destination: "1/1/2" })));
     check("filter is:suspicious reject linked", !isS(mk({ destination: "1/1/1" })));
 
-    const txt = parseFilter("schalten", susp);
-    check("filter free text match", txt(mk({ note: "Schalten Flur" })));
-    check("filter free text reject", !txt(mk({ note: "Dimmen" })));
+    const txt = parseFilter("switch", susp);
+    check("filter free text match", txt(mk({ note: "Switch Hallway" })));
+    check("filter free text reject", !txt(mk({ note: "Dim" })));
 
     const combo = parseFilter("1/1/* apci:write", susp);
     check("filter AND of terms match", combo(mk({ destination: "1/1/5", apci: "write" })));
