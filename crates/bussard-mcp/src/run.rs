@@ -36,7 +36,8 @@ pub async fn serve_stdio(state: Arc<SharedState>, config: ConnectionConfig) -> a
     let feeder = tokio::spawn(async move {
         let mut sub = feeder_handle.subscribe();
         while let Some(inbound) = sub.recv().await {
-            let decoded = DecodedTelegram::from_frame(&inbound.frame, Some(&model));
+            let current = model.current();
+            let decoded = DecodedTelegram::from_frame(&inbound.frame, Some(&current));
             ring.push_with_code(decoded, inbound.message_code);
         }
     });

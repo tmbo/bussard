@@ -63,6 +63,7 @@
 
 #![warn(missing_docs)]
 
+pub mod model_handle;
 pub mod run;
 pub mod server;
 pub mod state;
@@ -138,7 +139,7 @@ pub fn build_state_from_model(
     let ring = bussard_monitor::TelegramRing::new();
 
     let state = Arc::new(SharedState {
-        model,
+        model: model_handle::ModelHandle::new(config.dir.clone(), model),
         dir: config.dir.clone(),
         ring,
         bus,

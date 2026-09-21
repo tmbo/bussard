@@ -6,11 +6,12 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use bussard_bus::{BusHandle, BusState};
-use bussard_model::Model;
 use bussard_monitor::TelegramRing;
 use bussard_transport::TransportKind;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
+
+use crate::model_handle::ModelHandle;
 
 /// Minimum spacing between bus reads (rate limit for `knx_read_group`).
 pub const READ_MIN_INTERVAL: Duration = Duration::from_millis(250);
@@ -166,8 +167,11 @@ impl ReadLimiter {
 
 /// All shared state, held behind an `Arc` inside the rmcp server handler.
 pub struct SharedState {
-    /// The loaded KNX model.
-    pub model: Model,
+    /// The loaded KNX model, behind a handle that reloads it when the files on
+    /// disk change. An MCP session outlives many edits of `knx/`, and the
+    /// protected-GA gate must follow the source of truth rather than whatever
+    /// the directory held at startup. See [`crate::model_handle`].
+    pub model: ModelHandle,
     /// The directory the model was loaded from (for diagnostics).
     pub dir: PathBuf,
     /// The live telegram ring buffer, shared with the stream task.

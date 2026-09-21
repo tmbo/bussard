@@ -67,6 +67,11 @@ fn build_server(passive: bool) -> BussardMcp {
 }
 
 fn build_server_modes(passive: bool, allow_writes: bool) -> BussardMcp {
+    build_server_over(model(), passive, allow_writes)
+}
+
+/// Builds a server handler over a caller-supplied model.
+fn build_server_over(model: Model, passive: bool, allow_writes: bool) -> BussardMcp {
     let connection = ConnectionConfig {
         transport: TransportKind::Tunnel,
         gateway: Some(SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 1), 3671)),
@@ -85,7 +90,7 @@ fn build_server_modes(passive: bool, allow_writes: bool) -> BussardMcp {
     // read/write tools report "bus not connected" without one).
     let _ = &cfg;
     let state = Arc::new(SharedState {
-        model: model(),
+        model: bussard_mcp::model_handle::ModelHandle::new(cfg.dir.clone(), model),
         dir: cfg.dir.clone(),
         ring: bussard_monitor::TelegramRing::new(),
         bus: BusStatus::new(TransportKind::Tunnel),
@@ -260,6 +265,82 @@ async fn write_group_refuses_protected_ga() {
     server_task.abort();
 }
 
+/// A model with one unprotected, typed GA, for the DPT-override cases.
+fn typed_model() -> Model {
+    let mut groups = BTreeMap::new();
+    groups.insert(
+        ga("3/0/4"),
+        Group {
+            name: "Living Room Blind Move".to_string(),
+            dpt: Some("1.008".parse().unwrap()),
+            description: None,
+            protected: false,
+        },
+    );
+    Model {
+        config: BussardConfig::default(),
+        groups: Groups {
+            project: Some("Test".to_string()),
+            imported_from: None,
+            ranges: BTreeMap::new(),
+            groups,
+        },
+        links: Links {
+            links: BTreeMap::new(),
+        },
+        devices: BTreeMap::new(),
+    }
+}
+
+#[tokio::test]
+async fn write_group_refuses_a_dpt_override_that_contradicts_the_model() {
+    // Without this check a caller could send `dpt: "5.001", value: "255"` at a
+    // 1.008 GA and put an arbitrary payload byte on the bus, past every type
+    // the model declares. The CLI has the same override behind a human y/N;
+    // MCP has no human in the loop, so it refuses.
+    let (client, server_task) = connect_client(build_server_over(typed_model(), false, true)).await;
+    let mut args = serde_json::Map::new();
+    args.insert("ga".to_string(), serde_json::json!("3/0/4"));
+    args.insert("value".to_string(), serde_json::json!("255"));
+    args.insert("dpt".to_string(), serde_json::json!("5.001"));
+    let res = client
+        .call_tool(CallToolRequestParams::new("knx_write_group").with_arguments(args))
+        .await
+        .unwrap();
+    let s = res.structured_content.expect("structured");
+    assert_eq!(s["ok"], false, "a contradicting override must be refused");
+    assert_eq!(s["refused"], true);
+    let reason = s["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("1.008") && reason.contains("5.001"),
+        "{reason}"
+    );
+
+    client.cancel().await.unwrap();
+    server_task.abort();
+}
+
+#[tokio::test]
+async fn write_group_accepts_a_dpt_override_matching_the_model() {
+    // The same DPT the model declares is not a contradiction: it reaches the
+    // encoder (and then fails on the absent bus, not on the override).
+    let (client, server_task) = connect_client(build_server_over(typed_model(), false, true)).await;
+    let mut args = serde_json::Map::new();
+    args.insert("ga".to_string(), serde_json::json!("3/0/4"));
+    args.insert("value".to_string(), serde_json::json!("down"));
+    args.insert("dpt".to_string(), serde_json::json!("1.008"));
+    let res = client
+        .call_tool(CallToolRequestParams::new("knx_write_group").with_arguments(args))
+        .await
+        .unwrap();
+    let s = res.structured_content.expect("structured");
+    assert_eq!(s["ok"], false, "no bus is wired, so the send fails");
+    assert!(s.get("refused").is_none(), "but not as a refusal: {s:?}");
+
+    client.cancel().await.unwrap();
+    server_task.abort();
+}
+
 #[tokio::test]
 async fn write_group_reports_parse_error() {
     // A value that cannot be parsed for the DPT is a structured failure, not a
@@ -296,7 +377,10 @@ fn build_server_with_capture(
     ring: bussard_monitor::TelegramRing,
 ) -> BussardMcp {
     let state = Arc::new(SharedState {
-        model: model(),
+        model: bussard_mcp::model_handle::ModelHandle::new(
+            std::path::PathBuf::from("knx"),
+            model(),
+        ),
         dir: std::path::PathBuf::from("knx"),
         ring,
         bus: BusStatus::new(TransportKind::Tunnel),

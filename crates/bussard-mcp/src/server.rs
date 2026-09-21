@@ -171,7 +171,10 @@ impl BussardMcp {
         description = "Summarize the loaded KNX project: name, counts of devices/group-addresses/links, floors and rooms with device counts, group-address main-range names, live bus connection status, and validation error/warning counts. Call this first to orient yourself."
     )]
     async fn knx_project_summary(&self) -> Result<CallToolResult, ErrorData> {
-        ok(tools::project_summary(&self.state.model, &self.state.bus))
+        ok(tools::project_summary(
+            &self.state.model.current(),
+            &self.state.bus,
+        ))
     }
 
     /// `knx_model_lookup`.
@@ -183,7 +186,11 @@ impl BussardMcp {
         Parameters(args): Parameters<LookupArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let limit = args.limit.unwrap_or(50).clamp(1, 500) as usize;
-        ok(tools::model_lookup(&self.state.model, &args.query, limit))
+        ok(tools::model_lookup(
+            &self.state.model.current(),
+            &args.query,
+            limit,
+        ))
     }
 
     /// `knx_get_group`.
@@ -198,7 +205,11 @@ impl BussardMcp {
             .ga
             .parse()
             .map_err(|_| invalid(format!("invalid group address {:?}", args.ga)))?;
-        ok(tools::get_group(&self.state.model, &self.state.ring, ga))
+        ok(tools::get_group(
+            &self.state.model.current(),
+            &self.state.ring,
+            ga,
+        ))
     }
 
     /// `knx_get_device`.
@@ -213,7 +224,7 @@ impl BussardMcp {
             .address
             .parse()
             .map_err(|_| invalid(format!("invalid individual address {:?}", args.address)))?;
-        ok(tools::get_device(&self.state.model, ia))
+        ok(tools::get_device(&self.state.model.current(), ia))
     }
 
     /// `knx_recent_telegrams`.
@@ -313,7 +324,7 @@ impl BussardMcp {
         description = "Run the bussard model validator and return every diagnostic as JSON (code, severity, message, location) plus counts of errors/warnings/infos. Use this to check whether the YAML model is internally consistent."
     )]
     async fn knx_validate(&self) -> Result<CallToolResult, ErrorData> {
-        ok(tools::validate_result(&self.state.model))
+        ok(tools::validate_result(&self.state.model.current()))
     }
 
     /// `knx_read_group` (omitted in passive mode).
@@ -361,7 +372,14 @@ impl BussardMcp {
 
         // The shared read implementation: subscribe, send (completion-tracked),
         // skip the L_Data.con echo, decode against the GA's DPT (#32, #30).
-        let dpt = self.state.model.groups.groups.get(&ga).and_then(|g| g.dpt);
+        let dpt = self
+            .state
+            .model
+            .current()
+            .groups
+            .groups
+            .get(&ga)
+            .and_then(|g| g.dpt);
         match ops::read_group(handle, ga, dpt, READ_RESPONSE_TIMEOUT).await {
             Ok(Some(outcome)) => {
                 let (display, typed) = match &outcome.value {
@@ -519,8 +537,13 @@ impl BussardMcp {
             .parse()
             .map_err(|_| invalid(format!("invalid group address {:?}", args.ga)))?;
 
+        // Read the model through the handle, so an edit made to `groups.yaml`
+        // during the session (a `protected:` added, a `dpt:` corrected) is in
+        // force on the very next write rather than after a restart.
+        let model = self.state.model.current();
+
         // Hard-refuse protected GAs. There is no override via MCP.
-        if let Some(group) = self.state.model.groups.groups.get(&ga) {
+        if let Some(group) = model.groups.groups.get(&ga) {
             if group.protected {
                 return ok(json!({
                     "ga": ga.to_string(),
@@ -534,23 +557,45 @@ impl BussardMcp {
             }
         }
 
-        // Resolve the DPT: explicit `dpt` wins, else the GA's DPT.
-        let dpt: Dpt = match &args.dpt {
-            Some(s) => s
-                .parse()
-                .map_err(|e| invalid(format!("invalid dpt {s:?}: {e}")))?,
-            None => match self.state.model.groups.groups.get(&ga).and_then(|g| g.dpt) {
-                Some(d) => d,
-                None => {
-                    return ok(json!({
-                        "ga": ga.to_string(),
-                        "ok": false,
-                        "reason": format!(
-                            "GA {ga} has no DPT in the model; pass `dpt` to write it"
-                        ),
-                    }));
-                }
-            },
+        // Resolve the DPT: the model is authoritative where it has one.
+        //
+        // An unchecked `dpt` override is a hole in the protected/typed model: a
+        // caller could send `dpt: "5.001", value: "255"` at a 1.001 GA and put
+        // an arbitrary payload byte on the bus, past every type the model
+        // declares. The CLI has the same override but behind a human y/N; MCP
+        // has no human in the loop, so a mismatching override is refused. The
+        // override still works where it is genuinely needed: a GA the model
+        // does not type.
+        let modelled = model.groups.groups.get(&ga).and_then(|g| g.dpt);
+        let requested: Option<Dpt> = match &args.dpt {
+            Some(s) => Some(
+                s.parse()
+                    .map_err(|e| invalid(format!("invalid dpt {s:?}: {e}")))?,
+            ),
+            None => None,
+        };
+        let dpt: Dpt = match (requested, modelled) {
+            (Some(requested), Some(known)) if requested != known => {
+                return ok(json!({
+                    "ga": ga.to_string(),
+                    "ok": false,
+                    "refused": true,
+                    "reason": format!(
+                        "GA {ga} is declared as DPT {known} in the model; refusing to write it \
+                         as {requested}. Correct groups.yaml if the model is wrong — the model \
+                         is the source of truth, not the caller"
+                    ),
+                }));
+            }
+            (_, Some(known)) => known,
+            (Some(requested), None) => requested,
+            (None, None) => {
+                return ok(json!({
+                    "ga": ga.to_string(),
+                    "ok": false,
+                    "reason": format!("GA {ga} has no DPT in the model; pass `dpt` to write it"),
+                }));
+            }
         };
 
         // Parse + encode the value. Parse/encode errors are structured refusals.
@@ -598,13 +643,7 @@ impl BussardMcp {
         // The shared write implementation: send (completion-tracked against the
         // gateway ACK). A transport failure surfaces as ok:false — an honest
         // failure, not a silent success.
-        let name = self
-            .state
-            .model
-            .groups
-            .groups
-            .get(&ga)
-            .map(|g| g.name.clone());
+        let name = model.groups.groups.get(&ga).map(|g| g.name.clone());
 
         // Pack only sub-byte DPTs into the 6-bit APDU; a byte-sized DPT with a
         // small value must be sent whole (issue #59).
@@ -701,6 +740,7 @@ fn query_capture(
     limit: usize,
 ) -> Option<Vec<bussard_monitor::DecodedTelegram>> {
     let store = CaptureStore::open(db).ok()?;
+    let model = state.model.current();
     let qf = QueryFilter {
         // Only an *exact* GA can be pushed into SQL; a prefix stays None here and
         // is enforced by `filter.matches` below. `build_filter` already put both
@@ -718,7 +758,7 @@ fn query_capture(
     // the requested filter (this is what makes a GA prefix like "3/" correct).
     let mut out: Vec<bussard_monitor::DecodedTelegram> = rows
         .iter()
-        .filter_map(|r| r.redecode(Some(&state.model)).ok())
+        .filter_map(|r| r.redecode(Some(&model)).ok())
         .filter(|t| filter.matches(t))
         .collect();
     // Rows are newest-first; keep the newest `limit`, then make chronological.
