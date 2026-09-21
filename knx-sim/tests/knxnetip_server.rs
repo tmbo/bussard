@@ -292,6 +292,79 @@ fn test_tunnelling_on_an_unknown_channel_is_refused() -> Result<(), Box<dyn std:
 }
 
 #[test]
+fn test_individual_address_write_over_udp() -> Result<(), Box<dyn std::error::Error>> {
+    // End-to-end of `bussard assign`'s write step: a device in programming mode
+    // adopts the broadcast address and then answers the discovery read at its
+    // NEW address.
+    let sink = Arc::new(TracingSink);
+    let old = IndividualAddress::new(15, 15, 255);
+    let new = IndividualAddress::new(1, 1, 9);
+    let pd = knx_sim::testfixtures::synthetic_mdt_sys7_product();
+    let dev = Device::from_product_with_overrides(
+        old,
+        &pd,
+        LoadState::Loaded,
+        ProfileOverrides {
+            prog_mode: true,
+            ..Default::default()
+        },
+        sink.clone(),
+    )
+    .map_err(|e| format!("build device: {e}"))?;
+    let mut bus = Bus::new(sink);
+    bus.add_device(dev);
+
+    let mut server = KnxnetIpServer::bind("127.0.0.1:0".parse()?, bus)?;
+    let server_addr = server.local_addr()?;
+    let client = UdpSocket::bind("127.0.0.1:0")?;
+    client.set_read_timeout(Some(std::time::Duration::from_secs(2)))?;
+
+    // CONNECT + the address write + the verification read = 3 datagrams.
+    let handle = std::thread::spawn(move || {
+        server.serve_n(3).expect("serve");
+        server
+    });
+
+    let connect = KnxnetIpFrame::encode(service::CONNECT_REQUEST, &[0x00; 10]);
+    client.send_to(&connect, server_addr)?;
+    let mut buf = [0u8; 1024];
+    let (n, _) = client.recv_from(&mut buf)?;
+    let channel = KnxnetIpFrame::decode(&buf[..n])?.body[0];
+
+    // The write is ACKed; the service itself defines no response.
+    send_tunnel(
+        &client,
+        server_addr,
+        channel,
+        0,
+        &individual_address_write(new),
+    )?;
+    expect_ack(&client)?;
+
+    // The discovery read now reports the new address as the response source.
+    send_tunnel(&client, server_addr, channel, 1, &individual_address_read())?;
+    expect_ack(&client)?;
+    let (n, _) = client.recv_from(&mut buf)?;
+    let frame = KnxnetIpFrame::decode(&buf[..n])?;
+    assert_eq!(frame.service, service::TUNNELLING_REQUEST);
+    let cemi = CemiLData::decode(&frame.body[4..])?;
+    let apci10 = ((cemi.tpdu[0] as u16 & 0x03) << 8) | cemi.tpdu[1] as u16;
+    assert_eq!(Apci::from_u10(apci10), Apci::IndividualAddressResponse);
+    assert_eq!(cemi.source, new, "the device adopted the new address");
+
+    let server = handle.join().expect("join");
+    assert!(
+        server.bus().device(new).is_some(),
+        "the bus re-keyed the device under its new address"
+    );
+    assert!(
+        server.bus().device(old).is_none(),
+        "the old address is free"
+    );
+    Ok(())
+}
+
+#[test]
 fn test_connect_and_authorize_over_udp() -> Result<(), Box<dyn std::error::Error>> {
     let Some(mut server) = build_server() else {
         eprintln!("SKIP: DA.tp fixture not present");
@@ -731,6 +804,22 @@ fn individual_address_read() -> CemiLData {
         source: IndividualAddress::new(0, 0, 255),
         dest: 0x0000,
         tpdu: vec![(apci10 >> 8) as u8 & 0x03, (apci10 & 0xff) as u8],
+    }
+}
+
+/// A broadcast `A_IndividualAddress_Write` to `0/0/0` carrying the raw 2-byte
+/// new address, exactly as `bussard assign` puts it on the bus.
+fn individual_address_write(new_address: IndividualAddress) -> CemiLData {
+    let apci10 = Apci::IndividualAddressWrite.to_u10();
+    let mut tpdu = vec![(apci10 >> 8) as u8 & 0x03, (apci10 & 0xff) as u8];
+    tpdu.extend_from_slice(&new_address.raw().to_be_bytes());
+    CemiLData {
+        message_code: MessageCode::LDataReq,
+        ctrl1: 0xbc,
+        ctrl2: 0xe0, // group destination bit set (broadcast)
+        source: IndividualAddress::new(0, 0, 255),
+        dest: 0x0000,
+        tpdu,
     }
 }
 
