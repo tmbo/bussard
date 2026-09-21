@@ -88,14 +88,34 @@ pub fn read_knxprod_bytes(
 
 /// Decode an even-length hex string (as used by `InlineData`); `None` on any
 /// malformed input rather than a partial value.
+///
+/// Works on bytes, not `str` slices: a vendor file may carry any UTF-8 in that
+/// attribute, and `&s[i..i + 2]` on a multi-byte character panics on a char
+/// boundary. A non-ASCII byte simply fails the hex-digit test here.
 fn decode_hex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    let bytes = s.as_bytes();
+    if bytes.len() % 2 != 0 {
         return None;
     }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+    bytes
+        .chunks_exact(2)
+        .map(|pair| {
+            let hi = hex_digit(pair[0])?;
+            let lo = hex_digit(pair[1])?;
+            Some((hi << 4) | lo)
+        })
         .collect()
+}
+
+/// One ASCII hex digit as its value, or `None` for anything else (including
+/// every non-ASCII byte).
+fn hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn attr<'a>(e: &'a quick_xml::events::BytesStart<'a>, key: &str) -> Option<String> {
@@ -339,6 +359,25 @@ fn parse_application_program(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_decode_hex_roundtrips_and_rejects_malformed() {
+        assert_eq!(decode_hex("00FA0b"), Some(vec![0x00, 0xFA, 0x0B]));
+        assert_eq!(decode_hex(""), Some(Vec::new()));
+        // Odd length, non-hex ASCII: refused, not partially decoded.
+        assert_eq!(decode_hex("0"), None);
+        assert_eq!(decode_hex("zz"), None);
+    }
+
+    #[test]
+    fn test_decode_hex_non_ascii_does_not_panic() {
+        // `&s[i..i + 2]` on a 2-byte character used to panic on a char boundary
+        // ("ä" is one char, two bytes). Every byte-length-even non-ASCII string
+        // must simply be refused.
+        for s in ["ä", "ää", "0ä", "ä0", "€€", "\u{10348}"] {
+            assert_eq!(decode_hex(s), None, "{s:?} must be refused, not panic");
+        }
+    }
 
     #[test]
     fn test_read_knxprod_da_tp() -> Result<(), ProdError> {
