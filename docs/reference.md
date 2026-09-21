@@ -288,7 +288,7 @@ Serve the network-visualization website: an HTTP server that renders the model a
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--listen <ADDR>` | `127.0.0.1:8080` | The address to bind the HTTP server to. |
+| `--listen <ADDR>` | `127.0.0.1:8080` | The address to bind the HTTP server to. A non-loopback bind is allowed but warns: the port is unauthenticated. |
 | `--dir <DIR>` | `knx` | The model directory (required; a bad model is a hard error so the protected-GA gate never fails open). |
 | `--gateway <HOST>` | | Gateway override. On connect failure the server degrades to model-only mode. |
 | `--routing` | off | Force routing transport. |
