@@ -42,6 +42,27 @@ pub enum ImportError {
     #[error("could not decrypt the inner project archive (wrong password?)")]
     WrongPassword,
 
+    /// The inner project archive was decrypted but the entry could not be read
+    /// to the end.
+    ///
+    /// Kept apart from [`ImportError::WrongPassword`] so a zip-bomb cap
+    /// ([`bussard_ets::EtsError::EntryTooLarge`], which propagates as
+    /// [`ImportError::Ets`]) or a real I/O failure is not reported as a bad
+    /// password. A wrong *traditional ZipCrypto* password does land here — that
+    /// cipher only checks one byte, so garbage streams out and fails the CRC —
+    /// which is why the message mentions it.
+    #[error(
+        "reading `{entry}` from the decrypted inner project archive failed: {source} \
+         (with an ETS 4/5 export this is also what a wrong password looks like: traditional \
+         ZipCrypto has no authentication tag, so a wrong key decrypts to garbage)"
+    )]
+    DecryptedEntry {
+        /// The inner entry that could not be read.
+        entry: String,
+        /// The underlying read error.
+        source: Box<bussard_ets::EtsError>,
+    },
+
     /// A referenced manufacturer application-program file was missing.
     #[error(
         "application program `{application}` referenced by device {device} was not found in the archive"
