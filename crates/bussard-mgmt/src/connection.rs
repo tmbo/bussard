@@ -1755,6 +1755,70 @@ mod tests {
         assert_eq!(decoded.data, vec![0x00]);
     }
 
+    /// WIRE ROUND-TRIP: the peer must be able to rebuild the CCM nonce from the
+    /// ENCODED frame alone. The wrapped request is encoded to cEMI bytes and
+    /// decoded back, and the MAC is then verified using only what the decoded
+    /// frame carries (source, destination, TPCI octet).
+    ///
+    /// This is the shape of the divergence the knx-sim conformance loop caught
+    /// (issue #71): the nonce's TPCI octet was built from a value the receiver
+    /// could not reproduce, so every frame failed the peer's MAC check while
+    /// bussard's own constructed-frame tests passed.
+    #[tokio::test]
+    async fn activated_path_mac_verifies_from_a_decoded_cemi_frame() {
+        let key = [0x24u8; 16];
+        let tool_session =
+            DataSecureSession::new(Key16::new(key)).with_send_sequence(Sequence::new(1000));
+        let secure = crate::secure::SecureLayer::activated(tool_session);
+
+        let inbox = vec![control_from_dev(tpci::t_ack(0))];
+        let mut bus = ScriptedBus::new(inbox);
+        let mut l4 = Layer4Connection::connect_with_secure(
+            &mut bus,
+            dev(),
+            tool(),
+            Timeouts::default(),
+            secure,
+        )
+        .await
+        .unwrap();
+        l4.send_data(0x3D1, &[0x00, 0xFF, 0xFF, 0xFF, 0xFF])
+            .await
+            .unwrap();
+
+        let request = bus
+            .sent
+            .iter()
+            .find(|f| matches!(tpci::classify(f.tpci_octet()), TpciKind::NumberedData(_)))
+            .expect("a numbered request was sent");
+
+        // Round-trip through the wire encoding: this is exactly what a device
+        // (or the simulator) receives.
+        let wire = request.encode();
+        let decoded = CemiFrame::decode(&wire).expect("the frame decodes");
+        let (apci, asdu_bytes) = match (&decoded.tpci, &decoded.apdu) {
+            (Tpci::Other(_), Apdu::Other { apci, data }) => (*apci, data.clone()),
+            other => panic!("expected a data APDU, got {other:?}"),
+        };
+        assert_eq!(apci, A_SECURE_DATA);
+
+        // Rebuild the addressing context from the DECODED frame only.
+        let addr = TpAddressing {
+            source: decoded.source.raw(),
+            destination: decoded
+                .individual_destination()
+                .expect("individually addressed")
+                .raw(),
+            address_type_group: false,
+            extended_frame_format: decoded.control2.extended_frame_format,
+            tpci: decoded.tpci_octet(),
+        };
+        let inner = asdu::decode(&Key16::new(key), &asdu_bytes, &addr)
+            .expect("the MAC verifies from the decoded frame");
+        assert_eq!(inner.apci, 0x3D1);
+        assert_eq!(inner.data, vec![0x00, 0xFF, 0xFF, 0xFF, 0xFF]);
+    }
+
     /// ACTIVATED PATH REJECTS A WRONG MAC: a secured response whose MAC does not
     /// verify (built with the wrong key) is rejected as an MgmtError::Secure, not
     /// accepted as an answer.
