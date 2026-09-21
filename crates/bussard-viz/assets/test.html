@@ -126,15 +126,15 @@
     check("unknown GA is suspicious", store.isSuspiciousGa("7/7/7"));
 
     // --- search index -----------------------------------------------------
-    const r1 = store.search("flur");
+    const r1 = store.search("hallway");
     check("search hits device by room", r1.devices.some((e) => e.id === "1.1.1"));
-    const r2 = store.search("gira");
+    const r2 = store.search("acme");
     check("search hits by manufacturer", r2.devices.some((e) => e.id === "1.1.1"));
     const r3 = store.search("1/1/1");
     check("search hits GA by address", r3.groups.some((e) => e.id === "1/1/1"));
-    const r4 = store.search("taster flur");
+    const r4 = store.search("push hallway");
     check("search ANDs terms", r4.devices.length === 1 && r4.devices[0].id === "1.1.1");
-    const r5 = store.search("taster aktor");
+    const r5 = store.search("push actuator");
     check("search AND with no match", r5.devices.length === 0);
 
     // --- filter grammar ---------------------------------------------------
@@ -168,9 +168,9 @@
     check("filter is:suspicious match", isS(mk({ destination: "1/1/2" })));
     check("filter is:suspicious reject linked", !isS(mk({ destination: "1/1/1" })));
 
-    const txt = parseFilter("schalten", susp);
+    const txt = parseFilter("switch", susp);
     check("filter free text match", txt(mk({ note: "Switch Hallway" })));
-    check("filter free text reject", !txt(mk({ note: "Dimmen" })));
+    check("filter free text reject", !txt(mk({ note: "Dim" })));
 
     const combo = parseFilter("1/1/* apci:write", susp);
     check("filter AND of terms match", combo(mk({ destination: "1/1/5", apci: "write" })));
