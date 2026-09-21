@@ -14,20 +14,42 @@ use std::process::ExitCode;
 use bussard_model::Model;
 use bussard_viz::VizConfig;
 
-use crate::conn_cmd::{ConnOverrides, resolve_config};
+use crate::conn_cmd::{ConnOverrides, enforce_write_gate, resolve_config};
+
+/// Options for `bussard viz` beyond the connection and the model directory.
+#[derive(Debug, Clone, Default)]
+pub struct VizOptions {
+    /// Enable `POST /api/group-write`. Off by default: a bare `bussard viz` is
+    /// a viewer, and the endpoint answers `403` until this is set.
+    pub allow_writes: bool,
+    /// Enable the programming-mode watch (active broadcast reads on the bus).
+    pub watch_prog: bool,
+    /// Opt in to a non-loopback gateway, like the five CLI write verbs.
+    pub allow_remote_gateway: bool,
+    /// Extra `Host` header values the server answers to.
+    pub allowed_hosts: Vec<String>,
+}
 
 /// Runs `bussard viz`.
 ///
-/// `watch_prog` enables the programming-mode watch: a background task that puts
-/// a broadcast `A_IndividualAddress_Read` on the bus periodically and surfaces
-/// responders in `/api/state` and the `prog` SSE event. It defaults off and only
-/// takes effect when a bus is configured, because it generates active bus
-/// traffic that must never run unnoticed against a real installation.
+/// Two options put traffic on the bus, and both go through the same
+/// non-loopback write gate as `bussard write` (issue #74):
+///
+/// * [`allow_writes`](VizOptions::allow_writes) arms `POST /api/group-write`;
+/// * [`watch_prog`](VizOptions::watch_prog) runs the programming-mode watch, a
+///   background task that puts a broadcast `A_IndividualAddress_Read` on the
+///   bus periodically and surfaces responders in `/api/state` and the `prog`
+///   SSE event.
+///
+/// Both default off, so a bare `bussard viz` never transmits and is allowed
+/// against any gateway. With either set and a non-loopback gateway resolved,
+/// the server refuses to start without `--allow-remote-gateway` (or
+/// `BUSSARD_ALLOW_REAL_GATEWAY=1`).
 pub fn run(
     listen: SocketAddr,
     dir: &Path,
     overrides: ConnOverrides,
-    watch_prog: bool,
+    options: VizOptions,
 ) -> anyhow::Result<ExitCode> {
     if !dir.exists() {
         anyhow::bail!(
@@ -51,11 +73,31 @@ pub fn run(
         }
     };
 
+    // The same gate the five CLI write verbs use, applied once at server
+    // construction: if this server can transmit at all, the operator must have
+    // opted in to a non-loopback gateway. Loopback (the simulator, the test
+    // suite) is exempt, and a read-only viz never reaches this.
+    let transmits = options.allow_writes || options.watch_prog;
+    if let Some(conn) = &connection {
+        if transmits {
+            enforce_write_gate(conn, options.allow_remote_gateway)?;
+        }
+    }
+
+    // Say plainly what this server may do; a read-only viewer is the default.
+    if options.allow_writes {
+        eprintln!("group writes are ENABLED (POST /api/group-write)");
+    } else {
+        eprintln!("read-only: group writes return 403 (pass --allow-writes to enable them)");
+    }
+
     let config = VizConfig {
         dir: dir.to_path_buf(),
         listen,
         connection,
-        watch_prog,
+        watch_prog: options.watch_prog,
+        allow_writes: options.allow_writes,
+        allowed_hosts: options.allowed_hosts,
     };
 
     let runtime = tokio::runtime::Runtime::new()?;

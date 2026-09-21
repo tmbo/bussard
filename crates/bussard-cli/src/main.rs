@@ -473,6 +473,21 @@ enum Command {
         /// explicitly — never point it at a real installation unattended.
         #[arg(long)]
         watch_prog: bool,
+        /// Arm `POST /api/group-write`, so the page can send test writes. Off
+        /// by default: a bare `bussard viz` is a viewer and the endpoint
+        /// answers 403.
+        #[arg(long)]
+        allow_writes: bool,
+        /// Permit a non-loopback (real) gateway when this server may transmit
+        /// (`--allow-writes` or `--watch-prog`). Same gate as `bussard write`
+        /// (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
+        #[arg(long)]
+        allow_remote_gateway: bool,
+        /// Also answer requests whose `Host` is this name. Repeatable. Loopback
+        /// names and bare IP literals are always accepted; any other name is
+        /// refused because it is how DNS rebinding reaches this port.
+        #[arg(long, value_name = "HOST")]
+        allow_host: Vec<String>,
     },
     /// Run the read-only MCP server over stdio.
     Mcp {
@@ -493,6 +508,10 @@ enum Command {
         /// default. Mutually exclusive with `--passive`.
         #[arg(long, conflicts_with = "passive")]
         allow_writes: bool,
+        /// Permit `--allow-writes` against a non-loopback (real) gateway. Same
+        /// gate as `bussard write` (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
+        #[arg(long)]
+        allow_remote_gateway: bool,
         /// Path to a capture SQLite database to extend `knx_recent_telegrams`
         /// history beyond the in-memory ring window.
         #[arg(long, value_name = "PATH")]
@@ -755,11 +774,19 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             gateway,
             routing,
             watch_prog,
+            allow_writes,
+            allow_remote_gateway,
+            allow_host,
         } => viz_cmd::run(
             listen,
             &dir,
             conn_cmd::ConnOverrides { gateway, routing },
-            watch_prog,
+            viz_cmd::VizOptions {
+                allow_writes,
+                watch_prog,
+                allow_remote_gateway,
+                allowed_hosts: allow_host,
+            },
         ),
         Command::Mcp {
             dir,
@@ -767,12 +794,14 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             routing,
             passive,
             allow_writes,
+            allow_remote_gateway,
             capture_db,
         } => mcp_cmd::run(
             &dir,
             conn_cmd::ConnOverrides { gateway, routing },
             passive,
             allow_writes,
+            allow_remote_gateway,
             capture_db,
         ),
     }

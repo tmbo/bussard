@@ -612,12 +612,7 @@ fn climate_full_cluster_central_heating_mapping() {
     // control; temperature and valve are read-only telemetry. Setpoint shift and
     // target temperature are deliberately NOT wired (no HA key that invites a
     // temperature change).
-    let model = climate_room(
-        ModelBuilder::new("1.1.2", "Heizung", None),
-        "Study",
-        "0/3/",
-    )
-    .build();
+    let model = climate_room(ModelBuilder::new("1.1.2", "Heizung", None), "Study", "0/3/").build();
     let cs = only_climate(&model, &Overrides::default());
     assert_eq!(cs.len(), 1);
     let c = &cs[0];
@@ -780,11 +775,7 @@ fn climate_claims_valve_before_percent_sensor() {
 #[test]
 fn climate_determinism_multiple_rooms() {
     let model = climate_room(
-        climate_room(
-            ModelBuilder::new("1.1.2", "Heizung", None),
-            "Study",
-            "0/3/",
-        ),
+        climate_room(ModelBuilder::new("1.1.2", "Heizung", None), "Study", "0/3/"),
         "Bedroom",
         "1/4/",
     )
@@ -799,12 +790,7 @@ fn climate_determinism_multiple_rooms() {
 fn climate_name_override_and_exclusion() {
     // Name override applies (keyed by the anchor / operation_mode GA). Excluding
     // the anchor GA drops the whole climate entity.
-    let model = climate_room(
-        ModelBuilder::new("1.1.2", "Heizung", None),
-        "Study",
-        "0/3/",
-    )
-    .build();
+    let model = climate_room(ModelBuilder::new("1.1.2", "Heizung", None), "Study", "0/3/").build();
 
     let text = r#"
 entities:

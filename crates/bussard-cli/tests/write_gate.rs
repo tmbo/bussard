@@ -149,3 +149,111 @@ fn assign_non_tty_without_yes_is_refused() {
         "expected the non-TTY refusal naming --yes; stderr:\n{stderr}"
     );
 }
+
+// --- the long-running servers (issue #74 follow-up) --------------------------
+//
+// `bussard mcp --allow-writes` and `bussard viz --allow-writes/--watch-prog`
+// can transmit for their whole lifetime, so both run the same gate at server
+// construction. The refusal happens before the listener binds and before any
+// bus contact, so these cases terminate immediately.
+
+/// Creates a minimal, loadable model directory under the OS temp dir.
+///
+/// Both servers load the model before resolving the connection, so the gate
+/// cases need a directory that exists and parses.
+fn model_dir(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "bussard-gate-{tag}-{}-{:?}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create model dir");
+    std::fs::write(
+        dir.join("groups.yaml"),
+        "groups:\n  \"3/0/4\":\n    name: Living Room Blind Move\n    dpt: \"1.008\"\n",
+    )
+    .expect("write groups.yaml");
+    std::fs::write(dir.join("links.yaml"), "links: {}\n").expect("write links.yaml");
+    dir
+}
+
+/// Asserts that a server refused to start on the non-loopback write gate.
+fn assert_gate_refusal(success: bool, stderr: &str) {
+    assert!(!success, "must refuse to start; stderr:\n{stderr}");
+    assert!(
+        stderr.contains("refusing to write to non-loopback gateway"),
+        "expected the non-loopback refusal; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("192.0.2.1:3671"),
+        "must name the host; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("--allow-remote-gateway"),
+        "must state how to proceed; stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn mcp_allow_writes_refuses_non_loopback_gateway_without_optin() {
+    let dir = model_dir("mcp");
+    let (success, stderr) = run(
+        &[
+            "mcp",
+            "--allow-writes",
+            "--dir",
+            dir.to_str().expect("utf-8 dir"),
+            "--gateway",
+            NON_LOOPBACK,
+        ],
+        false,
+    );
+    assert_gate_refusal(success, &stderr);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn viz_allow_writes_refuses_non_loopback_gateway_without_optin() {
+    let dir = model_dir("viz-write");
+    let (success, stderr) = run(
+        &[
+            "viz",
+            "--allow-writes",
+            "--listen",
+            "127.0.0.1:0",
+            "--dir",
+            dir.to_str().expect("utf-8 dir"),
+            "--gateway",
+            NON_LOOPBACK,
+        ],
+        false,
+    );
+    assert_gate_refusal(success, &stderr);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn viz_watch_prog_refuses_non_loopback_gateway_without_optin() {
+    // `--watch-prog` puts broadcast reads on the bus on a timer: also a write
+    // in the gate's sense, and it must not run unnoticed against a real house.
+    let dir = model_dir("viz-prog");
+    let (success, stderr) = run(
+        &[
+            "viz",
+            "--watch-prog",
+            "--listen",
+            "127.0.0.1:0",
+            "--dir",
+            dir.to_str().expect("utf-8 dir"),
+            "--gateway",
+            NON_LOOPBACK,
+        ],
+        false,
+    );
+    assert_gate_refusal(success, &stderr);
+    let _ = std::fs::remove_dir_all(&dir);
+}

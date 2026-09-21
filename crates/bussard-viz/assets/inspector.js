@@ -453,20 +453,26 @@ class Inspector {
       });
     }
 
-    // A send() closure captured by every control in this widget.
+    // A send() closure captured by every control in this widget. Every write —
+    // protected or not — goes through an explicit confirm step that names the
+    // GA and the gateway, so no single click can move something in the house.
     const send = (value, dptOverride) => {
       if (g.protected && !armed.value) return;
-      this._send(g, value, { dpt: dptOverride, force: g.protected && armed.value }, status);
+      this._confirmSend(g, value, status, () =>
+        this._send(g, value, { dpt: dptOverride, force: g.protected && armed.value }, status),
+      );
     };
     // A raw-payload send() closure: bytes go verbatim as hex via the extended
     // endpoint. `label` is what to show in the optimistic status line.
     const sendRaw = (payloadHex, dptOverride, label) => {
       if (g.protected && !armed.value) return;
-      this._send(
-        g,
-        label,
-        { dpt: dptOverride, force: g.protected && armed.value, payload: payloadHex },
-        status,
+      this._confirmSend(g, label, status, () =>
+        this._send(
+          g,
+          label,
+          { dpt: dptOverride, force: g.protected && armed.value, payload: payloadHex },
+          status,
+        ),
       );
     };
 
@@ -710,6 +716,50 @@ class Inspector {
     return btn;
   }
 
+  // --- send confirmation ----------------------------------------------------
+
+  /**
+   * Ask for an explicit confirmation before putting a telegram on the bus.
+   *
+   * `docs/SAFETY.md` promises that every write names its gateway before it
+   * happens; the CLI does that with a `y/N` prompt, and this is the page's
+   * equivalent. It applies to unprotected GAs too: a stray click on a slider
+   * or a switch button reaches the real house otherwise. The protected-GA
+   * "force" checkbox is a separate, additional arming step.
+   *
+   * @param {Object} g — the group record being written.
+   * @param {string} label — what will be sent, for the prompt.
+   * @param {HTMLElement} status — the widget's status line, reused as the prompt.
+   * @param {() => void} perform — runs the write once confirmed.
+   */
+  _confirmSend(g, label, status, perform) {
+    const bus = (this.store && this.store.busStatus) || {};
+    const gateway = bus.gateway || "the configured gateway";
+    const where = g.name ? `${g.address} (${g.name})` : g.address;
+
+    status.hidden = false;
+    status.className = "send-status confirming";
+    status.textContent = "";
+    status.appendChild(el("span", "confirm-text", `Send ${label} to ${where} via ${gateway}?`));
+
+    const yes = el("button", "send-btn confirm-yes", "Send");
+    yes.type = "button";
+    const no = el("button", "send-btn confirm-no", "Cancel");
+    no.type = "button";
+    status.append(yes, no);
+
+    yes.addEventListener("click", () => {
+      status.textContent = "";
+      perform();
+    });
+    no.addEventListener("click", () => {
+      status.textContent = "";
+      status.className = "send-status";
+      status.hidden = true;
+    });
+    yes.focus();
+  }
+
   // --- send lifecycle (optimistic + echo confirmation) ---------------------
 
   /**
@@ -762,6 +812,9 @@ class Inspector {
 
   _onTelegram(t) {
     if (!t || !t.destination) return;
+    // `con` is the gateway confirming our own frame, not the bus answering:
+    // confirming a send against it would confirm nothing about the device.
+    if (t.message_code === "con") return;
     const pending = this._pendingSends.get(t.destination);
     if (!pending) return;
     // Any write/response echo on the GA confirms the send.
