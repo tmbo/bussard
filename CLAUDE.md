@@ -57,6 +57,33 @@ never gain a path dependency on a `crates/` member.
 Run `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D warnings`,
 and the test commands before committing, not just before merging.
 
+## Dev Loop Speed
+
+Speed is a project goal for the CLI and for working on it. Wall time in a
+session goes to linking and to waiting on the bus, so:
+
+- Build one binary. The campaign wrapper runs `target/debug/bussard` by
+  default (`BUSSARD_BIN` in `scripts/campaign/common.sh`). Do not also build
+  `--release` in the same loop; if a run needs release, export
+  `BUSSARD_BIN=target/release/bussard` and build only that.
+- Iterate with crate-scoped commands: `cargo nextest run -p <crate>`,
+  `cargo clippy -p <crate> --all-targets -- -D warnings`. Run the
+  workspace-wide fmt, clippy and test gate once, right before committing.
+- Never run two cargo invocations against the same `target/` at once; cargo
+  serializes them on a lock and every session waits. A subagent that builds
+  must get its own worktree
+  (`git worktree add -b <branch> ../bussard-wt/<name> main`); each worktree
+  has its own `target/`.
+- Do not sleep-poll a background command. The harness notifies on completion.
+- Filter command output before it reaches the transcript: `--json` piped
+  through `jq` or a short Python selector, wire traces through `grep`. Aim for
+  under 50 lines per tool result; large outputs force context compaction.
+- `[profile.dev] debug = "line-tables-only"` is deliberate. Do not switch it
+  back to full debuginfo. If `target/` has grown past tens of GB, run
+  `cargo clean` while no build is running.
+- Against a real device, prefer the knx-sim loop for iteration and go to the
+  bus only to confirm.
+
 ## Rust Edition and Toolchain
 
 - Edition: **2024**, set once in `[workspace.package]` (do not set it per crate).
