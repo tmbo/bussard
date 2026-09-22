@@ -1,0 +1,26 @@
+# Fixture model for the ETS group-address export golden tests.
+project: Export demo
+ranges:
+  "1":
+    name: Light
+  "1/0":
+    name: Ground floor
+  "2":
+    name: Safety
+  "2/0":
+    name: Alarms
+groups:
+  "1/0/0":
+    name: Ground floor Kitchen Light Switch
+    dpt: "1.001"
+  "1/0/3":
+    name: Ground floor Kitchen Light Switch status
+    dpt: "1.001"
+    description: Feedback from the actuator
+  "2/0/0":
+    name: Wind alarm
+    dpt: "1.005"
+    description: Roof & facade
+    protected: true
+  "2/0/1":
+    name: Untyped scene trigger

@@ -8,6 +8,7 @@ mod assign_cmd;
 mod capture_cmd;
 mod conn_cmd;
 mod describe_cmd;
+mod export_groups_cmd;
 mod flash_cmd;
 mod ha_config_cmd;
 mod import_cmd;
@@ -435,6 +436,18 @@ enum Command {
         #[arg(long)]
         no_lint_config: bool,
     },
+    /// Export the group-address plan in a format ETS can import.
+    ExportGroups {
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// The export format.
+        #[arg(long, value_enum)]
+        format: export_groups_cmd::ExportFormat,
+        /// The file to write.
+        #[arg(long, value_name = "FILE")]
+        out: PathBuf,
+    },
     /// Live-monitor the bus, decoding telegrams against the model.
     Monitor {
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
@@ -807,6 +820,7 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             json,
             no_lint_config,
         ),
+        Command::ExportGroups { dir, format, out } => export_groups_cmd::run(&dir, format, &out),
         Command::Init {
             dir,
             gateway,
