@@ -110,6 +110,14 @@ pub fn run(
         eprintln!("nothing learned; the model is unchanged.");
         return Ok(ExitCode::SUCCESS);
     }
+    // History (issue #110): keep the pre-learn files so `bussard undo` can put
+    // them back, recording any edit made outside bussard first.
+    crate::history_cmd::capture_external_edit(dir);
+    crate::history_cmd::snapshot(
+        dir,
+        bussard_model::history::SnapshotReason::new("learn")
+            .with_result("before writing the learned names and DPTs"),
+    );
     model
         .save(dir)
         .with_context(|| format!("saving the learned model to {}", dir.display()))?;

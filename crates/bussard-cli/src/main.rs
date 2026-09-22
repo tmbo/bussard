@@ -979,8 +979,8 @@ enum Command {
         #[arg(long)]
         allow_remote_gateway: bool,
         /// Refuse model edits: omits the `knx_set_group`, `knx_add_link`,
-        /// `knx_remove_link`, `knx_set_device`, `knx_set_parameter` and
-        /// `knx_undo` tools. The read tools stay available. Model edits only
+        /// `knx_remove_link`, `knx_set_device`, `knx_set_parameter`, `knx_undo`
+        /// and `knx_scaffold_groups` tools. The read tools stay available. Model edits only
         /// touch YAML files (never the bus), so they are on by default.
         #[arg(long)]
         no_model_edits: bool,

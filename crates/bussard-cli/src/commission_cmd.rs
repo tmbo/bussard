@@ -243,6 +243,17 @@ pub fn run(
         eprintln!("aborted — nothing was written.");
         return Ok(ExitCode::FAILURE);
     }
+    if pending > 0 {
+        // One history snapshot before the first bus write (#110).
+        crate::history_cmd::capture_external_edit(dir);
+        crate::history_cmd::snapshot(
+            dir,
+            bussard_model::history::SnapshotReason::new("commission")
+                .with_args(["--line".to_string(), line.clone()])
+                .with_gateway(Some(gateway.clone()))
+                .with_result("before assigning addresses on the line"),
+        );
+    }
 
     // Phase 2: the bench ritual, one device at a time.
     let mut outcomes = Vec::new();

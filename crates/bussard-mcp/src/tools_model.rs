@@ -126,7 +126,11 @@ pub struct UndoArgs {
 
 /// The names of the tools that edit the model, removed from the router when the
 /// server is started with `--no-model-edits`.
-pub const MODEL_EDIT_TOOLS: [&str; 6] = [
+///
+/// `knx_scaffold_groups` lives on the group-planning router but writes
+/// `groups.yaml`, so it is withheld with the others.
+pub const MODEL_EDIT_TOOLS: [&str; 7] = [
+    "knx_scaffold_groups",
     "knx_set_group",
     "knx_add_link",
     "knx_remove_link",

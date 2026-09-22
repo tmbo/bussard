@@ -40,7 +40,8 @@
 //!
 //! The last eight are model tools: they read and write YAML files under the
 //! model directory and never touch the bus, so they are available in every tier
-//! including `--passive`. The six that edit are withheld by `--no-model-edits`.
+//! including `--passive`. The six that edit, and `knx_scaffold_groups`, which
+//! writes `groups.yaml`, are withheld by `--no-model-edits`.
 //! Every edit snapshots first, validates after, and returns the change as
 //! sentences for the caller to quote to the human.
 //!
@@ -53,8 +54,8 @@
 //! to the physical bus, and both hard-refuse `protected` GAs.
 //!
 //! Tool counts per tier: `--passive` 18, default 20, `--allow-writes` 22. With
-//! `--no-model-edits` the six model-edit tools are withheld, giving 12, 14 and
-//! 16.
+//! `--no-model-edits` the seven model-edit tools (the six above plus
+//! `knx_scaffold_groups`) are withheld, giving 11, 13 and 15.
 //!
 //! # Connecting this to Claude Code
 //!
@@ -208,11 +209,12 @@ pub async fn run(config: &McpConfig) -> anyhow::Result<()> {
 ///   is there too, but refuses `live: true`.
 /// - default mode: 20 tools (adds `knx_read_group` and `knx_describe_device`).
 /// - `--allow-writes`: 22 tools (adds `knx_write_group` and `knx_run_tests`).
-/// - `--no-model-edits` removes the six model-edit tools from any of those
-///   (12, 14 and 16 tools).
+/// - `--no-model-edits` removes the seven model-edit tools
+///   ([`tools_model::MODEL_EDIT_TOOLS`], including `knx_scaffold_groups`) from
+///   any of those (11, 13 and 15 tools).
 ///
 /// The two model/history read tools (`knx_describe_change`, `knx_history`) and
-/// the six model-edit tools touch files only, so they are present in every tier
+/// the seven model-edit tools touch files only, so they are present in every tier
 /// including `--passive`.
 pub fn tool_names(passive: bool, allow_writes: bool, no_model_edits: bool) -> Vec<&'static str> {
     let mut names = vec![
@@ -224,7 +226,6 @@ pub fn tool_names(passive: bool, allow_writes: bool, no_model_edits: bool) -> Ve
         "knx_wait_for_telegram",
         "knx_validate",
         "knx_audit",
-        "knx_scaffold_groups",
         "knx_infer_group",
     ];
     if !passive {

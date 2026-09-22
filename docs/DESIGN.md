@@ -199,7 +199,7 @@ buffer. The tool list, parameters and tiers are in
   snapshots the model first (§ history, issue #110), applies one well-defined change,
   saves, validates, and returns the change as plain-language sentences (issue #112) the
   assistant quotes to the human. The edit tools write files only, so they are available in
-  every tier including `--passive`; `--no-model-edits` withholds them. Protected GAs are
+  every tier including `--passive`; `--no-model-edits` withholds them (and `knx_scaffold_groups`, which writes `groups.yaml`). Protected GAs are
   refused exactly as `knx_write_group` refuses them, and no tool parameter can set or clear
   `protected:`.
 - The line is therefore not read versus write, it is **files versus bus**. Files are

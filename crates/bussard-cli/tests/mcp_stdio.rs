@@ -4,8 +4,8 @@
 //! handshake on its stdin/stdout, and asserts:
 //!
 //! - stdout carries **only** valid JSON-RPC (nothing else may print there), and
-//! - `tools/list` returns exactly the expected tool set (12 in `--passive`: the
-//!   ten model/bus read tools plus the two file-only history tools).
+//! - `tools/list` returns exactly the expected tool set (11 in `--passive`: the
+//!   nine model/bus read tools plus the two file-only history tools).
 //!
 //! This is the stdout-purity guard the design brief calls for.
 
@@ -127,14 +127,13 @@ fn mcp_stdio_handshake_is_pure_json_and_lists_nine_passive_tools() {
         "knx_model_lookup",
         "knx_project_summary",
         "knx_recent_telegrams",
-        "knx_scaffold_groups",
         "knx_validate",
         "knx_wait_for_telegram",
     ];
     expected.sort_unstable();
     assert_eq!(
         tools, expected,
-        "passive mode exposes exactly 12 tools: no bus tools, and no model edits \
+        "passive mode exposes exactly 11 tools: no bus tools, and no model edits \
          because this server runs with --no-model-edits"
     );
 
