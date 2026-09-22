@@ -786,6 +786,18 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
         }
     }
 
+    /// Replaces this connection's timeout/retry budget.
+    ///
+    /// The budget is normally fixed at connect time, but a caller that uses an
+    /// already-open connection for a *liveness probe* — e.g. the flash's
+    /// post-reboot poll, which asks a rebooting device for its descriptor every
+    /// few hundred milliseconds — needs a much tighter budget than the KNX
+    /// standard 3 s, so a device that is still down is ruled out in
+    /// milliseconds rather than stalling the poll.
+    pub fn set_timeouts(&mut self, timeouts: Timeouts) {
+        self.timeouts = timeouts;
+    }
+
     /// Seeds the cached `PID_MAX_APDU_LENGTH` without a round-trip.
     ///
     /// `PID_MAX_APDU_LENGTH` is device-stable, so a caller that negotiated it on
