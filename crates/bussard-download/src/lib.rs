@@ -12,20 +12,32 @@
 //! - [`apply`]: drive the load-state download sequence over the bus to write the
 //!   tables, then verify by reading them back byte-for-byte.
 //!
+//! System 7 (mask 0705 / 0701) has the same three layers in sibling modules,
+//! because its tables are absolute memory regions rather than property arrays:
+//! [`compute_sys7`] synthesizes and decodes the byte forms, [`tables_sys7`] reads
+//! them off a live device, and [`apply_sys7`] drives the two table load-state
+//! machines to write them (issue #91).
+//!
 //! The CLI (`bussard plan` / `bussard apply`) is the top edge; safety policy —
-//! the 07B0-mask gate, the TTY confirmation, the pre-write backup, the
+//! the mask-family gate, the TTY confirmation, the pre-write backup, the
 //! never-run-on-live-bus discipline — lives there and in `bussard-cli`.
 
 pub mod apply;
+pub mod apply_sys7;
 pub mod compute;
 pub mod compute_sys7;
 pub mod flash;
 pub mod plan;
 pub mod preflight;
 pub mod sweep;
+pub mod tables_sys7;
 
 pub use apply::{
     TableObjectIndexes, VerifyOutcome, apply_tables, discover_table_objects, read_states,
+};
+pub use apply_sys7::{
+    SYS7_ADDRESS_LSM, SYS7_ASSOCIATION_LSM, Sys7ApplyError, Sys7TableImages, Sys7VerifyOutcome,
+    apply_sys7_tables, sys7_table_images,
 };
 pub use compute::{
     ChannelConfig, DesiredTables, GroupObjectDescriptor, Priority, app_program_version,
@@ -33,8 +45,10 @@ pub use compute::{
     expand_group_object_descriptors, size_code_from_object_size, table_image_with_count,
 };
 pub use compute_sys7::{
-    Sys7GroupObject, sys7_address_table, sys7_association_table, sys7_config_byte,
-    sys7_group_object_table, sys7_group_objects,
+    SYS7_ADDRESS_REGION_LEN, SYS7_ADDRESS_TABLE_ADDR, SYS7_ASSOCIATION_REGION_LEN,
+    SYS7_ASSOCIATION_TABLE_ADDR, Sys7DecodeError, Sys7GroupObject, decode_sys7_address_table,
+    decode_sys7_association_table, decode_sys7_group_object_table, sys7_address_table,
+    sys7_association_table, sys7_config_byte, sys7_group_object_table, sys7_group_objects,
 };
 pub use flash::{
     AppIdentity, Connector, FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, ImageRef,
@@ -50,3 +64,4 @@ pub use sweep::{
     SweepManifest, SweepTotals, classify_application, family_label, manifest_from_products,
     sweep_corpus, sweep_file,
 };
+pub use tables_sys7::{Sys7LiveTables, Sys7TablesError, read_sys7_tables};
