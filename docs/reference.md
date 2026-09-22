@@ -179,11 +179,12 @@ Only `flash` takes `--bcu-key`; `plan`, `apply` and `reconstruct` always authori
 
 ### `bussard plan <ADDRESS>`
 
-Read a device's live tables and show what `apply` would change. Read-only on the bus. Refuses to compute an empty table set for a device with no links in the model (that would wipe it). System B (`x7B0`) and System 7 (`0705` / `0701`); on System 7 the tables are read straight out of the `0x4000` / `0x4201` memory regions, bounded by the region size.
+Read a device's live tables and show what `apply` would change. With `--line`, plan every device the model has on that line instead. Read-only on the bus. Refuses to compute an empty table set for a device with no links in the model (that would wipe it). System B (`x7B0`) and System 7 (`0705` / `0701`); on System 7 the tables are read straight out of the `0x4000` / `0x4201` memory regions, bounded by the region size.
 
 | Flag / arg | Default | Meaning |
 |---|---|---|
-| `<ADDRESS>` | | The device to plan for, e.g. `1.1.4`. |
+| `<ADDRESS>` | | The device to plan for, e.g. `1.1.4`. Omit with `--line`. |
+| `--line <LINE>` | | Plan every model device on this line, e.g. `1.1`, in address order (see [whole-line runs](#whole-line-runs)). |
 | `--dir <DIR>` | `knx` | The model directory. |
 | `--json` | off | Emit JSON instead of the report format. |
 | `--gateway <HOST>` | | Gateway override. |
@@ -195,9 +196,47 @@ Apply the model's link tables to a device: plan, confirm, back up, write, verify
 
 | Flag / arg | Default | Meaning |
 |---|---|---|
-| `<ADDRESS>` | | The device to program, e.g. `1.1.4`. |
+| `<ADDRESS>` | | The device to program, e.g. `1.1.4`. Omit with `--line`. |
+| `--line <LINE>` | | Apply to every model device on this line, e.g. `1.1`, in address order (see [whole-line runs](#whole-line-runs)). |
+| `--resume` | off | Line mode only: continue the run recorded in `<dir>/captures/apply-line-<line>.json`, skipping the devices it finished. |
+| `--json` | off | Line mode only: emit the summary as JSON. |
 | `--dir <DIR>` | `knx` | The model directory. |
 | `--yes` | off | Skip the interactive confirmation (dangerous; for scripts). |
+| `--allow-remote-gateway` | off | Permit a write to a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
+| `--gateway <HOST>` | | Gateway override. |
+| `--routing` | off | Force routing transport. |
+
+#### Whole-line runs
+
+`plan --line` and `apply --line` visit the model's devices on one line in address order and end with one summary table: address, name, mask and status. The status is one of `changes: N` (plan), `applied: N` (apply), `unchanged`, `skipped: <reason>` or `failed: <reason>`. A device with an unsupported mask or no links in the model is skipped; a device that cannot be read or written fails. Neither stops the run.
+
+`apply --line` asks one confirmation for the whole run, naming the resolved gateway and the device count, then does per device what `apply <ADDRESS>` does: plan, back up, write, verify. Each outcome is written to `<dir>/captures/apply-line-<line>.json` as it happens. After a tunnel drop, a killed process or Ctrl-C, `--resume` reads that file and skips the finished devices without any bus traffic; failed devices are retried. A run with no failures deletes the file. The exit code is non-zero if any device failed.
+
+`--json` prints `{line, mode, gateway, devices: [{address, name, mask, system_type, status, changes, detail}], total, changed, unchanged, skipped, failed, state_file}`; `state_file` is set when the run left one behind.
+
+### `bussard commission --line <LINE>`
+
+Bench mode: commission the devices the model has on a line. It first checks which of them already answer at their address; those are reported as `present` and left alone. After one confirmation naming the gateway, it walks the rest in address order:
+
+1. Prompts `press the programming button on <name> (<order number>)` and waits for exactly one device in programming mode, as `assign` does.
+2. Reads that device's order number and compares it with the model's `product.order_number` (case and surrounding space ignored). A mismatch, or an unreadable order number while the model names one, is a hard stop for that device: nothing is written and the run moves on to the next device. A model device without an order number is assigned with a warning.
+3. Writes the address, verifies it with a descriptor read, and clears programming mode.
+4. With `--flash`, runs `flash` on the new address, selecting the application by the model's order number from `--product`, or from the first archive in `<dir>/vendor/` that carries it. With `--apply`, runs `apply`.
+5. Prints a label line, e.g. `1.1.7  Blind actuator  MDT JAL-0810.03  Ground floor / Living room`, and with `--labels` appends a row to the CSV.
+
+The summary table lists each device as `commissioned`, `present` or `failed: <reason>`. The exit code is non-zero if any device failed.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--line <LINE>` | | The line to commission, e.g. `1.1`. |
+| `--flash` | off | Also flash each device's application program. |
+| `--apply` | off | Also apply the model's link tables. |
+| `--labels <FILE>` | | Append one row per commissioned device, columns `address;name;order_number;floor;room` (header written when the file is new). |
+| `--product <FILE>` | | The `.knxprod` to flash from (with `--flash`). |
+| `--dir <DIR>` | `knx` | The model directory. |
+| `--yes` | off | Skip the confirmation (required without a TTY). |
+| `--json` | off | Emit the summary as JSON; label lines then go to stderr and into each device's `label` field. |
+| `--keyring <FILE>` / `--tool-key <HEX>` | | KNX Data Secure tool key for `--flash` and `--apply`. |
 | `--allow-remote-gateway` | off | Permit a write to a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
@@ -329,7 +368,7 @@ knx/
   ha.yaml           # optional ha-config overrides (see ha-config.md)
   models/           # generated from .knxprod; git-ignored
   vendor/           # cached .knxprod originals; git-ignored
-  captures/         # local captures and apply backups; git-ignored
+  captures/         # local captures, apply backups and apply-line-<line>.json resume state; git-ignored
 ```
 
 `bussard.yaml`, `groups.yaml`, `links.yaml` and `devices/` are the source of truth and belong in git. `models/`, `vendor/` and `captures/` are local-only; `init` and `import-product` plant the `.gitignore` entries. All YAML is parsed strictly: unknown fields and duplicate keys are errors. Emission is deterministic and sorted, so re-imports and hand edits produce minimal diffs. Every generated file carries a banner naming what generated it and what is hand-editable.
