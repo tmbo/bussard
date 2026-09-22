@@ -6,7 +6,7 @@ independent, foreign device implementation instead of our own in-process mocks.
 
 ## Licence framing
 
-thelsing/knx is GPL-3.0; bussard must stay free of it. We keep them at arm's length: this
+thelsing/knx is GPL-3.0. bussard is MIT. We keep them at arm's length: this
 harness **clones and builds** thelsing/knx at test time into a standalone
 executable and **runs it as a separate process** that bussard talks to over a
 network socket (KNXnet/IP routing multicast). Nothing from thelsing/knx is
@@ -142,7 +142,7 @@ bussard flash 15.15.255 --product <built.knxprod> --dir <empty> --yes \
 ### The synthetic `.knxprod`
 
 `knxprod/M-00FA/M-00FA_A-0001.xml` is bussard's OWN hand-authored product XML
-(bussard's own original work), not vendor data and not derived from any thelsing source. It declares:
+(MIT), not vendor data and not derived from any thelsing source. It declares:
 
 - `MaskVersion="MV-57B0"` — bussard's flash pre-flight gates on `is_system_b`
   (true for the whole `x7B0` family, so 57B0 passes) **and** an exact

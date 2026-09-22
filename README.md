@@ -107,3 +107,6 @@ gate, backups, flash recovery, protected GAs, supported masks). The essentials:
 
 Never commit `.knxproj` or `.knxprod` files: the application XML is the manufacturer's copyrighted work. You supply your own product files, free from manufacturer sites or the MyKNX catalogue ([details](docs/product-data.md)). `bussard` is an independent project, not affiliated with or certified by the KNX Association. KNX is a registered trademark of the KNX Association.
 
+## License
+
+[MIT](LICENSE)

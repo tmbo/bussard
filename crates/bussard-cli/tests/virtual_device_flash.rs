@@ -20,7 +20,7 @@
 //!
 //! # The .knxprod
 //!
-//! A tiny synthetic product (bussard's own original work, not vendor data) lives at
+//! A tiny synthetic product (bussard's own MIT work, not vendor data) lives at
 //! `tests-support/virtual-device/knxprod/`. Its single application declares
 //! `MaskVersion="MV-57B0"` so bussard's flash pre-flight accepts the 57B0 device
 //! (`is_system_b(0x57B0)` is true, and the exact app-mask==device-mask compare

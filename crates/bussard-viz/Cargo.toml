@@ -5,7 +5,7 @@ edition.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-publish.workspace = true
+license.workspace = true
 description = "Web visualization server for a bussard KNX installation: topology, group-address tree, and live bus traffic"
 
 [dependencies]

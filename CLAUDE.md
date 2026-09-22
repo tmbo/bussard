@@ -8,7 +8,7 @@ architecture overview.
 
 ## License Policy (most important rule)
 
-bussard MUST NEVER take on a copyleft dependency
+bussard is MIT-licensed and MUST NEVER take on a copyleft dependency
 (GPL/LGPL/AGPL/EPL/MPL/CDDL). This is the whole point of the clean-room
 reimplementation, so it is a hard constraint, not a preference.
 

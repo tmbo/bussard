@@ -27,7 +27,7 @@ edition = "2024"
 repository = "https://github.com/tmbo/bussard"
 authors = ["Tom Bocklisch"]
 rust-version = "1.85"
-publish = false
+license = "MIT"
 
 [workspace.dependencies]
 # Internal crates

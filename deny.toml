@@ -1,7 +1,7 @@
 # cargo-deny configuration for bussard.
 #
 # The license gate below is this project's automated clean-room guard. bussard
-# must never take on a copyleft dependency (GPL/LGPL/EPL/
+# is MIT-licensed and must never take on a copyleft dependency (GPL/LGPL/EPL/
 # MPL), which would contaminate the license and defeat the whole point of the
 # open-source reimplementation. cargo-deny fails CI if any crate in the tree
 # carries a license that is not on the allow-list, so a copyleft dep can never
@@ -16,13 +16,9 @@
 all-features = true
 
 [licenses]
-# The workspace crates themselves are unpublished (publish = false); their own
-# licensing is out of scope for this gate, which exists to police THIRD-PARTY
-# dependency licenses.
-private = { ignore = true }
 # Only these licenses may appear anywhere in the dependency tree. Everything
 # here is a permissive / public-domain-equivalent license compatible with
-# permissive redistribution. Copyleft licenses (GPL, LGPL, AGPL, EPL, MPL, CDDL, ...)
+# shipping under MIT. Copyleft licenses (GPL, LGPL, AGPL, EPL, MPL, CDDL, ...)
 # are deliberately absent, so they FAIL the gate.
 allow = [
     "MIT",
