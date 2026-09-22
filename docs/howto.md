@@ -132,6 +132,49 @@ $ bussard plan 1.1.5
 
 So `plan` shows what `apply` will prune, not just what it adds; `apply` removes it. To first see what a device actually carries, `bussard reconstruct 1.1.4` reads its tables back and diffs them against the model (the diff compares GA sets per object; the send/listen direction lives in a table many devices do not expose).
 
+## ... back up every device?
+
+Before the first write to an installation, take a snapshot of all of it:
+
+```console
+$ bussard backup
+backing up 12 device(s) via 192.0.2.10:3671 into knx/captures/backups/20260922T101500Z
+...
+  1.1.4      07B0  backed up
+      parameters: 1840 octet(s)
+  1.1.12     0010  skipped
+      unsupported mask 0010 (System 1): ...
+
+10 backed up, 1 skipped, 1 unreachable, 0 failed
+```
+
+`backup` only reads, so it is safe on a live bus. Each device gets one JSON file with its tables (and, on System B, its parameter segment); `manifest.json` lists every device and what happened to it. Use `--line 1.1` or a list of addresses to back up part of the installation, and `--out <dir>` to write elsewhere.
+
+To put one device's tables back:
+
+```console
+$ bussard restore knx/captures/backups/20260922T101500Z 1.1.4
+```
+
+`restore` shows the plan and asks before writing, exactly like `apply`. If the device has not changed since the snapshot, the plan is empty and nothing is written.
+
+## ... replace a dead device?
+
+Mount a new device of the same product, connect it to the bus, and run:
+
+```console
+$ bussard replace 1.1.4 --product MDT_JAL_0410_02.knxprod
+Press the programming button on the replacement device for 1.1.4.
+device in programming mode: 15.15.255
+  mask: 07B0 (System B)
+  order number: MDT-JAL-0410.02
+replace 1.1.4: address 15.15.255 → 1.1.4, flash the application and apply the model's tables, via 192.0.2.10:3671? [y/N] y
+...
+replaced 1.1.4 via 192.0.2.10:3671
+```
+
+`replace` refuses when the old device still answers or when the new one reports a different order number or mask than `devices/1.1.4-*.yaml`; `--force` overrides both, for when the model is out of date. It assigns the address, flashes the application with the model's parameters, applies the model's links, and writes `replaced: <date>` into the device file. Pass `--no-flash` for a spare that already carries the right application.
+
 ## ... generate the Home Assistant config?
 
 ```console

@@ -540,7 +540,7 @@ fn print_text(manifest: &BackupManifest, out_dir: &Path, manifest_path: &Path) {
         if let Some(p) = &entry.parameters {
             match (p.captured, p.length, &p.reason) {
                 (true, Some(len), _) => println!("      parameters: {len} octet(s)"),
-                (false, _, Some(reason)) => println!("      parameters: not captured — {reason}"),
+                (false, _, Some(reason)) => println!("      parameters: not captured: {reason}"),
                 _ => {}
             }
         }
