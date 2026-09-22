@@ -1400,7 +1400,7 @@ pub fn plan_flash(
     //    two supported families; every other mask refuses cleanly. System 7 is
     //    dispatched to its own lowering below (after the shared mask-match check).
     let profile = bussard_mgmt::MaskProfile::from_mask(device_mask);
-    if !profile.is_system_b() && !profile.is_system_7() {
+    if !profile.capabilities().flash {
         return Err(PlanError::NotSystemB {
             device: device.to_string(),
             device_mask,
