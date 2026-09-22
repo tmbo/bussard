@@ -112,6 +112,14 @@ hmac = "0.12"
 zeroize = { version = "1", features = ["derive"] }
 
 # ---------------------------------------------------------------------------
+# Local builds: line tables instead of full DWARF. The workspace links ~67
+# test binaries plus the `bussard` binary, and full debuginfo made those links
+# I/O bound (a 583 s all-targets build for 125 s of CPU) and grew target/ to
+# ~80 GB. Line tables keep panic locations and readable backtraces. CI sets
+# CARGO_PROFILE_DEV_DEBUG=0 in the environment, which overrides this.
+[profile.dev]
+debug = "line-tables-only"
+
 # Build profiles tuned for test iteration speed.
 #
 # The `.knxproj` import path runs PBKDF2-HMAC-SHA256 for 65_536 iterations to
