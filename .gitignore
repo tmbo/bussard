@@ -34,3 +34,7 @@ shared-with-windows/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# website build output (see website/README.md)
+_site/
+website/site/
