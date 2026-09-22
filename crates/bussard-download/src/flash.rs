@@ -1584,7 +1584,7 @@ pub fn plan_flash(
                 // it with the application's relative segments in document-ish
                 // order using the applies_to hint and remaining unallocated
                 // segments.
-                let seg = resolve_rel_segment(app, applies_to.as_deref(), &images);
+                let seg = resolve_rel_segment(app, *lsm_idx, applies_to.as_deref(), &images);
                 let size = size
                     .or_else(|| seg.as_ref().and_then(|(_, s)| *s))
                     .unwrap_or(0);
@@ -1640,6 +1640,11 @@ pub fn plan_flash(
                 // new segment at all). The DALI-gateway corpus app resolves its
                 // segment on BOTH ops of the repeated pair, so resolution alone
                 // must not defeat the dedupe; only a genuinely NEW segment does.
+                // "Same segment" is decided by `resolve_rel_segment`, which binds
+                // an op to the segment on its own `LsmIdx` — an app that declares
+                // segments on several LSMs (the ABB/BJE shape of issue #113) would
+                // otherwise bind the restated pair to two different segments and
+                // slip past this check.
                 let same_segment = match &seg {
                     None => true,
                     Some((seg_id, _)) => prev_rel_segment.as_deref() == Some(seg_id.as_str()),
@@ -2519,10 +2524,37 @@ fn assemble_ops(app: &ApplicationProgram, template_ops: Option<&[LoadOp]>) -> (V
     )
 }
 
-/// Resolves which relative segment a `RelSegment` op allocates, preferring one
-/// not already allocated. Returns `(segment_id, declared_size)`.
+/// Resolves which relative segment a `RelSegment` op allocates. Returns
+/// `(segment_id, declared_size)`.
+///
+/// The op names the load state machine it allocates on (`LsmIdx`), and a
+/// `<RelativeSegment>` declares the LSM it belongs to (`LoadStateMachine`), so
+/// that pair — not document order — is the segment's identity. When the op names
+/// an LSM that some relative segment declares, the candidates are narrowed to
+/// that LSM: the first one not already allocated, or, when they are all
+/// allocated, the first one again (a **restated** allocation of a segment this
+/// procedure has already opened, which the caller's dedupe then collapses).
+///
+/// Evidence (ABB/Busch-Jaeger i-bus, `M-0002_A-0806-71-AD30-O0007`, issue #113):
+/// the app declares `RS-03-00000` (`LoadStateMachine="3"`, the group-object-table
+/// segment) *and* `RS-04-00000` (`LoadStateMachine="4"`, the app segment), while
+/// its `MergeId=2` block restates one LSM-4 allocation twice (`AppliesTo="full"`
+/// then `="par"`, both `LsmIdx="4" Size="232"`). Handing segments out in id order
+/// bound the first op to `RS-03` and the second to `RS-04`, so the two ops looked
+/// like two different segments and the dedupe below declined — lowering two
+/// identical `AllocateSegment { size: 232, target: 4 }` steps, i.e. a repeated
+/// relative allocation on one object, the shape that broke a device during the KV
+/// work. Matching on the LSM binds both ops to `RS-04` and the restatement
+/// collapses. 153 of the 865 System B applications in the product corpus (every
+/// one of them an ABB `M-0002` or Busch-Jaeger `M-0007` app with this
+/// two-segment shape) were affected.
+///
+/// An op with no `LsmIdx`, or one naming an LSM no segment declares, keeps the
+/// historical document-order fallback, so a single-segment app and the
+/// multi-segment fixtures whose segments share one LSM lower exactly as before.
 fn resolve_rel_segment(
     app: &ApplicationProgram,
+    lsm_idx: Option<u32>,
     _applies_to: Option<&str>,
     already: &BTreeMap<String, Vec<u8>>,
 ) -> Option<(String, Option<u32>)> {
@@ -2532,8 +2564,30 @@ fn resolve_rel_segment(
         .filter(|s| s.kind == SegmentKind::Relative)
         .collect();
     segs.sort_by(|a, b| a.id.cmp(&b.id));
-    segs.into_iter()
+
+    // Narrow to the op's own load state machine when it names one that some
+    // segment declares; otherwise keep every relative segment as a candidate.
+    let on_lsm: Vec<_> = match lsm_idx {
+        Some(idx) => segs
+            .iter()
+            .copied()
+            .filter(|s| s.load_state_machine == Some(idx))
+            .collect(),
+        None => Vec::new(),
+    };
+    let candidates = if on_lsm.is_empty() { &segs } else { &on_lsm };
+
+    candidates
+        .iter()
         .find(|s| !already.contains_key(&s.id))
+        // Every segment on this LSM is already allocated: the op restates one.
+        .or_else(|| {
+            if on_lsm.is_empty() {
+                None
+            } else {
+                on_lsm.first()
+            }
+        })
         .map(|s| (s.id.clone(), s.size))
 }
 
@@ -5493,6 +5547,94 @@ mod tests {
                 .filter(|s| matches!(s, FlashStep::WriteRelMem { .. }))
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn plan_dedupes_a_restated_allocation_when_segments_span_several_lsms() {
+        // The real ABB/BJE i-bus shape (M-0002_A-0806-71-AD30-O0007, issue #113):
+        // the app declares TWO relative segments on DIFFERENT load state machines
+        // — RS-03 (LSM 3, the group-object-table segment) and RS-04 (LSM 4, the
+        // app segment) — and its MergeId=2 block restates one LSM-4 allocation
+        // twice (AppliesTo="full" then ="par", both LsmIdx=4 Size=6). Binding the
+        // ops in document order pinned the first to RS-03 and the second to RS-04,
+        // so the restatement looked like two distinct segments and lowered two
+        // identical AllocateSegment steps. Both ops name LSM 4, so both must bind
+        // RS-04 and collapse to one allocation — and the write must stream RS-04.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-2_A-806" ApplicationNumber="2054" ApplicationVersion="113"
+            MaskVersion="MV-07B0" Name="ABB" LoadProcedureStyle="MergedProcedure">
+          <Static>
+           <Code>
+            <RelativeSegment Id="M-2_A-806_RS-04-00000" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment>
+            <RelativeSegment Id="M-2_A-806_RS-03-00000" Size="3" LoadStateMachine="3" Offset="0"><Data>AAEC</Data></RelativeSegment>
+           </Code>
+           <LoadProcedures>
+            <LoadProcedure MergeId="2">
+             <LdCtrlUnload LsmIdx="4" />
+             <LdCtrlLoad LsmIdx="4" />
+             <LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="6" Mode="1" Fill="0" />
+             <LdCtrlRelSegment AppliesTo="par" LsmIdx="4" Size="6" Mode="0" Fill="0" />
+            </LoadProcedure>
+            <LoadProcedure MergeId="4">
+             <LdCtrlWriteRelMem AppliesTo="full,par" ObjIdx="4" Offset="0" Size="6" Verify="true" />
+            </LoadProcedure>
+            <LoadProcedure MergeId="7">
+             <LdCtrlLoadCompleted LsmIdx="4" />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-2_A-806", xml.as_bytes()).unwrap();
+        let plan = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+        .unwrap();
+
+        let allocs: Vec<&FlashStep> = plan
+            .steps
+            .iter()
+            .filter(|s| matches!(s, FlashStep::AllocateSegment { .. }))
+            .collect();
+        assert_eq!(
+            allocs.len(),
+            1,
+            "a restated LSM-4 allocation must collapse even when the app declares \
+             another relative segment on a different LSM, got steps {:?}",
+            plan.steps
+        );
+        assert!(matches!(
+            allocs[0],
+            FlashStep::AllocateSegment {
+                size: 6,
+                target: Some(4),
+                ..
+            }
+        ));
+        // The write binds the LSM-4 segment, and the LSM-3 segment (which this
+        // procedure never allocates) is not pulled into the plan's images.
+        let writes: Vec<&FlashStep> = plan
+            .steps
+            .iter()
+            .filter(|s| matches!(s, FlashStep::WriteRelMem { .. }))
+            .collect();
+        assert_eq!(writes.len(), 1);
+        match writes[0] {
+            FlashStep::WriteRelMem { image, .. } => {
+                assert_eq!(image.segment_id, "M-2_A-806_RS-04-00000");
+                assert_eq!(image.len, 6);
+            }
+            other => panic!("expected WriteRelMem, got {other:?}"),
+        }
+        assert!(
+            !plan.images.contains_key("M-2_A-806_RS-03-00000"),
+            "the LSM-3 segment is never allocated by this procedure"
         );
     }
 
