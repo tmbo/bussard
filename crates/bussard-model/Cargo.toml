@@ -10,6 +10,9 @@ description = "Core KNX domain model for bussard: GA/IA/DPT/flags types, DPT cod
 
 [dependencies]
 serde = { workspace = true }
+# JSON for the history manifest (`.bussard/history/<id>/manifest.json`) and for
+# the change-set payload the MCP tools return. Already a workspace dependency.
+serde_json = { workspace = true }
 serde_norway = { workspace = true }
 serde_path_to_error = { workspace = true }
 thiserror = { workspace = true }
@@ -21,3 +24,4 @@ anyhow = { workspace = true }
 # tests, proving the hand-written XML is well-formed. Test-only; the exporter
 # itself has no XML dependency.
 quick-xml = { workspace = true }
+serde_json = { workspace = true }

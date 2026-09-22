@@ -185,6 +185,31 @@ protected write when they mean to, but an LLM driving `bussard` over MCP can
 never write a protected GA, with or without `--allow-writes`. Keep genuinely
 dangerous GAs marked `protected: true` so the MCP path can never touch them.
 
+The same refusal covers the MCP model-edit tools: a protected GA cannot be
+renamed or retyped, and no link to it can be added or removed, over MCP. There is
+also no tool parameter that sets or clears `protected:`; only a human editing
+`groups.yaml` can. Any change that touches a protected GA is rendered with the
+sentence "This group address is protected." and sorted to the top of
+`bussard status`, so it is the first thing anyone reads.
+
+## History and undo
+
+bussard keeps a full copy of the model files under `<dir>/.bussard/history`
+before every command that writes the model or the bus, and before every model
+edit made over MCP. `bussard status` says what has changed since the last one,
+`bussard history` lists them, and `bussard undo` puts the files back.
+
+`undo` touches **files only**. It sends nothing on the bus and changes no
+device: after an undo the installation behaves exactly as it did a second
+before. The restored model reaches a device only when a human runs
+`bussard plan <ia>` and then `bussard apply <ia>`, behind the usual
+confirmation. An undo is itself snapshotted first, so it can be undone.
+
+Snapshots carry the four model inputs (`bussard.yaml`, `groups.yaml`,
+`links.yaml`, `devices/*.yaml`) and nothing else. Product data, captures,
+keyrings and project files are never copied into them, so a snapshot cannot
+leak a key, a password or vendor data.
+
 ## Supported device masks
 
 Write commands refuse an unsupported device mask during the pre-flight, before

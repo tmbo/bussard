@@ -12,6 +12,7 @@ mod describe_cmd;
 mod export_groups_cmd;
 mod flash_cmd;
 mod ha_config_cmd;
+mod history_cmd;
 mod import_cmd;
 mod import_product_cmd;
 mod init_cmd;
@@ -478,6 +479,50 @@ enum Command {
         #[arg(long)]
         allow_remote_gateway: bool,
     },
+    /// Show what has changed in the model since the last history snapshot.
+    Status {
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Emit the change set as JSON instead of sentences.
+        #[arg(long)]
+        json: bool,
+        /// Print the file-level diff instead of the plain-language rendering.
+        #[arg(long)]
+        raw: bool,
+    },
+    /// List the model's history snapshots, oldest first.
+    History {
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Emit the list as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show what one snapshot changed (or the change between two snapshots).
+    Show {
+        /// The snapshot: its id, or its number from `bussard history`.
+        #[arg(value_name = "SNAPSHOT")]
+        snapshot: String,
+        /// A second snapshot: show the change from the first one to this one.
+        #[arg(value_name = "SNAPSHOT")]
+        to: Option<String>,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+    },
+    /// Put the model files back to a history snapshot (files only, no devices).
+    Undo {
+        /// The snapshot to restore: its id, or its number from `bussard history`
+        /// (default: the newest one that differs from the working files, which
+        /// reverts the last change).
+        #[arg(value_name = "SNAPSHOT")]
+        snapshot: Option<String>,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+    },
     /// Validate the YAML model and report diagnostics.
     Validate {
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
@@ -672,6 +717,12 @@ enum Command {
         /// gate as `bussard write` (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
         #[arg(long)]
         allow_remote_gateway: bool,
+        /// Refuse model edits: omits the `knx_set_group`, `knx_add_link`,
+        /// `knx_remove_link`, `knx_set_device`, `knx_set_parameter` and
+        /// `knx_undo` tools. The read tools stay available. Model edits only
+        /// touch YAML files (never the bus), so they are on by default.
+        #[arg(long)]
+        no_model_edits: bool,
         /// Path to a capture SQLite database to extend `knx_recent_telegrams`
         /// history beyond the in-memory ring window.
         #[arg(long, value_name = "PATH")]
@@ -937,6 +988,12 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             },
             conn_cmd::ConnOverrides { gateway, routing },
         ),
+        Command::Status { dir, json, raw } => history_cmd::run_status(&dir, json, raw),
+        Command::History { dir, json } => history_cmd::run_history(&dir, json),
+        Command::Show { snapshot, to, dir } => {
+            history_cmd::run_show(&dir, &snapshot, to.as_deref())
+        }
+        Command::Undo { snapshot, dir } => history_cmd::run_undo(&dir, snapshot.as_deref()),
         Command::Validate { dir, format } => validate_cmd::run(&dir, format == Format::Json),
         Command::Scaffold {
             plan,
@@ -1051,13 +1108,17 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             passive,
             allow_writes,
             allow_remote_gateway,
+            no_model_edits,
             capture_db,
         } => mcp_cmd::run(
             &dir,
             conn_cmd::ConnOverrides { gateway, routing },
-            passive,
-            allow_writes,
-            allow_remote_gateway,
+            mcp_cmd::McpModes {
+                passive,
+                allow_writes,
+                allow_remote_gateway,
+                no_model_edits,
+            },
             capture_db,
         ),
     }

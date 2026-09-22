@@ -40,6 +40,7 @@ fn server_over(dir: &Path) -> Result<BussardMcp, Box<dyn Error>> {
         bus: BusStatus::new(TransportKind::Tunnel),
         passive: true,
         allow_writes: false,
+        no_model_edits: false,
         read_limiter: ReadLimiter::new(
             bussard_mcp::READ_MIN_INTERVAL,
             bussard_mcp::READ_MAX_CONCURRENT,

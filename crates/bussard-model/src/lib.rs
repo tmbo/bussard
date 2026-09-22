@@ -10,10 +10,12 @@
 #![warn(missing_docs)]
 
 pub mod address;
+pub mod change;
 pub mod codec;
 pub mod dpt;
 pub mod ets_export;
 pub mod flags;
+pub mod history;
 pub mod lint;
 pub mod loader;
 pub mod merge;
@@ -23,6 +25,7 @@ pub mod schema;
 pub mod validate;
 
 pub use address::{AddressParseError, GroupAddress, IndividualAddress};
+pub use change::{Change, ChangeKind, ChangeSet, LinkRole, describe, render_text};
 pub use codec::{
     DateTime, EncodeError, Float16RangeError, HvacMode, ParseValueError, Rgbw, TypedValue, decode,
     encode, encode_float16, parse_value,
@@ -30,6 +33,7 @@ pub use codec::{
 pub use dpt::{ApduSize, Dpt, DptParseError};
 pub use ets_export::{to_ets_csv, to_ets_xml};
 pub use flags::{Flags, FlagsParseError};
+pub use history::{History, HistoryError, Snapshot, SnapshotId, SnapshotReason};
 pub use lint::{GroupsLint, LintConfig, TopologyLint, lint};
 pub use loader::{LoadError, LoadedDevice, Model, SaveError};
 pub use merge::{Conflict, MergeReport, merge};

@@ -275,6 +275,7 @@ fn write_skeleton(dir: &Path, resolution: &Resolution) -> anyhow::Result<()> {
         .with_context(|| format!("creating {}", captures_dir.display()))?;
     write_file(&captures_dir.join(".gitignore"), CAPTURES_GITIGNORE)?;
 
+    write_file(&dir.join(".gitignore"), GITIGNORE)?;
     write_file(&dir.join("README.md"), README_MD)?;
 
     Ok(())
@@ -349,13 +350,46 @@ const CAPTURES_GITIGNORE: &str = "\
 !.gitignore
 ";
 
+/// `knx/.gitignore`: keep bussard's own history (and the other local
+/// artefacts) out of git. The history is bussard's, not the repository's: a git
+/// user keeps one history in git and one in `.bussard/`, and `bussard undo`
+/// reads bussard's.
+const GITIGNORE: &str = "\
+# bussard's own history and undo data. Local to this machine; `bussard history`
+# and `bussard undo` read it. Never commit it.
+.bussard/
+
+# Local, vendor-derived or generated data (see docs/product-data.md).
+models/
+vendor/
+";
+
 /// `knx/README.md`: onboarding orientation.
 const README_MD: &str = "\
 # KNX model (bussard)
 
 This directory is your KNX installation as code. bussard reads it to decode the
-bus, and (in later phases) to push changes to devices. Everything here is plain
-YAML — review changes as git diffs.
+bus and to push changes to your devices. Everything here is plain YAML, but you
+never have to edit it by hand: `bussard` and an assistant driving it write these
+files for you.
+
+## Undo is built in
+
+bussard keeps its own history in `.bussard/history/`. Every time bussard writes
+the model or the bus it first saves a full copy of these files, with a note
+saying which command did it and when.
+
+- `bussard status` — what has changed since the last save, in plain sentences.
+- `bussard history` — every save, oldest first, one line each.
+- `bussard show <n>` — what one of them changed.
+- `bussard undo` — put the files back to the previous save.
+
+`undo` changes files only. Your devices keep working exactly as they are until
+you run `bussard plan <device>` and `bussard apply <device>`, which is where you
+confirm the change and it reaches the bus.
+
+Edits you make in a text editor are picked up too: the next bussard command
+records them as an `external edit` save first, so nothing is lost.
 
 ## Files
 
@@ -364,6 +398,7 @@ YAML — review changes as git diffs.
 - `links.yaml` — com-object → group-address links, keyed by device address.
 - `devices/` — one YAML file per device (identity, naming, com-objects).
 - `captures/` — local telegram captures (git-ignored).
+- `.bussard/` — bussard's history (git-ignored; `bussard undo` reads it).
 
 ## Getting started
 
@@ -373,6 +408,14 @@ Two onboarding paths:
    `bussard import project.knxproj --dir .`
 2. **No ETS project** — watch the bus and build the model as you go:
    `bussard monitor --dir .`
+
+## If you use git
+
+You do not have to. If you do: commit `bussard.yaml`, `groups.yaml`,
+`links.yaml` and `devices/`. The generated `.gitignore` already excludes
+`.bussard/`, `models/`, `vendor/` and `captures/`, which are local to this
+machine. A git user then has two histories, one in git and one in bussard;
+`bussard undo` reads bussard's.
 
 Docs: https://github.com/tmbo/bussard
 ";
@@ -389,6 +432,7 @@ fn print_next_steps(dir: &Path) {
     println!("  - Connect Claude via MCP:   claude mcp add knx -- bussard mcp --dir {d}");
     println!();
     println!("Check the model any time:     bussard validate --dir {d}");
+    println!("See what changed, and undo it: bussard status --dir {d} / bussard undo --dir {d}");
 }
 
 #[cfg(test)]
@@ -566,7 +610,13 @@ mod tests {
         let dir = temp_dir("skeleton");
         run_with(&dir, None, true, no_gateways, no_probe).unwrap();
 
-        for f in ["bussard.yaml", "groups.yaml", "links.yaml", "README.md"] {
+        for f in [
+            "bussard.yaml",
+            "groups.yaml",
+            "links.yaml",
+            "README.md",
+            ".gitignore",
+        ] {
             assert!(dir.join(f).exists(), "missing {f}");
         }
         assert!(dir.join("devices").is_dir());

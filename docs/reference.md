@@ -241,6 +241,44 @@ The summary table lists each device as `commissioned`, `present` or `failed: <re
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
 
+### `bussard status`
+
+Show what has changed in the model since the last history snapshot, as plain sentences ("Rocker 1 on Hallway push button now switches Porch light (0/0/4)."). Nothing here has reached a device: `status` reads files only. Always exits 0. With no snapshot yet it says so and stops.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--dir <DIR>` | `knx` | The model directory. |
+| `--json` | off | Emit the change set as JSON (`{"base": <snapshot id>, "changes": [...]}`). |
+| `--raw` | off | Print the file-level diff instead of the sentences. |
+
+### `bussard history`
+
+List the snapshots under `<dir>/.bussard/history`, oldest first: number, id, the command and arguments that caused it, the gateway a bus write went to, and a one-line summary of what it changed. Deterministic apart from the timestamps.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--dir <DIR>` | `knx` | The model directory. |
+| `--json` | off | Emit the list as JSON. |
+
+### `bussard show <SNAPSHOT> [SNAPSHOT]`
+
+Render what one snapshot changed (against the one before it), or the change between two snapshots. A snapshot is named by its id or by its number from `bussard history`.
+
+| Flag / arg | Default | Meaning |
+|---|---|---|
+| `<SNAPSHOT>` | | The snapshot to show (id or number). |
+| `[SNAPSHOT]` | | A second snapshot: show the change from the first to this one. |
+| `--dir <DIR>` | `knx` | The model directory. |
+
+### `bussard undo [SNAPSHOT]`
+
+Restore the model files to a snapshot, print what that reverts, and point at `plan`/`apply`. **Files only**: devices keep their tables until a human pushes the restored model to them. Without an argument it restores the newest snapshot that differs from the working files. Snapshots are taken before each write, so that reverts exactly the last change, whether it was a model edit or a bus-only command like `apply`. The state before the undo is itself snapshotted, so a second `undo` reverts the first.
+
+| Flag / arg | Default | Meaning |
+|---|---|---|
+| `[SNAPSHOT]` | the newest one that differs from the working files | The snapshot to restore (id or number). |
+| `--dir <DIR>` | `knx` | The model directory. |
+
 ### `bussard validate`
 
 Validate the YAML model and report diagnostics (see [the diagnostics table](#validation-diagnostics)). Exits non-zero on errors.
@@ -368,6 +406,7 @@ Run the MCP server over stdio (see [the MCP server](#the-mcp-server)).
 | `--passive` | off | Never transmit on the bus; omits the `knx_read_group` tool. |
 | `--allow-writes` | off | Register the `knx_write_group` tool. Mutually exclusive with `--passive`. |
 | `--allow-remote-gateway` | off | Permit `--allow-writes` against a non-loopback (real) gateway. The same gate as `bussard write`; without it a write-enabled server pointed at a real gateway refuses to start. |
+| `--no-model-edits` | off | Withhold the model-edit tools (`knx_set_group`, `knx_add_link`, `knx_remove_link`, `knx_set_device`, `knx_set_parameter`, `knx_undo`). They write YAML files behind a history snapshot and never touch the bus, so they are registered by default. |
 | `--capture-db <PATH>` | | A `bussard capture` database to extend `knx_recent_telegrams` history beyond the in-memory ring. |
 
 ### `bussard viz`
@@ -415,7 +454,25 @@ knx/
   models/           # generated from .knxprod; git-ignored
   vendor/           # cached .knxprod originals; git-ignored
   captures/         # local captures, apply backups and apply-line-<line>.json resume state; git-ignored
+  .bussard/         # bussard's own history; git-ignored
 ```
+
+#### `.bussard/history`
+
+bussard keeps its own history so undo works without git:
+
+```
+knx/.bussard/history/20260922T101112Z-001/
+  manifest.json     # {"reason": {"command", "args"}, "gateway", "result", "bussard_version", "created_at"}
+  bussard.yaml
+  groups.yaml
+  links.yaml
+  devices/*.yaml
+```
+
+One directory per snapshot, named by a UTC timestamp plus a sequence number, so a listing is already a timeline. A snapshot is a full copy of the four model inputs, since a house model is well under a megabyte. Nothing else is ever copied: `models/`, `vendor/`, `captures/`, keyrings, `.knxproj` and `.knxprod` files stay out (see [product-data.md](product-data.md)).
+
+`import`, `apply`, `flash`, `adopt`, `reconstruct` and every MCP model edit snapshot before they write. `plan` and those commands also record an `external edit` snapshot first when the working files differ from the last one, so an edit made in an editor or by an assistant writing YAML is never lost. `bussard status`, `history`, `show` and `undo` read this directory; `bussard init` git-ignores it.
 
 `bussard.yaml`, `groups.yaml`, `links.yaml` and `devices/` are the source of truth and belong in git. `models/`, `vendor/` and `captures/` are local-only; `init` and `import-product` plant the `.gitignore` entries. All YAML is parsed strictly: unknown fields and duplicate keys are errors. Emission is deterministic and sorted, so re-imports and hand edits produce minimal diffs. Every generated file carries a banner naming what generated it and what is hand-editable.
 
@@ -645,6 +702,9 @@ CREATE INDEX idx_telegrams_dest_ts ON telegrams (destination, ts_utc);
 | Passive | `--passive` | Never transmits. The bus-touching read tools (`knx_read_group`, `knx_describe_device`) are not registered. |
 | Read (default) | none | May send GroupValueReads, rate-limited. |
 | Write | `--allow-writes` | Adds `knx_write_group`. |
+| No model edits | `--no-model-edits` | Withholds the six model-edit tools. Orthogonal to the tiers above: they write YAML files, never the bus, so they are registered in every tier by default. |
+
+The model tools (`knx_describe_change`, `knx_history`, and the six that edit) touch files under the model directory and nothing else. Every edit snapshots the model first, validates after, and returns the change as sentences for the caller to quote to the human. Nothing reaches a device until a human runs `bussard plan` and `bussard apply`.
 
 Bus operations share one rate limiter (minimum 250 ms between operations, at most two in flight). A GA marked `protected: true` is hard-refused by `knx_write_group` with no MCP override; the LLM must ask a human, who can run `bussard write ... --force` from the CLI. Programming and download (`plan`, `apply`, `flash`) are CLI-only and not exposed over MCP.
 
@@ -663,8 +723,16 @@ Bus operations share one rate limiter (minimum 250 ms between operations, at mos
 | `knx_read_group` | `ga` | Transmits a GroupValueRead and returns the decoded response. Omitted in `--passive` mode. |
 | `knx_describe_device` | `address` | Introspects a device: enumerates its interface objects and each property's description (PID, type, element count, access levels). Read-only on the bus. Omitted in `--passive` mode. |
 | `knx_write_group` | `ga`, `value` (human-typed), `dpt` (optional override) | A GroupValueWrite. Registered only with `--allow-writes`; refuses protected GAs outright, and refuses a `dpt` that contradicts the GA's DPT in the model (the override is for GAs the model does not type). |
+| `knx_describe_change` | `from`, `to` (snapshot ids, optional) | The change as plain sentences. With no arguments: the pending changes, i.e. the working model against the last snapshot. Files only. |
+| `knx_history` | `limit` (default 50, max 500) | The history snapshots with id, time, command, gateway and a one-line summary each. |
+| `knx_set_group` | `ga`, `name`, `dpt`, `description` (all but `ga` optional) | Creates or updates a group address. Creating one needs `name`. Refuses to rename or retype a `protected: true` GA; there is no parameter that sets or clears `protected`. |
+| `knx_add_link` | `device`, `com_object`, `ga`, `role` (`send`\|`listen`) | Binds a com object to a GA. A com object has at most one sending GA, so an existing one is replaced. Refuses protected GAs. |
+| `knx_remove_link` | `device`, `com_object`, `ga`, `role` | Unbinds a com object from a GA. Refuses protected GAs. |
+| `knx_set_device` | `address`, `name`, `floor`, `room` (all but `address` optional) | Renames a device or changes where it lives. |
+| `knx_set_parameter` | `address`, `parameter`, `value` | Sets one value in the device file's `parameters:` block, checked against the product model. Refuses when the device has no `parameters:` block or no product model to check against. |
+| `knx_undo` | `snapshot_id` (optional) | Restores the model files to a snapshot (default: the newest one that differs from the working files, i.e. undo the last change). Files only. |
 
-The model is not frozen at startup: the server re-reads the model directory when its files change, so a `protected: true` or a corrected `dpt:` added to `groups.yaml` mid-session is in force on the next tool call. A model that fails to parse is not swapped in; the server keeps the last good one and warns on stderr.
+The model is not frozen at startup: the server re-reads the model directory when its files change (and immediately after one of its own model edits), so a `protected: true` or a corrected `dpt:` added to `groups.yaml` mid-session is in force on the next tool call. A model that fails to parse is not swapped in; the server keeps the last good one and warns on stderr.
 
 ## The viz server
 
