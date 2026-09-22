@@ -1,14 +1,17 @@
 //! The `bussard reconstruct` subcommand — read a device's tables back over the
 //! bus and diff them against the model.
 //!
-//! Connects to a single System B (mask `07B0`) device, reads its group-address
-//! and association tables via interface-object properties (see
-//! [`bussard_mgmt::tables`]), resolves them to com-object → GA assignments, and
-//! diffs the result against the model's `links.yaml` entry for that device.
+//! Connects to a single device, reads its group-address and association tables,
+//! resolves them to com-object → GA assignments, and diffs the result against the
+//! model's `links.yaml` entry for that device. **System B** (mask `x7B0`) serves
+//! those tables as interface-object properties (see [`bussard_mgmt::tables`]);
+//! **System 7** (mask `0705` / `0701`) keeps them in absolute memory at `0x4000`
+//! / `0x4201` and is read by [`bussard_download::tables_sys7`] (issue #91). The
+//! report and the diff below are the same for both.
 //!
 //! The command is **read-only on the bus**: it only ever sends
-//! `A_DeviceDescriptor_Read`, `A_PropertyValue_Read` and (on the fallback path)
-//! `A_Memory_Read`.
+//! `A_DeviceDescriptor_Read`, `A_Authorize_Request`, `A_PropertyValue_Read` and
+//! (on the System 7 and System B fallback paths) `A_Memory_Read`.
 //!
 //! ## What the diff can and cannot see
 //!
@@ -131,38 +134,34 @@ pub fn run(
         let table_result = match Layer4Connection::connect(channel, target, source).await {
             Ok(mut l4) => {
                 // Authorize the session (free access) as ETS does before any
-                // configuration access (issue #52 finding #1). Best-effort for a
-                // read: tolerate a device without authorize; log an access-denied.
+                // configuration access (issue #52 finding #1), and as System 7
+                // requires before any memory access. Best-effort for a read:
+                // tolerate a device without authorize; log an access-denied.
                 if let Err(err) = l4.authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY).await {
                     tracing::debug!("{target} authorize (free access) did not grant: {err}");
                 }
-                let result = read_tables(&mut l4).await;
+                let result = crate::plan_cmd::read_live_tables(&mut l4).await;
                 let _ = l4.disconnect().await;
                 result
             }
-            Err(err) => Err(TablesError::Mgmt(err)),
+            Err(err) => Err(anyhow::Error::new(TablesError::Mgmt(err))
+                .context("connecting to the device")),
         };
         // Close the bus cleanly (release the gateway tunnel slot) — issue #31.
         let _ = handle.close().await;
         anyhow::Ok(table_result)
     })?;
 
-    let read = match result {
-        Ok(read) => read,
-        Err(TablesError::UnsupportedMask { address, mask }) => {
-            eprintln!(
-                "{address} reports mask {mask:04X} ({}) — `bussard reconstruct` supports \
-                 System B (mask 07B0) only for now",
-                system_type(mask)
-            );
+    let live = match result? {
+        crate::plan_cmd::LiveRead::Tables(live) => live,
+        crate::plan_cmd::LiveRead::UnsupportedMask { address, mask } => {
+            crate::plan_cmd::report_unsupported_mask("reconstruct", address, mask);
             return Ok(ExitCode::FAILURE);
         }
-        Err(err) => {
-            return Err(anyhow::Error::new(err).context("reading device tables"));
-        }
     };
+    let read = live.tables();
 
-    let report = build_report(target, &read, model.as_ref());
+    let report = build_report(target, read, model.as_ref());
     if json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {

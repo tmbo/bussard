@@ -16,16 +16,25 @@
 //!   that preserves device-owned bytes under the segment `<Mask>`).
 //!
 //! Cases: a full MDT-canonical flash to `Loaded` (both LSM realisations), a
-//! drop-and-resume, and a verify-mismatch failure.
+//! drop-and-resume, and a verify-mismatch failure — plus the **incremental link
+//! path** (issue #91) against the same device: `read_sys7_tables` → `plan` →
+//! `apply_sys7_tables` → read back (the `reconstruct` check), in both LSM
+//! realisations, on a device whose LSMs start `Loaded` with a real table image in
+//! memory.
 //!
-//! **The flash path is only ever exercised here — never against a live bus.**
+//! **The flash and apply paths are only ever exercised here — never against a
+//! live bus.**
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bussard_download::{Session, flash, plan_flash};
+use bussard_download::{
+    Session, apply_sys7_tables, compute_tables, flash, plan, plan_flash, read_sys7_tables,
+    sys7_table_images,
+};
+use bussard_mgmt::LsmAccess;
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_mgmt::load::LoadState;
 use bussard_prod::application::{ApplicationProgram, parse_application_program};
@@ -1340,6 +1349,331 @@ async fn test_probe_resident_state_sys7_without_a_plan_follows_the_env_realisati
             "a memory-mapped probe must not touch PID 5"
         );
     }
+    handle.abort();
+    Ok(())
+}
+
+// --- The incremental link path (issue #91) -----------------------------------
+//
+// `bussard plan` / `apply` / `reconstruct` on a System 7 device: read the live
+// tables out of the absolute memory regions, diff them against the model, and
+// write only the two table LSMs back. The device here starts where a flashed
+// device really is — all three LSMs `Loaded`, a vendor table image in memory —
+// which is exactly the state the flash-path tests above end in.
+
+/// The System 7 LSM access seam matching a mock device's realisation. A real
+/// device is one or the other; the mock serves both so bussard's switch is
+/// exercised against each (the `BUSSARD_FLASH_SYS7_LSM` override does the same
+/// for the flash path).
+fn lsm_access_for(mode: LsmMode) -> LsmAccess {
+    match mode {
+        LsmMode::MemoryMapped => LsmAccess::MemoryMapped {
+            control_addr: LSM_CONTROL_ADDR,
+            status_addr: LSM_STATUS_ADDR,
+        },
+        LsmMode::Property => LsmAccess::Property,
+    }
+}
+
+/// Seeds the device with a programmed System 7 table image: the address table at
+/// `0x4000` followed by `go` (the group-object descriptor table), the association
+/// table at `0x4201`, and all three LSMs `Loaded`. Returns the group-object
+/// table's base.
+fn seed_tables(state: &Shared, own_ia: u16, gas: &[u16], assoc: &[(u8, u8)], go: &[u8]) -> u16 {
+    let mut image = vec![(1 + gas.len()) as u8];
+    image.extend_from_slice(&own_ia.to_be_bytes());
+    for ga in gas {
+        image.extend_from_slice(&ga.to_be_bytes());
+    }
+    let go_base = 0x4000u16 + image.len() as u16;
+    let mut assoc_image = vec![assoc.len() as u8];
+    for &(tsap, asap) in assoc {
+        assoc_image.push(tsap);
+        assoc_image.push(asap);
+    }
+
+    let mut s = state.lock().unwrap();
+    for (i, &b) in image.iter().enumerate() {
+        s.memory.insert(0x4000 + i as u16, b);
+    }
+    for (i, &b) in go.iter().enumerate() {
+        s.memory.insert(go_base + i as u16, b);
+    }
+    for (i, &b) in assoc_image.iter().enumerate() {
+        s.memory.insert(0x4201 + i as u16, b);
+    }
+    for lsm in [1u8, 2, 3] {
+        s.lsm_states.insert(lsm, LS_LOADED);
+    }
+    go_base
+}
+
+fn ga(s: &str) -> bussard_model::GroupAddress {
+    s.parse().expect("a valid group address")
+}
+
+/// The model the plan wants: com-object 1 sends 1/0/1 and listens on 1/0/2.
+fn desired_links() -> bussard_download::DesiredTables {
+    compute_tables(&[bussard_model::schema::Link {
+        object: 1,
+        name: None,
+        send: Some(ga("1/0/1")),
+        listen: vec![ga("1/0/2")],
+    }])
+}
+
+/// Connects and authorizes a plain layer-4 connection (System 7 gates memory
+/// access behind `A_Authorize`).
+async fn authed_connection<'a>(
+    bus: &'a mut Transport,
+    target: bussard_model::IndividualAddress,
+) -> Layer4Connection<impl bussard_mgmt::L4Channel + 'a> {
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+    let mut l4 = Layer4Connection::connect(bus, target, source)
+        .await
+        .unwrap();
+    l4.authorize_or_fail(0xFFFF_FFFF)
+        .await
+        .expect("free-access authorize must be granted by the mock");
+    l4
+}
+
+async fn run_table_apply(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>> {
+    let (mut bus, state, handle) = setup(mode, Fault::None).await;
+    let target: bussard_model::IndividualAddress = "1.1.99".parse().unwrap();
+    let own_ia = target.raw();
+    // Two descriptors the download put there; `apply` must carry them over
+    // untouched even though the address table in front of them changes length.
+    let go_image = vec![
+        0x02, 0x07, 0x00, // CNT + RAM-flags ptr
+        0x07, 0x00, 0xDF, 0x00, // descriptor 1
+        0x07, 0x02, 0x87, 0x00, // descriptor 2
+    ];
+    let go_base = seed_tables(&state, own_ia, &[0x0801], &[(1, 1)], &go_image);
+    assert_eq!(go_base, 0x4005, "CNT + own IA + one GA");
+
+    let mut l4 = authed_connection(&mut bus, target).await;
+
+    // --- plan: read the live tables and diff them -----------------------------
+    let live = read_sys7_tables(&mut l4).await?;
+    assert_eq!(live.tables.mask, MASK_0705);
+    assert_eq!(live.own_ia, own_ia, "entry 0 is the device's own IA");
+    assert_eq!(live.tables.addresses, vec![ga("1/0/1")]);
+    assert_eq!(live.tables.associations, vec![(1, 1)]);
+    assert_eq!(live.tables.resolved.len(), 1);
+    assert_eq!(live.tables.resolved[0].object, 1);
+    assert_eq!(live.tables.resolved[0].ga, ga("1/0/1"));
+    assert_eq!(live.group_object_base, go_base);
+    assert_eq!(live.group_object_image, go_image);
+    assert_eq!(live.group_objects.len(), 2);
+
+    let desired = desired_links();
+    let report = plan(&live.tables, &desired);
+    assert_eq!(report.additions.len(), 1, "one new link: {report:?}");
+    assert_eq!(report.additions[0].ga, ga("1/0/2"));
+    assert_eq!(report.unchanged.len(), 1);
+    assert!(report.removals.is_empty());
+
+    // --- apply: write only the two table LSMs ---------------------------------
+    let images = sys7_table_images(&live, &desired, own_ia)?;
+    assert_eq!(
+        images.group_object_moved,
+        Some((0x4005, 0x4007)),
+        "the address table grew by one entry, so the descriptors move with it"
+    );
+    let profile = bussard_mgmt::MaskProfile::from_mask(MASK_0705)
+        .sys7_default_profile()
+        .expect("a System 7 profile");
+    let outcome = apply_sys7_tables(
+        &mut l4,
+        &lsm_access_for(mode),
+        &profile,
+        &images,
+        bussard_mgmt::task_segment_marker(MASK_0705, 0, 0),
+    )
+    .await?;
+    assert!(outcome.ok(), "apply must verify: {outcome:?}");
+
+    // --- reconstruct: read it all back and confirm the model is on the device --
+    let after = read_sys7_tables(&mut l4).await?;
+    assert_eq!(after.tables.addresses, desired.addresses);
+    assert_eq!(after.tables.associations, desired.associations);
+    assert!(
+        plan(&after.tables, &desired).is_noop(),
+        "a re-plan after apply must be a no-op: {:?}",
+        plan(&after.tables, &desired)
+    );
+    assert_eq!(after.own_ia, own_ia, "the own-IA slot survived the rewrite");
+    assert_eq!(
+        after.group_object_base, 0x4007,
+        "the descriptors moved with the longer address table"
+    );
+    assert_eq!(
+        after.group_object_image, go_image,
+        "the descriptors are byte-identical after the move"
+    );
+
+    {
+        let s = state.lock().unwrap();
+        assert_eq!(
+            s.restarts_seen, 0,
+            "a table-only apply must not restart the device"
+        );
+        for lsm in [1u8, 2] {
+            assert_eq!(s.lsm_state(lsm), LS_LOADED, "LSM {lsm} must end Loaded");
+        }
+        assert_eq!(
+            s.lsm_state(3),
+            LS_LOADED,
+            "the parameter LSM must never be touched"
+        );
+        if mode == LsmMode::MemoryMapped {
+            assert_eq!(
+                s.lsm5_property_accesses, 0,
+                "a memory-mapped device must never see a PID-5 access"
+            );
+        }
+    }
+
+    let _ = l4.disconnect().await;
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn apply_system7_tables_property_lsm() -> Result<(), Box<dyn std::error::Error>> {
+    run_table_apply(LsmMode::Property).await
+}
+
+#[tokio::test]
+async fn apply_system7_tables_memory_mapped_lsm() -> Result<(), Box<dyn std::error::Error>> {
+    run_table_apply(LsmMode::MemoryMapped).await
+}
+
+#[tokio::test]
+async fn read_system7_tables_never_invents_links_from_unprogrammed_memory()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Erased EEPROM is all 0xFF, so both count octets claim 255 entries — a count
+    // each region genuinely has room for — and every table slot reads 0xFFFF.
+    // Two guards have to hold, or `plan` would offer to "remove" hundreds of
+    // links that were never there:
+    //
+    // - the group-object table's 255 descriptors need 1023 octets, far past the
+    //   0x4000 region, so that count is refused and its descriptors left alone;
+    // - the one well-formed association entry resolves to an address-table slot
+    //   reading 0xFFFF, whose D15 is reserved and never a group address, so it
+    //   does not become a link.
+    let (mut bus, state, handle) = setup(LsmMode::Property, Fault::None).await;
+    let target: bussard_model::IndividualAddress = "1.1.99".parse().unwrap();
+    {
+        let mut s = state.lock().unwrap();
+        for addr in 0x4000u16..0x4400 {
+            s.memory.insert(addr, 0xFF);
+        }
+        // One well-formed association entry over the erased address table, so the
+        // reserved-D15 guard is what has to reject it rather than a short table.
+        for (i, b) in [0x01u8, 0x01, 0x01].iter().enumerate() {
+            s.memory.insert(0x4201 + i as u16, *b);
+        }
+        for lsm in [1u8, 2, 3] {
+            s.lsm_states.insert(lsm, LS_LOADED);
+        }
+    }
+    let mut l4 = authed_connection(&mut bus, target).await;
+    let live = read_sys7_tables(&mut l4).await?;
+    assert_eq!(
+        live.tables.addresses.len(),
+        254,
+        "the 0xFF count is read as-is"
+    );
+    assert!(
+        live.tables.resolved.is_empty(),
+        "no link may be invented from unprogrammed slots: {:?}",
+        live.tables.resolved
+    );
+    assert!(
+        live.group_object_image.is_empty(),
+        "an oversized group-object count leaves the descriptors untouched"
+    );
+    assert_eq!(live.tables.associations, vec![(1, 1)]);
+    let notes = live.tables.notes.join(" | ");
+    assert!(
+        notes.contains("unprogrammed"),
+        "the report must say why nothing resolved: {notes}"
+    );
+    assert!(
+        live.tables.notes.len() <= 4,
+        "one summary note per kind, not one per entry: {notes}"
+    );
+    // And the diff against a model is pure addition — nothing to "remove".
+    let report = plan(&live.tables, &desired_links());
+    assert!(report.removals.is_empty(), "{report:?}");
+    assert_eq!(report.additions.len(), 2);
+    let _ = l4.disconnect().await;
+    handle.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn read_system7_tables_refuses_a_count_its_region_cannot_hold()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The region bound is the hard refusal. A group-object table claiming 255
+    // descriptors needs 1023 octets; the 0x4000 region holds 513, so the reader
+    // refuses the count rather than reading a kilobyte of neighbouring memory —
+    // the same check `decode_sys7_group_object_table` makes offline.
+    let err = bussard_download::decode_sys7_group_object_table(
+        &[0xFF, 0x07, 0x00],
+        bussard_download::SYS7_ADDRESS_REGION_LEN,
+    )
+    .expect_err("an oversized count must be refused");
+    let text = err.to_string();
+    assert!(
+        text.contains("255") && text.contains("refusing"),
+        "the refusal must name the count: {text}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn apply_system7_tables_fails_on_a_verify_mismatch() -> Result<(), Box<dyn std::error::Error>>
+{
+    // A device that corrupts every stored segment write: the per-chunk read-back
+    // must catch it at the first chunk, before the load is completed.
+    let (mut bus, state, handle) = setup(LsmMode::Property, Fault::CorruptStoredImage).await;
+    let target: bussard_model::IndividualAddress = "1.1.99".parse().unwrap();
+    let own_ia = target.raw();
+    let go_image = vec![0x01, 0x07, 0x00, 0x07, 0x00, 0xDF, 0x00];
+    seed_tables(&state, own_ia, &[0x0801], &[(1, 1)], &go_image);
+
+    let mut l4 = authed_connection(&mut bus, target).await;
+    let live = read_sys7_tables(&mut l4).await?;
+    let desired = desired_links();
+    let images = sys7_table_images(&live, &desired, own_ia)?;
+    let profile = bussard_mgmt::MaskProfile::from_mask(MASK_0705)
+        .sys7_default_profile()
+        .expect("a System 7 profile");
+    let err = apply_sys7_tables(
+        &mut l4,
+        &lsm_access_for(LsmMode::Property),
+        &profile,
+        &images,
+        bussard_mgmt::task_segment_marker(MASK_0705, 0, 0),
+    )
+    .await
+    .expect_err("a corrupted store must fail the read-back verify");
+    assert!(
+        matches!(err, bussard_download::Sys7ApplyError::VerifyMismatch { .. }),
+        "expected a verify mismatch, got {err}"
+    );
+    {
+        let s = state.lock().unwrap();
+        assert_ne!(
+            s.lsm_state(1),
+            LS_LOADED,
+            "a failed write must not leave the address table Loaded"
+        );
+    }
+    let _ = l4.disconnect().await;
     handle.abort();
     Ok(())
 }
