@@ -124,6 +124,7 @@ pictures copied "1:1 from ETS", and dread redoing it after every change.
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
 | Generate the documentation from the model | Nothing beyond `viz` in a browser. | `bussard doc` producing device list with addresses, order numbers and locations, GA list with DPTs, per-room button and channel sheets, gateway details, all regenerated after every change. This is the same document the owner needs. | D5 |
+| Deliver the configuration as a file | A directory of YAML. | Integrators deliver files: the `.knxproj` goes on a USB stick in the cabinet. `bussard export house.bussard` gives the bussard model the same shape, with history and a checksum, and `bussard import` takes it back. | D19 |
 | Export for the customer's ETS | Nothing. | GA export in ETS-importable CSV or XML so names and DPTs curated in bussard land in the customer's project. | D12 |
 | Handover checklist | Nothing. | A handover doc that lists what to deliver, mirroring the KNX checklist. | D2 |
 
@@ -138,8 +139,8 @@ password, and screenshots of the delivered state.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| Absorb small changes without a visit | If the customer runs bussard, the change is a diff to `links.yaml`. `plan` shows the device delta. | A documented workflow where owner and integrator share one model repository, changes arrive as pull requests, `plan --json` runs in CI, and the integrator approves without touching the bus. This also answers the warranty question: git history shows who changed what. | D16 |
-| Know the delivered state | The git commit at handover is the delivered state. | Needs to be stated in the handover guide, and the acceptance test (D9) rerun after every merged change. | D2, D9 |
+| Absorb small changes without a visit | If the customer runs bussard, the change is a diff to `links.yaml`. `plan` shows the device delta. | Most customers are not git users, so the default exchange is by file: the customer sends `bussard export`, the integrator reviews with `bussard diff` (D7) in plain language, sends back an updated file or `.knxproj`, and the customer's `import` merges it while keeping their own names. A shared repository with pull requests and `plan --json` in CI is the second track for customers who want it. | D16, D19, D7 |
+| Know the delivered state | Whatever was in the directory at handover. | The handover bundle (D19) is the delivered state, with a checksum on the acceptance protocol. bussard's own history (D18) shows what changed since, on either side, which is the answer to the warranty question. The acceptance test (D9) reruns after every change. | D19, D18, D9 |
 | Real-gateway gate | Every write to a non-loopback gateway needs `--allow-remote-gateway` or the environment variable. | Correct for owners. For a professional who only ever writes to real gateways, the environment variable in the shell profile is the intended answer; document it. | D2 |
 
 ### Stage 9. Repairs and device replacement
@@ -204,9 +205,9 @@ strengths today are the ones ETS lacks: a textual, versioned, diffable model;
 a scriptable CLI; an LLM interface; and ETS-free downloads for System B and
 System 7 devices. The parts that would change his week are, in order: batch
 commissioning (D8), scripted acceptance tests (D9), generated documentation
-(D5), the ETS diff (D7), the shared-repository workflow for change requests
-(D16), topology and convention lints (D10), and the GA export back to ETS
-(D12). Two platform facts bound all of it: `apply` is System B only, and
+(D5), the ETS diff (D7), file-based exchange with customers and the optional
+shared-repository track (D19, D16), topology and convention lints (D10), and
+the GA export back to ETS (D12). Two platform facts bound all of it: `apply` is System B only, and
 KNXnet/IP Secure is unsupported, so a cabinet with older actuators or a
 Secure-only interface keeps him in ETS regardless.
 

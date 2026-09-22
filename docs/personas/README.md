@@ -15,7 +15,7 @@ persona file ends with its sources.
 |---|---|---|
 | [homeowner.md](homeowner.md) | Nadia, the new owner | Gets the keys to a KNX house, wants to understand it, own it, and change it without paying for every button. |
 | [integrator.md](integrator.md) | Jonas, the KNX integrator | Plans, addresses, commissions, documents and hands over KNX installations for customers, then lives with the change requests. |
-| [issues.md](issues.md) | both | Seventeen issue drafts derived from the journey gaps, with acceptance criteria and labels. |
+| [issues.md](issues.md) | both | Twenty issue drafts derived from the journey gaps, with acceptance criteria and labels. |
 
 ## How to use the personas
 
@@ -32,7 +32,7 @@ persona file ends with its sources.
 
 ## What both personas share
 
-Three facts shape both journeys and are worth keeping in mind for every
+Four facts shape both journeys and are worth keeping in mind for every
 design decision.
 
 The ETS project file is the single point of failure. It holds the names, the
@@ -49,6 +49,15 @@ ETS is Windows-only and priced for professionals. ETS6 Home is 350 EUR, caps at
 devices. Professional is 1,000 EUR. Everything bussard can do without ETS is a
 direct saving for the owner and a smaller licence dependency for the
 integrator's customers.
+
+Neither persona is git-native, and exchange happens by file. Owners will not
+learn git or read YAML diffs, and integrators deliver a file on a USB stick,
+as they do with the `.knxproj` today. bussard therefore needs its own history
+and undo (D18), a single-file bundle for exchange and backup (D19), and
+plain-language rendering of pending changes (D20). Git remains the right layer
+for the project's developers and for integrators who want a shared repository,
+and the model directory stays git-friendly, but nothing in the owner journey
+may depend on it.
 
 The bus is shared and slow, and writes are physical. A tunnelling interface
 has a fixed number of connections, often one to five, and Home Assistant, ETS

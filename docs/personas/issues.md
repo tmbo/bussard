@@ -1,9 +1,9 @@
 # Issue drafts from the persona journeys
 
-Seventeen drafts, each traceable to a journey stage in
+Twenty drafts, each traceable to a journey stage in
 [homeowner.md](homeowner.md) or [integrator.md](integrator.md). The `D` numbers
 are draft identifiers used by the persona docs; they are not GitHub issue
-numbers. Each draft was filed on GitHub on 2026-09-21; the table links the
+numbers. Drafts were filed on GitHub on 2026-09-21 and 2026-09-22; the table links the
 issue. Existing GitHub issues predating the drafts are written `#71`.
 
 Priority reflects how many journey stages a draft unblocks and how far it is
@@ -29,6 +29,9 @@ depend on platform work (mask coverage, Secure) or are planning-stage tooling.
 | D15 | [#107](https://github.com/tmbo/bussard/issues/107) | Documentation consistency: Secure flags, System 7 status, tunnel budget | both | P1 |
 | D16 | [#108](https://github.com/tmbo/bussard/issues/108) | Collaboration guide: owner and integrator share one model repository | both | P1 |
 | D17 | [#109](https://github.com/tmbo/bussard/issues/109) | Parameter-level plan for `flash` | owner | P2 |
+| D18 | [#110](https://github.com/tmbo/bussard/issues/110) | Built-in history and undo, no git required | both | P1 |
+| D19 | [#111](https://github.com/tmbo/bussard/issues/111) | `bussard export` and `import` of a single-file bundle | both | P1 |
+| D20 | [#112](https://github.com/tmbo/bussard/issues/112) | Plain-language rendering of pending model changes | owner | P1 |
 
 ---
 
@@ -98,9 +101,11 @@ gateways every day.
 Three documents under `docs/`:
 
 - `docs/getting-started-owner.md`: "the first weekend". Find the interface,
-  `init`, `import` or `scan` plus `reconstruct`, `audit`, `backup`, `viz`, put
-  the model in git, connect the assistant over MCP, first safe change with
-  `plan` and `apply`. Each step names the safety rail that applies.
+  `init`, `import` or `scan` plus `reconstruct`, `audit`, `backup`, `viz`,
+  `export` a bundle to a USB stick, connect the assistant over MCP, first safe
+  change with `plan` and `apply`, `undo` it. Each step names the safety rail
+  that applies. The guide does not mention git; a closing note points git
+  users at the optional repository layer.
 - `docs/handover-checklist.md`: a one-page list an owner can attach to a
   purchase or acceptance protocol and an integrator can use as a delivery list.
   Contents follow the KNX Association handover and security checklists:
@@ -109,7 +114,9 @@ Three documents under `docs/`:
   with individual addresses, GA list with DPTs, as-built plans, acceptance
   report, visualisation credentials, what changed since the last version.
   A short note on the legal position (guidelines say the latest project must
-  be handed over; contracts decide; sealed envelope as compromise).
+  be handed over; contracts decide; sealed envelope as compromise). For a
+  bussard-managed installation, the bundle from D19 and its checksum are the
+  delivered state.
 - A "for professionals" section in SAFETY.md: the environment variable for the
   real-gateway gate, why it is per machine and not per repository, tunnel
   etiquette when ETS is also connected.
@@ -119,8 +126,11 @@ Three documents under `docs/`:
 - README links the owner guide from the Quickstart.
 - Every command named in the guide exists and its flags match reference.md.
 - The checklist fits one printed page.
+- The word "git" does not appear before the closing note of the owner guide.
+- The generated `knx/README.md` leads with history and backups, not with what
+  to commit.
 
-Related: D1, D4, D16.
+Related: D1, D4, D16, D18, D19.
 
 ---
 
@@ -619,7 +629,7 @@ source (the Rust table, rendered) into the docs.
 
 ---
 
-## D16. Collaboration guide: owner and integrator share one model repository
+## D16. Collaboration guide: owner and integrator exchange changes
 
 Labels: documentation
 
@@ -628,27 +638,39 @@ Persona: Jonas stage 8; Nadia stage 10.
 ### Problem
 
 Change requests after handover are the integrator's recurring cost and the
-warranty dispute waiting to happen. Both are solved by a shared history, which
-bussard already provides through git, but nobody has written down the
-workflow.
+warranty dispute waiting to happen. Both are solved by a shared, legible
+history. Most owners are not git users and integrators deliver files, so the
+workflow cannot assume a shared repository.
 
 ### Proposal
 
-`docs/collaboration.md`: one repository per installation; the handover commit
-is the delivered state; the owner (or her assistant) proposes changes as pull
-requests; CI runs `validate`, D10 lints and `plan --json` against a recorded
-device state; the integrator reviews the plan output and approves; whoever is
-on site runs `apply`; D9 tests run after merge. A section on what never enters
-the repository (`.knxproj`, `.knxprod`, keyrings, passwords) and on the
-warranty question: the history shows who changed what and when.
+`docs/collaboration.md` with two tracks.
+
+File track, the default. The handover bundle (D19) is the delivered state and
+its checksum goes on the acceptance protocol. The owner sends `bussard export`
+output or describes the wish; the integrator runs `bussard diff` (D7) against
+the delivered bundle to see in plain language what the owner changed, makes the
+change in ETS or bussard, and sends back a `.knxproj` or bundle; the owner's
+`bussard import` merges it, keeps her hand-authored names, and reports
+disagreements. Both sides' `bussard history` (D18) answers who changed what
+and when, which is the warranty question.
+
+Repository track, for customers who want it. One repository per installation;
+the owner or her assistant proposes changes as pull requests; CI runs
+`validate`, D10 lints and `plan --json` against a recorded device state; the
+integrator approves; whoever is on site runs `apply`; D9 tests run after
+merge.
+
+Both tracks: what never enters a bundle or repository (`.knxproj`,
+`.knxprod`, keyrings, passwords).
 
 ### Acceptance criteria
 
-- A worked example with the synthetic fixture: a PR that changes one link,
-  its `plan --json` output, and the resulting `apply`.
-- Linked from README and from the owner guide (D2).
+- A worked example for each track with the synthetic fixture: one link
+  changed, the diff or plan output, the resulting `apply`.
+- The file track is the one the owner guide (D2) links to.
 
-Related: D2, D7, D9.
+Related: D2, D7, D9, D18, D19.
 
 ---
 
@@ -680,3 +702,142 @@ remains available with `-v`.
 - Works for System B; System 7 prints the memory plan with a note.
 
 Related: D6, #81.
+
+---
+
+## D18. Built-in history and undo, no git required
+
+Labels: enhancement
+
+Persona: Nadia stages 5, 6; Jonas stage 8.
+
+### Problem
+
+History exists only when the model directory is in git. Owners are not git
+users, and "what did I change last Tuesday, put it back" has no answer inside
+bussard. Every other tool an owner uses (documents, photos, ETS with its
+restore points and since 6.4 an archive on every close) keeps its own history.
+
+### Proposal
+
+bussard owns its history. Every `import`, `apply`, `flash`, `adopt`,
+`replace`, `learn` and every model edit made through bussard writes a
+snapshot of the model files under `<dir>/.bussard/history/<timestamp>/` with a
+manifest: reason (the command and its arguments), gateway if a write happened,
+and the result. A house model is well under a megabyte, so snapshots are full
+copies with no dependency.
+
+- `bussard history` lists snapshots with reason and a one-line plain-language
+  summary of the change (D20).
+- `bussard show <n>` renders the change between two snapshots (D7's semantic
+  diff).
+- `bussard undo [<n>]` restores the model to a snapshot. It changes files only;
+  the owner then runs `plan` and `apply` to push the restored model to
+  devices, behind the usual gate.
+- Edits made outside bussard (an editor, an LLM writing YAML) are captured as
+  an "external edit" snapshot at the start of the next command, so nothing is
+  lost.
+
+Git stays optional. The history directory is git-ignored by the generated
+`.gitignore`, so a git user keeps one history in git and the owner keeps one in
+bussard; `undo` reads bussard's.
+
+### Acceptance criteria
+
+- On the synthetic fixture, `import`, edit, `apply` on the simulator, `undo`,
+  `plan` shows the reverse of the applied change.
+- `history` output is deterministic apart from timestamps.
+- Snapshots never contain product data, keyrings or passwords.
+- The generated `knx/README.md` explains history and undo before it mentions
+  git.
+
+Related: D2, D7, D19, D20.
+
+---
+
+## D19. `bussard export` and `import` of a single-file bundle
+
+Labels: enhancement
+
+Persona: Nadia stages 5, 10; Jonas stages 7, 8.
+
+### Problem
+
+The model is a directory. Integrators deliver files, on a USB stick in the
+cabinet or by email, and owners back up by copying files to a stick. A
+directory is awkward to email, checksum, or put on an acceptance protocol.
+The `.knxproj` has the right shape; bussard's model does not.
+
+### Proposal
+
+`bussard export house.bussard` writes a zip archive containing the model
+files, the history (D18) unless `--no-history`, and a manifest with bussard
+version, model version, export time, device and GA counts, and a SHA-256 of
+the contents. It never includes `vendor/`, `models/`, captures, keyrings or
+passwords, and the manifest says so.
+
+`bussard import house.bussard` accepts the bundle wherever a `.knxproj` is
+accepted today and runs the same merge: generated data follows the bundle,
+hand-authored fields in the local model are kept, disagreements are reported in
+plain language (D20) with the choice to take theirs or keep mine per item.
+`bussard diff house.bussard` (D7) shows what a received bundle would change
+before importing it.
+
+`bussard init` and the owner guide (D2) recommend an export to removable media
+as the last step of the first weekend, and `apply` prints a hint when the
+latest export is older than the latest apply.
+
+### Acceptance criteria
+
+- Export then import into an empty directory reproduces the model
+  byte-identically.
+- Import of a bundle over a locally edited model keeps local names and reports
+  each disagreement.
+- The bundle opens with any zip tool and the manifest is readable JSON.
+- No file in the bundle matches the never-commit list in `product-data.md`.
+
+Related: D2, D7, D12, D16, D18.
+
+---
+
+## D20. Plain-language rendering of pending model changes
+
+Labels: enhancement
+
+Persona: Nadia stage 6; Jonas stage 8.
+
+### Problem
+
+Review today means reading a YAML diff. Owners will not read `links.yaml`
+hunks to decide whether a change an assistant proposed is safe. `plan` shows
+the device-level delta, which is the right last check but is expressed in com
+objects and tables.
+
+### Proposal
+
+A renderer that turns a model change (two model states, or the working tree
+versus the last snapshot) into short sentences built from device names,
+locations, channel names and GA names:
+
+- "Rocker 1 on Hallway push button will also switch Porch light (0/0/4)."
+- "Living room blind actuator, channel B, no longer listens to Central down
+  (3/0/1)."
+- "Night setback on Bathroom thermostat: 18 to 17 degrees."
+- "Wind alarm (3/2/0) is protected and is not touched."
+
+Surfaces: `bussard status` (pending changes since the last snapshot, the
+default first line before `plan`), `bussard history` and `show` (D18),
+`bussard diff` (D7), the import merge report (D19), and a "pending changes"
+panel in viz. Over MCP, a read-tier `knx_describe_change` tool so an assistant
+can quote the rendering back to the owner before she confirms. The YAML diff
+remains available with `--raw`.
+
+### Acceptance criteria
+
+- Golden tests: a fixture of model pairs and the expected sentences; every
+  change kind in the model schema has at least one.
+- Unknown or unnamed items degrade to addresses, never to an empty sentence.
+- `plan` prints the rendering above the table diff when the model differs from
+  the last snapshot.
+
+Related: D7, D17, D18, D19.

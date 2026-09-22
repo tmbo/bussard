@@ -3,19 +3,21 @@
 Nadia has just taken the keys to a house with a KNX installation she did not
 plan. The installation works, mostly. She wants to know what she owns, make it
 behave the way her family lives, connect it to the smart-home platform she
-already uses, and never be locked out of her own walls. She is technical enough
-to run a CLI and read a diff, and she talks to an LLM assistant daily. She is
-not an electrician and has no ETS licence.
+already uses, and never be locked out of her own walls. She can install
+software and follow a terminal tutorial, and she talks to an LLM assistant
+daily. She has never used git, does not want to learn it, and will not read a
+YAML diff to decide whether a change is safe. She is not an electrician and has
+no ETS licence.
 
 ## Profile
 
 | | |
 |---|---|
 | Situation | Bought a 2016 build with KNX lighting, blinds, heating and a weather station. About 70 devices on two lines. The integrator who built it has since closed. |
-| Skills | Comfortable in a terminal and in git. Runs Home Assistant. Has never opened ETS. |
+| Skills | Installs software and follows terminal tutorials. Runs Home Assistant. Has never opened ETS or used git. |
 | Budget | Willing to spend a few hundred euros on hardware (IP interface, a spare actuator). Not willing to spend 1,000 EUR on ETS Professional plus 500 EUR on a reconstruction app, and ETS Home's 64-device cap does not fit her house. |
 | Fears | Being locked out (BCU key, lost passwords), breaking heating or blinds in winter, paying a stranger 800 EUR to relabel a button. |
-| Success | She can say what every group address does, change a button without an integrator, and has a backup that survives the death of any single device or laptop. |
+| Success | She can say what every group address does, change a button without an integrator, undo a change she regrets, and has a backup that survives the death of any single device or laptop. |
 
 Three handover scenarios cover most real owners. The journey below applies to
 all three, and the table under each stage notes where they diverge.
@@ -107,7 +109,8 @@ reset, so the KNX checklist recommends setting one and documenting it.
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
 | Full backup on day one | `apply` backs up the one device it touches to `captures/backups/`. `reconstruct --line` reads tables but writes a model, not a restorable backup. | No `bussard backup` that snapshots every device's tables before the first write, and no restore from such a snapshot. | D4 |
-| Keep history | The YAML model in git is the history. The generated `knx/README.md` explains what to commit. | Good. Needs to be said louder in the owner onboarding. | D2 |
+| Keep history and undo | History exists only if she puts the model directory in git. The generated `knx/README.md` opens with what to commit. | She is not a git user. bussard needs its own history: a snapshot on every import, apply, flash and model edit, `bussard history` to list them, `bussard undo` to restore. Git stays optional on top. | D18 |
+| Keep a copy elsewhere | Copying the directory. | A single-file bundle (`bussard export house.bussard`) she can put on a USB stick in the cabinet, the way integrators do with ETS exports. | D19 |
 | Gateway and key hygiene | Nothing. | A hygiene section in the audit: default credentials reachable, port 3671 exposed, BCU key status per device (readable without key or not). Setting a BCU key is out of scope until the safety story for it is written. | D1, D2 |
 
 ### Stage 6. Make it hers
@@ -119,7 +122,7 @@ cannot make without a licence and the project file.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| Change a link | Edit `links.yaml`, `bussard plan 1.1.4`, `bussard apply 1.1.4`. Confirmed, backed up, verified. An LLM over MCP proposes the edit; she reviews the diff and runs plan and apply herself. | System B only. A 2016 house may have System 7 actuators that `apply` refuses. | existing #81 |
+| Change a link | Edit `links.yaml`, `bussard plan 1.1.4`, `bussard apply 1.1.4`. Confirmed, backed up, verified. An LLM over MCP proposes the edit; she reviews the diff and runs plan and apply herself. | The review step is a YAML diff, which she will not read. The pending change needs a plain-language rendering ("Rocker 1 on the hallway button will also switch the porch light") in the CLI and in viz before `plan` runs. System B only. | D20, existing #81 |
 | Change a parameter | Edit `parameters:` in the device file, `bussard flash <ia> --product x.knxprod`. Product data downloads by order number through the pointer index. | `flash` has no backup and no per-parameter diff; the plan shows memory, not "night setback 18 to 17 degrees". A parameter-level plan would make this safe for an owner. | D17, D5 |
 | Change scenes, timers, setpoints | If exposed as GAs: `bussard write`. Otherwise parameters, as above. | Same as parameters. | |
 
@@ -156,14 +159,18 @@ listener (three retries per telegram) or a device that stopped acknowledging.
 |---|---|---|---|
 | Watch | `monitor`, `capture --to bus.db`, viz Problems panel. | No rollup: repeated-telegram rate per GA, senders with no listener seen in traffic, devices that never answer a scan. | D1 |
 
-### Stage 10. Hand it on
+### Stage 10. Exchange with a professional, and hand it on
 
-What she does: sells the house, or hires an integrator for a big change. She
-wants to hand over something an integrator can work with.
+What she does: hires an integrator for a big change, receives an updated
+project file from them, or sells the house. Integrators deliver files, and
+they always have: the `.knxproj` is a file handover. She will not open a pull
+request and neither will they.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| Hand a legible package to a professional | The git repo plus `viz`. | Integrators live in ETS. The GA export (D12) and the generated documentation (D5) are the bridge; a `.knxproj` writer is not planned. | D5, D12 |
+| Take an updated file from the integrator | `bussard import new.knxproj` merges: generated data follows ETS, her hand-authored names and descriptions are kept, disagreements are reported. | The merge exists but is invisible. It needs a plain-language conflict report and a place in the owner guide as the default exchange path. | D19, D2 |
+| Send her state to the integrator | Copying the directory. | `bussard export house.bussard` as the one file to email, plus the GA export (D12) so her names land in their ETS. | D19, D12 |
+| Hand a legible package to the next owner | `viz` in a browser. | The bundle (D19), the generated documentation (D5) and the handover checklist (D2). A `.knxproj` writer is not planned. | D5, D19 |
 
 ## User stories
 
@@ -180,9 +187,17 @@ wants to hand over something an integrator can work with.
   terminal.
 - As a new owner, I want to replace a dead actuator with the same model in one
   guided command, so that a hardware failure does not need a professional.
-- As a new owner, I want to change what a button does by editing a diff my
-  assistant proposed, and see exactly which device bytes change before I
-  confirm, so that I stay in control and never write blind.
+- As a new owner, I want my assistant's proposed change shown to me in plain
+  words, and the device plan before I confirm, so that I stay in control
+  without reading YAML.
+- As a new owner, I want to undo last Tuesday's change with one command, so
+  that a regret costs a minute and not an evening.
+- As a new owner, I want my whole configuration as one file I can copy to a
+  USB stick or email to an integrator, so that a laptop failure or a
+  professional visit never starts from zero.
+- As a new owner, I want to load the updated file my integrator sends and keep
+  the names I gave things, so that their work and mine add up instead of
+  overwriting each other.
 - As a new owner, I want to know before I buy an interface how many tunnels it
   has, so that Home Assistant, ETS and bussard can coexist.
 - As a new owner, I want my group-address names exported in a format ETS can
@@ -194,19 +209,25 @@ wants to hand over something an integrator can work with.
 ## What makes bussard the right tool for her, and what is missing
 
 Today bussard already covers the two moments that matter most: it turns a
-password-protected `.knxproj` into a readable, versioned model in seconds, and
-it lets her change links and parameters without ETS, behind a plan and a
-confirmation. The MCP server means her assistant can explain the house and
-propose changes.
+password-protected `.knxproj` into a readable model in seconds, and it lets her
+change links and parameters without ETS, behind a plan and a confirmation. The
+MCP server means her assistant can explain the house and propose changes.
 
-The missing pieces are, in priority order: an audit that tells her what she has
-and what bussard can do about it (D1), an owner onboarding guide and handover
-checklist (D2), a learn mode for houses without a file (D3), a full backup (D4),
-generated documentation (D5), guided replacement (D6), the tunnel budget (D13),
-and package-manager installs so that "download a binary and verify a checksum"
-is not the first thing she reads (D14). Behind all of these sits mask coverage:
-until `apply` and `reconstruct` handle System 7, a fair share of houses from the
-2000s and 2010s are read-only for bussard.
+Two assumptions in the current design do not hold for her. History is git, and
+review is a YAML diff. Both work for the project's authors and fail for the
+owner. bussard should own its history (snapshots, `history`, `undo`, D18),
+exchange as a single file (D19), and render pending changes in plain language
+(D20), with git as an optional layer for people who already use it.
+
+The other missing pieces are, in priority order: an audit that tells her what
+she has and what bussard can do about it (D1), an owner onboarding guide and
+handover checklist that do not mention git (D2), a learn mode for houses
+without a file (D3), a full backup (D4), generated documentation (D5), guided
+replacement (D6), the tunnel budget (D13), and package-manager installs so that
+"download a binary and verify a checksum" is not the first thing she reads
+(D14). Behind all of these sits mask coverage: until `apply` and `reconstruct`
+handle System 7, a fair share of houses from the 2000s and 2010s are read-only
+for bussard.
 
 ## Sources
 
