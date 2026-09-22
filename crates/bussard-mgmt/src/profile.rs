@@ -271,14 +271,15 @@ impl MaskProfile {
                 flash: true,
                 describe: true,
                 reconstruct: true,
-                note: "tables are interface-object property arrays; full read and write support",
+                note: "tables live in device-allocated segments found via PID_TABLE_REFERENCE; \
+                       full read and write support",
             },
             MaskFamily::System7 => MaskCapabilities {
                 plan_apply: true,
                 flash: true,
                 describe: true,
                 reconstruct: true,
-                note: "memory-mapped tables at 0x4000 / 0x4201, A_Authorize required; \
+                note: "memory-mapped tables (default 0x4000 / 0x4201), A_Authorize required; \
                        line-mode `reconstruct --line` records a stub instead of tables",
             },
             MaskFamily::System2 => MaskCapabilities {

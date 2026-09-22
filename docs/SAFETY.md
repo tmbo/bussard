@@ -177,7 +177,33 @@ dangerous GAs marked `protected: true` so the MCP path can never touch them.
 ## Supported device masks
 
 Write commands refuse an unsupported device mask during the pre-flight, before
-any write. Support differs by command:
+any write. Support differs by command. This table is the single source: it is
+rendered from `MaskProfile::capabilities` in `bussard-mgmt`, the same table the
+refusals and `bussard audit` use, and a test
+(`crates/bussard-cli/tests/docs_consistency.rs`) fails when it drifts.
+
+<!-- mask-table:start -->
+| Mask | Family | Medium | `plan` / `apply` | `flash` | `reconstruct` | `describe` | Notes |
+|---|---|---|---|---|---|---|---|
+| `0010` | System 1 | TP1 | no | no | no | yes | classified but unsupported; program it with ETS |
+| `0011` | System 1 | TP1 | no | no | no | yes | classified but unsupported; program it with ETS |
+| `0012` | System 1 | TP1 | no | no | no | yes | classified but unsupported; program it with ETS |
+| `0013` | System 1 | TP1 | no | no | no | yes | classified but unsupported; program it with ETS |
+| `0020` | System 1 | TP1 | no | no | no | yes | classified but unsupported; program it with ETS |
+| `0021` | System 1 | TP1 | no | no | no | yes | classified but unsupported; program it with ETS |
+| `0025` | System 1 | TP1 | no | no | no | yes | classified but unsupported; program it with ETS |
+| `0300` | System 2 | TP1 | no | no | no | yes | classified but unsupported; program it with ETS |
+| `0310` | System 2 | TP1 | no | no | no | yes | classified but unsupported; program it with ETS |
+| `0311` | System 2 | TP1 | no | no | no | yes | classified but unsupported; program it with ETS |
+| `0700` | System 7 | TP1 | yes | yes | yes | yes | memory-mapped tables (default 0x4000 / 0x4201), A_Authorize required; line-mode `reconstruct --line` records a stub instead of tables |
+| `0701` | System 7 | TP1 | yes | yes | yes | yes | memory-mapped tables (default 0x4000 / 0x4201), A_Authorize required; line-mode `reconstruct --line` records a stub instead of tables |
+| `0705` | System 7 | TP1 | yes | yes | yes | yes | memory-mapped tables (default 0x4000 / 0x4201), A_Authorize required; line-mode `reconstruct --line` records a stub instead of tables |
+| `07B0` | System B | TP1 | yes | yes | yes | yes | tables live in device-allocated segments found via PID_TABLE_REFERENCE; full read and write support |
+| `27B0` | System B | RF | yes | yes | yes | yes | tables live in device-allocated segments found via PID_TABLE_REFERENCE; full read and write support |
+| `57B0` | System B | KNX-IP | yes | yes | yes | yes | tables live in device-allocated segments found via PID_TABLE_REFERENCE; full read and write support |
+<!-- mask-table:end -->
+
+The details per command:
 
 - **`flash`** supports **System B** (`07B0`, and the `57B0` / `27B0` KNX-IP and
   RF variants) and **System 7** (`0705` / `0701` / `0700`). A mask outside
@@ -216,6 +242,32 @@ any write. Support differs by command:
 
 Everything not on these lists is refused before a write, not attempted and
 rolled back.
+
+## The tunnel budget
+
+A KNXnet/IP tunnelling interface has a fixed number of connection slots, often
+one to five, set by the hardware. Each client holds one slot for as long as it is
+connected: Home Assistant's KNX integration holds one permanently, ETS holds one
+while a project is online, and so does every running `bussard` command, including
+a long-running `bussard viz` or `bussard mcp`. A second bussard command started
+while the first is running needs a second slot.
+
+When every slot is taken, the interface refuses a new connection with
+`E_NO_MORE_CONNECTIONS`. bussard reports that as its own condition, not a
+timeout, and exits with code `4`:
+
+```
+error: 192.0.2.10:3671 has no free tunnelling connection (E_NO_MORE_CONNECTIONS).
+A KNXnet/IP interface has a fixed number of tunnel slots, ...
+```
+
+It is a capacity problem, not a fault: retrying does not help until a slot is
+freed. Close one of the other clients (or wait for a crashed one's slot to time
+out, about two minutes), or run a long-lived observer over routing if the
+interface supports it. `bussard init --gateway <ip>` and `bussard audit --live`
+print `N tunnels, M in use` when the interface reports its slots. A bussard write
+never retries into a full interface, so the refusal happens before anything is
+sent to a device.
 
 ## Known limitations
 

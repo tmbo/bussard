@@ -25,9 +25,18 @@ rendered `load_procedure:` block. Unknown `LdCtrl*` ops render as
 
 ## The decisive split: mask family, not op richness
 
-`bussard flash` targets **System B (mask 07B0) only** — `plan_flash` refuses any
-other device at the `NotSystemB` gate *before* it inspects a single op. The
-corpus splits cleanly along that line:
+> **Update: System 7 is supported.** This analysis predates System 7 flash
+> support. `bussard flash` now also targets the System 7 masks `0705`, `0701`
+> and `0700` through a separate absolute-addressed lowering (`LdCtrlAbsSegment`,
+> `LdCtrlTaskSegment`, `LdCtrlTaskCtrl1`, `LdCtrlCompareMem`, the obj0/PID78
+> compare); see [system7-spec.md](system7-spec.md). The per-mask support table
+> lives in [SAFETY.md](SAFETY.md#supported-device-masks). The tallies below are
+> the original System-B-only snapshot and have not been re-run against the
+> System 7 lowering.
+
+When this analysis was taken, `bussard flash` targeted **System B (mask 07B0)
+only**: `plan_flash` refused any other device at the `NotSystemB` gate *before*
+it inspected a single op. The corpus splits cleanly along that line:
 
 | mask | family | apps | flashable today |
 |------|--------|-----:|-----------------|
