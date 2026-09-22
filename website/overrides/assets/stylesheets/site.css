@@ -1,0 +1,25 @@
+/* Colours and type shared with the landing page (website/index.html). */
+:root, [data-md-color-scheme="default"] {
+  --md-primary-fg-color: #1d8a54;
+  --md-primary-fg-color--light: #4fd08a;
+  --md-primary-fg-color--dark: #177a48;
+  --md-accent-fg-color: #177a48;
+  --md-accent-fg-color--transparent: rgba(29, 138, 84, .1);
+  --md-default-bg-color: #f7f9f8;
+  --md-code-bg-color: #eaf0ec;
+}
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: #143523;
+  --md-primary-fg-color--light: #4fd08a;
+  --md-primary-fg-color--dark: #0d1210;
+  --md-accent-fg-color: #6fdc9f;
+  --md-accent-fg-color--transparent: rgba(79, 208, 138, .12);
+  --md-default-bg-color: #0d1210;
+  --md-default-fg-color--light: #c8d2cc;
+  --md-code-bg-color: #151c18;
+  --md-typeset-a-color: #6fdc9f;
+}
+.md-header__topic:first-child { font-weight: 700; }
+.md-typeset h1 { font-weight: 700; letter-spacing: -0.01em; color: var(--md-default-fg-color); }
+.md-typeset h2 { font-weight: 600; letter-spacing: -0.01em; }
+.md-typeset table:not([class]) { font-size: .72rem; }
