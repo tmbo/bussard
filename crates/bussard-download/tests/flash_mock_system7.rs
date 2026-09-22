@@ -937,6 +937,7 @@ async fn flash_system7_resumes_across_a_connection_drop() -> Result<(), Box<dyn 
         handle: handle.clone(),
         target: "1.1.99".parse().unwrap(),
         source: "0.0.255".parse().unwrap(),
+        timeouts: Some(fast_timeouts()),
     };
     let mut session = Session::open_with_key(connector, None).await?;
     let app = mdt_canonical_app();
@@ -1006,6 +1007,7 @@ async fn run_flash_with_reboot(
         handle: handle.clone(),
         target: "1.1.99".parse().unwrap(),
         source: "0.0.255".parse().unwrap(),
+        timeouts: None,
     };
     let mut session = Session::open_with_key(connector, None).await?;
     let app = mdt_canonical_app();
@@ -1088,6 +1090,22 @@ struct LeaseConnector {
     handle: bussard_bus::BusHandle,
     target: bussard_model::IndividualAddress,
     source: bussard_model::IndividualAddress,
+    /// The L4 timeout budget each opened connection uses. `None` keeps the
+    /// default (3 s ACK/response); the drop-and-resume test sets a tiny budget
+    /// so the modelled silence of a dropped connection is detected in
+    /// milliseconds rather than seconds. Mirrors `flash_mock.rs`.
+    timeouts: Option<bussard_mgmt::Timeouts>,
+}
+
+/// A tiny L4 timeout budget for the drop-and-resume test: the connection the
+/// mock drops goes silent, and with the default 3 s ACK budget x repetitions
+/// each drop costs seconds of pure waiting. Mirrors `flash_mock.rs`.
+fn fast_timeouts() -> bussard_mgmt::Timeouts {
+    bussard_mgmt::Timeouts {
+        ack_timeout: Duration::from_millis(50),
+        max_repetitions: 1,
+        response_timeout: Duration::from_millis(50),
+    }
 }
 
 impl bussard_download::Connector for LeaseConnector {
@@ -1102,7 +1120,8 @@ impl bussard_download::Connector for LeaseConnector {
             ))
         })?;
         let channel = bussard_mgmt::LeaseChannel::new(lease);
-        Layer4Connection::connect(channel, self.target, self.source)
+        let timeouts = self.timeouts.unwrap_or_default();
+        Layer4Connection::connect_with(channel, self.target, self.source, timeouts)
             .await
             .map_err(bussard_mgmt::load::WriteError::Mgmt)
     }
