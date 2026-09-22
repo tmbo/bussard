@@ -39,7 +39,7 @@ the service, the cEMI message code, the transport-layer PDU and the decoded
 APDU. This is what you read when a step behaved strangely.
 
 `ops` is the normalized view: one operation sequence per target device, with
-everything that legitimately varies between two runs removed —
+everything that legitimately varies between two runs removed:
 
 - the KNXnet/IP layer (tunnel channel ids, sequence counters, `TUNNELING_ACK`)
 - Layer 4 sequence numbers and `T_ACK` / `T_NAK`
@@ -78,7 +78,7 @@ difference a verdict.
 | Verdict | Reason | What it means |
 | --- | --- | --- |
 | `IDENTICAL` | | The sequences match exactly, byte for byte. |
-| `BENIGN` | `ordering` | The same operations, reshuffled — reads, or writes to different interface objects. |
+| `BENIGN` | `ordering` | The same operations, reshuffled: reads, or writes to different interface objects. |
 | `BENIGN` | `cycling` | One side opened or closed the Layer 4 connection more often. |
 | `BENIGN` | `chunking` | The same memory image split into different write sizes. |
 | `BENIGN` | `retry` | One side repeated an operation the other also performed. |
