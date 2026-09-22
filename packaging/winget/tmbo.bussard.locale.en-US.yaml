@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: tmbo.bussard
+PackageVersion: 0.0.0
+PackageLocale: en-US
+Publisher: Tom Bocklisch
+PublisherUrl: https://github.com/tmbo
+PublisherSupportUrl: https://github.com/tmbo/bussard/issues
+PackageName: bussard
+PackageUrl: https://github.com/tmbo/bussard
+License: MIT
+LicenseUrl: https://github.com/tmbo/bussard/blob/main/LICENSE
+Copyright: Copyright (c) Tom Bocklisch
+ShortDescription: Program, monitor and decode a KNX building bus from the command line
+Description: |-
+  bussard is an open-source CLI for KNX building automation. It keeps the
+  configuration of a KNX installation as YAML files in git, pushes changes to
+  the devices over a KNXnet/IP gateway, watches and decodes bus traffic, and
+  exposes an MCP server so an LLM can drive it. It imports ETS project exports
+  and vendor product data, and every device write is plan-before-apply.
+Moniker: bussard
+Tags:
+  - knx
+  - home-automation
+  - building-automation
+  - smart-home
+  - cli
+  - mcp
+ReleaseNotesUrl: https://github.com/tmbo/bussard/releases
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0
