@@ -174,6 +174,40 @@ protected write when they mean to, but an LLM driving `bussard` over MCP can
 never write a protected GA, with or without `--allow-writes`. Keep genuinely
 dangerous GAs marked `protected: true` so the MCP path can never touch them.
 
+## Source address check
+
+Every command that opens a connection to a device (`scan`, `assign`, `adopt`,
+`describe`, `plan`, `apply`, `flash`, `reconstruct`) first checks that no device
+on the bus answers at the individual address bussard itself will use as its
+source: the address the gateway assigned to the tunnel, or `0.0.255` on routing.
+If a device answers, the command refuses before touching anything:
+
+```
+refusing to continue: a device on the bus (mask 07B0) already answers at
+1.1.255, the individual address this connection would use as its source.
+```
+
+This matters because a KNX device tells its management clients apart by source
+individual address and nothing else. If a real device sits at our address, both
+parties' numbered telegrams land inside one layer-4 session at the target: a
+memory write can be applied on behalf of the wrong session while both sides
+still see an acknowledgement. That is silent configuration corruption rather
+than a loud failure. ETS runs the same check before it uses an interface.
+
+The check costs one telegram and about 0.6 seconds on a free address. The fix is
+almost always on the gateway: give the tunnel an individual address no device
+owns (many gateways ship with a default that collides on a busy line).
+
+`--skip-address-check` turns it off, for a gateway that misbehaves on the probe
+itself. Nothing else disables it.
+
+**What it does not catch.** The check proves that no *device* answers at our
+address. It cannot see a second passive tool that shares the address without
+answering, for example another bussard in routing mode also sourcing from
+`0.0.255`, or an ETS session on a second tunnel. It also reports free when a
+device replies with something other than a device descriptor, since only a real
+`A_DeviceDescriptor_Response` is treated as proof.
+
 ## Supported device masks
 
 Write commands refuse an unsupported device mask during the pre-flight, before

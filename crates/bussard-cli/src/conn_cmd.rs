@@ -1,13 +1,19 @@
-//! Shared connection setup for the `monitor` and `capture` commands.
+//! Shared connection setup for every bus-facing command.
 //!
 //! Resolves a [`ConnectionConfig`] from an optional model directory's
 //! `bussard.yaml` plus command-line overrides, and loads the model (warning and
-//! continuing when the directory is absent).
+//! continuing when the directory is absent). It also holds the two pre-flight
+//! gates every device command runs: the non-loopback write gate
+//! ([`enforce_write_gate`]) and the source-address check ([`checked_source`]).
 
 use std::net::{Ipv4Addr, SocketAddrV4, ToSocketAddrs};
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{Context, anyhow};
+use bussard_bus::{BusHandle, ops};
+use bussard_mgmt::{AddressProbe, Timeouts, probe_own_address};
+use bussard_model::IndividualAddress;
 use bussard_model::Model;
 use bussard_model::schema::Transport as ModelTransport;
 use bussard_transport::config::{DEFAULT_MULTICAST, DEFAULT_PORT};
@@ -20,6 +26,96 @@ pub struct ConnOverrides {
     pub gateway: Option<String>,
     /// `--routing` to force multicast routing.
     pub routing: bool,
+    /// `--skip-address-check` to skip the pre-flight probe that no bus device
+    /// answers at bussard's own source individual address.
+    pub skip_address_check: bool,
+}
+
+/// Environment variable that overrides the per-attempt source-address probe
+/// timeout in milliseconds. Set by the integration tests to keep the mock runs
+/// fast; unset in normal use, where [`bussard_mgmt::PROBE_TIMEOUT`] applies.
+pub const ADDRESS_PROBE_MS_ENV: &str = "BUSSARD_ADDRESS_PROBE_MS";
+
+/// The source-address probe budget, honouring [`ADDRESS_PROBE_MS_ENV`] when set.
+fn probe_timeouts() -> Timeouts {
+    match std::env::var(ADDRESS_PROBE_MS_ENV)
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        Some(ms) => Timeouts {
+            ack_timeout: Duration::from_millis(ms),
+            max_repetitions: 0,
+            response_timeout: Duration::from_millis(ms),
+        },
+        None => Timeouts::probe(),
+    }
+}
+
+/// The source individual address for a **connection-oriented** device command,
+/// checked against the bus first.
+///
+/// Resolves the source exactly as [`ops::group_source`] does (the tunnel-assigned
+/// individual address, or the `0.0.255` fallback on routing), then — unless
+/// `--skip-address-check` was passed — probes the bus for a device answering at
+/// that very address and refuses to continue if one does.
+///
+/// # Why the check is not optional by default
+///
+/// A KNX device distinguishes its management clients by source individual
+/// address alone. If a real device answers where we speak from, both parties'
+/// numbered telegrams land inside one layer-4 session at the device: a memory
+/// write can be applied on behalf of the wrong session while both sides still
+/// see a `T_ACK`. That is silent configuration corruption, which is why ETS runs
+/// the same check before it uses an interface.
+///
+/// Group-only commands (`read`, `write`, `monitor`, `capture`) are
+/// connectionless and do not need this.
+pub async fn checked_source(
+    handle: &BusHandle,
+    overrides: &ConnOverrides,
+) -> anyhow::Result<IndividualAddress> {
+    let source = ops::group_source(handle);
+    if overrides.skip_address_check {
+        tracing::debug!(%source, "source-address check skipped (--skip-address-check)");
+        return Ok(source);
+    }
+    let probe = probe_own_address(handle, source, probe_timeouts())
+        .await
+        .with_context(|| {
+            format!("probing whether a device answers at our source address {source}")
+        })?;
+    match probe {
+        AddressProbe::Free => {
+            tracing::debug!(%source, "source-address check passed: no device answers there");
+            Ok(source)
+        }
+        AddressProbe::Occupied { mask } => Err(anyhow!(
+            "refusing to continue: a device on the bus (mask {mask:04X}) already answers at \
+             {source}, the individual address this connection would use as its source. Sharing a \
+             source address with a live device can silently corrupt device downloads. Fix the \
+             gateway's tunnel address assignment, or pass --skip-address-check if you are sure."
+        )),
+    }
+}
+
+/// [`checked_source`], closing `handle` before returning an error.
+///
+/// Every device command owns the [`BusHandle`] for the length of one runtime
+/// block and closes it when it is done. A refusal from the source-address check
+/// happens before any of that, so without this the gateway would hold the tunnel
+/// slot open for its full idle timeout (about two minutes) after a command that
+/// did nothing — see issue #31 for the same hazard on Ctrl-C.
+pub async fn checked_source_or_close(
+    handle: &BusHandle,
+    overrides: &ConnOverrides,
+) -> anyhow::Result<IndividualAddress> {
+    match checked_source(handle, overrides).await {
+        Ok(source) => Ok(source),
+        Err(err) => {
+            let _ = handle.close().await;
+            Err(err)
+        }
+    }
 }
 
 /// Loads the model from `dir` for a **monitoring** command that may safely
@@ -238,7 +334,7 @@ mod tests {
             None,
             &ConnOverrides {
                 gateway: Some(host.to_string()),
-                routing: false,
+                ..Default::default()
             },
         )
         .unwrap()
@@ -257,7 +353,7 @@ mod tests {
             None,
             &ConnOverrides {
                 routing: true,
-                gateway: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -315,7 +411,7 @@ mod tests {
             None,
             &ConnOverrides {
                 routing: true,
-                gateway: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -341,7 +437,7 @@ mod tests {
             None,
             &ConnOverrides {
                 routing: true,
-                gateway: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -355,7 +451,7 @@ mod tests {
             None,
             &ConnOverrides {
                 gateway: Some("192.0.2.10".to_string()),
-                routing: false,
+                ..Default::default()
             },
         )
         .unwrap();

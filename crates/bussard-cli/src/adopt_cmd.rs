@@ -32,7 +32,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow, bail};
-use bussard_bus::{Bus, BusHandle, ops};
+use bussard_bus::{Bus, BusHandle};
 use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO, PID_SERIAL_NUMBER};
 use bussard_mgmt::{
     DeviceConnection, LeaseChannel, broadcast, manufacturers, system_type, write_individual_address,
@@ -41,7 +41,9 @@ use bussard_model::schema::{ComObject, Device, Product};
 use bussard_model::{Dpt, Flags, IndividualAddress, LoadedDevice, Model};
 use bussard_prod::{ApplicationProgram, ProductData, ResolvedComObject};
 
-use crate::conn_cmd::{ConnOverrides, enforce_write_gate, gateway_display, resolve_config};
+use crate::conn_cmd::{
+    ConnOverrides, checked_source_or_close, enforce_write_gate, gateway_display, resolve_config,
+};
 
 /// The line to allocate on when the model has no devices to infer one from.
 // DUP: mirrors `assign_cmd::FALLBACK_LINE`; promote to a shared allocation helper.
@@ -129,7 +131,7 @@ pub fn run(
         // Wait for the actor to connect so the tunnel-assigned source address is
         // available (falling back to 0.0.255 on routing) — issue #30.
         handle.wait_connected(Duration::from_secs(10)).await;
-        let source = ops::group_source(&handle);
+        let source = checked_source_or_close(&handle, &overrides).await?;
         // Guard with Ctrl-C so an interrupt still closes the tunnel cleanly.
         let result = tokio::select! {
             result = adopt_flow(

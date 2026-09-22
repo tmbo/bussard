@@ -134,7 +134,10 @@ impl LeaseChannel {
     }
 }
 
-fn map_bus_error(err: BusError) -> MgmtError {
+/// Folds a [`BusError`] into the management error type: a transport failure
+/// passes through, and a stale drop or a gone actor both mean the connection is
+/// unusable.
+pub(crate) fn map_bus_error(err: BusError) -> MgmtError {
     match err {
         BusError::Transport(e) => MgmtError::Transport(e),
         // A stale drop or a gone actor both mean the connection is unusable.
@@ -173,6 +176,12 @@ pub const MAX_REPETITIONS: u32 = 3;
 /// answer.
 pub const RESPONSE_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// The per-attempt timeout of the pre-flight source-address probe
+/// ([`Timeouts::probe`]). Short on purpose: the probe runs before every
+/// connection-oriented device command, and a device sharing our address answers
+/// in tens of milliseconds.
+pub const PROBE_TIMEOUT: Duration = Duration::from_millis(600);
+
 /// Timeout and retry budget for a connection-oriented session.
 ///
 /// The defaults are the KNX-standard values ([`ACK_TIMEOUT`],
@@ -208,6 +217,21 @@ impl Timeouts {
             ack_timeout: Duration::from_millis(1500),
             max_repetitions: 1,
             response_timeout: Duration::from_millis(1500),
+        }
+    }
+
+    /// The budget for the pre-flight source-address probe
+    /// ([`crate::probe::probe_own_address`]): one attempt, no repetitions, so a
+    /// free address costs a single [`PROBE_TIMEOUT`] and every device command
+    /// can afford to run it.
+    ///
+    /// A device that shares our address is on the same line and answers in tens
+    /// of milliseconds, so the short budget does not weaken the check.
+    pub fn probe() -> Self {
+        Timeouts {
+            ack_timeout: PROBE_TIMEOUT,
+            max_repetitions: 0,
+            response_timeout: PROBE_TIMEOUT,
         }
     }
 }
