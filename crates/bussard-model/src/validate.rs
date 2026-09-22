@@ -219,6 +219,16 @@ fn check_parameters(model: &Model, models: &ProductModels, diags: &mut Vec<Diagn
     }
 }
 
+/// Checks a parameter value against its definition, returning the reason it is
+/// unacceptable, or `None` when it is fine.
+///
+/// The public face of the `E017` rule, so a caller that wants to reject a bad
+/// value *before* writing it (the MCP `knx_set_parameter` tool) uses exactly the
+/// same check the validator applies afterwards.
+pub fn parameter_value_error(kind: &ParamKind, value: &str) -> Option<String> {
+    value_error(kind, value)
+}
+
 /// Checks a value against a parameter kind, returning an error message if it is
 /// unparseable, out of range, or not a declared enum member; `None` if valid.
 fn value_error(kind: &ParamKind, value: &str) -> Option<String> {

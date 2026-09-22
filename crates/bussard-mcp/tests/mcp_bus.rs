@@ -110,6 +110,7 @@ fn state_for() -> Arc<SharedState> {
         bus: BusStatus::new(TransportKind::Tunnel),
         passive: false,
         allow_writes: true,
+        no_model_edits: true,
         read_limiter: ReadLimiter::new(
             bussard_mcp::READ_MIN_INTERVAL,
             bussard_mcp::READ_MAX_CONCURRENT,

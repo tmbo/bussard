@@ -83,6 +83,7 @@ fn build_server_over(model: Model, passive: bool, allow_writes: bool) -> Bussard
         connection: connection.clone(),
         passive,
         allow_writes,
+        no_model_edits: true,
         capture_db: None,
     };
     // Reconstruct state directly so we control passivity without touching disk.
@@ -96,6 +97,7 @@ fn build_server_over(model: Model, passive: bool, allow_writes: bool) -> Bussard
         bus: BusStatus::new(TransportKind::Tunnel),
         passive,
         allow_writes,
+        no_model_edits: true,
         read_limiter: ReadLimiter::new(
             bussard_mcp::READ_MIN_INTERVAL,
             bussard_mcp::READ_MAX_CONCURRENT,
@@ -123,15 +125,19 @@ async fn connect_client(
 }
 
 #[tokio::test]
-async fn tools_list_has_nine_tools_by_default() {
+async fn tools_list_has_eleven_tools_by_default() {
     let (client, server_task) = connect_client(build_server(false)).await;
     let tools = client.list_all_tools().await.unwrap();
     let mut names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
     names.sort();
-    let mut expected = bussard_mcp::tool_names(false, false);
+    let mut expected = bussard_mcp::tool_names(false, false, true);
     expected.sort();
-    assert_eq!(names, expected, "default mode exposes 9 tools");
-    assert_eq!(tools.len(), 9);
+    assert_eq!(
+        names, expected,
+        "default mode exposes 9 bus/model tools plus the 2 history read tools"
+    );
+    assert_eq!(tools.len(), 11);
+    assert!(names.contains(&"knx_describe_change".to_string()));
     assert!(!names.contains(&"knx_write_group".to_string()));
     assert!(names.contains(&"knx_describe_device".to_string()));
 
@@ -140,15 +146,15 @@ async fn tools_list_has_nine_tools_by_default() {
 }
 
 #[tokio::test]
-async fn tools_list_has_ten_tools_with_allow_writes() {
+async fn tools_list_has_twelve_tools_with_allow_writes() {
     let (client, server_task) = connect_client(build_server_modes(false, true)).await;
     let tools = client.list_all_tools().await.unwrap();
     let mut names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
     names.sort();
-    let mut expected = bussard_mcp::tool_names(false, true);
+    let mut expected = bussard_mcp::tool_names(false, true, true);
     expected.sort();
-    assert_eq!(names, expected, "--allow-writes exposes 10 tools");
-    assert_eq!(tools.len(), 10);
+    assert_eq!(names, expected, "--allow-writes adds knx_write_group");
+    assert_eq!(tools.len(), 12);
     assert!(names.contains(&"knx_write_group".to_string()));
     assert!(names.contains(&"knx_read_group".to_string()));
 
@@ -157,14 +163,15 @@ async fn tools_list_has_ten_tools_with_allow_writes() {
 }
 
 #[tokio::test]
-async fn tools_list_has_seven_tools_in_passive_mode() {
+async fn tools_list_has_nine_tools_in_passive_mode() {
     let (client, server_task) = connect_client(build_server(true)).await;
     let tools = client.list_all_tools().await.unwrap();
     let names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
     assert_eq!(
         tools.len(),
-        7,
-        "passive mode omits knx_read_group and knx_describe_device"
+        9,
+        "passive mode omits knx_read_group and knx_describe_device, and keeps the \
+         file-only history tools"
     );
     assert!(!names.contains(&"knx_read_group".to_string()));
     assert!(!names.contains(&"knx_describe_device".to_string()));
@@ -386,6 +393,7 @@ fn build_server_with_capture(
         bus: BusStatus::new(TransportKind::Tunnel),
         passive: false,
         allow_writes: false,
+        no_model_edits: true,
         read_limiter: ReadLimiter::new(
             bussard_mcp::READ_MIN_INTERVAL,
             bussard_mcp::READ_MAX_CONCURRENT,
