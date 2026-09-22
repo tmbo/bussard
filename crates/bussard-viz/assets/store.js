@@ -188,49 +188,17 @@ export class Store {
   }
 
   _computeProblems() {
-    const problems = [];
-    // Unlinked com objects are normal in KNX (actuators ship hundreds of
-    // objects, only a fraction are ever linked). They are not problems; count
-    // them as a neutral info figure instead.
-    let unusedComObjects = 0;
-    for (const d of this.model.devices || []) {
-      for (const co of d.com_objects || []) {
-        const noSend = !co.send;
-        const noListen = !(co.listen && co.listen.length);
-        if (noSend && noListen) unusedComObjects += 1;
-      }
-    }
-    // GAs: only one-sided *linked* GAs are real problems. A GA with at least one
-    // sender but no listener means telegrams go nowhere; a GA with at least one
-    // listener but no sender is never triggered. A fully-unlinked GA (no sender
-    // AND no listener) is a reserve address, not a problem: count it as info.
-    let unusedGroupAddresses = 0;
-    for (const g of this.model.groups || []) {
-      const hasSender = !!(g.senders && g.senders.length);
-      const hasListener = !!(g.listeners && g.listeners.length);
-      if (!hasSender && !hasListener) {
-        unusedGroupAddresses += 1;
-        continue;
-      }
-      if (hasSender && !hasListener) {
-        problems.push({
-          type: "ga-no-listener",
-          ga: g.address,
-          ga_name: g.name,
-          message: `${g.address} has senders but no listener (telegrams go nowhere)`,
-        });
-      }
-      if (hasListener && !hasSender) {
-        problems.push({
-          type: "ga-no-sender",
-          ga: g.address,
-          ga_name: g.name,
-          message: `${g.address} has listeners but no sender (never triggered)`,
-        });
-      }
-    }
-    this.problems = problems;
-    this.info = { unusedComObjects, unusedGroupAddresses };
+    // The analysis is computed server-side by bussard_model::analysis (the same
+    // code path as `bussard audit`) and shipped as `model.analysis`. Only
+    // one-sided linked GAs are problems; unlinked com objects and fully-unused
+    // GAs are neutral info counts.
+    const analysis = this.model.analysis || {};
+    this.problems = Array.isArray(analysis.findings) ? analysis.findings : [];
+    const info = analysis.info || {};
+    this.info = {
+      unusedComObjects: info.unlinked_com_objects || 0,
+      unusedGroupAddresses: info.unused_group_addresses || 0,
+    };
   }
 
   // --- queries ------------------------------------------------------------
