@@ -731,3 +731,296 @@ fn connect_response_body(channel: u8, gw: &UdpSocket) -> Vec<u8> {
     body.extend_from_slice(&[0x04, 0x04, 0x11, 0xFF]);
     body
 }
+
+/// The group address burst frame `i` carries, distinct for every index so the
+/// delivery order can be asserted.
+fn burst_ga(i: usize) -> GroupAddress {
+    format!("1/{}/{}", i / 256, i % 256).parse().unwrap()
+}
+
+/// Reads from the mock socket until the client's TUNNELING_ACK for `seq` arrives,
+/// ignoring anything else (e.g. a retransmit of our own request).
+async fn await_client_ack(gw: &UdpSocket, seq: u8) {
+    loop {
+        let (_peer, service, body) = tokio::time::timeout(Duration::from_secs(5), recv_frame(gw))
+            .await
+            .unwrap_or_else(|_| panic!("client stopped ACKing at seq {seq}"));
+        if service == ServiceType::TunnelingAck {
+            let (hdr, status) = knxnet::parse_tunneling_ack(&body).unwrap();
+            assert_eq!(status, 0);
+            if hdr.seq == seq {
+                return;
+            }
+        }
+    }
+}
+
+// --- Issue #82: inbound buffering must never block the tunnel task ---
+
+#[tokio::test]
+async fn inbound_burst_during_ack_wait_does_not_stall_the_tunnel() {
+    // The tunnel task delivers inbound frames from inside `await_ack`, i.e. while
+    // it still owes the caller the reply to an in-flight send. The caller (the bus
+    // actor) cannot drain meanwhile, because it is awaiting that reply. While the
+    // inbound channel was bounded at 256, a burst that filled it during one ACK
+    // window left the task waiting for capacity that only the blocked caller could
+    // free: a permanent deadlock.
+    //
+    // Here the gateway pushes BURST (> the old 256 bound) indications *before*
+    // ACKing our request, and the test never calls `recv` until the send returns.
+    // Every indication must still be ACKed (so the mock's per-frame ACK wait
+    // completes) and the send must finish.
+    const BURST: usize = 300;
+
+    let (addr, gw) = bind_mock().await;
+
+    let gw_task = tokio::spawn(async move {
+        let (peer, service, _body) = recv_frame(&gw).await;
+        assert_eq!(service, ServiceType::ConnectRequest);
+        let resp = knxnet_frame(
+            ServiceType::ConnectResponse,
+            &connect_response_body(0x1A, &gw),
+        );
+        gw.send_to(&resp, peer).await.unwrap();
+
+        // Our TUNNELING_REQUEST arrives. Hold its ACK back: the client stays
+        // inside `await_ack` for the whole burst below.
+        let (peer, service, body) = recv_frame(&gw).await;
+        assert_eq!(service, ServiceType::TunnelingRequest);
+        let ours = knxnet::parse_tunneling_request(&body).unwrap();
+
+        // Burst: one indication at a time, each awaiting the client's ACK. A
+        // client that stops ACKing (the deadlock) hangs this loop.
+        let src: IndividualAddress = "1.1.10".parse().unwrap();
+        for i in 0..BURST {
+            let seq = i as u8;
+            let ind = knxnet::tunneling_request(
+                knxnet::ConnectionHeader {
+                    channel_id: 0x1A,
+                    seq,
+                },
+                &CemiFrame::group_write_packed(burst_ga(i), src, &[1]),
+            );
+            gw.send_to(&ind, peer).await.unwrap();
+            await_client_ack(&gw, seq).await;
+        }
+
+        // Only now ACK the client's own request.
+        let ack = knxnet::tunneling_ack(ours.header.channel_id, ours.header.seq, 0);
+        gw.send_to(&ack, peer).await.unwrap();
+    });
+
+    let config = ConnectionConfig::tunnel(addr);
+    let mut conn = Transport::connect(&config).await.unwrap();
+
+    let ga: GroupAddress = "3/0/4".parse().unwrap();
+    let ia: IndividualAddress = "1.1.255".parse().unwrap();
+    // The send must complete: with the old bounded channel the tunnel task was
+    // blocked on delivery number 257 and this never returned.
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        conn.send(CemiFrame::group_write_packed(ga, ia, &[1])),
+    )
+    .await
+    .expect("send must not deadlock behind a full inbound channel")
+    .expect("the gateway ACKed the request");
+
+    tokio::time::timeout(Duration::from_secs(10), gw_task)
+        .await
+        .expect("the gateway must never stall waiting for an ACK")
+        .unwrap();
+
+    // Nothing was dropped or reordered: the whole burst is still queued, in order.
+    for i in 0..BURST {
+        let f = tokio::time::timeout(Duration::from_secs(2), conn.recv())
+            .await
+            .unwrap_or_else(|_| panic!("burst frame {i} must be delivered"))
+            .unwrap();
+        assert_eq!(
+            f.frame.group_destination().unwrap().to_string(),
+            burst_ga(i).to_string(),
+            "burst frames must arrive in order"
+        );
+    }
+
+    let _ = conn.close().await;
+}
+
+// --- Previously untested tunnel failure paths (protocol audit) ---
+
+#[tokio::test]
+async fn non_zero_tunneling_ack_status_fails_the_send() {
+    // A TUNNELING_ACK carrying a non-zero status is a rejection, not a success:
+    // it must surface as GatewayStatus rather than resolving the send, and must
+    // not be retried (only a timeout is retried).
+    let (addr, gw) = bind_mock().await;
+
+    let gw_task = tokio::spawn(async move {
+        let (peer, _s, _b) = recv_frame(&gw).await;
+        let resp = knxnet_frame(
+            ServiceType::ConnectResponse,
+            &connect_response_body(0x1B, &gw),
+        );
+        gw.send_to(&resp, peer).await.unwrap();
+
+        let (peer, service, body) = recv_frame(&gw).await;
+        assert_eq!(service, ServiceType::TunnelingRequest);
+        let tr = knxnet::parse_tunneling_request(&body).unwrap();
+        // 0x29 = E_TUNNELING_LAYER (a plausible refusal).
+        let ack = knxnet::tunneling_ack(tr.header.channel_id, tr.header.seq, 0x29);
+        gw.send_to(&ack, peer).await.unwrap();
+
+        // The rejected request must NOT be retransmitted.
+        let mut buf = [0u8; 1024];
+        if let Ok(Ok((n, _p))) =
+            tokio::time::timeout(Duration::from_secs(2), gw.recv_from(&mut buf)).await
+        {
+            let parsed = knxnet::parse(&buf[..n]).unwrap();
+            assert_ne!(
+                parsed.service,
+                ServiceType::TunnelingRequest,
+                "a status-rejected request must not be retransmitted"
+            );
+        }
+    });
+
+    let config = ConnectionConfig::tunnel(addr);
+    let mut conn = Transport::connect(&config).await.unwrap();
+    let ga: GroupAddress = "3/0/4".parse().unwrap();
+    let ia: IndividualAddress = "1.1.255".parse().unwrap();
+    let err = tokio::time::timeout(
+        Duration::from_secs(5),
+        conn.send(CemiFrame::group_write_packed(ga, ia, &[1])),
+    )
+    .await
+    .expect("a rejected send must resolve promptly, not wait out the ACK timeout")
+    .expect_err("non-zero ACK status must fail the send");
+    assert!(
+        matches!(
+            err,
+            bussard_transport::TransportError::GatewayStatus {
+                status: 0x29,
+                context: "TUNNELING_ACK"
+            }
+        ),
+        "expected a TUNNELING_ACK GatewayStatus, got {err:?}"
+    );
+
+    gw_task.await.unwrap();
+    let _ = conn.close().await;
+}
+
+#[tokio::test]
+async fn disconnect_request_during_ack_wait_ends_the_send_and_the_stream() {
+    // A server-initiated DISCONNECT_REQUEST can arrive while we are inside
+    // `await_ack`. It must be answered with a DISCONNECT_RESPONSE, fail the
+    // in-flight send with Disconnected, and surface the same error on the frame
+    // stream - not sit there until the ACK timeout.
+    let (addr, gw) = bind_mock().await;
+
+    let gw_task = tokio::spawn(async move {
+        let (peer, _s, _b) = recv_frame(&gw).await;
+        let resp = knxnet_frame(
+            ServiceType::ConnectResponse,
+            &connect_response_body(0x1C, &gw),
+        );
+        gw.send_to(&resp, peer).await.unwrap();
+
+        // Our request arrives; instead of ACKing it, disconnect.
+        let (peer, service, _body) = recv_frame(&gw).await;
+        assert_eq!(service, ServiceType::TunnelingRequest);
+        let disc = knxnet::disconnect_request(0x1C, knxnet::Hpai::wildcard());
+        gw.send_to(&disc, peer).await.unwrap();
+
+        // The client must answer the disconnect even mid-await.
+        let (_p, service, _b) = tokio::time::timeout(Duration::from_secs(2), recv_frame(&gw))
+            .await
+            .expect("a DISCONNECT_RESPONSE must follow promptly");
+        assert_eq!(service, ServiceType::DisconnectResponse);
+    });
+
+    let config = ConnectionConfig::tunnel(addr);
+    let mut conn = Transport::connect(&config).await.unwrap();
+    let ga: GroupAddress = "3/0/4".parse().unwrap();
+    let ia: IndividualAddress = "1.1.255".parse().unwrap();
+    let err = tokio::time::timeout(
+        Duration::from_secs(5),
+        conn.send(CemiFrame::group_write_packed(ga, ia, &[1])),
+    )
+    .await
+    .expect("a disconnect must end the ACK wait immediately")
+    .expect_err("a disconnect during the ACK wait must fail the send");
+    assert!(
+        matches!(err, bussard_transport::TransportError::Disconnected(0x1C)),
+        "expected Disconnected, got {err:?}"
+    );
+
+    // The consumer learns about it too.
+    let stream_err = tokio::time::timeout(Duration::from_secs(2), conn.recv())
+        .await
+        .expect("the frame stream must report the disconnect")
+        .expect_err("the frame stream must report the disconnect");
+    assert!(
+        matches!(
+            stream_err,
+            bussard_transport::TransportError::Disconnected(0x1C)
+        ),
+        "expected Disconnected on the stream, got {stream_err:?}"
+    );
+
+    gw_task.await.unwrap();
+}
+
+#[tokio::test]
+async fn heartbeat_lost_after_retries_is_surfaced_to_the_consumer() {
+    // A gateway that stops answering CONNECTIONSTATE_REQUESTs (the cable-pull
+    // drill) must be declared dead after HEARTBEAT_RETRIES attempts, and the
+    // consumer must see HeartbeatLost rather than a silently wedged stream.
+    //
+    // The real schedule is 60 s + 3 x 10 s, so the clock is paused *after* the
+    // handshake (pausing before it would auto-advance through the real round
+    // trip) and the runtime auto-advances it while both sides idle.
+    let (addr, gw) = bind_mock().await;
+
+    let gw_task = tokio::spawn(async move {
+        let (peer, service, _body) = recv_frame(&gw).await;
+        assert_eq!(service, ServiceType::ConnectRequest);
+        let resp = knxnet_frame(
+            ServiceType::ConnectResponse,
+            &connect_response_body(0x1D, &gw),
+        );
+        gw.send_to(&resp, peer).await.unwrap();
+
+        // Count the heartbeat attempts, answering none of them.
+        let mut attempts = 0u32;
+        while attempts < bussard_transport::config::HEARTBEAT_RETRIES {
+            let (_p, service, _b) = recv_frame(&gw).await;
+            if service == ServiceType::ConnectionstateRequest {
+                attempts += 1;
+            }
+        }
+        attempts
+    });
+
+    let config = ConnectionConfig::tunnel(addr);
+    let mut conn = Transport::connect(&config).await.unwrap();
+
+    // From here on nothing real is in flight: the mock never replies, so the
+    // auto-advancing paused clock drives the whole heartbeat schedule.
+    tokio::time::pause();
+    let err = conn
+        .recv()
+        .await
+        .expect_err("an unanswered heartbeat must end the stream");
+    assert!(
+        matches!(err, bussard_transport::TransportError::HeartbeatLost),
+        "expected HeartbeatLost, got {err:?}"
+    );
+
+    let attempts = gw_task.await.unwrap();
+    assert_eq!(
+        attempts,
+        bussard_transport::config::HEARTBEAT_RETRIES,
+        "every heartbeat retry must actually be sent"
+    );
+}

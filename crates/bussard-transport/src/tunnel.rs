@@ -14,8 +14,44 @@
 //! - handles a server-initiated DISCONNECT_REQUEST.
 //!
 //! The public [`Tunnel`] handle talks to the task over channels.
+//!
+//! # Inbound buffering policy (issue #82)
+//!
+//! The task hands decoded frames to the handle over an **unbounded** channel and
+//! never awaits that handover. This is a deadlock-avoidance requirement, not a
+//! performance choice:
+//!
+//! * The task delivers inbound frames from inside its `await_ack` and
+//!   `do_heartbeat` loops, i.e. while it still owes the caller the reply to an
+//!   in-flight `send`.
+//! * The only consumer, `bussard-bus`'s actor, awaits that `send` reply *inline*
+//!   (spawning it reorders L4 request/response under a flash lease — see the
+//!   `Actor::consume` docs and issue #57), so it is not calling
+//!   [`recv`](BusConnection::recv) meanwhile.
+//! * With a *bounded* channel, a burst that filled it during one ACK window left
+//!   the task awaiting capacity that only the blocked actor could free: both
+//!   waited forever. Delivery must therefore never block the task.
+//!
+//! Dropping frames instead is not an option here: a connection-oriented
+//! management response (a device's `T_ACK` or `A_*_Response`) is indistinguishable
+//! from monitor traffic at this layer without policy the transport should not
+//! own, and losing one desynchronises an L4 session mid-flash.
+//!
+//! The bound was never back-pressure anyway: an inbound TUNNELING_REQUEST is
+//! ACKed *before* it is queued, so the gateway is already committed to it and
+//! blocking here cannot slow the source — it can only stall the ACK loop.
+//!
+//! Memory stays bounded by the arithmetic of the stall: the consumer is blocked
+//! only for one send's ACK budget
+//! ([`TUNNELING_ACK_TIMEOUT`](crate::config::TUNNELING_ACK_TIMEOUT) x
+//! 1+[`TUNNELING_RETRANSMITS`](crate::config::TUNNELING_RETRANSMITS), ~2 s) and a
+//! TP1 bus carries ~50 frames/s, so the queue holds ~100 frames at worst. The
+//! depth is metered and `INBOUND_WARN_DEPTH` logs a warning if it ever runs
+//! deeper, which is the signal that a consumer is wedged for some other reason.
 
 use std::net::SocketAddrV4;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::SystemTime;
 
 use tokio::net::UdpSocket;
@@ -41,6 +77,16 @@ use crate::knxnet::{self, ConnectionHeader, Hpai, ServiceType};
 /// mistaken for a duplicate.
 const DUP_ACK_WINDOW: u8 = 8;
 
+/// Inbound queue depth at which the tunnel starts warning that its consumer is
+/// falling behind.
+///
+/// Reaching this means the handle has not called
+/// [`recv`](BusConnection::recv) for far longer than one send's ACK budget (see
+/// the inbound buffering policy in the module docs); the frames are still
+/// delivered, in order, but something upstream is wedged. The warning repeats
+/// every further `INBOUND_WARN_DEPTH` frames rather than once per frame.
+const INBOUND_WARN_DEPTH: usize = 512;
+
 /// Command sent from a [`Tunnel`] handle to its background task.
 enum Command {
     /// Send a cEMI frame; reply once ACKed (or on error).
@@ -55,7 +101,10 @@ enum Command {
 /// A KNXnet/IP tunneling connection.
 pub struct Tunnel {
     commands: mpsc::Sender<Command>,
-    frames: mpsc::Receiver<Result<TimestampedFrame>>,
+    frames: mpsc::UnboundedReceiver<Result<TimestampedFrame>>,
+    /// How many items sit undelivered in `frames`; the task meters the depth of
+    /// its own unbounded queue through this (see the module docs).
+    queued: Arc<AtomicUsize>,
     task: Option<JoinHandle<()>>,
     /// The individual address the gateway assigned to this tunnel, if reported.
     assigned_ia: Option<u16>,
@@ -100,7 +149,10 @@ impl Tunnel {
         let (channel_id, assigned_ia) = Self::handshake(&socket, control_hpai, data_hpai).await?;
 
         let (cmd_tx, cmd_rx) = mpsc::channel(16);
-        let (frame_tx, frame_rx) = mpsc::channel(256);
+        // Unbounded and never awaited: the task must not be able to block on
+        // delivery while a send's ACK is outstanding (see the module docs).
+        let (frame_tx, frame_rx) = mpsc::unbounded_channel();
+        let queued = Arc::new(AtomicUsize::new(0));
 
         let task_state = TaskState {
             socket,
@@ -111,12 +163,15 @@ impl Tunnel {
             first_incoming: true,
             commands: cmd_rx,
             frames: frame_tx,
+            queued: queued.clone(),
+            warned_depth: 0,
         };
         let task = tokio::spawn(task_state.run());
 
         Ok(Tunnel {
             commands: cmd_tx,
             frames: frame_rx,
+            queued,
             task: Some(task),
             assigned_ia,
         })
@@ -170,7 +225,11 @@ impl BusConnection for Tunnel {
 
     async fn recv(&mut self) -> Result<TimestampedFrame> {
         match self.frames.recv().await {
-            Some(result) => result,
+            Some(result) => {
+                // Keep the task's depth meter honest (see the module docs).
+                self.queued.fetch_sub(1, Ordering::Relaxed);
+                result
+            }
             None => Err(TransportError::Closed),
         }
     }
@@ -218,10 +277,43 @@ struct TaskState {
     /// The real local endpoint advertised in every HPAI (see `connect`).
     local_hpai: Hpai,
     commands: mpsc::Receiver<Command>,
-    frames: mpsc::Sender<Result<TimestampedFrame>>,
+    /// Inbound delivery to the handle. Unbounded on purpose: see the module
+    /// docs. Always written through `deliver`, never awaited.
+    frames: mpsc::UnboundedSender<Result<TimestampedFrame>>,
+    /// Undelivered items in `frames`, shared with the handle (which decrements
+    /// it on every `recv`), so the task can meter its own queue depth.
+    queued: Arc<AtomicUsize>,
+    /// The queue depth the last "consumer falling behind" warning reported, so
+    /// the warning repeats per `INBOUND_WARN_DEPTH` frames instead of per frame.
+    warned_depth: usize,
 }
 
 impl TaskState {
+    /// Hands one inbound item (a frame or a terminal error) to the [`Tunnel`]
+    /// handle.
+    ///
+    /// Deliberately **not** `async`: the channel is unbounded precisely so the
+    /// task can never block here while it still owes the caller the reply to an
+    /// in-flight send (see the inbound buffering policy in the module docs —
+    /// issue #82). A send that fails means the handle is gone; the task still
+    /// runs until its command channel closes, so there is nothing to report.
+    fn deliver(&mut self, item: Result<TimestampedFrame>) {
+        if self.frames.send(item).is_err() {
+            return;
+        }
+        let depth = self.queued.fetch_add(1, Ordering::Relaxed) + 1;
+        if depth == 1 {
+            // The queue had been drained: re-arm the warning for a future stall.
+            self.warned_depth = 0;
+        } else if depth >= self.warned_depth.saturating_add(INBOUND_WARN_DEPTH) {
+            self.warned_depth = depth;
+            tracing::warn!(
+                depth,
+                "inbound frame queue is deep; the connection consumer is not draining"
+            );
+        }
+    }
+
     async fn run(mut self) {
         let mut heartbeat =
             time::interval_at(Instant::now() + HEARTBEAT_INTERVAL, HEARTBEAT_INTERVAL);
@@ -258,7 +350,7 @@ impl TaskState {
                             }
                         }
                         Err(e) => {
-                            let _ = self.frames.send(Err(TransportError::from(e))).await;
+                            self.deliver(Err(TransportError::from(e)));
                             return;
                         }
                     }
@@ -267,7 +359,7 @@ impl TaskState {
                 // Heartbeat tick.
                 _ = heartbeat.tick() => {
                     if let Err(e) = self.do_heartbeat(&mut buf).await {
-                        let _ = self.frames.send(Err(e)).await;
+                        self.deliver(Err(e));
                         return;
                     }
                 }
@@ -364,10 +456,7 @@ impl TaskState {
                     let resp = knxnet::disconnect_response(channel, 0);
                     let _ = self.socket.send(&resp).await;
                 }
-                let _ = self
-                    .frames
-                    .send(Err(TransportError::Disconnected(self.channel_id)))
-                    .await;
+                self.deliver(Err(TransportError::Disconnected(self.channel_id)));
                 false
             }
             ServiceType::ConnectionstateResponse => true, // handled inline elsewhere
@@ -425,7 +514,7 @@ impl TaskState {
                         received_at: SystemTime::now(),
                         frame: cemi,
                     };
-                    let _ = self.frames.send(Ok(stamped)).await;
+                    self.deliver(Ok(stamped));
                 }
                 Err(err) => {
                     // ACKed above; ignore the payload we cannot parse.
