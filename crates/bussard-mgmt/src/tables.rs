@@ -76,10 +76,13 @@
 //!   by exactly two address octets; the response echoes the count in its APCI
 //!   low bits followed by address + data octets.
 //!
-//! Both encodings are produced by the shared [`apci::encode_device_descriptor_read`]
-//! and [`apci::encode_memory_read`] helpers — the same ones
-//! [`DeviceConnection`](crate::DeviceConnection) uses — so the two paths agree on
-//! the wire form. This module drives a borrowed [`Layer4Connection`] directly
+//! Both encodings are produced by the shared [`crate::apci`] helpers, through the
+//! crate's single descriptor reader ([`crate::connection::read_device_descriptor`])
+//! and single memory module ([`crate::memory`]) — the same ones
+//! [`DeviceConnection`](crate::DeviceConnection) and the download engine use — so
+//! every path agrees on the wire form. A table whose `PID_TABLE_REFERENCE` points
+//! above `0xFFFF` is read with `A_MemoryExtended_Read` instead of the plain
+//! service; the selection is per address, inside [`crate::memory`]. This module drives a borrowed [`Layer4Connection`] directly
 //! (rather than a [`DeviceConnection`](crate::DeviceConnection)) because
 //! `read_tables` operates on the caller's live connection.
 //!
@@ -88,9 +91,8 @@
 //! [`MgmtError`]; a device that answers but does not expose a readable table
 //! surfaces as [`TablesError::TableUnreadable`].
 
-use crate::apci;
 use crate::connection::{L4Channel, Layer4Connection, property_request};
-use crate::error::{MgmtError, descriptor_response_reason, raw_response_detail};
+use crate::error::MgmtError;
 use bussard_model::{GroupAddress, IndividualAddress};
 
 // --- Identifiers not (yet) in `apci.rs` ---
@@ -98,7 +100,10 @@ use bussard_model::{GroupAddress, IndividualAddress};
 // dedup into `apci.rs` later.
 
 /// `PID_OBJECT_TYPE` (1) — the interface object's type, a `u16` per element.
-pub const PID_OBJECT_TYPE: u8 = 1;
+///
+/// Re-exported from [`crate::connection`], which owns the discovery walk that
+/// reads it.
+pub use crate::connection::PID_OBJECT_TYPE;
 /// `PID_TABLE_REFERENCE` (7) — memory address of a loadable table.
 pub const PID_TABLE_REFERENCE: u8 = 7;
 /// `PID_TABLE` (23) — the loadable table exposed as a property array.
@@ -106,13 +111,6 @@ pub const PID_TABLE_REFERENCE: u8 = 7;
 /// 23 is the global "Table" PID (KNX 3/5/1 global property definitions); it is
 /// **not** 52, which is `PID_KNX_INDIVIDUAL_ADDRESS` of the IP parameter object.
 pub const PID_TABLE: u8 = 23;
-
-/// The 10-bit APCI selector mask for services that embed data in the low 6
-/// APCI bits (`A_DeviceDescriptor_*`, `A_Memory_*`). Re-exported from
-/// [`apci::APCI_SELECTOR_MASK`] for local readability.
-const APCI_SELECTOR_MASK: u16 = apci::APCI_SELECTOR_MASK;
-/// `A_DeviceDescriptor_Response` selector (low 6 bits = descriptor type).
-const APCI_DEVICE_DESCRIPTOR_RESPONSE: u16 = apci::A_DEVICE_DESCRIPTOR_RESPONSE;
 
 /// Object type of the device object.
 pub const OT_DEVICE: u16 = 0;
@@ -124,14 +122,6 @@ pub const OT_ASSOCIATION_TABLE: u16 = 2;
 pub const OT_APPLICATION_PROGRAM: u16 = 3;
 /// Object type of the group object table.
 pub const OT_GROUP_OBJECT_TABLE: u16 = 9;
-
-/// How many object indexes discovery probes before giving up.
-///
-/// The sweep runs `0..MAX_OBJECT_INDEX`. This must cover the application-program
-/// object, which on some System B devices sits at index 12–15 (past the address
-/// / association / group-object tables), so a budget of 16 is required — a
-/// tighter 0..12 budget silently misses those devices' app object.
-const MAX_OBJECT_INDEX: u8 = 16;
 
 /// Which read path produced a table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -320,28 +310,10 @@ pub async fn read_tables<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Result
 
 // --- Correctly-encoded management procedures (see the module docs) ---
 
-/// Reads the device descriptor type 0 (mask version).
-///
-/// The descriptor type lives in the low 6 APCI bits and the request carries
-/// **no** payload octet (see the module docs on wire encodings).
+/// Reads the device descriptor type 0 (mask version) through the crate's single
+/// descriptor reader, [`crate::connection::read_device_descriptor`].
 async fn device_descriptor<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Result<u16> {
-    let (req_apci, payload) = apci::encode_device_descriptor_read(0);
-    let (resp_apci, data) = l4.request(req_apci, &payload).await?;
-    // Accept any A_DeviceDescriptor_Response of >= 2 octets. The descriptor type
-    // rides in the response's low APCI bits (echoing the requested type 0); a
-    // type-2 response is longer, and some interfaces (observed on the KNX Virtual
-    // IP/TP interface) answer type 0 with **extra** trailing payload. Both are
-    // legal: the mask version is the leading big-endian word, so we read the
-    // first two octets and ignore any tail. We do NOT loosen the selector check —
-    // a wrong service, or a short (< 2 octet) answer, is still rejected, now with
-    // the raw APCI + payload bytes so the frame is captured without a sniffer.
-    if resp_apci & APCI_SELECTOR_MASK != APCI_DEVICE_DESCRIPTOR_RESPONSE || data.len() < 2 {
-        return Err(TablesError::Mgmt(MgmtError::MalformedResponse {
-            address: l4.target(),
-            reason: descriptor_response_reason(resp_apci, &data),
-        }));
-    }
-    Ok(u16::from_be_bytes([data[0], data[1]]))
+    Ok(crate::connection::read_device_descriptor(l4).await?)
 }
 
 /// Reads `count` elements of a property starting at element `start`.
@@ -362,27 +334,35 @@ async fn read_property<Ch: L4Channel>(
     Ok(resp.data)
 }
 
-/// Reads `len` octets of device memory starting at `addr`.
+/// Reads a `len`-octet span of device memory starting at the 24-bit `addr`,
+/// through the crate's single memory module.
 ///
-/// The octet count lives in the low 6 APCI bits of both request and response
-/// (see the module docs on wire encodings); the payload is address-only.
+/// [`crate::memory::read_memory_range`] loops over as many telegrams as the
+/// negotiated max-APDU allows and picks the plain `A_Memory_Read` or the
+/// `A_MemoryExtended_Read` from the address itself, so a table that lives above
+/// `0xFFFF` — the 07B0 actuators whose segments sit in `0xf000..0x1aad3` — is read
+/// back instead of refused (issue #80).
 async fn read_memory<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
-    addr: u16,
-    len: u8,
+    addr: u32,
+    len: usize,
 ) -> Result<Vec<u8>> {
-    let (req_apci, payload) = apci::encode_memory_read(addr, len);
-    let (resp_apci, data) = l4.request(req_apci, &payload).await?;
-    let resp = apci::decode_memory_response(resp_apci, &data).ok_or_else(|| {
-        TablesError::Mgmt(MgmtError::MalformedResponse {
-            address: l4.target(),
-            reason: format!(
-                "unexpected memory response ({})",
-                raw_response_detail(resp_apci, &data)
-            ),
-        })
-    })?;
-    Ok(resp.data)
+    crate::memory::read_memory_range(l4, addr, len)
+        .await
+        .map_err(|e| memory_error(l4.target(), e))
+}
+
+/// Folds a memory-layer [`crate::load::WriteError`] into a [`TablesError`]: a
+/// management error passes through unchanged, anything else (an out-of-range
+/// span) becomes an unreadable table naming the reason.
+fn memory_error(address: IndividualAddress, err: crate::load::WriteError) -> TablesError {
+    match err {
+        crate::load::WriteError::Mgmt(m) => TablesError::Mgmt(m),
+        other => TablesError::TableUnreadable {
+            address,
+            reason: other.to_string(),
+        },
+    }
 }
 
 // --- Discovery and table assembly ---
@@ -390,33 +370,14 @@ async fn read_memory<Ch: L4Channel>(
 /// Probes interface-object indexes `0..16` for `PID_OBJECT_TYPE`, returning the
 /// discovered `(object index, object type)` pairs in index order.
 ///
-/// This is the single, canonical interface-object discovery for the management
-/// layer. Interface objects are contiguously indexed, so the sweep ends at the
-/// first index whose `PID_OBJECT_TYPE` read comes back empty (zero elements) or
-/// is answered with a non-property service — both mean "no object here". The
-/// range spans a full `0..16` so a device whose application-program object sits
-/// at index 12–15 is still found (a tighter budget silently misses it).
-///
-/// Only a genuine transport failure propagates as an error; an empty/short/
-/// off-service *terminating* read is the normal end-of-list signal and simply
-/// stops the sweep. An empty result (nothing readable even at index 0) is
-/// distinguished by the caller.
-///
-/// This is the seam the read side (`read_tables`) and the download engine's
-/// apply / flash paths share, so all three probe the same correct range and
-/// terminate identically.
+/// A thin wrapper over [`crate::connection::probe_object_types`], the crate's one
+/// interface-object discovery, in this module's error type. See that function for
+/// the sweep's range and its tolerance at the end of the object list; an empty
+/// result (nothing readable even at index 0) is distinguished by the caller.
 pub async fn discover_interface_objects<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
 ) -> Result<Vec<(u8, u16)>> {
-    let mut objects = Vec::new();
-    for index in 0..MAX_OBJECT_INDEX {
-        let data = read_property(l4, index, PID_OBJECT_TYPE, 1, 1).await?;
-        if data.len() < 2 {
-            break;
-        }
-        objects.push((index, u16::from_be_bytes([data[0], data[1]])));
-    }
-    Ok(objects)
+    Ok(crate::connection::probe_object_types(l4).await?)
 }
 
 /// Discovers the interface objects and fails if none is readable at all.
@@ -455,8 +416,7 @@ async fn group_object_count<Ch: L4Channel>(
         return Ok(Some((count, TableSource::Property)));
     }
     let refbytes = read_property(l4, object_index, PID_TABLE_REFERENCE, 1, 1).await?;
-    let Some(table_addr) = decode_table_reference(&refbytes).and_then(|a| u16::try_from(a).ok())
-    else {
+    let Some(table_addr) = decode_table_reference(&refbytes) else {
         return Ok(None);
     };
     let count_bytes = read_memory(l4, table_addr, 2).await?;
@@ -581,13 +541,10 @@ async fn read_table_via_memory<Ch: L4Channel>(
                 )
             },
         })?;
-    let table_addr = u16::try_from(table_addr).map_err(|_| TablesError::TableUnreadable {
-        address,
-        reason: format!(
-            "{what}: table reference {table_addr:#X} exceeds the 16-bit A_Memory_Read address space"
-        ),
-    })?;
-
+    // No 16-bit ceiling here: `read_memory` selects `A_MemoryExtended_Read` for an
+    // address above `0xFFFF`, which is exactly where the 07B0 actuators keep their
+    // tables (`0xf000..0x1aad3`). Refusing them was the reconstruct/apply
+    // verification failure in issue #80.
     let count_bytes = read_memory(l4, table_addr, 2).await?;
     if count_bytes.len() < 2 {
         return Err(TablesError::TableUnreadable {
@@ -598,35 +555,16 @@ async fn read_table_via_memory<Ch: L4Channel>(
     let count = usize::from(u16::from_be_bytes([count_bytes[0], count_bytes[1]]));
 
     let total = count * elem_size;
-    let mut bytes = Vec::with_capacity(total);
-    let mut offset: usize = 0;
-    // Scale the read to the device's negotiated max APDU (issue #58); falls back
-    // to the conservative standard-frame cap when it was never negotiated.
-    let read_chunk = usize::from(l4.max_memory_chunk());
-    while offset < total {
-        let want = (total - offset).min(read_chunk);
-        // Compute the full read address in usize FIRST, then bound it to the
-        // 16-bit A_Memory_Read space — `offset` can reach hundreds of KiB, so
-        // truncating it to u16 before the checked_add would wrap past the guard.
-        let addr = usize::from(table_addr)
-            .checked_add(2)
-            .and_then(|a| a.checked_add(offset))
-            .and_then(|a| u16::try_from(a).ok())
-            .ok_or_else(|| TablesError::TableUnreadable {
-                address,
-                reason: format!("{what}: table extends past the 16-bit address space"),
-            })?;
-        let data = read_memory(l4, addr, want as u8).await?;
-        if data.is_empty() {
-            return Err(TablesError::TableUnreadable {
-                address,
-                reason: format!("{what}: memory read at {addr:#06X} came back empty"),
-            });
-        }
-        offset += data.len();
-        bytes.extend_from_slice(&data);
-    }
-    bytes.truncate(total);
+    // The entries start after the 2-octet count word. `read_memory` chunks the span
+    // by the negotiated max APDU (issue #58) and bounds it against the 24-bit
+    // extended-memory space, so the only address arithmetic left here is the +2.
+    let entries_addr = table_addr
+        .checked_add(2)
+        .ok_or_else(|| TablesError::TableUnreadable {
+            address,
+            reason: format!("{what}: table reference {table_addr:#X} is at the top of memory"),
+        })?;
+    let bytes = read_memory(l4, entries_addr, total).await?;
     Ok(bytes)
 }
 

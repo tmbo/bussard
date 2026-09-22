@@ -213,16 +213,26 @@ pub const MEMORY_LSM_RECORD_SIZE: usize = 11;
 /// - task  `13 02 00 40 00 00 00 48 14 0c 14` (LSM1, marker `48 14 0c 14`),
 /// - taskctrl1 `33 04 00 46 eb 01 00 00 00 00 00` (LSM3, addr 0x46EB count 1).
 ///
-/// `lsm_index` must be `0..=15` (it occupies the high nibble); the caller only
-/// ever passes 1..=5.
+/// `lsm_index` must be `1..=15` (it occupies the high nibble; `0` names no
+/// machine), and the callers validate that — `bussard-download` refuses such a
+/// plan at plan time and re-checks in the executor (issue #81). Here the index is
+/// masked to its nibble so a stray value can never bleed into the **opcode** half
+/// of the octet and send a different load event than the caller asked for.
 pub fn wrap_memory_lsm_record(
     lsm_index: u8,
     event: &[u8; LOAD_EVENT_SIZE],
 ) -> [u8; MEMORY_LSM_RECORD_SIZE] {
     let mut v = [0u8; MEMORY_LSM_RECORD_SIZE];
     // Fold the LSM index into the high nibble of the event opcode byte. The event
-    // opcode is <= 0x04 so the low nibble carries it losslessly.
-    v[0] = (lsm_index << 4) | (event[0] & 0x0F);
+    // opcode is <= 0x04 so the low nibble carries it losslessly. The index is
+    // masked to a nibble first: `(16 << 4)` would truncate to `0x00` and silently
+    // rewrite the opcode, so the mask keeps the corruption out of the half of the
+    // octet that decides *what* the record does.
+    debug_assert!(
+        (1..=15).contains(&lsm_index),
+        "LSM index {lsm_index} is outside 1..=15"
+    );
+    v[0] = ((lsm_index & 0x0F) << 4) | (event[0] & 0x0F);
     v[1] = event[1]; // subtype
     v[2] = 0x00; // high octet of the widened 3-octet start address
     // Widen the 2-octet address to 3 octets and copy the remaining event fields
@@ -276,8 +286,9 @@ impl LsmAccess {
     /// Sends a 10-octet load `event` to load-state machine `lsm` (1-based).
     ///
     /// - `MemoryMapped`: wraps the event in the 11-octet record ([`wrap_memory_lsm_record`])
-    ///   and writes it to `control_addr` (read-back-verified, like every System 7
-    ///   memory write).
+    ///   and writes it to `control_addr` via the shared
+    ///   [`crate::memory::write_memory`] (a plain `A_Memory_Write`; the LSM's own
+    ///   status read is what confirms the event took).
     /// - `Property`: writes the event to `PID_LOAD_STATE_CONTROL` of object `lsm`.
     pub async fn send_event<Ch: L4Channel>(
         &self,

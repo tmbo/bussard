@@ -55,6 +55,7 @@ pub mod device;
 pub mod error;
 pub mod load;
 pub mod manufacturers;
+pub mod memory;
 pub mod profile;
 pub mod secure;
 pub mod sys7;
@@ -66,19 +67,25 @@ pub use broadcast::{
     write_individual_address, write_individual_address_by_serial,
 };
 pub use connection::{
-    AuthorizeOutcome, L4Channel, Layer4Connection, LeaseChannel, PropertyDesc, Timeouts,
-    describe_object_properties,
+    AuthorizeOutcome, L4Channel, Layer4Connection, LeaseChannel, MAX_OBJECT_INDEX, PID_OBJECT_TYPE,
+    PropertyDesc, Timeouts, describe_object_properties, probe_object_type, probe_object_types,
+    read_device_descriptor,
 };
 pub use device::DeviceConnection;
 pub use error::{MgmtError, Result, SilenceKind};
 pub use load::{
-    LD_CTRL_ABS_SEGMENT, LD_CTRL_REL_SEGMENT, LoadControl, LoadState, LoadStateContext,
-    MCB_ENTRY_LEN, McbEntry, PID_LOAD_STATE_CONTROL, PID_MCB_TABLE, PID_PROGRAM_VERSION,
-    SegmentAllocation, WriteError, allocate_segment, compare_property, compare_rel_mem,
-    crc16_ccitt, encode_abs_segment, encode_rel_segment, is_connection_death, mcb_entry,
-    read_load_state, read_mcb_table, read_memory, read_program_version, read_table_reference,
-    select_extended_memory, write_load_control, write_memory, write_memory_verified,
-    write_property, write_table,
+    LD_CTRL_REL_SEGMENT, LoadControl, LoadState, LoadStateContext, MCB_ENTRY_LEN, McbEntry,
+    PID_LOAD_STATE_CONTROL, PID_MCB_TABLE, PID_PROGRAM_VERSION, SegmentAllocation, WriteError,
+    allocate_segment, compare_property, compare_rel_mem, crc16_ccitt, encode_rel_segment,
+    is_connection_death, mcb_entry, read_load_state, read_mcb_table, read_program_version,
+    read_table_reference, write_load_control, write_property, write_table,
+};
+// The memory primitives moved out of `load` into their own module (issue #80);
+// every historical `bussard_mgmt::…` and `bussard_mgmt::load::…` path still
+// resolves, so no caller had to change.
+pub use memory::{
+    read_memory, read_memory_range, select_extended_memory, write_memory, write_memory_chunked,
+    write_memory_verified,
 };
 pub use profile::{KnxMedium, LsmRealisation, MaskFamily, MaskProfile, Sys7Profile};
 pub use secure::SecureLayer;
