@@ -844,8 +844,11 @@ mod tests {
 
     #[test]
     fn test_default_bundle_path_sits_next_to_the_model() {
-        let path = default_bundle_path(Path::new("/srv/house/knx"));
-        assert_eq!(path.parent(), Some(Path::new("/srv/house")));
+        // Built from the temp dir so the path is absolute on every platform
+        // (a bare `/srv/house` is relative on Windows).
+        let house = std::env::temp_dir().join("srv").join("house");
+        let path = default_bundle_path(&house.join("knx"));
+        assert_eq!(path.parent(), Some(house.as_path()));
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         assert!(
             name.starts_with("knx-") && name.ends_with(".bussard"),
