@@ -350,14 +350,17 @@ fn plan_reports_additions_removals_and_ops() {
 }
 
 #[test]
-fn plan_refuses_non_system_b() {
+fn plan_refuses_an_unsupported_mask_family() {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let (gw, port) = rt.block_on(async {
         let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let port = sock.local_addr().unwrap().port();
         (sock, port)
     });
-    let handle = rt.spawn(run_gateway(gw, scripted_device("1.1.4", 0x0705)));
+    // A System 1 (BCU1) device: neither table reader speaks it, so `plan` must
+    // refuse it with a friendly message. System 7 (0705/0701) is supported now
+    // (issue #91) and is covered by the System 7 mock suites.
+    let handle = rt.spawn(run_gateway(gw, scripted_device("1.1.4", 0x0012)));
 
     let tmp = std::env::temp_dir().join(format!("bussard-plan-mask-{}", std::process::id()));
     let model_dir = tmp.join("knx");
@@ -369,11 +372,11 @@ fn plan_refuses_non_system_b() {
 
     assert!(
         !output.status.success(),
-        "a non-System-B mask must exit non-zero"
+        "an unsupported mask family must exit non-zero"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("0705") && stderr.contains("System B"),
-        "the refusal must name the mask and system: {stderr}"
+        stderr.contains("0012") && stderr.contains("System B") && stderr.contains("System 7"),
+        "the refusal must name the mask and the supported families: {stderr}"
     );
 }
