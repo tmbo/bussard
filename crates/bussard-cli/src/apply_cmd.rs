@@ -261,6 +261,9 @@ pub fn run(
                 summary.association_state,
                 report.resulting_association_count,
             );
+            if let Some(hint) = crate::export_cmd::stale_export_hint(dir) {
+                eprintln!("{hint}");
+            }
             Ok(ExitCode::SUCCESS)
         }
         Ok(summary) => {

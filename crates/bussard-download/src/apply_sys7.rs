@@ -260,13 +260,7 @@ pub async fn apply_sys7_tables<Ch: L4Channel>(
         images.address_region.len(),
     )
     .await?;
-    write_verified(
-        l4,
-        "address",
-        images.address_base,
-        &images.address_region,
-    )
-    .await?;
+    write_verified(l4, "address", images.address_base, &images.address_region).await?;
 
     // 4: the LSM 2 region — its TSAPs index the content just written.
     alloc_region(
@@ -310,12 +304,8 @@ pub async fn apply_sys7_tables<Ch: L4Channel>(
 
     // Verify by reading both regions back off the loaded device.
     let addr_back = read_region(l4, images.address_base, images.address_region.len()).await?;
-    let assoc_back = read_region(
-        l4,
-        images.association_base,
-        images.association_image.len(),
-    )
-    .await?;
+    let assoc_back =
+        read_region(l4, images.association_base, images.association_image.len()).await?;
 
     Ok(Sys7VerifyOutcome {
         address_state,

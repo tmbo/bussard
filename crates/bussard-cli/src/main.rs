@@ -8,9 +8,12 @@ mod assign_cmd;
 mod capture_cmd;
 mod conn_cmd;
 mod describe_cmd;
+mod diff_cmd;
+mod export_cmd;
 mod flash_cmd;
 mod ha_config_cmd;
 mod history_cmd;
+mod import_bundle;
 mod import_cmd;
 mod import_product_cmd;
 mod init_cmd;
@@ -86,9 +89,9 @@ enum Command {
         #[arg(long)]
         routing: bool,
     },
-    /// Import an existing `.knxproj` (or xknxproject JSON dump) into the model.
+    /// Import a `.knxproj`, a `.bussard` bundle or an xknxproject JSON dump.
     Import {
-        /// The `.knxproj` file to import (omit when using `--from-json`).
+        /// The `.knxproj` or `.bussard` file to import (omit with `--from-json`).
         #[arg(value_name = "PROJECT", required_unless_present = "from_json")]
         project: Option<PathBuf>,
         /// Import from an xknxproject JSON dump instead of a `.knxproj`.
@@ -100,6 +103,54 @@ enum Command {
         /// The model directory to write (aligned with every other command).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
+        /// On a re-import, keep this model's value for every hand-edited
+        /// conflict and exit 0.
+        #[arg(long, conflicts_with_all = ["theirs", "interactive"])]
+        mine: bool,
+        /// On a re-import, take the incoming value for every hand-edited conflict.
+        #[arg(long, conflicts_with = "interactive")]
+        theirs: bool,
+        /// On a re-import, ask per conflict (needs a terminal).
+        #[arg(long)]
+        interactive: bool,
+    },
+    /// Write the model and its history as one `.bussard` file to hand over.
+    Export {
+        /// The bundle to write (default: next to the model directory, named
+        /// after it and today's date).
+        #[arg(value_name = "FILE")]
+        file: Option<PathBuf>,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Leave the `.bussard/history` snapshots out.
+        #[arg(long)]
+        no_history: bool,
+        /// Print the path and manifest as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Explain what changes between two projects, as plain sentences.
+    Diff {
+        /// The first side: a `.knxproj`, a `.bussard` bundle, an xknxproject
+        /// `.json` dump or a model directory.
+        #[arg(value_name = "A")]
+        a: PathBuf,
+        /// The second side, in any of the same forms.
+        #[arg(value_name = "B")]
+        b: PathBuf,
+        /// Emit the change set as JSON.
+        #[arg(long, conflicts_with = "raw")]
+        json: bool,
+        /// Print a file-level YAML diff instead of sentences.
+        #[arg(long)]
+        raw: bool,
+        /// Project password for both sides (else `BUSSARD_PROJECT_PASSWORD`).
+        #[arg(long)]
+        password: Option<String>,
+        /// Project password for the second side, when it differs.
+        #[arg(long)]
+        password_b: Option<String>,
     },
     /// Scan a line for devices: mask version, manufacturer, order number.
     Scan {
@@ -819,15 +870,37 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             from_json,
             password,
             dir,
+            mine,
+            theirs,
+            interactive,
         } => {
+            let choice = import_bundle::ConflictChoice::from_flags(mine, theirs, interactive);
             if let Some(json) = from_json {
-                import_cmd::run_json(&json, &dir)
+                import_cmd::run_json(&json, &dir, choice)
             } else if let Some(project) = project {
-                import_cmd::run_knxproj(&project, &dir, password)
+                if bussard_model::bundle::is_bundle_path(&project) {
+                    import_bundle::run_bundle(&project, &dir, choice)
+                } else {
+                    import_cmd::run_knxproj(&project, &dir, password, choice)
+                }
             } else {
                 anyhow::bail!("provide a .knxproj path or --from-json <file>")
             }
         }
+        Command::Export {
+            file,
+            dir,
+            no_history,
+            json,
+        } => export_cmd::run(file.as_deref(), &dir, no_history, json),
+        Command::Diff {
+            a,
+            b,
+            json,
+            raw,
+            password,
+            password_b,
+        } => diff_cmd::run(&a, &b, json, raw, password, password_b),
         Command::Monitor {
             dir,
             json,
