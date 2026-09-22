@@ -236,14 +236,17 @@ The download runs over a single management connection for its whole duration, ex
 ETS does; a genuinely dead connection fails cleanly, and re-running `flash` is safe
 because the download is idempotent.
 
-**The frontier.** System 7 (mask `0705`, plus `0701`/`0700`): parsed and classified, but
-not flashable; its segment-based procedures (`LdCtrlAbsSegment`, `LdCtrlWriteMem` to
-absolute segments) are refused at pre-flight. `57B0` (KNXnet/IP System B) is likewise
-refused; the gates require exactly `07B0`. `LdCtrlTaskSegment`/`LdCtrlTaskCtrl1` and
-unrecognized ops (notably `LdCtrlCompareRelMem`, a read-and-compare that blocks two
-otherwise-executable MDT apps) are refused whole; `LdCtrlCompareRelMem` is the top
-roadmap op. These remain ETS-only until implemented and validated byte-wise against ETS
-dumps.
+**The frontier.** System 7 (mask `0705`, plus `0701`/`0700`) is flashable: its
+absolute-addressed procedures (`LdCtrlAbsSegment` allocation and streaming,
+`LdCtrlTaskSegment`, `LdCtrlTaskCtrl1`, the obj0/PID78 compare, `LdCtrlCompareMem`) run on
+their own lowering, driven by the per-mask profile (see
+[system7-spec.md](system7-spec.md)). The System B family covers `07B0` and its `57B0`
+(KNX-IP) and `27B0` (RF) variants. The per-mask support table lives in one place,
+`MaskProfile::capabilities`, and is rendered into
+[SAFETY.md](SAFETY.md#supported-device-masks). Unrecognized ops (notably
+`LdCtrlCompareRelMem`, a read-and-compare that blocks two otherwise-executable MDT apps)
+are refused whole before any write; `LdCtrlCompareRelMem` is the top roadmap op. System 1
+and System 2 masks remain ETS-only.
 
 ### The interop wall
 

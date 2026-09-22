@@ -1,4 +1,71 @@
 {
+  "analysis": {
+    "devices": 10,
+    "devices_per_line": [
+      {
+        "devices": 10,
+        "line": "1.1"
+      }
+    ],
+    "devices_without_location": [
+      "1.1.10"
+    ],
+    "devices_without_name": [],
+    "findings": [
+      {
+        "ga": "0/1/3",
+        "ga_name": "Kitchen Blind Move",
+        "message": "0/1/3 has listeners but no sender (never triggered)",
+        "type": "ga-no-sender"
+      },
+      {
+        "ga": "1/1/1",
+        "ga_name": "Bedroom Blind Position",
+        "message": "1/1/1 has senders but no listener (telegrams go nowhere)",
+        "type": "ga-no-listener"
+      },
+      {
+        "ga": "2/0/3",
+        "ga_name": "Presence Hallway",
+        "message": "2/0/3 has senders but no listener (telegrams go nowhere)",
+        "type": "ga-no-listener"
+      },
+      {
+        "ga": "3/1/0",
+        "ga_name": null,
+        "message": "3/1/0 has senders but no listener (telegrams go nowhere)",
+        "type": "ga-no-listener"
+      }
+    ],
+    "group_addresses": 34,
+    "group_addresses_without_dpt": [
+      "2/0/4",
+      "3/1/0"
+    ],
+    "group_addresses_without_name": [
+      "3/1/0"
+    ],
+    "imported_from": null,
+    "info": {
+      "unlinked_com_objects": 7,
+      "unused_group_addresses": 5
+    },
+    "links": 55,
+    "links_to_unknown_devices": [],
+    "links_to_unknown_objects": [
+      {
+        "device": "1.1.1",
+        "name": "Spare Output",
+        "object": 40
+      }
+    ],
+    "project": "Demo House",
+    "protected_group_addresses": [
+      "3/0/0",
+      "3/0/1"
+    ],
+    "secure_devices": []
+  },
   "devices": [
     {
       "address": "1.1.1",

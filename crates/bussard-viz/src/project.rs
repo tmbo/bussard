@@ -27,14 +27,20 @@ use serde_json::{Value, json};
 /// Builds the canonical `/api/model` JSON projection from a loaded model.
 ///
 /// The result is a single JSON object with the keys `project`, `stats`,
-/// `ranges`, `devices`, and `groups`, exactly as documented in the frontend
-/// contract. See the module docs for the projection rules.
+/// `ranges`, `devices`, `groups` and `analysis`, exactly as documented in the
+/// frontend contract. `analysis` is [`bussard_model::analyze`]'s output (the
+/// Problems panel's findings and neutral info). See the module docs for the
+/// projection rules.
 pub fn project_model(model: &Model) -> Value {
     let ranges = project_ranges(model);
     let devices = project_devices(model);
     let groups = project_groups(model);
 
     let link_count: usize = model.links.links.values().map(Vec::len).sum();
+
+    // The Problems panel renders this rather than recomputing it in the
+    // browser, so `bussard audit` and viz share one analysis code path.
+    let analysis = serde_json::to_value(bussard_model::analyze(model)).unwrap_or(Value::Null);
 
     json!({
         "project": model.groups.project,
@@ -46,6 +52,7 @@ pub fn project_model(model: &Model) -> Value {
         "ranges": ranges,
         "devices": devices,
         "groups": groups,
+        "analysis": analysis,
     })
 }
 
@@ -614,6 +621,19 @@ mod tests {
         // Its sender is 1.1.30 obj 9.
         assert_eq!(synth["senders"][0]["device"], "1.1.30");
         assert_eq!(synth["senders"][0]["object"], 9);
+    }
+
+    #[test]
+    fn test_project_model_ships_the_shared_analysis() {
+        let model = fixture_model();
+        let json = project_model(&model);
+        let expected =
+            serde_json::to_value(bussard_model::analyze(&model)).expect("the analysis serializes");
+        assert_eq!(json["analysis"], expected);
+        // The frontend reads these exact keys.
+        assert!(json["analysis"]["findings"].is_array());
+        assert!(json["analysis"]["info"]["unlinked_com_objects"].is_number());
+        assert!(json["analysis"]["info"]["unused_group_addresses"].is_number());
     }
 
     #[test]

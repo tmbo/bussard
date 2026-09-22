@@ -82,7 +82,16 @@
         { address: "1/2/0", name: null, dpt: null, protected: true, main: 1, middle: 2, sub: 0,
           range: { main: "Lighting", middle: null },
           senders: [], listeners: [] }
-      ]
+      ],
+      // Computed server-side by bussard_model::analysis (shared with
+      // `bussard audit`); the store renders it, it does not recompute it.
+      analysis: {
+        findings: [
+          { type: "ga-no-listener", ga: "1/1/2", ga_name: "No listener",
+            message: "1/1/2 has senders but no listener (telegrams go nowhere)" }
+        ],
+        info: { unlinked_com_objects: 1, unused_group_addresses: 1 }
+      }
     };
 
     const store = new Store(fixture);
@@ -116,7 +125,16 @@
         { address: "2/0/1", name: "orphan listener", senders: [],
           listeners: [{ device: "1.1.9", device_name: "X", object: 0 }] },
       ],
+      analysis: {
+        findings: [
+          { type: "ga-no-sender", ga: "2/0/1", ga_name: "orphan listener",
+            message: "2/0/1 has listeners but no sender (never triggered)" }
+        ],
+        info: { unlinked_com_objects: 0, unused_group_addresses: 0 }
+      },
     });
+    check("a model without analysis renders no problems",
+      new Store({ devices: [], groups: [], ranges: [], stats: {} }).problems.length === 0);
     check("ga-no-sender detected (listeners, no sender)",
       storeMirror.problems.some((p) => p.type === "ga-no-sender" && p.ga === "2/0/1"));
 

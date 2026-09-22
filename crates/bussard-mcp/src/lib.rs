@@ -23,6 +23,7 @@
 //! | `knx_recent_telegrams` | Recent telegrams from the ring (and capture DB). |
 //! | `knx_wait_for_telegram` | Block for the next matching telegram ("press the button now"). |
 //! | `knx_validate` | Model validation diagnostics as JSON. |
+//! | `knx_audit` | Installation audit: model gaps, one-sided links, mask capabilities, Secure devices; with `live`, tunnel slots and a traffic sample (live refused in `--passive`). |
 //! | `knx_scaffold_groups` | Draft or extend `groups.yaml` from a room and function list. |
 //! | `knx_read_group` | Send a GroupValueRead and return the value (omitted in `--passive`). |
 //! | `knx_describe_device` | Introspect a device: enumerate its interface objects and each property's description (omitted in `--passive`). |
@@ -45,14 +46,15 @@
 //!
 //! In `--passive` mode the two bus-touching read tools (`knx_read_group` and
 //! `knx_describe_device`) are unregistered and the server never transmits;
-//! `knx_infer_group` stays, because it only reads the telegram ring.
+//! `knx_infer_group` stays, because it only reads the telegram ring, and
+//! `knx_audit` stays but refuses `live: true`.
 //! `knx_write_group` and `knx_run_tests` are registered only when the server is
 //! started with `--allow-writes` (which conflicts with `--passive`); both write
 //! to the physical bus, and both hard-refuse `protected` GAs.
 //!
-//! Tool counts per tier: `--passive` 17, default 19, `--allow-writes` 21. With
-//! `--no-model-edits` the six model-edit tools are withheld, giving 11, 13 and
-//! 15.
+//! Tool counts per tier: `--passive` 18, default 20, `--allow-writes` 22. With
+//! `--no-model-edits` the six model-edit tools are withheld, giving 12, 14 and
+//! 16.
 //!
 //! # Connecting this to Claude Code
 //!
@@ -88,6 +90,7 @@ pub mod run;
 pub mod server;
 pub mod state;
 pub mod tools;
+pub mod tools_audit;
 pub mod tools_groups;
 pub mod tools_learn;
 pub mod tools_model;
@@ -162,7 +165,8 @@ pub fn build_state_from_model(
         .parse()
         .expect("DEFAULT_SOURCE_IA is a valid individual address");
 
-    let bus = state::BusStatus::new(config.connection.transport.clone());
+    let bus = state::BusStatus::new(config.connection.transport.clone())
+        .with_gateway(config.connection.gateway);
     let ring = bussard_monitor::TelegramRing::new();
 
     let state = Arc::new(SharedState {
@@ -198,13 +202,14 @@ pub async fn run(config: &McpConfig) -> anyhow::Result<()> {
 
 /// The set of tool names exposed, in registration order. Used by tests and docs.
 ///
-/// - passive mode: 17 tools (no bus-touching tools: no `knx_read_group`, no
+/// - passive mode: 18 tools (no bus-touching tools: no `knx_read_group`, no
 ///   `knx_describe_device`, no `knx_write_group`, no `knx_run_tests`).
-///   `knx_infer_group` is there: it only reads the telegram ring.
-/// - default mode: 19 tools (adds `knx_read_group` and `knx_describe_device`).
-/// - `--allow-writes`: 21 tools (adds `knx_write_group` and `knx_run_tests`).
+///   `knx_infer_group` is there: it only reads the telegram ring. `knx_audit`
+///   is there too, but refuses `live: true`.
+/// - default mode: 20 tools (adds `knx_read_group` and `knx_describe_device`).
+/// - `--allow-writes`: 22 tools (adds `knx_write_group` and `knx_run_tests`).
 /// - `--no-model-edits` removes the six model-edit tools from any of those
-///   (11, 13 and 15 tools).
+///   (12, 14 and 16 tools).
 ///
 /// The two model/history read tools (`knx_describe_change`, `knx_history`) and
 /// the six model-edit tools touch files only, so they are present in every tier
@@ -218,6 +223,7 @@ pub fn tool_names(passive: bool, allow_writes: bool, no_model_edits: bool) -> Ve
         "knx_recent_telegrams",
         "knx_wait_for_telegram",
         "knx_validate",
+        "knx_audit",
         "knx_scaffold_groups",
         "knx_infer_group",
     ];

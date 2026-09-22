@@ -8,7 +8,7 @@ Three KNX terms the recipes rely on:
 - An individual address (IA, `1.1.4`, area.line.device) is a device's unique bus address, used for commissioning and diagnosis.
 - A com object is one input or output slot of a device, such as "channel A: move up/down" on a blind actuator. Linking it to a GA in `links.yaml` makes the device send on or listen to that address. In the compact `CRWTUI` flag string, W means the object accepts writes (a command input) and T means it transmits (a status output).
 
-A word on safety before the writing recipes: every bus-writing command reads the live state first, shows a plan, confirms on a terminal (`y/N`), writes, then verifies by reading back. `apply` also backs up first. `plan`, `apply`, `reconstruct` and `flash` support System B (mask `07B0`) devices for now (plus System 7 for `flash`) and refuse anything else before writing. A write to a non-loopback gateway is refused unless you opt in with `--allow-remote-gateway`. Do the first real writes against a spare device or the simulator, not a live installation. Read [SAFETY.md](SAFETY.md) once before you start writing.
+A word on safety before the writing recipes: every bus-writing command reads the live state first, shows a plan, confirms on a terminal (`y/N`), writes, then verifies by reading back. `apply` also backs up first. `plan`, `apply`, `reconstruct` and `flash` support the System B (`07B0`, `27B0`, `57B0`) and System 7 (`0705`, `0701`, `0700`) masks and refuse anything else before writing; [SAFETY.md](SAFETY.md#supported-device-masks) has the table, and `bussard audit` shows it per device. A write to a non-loopback gateway is refused unless you opt in with `--allow-remote-gateway`. Do the first real writes against a spare device or the simulator, not a live installation. Read [SAFETY.md](SAFETY.md) once before you start writing.
 
 ## ... watch and decode the bus?
 
@@ -32,6 +32,31 @@ read-only: group writes return 403 (pass --allow-writes to enable them)
 Open the address to get a bus-spine diagram of every device by floor and room, the group-address tree, and live telegrams pulsing along the spine as they happen. Select a device or GA to see its links, senders, and listeners. With no reachable gateway the page still shows the model, just without live traffic. See [the viz server](reference.md#the-viz-server) for the endpoints.
 
 A bare `bussard viz` is a viewer: it never transmits, so it is safe to point at the live installation. Add `--allow-writes` to arm the per-DPT test-write widgets, and then the same real-gateway gate as `bussard write` applies — against a non-loopback gateway the server refuses to start without `--allow-remote-gateway`. Every armed write asks for an explicit confirmation naming the GA and the gateway, and a `protected` GA needs the force checkbox on top of that.
+
+## ... find out what I have?
+
+```console
+$ bussard audit
+== Model ==
+project: my-house   imported from: my-house.knxproj
+38 device(s), 214 group address(es), 402 link(s)
+  line 1.1: 38 device(s)
+...
+== Devices per mask ==
+  07B0 System B (29 device(s)): bussard can: plan/apply, flash, reconstruct, describe
+  0705 System 7 (7 device(s)): bussard can: plan/apply, flash, reconstruct, describe
+  0012 System 1 (2 device(s)): bussard can: describe only
+```
+
+`audit` reads the model and reports what an owner or integrator needs next: devices without a name or a location, GAs without a DPT, links to com-objects the device file does not declare, one-sided links (a GA with senders but no listener, or the reverse), what bussard can do with each device's mask, protected GAs, and the KNX Secure devices. Pass `--keyring <file.knxkeys>` (password in `BUSSARD_KEYRING_PASSWORD`) to see which Secure devices the keyring covers.
+
+Add `--live` to also ask the gateway for its tunnel budget, sample the bus for `--window` seconds (default 30) and probe every modelled device. The live part only reads: it never sends a group telegram. `--json` emits the same report as one object, which is also what Claude gets from the `knx_audit` MCP tool.
+
+Unlinked com-objects and unused GAs are counted, not flagged. Actuators ship far more objects than a project links, and a GA with no link at all is a reserve address.
+
+## ... get past "no free tunnelling connection"?
+
+A KNXnet/IP interface has a fixed number of tunnel slots, often one to five, and every connected client holds one: Home Assistant's KNX integration, an open ETS project, `bussard viz`, `bussard mcp`, or another bussard command still running. When all are taken the interface answers a connect with `E_NO_MORE_CONNECTIONS`, and bussard says so and exits with code `4` instead of timing out. `bussard init --gateway <ip>` and `bussard audit --live` print `N tunnels, M in use` when the interface reports it. Stop one of the other clients, or switch a long-running one to routing (`--routing`) if your interface supports multicast. More in [SAFETY.md](SAFETY.md#the-tunnel-budget).
 
 ## ... find out what devices are on my line?
 

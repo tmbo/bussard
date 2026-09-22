@@ -1024,3 +1024,151 @@ async fn heartbeat_lost_after_retries_is_surfaced_to_the_consumer() {
         "every heartbeat retry must actually be sent"
     );
 }
+
+// --- tunnelling capacity (issue #105) ---------------------------------------
+
+/// Builds a DESCRIPTION_RESPONSE body: a device-info DIB plus a tunnelling-info
+/// DIB advertising `slots` tunnelling slots, of which the first `in_use` are
+/// occupied.
+fn description_response_body(name: &str, slots: usize, in_use: usize) -> Vec<u8> {
+    let mut body = Vec::new();
+
+    // Device-info DIB: 54 octets total (2 header + 52 body).
+    let mut dev = vec![0u8; 54];
+    dev[0] = 54;
+    dev[1] = 0x01; // DIB_DEVICE_INFO
+    dev[2] = 0x02; // medium: TP1
+    dev[3] = 0x00; // device status
+    dev[4..6].copy_from_slice(&0x1000u16.to_be_bytes()); // IA 1.0.0
+    let name_bytes = name.as_bytes();
+    dev[24..24 + name_bytes.len()].copy_from_slice(name_bytes);
+    body.extend_from_slice(&dev);
+
+    // Tunnelling-info DIB: 2 header + 2 max-APDU + 4 per slot.
+    let mut tun = Vec::new();
+    tun.push((4 + 4 * slots) as u8);
+    tun.push(0x07); // DIB_TUNNELING_INFO
+    tun.extend_from_slice(&248u16.to_be_bytes()); // max APDU
+    for slot in 0..slots {
+        // Slot IAs 1.0.241, 1.0.242, …
+        tun.extend_from_slice(&(0x10F1u16 + slot as u16).to_be_bytes());
+        // Status bits: free = 0x01, authorized = 0x02, usable = 0x04.
+        let mut status = 0x0006u16; // usable + authorized
+        if slot >= in_use {
+            status |= 0x0001; // free
+        }
+        tun.extend_from_slice(&status.to_be_bytes());
+    }
+    body.extend_from_slice(&tun);
+    body
+}
+
+#[tokio::test]
+async fn description_response_reports_tunnel_slots() {
+    let (addr, gw) = bind_mock().await;
+
+    let gw_task = tokio::spawn(async move {
+        let (peer, service, _body) = recv_frame(&gw).await;
+        assert_eq!(service, ServiceType::DescriptionRequest);
+        let body = description_response_body("Mock IP Interface", 4, 3);
+        let resp = knxnet_frame(ServiceType::DescriptionResponse, &body);
+        gw.send_to(&resp, peer).await.unwrap();
+    });
+
+    let description = bussard_transport::describe_gateway(addr, Duration::from_secs(2))
+        .await
+        .expect("the gateway describes itself");
+    gw_task.await.unwrap();
+
+    assert_eq!(description.name.as_deref(), Some("Mock IP Interface"));
+    assert_eq!(description.individual_address, Some(0x1000));
+    assert_eq!(description.max_apdu_length, Some(248));
+    let slots = description.tunnel_slots.as_ref().expect("a tunnelling DIB");
+    assert_eq!(slots.len(), 4);
+    assert!(slots.iter().all(|s| s.usable && s.authorized));
+    assert_eq!(slots.iter().filter(|s| s.free).count(), 1);
+    assert_eq!(slots[0].individual_address, 0x10F1);
+
+    let capacity = description.tunnel_capacity().expect("a capacity");
+    assert_eq!(capacity.total, 4);
+    assert_eq!(capacity.in_use, 3);
+}
+
+#[tokio::test]
+async fn description_without_tunnelling_dib_reports_no_capacity() {
+    let (addr, gw) = bind_mock().await;
+
+    let gw_task = tokio::spawn(async move {
+        let (peer, service, _body) = recv_frame(&gw).await;
+        assert_eq!(service, ServiceType::DescriptionRequest);
+        // Only the device-info DIB: an older interface that never reports slots.
+        let body = description_response_body("Legacy Interface", 0, 0);
+        // Drop the (empty) tunnelling DIB the helper appended.
+        let resp = knxnet_frame(ServiceType::DescriptionResponse, &body[..54]);
+        gw.send_to(&resp, peer).await.unwrap();
+    });
+
+    let description = bussard_transport::describe_gateway(addr, Duration::from_secs(2))
+        .await
+        .expect("the gateway describes itself");
+    gw_task.await.unwrap();
+
+    assert_eq!(description.name.as_deref(), Some("Legacy Interface"));
+    assert!(description.tunnel_slots.is_none());
+    assert!(
+        description.tunnel_capacity().is_none(),
+        "an interface that reports nothing must not be claimed to have zero tunnels"
+    );
+}
+
+#[tokio::test]
+async fn connect_refused_with_no_more_connections() {
+    let (addr, gw) = bind_mock().await;
+
+    let gw_task = tokio::spawn(async move {
+        let (peer, service, _body) = recv_frame(&gw).await;
+        assert_eq!(service, ServiceType::ConnectRequest);
+        // E_NO_MORE_CONNECTIONS: channel 0, status 0x24, no HPAI/CRD follows.
+        let resp = knxnet_frame(ServiceType::ConnectResponse, &[0x00, 0x24]);
+        gw.send_to(&resp, peer).await.unwrap();
+    });
+
+    let config = ConnectionConfig::tunnel(addr);
+    let err = Transport::connect(&config)
+        .await
+        .err()
+        .expect("a full interface refuses the connect");
+    gw_task.await.unwrap();
+
+    assert!(
+        matches!(err, bussard_transport::TransportError::NoMoreConnections),
+        "a 0x24 refusal must be its own variant, not a generic gateway status: {err:?}"
+    );
+    let text = err.to_string();
+    assert!(text.contains("E_NO_MORE_CONNECTIONS"), "{text}");
+}
+
+#[tokio::test]
+async fn other_connect_status_stays_a_gateway_status() {
+    let (addr, gw) = bind_mock().await;
+
+    let gw_task = tokio::spawn(async move {
+        let (peer, service, _body) = recv_frame(&gw).await;
+        assert_eq!(service, ServiceType::ConnectRequest);
+        // E_CONNECTION_TYPE (0x22): a different refusal, not a capacity problem.
+        let resp = knxnet_frame(ServiceType::ConnectResponse, &[0x00, 0x22]);
+        gw.send_to(&resp, peer).await.unwrap();
+    });
+
+    let config = ConnectionConfig::tunnel(addr);
+    let err = Transport::connect(&config).await.err().expect("refused");
+    gw_task.await.unwrap();
+
+    assert!(
+        matches!(
+            err,
+            bussard_transport::TransportError::GatewayStatus { status: 0x22, .. }
+        ),
+        "{err:?}"
+    );
+}
