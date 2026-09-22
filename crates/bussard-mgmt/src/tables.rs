@@ -90,7 +90,7 @@
 
 use crate::apci;
 use crate::connection::{L4Channel, Layer4Connection, property_request};
-use crate::error::{MgmtError, descriptor_response_reason, raw_response_detail};
+use crate::error::{MgmtError, descriptor_response_reason};
 use bussard_model::{GroupAddress, IndividualAddress};
 
 // --- Identifiers not (yet) in `apci.rs` ---
@@ -362,27 +362,35 @@ async fn read_property<Ch: L4Channel>(
     Ok(resp.data)
 }
 
-/// Reads `len` octets of device memory starting at `addr`.
+/// Reads a `len`-octet span of device memory starting at the 24-bit `addr`,
+/// through the crate's single memory module.
 ///
-/// The octet count lives in the low 6 APCI bits of both request and response
-/// (see the module docs on wire encodings); the payload is address-only.
+/// [`crate::memory::read_memory_range`] loops over as many telegrams as the
+/// negotiated max-APDU allows and picks the plain `A_Memory_Read` or the
+/// `A_MemoryExtended_Read` from the address itself, so a table that lives above
+/// `0xFFFF` — the 07B0 actuators whose segments sit in `0xf000..0x1aad3` — is read
+/// back instead of refused (issue #80).
 async fn read_memory<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
-    addr: u16,
-    len: u8,
+    addr: u32,
+    len: usize,
 ) -> Result<Vec<u8>> {
-    let (req_apci, payload) = apci::encode_memory_read(addr, len);
-    let (resp_apci, data) = l4.request(req_apci, &payload).await?;
-    let resp = apci::decode_memory_response(resp_apci, &data).ok_or_else(|| {
-        TablesError::Mgmt(MgmtError::MalformedResponse {
-            address: l4.target(),
-            reason: format!(
-                "unexpected memory response ({})",
-                raw_response_detail(resp_apci, &data)
-            ),
-        })
-    })?;
-    Ok(resp.data)
+    crate::memory::read_memory_range(l4, addr, len)
+        .await
+        .map_err(|e| memory_error(l4.target(), e))
+}
+
+/// Folds a memory-layer [`crate::load::WriteError`] into a [`TablesError`]: a
+/// management error passes through unchanged, anything else (an out-of-range
+/// span) becomes an unreadable table naming the reason.
+fn memory_error(address: IndividualAddress, err: crate::load::WriteError) -> TablesError {
+    match err {
+        crate::load::WriteError::Mgmt(m) => TablesError::Mgmt(m),
+        other => TablesError::TableUnreadable {
+            address,
+            reason: other.to_string(),
+        },
+    }
 }
 
 // --- Discovery and table assembly ---
@@ -455,8 +463,7 @@ async fn group_object_count<Ch: L4Channel>(
         return Ok(Some((count, TableSource::Property)));
     }
     let refbytes = read_property(l4, object_index, PID_TABLE_REFERENCE, 1, 1).await?;
-    let Some(table_addr) = decode_table_reference(&refbytes).and_then(|a| u16::try_from(a).ok())
-    else {
+    let Some(table_addr) = decode_table_reference(&refbytes) else {
         return Ok(None);
     };
     let count_bytes = read_memory(l4, table_addr, 2).await?;
@@ -581,13 +588,10 @@ async fn read_table_via_memory<Ch: L4Channel>(
                 )
             },
         })?;
-    let table_addr = u16::try_from(table_addr).map_err(|_| TablesError::TableUnreadable {
-        address,
-        reason: format!(
-            "{what}: table reference {table_addr:#X} exceeds the 16-bit A_Memory_Read address space"
-        ),
-    })?;
-
+    // No 16-bit ceiling here: `read_memory` selects `A_MemoryExtended_Read` for an
+    // address above `0xFFFF`, which is exactly where the 07B0 actuators keep their
+    // tables (`0xf000..0x1aad3`). Refusing them was the reconstruct/apply
+    // verification failure in issue #80.
     let count_bytes = read_memory(l4, table_addr, 2).await?;
     if count_bytes.len() < 2 {
         return Err(TablesError::TableUnreadable {
@@ -598,35 +602,16 @@ async fn read_table_via_memory<Ch: L4Channel>(
     let count = usize::from(u16::from_be_bytes([count_bytes[0], count_bytes[1]]));
 
     let total = count * elem_size;
-    let mut bytes = Vec::with_capacity(total);
-    let mut offset: usize = 0;
-    // Scale the read to the device's negotiated max APDU (issue #58); falls back
-    // to the conservative standard-frame cap when it was never negotiated.
-    let read_chunk = usize::from(l4.max_memory_chunk());
-    while offset < total {
-        let want = (total - offset).min(read_chunk);
-        // Compute the full read address in usize FIRST, then bound it to the
-        // 16-bit A_Memory_Read space — `offset` can reach hundreds of KiB, so
-        // truncating it to u16 before the checked_add would wrap past the guard.
-        let addr = usize::from(table_addr)
-            .checked_add(2)
-            .and_then(|a| a.checked_add(offset))
-            .and_then(|a| u16::try_from(a).ok())
-            .ok_or_else(|| TablesError::TableUnreadable {
-                address,
-                reason: format!("{what}: table extends past the 16-bit address space"),
-            })?;
-        let data = read_memory(l4, addr, want as u8).await?;
-        if data.is_empty() {
-            return Err(TablesError::TableUnreadable {
-                address,
-                reason: format!("{what}: memory read at {addr:#06X} came back empty"),
-            });
-        }
-        offset += data.len();
-        bytes.extend_from_slice(&data);
-    }
-    bytes.truncate(total);
+    // The entries start after the 2-octet count word. `read_memory` chunks the span
+    // by the negotiated max APDU (issue #58) and bounds it against the 24-bit
+    // extended-memory space, so the only address arithmetic left here is the +2.
+    let entries_addr = table_addr
+        .checked_add(2)
+        .ok_or_else(|| TablesError::TableUnreadable {
+            address,
+            reason: format!("{what}: table reference {table_addr:#X} is at the top of memory"),
+        })?;
+    let bytes = read_memory(l4, entries_addr, total).await?;
     Ok(bytes)
 }
 
