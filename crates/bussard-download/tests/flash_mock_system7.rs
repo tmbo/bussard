@@ -1618,8 +1618,10 @@ async fn read_system7_tables_never_invents_links_from_unprogrammed_memory()
         notes.contains("unprogrammed"),
         "the report must say why nothing resolved: {notes}"
     );
+    // Up to four entry-kind summaries, plus one table-base fallback note per
+    // table object (1 and 2) on a mock that does not answer PID_TABLE_REFERENCE.
     assert!(
-        live.tables.notes.len() <= 4,
+        live.tables.notes.len() <= 6,
         "one summary note per kind, not one per entry: {notes}"
     );
     // And the diff against a model is pure addition — nothing to "remove".
