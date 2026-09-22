@@ -65,6 +65,7 @@ fn test_bussard_theben_0701_plan_is_memory_mapped() {
         &BTreeMap::new(),
         &BTreeMap::new(),
         None,
+        &BTreeMap::new(),
     )
     .expect("Theben 0701 plan builds");
 

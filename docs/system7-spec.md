@@ -83,6 +83,16 @@ in the System 7 corpus.
 > for procedures without it. Supersedes the two "no MCB on System 7" claims
 > below (section 6).
 
+> **Amendment (2026-09-22, Jung 3361-1MWW, physical campaign, issue #89):** the
+> MCB entries are read **one per request**. `LdCtrlLoadImageProp ObjIdx="3"
+> PropId="27" Count="6"` does not mean one `A_PropertyValue_Read` with
+> `count=6`. Sent that way, the real device answered count 0 with no data: six
+> 8-octet entries are 48 octets of value, far past a standard-frame APDU, and a
+> real device refuses the whole read rather than answering part of it. The
+> 1.1.31 ETS capture reads index 1..=6 with `count=1` each. bussard's
+> `read_mcb_table` loops one element per request, and the simulator refuses
+> `count > 1` on PID 27 the way the Jung did.
+
 ### 2.1 Interface objects
 
 The standard object-type numbers still exist as identifiers even though the
@@ -503,7 +513,9 @@ last-EEPROM `checksum_ctrl 0x00`.
   Jung `A-A011` via `LoadImageProp` PID 27 — see the section 2 amendment. **M2
   CONFIRMED:** ETS verified the Jung MCB by *reading* `PID 27 (0x1B)` per object
   (`PropRead [d5 03 1b 10 01]` on objects 1/2/3, object 3 across start indices
-  1..6), never writing it — exactly `A_PropertyValue_Read(PID_MCB_TABLE)`.
+  1..6), never writing it — exactly `A_PropertyValue_Read(PID_MCB_TABLE)`. Note
+  the `10` in that header: **one element per request**. A single `count=6` read
+  is refused by the real device (see the section 2 amendment of 2026-09-22).
   Segment checksums (last byte of a checksum-enabled segment) exist on
   the BCU2 lineage but are not required for M1.
 - **Restart semantics** `[research 6.3; M2 Jung 0705 capture CONFIRMED]`. Basic
