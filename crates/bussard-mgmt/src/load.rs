@@ -63,7 +63,7 @@
 
 use crate::apci::{self};
 use crate::connection::{L4Channel, Layer4Connection, property_request, property_write_request};
-use crate::error::{MgmtError, raw_response_detail};
+use crate::error::MgmtError;
 use crate::tables::{PID_TABLE, PID_TABLE_REFERENCE};
 use bussard_model::IndividualAddress;
 
@@ -1399,196 +1399,35 @@ pub async fn write_table<Ch: L4Channel>(
 
 // --- Memory read/write on a Layer4Connection --------------------------------
 //
-// [`crate::device::DeviceConnection`] exposes `read_memory`/`write_memory`, but
-// it owns its own `Layer4Connection`. The download engine drives the load
-// machine (`write_load_control`, `allocate_segment`, `write_property`) directly
-// against a borrowed `Layer4Connection` — the same channel it must write segment
-// content into. These two helpers give it the memory primitives on that same
-// connection, with the identical read-back verification discipline as
-// `DeviceConnection::write_memory` (evidence: `device.rs`, which reads each
-// chunk back and compares because `A_Memory_Write` has no mandatory response).
+// The memory primitives themselves now live in [`crate::memory`] — one module for
+// every memory access bussard makes, after the same helpers had been
+// re-implemented here, in `device.rs`, `tables.rs` and `sys7.rs` and drifted apart
+// (issue #80). They are re-exported here under their historical names so the
+// `bussard_mgmt::load::…` paths callers (and `bussard-download`) already use keep
+// resolving.
 
-/// Reads `len` octets of device memory starting at `addr` over a borrowed
-/// [`Layer4Connection`]. `len` is clamped to [`apci::MAX_MEMORY_READ_LEN`] per
-/// telegram — callers loop for larger ranges. Mirrors
-/// [`crate::device::DeviceConnection::read_memory`].
-///
-/// When the address fits the 16-bit space this uses the plain `A_Memory_Read`
-/// (byte-identical to before); an address above `0xFFFF` uses
-/// `A_MemoryExtended_Read` (APCI `0x1FD`, 3-octet address) — the System B
-/// extended service the ≥16-bit devices require (see [`select_extended_memory`]).
-pub async fn read_memory<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-    addr: u32,
-    len: u8,
-) -> Result<Vec<u8>> {
-    if select_extended_memory(addr, usize::from(len)) {
-        return read_memory_extended(l4, addr, len).await;
-    }
-    let addr16 = addr as u16;
-    let (req_apci, payload) = apci::encode_memory_read(addr16, len);
-    let (resp_apci, data) = l4.request(req_apci, &payload).await?;
-    let resp = apci::decode_memory_response(resp_apci, &data).ok_or_else(|| {
-        WriteError::Mgmt(MgmtError::MalformedResponse {
-            address: l4.target(),
-            reason: format!(
-                "expected A_Memory_Response with matching count ({})",
-                raw_response_detail(resp_apci, &data)
-            ),
-        })
-    })?;
-    Ok(resp.data)
-}
-
-/// Whether a memory access at `addr` spanning `len` octets must use the System B
-/// **extended** memory service rather than the plain `A_Memory_*` service.
-///
-/// The rule, matched to the real ETS6 captures
-/// (`scratchpad/ets-analysis/sysb-{a,c}.md`): use the extended service **iff the
-/// top address of the access exceeds the 16-bit space** (`addr + len - 1 >
-/// 0xFFFF`). ETS drives Steinel (segment `0x3400..0x3BD6`, all ≤ `0xFFFF`) with
-/// plain `A_Memory_Write`, and the Jung/ABB 07B0 devices whose segments live at
-/// `0xf000..0x1aad3` with `A_MemoryExtended_Write` — the selection is per address
-/// range, not per device. This keeps every ≤16-bit device (KV, DA.tp, Steinel,
-/// BM/A4) on the byte-identical plain path.
-pub fn select_extended_memory(addr: u32, len: usize) -> bool {
-    let top = u64::from(addr).saturating_add(len.max(1) as u64 - 1);
-    top > 0xFFFF
-}
-
-/// Reads `len` octets at the 24-bit `addr` via `A_MemoryExtended_Read` (APCI
-/// `0x1FD`), validating the response's return code and echoed address.
-async fn read_memory_extended<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-    addr: u32,
-    len: u8,
-) -> Result<Vec<u8>> {
-    let (req_apci, payload) = apci::encode_memory_extended_read(addr, u16::from(len));
-    let (resp_apci, data) = l4.request(req_apci, &payload).await?;
-    let resp = apci::decode_memory_extended_response(resp_apci, &data).ok_or_else(|| {
-        WriteError::Mgmt(MgmtError::MalformedResponse {
-            address: l4.target(),
-            reason: format!(
-                "expected A_MemoryExtended_Read_Response ({})",
-                raw_response_detail(resp_apci, &data)
-            ),
-        })
-    })?;
-    if resp.return_code != 0 {
-        return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
-            address: l4.target(),
-            reason: format!(
-                "A_MemoryExtended_Read at {addr:#08X} returned non-zero code {:#04X}",
-                resp.return_code
-            ),
-        }));
-    }
-    Ok(resp.data)
-}
-
-/// Writes `data` to device memory starting at the 16-bit `addr`, in
-/// [`apci::MAX_MEMORY_WRITE_LEN`]-octet chunks, verifying each chunk by
-/// read-back. Mirrors [`crate::device::DeviceConnection::write_memory`] but on a
-/// borrowed [`Layer4Connection`] so the download engine can write segment content
-/// on the very connection it drives the load machine over.
-///
-/// For every chunk this sends `A_Memory_Write`, then reads the same address back
-/// and compares. A divergence fails with [`MgmtError::MemoryVerifyFailed`]. An
-/// empty `data` is a no-op. This is [`write_memory_verified`] with no progress
-/// callback.
-pub async fn write_memory<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-    addr: u32,
-    data: &[u8],
-) -> Result<()> {
-    write_memory_verified(l4, addr, data, |_| {}).await
-}
-
-/// The number of times a single memory-write exchange (the write plus its
-/// read-back verify) is retried when it fails with a *transient* connection
-/// blip, before the error is surfaced.
-///
-/// A real KNXnet/IP gateway holds one stable connection for the whole download
-/// exactly as ETS does; this small bounded retry only exists so a transient hiccup
-/// on a flaky Wi-Fi tunnel (a dropped ACK, a momentary silence) does not abort an
-/// otherwise-healthy flash. It is NOT connection cycling: the same connection is
-/// reused, and a device-level refusal (a verify mismatch, a load error) is never
-/// retried. If the connection genuinely dies, the flash fails after these attempts
-/// and re-running `bussard flash` is safe (the download is idempotent).
-const MAX_EXCHANGE_RETRIES: u32 = 3;
-
-/// Writes `data` to device memory at `addr`, verifying each
-/// [`apci::MAX_MEMORY_WRITE_LEN`]-octet chunk by read-back, invoking `on_written`
-/// with the cumulative octet count after each confirmed chunk (for progress
-/// reporting).
-///
-/// Each chunk is written and immediately read back and compared, so a device that
-/// silently drops or truncates a chunk fails at that chunk, before more content is
-/// streamed on top — the conservative real-device behaviour. A transient
-/// connection blip on an individual chunk is retried up to [`MAX_EXCHANGE_RETRIES`]
-/// times on the same connection (see [`is_connection_death`]); a device-level
-/// refusal propagates immediately. An empty `data` is a no-op.
-pub async fn write_memory_verified<Ch: L4Channel, F: FnMut(usize)>(
-    l4: &mut Layer4Connection<Ch>,
-    addr: u32,
-    data: &[u8],
-    mut on_written: F,
-) -> Result<()> {
-    if data.is_empty() {
-        return Ok(());
-    }
-    // Choose plain vs extended for the whole write from its top address (see
-    // `select_extended_memory`): a segment that fits 16 bits stays byte-identical
-    // to the historical plain `A_Memory_Write` path; one that runs past `0xFFFF`
-    // uses the System B extended service.
-    let extended = select_extended_memory(addr, data.len());
-    // Scale the chunk to the device's negotiated max APDU (issue #58). The plain
-    // service caps at 63 (the 6-bit count field); the extended service scales to
-    // the 228-octet extended-frame budget ETS uses. Both fall back to the
-    // conservative cap when `PID_MAX_APDU_LENGTH` was never negotiated.
-    let write_chunk = if extended {
-        usize::from(l4.max_extended_memory_chunk())
-    } else {
-        usize::from(l4.max_memory_chunk())
-    };
-    let mut offset = 0usize;
-    while offset < data.len() {
-        let take = write_chunk.min(data.len() - offset);
-        let piece = &data[offset..offset + take];
-
-        // Write + verify this chunk, retrying a transient connection blip on the
-        // same connection a bounded number of times. A device-level refusal (a
-        // verify mismatch) is not retried — retrying would just fail again.
-        let mut attempt = 0u32;
-        loop {
-            match write_one_chunk(l4, addr, offset, piece, extended).await {
-                Ok(()) => break,
-                Err(err) if is_connection_death(&err) && attempt < MAX_EXCHANGE_RETRIES => {
-                    attempt += 1;
-                }
-                Err(err) => return Err(err),
-            }
-        }
-
-        offset += take;
-        on_written(offset);
-    }
-    Ok(())
-}
+pub use crate::memory::{
+    read_memory, read_memory_range, select_extended_memory, write_memory, write_memory_chunked,
+    write_memory_verified,
+};
 
 /// Whether an error is a connection-death — a mid-session silence, a dropped ACK,
 /// or a momentary no-response (the "device absent"/"disconnected" family) — as
 /// opposed to a device-level refusal like a verify mismatch or a load error.
 ///
-/// Two callers use this. [`write_memory_verified`] retries such a blip a bounded
-/// number of times **on the same connection** (a transient hiccup on a flaky Wi-Fi
-/// tunnel). The flash engine (`bussard-download`) uses it, when a whole step fails
-/// this way, to **cycle the L4 connection and re-run the step**: a
+/// The flash engine (`bussard-download`) is the caller: when a whole step fails
+/// this way it **cycles the L4 connection and re-runs the step**. A
 /// connection-oriented device (KNX Virtual) drops the L4 link at a
 /// non-deterministic exchange count, but the object's load state and allocated
 /// segments are persistent device state that survive the drop, so reconnecting and
-/// resuming recovers it. A device-level refusal is never a connection-death, so
-/// neither caller retries one.
+/// resuming recovers it. A device-level refusal is never a connection-death, so it
+/// is never retried.
+///
+/// Recovery genuinely needs a **new** connection: [`Layer4Connection`] marks the
+/// connection closed before raising any of these, so retrying the same exchange on
+/// the same connection can only fail again (issue #80). That is why
+/// [`crate::memory::write_memory_chunked`] no longer retries in place and the
+/// reconnecting call site owns the recovery.
 pub fn is_connection_death(err: &WriteError) -> bool {
     matches!(
         err,
@@ -1598,105 +1437,9 @@ pub fn is_connection_death(err: &WriteError) -> bool {
     )
 }
 
-/// Writes one memory chunk at `base + offset`.
-///
-/// When `extended` is false this is the historical plain `A_Memory_Write` path,
-/// byte-identical to before: a fire-and-forget write whose optional echo is
-/// discarded (integrity is confirmed later by the MCB CRC and the end-of-segment
-/// spot-check). When `extended` is true it sends `A_MemoryExtended_Write` (APCI
-/// `0x1FB`, 3-octet address) and awaits the device's inline
-/// `A_MemoryExtended_Write_Response` (`0x1FC`), failing on a non-zero return code
-/// — the extended service confirms every chunk on the wire, so no separate
-/// read-back is needed.
-async fn write_one_chunk<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-    base: u32,
-    offset: usize,
-    piece: &[u8],
-    extended: bool,
-) -> Result<()> {
-    let chunk_addr = chunk_address(l4, base, offset)?;
-    if extended {
-        let (req_apci, payload) = apci::encode_memory_extended_write(chunk_addr, piece);
-        let (resp_apci, data) = l4.request(req_apci, &payload).await?;
-        let resp = apci::decode_memory_extended_response(resp_apci, &data).ok_or_else(|| {
-            WriteError::Mgmt(MgmtError::MalformedResponse {
-                address: l4.target(),
-                reason: format!(
-                    "expected A_MemoryExtended_Write_Response ({})",
-                    raw_response_detail(resp_apci, &data)
-                ),
-            })
-        })?;
-        if resp.return_code != 0 {
-            return Err(WriteError::Mgmt(MgmtError::MemoryVerifyFailed {
-                address: l4.target(),
-                addr: chunk_addr,
-                expected: piece.to_vec(),
-                got: Vec::new(),
-            }));
-        }
-        return Ok(());
-    }
-    let addr16 = chunk_addr as u16;
-    let (req_apci, payload) = apci::encode_memory_write(addr16, piece);
-    // Write only, no per-chunk read-back. ETS streams the whole image and does
-    // NOT read each chunk back — a read-back after every write doubles the
-    // exchanges (exhausting a device's per-connection L4 budget on a large
-    // segment) and, worse, interleaves stray A_Memory_Responses into the stream
-    // so a following property read correlates the wrong response. Integrity is
-    // confirmed after the load by the device's own MCB CRC (LdCtrlLoadImageProp)
-    // and the flash engine's end-of-segment spot-check.
-    l4.send_data(req_apci, &payload).await?;
-    // A verify-mode device answers the write with an unsolicited A_Memory_Response
-    // echo that await_ack folds into the pending slot. This write expects no
-    // response, so drop the echo — otherwise it satisfies the next request's
-    // recv_response with the wrong APDU (a "malformed response").
-    l4.discard_pending_response();
-    Ok(())
-}
-
-/// Computes `base + offset` as a device address, failing if it runs past the
-/// 24-bit extended-memory address space (a programming error, not a device
-/// fault). The plain-service caller keeps the same behaviour for ≤16-bit
-/// addresses; the extended service reaches the full 24-bit space.
-fn chunk_address<Ch: L4Channel>(
-    l4: &Layer4Connection<Ch>,
-    base: u32,
-    offset: usize,
-) -> Result<u32> {
-    u32::try_from(offset)
-        .ok()
-        .and_then(|off| base.checked_add(off))
-        .filter(|&a| a <= apci::MAX_MEMORY_ADDRESS)
-        .ok_or_else(|| {
-            WriteError::Mgmt(MgmtError::MalformedResponse {
-                address: l4.target(),
-                reason: "memory write range exceeds the 24-bit address space".to_string(),
-            })
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn select_extended_memory_picks_the_service_by_top_address() {
-        // A whole access that fits 0xFFFF stays on the plain service — the
-        // byte-identical KV/DA.tp/Steinel path.
-        assert!(!select_extended_memory(0x4000, 63));
-        assert!(!select_extended_memory(0xFFC0, 64)); // ends exactly at 0xFFFF
-        assert!(!select_extended_memory(0x0000, 1));
-        // An access whose top address crosses 0xFFFF uses the extended service —
-        // the real 07B0 actuators (bases 0xf000..0x16000, ends to 0x1aad3).
-        assert!(select_extended_memory(0xFFFF, 2)); // 0xFFFF..0x10000
-        assert!(select_extended_memory(0x01_6000, 6));
-        assert!(select_extended_memory(0x0F_000, 0x8000)); // 0xf000 base, big span
-        // A zero-length access is treated as one octet at `addr`.
-        assert!(!select_extended_memory(0xFFFF, 0));
-        assert!(select_extended_memory(0x1_0000, 0));
-    }
 
     #[test]
     fn load_state_round_trips_octets() {
