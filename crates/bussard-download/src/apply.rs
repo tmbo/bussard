@@ -48,7 +48,7 @@ use bussard_mgmt::connection::{L4Channel, Layer4Connection};
 use bussard_mgmt::load::{
     self, LoadControl, LoadState, WriteError, read_load_state, write_load_control, write_table,
 };
-use bussard_mgmt::tables::{OT_ADDRESS_TABLE, OT_ASSOCIATION_TABLE, PID_OBJECT_TYPE, read_tables};
+use bussard_mgmt::tables::{OT_ADDRESS_TABLE, OT_ASSOCIATION_TABLE, read_tables};
 
 use crate::compute::DesiredTables;
 
@@ -90,36 +90,20 @@ impl VerifyOutcome {
 
 /// Discovers the two table objects' indexes by probing `PID_OBJECT_TYPE`.
 ///
-/// Mirrors the read side's discovery (contiguously-indexed interface objects,
-/// first empty read ends the sweep).
+/// The sweep is [`bussard_mgmt::probe_object_types`], the same walk the read side
+/// and the flash engine use — contiguously-indexed interface objects, ending at
+/// the first index that answers "no object here".
 pub async fn discover_table_objects<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
 ) -> Result<TableObjectIndexes, WriteError> {
-    let mut address = None;
-    let mut association = None;
-    for index in 0..16u8 {
-        let payload = bussard_mgmt::apci::encode_property_value_read(index, PID_OBJECT_TYPE, 1, 1);
-        let (resp_apci, data) = l4
-            .request(bussard_mgmt::apci::A_PROPERTY_VALUE_READ, &payload)
-            .await?;
-        if resp_apci != bussard_mgmt::apci::A_PROPERTY_VALUE_RESPONSE {
-            break;
-        }
-        let Some(resp) = bussard_mgmt::apci::decode_property_value_response(&data) else {
-            break;
-        };
-        if resp.count == 0 || resp.data.len() < 2 {
-            break;
-        }
-        let ot = u16::from_be_bytes([resp.data[0], resp.data[1]]);
-        if ot == OT_ADDRESS_TABLE && address.is_none() {
-            address = Some(index);
-        }
-        if ot == OT_ASSOCIATION_TABLE && association.is_none() {
-            association = Some(index);
-        }
-    }
-    match (address, association) {
+    let objects = bussard_mgmt::probe_object_types(l4).await?;
+    let first = |want: u16| {
+        objects
+            .iter()
+            .find(|&&(_, ot)| ot == want)
+            .map(|&(index, _)| index)
+    };
+    match (first(OT_ADDRESS_TABLE), first(OT_ASSOCIATION_TABLE)) {
         (Some(address), Some(association)) => Ok(TableObjectIndexes {
             address,
             association,

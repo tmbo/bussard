@@ -88,9 +88,8 @@
 //! [`MgmtError`]; a device that answers but does not expose a readable table
 //! surfaces as [`TablesError::TableUnreadable`].
 
-use crate::apci;
 use crate::connection::{L4Channel, Layer4Connection, property_request};
-use crate::error::{MgmtError, descriptor_response_reason};
+use crate::error::MgmtError;
 use bussard_model::{GroupAddress, IndividualAddress};
 
 // --- Identifiers not (yet) in `apci.rs` ---
@@ -98,7 +97,10 @@ use bussard_model::{GroupAddress, IndividualAddress};
 // dedup into `apci.rs` later.
 
 /// `PID_OBJECT_TYPE` (1) — the interface object's type, a `u16` per element.
-pub const PID_OBJECT_TYPE: u8 = 1;
+///
+/// Re-exported from [`crate::connection`], which owns the discovery walk that
+/// reads it.
+pub use crate::connection::PID_OBJECT_TYPE;
 /// `PID_TABLE_REFERENCE` (7) — memory address of a loadable table.
 pub const PID_TABLE_REFERENCE: u8 = 7;
 /// `PID_TABLE` (23) — the loadable table exposed as a property array.
@@ -106,13 +108,6 @@ pub const PID_TABLE_REFERENCE: u8 = 7;
 /// 23 is the global "Table" PID (KNX 3/5/1 global property definitions); it is
 /// **not** 52, which is `PID_KNX_INDIVIDUAL_ADDRESS` of the IP parameter object.
 pub const PID_TABLE: u8 = 23;
-
-/// The 10-bit APCI selector mask for services that embed data in the low 6
-/// APCI bits (`A_DeviceDescriptor_*`, `A_Memory_*`). Re-exported from
-/// [`apci::APCI_SELECTOR_MASK`] for local readability.
-const APCI_SELECTOR_MASK: u16 = apci::APCI_SELECTOR_MASK;
-/// `A_DeviceDescriptor_Response` selector (low 6 bits = descriptor type).
-const APCI_DEVICE_DESCRIPTOR_RESPONSE: u16 = apci::A_DEVICE_DESCRIPTOR_RESPONSE;
 
 /// Object type of the device object.
 pub const OT_DEVICE: u16 = 0;
@@ -124,14 +119,6 @@ pub const OT_ASSOCIATION_TABLE: u16 = 2;
 pub const OT_APPLICATION_PROGRAM: u16 = 3;
 /// Object type of the group object table.
 pub const OT_GROUP_OBJECT_TABLE: u16 = 9;
-
-/// How many object indexes discovery probes before giving up.
-///
-/// The sweep runs `0..MAX_OBJECT_INDEX`. This must cover the application-program
-/// object, which on some System B devices sits at index 12–15 (past the address
-/// / association / group-object tables), so a budget of 16 is required — a
-/// tighter 0..12 budget silently misses those devices' app object.
-const MAX_OBJECT_INDEX: u8 = 16;
 
 /// Which read path produced a table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -320,28 +307,10 @@ pub async fn read_tables<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Result
 
 // --- Correctly-encoded management procedures (see the module docs) ---
 
-/// Reads the device descriptor type 0 (mask version).
-///
-/// The descriptor type lives in the low 6 APCI bits and the request carries
-/// **no** payload octet (see the module docs on wire encodings).
+/// Reads the device descriptor type 0 (mask version) through the crate's single
+/// descriptor reader, [`crate::connection::read_device_descriptor`].
 async fn device_descriptor<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Result<u16> {
-    let (req_apci, payload) = apci::encode_device_descriptor_read(0);
-    let (resp_apci, data) = l4.request(req_apci, &payload).await?;
-    // Accept any A_DeviceDescriptor_Response of >= 2 octets. The descriptor type
-    // rides in the response's low APCI bits (echoing the requested type 0); a
-    // type-2 response is longer, and some interfaces (observed on the KNX Virtual
-    // IP/TP interface) answer type 0 with **extra** trailing payload. Both are
-    // legal: the mask version is the leading big-endian word, so we read the
-    // first two octets and ignore any tail. We do NOT loosen the selector check —
-    // a wrong service, or a short (< 2 octet) answer, is still rejected, now with
-    // the raw APCI + payload bytes so the frame is captured without a sniffer.
-    if resp_apci & APCI_SELECTOR_MASK != APCI_DEVICE_DESCRIPTOR_RESPONSE || data.len() < 2 {
-        return Err(TablesError::Mgmt(MgmtError::MalformedResponse {
-            address: l4.target(),
-            reason: descriptor_response_reason(resp_apci, &data),
-        }));
-    }
-    Ok(u16::from_be_bytes([data[0], data[1]]))
+    Ok(crate::connection::read_device_descriptor(l4).await?)
 }
 
 /// Reads `count` elements of a property starting at element `start`.
@@ -398,33 +367,14 @@ fn memory_error(address: IndividualAddress, err: crate::load::WriteError) -> Tab
 /// Probes interface-object indexes `0..16` for `PID_OBJECT_TYPE`, returning the
 /// discovered `(object index, object type)` pairs in index order.
 ///
-/// This is the single, canonical interface-object discovery for the management
-/// layer. Interface objects are contiguously indexed, so the sweep ends at the
-/// first index whose `PID_OBJECT_TYPE` read comes back empty (zero elements) or
-/// is answered with a non-property service — both mean "no object here". The
-/// range spans a full `0..16` so a device whose application-program object sits
-/// at index 12–15 is still found (a tighter budget silently misses it).
-///
-/// Only a genuine transport failure propagates as an error; an empty/short/
-/// off-service *terminating* read is the normal end-of-list signal and simply
-/// stops the sweep. An empty result (nothing readable even at index 0) is
-/// distinguished by the caller.
-///
-/// This is the seam the read side (`read_tables`) and the download engine's
-/// apply / flash paths share, so all three probe the same correct range and
-/// terminate identically.
+/// A thin wrapper over [`crate::connection::probe_object_types`], the crate's one
+/// interface-object discovery, in this module's error type. See that function for
+/// the sweep's range and its tolerance at the end of the object list; an empty
+/// result (nothing readable even at index 0) is distinguished by the caller.
 pub async fn discover_interface_objects<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
 ) -> Result<Vec<(u8, u16)>> {
-    let mut objects = Vec::new();
-    for index in 0..MAX_OBJECT_INDEX {
-        let data = read_property(l4, index, PID_OBJECT_TYPE, 1, 1).await?;
-        if data.len() < 2 {
-            break;
-        }
-        objects.push((index, u16::from_be_bytes([data[0], data[1]])));
-    }
-    Ok(objects)
+    Ok(crate::connection::probe_object_types(l4).await?)
 }
 
 /// Discovers the interface objects and fails if none is readable at all.

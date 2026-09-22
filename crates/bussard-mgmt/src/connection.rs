@@ -1101,6 +1101,98 @@ pub(crate) async fn property_description_request<Ch: L4Channel>(
     })
 }
 
+/// The interface-object index the discovery sweep stops at (exclusive).
+///
+/// Interface objects are contiguously indexed from 0, so the sweep ends at the
+/// first index that answers "no object here". The full `0..16` range matters: a
+/// device whose application-program object sits at index 12–15 is still found,
+/// where a tighter budget silently misses it.
+pub const MAX_OBJECT_INDEX: u8 = 16;
+
+/// `PID_OBJECT_TYPE` (1) — the interface-object type, the property every object
+/// discovery walk reads.
+pub const PID_OBJECT_TYPE: u8 = 1;
+
+/// Probes one interface-object index for its `PID_OBJECT_TYPE`.
+///
+/// `Ok(Some(object_type))` is an object; `Ok(None)` means **no object at this
+/// index** and ends a sweep. The `None` case is deliberately **tolerant**: an
+/// index answered with a non-property service, an undecodable response, zero
+/// elements or a short value all mean "no object here". Real devices do not agree
+/// on how they refuse an out-of-range object index — KNX Virtual and the thelsing
+/// demo each answer differently — and the flash engine's walk, the one that has
+/// been run against them, tolerated all of it. Only a genuine transport failure
+/// (a silence, a disconnect) propagates as `Err`.
+///
+/// This is the single probe behind [`probe_object_types`] and behind
+/// `bussard-download`'s resumable walk, which needs one index at a time so it can
+/// reconnect and continue mid-sweep.
+pub async fn probe_object_type<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    index: u8,
+) -> Result<Option<u16>> {
+    match property_request(l4, index, PID_OBJECT_TYPE, 1, 1).await {
+        Ok(resp) if resp.count == 0 || resp.data.len() < 2 => Ok(None),
+        Ok(resp) => Ok(Some(u16::from_be_bytes([resp.data[0], resp.data[1]]))),
+        // An off-service or undecodable answer is how some devices say "no object
+        // at this index"; it ends the sweep rather than failing it.
+        Err(MgmtError::MalformedResponse { .. }) => Ok(None),
+        Err(other) => Err(other),
+    }
+}
+
+/// Walks `PID_OBJECT_TYPE` over `0..`[`MAX_OBJECT_INDEX`] and returns the
+/// `(object index, object type)` pairs the device exposes, in index order.
+///
+/// This is *the* interface-object discovery for bussard: the table read side, the
+/// incremental `apply`, the flash engine and the read-only pre-flight probe all
+/// call it, so all four see the same device picture and terminate identically.
+/// Each index is probed with [`probe_object_type`], whose tolerance at the end of
+/// the list is the behaviour real devices need.
+///
+/// An empty result (nothing readable even at index 0) is not an error here;
+/// callers that require at least one object say so themselves.
+pub async fn probe_object_types<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+) -> Result<Vec<(u8, u16)>> {
+    let mut objects = Vec::new();
+    for index in 0..MAX_OBJECT_INDEX {
+        match probe_object_type(l4, index).await? {
+            Some(ot) => objects.push((index, ot)),
+            None => break,
+        }
+    }
+    Ok(objects)
+}
+
+/// Reads the device descriptor type 0 — the 16-bit **mask version** that decides
+/// property-based vs memory-based link writes.
+///
+/// Sends `A_DeviceDescriptor_Read` with the descriptor type in the low APCI bits
+/// and an **empty** payload (the spec-correct framing; strict devices
+/// `T_Disconnect` the over-long form), then validates the answer's service and
+/// takes the mask from the leading big-endian word.
+///
+/// The selector check is strict — a wrong service or a shorter-than-2-octet answer
+/// is rejected, with the raw APCI and payload in the message — but the response
+/// **length** is not: the descriptor type rides in the response's low APCI bits, a
+/// type-2 response is longer, and some interfaces (observed on the KNX Virtual
+/// IP/TP interface) answer type 0 with extra trailing payload. Both are legal, so
+/// any tail is ignored.
+pub async fn read_device_descriptor<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Result<u16> {
+    let (req_apci, payload) = crate::apci::encode_device_descriptor_read(0);
+    let (resp_apci, data) = l4.request(req_apci, &payload).await?;
+    if resp_apci & crate::apci::APCI_SELECTOR_MASK != crate::apci::A_DEVICE_DESCRIPTOR_RESPONSE
+        || data.len() < 2
+    {
+        return Err(MgmtError::MalformedResponse {
+            address: l4.target(),
+            reason: crate::error::descriptor_response_reason(resp_apci, &data),
+        });
+    }
+    Ok(u16::from_be_bytes([data[0], data[1]]))
+}
+
 /// Enumerates the properties of one interface object by walking the property
 /// index `1..` until the device reports none (issue #72).
 ///

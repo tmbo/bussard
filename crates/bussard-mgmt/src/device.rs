@@ -15,7 +15,7 @@ use crate::connection::{
     describe_object_properties, property_description_request, property_request,
     property_write_request,
 };
-use crate::error::{MgmtError, Result, descriptor_response_reason, raw_response_detail};
+use crate::error::{MgmtError, Result, raw_response_detail};
 
 /// A management client bound to a single device over a connection-oriented
 /// session.
@@ -110,26 +110,10 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
     /// Reads the device descriptor (type 0): the 16-bit **mask version** that
     /// decides property-based vs memory-based link writes.
     ///
-    /// Sends `A_DeviceDescriptor_Read` with the descriptor type in the APCI low
-    /// bits and an **empty** payload (the spec-correct framing — strict devices
-    /// `T_Disconnect` the over-long form), and decodes the `Response`,
-    /// validating that its APCI is an `A_DeviceDescriptor_Response`.
+    /// Delegates to [`crate::connection::read_device_descriptor`], the crate's one
+    /// descriptor reader — see it for the exact framing and what it accepts.
     pub async fn device_descriptor(&mut self) -> Result<u16> {
-        let (req_apci, payload) = apci::encode_device_descriptor_read(0);
-        let (resp_apci, data) = self.inner.request(req_apci, &payload).await?;
-        if resp_apci & apci::APCI_SELECTOR_MASK != apci::A_DEVICE_DESCRIPTOR_RESPONSE {
-            return Err(MgmtError::MalformedResponse {
-                address: self.inner.target(),
-                reason: descriptor_response_reason(resp_apci, &data),
-            });
-        }
-        apci::decode_device_descriptor_response(&data).ok_or_else(|| MgmtError::MalformedResponse {
-            address: self.inner.target(),
-            reason: format!(
-                "device descriptor response too short ({})",
-                raw_response_detail(resp_apci, &data)
-            ),
-        })
+        crate::connection::read_device_descriptor(&mut self.inner).await
     }
 
     /// Reads `count` elements of a property, starting at element `start`, of the
