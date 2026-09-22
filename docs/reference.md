@@ -225,7 +225,7 @@ Read a device's live tables and show what `apply` would change. With `--line`, p
 
 ### `bussard apply <ADDRESS>`
 
-Apply the model's link tables to a device: plan, confirm, back up, write, verify. The pre-state tables are written to `<dir>/captures/backups/<ia>-<timestamp>.json` before any write; tables are rewritten wholesale, so re-running `apply` is idempotent. System B (`x7B0`) and System 7 (`0705` / `0701`). On System B each table is written into a segment the device allocates for it: StartLoading, `LdCtrlRelSegment`, read the placement from `PID_TABLE_REFERENCE`, memory-write the count word plus the elements, LoadCompleted. The `PID_TABLE` property array is never written, because real devices refuse it (see the finding in [testing-campaign.md](testing-campaign.md#findings)). On System 7 only the two table load-state machines are driven (Unload, StartLoading, allocate, 12-octet writes with read-back verify, TaskSegment, LoadCompleted) — parameters are untouched and the device is not restarted, so a link change costs no downtime.
+Apply the model's link tables to a device: plan, confirm, back up, write, verify. The pre-state tables are written to `<dir>/captures/backups/<ia>-<timestamp>.json` before any write (the format `backup` and `restore` share), and `apply` prints a hint when no installation-wide `backup` run exists yet; tables are rewritten wholesale, so re-running `apply` is idempotent. System B (`x7B0`) and System 7 (`0705` / `0701`). On System B each table is written into a segment the device allocates for it: StartLoading, `LdCtrlRelSegment`, read the placement from `PID_TABLE_REFERENCE`, memory-write the count word plus the elements, LoadCompleted. The `PID_TABLE` property array is never written, because real devices refuse it (see the finding in [testing-campaign.md](testing-campaign.md#findings)). On System 7 only the two table load-state machines are driven (Unload, StartLoading, allocate, 12-octet writes with read-back verify, TaskSegment, LoadCompleted) — parameters are untouched and the device is not restarted, so a link change costs no downtime.
 
 | Flag / arg | Default | Meaning |
 |---|---|---|
@@ -311,6 +311,72 @@ Restore the model files to a snapshot, print what that reverts, and point at `pl
 |---|---|---|
 | `[SNAPSHOT]` | the newest one that differs from the working files | The snapshot to restore (id or number). |
 | `--dir <DIR>` | `knx` | The model directory. |
+
+### `bussard backup [ADDRESS...]`
+
+Snapshot the installation before you change it. For every device in the model (or every model device on `--line`, or the addresses given), `backup` reads the address and association tables and writes one JSON file per device, in the same format `apply` uses for its pre-write backup. On System B it also reads the application segment, which holds the parameters: the base comes from `PID_TABLE_REFERENCE` and the length from `PID_MCB_TABLE`, so no product data is needed. System 7 reports no length for its parameter image, so its parameters are marked as not captured.
+
+`manifest.json` lists every device the run considered, with its mask, system type, resident application id, order number, read time, parameter status and one of four statuses:
+
+| Status | Meaning |
+|---|---|
+| `backed_up` | Tables (and, where possible, parameters) were written to a file. |
+| `skipped` | The mask is outside System B / System 7; the reason is in `detail`. |
+| `unreachable` | Nothing answered at the address. |
+| `failed` | The device answered, but a read failed; the reason is in `detail`. |
+
+`backup` sends only descriptor, authorize, property-read and memory-read APDUs, so it is safe on a live installation. It uses one bus connection, leased per device. Exit code 0 when no device failed, 1 otherwise.
+
+| Flag / arg | Default | Meaning |
+|---|---|---|
+| `[ADDRESS...]` | every model device | Back up only these devices. |
+| `--line <LINE>` | | Back up only the model devices on this line, e.g. `1.1`. |
+| `--out <DIR>` | `<dir>/captures/backups/<UTC timestamp>/` | Where to write the snapshot. |
+| `--dir <DIR>` | `knx` | The model directory. |
+| `--json` | off | Print the manifest as JSON. |
+| `--keyring <FILE>` / `--tool-key <HEX>` | | KNX Data Secure tool keys, as for `apply`. |
+| `--gateway <HOST>` | | Gateway override. |
+| `--routing` | off | Force routing transport. |
+
+### `bussard restore <BACKUP_DIR> <ADDRESS>`
+
+Write one device's backed-up link tables back. `restore` picks the newest `<ia>-<timestamp>.json` in `BACKUP_DIR` (a `backup` run, or `<dir>/captures/backups` for the files `apply` leaves) and runs the `apply` path with the backup as the desired state: plan, confirm, pre-write backup, write, verify. A backup restored onto a device that has not changed plans empty and writes nothing. Parameter memory in the backup is reported but not written; put parameters back with `flash`. The model is optional here: the tables come from the backup.
+
+| Flag / arg | Default | Meaning |
+|---|---|---|
+| `<BACKUP_DIR>` | | The backup directory. |
+| `<ADDRESS>` | | The device to restore, e.g. `1.1.4`. |
+| `--dir <DIR>` | `knx` | The model directory (connection defaults, backup location). |
+| `--yes` | off | Skip the interactive confirmation. |
+| `--allow-remote-gateway` | off | Permit a write to a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
+| `--keyring <FILE>` / `--tool-key <HEX>` | | KNX Data Secure tool key. |
+| `--gateway <HOST>` | | Gateway override. |
+| `--routing` | off | Force routing transport. |
+
+### `bussard replace <ADDRESS> --product <FILE>`
+
+Put a new device of the same product in place of a dead one. The steps:
+
+1. Check that nothing answers at `ADDRESS`. A device that still answers is refused unless `--force`.
+2. Wait for the programming button and read the pressed device's order number, mask and application id. A mismatch with the model's device file (`product.order_number`, `product.mask`) is refused unless `--force`. A field the model states but the device does not report counts as a mismatch.
+3. Ask once for confirmation, naming the gateway. Then assign the address (as `assign` does), flash the application with the model's parameters (as `flash` does; skipped with `--no-flash`), and apply the model's tables (as `apply` does).
+4. Record `replaced: <RFC3339>` in the device file with a one-line edit; the rest of the file is kept as it is.
+
+`replace` adds no write primitive of its own. If the flash or apply step fails, the address is already assigned; the error names the command to re-run.
+
+| Flag / arg | Default | Meaning |
+|---|---|---|
+| `<ADDRESS>` | | The address of the device being replaced. |
+| `--product <FILE>` | | The vendor `.knxprod` for the new device. |
+| `--dir <DIR>` | `knx` | The model directory. |
+| `--yes` | off | Skip the confirmation (required without a TTY). |
+| `--force` | off | Proceed although the old device answers or the identity does not match. |
+| `--no-flash` | off | Leave the application image alone (a spare that already carries it). |
+| `--bcu-key <HEX>` | free access | BCU key for the flash step. |
+| `--allow-remote-gateway` | off | Permit a write to a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
+| `--keyring <FILE>` / `--tool-key <HEX>` | | KNX Data Secure tool key. |
+| `--gateway <HOST>` | | Gateway override. |
+| `--routing` | off | Force routing transport. |
 
 ### `bussard validate`
 
@@ -418,6 +484,44 @@ Write a group value to the bus. The value is human-typed (`on`/`off`, `up`/`down
 | `--routing` | off | Force routing transport. |
 | `--allow-remote-gateway` | off | Permit a write to a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
 
+### `bussard learn`
+
+Name and type group addresses from live traffic. Learn mode prompts you to trigger an object, waits for the telegram, and shows the sender, its channel and com object, the payload, ranked DPT candidates with a reason for each, and a proposed name built from the device's room, channel and com-object function. Accept, edit the name, change the DPT, skip, or quit. Accepted answers go into `groups.yaml`; when the sending com object can be pinned down (an existing link, or exactly one free transmit-capable object on the sending device), `links.yaml` gets the `send:` entry too.
+
+Learn mode never transmits. It listens on the same connection `monitor` uses and never calls a send path. A DPT candidate is ranked `high` only when the sending com object declares that DPT in the model; payload shape alone gives `medium` at most, because most payload lengths fit several DPTs. Repeated telegrams on one GA narrow the candidates.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--ga <GA>` | | Learn this group address. Repeatable; learned in the order given. |
+| `--unnamed` | off | Learn every GA in the model whose name is a placeholder (empty, the address itself, `GA <address>`, `Unnamed`, `Unknown...`). |
+| `--untyped` | off | Learn every GA in the model with no DPT (the ones `validate` reports as W011). |
+| `--yes` | off | Accept the top candidate and the proposed name without prompting. Required without a terminal. |
+| `--timeout <SECS>` | `30` | How long to wait for each telegram. |
+| `--dir <DIR>` | `knx` | The model directory. A model that fails to parse is a hard error. |
+| `--gateway <HOST>` | | Gateway override. |
+| `--routing` | off | Force routing transport. |
+
+With neither `--ga` nor `--unnamed`/`--untyped`, learn takes whatever appears on the bus next, one GA at a time, until a wait times out or you quit.
+
+### `bussard test`
+
+Run the acceptance tests in [`tests.yaml`](#testsyaml) against the bus and print a pass/fail report. Each test writes a group value (or prints a `manual:` instruction and waits for Enter), then waits for the expected telegram. A failing expectation reports the value that did arrive on the expected GA. The text report contains no timestamps, so two runs over a healthy installation are byte-identical; the JSON report adds only `started_at`. Exits non-zero when any test fails; skipped and refused tests do not fail the run.
+
+A test run writes to the bus, so it goes through the same rails as `bussard write`: the non-loopback gateway gate and a confirmation naming the gateway. A test that writes to a `protected: true` GA needs both `allow_protected: true` in the file and `--force`; with either missing it is reported as refused and nothing is sent to that GA.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--file <FILE>` | `<dir>/tests.yaml` | The test file to run. |
+| `--json` | off | Print the report as JSON: `started_at`, `tests[]` (`name`, `status` of `pass`/`fail`/`skipped`/`refused`, `detail`, `observed`), and `summary` counts. |
+| `--force` | off | Together with `allow_protected: true` in the file, permit tests that write to protected GAs. |
+| `--skip-manual` | off | Report `manual:` tests as skipped instead of prompting. Without a terminal they are skipped anyway. |
+| `--only <NAME>` | all | Run only the named test (case-insensitive). Repeatable. |
+| `--yes` | off | Skip the confirmation prompt (required for a non-TTY run). |
+| `--dir <DIR>` | `knx` | The model directory. |
+| `--gateway <HOST>` | | Gateway override. |
+| `--routing` | off | Force routing transport. |
+| `--allow-remote-gateway` | off | Permit a run against a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
+
 ### `bussard ha-config`
 
 Generate the Home Assistant KNX integration YAML from the model. Derivation rules and the `ha.yaml` override file are documented in [ha-config.md](ha-config.md).
@@ -484,6 +588,7 @@ knx/
   links.yaml        # com-object → GA assignments
   devices/          # one file per device, e.g. 1.1.4-jalousieaktor-wohnen.yaml
   ha.yaml           # optional ha-config overrides (see ha-config.md)
+  tests.yaml        # optional acceptance tests for `bussard test`
   models/           # generated from .knxprod; git-ignored
   vendor/           # cached .knxprod originals; git-ignored
   captures/         # local captures, apply backups and apply-line-<line>.json resume state; git-ignored
@@ -507,7 +612,7 @@ One directory per snapshot, named by a UTC timestamp plus a sequence number, so 
 
 `import`, `apply`, `flash`, `adopt`, `reconstruct` and every MCP model edit snapshot before they write. `plan` and those commands also record an `external edit` snapshot first when the working files differ from the last one, so an edit made in an editor or by an assistant writing YAML is never lost. `bussard status`, `history`, `show` and `undo` read this directory; `bussard init` git-ignores it.
 
-`bussard.yaml`, `groups.yaml`, `links.yaml` and `devices/` are the source of truth and belong in git. `models/`, `vendor/` and `captures/` are local-only; `init` and `import-product` plant the `.gitignore` entries. All YAML is parsed strictly: unknown fields and duplicate keys are errors. Emission is deterministic and sorted, so re-imports and hand edits produce minimal diffs. Every generated file carries a banner naming what generated it and what is hand-editable.
+`bussard.yaml`, `groups.yaml`, `links.yaml`, `devices/` and `tests.yaml` belong in git; the first four are the source of truth. `models/`, `vendor/` and `captures/` are local-only; `init` and `import-product` plant the `.gitignore` entries. All YAML is parsed strictly: unknown fields and duplicate keys are errors. Emission is deterministic and sorted, so re-imports and hand edits produce minimal diffs. Every generated file carries a banner naming what generated it and what is hand-editable.
 
 ### The bundle format
 
@@ -637,6 +742,7 @@ links:
 address: "1.1.4"
 name: "Blind Actuator 4-fold"
 location: { floor: "Ground Floor", room: "Utility Room" }
+replaced: 2026-09-22T10:15:00Z   # written by `bussard replace`; absent otherwise
 product:
   manufacturer: "Northwind Controls"
   order_number: "BA-4"
@@ -675,6 +781,33 @@ com_objects:
 | `com_objects.<n>.channel` | string, optional | Owning channel key. |
 
 Com-object entries carry no `name` (it lives in `links.yaml`).
+
+### `tests.yaml`
+
+The acceptance tests `bussard test` and the `knx_run_tests` MCP tool run. Optional; parsed as strictly as the rest of the model.
+
+```yaml
+allow_protected: false      # opt-in for tests that write protected GAs (also needs --force)
+tests:
+  - name: Kitchen ceiling light switches and reports
+    write: { ga: "1/0/10", value: "on" }
+    expect: { ga: "1/0/12", value: "on", within: 2s }
+  - name: Wind alarm raises the blinds
+    manual: "Trigger the wind alarm on the weather station"
+    expect: { ga: "3/1/0", value: "up", within: 5s }
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `allow_protected` | bool, default `false` | Half of the opt-in for writing a `protected: true` GA. The CLI also needs `--force`; the MCP tool ignores this flag and always refuses. |
+| `tests[].name` | string | Reported name, and the key for `--only`. |
+| `tests[].write` | `{ga, value, dpt?}` | The stimulus: a group write. `value` is human-typed and encoded against the GA's DPT, or `dpt` when given. |
+| `tests[].manual` | string | The stimulus instead of a write: an instruction for a human. Exactly one of `write` or `manual`. |
+| `tests[].expect.ga` | GA | The group address the proof must appear on. |
+| `tests[].expect.value` | scalar, optional | The value it must carry, encoded against the GA's DPT and compared byte for byte. Omit to accept any value. On a GA without a DPT, give the payload as hex (`"0x01"`). |
+| `tests[].expect.within` | duration, default `3s` | How long to wait: `2s`, `500ms`, `1m`, or a bare number of seconds. |
+
+A manual test must have an `expect`. The runner ignores the gateway's echo of its own write and anything sent from its own address, so a test may write and expect the same GA.
 
 ### Generated model files (`models/*.yaml`)
 
@@ -763,12 +896,12 @@ CREATE INDEX idx_telegrams_dest_ts ON telegrams (destination, ts_utc);
 |---|---|---|
 | Passive | `--passive` | Never transmits. The bus-touching read tools (`knx_read_group`, `knx_describe_device`) are not registered. |
 | Read (default) | none | May send GroupValueReads, rate-limited. |
-| Write | `--allow-writes` | Adds `knx_write_group`. |
+| Write | `--allow-writes` | Adds `knx_write_group` and `knx_run_tests`. |
 | No model edits | `--no-model-edits` | Withholds the six model-edit tools. Orthogonal to the tiers above: they write YAML files, never the bus, so they are registered in every tier by default. |
 
 The model tools (`knx_describe_change`, `knx_history`, and the six that edit) touch files under the model directory and nothing else. `knx_export_bundle` and `knx_diff_project` only read the model (the export writes one bundle file) and are registered in every tier, `--no-model-edits` included. Every edit snapshots the model first, validates after, and returns the change as sentences for the caller to quote to the human. Nothing reaches a device until a human runs `bussard plan` and `bussard apply`.
 
-Bus operations share one rate limiter (minimum 250 ms between operations, at most two in flight). A GA marked `protected: true` is hard-refused by `knx_write_group` with no MCP override; the LLM must ask a human, who can run `bussard write ... --force` from the CLI. Programming and download (`plan`, `apply`, `flash`) are CLI-only and not exposed over MCP.
+Bus operations share one rate limiter (minimum 250 ms between operations, at most two in flight). A GA marked `protected: true` is hard-refused by `knx_write_group` and `knx_run_tests` with no MCP override; the LLM must ask a human, who can run `bussard write ... --force` from the CLI. Programming and download (`plan`, `apply`, `flash`) are CLI-only and not exposed over MCP.
 
 ### Tools
 
@@ -784,7 +917,9 @@ Bus operations share one rate limiter (minimum 250 ms between operations, at mos
 | `knx_scaffold_groups` | `plan` (JSON `{rooms: [{floor, room, functions}]}`), `scheme` (optional) | Writes `groups.yaml` from a room and function list, returns the addresses added and the model's validation counts. Confirm the room list with the human first. |
 | `knx_read_group` | `ga` | Transmits a GroupValueRead and returns the decoded response. Omitted in `--passive` mode. |
 | `knx_describe_device` | `address` | Introspects a device: enumerates its interface objects and each property's description (PID, type, element count, access levels). Read-only on the bus. Omitted in `--passive` mode. |
+| `knx_infer_group` | `ga`, `payload_hex` (optional) | What the traffic on a GA says it is: ranked DPT candidates (`dpt`, `confidence` of `low`/`medium`/`high`, `reason`), the sender (address, name, location), its channel and com object (index, name, declared DPT, flags), the GA's current model entry, a proposed name, and a `next_step` telling the assistant to confirm with the human before calling `knx_set_group` and `knx_add_link`. Uses every telegram seen on the GA, or `payload_hex` when given. Reads only; also registered in `--passive`. |
 | `knx_write_group` | `ga`, `value` (human-typed), `dpt` (optional override) | A GroupValueWrite. Registered only with `--allow-writes`; refuses protected GAs outright, and refuses a `dpt` that contradicts the GA's DPT in the model (the override is for GAs the model does not type). |
+| `knx_run_tests` | `only` (list of test names, optional) | Runs `tests.yaml` and returns the same report as `bussard test --json`, plus `refused_protected`. Registered only with `--allow-writes`. A test that writes a protected GA is refused whatever the file says; `manual:` tests are skipped. |
 | `knx_describe_change` | `from`, `to` (snapshot ids, optional) | The change as plain sentences. With no arguments: the pending changes, i.e. the working model against the last snapshot. Files only. |
 | `knx_history` | `limit` (default 50, max 500) | The history snapshots with id, time, command, gateway and a one-line summary each. |
 | `knx_set_group` | `ga`, `name`, `dpt`, `description` (all but `ga` optional) | Creates or updates a group address. Creating one needs `name`. Refuses to rename or retype a `protected: true` GA; there is no parameter that sets or clears `protected`. |

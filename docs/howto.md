@@ -222,6 +222,49 @@ $ bussard plan 1.1.5
 
 So `plan` shows what `apply` will prune, not just what it adds; `apply` removes it. To first see what a device actually carries, `bussard reconstruct 1.1.4` reads its tables back and diffs them against the model (the diff compares GA sets per object; the send/listen direction lives in a table many devices do not expose).
 
+## ... back up every device?
+
+Before the first write to an installation, take a snapshot of all of it:
+
+```console
+$ bussard backup
+backing up 12 device(s) via 192.0.2.10:3671 into knx/captures/backups/20260922T101500Z
+...
+  1.1.4      07B0  backed up
+      parameters: 1840 octet(s)
+  1.1.12     0010  skipped
+      unsupported mask 0010 (System 1): ...
+
+10 backed up, 1 skipped, 1 unreachable, 0 failed
+```
+
+`backup` only reads, so it is safe on a live bus. Each device gets one JSON file with its tables (and, on System B, its parameter segment); `manifest.json` lists every device and what happened to it. Use `--line 1.1` or a list of addresses to back up part of the installation, and `--out <dir>` to write elsewhere.
+
+To put one device's tables back:
+
+```console
+$ bussard restore knx/captures/backups/20260922T101500Z 1.1.4
+```
+
+`restore` shows the plan and asks before writing, exactly like `apply`. If the device has not changed since the snapshot, the plan is empty and nothing is written.
+
+## ... replace a dead device?
+
+Mount a new device of the same product, connect it to the bus, and run:
+
+```console
+$ bussard replace 1.1.4 --product MDT_JAL_0410_02.knxprod
+Press the programming button on the replacement device for 1.1.4.
+device in programming mode: 15.15.255
+  mask: 07B0 (System B)
+  order number: MDT-JAL-0410.02
+replace 1.1.4: address 15.15.255 → 1.1.4, flash the application and apply the model's tables, via 192.0.2.10:3671? [y/N] y
+...
+replaced 1.1.4 via 192.0.2.10:3671
+```
+
+`replace` refuses when the old device still answers or when the new one reports a different order number or mask than `devices/1.1.4-*.yaml`; `--force` overrides both, for when the model is out of date. It assigns the address, flashes the application with the model's parameters, applies the model's links, and writes `replaced: <date>` into the device file. Pass `--no-flash` for a spare that already carries the right application.
+
 ## ... generate the Home Assistant config?
 
 ```console
@@ -323,6 +366,54 @@ parameters:
 ```
 
 Edit the value, then validate: with the device's product model generated (`import-product`), `validate` checks that the key exists and the value is in range (E016/E017). The new value reaches the device via `flash`, which recomputes the full parameter memory image from the vendor defaults plus your overrides. One caveat: a `.knxproj` re-import replaces the whole `parameters:` block with ETS truth, so make the change in ETS too if you still re-import.
+
+## ... name the group addresses of a house without a project file?
+
+Let the assistant run the loop with you. Start the MCP server (`--passive` is enough, nothing here transmits) and say "help me name the group addresses". The assistant asks you to press a button, waits for the telegram with `knx_wait_for_telegram`, then calls `knx_infer_group`, which returns DPT candidates, the sending device, its channel and com object, and a proposed name such as "Kitchen ceiling light, switch". It tells you what it thinks the button is; you confirm or correct it in chat, and only then does it write the answer into the model with `knx_set_group` and `knx_add_link`. Press the same button again when the candidates are uncertain: every extra telegram narrows them.
+
+At a terminal, `bussard learn` runs the same loop:
+
+```console
+$ bussard learn --untyped --gateway 192.0.2.10
+
+[1/12] 1/0/1: trigger the object you want to name (waiting up to 30s)
+  1/0/1  sender 1.1.30 Schaltaktor (Kitchen)
+  com object 3 Kanal A - Schalten, channel Ceiling light, declares 1.001
+  payload 01 (1 byte(s))
+    1. 1.001 [high] the sending com object declares DPT 1.001 in the model
+  proposed name: Kitchen ceiling light, schalten
+  accept as "Kitchen ceiling light, schalten" / 1.001? [a]ccept, [e]dit name, [d]pt, [s]kip, [q]uit:
+```
+
+`--unnamed` picks placeholder names instead of missing DPTs, `--ga` names specific addresses, and a bare `bussard learn` takes whatever appears on the bus. Accepted answers land in `groups.yaml` and, when the com object is clear, `links.yaml`; review the diff and run `validate`, which stops reporting W011 for every GA you typed.
+
+## ... write an acceptance test?
+
+Put a `tests.yaml` next to `groups.yaml`. Each test is a stimulus and the telegram that proves the installation reacted:
+
+```yaml
+tests:
+  - name: Kitchen ceiling light switches and reports
+    write: { ga: "1/0/10", value: "on" }
+    expect: { ga: "1/0/12", value: "on", within: 2s }
+  - name: Wind alarm raises the blinds
+    manual: "Press the test button on the weather station"
+    expect: { ga: "3/1/0", value: "up", within: 5s }
+```
+
+The assistant can draft the file from the model (switch objects with a status GA are the obvious first tests) and run it over MCP with `knx_run_tests` when the server has `--allow-writes`. At a terminal:
+
+```console
+$ bussard test --gateway 192.0.2.10
+PASS Kitchen ceiling light switches and reports
+     1/0/12 arrived = on within 2s
+FAIL Wind alarm raises the blinds
+     expected 3/1/0 = up within 5s after the manual step "Press the test button on the weather station", but it did not arrive
+
+2 test(s): 1 passed, 1 failed, 0 skipped, 0 refused
+```
+
+The report has no timestamps, so rerunning it at the three-month visit gives a diffable protocol; `--json` feeds other tooling. The run exits non-zero on any failure. A test that writes a protected GA needs `allow_protected: true` in the file and `--force`, and the MCP tool never runs it.
 
 ## ... let Claude debug the bus?
 

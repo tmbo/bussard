@@ -577,7 +577,7 @@ pub(crate) async fn warn_if_still_in_programming_mode(
 /// Builds the stub [`Device`] from the verified read-back. Fields that could not
 /// be read are left empty; the whole product block is omitted when nothing was
 /// readable.
-fn build_stub_device(address: IndividualAddress, v: &Verified) -> Device {
+pub(crate) fn build_stub_device(address: IndividualAddress, v: &Verified) -> Device {
     let manufacturer = v.manufacturer_id.map(manufacturers::display);
     let order_number = v.order.clone();
     let mask = v.mask.map(|m| format!("{m:#06X}"));
@@ -600,6 +600,7 @@ fn build_stub_device(address: IndividualAddress, v: &Verified) -> Device {
         name: "New device (assign)".to_string(),
         description: None,
         location: None,
+        replaced: None,
         product,
         channels: Default::default(),
         parameters: Default::default(),
@@ -674,7 +675,7 @@ fn empty_model() -> Model {
 }
 
 /// Formats a byte slice as lowercase hex.
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
@@ -705,6 +706,7 @@ mod tests {
                         name: "d".to_string(),
                         description: None,
                         location: None,
+                        replaced: None,
                         product: None,
                         channels: Default::default(),
                         parameters: Default::default(),

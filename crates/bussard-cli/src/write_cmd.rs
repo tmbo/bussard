@@ -168,7 +168,14 @@ fn confirm_write(
 
 /// Returns a refusal message if `ga` is protected in the model and `force` is
 /// not set; otherwise `None` (the write may proceed).
-fn protected_refusal(model: Option<&Model>, ga: GroupAddress, force: bool) -> Option<String> {
+///
+/// Shared with `bussard test`, whose acceptance runs go on the bus through the
+/// same rails and must refuse a protected GA with the same words.
+pub(crate) fn protected_refusal(
+    model: Option<&Model>,
+    ga: GroupAddress,
+    force: bool,
+) -> Option<String> {
     if force {
         return None;
     }

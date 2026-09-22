@@ -206,6 +206,7 @@ pub fn model_from_json(json: &str) -> Result<Model> {
             name: dev.name.clone(),
             description: dev.description.clone().filter(|s| !s.is_empty()),
             location: None,
+            replaced: None,
             product,
             channels: BTreeMap::new(),
             parameters: BTreeMap::new(),
