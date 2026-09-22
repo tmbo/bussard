@@ -191,7 +191,7 @@ Read a device's live tables and show what `apply` would change. Read-only on the
 
 ### `bussard apply <ADDRESS>`
 
-Apply the model's link tables to a device: plan, confirm, back up, write, verify. The pre-state tables are written to `<dir>/captures/backups/<ia>-<timestamp>.json` before any write; tables are rewritten wholesale, so re-running `apply` is idempotent. System B (`x7B0`) and System 7 (`0705` / `0701`). On System 7 only the two table load-state machines are driven (Unload, StartLoading, allocate, 12-octet writes with read-back verify, TaskSegment, LoadCompleted) — parameters are untouched and the device is not restarted, so a link change costs no downtime.
+Apply the model's link tables to a device: plan, confirm, back up, write, verify. The pre-state tables are written to `<dir>/captures/backups/<ia>-<timestamp>.json` before any write; tables are rewritten wholesale, so re-running `apply` is idempotent. System B (`x7B0`) and System 7 (`0705` / `0701`). On System B each table is written into a segment the device allocates for it: StartLoading, `LdCtrlRelSegment`, read the placement from `PID_TABLE_REFERENCE`, memory-write the count word plus the elements, LoadCompleted. The `PID_TABLE` property array is never written, because real devices refuse it (see the finding in [testing-campaign.md](testing-campaign.md#findings)). On System 7 only the two table load-state machines are driven (Unload, StartLoading, allocate, 12-octet writes with read-back verify, TaskSegment, LoadCompleted) — parameters are untouched and the device is not restarted, so a link change costs no downtime.
 
 | Flag / arg | Default | Meaning |
 |---|---|---|

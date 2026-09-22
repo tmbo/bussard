@@ -185,8 +185,12 @@ any write. Support differs by command:
   load procedure containing an operation `bussard` cannot execute all refuse the
   procedure rather than leaving a device half-flashed.
 - **`apply`, `plan`, and single-device `reconstruct`** support **System B**
-  (`x7B0`) and **System 7** (`0705` / `0701`). On System B the tables are
-  interface-object property arrays; on System 7 they are the absolute memory
+  (`x7B0`) and **System 7** (`0705` / `0701`). On System B each table lives in a
+  segment the device allocates for it: `apply` opens the table object, asks for a
+  segment with `LdCtrlRelSegment`, reads the placement from
+  `PID_TABLE_REFERENCE`, and writes the image there. It never writes the
+  `PID_TABLE` property array, which real devices refuse (a Jung F50 rejected it
+  outright). On System 7 the tables are the absolute memory
   regions at `0x4000` (address table + group-object descriptors) and `0x4201`
   (association table), and `apply` rewrites only those two table load-state
   machines — the parameter LSM and the application image are never touched, and
