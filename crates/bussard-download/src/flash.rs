@@ -68,7 +68,7 @@ use bussard_mgmt::load::{
     is_connection_death, master_reset_via_basic_restart, read_load_state, read_mcb_table,
     read_memory, read_table_reference, write_load_control, write_property,
 };
-use bussard_mgmt::tables::{OT_APPLICATION_PROGRAM, PID_OBJECT_TYPE};
+use bussard_mgmt::tables::OT_APPLICATION_PROGRAM;
 use bussard_prod::application::{ApplicationProgram, LoadOp, LoadProcedure, SegmentKind};
 
 /// A step of a validated flash, ready to render for the pre-flight display and
@@ -2570,39 +2570,19 @@ async fn discover_object_table<Ch: L4Channel>(
 }
 
 /// Walks `PID_OBJECT_TYPE` from index 0 and returns the `(index, object type)`
-/// table the device exposes.
+/// table the device exposes, in this crate's error type.
 ///
-/// The walk is deliberately **tolerant** at its end: an index answered with a
-/// non-property service, an undecodable response, zero elements or a short value
-/// all mean "no object here" and simply stop the sweep with what was read so
-/// far. Only a genuine transport failure propagates. That tolerance is what lets
-/// it run against real devices (KNX Virtual, the thelsing demo) whose answer for
-/// an out-of-range object index is not uniform.
-///
-/// Shared by the flash's own discovery ([`discover_object_table`]) and the
-/// read-only freshness probe ([`crate::preflight`]), so both see the same device
-/// picture.
-pub(crate) async fn probe_object_types<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
+/// The walk itself is [`bussard_mgmt::probe_object_types`] — the crate-wide
+/// interface-object discovery the table read side and `apply` use too, so all of
+/// them see the same device picture. Its tolerance at the end of the object list
+/// (an off-service, undecodable, empty or short answer means "no object here")
+/// came from this walk: it is what lets it run against real devices, KNX Virtual
+/// and the thelsing demo included, whose answer for an out-of-range object index
+/// is not uniform.
+pub(crate) async fn probe_object_types<Ch: bussard_mgmt::L4Channel>(
+    l4: &mut bussard_mgmt::Layer4Connection<Ch>,
 ) -> Result<Vec<(u8, u16)>, WriteError> {
-    let mut table: Vec<(u8, u16)> = Vec::new();
-    for index in 0..16u8 {
-        let payload = bussard_mgmt::apci::encode_property_value_read(index, PID_OBJECT_TYPE, 1, 1);
-        let (resp_apci, data) = l4
-            .request(bussard_mgmt::apci::A_PROPERTY_VALUE_READ, &payload)
-            .await?;
-        if resp_apci != bussard_mgmt::apci::A_PROPERTY_VALUE_RESPONSE {
-            break;
-        }
-        let Some(resp) = bussard_mgmt::apci::decode_property_value_response(&data) else {
-            break;
-        };
-        if resp.count == 0 || resp.data.len() < 2 {
-            break;
-        }
-        table.push((index, u16::from_be_bytes([resp.data[0], resp.data[1]])));
-    }
-    Ok(table)
+    Ok(bussard_mgmt::probe_object_types(l4).await?)
 }
 
 /// Discovers the object table like [`discover_object_table`], but **resumable at
@@ -2624,26 +2604,16 @@ async fn discover_object_table_resumable<C: Connector>(
     let mut app_obj: Option<u8> = None;
     let mut index: u8 = 0;
     let mut stalled_reconnects = 0u32;
-    while index < 16u8 {
-        let payload = bussard_mgmt::apci::encode_property_value_read(index, PID_OBJECT_TYPE, 1, 1);
-        match session
-            .l4()
-            .request(bussard_mgmt::apci::A_PROPERTY_VALUE_READ, &payload)
+    while index < bussard_mgmt::MAX_OBJECT_INDEX {
+        // One index at a time through the shared, tolerant probe, so the resumable
+        // walk and the one-shot `probe_object_types` terminate identically.
+        match bussard_mgmt::probe_object_type(session.l4(), index)
             .await
             .map_err(WriteError::Mgmt)
         {
-            Ok((resp_apci, data)) => {
+            Ok(None) => break,
+            Ok(Some(ot)) => {
                 stalled_reconnects = 0;
-                if resp_apci != bussard_mgmt::apci::A_PROPERTY_VALUE_RESPONSE {
-                    break;
-                }
-                let Some(resp) = bussard_mgmt::apci::decode_property_value_response(&data) else {
-                    break;
-                };
-                if resp.count == 0 || resp.data.len() < 2 {
-                    break;
-                }
-                let ot = u16::from_be_bytes([resp.data[0], resp.data[1]]);
                 table.push((index, ot));
                 if ot == OT_APPLICATION_PROGRAM && app_obj.is_none() {
                     app_obj = Some(index);

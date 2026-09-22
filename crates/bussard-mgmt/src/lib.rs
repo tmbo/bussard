@@ -67,8 +67,9 @@ pub use broadcast::{
     write_individual_address, write_individual_address_by_serial,
 };
 pub use connection::{
-    AuthorizeOutcome, L4Channel, Layer4Connection, LeaseChannel, PropertyDesc, Timeouts,
-    describe_object_properties,
+    AuthorizeOutcome, L4Channel, Layer4Connection, LeaseChannel, MAX_OBJECT_INDEX, PID_OBJECT_TYPE,
+    PropertyDesc, Timeouts, describe_object_properties, probe_object_type, probe_object_types,
+    read_device_descriptor,
 };
 pub use device::DeviceConnection;
 pub use error::{MgmtError, Result, SilenceKind};
