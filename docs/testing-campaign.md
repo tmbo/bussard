@@ -201,6 +201,25 @@ the full rule; for this campaign specifically:
 - When a finding becomes an issue, paste the decoded `knxtrace` excerpt, not the
   raw capture, and replace addresses with TEST-NET ones.
 
+## Findings
+
+**A real device will not take its tables through `PID_TABLE`** (issue #89).
+`bussard apply` against a Jung F50 push-button module (52911ST, application
+`M-0004_A-D141-22`) failed on the link-table download: the device rejected the
+`A_PropertyValue_Write` to `PID_TABLE` (PID 23) with a zero-count response,
+writing nothing and echoing no elements. Two ETS captures taken alongside it (a
+Jung F50 sibling at 1.1.18, and the KNX Virtual DA.tp) show ETS never attempts
+that path. After each `StartLoading` it writes a 10-octet
+`AdditionalLoadControls` / `LdCtrlRelSegment` sized to the whole image (the
+2-octet count word plus `n * elem_size`), reads `PID_TABLE_REFERENCE` for the
+placement, streams the image with `A_Memory_Write` / `A_MemoryExtended_Write`,
+and only then sends `LoadCompleted`.
+
+Only the lenient KNX Virtual stack also accepts a property write to `PID_TABLE`,
+which is why the mock device and `knx-sim` both let the bug through. `apply` now
+allocates and memory-writes; the mock and the simulator both refuse a `PID_TABLE`
+write the way the Jung did, so the old path cannot come back unnoticed.
+
 ## Rehearsing on the simulator
 
 Every script has a loopback dry-run mode, so the runbook can be rehearsed
