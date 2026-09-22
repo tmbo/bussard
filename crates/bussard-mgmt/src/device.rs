@@ -15,7 +15,7 @@ use crate::connection::{
     describe_object_properties, property_description_request, property_request,
     property_write_request,
 };
-use crate::error::{MgmtError, Result, descriptor_response_reason, raw_response_detail};
+use crate::error::{MgmtError, Result, raw_response_detail};
 
 /// A management client bound to a single device over a connection-oriented
 /// session.
@@ -110,26 +110,10 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
     /// Reads the device descriptor (type 0): the 16-bit **mask version** that
     /// decides property-based vs memory-based link writes.
     ///
-    /// Sends `A_DeviceDescriptor_Read` with the descriptor type in the APCI low
-    /// bits and an **empty** payload (the spec-correct framing — strict devices
-    /// `T_Disconnect` the over-long form), and decodes the `Response`,
-    /// validating that its APCI is an `A_DeviceDescriptor_Response`.
+    /// Delegates to [`crate::connection::read_device_descriptor`], the crate's one
+    /// descriptor reader — see it for the exact framing and what it accepts.
     pub async fn device_descriptor(&mut self) -> Result<u16> {
-        let (req_apci, payload) = apci::encode_device_descriptor_read(0);
-        let (resp_apci, data) = self.inner.request(req_apci, &payload).await?;
-        if resp_apci & apci::APCI_SELECTOR_MASK != apci::A_DEVICE_DESCRIPTOR_RESPONSE {
-            return Err(MgmtError::MalformedResponse {
-                address: self.inner.target(),
-                reason: descriptor_response_reason(resp_apci, &data),
-            });
-        }
-        apci::decode_device_descriptor_response(&data).ok_or_else(|| MgmtError::MalformedResponse {
-            address: self.inner.target(),
-            reason: format!(
-                "device descriptor response too short ({})",
-                raw_response_detail(resp_apci, &data)
-            ),
-        })
+        crate::connection::read_device_descriptor(&mut self.inner).await
     }
 
     /// Reads `count` elements of a property, starting at element `start`, of the
@@ -248,18 +232,25 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
     /// the golden-fixture dump primitive; callers loop over addresses for larger
     /// ranges). Returns the octets from the `A_Memory_Response`.
     pub async fn read_memory(&mut self, addr: u32, len: u8) -> Result<Vec<u8>> {
-        // Delegate to the shared load-layer primitive, which picks the plain
-        // A_Memory_Read or the 24-bit A_MemoryExtended_Read from the address (see
-        // `crate::load::read_memory` / `select_extended_memory`).
-        crate::load::read_memory(&mut self.inner, addr, len)
+        // Delegate to [`crate::memory`], the crate's single memory module, which
+        // picks the plain A_Memory_Read or the 24-bit A_MemoryExtended_Read from
+        // the address (see `memory::select_extended_memory`).
+        crate::memory::read_memory(&mut self.inner, addr, len)
             .await
-            .map_err(|e| match e {
-                crate::load::WriteError::Mgmt(m) => m,
-                other => MgmtError::MalformedResponse {
-                    address: self.inner.target(),
-                    reason: other.to_string(),
-                },
-            })
+            .map_err(|e| self.memory_error(e))
+    }
+
+    /// Folds a [`crate::memory`] error back into the [`MgmtError`] this type's
+    /// callers expect: a management error passes through, anything else (an
+    /// out-of-range address) becomes a malformed-response description.
+    fn memory_error(&self, err: crate::load::WriteError) -> MgmtError {
+        match err {
+            crate::load::WriteError::Mgmt(m) => m,
+            other => MgmtError::MalformedResponse {
+                address: self.inner.target(),
+                reason: other.to_string(),
+            },
+        }
     }
 
     /// Writes `data` to device memory starting at `addr`, in
@@ -280,9 +271,21 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
     /// stored octets, but that mode is optional, device-configurable and not
     /// observable from the tool ahead of time. An explicit `A_Memory_Read`
     /// read-back is the one confirmation that works across every stack, so it is
-    /// the path bussard takes; the optional write echo is ignored. Callers that
-    /// need speed over safety on a known-good link can fall back to the raw
-    /// [`apci::encode_memory_write`] primitive and skip verification.
+    /// the path bussard takes; the optional write echo is ignored.
+    ///
+    /// # This is not the download path
+    ///
+    /// The flash/apply engine streams segments with
+    /// [`crate::memory::write_memory_chunked`], which deliberately does **not**
+    /// read each chunk back: on a multi-kilobyte image that doubles the numbered
+    /// exchanges (exhausting a device's per-connection L4 budget) and interleaves
+    /// stray `A_Memory_Response`s into the stream. Integrity there is confirmed by
+    /// the device's own MCB CRC and the end-of-segment spot check. This method is
+    /// the small, interactive, one-shot write — a few octets a human or a test is
+    /// about to look at — so it keeps the per-chunk read-back and the plain 63-octet
+    /// chunk; the service selection and the 24-bit address bound are shared with
+    /// [`crate::memory`] so the two paths cannot disagree about *what* a memory
+    /// access is.
     ///
     /// An empty `data` is a no-op.
     pub async fn write_memory(&mut self, addr: u32, data: &[u8]) -> Result<()> {
@@ -306,7 +309,7 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
             // from the address, keeping the ≤16-bit path byte-identical. The
             // extended write is confirmed inline; the plain write is verified by a
             // separate read-back compare (the historical dump-primitive discipline).
-            if crate::load::select_extended_memory(chunk_addr, take) {
+            if crate::memory::select_extended_memory(chunk_addr, take) {
                 let (req_apci, payload) = apci::encode_memory_extended_write(chunk_addr, piece);
                 let (resp_apci, resp) = self.inner.request(req_apci, &payload).await?;
                 let parsed =
@@ -351,14 +354,18 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
         Ok(())
     }
 
-    /// Restarts the device (`A_Restart`). Fire-and-forget: the device does not
-    /// answer and typically drops the connection as it reboots, so this only
-    /// sends the request NDT and awaits its `T_ACK`.
+    /// Restarts the device (`A_Restart`). Fire-and-forget: the device reboots on
+    /// the request and never `T_ACK`s it (it drops the L4 link immediately), so
+    /// this sends the telegram **without** awaiting the ACK — waiting would
+    /// retransmit and then spuriously report the device absent. The caller waits
+    /// out the reboot and reconnects.
     ///
-    /// Nothing in phase 2 calls this yet; it is here for the downloader.
+    /// This is the same realisation the download engine uses for its terminal
+    /// restart (`crate::load::master_reset_via_basic_restart`), which is the one
+    /// verified against the real ETS→KNX-Virtual capture.
     pub async fn restart(&mut self) -> Result<()> {
         let (apci, payload) = apci::encode_restart(0);
-        self.inner.send_data(apci, &payload).await
+        self.inner.send_data_unacked(apci, &payload).await
     }
 
     /// Sends a clean `T_Disconnect`.

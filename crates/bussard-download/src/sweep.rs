@@ -202,11 +202,18 @@ pub struct SweepManifest {
 
 impl SweepManifest {
     /// Serializes the manifest to pretty, stable JSON (trailing newline).
-    pub fn to_json(&self) -> String {
+    ///
+    /// # Errors
+    ///
+    /// Returns the underlying [`serde_json::Error`] if the manifest cannot be
+    /// serialized. This used to be swallowed into an empty string, which would
+    /// have written an **empty baseline file** and then compared clean against it
+    /// — a regression check that silently stopped checking.
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
         // serde_json's pretty printer is deterministic for our sorted data.
-        let mut s = serde_json::to_string_pretty(self).unwrap_or_default();
+        let mut s = serde_json::to_string_pretty(self)?;
         s.push('\n');
-        s
+        Ok(s)
     }
 
     /// Parses a manifest from JSON.
@@ -515,6 +522,10 @@ pub fn normalize_plan_error(e: &PlanError) -> String {
         PlanError::AddressOutOfRange { .. } => "AddressOutOfRange".to_string(),
         PlanError::UnsupportedWriteProp { .. } => "UnsupportedWriteProp".to_string(),
         PlanError::MissingTableImage { .. } => "MissingTableImage".to_string(),
+        PlanError::Sys7FieldOutOfRange { field, .. } => {
+            format!("Sys7FieldOutOfRange: {field}")
+        }
+        PlanError::Sys7LsmOutOfRange { .. } => "Sys7LsmOutOfRange".to_string(),
         // NotSystemB is bucketed as NotSupportedFamily before reaching here.
         PlanError::NotSystemB { .. } => "NotSupportedFamily".to_string(),
     }
@@ -616,7 +627,7 @@ mod tests {
             }],
         }];
         let manifest = manifest_from_products(products);
-        let json = manifest.to_json();
+        let json = manifest.to_json().expect("the manifest serializes");
         let back = SweepManifest::from_json(&json).expect("roundtrip");
         assert_eq!(manifest, back);
         assert_eq!(back.totals.plan_executable, 1);
@@ -649,7 +660,10 @@ mod tests {
                 },
             ])
         };
-        assert_eq!(mk().to_json(), mk().to_json());
+        assert_eq!(
+            mk().to_json().expect("serializes"),
+            mk().to_json().expect("serializes")
+        );
         // Products are sorted by file name regardless of input order.
         assert_eq!(mk().products[0].file, "a.knxprod");
     }

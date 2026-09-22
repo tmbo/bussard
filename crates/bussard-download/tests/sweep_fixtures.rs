@@ -162,7 +162,11 @@ fn fixture_corpus_sweep_buckets_as_expected() {
     // Regenerate the baseline first, so a deliberate refresh does not trip the
     // shape assertions below (which encode the *current* intent).
     if std::env::var_os("BUSSARD_UPDATE_SWEEP_MANIFEST").is_some() {
-        std::fs::write(baseline_json(), manifest.to_json()).expect("write baseline json");
+        std::fs::write(
+            baseline_json(),
+            manifest.to_json().expect("the manifest serializes"),
+        )
+        .expect("write baseline json");
         std::fs::write(baseline_md(), manifest.to_markdown()).expect("write baseline md");
         eprintln!("baseline regenerated (BUSSARD_UPDATE_SWEEP_MANIFEST set)");
     }

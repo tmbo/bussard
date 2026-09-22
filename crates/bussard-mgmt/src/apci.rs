@@ -332,13 +332,20 @@ pub const MAX_MEMORY_WRITE_LEN: u8 = 63;
 /// Layout: `[object_index] [property_id] [count(4b)<<4 | start_hi(4b)] [start_lo]`.
 /// `count` is 1–15; `start` is a 12-bit element index (usually 1 for the first
 /// element).
+///
+/// A count larger than 15 is **clamped to 15**, not masked. Masking would turn a
+/// count of 16 into `0`, and `count == 0` is a different request — "read the
+/// property's element count" — so the device would answer a 2-octet element count
+/// where the caller expected 16 elements. Clamping asks for as many elements as
+/// the field can carry and lets the caller loop for the rest, which is what every
+/// chunked reader here already does.
 pub fn encode_property_value_read(
     object_index: u8,
     property_id: u8,
     count: u8,
     start: u16,
 ) -> Vec<u8> {
-    let count = count & 0x0f;
+    let count = count.min(0x0f);
     let start = start & 0x0fff;
     vec![
         object_index,

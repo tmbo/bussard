@@ -5,7 +5,8 @@
 //! The scripted device serves object-index discovery (`PID_OBJECT_TYPE`),
 //! `PID_TABLE` property arrays with real element counts and chunked reads,
 //! `PID_TABLE_REFERENCE` and raw memory — enough to exercise the property
-//! path, the memory-fallback path, the unsupported-mask refusal and the
+//! path, the memory-fallback path (plain `A_Memory_Read` below `0xFFFF` and
+//! `A_MemoryExtended_Read` above it), the unsupported-mask refusal and the
 //! nothing-readable error.
 
 use std::collections::HashMap;
@@ -40,17 +41,23 @@ struct TableDevice {
     /// `(object index, pid) → property array` (element 0 of the array is the
     /// first *element*, i.e. property start index 1).
     props: HashMap<(u8, u8), Vec<Vec<u8>>>,
-    /// Byte-addressable memory for `A_Memory_Read`.
-    memory: HashMap<u16, u8>,
+    /// Byte-addressable memory for `A_Memory_Read` / `A_MemoryExtended_Read`;
+    /// the key is the full 24-bit address, so a table above `0xFFFF` (the 07B0
+    /// actuators' `0xf000..0x1aad3` segments) can be scripted.
+    memory: HashMap<u32, u8>,
+    /// When set, the device refuses the plain `A_Memory_Read` service entirely —
+    /// a stand-in for the extended-memory-only devices, so a test can prove the
+    /// read really went out as `A_MemoryExtended_Read`.
+    extended_memory_only: bool,
     /// If set, cap the number of elements answered per property read to
     /// simulate a device that returns fewer elements than requested.
     max_elems_per_read: Option<usize>,
 }
 
 impl TableDevice {
-    fn put_memory(&mut self, base: u16, bytes: &[u8]) {
+    fn put_memory(&mut self, base: u32, bytes: &[u8]) {
         for (i, b) in bytes.iter().enumerate() {
-            self.memory.insert(base + i as u16, *b);
+            self.memory.insert(base + i as u32, *b);
         }
     }
 }
@@ -225,17 +232,37 @@ fn device_response(dev: &TableDevice, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)
         ));
     }
     if req_apci & APCI_SELECTOR == apci::A_MEMORY_READ {
+        if dev.extended_memory_only {
+            return None; // a device that only serves the extended memory service
+        }
         let count = (req_apci & 0x3F) as u8;
         if data.len() != 2 {
             return None; // strict: the payload is exactly the 2 address octets
         }
         let addr = u16::from_be_bytes([data[0], data[1]]);
         let bytes: Vec<u8> = (0..count)
-            .map(|i| dev.memory.get(&(addr + u16::from(i))).copied().unwrap_or(0))
+            .map(|i| {
+                dev.memory
+                    .get(&(u32::from(addr) + u32::from(i)))
+                    .copied()
+                    .unwrap_or(0)
+            })
             .collect();
         let mut resp = addr.to_be_bytes().to_vec();
         resp.extend_from_slice(&bytes);
         return Some((apci::A_MEMORY_RESPONSE | u16::from(count), resp));
+    }
+    // A_MemoryExtended_Read: a full count octet and a 3-octet address, answered
+    // with `[return_code][addr:3][data…]`.
+    if req_apci == apci::A_MEMORY_EXTENDED_READ {
+        let req = apci::decode_memory_extended_request(&data, false)?;
+        let bytes: Vec<u8> = (0..u32::from(req.count))
+            .map(|i| dev.memory.get(&(req.addr + i)).copied().unwrap_or(0))
+            .collect();
+        let mut resp = vec![0x00];
+        resp.extend_from_slice(&req.addr.to_be_bytes()[1..]);
+        resp.extend_from_slice(&bytes);
+        return Some((apci::A_MEMORY_EXTENDED_READ_RESPONSE, resp));
     }
     match req_apci {
         apci::A_PROPERTY_VALUE_READ => {
@@ -476,6 +503,58 @@ async fn falls_back_to_memory_when_pid_table_is_unreadable() {
             .any(|n| n.contains("no group object table")),
         "the missing group object table should be noted: {:?}",
         read.notes
+    );
+
+    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+}
+
+#[tokio::test]
+async fn memory_table_above_64k_is_read_via_extended_memory() {
+    // The read-back that motivated the extended memory service: a 07B0 actuator
+    // whose tables live above `0xFFFF` (real segments run `0xf000..0x1aad3`). The
+    // device here refuses the plain `A_Memory_Read` outright, so the tables can
+    // only be read if `read_tables` really issues `A_MemoryExtended_Read` — before
+    // issue #80 this path refused the table reference as "exceeds the 16-bit
+    // A_Memory_Read address space" and reconstruct/apply verification failed.
+    let (addr, gw) = bind_mock().await;
+    let target: IndividualAddress = "1.1.11".parse().unwrap();
+
+    let mut dev = TableDevice {
+        mask: 0x07B0,
+        object_types: vec![OT_DEVICE, OT_ADDRESS_TABLE, OT_ASSOCIATION_TABLE],
+        extended_memory_only: true,
+        ..TableDevice::default()
+    };
+    // Address table at 0x01_0000, named by the 4-octet PID_TABLE_REFERENCE form.
+    const ADDR_TABLE: u32 = 0x0001_0000;
+    dev.props.insert(
+        (1, PID_TABLE_REFERENCE),
+        vec![ADDR_TABLE.to_be_bytes().to_vec()],
+    );
+    let mut addr_blob = be16(2);
+    addr_blob.extend_from_slice(&be16(ga("1/2/0").raw()));
+    addr_blob.extend_from_slice(&be16(ga("4/0/7").raw()));
+    dev.put_memory(ADDR_TABLE, &addr_blob);
+    // Association table at 0x01_AAD3 — the top of the real actuators' span.
+    const ASSOC_TABLE: u32 = 0x0001_AAD3;
+    dev.props.insert(
+        (2, PID_TABLE_REFERENCE),
+        vec![ASSOC_TABLE.to_be_bytes().to_vec()],
+    );
+    let mut assoc_blob = be16(2);
+    assoc_blob.extend_from_slice(&assoc_elem(1, 1));
+    assoc_blob.extend_from_slice(&assoc_elem(2, 5));
+    dev.put_memory(ASSOC_TABLE, &assoc_blob);
+
+    let gw_task = tokio::spawn(run_mock(gw, target, dev));
+
+    let read = read_tables_from(addr, target).await.unwrap();
+    assert_eq!(read.addresses, vec![ga("1/2/0"), ga("4/0/7")]);
+    assert_eq!(read.associations, vec![(1, 1), (2, 5)]);
+    assert!(
+        read.sources.iter().all(|(_, s)| *s == TableSource::Memory),
+        "both tables should come from the memory path: {:?}",
+        read.sources
     );
 
     let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
