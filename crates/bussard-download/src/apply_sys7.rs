@@ -74,8 +74,8 @@ use bussard_mgmt::{LsmAccess, Sys7Profile, alloc_attr_octets};
 
 use crate::compute::DesiredTables;
 use crate::compute_sys7::{
-    SYS7_ADDRESS_REGION_LEN, SYS7_ADDRESS_TABLE_ADDR, SYS7_ASSOCIATION_REGION_LEN,
-    SYS7_ASSOCIATION_TABLE_ADDR, sys7_address_table, sys7_association_table,
+    SYS7_ADDRESS_REGION_LEN, SYS7_ASSOCIATION_REGION_LEN, sys7_address_table,
+    sys7_association_table,
 };
 use crate::tables_sys7::{Sys7LiveTables, read_region};
 
@@ -395,6 +395,8 @@ mod tests {
                 sources: Vec::new(),
                 notes: Vec::new(),
             },
+            address_base: crate::compute_sys7::SYS7_ADDRESS_TABLE_ADDR,
+            association_base: crate::compute_sys7::SYS7_ASSOCIATION_TABLE_ADDR,
             own_ia,
             group_object_base: go_base,
             group_object_image: go_image,

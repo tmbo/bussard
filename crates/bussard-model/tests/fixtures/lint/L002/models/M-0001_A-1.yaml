@@ -1,0 +1,5 @@
+# Generated product model (fixture). Only the fields the lint reads are present.
+identity:
+  id: M-0001_A-1
+bus_current_ma: 10
+parameters: []

@@ -44,9 +44,10 @@ impl BussardMcp {
     /// `knx_read_group` in passive mode, and `knx_write_group` unless
     /// `--allow-writes` is set (and never in passive mode).
     pub fn new(state: Arc<SharedState>) -> Self {
-        // The bus tools and the model tools live in two `#[tool_router]` impl
-        // blocks; rmcp's `ToolRouter` adds, so the server serves both.
-        let mut tool_router = Self::tool_router() + Self::model_router();
+        // The bus tools, the model tools and the group-planning tools live in
+        // separate `#[tool_router]` impl blocks; rmcp's `ToolRouter` adds, so the
+        // server serves all of them.
+        let mut tool_router = Self::tool_router() + Self::model_router() + Self::groups_router();
         if state.no_model_edits {
             for name in crate::tools_model::MODEL_EDIT_TOOLS {
                 tool_router.remove_route(name);

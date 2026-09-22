@@ -218,6 +218,44 @@ synthesized 9 group address(es) and 5 link(s)
 
 The synthesized model is a scaffold, not ground truth, and every file carries a banner saying so: names and DPTs are placeholders (`validate` warns W011, honestly), directions are recorded as `listen:`, and non-System-B devices become stubs. Watch the bus with `monitor --dir fresh` and annotate `groups.yaml` as you identify traffic; decoding fills in as the model grows.
 
+## ... commission a whole line?
+
+Preview the line first. `plan --line` reads every device the model has on the line and prints one table:
+
+```console
+$ bussard plan --line 1.1
+
+plan line 1.1 via 192.0.2.10:3671 — 3 device(s)
+
+address   name              mask   status
+1.1.4     Jalousie Wohnen   07B0   changes: 2
+1.1.5     Alter Dimmer      0012   skipped: unsupported mask 0012 (System 1)
+1.1.6     Schaltaktor       07B0   unchanged
+```
+
+Then write it. `apply --line` asks once for the whole line, backs up and verifies each device, and keeps going when one fails:
+
+```console
+$ bussard apply --line 1.1
+apply the model's links to 3 device(s) on line 1.1 via 192.0.2.10:3671? [y/N] y
+```
+
+If the tunnel drops or you stop the run, re-run with `--resume`. It reads `knx/captures/apply-line-1.1.json` and skips the devices already done, touching only the rest. Add `--json` to either command for a summary an assistant can report.
+
+## ... label devices on the bench?
+
+Put the model's devices for a line on the bench, factory-fresh, and run:
+
+```console
+$ bussard commission --line 1.1 --labels labels.csv
+commission 2 device(s) on line 1.1 via 192.0.2.10:3671? [y/N] y
+  press the programming button on Blind actuator (JAL-0810.03)
+  assigned 15.15.255 → 1.1.7
+1.1.7  Blind actuator  MDT JAL-0810.03  Ground floor / Living room
+```
+
+For each device that does not answer yet, `commission` asks for its programming button, checks the pressed device's order number against the model, and only then writes the address. Pressing the wrong module stops that device with both order numbers named; the run carries on with the next one. Each commissioned device prints a label line and appends `address;name;order_number;floor;room` to `labels.csv` for the label printer. Add `--flash` and `--apply` to program each device in the same pass.
+
 ## ... flash a factory-fresh device?
 
 A factory-fresh device needs its application program downloaded once before links take effect. `flash` does that first download straight from the `.knxprod`:
@@ -259,6 +297,55 @@ $ claude mcp add knx -- bussard mcp --dir knx
 Then ask in plain language: "What devices are on my bus?", "Watch for telegrams while I press the kitchen switch", "Read the wind speed". The server exposes the model, live telegrams, a "press the button now" wait tool, and rate-limited bus reads ([the full tool list](reference.md#the-mcp-server)). Add `--passive` for a server that never transmits, or `--allow-writes` to let Claude write group values. `--allow-writes` goes through the same real-gateway gate as `bussard write`: against a non-loopback gateway the server refuses to start without `--allow-remote-gateway`. Protected GAs are refused over MCP with no override either way, and a `dpt` that contradicts the model is refused too.
 
 The payoff is closing the loop between an intent and a reviewed change. "I added a presence detector in the hall, it should switch the hall light": Claude finds the detector's GA from recent telegrams, reads the light state, checks the model, and proposes the `links.yaml` edit. You review the diff, then run `plan` and `apply` yourself.
+
+## ... plan the group addresses for a new house?
+
+Write the room book as a plan file and let bussard do the numbering:
+
+```yaml
+# plan.yaml
+rooms:
+  - floor: Ground floor
+    room: Kitchen
+    functions: [light, light-dim, blind, heating]
+  - floor: Ground floor
+    room: Living room
+    functions: [light-dim, blind, heating, socket]
+  - floor: First floor
+    room: Bedroom
+    functions: [light, blind, heating]
+```
+
+```console
+$ bussard scaffold plan.yaml --dir knx
+Scaffolded 62 group address(es) into knx/groups.yaml using the floor-trade-block scheme.
+  1/1/0     1.001    Ground floor Kitchen Light Switch
+  1/1/3     1.001    Ground floor Kitchen Light Switch status
+  1/1/5     1.001    Ground floor Kitchen Dimmer Switch
+  ...
+Wrote a matching lint: block to knx/bussard.yaml - `bussard validate` now checks the convention.
+Validation: 0 error(s), 0 warning(s).
+```
+
+Each function reserves a fixed block (five addresses for a light, ten for a blind or heating zone) and fills only the roles it needs, so the unused slots are there when the plain light later becomes a dimmer. Pick the other scheme with `--scheme function-floor` (trade on the main group, floor on the middle). Add rooms to `plan.yaml` and re-run: existing addresses and names are kept verbatim, only the new rooms are numbered.
+
+The written `lint:` block makes `bussard validate` check the convention from then on: a GA outside its block, a switch with no feedback address, a DPT that contradicts its role ([codes L005-L008](reference.md#validation-diagnostics)).
+
+An assistant driving `bussard mcp` can do the same over the `knx_scaffold_groups` tool, drafting the room list from a conversation. Confirm the floors, rooms and functions before it writes.
+
+## ... get my names into ETS?
+
+Import is otherwise one-way. `export-groups` writes the plan in the two formats ETS's *Group Addresses -> Import* accepts:
+
+```console
+$ bussard export-groups --format ets-csv --out groups.csv
+Wrote 62 group address(es) to groups.csv (ETS CSV).
+Import it in ETS: Group Addresses -> Import, then pick this file.
+```
+
+In ETS, open the project, select *Group Addresses* in the project tree, and use *Import* on the toolbar. The CSV is the three-level form ETS itself exports (UTF-8 with a BOM, semicolon separated); `--format ets-xml` writes the `GroupAddress-Export` XML instead, which keeps the main and middle range names as a tree.
+
+Names, descriptions and DPTs cross over as they are. ETS has no equivalent of bussard's `protected:` flag, so a guarded address carries a leading `[protected]` marker in its description and stays recognisable on the other side.
 
 ## ... capture history and query it?
 

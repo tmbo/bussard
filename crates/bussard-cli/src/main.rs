@@ -6,10 +6,12 @@ mod adopt_cmd;
 mod apply_cmd;
 mod assign_cmd;
 mod capture_cmd;
+mod commission_cmd;
 mod conn_cmd;
 mod describe_cmd;
 mod diff_cmd;
 mod export_cmd;
+mod export_groups_cmd;
 mod flash_cmd;
 mod ha_config_cmd;
 mod history_cmd;
@@ -18,11 +20,13 @@ mod import_cmd;
 mod import_product_cmd;
 mod init_cmd;
 mod keyring_cmd;
+mod line_cmd;
 mod mcp_cmd;
 mod monitor_cmd;
 mod plan_cmd;
 mod read_cmd;
 mod reconstruct_cmd;
+mod scaffold_cmd;
 mod scan_cmd;
 mod secure_key;
 mod validate_cmd;
@@ -72,6 +76,24 @@ enum Format {
     Text,
     /// A JSON array.
     Json,
+}
+
+/// The group-address addressing scheme, as a CLI value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum SchemeArg {
+    /// `main` = floor, `middle` = trade.
+    FloorTradeBlock,
+    /// `main` = trade, `middle` = floor.
+    FunctionFloor,
+}
+
+impl From<SchemeArg> for bussard_model::Scheme {
+    fn from(value: SchemeArg) -> Self {
+        match value {
+            SchemeArg::FloorTradeBlock => bussard_model::Scheme::FloorTradeBlock,
+            SchemeArg::FunctionFloor => bussard_model::Scheme::FunctionFloor,
+        }
+    }
 }
 
 /// The top-level subcommands.
@@ -387,11 +409,17 @@ enum Command {
         #[arg(long)]
         routing: bool,
     },
-    /// Read a device's live tables and show what `apply` would change.
+    /// Read a device's live tables and show what `apply` would change, or (with
+    /// `--line`) plan every model device on a whole line.
     Plan {
-        /// The device to plan for, e.g. `1.1.4`.
-        #[arg(value_name = "ADDRESS")]
-        address: String,
+        /// The device to plan for, e.g. `1.1.4` (mutually exclusive with
+        /// `--line`).
+        #[arg(value_name = "ADDRESS", required_unless_present = "line")]
+        address: Option<String>,
+        /// Plan every device the model has on this line, e.g. `1.1`, in address
+        /// order, and print one summary table (issue #100).
+        #[arg(long, value_name = "LINE", conflicts_with = "address")]
+        line: Option<String>,
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
@@ -405,11 +433,26 @@ enum Command {
         #[arg(long)]
         routing: bool,
     },
-    /// Apply the model's link tables to a device (plan, confirm, write, verify).
+    /// Apply the model's link tables to a device (plan, confirm, write, verify),
+    /// or (with `--line`) to every model device on a whole line.
     Apply {
-        /// The device to program, e.g. `1.1.4`.
-        #[arg(value_name = "ADDRESS")]
-        address: String,
+        /// The device to program, e.g. `1.1.4` (mutually exclusive with
+        /// `--line`).
+        #[arg(value_name = "ADDRESS", required_unless_present = "line")]
+        address: Option<String>,
+        /// Apply to every device the model has on this line, e.g. `1.1`, in
+        /// address order: one confirmation for the run, one summary table, and a
+        /// resumable state file (issue #100).
+        #[arg(long, value_name = "LINE", conflicts_with = "address")]
+        line: Option<String>,
+        /// Line mode only: emit the JSON summary instead of the table.
+        #[arg(long, requires = "line")]
+        json: bool,
+        /// Line mode only: continue the run recorded in
+        /// `<dir>/captures/apply-line-<line>.json`, skipping the devices it
+        /// already finished.
+        #[arg(long, requires = "line")]
+        resume: bool,
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
@@ -482,6 +525,55 @@ enum Command {
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
     },
+    /// Bench mode: walk the model's devices on a line, prompt for each device's
+    /// programming button, verify its order number, assign its address, and
+    /// print a label (issue #100).
+    Commission {
+        /// The line to commission, e.g. `1.1`.
+        #[arg(long, value_name = "LINE")]
+        line: String,
+        /// Also flash each device's application program after assigning it.
+        #[arg(long)]
+        flash: bool,
+        /// Also apply the model's link tables after assigning (and flashing).
+        #[arg(long)]
+        apply: bool,
+        /// Append one label row per commissioned device to this CSV file
+        /// (columns `address;name;order_number;floor;room`).
+        #[arg(long, value_name = "FILE")]
+        labels: Option<PathBuf>,
+        /// The vendor `.knxprod` to flash from. Without it, `--flash` searches
+        /// `<dir>/vendor/` for an archive carrying the device's order number.
+        #[arg(long, value_name = "FILE", requires = "flash")]
+        product: Option<PathBuf>,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Skip the interactive confirmation (dangerous; for scripts).
+        #[arg(long)]
+        yes: bool,
+        /// Emit the JSON summary instead of the table.
+        #[arg(long)]
+        json: bool,
+        /// The ETS `.knxkeys` keyring holding each target's KNX Data Secure tool
+        /// key (issue #71), used by `--flash` and `--apply`.
+        #[arg(long, value_name = "FILE")]
+        keyring: Option<PathBuf>,
+        /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
+        /// escape hatch. Prefer `--keyring` for a real installation.
+        #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
+        tool_key: Option<String>,
+        /// Override the gateway `host[:port]` for tunneling.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Force KNXnet/IP routing (multicast) transport.
+        #[arg(long)]
+        routing: bool,
+        /// Permit a write to a non-loopback (real) gateway. Required for any
+        /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
+        #[arg(long)]
+        allow_remote_gateway: bool,
+    },
     /// Validate the YAML model and report diagnostics.
     Validate {
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
@@ -490,6 +582,39 @@ enum Command {
         /// Output format.
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
+    },
+    /// Draft a group-address plan from a room and function list.
+    Scaffold {
+        /// The plan file: `rooms: [{floor, room, functions: [...]}]`.
+        #[arg(value_name = "PLAN")]
+        plan: PathBuf,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// The addressing scheme (default: `lint.groups.scheme`, else floor-trade-block).
+        #[arg(long, value_enum)]
+        scheme: Option<SchemeArg>,
+        /// Write to this file instead of `<dir>/groups.yaml`.
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+        /// Emit JSON instead of the table format.
+        #[arg(long)]
+        json: bool,
+        /// Do not add a matching `lint:` block to `bussard.yaml`.
+        #[arg(long)]
+        no_lint_config: bool,
+    },
+    /// Export the group-address plan in a format ETS can import.
+    ExportGroups {
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// The export format.
+        #[arg(long, value_enum)]
+        format: export_groups_cmd::ExportFormat,
+        /// The file to write.
+        #[arg(long, value_name = "FILE")]
+        out: PathBuf,
     },
     /// Live-monitor the bus, decoding telegrams against the model.
     Monitor {
@@ -823,18 +948,27 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
         ),
         Command::Plan {
             address,
+            line,
             dir,
             json,
             gateway,
             routing,
-        } => plan_cmd::run(
-            &address,
-            &dir,
-            json,
-            conn_cmd::ConnOverrides { gateway, routing },
-        ),
+        } => {
+            let overrides = conn_cmd::ConnOverrides { gateway, routing };
+            match line {
+                Some(line) => line_cmd::run_plan(&line, &dir, json, overrides),
+                None => {
+                    // clap guarantees ADDRESS is present when --line is absent.
+                    let address = address.expect("clap requires ADDRESS without --line");
+                    plan_cmd::run(&address, &dir, json, overrides)
+                }
+            }
+        }
         Command::Apply {
             address,
+            line,
+            json,
+            resume,
             dir,
             yes,
             keyring,
@@ -842,11 +976,63 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             gateway,
             routing,
             allow_remote_gateway,
-        } => apply_cmd::run(
-            &address,
-            &dir,
+        } => {
+            let overrides = conn_cmd::ConnOverrides { gateway, routing };
+            let tool_key_source = secure_key::ToolKeySource {
+                keyring: keyring.as_deref(),
+                tool_key: tool_key.as_deref(),
+            };
+            match line {
+                Some(line) => line_cmd::run_apply(
+                    &line,
+                    &dir,
+                    yes,
+                    json,
+                    resume,
+                    allow_remote_gateway,
+                    tool_key_source,
+                    overrides,
+                ),
+                None => {
+                    // clap guarantees ADDRESS is present when --line is absent.
+                    let address = address.expect("clap requires ADDRESS without --line");
+                    apply_cmd::run(
+                        &address,
+                        &dir,
+                        yes,
+                        allow_remote_gateway,
+                        tool_key_source,
+                        overrides,
+                    )
+                }
+            }
+        }
+        Command::Commission {
+            line,
+            flash,
+            apply,
+            labels,
+            product,
+            dir,
             yes,
+            json,
+            keyring,
+            tool_key,
+            gateway,
+            routing,
             allow_remote_gateway,
+        } => commission_cmd::run(
+            &line,
+            &dir,
+            commission_cmd::CommissionOptions {
+                flash,
+                apply,
+                labels: labels.as_deref(),
+                product: product.as_deref(),
+                yes,
+                json,
+                allow_remote_gateway,
+            },
             secure_key::ToolKeySource {
                 keyring: keyring.as_deref(),
                 tool_key: tool_key.as_deref(),
@@ -860,6 +1046,22 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
         }
         Command::Undo { snapshot, dir } => history_cmd::run_undo(&dir, snapshot.as_deref()),
         Command::Validate { dir, format } => validate_cmd::run(&dir, format == Format::Json),
+        Command::Scaffold {
+            plan,
+            dir,
+            scheme,
+            out,
+            json,
+            no_lint_config,
+        } => scaffold_cmd::run(
+            &plan,
+            &dir,
+            scheme.map(Into::into),
+            out.as_deref(),
+            json,
+            no_lint_config,
+        ),
+        Command::ExportGroups { dir, format, out } => export_groups_cmd::run(&dir, format, &out),
         Command::Init {
             dir,
             gateway,
