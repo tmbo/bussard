@@ -30,7 +30,7 @@ fn write_model(dir: &std::path::Path) {
 }
 
 #[test]
-fn mcp_stdio_handshake_is_pure_json_and_lists_nine_passive_tools() {
+fn mcp_stdio_handshake_is_pure_json_and_lists_the_passive_tools() {
     let tmp = std::env::temp_dir().join(format!("bussard-mcp-stdio-{}", std::process::id()));
     let knx = tmp.join("knx");
     write_model(&knx);
@@ -119,6 +119,8 @@ fn mcp_stdio_handshake_is_pure_json_and_lists_nine_passive_tools() {
     tools.sort();
     let mut expected = vec![
         "knx_describe_change",
+        "knx_diff_project",
+        "knx_export_bundle",
         "knx_get_device",
         "knx_get_group",
         "knx_history",
@@ -132,7 +134,7 @@ fn mcp_stdio_handshake_is_pure_json_and_lists_nine_passive_tools() {
     expected.sort_unstable();
     assert_eq!(
         tools, expected,
-        "passive mode exposes exactly 10 tools: no bus tools, and no model edits \
+        "passive mode exposes exactly 12 tools: no bus tools, and no model edits \
          because this server runs with --no-model-edits"
     );
 

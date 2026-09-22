@@ -47,7 +47,10 @@ impl BussardMcp {
         // The bus tools, the model tools and the group-planning tools live in
         // separate `#[tool_router]` impl blocks; rmcp's `ToolRouter` adds, so the
         // server serves all of them.
-        let mut tool_router = Self::tool_router() + Self::model_router() + Self::groups_router();
+        let mut tool_router = Self::tool_router()
+            + Self::model_router()
+            + Self::groups_router()
+            + Self::diff_router();
         if state.no_model_edits {
             for name in crate::tools_model::MODEL_EDIT_TOOLS {
                 tool_router.remove_route(name);

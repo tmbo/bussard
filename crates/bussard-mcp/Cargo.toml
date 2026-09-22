@@ -10,6 +10,8 @@ description = "MCP stdio server for bussard: read-only KNX model and bus introsp
 
 [dependencies]
 bussard-model = { workspace = true }
+# `.knxproj` import for `knx_diff_project` (issue #99), in memory only.
+bussard-project = { workspace = true }
 bussard-transport = { workspace = true }
 bussard-monitor = { workspace = true }
 bussard-bus = { workspace = true }
