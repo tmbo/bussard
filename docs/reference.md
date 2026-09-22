@@ -192,7 +192,7 @@ Read a device's live tables and show what `apply` would change. With `--line`, p
 
 ### `bussard apply <ADDRESS>`
 
-Apply the model's link tables to a device: plan, confirm, back up, write, verify. The pre-state tables are written to `<dir>/captures/backups/<ia>-<timestamp>.json` before any write; tables are rewritten wholesale, so re-running `apply` is idempotent. System B (`x7B0`) and System 7 (`0705` / `0701`). On System B each table is written into a segment the device allocates for it: StartLoading, `LdCtrlRelSegment`, read the placement from `PID_TABLE_REFERENCE`, memory-write the count word plus the elements, LoadCompleted. The `PID_TABLE` property array is never written, because real devices refuse it (see the finding in [testing-campaign.md](testing-campaign.md#findings)). On System 7 only the two table load-state machines are driven (Unload, StartLoading, allocate, 12-octet writes with read-back verify, TaskSegment, LoadCompleted) — parameters are untouched and the device is not restarted, so a link change costs no downtime.
+Apply the model's link tables to a device: plan, confirm, back up, write, verify. The pre-state tables are written to `<dir>/captures/backups/<ia>-<timestamp>.json` before any write (the format `backup` and `restore` share), and `apply` prints a hint when no installation-wide `backup` run exists yet; tables are rewritten wholesale, so re-running `apply` is idempotent. System B (`x7B0`) and System 7 (`0705` / `0701`). On System B each table is written into a segment the device allocates for it: StartLoading, `LdCtrlRelSegment`, read the placement from `PID_TABLE_REFERENCE`, memory-write the count word plus the elements, LoadCompleted. The `PID_TABLE` property array is never written, because real devices refuse it (see the finding in [testing-campaign.md](testing-campaign.md#findings)). On System 7 only the two table load-state machines are driven (Unload, StartLoading, allocate, 12-octet writes with read-back verify, TaskSegment, LoadCompleted) — parameters are untouched and the device is not restarted, so a link change costs no downtime.
 
 | Flag / arg | Default | Meaning |
 |---|---|---|
@@ -278,6 +278,72 @@ Restore the model files to a snapshot, print what that reverts, and point at `pl
 |---|---|---|
 | `[SNAPSHOT]` | the newest one that differs from the working files | The snapshot to restore (id or number). |
 | `--dir <DIR>` | `knx` | The model directory. |
+
+### `bussard backup [ADDRESS...]`
+
+Snapshot the installation before you change it. For every device in the model (or every model device on `--line`, or the addresses given), `backup` reads the address and association tables and writes one JSON file per device, in the same format `apply` uses for its pre-write backup. On System B it also reads the application segment, which holds the parameters: the base comes from `PID_TABLE_REFERENCE` and the length from `PID_MCB_TABLE`, so no product data is needed. System 7 reports no length for its parameter image, so its parameters are marked as not captured.
+
+`manifest.json` lists every device the run considered, with its mask, system type, resident application id, order number, read time, parameter status and one of four statuses:
+
+| Status | Meaning |
+|---|---|
+| `backed_up` | Tables (and, where possible, parameters) were written to a file. |
+| `skipped` | The mask is outside System B / System 7; the reason is in `detail`. |
+| `unreachable` | Nothing answered at the address. |
+| `failed` | The device answered, but a read failed; the reason is in `detail`. |
+
+`backup` sends only descriptor, authorize, property-read and memory-read APDUs, so it is safe on a live installation. It uses one bus connection, leased per device. Exit code 0 when no device failed, 1 otherwise.
+
+| Flag / arg | Default | Meaning |
+|---|---|---|
+| `[ADDRESS...]` | every model device | Back up only these devices. |
+| `--line <LINE>` | | Back up only the model devices on this line, e.g. `1.1`. |
+| `--out <DIR>` | `<dir>/captures/backups/<UTC timestamp>/` | Where to write the snapshot. |
+| `--dir <DIR>` | `knx` | The model directory. |
+| `--json` | off | Print the manifest as JSON. |
+| `--keyring <FILE>` / `--tool-key <HEX>` | | KNX Data Secure tool keys, as for `apply`. |
+| `--gateway <HOST>` | | Gateway override. |
+| `--routing` | off | Force routing transport. |
+
+### `bussard restore <BACKUP_DIR> <ADDRESS>`
+
+Write one device's backed-up link tables back. `restore` picks the newest `<ia>-<timestamp>.json` in `BACKUP_DIR` (a `backup` run, or `<dir>/captures/backups` for the files `apply` leaves) and runs the `apply` path with the backup as the desired state: plan, confirm, pre-write backup, write, verify. A backup restored onto a device that has not changed plans empty and writes nothing. Parameter memory in the backup is reported but not written; put parameters back with `flash`. The model is optional here: the tables come from the backup.
+
+| Flag / arg | Default | Meaning |
+|---|---|---|
+| `<BACKUP_DIR>` | | The backup directory. |
+| `<ADDRESS>` | | The device to restore, e.g. `1.1.4`. |
+| `--dir <DIR>` | `knx` | The model directory (connection defaults, backup location). |
+| `--yes` | off | Skip the interactive confirmation. |
+| `--allow-remote-gateway` | off | Permit a write to a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
+| `--keyring <FILE>` / `--tool-key <HEX>` | | KNX Data Secure tool key. |
+| `--gateway <HOST>` | | Gateway override. |
+| `--routing` | off | Force routing transport. |
+
+### `bussard replace <ADDRESS> --product <FILE>`
+
+Put a new device of the same product in place of a dead one. The steps:
+
+1. Check that nothing answers at `ADDRESS`. A device that still answers is refused unless `--force`.
+2. Wait for the programming button and read the pressed device's order number, mask and application id. A mismatch with the model's device file (`product.order_number`, `product.mask`) is refused unless `--force`. A field the model states but the device does not report counts as a mismatch.
+3. Ask once for confirmation, naming the gateway. Then assign the address (as `assign` does), flash the application with the model's parameters (as `flash` does; skipped with `--no-flash`), and apply the model's tables (as `apply` does).
+4. Record `replaced: <RFC3339>` in the device file with a one-line edit; the rest of the file is kept as it is.
+
+`replace` adds no write primitive of its own. If the flash or apply step fails, the address is already assigned; the error names the command to re-run.
+
+| Flag / arg | Default | Meaning |
+|---|---|---|
+| `<ADDRESS>` | | The address of the device being replaced. |
+| `--product <FILE>` | | The vendor `.knxprod` for the new device. |
+| `--dir <DIR>` | `knx` | The model directory. |
+| `--yes` | off | Skip the confirmation (required without a TTY). |
+| `--force` | off | Proceed although the old device answers or the identity does not match. |
+| `--no-flash` | off | Leave the application image alone (a spare that already carries it). |
+| `--bcu-key <HEX>` | free access | BCU key for the flash step. |
+| `--allow-remote-gateway` | off | Permit a write to a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
+| `--keyring <FILE>` / `--tool-key <HEX>` | | KNX Data Secure tool key. |
+| `--gateway <HOST>` | | Gateway override. |
+| `--routing` | off | Force routing transport. |
 
 ### `bussard validate`
 
@@ -614,6 +680,7 @@ links:
 address: "1.1.4"
 name: "Blind Actuator 4-fold"
 location: { floor: "Ground Floor", room: "Utility Room" }
+replaced: 2026-09-22T10:15:00Z   # written by `bussard replace`; absent otherwise
 product:
   manufacturer: "Northwind Controls"
   order_number: "BA-4"

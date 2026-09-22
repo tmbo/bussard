@@ -470,6 +470,7 @@ mod tests {
                         name: format!("dev {a}"),
                         description: None,
                         location: None,
+                        replaced: None,
                         product: None,
                         channels: BTreeMap::new(),
                         parameters: BTreeMap::new(),

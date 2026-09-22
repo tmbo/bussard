@@ -959,6 +959,7 @@ mod tests {
                 module_bases: BTreeMap::new(),
                 com_objects: BTreeMap::new(),
                 security: None,
+                replaced: None,
             },
             file_stem: format!("{ia_str}-{name}"),
         }
