@@ -84,6 +84,10 @@ struct WriteDevice {
     /// seen this many NDTs, modelling a device that wedges mid-session. The tool
     /// then hits its ACK timeout and surfaces a mid-session silence error.
     silent_after_ndt: Option<usize>,
+    /// The octet count of every `A_Memory_Read` the tool sent, in order. Lets a
+    /// test assert the reads were chunked to the device's negotiated APDU rather
+    /// than a fixed 63 (issue #80).
+    read_counts: Vec<u8>,
 }
 
 type Shared = Arc<Mutex<WriteDevice>>;
@@ -286,7 +290,8 @@ fn device_response(dev: &Shared, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)> {
         }
         let count = (apci_val & 0x3f) as u8;
         let addr = u16::from_be_bytes([data[0], data[1]]);
-        let d = dev.lock().unwrap();
+        let mut d = dev.lock().unwrap();
+        d.read_counts.push(count);
         let bytes: Vec<u8> = (0..count)
             .map(|i| {
                 let a = addr.wrapping_add(u16::from(i));
@@ -425,6 +430,47 @@ fn fast() -> Timeouts {
         max_repetitions: 1,
         response_timeout: Duration::from_millis(200),
     }
+}
+
+/// `compare_rel_mem` must chunk its read-back by the **negotiated** max-APDU: a
+/// device advertising `PID_MAX_APDU_LENGTH = 15` takes 12-octet reads in standard
+/// frames, and the fixed 63-octet chunk this used to send is an extended frame such
+/// a device may reject (issue #80).
+#[tokio::test]
+async fn compare_rel_mem_chunks_by_the_negotiated_apdu() {
+    let (addr, gw) = bind_mock().await;
+    let target: IndividualAddress = "1.1.4".parse().unwrap();
+    let shared: Shared = Arc::new(Mutex::new(device()));
+    // Seed 40 octets of segment content the compare will match.
+    let expected: Vec<u8> = (0..40u8).map(|i| i.wrapping_mul(3)).collect();
+    {
+        let mut d = shared.lock().unwrap();
+        for (i, b) in expected.iter().enumerate() {
+            d.memory.insert(0x4200 + i as u16, *b);
+        }
+    }
+    let gw_task = tokio::spawn(run_mock(gw, target, shared.clone()));
+
+    let mut bus = open_bus(addr).await;
+    let source: IndividualAddress = "0.0.255".parse().unwrap();
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    // A 15-octet APDU device: 15 - 3 octets of memory-read overhead = 12.
+    l4.set_max_apdu(Some(15));
+
+    load::compare_rel_mem(&mut l4, 1, 0x4200, 0, &expected, None, false)
+        .await
+        .expect("the segment content matches, so the compare passes");
+
+    let counts = shared.lock().unwrap().read_counts.clone();
+    assert_eq!(
+        counts,
+        vec![12, 12, 12, 4],
+        "a 40-octet compare on a 15-octet-APDU device is four standard-frame reads"
+    );
+
+    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
 }
 
 // --- Tests --------------------------------------------------------------
