@@ -32,7 +32,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
-use bussard_bus::{Bus, BusHandle, ops};
+use bussard_bus::{Bus, BusHandle};
 use bussard_download::{
     FlashPlan, FlashStep, Freshness, Progress, assess_freshness, flash, plan_flash,
     probe_resident_state, select_application, trace,
@@ -43,7 +43,8 @@ use bussard_model::IndividualAddress;
 use bussard_prod::{ApplicationProgram, ProductData, normalize_order_number};
 
 use crate::conn_cmd::{
-    ConnOverrides, enforce_write_gate, gateway_display, load_model_required, resolve_config,
+    ConnOverrides, checked_source_or_close, enforce_write_gate, gateway_display,
+    load_model_required, resolve_config,
 };
 
 /// Flashes an application program from vendor product data into a device.
@@ -147,12 +148,13 @@ pub fn run(
         let config = config.clone();
         let probe_key = tool_key.clone();
         let probe_seq = secure_seq.clone();
+        let conn = overrides.clone();
         runtime.block_on(async move {
             let (handle, _task) = Bus::connect(config);
             if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
                 eprintln!("warning: bus not connected yet; management traffic may use the 0.0.255 fallback source");
             }
-            let source = ops::group_source(&handle);
+            let source = checked_source_or_close(&handle, &conn).await?;
             let lease = handle.lease().await.context("leasing the bus")?;
             let channel = LeaseChannel::new(lease);
             // Track whether the T_Connect established before the first read: a
@@ -297,7 +299,7 @@ pub fn run(
         if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
             eprintln!("warning: bus not connected yet; management traffic may use the 0.0.255 fallback source");
         }
-        let source = ops::group_source(&handle);
+        let source = checked_source_or_close(&handle, &overrides).await?;
         let result = execute(
             &handle,
             target,
