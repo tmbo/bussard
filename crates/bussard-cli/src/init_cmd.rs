@@ -368,56 +368,73 @@ vendor/
 const README_MD: &str = "\
 # KNX model (bussard)
 
-This directory is your KNX installation as code. bussard reads it to decode the
-bus and to push changes to your devices. Everything here is plain YAML, but you
-never have to edit it by hand: `bussard` and an assistant driving it write these
-files for you.
+This directory is your KNX installation as a model. bussard reads it to decode
+the bus and to program your devices. The files are plain YAML, but you never
+have to edit them by hand: bussard and an assistant driving it write them for
+you.
 
-## Undo is built in
+## History and undo are built in
 
-bussard keeps its own history in `.bussard/history/`. Every time bussard writes
-the model or the bus it first saves a full copy of these files, with a note
-saying which command did it and when.
+bussard keeps its own history in `.bussard/history/`. Before bussard writes the
+model or a device, it saves a full copy of these files, with a note saying which
+command did it and when.
 
-- `bussard status` — what has changed since the last save, in plain sentences.
-- `bussard history` — every save, oldest first, one line each.
-- `bussard show <n>` — what one of them changed.
-- `bussard undo` — put the files back to the previous save.
+- `bussard status`: what has changed since the last save, in plain sentences.
+- `bussard history`: every save, oldest first, one line each.
+- `bussard show <n>`: what one save changed.
+- `bussard undo`: put the files back to the previous save.
 
 `undo` changes files only. Your devices keep working exactly as they are until
 you run `bussard plan <device>` and `bussard apply <device>`, which is where you
 confirm the change and it reaches the bus.
 
-Edits you make in a text editor are picked up too: the next bussard command
-records them as an `external edit` save first, so nothing is lost.
+Edits made in a text editor are picked up too: the next bussard command records
+them as an `external edit` save first, so nothing is lost.
 
-## Files
+## Backups
 
-- `bussard.yaml` — connection config: transport (tunnel or routing) and gateway.
-- `groups.yaml` — the group-address plan: address → name + DPT.
-- `links.yaml` — com-object → group-address links, keyed by device address.
-- `devices/` — one YAML file per device (identity, naming, com-objects).
-- `captures/` — local telegram captures (git-ignored).
-- `.bussard/` — bussard's history (git-ignored; `bussard undo` reads it).
+- `bussard backup`: read every device's tables into `captures/backups/`
+  before your first change. It only reads, so it is safe on a live house.
+- `bussard restore <backup-dir> <device>`: write one device back from a backup.
+- `bussard export house.bussard`: the whole model and its history as one file.
+  Keep a copy on a USB stick in the cabinet. `bussard import house.bussard`
+  brings it back on another computer.
+
+## Connect your assistant
+
+    claude mcp add knx -- bussard mcp --dir <this directory>
+
+The assistant can read the model, watch the bus, and edit the model; every edit
+is saved to the history first. Only you program devices, with `plan` and `apply`.
 
 ## Getting started
 
-Two onboarding paths:
+1. You have an ETS export: `bussard import project.knxproj --dir .`
+2. No ETS project: `bussard reconstruct --line 1.1 --out <new directory>` reads
+   what the devices carry into a fresh model. Then ask the assistant to help
+   you name the group addresses as you press buttons (`bussard learn` does the
+   same in a terminal).
+3. `bussard audit` reports what you have and what bussard can do with it.
 
-1. **You have an ETS export** — import it to populate the model:
-   `bussard import project.knxproj --dir .`
-2. **No ETS project** — watch the bus and build the model as you go:
-   `bussard monitor --dir .`
+## Files
+
+- `bussard.yaml`: connection config, transport (tunnel or routing) and gateway.
+- `groups.yaml`: the group-address plan, address to name and DPT.
+- `links.yaml`: com-object to group-address links, keyed by device address.
+- `devices/`: one YAML file per device (identity, naming, com-objects).
+- `tests.yaml`: optional acceptance tests for `bussard test`.
+- `captures/`: local telegram captures and device backups.
+- `.bussard/`: bussard's history (`bussard undo` reads it).
 
 ## If you use git
 
 You do not have to. If you do: commit `bussard.yaml`, `groups.yaml`,
-`links.yaml` and `devices/`. The generated `.gitignore` already excludes
-`.bussard/`, `models/`, `vendor/` and `captures/`, which are local to this
-machine. A git user then has two histories, one in git and one in bussard;
+`links.yaml`, `devices/` and `tests.yaml`. The generated `.gitignore` already
+excludes `.bussard/`, `models/`, `vendor/` and `captures/`, which are local to
+this machine. A git user then has two histories, one in git and one in bussard;
 `bussard undo` reads bussard's.
 
-Docs: https://github.com/tmbo/bussard
+Guide for new owners: https://github.com/tmbo/bussard/blob/main/docs/getting-started-owner.md
 ";
 
 /// Prints crisp next steps to stdout.

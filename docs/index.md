@@ -78,6 +78,9 @@ and cannot be changed over MCP at all.
 
 ## Where next
 
+- [The first weekend](getting-started-owner.md): the owner's guide, from install to a backup on a USB stick.
+- [Handover checklist](handover-checklist.md): what an owner demands and an integrator delivers.
+- [Working with an integrator](collaboration.md): exchanging changes by bundle or by repository.
 - [How do I ...](howto.md): recipes, from watching the bus to flashing a device.
 - [Reference](reference.md): every command, flag, YAML field and MCP tool.
 - [Home Assistant](ha-config.md): how `ha-config` derives entities from the model.

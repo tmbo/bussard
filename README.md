@@ -30,6 +30,8 @@ All the configuration for your KNX setup is stored in YAML files, ready for your
 
 ## Quickstart
 
+New to KNX ownership? Read [the first weekend guide](docs/getting-started-owner.md).
+
 Have an ETS export? Import it and watch your bus decode itself:
 
 ```console
@@ -109,7 +111,7 @@ $ cargo install --path crates/bussard-cli
 ## Safety
 
 `bussard` writes to physical building infrastructure. **Read
-[docs/SAFETY.md](docs/SAFETY.md) before your first write** — it is the single
+[docs/SAFETY.md](docs/SAFETY.md) before your first write**. It is the single
 read-before-your-first-write guide (which bus you are hitting, the real-gateway
 gate, backups, flash recovery, protected GAs, supported masks). The essentials:
 
@@ -123,6 +125,9 @@ gate, backups, flash recovery, protected GAs, supported masks). The essentials:
 - [Safety](docs/SAFETY.md): read this before your first write.
 - [Reference](docs/reference.md): every command, flag, YAML field, and MCP tool.
 - [How do I ...](docs/howto.md): recipes, from watching the bus to flashing a device.
+- [The first weekend](docs/getting-started-owner.md): the owner's guide, from install to a backup on a USB stick.
+- [Handover checklist](docs/handover-checklist.md): what an owner demands and an integrator delivers.
+- [Working with an integrator](docs/collaboration.md): exchanging changes by bundle or by repository.
 - [Design](docs/DESIGN.md): architecture, feasibility, roadmap.
 - [Home Assistant](docs/ha-config.md): how `ha-config` derives entities.
 - [Product data](docs/product-data.md): `.knxprod` handling and the pointer index.
