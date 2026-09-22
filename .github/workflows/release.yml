@@ -127,3 +127,109 @@ jobs:
           fi
           gh release upload "${{ github.ref_name }}" \
             "${{ matrix.asset }}" "${{ matrix.asset }}.sha256" --clobber
+
+  # Package managers. Both jobs need a token for a repository outside this one,
+  # so both are no-ops until the maintainer adds the secret (packaging/README.md
+  # has the one-time setup). A missing secret skips the job with a notice rather
+  # than failing the release.
+  homebrew:
+    name: update the Homebrew tap
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # `secrets` is not available in a job-level `if`, so read it into the env
+      # and gate the steps on that instead.
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - name: Skip without a tap token
+        if: env.HOMEBREW_TAP_TOKEN == ''
+        run: |
+          echo "::notice::HOMEBREW_TAP_TOKEN is not set, so the Homebrew tap was \
+          not updated. Create tmbo/homebrew-tap and add the secret; see \
+          packaging/README.md."
+      - uses: actions/checkout@v5
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        with:
+          fetch-depth: 1
+      - name: Render the formula from the release checksums
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ github.ref_name }}"
+          version="${tag#v}"
+          mkdir -p dist
+          for a in macos-arm64 macos-x64 linux-x64 linux-arm64; do
+            gh release download "$tag" --repo "${{ github.repository }}" \
+              --pattern "bussard-$a.sha256" --dir dist
+          done
+          sha() { cut -d ' ' -f 1 < "dist/bussard-$1.sha256"; }
+          sed -e "s|@VERSION@|$version|g" \
+              -e "s|@TAG@|$tag|g" \
+              -e "s|@SHA256_MACOS_ARM64@|$(sha macos-arm64)|" \
+              -e "s|@SHA256_MACOS_X64@|$(sha macos-x64)|" \
+              -e "s|@SHA256_LINUX_X64@|$(sha linux-x64)|" \
+              -e "s|@SHA256_LINUX_ARM64@|$(sha linux-arm64)|" \
+              Formula/bussard.rb > rendered-bussard.rb
+          if grep -q '@[A-Z0-9_]*@' rendered-bussard.rb; then
+            echo "::error::the formula still has unsubstituted placeholders"
+            grep -n '@[A-Z0-9_]*@' rendered-bussard.rb
+            exit 1
+          fi
+          cat rendered-bussard.rb
+      - name: Push the formula to tmbo/homebrew-tap
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        run: |
+          set -euo pipefail
+          version="${{ github.ref_name }}"
+          version="${version#v}"
+          git clone --depth 1 \
+            "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/tmbo/homebrew-tap.git" tap
+          mkdir -p tap/Formula
+          cp rendered-bussard.rb tap/Formula/bussard.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/bussard.rb
+          if git diff --cached --quiet; then
+            echo "tap already up to date"
+            exit 0
+          fi
+          git commit -m "bussard $version"
+          git push
+
+  winget:
+    name: submit the winget manifest
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+    steps:
+      - name: Skip without a winget token
+        if: env.WINGET_TOKEN == ''
+        shell: bash
+        run: |
+          echo "::notice::WINGET_TOKEN is not set, so no winget manifest was \
+          submitted. See packaging/README.md for the one-time setup."
+      # wingetcreate reads the published manifests for tmbo.bussard from
+      # microsoft/winget-pkgs, swaps in the new version and installer URL,
+      # recomputes the installer hash from the release asset, and opens the pull
+      # request. The first submission is manual (packaging/README.md); from then
+      # on this keeps the package current.
+      - name: Update and submit with wingetcreate
+        if: env.WINGET_TOKEN != ''
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $version = $tag -replace '^v', ''
+          $url = "https://github.com/${{ github.repository }}/releases/download/$tag/bussard-windows-x64.exe"
+          Invoke-WebRequest -Uri https://aka.ms/wingetcreate/latest `
+            -OutFile wingetcreate.exe -UseBasicParsing
+          .\wingetcreate.exe update tmbo.bussard `
+            --version $version `
+            --urls "$url|x64" `
+            --submit `
+            --token $env:WINGET_TOKEN

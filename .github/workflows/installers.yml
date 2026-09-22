@@ -1,0 +1,153 @@
+# Installer smoke tests.
+#
+# The installers are the first thing a new user runs, and they are the one part
+# of the project that is not covered by `cargo test`. This workflow lints
+# install.sh and then actually installs the latest published release on Linux,
+# macOS and Windows and asserts that `bussard --version` runs.
+#
+# Until the first non-draft release exists there is nothing to download, so the
+# install steps skip with a notice instead of failing.
+name: Installers
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - install.sh
+      - install.ps1
+      - Formula/**
+      - packaging/**
+      - .github/workflows/installers.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - install.sh
+      - install.ps1
+      - Formula/**
+      - packaging/**
+      - .github/workflows/installers.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installers-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  lint:
+    name: shellcheck + parse
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      # install.sh is piped into `sh`, which on Debian/Ubuntu is dash, so it has
+      # to be POSIX. `-s sh` makes shellcheck reject bashisms.
+      - name: Check install.sh syntax
+        run: sh -n install.sh
+
+      - name: shellcheck install.sh
+        run: shellcheck --shell=sh --severity=style install.sh
+
+      - name: Check install.ps1 parses
+        shell: pwsh
+        run: |
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path ./install.ps1).Path, [ref]$null, [ref]$errors) | Out-Null
+          if ($errors -and $errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Host "::error::$($_.Message)" }
+            exit 1
+          }
+          Write-Host 'install.ps1 parses'
+
+  install-sh:
+    name: install.sh (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Is there a published release to install?
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/${{ github.repository }}/releases/latest" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No published release yet (a draft does not count), \
+          so install.sh has nothing to download. Skipping the install smoke \
+          test; it starts running with the first release."
+          fi
+
+      - name: Install into a scratch directory
+        if: steps.release.outputs.exists == 'true'
+        env:
+          BUSSARD_INSTALL_DIR: ${{ runner.temp }}/bussard-bin
+        run: sh ./install.sh
+
+      - name: Assert bussard --version
+        if: steps.release.outputs.exists == 'true'
+        run: |
+          out="$("${{ runner.temp }}/bussard-bin/bussard" --version)"
+          echo "$out"
+          echo "$out" | grep -Eq '[0-9]+\.[0-9]+\.[0-9]+' || {
+            echo "::error::bussard --version did not print a version: $out"
+            exit 1
+          }
+
+  install-ps1:
+    name: install.ps1 (windows)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Is there a published release to install?
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/${{ github.repository }}/releases/latest" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No published release yet (a draft does not count), \
+          so install.ps1 has nothing to download. Skipping the install smoke \
+          test; it starts running with the first release."
+          fi
+
+      # Run it under Windows PowerShell 5.1 (`shell: powershell`), the version
+      # that ships with Windows and that a new user will have.
+      - name: Install into a scratch directory
+        if: steps.release.outputs.exists == 'true'
+        shell: powershell
+        env:
+          BUSSARD_INSTALL_DIR: ${{ runner.temp }}\bussard-bin
+        run: .\install.ps1
+
+      - name: Assert bussard --version
+        if: steps.release.outputs.exists == 'true'
+        shell: powershell
+        run: |
+          $out = & "${{ runner.temp }}\bussard-bin\bussard.exe" --version
+          Write-Host $out
+          if ($out -notmatch '\d+\.\d+\.\d+') {
+            Write-Host "::error::bussard --version did not print a version: $out"
+            exit 1
+          }

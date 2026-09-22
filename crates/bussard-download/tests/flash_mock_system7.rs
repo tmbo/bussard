@@ -505,13 +505,29 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
         }
         // PID_MCB_TABLE (Jung A-A011 objects): 8-octet entry with the device CRC
         // over the segment it holds. Model a plausible readable entry.
+        //
+        // ONE entry per request. A real Jung 3361-1MWW (mask 0705, application
+        // `M-0004_A-A011-13`) REFUSED a multi-element read — bussard sent
+        // `A_PropertyValue_Read obj=3 pid=27 count=6 start=1`, straight from
+        // `LdCtrlLoadImageProp ObjIdx="3" PropId="27" Count="6"`, and the device
+        // answered count 0 with no data (issue #89 campaign, 1.1.36). Six
+        // 8-octet entries are 48 octets of value, nowhere near a standard-frame
+        // APDU, and a real device does not partially answer: it refuses the
+        // whole read. The 1.1.31 ETS capture reads the six entries one at a
+        // time, `count=1` at index 1..=6, which is what bussard does now.
         if pid == PID_MCB_TABLE && s.mcb_objects.contains(&obj) {
+            if count > 1 {
+                return Reaction::Answer(
+                    A_PROPERTY_VALUE_RESPONSE,
+                    prop_response(obj, pid, 0, start, &[]),
+                );
+            }
             let crc = crc16_aug_ccitt(&[0u8; 4]);
             let mut entry = vec![0x00, 0x00, 0x00, 0x04, 0x00, 0xFF];
             entry.extend_from_slice(&crc.to_be_bytes());
             return Reaction::Answer(
                 A_PROPERTY_VALUE_RESPONSE,
-                prop_response(obj, pid, count.max(1), start, &entry),
+                prop_response(obj, pid, 1, start, &entry),
             );
         }
         // Anything else: count 0 (absent).

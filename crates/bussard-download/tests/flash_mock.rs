@@ -667,7 +667,7 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
     }
 
     if req_apci == A_PROPERTY_VALUE_READ {
-        let Some((oi, pid, _count, start)) = decode_prop_header(data) else {
+        let Some((oi, pid, req_count, start)) = decode_prop_header(data) else {
             return Reaction::Nak;
         };
         if pid == PID_OBJECT_TYPE {
@@ -719,6 +719,19 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
             // 8-octet PDT_GENERIC_08 entry
             // `[size u32 BE][crc_ctrl=0x00][access=0xFF][crc16 u16 BE]`, valid
             // only while Loaded. A wrong tool-side CRC must NOT match this.
+            //
+            // ONE entry per request. A real Jung 3361-1MWW refused a
+            // `count=6` read of PID 27 with a zero-count response (issue #89
+            // campaign, 1.1.36); ETS reads the entries one at a time, `count=1`
+            // at index 1..=6. Several 8-octet entries do not fit a
+            // standard-frame APDU and a real device does not partially answer,
+            // so a multi-element read is refused whole here too.
+            if req_count > 1 {
+                return Reaction::Answer(
+                    A_PROPERTY_VALUE_RESPONSE,
+                    prop_response(oi, pid, 0, start, &[]),
+                );
+            }
             if loadable_object_index(&s) != Some(oi) || s.app_load_state != LS_LOADED {
                 return Reaction::Answer(
                     A_PROPERTY_VALUE_RESPONSE,

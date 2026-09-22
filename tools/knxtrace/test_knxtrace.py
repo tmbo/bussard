@@ -6,8 +6,7 @@
 
 Every capture used here is generated in-process from TEST-NET-1 addresses
 (192.0.2.0/24, RFC 5737) and invented device addresses. No real capture, no real
-installation data and no key material appears in this file or in what it writes,
-which is what keeps `scripts/check-no-house-data.sh` happy.
+installation data and no key material appears in this file or in what it writes.
 
 The only committed data the tests read is `knx-sim/tests/fixtures/*.txt`: the
 request-direction TPDU streams from the ETS oracle captures, which the simulator

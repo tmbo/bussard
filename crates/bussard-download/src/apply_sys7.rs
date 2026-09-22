@@ -126,7 +126,12 @@ pub enum Sys7ApplyError {
 /// device's live group-object descriptors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sys7TableImages {
-    /// The whole `0x4000` region image: the new address table followed by the
+    /// Where the LSM 1 region starts on this device ([`Sys7LiveTables::address_base`]).
+    pub address_base: u16,
+    /// Where the LSM 2 region starts on this device
+    /// ([`Sys7LiveTables::association_base`]).
+    pub association_base: u16,
+    /// The whole LSM 1 region image: the new address table followed by the
     /// device's own group-object descriptor table, relocated to its new offset.
     pub address_region: Vec<u8>,
     /// How many leading octets of `address_region` are the address table itself.
@@ -186,7 +191,7 @@ pub fn sys7_table_images(
     if address_region.len() > SYS7_ADDRESS_REGION_LEN {
         return Err(Sys7ApplyError::RegionOverflow {
             table: "address",
-            base: SYS7_ADDRESS_TABLE_ADDR,
+            base: live.address_base,
             len: address_region.len(),
             capacity: SYS7_ADDRESS_REGION_LEN,
         });
@@ -196,18 +201,20 @@ pub fn sys7_table_images(
     if association_image.len() > SYS7_ASSOCIATION_REGION_LEN {
         return Err(Sys7ApplyError::RegionOverflow {
             table: "association",
-            base: SYS7_ASSOCIATION_TABLE_ADDR,
+            base: live.association_base,
             len: association_image.len(),
             capacity: SYS7_ASSOCIATION_REGION_LEN,
         });
     }
 
-    let new_go_base = SYS7_ADDRESS_TABLE_ADDR.wrapping_add(address_table_len as u16);
+    let new_go_base = live.address_base.wrapping_add(address_table_len as u16);
     let group_object_moved = (!live.group_object_image.is_empty()
         && new_go_base != live.group_object_base)
         .then_some((live.group_object_base, new_go_base));
 
     Ok(Sys7TableImages {
+        address_base: live.address_base,
+        association_base: live.association_base,
         address_region,
         address_table_len,
         association_image,
@@ -243,38 +250,38 @@ pub async fn apply_sys7_tables<Ch: L4Channel>(
     lsm.drive(l4, SYS7_ADDRESS_LSM, LoadControl::StartLoading)
         .await?;
 
-    // 3: the 0x4000 region — allocate exactly what will be written, then stream.
+    // 3: the LSM 1 region — allocate exactly what will be written, then stream.
     alloc_region(
         l4,
         lsm,
         profile,
         SYS7_ADDRESS_LSM,
-        SYS7_ADDRESS_TABLE_ADDR,
+        images.address_base,
         images.address_region.len(),
     )
     .await?;
     write_verified(
         l4,
         "address",
-        SYS7_ADDRESS_TABLE_ADDR,
+        images.address_base,
         &images.address_region,
     )
     .await?;
 
-    // 4: the 0x4201 region — its TSAPs index the content just written.
+    // 4: the LSM 2 region — its TSAPs index the content just written.
     alloc_region(
         l4,
         lsm,
         profile,
         SYS7_ASSOCIATION_LSM,
-        SYS7_ASSOCIATION_TABLE_ADDR,
+        images.association_base,
         images.association_image.len(),
     )
     .await?;
     write_verified(
         l4,
         "association",
-        SYS7_ASSOCIATION_TABLE_ADDR,
+        images.association_base,
         &images.association_image,
     )
     .await?;
@@ -283,7 +290,7 @@ pub async fn apply_sys7_tables<Ch: L4Channel>(
     lsm.send_control(
         l4,
         SYS7_ADDRESS_LSM,
-        &encode_task_segment(SYS7_ADDRESS_TABLE_ADDR, task_marker),
+        &encode_task_segment(images.address_base, task_marker),
     )
     .await?;
     let address_state = lsm
@@ -294,7 +301,7 @@ pub async fn apply_sys7_tables<Ch: L4Channel>(
     lsm.send_control(
         l4,
         SYS7_ASSOCIATION_LSM,
-        &encode_task_segment(SYS7_ASSOCIATION_TABLE_ADDR, task_marker),
+        &encode_task_segment(images.association_base, task_marker),
     )
     .await?;
     let association_state = lsm
@@ -302,10 +309,10 @@ pub async fn apply_sys7_tables<Ch: L4Channel>(
         .await?;
 
     // Verify by reading both regions back off the loaded device.
-    let addr_back = read_region(l4, SYS7_ADDRESS_TABLE_ADDR, images.address_region.len()).await?;
+    let addr_back = read_region(l4, images.address_base, images.address_region.len()).await?;
     let assoc_back = read_region(
         l4,
-        SYS7_ASSOCIATION_TABLE_ADDR,
+        images.association_base,
         images.association_image.len(),
     )
     .await?;

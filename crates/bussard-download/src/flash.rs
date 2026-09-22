@@ -32,7 +32,7 @@
 //! | `WriteProp{ot,pid}` | [`write_property`]                                   | a property write, echo-validated |
 //! | `CompareProp{oi,pid}`| [`compare_property`]                                | reads the property and byte-compares it (under `Mask`) against the op's `InlineData`; a mismatch fails the flash |
 //! | `CompareRelMem{oi,off}`| [`compare_rel_mem`]                              | reads relative memory at `base+off` and byte-compares it (under `Mask`, optionally `Invert`ed) against the op's `InlineData`; a mismatch fails the flash |
-//! | `LoadImageProp{oi,pid}`| [`read_mcb_table`]                                | reads the object's `PID_MCB_TABLE` and checks the device CRC over the stored segment against the written image |
+//! | `LoadImageProp{oi,pid}`| [`read_mcb_table`]                                | reads the object's `PID_MCB_TABLE` one element per request and checks the device CRC over the stored segment against the written image |
 //! | `Restart`           | `restart`                                            | last op; fire-and-forget |
 //!
 //! # `lsm_idx` → interface-object index
@@ -202,7 +202,11 @@ pub enum FlashStep {
         obj_idx: u32,
         /// The property id to read (27 = `PID_MCB_TABLE`).
         prop_id: u32,
-        /// How many MCB elements to read (`Count`), at least 1.
+        /// How many MCB elements to read (`Count`), at least 1. They are read
+        /// **one per request**: a real Jung 3361-1MWW refused a single
+        /// `count=6` read with a zero-count response (issue #89 campaign), and
+        /// the ETS capture of the same application reads index 1..=6 one at a
+        /// time. See [`read_mcb_table`].
         count: u32,
         /// The segment image whose CRC to check against the device's MCB, when
         /// this engine wrote the target object's image; `None` when the op
@@ -264,11 +268,19 @@ pub enum FlashStep {
         address: u32,
         /// The declared segment size in octets (the allocation length).
         size: u32,
-        /// The memory type for the allocation (`3` = EEPROM, `2` = RAM), from the
-        /// mask profile.
+        /// The memory type for the allocation (`3` = EEPROM, `2` = RAM): the op's
+        /// `MemType`, or derived from the address via the mask profile.
         mem_type: u8,
-        /// The segment image to stream, when the segment carries `<Data>`; `None`
-        /// for an allocate-only record.
+        /// The allocation record's access-attribute octet: the op's `Access`
+        /// (`0xF2`/`0xF3` on the Jung System 7 apps), else `0xF2`.
+        seg_flags: u8,
+        /// The allocation record's checksum-control octet: the op's `SegFlags`
+        /// (`0x80` checksum-controlled, `0x00` runtime-writable), else derived
+        /// from `mem_type`. A `0x00` segment is not spot-checked after the
+        /// restart: the application rewrites it (issue #89, 1.1.36 `0x4916`).
+        checksum_ctrl: u8,
+        /// The segment image to stream, when the segment carries `<Data>` (or a
+        /// computed table image replaces it); `None` for an allocate-only record.
         image: Option<ImageRef>,
     },
     /// Finalize System 7 load-state machine `lsm` with a task/segment descriptor
@@ -1415,14 +1427,15 @@ pub fn plan_flash(
     // obj0/PID78 preflight all differ from System B, so it is a separate path
     // rather than a branchy overload of the System B lowering below.
     if profile.is_system_7() {
+        let sys7_tables = sys7_tables_from_system_b(table_images);
         return plan_flash_sys7(
             app,
-            device,
             device_mask,
             overrides,
             base_offsets,
             profile,
             None,
+            &sys7_tables,
         );
     }
 
@@ -2047,12 +2060,12 @@ pub fn plan_flash(
 /// corpus-default profile drives blind (`[system7-spec §2.4]`).
 fn plan_flash_sys7(
     app: &ApplicationProgram,
-    _device: &str,
     device_mask: u16,
     overrides: &BTreeMap<String, String>,
     base_offsets: &BTreeMap<String, u32>,
     profile: bussard_mgmt::MaskProfile,
     hawk: Option<&bussard_prod::HawkConfig>,
+    sys7_tables: &BTreeMap<u32, Sys7TableImage>,
 ) -> std::result::Result<FlashPlan, PlanError> {
     let app_mask = app
         .mask_version
@@ -2133,6 +2146,9 @@ fn plan_flash_sys7(
                 lsm_idx,
                 address,
                 size,
+                access,
+                mem_type,
+                seg_flags,
             } => {
                 // Validate before anything is bound: the executor folds the LSM
                 // index into the record's opcode nibble and the address/size into
@@ -2148,26 +2164,75 @@ fn plan_flash_sys7(
                 // The allocation must also *fit* the 16-bit space: a segment that
                 // starts inside it but runs past 0xFFFF cannot be placed.
                 check_sys7_u16(step_no, "segment end", addr + size.saturating_sub(1))?;
-                // Bind the segment's <Data>/<Mask>. A segment with no <Data> is an
-                // allocate-only record (e.g. the 0x0700 RAM region) — no stream.
-                let image = seg_by_addr.get(&addr).and_then(|seg| {
-                    seg.data.as_ref().map(|data| {
-                        images.insert(seg.id.clone(), data.clone());
-                        if let Some(mask) = &seg.mask {
-                            segment_masks.insert(seg.id.clone(), mask.clone());
-                        }
-                        ImageRef {
-                            segment_id: seg.id.clone(),
-                            kind: ImageKind::Code,
-                            len: data.len(),
-                        }
+                // The allocation record's attribute octets come from the op itself
+                // when the product declares them (`Access`/`MemType`/`SegFlags`,
+                // which the ETS captures reproduce verbatim: `f2 03 80`,
+                // `f3 03 80`, `f3 03 00`), else from the address-derived defaults.
+                let mem_type = mem_type
+                    .and_then(|m| u8::try_from(m).ok())
+                    .unwrap_or_else(|| mem_type_for_addr(addr, &s7_profile));
+                let (default_flags, default_checksum) = bussard_mgmt::alloc_attr_octets(mem_type);
+                let op_seg_flags: Option<u32> = seg_flags.to_owned();
+                let checksum_ctrl = seg_flags_octet(op_seg_flags).unwrap_or(default_checksum);
+                let seg_flags = access
+                    .and_then(|a| u8::try_from(a).ok())
+                    .unwrap_or(default_flags);
+                // A table LSM (1 = group addresses, 2 = associations) streams the
+                // table computed from the model, never the product's `<Data>`
+                // template: the Jung 3361-1MWW ships a 255-entry placeholder table
+                // (`FF 00 00 00 01 00 02 …`) which, written verbatim, linked the
+                // device to 254 group addresses (issue #89, 1.1.36). ETS writes
+                // the count octet and the group addresses only, skipping the
+                // device-owned individual-address slot — the table mask does the
+                // same here.
+                let image = if let Some(table) = sys7_tables.get(&lsm) {
+                    if table.image.len() > size as usize {
+                        return Err(PlanError::UnresolvableImage {
+                            step: step_no,
+                            reason: format!(
+                                "LSM {lsm} table image is {} octets but the segment at {addr:#06X} holds {size}",
+                                table.image.len()
+                            ),
+                        });
+                    }
+                    let id = seg_by_addr
+                        .get(&addr)
+                        .map(|seg| seg.id.clone())
+                        .unwrap_or_else(|| format!("lsm{lsm}-table-{addr:#06X}"));
+                    images.insert(id.clone(), table.image.clone());
+                    if let Some(mask) = &table.mask {
+                        segment_masks.insert(id.clone(), mask.clone());
+                    }
+                    Some(ImageRef {
+                        segment_id: id,
+                        kind: ImageKind::Table,
+                        len: table.image.len(),
                     })
-                });
+                } else {
+                    // Bind the segment's <Data>/<Mask>. A segment with no <Data> is
+                    // an allocate-only record (e.g. the 0x0700 RAM region) — no
+                    // stream.
+                    seg_by_addr.get(&addr).and_then(|seg| {
+                        seg.data.as_ref().map(|data| {
+                            images.insert(seg.id.clone(), data.clone());
+                            if let Some(mask) = &seg.mask {
+                                segment_masks.insert(seg.id.clone(), mask.clone());
+                            }
+                            ImageRef {
+                                segment_id: seg.id.clone(),
+                                kind: ImageKind::Code,
+                                len: data.len(),
+                            }
+                        })
+                    })
+                };
                 steps.push(FlashStep::Sys7AbsSegment {
                     lsm,
                     address: addr,
                     size,
-                    mem_type: mem_type_for_addr(addr, &s7_profile),
+                    mem_type,
+                    seg_flags,
+                    checksum_ctrl,
                     image,
                 });
             }
@@ -2304,6 +2369,7 @@ pub fn plan_flash_sys7_with_hawk(
     overrides: &BTreeMap<String, String>,
     base_offsets: &BTreeMap<String, u32>,
     hawk: Option<&bussard_prod::HawkConfig>,
+    table_images: &BTreeMap<u32, Vec<u8>>,
 ) -> std::result::Result<FlashPlan, PlanError> {
     let profile = bussard_mgmt::MaskProfile::from_mask(device_mask);
     if !profile.is_system_7() {
@@ -2324,15 +2390,95 @@ pub fn plan_flash_sys7_with_hawk(
             app_mask,
         });
     }
+    let sys7_tables = sys7_tables_from_system_b(table_images);
     plan_flash_sys7(
         app,
-        device,
         device_mask,
         overrides,
         base_offsets,
         profile,
         hawk,
+        &sys7_tables,
     )
+}
+
+/// A computed System 7 table image bound to a table LSM's absolute segment in
+/// place of the product's `<Data>` template.
+///
+/// `mask` (same length as `image`, `0xFF` = write, `0x00` = leave the device's
+/// octet alone) skips the individual-address slot of the group-address table,
+/// exactly as ETS does: it writes the count octet at the segment start and the
+/// group addresses from offset 3, never the two octets in between.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Sys7TableImage {
+    /// The table octets, from the segment start.
+    pub image: Vec<u8>,
+    /// Per-octet write mask, when part of the span is device-owned.
+    pub mask: Option<Vec<u8>>,
+}
+
+/// Derives the System 7 table images (keyed by LSM index: 1 = group-address
+/// table, 2 = association table) from the System B table images
+/// [`plan_flash`] receives (keyed by object index, `[count:2 BE][elements]`
+/// with 2-octet address and 4-octet `[TSAP:2][ASAP:2]` association elements).
+///
+/// System 7 layouts (`[system7-spec §7]`, ETS captures for 1.1.31 and 1.1.46):
+///
+/// ```text
+/// group addresses  [CNT:1][own IA:2, device-owned][GA1:2 BE]…   CNT = 1 + n
+/// associations     [CNT:1][TSAP:1][ASAP:1]…                     CNT = n
+/// ```
+///
+/// A table that does not fit the one-octet count is left out, and the
+/// lowering then keeps the product's `<Data>`; the segment-size check there
+/// refuses an image longer than its segment.
+pub fn sys7_tables_from_system_b(
+    table_images: &BTreeMap<u32, Vec<u8>>,
+) -> BTreeMap<u32, Sys7TableImage> {
+    let mut out = BTreeMap::new();
+    if let Some(addr) = table_images.get(&1).filter(|img| img.len() >= 2) {
+        let elements = &addr[2..];
+        let n = elements.len() / 2;
+        if n < usize::from(u8::MAX) {
+            let mut image = Vec::with_capacity(3 + elements.len());
+            image.push((n + 1) as u8);
+            image.extend_from_slice(&[0, 0]);
+            image.extend_from_slice(&elements[..n * 2]);
+            let mut mask = vec![0xFF; image.len()];
+            mask[1] = 0;
+            mask[2] = 0;
+            out.insert(
+                1,
+                Sys7TableImage {
+                    image,
+                    mask: Some(mask),
+                },
+            );
+        }
+    }
+    if let Some(assoc) = table_images.get(&2).filter(|img| img.len() >= 2) {
+        let elements = &assoc[2..];
+        let n = elements.len() / 4;
+        let fits =
+            n <= usize::from(u8::MAX) && elements.chunks_exact(4).all(|e| e[0] == 0 && e[2] == 0);
+        if fits {
+            let mut image = Vec::with_capacity(1 + n * 2);
+            image.push(n as u8);
+            for e in elements.chunks_exact(4) {
+                image.push(e[1]);
+                image.push(e[3]);
+            }
+            out.insert(2, Sys7TableImage { image, mask: None });
+        }
+    }
+    out
+}
+
+/// Maps an `LdCtrlAbsSegment` `SegFlags` attribute to the allocation record's
+/// checksum-control octet: `128` → `0x80` (checksum-controlled), `0` → `0x00`
+/// (runtime-writable). Any other value is passed through when it fits an octet.
+fn seg_flags_octet(seg_flags: Option<u32>) -> Option<u8> {
+    seg_flags.and_then(|f| u8::try_from(f).ok())
 }
 
 /// Derives a [`bussard_mgmt::Sys7Profile`] from a mask's parsed
@@ -3882,15 +4028,16 @@ async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                         address,
                         size,
                         mem_type,
+                        seg_flags,
+                        checksum_ctrl,
                         image,
                     } => {
                         // 1. Allocate the absolute segment on the LSM. The captures pin
-                        //    opcode/subtype, big-endian start+length and `mem_type`; the
-                        //    per-segment `seg_flags` (0xF2) and `checksum_ctrl` (0x80 EEPROM
-                        //    / 0x00 RAM) attribute octets are now derived from `mem_type`
-                        //    (`bussard_mgmt::alloc_attr_octets`), reproducing the dominant
-                        //    captured pattern.
-                        let (seg_flags, checksum_ctrl) = bussard_mgmt::alloc_attr_octets(*mem_type);
+                        //    opcode/subtype, big-endian start+length, `mem_type` and the
+                        //    per-segment attribute octets, which the plan takes from the
+                        //    op's `Access`/`MemType`/`SegFlags` (ETS reproduces them
+                        //    verbatim) or derives from the address when absent.
+                        let (seg_flags, checksum_ctrl) = (*seg_flags, *checksum_ctrl);
                         // Checked, not truncated: an out-of-range address used to go out as
                         // a wrong allocation frame before the following write refused.
                         let target = session.l4().target();
@@ -3923,11 +4070,13 @@ async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                                 &mut progress,
                             )
                             .await?;
-                            // Spot-check only unmasked segments: a masked segment leaves
-                            // device-owned bytes untouched, so the image's leading octets
-                            // do not equal the device's memory, and there is nothing
-                            // meaningful to compare the sample against.
-                            if mask.is_none() {
+                            // Spot-check only unmasked, checksum-controlled segments: a
+                            // masked segment leaves device-owned bytes untouched, so the
+                            // image's leading octets do not equal the device's memory;
+                            // a `checksum_ctrl == 0` segment is rewritten by the running
+                            // application after the restart (1.1.36 `0x4916`: written
+                            // `0c`, read back `00`), so its sample proves nothing.
+                            if mask.is_none() && checksum_ctrl != 0 {
                                 written_samples.push((addr, take_sample(bytes)));
                             }
                         }
@@ -5024,6 +5173,7 @@ mod tests {
             &no_overrides(),
             &BTreeMap::new(),
             Some(&hawk),
+            &BTreeMap::new(),
         )
         .expect("a System 7 plan");
         assert!(plan.is_sys7());

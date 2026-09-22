@@ -18,7 +18,8 @@ pub mod sys7_lsm;
 pub use group_comm::{ComObject, GroupComm, flag};
 pub use interface_object::{
     InterfaceObject, PDT_GENERIC_01, PID_LOAD_STATE_CONTROL, PID_MCB_TABLE, PID_OBJECT_TYPE,
-    PID_PROGMODE, PID_RUN_STATE_CONTROL, PID_TABLE_REFERENCE, Property, PropertyDescription, iot,
+    PID_PROGMODE, PID_RUN_STATE_CONTROL, PID_TABLE, PID_TABLE_REFERENCE, Property,
+    PropertyDescription, iot,
 };
 pub use lsm::{
     LoadEvent, LoadState, LoadStateMachine, Sys7LoadStateMachine, Sys7Step, Sys7TransitionError,
@@ -1621,7 +1622,24 @@ impl Device {
             // this object currently holds in its allocated segment. A tool's
             // LdCtrlLoadImageProp verify step reads this back and compares the CRC
             // to the image it streamed, so it must reflect the real stored bytes.
-            self.mcb_entry_for(object)
+            //
+            // ONE entry per request. A real Jung 3361-1MWW (mask 0705,
+            // application `M-0004_A-A011-13`) REFUSED a multi-element read:
+            // bussard sent `A_PropertyValue_Read obj=3 pid=27 count=6 start=1`,
+            // taken literally from `LdCtrlLoadImageProp ObjIdx="3" PropId="27"
+            // Count="6"`, and the device answered count 0 with no data (issue
+            // #89 campaign, 1.1.36). Six 8-octet entries are 48 octets of value,
+            // far past a standard-frame APDU, and a real device does not
+            // partially answer a property read — it refuses the whole request
+            // with the zero-count response. The 1.1.31 ETS capture reads the six
+            // entries one at a time (`count=1`, index 1..=6), which is the only
+            // shape a tool may rely on. `None` here lands in the zero-count
+            // branch below, the same signal the Jung sent.
+            if count > 1 {
+                None
+            } else {
+                self.mcb_entry_for(object)
+            }
         } else {
             self.objects
                 .get(&object)
@@ -1708,6 +1726,36 @@ impl Device {
                 ));
             }
             return self.on_load_state_write(tool, object, count, start, value);
+        }
+
+        // PID_TABLE (23) is NOT a download path. A real device realises a
+        // loadable table in the object's allocated segment: the tool sizes it
+        // with an `AdditionalLoadControls` / `LdCtrlRelSegment` write, reads the
+        // placement from `PID_TABLE_REFERENCE`, and streams the image (count word
+        // + elements) with `A_Memory_Write` / `A_MemoryExtended_Write`.
+        //
+        // Evidence (issue #89, 2026 physical campaign): a Jung F50 push-button
+        // module (52911ST, application `M-0004_A-D141-22`) REFUSED
+        // `A_PropertyValue_Write` to PID 23 with a zero-count
+        // `A_PropertyValue_Response` — the header echoed back with
+        // `nr_of_elem = 0` and no data (KNX App-Layer 03.03.07 §3.4.4.2, the same
+        // "cannot serve this access" signal a property read uses). Two
+        // independent ETS captures (a Jung F50 sibling at 1.1.18, and KNX Virtual
+        // DA.tp) show ETS never attempts the property path either. Only the
+        // lenient KNX Virtual stack happens to *accept* such a write, which is
+        // precisely why a tool tested against it alone can ship a download that
+        // no real device performs. The simulator is the adversarial peer, so it
+        // takes the real device's side: refused, with no opt-out.
+        if pid == PID_TABLE {
+            let resp = self.respond(
+                tool,
+                0x3D6,
+                &[object, pid, (start >> 8) as u8 & 0x0F, (start & 0xFF) as u8],
+            );
+            return Ok(DeviceReaction {
+                responses: vec![resp],
+                did_master_reset: false,
+            });
         }
 
         let io = self
@@ -2510,6 +2558,68 @@ mod tests {
         Ok(())
     }
 
+    /// Build a fixture-free **System B** device: the synthetic MDT product with
+    /// its mask forced to `07B0`, so the test needs no un-committed `.knxprod`.
+    fn system_b_device() -> Result<Device, String> {
+        let pd = crate::testfixtures::synthetic_mdt_sys7_product();
+        let sink = std::sync::Arc::new(RecordingSink::new());
+        Device::from_product_with_overrides(
+            IndividualAddress::new(1, 1, 2),
+            &pd,
+            LoadState::Loaded,
+            ProfileOverrides {
+                mask: Some("07B0".into()),
+                ..Default::default()
+            },
+            sink,
+        )
+    }
+
+    #[test]
+    fn test_pid_table_property_write_is_refused_with_zero_count()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A real System B device does not take a loadable table through the
+        // PID_TABLE property array. The Jung F50 52911ST answered this write with
+        // a zero-count A_PropertyValue_Response (issue #89); the simulator models
+        // that, so a tool that skips the allocate + memory-write realisation is
+        // caught here rather than on a real bus.
+        let mut dev = system_b_device()?;
+        connect(&mut dev)?;
+        // Authorize first, so the refusal is about PID 23 and not about access.
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+        assert_eq!(dev.access_level, 0);
+
+        // A_PropertyValue_Write(object 1, PID 23, count 1, start 1, [0x12, 0x34]).
+        let write = data(&dev, 0x3D7, &[0x01, PID_TABLE, 0x10, 0x01, 0x12, 0x34]);
+        let reaction = dev.handle_cemi(&write)?;
+
+        // A refusal is still an answer, not silence: the tool must be able to
+        // tell "refused" from "dropped telegram".
+        let resp = reaction
+            .responses
+            .first()
+            .ok_or("a refused PID_TABLE write must still be answered")?;
+        let apci10 = ((resp.tpdu[0] as u16 & 0x03) << 8) | resp.tpdu[1] as u16;
+        assert_eq!(Apci::from_u10(apci10), Apci::PropertyValueResponse);
+        assert_eq!(
+            &resp.tpdu[2..],
+            // object, pid, nr_of_elem = 0 in the high nibble | start_hi, start_lo
+            &[0x01, PID_TABLE, 0x00, 0x01],
+            "the header is echoed with nr_of_elem = 0 and no data"
+        );
+
+        // And nothing was stored: no PID 23 appeared on the object, and the write
+        // left the device's memory untouched.
+        assert!(
+            dev.objects
+                .get(&1)
+                .map(|o| o.property(PID_TABLE).is_none())
+                .unwrap_or(true),
+            "a refused write must not create or fill PID_TABLE"
+        );
+        Ok(())
+    }
+
     #[test]
     fn test_authorize_unlocks() -> Result<(), Box<dyn std::error::Error>> {
         let Some(mut dev) = da_tp_device()? else {
@@ -2877,6 +2987,40 @@ mod tests {
             assert_eq!(&mcb[0..4], &[0, 0, 0, 8]);
             let crc = crc16_aug_ccitt(&[1, 2, 3, 4, 5, 6, 7, 8]);
             assert_eq!(&mcb[6..8], &crc.to_be_bytes());
+            Ok(())
+        }
+
+        #[test]
+        fn test_sys7_multi_element_mcb_read_is_refused() -> Result<(), Box<dyn std::error::Error>> {
+            // A real Jung 3361-1MWW (mask 0705, `M-0004_A-A011-13`) refused a
+            // multi-element MCB read: `A_PropertyValue_Read obj=3 pid=27 count=6
+            // start=1` came back count 0 with no data (issue #89 campaign,
+            // 1.1.36). Six 8-octet entries never fit a standard-frame APDU and a
+            // real device does not partially answer. ETS reads them one at a
+            // time, so the sim serves count=1 and refuses anything wider.
+            let mut dev = sys7_device(LsmAccess::MemoryMapped);
+            connect(&mut dev)?;
+            dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+            let start_rec = [0x11u8, 0x00, 0x00, 0, 0, 0, 0, 0, 0, 0, 0];
+            dev.handle_cemi(&mem_write_frame(&dev, 0x0104, &start_rec))?;
+            let alloc_rec = [
+                0x13u8, 0x00, 0x00, 0x40, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00,
+            ];
+            dev.handle_cemi(&mem_write_frame(&dev, 0x0104, &alloc_rec))?;
+            dev.handle_cemi(&mem_write_frame(&dev, 0x4000, &[1, 2, 3, 4, 5, 6, 7, 8]))?;
+
+            // count = 6, start = 1 — the shape the Jung refused.
+            let r = dev.handle_cemi(&data(&dev, 0x3D5, &[0x01, 27, 0x60, 0x01]))?;
+            let resp = &r.responses[0];
+            assert_eq!(
+                &resp.tpdu[2..],
+                &[0x01, 27, 0x00, 0x01],
+                "a multi-element MCB read is refused with nr_of_elem = 0 and no data"
+            );
+
+            // count = 1 at the same index still serves the entry.
+            let r = dev.handle_cemi(&data(&dev, 0x3D5, &[0x01, 27, 0x10, 0x01]))?;
+            assert_eq!(prop_response_value(&r).len(), MCB_ENTRY_LEN);
             Ok(())
         }
 

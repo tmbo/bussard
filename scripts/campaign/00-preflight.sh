@@ -12,7 +12,6 @@
 # It does not touch a device. It:
 #   - refuses without --i-have-an-ets-backup (issue #89's first ground rule)
 #   - resolves and prints the gateway, and refuses a real bus without the opt-in
-#   - installs the private-data pre-commit hook
 #   - starts tcpdump and `bussard capture` into captures/campaign/<date>/
 #   - writes a session file the other scripts read
 #
@@ -62,11 +61,10 @@ note "mode          $([ "$DRY_RUN" -eq 1 ] && echo 'dry run (no real bus expecte
 echo
 note "It will:"
 note "  1. verify the ETS backup was confirmed (--i-have-an-ets-backup)"
-note "  2. install the private-data pre-commit hook"
-note "  3. check the bussard binary and the model parse"
-note "  4. start tcpdump into $ROOT/preflight/campaign-<ts>.pcap"
-note "  5. start 'bussard capture' into $ROOT/preflight/bus.db"
-note "  6. write $SESSION for the later scripts"
+note "  2. check the bussard binary and the model parse"
+note "  3. start tcpdump into $ROOT/preflight/campaign-<ts>.pcap"
+note "  4. start 'bussard capture' into $ROOT/preflight/bus.db"
+note "  5. write $SESSION for the later scripts"
 echo
 note "It will NOT write to any device."
 rule
@@ -89,17 +87,10 @@ require_go
 # --- Execute ----------------------------------------------------------------
 ensure_dir "$ROOT/preflight"
 
-say "1/6  ETS backup"
+say "1/5  ETS backup"
 note "confirmed by the operator via --i-have-an-ets-backup"
 
-say "2/6  private-data hook"
-if bash "$REPO/scripts/install-hooks.sh"; then
-  note "captures and .knxproj/.knxkeys files can no longer be committed by accident"
-else
-  warn "could not install the pre-commit hook; do NOT commit from this checkout"
-fi
-
-say "3/6  binary and model"
+say "2/5  binary and model"
 [ -x "$BUSSARD_BIN" ] || die "bussard binary not found at $BUSSARD_BIN (cargo build --bin bussard)"
 note "$("$BUSSARD_BIN" --version 2>/dev/null || echo 'bussard (version unknown)')"
 if "$BUSSARD_BIN" validate --dir "$MODEL_DIR" >"$ROOT/preflight/validate.txt" 2>&1; then
@@ -109,7 +100,7 @@ else
 fi
 model_devices >"$ROOT/preflight/devices.txt"
 
-say "4/6  tcpdump"
+say "3/5  tcpdump"
 PCAP="$ROOT/preflight/campaign-$(date +%Y%m%d%H%M%S).pcap"
 : >"$PIDS"
 if start_tcpdump "$PCAP"; then
@@ -119,7 +110,7 @@ else
   note "continuing without a campaign-wide capture; per-step captures may still work"
 fi
 
-say "5/6  bussard capture"
+say "4/5  bussard capture"
 CAPTURE_DB="$ROOT/preflight/bus.db"
 "$BUSSARD_BIN" capture --to "$CAPTURE_DB" --dir "$MODEL_DIR" --gateway "$GATEWAY_RESOLVED" \
   >"$ROOT/preflight/capture.log" 2>&1 &
@@ -132,7 +123,7 @@ else
   warn "bussard capture exited immediately; see $ROOT/preflight/capture.log"
 fi
 
-say "6/6  session"
+say "5/5  session"
 cat >"$SESSION" <<EOF
 # Written by 00-preflight.sh on $(now_utc) UTC. Sourced by the later scripts.
 CAMPAIGN_DATE=$CAMPAIGN_DATE
