@@ -596,7 +596,8 @@ fn main() -> ExitCode {
     // available for regression spotting, but a plain 0.1.0 run is quiet.
     let started = std::time::Instant::now();
     let code = match run(cli.command) {
-        Ok(code) => code,
+        Ok(code) if code == ExitCode::SUCCESS => code,
+        Ok(code) => no_free_tunnel_or(code),
         // A gateway with no free tunnel slot gets its own message and exit code
         // (issue #105); it is a capacity refusal, not a generic failure.
         Err(err) if is_no_free_tunnel(&err) => {
@@ -605,13 +606,25 @@ fn main() -> ExitCode {
         }
         Err(err) => {
             eprintln!("error: {err:#}");
-            ExitCode::FAILURE
+            no_free_tunnel_or(ExitCode::FAILURE)
         }
     };
     if cli.timing {
         eprintln!("took {:.2?}", started.elapsed());
     }
     code
+}
+
+/// Maps a failed run to the no-free-tunnel exit code when the bus actor saw the
+/// gateway refuse every connect with `E_NO_MORE_CONNECTIONS` (the actor retries
+/// such refusals, so the command itself only sees a bus that never came up).
+fn no_free_tunnel_or(code: ExitCode) -> ExitCode {
+    if bussard_bus::no_free_tunnel_seen() {
+        eprintln!("{}", conn_cmd::no_free_tunnel_message("the gateway"));
+        ExitCode::from(conn_cmd::EXIT_NO_FREE_TUNNEL)
+    } else {
+        code
+    }
 }
 
 /// Whether an error chain carries the "no free tunnelling connection" refusal.
