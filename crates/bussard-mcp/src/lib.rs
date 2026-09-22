@@ -23,16 +23,17 @@
 //! | `knx_recent_telegrams` | Recent telegrams from the ring (and capture DB). |
 //! | `knx_wait_for_telegram` | Block for the next matching telegram ("press the button now"). |
 //! | `knx_validate` | Model validation diagnostics as JSON. |
+//! | `knx_scaffold_groups` | Draft or extend `groups.yaml` from a room and function list. |
 //! | `knx_read_group` | Send a GroupValueRead and return the value (omitted in `--passive`). |
 //! | `knx_describe_device` | Introspect a device: enumerate its interface objects and each property's description (omitted in `--passive`). |
 //! | `knx_write_group` | Send a GroupValueWrite (registered only with `--allow-writes`). |
 //!
 //! In `--passive` mode the two bus-touching read tools (`knx_read_group` and
-//! `knx_describe_device`) are unregistered, so `tools/list` contains seven tools
-//! instead of nine and the server never transmits. `knx_write_group` is
+//! `knx_describe_device`) are unregistered, so `tools/list` contains eight tools
+//! instead of ten and the server never transmits. `knx_write_group` is
 //! registered only when the server is started with `--allow-writes` (which
-//! conflicts with `--passive`), making ten tools; it writes to the physical bus
-//! and hard-refuses `protected` GAs.
+//! conflicts with `--passive`), making eleven tools; it writes to the physical
+//! bus and hard-refuses `protected` GAs.
 //!
 //! # Connecting this to Claude Code
 //!
@@ -68,6 +69,7 @@ pub mod run;
 pub mod server;
 pub mod state;
 pub mod tools;
+pub mod tools_groups;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -170,10 +172,10 @@ pub async fn run(config: &McpConfig) -> anyhow::Result<()> {
 
 /// The set of tool names exposed, in registration order. Used by tests and docs.
 ///
-/// - passive mode: 7 tools (no bus-touching tools: no `knx_read_group`, no
+/// - passive mode: 8 tools (no bus-touching tools: no `knx_read_group`, no
 ///   `knx_describe_device`, no `knx_write_group`).
-/// - default mode: 9 tools (adds `knx_read_group` and `knx_describe_device`).
-/// - `--allow-writes`: 10 tools (adds `knx_write_group`).
+/// - default mode: 10 tools (adds `knx_read_group` and `knx_describe_device`).
+/// - `--allow-writes`: 11 tools (adds `knx_write_group`).
 pub fn tool_names(passive: bool, allow_writes: bool) -> Vec<&'static str> {
     let mut names = vec![
         "knx_project_summary",
@@ -183,6 +185,7 @@ pub fn tool_names(passive: bool, allow_writes: bool) -> Vec<&'static str> {
         "knx_recent_telegrams",
         "knx_wait_for_telegram",
         "knx_validate",
+        "knx_scaffold_groups",
     ];
     if !passive {
         names.push("knx_read_group");

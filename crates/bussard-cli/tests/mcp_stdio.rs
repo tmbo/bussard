@@ -121,11 +121,12 @@ fn mcp_stdio_handshake_is_pure_json_and_lists_seven_passive_tools() {
         "knx_model_lookup",
         "knx_project_summary",
         "knx_recent_telegrams",
+        "knx_scaffold_groups",
         "knx_validate",
         "knx_wait_for_telegram",
     ];
     expected.sort_unstable();
-    assert_eq!(tools, expected, "passive mode exposes exactly 7 tools");
+    assert_eq!(tools, expected, "passive mode exposes exactly 8 tools");
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
