@@ -17,6 +17,11 @@ serde_norway = { workspace = true }
 serde_path_to_error = { workspace = true }
 thiserror = { workspace = true }
 bitflags = { workspace = true }
+# The `.bussard` bundle (issue #111): a deflate zip with a SHA-256 manifest.
+# Both are already workspace dependencies (bussard-ets/-prod/-project and
+# bussard-secure/-project), so the tree gains no new crate.
+zip = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }

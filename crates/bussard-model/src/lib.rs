@@ -10,6 +10,7 @@
 #![warn(missing_docs)]
 
 pub mod address;
+pub mod bundle;
 pub mod change;
 pub mod codec;
 pub mod dpt;
@@ -18,11 +19,13 @@ pub mod history;
 pub mod loader;
 pub mod merge;
 pub mod param_model;
+pub mod reconcile;
 pub mod schema;
 pub mod validate;
 
 pub use address::{AddressParseError, GroupAddress, IndividualAddress};
-pub use change::{Change, ChangeKind, ChangeSet, LinkRole, describe, render_text};
+pub use bundle::{Bundle, BundleError, BundleManifest};
+pub use change::{Change, ChangeKind, ChangeSet, LinkRole, describe, name_parameters, render_text};
 pub use codec::{
     DateTime, EncodeError, Float16RangeError, HvacMode, ParseValueError, Rgbw, TypedValue, decode,
     encode, encode_float16, parse_value,
