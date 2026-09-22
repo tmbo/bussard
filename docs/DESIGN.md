@@ -7,7 +7,7 @@
 
 ## 1. What we're building
 
-`bussard`: an open-source, cross-platform CLI for KNX. No GUI.
+`bussard`: an open-source (MIT), cross-platform CLI for KNX. No GUI.
 
 The goal is to use a configuration-first approach for managing KNX:
 
@@ -83,7 +83,7 @@ and Wine. Handling details live in [product-data.md](product-data.md).
 
 ## 4. Ecosystem survey and licensing constraints
 
-Surveyed 2026-09. Key constraint: bussard stays copyleft-free, so GPL code cannot be depended on,
+Surveyed 2026-09. Key constraint: bussard is MIT, so GPL code cannot be depended on,
 forked, or ported.
 
 | Project | Language | License | Use for bussard |
@@ -97,7 +97,7 @@ forked, or ported.
 | `knxkit` | Rust | EPL-2.0/GPL-3.0 | Stalled, no routing, pre-production. Not used. |
 | `knx-ip` / KNXyz | Rust | MIT | Too new/unaudited for the core. Watching. |
 
-Consequence: the transport + cEMI layer is written from scratch. The wire surface
+Consequence: the transport + cEMI layer is written from scratch (MIT). The wire surface
 is small (~1-2 KLOC): KNXnet/IP framing, tunneling (CONNECT / CONNECTIONSTATE heartbeat /
 TUNNELING_REQUEST+ACK sequence counters / DISCONNECT), routing (multicast
 224.0.23.12:3671, ROUTING_INDICATION / LOST_MESSAGE / BUSY), and cEMI `L_Data` decode

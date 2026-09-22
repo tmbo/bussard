@@ -12,7 +12,7 @@
 //! `L_Data` telegrams (including the 6-bit "small APDU" packing) and a
 //! [`knxnet`] module for the framing of every service.
 //!
-//! It is written from scratch, from the published
+//! It is written from scratch under the crate's MIT license, from the published
 //! KNXnet/IP protocol structure — no GPL KNX stacks were used.
 //!
 //! # Example

@@ -17,7 +17,6 @@ all-features = true
 [licenses]
 # knx-sim itself is `publish = false`; this gate exists to police THIRD-PARTY
 # dependency licences, not the crate's own.
-private = { ignore = true }
 # Only these licences may appear anywhere in the dependency tree. Copyleft
 # licences (GPL, LGPL, AGPL, EPL, MPL, CDDL, ...) are deliberately absent, so
 # they FAIL the gate. Kept in sync with the root deny.toml.

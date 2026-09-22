@@ -12,7 +12,7 @@ rust-version = "1.85"
 description = "An independent, strict KNX device + bus simulator for cross-checking flashing tools on the wire."
 authors = ["Tom Bocklisch"]
 repository = "https://github.com/tmbo/bussard"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 # A test/development tool, never published to crates.io. Stated explicitly so an
 # accidental `cargo publish` is refused, and so cargo-deny's `private = { ignore
 # = true }` treats this crate's own licensing as out of scope (the gate exists to

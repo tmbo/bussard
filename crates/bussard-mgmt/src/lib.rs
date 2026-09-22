@@ -9,7 +9,7 @@
 //! serial, order info), memory reads and restart. A connectionless broadcast
 //! helper reports which devices are in programming mode.
 //!
-//! It is written from scratch from the published
+//! It is written from scratch under the crate's MIT license from the published
 //! KNX transport- and application-layer specification structure (EN 50090 / the
 //! KNX standard 3/3/x and 3/5/x), the Wireshark KNXnet/IP dissector's public
 //! field definitions, and behaviour verified live against real devices (see the

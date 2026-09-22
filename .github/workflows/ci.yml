@@ -382,7 +382,7 @@ jobs:
   #
   # Licence note: thelsing/knx is GPL and is fetched + built + run as a separate
   # peer here; it is never linked into or vendored by bussard (all bussard crates
-  # stay copyleft-free, guarded by the `deny` job). This job compiles that GPL code into a
+  # stay MIT, guarded by the `deny` job). This job compiles that GPL code into a
   # standalone binary at CI time and talks to it over a socket — no linkage.
   virtual-device:
     name: virtual-device (advisory, ubuntu, interop)
