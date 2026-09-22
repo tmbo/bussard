@@ -12,8 +12,8 @@ use tokio::net::UdpSocket;
 use tokio::time::Instant;
 
 use crate::config::{DEFAULT_MULTICAST, DEFAULT_PORT};
-use crate::error::Result;
-use crate::knxnet::{self, GatewayInfo, Hpai, ServiceType};
+use crate::error::{Result, TransportError};
+use crate::knxnet::{self, GatewayDescription, GatewayInfo, Hpai, ServiceType};
 
 /// Discovers KNXnet/IP gateways on the local network.
 ///
@@ -74,6 +74,61 @@ pub async fn discover(timeout: Duration, interface: Ipv4Addr) -> Result<Vec<Gate
     }
 
     Ok(found)
+}
+
+/// Asks one gateway's control endpoint to describe itself
+/// (DESCRIPTION_REQUEST / DESCRIPTION_RESPONSE).
+///
+/// Unicast, so unlike [`discover`] it works across subnets. The answer carries
+/// the device-info DIB (name, individual address, serial) and, on a KNXnet/IP
+/// Core v2 interface, the tunnelling-info DIB with one entry per tunnelling
+/// slot — which is how bussard reports "N tunnels, M in use" (issue #105).
+///
+/// Read-only: nothing is put on the KNX bus, only a UDP exchange with the
+/// interface itself.
+pub async fn describe_gateway(
+    endpoint: SocketAddrV4,
+    timeout: Duration,
+) -> Result<GatewayDescription> {
+    let socket = UdpSocket::bind(SocketAddr::from(SocketAddrV4::new(
+        Ipv4Addr::UNSPECIFIED,
+        0,
+    )))
+    .await?;
+    socket.connect(endpoint).await?;
+    let local = match socket.local_addr()? {
+        SocketAddr::V4(v4) => v4,
+        SocketAddr::V6(_) => {
+            return Err(TransportError::InvalidField {
+                field: "local socket is IPv6, KNXnet/IP requires IPv4",
+                value: 0,
+            });
+        }
+    };
+    socket
+        .send(&knxnet::description_request(Hpai::new(local)))
+        .await?;
+
+    let deadline = Instant::now() + timeout;
+    let mut buf = [0u8; 1024];
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(TransportError::Timeout("DESCRIPTION_RESPONSE"));
+        }
+        match tokio::time::timeout(remaining, socket.recv(&mut buf)).await {
+            Ok(Ok(n)) => {
+                if let Ok(parsed) = knxnet::parse(&buf[..n]) {
+                    if parsed.service == ServiceType::DescriptionResponse {
+                        return knxnet::parse_description_response(parsed.body);
+                    }
+                }
+                // Anything else on this ephemeral port is not ours; keep waiting.
+            }
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => return Err(TransportError::Timeout("DESCRIPTION_RESPONSE")),
+        }
+    }
 }
 
 /// Enumerates the machine's usable local IPv4 interfaces.

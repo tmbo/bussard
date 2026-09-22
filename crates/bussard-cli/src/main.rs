@@ -568,6 +568,12 @@ fn main() -> ExitCode {
     let started = std::time::Instant::now();
     let code = match run(cli.command) {
         Ok(code) => code,
+        // A gateway with no free tunnel slot gets its own message and exit code
+        // (issue #105); it is a capacity refusal, not a generic failure.
+        Err(err) if is_no_free_tunnel(&err) => {
+            eprintln!("{}", conn_cmd::no_free_tunnel_message("the gateway"));
+            ExitCode::from(conn_cmd::EXIT_NO_FREE_TUNNEL)
+        }
         Err(err) => {
             eprintln!("error: {err:#}");
             ExitCode::FAILURE
@@ -577,6 +583,16 @@ fn main() -> ExitCode {
         eprintln!("took {:.2?}", started.elapsed());
     }
     code
+}
+
+/// Whether an error chain carries the "no free tunnelling connection" refusal.
+fn is_no_free_tunnel(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<bussard_transport::TransportError>(),
+            Some(bussard_transport::TransportError::NoMoreConnections)
+        )
+    })
 }
 
 /// Dispatches a subcommand, returning the process exit code on success.
