@@ -50,14 +50,19 @@ def load_frames(path: str) -> list:
         raise SystemExit("cannot read %s: %s" % (path, exc))
 
 
-def load_ops(path: str, device: str | None = None) -> dict:
-    """Normalizes either a capture file or a TPDU fixture, by extension."""
+def load_ops(path: str) -> dict:
+    """Normalizes either a capture file or a TPDU fixture, by extension.
+
+    Every device is normalized, not just the requested one: when the requested
+    address is absent, the error then names what the capture does contain, which
+    is the difference between "no operations for 1.1.2" and a useful message.
+    """
     if path.endswith(TPDU_SUFFIXES):
         try:
-            return normalize_tpdu_file(path, device)
+            return normalize_tpdu_file(path)
         except OSError as exc:
             raise SystemExit("cannot read %s: %s" % (path, exc))
-    return normalize(load_frames(path), device)
+    return normalize(load_frames(path))
 
 
 # --------------------------------------------------------------------------
@@ -129,7 +134,7 @@ def _trace_line(frame: KnxFrame, base: float) -> str:
 
 
 def cmd_ops(args) -> int:
-    buckets = load_ops(args.capture, args.device)
+    buckets = load_ops(args.capture)
     ops = resolve_device(buckets, args.device)
     if args.json:
         print(json.dumps(_ops_json(ops, args.capture), indent=2))
@@ -189,8 +194,8 @@ def _jsonable(value):
 
 
 def cmd_diff(args) -> int:
-    ops_a = resolve_device(load_ops(args.a, args.device), args.device)
-    ops_b = resolve_device(load_ops(args.b, args.device), args.device)
+    ops_a = resolve_device(load_ops(args.a), args.device)
+    ops_b = resolve_device(load_ops(args.b), args.device)
     if ops_a.device != ops_b.device:
         raise SystemExit(
             "the two captures name different devices (%s vs %s); pass --device"
