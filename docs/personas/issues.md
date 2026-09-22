@@ -39,6 +39,8 @@ depend on platform work (mask coverage, Secure) or are planning-stage tooling.
 
 Labels: enhancement
 
+Status: implemented, pending merge (#93, branch `feat/audit-tunnel-docs`). Reshaped: adds the read-tier MCP tool `knx_audit` and one shared mask-capability table.
+
 Persona: Nadia stages 1, 2, 5, 9; Jonas stage 5.
 
 ### Problem
@@ -85,6 +87,8 @@ Related: D13, D5, viz Problems panel, #45 (scan probe budget).
 ## D2. Owner onboarding guide, handover checklist, professional notes
 
 Labels: documentation
+
+Status: implemented, pending merge (#94, branch `docs/owner-collab-personas`). Reshaped: the owner guide is a conversation with the assistant, not a list of commands; the CLI steps are the device programming and the fallback.
 
 Persona: Nadia stages 0, 2, 5; Jonas stages 7, 8.
 
@@ -138,6 +142,8 @@ Related: D1, D4, D16, D18, D19.
 
 Labels: enhancement
 
+Status: implemented on main (#95). Reshaped: the primary loop runs in chat through `knx_wait_for_telegram`, `knx_infer_group` and the model-edit tools; `bussard learn` is the terminal fallback.
+
 Persona: Nadia stage 3.
 
 ### Problem
@@ -185,6 +191,8 @@ Related: #81 (System 7 reconstruct), D1.
 
 Labels: enhancement
 
+Status: implemented on main (#96).
+
 Persona: Nadia stage 5; Jonas stage 8.
 
 ### Problem
@@ -221,6 +229,8 @@ Related: D2, SAFETY.md backups section.
 ## D5. `bussard doc`: generated installation documentation
 
 Labels: enhancement
+
+Status: implemented on main (#97).
 
 Persona: Nadia stages 4, 10; Jonas stage 7.
 
@@ -264,6 +274,8 @@ Related: D12, D1.
 
 Labels: enhancement
 
+Status: implemented on main (#98).
+
 Persona: Nadia stage 8; Jonas stage 9.
 
 ### Problem
@@ -303,6 +315,8 @@ Related: #79 (flash freshness), D4, D17.
 
 Labels: enhancement
 
+Status: implemented, pending merge (#99, branch `feat/bundle-diff`). Reshaped: either side can be a `.knxproj`, a bundle or a model directory, and the read-tier MCP tool `knx_diff_project` previews a received file.
+
 Persona: Jonas stages 3, 8.
 
 ### Problem
@@ -340,6 +354,8 @@ Related: D12, D16, #83 (ETS XML layer).
 ## D8. Batch commissioning: `plan`, `apply`, `assign`, `flash` over a line
 
 Labels: enhancement
+
+Status: implemented on main (#100). Reshaped: the bench loop is `bussard commission --line`, and `plan`/`apply --line` cover commissioning day.
 
 Persona: Jonas stages 4, 5; Nadia stage 2.
 
@@ -382,6 +398,8 @@ Related: #81 (System 7 tables), #45, D6.
 ## D9. `bussard test`: scripted functional acceptance tests
 
 Labels: enhancement
+
+Status: implemented on main (#101). Reshaped: adds the MCP tool `knx_run_tests` on a write-enabled server.
 
 Persona: Jonas stages 6, 8; Nadia stage 6.
 
@@ -426,6 +444,8 @@ Related: D5, D16.
 ## D10. Topology and convention lints in `validate`
 
 Labels: enhancement
+
+Status: implemented on main (#102).
 
 Persona: Jonas stages 2, 3.
 
@@ -473,6 +493,8 @@ Related: D11.
 
 Labels: enhancement
 
+Status: implemented on main (#103). Adds the MCP tool `knx_scaffold_groups`.
+
 Persona: Jonas stages 1, 3.
 
 ### Problem
@@ -513,6 +535,8 @@ Related: D10, D12.
 
 Labels: enhancement
 
+Status: implemented on main (#104).
+
 Persona: Nadia stages 7, 10; Jonas stage 7.
 
 ### Problem
@@ -541,6 +565,8 @@ Related: D7, D5.
 ## D13. Report tunnelling capacity at `init` and refuse cleanly when none is free
 
 Labels: enhancement
+
+Status: implemented, pending merge (#105, branch `feat/audit-tunnel-docs`).
 
 Persona: Nadia stages 1, 7; Jonas stage 5.
 
@@ -574,6 +600,8 @@ Related: D1, D15.
 
 Labels: enhancement
 
+Status: implemented on main (#106).
+
 Persona: Nadia, before stage 1.
 
 ### Problem
@@ -598,6 +626,8 @@ publishes all three from the existing artifacts.
 ## D15. Documentation consistency: Secure flags, System 7 status, tunnel budget
 
 Labels: documentation
+
+Status: implemented, pending merge (#107, branch `feat/audit-tunnel-docs`).
 
 Persona: both.
 
@@ -632,6 +662,8 @@ source (the Rust table, rendered) into the docs.
 ## D16. Collaboration guide: owner and integrator exchange changes
 
 Labels: documentation
+
+Status: implemented, pending merge (#108, branch `docs/owner-collab-personas`). Reshaped: the file track is the default and the owner's assistant previews received files with `knx_diff_project`; the repository track is optional.
 
 Persona: Jonas stage 8; Nadia stage 10.
 
@@ -678,6 +710,8 @@ Related: D2, D7, D9, D18, D19.
 
 Labels: enhancement
 
+Status: implemented on main (#109).
+
 Persona: Nadia stage 6; Jonas stage 9.
 
 ### Problem
@@ -708,6 +742,8 @@ Related: D6, #81.
 ## D18. Built-in history and undo, no git required
 
 Labels: enhancement
+
+Status: implemented on main (#110). Reshaped: adds the MCP model-edit tools (`knx_set_group`, `knx_add_link`, `knx_remove_link`, `knx_set_device`, `knx_set_parameter`) that snapshot, validate and return sentences, plus `knx_history`, `knx_undo` and `knx_describe_change`.
 
 Persona: Nadia stages 5, 6; Jonas stage 8.
 
@@ -759,6 +795,8 @@ Related: D2, D7, D19, D20.
 
 Labels: enhancement
 
+Status: implemented, pending merge (#111, branch `feat/bundle-diff`). Adds the MCP tool `knx_export_bundle`.
+
 Persona: Nadia stages 5, 10; Jonas stages 7, 8.
 
 ### Problem
@@ -803,6 +841,8 @@ Related: D2, D7, D12, D16, D18.
 ## D20. Plain-language rendering of pending model changes
 
 Labels: enhancement
+
+Status: implemented on main (#112). The renderer is what every model-edit tool returns.
 
 Persona: Nadia stage 6; Jonas stage 8.
 
