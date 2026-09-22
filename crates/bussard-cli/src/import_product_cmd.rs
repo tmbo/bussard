@@ -630,17 +630,11 @@ fn load_op_summary(op: &LoadOp) -> String {
             lsm_idx,
             address,
             size,
-            access,
-            mem_type,
-            seg_flags,
         } => format!(
-            "abs_segment lsm={} addr={} size={} access={} mem_type={} seg_flags={}",
+            "abs_segment lsm={} addr={} size={}",
             opt(lsm_idx),
             opt(address),
-            opt(size),
-            opt(access),
-            opt(mem_type),
-            opt(seg_flags)
+            opt(size)
         ),
         LoadOp::WriteRelMem {
             obj_idx,
