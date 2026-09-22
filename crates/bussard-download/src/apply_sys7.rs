@@ -382,7 +382,6 @@ async fn write_verified<Ch: L4Channel>(
 mod tests {
     use super::*;
     use crate::compute::compute_tables;
-    use crate::compute_sys7::{SYS7_ADDRESS_TABLE_ADDR, SYS7_ASSOCIATION_TABLE_ADDR};
     use bussard_mgmt::tables::DeviceTables;
     use bussard_model::schema::Link;
 
@@ -396,8 +395,8 @@ mod tests {
                 sources: Vec::new(),
                 notes: Vec::new(),
             },
-            address_base: SYS7_ADDRESS_TABLE_ADDR,
-            association_base: SYS7_ASSOCIATION_TABLE_ADDR,
+            address_base: crate::compute_sys7::SYS7_ADDRESS_TABLE_ADDR,
+            association_base: crate::compute_sys7::SYS7_ASSOCIATION_TABLE_ADDR,
             own_ia,
             group_object_base: go_base,
             group_object_image: go_image,
