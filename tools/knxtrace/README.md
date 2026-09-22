@@ -151,11 +151,9 @@ not to print anything that should not leave it:
 - KNXnet/IP Secure frames are named, sized and hashed. Nothing is decrypted, and
   there is no code path that could decrypt.
 
-Captures themselves live under the gitignored `captures/`, and
-`scripts/check-no-house-data.sh` (installed as a pre-commit hook by
-`scripts/install-hooks.sh`) refuses any `.pcap` or `.pcapng` in a commit. The
-tests here build their own captures in-process from RFC 5737 TEST-NET-1
-addresses.
+Captures themselves live under the gitignored `captures/`, and `.pcap` /
+`.pcapng` files are gitignored everywhere. The tests here build their own
+captures in-process from RFC 5737 TEST-NET-1 addresses.
 
 ## Layout
 

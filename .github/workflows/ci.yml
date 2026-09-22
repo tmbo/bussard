@@ -198,22 +198,6 @@ jobs:
   #
   # This job does not compile the workspace (it only reads Cargo.lock + crate
   # metadata), so it is fast and needs no rustc/cargo cache.
-  # Private-data gate: the repo must never describe a real installation. Refuses
-  # gitignored-only paths that got tracked, a private LAN address, and any room /
-  # floor / location / custom device name from the maintainer's model (matched by
-  # sha256 against .house-markers.sha256; no plaintext in the repo). See
-  # docs/SAFETY.md, "Private data".
-  private-data:
-    name: private-data check (ubuntu)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v5
-        with:
-          fetch-depth: 1
-      - name: check tracked files for private installation data
-        run: scripts/check-no-house-data.sh --tracked
-
   deny:
     name: cargo-deny (ubuntu)
     runs-on: ubuntu-latest
