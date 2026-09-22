@@ -140,6 +140,10 @@ async fn push_indication(
 }
 
 /// Runs the mock gateway + de-mirrored device until the client disconnects.
+///
+/// The loop only returns after 5 s of silence, so tests end with
+/// `gw_task.abort()` rather than awaiting the task: awaiting it (even
+/// under a 1 s timeout) added that wait to every test.
 async fn run_mock(gw: UdpSocket, address: IndividualAddress, dev: Shared) {
     let mut gw_seq: u8 = 0;
     let mut dev_send_seq: u8 = 0;
@@ -470,7 +474,7 @@ async fn compare_rel_mem_chunks_by_the_negotiated_apdu() {
         "a 40-octet compare on a 15-octet-APDU device is four standard-frame reads"
     );
 
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 // --- Tests --------------------------------------------------------------
@@ -510,7 +514,7 @@ async fn write_memory_chunks_and_verifies_round_trip() {
             "135 bytes = three A_Memory_Write telegrams at a 63-octet chunk size"
         );
     }
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -537,7 +541,7 @@ async fn write_memory_exact_single_chunk_boundary() {
         assert_eq!(d.memory.get(&0x5000).copied(), Some(0));
         assert_eq!(d.memory.get(&0x503E).copied(), Some(62));
     }
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -578,7 +582,7 @@ async fn write_memory_verify_mismatch_surfaces_address_and_diff() {
         other => panic!("expected MemoryVerifyFailed, got {other:?}"),
     }
     dev.disconnect().await.unwrap();
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -604,7 +608,7 @@ async fn write_memory_nak_mid_chunk_fails() {
         matches!(err, MgmtError::Nak { .. }),
         "a NAK mid-chunk surfaces as Nak: {err:?}"
     );
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -641,7 +645,7 @@ async fn allocate_segment_round_trip_returns_device_address() {
         assert!(d.allocated);
         assert_eq!(d.load_state, 2, "object is still Loading after allocation");
     }
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -672,7 +676,7 @@ async fn allocate_segment_in_wrong_state_is_refused() {
         other => panic!("expected UnexpectedLoadState, got {other:?}"),
     }
     let _ = l4.disconnect().await;
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -702,7 +706,7 @@ async fn allocate_segment_refusal_surfaces_load_error() {
         other => panic!("expected LoadError, got {other:?}"),
     }
     let _ = l4.disconnect().await;
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -744,5 +748,5 @@ async fn mid_session_silence_error_carries_exchange_counter() {
         other => panic!("expected MidSessionSilence, got {other:?}"),
     }
     let _ = l4.disconnect().await;
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
