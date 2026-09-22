@@ -1,0 +1,1 @@
+Rocker 1 on Hallway push button now switches Porch light (0/0/4).
