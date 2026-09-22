@@ -174,6 +174,14 @@ protected write when they mean to, but an LLM driving `bussard` over MCP can
 never write a protected GA, with or without `--allow-writes`. Keep genuinely
 dangerous GAs marked `protected: true` so the MCP path can never touch them.
 
+`bussard test` runs scripted writes, so it takes the same rails as `bussard
+write` (the non-loopback gateway gate and a confirmation naming the gateway),
+and a protected GA needs two opt-ins instead of one: `allow_protected: true` in
+`tests.yaml` and `--force` on the command line. With either missing, the test
+is reported as refused and nothing is written to that GA. The `knx_run_tests`
+MCP tool refuses such a test whatever the file says. `bussard learn` never
+transmits at all.
+
 ## Supported device masks
 
 Write commands refuse an unsupported device mask during the pre-flight, before
