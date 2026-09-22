@@ -58,6 +58,7 @@ fn device_with_comobject(addr: &str, name: &str, dpt: Dpt) -> LoadedDevice {
         name: name.to_string(),
         description: None,
         location: None,
+        replaced: None,
         product: None,
         channels: BTreeMap::new(),
         parameters: BTreeMap::new(),
