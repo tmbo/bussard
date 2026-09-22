@@ -184,14 +184,31 @@ any write. Support differs by command:
   those families, a mask mismatch between the application and the device, or a
   load procedure containing an operation `bussard` cannot execute all refuse the
   procedure rather than leaving a device half-flashed.
-- **`apply`, `plan`, and single-device `reconstruct`** support **System B only**
-  for now. Another mask is refused (in line-mode `reconstruct` it is recorded as
-  a stub instead). The refusal names the mask, for example:
+- **`apply`, `plan`, and single-device `reconstruct`** support **System B**
+  (`x7B0`) and **System 7** (`0705` / `0701`). On System B the tables are
+  interface-object property arrays; on System 7 they are the absolute memory
+  regions at `0x4000` (address table + group-object descriptors) and `0x4201`
+  (association table), and `apply` rewrites only those two table load-state
+  machines — the parameter LSM and the application image are never touched, and
+  the device is not restarted. Another mask is refused (in line-mode
+  `reconstruct` it is recorded as a stub instead). The refusal names the mask,
+  for example:
 
   ```
-  1.1.5 reports mask 0705 (System 7) — `bussard apply` supports
-  System B (mask 07B0) only for now
+  1.1.5 reports mask 0012 (System 1) — `bussard apply` supports the
+  System B (x7B0) and System 7 (0705 / 0701) families
   ```
+
+  Every System 7 table read is bounded by its memory region: a count octet
+  claiming more entries than the region holds (virgin EEPROM reads `0xFF`) is
+  refused rather than followed into neighbouring memory, and an image that would
+  not fit its region is refused before anything is written.
+
+  These three commands run without a `.knxprod`, so the System 7 table bases are
+  the corpus-wide defaults `0x4000` / `0x4201` rather than product-resolved
+  addresses. A device that keeps its tables elsewhere reads back as an empty
+  table set — never as mis-decoded links — and must be programmed with
+  `bussard flash`, which does resolve the addresses from product data.
 
 Everything not on these lists is refused before a write, not attempted and
 rolled back.
