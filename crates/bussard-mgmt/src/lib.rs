@@ -73,12 +73,11 @@ pub use connection::{
 pub use device::DeviceConnection;
 pub use error::{MgmtError, Result, SilenceKind};
 pub use load::{
-    LD_CTRL_ABS_SEGMENT, LD_CTRL_REL_SEGMENT, LoadControl, LoadState, LoadStateContext,
-    MCB_ENTRY_LEN, McbEntry, PID_LOAD_STATE_CONTROL, PID_MCB_TABLE, PID_PROGRAM_VERSION,
-    SegmentAllocation, WriteError, allocate_segment, compare_property, compare_rel_mem,
-    crc16_ccitt, encode_rel_segment, is_connection_death, mcb_entry, read_load_state,
-    read_mcb_table, read_program_version, read_table_reference, write_load_control, write_property,
-    write_table,
+    LD_CTRL_REL_SEGMENT, LoadControl, LoadState, LoadStateContext, MCB_ENTRY_LEN, McbEntry,
+    PID_LOAD_STATE_CONTROL, PID_MCB_TABLE, PID_PROGRAM_VERSION, SegmentAllocation, WriteError,
+    allocate_segment, compare_property, compare_rel_mem, crc16_ccitt, encode_rel_segment,
+    is_connection_death, mcb_entry, read_load_state, read_mcb_table, read_program_version,
+    read_table_reference, write_load_control, write_property, write_table,
 };
 // The memory primitives moved out of `load` into their own module (issue #80);
 // every historical `bussard_mgmt::…` and `bussard_mgmt::load::…` path still
