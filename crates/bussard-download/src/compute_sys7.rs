@@ -23,6 +23,317 @@ use bussard_model::GroupAddress;
 
 use crate::compute::{DesiredTables, GroupObjectDescriptor, Priority};
 
+// --- Layout constants (the single definition of the System 7 table forms) ----
+//
+// Both directions — the synthesizers below and the decoders in this module (used
+// by `bussard plan` / `apply` / `reconstruct` through [`crate::tables_sys7`]) —
+// are built from these constants, so a format change cannot drift between the
+// write side and the read side.
+
+/// The absolute base address of the System 7 **address table (GrAT)**: the LSM 1
+/// table region (`[system7-spec §2.3]`, `[corpus: 49/49]`).
+pub const SYS7_ADDRESS_TABLE_ADDR: u16 = 0x4000;
+
+/// The absolute base address of the System 7 **association table (GrOAT)**: the
+/// LSM 2 table region (`[system7-spec §2.3]`).
+pub const SYS7_ASSOCIATION_TABLE_ADDR: u16 = 0x4201;
+
+/// Octets of the leading `CNT` field every System 7 table image starts with.
+pub const SYS7_COUNT_LEN: usize = 1;
+
+/// Octets per address-table entry (a big-endian `u16`: the own IA, then each GA).
+pub const SYS7_ADDRESS_ENTRY_LEN: usize = 2;
+
+/// Octets per association-table entry (`[TSAP:1][ASAP:1]`).
+pub const SYS7_ASSOCIATION_ENTRY_LEN: usize = 2;
+
+/// Octets of the group-object table header: `[CNT:1][RAM-flags ptr:2 BE]`.
+pub const SYS7_GROUP_OBJECT_HEADER_LEN: usize = 3;
+
+/// Octets per group-object descriptor: `[data-ptr:2 BE][CONFIG:1][TYPE:1]`.
+pub const SYS7_GROUP_OBJECT_DESCRIPTOR_LEN: usize = 4;
+
+/// The default RAM-flags table pointer written into the group-object table
+/// header (the low-RAM working region, `[system7-spec §2.3/§7.3]`).
+pub const SYS7_DEFAULT_RAM_FLAGS_PTR: u16 = 0x0700;
+
+/// How many octets the LSM 1 table region spans: from
+/// [`SYS7_ADDRESS_TABLE_ADDR`] up to (not including) the LSM 2 region at
+/// [`SYS7_ASSOCIATION_TABLE_ADDR`]. The corpus segments at `0x4000` are ~511–513
+/// octets, which is exactly this gap (`[system7-spec §2.3]`).
+///
+/// Every read of the region is bounded by this, and every write refused above it,
+/// so a corrupt `CNT` octet can never make bussard read (or write) a kilobyte of
+/// neighbouring device memory.
+pub const SYS7_ADDRESS_REGION_LEN: usize =
+    (SYS7_ASSOCIATION_TABLE_ADDR - SYS7_ADDRESS_TABLE_ADDR) as usize;
+
+/// The absolute base address of the System 7 **parameter image** (LSM 3,
+/// `[system7-spec §2.3]`). Only used here as the upper bound of the LSM 2 region.
+pub const SYS7_PARAMETER_IMAGE_ADDR: u16 = 0x4400;
+
+/// How many octets the LSM 2 table region spans: from
+/// [`SYS7_ASSOCIATION_TABLE_ADDR`] up to (not including) the LSM 3 parameter
+/// image at [`SYS7_PARAMETER_IMAGE_ADDR`] — 511 octets, exactly the corpus
+/// segment size (`[system7-spec §2.3]`). The same bound discipline as
+/// [`SYS7_ADDRESS_REGION_LEN`] applies.
+pub const SYS7_ASSOCIATION_REGION_LEN: usize =
+    (SYS7_PARAMETER_IMAGE_ADDR - SYS7_ASSOCIATION_TABLE_ADDR) as usize;
+
+/// The octet length of an address-table image holding `count` entries (the `CNT`
+/// octet plus `count` two-octet entries, the own-IA slot included).
+pub fn sys7_address_table_len(count: usize) -> usize {
+    SYS7_COUNT_LEN + count * SYS7_ADDRESS_ENTRY_LEN
+}
+
+/// The octet length of an association-table image holding `count` `(TSAP, ASAP)`
+/// pairs.
+pub fn sys7_association_table_len(count: usize) -> usize {
+    SYS7_COUNT_LEN + count * SYS7_ASSOCIATION_ENTRY_LEN
+}
+
+/// The octet length of a group-object table image holding `count` descriptors
+/// (the `[CNT][RAM-flags ptr]` header plus `count` four-octet descriptors).
+pub fn sys7_group_object_table_len(count: usize) -> usize {
+    SYS7_GROUP_OBJECT_HEADER_LEN + count * SYS7_GROUP_OBJECT_DESCRIPTOR_LEN
+}
+
+/// A System 7 table image that could not be decoded.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum Sys7DecodeError {
+    /// The image is shorter than its own `CNT` octet claims.
+    #[error(
+        "the System 7 {table} image is truncated: its count of {count} needs {need} octets, but only {got} were read"
+    )]
+    Truncated {
+        /// Which table (`address`, `association`, `group object`).
+        table: &'static str,
+        /// The count the leading octet declared.
+        count: usize,
+        /// How many octets that count needs.
+        need: usize,
+        /// How many octets were available.
+        got: usize,
+    },
+    /// The `CNT` octet claims more entries than the table's memory region holds —
+    /// an absurd count (an unwritten `0xFF`, or the wrong base address), refused
+    /// rather than read past the region.
+    #[error(
+        "the System 7 {table} table declares {count} entries ({need} octets), more than its {capacity}-octet memory region holds — refusing (an unprogrammed or mis-based table)"
+    )]
+    TooLarge {
+        /// Which table.
+        table: &'static str,
+        /// The count the leading octet declared.
+        count: usize,
+        /// How many octets that count would need.
+        need: usize,
+        /// The region's capacity in octets.
+        capacity: usize,
+    },
+}
+
+// --- Decoders (the exact inverse of the synthesizers above) ------------------
+//
+// `bussard plan` / `apply` / `reconstruct` read these images back off a live
+// device through [`crate::tables_sys7`]. Both directions share the constants
+// above, so the wire form has exactly one definition.
+
+/// The octet span a `CNT`-prefixed System 7 table occupies, refusing a count the
+/// table's memory region cannot hold.
+///
+/// This is the single "refuse an absurd count" gate: an unprogrammed `0xFF`
+/// octet, or a read at the wrong base, claims hundreds of entries — reading them
+/// would run a kilobyte into neighbouring device memory and decode noise as
+/// links. Every read and every write is bounded by the region span instead.
+fn sys7_table_span(
+    table: &'static str,
+    count: usize,
+    header_len: usize,
+    entry_len: usize,
+    capacity: usize,
+) -> Result<usize, Sys7DecodeError> {
+    let need = header_len + count * entry_len;
+    if need > capacity {
+        return Err(Sys7DecodeError::TooLarge {
+            table,
+            count,
+            need,
+            capacity,
+        });
+    }
+    Ok(need)
+}
+
+/// The total octet span of the address-table image whose leading `CNT` octet is
+/// `cnt`, refused when it does not fit `capacity` octets of memory region.
+///
+/// A reader uses this to size its second read: fetch the `CNT` octet, ask for the
+/// span, then read exactly that many octets (see [`crate::tables_sys7`]).
+pub fn sys7_address_table_span(cnt: u8, capacity: usize) -> Result<usize, Sys7DecodeError> {
+    sys7_table_span(
+        "address",
+        usize::from(cnt),
+        SYS7_COUNT_LEN,
+        SYS7_ADDRESS_ENTRY_LEN,
+        capacity,
+    )
+}
+
+/// The total octet span of the association-table image whose leading `CNT` octet
+/// is `cnt` (see [`sys7_address_table_span`]).
+pub fn sys7_association_table_span(cnt: u8, capacity: usize) -> Result<usize, Sys7DecodeError> {
+    sys7_table_span(
+        "association",
+        usize::from(cnt),
+        SYS7_COUNT_LEN,
+        SYS7_ASSOCIATION_ENTRY_LEN,
+        capacity,
+    )
+}
+
+/// The total octet span of the group-object-table image whose leading `CNT` octet
+/// is `cnt` (see [`sys7_address_table_span`]). The header is three octets
+/// (`[CNT:1][RAM-flags ptr:2]`).
+pub fn sys7_group_object_table_span(cnt: u8, capacity: usize) -> Result<usize, Sys7DecodeError> {
+    sys7_table_span(
+        "group object",
+        usize::from(cnt),
+        SYS7_GROUP_OBJECT_HEADER_LEN,
+        SYS7_GROUP_OBJECT_DESCRIPTOR_LEN,
+        capacity,
+    )
+}
+
+/// Decodes a System 7 **address table (GrAT)** image — the exact inverse of
+/// [`sys7_address_table`] (`[system7-spec §7.1]`).
+///
+/// Returns the device's own individual address (entry 0, TSAP 0) and the group
+/// addresses TSAP 1..N in table order. `capacity` is the octet span of the memory
+/// region the image was read from ([`SYS7_ADDRESS_REGION_LEN`] for the `0x4000`
+/// region); a `CNT` larger than that region can hold is refused with
+/// [`Sys7DecodeError::TooLarge`] rather than decoded.
+///
+/// A `CNT` of `0` is an unprogrammed table: it has no own-IA slot, so the own IA
+/// is reported as `0` and the GA list is empty.
+pub fn decode_sys7_address_table(
+    image: &[u8],
+    capacity: usize,
+) -> Result<(u16, Vec<GroupAddress>), Sys7DecodeError> {
+    let count = usize::from(count_octet("address", image)?);
+    let need = sys7_table_span(
+        "address",
+        count,
+        SYS7_COUNT_LEN,
+        SYS7_ADDRESS_ENTRY_LEN,
+        capacity,
+    )?;
+    require_len("address", count, need, image)?;
+    if count == 0 {
+        return Ok((0, Vec::new()));
+    }
+    let entries: Vec<u16> = image[SYS7_COUNT_LEN..need]
+        .chunks_exact(SYS7_ADDRESS_ENTRY_LEN)
+        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+        .collect();
+    let own_ia = entries[0];
+    let addresses = entries[1..]
+        .iter()
+        .map(|&r| GroupAddress::from_raw(r))
+        .collect();
+    Ok((own_ia, addresses))
+}
+
+/// Decodes a System 7 **association table (GrOAT)** image into `(TSAP, ASAP)`
+/// pairs — the exact inverse of [`sys7_association_table`]
+/// (`[system7-spec §7.2]`).
+///
+/// The pairs are widened to `u16` so they share the System B
+/// [`bussard_mgmt::tables::DeviceTables`] shape; on System 7 both indexes are one
+/// octet. `capacity` bounds the count exactly as in
+/// [`decode_sys7_address_table`].
+pub fn decode_sys7_association_table(
+    image: &[u8],
+    capacity: usize,
+) -> Result<Vec<(u16, u16)>, Sys7DecodeError> {
+    let count = usize::from(count_octet("association", image)?);
+    let need = sys7_table_span(
+        "association",
+        count,
+        SYS7_COUNT_LEN,
+        SYS7_ASSOCIATION_ENTRY_LEN,
+        capacity,
+    )?;
+    require_len("association", count, need, image)?;
+    Ok(image[SYS7_COUNT_LEN..need]
+        .chunks_exact(SYS7_ASSOCIATION_ENTRY_LEN)
+        .map(|c| (u16::from(c[0]), u16::from(c[1])))
+        .collect())
+}
+
+/// Decodes a System 7 **group-object table** image into its RAM-flags pointer and
+/// the per-object descriptors — the exact inverse of [`sys7_group_object_table`]
+/// (`[system7-spec §7.3]`).
+///
+/// Descriptors are returned 1-based by ASAP exactly as
+/// [`sys7_group_object_table`] packs them (descriptor `k` is ASAP `k + 1`);
+/// all-zero gap descriptors are preserved so a re-encode is byte-identical.
+pub fn decode_sys7_group_object_table(
+    image: &[u8],
+    capacity: usize,
+) -> Result<(u16, Vec<Sys7GroupObject>), Sys7DecodeError> {
+    let count = usize::from(count_octet("group object", image)?);
+    let need = sys7_table_span(
+        "group object",
+        count,
+        SYS7_GROUP_OBJECT_HEADER_LEN,
+        SYS7_GROUP_OBJECT_DESCRIPTOR_LEN,
+        capacity,
+    )?;
+    require_len("group object", count, need, image)?;
+    let ram_flags_ptr = u16::from_be_bytes([image[1], image[2]]);
+    let objects = image[SYS7_GROUP_OBJECT_HEADER_LEN..need]
+        .chunks_exact(SYS7_GROUP_OBJECT_DESCRIPTOR_LEN)
+        .enumerate()
+        .map(|(i, d)| Sys7GroupObject {
+            asap: (i + 1) as u16,
+            data_ptr: u16::from_be_bytes([d[0], d[1]]),
+            config: d[2],
+            type_code: d[3],
+        })
+        .collect();
+    Ok((ram_flags_ptr, objects))
+}
+
+/// The leading `CNT` octet of a table image, or a truncation error on an empty
+/// read (a device that answered a memory read with nothing).
+fn count_octet(table: &'static str, image: &[u8]) -> Result<u8, Sys7DecodeError> {
+    image.first().copied().ok_or(Sys7DecodeError::Truncated {
+        table,
+        count: 0,
+        need: SYS7_COUNT_LEN,
+        got: 0,
+    })
+}
+
+/// Refuses an image shorter than the span its own `CNT` octet declares.
+fn require_len(
+    table: &'static str,
+    count: usize,
+    need: usize,
+    image: &[u8],
+) -> Result<(), Sys7DecodeError> {
+    if image.len() < need {
+        return Err(Sys7DecodeError::Truncated {
+            table,
+            count,
+            need,
+            got: image.len(),
+        });
+    }
+    Ok(())
+}
+
 /// Builds the System 7 **address table (GrAT)** image for `0x4000`
 /// (`[system7-spec §7.1]`):
 ///
@@ -35,7 +346,7 @@ use crate::compute::{DesiredTables, GroupObjectDescriptor, Priority};
 /// `own_ia`; TSAP 1..N map to the sorted GAs in [`DesiredTables::addresses`].
 pub fn sys7_address_table(own_ia: u16, tables: &DesiredTables) -> Vec<u8> {
     let count = 1 + tables.addresses.len();
-    let mut out = Vec::with_capacity(1 + count * 2);
+    let mut out = Vec::with_capacity(sys7_address_table_len(count));
     out.push(count.min(usize::from(u8::MAX)) as u8);
     out.extend_from_slice(&own_ia.to_be_bytes());
     for ga in &tables.addresses {
@@ -345,5 +656,123 @@ mod tests {
     #[test]
     fn test_empty_group_object_table_is_none() {
         assert!(sys7_group_object_table(0x0700, &[]).is_none());
+    }
+
+    // --- Decoder round-trips against the synthesizers ------------------------
+
+    #[test]
+    fn test_decode_sys7_address_table_round_trips() -> Result<(), Sys7DecodeError> {
+        let links = vec![
+            link(1, Some("1/0/1"), &["2/0/1"]),
+            link(2, Some("1/0/2"), &[]),
+        ];
+        let tables = compute_tables(&links);
+        let own_ia = 0x1105u16;
+        let img = sys7_address_table(own_ia, &tables);
+        let (decoded_ia, decoded) = decode_sys7_address_table(&img, SYS7_ADDRESS_REGION_LEN)?;
+        assert_eq!(decoded_ia, own_ia);
+        assert_eq!(decoded, tables.addresses);
+        // The span the reader would ask for is exactly the synthesized length.
+        assert_eq!(
+            sys7_address_table_span(img[0], SYS7_ADDRESS_REGION_LEN)?,
+            img.len()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_decode_sys7_association_table_round_trips() -> Result<(), Sys7DecodeError> {
+        let links = vec![
+            link(1, Some("1/0/1"), &["2/0/1"]),
+            link(2, Some("1/0/2"), &[]),
+        ];
+        let tables = compute_tables(&links);
+        let img = sys7_association_table(&tables);
+        let decoded = decode_sys7_association_table(&img, SYS7_ASSOCIATION_REGION_LEN)?;
+        assert_eq!(decoded, tables.associations);
+        assert_eq!(
+            sys7_association_table_span(img[0], SYS7_ASSOCIATION_REGION_LEN)?,
+            img.len()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_decode_sys7_group_object_table_round_trips() -> Result<(), Sys7DecodeError> {
+        // Gaps included: only ASAP 1 and 3 are real, ASAP 2 is a zero descriptor.
+        let objects = vec![
+            Sys7GroupObject {
+                asap: 1,
+                data_ptr: 0x075C,
+                config: 0xDF,
+                type_code: 0x03,
+            },
+            Sys7GroupObject {
+                asap: 3,
+                data_ptr: 0x0760,
+                config: 0x87,
+                type_code: 0x00,
+            },
+        ];
+        let img = sys7_group_object_table(0x0700, &objects).expect("a table");
+        let (ram_ptr, decoded) = decode_sys7_group_object_table(&img, SYS7_ADDRESS_REGION_LEN)?;
+        assert_eq!(ram_ptr, 0x0700);
+        assert_eq!(decoded.len(), 3, "CNT covers the gap at ASAP 2");
+        assert_eq!(decoded[0], objects[0]);
+        assert_eq!(decoded[2], objects[1]);
+        // Re-encoding the decoded descriptors reproduces the image byte-for-byte.
+        assert_eq!(
+            sys7_group_object_table(ram_ptr, &decoded).expect("a table"),
+            img
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_decode_refuses_an_absurd_count() {
+        // An unprogrammed 0xFF count octet claims 255 entries (511 octets for the
+        // address table); the 0x4201 association region holds only 511, so 255
+        // pairs (511 octets) just fits there but a group-object table of 255
+        // descriptors (1023 octets) does not.
+        let err = decode_sys7_group_object_table(&[0xFF, 0x07, 0x00], SYS7_ASSOCIATION_REGION_LEN)
+            .expect_err("an absurd count is refused");
+        assert!(
+            matches!(err, Sys7DecodeError::TooLarge { count: 255, .. }),
+            "{err}"
+        );
+        // A count that fits the region but not the bytes actually read is a
+        // truncation, not a bogus count.
+        let err = decode_sys7_address_table(&[0x04, 0x11, 0x05], SYS7_ADDRESS_REGION_LEN)
+            .expect_err("a short image is refused");
+        assert!(
+            matches!(
+                err,
+                Sys7DecodeError::Truncated {
+                    count: 4,
+                    need: 9,
+                    got: 3,
+                    ..
+                }
+            ),
+            "{err}"
+        );
+        // An empty read is a truncation too, not a panic.
+        assert!(decode_sys7_association_table(&[], SYS7_ASSOCIATION_REGION_LEN).is_err());
+    }
+
+    #[test]
+    fn test_decode_unprogrammed_address_table_is_empty() -> Result<(), Sys7DecodeError> {
+        let (own_ia, gas) = decode_sys7_address_table(&[0x00], SYS7_ADDRESS_REGION_LEN)?;
+        assert_eq!(own_ia, 0);
+        assert!(gas.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_region_spans_match_the_corpus_segment_sizes() {
+        // The 0x4000 region runs up to 0x4201 (513 octets, the corpus segment
+        // size) and the 0x4201 region up to the 0x4400 parameter image (511).
+        assert_eq!(SYS7_ADDRESS_REGION_LEN, 513);
+        assert_eq!(SYS7_ASSOCIATION_REGION_LEN, 511);
     }
 }
