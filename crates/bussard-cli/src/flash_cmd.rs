@@ -127,6 +127,8 @@ pub fn run(
     // gateway unless the operator opted in.
     enforce_write_gate(&config, allow_remote_gateway)?;
     let gateway = gateway_display(&config);
+    // An edit made outside bussard is recorded before this command acts on it.
+    crate::history_cmd::capture_external_edit(dir);
     let overrides_map = collect_parameter_overrides(model.as_ref(), target);
     // Module-instance base offsets persisted by the importer (issue #48): the
     // keys are module-instance selectors, byte-identical to what
@@ -280,6 +282,16 @@ pub fn run(
         eprintln!("aborted — nothing written.");
         return Ok(ExitCode::FAILURE);
     }
+
+    // History (issue #110): record the model state this flash is about to act
+    // on, together with the gateway it goes to.
+    crate::history_cmd::snapshot(
+        dir,
+        bussard_model::history::SnapshotReason::new("flash")
+            .with_args([target.to_string()])
+            .with_gateway(Some(gateway.clone()))
+            .with_result("before flashing the application program"),
+    );
 
     // Phase B (write): execute the flash with a progress line.
     let plan_ref = &plan;

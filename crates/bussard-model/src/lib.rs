@@ -14,6 +14,7 @@ pub mod change;
 pub mod codec;
 pub mod dpt;
 pub mod flags;
+pub mod history;
 pub mod loader;
 pub mod merge;
 pub mod param_model;
@@ -28,6 +29,7 @@ pub use codec::{
 };
 pub use dpt::{ApduSize, Dpt, DptParseError};
 pub use flags::{Flags, FlagsParseError};
+pub use history::{History, HistoryError, Snapshot, SnapshotId, SnapshotReason};
 pub use loader::{LoadError, LoadedDevice, Model, SaveError};
 pub use merge::{Conflict, MergeReport, merge};
 pub use param_model::{ParamDef, ParamKind, ProductModel, ProductModels};

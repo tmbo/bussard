@@ -74,6 +74,16 @@ pub fn run_json(path: &Path, dir: &Path) -> anyhow::Result<ExitCode> {
 /// reported so the outcome is non-zero-ish while the on-disk hand edits stay
 /// intact.
 fn write_model(model: Model, dir: &Path) -> anyhow::Result<ExitCode> {
+    // History (issue #110): record an edit made outside bussard before the
+    // import overwrites it, then snapshot the pre-import state so `bussard undo`
+    // can put it back.
+    crate::history_cmd::capture_external_edit(dir);
+    crate::history_cmd::snapshot(
+        dir,
+        bussard_model::history::SnapshotReason::new("import")
+            .with_result("before writing the imported model"),
+    );
+
     // A re-import is any target that already holds a loadable model.
     let existing = load_existing_model(dir);
 
