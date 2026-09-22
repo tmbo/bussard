@@ -211,6 +211,28 @@ Validate the YAML model and report diagnostics (see [the diagnostics table](#val
 | `--dir <DIR>` | `knx` | The model directory. |
 | `--format <FORMAT>` | `text` | `text` (rustc-style diagnostics) or `json` (a JSON array). |
 
+### `bussard doc`
+
+Render the handover documentation folder the KNX guidelines prescribe, straight from the model (issue #97). Offline: it reads the model and, when present, the cached product models in `models/`, and never touches the bus.
+
+| File | Contents |
+|---|---|
+| `index.md` | Links to everything below, including one entry per room sheet. |
+| `devices.md` | Individual address, name, location, manufacturer, order number, application, mask, Secure status. |
+| `groups.md` | Address, name, DPT, description, protected flag, senders and listeners (device and com-object names). |
+| `rooms/<floor>-<room>.md` | Every device in the room with its channels, and one plain-language line per com object: `Rocker 1 switches Kitchen ceiling light (1/0/10); status from 1/0/12.` Unnamed items fall back to their addresses. Devices without a `location:` get no room sheet. |
+| `connection.md` | Transport and gateway or multicast endpoint from `bussard.yaml`. Never credentials. |
+| `changelog.md` | The last 50 commits touching the model directory, from `git log`. Empty when the directory is not a git repository or `git` is missing. |
+
+The output is deterministic: two runs on the same model write identical bytes (no timestamps), so the folder can be committed and its diff reviewed after every change.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--dir <DIR>` | `knx` | The model directory. |
+| `--out <DIR>` | `docs/installation` | Where to write the files. Existing files with the same names are overwritten; others are left alone. |
+| `--format <FORMAT>` | `md` | `md` (Markdown) or `html` (one self-contained page per file, inline styles, no scripts). |
+| `--json` | off | Print the structured document model to stdout instead of writing files. |
+
 ### `bussard monitor`
 
 Live-monitor the bus, decoding telegrams against the model. Unknown GAs and DPTs degrade to raw hex, never a failure.
