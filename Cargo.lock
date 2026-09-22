@@ -339,6 +339,7 @@ dependencies = [
  "anyhow",
  "bitflags",
  "serde",
+ "serde_json",
  "serde_norway",
  "serde_path_to_error",
  "thiserror",
