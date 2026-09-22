@@ -10,6 +10,7 @@ mod capture_cmd;
 mod commission_cmd;
 mod conn_cmd;
 mod describe_cmd;
+mod doc_cmd;
 mod export_groups_cmd;
 mod flash_cmd;
 mod ha_config_cmd;
@@ -94,6 +95,24 @@ impl From<SchemeArg> for bussard_model::Scheme {
         match value {
             SchemeArg::FloorTradeBlock => bussard_model::Scheme::FloorTradeBlock,
             SchemeArg::FunctionFloor => bussard_model::Scheme::FunctionFloor,
+        }
+    }
+}
+
+/// The rendered format for `bussard doc`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum DocOutputFormat {
+    /// Markdown, one `.md` file per section.
+    Md,
+    /// Self-contained HTML, one `.html` file per section.
+    Html,
+}
+
+impl From<DocOutputFormat> for bussard_model::DocFormat {
+    fn from(value: DocOutputFormat) -> Self {
+        match value {
+            DocOutputFormat::Md => bussard_model::DocFormat::Markdown,
+            DocOutputFormat::Html => bussard_model::DocFormat::Html,
         }
     }
 }
@@ -362,6 +381,10 @@ enum Command {
         /// Force KNXnet/IP routing (multicast) transport.
         #[arg(long)]
         routing: bool,
+        /// Emit the pre-flight plan as JSON (including the `parameters` array)
+        /// instead of the human report.
+        #[arg(long)]
+        json: bool,
     },
     /// Read a device's live tables and show what `apply` would change, or (with
     /// `--line`) plan every model device on a whole line.
@@ -694,6 +717,21 @@ enum Command {
         #[arg(long, value_name = "FILE")]
         out: PathBuf,
     },
+    /// Render the handover documentation folder from the model.
+    Doc {
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// The directory to write the rendered documentation into.
+        #[arg(long, default_value = "docs/installation")]
+        out: PathBuf,
+        /// The rendered format.
+        #[arg(long, value_enum, default_value_t = DocOutputFormat::Md)]
+        format: DocOutputFormat,
+        /// Print the structured document model as JSON instead of writing files.
+        #[arg(long)]
+        json: bool,
+    },
     /// Live-monitor the bus, decoding telegrams against the model.
     Monitor {
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
@@ -936,7 +974,7 @@ fn main() -> ExitCode {
     // invocation's elapsed time on stderr. Speed is a project goal, so this stays
     // available for regression spotting, but a plain 0.1.0 run is quiet.
     let started = std::time::Instant::now();
-    let code = match run(cli.command) {
+    let code = match run(cli.command, cli.verbose) {
         Ok(code) => code,
         Err(err) => {
             eprintln!("error: {err:#}");
@@ -950,7 +988,10 @@ fn main() -> ExitCode {
 }
 
 /// Dispatches a subcommand, returning the process exit code on success.
-fn run(command: Command) -> anyhow::Result<ExitCode> {
+///
+/// `verbose` is the global `-v` repeat count; `flash` uses it to unfold the
+/// memory-level plan under the parameter-level one (issue #109).
+fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
     match command {
         Command::Scan {
             line,
@@ -1073,6 +1114,7 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             tool_key,
             gateway,
             routing,
+            json,
         } => flash_cmd::run(
             &address,
             &product,
@@ -1088,6 +1130,7 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
                 tool_key: tool_key.as_deref(),
             },
             conn_cmd::ConnOverrides { gateway, routing },
+            flash_cmd::FlashOutput { json, verbose },
         ),
         Command::Plan {
             address,
@@ -1277,6 +1320,12 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             no_lint_config,
         ),
         Command::ExportGroups { dir, format, out } => export_groups_cmd::run(&dir, format, &out),
+        Command::Doc {
+            dir,
+            out,
+            format,
+            json,
+        } => doc_cmd::run(&dir, &out, format.into(), json),
         Command::Init {
             dir,
             gateway,

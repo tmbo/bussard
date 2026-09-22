@@ -34,8 +34,9 @@ use std::process::ExitCode;
 use anyhow::{Context, bail};
 use bussard_bus::{Bus, BusHandle, ops};
 use bussard_download::{
-    FlashPlan, FlashStep, Freshness, Progress, assess_freshness, flash, plan_flash,
-    probe_resident_state, select_application, trace,
+    CurrentMemory, FlashPlan, FlashStep, Freshness, ParamPlan, ParamValue, Progress,
+    assess_freshness, flash, param_plan, plan_flash, probe_resident_state,
+    read_current_parameter_memory, select_application, trace,
 };
 use bussard_mgmt::load::WriteError;
 use bussard_mgmt::{DeviceConnection, Layer4Connection, LeaseChannel, MgmtError, Timeouts};
@@ -63,6 +64,7 @@ pub fn run(
     bcu_key: Option<&str>,
     tool_key_source: crate::secure_key::ToolKeySource<'_>,
     overrides: ConnOverrides,
+    output: FlashOutput,
 ) -> anyhow::Result<ExitCode> {
     let target: IndividualAddress = address
         .parse()
@@ -250,7 +252,51 @@ pub fn run(
         }
     };
 
-    print_plan(target, device_mask, &plan, &overrides_map);
+    // The parameter-level plan (issue #109): what this flash changes in the
+    // vendor's own words, before the memory-level plan. Reading the current
+    // values back is only meaningful on a device that already carries an
+    // application; a factory-fresh one has no segment to read, so every value is
+    // reported as an unknown current value.
+    let current_params = if resident
+        .as_ref()
+        .is_some_and(|r| r.has_loaded_application())
+    {
+        read_current_parameters(
+            &runtime,
+            config.clone(),
+            target,
+            &plan,
+            bcu_key,
+            tool_key.clone(),
+            secure_seq.clone(),
+        )
+    } else {
+        CurrentMemory::new()
+    };
+    let params = if plan.is_sys7() {
+        // System 7 writes whole absolute memory regions rather than a parameter
+        // image over an allocated segment, so the memory-level plan is the
+        // authoritative one there.
+        ParamPlan {
+            note: Some(bussard_download::SYS7_NOTE.to_string()),
+            ..Default::default()
+        }
+    } else {
+        param_plan(app, &overrides_map, &base_offsets, &current_params)
+    };
+
+    if output.json {
+        print_plan_json(target, device_mask, &plan, &params)?;
+    } else {
+        print_plan(
+            target,
+            device_mask,
+            &plan,
+            &overrides_map,
+            &params,
+            output.verbose,
+        );
+    }
 
     // The factory-freshness gate (issue #79): a flash takes no backup, so a
     // device that already carries a *different* application is refused unless
@@ -813,11 +859,155 @@ async fn execute(
 /// Prints the pre-flight plan: application identity, mask compatibility, the
 /// applied parameter overrides, and the ordered step list with byte counts and
 /// time estimate.
+/// How the flash pre-flight reports itself: the `--json` switch and the global
+/// `-v` count that unfolds the memory-level plan.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FlashOutput {
+    /// Emit the pre-flight as JSON (including the `parameters` array) instead of
+    /// the human report.
+    pub json: bool,
+    /// The global `-v` repeat count. One or more unfolds the memory-level plan
+    /// (the step trace) under the parameter-level one.
+    pub verbose: u8,
+}
+
+/// Reads the device's current parameter memory over a read-only management
+/// session, so the parameter plan can name what the device holds today.
+///
+/// Best-effort: any failure yields an empty map and every parameter is then
+/// reported with an unknown current value. Nothing here writes to the device.
+#[allow(clippy::too_many_arguments)]
+fn read_current_parameters(
+    runtime: &tokio::runtime::Runtime,
+    config: bussard_transport::ConnectionConfig,
+    target: IndividualAddress,
+    plan: &FlashPlan,
+    bcu_key: Option<u32>,
+    tool_key: Option<bussard_secure::Key16>,
+    secure_seq: bussard_secure::SequenceHighWater,
+) -> CurrentMemory {
+    let result: anyhow::Result<CurrentMemory> = runtime.block_on(async {
+        let (handle, _task) = Bus::connect(config);
+        if !handle
+            .wait_connected(std::time::Duration::from_secs(10))
+            .await
+        {
+            return Ok(CurrentMemory::new());
+        }
+        let source = ops::group_source(&handle);
+        let lease = handle.lease().await.context("leasing the bus")?;
+        let channel = LeaseChannel::new(lease);
+        let secure = crate::secure_key::layer(&tool_key, &secure_seq);
+        let current = match DeviceConnection::connect_with_secure(
+            channel,
+            target,
+            source,
+            Timeouts::default(),
+            secure,
+        )
+        .await
+        {
+            Ok(mut dev) => {
+                let key = bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY);
+                let _ = dev.authorize(key).await;
+                let current = read_current_parameter_memory(dev.l4_mut(), plan).await;
+                let _ = dev.disconnect().await;
+                current
+            }
+            Err(_) => CurrentMemory::new(),
+        };
+        let _ = handle.close().await;
+        anyhow::Ok(current)
+    });
+    match result {
+        Ok(current) => current,
+        Err(err) => {
+            tracing::debug!(%err, "the parameter read-back did not run; values stay unknown");
+            CurrentMemory::new()
+        }
+    }
+}
+
+/// Prints the parameter-level plan: what changes, in the vendor's own words.
+fn print_param_plan(params: &ParamPlan) {
+    if let Some(note) = &params.note {
+        println!("  note        : {note}");
+    }
+    if params.changes.is_empty() {
+        println!("  parameters  : no parameter change");
+        return;
+    }
+    println!(
+        "  parameters  : {} change(s){}:",
+        params.changes.len(),
+        if params.unknown > 0 {
+            format!(", {} without a readable current value", params.unknown)
+        } else {
+            String::new()
+        }
+    );
+    for change in &params.changes {
+        println!("      {}", change.line());
+    }
+}
+
+/// Emits the pre-flight as JSON, including the `parameters` array (issue #109).
+fn print_plan_json(
+    target: IndividualAddress,
+    device_mask: u16,
+    plan: &FlashPlan,
+    params: &ParamPlan,
+) -> anyhow::Result<()> {
+    let parameters: Vec<serde_json::Value> = params
+        .changes
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "key": c.key,
+                "name": c.name,
+                "old": match &c.old {
+                    ParamValue::Known(v) => serde_json::Value::String(v.clone()),
+                    ParamValue::Unknown => serde_json::Value::Null,
+                },
+                "new": match &c.new {
+                    ParamValue::Known(v) => serde_json::Value::String(v.clone()),
+                    ParamValue::Unknown => serde_json::Value::Null,
+                },
+                "unit": c.unit,
+            })
+        })
+        .collect();
+    let value = serde_json::json!({
+        "device": target.to_string(),
+        "device_mask": format!("{device_mask:04X}"),
+        "application": {
+            "id": plan.identity.id,
+            "name": plan.identity.name,
+            "number": plan.identity.application_number,
+            "version": plan.identity.application_version,
+            "mask": plan.identity.mask_version,
+        },
+        "parameters": parameters,
+        "parameter_note": params.note,
+        "memory": {
+            "write_bytes": plan.total_write_bytes(),
+            "steps": plan.steps.len(),
+            "frames": plan.estimated_write_frames(),
+            "estimated_seconds": plan.estimated_duration().as_secs_f64(),
+        },
+        "procedure": trace(plan),
+    });
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
+
 fn print_plan(
     target: IndividualAddress,
     device_mask: u16,
     plan: &FlashPlan,
     overrides: &BTreeMap<String, String>,
+    params: &ParamPlan,
+    verbose: u8,
 ) {
     println!("Flash plan for {target}");
     println!(
@@ -835,14 +1025,13 @@ fn print_plan(
         "  mask        : app {} vs device {device_mask:04X} — compatible",
         plan.identity.mask_version,
     );
-    // The parameter overrides that deviate from the vendor defaults, so the user
-    // confirms exactly what this flash changes. Keyed by the app-relative
-    // ParameterRef id (the #46 contract identity).
-    if overrides.is_empty() {
-        println!("  parameters  : none (flashing vendor defaults)");
-    } else {
+    // The parameter-level plan first (issue #109): an owner reads "night setback:
+    // 18 to 17 °C", not a byte offset. The model's own override keys follow only
+    // when asked for, and the memory-level plan only under `-v`.
+    print_param_plan(params);
+    if verbose > 0 && !overrides.is_empty() {
         println!(
-            "  parameters  : {} override(s) applied over vendor defaults:",
+            "  overrides   : {} model value(s), keyed by the app-relative ParameterRef id:",
             overrides.len()
         );
         for (key, value) in overrides {
@@ -856,9 +1045,16 @@ fn print_plan(
         plan.estimated_write_frames(),
         plan.estimated_duration().as_secs_f64(),
     );
-    println!("  procedure   :");
-    for line in trace(plan) {
-        println!("    {line}");
+    if verbose > 0 {
+        println!("  procedure   :");
+        for line in trace(plan) {
+            println!("    {line}");
+        }
+    } else {
+        println!(
+            "  procedure   : {} step(s); re-run with -v for the memory-level plan",
+            plan.steps.len()
+        );
     }
 }
 

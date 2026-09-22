@@ -12,6 +12,7 @@
 pub mod address;
 pub mod change;
 pub mod codec;
+pub mod doc;
 pub mod dpt;
 pub mod ets_export;
 pub mod flags;
@@ -31,6 +32,7 @@ pub use codec::{
     DateTime, EncodeError, Float16RangeError, HvacMode, ParseValueError, Rgbw, TypedValue, decode,
     encode, encode_float16, parse_value,
 };
+pub use doc::{DocError, DocFile, DocFormat, InstallationDoc};
 pub use dpt::{ApduSize, Dpt, DptParseError};
 pub use ets_export::{to_ets_csv, to_ets_xml};
 pub use flags::{Flags, FlagsParseError};
