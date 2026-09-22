@@ -64,10 +64,13 @@ jobs:
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          # Only write a new cache from main. PR runs restore the main cache
-          # read-only, which stops every PR from churning its own cache entry
-          # (and evicting others under the 10 GB repo cache budget).
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Read-only. rust-cache refuses to overwrite an existing key, so a
+          # shared key can only ever have ONE writer: whichever job finishes
+          # first wins, and if that is a job with a partial build graph every
+          # other job gets a "hit" that still recompiles most of the
+          # workspace. The `test` job on ubuntu is that single writer for
+          # `rust-ubuntu` because it builds the fullest graph.
+          save-if: false
           # Shared key so this job reuses the same build cache as the test job
           # on ubuntu — the dev/test profile compilation graph is identical.
           shared-key: rust-ubuntu
@@ -101,11 +104,15 @@ jobs:
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
+          # The only writer of the shared `rust-ubuntu` key (every other
+          # ubuntu job sets `save-if: false`): this job builds the fullest
+          # dev/test graph, so its cache is the one worth restoring
+          # everywhere. macOS/Windows get their own per-OS key automatically
+          # (the action keys on runner OS + rustc version) and are the sole
+          # writers of those, so they save from main too.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-          # On ubuntu, share the cache with the lint job (same profile/graph),
-          # so whichever finishes its build first warms it for the other.
-          # macOS/Windows get their own per-OS cache automatically (the action
-          # keys on the runner OS + rustc version).
+          # On ubuntu, share the cache with the lint job and the other ubuntu
+          # jobs (same profile/graph).
           shared-key: ${{ matrix.os == 'ubuntu-latest' && 'rust-ubuntu' || '' }}
 
       # nextest runs tests in a process-parallel harness that is meaningfully
@@ -167,8 +174,10 @@ jobs:
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          # Reuse the ubuntu build graph warmed by lint/test.
+          # Read-only: the ubuntu `test` job is the single writer of this
+          # shared key (see there).
+          save-if: false
+          # Reuse the ubuntu build graph warmed by the test job.
           shared-key: rust-ubuntu
 
       - name: Install cargo-nextest
@@ -391,8 +400,10 @@ jobs:
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          # Reuse the ubuntu build graph warmed by lint/test.
+          # Read-only: the ubuntu `test` job is the single writer of this
+          # shared key (see there).
+          save-if: false
+          # Reuse the ubuntu build graph warmed by the test job.
           shared-key: rust-ubuntu
 
       # Cache the built external device binary keyed on the pinned commit, so a
@@ -584,7 +595,9 @@ jobs:
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Read-only: the ubuntu `test` job is the single writer of this
+          # shared key (see there).
+          save-if: false
           shared-key: rust-ubuntu
 
       # Reuse the same pinned-commit build cache the `virtual-device` job warms.
@@ -701,8 +714,11 @@ jobs:
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          # Reuse the ubuntu build graph warmed by lint/test — keeps this cheap.
+          # Read-only: the ubuntu `test` job is the single writer of this
+          # shared key. This job only builds `-p bussard-viz`, so letting it
+          # save would pin a near-empty cache under `rust-ubuntu`.
+          save-if: false
+          # Reuse the ubuntu build graph warmed by the test job.
           shared-key: rust-ubuntu
 
       - name: Install cargo-nextest
