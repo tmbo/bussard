@@ -385,6 +385,8 @@ mod tests {
     use bussard_mgmt::tables::DeviceTables;
     use bussard_model::schema::Link;
 
+    use crate::compute_sys7::{SYS7_ADDRESS_TABLE_ADDR, SYS7_ASSOCIATION_TABLE_ADDR};
+
     fn live(own_ia: u16, go_image: Vec<u8>, go_base: u16) -> Sys7LiveTables {
         Sys7LiveTables {
             tables: DeviceTables {
@@ -395,9 +397,9 @@ mod tests {
                 sources: Vec::new(),
                 notes: Vec::new(),
             },
-            address_base: crate::compute_sys7::SYS7_ADDRESS_TABLE_ADDR,
-            association_base: crate::compute_sys7::SYS7_ASSOCIATION_TABLE_ADDR,
             own_ia,
+            address_base: SYS7_ADDRESS_TABLE_ADDR,
+            association_base: SYS7_ASSOCIATION_TABLE_ADDR,
             group_object_base: go_base,
             group_object_image: go_image,
             group_objects: Vec::new(),
