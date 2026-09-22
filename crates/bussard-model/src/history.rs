@@ -51,7 +51,7 @@ const MANIFEST: &str = "manifest.json";
 
 /// The model files a snapshot copies. Everything else in the model directory is
 /// local, vendor-derived or secret and is never snapshotted.
-const MODEL_FILES: [&str; 3] = ["bussard.yaml", "groups.yaml", "links.yaml"];
+pub(crate) const MODEL_FILES: [&str; 3] = ["bussard.yaml", "groups.yaml", "links.yaml"];
 
 /// An error reading or writing the history.
 #[derive(Debug, thiserror::Error)]
@@ -615,7 +615,7 @@ fn compact_stamp(ts: SystemTime) -> String {
 }
 
 /// `2026-09-22T10:11:12Z` — the manifest's `created_at`.
-fn rfc3339(ts: SystemTime) -> String {
+pub(crate) fn rfc3339(ts: SystemTime) -> String {
     let (year, month, day, hour, minute, second) = civil(ts);
     format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
 }

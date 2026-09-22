@@ -11,6 +11,7 @@
 
 pub mod address;
 pub mod analysis;
+pub mod bundle;
 pub mod change;
 pub mod codec;
 pub mod doc;
@@ -22,6 +23,7 @@ pub mod lint;
 pub mod loader;
 pub mod merge;
 pub mod param_model;
+pub mod reconcile;
 pub mod scaffold;
 pub mod schema;
 pub mod tests_schema;
@@ -29,7 +31,8 @@ pub mod validate;
 
 pub use address::{AddressParseError, GroupAddress, IndividualAddress};
 pub use analysis::{ModelAnalysis, analyze};
-pub use change::{Change, ChangeKind, ChangeSet, LinkRole, describe, render_text};
+pub use bundle::{Bundle, BundleError, BundleManifest};
+pub use change::{Change, ChangeKind, ChangeSet, LinkRole, describe, name_parameters, render_text};
 pub use codec::{
     DateTime, EncodeError, Float16RangeError, HvacMode, ParseValueError, Rgbw, TypedValue, decode,
     encode, encode_float16, parse_value,

@@ -494,6 +494,9 @@ fn print_next_steps(dir: &Path) {
     println!();
     println!("Check the model any time:     bussard validate --dir {d}");
     println!("See what changed, and undo it: bussard status --dir {d} / bussard undo --dir {d}");
+    println!(
+        "When it works, keep a copy:   bussard export --dir {d} (one file to back up or hand over)"
+    );
 }
 
 #[cfg(test)]

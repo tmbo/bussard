@@ -28,6 +28,7 @@ use serde::Serialize;
 
 use crate::address::{GroupAddress, IndividualAddress};
 use crate::loader::{LoadedDevice, Model};
+use crate::param_model::{ProductModels, key_to_param_id};
 use crate::schema::{Device, Group, Location, Product};
 
 /// The kind of a single model change.
@@ -261,6 +262,44 @@ pub fn describe(old: &Model, new: &Model) -> ChangeSet {
     describe_devices(old, new, &mut changes);
     describe_links(old, new, &mut changes);
     ChangeSet { changes }
+}
+
+/// Replaces the key-derived label of every parameter change with the
+/// parameter's text from the cached product model, e.g. `Nachtabsenkung on …`
+/// becomes `Night setback on …`.
+///
+/// `models` are the two sides the set was described from (the device is looked
+/// up in each, in order, for its `application_ref`). A change whose device has
+/// no cached product model, or whose parameter has no text, keeps the label
+/// derived from its key: nothing degrades to silence.
+pub fn name_parameters(set: &mut ChangeSet, models: [&Model; 2], products: &ProductModels) {
+    for change in &mut set.changes {
+        if change.kind != ChangeKind::ParameterChanged {
+            continue;
+        }
+        let (Some(device), Some(key)) = (change.device.as_deref(), change.field.as_deref()) else {
+            continue;
+        };
+        let Ok(ia) = device.parse::<IndividualAddress>() else {
+            continue;
+        };
+        let text = models
+            .iter()
+            .filter_map(|m| m.devices.get(&ia))
+            .filter_map(|d| d.device.product.as_ref()?.application_ref.as_deref())
+            .filter_map(|app| products.get(app))
+            .find_map(|product| {
+                let id = key_to_param_id(key)?;
+                product.parameters.get(&id)?.text.clone()
+            });
+        let Some(text) = text else {
+            continue;
+        };
+        let label = parameter_label(key);
+        if let Some(rest) = change.sentence.strip_prefix(&label) {
+            change.sentence = format!("{}{rest}", text.trim());
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

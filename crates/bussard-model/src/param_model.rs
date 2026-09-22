@@ -41,6 +41,9 @@ pub struct ParamDef {
     pub kind: ParamKind,
     /// The vendor default value, if any.
     pub default: Option<String>,
+    /// The parameter's human-readable text as ETS shows it (e.g. "Night
+    /// setback"), when the product model carries one.
+    pub text: Option<String>,
 }
 
 /// A parameter's type, mirroring the `type:` tag in the model YAML.
@@ -92,6 +95,8 @@ struct RawParam {
     param_type: RawType,
     #[serde(default)]
     default: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
 }
 
 // Some fields exist only to consume the YAML shape faithfully; the validator
@@ -158,6 +163,7 @@ impl ProductModel {
                 ParamDef {
                     kind: p.param_type.into_kind(),
                     default: p.default,
+                    text: p.text.filter(|t| !t.trim().is_empty()),
                 },
             );
         }

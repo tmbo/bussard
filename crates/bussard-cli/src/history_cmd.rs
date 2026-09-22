@@ -402,7 +402,7 @@ fn print_raw_diff(history: &History, latest: &Snapshot) -> anyhow::Result<()> {
 /// an edit shows up as a small contiguous middle; `bussard status` without
 /// `--raw` is the readable view, and `git diff` is there for anyone who wants a
 /// real one.
-fn unified_body(old: &str, new: &str) -> String {
+pub(crate) fn unified_body(old: &str, new: &str) -> String {
     let old_lines: Vec<&str> = old.lines().collect();
     let new_lines: Vec<&str> = new.lines().collect();
 

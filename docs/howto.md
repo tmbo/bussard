@@ -198,6 +198,44 @@ $ bussard history --json | jq '.[-1]'
 
 Nothing an assistant does over MCP reaches the bus: the model-edit tools write YAML files, and `plan`/`apply`/`flash` are CLI-only. A change touching a `protected: true` group address ends with "This group address is protected." and is sorted first, and the MCP tools refuse such a change outright. If you dislike what you see, `bussard undo`. To run the server without the edit tools at all, start it with `bussard mcp --no-model-edits`.
 
+## ... send my configuration to an integrator?
+
+Export the model as one file and send that:
+
+```console
+$ bussard export house.bussard
+exported 4 device(s), 11 group address(es), 6 history snapshot(s) → house.bussard
+model sha256 3f1c…
+never included: models/ (cached vendor product models), vendor/ (vendor product data), captures/ (bus recordings), keyrings (*.knxkeys and tool keys), *.knxproj (ETS projects), *.knxprod (vendor product files), .env (passwords and local settings)
+```
+
+The `.bussard` file is a zip holding `bussard.yaml`, `groups.yaml`, `links.yaml`, `devices/`, the history snapshots and a manifest with counts and a SHA-256 of the model. Passwords, keyrings, vendor data and ETS files stay on your machine. Leave out the history with `--no-history`. Without a file name, `export` writes `<dir>-<date>.bussard` next to the model directory.
+
+The integrator runs `bussard import house.bussard --dir knx` into an empty directory and gets your model back byte for byte, history included. Keep a copy as your backup too: export at the end of the first working weekend and after every change you want to keep. `apply` reminds you on stderr when the last export is older than the model you just pushed.
+
+Over MCP, the assistant does the same with `knx_export_bundle`.
+
+## ... see what an integrator's new export would change?
+
+Before importing, ask for the difference:
+
+```console
+$ bussard diff knx integrator-2026-10-01.bussard
+2 change(s) from knx to integrator-2026-10-01.bussard:
+  Group address 1/0/1 is now called "Kitchen ceiling" (was "Light Kitchen").
+  Night setback on Living room thermostat (1.0.4): 2 to 3.
+```
+
+Each side can be a model directory, a `.bussard` bundle or a `.knxproj` (`--password`, `--password-b`, or `BUSSARD_PROJECT_PASSWORD`). A renamed group address is one rename. `--json` gives the structured changes, `--raw` a file-level YAML diff. With an assistant, `knx_diff_project` returns the same sentences, and the assistant reads them to you before you import.
+
+Then import:
+
+```console
+$ bussard import integrator-2026-10-01.bussard --dir knx
+```
+
+Generated data (com-object tables, links, parameters) follows the bundle. Names, rooms and descriptions you edited stay yours; each disagreement is printed as a sentence and the command exits 3. Re-run with `--theirs` to take the integrator's values, `--mine` to keep yours, or `--interactive` to choose each one. The import snapshots first, so `bussard undo` reverts it.
+
 ## ... clean stale links off a device?
 
 Same pair. A link left on the device by an earlier ETS download but absent from `links.yaml` shows up in the plan as a removal:
@@ -507,3 +545,7 @@ $ claude mcp add knx -- bussard mcp --dir knx --capture-db knx/captures/bus.db
 ## What goes in git?
 
 Git is optional: `bussard history` and `bussard undo` work without it. If you do use git, `bussard.yaml`, `groups.yaml`, `links.yaml`, and `devices/` are the source of truth and belong in the repo. Keep out: `.bussard/` (bussard's own history, local to the machine; `init` git-ignores it), `vendor/` and `models/` (derived from copyrighted `.knxprod` files; `import-product` plants a `.gitignore`), `captures/` (`init` git-ignores it), and `.env` (secrets like `BUSSARD_PROJECT_PASSWORD`).
+
+### ETS with git
+
+If ETS stays the tool of record, keep git as the review log: after every ETS session, export the `.knxproj`, run `bussard import project.knxproj --dir knx`, and commit. Before committing, `bussard diff <last-export>.knxproj project.knxproj` explains the session in sentences; that is the review. The commit then holds the YAML diff for anyone who reads it.
