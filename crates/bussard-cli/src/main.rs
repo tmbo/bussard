@@ -353,6 +353,10 @@ enum Command {
         /// Force KNXnet/IP routing (multicast) transport.
         #[arg(long)]
         routing: bool,
+        /// Emit the pre-flight plan as JSON (including the `parameters` array)
+        /// instead of the human report.
+        #[arg(long)]
+        json: bool,
     },
     /// Read a device's live tables and show what `apply` would change.
     Plan {
@@ -600,7 +604,7 @@ fn main() -> ExitCode {
     // invocation's elapsed time on stderr. Speed is a project goal, so this stays
     // available for regression spotting, but a plain 0.1.0 run is quiet.
     let started = std::time::Instant::now();
-    let code = match run(cli.command) {
+    let code = match run(cli.command, cli.verbose) {
         Ok(code) => code,
         Err(err) => {
             eprintln!("error: {err:#}");
@@ -614,7 +618,10 @@ fn main() -> ExitCode {
 }
 
 /// Dispatches a subcommand, returning the process exit code on success.
-fn run(command: Command) -> anyhow::Result<ExitCode> {
+///
+/// `verbose` is the global `-v` repeat count; `flash` uses it to unfold the
+/// memory-level plan under the parameter-level one (issue #109).
+fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
     match command {
         Command::Scan {
             line,
@@ -737,6 +744,7 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             tool_key,
             gateway,
             routing,
+            json,
         } => flash_cmd::run(
             &address,
             &product,
@@ -752,6 +760,7 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
                 tool_key: tool_key.as_deref(),
             },
             conn_cmd::ConnOverrides { gateway, routing },
+            flash_cmd::FlashOutput { json, verbose },
         ),
         Command::Plan {
             address,
