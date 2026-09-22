@@ -69,7 +69,35 @@ $ claude mcp add knx -- bussard mcp --dir knx    # let Claude debug your bus
 
 You will need a KNXnet/IP gateway (tunneling or routing). Optional but nice: your ETS project export (`.knxproj`) for an instantly named model, and also optionally vendor product data (`.knxprod`, free downloads from manufacturer sites) for commissioning new devices.
 
-Grab a prebuilt binary from the
+macOS and Linux:
+
+```console
+$ curl -fsSL https://raw.githubusercontent.com/tmbo/bussard/main/install.sh | sh
+```
+
+With Homebrew:
+
+```console
+$ brew install tmbo/tap/bussard
+```
+
+Windows:
+
+```console
+> winget install tmbo.bussard
+```
+
+or, in PowerShell:
+
+```console
+> irm https://raw.githubusercontent.com/tmbo/bussard/main/install.ps1 | iex
+```
+
+The installers download the binary for your machine, verify the published
+SHA-256 checksum, and put `bussard` on your PATH. Set `BUSSARD_VERSION` to pin a
+version and `BUSSARD_INSTALL_DIR` to choose where it lands.
+
+Prefer to do it yourself? Grab a binary from the
 [latest release](https://github.com/tmbo/bussard/releases/latest)
 (Linux x64, Linux arm64, macOS arm64, macOS x64, Windows x64, each with a
 `.sha256` checksum), or build from source:
@@ -77,8 +105,6 @@ Grab a prebuilt binary from the
 ```console
 $ cargo install --path crates/bussard-cli
 ```
-
-Package managers (Homebrew, winget, `curl | sh`) are planned.
 
 ## Safety
 
