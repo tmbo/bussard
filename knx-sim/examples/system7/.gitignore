@@ -3,3 +3,6 @@
 /products/
 # The empty model dir run.sh generates for the bare flashes.
 /model/
+# The link model run.sh generates for the incremental plan/apply/reconstruct
+# cycle (regenerated on every run).
+/model-linked/
