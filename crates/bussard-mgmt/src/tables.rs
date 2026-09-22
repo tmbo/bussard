@@ -76,10 +76,13 @@
 //!   by exactly two address octets; the response echoes the count in its APCI
 //!   low bits followed by address + data octets.
 //!
-//! Both encodings are produced by the shared [`apci::encode_device_descriptor_read`]
-//! and [`apci::encode_memory_read`] helpers — the same ones
-//! [`DeviceConnection`](crate::DeviceConnection) uses — so the two paths agree on
-//! the wire form. This module drives a borrowed [`Layer4Connection`] directly
+//! Both encodings are produced by the shared [`crate::apci`] helpers, through the
+//! crate's single descriptor reader ([`crate::connection::read_device_descriptor`])
+//! and single memory module ([`crate::memory`]) — the same ones
+//! [`DeviceConnection`](crate::DeviceConnection) and the download engine use — so
+//! every path agrees on the wire form. A table whose `PID_TABLE_REFERENCE` points
+//! above `0xFFFF` is read with `A_MemoryExtended_Read` instead of the plain
+//! service; the selection is per address, inside [`crate::memory`]. This module drives a borrowed [`Layer4Connection`] directly
 //! (rather than a [`DeviceConnection`](crate::DeviceConnection)) because
 //! `read_tables` operates on the caller's live connection.
 //!
