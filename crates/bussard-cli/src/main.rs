@@ -20,6 +20,7 @@ mod monitor_cmd;
 mod plan_cmd;
 mod read_cmd;
 mod reconstruct_cmd;
+mod replace_cmd;
 mod restore_cmd;
 mod scan_cmd;
 mod secure_key;
@@ -465,6 +466,53 @@ enum Command {
         #[arg(long)]
         allow_remote_gateway: bool,
     },
+    /// Replace a dead device: assign, flash, apply and record, in one guided
+    /// flow with one confirmation (issue #98).
+    Replace {
+        /// The address of the device being replaced, e.g. `1.1.4`.
+        #[arg(value_name = "ADDRESS")]
+        address: String,
+        /// The vendor `.knxprod` for the replacement device.
+        #[arg(long, value_name = "FILE")]
+        product: PathBuf,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Skip the interactive confirmation (dangerous; for scripts).
+        #[arg(long)]
+        yes: bool,
+        /// Proceed although the old device still answers, or although the
+        /// pressed device's order number, mask or application does not match the
+        /// model's device file.
+        #[arg(long)]
+        force: bool,
+        /// Assign and apply, but leave the application image alone — for a spare
+        /// that already carries the right application.
+        #[arg(long)]
+        no_flash: bool,
+        /// The device's BCU access key, in hex, presented with A_Authorize on
+        /// every management connect (issue #52).
+        #[arg(long, value_name = "HEX")]
+        bcu_key: Option<String>,
+        /// The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool
+        /// key (issue #71).
+        #[arg(long, value_name = "FILE")]
+        keyring: Option<PathBuf>,
+        /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
+        /// escape hatch.
+        #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
+        tool_key: Option<String>,
+        /// Override the gateway `host[:port]` for tunneling.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Force KNXnet/IP routing (multicast) transport.
+        #[arg(long)]
+        routing: bool,
+        /// Permit a write to a non-loopback (real) gateway. Required for any
+        /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
+        #[arg(long)]
+        allow_remote_gateway: bool,
+    },
     /// Validate the YAML model and report diagnostics.
     Validate {
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
@@ -868,6 +916,34 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             &dir,
             yes,
             allow_remote_gateway,
+            secure_key::ToolKeySource {
+                keyring: keyring.as_deref(),
+                tool_key: tool_key.as_deref(),
+            },
+            conn_cmd::ConnOverrides { gateway, routing },
+        ),
+        Command::Replace {
+            address,
+            product,
+            dir,
+            yes,
+            force,
+            no_flash,
+            bcu_key,
+            keyring,
+            tool_key,
+            gateway,
+            routing,
+            allow_remote_gateway,
+        } => replace_cmd::run(
+            &address,
+            &product,
+            &dir,
+            yes,
+            force,
+            no_flash,
+            allow_remote_gateway,
+            bcu_key.as_deref(),
             secure_key::ToolKeySource {
                 keyring: keyring.as_deref(),
                 tool_key: tool_key.as_deref(),
