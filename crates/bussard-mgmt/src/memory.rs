@@ -67,7 +67,7 @@ pub fn select_extended_memory(addr: u32, len: usize) -> bool {
 /// back to the conservative standard-frame floor when it was never read. The
 /// result is clamped to `1..=255` because the single-telegram primitives take a
 /// `u8` count.
-fn chunk_for(l4: &Layer4Connection<impl L4Channel>, addr: u32, len: usize) -> usize {
+pub(crate) fn chunk_for(l4: &Layer4Connection<impl L4Channel>, addr: u32, len: usize) -> usize {
     let raw = if select_extended_memory(addr, len) {
         usize::from(l4.max_extended_memory_chunk())
     } else {

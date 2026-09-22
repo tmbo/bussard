@@ -753,9 +753,9 @@ fn rel_mem_compare_passes(
 /// The read starts at the absolute address `base + offset`, where `base` is the
 /// device-reported segment address the caller resolved from the object's
 /// `PID_TABLE_REFERENCE` (exactly as a `WriteRelMem` resolves its write base).
-/// `expected.len()` octets are read, in [`apci::MAX_MEMORY_READ_LEN`]-octet
-/// telegrams (System B devices cap a single `A_Memory_Read` at that many octets),
-/// then compared against `expected`:
+/// `expected.len()` octets are read, in telegrams sized by the device's
+/// **negotiated** `PID_MAX_APDU_LENGTH` (issue #80 — a fixed 63 sent an extended
+/// frame to a device advertising 15), then compared against `expected`:
 ///
 /// - When `mask` is `Some`, each position is compared only where the mask byte is
 ///   non-zero (`0xFF` in ETS data = compare, `0x00` = ignore); a `mask` shorter
@@ -812,9 +812,11 @@ pub async fn compare_rel_mem<Ch: L4Channel>(
             detail: format!("read of {} octet(s) from {start:#X}", expected.len()),
         })?;
 
-    // Read the required span in device-max chunks. `read_memory` clamps a single
-    // telegram to MAX_MEMORY_READ_LEN, so loop until the whole length is gathered.
-    let chunk = usize::from(apci::MAX_MEMORY_READ_LEN);
+    // Read the required span in chunks the device actually accepts: the negotiated
+    // max-APDU cap for whichever service `read_memory` will pick for this address
+    // (issue #58/#80). A fixed 63 here handed a 15-octet-APDU device an extended
+    // frame it may reject.
+    let chunk = crate::memory::chunk_for(l4, start, expected.len());
     let mut actual: Vec<u8> = Vec::with_capacity(expected.len());
     while actual.len() < expected.len() {
         let want = (expected.len() - actual.len()).min(chunk);
