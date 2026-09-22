@@ -8,6 +8,7 @@ use std::net::{Ipv4Addr, SocketAddrV4, ToSocketAddrs};
 use std::path::Path;
 
 use anyhow::{Context, anyhow};
+use bussard_bus::{Bus, BusHandle};
 use bussard_model::Model;
 use bussard_model::schema::Transport as ModelTransport;
 use bussard_transport::config::{DEFAULT_MULTICAST, DEFAULT_PORT};
@@ -44,6 +45,64 @@ pub fn no_free_tunnel_message(gateway: impl std::fmt::Display) -> String {
          Close one of them (or wait for its connection to time out) and retry; \
          `bussard init --gateway {gateway}` prints the slot count when the interface reports it."
     )
+}
+
+/// One KNXnet/IP tunnel held open for a whole command, closed on every exit path.
+///
+/// A management command that reads first and writes second (`flash`, `apply`)
+/// used to open a tunnel for the read-only pre-flight, close it, and open a
+/// second one for the write phase. Each open costs a CONNECT_REQUEST round trip
+/// plus the tunnel's own-address setup, each close can wait out the DISCONNECT
+/// timeout on a silent gateway, and a gateway with a single tunnel slot can
+/// refuse the second connect outright.
+///
+/// This holds **one** tunnel across both phases — the transport's heartbeat keeps
+/// the slot alive across the interactive confirmation — and closes it from
+/// `Drop`, so every early return, refusal, declined confirmation and error path
+/// releases the gateway slot exactly once (issue #31's guarantee, now on one
+/// connection instead of two).
+pub struct BusSession {
+    handle: BusHandle,
+    runtime: tokio::runtime::Handle,
+}
+
+impl BusSession {
+    /// Opens the tunnel on `runtime` and waits (bounded) for it to come up.
+    ///
+    /// A gateway that has not answered in time only warns: management traffic
+    /// then presents the 0.0.255 fallback source, exactly as before.
+    pub fn open(runtime: &tokio::runtime::Runtime, config: ConnectionConfig) -> BusSession {
+        let handle = runtime.block_on(async {
+            let (handle, _task) = Bus::connect(config);
+            if !handle
+                .wait_connected(std::time::Duration::from_secs(10))
+                .await
+            {
+                eprintln!(
+                    "warning: bus not connected yet; management traffic may use the 0.0.255 fallback source"
+                );
+            }
+            handle
+        });
+        BusSession {
+            handle,
+            runtime: runtime.handle().clone(),
+        }
+    }
+
+    /// The bus handle every phase of the command runs over.
+    pub fn handle(&self) -> &BusHandle {
+        &self.handle
+    }
+}
+
+impl Drop for BusSession {
+    fn drop(&mut self) {
+        // Close the tunnel cleanly (release the gateway's slot) whichever way the
+        // command exited. `run` is synchronous here, so blocking on the runtime
+        // handle is safe; a gone actor makes this a no-op.
+        let _ = self.runtime.block_on(self.handle.close());
+    }
 }
 
 /// Loads the model from `dir` for a **monitoring** command that may safely

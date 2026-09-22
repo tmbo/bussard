@@ -32,7 +32,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
-use bussard_bus::{Bus, BusHandle, ops};
+use bussard_bus::{BusHandle, ops};
 use bussard_download::{
     CurrentMemory, FlashPlan, FlashStep, Freshness, ParamPlan, ParamValue, Progress,
     assess_freshness, flash, param_plan, plan_flash, probe_resident_state,
@@ -44,7 +44,8 @@ use bussard_model::IndividualAddress;
 use bussard_prod::{ApplicationProgram, ProductData, normalize_order_number};
 
 use crate::conn_cmd::{
-    ConnOverrides, enforce_write_gate, gateway_display, load_model_required, resolve_config,
+    BusSession, ConnOverrides, enforce_write_gate, gateway_display, load_model_required,
+    resolve_config,
 };
 
 /// Flashes an application program from vendor product data into a device.
@@ -60,6 +61,7 @@ pub fn run(
     dir: &Path,
     yes: bool,
     force: bool,
+    full: bool,
     allow_remote_gateway: bool,
     bcu_key: Option<&str>,
     tool_key_source: crate::secure_key::ToolKeySource<'_>,
@@ -142,21 +144,26 @@ pub fn run(
         .map(|d| d.device.module_bases.clone())
         .unwrap_or_default();
 
+    // ONE tunnel for the whole command: the read-only pre-flight below, the
+    // interactive confirmation, and the write phase all run over it, and
+    // `BusSession` closes it on every exit path. Opening a second tunnel for the
+    // write phase used to cost another CONNECT/DISCONNECT round trip — and the
+    // gateway's only tunnel slot — for no gain; the tunnel heartbeat holds the
+    // slot across the confirmation prompt.
+    let runtime = tokio::runtime::Runtime::new()?;
+    let bus = BusSession::open(&runtime, config);
+    let handle = bus.handle();
+    // The tunnel-assigned source address, resolved once for both phases.
+    let source = ops::group_source(handle);
+
     // Phase A (read-only): read the device descriptor and probe what is already
     // resident on the device (issue #79). Both run over one connection; neither
     // writes anything.
-    let runtime = tokio::runtime::Runtime::new()?;
     let secure_probe = tool_key.is_some();
     let probe = {
-        let config = config.clone();
         let probe_key = tool_key.clone();
         let probe_seq = secure_seq.clone();
-        runtime.block_on(async move {
-            let (handle, _task) = Bus::connect(config);
-            if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
-                eprintln!("warning: bus not connected yet; management traffic may use the 0.0.255 fallback source");
-            }
-            let source = ops::group_source(&handle);
+        runtime.block_on(async {
             let lease = handle.lease().await.context("leasing the bus")?;
             let channel = LeaseChannel::new(lease);
             // Track whether the T_Connect established before the first read: a
@@ -166,6 +173,11 @@ pub fn run(
             // activated device (spec §6.4): probe it through the same secure
             // layer the flash will use, or plain when no tool key was given.
             let secure = crate::secure_key::layer(&probe_key, &probe_seq);
+            // What this read-only pass learns about the device, handed to the
+            // write phase so it does not rediscover any of it (the authorize
+            // outcome, the max APDU, and — filled in from the freshness probe
+            // below — the interface-object table).
+            let mut facts = bussard_download::DeviceFacts::default();
             let (connected, result, resident) = match DeviceConnection::connect_with_secure(
                 channel,
                 target,
@@ -182,9 +194,21 @@ pub fn run(
                     // first. Tolerate a device that does not implement authorize.
                     let key = bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY);
                     let r = match dev.authorize(key).await {
-                        Ok(_) => dev.device_descriptor().await,
+                        Ok(outcome) => {
+                            // Remember the verdict: a device that does not
+                            // implement authorize must not be asked again in the
+                            // write phase, where the unanswered request costs a
+                            // full RESPONSE_TIMEOUT per connection window.
+                            facts.authorize = Some(outcome);
+                            dev.device_descriptor().await
+                        }
                         Err(err) => Err(err),
                     };
+                    // PID_MAX_APDU_LENGTH is device-stable: negotiate it here, on
+                    // the read-only connection, so the write phase seeds it
+                    // instead of spending an exchange from its tight
+                    // per-connection budget on it.
+                    facts.max_apdu = dev.l4_mut().negotiate_max_apdu().await.ok().flatten();
                     // The factory-freshness probe (issue #79): read the load
                     // state (and, on System B, the resident application id) of
                     // the objects this flash would unload and rewrite. Purely
@@ -195,17 +219,19 @@ pub fn run(
                         Ok(mask) => Some(probe_resident_state(dev.l4_mut(), *mask, None).await),
                         Err(_) => None,
                     };
+                    if let Some(state) = &resident {
+                        facts.object_table = state.object_table.clone();
+                    }
                     let _ = dev.disconnect().await;
                     (true, r, resident)
                 }
                 Err(err) => (false, Err(err), None),
             };
-            let _ = handle.close().await;
-            anyhow::Ok((connected, result, resident))
+            anyhow::Ok((connected, result, resident, facts))
         })?
     };
 
-    let (connected, device_mask, resident) = probe;
+    let (connected, device_mask, resident, facts) = probe;
     let device_mask = match device_mask {
         Ok(mask) => mask,
         Err(err) => {
@@ -263,7 +289,7 @@ pub fn run(
     {
         read_current_parameters(
             &runtime,
-            config.clone(),
+            handle,
             target,
             &plan,
             bcu_key,
@@ -345,30 +371,33 @@ pub fn run(
     // only holds the load if it survives the reboot, so bussard reconnects and
     // re-reads the load state once the device is back rather than trusting the
     // transient `Loaded` it reports before rebooting.
+    //
+    // Differential download (the ETS group-B behaviour): an object whose resident
+    // image already matches what bussard would stream (MCB size + CRC, and the
+    // object reports `Loaded`) is not re-streamed. Only taken when the device
+    // carries no application or the same one — never when `--force` is replacing
+    // a different or unidentified application, and never with `--full`.
+    let skip_unchanged = !full
+        && matches!(
+            freshness,
+            Freshness::Fresh | Freshness::SameApplication { .. }
+        );
+    if skip_unchanged && matches!(freshness, Freshness::SameApplication { .. }) {
+        eprintln!(
+            "differential download: objects whose resident image already matches are \
+             skipped (pass --full to re-stream everything)"
+        );
+    }
     let options = bussard_download::FlashOptions {
         bcu_key,
         verify_after_restart: true,
-        ..Default::default()
+        skip_matching_mcb: skip_unchanged,
     };
-    let outcome = runtime.block_on(async move {
-        let (handle, _task) = Bus::connect(config);
-        if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
-            eprintln!("warning: bus not connected yet; management traffic may use the 0.0.255 fallback source");
-        }
-        let source = ops::group_source(&handle);
-        let result = execute(
-            &handle,
-            target,
-            source,
-            plan_ref,
-            options,
-            tool_key,
-            secure_seq,
-        )
-        .await;
-        let _ = handle.close().await;
-        anyhow::Ok(result)
-    })?;
+    // The same tunnel phase A used: the pre-flight's L4 session and its bus lease
+    // are both released by now, so the write phase simply takes the lease again.
+    let outcome = runtime.block_on(execute(
+        handle, target, source, plan_ref, options, facts, tool_key, secure_seq,
+    ));
 
     match outcome {
         Ok(verify) if verify.ok() => {
@@ -805,12 +834,14 @@ impl bussard_download::Connector for LeaseConnector<'_> {
 }
 
 /// Runs the on-bus flash sequence with a progress line.
+#[allow(clippy::too_many_arguments)]
 async fn execute(
     handle: &BusHandle,
     target: IndividualAddress,
     source: IndividualAddress,
     plan: &FlashPlan,
     options: bussard_download::FlashOptions,
+    facts: bussard_download::DeviceFacts,
     secure_tool_key: Option<bussard_secure::Key16>,
     secure_seq: bussard_secure::SequenceHighWater,
 ) -> Result<bussard_download::FlashOutcome, WriteError> {
@@ -826,7 +857,11 @@ async fn execute(
     };
     // Authorize the management connect with the project BCU key (or free access
     // when unset) — issue #52 finding #1.
-    let mut session = bussard_download::Session::open_with_key(connector, options.bcu_key).await?;
+    // Opened with what the read-only pre-flight already learned (the object
+    // table, the authorize verdict, the max APDU), so the write phase does not
+    // rediscover any of it.
+    let mut session =
+        bussard_download::Session::open_with_facts(connector, options.bcu_key, facts).await?;
     // The session owns the open connection; from here the flash body runs and its
     // result is captured, then the session is disconnected unconditionally below —
     // regardless of whether the flash succeeded or failed mid-procedure. `flash`
@@ -879,7 +914,7 @@ pub struct FlashOutput {
 #[allow(clippy::too_many_arguments)]
 fn read_current_parameters(
     runtime: &tokio::runtime::Runtime,
-    config: bussard_transport::ConnectionConfig,
+    handle: &BusHandle,
     target: IndividualAddress,
     plan: &FlashPlan,
     bcu_key: Option<u32>,
@@ -887,14 +922,9 @@ fn read_current_parameters(
     secure_seq: bussard_secure::SequenceHighWater,
 ) -> CurrentMemory {
     let result: anyhow::Result<CurrentMemory> = runtime.block_on(async {
-        let (handle, _task) = Bus::connect(config);
-        if !handle
-            .wait_connected(std::time::Duration::from_secs(10))
-            .await
-        {
-            return Ok(CurrentMemory::new());
-        }
-        let source = ops::group_source(&handle);
+        // Runs over the command's tunnel: the lease below serialises it against
+        // the pre-flight and write phases, so no second tunnel is opened.
+        let source = ops::group_source(handle);
         let lease = handle.lease().await.context("leasing the bus")?;
         let channel = LeaseChannel::new(lease);
         let secure = crate::secure_key::layer(&tool_key, &secure_seq);
@@ -916,7 +946,6 @@ fn read_current_parameters(
             }
             Err(_) => CurrentMemory::new(),
         };
-        let _ = handle.close().await;
         anyhow::Ok(current)
     });
     match result {

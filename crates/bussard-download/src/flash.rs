@@ -662,21 +662,49 @@ const MAX_WRITE_SPAN: u64 = 1024 * 1024;
 /// [`bussard_mgmt::select_extended_memory`]).
 const MAX_MEMORY_END: u64 = 0x100_0000;
 
-/// How long to wait for a device to come back after a master-reset `A_Restart`
-/// before attempting to reconnect. A real ETS→KNX-Virtual capture showed ~6.5s of
-/// silence while the device rebooted; this is deliberately generous so a slower
-/// real device still comes back in time. The wait is a single bounded sleep — not
-/// a poll loop — because the device is unreachable while it reboots.
+/// The **upper bound** on how long to wait for a device to come back after a
+/// restart (a master-reset `A_Restart` or the terminal one) before giving up on
+/// the reboot. A real ETS→KNX-Virtual capture showed ~6.5s of silence while the
+/// device rebooted; real devices vary, so the bound is deliberately generous.
+///
+/// It is a *bound*, not a fixed sleep: after
+/// [`REBOOT_PROBE_MIN_WAIT`] of silence the session polls the device with a cheap
+/// liveness probe every [`REBOOT_PROBE_INTERVAL`] (see
+/// [`Session::reconnect_after_reboot`]), so a device that is back after 6.5 s is
+/// picked up then instead of costing the full bound. Only a device that never
+/// answers pays it.
 const MASTER_RESET_REBOOT_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// How long the post-restart poll stays quiet before its first probe.
+///
+/// A device that is still shutting down can answer for a few hundred
+/// milliseconds after it acknowledged the restart; probing immediately would
+/// mistake that dying stack for a rebooted one and resume the procedure against
+/// a device that is about to go away. Waiting a short minimum first makes the
+/// first probe meaningful. Capped by the overall bound (see
+/// [`reboot_wait_bound`]) so a test that shrinks the bound stays fast.
+const REBOOT_PROBE_MIN_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// How long to wait between post-restart liveness probes.
+const REBOOT_PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The tight L4 budget one post-restart liveness probe runs on: a device that is
+/// still rebooting must be ruled out in a fraction of a second, not in the
+/// standard 3 s ACK wait times four attempts.
+const REBOOT_PROBE_TIMEOUTS: bussard_mgmt::Timeouts = bussard_mgmt::Timeouts {
+    ack_timeout: std::time::Duration::from_millis(400),
+    max_repetitions: 0,
+    response_timeout: std::time::Duration::from_millis(400),
+};
+
 /// Environment variable that overrides [`MASTER_RESET_REBOOT_WAIT`] with a
-/// millisecond value. Set by the mock-device master-reset test so the reboot wait
-/// does not stall the test; unset in normal use, so the full generous wait
-/// applies. Behaviour is otherwise unchanged.
+/// millisecond value. Set by the mock-device restart tests so the reboot wait
+/// does not stall them; unset in normal use, so the full generous bound applies.
+/// It caps the minimum quiet period too, so a tiny value really is a tiny wait.
 const REBOOT_WAIT_MS_ENV: &str = "BUSSARD_FLASH_REBOOT_WAIT_MS";
 
-/// The master-reset reboot wait, honouring [`REBOOT_WAIT_MS_ENV`] for tests.
-fn master_reset_reboot_wait() -> std::time::Duration {
+/// The upper bound on the post-restart wait, honouring [`REBOOT_WAIT_MS_ENV`].
+fn reboot_wait_bound() -> std::time::Duration {
     std::env::var(REBOOT_WAIT_MS_ENV)
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
@@ -989,8 +1017,8 @@ pub struct FlashOptions {
     /// its `LoadImageProp` MCB re-verify.
     ///
     /// It NEVER skips a genuinely-needed write: a fresh/blank device (no MCB
-    /// entry) or any object whose resident size or CRC differs full-streams
-    /// exactly as before. When `false` (the conservative default, and every
+    /// entry), any object whose resident size or CRC differs, and any object that
+    /// does not currently report `Loaded` full-streams exactly as before. When `false` (the conservative default, and every
     /// path validated byte-for-byte against DA.tp, which was a fresh flash whose
     /// blank device never matches) every object is always full-streamed.
     pub skip_matching_mcb: bool,
@@ -1092,8 +1120,59 @@ impl<Ch: L4Channel> Session<SingleConnector<Ch>> {
             connector: None,
             bcu_key: None,
             authorize_outcomes: BTreeMap::new(),
+            facts: DeviceFacts::default(),
             max_apdu: None,
         }
+    }
+}
+
+/// What the read-only pre-flight already learned about the device, carried into
+/// the write phase so the flash does not pay for discovering it a second time.
+///
+/// `bussard flash` runs a read-only probe before it shows the plan (issue #79):
+/// it walks `PID_OBJECT_TYPE` over every interface object, presents
+/// `A_Authorize_Request`, and reads each object's load state. All three are
+/// device-stable facts, but the write phase used to rediscover them on its own
+/// connection: another full object-table walk, another authorize (a device that
+/// does not implement authorize burns a full `RESPONSE_TIMEOUT` answering
+/// nothing), and another `PID_MAX_APDU_LENGTH` read.
+///
+/// Handing the pre-flight's findings to [`Session::open_with_facts`] removes
+/// that duplication. Every field is optional/empty-tolerant: an empty
+/// [`DeviceFacts`] (or [`Session::open_with_key`], which supplies none) restores
+/// the rediscover-everything behaviour byte-for-byte, which is what the mock and
+/// oracle tests pin.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeviceFacts {
+    /// The interface-object table (`index → PID_OBJECT_TYPE`) the pre-flight
+    /// walked, in index order. Empty when it could not be read, in which case
+    /// the flash walks it itself.
+    pub object_table: Vec<(u8, u16)>,
+    /// The authorize outcome the pre-flight observed on its own connection.
+    ///
+    /// Only an [`Unsupported`](bussard_mgmt::AuthorizeOutcome::Unsupported)
+    /// outcome changes what the write phase does — it stops re-presenting a key
+    /// to a device that answers nothing, saving a full `RESPONSE_TIMEOUT` per
+    /// connection window. A `Granted` is per-connection state that a fresh
+    /// `T_Connect` clears, so it is recorded but still re-presented.
+    pub authorize: Option<bussard_mgmt::AuthorizeOutcome>,
+    /// The device's `PID_MAX_APDU_LENGTH`, when the pre-flight negotiated it.
+    /// Device-stable, so the session seeds it instead of spending an exchange
+    /// re-reading it.
+    pub max_apdu: Option<u16>,
+}
+
+impl DeviceFacts {
+    /// The application-program object index this table names, if any.
+    ///
+    /// `None` when the pre-flight read no table, or read one that carries no
+    /// interface-object of type 3 — either way the flash falls back to its own
+    /// discovery walk rather than guessing.
+    pub fn application_object(&self) -> Option<u8> {
+        self.object_table
+            .iter()
+            .find(|(_, ot)| *ot == OT_APPLICATION_PROGRAM)
+            .map(|(index, _)| *index)
     }
 }
 
@@ -1140,6 +1219,11 @@ pub struct Session<C: Connector> {
     /// a real write gate must re-present the key on every fresh connection. A
     /// `Denied` never reaches the cache — it fails the open before insertion.
     authorize_outcomes: BTreeMap<u16, bussard_mgmt::AuthorizeOutcome>,
+    /// What the CLI's read-only pre-flight already learned about this device
+    /// ([`DeviceFacts`]), so the flash does not rediscover it. Empty for a
+    /// session opened without facts (the library default and every mock test),
+    /// which keeps the rediscover-everything wire sequence.
+    facts: DeviceFacts,
     /// The device's `PID_MAX_APDU_LENGTH`, negotiated once on the first connection
     /// and re-seeded (not re-read) onto every later window's connection.
     ///
@@ -1166,24 +1250,66 @@ impl<C: Connector> Session<C> {
 
     /// Opens the connection and authorizes it with `bcu_key` (or the free-access
     /// key when `None`).
+    ///
+    /// Equivalent to [`open_with_facts`](Session::open_with_facts) with an empty
+    /// [`DeviceFacts`]: the session discovers everything itself, which is the
+    /// standalone-library behaviour the mock and oracle wire traces pin.
     pub async fn open_with_key(
+        connector: C,
+        bcu_key: Option<u32>,
+    ) -> Result<Session<C>, WriteError> {
+        Session::open_with_facts(connector, bcu_key, DeviceFacts::default()).await
+    }
+
+    /// Opens the connection with what a read-only pre-flight already learned
+    /// about the device ([`DeviceFacts`]).
+    ///
+    /// Two of the three facts change what this open costs on the wire:
+    ///
+    /// * an [`Unsupported`](bussard_mgmt::AuthorizeOutcome::Unsupported)
+    ///   authorize outcome seeds the per-target cache, so no key is presented to
+    ///   a device that answers nothing — saving one `RESPONSE_TIMEOUT` here and
+    ///   one on every later reconnect/cycle;
+    /// * a known `PID_MAX_APDU_LENGTH` is seeded instead of re-read, saving a
+    ///   numbered exchange against the tight per-connection budget.
+    ///
+    /// The object table is not used here; it is consumed by [`flash`] in place of
+    /// its own discovery walk.
+    pub async fn open_with_facts(
         mut connector: C,
         bcu_key: Option<u32>,
+        facts: DeviceFacts,
     ) -> Result<Session<C>, WriteError> {
         let mut l4 = connector.connect().await?;
         let mut authorize_outcomes = BTreeMap::new();
+        // Seed the pre-flight's verdict BEFORE authorizing: an "this device does
+        // not implement authorize" finding is what makes `authorize` skip the
+        // request entirely. A `Granted`/`Denied` verdict is per-connection state
+        // and is deliberately not seeded — this fresh connection must earn it.
+        if let Some(outcome @ bussard_mgmt::AuthorizeOutcome::Unsupported { .. }) = &facts.authorize
+        {
+            authorize_outcomes.insert(l4.target().raw(), outcome.clone());
+        }
         Self::authorize(&mut l4, bcu_key, &mut authorize_outcomes).await?;
         // Read PID_MAX_APDU_LENGTH once so memory/property chunks scale to the
         // device (issue #58). Best-effort: a failure leaves the conservative
         // standard-frame caps and never aborts the open. Cached at the session
         // level and re-seeded (not re-read) on later windows so it costs exactly
-        // one exchange for the whole flash.
-        let max_apdu = l4.negotiate_max_apdu().await.ok().flatten();
+        // one exchange for the whole flash — or none, when the pre-flight already
+        // negotiated it.
+        let max_apdu = match facts.max_apdu {
+            Some(known) => {
+                l4.set_max_apdu(Some(known));
+                Some(known)
+            }
+            None => l4.negotiate_max_apdu().await.ok().flatten(),
+        };
         Ok(Session {
             l4: Some(l4),
             connector: Some(connector),
             bcu_key,
             authorize_outcomes,
+            facts,
             max_apdu,
         })
     }
@@ -1241,6 +1367,17 @@ impl<C: Connector> Session<C> {
         self.connector.is_some()
     }
 
+    /// The pre-flight's interface-object table and the application-object index
+    /// it names, when both are known.
+    ///
+    /// `None` when the session was opened without [`DeviceFacts`], or with facts
+    /// whose table is empty or carries no application-program object — in which
+    /// case the caller walks the table itself.
+    fn known_object_table(&self) -> Option<(u8, Vec<(u8, u16)>)> {
+        let app_obj = self.facts.application_object()?;
+        Some((app_obj, self.facts.object_table.clone()))
+    }
+
     /// Re-establishes the L4 connection after a device restart, re-authorizing it.
     ///
     /// Used by the master-reset step and the terminal-restart verify: the device
@@ -1269,6 +1406,86 @@ impl<C: Connector> Session<C> {
         l4.set_max_apdu(self.max_apdu);
         self.l4 = Some(l4);
         Ok(())
+    }
+
+    /// Waits out a device reboot with a **bounded poll**, then re-establishes the
+    /// authorized connection.
+    ///
+    /// Used after a master-reset `A_Restart` and after the terminal restart. The
+    /// device is unreachable while it reboots, but how long that takes varies by
+    /// device (~6.5 s on KNX Virtual, less on others), so this does not burn a
+    /// fixed [`MASTER_RESET_REBOOT_WAIT`]:
+    ///
+    /// 1. stay quiet for [`REBOOT_PROBE_MIN_WAIT`] (capped by the overall bound)
+    ///    so a device that is still *shutting down* is not mistaken for one that
+    ///    has come back;
+    /// 2. then, every [`REBOOT_PROBE_INTERVAL`], run a cheap liveness probe — a
+    ///    throwaway `T_Connect` + `A_DeviceDescriptor_Read` + `T_Disconnect` on a
+    ///    tight [`REBOOT_PROBE_TIMEOUTS`] budget — until it answers or the bound
+    ///    from [`reboot_wait_bound`] elapses;
+    /// 3. either way, finish with the ordinary [`reconnect`](Session::reconnect),
+    ///    so the session connection is established exactly as before and a device
+    ///    that never came back surfaces that reconnect's error unchanged.
+    ///
+    /// The probe deliberately runs on its **own** connection rather than on the
+    /// session's: it must not touch the session's authorize cache (a still-booting
+    /// device answers nothing, which an authorize would record as "does not
+    /// implement authorize" and never retry) and it must not shift the session
+    /// connection's numbered-exchange sequence.
+    async fn reconnect_after_reboot(&mut self) -> Result<(), WriteError> {
+        // Drop the dead connection up front: on the real path it holds the bus
+        // lease, and the probes below need it. Dropping (rather than
+        // disconnecting) is right — the peer is mid-reboot and will not answer.
+        self.l4 = None;
+        let bound = reboot_wait_bound();
+        let started = tokio::time::Instant::now();
+        tokio::time::sleep(REBOOT_PROBE_MIN_WAIT.min(bound)).await;
+        // Only a session that owns a connector can probe; one built from a single
+        // open connection falls straight through to `reconnect`'s error.
+        if self.connector.is_some() {
+            let deadline = started + bound;
+            loop {
+                if self.probe_rebooted_device().await {
+                    break;
+                }
+                let now = tokio::time::Instant::now();
+                if now >= deadline {
+                    tracing::debug!(
+                        "device did not answer a liveness probe within the reboot bound; \
+                         reconnecting anyway"
+                    );
+                    break;
+                }
+                tokio::time::sleep(REBOOT_PROBE_INTERVAL.min(deadline - now)).await;
+            }
+        }
+        self.reconnect().await
+    }
+
+    /// One post-reboot liveness probe: is the device answering management again?
+    ///
+    /// Opens a throwaway connection through the retained [`Connector`], asks for
+    /// the device descriptor on the tight [`REBOOT_PROBE_TIMEOUTS`] budget, and
+    /// tears it down again. Every failure path — no connector, a connector error,
+    /// a silent device — is just `false`, so a failed probe leaves no state
+    /// behind: the throwaway connection (and, on the real path, its bus lease) is
+    /// released before returning, and the session still holds no connection of its
+    /// own.
+    async fn probe_rebooted_device(&mut self) -> bool {
+        let Some(connector) = self.connector.as_mut() else {
+            return false;
+        };
+        let mut l4 = match connector.connect().await {
+            Ok(l4) => l4,
+            Err(_) => return false,
+        };
+        l4.set_timeouts(REBOOT_PROBE_TIMEOUTS);
+        let alive = bussard_mgmt::read_device_descriptor(&mut l4).await.is_ok();
+        // Close the probe connection either way: a clean `T_Disconnect` when it
+        // answered (so the device frees the slot immediately), a no-op when the
+        // probe already tore it down.
+        let _ = l4.disconnect().await;
+        alive
     }
 
     /// Proactively cycles the L4 connection **between** flash steps to stay under
@@ -2952,6 +3169,28 @@ async fn discover_object_table_resumable<C: Connector>(
     }
 }
 
+/// Re-confirms the application-program object index on a fresh post-restart
+/// connection with a **single** `PID_OBJECT_TYPE` probe.
+///
+/// The interface-object table is device state that survives a reboot, so the
+/// index discovered before the terminal restart is still the right one; the only
+/// thing worth checking is that the device really is back and still reports that
+/// index as an application-program object. A probe that answers anything else —
+/// a different type, no object, or a read error — means the picture is not what
+/// was assumed, so the full resumable walk runs and decides (it also reconnects
+/// if the probe killed the connection).
+async fn confirm_app_object<C: Connector>(
+    session: &mut Session<C>,
+    app_obj: u8,
+) -> Result<u8, WriteError> {
+    match bussard_mgmt::probe_object_type(session.l4(), app_obj).await {
+        Ok(Some(OT_APPLICATION_PROGRAM)) => Ok(app_obj),
+        _ => discover_object_table_resumable(session)
+            .await
+            .map(|(index, _table)| index),
+    }
+}
+
 /// Resolves the op-carried `LsmIdx`/`ObjIdx` to the device interface-object index
 /// the step should act on, by **index**, not by object type — the divergence-#2 fix.
 ///
@@ -3132,7 +3371,19 @@ async fn resident_match_objects<C: Connector>(
         };
         let want_size = image.len() as u32;
         let want_crc = bussard_mgmt::crc16_ccitt(image);
-        if entry.segment_size == want_size && entry.crc16 == want_crc {
+        if entry.segment_size != want_size || entry.crc16 != want_crc {
+            continue;
+        }
+        // A matching MCB alone is not enough: an object left `Unloaded`,
+        // `Loading` or `Error` (an interrupted flash, an app-unload) can still
+        // describe an intact segment, but skipping its re-load would skip the
+        // `StartLoading`/`LoadCompleted` that bring it back to `Loaded`. Only an
+        // object that reports `Loaded` right now is skipped; an unreadable state
+        // full-streams, like an unreadable MCB.
+        if matches!(
+            read_load_state(session.l4(), obj).await,
+            Ok(LoadState::Loaded)
+        ) {
             matches.insert(obj);
         }
     }
@@ -3356,7 +3607,16 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
     // reconnects and CONTINUES from the next index, keeping the indices already
     // probed. Whole-operation replay alone could not recover a discovery that needs
     // more exchanges than the budget; per-probe forward progress can.
-    let (app_obj, object_table) = discover_object_table_resumable(session).await?;
+    //
+    // A session opened with [`DeviceFacts`] (the CLI: its read-only pre-flight
+    // already walked `PID_OBJECT_TYPE` over every object) skips the walk entirely
+    // — the table is device-stable, so re-reading it would only repeat one
+    // `A_PropertyValue_Read` per interface object. Without facts (the library
+    // API, every mock and oracle test) the walk runs exactly as before.
+    let (app_obj, object_table) = match session.known_object_table() {
+        Some(known) => known,
+        None => discover_object_table_resumable(session).await?,
+    };
     let total = plan.steps.len();
 
     // The base address of the most-recently allocated relative segment, used by
@@ -3438,7 +3698,10 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                 progress(Progress::Step {
                     index: i + 1,
                     total,
-                    label: format!("skip {} (resident MCB matches)", step_label(step)),
+                    label: format!(
+                        "skip {} (unchanged: resident MCB size+CRC match the image, object Loaded)",
+                        step_label(step)
+                    ),
                 });
                 continue;
             }
@@ -3790,8 +4053,9 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                         // wait out the reboot, re-establish the connection and re-authorize.
                         master_reset_via_basic_restart(session.l4(), *erase_code, *channel_number)
                             .await?;
-                        tokio::time::sleep(master_reset_reboot_wait()).await;
-                        session.reconnect().await?;
+                        // Wait out the reboot with a bounded poll (not a fixed
+                        // sleep) and re-establish the authorized connection.
+                        session.reconnect_after_reboot().await?;
 
                         // The master reset ERASES the app object's load state (back to
                         // `Unloaded`) and drops the segment allocated before it (erase
@@ -3877,17 +4141,17 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                         let (apci, payload) = bussard_mgmt::apci::encode_restart(0);
                         if verify_after_restart && session.can_reconnect() {
                             let _ = session.l4().send_data_unacked(apci, &payload).await;
-                            // The device is unreachable while it reboots; wait it out (a
-                            // single bounded sleep, not a poll loop), then re-establish the
-                            // authorized connection.
-                            tokio::time::sleep(master_reset_reboot_wait()).await;
-                            session.reconnect().await?;
-                            // Re-discover the application object on the fresh connection: the
-                            // object index is stable across the reboot, but the L4 connection
-                            // is new, so probe it again rather than trusting the pre-restart
-                            // handle. Resumable so a tight-budget device survives the re-probe.
-                            let (post_app_obj, _post_table) =
-                                discover_object_table_resumable(session).await?;
+                            // The device is unreachable while it reboots; poll for it
+                            // (bounded), then re-establish the authorized connection.
+                            session.reconnect_after_reboot().await?;
+                            // Re-confirm the application object on the fresh connection. The
+                            // index is stable across the reboot, so a single `PID_OBJECT_TYPE`
+                            // probe of the known index is enough; only if the device answers
+                            // something else (or does not answer) is the full walk re-run.
+                            // Re-walking every object unconditionally — the previous behaviour
+                            // — cost one exchange per interface object on the tightest
+                            // connection of the whole flash.
+                            let post_app_obj = confirm_app_object(session, app_obj).await?;
                             verified = Some(
                                 verify_outcome(
                                     session,
@@ -4214,11 +4478,10 @@ async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                         let (apci, payload) = bussard_mgmt::apci::encode_restart(0);
                         if verify_after_restart && session.can_reconnect() {
                             let _ = session.l4().send_data_unacked(apci, &payload).await;
-                            // The device is unreachable while it reboots; wait it out (a
-                            // single bounded sleep, not a poll loop), then re-establish the
-                            // authorized connection and verify honestly on it.
-                            tokio::time::sleep(master_reset_reboot_wait()).await;
-                            session.reconnect().await?;
+                            // The device is unreachable while it reboots; poll for it
+                            // (bounded), then re-establish the authorized connection and
+                            // verify honestly on it.
+                            session.reconnect_after_reboot().await?;
                             verified = Some(
                                 verify_sys7(session, &lsm, &completed_lsms, &written_samples)
                                     .await?,
