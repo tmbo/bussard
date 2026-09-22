@@ -216,12 +216,29 @@ jobs:
         with:
           fetch-depth: 1 # deny reads Cargo.lock, not history
 
-      - name: cargo-deny
-        # Pinned to a tagged release for reproducibility. The action ships a
-        # prebuilt cargo-deny binary, so there is nothing to compile here.
-        uses: EmbarkStudios/cargo-deny-action@v2.1.1
-        with:
-          command: check
+      # cargo-deny shells out to `cargo metadata`, so it needs a toolchain —
+      # but nothing is compiled, so there is no cache step either.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # A prebuilt cargo-deny binary, installed in a couple of seconds. The
+      # EmbarkStudios/cargo-deny-action this replaces built a Docker image on
+      # every run and then downloaded a second (musl) toolchain inside it, so
+      # ~30 s of setup wrapped a 2 s check.
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@cargo-deny
+
+      # `--all-features` and the full check set (advisories, bans, licenses,
+      # sources) are exactly what the action ran by default.
+      - name: cargo-deny (bussard workspace)
+        run: cargo deny --all-features check
+
+      # The second licence gate. knx-sim is an independent workspace with its
+      # own dependency set and its own deny.toml (same allow-list as the root;
+      # cargo-deny picks up the config next to the manifest). It runs here
+      # rather than in the `knx-sim` job so both gates share one install.
+      - name: cargo-deny (knx-sim workspace)
+        run: cargo deny --all-features --manifest-path knx-sim/Cargo.toml check
 
   # MSRV gate: the workspace declares rust-version = "1.85", so verify the code
   # still builds on exactly that toolchain. This is `cargo check` only (no
@@ -299,14 +316,9 @@ jobs:
       - name: Test
         run: cargo test
 
-      # The second licence gate. knx-sim has its own dependency set and its own
-      # deny.toml (same allow-list as the root), so the "never take on a copyleft
-      # dependency" rule is enforced here as well as in the `deny` job.
-      - name: cargo-deny (knx-sim manifest)
-        uses: EmbarkStudios/cargo-deny-action@v2.1.1
-        with:
-          command: check
-          manifest-path: knx-sim/Cargo.toml
+      # knx-sim's licence gate is not here: it runs in the `deny` job, which
+      # already has cargo-deny installed, as
+      # `cargo deny --manifest-path knx-sim/Cargo.toml check`.
 
   # The conformance loop between the two implementations, guarded on every push.
   #
