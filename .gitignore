@@ -30,3 +30,7 @@ shared-with-windows/
 
 # Session scratch + vendor-derived analysis dumps (never commit)
 /scratchpad/
+
+# Python bytecode
+__pycache__/
+*.pyc
