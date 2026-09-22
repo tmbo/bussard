@@ -846,8 +846,9 @@ async fn flash_system7_memory_mapped_reaches_loaded() -> Result<(), Box<dyn std:
 
 #[tokio::test]
 async fn flash_system7_verify_mismatch_fails() -> Result<(), Box<dyn std::error::Error>> {
-    // A device that corrupts every stored write: the per-chunk read-back verify
-    // inside write_memory_verified diverges and the flash fails at that write.
+    // A device that corrupts every stored write: the flash must not report
+    // success — either a step's own compare fails, or the post-flash read-back
+    // spot check diverges.
     set_sys7_lsm_env(LsmMode::MemoryMapped);
     let (mut bus, _state, handle) = setup(LsmMode::MemoryMapped, Fault::CorruptStoredImage).await;
     let target: bussard_model::IndividualAddress = "1.1.99".parse().unwrap();

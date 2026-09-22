@@ -3638,10 +3638,10 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                 // An unexpected mid-flow connection death on a resumable step: cycle the
                 // L4 connection and re-run the step, up to the per-step bound. This
                 // composes with the proactive `cycle_l4` above (which reduces how often
-                // we get here) and the per-write `MAX_EXCHANGE_RETRIES` inside
-                // `write_memory_verified` (which absorbs a single-chunk blip on the same
-                // connection); resume-on-drop is the outer net that reconnects a *dead*
-                // connection and replays the whole step.
+                // we get here) and with `write_image`'s chunk-granular resume (which
+                // continues a segment stream from the last confirmed offset instead of
+                // replaying the whole image); resume-on-drop is the outer net that
+                // reconnects a *dead* connection and replays the whole step.
                 Err(e)
                     if resumable_death(&e, session)
                         && !self_reconnecting_step
@@ -4193,8 +4193,10 @@ async fn verify_outcome<C: Connector>(
 /// byte-progress event per confirmed chunk, and **resuming at chunk granularity**
 /// across an unexpected connection death.
 ///
-/// The write is chunked by [`bussard_mgmt::write_memory_verified`], which retries a
-/// single-chunk blip on the same connection. When the whole connection dies mid-way
+/// The write is chunked by [`bussard_mgmt::write_memory_chunked`], which sizes each
+/// chunk from the negotiated max-APDU and propagates a connection death on the first
+/// failure — recovering from one needs a *new* connection, which only this call site
+/// can open. When the connection dies mid-way
 /// (the device dropped it), this reconnects and continues streaming from the last
 /// **confirmed** offset rather than restarting the image — essential on a device
 /// whose per-connection exchange budget is smaller than the whole image (a
@@ -4230,7 +4232,7 @@ async fn write_image<C: Connector, F: FnMut(Progress)>(
             });
         };
         let tail_addr = addr.saturating_add(confirmed as u32);
-        let result = bussard_mgmt::write_memory_verified(
+        let result = bussard_mgmt::write_memory_chunked(
             session.l4(),
             tail_addr,
             &bytes[confirmed..],
