@@ -405,6 +405,12 @@ enum Command {
         /// same application does not need it.
         #[arg(long)]
         force: bool,
+        /// Re-stream every object. By default an object whose resident image
+        /// already matches (MCB size and CRC, object `Loaded`) is skipped when
+        /// re-flashing the same application, so a parameter-only change does
+        /// not re-download the code segment.
+        #[arg(long)]
+        full: bool,
         /// Permit a write to a non-loopback (real) gateway. Required for any
         /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
         #[arg(long)]
@@ -1245,6 +1251,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             dir,
             yes,
             force,
+            full,
             allow_remote_gateway,
             bcu_key,
             keyring,
@@ -1260,6 +1267,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             &dir,
             yes,
             force,
+            full,
             allow_remote_gateway,
             bcu_key.as_deref(),
             secure_key::ToolKeySource {

@@ -399,7 +399,7 @@ parameters:
   "windalarm-1@MD-1_M-3_MI-1_P-3_R-45": "1"
 ```
 
-Edit the value, then validate: with the device's product model generated (`import-product`), `validate` checks that the key exists and the value is in range (E016/E017). The new value reaches the device via `flash`, which recomputes the full parameter memory image from the vendor defaults plus your overrides. Its pre-flight names each change in the vendor's words, with the value the device holds now:
+Edit the value, then validate: with the device's product model generated (`import-product`), `validate` checks that the key exists and the value is in range (E016/E017). The new value reaches the device via `flash`, which recomputes the full parameter memory image from the vendor defaults plus your overrides. Objects whose resident image is unchanged (typically the code segment) are skipped, so a parameter change streams only what differs; pass `--full` to re-stream everything. Its pre-flight names each change in the vendor's words, with the value the device holds now:
 
 ```console
 $ bussard flash 1.1.12 --product heating.knxprod --gateway 127.0.0.1:3671

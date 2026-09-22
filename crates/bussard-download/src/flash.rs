@@ -1017,8 +1017,8 @@ pub struct FlashOptions {
     /// its `LoadImageProp` MCB re-verify.
     ///
     /// It NEVER skips a genuinely-needed write: a fresh/blank device (no MCB
-    /// entry) or any object whose resident size or CRC differs full-streams
-    /// exactly as before. When `false` (the conservative default, and every
+    /// entry), any object whose resident size or CRC differs, and any object that
+    /// does not currently report `Loaded` full-streams exactly as before. When `false` (the conservative default, and every
     /// path validated byte-for-byte against DA.tp, which was a fresh flash whose
     /// blank device never matches) every object is always full-streamed.
     pub skip_matching_mcb: bool,
@@ -3371,7 +3371,19 @@ async fn resident_match_objects<C: Connector>(
         };
         let want_size = image.len() as u32;
         let want_crc = bussard_mgmt::crc16_ccitt(image);
-        if entry.segment_size == want_size && entry.crc16 == want_crc {
+        if entry.segment_size != want_size || entry.crc16 != want_crc {
+            continue;
+        }
+        // A matching MCB alone is not enough: an object left `Unloaded`,
+        // `Loading` or `Error` (an interrupted flash, an app-unload) can still
+        // describe an intact segment, but skipping its re-load would skip the
+        // `StartLoading`/`LoadCompleted` that bring it back to `Loaded`. Only an
+        // object that reports `Loaded` right now is skipped; an unreadable state
+        // full-streams, like an unreadable MCB.
+        if matches!(
+            read_load_state(session.l4(), obj).await,
+            Ok(LoadState::Loaded)
+        ) {
             matches.insert(obj);
         }
     }
@@ -3686,7 +3698,10 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                 progress(Progress::Step {
                     index: i + 1,
                     total,
-                    label: format!("skip {} (resident MCB matches)", step_label(step)),
+                    label: format!(
+                        "skip {} (unchanged: resident MCB size+CRC match the image, object Loaded)",
+                        step_label(step)
+                    ),
                 });
                 continue;
             }
