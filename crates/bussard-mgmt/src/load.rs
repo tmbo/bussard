@@ -377,26 +377,6 @@ pub enum WriteError {
         detail: String,
     },
 
-    /// A `LdCtrlMasterReset` was rejected: the device answered its
-    /// `A_Restart_Response` with a non-zero error code rather than accepting the
-    /// master reset. The reset did not happen, so the procedure cannot continue.
-    #[error(
-        "{address}: master reset (erase code {erase_code}, channel {channel_number}) was rejected \
-         — device returned error code {error_code} ({reason})"
-    )]
-    MasterResetRejected {
-        /// The device.
-        address: IndividualAddress,
-        /// The erase code presented.
-        erase_code: u8,
-        /// The channel number presented.
-        channel_number: u8,
-        /// The error code the device returned in its `A_Restart_Response`.
-        error_code: u8,
-        /// A human-readable interpretation of the error code.
-        reason: &'static str,
-    },
-
     /// An underlying management error (absent, NAK, disconnect, malformed).
     #[error(transparent)]
     Mgmt(#[from] MgmtError),
@@ -541,91 +521,6 @@ pub async fn read_program_version<Ch: L4Channel>(
         return Ok(None);
     }
     Ok(Some(resp.data))
-}
-
-/// Interprets an `A_Restart_Response` error code into a human-readable reason,
-/// per the KNX spec master-reset error codes.
-///
-/// The mapping is `0x00` = success, `0x01` = access denied, `0x02` = unsupported
-/// erase code, `0x03` = invalid channel number (KNX 3/5/2 / XKNX reference). The
-/// earlier bussard mapping was off by one (`2/3/4`); the issue #49 errata fixed
-/// it. The DA.tp capture (`shared-with-windows/dumpfile.pcap`) only ever showed a
-/// `0x00` (success) response, so the non-zero codes could not be settled from the
-/// capture and stay spec-derived. `S7-CAL: master-reset error-code mapping —
-/// capture a rejected master reset on a real device to confirm 0x01/0x02/0x03`.
-fn master_reset_error_reason(code: u8) -> &'static str {
-    match code {
-        0 => "success",
-        1 => "access denied",
-        2 => "unsupported erase code",
-        3 => "invalid channel number",
-        _ => "device-defined error",
-    }
-}
-
-/// Performs a device **Master Reset** (`LdCtrlMasterReset`): sends a master-reset
-/// `A_Restart` request and confirms the device accepted it.
-///
-/// Unlike a basic restart (fire-and-forget), a master reset is confirmed by an
-/// `A_Restart_Response` carrying an error code before the device reboots and
-/// drops the connection (see [`crate::apci::encode_master_reset`]). This sends
-/// the request, then:
-///
-/// - If the device answers an `A_Restart_Response`
-///   ([`A_RESTART_RESPONSE`](crate::apci::A_RESTART_RESPONSE)), a **zero** error
-///   code is success and a **non-zero** code fails with
-///   [`WriteError::MasterResetRejected`].
-/// - If the device **acknowledges the request but then goes silent** (no
-///   response NDT, a mid-session silence, or a `T_Disconnect`) it has already
-///   begun rebooting — the expected outcome of an accepted master reset — so this
-///   returns `Ok(())`. The caller then waits out the reboot and reconnects.
-///
-/// A device that never even acknowledges the request (the very first send times
-/// out) surfaces the underlying [`MgmtError`], since that means the request never
-/// landed.
-///
-/// Clean-room: encoding and semantics from the published KNX spec (A_Restart /
-/// DM_Restart master reset) and the XKNX MIT reference; verified against a real
-/// ETS→KNX-Virtual capture.
-pub async fn master_reset<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-    erase_code: u8,
-    channel_number: u8,
-) -> Result<()> {
-    let address = l4.target();
-    let (apci, payload) = crate::apci::encode_master_reset(erase_code, channel_number);
-    // Send the request as a numbered telegram and require the device's T_ACK: a
-    // request that is never acknowledged never landed, which is a real failure.
-    l4.send_data(apci, &payload).await?;
-    // Await the A_Restart_Response. The device answers, then reboots — but it may
-    // also reboot immediately and drop the link, so silence/disconnect after the
-    // acknowledged send is the *expected* accepted outcome, not a failure.
-    match l4.recv_response().await {
-        Ok((resp_apci, data)) => {
-            if resp_apci == crate::apci::A_RESTART_RESPONSE {
-                let error_code = crate::apci::decode_restart_response(&data);
-                if error_code != 0 {
-                    return Err(WriteError::MasterResetRejected {
-                        address,
-                        erase_code,
-                        channel_number,
-                        error_code,
-                        reason: master_reset_error_reason(error_code),
-                    });
-                }
-            }
-            // A zero error code, or any non-restart-response answer (the device
-            // simply rebooting): accepted.
-            Ok(())
-        }
-        // The device acknowledged the request, then went silent or dropped the
-        // connection: it is rebooting, which is exactly what an accepted master
-        // reset does. Treat as success; the caller reconnects.
-        Err(MgmtError::NoResponse { .. })
-        | Err(MgmtError::MidSessionSilence { .. })
-        | Err(MgmtError::Disconnected { .. }) => Ok(()),
-        Err(other) => Err(WriteError::Mgmt(other)),
-    }
 }
 
 /// Realises an `LdCtrlMasterReset` op the way ETS→KNX-Virtual does on the wire:
@@ -944,22 +839,6 @@ pub async fn write_load_control<Ch: L4Channel>(
 /// `data[6]` and a fill byte at `data[7]` (see [`encode_rel_segment`]).
 pub const LD_CTRL_REL_SEGMENT: u8 = 0x0B;
 
-/// The `AdditionalLoadControls` sub-command for an **absolute** (tool-placed)
-/// segment allocation — `LdCtrlAbsSegment` (KNX 3/5/2). The tool supplies the
-/// segment's absolute memory address, size, access/mem-type flags and a checksum
-/// control.
-///
-/// **Uncertain / unverified against a device.** Common System B devices
-/// implement only the relative form (`0x0B`) and reject other
-/// `AdditionalLoadControls` sub-commands outright. The absolute layout below
-/// follows the published ETS `LdCtrlAbsSegment` element (`LsmIdx, SegType,
-/// Address, Size, Access, MemType, SegFlags`), but the exact octet order has not
-/// been pinned against a live device, so [`encode_abs_segment`] is provided for
-/// the downloader to build on and is flagged as needing live confirmation.
-/// Prefer [`allocate_segment`] (relative) wherever the device places the segment
-/// itself.
-pub const LD_CTRL_ABS_SEGMENT: u8 = 0x01;
-
 /// The fill flag `data[6]` of a relative allocation: `0x01` fills the freshly
 /// allocated segment with the fill byte, `0x00` leaves it untouched (KNX 3/5/2
 /// `LdCtrlRelSegment`).
@@ -993,37 +872,6 @@ pub fn encode_rel_segment(size: u32, fill_byte: Option<u8>) -> [u8; 10] {
         v[6] = LD_CTRL_FILL;
         v[7] = byte;
     }
-    v
-}
-
-/// Encodes the 10-octet `AdditionalLoadControls` property value for an
-/// **absolute** segment allocation (`LdCtrlAbsSegment`).
-///
-/// **Unverified layout** — see [`LD_CTRL_ABS_SEGMENT`]. Provided for the
-/// downloader; the exact octet order for `access`/`mem_type`/`seg_flags` must be
-/// confirmed against a live device before this is relied on. Current layout:
-/// `[event=3, sub=0x01, addr(u32 BE), size(u16 BE), access, mem_type, seg_flags]`
-/// — 11 octets would overflow, so the size is a `u16` here to fit the 10-octet
-/// structure; a device that wants a `u32` size will reject this. Flagged as an
-/// open uncertainty for the download engine.
-pub fn encode_abs_segment(
-    addr: u32,
-    size: u16,
-    access: u8,
-    mem_type: u8,
-    seg_flags: u8,
-) -> [u8; 10] {
-    let mut v = [0u8; 10];
-    v[0] = LoadControl::AdditionalLoadControls.octet();
-    v[1] = LD_CTRL_ABS_SEGMENT;
-    v[2..6].copy_from_slice(&addr.to_be_bytes());
-    v[6..8].copy_from_slice(&size.to_be_bytes());
-    v[8] = access;
-    v[9] = mem_type;
-    // seg_flags has no octet left in the 10-octet structure; folded into the
-    // caller's mem_type/access on real devices. Kept in the signature so the
-    // downloader's call sites are explicit; documented uncertainty.
-    let _ = seg_flags;
     v
 }
 
@@ -1542,16 +1390,6 @@ mod tests {
         // those first 8 octets, byte-for-byte with the ETS capture.
         let v = encode_rel_segment(0x0000_28C1, Some(0x00));
         assert_eq!(&v[0..8], &[0x03, 0x0B, 0x00, 0x00, 0x28, 0xC1, 0x01, 0x00]);
-    }
-
-    #[test]
-    fn abs_segment_carries_event_and_subcommand() {
-        let v = encode_abs_segment(0x0000_4000, 0x0140, 0xFF, 0x00, 0x00);
-        assert_eq!(v.len(), 10);
-        assert_eq!(v[0], LoadControl::AdditionalLoadControls.octet());
-        assert_eq!(v[1], LD_CTRL_ABS_SEGMENT);
-        assert_eq!(&v[2..6], &[0x00, 0x00, 0x40, 0x00]); // address big-endian
-        assert_eq!(&v[6..8], &[0x01, 0x40]); // size big-endian
     }
 
     #[test]
