@@ -52,6 +52,13 @@ pub struct Hardware {
     /// Multi-application devices (a single hardware programmed with several
     /// application programs) list more than one; the first is the primary.
     pub hardware2program: HashMap<String, Vec<String>>,
+    /// Order number → the bus current the hardware draws, in mA, from the
+    /// `<Hardware BusCurrent=…>` attribute.
+    ///
+    /// Read by the `L002` topology lint (via the generated `models/*.yaml`) to
+    /// total a line's draw against its power supply. Vendors declare it per
+    /// `<Hardware>` block, so every order number in a block shares the value.
+    pub order_to_bus_current: HashMap<String, u32>,
     /// Order number → ordered application-program ids, joined per Hardware block
     /// through that block's own `Hardware2Program`s (not cross-producted).
     ///
@@ -69,6 +76,7 @@ impl Hardware {
     pub fn extend(&mut self, other: Hardware) {
         self.products.extend(other.products);
         self.hardware2program.extend(other.hardware2program);
+        self.order_to_bus_current.extend(other.order_to_bus_current);
         for (order, apps) in other.order_to_apps {
             self.order_to_apps.entry(order).or_default().extend(apps);
         }
@@ -89,6 +97,7 @@ pub fn parse_hardware(xml: &str) -> Result<Hardware> {
     let mut products: HashMap<String, ProductInfo> = HashMap::new();
     let mut h2p: HashMap<String, Vec<String>> = HashMap::new();
     let mut order_to_apps: HashMap<String, Vec<String>> = HashMap::new();
+    let mut order_to_bus_current: HashMap<String, u32> = HashMap::new();
 
     let mut current_h2p_id: Option<String> = None;
     let mut current_hw_name: Option<String> = None;
@@ -97,6 +106,7 @@ pub fn parse_hardware(xml: &str) -> Result<Hardware> {
     // for the order-number join. Kept separate from the h2p-id keying above.
     let mut block_orders: Vec<String> = Vec::new();
     let mut block_apps: Vec<String> = Vec::new();
+    let mut block_bus_current: Option<u32> = None;
 
     // Translation state for the `<Languages>` section: product `Text` → en-US.
     let mut translations = TranslationCollector::new();
@@ -110,8 +120,16 @@ pub fn parse_hardware(xml: &str) -> Result<Hardware> {
             Event::Start(e) | Event::Empty(e) => match e.local_name().as_ref() {
                 b"Hardware" => {
                     // A new hardware block: flush the prior block's order join.
-                    flush_block(&mut order_to_apps, &mut block_orders, &mut block_apps);
+                    flush_block(
+                        &mut order_to_apps,
+                        &mut order_to_bus_current,
+                        &mut block_orders,
+                        &mut block_apps,
+                        &mut block_bus_current,
+                    );
                     current_hw_name = attr_value(&e, b"Name", context)?;
+                    block_bus_current =
+                        attr_value(&e, b"BusCurrent", context)?.and_then(|v| parse_bus_current(&v));
                 }
                 b"Product" => {
                     let order = attr_value(&e, b"OrderNumber", context)?;
@@ -181,7 +199,13 @@ pub fn parse_hardware(xml: &str) -> Result<Hardware> {
         }
     }
     // Flush the final block.
-    flush_block(&mut order_to_apps, &mut block_orders, &mut block_apps);
+    flush_block(
+        &mut order_to_apps,
+        &mut order_to_bus_current,
+        &mut block_orders,
+        &mut block_apps,
+        &mut block_bus_current,
+    );
 
     // Apply en-US product-name translations, keyed by product id.
     if !translations.is_empty() {
@@ -195,16 +219,20 @@ pub fn parse_hardware(xml: &str) -> Result<Hardware> {
     Ok(Hardware {
         products,
         hardware2program: h2p,
+        order_to_bus_current,
         order_to_apps,
     })
 }
 
-/// Maps every collected order number in the block to every collected app ref,
-/// then clears the block buffers for the next `<Hardware>`.
+/// Maps every collected order number in the block to every collected app ref
+/// (and to the block's declared bus current), then clears the block buffers for
+/// the next `<Hardware>`.
 fn flush_block(
     order_to_apps: &mut HashMap<String, Vec<String>>,
+    order_to_bus_current: &mut HashMap<String, u32>,
     orders: &mut Vec<String>,
     apps: &mut Vec<String>,
+    bus_current: &mut Option<u32>,
 ) {
     if !orders.is_empty() && !apps.is_empty() {
         for order in orders.iter() {
@@ -214,13 +242,58 @@ fn flush_block(
                 .extend(apps.iter().cloned());
         }
     }
+    if let Some(ma) = *bus_current {
+        for order in orders.iter() {
+            order_to_bus_current.insert(order.clone(), ma);
+        }
+    }
     orders.clear();
     apps.clear();
+    *bus_current = None;
+}
+
+/// Parses a `BusCurrent` attribute (mA). Vendors write it as an integer, but a
+/// decimal shows up too; a fractional value rounds up so a lint never
+/// under-reports a line's draw.
+fn parse_bus_current(raw: &str) -> Option<u32> {
+    let text = raw.trim();
+    if text.is_empty() {
+        return None;
+    }
+    if let Ok(value) = text.parse::<u32>() {
+        return Some(value);
+    }
+    let value = text.parse::<f64>().ok()?;
+    if !value.is_finite() || value < 0.0 {
+        return None;
+    }
+    Some(value.ceil() as u32)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_hardware_reads_bus_current_per_block() -> Result<()> {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+          <Hardware Id="H-1" Name="Actuator" BusCurrent="10">
+            <Products><Product Id="H-1_P-A" OrderNumber="A-1" /></Products>
+          </Hardware>
+          <Hardware Id="H-2" Name="Sensor" BusCurrent="7.5">
+            <Products><Product Id="H-2_P-B" OrderNumber="B-1" /></Products>
+          </Hardware>
+          <Hardware Id="H-3" Name="Passive">
+            <Products><Product Id="H-3_P-C" OrderNumber="C-1" /></Products>
+          </Hardware>
+        </KNX>"#;
+        let hw = parse_hardware(xml)?;
+        assert_eq!(hw.order_to_bus_current.get("A-1"), Some(&10));
+        // A fractional value rounds up so the lint never under-reports.
+        assert_eq!(hw.order_to_bus_current.get("B-1"), Some(&8));
+        assert_eq!(hw.order_to_bus_current.get("C-1"), None);
+        Ok(())
+    }
 
     #[test]
     fn product_prefers_text_over_hardware_name() {
