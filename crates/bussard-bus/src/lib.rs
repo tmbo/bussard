@@ -546,6 +546,13 @@ impl Actor {
     /// (it keeps ACKing incoming requests), so nothing is lost; the only cost is a
     /// short delivery-latency bump for concurrent subscribers during an L4 send,
     /// which the lease already serialises against.
+    ///
+    /// The inline send is only safe because that buffer never blocks the tunnel
+    /// task: its inbound channel is unbounded and written synchronously. While it
+    /// was bounded at 256, an inbound burst that filled it during one ACK window
+    /// deadlocked the pair — the tunnel task waited for capacity, the actor waited
+    /// for the ACK reply (issue #82). If that buffering policy is ever revisited,
+    /// this inline send is the reason it must not block.
     async fn consume(&mut self, mut conn: Transport) -> ActorOutcome {
         loop {
             tokio::select! {
