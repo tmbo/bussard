@@ -22,6 +22,7 @@ pub mod merge;
 pub mod param_model;
 pub mod scaffold;
 pub mod schema;
+pub mod tests_schema;
 pub mod validate;
 
 pub use address::{AddressParseError, GroupAddress, IndividualAddress};
@@ -39,4 +40,7 @@ pub use loader::{LoadError, LoadedDevice, Model, SaveError};
 pub use merge::{Conflict, MergeReport, merge};
 pub use param_model::{ParamDef, ParamKind, ProductModel, ProductModels};
 pub use scaffold::{Plan, PlanRoom, Scheme, scaffold, scaffold_file};
+pub use tests_schema::{
+    Expectation, TestCase, TestFileError, TestSuite, WriteStep, load_tests, load_tests_in_dir,
+};
 pub use validate::{Diagnostic, Severity, has_errors, validate, validate_in_dir};

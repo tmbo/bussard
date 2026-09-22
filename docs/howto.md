@@ -286,6 +286,54 @@ parameters:
 
 Edit the value, then validate: with the device's product model generated (`import-product`), `validate` checks that the key exists and the value is in range (E016/E017). The new value reaches the device via `flash`, which recomputes the full parameter memory image from the vendor defaults plus your overrides. One caveat: a `.knxproj` re-import replaces the whole `parameters:` block with ETS truth, so make the change in ETS too if you still re-import.
 
+## ... name the group addresses of a house without a project file?
+
+Let the assistant run the loop with you. Start the MCP server (`--passive` is enough, nothing here transmits) and say "help me name the group addresses". The assistant asks you to press a button, waits for the telegram with `knx_wait_for_telegram`, then calls `knx_infer_group`, which returns DPT candidates, the sending device, its channel and com object, and a proposed name such as "Kitchen ceiling light, switch". It tells you what it thinks the button is; you confirm or correct it in chat, and only then does it write the answer into the model with `knx_set_group` and `knx_add_link`. Press the same button again when the candidates are uncertain: every extra telegram narrows them.
+
+At a terminal, `bussard learn` runs the same loop:
+
+```console
+$ bussard learn --untyped --gateway 192.0.2.10
+
+[1/12] 1/0/1: trigger the object you want to name (waiting up to 30s)
+  1/0/1  sender 1.1.30 Schaltaktor (Kitchen)
+  com object 3 Kanal A - Schalten, channel Ceiling light, declares 1.001
+  payload 01 (1 byte(s))
+    1. 1.001 [high] the sending com object declares DPT 1.001 in the model
+  proposed name: Kitchen ceiling light, schalten
+  accept as "Kitchen ceiling light, schalten" / 1.001? [a]ccept, [e]dit name, [d]pt, [s]kip, [q]uit:
+```
+
+`--unnamed` picks placeholder names instead of missing DPTs, `--ga` names specific addresses, and a bare `bussard learn` takes whatever appears on the bus. Accepted answers land in `groups.yaml` and, when the com object is clear, `links.yaml`; review the diff and run `validate`, which stops reporting W011 for every GA you typed.
+
+## ... write an acceptance test?
+
+Put a `tests.yaml` next to `groups.yaml`. Each test is a stimulus and the telegram that proves the installation reacted:
+
+```yaml
+tests:
+  - name: Kitchen ceiling light switches and reports
+    write: { ga: "1/0/10", value: "on" }
+    expect: { ga: "1/0/12", value: "on", within: 2s }
+  - name: Wind alarm raises the blinds
+    manual: "Press the test button on the weather station"
+    expect: { ga: "3/1/0", value: "up", within: 5s }
+```
+
+The assistant can draft the file from the model (switch objects with a status GA are the obvious first tests) and run it over MCP with `knx_run_tests` when the server has `--allow-writes`. At a terminal:
+
+```console
+$ bussard test --gateway 192.0.2.10
+PASS Kitchen ceiling light switches and reports
+     1/0/12 arrived = on within 2s
+FAIL Wind alarm raises the blinds
+     expected 3/1/0 = up within 5s after the manual step "Press the test button on the weather station", but it did not arrive
+
+2 test(s): 1 passed, 1 failed, 0 skipped, 0 refused
+```
+
+The report has no timestamps, so rerunning it at the three-month visit gives a diffable protocol; `--json` feeds other tooling. The run exits non-zero on any failure. A test that writes a protected GA needs `allow_protected: true` in the file and `--force`, and the MCP tool never runs it.
+
 ## ... let Claude debug the bus?
 
 Register the MCP server once:

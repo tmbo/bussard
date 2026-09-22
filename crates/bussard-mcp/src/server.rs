@@ -1,11 +1,14 @@
 //! The rmcp server handler and its tools.
 //!
-//! [`BussardMcp`] holds the shared state and exposes the read tools (eleven by
-//! default, nine in `--passive` mode — `knx_read_group` and
-//! `knx_describe_device` both touch the bus) plus, with `--allow-writes`, the
-//! `knx_write_group` write tool (twelve total) over the Model Context Protocol.
-//! The model and history tools live in [`crate::tools_model`], in a second
-//! `#[tool_router]` block combined into the same router.
+//! [`BussardMcp`] holds the shared state and exposes the read tools (the
+//! bus-touching `knx_read_group` and `knx_describe_device` are omitted in
+//! `--passive` mode) plus, with `--allow-writes`, the `knx_write_group` and
+//! `knx_run_tests` write tools over the Model Context Protocol. The per-tier
+//! tool counts are listed on [`crate::tool_names`]. The model and history tools
+//! live in [`crate::tools_model`], the group-planning tools in
+//! [`crate::tools_groups`], and the learn and acceptance tools in
+//! [`crate::tools_learn`]; each is its own `#[tool_router]` block, combined in
+//! [`BussardMcp::new`].
 //! Each `#[tool]`
 //! method is a thin adapter: it parses arguments, calls the pure logic in
 //! [`crate::tools`], and boxes the JSON in a `CallToolResult::structured`.
@@ -44,11 +47,15 @@ impl BussardMcp {
     /// `knx_read_group` in passive mode, and `knx_write_group` unless
     /// `--allow-writes` is set (and never in passive mode).
     pub fn new(state: Arc<SharedState>) -> Self {
-        // The bus tools, the model-edit tools and the group-planning tools live
-        // in separate `#[tool_router]` impl blocks (see `crate::tools_model`
-        // and `crate::tools_groups`); rmcp's `ToolRouter` implements `Add`, so
-        // they combine into one instance router.
-        let mut tool_router = Self::tool_router() + Self::model_router() + Self::groups_router();
+        // The bus tools, the model-edit tools, the group-planning tools and the
+        // learn/acceptance tools live in separate `#[tool_router]` impl blocks
+        // (see `crate::tools_model`, `crate::tools_groups` and
+        // `crate::tools_learn`); rmcp's `ToolRouter` implements `Add`, so they
+        // combine into one instance router, then get trimmed for this tier.
+        let mut tool_router = Self::tool_router()
+            + Self::model_router()
+            + Self::groups_router()
+            + Self::learn_router();
         if state.no_model_edits {
             for name in crate::tools_model::MODEL_EDIT_TOOLS {
                 tool_router.remove_route(name);
@@ -62,6 +69,9 @@ impl BussardMcp {
         }
         if !state.allow_writes || state.passive {
             tool_router.remove_route("knx_write_group");
+            // Running the acceptance suite writes to the bus, so it follows the
+            // write tier. `knx_infer_group` stays: it only reads the ring.
+            tool_router.remove_route("knx_run_tests");
         }
         BussardMcp { state, tool_router }
     }

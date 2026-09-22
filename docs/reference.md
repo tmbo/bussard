@@ -385,6 +385,44 @@ Write a group value to the bus. The value is human-typed (`on`/`off`, `up`/`down
 | `--routing` | off | Force routing transport. |
 | `--allow-remote-gateway` | off | Permit a write to a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
 
+### `bussard learn`
+
+Name and type group addresses from live traffic. Learn mode prompts you to trigger an object, waits for the telegram, and shows the sender, its channel and com object, the payload, ranked DPT candidates with a reason for each, and a proposed name built from the device's room, channel and com-object function. Accept, edit the name, change the DPT, skip, or quit. Accepted answers go into `groups.yaml`; when the sending com object can be pinned down (an existing link, or exactly one free transmit-capable object on the sending device), `links.yaml` gets the `send:` entry too.
+
+Learn mode never transmits. It listens on the same connection `monitor` uses and never calls a send path. A DPT candidate is ranked `high` only when the sending com object declares that DPT in the model; payload shape alone gives `medium` at most, because most payload lengths fit several DPTs. Repeated telegrams on one GA narrow the candidates.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--ga <GA>` | | Learn this group address. Repeatable; learned in the order given. |
+| `--unnamed` | off | Learn every GA in the model whose name is a placeholder (empty, the address itself, `GA <address>`, `Unnamed`, `Unknown...`). |
+| `--untyped` | off | Learn every GA in the model with no DPT (the ones `validate` reports as W011). |
+| `--yes` | off | Accept the top candidate and the proposed name without prompting. Required without a terminal. |
+| `--timeout <SECS>` | `30` | How long to wait for each telegram. |
+| `--dir <DIR>` | `knx` | The model directory. A model that fails to parse is a hard error. |
+| `--gateway <HOST>` | | Gateway override. |
+| `--routing` | off | Force routing transport. |
+
+With neither `--ga` nor `--unnamed`/`--untyped`, learn takes whatever appears on the bus next, one GA at a time, until a wait times out or you quit.
+
+### `bussard test`
+
+Run the acceptance tests in [`tests.yaml`](#testsyaml) against the bus and print a pass/fail report. Each test writes a group value (or prints a `manual:` instruction and waits for Enter), then waits for the expected telegram. A failing expectation reports the value that did arrive on the expected GA. The text report contains no timestamps, so two runs over a healthy installation are byte-identical; the JSON report adds only `started_at`. Exits non-zero when any test fails; skipped and refused tests do not fail the run.
+
+A test run writes to the bus, so it goes through the same rails as `bussard write`: the non-loopback gateway gate and a confirmation naming the gateway. A test that writes to a `protected: true` GA needs both `allow_protected: true` in the file and `--force`; with either missing it is reported as refused and nothing is sent to that GA.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--file <FILE>` | `<dir>/tests.yaml` | The test file to run. |
+| `--json` | off | Print the report as JSON: `started_at`, `tests[]` (`name`, `status` of `pass`/`fail`/`skipped`/`refused`, `detail`, `observed`), and `summary` counts. |
+| `--force` | off | Together with `allow_protected: true` in the file, permit tests that write to protected GAs. |
+| `--skip-manual` | off | Report `manual:` tests as skipped instead of prompting. Without a terminal they are skipped anyway. |
+| `--only <NAME>` | all | Run only the named test (case-insensitive). Repeatable. |
+| `--yes` | off | Skip the confirmation prompt (required for a non-TTY run). |
+| `--dir <DIR>` | `knx` | The model directory. |
+| `--gateway <HOST>` | | Gateway override. |
+| `--routing` | off | Force routing transport. |
+| `--allow-remote-gateway` | off | Permit a run against a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
+
 ### `bussard ha-config`
 
 Generate the Home Assistant KNX integration YAML from the model. Derivation rules and the `ha.yaml` override file are documented in [ha-config.md](ha-config.md).
@@ -451,6 +489,7 @@ knx/
   links.yaml        # com-object → GA assignments
   devices/          # one file per device, e.g. 1.1.4-jalousieaktor-wohnen.yaml
   ha.yaml           # optional ha-config overrides (see ha-config.md)
+  tests.yaml        # optional acceptance tests for `bussard test`
   models/           # generated from .knxprod; git-ignored
   vendor/           # cached .knxprod originals; git-ignored
   captures/         # local captures, apply backups and apply-line-<line>.json resume state; git-ignored
@@ -474,7 +513,7 @@ One directory per snapshot, named by a UTC timestamp plus a sequence number, so 
 
 `import`, `apply`, `flash`, `adopt`, `reconstruct` and every MCP model edit snapshot before they write. `plan` and those commands also record an `external edit` snapshot first when the working files differ from the last one, so an edit made in an editor or by an assistant writing YAML is never lost. `bussard status`, `history`, `show` and `undo` read this directory; `bussard init` git-ignores it.
 
-`bussard.yaml`, `groups.yaml`, `links.yaml` and `devices/` are the source of truth and belong in git. `models/`, `vendor/` and `captures/` are local-only; `init` and `import-product` plant the `.gitignore` entries. All YAML is parsed strictly: unknown fields and duplicate keys are errors. Emission is deterministic and sorted, so re-imports and hand edits produce minimal diffs. Every generated file carries a banner naming what generated it and what is hand-editable.
+`bussard.yaml`, `groups.yaml`, `links.yaml`, `devices/` and `tests.yaml` belong in git; the first four are the source of truth. `models/`, `vendor/` and `captures/` are local-only; `init` and `import-product` plant the `.gitignore` entries. All YAML is parsed strictly: unknown fields and duplicate keys are errors. Emission is deterministic and sorted, so re-imports and hand edits produce minimal diffs. Every generated file carries a banner naming what generated it and what is hand-editable.
 
 ### `bussard.yaml`
 
@@ -614,6 +653,33 @@ com_objects:
 
 Com-object entries carry no `name` (it lives in `links.yaml`).
 
+### `tests.yaml`
+
+The acceptance tests `bussard test` and the `knx_run_tests` MCP tool run. Optional; parsed as strictly as the rest of the model.
+
+```yaml
+allow_protected: false      # opt-in for tests that write protected GAs (also needs --force)
+tests:
+  - name: Kitchen ceiling light switches and reports
+    write: { ga: "1/0/10", value: "on" }
+    expect: { ga: "1/0/12", value: "on", within: 2s }
+  - name: Wind alarm raises the blinds
+    manual: "Trigger the wind alarm on the weather station"
+    expect: { ga: "3/1/0", value: "up", within: 5s }
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `allow_protected` | bool, default `false` | Half of the opt-in for writing a `protected: true` GA. The CLI also needs `--force`; the MCP tool ignores this flag and always refuses. |
+| `tests[].name` | string | Reported name, and the key for `--only`. |
+| `tests[].write` | `{ga, value, dpt?}` | The stimulus: a group write. `value` is human-typed and encoded against the GA's DPT, or `dpt` when given. |
+| `tests[].manual` | string | The stimulus instead of a write: an instruction for a human. Exactly one of `write` or `manual`. |
+| `tests[].expect.ga` | GA | The group address the proof must appear on. |
+| `tests[].expect.value` | scalar, optional | The value it must carry, encoded against the GA's DPT and compared byte for byte. Omit to accept any value. On a GA without a DPT, give the payload as hex (`"0x01"`). |
+| `tests[].expect.within` | duration, default `3s` | How long to wait: `2s`, `500ms`, `1m`, or a bare number of seconds. |
+
+A manual test must have an `expect`. The runner ignores the gateway's echo of its own write and anything sent from its own address, so a test may write and expect the same GA.
+
 ### Generated model files (`models/*.yaml`)
 
 One file per application program, generated by `import-product` and never hand-edited. The field-by-field description lives in [product-data.md](product-data.md#the-model-file-format).
@@ -701,12 +767,12 @@ CREATE INDEX idx_telegrams_dest_ts ON telegrams (destination, ts_utc);
 |---|---|---|
 | Passive | `--passive` | Never transmits. The bus-touching read tools (`knx_read_group`, `knx_describe_device`) are not registered. |
 | Read (default) | none | May send GroupValueReads, rate-limited. |
-| Write | `--allow-writes` | Adds `knx_write_group`. |
+| Write | `--allow-writes` | Adds `knx_write_group` and `knx_run_tests`. |
 | No model edits | `--no-model-edits` | Withholds the six model-edit tools. Orthogonal to the tiers above: they write YAML files, never the bus, so they are registered in every tier by default. |
 
 The model tools (`knx_describe_change`, `knx_history`, and the six that edit) touch files under the model directory and nothing else. Every edit snapshots the model first, validates after, and returns the change as sentences for the caller to quote to the human. Nothing reaches a device until a human runs `bussard plan` and `bussard apply`.
 
-Bus operations share one rate limiter (minimum 250 ms between operations, at most two in flight). A GA marked `protected: true` is hard-refused by `knx_write_group` with no MCP override; the LLM must ask a human, who can run `bussard write ... --force` from the CLI. Programming and download (`plan`, `apply`, `flash`) are CLI-only and not exposed over MCP.
+Bus operations share one rate limiter (minimum 250 ms between operations, at most two in flight). A GA marked `protected: true` is hard-refused by `knx_write_group` and `knx_run_tests` with no MCP override; the LLM must ask a human, who can run `bussard write ... --force` from the CLI. Programming and download (`plan`, `apply`, `flash`) are CLI-only and not exposed over MCP.
 
 ### Tools
 
@@ -722,7 +788,9 @@ Bus operations share one rate limiter (minimum 250 ms between operations, at mos
 | `knx_scaffold_groups` | `plan` (JSON `{rooms: [{floor, room, functions}]}`), `scheme` (optional) | Writes `groups.yaml` from a room and function list, returns the addresses added and the model's validation counts. Confirm the room list with the human first. |
 | `knx_read_group` | `ga` | Transmits a GroupValueRead and returns the decoded response. Omitted in `--passive` mode. |
 | `knx_describe_device` | `address` | Introspects a device: enumerates its interface objects and each property's description (PID, type, element count, access levels). Read-only on the bus. Omitted in `--passive` mode. |
+| `knx_infer_group` | `ga`, `payload_hex` (optional) | What the traffic on a GA says it is: ranked DPT candidates (`dpt`, `confidence` of `low`/`medium`/`high`, `reason`), the sender (address, name, location), its channel and com object (index, name, declared DPT, flags), the GA's current model entry, a proposed name, and a `next_step` telling the assistant to confirm with the human before calling `knx_set_group` and `knx_add_link`. Uses every telegram seen on the GA, or `payload_hex` when given. Reads only; also registered in `--passive`. |
 | `knx_write_group` | `ga`, `value` (human-typed), `dpt` (optional override) | A GroupValueWrite. Registered only with `--allow-writes`; refuses protected GAs outright, and refuses a `dpt` that contradicts the GA's DPT in the model (the override is for GAs the model does not type). |
+| `knx_run_tests` | `only` (list of test names, optional) | Runs `tests.yaml` and returns the same report as `bussard test --json`, plus `refused_protected`. Registered only with `--allow-writes`. A test that writes a protected GA is refused whatever the file says; `manual:` tests are skipped. |
 | `knx_describe_change` | `from`, `to` (snapshot ids, optional) | The change as plain sentences. With no arguments: the pending changes, i.e. the working model against the last snapshot. Files only. |
 | `knx_history` | `limit` (default 50, max 500) | The history snapshots with id, time, command, gateway and a one-line summary each. |
 | `knx_set_group` | `ga`, `name`, `dpt`, `description` (all but `ga` optional) | Creates or updates a group address. Creating one needs `name`. Refuses to rename or retype a `protected: true` GA; there is no parameter that sets or clears `protected`. |

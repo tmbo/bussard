@@ -125,7 +125,7 @@ async fn connect_client(
 }
 
 #[tokio::test]
-async fn tools_list_has_twelve_tools_by_default() {
+async fn tools_list_has_thirteen_tools_by_default() {
     let (client, server_task) = connect_client(build_server(false)).await;
     let tools = client.list_all_tools().await.unwrap();
     let mut names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
@@ -134,10 +134,12 @@ async fn tools_list_has_twelve_tools_by_default() {
     expected.sort();
     assert_eq!(
         names, expected,
-        "default mode exposes 10 bus/model tools plus the 2 history read tools"
+        "default mode exposes 11 bus/model tools plus the 2 history read tools"
     );
-    assert_eq!(tools.len(), 12);
+    assert_eq!(tools.len(), 13);
     assert!(names.contains(&"knx_describe_change".to_string()));
+    assert!(names.contains(&"knx_infer_group".to_string()));
+    assert!(!names.contains(&"knx_run_tests".to_string()));
     assert!(!names.contains(&"knx_write_group".to_string()));
     assert!(names.contains(&"knx_describe_device".to_string()));
 
@@ -146,15 +148,19 @@ async fn tools_list_has_twelve_tools_by_default() {
 }
 
 #[tokio::test]
-async fn tools_list_has_thirteen_tools_with_allow_writes() {
+async fn tools_list_has_fifteen_tools_with_allow_writes() {
     let (client, server_task) = connect_client(build_server_modes(false, true)).await;
     let tools = client.list_all_tools().await.unwrap();
     let mut names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
     names.sort();
     let mut expected = bussard_mcp::tool_names(false, true, true);
     expected.sort();
-    assert_eq!(names, expected, "--allow-writes adds knx_write_group");
-    assert_eq!(tools.len(), 13);
+    assert_eq!(
+        names, expected,
+        "--allow-writes adds knx_write_group and knx_run_tests"
+    );
+    assert_eq!(tools.len(), 15);
+    assert!(names.contains(&"knx_run_tests".to_string()));
     assert!(names.contains(&"knx_write_group".to_string()));
     assert!(names.contains(&"knx_read_group".to_string()));
 
@@ -163,13 +169,13 @@ async fn tools_list_has_thirteen_tools_with_allow_writes() {
 }
 
 #[tokio::test]
-async fn tools_list_has_ten_tools_in_passive_mode() {
+async fn tools_list_has_eleven_tools_in_passive_mode() {
     let (client, server_task) = connect_client(build_server(true)).await;
     let tools = client.list_all_tools().await.unwrap();
     let names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
     assert_eq!(
         tools.len(),
-        10,
+        11,
         "passive mode omits knx_read_group and knx_describe_device, and keeps the \
          file-only history tools"
     );
@@ -177,6 +183,10 @@ async fn tools_list_has_ten_tools_in_passive_mode() {
     assert!(!names.contains(&"knx_describe_device".to_string()));
     assert!(names.contains(&"knx_project_summary".to_string()));
     assert!(names.contains(&"knx_scaffold_groups".to_string()));
+    assert!(
+        names.contains(&"knx_infer_group".to_string()),
+        "infer only reads the ring"
+    );
 
     client.cancel().await.unwrap();
     server_task.abort();

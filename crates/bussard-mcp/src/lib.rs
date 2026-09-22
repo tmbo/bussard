@@ -26,7 +26,9 @@
 //! | `knx_scaffold_groups` | Draft or extend `groups.yaml` from a room and function list. |
 //! | `knx_read_group` | Send a GroupValueRead and return the value (omitted in `--passive`). |
 //! | `knx_describe_device` | Introspect a device: enumerate its interface objects and each property's description (omitted in `--passive`). |
+//! | `knx_infer_group` | Infer a GA's DPT and a proposed name from the traffic seen on it (issue #95). |
 //! | `knx_write_group` | Send a GroupValueWrite (registered only with `--allow-writes`). |
+//! | `knx_run_tests` | Run the model directory's `tests.yaml` against the bus (registered only with `--allow-writes`). |
 //! | `knx_describe_change` | Pending or between-snapshot model changes, as plain sentences. |
 //! | `knx_history` | The model's history snapshots with a one-line summary each. |
 //! | `knx_set_group` | Create or update a group address (refuses to rename or retype a protected one). |
@@ -42,15 +44,15 @@
 //! sentences for the caller to quote to the human.
 //!
 //! In `--passive` mode the two bus-touching read tools (`knx_read_group` and
-//! `knx_describe_device`) are unregistered and the server never transmits.
-//! `knx_write_group` is
-//! registered only when the server is started with `--allow-writes` (which
-//! conflicts with `--passive`); it writes to the physical bus and hard-refuses
-//! `protected` GAs.
+//! `knx_describe_device`) are unregistered and the server never transmits;
+//! `knx_infer_group` stays, because it only reads the telegram ring.
+//! `knx_write_group` and `knx_run_tests` are registered only when the server is
+//! started with `--allow-writes` (which conflicts with `--passive`); both write
+//! to the physical bus, and both hard-refuse `protected` GAs.
 //!
-//! Tool counts per tier: `--passive` 16, default 18, `--allow-writes` 19. With
-//! `--no-model-edits` the six model-edit tools are withheld, giving 10, 12 and
-//! 13.
+//! Tool counts per tier: `--passive` 17, default 19, `--allow-writes` 21. With
+//! `--no-model-edits` the six model-edit tools are withheld, giving 11, 13 and
+//! 15.
 //!
 //! # Connecting this to Claude Code
 //!
@@ -87,6 +89,7 @@ pub mod server;
 pub mod state;
 pub mod tools;
 pub mod tools_groups;
+pub mod tools_learn;
 pub mod tools_model;
 
 use std::path::PathBuf;
@@ -195,12 +198,13 @@ pub async fn run(config: &McpConfig) -> anyhow::Result<()> {
 
 /// The set of tool names exposed, in registration order. Used by tests and docs.
 ///
-/// - passive mode: 16 tools (no bus-touching tools: no `knx_read_group`, no
-///   `knx_describe_device`, no `knx_write_group`).
-/// - default mode: 18 tools (adds `knx_read_group` and `knx_describe_device`).
-/// - `--allow-writes`: 19 tools (adds `knx_write_group`).
+/// - passive mode: 17 tools (no bus-touching tools: no `knx_read_group`, no
+///   `knx_describe_device`, no `knx_write_group`, no `knx_run_tests`).
+///   `knx_infer_group` is there: it only reads the telegram ring.
+/// - default mode: 19 tools (adds `knx_read_group` and `knx_describe_device`).
+/// - `--allow-writes`: 21 tools (adds `knx_write_group` and `knx_run_tests`).
 /// - `--no-model-edits` removes the six model-edit tools from any of those
-///   (10, 12 and 13 tools).
+///   (11, 13 and 15 tools).
 ///
 /// The two model/history read tools (`knx_describe_change`, `knx_history`) and
 /// the six model-edit tools touch files only, so they are present in every tier
@@ -215,6 +219,7 @@ pub fn tool_names(passive: bool, allow_writes: bool, no_model_edits: bool) -> Ve
         "knx_wait_for_telegram",
         "knx_validate",
         "knx_scaffold_groups",
+        "knx_infer_group",
     ];
     if !passive {
         names.push("knx_read_group");
@@ -222,6 +227,7 @@ pub fn tool_names(passive: bool, allow_writes: bool, no_model_edits: bool) -> Ve
     }
     if allow_writes && !passive {
         names.push("knx_write_group");
+        names.push("knx_run_tests");
     }
     names.extend(tools_model::MODEL_READ_TOOLS);
     if !no_model_edits {
