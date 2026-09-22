@@ -1,9 +1,10 @@
 //! The rmcp server handler and its tools.
 //!
-//! [`BussardMcp`] holds the shared state and exposes the read-only tools (nine
-//! by default, seven in `--passive` mode — `knx_read_group` and
+//! [`BussardMcp`] holds the shared state and exposes the read-only tools (ten
+//! by default, eight in `--passive` mode — `knx_read_group` and
 //! `knx_describe_device` both touch the bus) plus, with `--allow-writes`, the
-//! `knx_write_group` write tool (ten total) over the Model Context Protocol.
+//! `knx_write_group` write tool (eleven total) over the Model Context Protocol.
+//! `knx_audit` lives on its own router in [`crate::tools_audit`].
 //! Each `#[tool]`
 //! method is a thin adapter: it parses arguments, calls the pure logic in
 //! [`crate::tools`], and boxes the JSON in a `CallToolResult::structured`.
@@ -42,7 +43,8 @@ impl BussardMcp {
     /// `knx_read_group` in passive mode, and `knx_write_group` unless
     /// `--allow-writes` is set (and never in passive mode).
     pub fn new(state: Arc<SharedState>) -> Self {
-        let mut tool_router = Self::tool_router();
+        // The audit tool lives on its own router in `tools_audit` (issue #93).
+        let mut tool_router = Self::tool_router() + Self::audit_router();
         if state.passive {
             tool_router.remove_route("knx_read_group");
             // Introspection actively transmits management traffic, so it is a

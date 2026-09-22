@@ -4,7 +4,7 @@
 //! handshake on its stdin/stdout, and asserts:
 //!
 //! - stdout carries **only** valid JSON-RPC (nothing else may print there), and
-//! - `tools/list` returns exactly the expected tool set (7 in `--passive`).
+//! - `tools/list` returns exactly the expected tool set (8 in `--passive`).
 //!
 //! This is the stdout-purity guard the design brief calls for.
 
@@ -116,6 +116,7 @@ fn mcp_stdio_handshake_is_pure_json_and_lists_seven_passive_tools() {
     let mut tools = tools.expect("received a tools/list response");
     tools.sort();
     let mut expected = vec![
+        "knx_audit",
         "knx_get_device",
         "knx_get_group",
         "knx_model_lookup",
@@ -125,7 +126,7 @@ fn mcp_stdio_handshake_is_pure_json_and_lists_seven_passive_tools() {
         "knx_wait_for_telegram",
     ];
     expected.sort_unstable();
-    assert_eq!(tools, expected, "passive mode exposes exactly 7 tools");
+    assert_eq!(tools, expected, "passive mode exposes exactly 8 tools");
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
