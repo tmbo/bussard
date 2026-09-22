@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
 #
 # End-to-end demo of the System 7 (mask 0705) conformance loop: build both
-# projects, start the knx-sim gateway with three simulated System 7 devices, then
+# projects, start the knx-sim gateway with four simulated System 7 devices, then
 # drive `bussard flash` against it to program every device to a verified
 # `Loaded` — exercising BOTH LsmAccess realisations (memory-mapped and
 # property-based) and the Jung MCB / TaskCtrl1 download path.
+#
+# Then the incremental link path (issue #91): `bussard plan` -> `apply` ->
+# `reconstruct` against the 0705 property device (1.1.6) and the 0701
+# memory-mapped device (1.1.8). That path reads the live tables straight out of
+# the absolute 0x4000 / 0x4201 regions, diffs them against the model, and
+# rewrites ONLY the two table load-state machines — no parameter reset, no
+# restart. Every device must still answer on the bus afterwards.
 #
 # Devices (all mask 0705):
 #   1.1.5  MDT   M-0083_A-000E  memory-mapped LSM      [BUSSARD_FLASH_SYS7_LSM=memory]
@@ -146,6 +153,101 @@ flash_dev 1.1.7 de_3361-1m_V1.3_2020-05 M-0004_A-A011-13-60BC-O000A
 # from its 0701 mask-family default (no env override).
 flash_dev 1.1.8 T4940275_KNX_FIX2_Dimmaktor_V1.0_ETS4 M-0048_A-4947-10-4918
 
+# --- Incremental link change: plan -> apply -> reconstruct -------------------
+# The flash above programmed the vendor default application with NO group links.
+# This is the differential path a link edit takes in practice: read, diff, and
+# write back only the two table LSMs. Run it against both LSM realisations —
+# 1.1.6 (MDT 0705, property PID-5) and 1.1.8 (Theben 0701, memory-mapped).
+say "incremental link change"
+LINKED="$HERE/model-linked"
+mkdir -p "$LINKED"
+cat > "$LINKED/bussard.yaml" <<EOF
+connection:
+  transport: tunnel
+  gateway: $GATEWAY
+EOF
+cat > "$LINKED/groups.yaml" <<'EOF'
+project: system7-links
+groups:
+  1/0/1:
+    name: S7 Property Device
+    dpt: '1.001'
+  1/0/2:
+    name: S7 Memory Mapped Device
+    dpt: '1.001'
+EOF
+cat > "$LINKED/links.yaml" <<'EOF'
+links:
+  # 1.1.6 — MDT 0705, property (PID-5) LSM.
+  1.1.6:
+    - object: 1
+      name: Switch
+      listen:
+        - 1/0/1
+  # 1.1.8 — Theben 0701, memory-mapped 11-octet LSM records.
+  1.1.8:
+    - object: 1
+      name: Switch
+      listen:
+        - 1/0/2
+EOF
+ok "link model at $LINKED"
+
+# link_cycle <ia> <ga>: plan offers the link, apply writes and verifies it,
+# reconstruct agrees with the model, and a re-plan is a no-op.
+link_cycle() {
+  local ia=$1 ga=$2 out
+
+  out="$("$BUSSARD" plan "$ia" --dir "$LINKED" --gateway "$GATEWAY" 2>&1)"
+  if grep -q "add:.*$ga" <<<"$out"; then
+    ok "plan $ia offers + $ga"
+  else
+    bad "plan $ia did not offer $ga"
+    echo "$out" | tail -6 | sed 's/^/      /'
+    return
+  fi
+
+  out="$("$BUSSARD" apply "$ia" --dir "$LINKED" --yes --gateway "$GATEWAY" 2>&1)"
+  if grep -q "apply verified" <<<"$out"; then
+    ok "apply $ia -> verified"
+  else
+    bad "apply $ia failed"
+    echo "$out" | tail -8 | sed 's/^/      /'
+    return
+  fi
+
+  out="$("$BUSSARD" reconstruct "$ia" --dir "$LINKED" --gateway "$GATEWAY" 2>&1)"
+  if grep -q "device tables and model links agree" <<<"$out"; then
+    ok "reconstruct $ia agrees with the model"
+  else
+    bad "reconstruct $ia disagrees with the model"
+    echo "$out" | tail -8 | sed 's/^/      /'
+  fi
+
+  out="$("$BUSSARD" plan "$ia" --dir "$LINKED" --gateway "$GATEWAY" 2>&1)"
+  if grep -q "nothing to do" <<<"$out"; then
+    ok "re-plan $ia is a no-op"
+  else
+    bad "re-plan $ia is not idempotent"
+    echo "$out" | tail -6 | sed 's/^/      /'
+  fi
+}
+
+link_cycle 1.1.6 1/0/1
+link_cycle 1.1.8 1/0/2
+
+# --- Every device still answers on the bus ----------------------------------
+# A table-only apply must never brick a device: the two it rewrote and the two it
+# never touched all still answer a full management read.
+say "still responding"
+for ia in 1.1.5 1.1.6 1.1.7 1.1.8; do
+  if "$BUSSARD" reconstruct "$ia" --dir "$MODEL" --gateway "$GATEWAY" >/dev/null 2>&1; then
+    ok "$ia still answers on the bus"
+  else
+    bad "$ia stopped answering"
+  fi
+done
+
 rm -f "$SIM_LOG"
 
 # --- Verdict ----------------------------------------------------------------
@@ -153,4 +255,6 @@ kill "$SIM_PID" 2>/dev/null
 say "result"
 printf '  %d passed, %d failed\n' "$pass" "$fail"
 [[ $fail -eq 0 ]] || exit 1
-echo "  System 7 conformance loop OK: both LSM realisations + Jung MCB reached verified Loaded"
+echo "  System 7 conformance loop OK: both LSM realisations + Jung MCB reached verified"
+echo "  Loaded, and the incremental plan/apply/reconstruct path round-tripped a link"
+echo "  change on both realisations with every device still answering."
