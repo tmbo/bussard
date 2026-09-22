@@ -198,13 +198,20 @@ fn assert_no_regression(baseline: &SweepManifest, current: &SweepManifest) {
 ///
 /// The MDT AKK switch actuator (A-0007) declares TWO identical `LdCtrlRelSegment`
 /// ops for its single 1936-octet segment (`AppliesTo="full"` and `="par"`, both
-/// `LsmIdx=4 Size=1936`) inside one MergeId block. The lowering must dedupe the
-/// identical consecutive allocation, so no plan in the corpus ever emits two
-/// back-to-back `AllocateSegment` steps of the same size. (Re-allocation on an
-/// already-Loading object is legal per the KNX load-state machine — KNX Spec 3/5/2
-/// `LdCtrlRelSegment` frees any prior backing store and re-allocates — but the
-/// second allocation is redundant and is the step KNX Virtual was observed to
-/// choke on, so we drop it.)
+/// `LsmIdx=4 Size=1936`) inside one MergeId block; the ABB/Busch-Jaeger i-bus apps
+/// (issue #113) restate the same pair while *also* declaring a second relative
+/// segment on another LSM. The lowering must dedupe the restated allocation, so no
+/// plan in the corpus ever emits two back-to-back `AllocateSegment` steps for the
+/// same object. (Re-allocation on an already-Loading object is legal per the KNX
+/// load-state machine — KNX Spec 3/5/2 `LdCtrlRelSegment` frees any prior backing
+/// store and re-allocates — but the second allocation is redundant and is the step
+/// KNX Virtual was observed to choke on, so we drop it.)
+///
+/// "The same object" is the identity check: same target **and** same size. Two
+/// adjacent allocations of equal size for *different* objects (an address table
+/// and an association table both two octets, say) are two genuine segments and
+/// must pass. The failure names the step indices, the target, and the source ops
+/// that declare that allocation, so the next occurrence is diagnosable in one line.
 ///
 /// Env-gated exactly like the sweep: absent corpus skips cleanly (CI never holds
 /// copyrighted vendor data), so this is a local/opt-in regression check.
@@ -245,26 +252,93 @@ fn corpus_never_emits_duplicate_consecutive_allocations() {
                 continue;
             };
             checked_plans += 1;
-            // No two consecutive AllocateSegment steps of the same size.
-            for pair in plan.steps.windows(2) {
-                if let (
-                    FlashStep::AllocateSegment { size: a, .. },
-                    FlashStep::AllocateSegment { size: b, .. },
+            // No two consecutive AllocateSegment steps for the same object: same
+            // target AND same size is one segment allocated twice.
+            for (i, pair) in plan.steps.windows(2).enumerate() {
+                let (
+                    FlashStep::AllocateSegment {
+                        size: a,
+                        target: ta,
+                        ..
+                    },
+                    FlashStep::AllocateSegment {
+                        size: b,
+                        target: tb,
+                        ..
+                    },
                 ) = (&pair[0], &pair[1])
-                {
-                    assert_ne!(
-                        a,
-                        b,
-                        "app {} in {} lowered two identical consecutive allocations \
-                         ({a} bytes) — the dedupe regressed",
-                        app.id,
-                        file.display()
-                    );
-                }
+                else {
+                    continue;
+                };
+                assert!(
+                    a != b || ta != tb,
+                    "app {} in {} lowered the same allocation twice in a row — \
+                     steps [{i}] and [{}] are both AllocateSegment {{ size: {a}, \
+                     target: {ta:?} }}; the dedupe regressed.\n  \
+                     declared by: {}\n  \
+                     plan assembled from: the app's own load procedures \
+                     (no master template spliced)",
+                    app.id,
+                    file.display(),
+                    i + 1,
+                    rel_segment_op_origins(app, *ta, *a),
+                );
             }
         }
     }
     eprintln!("duplicate-allocation guard checked {checked_plans} executable plan(s).");
+}
+
+/// Names every `LdCtrlRelSegment` op in the application's own load procedures
+/// that could have produced an allocation of `size` octets on `target`, as
+/// `MergeId=<id> op#<n> (LsmIdx=…, Size=…, AppliesTo=…)`.
+///
+/// The guard above plans with `template_ops = None`, so the app's procedures are
+/// the only origin; the label is printed alongside so a future spliced run reads
+/// unambiguously. Listing the ops turns a bare "allocated twice" into a one-line
+/// diagnosis: two ops in one `MergeId` block is a restated allocation (dedupe at
+/// lowering), one op is a splice or collapse bug, and ops in different blocks
+/// point at the assembly order.
+fn rel_segment_op_origins(
+    app: &bussard_prod::ApplicationProgram,
+    target: Option<u32>,
+    size: u32,
+) -> String {
+    let mut hits: Vec<String> = Vec::new();
+    for proc in &app.load_procedures {
+        for (n, op) in proc.ops.iter().enumerate() {
+            let bussard_prod::LoadOp::RelSegment {
+                lsm_idx,
+                size: op_size,
+                applies_to,
+                ..
+            } = op
+            else {
+                continue;
+            };
+            // A size-less op takes the segment's declared size, so it is a
+            // candidate whatever `size` is; match the target when both name one.
+            if op_size.is_some_and(|s| s != size) {
+                continue;
+            }
+            match (target, lsm_idx) {
+                (Some(t), Some(l)) if t != *l => continue,
+                _ => {}
+            }
+            hits.push(format!(
+                "MergeId={} op#{n} (LsmIdx={lsm_idx:?}, Size={op_size:?}, AppliesTo={:?})",
+                proc.merge_id.as_deref().unwrap_or("-"),
+                applies_to.as_deref().unwrap_or("-"),
+            ));
+        }
+    }
+    if hits.is_empty() {
+        "no LdCtrlRelSegment op in the app matches — the allocation came from the \
+         master-template splice"
+            .to_string()
+    } else {
+        hits.join("; ")
+    }
 }
 
 /// Extended-memory regression guard, run against the real corpus when present.
