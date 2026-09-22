@@ -172,6 +172,11 @@ pub fn run(
             // activated device (spec §6.4): probe it through the same secure
             // layer the flash will use, or plain when no tool key was given.
             let secure = crate::secure_key::layer(&probe_key, &probe_seq);
+            // What this read-only pass learns about the device, handed to the
+            // write phase so it does not rediscover any of it (the authorize
+            // outcome, the max APDU, and — filled in from the freshness probe
+            // below — the interface-object table).
+            let mut facts = bussard_download::DeviceFacts::default();
             let (connected, result, resident) = match DeviceConnection::connect_with_secure(
                 channel,
                 target,
@@ -188,9 +193,21 @@ pub fn run(
                     // first. Tolerate a device that does not implement authorize.
                     let key = bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY);
                     let r = match dev.authorize(key).await {
-                        Ok(_) => dev.device_descriptor().await,
+                        Ok(outcome) => {
+                            // Remember the verdict: a device that does not
+                            // implement authorize must not be asked again in the
+                            // write phase, where the unanswered request costs a
+                            // full RESPONSE_TIMEOUT per connection window.
+                            facts.authorize = Some(outcome);
+                            dev.device_descriptor().await
+                        }
                         Err(err) => Err(err),
                     };
+                    // PID_MAX_APDU_LENGTH is device-stable: negotiate it here, on
+                    // the read-only connection, so the write phase seeds it
+                    // instead of spending an exchange from its tight
+                    // per-connection budget on it.
+                    facts.max_apdu = dev.l4_mut().negotiate_max_apdu().await.ok().flatten();
                     // The factory-freshness probe (issue #79): read the load
                     // state (and, on System B, the resident application id) of
                     // the objects this flash would unload and rewrite. Purely
@@ -201,16 +218,19 @@ pub fn run(
                         Ok(mask) => Some(probe_resident_state(dev.l4_mut(), *mask, None).await),
                         Err(_) => None,
                     };
+                    if let Some(state) = &resident {
+                        facts.object_table = state.object_table.clone();
+                    }
                     let _ = dev.disconnect().await;
                     (true, r, resident)
                 }
                 Err(err) => (false, Err(err), None),
             };
-            anyhow::Ok((connected, result, resident))
+            anyhow::Ok((connected, result, resident, facts))
         })?
     };
 
-    let (connected, device_mask, resident) = probe;
+    let (connected, device_mask, resident, facts) = probe;
     let device_mask = match device_mask {
         Ok(mask) => mask,
         Err(err) => {
@@ -358,7 +378,7 @@ pub fn run(
     // The same tunnel phase A used: the pre-flight's L4 session and its bus lease
     // are both released by now, so the write phase simply takes the lease again.
     let outcome = runtime.block_on(execute(
-        handle, target, source, plan_ref, options, tool_key, secure_seq,
+        handle, target, source, plan_ref, options, facts, tool_key, secure_seq,
     ));
 
     match outcome {
@@ -796,12 +816,14 @@ impl bussard_download::Connector for LeaseConnector<'_> {
 }
 
 /// Runs the on-bus flash sequence with a progress line.
+#[allow(clippy::too_many_arguments)]
 async fn execute(
     handle: &BusHandle,
     target: IndividualAddress,
     source: IndividualAddress,
     plan: &FlashPlan,
     options: bussard_download::FlashOptions,
+    facts: bussard_download::DeviceFacts,
     secure_tool_key: Option<bussard_secure::Key16>,
     secure_seq: bussard_secure::SequenceHighWater,
 ) -> Result<bussard_download::FlashOutcome, WriteError> {
@@ -817,7 +839,11 @@ async fn execute(
     };
     // Authorize the management connect with the project BCU key (or free access
     // when unset) — issue #52 finding #1.
-    let mut session = bussard_download::Session::open_with_key(connector, options.bcu_key).await?;
+    // Opened with what the read-only pre-flight already learned (the object
+    // table, the authorize verdict, the max APDU), so the write phase does not
+    // rediscover any of it.
+    let mut session =
+        bussard_download::Session::open_with_facts(connector, options.bcu_key, facts).await?;
     // The session owns the open connection; from here the flash body runs and its
     // result is captured, then the session is disconnected unconditionally below —
     // regardless of whether the flash succeeded or failed mid-procedure. `flash`
