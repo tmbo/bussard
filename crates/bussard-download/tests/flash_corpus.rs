@@ -86,7 +86,8 @@ fn corpus_flashability_sweep() {
     // Regenerate the real-corpus baseline on demand.
     if std::env::var_os("BUSSARD_UPDATE_SWEEP_MANIFEST").is_some() {
         let base = real_corpus_baseline();
-        std::fs::write(&base, manifest.to_json()).expect("write real-corpus baseline");
+        std::fs::write(&base, manifest.to_json().expect("the manifest serializes"))
+            .expect("write real-corpus baseline");
         std::fs::write(base.with_extension("md"), manifest.to_markdown())
             .expect("write real-corpus baseline md");
         eprintln!("real-corpus baseline regenerated at {}", base.display());
