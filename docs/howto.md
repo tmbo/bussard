@@ -166,6 +166,44 @@ synthesized 9 group address(es) and 5 link(s)
 
 The synthesized model is a scaffold, not ground truth, and every file carries a banner saying so: names and DPTs are placeholders (`validate` warns W011, honestly), directions are recorded as `listen:`, and non-System-B devices become stubs. Watch the bus with `monitor --dir fresh` and annotate `groups.yaml` as you identify traffic; decoding fills in as the model grows.
 
+## ... commission a whole line?
+
+Preview the line first. `plan --line` reads every device the model has on the line and prints one table:
+
+```console
+$ bussard plan --line 1.1
+
+plan line 1.1 via 192.0.2.10:3671 — 3 device(s)
+
+address   name              mask   status
+1.1.4     Jalousie Wohnen   07B0   changes: 2
+1.1.5     Alter Dimmer      0012   skipped: unsupported mask 0012 (System 1)
+1.1.6     Schaltaktor       07B0   unchanged
+```
+
+Then write it. `apply --line` asks once for the whole line, backs up and verifies each device, and keeps going when one fails:
+
+```console
+$ bussard apply --line 1.1
+apply the model's links to 3 device(s) on line 1.1 via 192.0.2.10:3671? [y/N] y
+```
+
+If the tunnel drops or you stop the run, re-run with `--resume`. It reads `knx/captures/apply-line-1.1.json` and skips the devices already done, touching only the rest. Add `--json` to either command for a summary an assistant can report.
+
+## ... label devices on the bench?
+
+Put the model's devices for a line on the bench, factory-fresh, and run:
+
+```console
+$ bussard commission --line 1.1 --labels labels.csv
+commission 2 device(s) on line 1.1 via 192.0.2.10:3671? [y/N] y
+  press the programming button on Blind actuator (JAL-0810.03)
+  assigned 15.15.255 → 1.1.7
+1.1.7  Blind actuator  MDT JAL-0810.03  Ground floor / Living room
+```
+
+For each device that does not answer yet, `commission` asks for its programming button, checks the pressed device's order number against the model, and only then writes the address. Pressing the wrong module stops that device with both order numbers named; the run carries on with the next one. Each commissioned device prints a label line and appends `address;name;order_number;floor;room` to `labels.csv` for the label printer. Add `--flash` and `--apply` to program each device in the same pass.
+
 ## ... flash a factory-fresh device?
 
 A factory-fresh device needs its application program downloaded once before links take effect. `flash` does that first download straight from the `.knxprod`:
