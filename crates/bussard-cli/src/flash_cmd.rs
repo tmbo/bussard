@@ -618,12 +618,37 @@ fn build_table_images(
 
     // obj3 (group-object table).
     let linked: std::collections::BTreeSet<u16> = links.iter().map(|l| l.object).collect();
+    // The flags ETS writes for a linked object are the project's, not the
+    // product's defaults: the model's `com_objects` carry them (1.1.46 in the
+    // campaign: object 7 is CRT in the model and ETS wrote T R C, the product
+    // default lacks T). Applied to every descriptor set below.
+    let model_flags: std::collections::BTreeMap<u16, bussard_model::Flags> = model
+        .and_then(|m| m.devices.get(&target))
+        .map(|loaded| {
+            loaded
+                .device
+                .com_objects
+                .iter()
+                .map(|(number, co)| (*number, co.flags))
+                .collect()
+        })
+        .unwrap_or_default();
+    let with_model_flags = |mut descriptors: Vec<GroupObjectDescriptor>| {
+        for d in &mut descriptors {
+            if linked.contains(&d.asap) {
+                if let Some(flags) = model_flags.get(&d.asap) {
+                    d.flags = *flags;
+                }
+            }
+        }
+        descriptors
+    };
     let obj3 = if !app.module_instances.is_empty() && app.channel_membership.is_some() {
         // Module-based application: instantiate the com-objects across channels.
         // Each channel is linked when any of the com-objects it carries appears
         // in the model links; `<choose>` selectors fall back to their parameter
         // defaults (the vendor-default channel objects on a bare flash).
-        let descriptors = build_module_obj3_descriptors(app, &linked);
+        let descriptors = with_model_flags(build_module_obj3_descriptors(app, &linked));
         compute_group_object_table(&descriptors)
     } else {
         // Non-module application: a flat per-com-object table. With links, ETS
@@ -644,7 +669,8 @@ fn build_table_images(
                 .collect();
             compute_group_object_table(&descriptors)
         } else {
-            let descriptors = descriptors_for_linked_objects(&com_objects, &linked);
+            let descriptors =
+                with_model_flags(descriptors_for_linked_objects(&com_objects, &linked));
             compute_group_object_table(&descriptors)
         }
     };
