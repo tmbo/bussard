@@ -94,7 +94,13 @@ impl DynamicConfig {
         module: Option<usize>,
         param_ref_id: &str,
     ) -> Option<String> {
-        value_of(app, &self.values, self.instance_id(module), param_ref_id)
+        value_of(
+            app,
+            &self.values,
+            self.instance_id(module),
+            self.module_args(module),
+            param_ref_id,
+        )
     }
 
     /// Whether the value of `param_ref_id` in `module` came from a caller
@@ -165,10 +171,16 @@ pub fn evaluate_dynamic(
         walk.run(app, &values, &app.dynamic, None, 0);
         let mut changed = false;
         for assign in &walk.assigns {
-            let instance = walk.instance_id(assign.module).to_string();
+            let instance = walk.instance_id(assign.target_module).to_string();
             let new = match (&assign.value, &assign.source) {
                 (Some(v), _) => Some(v.clone()),
-                (None, Some(src)) => value_of(app, &values, &instance, src),
+                (None, Some(src)) => value_of(
+                    app,
+                    &values,
+                    walk.instance_id(assign.source_module),
+                    walk.module_args(assign.source_module),
+                    src,
+                ),
                 (None, None) => None,
             };
             let Some(new) = new else {
@@ -195,11 +207,11 @@ pub fn evaluate_dynamic(
     let mut parameters = Vec::new();
     let assigned = walk.assigns.iter().flat_map(|a| {
         std::iter::once(ActiveParameter {
-            module: a.module,
+            module: a.target_module,
             param_ref_id: a.target.clone(),
         })
         .chain(a.source.iter().map(|s| ActiveParameter {
-            module: a.module,
+            module: a.source_module,
             param_ref_id: s.clone(),
         }))
     });
@@ -256,11 +268,18 @@ fn parameter_id<'a>(app: &'a ApplicationProgram, param_ref_id: &str) -> Option<&
         .map(|r| r.ref_id.as_str())
 }
 
-/// The effective value of an app-relative `ParameterRef` in one instance.
+/// The effective value of an app-relative `ParameterRef` in one instance: an
+/// override or `<Assign>` result, else the ref's `Value`, else the parameter's
+/// `Value`. A default of a parameter with a `BaseValue` argument has that
+/// argument's value in the instance (`args`) added to it, as ETS does (issue
+/// #126: the Jung 230021SU input module's "internal group communication"
+/// parameter is `Value="0" BaseValue="MD-1_A-19"`, 4 in one instance and 5 in
+/// another, and its `<choose>` selects the instance's App-ID and debounce refs).
 fn value_of(
     app: &ApplicationProgram,
     values: &HashMap<(String, String), String>,
     instance: &str,
+    args: Option<&HashMap<String, i64>>,
     param_ref_id: &str,
 ) -> Option<String> {
     let pref = app
@@ -269,11 +288,29 @@ fn value_of(
     if let Some(v) = values.get(&(instance.to_string(), param_ref_id.to_string())) {
         return Some(v.clone());
     }
-    pref.value.clone().or_else(|| {
-        app.parameters
-            .get(&pref.ref_id)
-            .and_then(|p| p.default.clone())
-    })
+    let param = app.parameters.get(&pref.ref_id);
+    let default = pref
+        .value
+        .clone()
+        .or_else(|| param.and_then(|p| p.default.clone()));
+    let base = param
+        .and_then(|p| p.base_value.as_deref())
+        .map(|arg| arg.strip_prefix(&format!("{}_", app.id)).unwrap_or(arg))
+        .and_then(|arg| args?.get(arg).copied());
+    match base {
+        Some(base) => {
+            let own = match default.as_deref().map(str::trim) {
+                None | Some("") => 0,
+                Some(v) => match v.parse::<i64>() {
+                    Ok(n) => n,
+                    // A non-integer default takes no base.
+                    Err(_) => return default,
+                },
+            };
+            Some(own.saturating_add(base).to_string())
+        }
+        None => default,
+    }
 }
 
 /// Whether a `<when>` test (other than `default`) matches a value.
@@ -300,8 +337,11 @@ fn when_matches(test: &WhenTest, value: Option<f64>) -> bool {
 /// A reached `<Assign>`.
 #[derive(Debug, Clone)]
 struct ReachedAssign {
-    module: Option<usize>,
+    /// The scope of `target` (see [`Walk::scope`]).
+    target_module: Option<usize>,
     target: String,
+    /// The scope of `source`.
+    source_module: Option<usize>,
     source: Option<String>,
     value: Option<String>,
 }
@@ -316,11 +356,36 @@ struct Walk {
 }
 
 impl Walk {
+    fn module_args(&self, module: Option<usize>) -> Option<&HashMap<String, i64>> {
+        module.and_then(|i| self.modules.get(i)).map(|m| &m.args)
+    }
+
     fn instance_id(&self, module: Option<usize>) -> &str {
         module
             .and_then(|i| self.modules.get(i))
             .map(|m| m.id.as_str())
             .unwrap_or("")
+    }
+
+    /// The scope a ref reached inside `module` belongs to: the module instance
+    /// for a ref of its own `ModuleDef` (`MD-3_P-3_R-3` inside an `MD-3`
+    /// instance), the application for an application ref (`P-15_R-16`).
+    ///
+    /// A module's Dynamic body may test and assign application parameters:
+    /// the Jung 230021SU blind module chooses on the application's "safety
+    /// release" `P-15_R-16` and assigns the application's alarm parameters to
+    /// its own. Those resolve to the application's values, never to a
+    /// per-instance copy (issue #126).
+    fn scope(&self, module: Option<usize>, ref_id: &str) -> Option<usize> {
+        let m = self.modules.get(module?)?;
+        let own = ref_id
+            .strip_prefix(m.module_def.as_str())
+            .is_some_and(|rest| rest.starts_with('_'));
+        if own || ref_id.starts_with("MD-") {
+            module
+        } else {
+            None
+        }
     }
 
     fn run(
@@ -334,19 +399,26 @@ impl Walk {
         for node in nodes {
             match node {
                 DynamicNode::ParameterRefRef(r) => self.parameters.push(ActiveParameter {
-                    module,
+                    module: self.scope(module, r),
                     param_ref_id: r.clone(),
                 }),
                 DynamicNode::ComObjectRefRef(r) => self.com_objects.push(ActiveComObject {
-                    module,
+                    module: self.scope(module, r),
                     com_object_ref_id: r.clone(),
                 }),
                 DynamicNode::Choose {
                     param_ref_id,
                     whens,
                 } => {
-                    let value = value_of(app, values, self.instance_id(module), param_ref_id)
-                        .and_then(|v| v.trim().parse::<f64>().ok());
+                    let scope = self.scope(module, param_ref_id);
+                    let value = value_of(
+                        app,
+                        values,
+                        self.instance_id(scope),
+                        self.module_args(scope),
+                        param_ref_id,
+                    )
+                    .and_then(|v| v.trim().parse::<f64>().ok());
                     let hits: Vec<_> = whens
                         .iter()
                         .filter(|w| when_matches(&w.test, value))
@@ -387,8 +459,9 @@ impl Walk {
                     source,
                     value,
                 } => self.assigns.push(ReachedAssign {
-                    module,
+                    target_module: self.scope(module, target),
                     target: target.clone(),
+                    source_module: source.as_deref().and_then(|s| self.scope(module, s)),
                     source: source.clone(),
                     value: value.clone(),
                 }),
@@ -524,6 +597,109 @@ mod tests {
                 .any(|p| p.param_ref_id == "MD-1_P-2_R-2")
         );
         assert_eq!(cfg.unresolved_overrides, ["P-99_R-1"]);
+        Ok(())
+    }
+
+    /// The Jung 230021SU shape (issue #126): the module's `intcomm` default
+    /// is its `BaseValue` argument, and its switching object is shown only
+    /// while that value is 0; the module body shows and tests the
+    /// application's `release` and assigns from the application's `alarm`.
+    const MODULE_APP_REFS_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/20">
+     <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="t">
+      <Static>
+       <Parameters>
+        <Parameter Id="A_P-1" Name="release" Value="0" />
+        <Parameter Id="A_P-2" Name="alarm" Value="0" />
+       </Parameters>
+       <ParameterRefs>
+        <ParameterRef Id="A_P-1_R-1" RefId="A_P-1" />
+        <ParameterRef Id="A_P-2_R-2" RefId="A_P-2" />
+       </ParameterRefs>
+      </Static>
+      <ModuleDefs>
+       <ModuleDef Id="A_MD-1" Name="m">
+        <Arguments><Argument Id="A_MD-1_A-1" Name="obj" /><Argument Id="A_MD-1_A-2" Name="intcomm" /></Arguments>
+        <Static>
+         <Parameters>
+          <Parameter Id="A_MD-1_P-1" Name="intcomm" Value="0" BaseValue="A_MD-1_A-2" />
+          <Parameter Id="A_MD-1_P-2" Name="copy" Value="0" />
+         </Parameters>
+         <ParameterRefs>
+          <ParameterRef Id="A_MD-1_P-1_R-1" RefId="A_MD-1_P-1" />
+          <ParameterRef Id="A_MD-1_P-2_R-2" RefId="A_MD-1_P-2" />
+         </ParameterRefs>
+         <ComObjects><ComObject Id="A_MD-1_O-1" Number="0" BaseNumber="A_MD-1_A-1" /></ComObjects>
+         <ComObjectRefs><ComObjectRef Id="A_MD-1_O-1_R-1" RefId="A_MD-1_O-1" /></ComObjectRefs>
+        </Static>
+        <Dynamic>
+         <ParameterBlock Id="A_MD-1_PB-1">
+          <choose ParamRefId="A_MD-1_P-1_R-1">
+           <when test="0"><ComObjectRefRef RefId="A_MD-1_O-1_R-1" /></when>
+          </choose>
+          <ParameterRefRef RefId="A_P-1_R-1" />
+          <choose ParamRefId="A_P-1_R-1">
+           <when test="1"><Assign TargetParamRefRef="A_MD-1_P-2_R-2" SourceParamRefRef="A_P-2_R-2" /></when>
+          </choose>
+         </ParameterBlock>
+        </Dynamic>
+       </ModuleDef>
+      </ModuleDefs>
+      <Dynamic>
+       <Module Id="A_MD-1_M-1" RefId="A_MD-1"><NumericArg RefId="A_MD-1_A-1" Value="10" /><NumericArg RefId="A_MD-1_A-2" Value="0" /></Module>
+       <Module Id="A_MD-1_M-2" RefId="A_MD-1"><NumericArg RefId="A_MD-1_A-1" Value="20" /><NumericArg RefId="A_MD-1_A-2" Value="4" /></Module>
+      </Dynamic>
+     </ApplicationProgram></KNX>"#;
+
+    #[test]
+    fn test_evaluate_dynamic_base_value_takes_the_instance_argument()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let app = parse_application_program_str("A", MODULE_APP_REFS_XML)?;
+        let cfg = evaluate_dynamic(&app, &BTreeMap::new());
+        assert_eq!(cfg.modules.len(), 2);
+        assert_eq!(
+            cfg.value(&app, Some(0), "MD-1_P-1_R-1").as_deref(),
+            Some("0")
+        );
+        assert_eq!(
+            cfg.value(&app, Some(1), "MD-1_P-1_R-1").as_deref(),
+            Some("4")
+        );
+        // Only the instance whose argument is 0 shows its switching object.
+        let cos: Vec<_> = cfg
+            .com_objects
+            .iter()
+            .map(|c| (c.module, c.com_object_ref_id.as_str()))
+            .collect();
+        assert_eq!(cos, [(Some(0), "MD-1_O-1_R-1")]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_evaluate_dynamic_application_refs_in_a_module_resolve_to_the_application()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let app = parse_application_program_str("A", MODULE_APP_REFS_XML)?;
+        let mut overrides = BTreeMap::new();
+        overrides.insert("P-1_R-1".to_string(), "1".to_string());
+        overrides.insert("P-2_R-2".to_string(), "3".to_string());
+        let cfg = evaluate_dynamic(&app, &overrides);
+        // The application's override steers the module's choose, and the
+        // assign copies the application's value into each instance.
+        assert_eq!(
+            cfg.value(&app, Some(0), "MD-1_P-2_R-2").as_deref(),
+            Some("3")
+        );
+        assert_eq!(
+            cfg.value(&app, Some(1), "MD-1_P-2_R-2").as_deref(),
+            Some("3")
+        );
+        // Application refs reached inside the module are the application's.
+        let app_level: Vec<_> = cfg
+            .parameters
+            .iter()
+            .filter(|p| !p.param_ref_id.starts_with("MD-"))
+            .map(|p| (p.module, p.param_ref_id.as_str()))
+            .collect();
+        assert_eq!(app_level, [(None, "P-1_R-1"), (None, "P-2_R-2")]);
         Ok(())
     }
 
