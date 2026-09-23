@@ -309,6 +309,28 @@ image, other = device-owned, leave untouched. Under the mask, bussard streams
 only owned bytes (still in 12-octet chunks by address run). The sim, on receiving
 a write into a masked region, must accept the owned bytes and preserve the rest.
 
+**Amendment (issue #133): read-compare-write on masks without `VerifyMode`.**
+`CONFIRMED` against `meteodata-1-1-202-new.pcapng` (Theben Meteodata 140 S,
+1.1.202, mask 0701, full ETS download after a device reset). ETS does not stream
+the 0701 segments blind: it reads the device memory back in the chunk size it
+would write (12 octets), compares each chunk with its image, and writes only the
+chunks that differ, then reads a written chunk back. The capture holds 194
+12-octet `A_Memory_Read`s across `0x4000`, `0x4400`, `0x4800` and `0x4C00`, and
+only 21 writes: the load-state records at `0x0104` and single octets at `0x4000`
+and `0x4800`. The switch is the Hawk `VerifyMode` feature in `knx_master.xml`:
+MV-0705 declares `VerifyMode=1` (and `DownloadStamp=1`) and is written blind and
+verified through the MCB entries; MV-0700 and MV-0701 declare none.
+
+bussard follows the same rule. `Sys7Profile::verify_mode` comes from the Hawk
+block when the planner has one, else from the mask default (0700/0701 none,
+0705 `1`). With no verify mode, each AbsSegment image is walked in negotiated
+memory chunks: read the owned span of the chunk, skip it when it matches, else
+write its owned runs and read it back (a mismatch fails the flash). Because every
+octet was compared, those segments get no post-restart spot check. The plan text
+reads `stream segment (read-compare, N octets)`, and `plan.json` marks each
+segment image `write_mode: read-compare` (or `blind`). A re-flash of an unchanged
+device writes nothing but the load-state records.
+
 ### 4.3 TaskSegment — per-LSM finalize
 
 `TaskSegment{lsm_idx, address}` `[corpus: 47/49]` writes a task/segment

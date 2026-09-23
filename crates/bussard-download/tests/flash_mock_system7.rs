@@ -1222,6 +1222,185 @@ async fn flash_system7_memory_mapped_post_restart_lsm5_reaches_loaded()
     Ok(())
 }
 
+// --- Read-compare-write on a mask without VerifyMode (issue #133) ----------
+//
+// ETS streams a Theben 0701 segment by reading each chunk back first and writing
+// only the chunks that differ (`meteodata-1-1-202-new.pcapng`: 194 12-octet
+// reads, a handful of writes). A 0705 mask declares `VerifyMode=1` and stays a
+// blind write.
+
+/// A Theben-style 0701 app: a masked 4-octet table segment at `0x4000` (octet 2
+/// device-owned) on LSM 1 and a 40-octet parameter segment at `0x4400` (octets
+/// `01..=28`) on LSM 3, spanning several memory chunks.
+fn theben_read_compare_app(mask_version: &str) -> ApplicationProgram {
+    let xml = format!(
+        r#"<KNX xmlns="http://knx.org/xml/project/23">
+     <ApplicationProgram Id="M-48_A-4948" ApplicationNumber="18760" ApplicationVersion="16"
+        MaskVersion="{mask_version}" Name="read-compare" LoadProcedureStyle="ProductProcedure">
+      <Static>
+       <Code>
+        <AbsoluteSegment Id="M-48_A-4948_AS-1" Size="4" Address="16384"><Data>AAECAw==</Data><Mask>//8A/w==</Mask></AbsoluteSegment>
+        <AbsoluteSegment Id="M-48_A-4948_AS-2" Size="40" Address="17408"><Data>AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyAhIiMkJSYnKA==</Data></AbsoluteSegment>
+       </Code>
+       <LoadProcedures>
+        <LoadProcedure>
+         <LdCtrlConnect />
+         <LdCtrlUnload LsmIdx="1" />
+         <LdCtrlUnload LsmIdx="3" />
+         <LdCtrlLoad LsmIdx="1" />
+         <LdCtrlAbsSegment LsmIdx="1" Address="16384" Size="4" />
+         <LdCtrlTaskSegment LsmIdx="1" Address="16384" />
+         <LdCtrlLoadCompleted LsmIdx="1" />
+         <LdCtrlLoad LsmIdx="3" />
+         <LdCtrlAbsSegment LsmIdx="3" Address="17408" Size="40" />
+         <LdCtrlTaskSegment LsmIdx="3" Address="17408" />
+         <LdCtrlLoadCompleted LsmIdx="3" />
+         <LdCtrlRestart />
+         <LdCtrlDisconnect />
+        </LoadProcedure>
+       </LoadProcedures>
+      </Static>
+     </ApplicationProgram></KNX>"#
+    );
+    parse_application_program("M-48_A-4948", xml.as_bytes()).expect("parse read-compare app")
+}
+
+/// Seeds the mock's memory with every image octet the plan owns, as if an
+/// earlier download had already written this exact configuration.
+fn seed_planned_images(state: &Shared, plan: &bussard_download::FlashPlan) {
+    let mut s = state.lock().unwrap();
+    for step in &plan.steps {
+        if let bussard_download::FlashStep::Sys7AbsSegment {
+            address,
+            image: Some(img),
+            ..
+        } = step
+        {
+            let bytes = plan.image_bytes(&img.segment_id).unwrap_or_default();
+            let mask = plan.segment_mask(&img.segment_id);
+            for (i, &b) in bytes.iter().enumerate() {
+                if mask.is_none_or(|m| m.get(i).copied() == Some(0xFF)) {
+                    s.memory.insert(*address as u16 + i as u16, b);
+                }
+            }
+        }
+    }
+}
+
+/// Plans the read-compare app for `mask`, runs the flash against a memory-mapped
+/// mock whose memory `prepare` sets up, and returns the device state.
+async fn run_read_compare_flash(
+    mask: u16,
+    prepare: impl FnOnce(&Shared, &bussard_download::FlashPlan),
+) -> Result<(Shared, bussard_download::FlashPlan), Box<dyn std::error::Error>> {
+    set_sys7_lsm_env(LsmMode::MemoryMapped);
+    let (mut bus, state, handle) = setup(LsmMode::MemoryMapped, Fault::None).await;
+    let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
+    let app = theben_read_compare_app(&format!("MV-{mask:04X}"));
+    let plan = plan_flash(
+        &app,
+        "1.1.99",
+        mask,
+        &no_overrides(),
+        &std::collections::BTreeMap::new(),
+        None,
+        &std::collections::BTreeMap::new(),
+    )?;
+    prepare(&state, &plan);
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_p| {},
+    )
+    .await?;
+    assert!(outcome.ok(), "flash should reach Loaded: {outcome:?}");
+    handle.abort();
+    let _ = session.into_disconnect().await;
+    Ok((state, plan))
+}
+
+#[tokio::test]
+async fn test_flash_sys7_read_compare_unchanged_device_writes_no_segment()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (state, plan) = run_read_compare_flash(0x0701, seed_planned_images).await?;
+    assert!(plan.sys7_read_compare(), "0701 declares no VerifyMode");
+    assert!(
+        bussard_download::trace(&plan)
+            .iter()
+            .any(|l| l.contains("stream segment (read-compare, 40 octets)")),
+        "the plan text names the read-compare stream"
+    );
+    let s = state.lock().unwrap();
+    assert_eq!(
+        s.memory_writes_seen, 0,
+        "an unchanged device gets no segment write, only LSM records"
+    );
+    assert!(
+        !s.memory.contains_key(&0x4002),
+        "masked octet never touched"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_sys7_read_compare_one_differing_octet_writes_one_chunk()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (state, _plan) = run_read_compare_flash(0x0701, |state, plan| {
+        seed_planned_images(state, plan);
+        // One stale octet in the middle of the 40-octet parameter segment.
+        state.lock().unwrap().memory.insert(0x4414, 0xEE);
+    })
+    .await?;
+    let s = state.lock().unwrap();
+    assert_eq!(
+        s.memory_writes_seen, 1,
+        "exactly the differing chunk is written"
+    );
+    assert_eq!(
+        s.memory.get(&0x4414).copied(),
+        Some(0x15),
+        "stale octet fixed"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_sys7_read_compare_fresh_device_writes_owned_octets()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (state, _plan) = run_read_compare_flash(0x0701, |_, _| {}).await?;
+    let s = state.lock().unwrap();
+    assert!(s.memory_writes_seen >= 1, "differing chunks are written");
+    for i in 0..40u16 {
+        assert_eq!(s.memory.get(&(0x4400 + i)).copied(), Some(i as u8 + 1));
+    }
+    assert_eq!(s.memory.get(&0x4001).copied(), Some(0x01));
+    assert_eq!(s.memory.get(&0x4003).copied(), Some(0x03));
+    assert!(
+        !s.memory.contains_key(&0x4002),
+        "masked octet never written"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_sys7_verify_mode_mask_writes_blind() -> Result<(), Box<dyn std::error::Error>> {
+    // 0705 declares VerifyMode=1: the whole image is written even when the
+    // device already holds it.
+    let (state, plan) = run_read_compare_flash(0x0705, seed_planned_images).await?;
+    assert!(!plan.sys7_read_compare(), "0705 declares VerifyMode=1");
+    let s = state.lock().unwrap();
+    assert!(
+        s.memory_writes_seen >= 3,
+        "a blind write streams every segment: {}",
+        s.memory_writes_seen
+    );
+    Ok(())
+}
+
 // --- Pre-flight factory-freshness probe (issue #79) -------------------------
 //
 // System 7's load-state machines are read through the same `LsmAccess` seam the

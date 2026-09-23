@@ -9,7 +9,8 @@
 //!   every step that streams memory its absolute address where the plan knows
 //!   it (System 7 AbsSegments, `WriteMem`), else the target object and offset
 //!   (System B `WriteRelMem`: the device chooses the segment base), plus the
-//!   segment id, length and SHA-256; the allocation records; and the table
+//!   segment id, length and SHA-256 (and, for a System 7 segment, its
+//!   `write_mode`: `read-compare` or `blind`, issue #133); the allocation records; and the table
 //!   images with their addresses;
 //! - one `.bin` per streamed image with the exact bytes the executor sends
 //!   (`0x<addr>.bin` for an absolute write, `obj<N>_<segment>.bin` for a
@@ -196,6 +197,14 @@ pub fn write_dump(
                         None,
                         None,
                     )?;
+                    // How the executor streams it: `read-compare` reads each
+                    // chunk and writes only differing ones (a mask without a
+                    // Hawk VerifyMode, issue #133), `blind` writes it whole.
+                    record["image"]["write_mode"] = json!(if plan.sys7_read_compare() {
+                        "read-compare"
+                    } else {
+                        "blind"
+                    });
                     if image.kind == bussard_download::ImageKind::Table {
                         table_steps.insert(*lsm, (n, Some(*address)));
                     }
@@ -261,6 +270,11 @@ pub fn write_dump(
         "device": device,
         "device_mask": format!("{device_mask:04X}"),
         "system": if plan.is_sys7() { "7" } else { "B" },
+        "sys7_segment_write": if plan.is_sys7() {
+            json!(if plan.sys7_read_compare() { "read-compare" } else { "blind" })
+        } else {
+            Value::Null
+        },
         "application": {
             "id": plan.identity.id,
             "name": plan.identity.name,
