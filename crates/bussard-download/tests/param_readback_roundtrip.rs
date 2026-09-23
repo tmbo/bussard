@@ -236,8 +236,8 @@ fn round_trip(
 }
 
 /// The keys of `values` that land in memory, that the configuration shows as
-/// the user's (no `<Assign>` sets them) and whose value is not the vendor
-/// default: what `non_default` must list.
+/// the user's (no `<Assign>` sets them, not `Access="None"`) and whose value
+/// is not the vendor default: what `non_default` must list.
 fn memory_keys(app: &ApplicationProgram, values: &BTreeMap<String, String>) -> BTreeSet<String> {
     let config = evaluate_dynamic(app, values);
     let shown: BTreeSet<(Option<String>, String)> = config
@@ -282,8 +282,16 @@ fn memory_keys(app: &ApplicationProgram, values: &BTreeMap<String, String>) -> B
             };
             let differs =
                 canonical(values.get(*key).map(String::as_str)) != canonical(default.as_deref());
+            let ref_access = app
+                .parameter_refs
+                .get(&format!("{}_{param_ref}", app.id))
+                .and_then(|r| r.access.as_deref());
+            let device_managed = ref_access
+                .or(param.access.as_deref())
+                .is_some_and(|a| a.eq_ignore_ascii_case("none"));
             placed
                 && differs
+                && !device_managed
                 && (app.dynamic.is_empty()
                     || shown.contains(&(instance.clone(), param_ref.clone())))
                 && !config.is_assigned(module, &param_ref)
