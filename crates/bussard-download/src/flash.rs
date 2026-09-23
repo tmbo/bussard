@@ -2326,8 +2326,9 @@ fn plan_flash_sys7(
         return Err(PlanError::NoProcedure(app.id.clone()));
     }
 
-    // Resolve parameter images up front (the 0x4400 param segments carry <Data>
-    // already, but a module-based app may still compute per-instance images).
+    // Resolve parameter images up front: each parameter segment's <Data> is only
+    // the vendor's template, and the image streamed for it is that template with
+    // the parameters laid over it.
     let param_images = bussard_prod::compute_parameter_image(app, overrides, base_offsets)
         .map_err(|e| PlanError::UnresolvableImage {
             step: 0,
@@ -2456,11 +2457,21 @@ fn plan_flash_sys7(
                         len: table.image.len(),
                     })
                 } else {
-                    // Bind the segment's <Data>/<Mask>. A segment with no <Data> is
-                    // an allocate-only record (e.g. the 0x0700 RAM region) — no
-                    // stream.
+                    // Bind the segment's parameter image: its <Data> with every
+                    // parameter's resolved value (vendor default, ParameterRef
+                    // override, model override) laid over it. Streaming the raw
+                    // <Data> template instead wrote the vendor's placeholder
+                    // bytes, which are not the parameter defaults, and dropped
+                    // every model override (issue #117: the 3361-1MWW and 3181
+                    // parameter segments). A segment with no <Data> that no
+                    // parameter targets is an allocate-only record (e.g. the
+                    // 0x0700 RAM region), with no stream.
                     seg_by_addr.get(&addr).and_then(|seg| {
-                        seg.data.as_ref().map(|data| {
+                        let bytes = param_images
+                            .get(&seg.id)
+                            .filter(|b| !b.is_empty())
+                            .or(seg.data.as_ref());
+                        bytes.map(|data| {
                             images.insert(seg.id.clone(), data.clone());
                             if let Some(mask) = &seg.mask {
                                 segment_masks.insert(seg.id.clone(), mask.clone());
@@ -5681,6 +5692,66 @@ mod tests {
             }
         )));
         assert!(matches!(plan.steps.last(), Some(FlashStep::Restart)));
+    }
+
+    /// The System 7 parameter segment streams its `<Data>` with the
+    /// parameters laid over it, not the raw template (issue #117): the Jung
+    /// 3361-1MWW and 3181 segments went out as the vendor placeholder bytes,
+    /// with every model override dropped.
+    #[test]
+    fn test_plan_flash_sys7_streams_the_parameter_image() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/11">
+         <ApplicationProgram Id="M-83_A-F" ApplicationNumber="14" ApplicationVersion="35"
+            MaskVersion="MV-0705" Name="FabS7P" LoadProcedureStyle="ProductProcedure">
+          <Static>
+           <Code>
+            <AbsoluteSegment Id="M-83_A-F_AS-3" Size="3" Address="17408"><Data>BAUG</Data></AbsoluteSegment>
+           </Code>
+           <ParameterTypes>
+            <ParameterType Id="M-83_A-F_PT-8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+           </ParameterTypes>
+           <Parameters>
+            <Parameter Id="M-83_A-F_P-1" Name="delay" ParameterType="M-83_A-F_PT-8" Value="17"><Memory CodeSegment="M-83_A-F_AS-3" Offset="0" BitOffset="0" /></Parameter>
+            <Parameter Id="M-83_A-F_P-2" Name="level" ParameterType="M-83_A-F_PT-8" Value="1"><Memory CodeSegment="M-83_A-F_AS-3" Offset="1" BitOffset="0" /></Parameter>
+           </Parameters>
+           <ParameterRefs>
+            <ParameterRef Id="M-83_A-F_P-1_R-1" RefId="M-83_A-F_P-1" />
+            <ParameterRef Id="M-83_A-F_P-2_R-2" RefId="M-83_A-F_P-2" />
+           </ParameterRefs>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlConnect />
+             <LdCtrlUnload LsmIdx="3" />
+             <LdCtrlLoad LsmIdx="3" />
+             <LdCtrlAbsSegment LsmIdx="3" Address="17408" Size="3" />
+             <LdCtrlLoadCompleted LsmIdx="3" />
+             <LdCtrlRestart />
+             <LdCtrlDisconnect />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+          <Dynamic><ChannelIndependentBlock><ParameterBlock Id="M-83_A-F_PB-1">
+           <ParameterRefRef RefId="M-83_A-F_P-1_R-1" />
+           <ParameterRefRef RefId="M-83_A-F_P-2_R-2" />
+          </ParameterBlock></ChannelIndependentBlock></Dynamic>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-83_A-F", xml.as_bytes())?;
+        let overrides: BTreeMap<String, String> =
+            [("P-2_R-2".to_string(), "200".to_string())].into();
+        let plan = plan_flash(
+            &app,
+            "1.1.99",
+            0x0705,
+            &overrides,
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?;
+        // Byte 0: P-1's default 17 over the template's 04. Byte 1: the
+        // override. Byte 2: no parameter, the template's 06.
+        assert_eq!(plan.images.get("M-83_A-F_AS-3"), Some(&vec![17, 200, 6]));
+        Ok(())
     }
 
     #[test]
