@@ -24,6 +24,8 @@ const KEYRING_PASSWORD_ENV: &str = "BUSSARD_KEYRING_PASSWORD";
 /// struct can be freely serialized (unlike the key-bearing `Keyring`).
 #[derive(Debug, serde::Serialize)]
 struct KeyringSummary {
+    /// The ETS project the keyring was exported from.
+    project: String,
     /// The keyring's `Created` timestamp.
     created: String,
     /// Whether a backbone (routing) key is present.
@@ -51,9 +53,10 @@ pub fn run(file: &Path, json: bool) -> anyhow::Result<ExitCode> {
         .with_context(|| format!("reading keyring {}", file.display()))?;
 
     let keyring = bussard_project::parse_keyring(&xml, &password)
-        .with_context(|| format!("parsing keyring {}", file.display()))?;
+        .with_context(|| format!("loading keyring {}", file.display()))?;
 
     let summary = KeyringSummary {
+        project: keyring.project.clone(),
         created: keyring.created.clone(),
         has_backbone_key: keyring.backbone.is_some(),
         devices: keyring.devices.iter().map(|d| d.ia.to_string()).collect(),
@@ -75,7 +78,7 @@ pub fn run(file: &Path, json: bool) -> anyhow::Result<ExitCode> {
 
 /// Prints the human-readable keyring summary (no key material).
 fn print_text(s: &KeyringSummary) {
-    println!("keyring created {}", s.created);
+    println!("keyring for project {:?}, created {}", s.project, s.created);
     println!(
         "  backbone key: {}",
         if s.has_backbone_key {
