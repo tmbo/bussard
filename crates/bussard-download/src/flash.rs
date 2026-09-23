@@ -662,21 +662,49 @@ const MAX_WRITE_SPAN: u64 = 1024 * 1024;
 /// [`bussard_mgmt::select_extended_memory`]).
 const MAX_MEMORY_END: u64 = 0x100_0000;
 
-/// How long to wait for a device to come back after a master-reset `A_Restart`
-/// before attempting to reconnect. A real ETS→KNX-Virtual capture showed ~6.5s of
-/// silence while the device rebooted; this is deliberately generous so a slower
-/// real device still comes back in time. The wait is a single bounded sleep — not
-/// a poll loop — because the device is unreachable while it reboots.
+/// The **upper bound** on how long to wait for a device to come back after a
+/// restart (a master-reset `A_Restart` or the terminal one) before giving up on
+/// the reboot. A real ETS→KNX-Virtual capture showed ~6.5s of silence while the
+/// device rebooted; real devices vary, so the bound is deliberately generous.
+///
+/// It is a *bound*, not a fixed sleep: after
+/// [`REBOOT_PROBE_MIN_WAIT`] of silence the session polls the device with a cheap
+/// liveness probe every [`REBOOT_PROBE_INTERVAL`] (see
+/// [`Session::reconnect_after_reboot`]), so a device that is back after 6.5 s is
+/// picked up then instead of costing the full bound. Only a device that never
+/// answers pays it.
 const MASTER_RESET_REBOOT_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// How long the post-restart poll stays quiet before its first probe.
+///
+/// A device that is still shutting down can answer for a few hundred
+/// milliseconds after it acknowledged the restart; probing immediately would
+/// mistake that dying stack for a rebooted one and resume the procedure against
+/// a device that is about to go away. Waiting a short minimum first makes the
+/// first probe meaningful. Capped by the overall bound (see
+/// [`reboot_wait_bound`]) so a test that shrinks the bound stays fast.
+const REBOOT_PROBE_MIN_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// How long to wait between post-restart liveness probes.
+const REBOOT_PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The tight L4 budget one post-restart liveness probe runs on: a device that is
+/// still rebooting must be ruled out in a fraction of a second, not in the
+/// standard 3 s ACK wait times four attempts.
+const REBOOT_PROBE_TIMEOUTS: bussard_mgmt::Timeouts = bussard_mgmt::Timeouts {
+    ack_timeout: std::time::Duration::from_millis(400),
+    max_repetitions: 0,
+    response_timeout: std::time::Duration::from_millis(400),
+};
+
 /// Environment variable that overrides [`MASTER_RESET_REBOOT_WAIT`] with a
-/// millisecond value. Set by the mock-device master-reset test so the reboot wait
-/// does not stall the test; unset in normal use, so the full generous wait
-/// applies. Behaviour is otherwise unchanged.
+/// millisecond value. Set by the mock-device restart tests so the reboot wait
+/// does not stall them; unset in normal use, so the full generous bound applies.
+/// It caps the minimum quiet period too, so a tiny value really is a tiny wait.
 const REBOOT_WAIT_MS_ENV: &str = "BUSSARD_FLASH_REBOOT_WAIT_MS";
 
-/// The master-reset reboot wait, honouring [`REBOOT_WAIT_MS_ENV`] for tests.
-fn master_reset_reboot_wait() -> std::time::Duration {
+/// The upper bound on the post-restart wait, honouring [`REBOOT_WAIT_MS_ENV`].
+fn reboot_wait_bound() -> std::time::Duration {
     std::env::var(REBOOT_WAIT_MS_ENV)
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
@@ -1269,6 +1297,86 @@ impl<C: Connector> Session<C> {
         l4.set_max_apdu(self.max_apdu);
         self.l4 = Some(l4);
         Ok(())
+    }
+
+    /// Waits out a device reboot with a **bounded poll**, then re-establishes the
+    /// authorized connection.
+    ///
+    /// Used after a master-reset `A_Restart` and after the terminal restart. The
+    /// device is unreachable while it reboots, but how long that takes varies by
+    /// device (~6.5 s on KNX Virtual, less on others), so this does not burn a
+    /// fixed [`MASTER_RESET_REBOOT_WAIT`]:
+    ///
+    /// 1. stay quiet for [`REBOOT_PROBE_MIN_WAIT`] (capped by the overall bound)
+    ///    so a device that is still *shutting down* is not mistaken for one that
+    ///    has come back;
+    /// 2. then, every [`REBOOT_PROBE_INTERVAL`], run a cheap liveness probe — a
+    ///    throwaway `T_Connect` + `A_DeviceDescriptor_Read` + `T_Disconnect` on a
+    ///    tight [`REBOOT_PROBE_TIMEOUTS`] budget — until it answers or the bound
+    ///    from [`reboot_wait_bound`] elapses;
+    /// 3. either way, finish with the ordinary [`reconnect`](Session::reconnect),
+    ///    so the session connection is established exactly as before and a device
+    ///    that never came back surfaces that reconnect's error unchanged.
+    ///
+    /// The probe deliberately runs on its **own** connection rather than on the
+    /// session's: it must not touch the session's authorize cache (a still-booting
+    /// device answers nothing, which an authorize would record as "does not
+    /// implement authorize" and never retry) and it must not shift the session
+    /// connection's numbered-exchange sequence.
+    async fn reconnect_after_reboot(&mut self) -> Result<(), WriteError> {
+        // Drop the dead connection up front: on the real path it holds the bus
+        // lease, and the probes below need it. Dropping (rather than
+        // disconnecting) is right — the peer is mid-reboot and will not answer.
+        self.l4 = None;
+        let bound = reboot_wait_bound();
+        let started = tokio::time::Instant::now();
+        tokio::time::sleep(REBOOT_PROBE_MIN_WAIT.min(bound)).await;
+        // Only a session that owns a connector can probe; one built from a single
+        // open connection falls straight through to `reconnect`'s error.
+        if self.connector.is_some() {
+            let deadline = started + bound;
+            loop {
+                if self.probe_rebooted_device().await {
+                    break;
+                }
+                let now = tokio::time::Instant::now();
+                if now >= deadline {
+                    tracing::debug!(
+                        "device did not answer a liveness probe within the reboot bound; \
+                         reconnecting anyway"
+                    );
+                    break;
+                }
+                tokio::time::sleep(REBOOT_PROBE_INTERVAL.min(deadline - now)).await;
+            }
+        }
+        self.reconnect().await
+    }
+
+    /// One post-reboot liveness probe: is the device answering management again?
+    ///
+    /// Opens a throwaway connection through the retained [`Connector`], asks for
+    /// the device descriptor on the tight [`REBOOT_PROBE_TIMEOUTS`] budget, and
+    /// tears it down again. Every failure path — no connector, a connector error,
+    /// a silent device — is just `false`, so a failed probe leaves no state
+    /// behind: the throwaway connection (and, on the real path, its bus lease) is
+    /// released before returning, and the session still holds no connection of its
+    /// own.
+    async fn probe_rebooted_device(&mut self) -> bool {
+        let Some(connector) = self.connector.as_mut() else {
+            return false;
+        };
+        let mut l4 = match connector.connect().await {
+            Ok(l4) => l4,
+            Err(_) => return false,
+        };
+        l4.set_timeouts(REBOOT_PROBE_TIMEOUTS);
+        let alive = bussard_mgmt::read_device_descriptor(&mut l4).await.is_ok();
+        // Close the probe connection either way: a clean `T_Disconnect` when it
+        // answered (so the device frees the slot immediately), a no-op when the
+        // probe already tore it down.
+        let _ = l4.disconnect().await;
+        alive
     }
 
     /// Proactively cycles the L4 connection **between** flash steps to stay under
@@ -3790,8 +3898,9 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                         // wait out the reboot, re-establish the connection and re-authorize.
                         master_reset_via_basic_restart(session.l4(), *erase_code, *channel_number)
                             .await?;
-                        tokio::time::sleep(master_reset_reboot_wait()).await;
-                        session.reconnect().await?;
+                        // Wait out the reboot with a bounded poll (not a fixed
+                        // sleep) and re-establish the authorized connection.
+                        session.reconnect_after_reboot().await?;
 
                         // The master reset ERASES the app object's load state (back to
                         // `Unloaded`) and drops the segment allocated before it (erase
@@ -3877,11 +3986,9 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                         let (apci, payload) = bussard_mgmt::apci::encode_restart(0);
                         if verify_after_restart && session.can_reconnect() {
                             let _ = session.l4().send_data_unacked(apci, &payload).await;
-                            // The device is unreachable while it reboots; wait it out (a
-                            // single bounded sleep, not a poll loop), then re-establish the
-                            // authorized connection.
-                            tokio::time::sleep(master_reset_reboot_wait()).await;
-                            session.reconnect().await?;
+                            // The device is unreachable while it reboots; poll for it
+                            // (bounded), then re-establish the authorized connection.
+                            session.reconnect_after_reboot().await?;
                             // Re-discover the application object on the fresh connection: the
                             // object index is stable across the reboot, but the L4 connection
                             // is new, so probe it again rather than trusting the pre-restart
@@ -4214,11 +4321,10 @@ async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                         let (apci, payload) = bussard_mgmt::apci::encode_restart(0);
                         if verify_after_restart && session.can_reconnect() {
                             let _ = session.l4().send_data_unacked(apci, &payload).await;
-                            // The device is unreachable while it reboots; wait it out (a
-                            // single bounded sleep, not a poll loop), then re-establish the
-                            // authorized connection and verify honestly on it.
-                            tokio::time::sleep(master_reset_reboot_wait()).await;
-                            session.reconnect().await?;
+                            // The device is unreachable while it reboots; poll for it
+                            // (bounded), then re-establish the authorized connection and
+                            // verify honestly on it.
+                            session.reconnect_after_reboot().await?;
                             verified = Some(
                                 verify_sys7(session, &lsm, &completed_lsms, &written_samples)
                                     .await?,
