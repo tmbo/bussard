@@ -287,9 +287,9 @@ pub async fn read_sys7_tables<Ch: L4Channel>(
             ],
             notes,
         },
+        own_ia,
         address_base,
         association_base,
-        own_ia,
         group_object_base,
         group_object_image,
         group_objects,
@@ -366,12 +366,10 @@ async fn table_base<Ch: L4Channel>(
             ));
             default
         }
-        Err(_) => {
-            notes.push(format!(
-                "object {object_index} has no readable PID_TABLE_REFERENCE; using {default:#06X}"
-            ));
-            default
-        }
+        // No readable PID_TABLE_REFERENCE: the spec default, silently. This is
+        // the normal shape for a device (or mock) that does not expose PID 7 on
+        // its table objects, not a finding worth a note.
+        Err(_) => default,
     }
 }
 
