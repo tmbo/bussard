@@ -451,6 +451,9 @@ pub enum ParameterType {
         kind: String,
         /// Size in bits, if the element declared one.
         size_bits: Option<u32>,
+        /// The `Unit` attribute, if declared (a `<TypeTime>`'s `Seconds`,
+        /// `PackedDaysHoursMinutesAndSeconds`, ...).
+        unit: Option<String>,
     },
 }
 
@@ -907,6 +910,13 @@ pub struct ApplicationProgram {
     pub is_secure_enabled: bool,
     /// The XML schema version this file declared, e.g. `"20"`, `"21"`, `"23"`.
     pub schema_version: Option<String>,
+    /// The `<Options DownloadInvisibleParameters>` value (`None`, `Background`),
+    /// or `None` when the application declares no such attribute. It says
+    /// whether a download writes the parameters the configuration does not
+    /// show; see [`Self::downloads_invisible_parameters`].
+    pub download_invisible_parameters: Option<String>,
+    /// Whether `<Options>` declares `PreferPartialDownloadIfApplicationLoaded="true"`.
+    pub prefer_partial_download: bool,
     /// Base com-objects, keyed by full `Id`.
     pub com_objects: HashMap<String, ComObject>,
     /// Com-object refs, keyed by full `Id`.
@@ -950,6 +960,26 @@ pub struct ApplicationProgram {
 }
 
 impl ApplicationProgram {
+    /// Whether a download writes the parameters the configuration does not
+    /// show, with their defaults.
+    ///
+    /// ETS does when `<Options>` declares neither `DownloadInvisibleParameters`
+    /// nor `PreferPartialDownloadIfApplicationLoaded="true"` (issue #89),
+    /// established from full-download captures:
+    ///
+    /// * Busch-Jaeger Busch-Wächter PRO 280 (`M-0007_A-6179-82`) and Steinel
+    ///   ControlPro (`M-008E_A-7188-31`), neither attribute: hidden parameters
+    ///   carry their defaults (the Busch-Jaeger's sending cycle 600 behind
+    ///   "Enable group object In operation = No").
+    /// * Jung 230021SU, 390041SR, F50 (`None`) and ABB BE/S16 (`Background`),
+    ///   all with partial download preferred: hidden parameters keep the
+    ///   segment template (the ABB hides the same sending cycle and gets 0).
+    /// * Jung System 7 2116REG, 3181, 3361 (no `DownloadInvisibleParameters`,
+    ///   partial download preferred): the template too.
+    pub fn downloads_invisible_parameters(&self) -> bool {
+        self.download_invisible_parameters.is_none() && !self.prefer_partial_download
+    }
+
     /// Whether this is a `PeiProgram` (a second loadable program, not an
     /// application a device is selected by).
     pub fn is_pei_program(&self) -> bool {
@@ -1275,6 +1305,12 @@ fn handle_start(
         }
         b"RelativeSegment" => insert_segment(app, m, SegmentKind::Relative),
         b"AbsoluteSegment" => insert_segment(app, m, SegmentKind::Absolute),
+        b"Options" => {
+            app.download_invisible_parameters =
+                get(m, b"DownloadInvisibleParameters").map(str::to_string);
+            app.prefer_partial_download = get(m, b"PreferPartialDownloadIfApplicationLoaded")
+                .is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1");
+        }
         b"Language" => translations.enter_language(get(m, b"Identifier")),
         b"TranslationElement" => translations.enter_element(get(m, b"RefId")),
         b"ComObject" => insert_com_object(app, m),
@@ -1395,6 +1431,12 @@ fn handle_empty(
         b"ComObjectRef" => insert_com_object_ref(app, m),
         b"Channel" => insert_channel(app, m),
         b"Argument" => insert_argument(app, m),
+        b"Options" => {
+            app.download_invisible_parameters =
+                get(m, b"DownloadInvisibleParameters").map(str::to_string);
+            app.prefer_partial_download = get(m, b"PreferPartialDownloadIfApplicationLoaded")
+                .is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1");
+        }
         b"NumericArg" => {
             // A `<NumericArg RefId=arg-id Value=n>` of the current `<Module>`.
             if let Some(module) = state.dynamic.cur_module.as_mut() {
@@ -1507,6 +1549,7 @@ fn handle_empty(
             state.pt_kind = Some(ParameterType::Other {
                 kind,
                 size_bits: get(m, b"SizeInBit").and_then(|s| s.parse().ok()),
+                unit: get(m, b"Unit").map(str::to_string),
             });
         }
         name if name.starts_with(b"LdCtrl") => {
@@ -2269,6 +2312,50 @@ mod tests {
         assert_eq!(app.name.as_deref(), Some("Sample"));
         assert_eq!(app.load_procedure_style.as_deref(), Some("MergedProcedure"));
         assert_eq!(app.schema_version.as_deref(), Some("23"));
+    }
+
+    /// `<Options>` decides whether a download writes hidden parameters
+    /// (issue #89): only when it declares neither `DownloadInvisibleParameters`
+    /// nor a preferred partial download.
+    #[test]
+    fn test_parse_application_program_download_invisible_parameters() -> Result<()> {
+        let xml = |options: &str| {
+            format!(
+                r#"<KNX xmlns="http://knx.org/xml/project/20"><ApplicationProgram Id="M-1_A-1" Name="t"><Static>{options}</Static></ApplicationProgram></KNX>"#
+            )
+        };
+        for (options, declared, partial, writes) in [
+            (r#"<Options Comparable="false" />"#, None, false, true),
+            ("", None, false, true),
+            (
+                r#"<Options DownloadInvisibleParameters="None" />"#,
+                Some("None"),
+                false,
+                false,
+            ),
+            (
+                r#"<Options DownloadInvisibleParameters="Background" PreferPartialDownloadIfApplicationLoaded="true" />"#,
+                Some("Background"),
+                true,
+                false,
+            ),
+            (
+                r#"<Options PreferPartialDownloadIfApplicationLoaded="true"></Options>"#,
+                None,
+                true,
+                false,
+            ),
+        ] {
+            let app = parse_application_program_str("M-1_A-1", &xml(options))?;
+            assert_eq!(
+                app.download_invisible_parameters.as_deref(),
+                declared,
+                "{options}"
+            );
+            assert_eq!(app.prefer_partial_download, partial, "{options}");
+            assert_eq!(app.downloads_invisible_parameters(), writes, "{options}");
+        }
+        Ok(())
     }
 
     #[test]
