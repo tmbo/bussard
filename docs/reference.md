@@ -11,7 +11,7 @@ The complete surface of `bussard`: every command and flag, the environment varia
 - `--skip-address-check`: on the commands that open a connection to a device, skip the pre-flight probe that no bus device answers at bussard's own source individual address. See [SAFETY.md](SAFETY.md#source-address-check).
 - Filters (`monitor --filter`, `capture --filter`): a comma-separated list of GAs (`3/2/0`), GA prefixes (`3/` or `3/2/`), or IAs (`1.1.30`).
 - Confirmation: commands that write to devices confirm on a terminal (`y/N`), naming the resolved gateway (`host:port`). Without a TTY they refuse unless `--yes` is passed (`--yes-download` for `import-product`). This covers `write`, `flash`, `apply`, `assign` and `adopt`.
-- Real-gateway safety: a write command whose resolved gateway is **not** loopback (not `127.0.0.0/8` or `::1`) refuses to run unless you opt in with `--allow-remote-gateway` or `BUSSARD_ALLOW_REAL_GATEWAY=1`. Loopback gateways (the local simulator, the test suite) are always allowed. Reads (`monitor`, `read`, `scan`, `plan`, `reconstruct`) are never gated. The two long-running servers pass the same gate once, at startup, when they are able to transmit: `mcp --allow-writes`, `viz --allow-writes`, and `viz --watch-prog`. Without those flags neither server can write, so neither is gated. [SAFETY.md](SAFETY.md) is the read-before-your-first-write guide to all of this.
+- Real-gateway safety: a write command whose resolved gateway is **not** loopback (not `127.0.0.0/8` or `::1`) refuses to run unless you opt in with `--allow-remote-gateway` or `BUSSARD_ALLOW_REAL_GATEWAY=1`. Loopback gateways (the local simulator, the test suite) are always allowed. Reads (`monitor`, `read`, `scan`, `plan`, `reconstruct`) are never gated. The two long-running servers pass the same gate once, at startup, when they are able to transmit: `mcp --allow-writes`, `mcp --allow-programming`, `viz --allow-writes`, and `viz --watch-prog`. The MCP programming tools check it again on every call. Without those flags neither server can write, so neither is gated. [SAFETY.md](SAFETY.md) is the read-before-your-first-write guide to all of this.
 
 ### Global flags
 
@@ -640,7 +640,9 @@ Run the MCP server over stdio (see [the MCP server](#the-mcp-server)).
 | `--routing` | off | Force routing transport. |
 | `--passive` | off | Never transmit on the bus; omits the `knx_read_group` tool. |
 | `--allow-writes` | off | Register the `knx_write_group` tool. Mutually exclusive with `--passive`. |
-| `--allow-remote-gateway` | off | Permit `--allow-writes` against a non-loopback (real) gateway. The same gate as `bussard write`; without it a write-enabled server pointed at a real gateway refuses to start. |
+| `--allow-programming` | off | Register the programming tier, `knx_plan_device` and `knx_apply_device` (see [the programming tier](#the-programming-tier)). Mutually exclusive with `--passive`. |
+| `--plan-ttl-minutes <MINUTES>` | `10` | How long a `knx_plan_device` digest stays valid for `knx_apply_device`. Needs `--allow-programming`. |
+| `--allow-remote-gateway` | off | Permit `--allow-writes` or `--allow-programming` against a non-loopback (real) gateway. The same gate as `bussard write`; without it (or `BUSSARD_ALLOW_REAL_GATEWAY=1`) such a server pointed at a real gateway refuses to start. |
 | `--no-model-edits` | off | Withhold the model-edit tools (`knx_set_group`, `knx_add_link`, `knx_remove_link`, `knx_set_device`, `knx_set_parameter`, `knx_undo`, `knx_scaffold_groups`). They write YAML files behind a history snapshot and never touch the bus, so they are registered by default. |
 | `--capture-db <PATH>` | | A `bussard capture` database to extend `knx_recent_telegrams` history beyond the in-memory ring. |
 
@@ -989,20 +991,21 @@ CREATE INDEX idx_telegrams_dest_ts ON telegrams (destination, ts_utc);
 
 ## The MCP server
 
-`bussard mcp` serves the Model Context Protocol over stdio. Three tiers:
+`bussard mcp` serves the Model Context Protocol over stdio. Four tiers:
 
 | Tier | Flag | On the bus |
 |---|---|---|
 | Passive | `--passive` | Never transmits. The bus-touching read tools (`knx_read_group`, `knx_describe_device`) are not registered, and `knx_audit` refuses `live: true`. |
 | Read (default) | none | May send GroupValueReads, rate-limited. |
 | Write | `--allow-writes` | Adds `knx_write_group` and `knx_run_tests`. |
+| Programming | `--allow-programming` | Adds `knx_plan_device` and `knx_apply_device`, which write one device's link tables after a plan the human approved. Needs a loopback gateway or the real-gateway opt-in. Independent of `--allow-writes`; not available with `--passive`. |
 | No model edits | `--no-model-edits` | Withholds the six model-edit tools and `knx_scaffold_groups`. Orthogonal to the tiers above: they write YAML files, never the bus, so they are registered in every tier by default. |
 
-The model tools (`knx_describe_change`, `knx_history`, the six that edit, and `knx_scaffold_groups`) touch files under the model directory and nothing else. `knx_export_bundle` and `knx_diff_project` only read the model (the export writes one bundle file) and are registered in every tier, `--no-model-edits` included. Every edit snapshots the model first, validates after, and returns the change as sentences for the caller to quote to the human. Nothing reaches a device until a human runs `bussard plan` and `bussard apply`.
+The model tools (`knx_describe_change`, `knx_history`, the six that edit, and `knx_scaffold_groups`) touch files under the model directory and nothing else. `knx_export_bundle` and `knx_diff_project` only read the model (the export writes one bundle file) and are registered in every tier, `--no-model-edits` included. Every edit snapshots the model first, validates after, and returns the change as sentences for the caller to quote to the human. Nothing reaches a device until a human runs `bussard plan` and `bussard apply`, or approves a plan in the conversation on a server started with `--allow-programming`.
 
-Tool counts: 20 in `--passive`, 22 by default, 24 with `--allow-writes`. `--no-model-edits` takes seven away from each (13, 15 and 17).
+Tool counts: 20 in `--passive`, 22 by default, 24 with `--allow-writes`. `--no-model-edits` takes seven away from each (13, 15 and 17). `--allow-programming` adds two to any non-passive tier.
 
-Bus operations share one rate limiter (minimum 250 ms between operations, at most two in flight). A GA marked `protected: true` is hard-refused by `knx_write_group` and `knx_run_tests` with no MCP override; the LLM must ask a human, who can run `bussard write ... --force` from the CLI. Programming and download (`plan`, `apply`, `flash`) are CLI-only and not exposed over MCP.
+Bus operations share one rate limiter (minimum 250 ms between operations, at most two in flight). A GA marked `protected: true` is hard-refused by `knx_write_group` and `knx_run_tests` with no MCP override; the LLM must ask a human, who can run `bussard write ... --force` from the CLI. Download (`flash`) and batch programming (`apply --line`) are CLI-only. Single-device table programming is exposed only through the programming tier below.
 
 ### Tools
 
@@ -1032,6 +1035,20 @@ Bus operations share one rate limiter (minimum 250 ms between operations, at mos
 | `knx_undo` | `snapshot_id` (optional) | Restores the model files to a snapshot (default: the newest one that differs from the working files, i.e. undo the last change). Files only. |
 | `knx_export_bundle` | `path`, `include_history` (default true), both optional | Writes the model and its history as one `.bussard` file (default: next to the model directory) and returns the path and manifest. Available in every tier. |
 | `knx_diff_project` | `path` (a `.knxproj` or `.bussard`) | What that file would change compared with the working model: `{count, summary, touches_protected, sentences, changes, source}`. The assistant quotes the sentences before the human imports. A password-protected `.knxproj` needs `BUSSARD_PROJECT_PASSWORD` in the server's environment. Read-only; available in every tier. |
+| `knx_plan_device` | `address` | Reads the device's live tables (read-only on the bus) and returns `plan` (the text `bussard plan` prints: additions, removals, unchanged count, table sizes, load operations), `pending_model_changes` (sentences), the same lists as JSON, `backup_dir`, `plan_digest`, `planned_at` and `expires_at`. A plan with nothing to do has no digest. Refuses a change that touches a protected GA. Registered only with `--allow-programming`. |
+| `knx_apply_device` | `address`, `plan_digest` | Writes the planned tables: backup first, then the `bussard apply` write, then a read-back verify. Returns `verified`, the final load states, `backup`, `gateway` and the history `snapshot`. Refused unless the digest is fresh and a new read still reproduces it (see below). Registered only with `--allow-programming`. |
+
+### The programming tier
+
+`--allow-programming` (issue #118) lets the assistant finish a change instead of ending with "now type `bussard apply`". It is the same plan and write as the CLI, with gates in front:
+
+- **Write gate.** A non-loopback gateway needs `BUSSARD_ALLOW_REAL_GATEWAY=1` or `--allow-remote-gateway`. The server refuses to start without it, and both tools check it again on every call.
+- **Source-address probe.** Both tools refuse when a device already answers at the tunnel's own individual address, as the CLI device commands do.
+- **Plan digest.** `knx_plan_device` returns `plan_digest`, a SHA-256 over the device address, the model's links for it, the desired tables and the live tables it read. `knx_apply_device` refuses unless the digest came from this server session within `--plan-ttl-minutes` (default 10) and a fresh read of the device, with the current model, reproduces it. A digest is single use: a write, or a refusal because the device or the model moved, retires it.
+- **Human approval.** The tool descriptions tell the assistant to show the plan to the human and to call `knx_apply_device` only after an explicit yes in the conversation.
+- **Protected GAs.** A plan whose additions or removals touch a `protected: true` GA is refused, with no override.
+
+An apply writes the pre-state backup to `captures/backups/` before anything else, records a history snapshot `mcp knx_apply_device <address> <digest>` naming the gateway (the audit line `bussard history` shows), writes, and verifies by reading back. One device per call. `flash` stays CLI-only.
 
 The model is not frozen at startup: the server re-reads the model directory when its files change (and immediately after one of its own model edits), so a `protected: true` or a corrected `dpt:` added to `groups.yaml` mid-session is in force on the next tool call. A model that fails to parse is not swapped in; the server keeps the last good one and warns on stderr.
 

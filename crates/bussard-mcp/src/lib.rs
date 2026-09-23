@@ -39,6 +39,8 @@
 //! | `knx_undo` | Restore the model files to a history snapshot. |
 //! | `knx_export_bundle` | Write the model and history as one `.bussard` handover file. |
 //! | `knx_diff_project` | What a received `.knxproj` or bundle would change, as sentences. |
+//! | `knx_plan_device` | Read one device's live tables and return the plan `bussard plan` prints, plus a `plan_digest` (registered only with `--allow-programming`). |
+//! | `knx_apply_device` | Write the planned tables to one device, backup first and verify after, only with a fresh matching `plan_digest` (registered only with `--allow-programming`). |
 //!
 //! The eight from `knx_describe_change` to `knx_undo` are model tools: they
 //! read and write YAML files under the model directory and never touch the bus,
@@ -60,6 +62,13 @@
 //! Tool counts per tier: `--passive` 20, default 22, `--allow-writes` 24. With
 //! `--no-model-edits` the seven model-edit tools (the six above plus
 //! `knx_scaffold_groups`) are withheld, giving 13, 15 and 17.
+//!
+//! `--allow-programming` (issue #118) adds the two programming tools
+//! ([`tools_program::PROGRAMMING_TOOLS`]) to any non-passive tier. They write
+//! device tables, so they pass the non-loopback write gate on every call, run
+//! the source-address probe, and apply only a plan whose digest this session
+//! produced minutes ago and which a fresh read still reproduces. See
+//! [`tools_program`].
 //!
 //! # Connecting this to Claude Code
 //!
@@ -100,6 +109,7 @@ pub mod tools_diff;
 pub mod tools_groups;
 pub mod tools_learn;
 pub mod tools_model;
+pub mod tools_program;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -134,6 +144,15 @@ pub struct McpConfig {
     pub no_model_edits: bool,
     /// Optional capture database to extend `knx_recent_telegrams` history.
     pub capture_db: Option<PathBuf>,
+    /// Register the programming tier (`knx_plan_device`, `knx_apply_device`;
+    /// issue #118). The CLI refuses it together with `--passive` and applies
+    /// the non-loopback write gate before starting.
+    pub allow_programming: bool,
+    /// The operator passed `--allow-remote-gateway`: the programming tools'
+    /// own write-gate check accepts a real gateway.
+    pub allow_remote_gateway: bool,
+    /// How long a `knx_plan_device` digest stays valid for `knx_apply_device`.
+    pub plan_ttl: std::time::Duration,
 }
 
 /// Builds the shared state and the outbound receiver from a config.
@@ -186,6 +205,13 @@ pub fn build_state_from_model(
         read_limiter: state::ReadLimiter::new(READ_MIN_INTERVAL, READ_MAX_CONCURRENT),
         capture_db: config.capture_db.clone(),
         source_ia,
+        programming: (config.allow_programming && !config.passive).then(|| {
+            tools_program::ProgrammingTier::new(
+                config.connection.clone(),
+                config.allow_remote_gateway,
+                config.plan_ttl,
+            )
+        }),
     });
 
     Ok(state)
@@ -223,6 +249,17 @@ pub async fn run(config: &McpConfig) -> anyhow::Result<()> {
 /// seven model-edit tools touch files only, so they are present in every tier
 /// including `--passive`.
 pub fn tool_names(passive: bool, allow_writes: bool, no_model_edits: bool) -> Vec<&'static str> {
+    tool_names_for(passive, allow_writes, no_model_edits, false)
+}
+
+/// [`tool_names`] with the programming tier: `allow_programming` appends
+/// [`tools_program::PROGRAMMING_TOOLS`] unless the server is passive.
+pub fn tool_names_for(
+    passive: bool,
+    allow_writes: bool,
+    no_model_edits: bool,
+    allow_programming: bool,
+) -> Vec<&'static str> {
     let mut names = vec![
         "knx_project_summary",
         "knx_model_lookup",
@@ -246,6 +283,9 @@ pub fn tool_names(passive: bool, allow_writes: bool, no_model_edits: bool) -> Ve
     names.extend(tools_diff::DIFF_TOOLS);
     if !no_model_edits {
         names.extend(tools_model::MODEL_EDIT_TOOLS);
+    }
+    if allow_programming && !passive {
+        names.extend(tools_program::PROGRAMMING_TOOLS);
     }
     names
 }

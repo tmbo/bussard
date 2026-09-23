@@ -58,7 +58,8 @@ impl BussardMcp {
             + Self::groups_router()
             + Self::learn_router()
             + Self::audit_router()
-            + Self::diff_router();
+            + Self::diff_router()
+            + Self::program_router();
         if state.no_model_edits {
             for name in crate::tools_model::MODEL_EDIT_TOOLS {
                 tool_router.remove_route(name);
@@ -75,6 +76,13 @@ impl BussardMcp {
             // Running the acceptance suite writes to the bus, so it follows the
             // write tier. `knx_infer_group` stays: it only reads the ring.
             tool_router.remove_route("knx_run_tests");
+        }
+        if state.programming.is_none() || state.passive {
+            // The programming tier writes device tables: registered only with
+            // `--allow-programming`, never in passive mode (issue #118).
+            for name in crate::tools_program::PROGRAMMING_TOOLS {
+                tool_router.remove_route(name);
+            }
         }
         BussardMcp { state, tool_router }
     }
@@ -828,7 +836,10 @@ impl ServerHandler for BussardMcp {
                  passive mode). When started with \
                  --allow-writes the knx_write_group tool is also available; it writes to the \
                  physical bus (actuators move) and refuses protected group addresses — prefer \
-                 asking the human when a write's intent or safety is unclear.",
+                 asking the human when a write's intent or safety is unclear. When started \
+                 with --allow-programming, knx_plan_device and knx_apply_device program one \
+                 device's link tables: always show the plan to the human and call \
+                 knx_apply_device only after an explicit yes in the conversation.",
             )
     }
 }

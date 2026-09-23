@@ -1166,8 +1166,25 @@ enum Command {
         /// default. Mutually exclusive with `--passive`.
         #[arg(long, conflicts_with = "passive")]
         allow_writes: bool,
-        /// Permit `--allow-writes` against a non-loopback (real) gateway. Same
-        /// gate as `bussard write` (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
+        /// Programming tier: registers `knx_plan_device` and
+        /// `knx_apply_device`, which write one device's link tables after a
+        /// plan the human approved (issue #118). Off by default. Mutually
+        /// exclusive with `--passive`; a non-loopback gateway also needs
+        /// `--allow-remote-gateway` or BUSSARD_ALLOW_REAL_GATEWAY=1.
+        #[arg(long, conflicts_with = "passive")]
+        allow_programming: bool,
+        /// How many minutes a `knx_plan_device` digest stays valid for
+        /// `knx_apply_device`.
+        #[arg(
+            long,
+            value_name = "MINUTES",
+            default_value_t = 10,
+            requires = "allow_programming"
+        )]
+        plan_ttl_minutes: u64,
+        /// Permit `--allow-writes` or `--allow-programming` against a
+        /// non-loopback (real) gateway. Same gate as `bussard write` (or set
+        /// BUSSARD_ALLOW_REAL_GATEWAY=1).
         #[arg(long)]
         allow_remote_gateway: bool,
         /// Refuse model edits: omits the `knx_set_group`, `knx_add_link`,
@@ -1891,6 +1908,8 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             routing,
             passive,
             allow_writes,
+            allow_programming,
+            plan_ttl_minutes,
             allow_remote_gateway,
             no_model_edits,
             capture_db,
@@ -1904,6 +1923,8 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             mcp_cmd::McpModes {
                 passive,
                 allow_writes,
+                allow_programming,
+                plan_ttl: std::time::Duration::from_secs(plan_ttl_minutes.saturating_mul(60)),
                 allow_remote_gateway,
                 no_model_edits,
             },

@@ -31,6 +31,7 @@ pub mod flash;
 pub mod param_plan;
 pub mod plan;
 pub mod preflight;
+pub mod program;
 pub mod sweep;
 pub mod tables_sys7;
 
@@ -74,6 +75,11 @@ pub use param_plan::{
 pub use plan::{LoadStep, ObjectGa, PlanReport, plan};
 pub use preflight::{
     Freshness, ResidentObject, ResidentState, assess_freshness, format_app_id, probe_resident_state,
+};
+pub use program::{
+    LiveRead, LiveReadError, LiveTables, NoLinks, TableWriteSummary, desired_tables_for,
+    read_live_tables, render_plan_text, write_pre_write_backup, write_sys7, write_system_b,
+    write_tables,
 };
 pub use sweep::{
     AppSweep, FamilyCoverage, ImageClass, ParseClass, PlanClass, ProductSweep, RankedReason,

@@ -41,10 +41,10 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
-use bussard_download::backup::{DeviceBackup, backups_root, has_installation_backup};
+use bussard_download::backup::{backups_root, has_installation_backup};
 use bussard_download::{
-    DesiredTables, PlanReport, Sys7LiveTables, Sys7TableImages, VerifyOutcome, apply_sys7_tables,
-    apply_tables, discover_table_objects, negotiate_session_apdu, plan, sys7_table_images,
+    DesiredTables, PlanReport, Sys7LiveTables, Sys7TableImages, VerifyOutcome, plan,
+    sys7_table_images, write_tables,
 };
 use bussard_mgmt::tables::DeviceTables;
 use bussard_mgmt::{Layer4Connection, LeaseChannel, MaskProfile, system_type};
@@ -323,35 +323,9 @@ pub(crate) fn apply_desired(
     let outcome = runtime.block_on(async {
         let lease = handle.lease().await.context("leasing the bus")?;
         let channel = LeaseChannel::new(lease);
-        let result = match &sys7 {
-            Some((_, images)) => execute_sys7(
-                channel,
-                target,
-                source,
-                mask,
-                images,
-                &tool_key,
-                &secure_seq,
-            )
-            .await
-            .map(|v| ApplySummary {
-                ok: v.ok(),
-                address_state: v.address_state,
-                association_state: v.association_state,
-                detail: format!("{v:?}"),
-            })
-            .map_err(|e| e.to_string()),
-            None => execute(channel, target, source, &desired, &tool_key, &secure_seq)
-                .await
-                .map(|v| ApplySummary {
-                    ok: v.ok(),
-                    address_state: v.address_state,
-                    association_state: v.association_state,
-                    detail: format!("{v:?}"),
-                })
-                .map_err(|e| e.to_string()),
-        };
-        anyhow::Ok(result)
+        let secure = crate::secure_key::layer(&tool_key, &secure_seq);
+        let images = sys7.as_ref().map(|(_, images)| images);
+        anyhow::Ok(write_tables(channel, target, source, mask, &desired, images, secure).await)
     })?;
 
     match outcome {
@@ -386,19 +360,6 @@ pub(crate) fn apply_desired(
     }
 }
 
-/// The family-agnostic result of one write phase, so both paths print the same
-/// verified/failed line.
-struct ApplySummary {
-    /// Whether everything loaded and read back byte-for-byte.
-    ok: bool,
-    /// The address table's (LSM 1's) final load state.
-    address_state: bussard_mgmt::load::LoadState,
-    /// The association table's (LSM 2's) final load state.
-    association_state: bussard_mgmt::load::LoadState,
-    /// The full outcome, printed only when something did not verify.
-    detail: String,
-}
-
 /// Runs the on-bus write sequence for a **System 7** device: authorize, then
 /// drive the two table load-state machines (see [`bussard_download::apply_sys7`]).
 ///
@@ -415,40 +376,7 @@ pub(crate) async fn execute_sys7(
     secure_seq: &bussard_secure::SequenceHighWater,
 ) -> Result<bussard_download::Sys7VerifyOutcome, bussard_download::Sys7ApplyError> {
     let secure = crate::secure_key::layer(tool_key, secure_seq);
-    let mut l4 = Layer4Connection::connect_with_secure(
-        channel,
-        target,
-        source,
-        bussard_mgmt::Timeouts::default(),
-        secure,
-    )
-    .await
-    .map_err(|e| {
-        bussard_download::Sys7ApplyError::Write(bussard_mgmt::load::WriteError::Mgmt(e))
-    })?;
-    // System 7 gates every memory access behind A_Authorize (spec §6); this is
-    // the mutating path, so an explicit access-denied fails loudly.
-    l4.authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY)
-        .await
-        .map_err(|e| {
-            bussard_download::Sys7ApplyError::Write(bussard_mgmt::load::WriteError::Mgmt(e))
-        })?;
-    // Negotiate PID_MAX_APDU_LENGTH once, right after authorize, like ETS's
-    // opening property read (#116); the table writes then use its chunk size.
-    negotiate_session_apdu(&mut l4).await?;
-    let profile = MaskProfile::from_mask(mask)
-        .sys7_default_profile()
-        .unwrap_or_else(bussard_mgmt::Sys7Profile::corpus_default);
-    let lsm = bussard_mgmt::lsm_access_from_profile(&profile);
-    // The TaskSegment marker's middle octets are the product's application number,
-    // which a table-only apply does not have (no product is loaded). The device
-    // keys the finalize on subtype + address, so a zero application number still
-    // drives it to Loaded. `S7-CAL: confirm a 0705/0701 device ignores the
-    // TaskSegment marker on a table-only reload.`
-    let marker = bussard_mgmt::task_segment_marker(mask, 0, 0);
-    let result = apply_sys7_tables(&mut l4, &lsm, &profile, images, marker).await;
-    let _ = l4.disconnect().await;
-    result
+    bussard_download::write_sys7(channel, target, source, mask, images, secure).await
 }
 
 /// Runs the on-bus write sequence: discover the table objects, then apply.
@@ -461,30 +389,7 @@ pub(crate) async fn execute(
     secure_seq: &bussard_secure::SequenceHighWater,
 ) -> Result<VerifyOutcome, bussard_mgmt::load::WriteError> {
     let secure = crate::secure_key::layer(tool_key, secure_seq);
-    let mut l4 = Layer4Connection::connect_with_secure(
-        channel,
-        target,
-        source,
-        bussard_mgmt::Timeouts::default(),
-        secure,
-    )
-    .await
-    .map_err(bussard_mgmt::load::WriteError::Mgmt)?;
-    // Authorize the write session with the free-access key before any table
-    // write, exactly as ETS does (issue #52 finding #1). This is the mutating
-    // path, so fail loudly on an explicit access-denied (a keyed device needs its
-    // BCU key) rather than proceeding into writes that the device would drop; a
-    // device that does not implement authorize is tolerated and continues.
-    l4.authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY)
-        .await
-        .map_err(bussard_mgmt::load::WriteError::Mgmt)?;
-    // Negotiate PID_MAX_APDU_LENGTH once, right after authorize, like ETS's
-    // opening property read (#116); the table writes then use its chunk size.
-    negotiate_session_apdu(&mut l4).await?;
-    let objects = discover_table_objects(&mut l4).await?;
-    let result = apply_tables(&mut l4, objects, desired).await;
-    let _ = l4.disconnect().await;
-    result
+    bussard_download::write_system_b(channel, target, source, desired, secure).await
 }
 
 /// Confirms on a TTY (y/N), naming the resolved gateway (issue #74).
@@ -532,10 +437,8 @@ pub(crate) fn write_backup(
     live: &DeviceTables,
     sys7: Option<&Sys7LiveTables>,
 ) -> anyhow::Result<std::path::PathBuf> {
-    let backup = DeviceBackup::capture(target, live, sys7, None, std::time::SystemTime::now());
-    Ok(bussard_download::write_device_backup(
-        &backups_root(dir),
-        &backup,
+    Ok(bussard_download::write_pre_write_backup(
+        dir, target, live, sys7,
     )?)
 }
 

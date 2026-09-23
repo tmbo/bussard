@@ -56,6 +56,7 @@ mod router;
 pub mod tpci;
 mod tunnel;
 pub mod wire_trace;
+pub mod write_gate;
 
 pub use config::{ConnectionConfig, TransportKind};
 pub use conn::{BusConnection, TimestampedFrame};

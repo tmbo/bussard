@@ -308,6 +308,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bussard-bus",
+ "bussard-download",
  "bussard-mgmt",
  "bussard-model",
  "bussard-monitor",
@@ -316,6 +317,7 @@ dependencies = [
  "rmcp",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
  "tracing",
