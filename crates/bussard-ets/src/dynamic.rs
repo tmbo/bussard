@@ -71,8 +71,8 @@ pub struct DynamicConfig {
     pub com_objects: Vec<ActiveComObject>,
     /// Override keys that name no `ParameterRef` of this application.
     pub unresolved_overrides: Vec<String>,
-    /// Resolved values keyed by (module instance id or `""`, full `Parameter`
-    /// id): the overrides and the `<Assign>` results.
+    /// Resolved values keyed by (module instance id or `""`, app-relative
+    /// `ParameterRef` id): the overrides and the `<Assign>` results.
     values: HashMap<(String, String), String>,
     /// The keys of `values` that came from a caller override (not an assign).
     overridden: HashSet<(String, String)>,
@@ -86,8 +86,8 @@ impl DynamicConfig {
     }
 
     /// The effective value of `param_ref_id` (app-relative) in the context of
-    /// `module`: an override or `<Assign>` result for its parameter, else the
-    /// ref's `Value`, else the parameter's own `Value`.
+    /// `module`: an override or `<Assign>` result for this ref, else the ref's
+    /// `Value`, else the parameter's own `Value`.
     pub fn value(
         &self,
         app: &ApplicationProgram,
@@ -105,10 +105,11 @@ impl DynamicConfig {
         module: Option<usize>,
         param_ref_id: &str,
     ) -> bool {
-        parameter_id(app, param_ref_id).is_some_and(|pid| {
-            self.overridden
-                .contains(&(self.instance_id(module).to_string(), pid.to_string()))
-        })
+        parameter_id(app, param_ref_id).is_some()
+            && self.overridden.contains(&(
+                self.instance_id(module).to_string(),
+                param_ref_id.to_string(),
+            ))
     }
 
     /// The instance id used as the value key for `module`.
@@ -124,9 +125,13 @@ impl DynamicConfig {
 ///
 /// `overrides` is keyed by app-relative `ParameterRef` id, optionally carrying
 /// a project module-instance selector (`MD-<d>_M-<m>_MI-<n>_<param>_R-<r>`, the
-/// device-file key form); a value applies to the parameter the ref names,
-/// within that module instance. A value is a parameter's, not a ref's: two refs
-/// of one parameter share it. Keys that name no ref of this application are
+/// device-file key form); a value applies to that ref, within that module
+/// instance. A value is a ref's, not a parameter's, as in an ETS project
+/// (`ParameterInstanceRef` is keyed by ref): when a configuration shows a
+/// different ref of the same parameter, ETS writes that ref's own value (issue
+/// #117: a Jung 3361-1MWW set to application type 1 shows other refs of its
+/// send-delay parameters, and ETS writes their defaults, not the values set
+/// through the refs of type 0). Keys that name no ref of this application are
 /// listed in [`DynamicConfig::unresolved_overrides`].
 ///
 /// `<Assign>` elements reached by the walk set their target to the source's
@@ -145,8 +150,8 @@ pub fn evaluate_dynamic(
     for (key, value) in overrides {
         let (instance, param_ref) = split_selector(key);
         match parameter_id(app, &param_ref) {
-            Some(pid) => {
-                let k = (instance.unwrap_or_default(), pid.to_string());
+            Some(_) => {
+                let k = (instance.unwrap_or_default(), param_ref);
                 overridden.insert(k.clone());
                 values.insert(k, value.clone());
             }
@@ -166,10 +171,13 @@ pub fn evaluate_dynamic(
                 (None, Some(src)) => value_of(app, &values, &instance, src),
                 (None, None) => None,
             };
-            let (Some(new), Some(pid)) = (new, parameter_id(app, &assign.target)) else {
+            let Some(new) = new else {
                 continue;
             };
-            let key = (instance, pid.to_string());
+            if parameter_id(app, &assign.target).is_none() {
+                continue;
+            }
+            let key = (instance, assign.target.clone());
             if values.get(&key) != Some(&new) {
                 overridden.remove(&key);
                 values.insert(key, new);
@@ -258,7 +266,7 @@ fn value_of(
     let pref = app
         .parameter_refs
         .get(&format!("{}_{param_ref_id}", app.id))?;
-    if let Some(v) = values.get(&(instance.to_string(), pref.ref_id.clone())) {
+    if let Some(v) = values.get(&(instance.to_string(), param_ref_id.to_string())) {
         return Some(v.clone());
     }
     pref.value.clone().or_else(|| {
@@ -536,5 +544,51 @@ mod tests {
             split_selector("MD-3_P-3_R-6"),
             (None, "MD-3_P-3_R-6".to_string())
         );
+    }
+
+    /// A value belongs to a ref: `P-2` has a ref in each branch of `P-1`; a
+    /// value set through `R-20` does not carry over to `R-21` when the other
+    /// branch shows it (the Jung 3361-1MWW send delays, issue #117).
+    #[test]
+    fn test_evaluate_dynamic_value_is_per_ref() -> Result<(), Box<dyn std::error::Error>> {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/11">
+         <ApplicationProgram Id="A" MaskVersion="MV-0705" Name="t">
+          <Static>
+           <Parameters>
+            <Parameter Id="A_P-1" Name="type" Value="0" />
+            <Parameter Id="A_P-2" Name="delay" Value="30" />
+           </Parameters>
+           <ParameterRefs>
+            <ParameterRef Id="A_P-1_R-1" RefId="A_P-1" />
+            <ParameterRef Id="A_P-2_R-20" RefId="A_P-2" />
+            <ParameterRef Id="A_P-2_R-21" RefId="A_P-2" />
+           </ParameterRefs>
+          </Static>
+          <Dynamic><ChannelIndependentBlock><ParameterBlock Id="A_PB-1">
+           <ParameterRefRef RefId="A_P-1_R-1" />
+           <choose ParamRefId="A_P-1_R-1">
+            <when test="0"><ParameterRefRef RefId="A_P-2_R-20" /></when>
+            <when test="1"><ParameterRefRef RefId="A_P-2_R-21" /></when>
+           </choose>
+          </ParameterBlock></ChannelIndependentBlock></Dynamic>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program_str("A", xml)?;
+        let overrides: BTreeMap<String, String> = [
+            ("P-1_R-1".to_string(), "1".to_string()),
+            ("P-2_R-20".to_string(), "0".to_string()),
+        ]
+        .into();
+        let config = evaluate_dynamic(&app, &overrides);
+        let reached: Vec<&str> = config
+            .parameters
+            .iter()
+            .map(|p| p.param_ref_id.as_str())
+            .collect();
+        assert_eq!(reached, ["P-1_R-1", "P-2_R-21"]);
+        assert_eq!(config.value(&app, None, "P-2_R-21").as_deref(), Some("30"));
+        assert!(!config.is_override(&app, None, "P-2_R-21"));
+        assert_eq!(config.value(&app, None, "P-2_R-20").as_deref(), Some("0"));
+        assert!(config.is_override(&app, None, "P-2_R-20"));
+        Ok(())
     }
 }
