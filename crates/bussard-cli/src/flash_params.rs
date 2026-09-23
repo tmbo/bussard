@@ -11,7 +11,10 @@
 //! 2. Read the parameter memory back and cut the full plan down to it
 //!    ([`FlashPlan::parameters_only`]). Refuse when a parameter segment cannot
 //!    be read, or when the new values would change the group-object table (a
-//!    parameter that shows or hides a com-object needs the full flash).
+//!    parameter that shows or hides a com-object needs the full flash). On
+//!    System 7, also refuse when the model's links differ from the device's
+//!    link tables: the table load-state machines are not reloaded (`apply`
+//!    rewrites them).
 //! 3. Show the plan: the parameters that change, the regions and octets.
 //!    Nothing to change exits 0 without touching a load state.
 //! 4. Confirm (a terminal, or `--yes`), snapshot the model history, and back up
@@ -90,6 +93,16 @@ pub(crate) fn run(ctx: Context<'_>) -> anyhow::Result<ExitCode> {
     let read = ctx.runtime.block_on(read_device(&ctx))?;
     if let Some(reason) = read.code_mismatch {
         eprintln!("refusing the parameter-only download to {target}: {reason}");
+        return Ok(ExitCode::FAILURE);
+    }
+    // A parameter-only download leaves the table load-state machines alone,
+    // so links that differ from the device need `apply` first (issue #146).
+    if let Some(reason) = read.table_change {
+        eprintln!(
+            "refusing the parameter-only download to {target}: {reason}. A parameter-only \
+             download does not rewrite the link tables; run `bussard apply` for the links \
+             first, then re-run `bussard flash --parameters-only {target}`."
+        );
         return Ok(ExitCode::FAILURE);
     }
     let regions = read.regions;
@@ -188,7 +201,7 @@ pub(crate) fn run(ctx: Context<'_>) -> anyhow::Result<ExitCode> {
     // Verify like `apply`: read the parameter memory back and compare every
     // octet the download meant to change.
     let after = ctx.runtime.block_on(read_device(&ctx))?.regions;
-    match verify_readback(&partial, &after) {
+    match verify_readback(&partial, &after, &runtime_segments(ctx.plan)) {
         Ok(octets) => {
             println!(
                 "\nparameters verified: {octets} changed octet(s) read back from {target}; \
@@ -282,6 +295,8 @@ struct DeviceRead {
     regions: ParamRegions,
     /// Why the System 7 code comparison says this is another application.
     code_mismatch: Option<String>,
+    /// Which System 7 link table the model would change (issue #146).
+    table_change: Option<String>,
 }
 
 /// Opens a read-only session and reads the parameter regions (plus, on System
@@ -303,15 +318,19 @@ async fn read_device(ctx: &Context<'_>) -> anyhow::Result<DeviceRead> {
     let key = ctx.bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY);
     let _ = dev.authorize(key).await;
     let regions = read_parameter_regions(dev.l4_mut(), ctx.plan).await;
-    let code_mismatch = if ctx.plan.is_sys7() {
-        sys7_code_mismatch(dev.l4_mut(), ctx.plan).await
+    let (code_mismatch, table_change) = if ctx.plan.is_sys7() {
+        (
+            sys7_code_mismatch(dev.l4_mut(), ctx.plan).await,
+            sys7_table_change(dev.l4_mut(), ctx.plan).await,
+        )
     } else {
-        None
+        (None, None)
     };
     let _ = dev.disconnect().await;
     Ok(DeviceRead {
         regions,
         code_mismatch,
+        table_change,
     })
 }
 
@@ -362,6 +381,80 @@ pub(crate) async fn sys7_code_mismatch<Ch: bussard_mgmt::L4Channel>(
                 "the code at {address:#06X} ({}) does not match {}; the device runs another \
                  application or version. Run a full `bussard flash` to replace it.",
                 image.segment_id, plan.identity.id
+            ));
+        }
+    }
+    None
+}
+
+/// Names the first System 7 link table (LSM 1 group addresses, LSM 2
+/// associations) whose resident content differs from what the full plan
+/// computes from the model, or that cannot be read (issue #146). `None` when
+/// every table matches.
+///
+/// The group-address table is compared octet by octet under its mask (the
+/// own-address slot is device-owned); the association table as a set of
+/// `(TSAP, ASAP)` pairs, since the order of equal links carries no meaning.
+pub(crate) async fn sys7_table_change<Ch: bussard_mgmt::L4Channel>(
+    l4: &mut bussard_mgmt::Layer4Connection<Ch>,
+    plan: &FlashPlan,
+) -> Option<String> {
+    for step in &plan.steps {
+        let FlashStep::Sys7AbsSegment {
+            lsm,
+            address,
+            size,
+            image: Some(image),
+            ..
+        } = step
+        else {
+            continue;
+        };
+        if image.kind != bussard_download::ImageKind::Table {
+            continue;
+        }
+        let Some(desired) = plan.image_bytes(&image.segment_id) else {
+            continue;
+        };
+        let got = match read_memory_range(l4, *address, desired.len()).await {
+            Ok(got) => got,
+            Err(err) => {
+                return Some(format!(
+                    "the LSM {lsm} link table at {address:#06X} could not be read ({err})"
+                ));
+            }
+        };
+        let mask = plan.segment_mask(&image.segment_id);
+        let same_octets = desired
+            .iter()
+            .enumerate()
+            .all(|(i, b)| mask.is_some_and(|m| m.get(i) != Some(&0xFF)) || got.get(i) == Some(b));
+        if same_octets {
+            continue;
+        }
+        let capacity = usize::try_from(*size).unwrap_or(usize::MAX);
+        let same_links = *lsm == 2
+            && match (
+                bussard_download::decode_sys7_association_table(desired, capacity),
+                bussard_download::decode_sys7_association_table(&got, capacity),
+            ) {
+                (Ok(mut want), Ok(mut have)) => {
+                    want.sort_unstable();
+                    have.sort_unstable();
+                    want == have
+                }
+                _ => false,
+            };
+        if !same_links {
+            let table = if *lsm == 1 {
+                "group-address table"
+            } else if *lsm == 2 {
+                "association table"
+            } else {
+                "link table"
+            };
+            return Some(format!(
+                "the model's links differ from the device's {table} (LSM {lsm} at {address:#06X})"
             ));
         }
     }
@@ -476,6 +569,54 @@ fn print_json(
     Ok(())
 }
 
+/// `flash --parameters-only --dry-run`: the op sequence the download would
+/// send, planned offline (no connection).
+///
+/// With no device memory to diff against, each parameter write is shown at
+/// its full segment length; on the bus only the octets that differ from what
+/// the device holds are written.
+pub(crate) fn dry_run(
+    target: IndividualAddress,
+    plan: &FlashPlan,
+    json: bool,
+) -> anyhow::Result<ExitCode> {
+    let regions = bussard_download::planned_parameter_regions(plan);
+    let partial = match plan.parameters_only(&regions) {
+        Ok(partial) => partial,
+        Err(err) => {
+            eprintln!("refusing the parameter-only download to {target}: {err}");
+            return Ok(ExitCode::FAILURE);
+        }
+    };
+    if json {
+        let value = serde_json::json!({
+            "device": target.to_string(),
+            "mode": "parameters-only",
+            "dry_run": true,
+            "application": partial.identity.id,
+            "procedure": bussard_download::trace(&partial),
+        });
+        println!("{}", serde_json::to_string_pretty(&value)?);
+    } else {
+        println!("Parameter-only download for {target} (offline plan)");
+        println!(
+            "  application : {} {}",
+            partial.identity.id,
+            partial.identity.name.as_deref().unwrap_or("")
+        );
+        println!(
+            "  memory      : only the octets that differ from the device's parameter memory \
+             are written (read before the first write)"
+        );
+        println!("  procedure   :");
+        for (i, step) in partial.steps.iter().enumerate() {
+            println!("      {:>2}. {}", i + 1, partial.step_label(step));
+        }
+    }
+    eprintln!("dry run: no connection opened, nothing written.");
+    Ok(ExitCode::SUCCESS)
+}
+
 /// Confirms on a terminal unless `--yes`; a non-interactive run without `--yes`
 /// is refused.
 fn confirm(
@@ -533,11 +674,36 @@ fn write_backup(
     )?)
 }
 
-/// Compares the read-back against every octet the download meant to change.
+/// The System 7 segments the running application rewrites after the restart
+/// (`checksum_ctrl == 0`, the Jung `0x4916` region, issue #89): their
+/// read-back proves nothing, so the verify skips them.
+fn runtime_segments(plan: &FlashPlan) -> std::collections::BTreeSet<String> {
+    plan.steps
+        .iter()
+        .filter_map(|step| match step {
+            FlashStep::Sys7AbsSegment {
+                checksum_ctrl: 0,
+                image: Some(image),
+                ..
+            } => Some(image.segment_id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Compares the read-back against every octet the download meant to change,
+/// except in the segments the application rewrites at run time (`skip`).
 /// Returns how many octets were checked.
-fn verify_readback(partial: &FlashPlan, after: &ParamRegions) -> Result<usize, String> {
+fn verify_readback(
+    partial: &FlashPlan,
+    after: &ParamRegions,
+    skip: &std::collections::BTreeSet<String>,
+) -> Result<usize, String> {
     let mut checked = 0usize;
     for (segment, _, _, _) in region_rows(partial, after) {
+        if skip.contains(&segment) {
+            continue;
+        }
         let (Some(current), Some(desired)) =
             (partial.baseline(&segment), partial.image_bytes(&segment))
         else {
@@ -573,10 +739,11 @@ fn recovery_notice(target: IndividualAddress, backup: &Path) {
     eprintln!(
         "\nThe device may be left with partly-written parameters or an application that is not\n\
          Loaded. The parameter memory before the download was saved to:\n    {}\n\
-         Recover by re-running `bussard flash --parameters-only {target}` (it rewrites only\n\
-         the octets that still differ), or with a full `bussard flash {target}`. Do not assume\n\
-         the device works until a read-back (`bussard plan {target}`) shows no parameter\n\
-         difference.",
+         If the application still reads Loaded, re-running `bussard flash --parameters-only\n\
+         {target}` rewrites only the octets that still differ. If it is not Loaded (load state\n\
+         Error or Loading), recover with a full `bussard flash --force {target}`, which\n\
+         reloads every load-state machine. Do not assume the device works until a read-back\n\
+         (`bussard plan {target}`) shows no parameter difference.",
         backup.display()
     );
 }

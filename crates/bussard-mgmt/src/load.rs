@@ -283,6 +283,23 @@ pub enum WriteError {
         object_index: u8,
     },
 
+    /// A write into resident memory needs the object `Loaded` and the device
+    /// reports another state, so nothing was written (the parameter-only
+    /// download, issue #146).
+    #[error(
+        "{address}: load-state machine {object_index} is {actual}, not Loaded; a parameter-only \
+         download writes only into a loaded application, so nothing was written. Program the \
+         device with a full `bussard flash --force {address}`"
+    )]
+    NotLoaded {
+        /// The device.
+        address: IndividualAddress,
+        /// The load-state machine (object) index.
+        object_index: u8,
+        /// The state the device reports.
+        actual: LoadState,
+    },
+
     /// A `LdCtrlLoadImageProp` integrity check failed: the device's
     /// `PID_MCB_TABLE` CRC over the segment it stored does not match the CRC the
     /// tool computed over the bytes it wrote — the image did not land intact.

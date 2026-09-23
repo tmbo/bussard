@@ -90,6 +90,19 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                     }
                     FlashStep::Sys7StartLoading { lsm: idx } => {
                         let octet = lsm_octet(session.l4().target(), *idx)?;
+                        // A parameter-only download writes into the resident
+                        // application (issue #146): the machine must hold it,
+                        // or nothing is written.
+                        if plan.is_parameters_only() {
+                            let actual = lsm.read_state(session.l4(), octet).await?;
+                            if actual != LoadState::Loaded {
+                                return Err(WriteError::NotLoaded {
+                                    address: session.l4().target(),
+                                    object_index: octet,
+                                    actual,
+                                });
+                            }
+                        }
                         lsm.drive(session.l4(), octet, LoadControl::StartLoading)
                             .await?;
                     }
@@ -126,58 +139,38 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                         // 2. Stream the segment's <Data>, if any, to its absolute address.
                         //    A data-less segment (0x0700 RAM region) is allocate-only.
                         if let Some(img) = image {
-                            let bytes = plan
-                                .images
-                                .get(&img.segment_id)
-                                .expect("System 7 segment image resolved at plan time");
-                            let addr = seg_addr;
-                            let mask = ctx.segment_masks.get(&img.segment_id);
-                            // A parameter-only download (issue #119) narrows the
-                            // write to the octets that differ from the resident
-                            // memory read before planning: the mask owns only
-                            // those runs, so read-compare reads and compares just
-                            // the chunks that hold them, and the plain writer
-                            // writes just them.
-                            let diff_mask = plan.baseline.get(&img.segment_id).map(|current| {
-                                let mut owned = vec![0u8; bytes.len()];
-                                for (start, end) in super::execute::diff_regions(
-                                    bytes,
-                                    current,
-                                    mask.map(Vec::as_slice),
-                                ) {
-                                    owned[start..end].fill(0xFF);
-                                }
-                                owned
-                            });
-                            let mask_slice = diff_mask.as_deref().or(mask.map(Vec::as_slice));
-                            if ctx.profile.read_compare_write() {
-                                // No `VerifyMode` on this mask: read each chunk,
-                                // write only the differing ones, and let the
-                                // read-back stand as the verification (issue
-                                // #133). Every octet was compared, so no
-                                // post-restart spot check is recorded.
-                                read_compare_sys7_segment(
-                                    session,
-                                    addr,
-                                    bytes,
-                                    mask_slice,
-                                    &mut progress,
-                                )
-                                .await?;
-                            } else {
-                                write_sys7_segment(session, addr, bytes, mask_slice, &mut progress)
-                                    .await?;
-                                // Spot-check only unmasked, checksum-controlled segments: a
-                                // masked segment leaves device-owned bytes untouched, so the
-                                // image's leading octets do not equal the device's memory;
-                                // a `checksum_ctrl == 0` segment is rewritten by the running
-                                // application after the restart (1.1.36 `0x4916`: written
-                                // `0c`, read back `00`), so its sample proves nothing.
-                                if mask.is_none() && checksum_ctrl != 0 {
-                                    written_samples.push((addr, take_sample(bytes)));
+                            let blind = stream_sys7_image(
+                                session,
+                                plan,
+                                seg_addr,
+                                &img.segment_id,
+                                &mut progress,
+                            )
+                            .await?;
+                            // Spot-check only unmasked, checksum-controlled segments
+                            // written blind: a masked segment leaves device-owned
+                            // bytes untouched, so the image's leading octets do not
+                            // equal the device's memory; a `checksum_ctrl == 0`
+                            // segment is rewritten by the running application after
+                            // the restart (1.1.36 `0x4916`: written `0c`, read back
+                            // `00`), so its sample proves nothing. A read-compare
+                            // write compared every octet already.
+                            if blind
+                                && !ctx.segment_masks.contains_key(&img.segment_id)
+                                && checksum_ctrl != 0
+                            {
+                                if let Some(bytes) = plan.images.get(&img.segment_id) {
+                                    written_samples.push((seg_addr, take_sample(bytes)));
                                 }
                             }
                         }
+                    }
+                    // A parameter segment written in place, with no allocation
+                    // record: the System 7 parameter-only download (issue #146).
+                    FlashStep::WriteMem { address, image } => {
+                        let addr = sys7_u16(session.l4().target(), "write address", *address)?;
+                        stream_sys7_image(session, plan, addr, &image.segment_id, &mut progress)
+                            .await?;
                     }
                     FlashStep::Sys7TaskSegment {
                         lsm: idx,
@@ -345,6 +338,48 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
     match verified {
         Some(outcome) => Ok(outcome),
         None => verify_sys7(session, &lsm, &completed_lsms, &written_samples).await,
+    }
+}
+
+/// Streams the plan's image for `segment_id` to `addr` and reports whether it
+/// was written blind (`true`) or read-compare-written (`false`).
+///
+/// A parameter-only download (issue #119) narrows the write to the octets that
+/// differ from the resident memory read before planning: the mask owns only
+/// those runs, so read-compare reads and compares just the chunks that hold
+/// them, and the plain writer writes just them. A mask with no `VerifyMode`
+/// reads each chunk, writes only the differing ones, and lets the read-back
+/// stand as the verification (issue #133).
+async fn stream_sys7_image<C: Connector, F: FnMut(Progress)>(
+    session: &mut Session<C>,
+    plan: &FlashPlan,
+    addr: u16,
+    segment_id: &str,
+    progress: &mut F,
+) -> Result<bool, WriteError> {
+    let ctx = plan
+        .sys7
+        .as_ref()
+        .expect("stream_sys7_image called on a non-System-7 plan");
+    let bytes = plan
+        .images
+        .get(segment_id)
+        .expect("System 7 segment image resolved at plan time");
+    let mask = ctx.segment_masks.get(segment_id);
+    let diff_mask = plan.baseline.get(segment_id).map(|current| {
+        let mut owned = vec![0u8; bytes.len()];
+        for (start, end) in super::execute::diff_regions(bytes, current, mask.map(Vec::as_slice)) {
+            owned[start..end].fill(0xFF);
+        }
+        owned
+    });
+    let mask_slice = diff_mask.as_deref().or(mask.map(Vec::as_slice));
+    if ctx.profile.read_compare_write() {
+        read_compare_sys7_segment(session, addr, bytes, mask_slice, progress).await?;
+        Ok(false)
+    } else {
+        write_sys7_segment(session, addr, bytes, mask_slice, progress).await?;
+        Ok(true)
     }
 }
 

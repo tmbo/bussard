@@ -483,8 +483,9 @@ enum Command {
         /// written, then the load completes and the device restarts. Refused when
         /// the device runs another application or is not Loaded, and when a
         /// changed parameter shows or hides a com-object (that needs a full flash).
-        /// The parameter memory is backed up first.
-        #[arg(long, conflicts_with_all = ["full", "force", "no_factory_reset", "dry_run"])]
+        /// The parameter memory is backed up first. With `--dry-run`, prints the
+        /// op sequence offline.
+        #[arg(long, conflicts_with_all = ["full", "force", "no_factory_reset"])]
         parameters_only: bool,
         /// Permit a write to a non-loopback (real) gateway. Required for any
         /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
