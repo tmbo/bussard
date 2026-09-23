@@ -495,6 +495,14 @@ pub struct Parameter {
     pub suffix_text: Option<String>,
     /// The memory location this parameter's value occupies, if any.
     pub memory: Option<Memory>,
+    /// For a **module** parameter, the module-`<Argument>` id whose
+    /// per-instance value is added to the parameter's default value (the
+    /// `BaseValue` attribute). A Jung 230021SU input module declares its
+    /// "internal group communication" parameter with `Value="0"
+    /// BaseValue="MD-1_A-19"`, so each instance's default is its argument
+    /// value, and `<choose>` branches on it select that instance's refs (issue
+    /// #126). `None` for a parameter without one.
+    pub base_value: Option<String>,
 }
 
 /// A parameter's memory location (`<Memory CodeSegment Offset BitOffset>`).
@@ -1589,6 +1597,7 @@ fn insert_parameter_start(app: &mut ApplicationProgram, m: &Attrs) -> Option<Str
             access: get(m, b"Access").map(str::to_string),
             suffix_text: get(m, b"SuffixText").map(str::to_string),
             memory: None,
+            base_value: get(m, b"BaseValue").map(str::to_string),
         },
     );
     Some(id)

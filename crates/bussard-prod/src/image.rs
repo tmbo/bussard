@@ -2218,6 +2218,85 @@ mod tests {
         Ok(())
     }
 
+    /// The Jung 230021SU shape (issue #126). The module's "internal group
+    /// communication" parameter has no memory and takes its default from the
+    /// instance argument (`BaseValue`); it picks which ref of the App-ID
+    /// parameter is written (66 or 68). The module body also chooses on the
+    /// application's "safety release" and assigns the application's alarm
+    /// parameter (two refs at one location) to its own copy.
+    const BASE_VALUE_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/20">
+     <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="act">
+      <Static>
+       <Code><RelativeSegment Id="A_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAAAAAAA</Data></RelativeSegment></Code>
+       <ParameterTypes><ParameterType Id="A_PT-1" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType></ParameterTypes>
+       <Parameters>
+        <Parameter Id="A_P-1" Name="release" ParameterType="A_PT-1" Value="0" />
+        <Parameter Id="A_P-2" Name="alarm" ParameterType="A_PT-1" Value="0"><Memory CodeSegment="A_RS-1" Offset="0" BitOffset="0" /></Parameter>
+       </Parameters>
+       <ParameterRefs>
+        <ParameterRef Id="A_P-1_R-1" RefId="A_P-1" />
+        <ParameterRef Id="A_P-2_R-2" RefId="A_P-2" />
+        <ParameterRef Id="A_P-2_R-3" RefId="A_P-2" />
+       </ParameterRefs>
+      </Static>
+      <ModuleDefs>
+       <ModuleDef Id="A_MD-1" Name="input">
+        <Arguments><Argument Id="A_MD-1_A-1" Name="par" /><Argument Id="A_MD-1_A-2" Name="intcomm" /></Arguments>
+        <Static>
+         <Parameters>
+          <Parameter Id="A_MD-1_P-1" Name="intcomm" ParameterType="A_PT-1" Value="0" BaseValue="A_MD-1_A-2" />
+          <Parameter Id="A_MD-1_P-2" Name="appid" ParameterType="A_PT-1" Value="0"><Memory CodeSegment="A_RS-1" Offset="1" BitOffset="0" BaseOffset="A_MD-1_A-1" /></Parameter>
+          <Parameter Id="A_MD-1_P-3" Name="alarm copy" ParameterType="A_PT-1" Value="0"><Memory CodeSegment="A_RS-1" Offset="2" BitOffset="0" BaseOffset="A_MD-1_A-1" /></Parameter>
+         </Parameters>
+         <ParameterRefs>
+          <ParameterRef Id="A_MD-1_P-1_R-1" RefId="A_MD-1_P-1" />
+          <ParameterRef Id="A_MD-1_P-2_R-4" RefId="A_MD-1_P-2" Value="66" />
+          <ParameterRef Id="A_MD-1_P-2_R-5" RefId="A_MD-1_P-2" Value="68" />
+          <ParameterRef Id="A_MD-1_P-3_R-6" RefId="A_MD-1_P-3" />
+         </ParameterRefs>
+        </Static>
+        <Dynamic><ParameterBlock Id="A_MD-1_PB-1">
+         <choose ParamRefId="A_MD-1_P-1_R-1">
+          <when test="0"><ParameterRefRef RefId="A_MD-1_P-2_R-4" /></when>
+          <when test="4 5"><ParameterRefRef RefId="A_MD-1_P-2_R-5" /></when>
+         </choose>
+         <ParameterRefRef RefId="A_MD-1_P-3_R-6" />
+         <choose ParamRefId="A_P-1_R-1">
+          <when test="0"><Assign TargetParamRefRef="A_MD-1_P-3_R-6" SourceParamRefRef="A_P-2_R-2" /></when>
+          <when test="1"><Assign TargetParamRefRef="A_MD-1_P-3_R-6" SourceParamRefRef="A_P-2_R-3" /></when>
+         </choose>
+        </ParameterBlock></Dynamic>
+       </ModuleDef>
+      </ModuleDefs>
+      <Dynamic>
+       <ChannelIndependentBlock><ParameterBlock Id="A_PB-1">
+        <ParameterRefRef RefId="A_P-1_R-1" />
+        <choose ParamRefId="A_P-1_R-1">
+         <when test="0"><ParameterRefRef RefId="A_P-2_R-2" /></when>
+         <when test="1"><ParameterRefRef RefId="A_P-2_R-3" /></when>
+        </choose>
+       </ParameterBlock></ChannelIndependentBlock>
+       <Module Id="A_MD-1_M-1" RefId="A_MD-1"><NumericArg RefId="A_MD-1_A-1" Value="2" /><NumericArg RefId="A_MD-1_A-2" Value="4" /></Module>
+      </Dynamic>
+     </ApplicationProgram></KNX>"#;
+
+    #[test]
+    fn test_compute_parameter_image_dynamic_base_value_and_application_refs_in_module() -> Result<()>
+    {
+        let app = parse_application_program("A", BASE_VALUE_XML.as_bytes())?;
+        assert!(uses_dynamic_image(&app));
+        // The alarm released and set, as in the project.
+        let mut overrides = BTreeMap::new();
+        overrides.insert("P-1_R-1".to_string(), "1".to_string());
+        overrides.insert("P-2_R-3".to_string(), "1".to_string());
+        let images = compute_parameter_image(&app, &overrides, &BTreeMap::new())?;
+        // Octet 0: the application's alarm (R-3), not overwritten by the
+        // other ref's default. Octet 3: App-ID 68 (intcomm = 0 + argument 4).
+        // Octet 4: the module's copy of the alarm, assigned from R-3.
+        assert_eq!(images["A_RS-1"], [1, 0, 0, 0x44, 1, 0]);
+        Ok(())
+    }
+
     #[test]
     fn test_compute_parameter_image_skips_display_only_and_places_union_overrides() -> Result<()> {
         // The vendor-default path (a non-module app): a display-only override is
