@@ -79,12 +79,27 @@ pub struct HawkResource {
 pub struct HawkConfig {
     /// Resource name → its parsed record.
     pub resources: HashMap<String, HawkResource>,
+    /// The block's `<Features>`: feature name → its `Value` attribute (e.g.
+    /// `"VerifyMode"` → `"1"`, `"PropertyMappedLsms"` → `"0"`).
+    pub features: HashMap<String, String>,
 }
 
 impl HawkConfig {
     /// The resource with the given name, if present.
     pub fn resource(&self, name: &str) -> Option<&HawkResource> {
         self.resources.get(name)
+    }
+
+    /// The `Value` of the named `<Feature>`, if the block declares it.
+    pub fn feature(&self, name: &str) -> Option<&str> {
+        self.features.get(name).map(String::as_str)
+    }
+
+    /// The `VerifyMode` feature as a number, or `None` when the mask declares
+    /// none (MV-0701) or its value is not numeric. MV-0705 declares `1`.
+    pub fn verify_mode(&self) -> Option<u8> {
+        self.feature("VerifyMode")
+            .and_then(|v| v.trim().parse().ok())
     }
 }
 
@@ -154,6 +169,8 @@ pub fn parse_master_template(xml: &[u8], context: &str) -> Result<MasterTemplate
     // The `HawkConfigurationData` resource currently being accumulated, if inside
     // a `<Resource>` element within the current mask's Hawk block.
     let mut cur_resource: Option<HawkResource> = None;
+    // Whether the reader is inside the current mask's `HawkConfigurationData`.
+    let mut in_hawk = false;
 
     loop {
         let event = reader.read_event().map_err(|source| EtsError::Xml {
@@ -186,6 +203,7 @@ pub fn parse_master_template(xml: &[u8], context: &str) -> Result<MasterTemplate
                     }
                     // A `HawkConfigurationData` `<Resource>` (has child <Location>
                     // / <ResourceType>): start accumulating it.
+                    b"HawkConfigurationData" if cur_mask.is_some() => in_hawk = true,
                     b"Resource" if cur_mask.is_some() => {
                         attrs.parse_into(&e, context)?;
                         cur_resource = Some(HawkResource {
@@ -211,6 +229,18 @@ pub fn parse_master_template(xml: &[u8], context: &str) -> Result<MasterTemplate
                             r.address_space = get(&attrs, b"AddressSpace").map(str::to_string);
                             r.start_address =
                                 get(&attrs, b"StartAddress").and_then(|s| s.trim().parse().ok());
+                        }
+                    }
+                    // `<Feature Name=".." Value=".."/>` inside the Hawk block.
+                    b"Feature" if in_hawk => {
+                        attrs.parse_into(&e, context)?;
+                        if let (Some(mask), Some(name)) = (cur_mask.clone(), get(&attrs, b"Name")) {
+                            let value = get(&attrs, b"Value").unwrap_or_default().to_string();
+                            out.hawk
+                                .entry(mask)
+                                .or_default()
+                                .features
+                                .insert(name.to_string(), value);
                         }
                     }
                     b"ResourceType" if cur_resource.is_some() => {
@@ -244,7 +274,11 @@ pub fn parse_master_template(xml: &[u8], context: &str) -> Result<MasterTemplate
                             .insert(resource.name.clone(), resource);
                     }
                 }
-                b"MaskVersion" => cur_mask = None,
+                b"HawkConfigurationData" => in_hawk = false,
+                b"MaskVersion" => {
+                    cur_mask = None;
+                    in_hawk = false;
+                }
                 _ => {}
             },
             _ => {}
@@ -362,6 +396,10 @@ mod tests {
  <MasterData><MaskVersions>
   <MaskVersion Id="MV-0705" Name="System 7">
    <HawkConfigurationData>
+    <Features>
+     <Feature Name="PropertyMappedLsms" Value="1" />
+     <Feature Name="VerifyMode" Value="1" />
+    </Features>
     <Resources>
      <Resource Name="ManagementStyle" Access="remote">
       <Location AddressSpace="Constant" StartAddress="2" />
@@ -412,6 +450,9 @@ mod tests {
                 .and_then(|r| r.start_address),
             Some(46827) // 0xB6EB
         );
+        // The <Features> block: VerifyMode=1 selects the blind write (#133).
+        assert_eq!(hawk.feature("PropertyMappedLsms"), Some("1"));
+        assert_eq!(hawk.verify_mode(), Some(1));
         Ok(())
     }
 

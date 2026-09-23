@@ -2,7 +2,6 @@
 //! 0701 device, then read the written regions back to verify them.
 
 use super::execute::write_image;
-use super::labels::step_label;
 use super::session::{
     Connector, MAX_RESUME_RECONNECTS, Session, reconnect_exchange_threshold, resumable_death,
 };
@@ -71,7 +70,7 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
         progress(Progress::Step {
             index: i + 1,
             total,
-            label: step_label(step),
+            label: plan.step_label(step),
         });
 
         // Resume-on-drop: run the step, and if it dies from an unexpected mid-flow
@@ -133,22 +132,38 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                                 .expect("System 7 segment image resolved at plan time");
                             let addr = seg_addr;
                             let mask = ctx.segment_masks.get(&img.segment_id);
-                            write_sys7_segment(
-                                session,
-                                addr,
-                                bytes,
-                                mask.map(Vec::as_slice),
-                                &mut progress,
-                            )
-                            .await?;
-                            // Spot-check only unmasked, checksum-controlled segments: a
-                            // masked segment leaves device-owned bytes untouched, so the
-                            // image's leading octets do not equal the device's memory;
-                            // a `checksum_ctrl == 0` segment is rewritten by the running
-                            // application after the restart (1.1.36 `0x4916`: written
-                            // `0c`, read back `00`), so its sample proves nothing.
-                            if mask.is_none() && checksum_ctrl != 0 {
-                                written_samples.push((addr, take_sample(bytes)));
+                            if ctx.profile.read_compare_write() {
+                                // No `VerifyMode` on this mask: read each chunk,
+                                // write only the differing ones, and let the
+                                // read-back stand as the verification (issue
+                                // #133). Every octet was compared, so no
+                                // post-restart spot check is recorded.
+                                read_compare_sys7_segment(
+                                    session,
+                                    addr,
+                                    bytes,
+                                    mask.map(Vec::as_slice),
+                                    &mut progress,
+                                )
+                                .await?;
+                            } else {
+                                write_sys7_segment(
+                                    session,
+                                    addr,
+                                    bytes,
+                                    mask.map(Vec::as_slice),
+                                    &mut progress,
+                                )
+                                .await?;
+                                // Spot-check only unmasked, checksum-controlled segments: a
+                                // masked segment leaves device-owned bytes untouched, so the
+                                // image's leading octets do not equal the device's memory;
+                                // a `checksum_ctrl == 0` segment is rewritten by the running
+                                // application after the restart (1.1.36 `0x4916`: written
+                                // `0c`, read back `00`), so its sample proves nothing.
+                                if mask.is_none() && checksum_ctrl != 0 {
+                                    written_samples.push((addr, take_sample(bytes)));
+                                }
                             }
                         }
                     }
@@ -474,4 +489,88 @@ pub(super) async fn write_sys7_segment<C: Connector, F: FnMut(Progress)>(
         write_image(session, u32::from(run_addr), &bytes[run_start..i], progress).await?;
     }
     Ok(())
+}
+
+/// Streams a System 7 segment image read-compare-write, the ETS behaviour on a
+/// mask without a Hawk `VerifyMode` (Theben `0701`, issue #133,
+/// `[system7-spec §4.2 amendment]`).
+///
+/// The image is walked in chunks of the negotiated memory chunk (the write
+/// chunk, 12 octets on the Meteodata). Each chunk is read from the device and
+/// compared with the image over its owned octets (all of them without a
+/// `<Mask>`; only the `0xFF`-masked ones with one, and a chunk with no owned
+/// octet is neither read nor written). A matching chunk is left alone. A
+/// differing chunk has its owned runs written, then is read back and must
+/// match, or the write fails with
+/// [`MgmtError::MemoryVerifyFailed`](bussard_mgmt::MgmtError::MemoryVerifyFailed).
+/// Returns the number of chunks written.
+pub(super) async fn read_compare_sys7_segment<C: Connector, F: FnMut(Progress)>(
+    session: &mut Session<C>,
+    addr: u16,
+    bytes: &[u8],
+    mask: Option<&[u8]>,
+    progress: &mut F,
+) -> Result<usize, WriteError> {
+    let owned = |i: usize| mask.is_none_or(|m| m.get(i).copied() == Some(0xFF));
+    let chunk = usize::from(session.l4().max_memory_chunk()).max(1);
+    let total = bytes.len();
+    let mut written_chunks = 0usize;
+    let mut start = 0usize;
+    while start < total {
+        let end = (start + chunk).min(total);
+        // The owned span inside this chunk: read only from its first to its last
+        // owned octet, so a masked chunk never reads a device-owned edge.
+        let first = (start..end).find(|&i| owned(i));
+        let last = (start..end).rev().find(|&i| owned(i));
+        if let (Some(first), Some(last)) = (first, last) {
+            let span_addr = addr.saturating_add(first as u16);
+            let expected = &bytes[first..=last];
+            let differs = |got: &[u8]| {
+                got.len() != expected.len()
+                    || (first..=last).any(|i| owned(i) && got[i - first] != bytes[i])
+            };
+            let got = read_memory(session.l4(), u32::from(span_addr), expected.len() as u8).await?;
+            if differs(&got) {
+                // Write the owned runs of the span (all of it without a mask).
+                let mut i = first;
+                while i <= last {
+                    if !owned(i) {
+                        i += 1;
+                        continue;
+                    }
+                    let run_start = i;
+                    while i <= last && owned(i) {
+                        i += 1;
+                    }
+                    let run_addr = addr.saturating_add(run_start as u16);
+                    write_image(
+                        session,
+                        u32::from(run_addr),
+                        &bytes[run_start..i],
+                        &mut |_: Progress| {},
+                    )
+                    .await?;
+                }
+                let got =
+                    read_memory(session.l4(), u32::from(span_addr), expected.len() as u8).await?;
+                if differs(&got) {
+                    return Err(WriteError::Mgmt(
+                        bussard_mgmt::MgmtError::MemoryVerifyFailed {
+                            address: session.l4().target(),
+                            addr: u32::from(span_addr),
+                            expected: expected.to_vec(),
+                            got,
+                        },
+                    ));
+                }
+                written_chunks += 1;
+            }
+        }
+        start = end;
+        progress(Progress::Bytes {
+            written: start,
+            total,
+        });
+    }
+    Ok(written_chunks)
 }

@@ -737,6 +737,15 @@ impl FlashPlan {
             FlashStep::Restart if self.confirmed_restart => {
                 "restart device (confirmed: A_Restart master reset, erase code 1)".to_string()
             }
+            FlashStep::Sys7AbsSegment {
+                lsm,
+                address,
+                image: Some(img),
+                ..
+            } if self.sys7_read_compare() => format!(
+                "[S7] alloc + stream segment (read-compare, {} octets) to {address:#06X} on LSM {lsm}",
+                img.len
+            ),
             _ => step_label(step),
         }
     }
@@ -751,6 +760,17 @@ impl FlashPlan {
     /// (M2 Jung 0705 capture, `[system7-spec §5]`).
     pub fn sys7_lsm(&self) -> Option<bussard_mgmt::LsmRealisation> {
         self.sys7.as_ref().map(|s| s.profile.lsm)
+    }
+
+    /// Whether this System 7 plan streams its segments read-compare-write: read
+    /// each chunk first, write only the chunks that differ, and count the
+    /// read-back as the verification. True when the mask declares no Hawk
+    /// `VerifyMode` (Theben `0701`, issue #133); false for a `VerifyMode` mask
+    /// (Jung `0705`, written blind) and for every System B plan.
+    pub fn sys7_read_compare(&self) -> bool {
+        self.sys7
+            .as_ref()
+            .is_some_and(|s| s.profile.read_compare_write())
     }
 
     /// The System 7 LSM access seam this plan will drive, or `None` for a System
