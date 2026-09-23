@@ -13,6 +13,9 @@
 //! README there); the vendor products are not, so the tests are gated on
 //! `BUSSARD_PRODUCT_CORPUS` like the other corpus tests and skip when a product
 //! is not in the cache.
+//!
+//! One plan test (issue #160) checks the program-version writes of the Jung
+//! 2-fold switch actuator (`M-0004_A-20DE-22`) against its ETS download.
 
 use std::collections::BTreeMap;
 use std::io::{Cursor, Read};
@@ -422,5 +425,60 @@ fn test_d141_22_inactive_channel_condition_leaves_the_fill() -> TestResult {
         .get(D141_22_SEGMENT)
         .ok_or("no image for the parameter segment")?;
     assert_eq!((ours[0xA5], ours[0xA8]), (0x2E, 0x2E));
+    Ok(())
+}
+
+/// Issue #160: the Jung 2-fold switch actuator (1.1.47, `M-0004_A-20DE-22`)
+/// loads nothing into object 5, so ETS writes PID 13 only to object 4 although
+/// the product's 07B0 `Load/all` template writes it to objects 5 and 4. The
+/// capture shows `prop-write obj4/PID_PROGRAM_VERSION` right before the
+/// LoadCompleted of objects 4..1, and no write to object 5.
+#[test]
+fn test_20de_plan_writes_program_version_only_to_loaded_objects() -> TestResult {
+    let source = Source {
+        product: "all_230021SU_v2v_20210930.knxprod",
+        inner: None,
+        app_id: "M-0004_A-20DE-22-C7D8-O000A",
+    };
+    let Some(app) = load(&source)? else {
+        return Ok(());
+    };
+    let Some(dir) = std::env::var_os("BUSSARD_PRODUCT_CORPUS") else {
+        return Ok(());
+    };
+    let path = PathBuf::from(dir).join("cache/vendor").join(source.product);
+    let master_xml = zip_entry(std::fs::read(path)?, "knx_master.xml")?;
+    let master = bussard_prod::parse_master_template(&master_xml, "knx_master.xml")?;
+    let mask = app.mask_version.as_deref().ok_or("no mask version")?;
+    let template = master
+        .full_load_procedure(mask)
+        .ok_or("no Load/all template")?
+        .ops
+        .clone();
+    let tables = BTreeMap::from([(1, vec![0, 0]), (2, vec![0, 0]), (3, vec![0, 0])]);
+    let plan = plan_flash(
+        &app,
+        "1.1.47",
+        0x07B0,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        Some(&template),
+        &tables,
+    )?;
+    let pid13: Vec<(u32, Vec<u8>)> = plan
+        .steps
+        .iter()
+        .filter_map(|s| match s {
+            FlashStep::WriteProp {
+                obj_idx,
+                prop_id: 13,
+                value,
+                ..
+            } => Some((*obj_idx, value.clone())),
+            _ => None,
+        })
+        .collect();
+    // Manufacturer 0x0004, application number 0x20DE, version 0x22.
+    assert_eq!(pid13, [(4, vec![0x00, 0x04, 0x20, 0xDE, 0x22])]);
     Ok(())
 }
