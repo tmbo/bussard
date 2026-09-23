@@ -13,9 +13,11 @@ public field definitions, and bussard's own clean-room constants in
 `crates/bussard-mgmt/src/apci.rs` and `crates/bussard-secure/src/asdu.rs`.
 
 Privacy: this decoder never prints key material. `A_Authorize` keys other than
-the well-known free-access key are redacted to a hash, `A_SecureData` payloads
-are reported as a length and a hash, and KNXnet/IP Secure session frames are
-named and sized but never decrypted.
+the well-known free-access key are redacted to a hash, and KNXnet/IP Secure
+session frames are named and sized but never decrypted. `A_SecureData` (Data
+Secure) payloads are reported as a length and a hash here; with an ETS keyring,
+`datasecure.unwrap_frames` verifies the MAC afterwards and attaches the
+decrypted inner APDU as `Apdu.inner`, decoded by this module like any other.
 """
 
 from __future__ import annotations
@@ -274,14 +276,35 @@ class Apdu:
     name: str
     fields: Dict[str, object] = field(default_factory=dict)
     payload: bytes = b""
+    # A_SecureData only: the decrypted inner APDU, set by
+    # `datasecure.unwrap_frames` when a keyring key verified the MAC.
+    inner: Optional["Apdu"] = None
 
     def summary(self) -> str:
+        if self.name == "A_SecureData" and "mac" in self.fields:
+            return self._secure_summary()
         if not self.fields:
             return self.name
         parts = []
         for key, value in self.fields.items():
             parts.append("%s=%s" % (key, value))
         return "%s %s" % (self.name, " ".join(parts))
+
+    def _secure_summary(self) -> str:
+        f = self.fields
+        head = [
+            "scf=%s" % f.get("scf", "?"),
+            "seq=%s" % f.get("seq", "?"),
+        ]
+        if "key" in f:
+            head.append(str(f["key"]))
+        head.append("MAC %s" % f["mac"])
+        text = "A_SecureData{%s}" % " ".join(head)
+        if self.inner is not None:
+            return "%s -> %s" % (text, self.inner.summary())
+        if f.get("service") != "S-A_Data" and "sync_len" in f:
+            return "%s -> %s len=%s" % (text, f.get("service"), f["sync_len"])
+        return text
 
 
 @dataclass
@@ -316,6 +339,10 @@ class Cemi:
     confirm_error: bool = False
     npdu: bytes = b""
     l4: Optional[L4] = None
+    # Raw wire values the Data Secure nonce covers (see datasecure.py).
+    src_raw: int = 0
+    dst_raw: int = 0
+    ext_ff: int = 0
 
 
 @dataclass
@@ -526,6 +553,9 @@ def _decode_exact(apci: int, name: str, payload: bytes) -> Apdu:
 def _decode_secure(apci: int, name: str, payload: bytes) -> Apdu:
     """Decodes the A_SecureData ASDU header only — never the protected APDU.
 
+    Decryption is a separate pass (`datasecure.unwrap_frames`) that needs the
+    frame's addressing and a keyring, neither of which this function sees.
+
     The SCF and the 6-octet sequence number travel in the clear and are what a
     parity diff needs. The wrapped APDU and its MAC are summarised by length and
     hash: they are ciphertext under the tool key, and printing them invites
@@ -656,6 +686,9 @@ def decode_cemi(data: bytes) -> Optional[Cemi]:
         confirm_error=bool(ctrl1 & 0x01),
         npdu=npdu,
         l4=decode_npdu(npdu),
+        src_raw=src_raw,
+        dst_raw=dst_raw,
+        ext_ff=ctrl2 & 0x0F,
     )
 
 
