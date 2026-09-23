@@ -5282,6 +5282,52 @@ async fn test_require_factory_reset_adds_one_step_and_skip_removes_it()
     Ok(())
 }
 
+/// Issue #160, Jung 2-fold switch actuator 1.1.47 and 6-fold heating actuator
+/// 1.1.2: the 07B0 template writes PID 13 to objects 5 and 4, but an app with
+/// nothing to load into object 5 leaves that object unloaded, and ETS then
+/// writes the program version only to object 4. The plan keeps object 5's
+/// Unload and drops its StartLoading, LoadCompleted and PID 13 write.
+#[test]
+fn test_plan_flash_skips_program_version_of_an_unloaded_object()
+-> Result<(), Box<dyn std::error::Error>> {
+    let app = app_da_tp();
+    let tables = BTreeMap::from([(1, vec![0, 0]), (2, vec![0, 0]), (3, vec![0, 0])]);
+    let template = master_template_all_ops();
+    let plan = plan_flash(
+        &app,
+        "1.1.47",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        Some(&template),
+        &tables,
+    )?;
+    let pid13_objects: Vec<u32> = plan
+        .steps
+        .iter()
+        .filter_map(|s| match s {
+            FlashStep::WriteProp {
+                obj_idx,
+                prop_id: 13,
+                ..
+            } => Some(*obj_idx),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(pid13_objects, vec![4], "PID 13 only on the loaded object 4");
+    assert!(
+        plan.steps
+            .iter()
+            .any(|s| matches!(s, FlashStep::Unload { target: Some(5) })),
+        "object 5 is still unloaded, as ETS does"
+    );
+    assert!(!plan.steps.iter().any(|s| matches!(
+        s,
+        FlashStep::StartLoading { target: Some(5) } | FlashStep::LoadCompleted { target: Some(5) }
+    )));
+    Ok(())
+}
+
 /// Issue #126, ABB BE/S16.230.3.2: the application's `Hardware2Program` also
 /// lists a `PeiProgram` (object 5). Its merged blocks fill MergeId 3 and 5 of
 /// the 07B0 template, so the plan opens, fill-allocates and streams object 5

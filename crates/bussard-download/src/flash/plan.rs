@@ -358,6 +358,19 @@ pub fn plan_flash_with_object_flags(
         })
         .collect();
     let is_loadable = |idx: &Option<u32>| idx.is_none_or(|i| loadable.contains(&i));
+    // The objects the procedure would open but this plan skips (a `Load` with no
+    // allocation, see above). ETS writes an object's PID 13 program version
+    // only when it loads that object: the 07B0 template's
+    // `LdCtrlWriteProp ObjIdx=5 PropId=13` runs on the ABB BE/S16 and the
+    // Busch-Waechter PRO 280, whose object 5 receives a segment, and is skipped
+    // on the Jung actuators, whose object 5 stays unloaded (issue #160).
+    let skipped_objects: std::collections::HashSet<u32> = ops
+        .iter()
+        .filter_map(|op| match op {
+            LoadOp::Load { lsm_idx: Some(idx) } if !loadable.contains(idx) => Some(*idx),
+            _ => None,
+        })
+        .collect();
 
     for (i, op) in ops.iter().enumerate() {
         let step_no = i + 1;
@@ -679,6 +692,14 @@ pub fn plan_flash_with_object_flags(
                 last_written_image = Some(image.clone());
                 steps.push(FlashStep::WriteMem { address, image });
             }
+
+            // The program version of an object this plan never loads: ETS does
+            // not write it (see `skipped_objects`).
+            LoadOp::WriteProp {
+                obj_idx: Some(idx),
+                prop_id: Some(prop_id),
+                ..
+            } if *prop_id == PID_PROGRAM_VERSION && skipped_objects.contains(idx) => {}
 
             LoadOp::WriteProp {
                 obj_idx,
