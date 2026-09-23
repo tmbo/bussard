@@ -687,6 +687,7 @@ mod tests {
                 name: "dev".to_string(),
                 description: None,
                 location: None,
+                replaced: None,
                 product: None,
                 channels: BTreeMap::new(),
                 parameters: BTreeMap::new(),
@@ -1015,6 +1016,7 @@ mod tests {
             name: "dev".to_string(),
             description: None,
             location: None,
+            replaced: None,
             product: Some(Product {
                 manufacturer: None,
                 manufacturer_ref: None,

@@ -93,8 +93,37 @@ decoded value, and the gateway.
 association tables) to a device. It backs up first: the device's pre-apply
 tables are written to `<dir>/captures/backups/<ia>-<timestamp>.json` before any
 write, and the apply refuses if the backup cannot be written. Tables are
-rewritten wholesale, so re-running `apply` is idempotent. To restore, re-apply
-from the model, or reconstruct the earlier state from the backup JSON.
+rewritten wholesale, so re-running `apply` is idempotent. To go back, re-apply
+from the model, or `bussard restore <dir>/captures/backups <ADDRESS>` to write
+the backed-up tables through the same path.
+
+**Installation-wide backup (`backup`, `restore`).** The per-device backup above
+covers only the device `apply` is about to touch. Take a snapshot of the whole
+installation before the first write: `bussard backup` reads every model device
+into `<dir>/captures/backups/<UTC timestamp>/`, one JSON file per device plus a
+`manifest.json`. It is read-only on the bus: it sends descriptor, authorize,
+property-read and memory-read APDUs and nothing else, and a mock-gateway test
+fails if a single write reaches a device. The manifest lists every device,
+including the ones it could not cover: `skipped` for a mask bussard cannot read,
+`unreachable` for a device that did not answer, `failed` for a read that broke
+(which makes the run exit 1). On System B the snapshot includes the
+application segment, where the parameters live; on System 7 it does not,
+because the device does not report that segment's length. `apply` prints a
+hint while no such snapshot exists.
+
+`bussard restore <backup-dir> <ADDRESS>` writes one device's tables back. It is
+the `apply` command with the backup as the desired state: same plan, same
+confirmation naming the gateway, same pre-write backup, same verify, same
+non-loopback gate. Restoring a fresh backup onto an unchanged device plans empty
+and writes nothing. `restore` writes link tables only; parameters come back with
+`flash`.
+
+**`replace <ADDRESS> --product <FILE>`** swaps a dead device for a new one of
+the same product. It refuses when the old device still answers, and when the
+pressed device's order number or mask differs from the model's device file,
+unless `--force`. After one confirmation naming the gateway it runs the
+`assign`, `flash` and `apply` write paths in turn (no write of its own), then
+records `replaced: <date>` in the device file.
 
 **`flash --product <FILE> <ADDRESS>`** downloads an application program from
 vendor product data (the ETS-free application download). It runs a pre-flight
@@ -191,6 +220,14 @@ also no tool parameter that sets or clears `protected:`; only a human editing
 `groups.yaml` can. Any change that touches a protected GA is rendered with the
 sentence "This group address is protected." and sorted to the top of
 `bussard status`, so it is the first thing anyone reads.
+
+`bussard test` runs scripted writes, so it takes the same rails as `bussard
+write` (the non-loopback gateway gate and a confirmation naming the gateway),
+and a protected GA needs two opt-ins instead of one: `allow_protected: true` in
+`tests.yaml` and `--force` on the command line. With either missing, the test
+is reported as refused and nothing is written to that GA. The `knx_run_tests`
+MCP tool refuses such a test whatever the file says. `bussard learn` never
+transmits at all.
 
 ## History and undo
 

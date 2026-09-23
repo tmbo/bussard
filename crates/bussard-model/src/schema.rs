@@ -159,6 +159,16 @@ pub struct Device {
     /// Physical location.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<Location>,
+    /// When this device was last replaced by `bussard replace`, as an RFC3339
+    /// UTC date-time (issue #98).
+    ///
+    /// A replacement swaps the physical hardware behind an individual address.
+    /// Nothing else in the model changes, so without this field the history of a
+    /// device that died and was swapped is invisible. Absent on every device that
+    /// was never replaced, and skipped on serialization, so existing device files
+    /// round-trip byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaced: Option<String>,
     /// Product identity (for matching `.knxprod` in later phases).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub product: Option<Product>,

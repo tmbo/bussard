@@ -5,6 +5,7 @@
 mod adopt_cmd;
 mod apply_cmd;
 mod assign_cmd;
+mod backup_cmd;
 mod capture_cmd;
 mod commission_cmd;
 mod conn_cmd;
@@ -20,15 +21,19 @@ mod import_cmd;
 mod import_product_cmd;
 mod init_cmd;
 mod keyring_cmd;
+mod learn_cmd;
 mod line_cmd;
 mod mcp_cmd;
 mod monitor_cmd;
 mod plan_cmd;
 mod read_cmd;
 mod reconstruct_cmd;
+mod replace_cmd;
+mod restore_cmd;
 mod scaffold_cmd;
 mod scan_cmd;
 mod secure_key;
+mod test_cmd;
 mod validate_cmd;
 mod viz_cmd;
 mod write_cmd;
@@ -481,6 +486,55 @@ enum Command {
         #[arg(long)]
         allow_remote_gateway: bool,
     },
+    /// Bench mode: walk the model's devices on a line, prompt for each device's
+    /// programming button, verify its order number, assign its address, and
+    /// print a label (issue #100).
+    Commission {
+        /// The line to commission, e.g. `1.1`.
+        #[arg(long, value_name = "LINE")]
+        line: String,
+        /// Also flash each device's application program after assigning it.
+        #[arg(long)]
+        flash: bool,
+        /// Also apply the model's link tables after assigning (and flashing).
+        #[arg(long)]
+        apply: bool,
+        /// Append one label row per commissioned device to this CSV file
+        /// (columns `address;name;order_number;floor;room`).
+        #[arg(long, value_name = "FILE")]
+        labels: Option<PathBuf>,
+        /// The vendor `.knxprod` to flash from. Without it, `--flash` searches
+        /// `<dir>/vendor/` for an archive carrying the device's order number.
+        #[arg(long, value_name = "FILE", requires = "flash")]
+        product: Option<PathBuf>,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Skip the interactive confirmation (dangerous; for scripts).
+        #[arg(long)]
+        yes: bool,
+        /// Emit the JSON summary instead of the table.
+        #[arg(long)]
+        json: bool,
+        /// The ETS `.knxkeys` keyring holding each target's KNX Data Secure tool
+        /// key (issue #71), used by `--flash` and `--apply`.
+        #[arg(long, value_name = "FILE")]
+        keyring: Option<PathBuf>,
+        /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
+        /// escape hatch. Prefer `--keyring` for a real installation.
+        #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
+        tool_key: Option<String>,
+        /// Override the gateway `host[:port]` for tunneling.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Force KNXnet/IP routing (multicast) transport.
+        #[arg(long)]
+        routing: bool,
+        /// Permit a write to a non-loopback (real) gateway. Required for any
+        /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
+        #[arg(long)]
+        allow_remote_gateway: bool,
+    },
     /// Show what has changed in the model since the last history snapshot.
     Status {
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
@@ -525,42 +579,117 @@ enum Command {
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
     },
-    /// Bench mode: walk the model's devices on a line, prompt for each device's
-    /// programming button, verify its order number, assign its address, and
-    /// print a label (issue #100).
-    Commission {
-        /// The line to commission, e.g. `1.1`.
-        #[arg(long, value_name = "LINE")]
-        line: String,
-        /// Also flash each device's application program after assigning it.
+    /// Snapshot every device in the installation: tables, and where bussard can
+    /// bound the read, the writable parameter memory (issue #96).
+    ///
+    /// Read-only on the bus. Writes one JSON file per device plus a
+    /// `manifest.json` that lists every device considered, including the ones
+    /// whose mask bussard cannot read.
+    Backup {
+        /// Back up only these devices, e.g. `1.1.4 1.1.7` (default: every device
+        /// in the model).
+        #[arg(value_name = "ADDRESS")]
+        addresses: Vec<String>,
+        /// Back up only the model devices on this line, e.g. `1.1`.
+        #[arg(long, value_name = "LINE", conflicts_with = "addresses")]
+        line: Option<String>,
+        /// Where to write the snapshot (default:
+        /// `<dir>/captures/backups/<UTC timestamp>/`).
+        #[arg(long, value_name = "DIR")]
+        out: Option<PathBuf>,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Emit the manifest as JSON instead of the text summary.
         #[arg(long)]
-        flash: bool,
-        /// Also apply the model's link tables after assigning (and flashing).
-        #[arg(long)]
-        apply: bool,
-        /// Append one label row per commissioned device to this CSV file
-        /// (columns `address;name;order_number;floor;room`).
+        json: bool,
+        /// The ETS `.knxkeys` keyring holding the targets' KNX Data Secure tool
+        /// keys (issue #71). The keyring password comes from
+        /// `BUSSARD_KEYRING_PASSWORD`, never a CLI argument.
         #[arg(long, value_name = "FILE")]
-        labels: Option<PathBuf>,
-        /// The vendor `.knxprod` to flash from. Without it, `--flash` searches
-        /// `<dir>/vendor/` for an archive carrying the device's order number.
-        #[arg(long, value_name = "FILE", requires = "flash")]
-        product: Option<PathBuf>,
+        keyring: Option<PathBuf>,
+        /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
+        /// escape hatch for a simulator or a device with a synthetic key.
+        #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
+        tool_key: Option<String>,
+        /// Override the gateway `host[:port]` for tunneling.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Force KNXnet/IP routing (multicast) transport.
+        #[arg(long)]
+        routing: bool,
+    },
+    /// Write a device's backed-up link tables back onto it (issue #96).
+    ///
+    /// Runs the same plan, confirm, back up, write and verify path as `apply`,
+    /// with the backup as the desired state instead of the model.
+    Restore {
+        /// The backup directory: a `bussard backup` run, or
+        /// `<dir>/captures/backups` for the per-device snapshots `apply` leaves.
+        #[arg(value_name = "BACKUP_DIR")]
+        backup_dir: PathBuf,
+        /// The device to restore, e.g. `1.1.4`.
+        #[arg(value_name = "ADDRESS")]
+        address: String,
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// Skip the interactive confirmation (dangerous; for scripts).
         #[arg(long)]
         yes: bool,
-        /// Emit the JSON summary instead of the table.
-        #[arg(long)]
-        json: bool,
-        /// The ETS `.knxkeys` keyring holding each target's KNX Data Secure tool
-        /// key (issue #71), used by `--flash` and `--apply`.
+        /// The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool
+        /// key (issue #71).
         #[arg(long, value_name = "FILE")]
         keyring: Option<PathBuf>,
         /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
-        /// escape hatch. Prefer `--keyring` for a real installation.
+        /// escape hatch.
+        #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
+        tool_key: Option<String>,
+        /// Override the gateway `host[:port]` for tunneling.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Force KNXnet/IP routing (multicast) transport.
+        #[arg(long)]
+        routing: bool,
+        /// Permit a write to a non-loopback (real) gateway. Required for any
+        /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
+        #[arg(long)]
+        allow_remote_gateway: bool,
+    },
+    /// Replace a dead device: assign, flash, apply and record, in one guided
+    /// flow with one confirmation (issue #98).
+    Replace {
+        /// The address of the device being replaced, e.g. `1.1.4`.
+        #[arg(value_name = "ADDRESS")]
+        address: String,
+        /// The vendor `.knxprod` for the replacement device.
+        #[arg(long, value_name = "FILE")]
+        product: PathBuf,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Skip the interactive confirmation (dangerous; for scripts).
+        #[arg(long)]
+        yes: bool,
+        /// Proceed although the old device still answers, or although the
+        /// pressed device's order number, mask or application does not match the
+        /// model's device file.
+        #[arg(long)]
+        force: bool,
+        /// Assign and apply, but leave the application image alone — for a spare
+        /// that already carries the right application.
+        #[arg(long)]
+        no_flash: bool,
+        /// The device's BCU access key, in hex, presented with A_Authorize on
+        /// every management connect (issue #52).
+        #[arg(long, value_name = "HEX")]
+        bcu_key: Option<String>,
+        /// The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool
+        /// key (issue #71).
+        #[arg(long, value_name = "FILE")]
+        keyring: Option<PathBuf>,
+        /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
+        /// escape hatch.
         #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
         tool_key: Option<String>,
         /// Override the gateway `host[:port]` for tunneling.
@@ -744,6 +873,71 @@ enum Command {
         /// refused because it is how DNS rebinding reaches this port.
         #[arg(long, value_name = "HOST")]
         allow_host: Vec<String>,
+    },
+    /// Name and type group addresses from live traffic (never transmits).
+    Learn {
+        /// Learn this group address (repeatable). Without it, `--unnamed` /
+        /// `--untyped` pick targets from the model, and a bare `learn` takes
+        /// whatever appears on the bus.
+        #[arg(long = "ga", value_name = "GA")]
+        gas: Vec<String>,
+        /// Learn every group address in the model whose name is a placeholder.
+        #[arg(long)]
+        unnamed: bool,
+        /// Learn every group address in the model that has no DPT.
+        #[arg(long)]
+        untyped: bool,
+        /// Accept the top DPT candidate and the proposed name without asking
+        /// (for scripted sessions).
+        #[arg(long)]
+        yes: bool,
+        /// How long to wait for each telegram, in seconds.
+        #[arg(long, value_name = "SECS", default_value_t = 30)]
+        timeout: u64,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Override the gateway `host[:port]` for tunneling.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Force KNXnet/IP routing (multicast) transport.
+        #[arg(long)]
+        routing: bool,
+    },
+    /// Run the scripted acceptance tests in `tests.yaml` against the bus.
+    Test {
+        /// The test file to run (default: `<dir>/tests.yaml`).
+        #[arg(long, value_name = "FILE")]
+        file: Option<PathBuf>,
+        /// Emit the report as JSON instead of text.
+        #[arg(long)]
+        json: bool,
+        /// Together with `allow_protected: true` in the file, permit tests that
+        /// write to a protected group address.
+        #[arg(long)]
+        force: bool,
+        /// Report `manual:` steps as skipped instead of carrying them out.
+        #[arg(long)]
+        skip_manual: bool,
+        /// Run only the named test (repeatable).
+        #[arg(long, value_name = "NAME")]
+        only: Vec<String>,
+        /// Skip the confirmation prompt (required for a non-TTY run).
+        #[arg(long)]
+        yes: bool,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Override the gateway `host[:port]` for tunneling.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Force KNXnet/IP routing (multicast) transport.
+        #[arg(long)]
+        routing: bool,
+        /// Permit a run against a non-loopback (real) gateway. Required for any
+        /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
+        #[arg(long)]
+        allow_remote_gateway: bool,
     },
     /// Run the read-only MCP server over stdio.
     Mcp {
@@ -1045,6 +1239,78 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             history_cmd::run_show(&dir, &snapshot, to.as_deref())
         }
         Command::Undo { snapshot, dir } => history_cmd::run_undo(&dir, snapshot.as_deref()),
+        Command::Backup {
+            addresses,
+            line,
+            out,
+            dir,
+            json,
+            keyring,
+            tool_key,
+            gateway,
+            routing,
+        } => backup_cmd::run(
+            &addresses,
+            line.as_deref(),
+            out.as_deref(),
+            &dir,
+            json,
+            secure_key::ToolKeySource {
+                keyring: keyring.as_deref(),
+                tool_key: tool_key.as_deref(),
+            },
+            conn_cmd::ConnOverrides { gateway, routing },
+        ),
+        Command::Restore {
+            backup_dir,
+            address,
+            dir,
+            yes,
+            keyring,
+            tool_key,
+            gateway,
+            routing,
+            allow_remote_gateway,
+        } => restore_cmd::run(
+            &backup_dir,
+            &address,
+            &dir,
+            yes,
+            allow_remote_gateway,
+            secure_key::ToolKeySource {
+                keyring: keyring.as_deref(),
+                tool_key: tool_key.as_deref(),
+            },
+            conn_cmd::ConnOverrides { gateway, routing },
+        ),
+        Command::Replace {
+            address,
+            product,
+            dir,
+            yes,
+            force,
+            no_flash,
+            bcu_key,
+            keyring,
+            tool_key,
+            gateway,
+            routing,
+            allow_remote_gateway,
+        } => replace_cmd::run(
+            &address,
+            &product,
+            &dir,
+            yes,
+            force,
+            no_flash,
+            allow_remote_gateway,
+            bcu_key.as_deref(),
+            secure_key::ToolKeySource {
+                keyring: keyring.as_deref(),
+                tool_key: tool_key.as_deref(),
+            },
+            conn_cmd::ConnOverrides { gateway, routing },
+        ),
         Command::Validate { dir, format } => validate_cmd::run(&dir, format == Format::Json),
         Command::Scaffold {
             plan,
@@ -1173,6 +1439,50 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
                 allow_remote_gateway,
                 allowed_hosts: allow_host,
             },
+        ),
+        Command::Learn {
+            gas,
+            unnamed,
+            untyped,
+            yes,
+            timeout,
+            dir,
+            gateway,
+            routing,
+        } => learn_cmd::run(
+            &dir,
+            learn_cmd::LearnOptions {
+                gas,
+                unnamed,
+                untyped,
+                yes,
+                timeout_seconds: timeout,
+            },
+            conn_cmd::ConnOverrides { gateway, routing },
+        ),
+        Command::Test {
+            file,
+            json,
+            force,
+            skip_manual,
+            only,
+            yes,
+            dir,
+            gateway,
+            routing,
+            allow_remote_gateway,
+        } => test_cmd::run(
+            &dir,
+            test_cmd::TestOptions {
+                file,
+                json,
+                force,
+                skip_manual,
+                only,
+                yes,
+                allow_remote_gateway,
+            },
+            conn_cmd::ConnOverrides { gateway, routing },
         ),
         Command::Mcp {
             dir,
