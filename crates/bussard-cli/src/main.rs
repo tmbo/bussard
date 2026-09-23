@@ -19,6 +19,7 @@ mod monitor_cmd;
 mod plan_cmd;
 mod read_cmd;
 mod reconstruct_cmd;
+mod scaffold_cmd;
 mod scan_cmd;
 mod secure_key;
 mod validate_cmd;
@@ -68,6 +69,24 @@ enum Format {
     Text,
     /// A JSON array.
     Json,
+}
+
+/// The group-address addressing scheme, as a CLI value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum SchemeArg {
+    /// `main` = floor, `middle` = trade.
+    FloorTradeBlock,
+    /// `main` = trade, `middle` = floor.
+    FunctionFloor,
+}
+
+impl From<SchemeArg> for bussard_model::Scheme {
+    fn from(value: SchemeArg) -> Self {
+        match value {
+            SchemeArg::FloorTradeBlock => bussard_model::Scheme::FloorTradeBlock,
+            SchemeArg::FunctionFloor => bussard_model::Scheme::FunctionFloor,
+        }
+    }
 }
 
 /// The top-level subcommands.
@@ -394,6 +413,27 @@ enum Command {
         /// Output format.
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
+    },
+    /// Draft a group-address plan from a room and function list.
+    Scaffold {
+        /// The plan file: `rooms: [{floor, room, functions: [...]}]`.
+        #[arg(value_name = "PLAN")]
+        plan: PathBuf,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// The addressing scheme (default: `lint.groups.scheme`, else floor-trade-block).
+        #[arg(long, value_enum)]
+        scheme: Option<SchemeArg>,
+        /// Write to this file instead of `<dir>/groups.yaml`.
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+        /// Emit JSON instead of the table format.
+        #[arg(long)]
+        json: bool,
+        /// Do not add a matching `lint:` block to `bussard.yaml`.
+        #[arg(long)]
+        no_lint_config: bool,
     },
     /// Live-monitor the bus, decoding telegrams against the model.
     Monitor {
@@ -752,6 +792,21 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             conn_cmd::ConnOverrides { gateway, routing },
         ),
         Command::Validate { dir, format } => validate_cmd::run(&dir, format == Format::Json),
+        Command::Scaffold {
+            plan,
+            dir,
+            scheme,
+            out,
+            json,
+            no_lint_config,
+        } => scaffold_cmd::run(
+            &plan,
+            &dir,
+            scheme.map(Into::into),
+            out.as_deref(),
+            json,
+            no_lint_config,
+        ),
         Command::Init {
             dir,
             gateway,
