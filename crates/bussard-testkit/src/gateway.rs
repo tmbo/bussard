@@ -143,7 +143,8 @@ impl GatewayBuilder {
         self
     }
 
-    /// Push `frame` to the client `delay` after each successful CONNECT.
+    /// Push `frame` to the client `delay` after each successful CONNECT. Frames
+    /// go out in delay order, and in configuration order for equal delays.
     pub fn push_after_connect(mut self, delay: Duration, frame: CemiFrame) -> Self {
         self.after_connect.push((delay, frame));
         self
@@ -491,11 +492,20 @@ impl Server {
             return Flow::Stop;
         }
         self.peer = Some(from);
-        for (delay, frame) in self.after_connect.clone() {
+        if !self.after_connect.is_empty() {
+            // One task for all scheduled pushes, sorted by delay, so frames with
+            // equal delays still go out in the order they were configured.
+            let mut schedule = self.after_connect.clone();
+            schedule.sort_by_key(|(delay, _)| *delay);
             let tx = self.cmd_tx.clone();
             tokio::spawn(async move {
-                tokio::time::sleep(delay).await;
-                let _ = tx.send(Command::Push(frame));
+                let start = tokio::time::Instant::now();
+                for (delay, frame) in schedule {
+                    tokio::time::sleep_until(start + delay).await;
+                    if tx.send(Command::Push(frame)).is_err() {
+                        return;
+                    }
+                }
             });
         }
         let pending: Vec<CemiFrame> = self.pending.drain(..).collect();
