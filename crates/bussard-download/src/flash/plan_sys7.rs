@@ -154,6 +154,11 @@ pub(super) fn plan_flash_sys7(
     if let Some(lsm) = sys7_lsm_override() {
         s7_profile.lsm = lsm;
     }
+    // The Hawk `VerifyMode` feature decides blind vs read-compare-write segment
+    // streaming (issue #133), even when the block selects no memory-mapped LSM.
+    if let Some(h) = hawk {
+        s7_profile.verify_mode = h.verify_mode();
+    }
 
     // Index the app's absolute code segments by address so each AbsSegment op can
     // find its <Data>/<Mask> payload. System 7 segments are all absolute.
@@ -862,7 +867,8 @@ pub(super) fn seg_flags_octet(seg_flags: Option<u32>) -> Option<u8> {
 /// `HawkConfigurationData` (`[system7-spec §2.4/§5]`).
 ///
 /// Reads the `GroupAddressTableLoadControl` (the LSM control address + record
-/// length) and `GroupAddressTableLoadStatus` (the status base) resources. A
+/// length) and `GroupAddressTableLoadStatus` (the status base) resources, and
+/// the `VerifyMode` feature ([`bussard_mgmt::Sys7Profile::verify_mode`]). A
 /// `Flavour="LoadControl_M112"` LoadControl in `StandardMemory` selects
 /// [`bussard_mgmt::LsmRealisation::MemoryMapped`] with the resolved addresses;
 /// absent that, `None` (the caller falls back to the corpus default — property).
@@ -896,6 +902,7 @@ pub fn sys7_profile_from_hawk(
         control_addr,
         status_addr,
     };
+    profile.verify_mode = hawk.verify_mode();
     Some(profile)
 }
 
@@ -1674,7 +1681,10 @@ mod tests {
                 flavour: Some("LoadControl_M112".to_string()),
             },
         );
-        let hawk = HawkConfig { resources };
+        let hawk = HawkConfig {
+            resources,
+            ..HawkConfig::default()
+        };
         let profile = sys7_profile_from_hawk(&hawk).expect("a resolved profile");
         // A LoadControl_M112 @ StandardMemory Hawk block still resolves to the
         // memory-mapped realisation with the block's addresses (the data-driven
@@ -1711,5 +1721,30 @@ mod tests {
         )
         .expect("a System 7 plan");
         assert!(plan.is_sys7());
+        // This Hawk block declares no VerifyMode feature: read-compare-write
+        // (issue #133), even on 0705 whose corpus default is VerifyMode=1.
+        assert_eq!(profile.verify_mode, None);
+        assert!(plan.sys7_read_compare());
+
+        // With `VerifyMode=1` the same block selects the blind write.
+        let mut verified = hawk.clone();
+        verified
+            .features
+            .insert("VerifyMode".to_string(), "1".to_string());
+        assert_eq!(
+            sys7_profile_from_hawk(&verified).map(|p| p.verify_mode),
+            Some(Some(1))
+        );
+        let plan = plan_flash_sys7_with_hawk(
+            &app,
+            "1.1.99",
+            0x0705,
+            &no_overrides(),
+            &BTreeMap::new(),
+            Some(&verified),
+            &BTreeMap::new(),
+        )
+        .expect("a System 7 plan");
+        assert!(!plan.sys7_read_compare());
     }
 }

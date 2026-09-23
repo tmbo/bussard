@@ -447,6 +447,13 @@ pub struct Sys7Profile {
     /// The default memory type for the low-RAM working-region allocations
     /// (`0x0700`/`0x0730`). `2` = RAM `[system7-spec §4.2]`.
     pub ram_mem_type: u8,
+    /// The mask's Hawk `VerifyMode` feature, or `None` when the mask declares
+    /// none (Theben `0700`/`0701`). With a verify mode (Jung `0705` declares `1`)
+    /// ETS writes each segment whole and relies on the device's verification;
+    /// without one it reads each chunk back first, writes only the chunks that
+    /// differ, and the read-back is the verification (issue #133). See
+    /// [`Sys7Profile::read_compare_write`].
+    pub verify_mode: Option<u8>,
 }
 
 impl Sys7Profile {
@@ -476,12 +483,28 @@ impl Sys7Profile {
         } else {
             LsmRealisation::Property
         };
+        // The `knx_master.xml` Hawk blocks: MV-0705 declares `VerifyMode=1`,
+        // MV-0700 and MV-0701 declare none (issue #133).
+        let verify_mode = match mask & 0x0FFF {
+            0x700 | 0x701 => None,
+            _ => Some(1),
+        };
         Sys7Profile {
             lsm,
             authorize_level: 0,
             eeprom_mem_type: 3,
             ram_mem_type: 2,
+            verify_mode,
         }
+    }
+
+    /// Whether segment images are streamed read-compare-write: read each chunk
+    /// first, write only the chunks that differ from the image, and count the
+    /// read-back as the verification. True when the mask declares no
+    /// `VerifyMode` (the ETS behaviour on the Theben `0701` Meteodata capture,
+    /// issue #133); a `VerifyMode` mask is written blind.
+    pub fn read_compare_write(&self) -> bool {
+        self.verify_mode.is_none()
     }
 
     /// The property-based System 7 default profile (Jung `0705`): a convenience
@@ -524,6 +547,20 @@ mod tests {
             assert!(!p.tables_supported(), "{mask:04X}");
             assert!(p.uses_memory_mapped_tables(), "{mask:04X}");
             assert!(p.requires_authorize(), "{mask:04X}");
+        }
+    }
+
+    #[test]
+    fn test_corpus_default_for_mask_verify_mode_matches_hawk() {
+        // knx_master.xml: MV-0705 declares VerifyMode=1 (blind write), MV-0700 and
+        // MV-0701 declare none (read-compare-write, issue #133).
+        let jung = Sys7Profile::corpus_default_for_mask(0x0705);
+        assert_eq!(jung.verify_mode, Some(1));
+        assert!(!jung.read_compare_write());
+        for mask in [0x0700u16, 0x0701] {
+            let p = Sys7Profile::corpus_default_for_mask(mask);
+            assert_eq!(p.verify_mode, None, "{mask:04X}");
+            assert!(p.read_compare_write(), "{mask:04X}");
         }
     }
 

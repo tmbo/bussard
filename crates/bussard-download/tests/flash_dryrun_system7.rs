@@ -239,3 +239,71 @@ fn plan_lowers_jung_a_a011_with_load_image_prop() {
         "Jung A-A011 tears down three LSMs"
     );
 }
+
+/// The Theben Meteodata 140 S product (mask 0701) from the vendor cache, or
+/// `None` when the corpus is unset or does not carry it.
+fn meteodata_product() -> Option<bussard_prod::ProductData> {
+    const ZIP: &str = "o5646v53_KNX_DB_Meteodata_140_S_KNX_KNXDatenbank.zip";
+    const INNER: &str = "KNX_DB_D_GB_E_F_I_NL_METEODATA_140_S_V1_4_knxprod_2206.knxprod";
+    let dir = corpus_dir()?;
+    [
+        dir.join("cache").join("vendor").join(ZIP),
+        dir.join("vendor").join(ZIP),
+        dir.join(ZIP),
+    ]
+    .iter()
+    .find(|p| p.exists())
+    .and_then(|p| bussard_prod::read_knxprod_inner(p, Some(INNER)).ok())
+}
+
+/// Issue #133: the Meteodata `knx_master.xml` Hawk blocks decide blind vs
+/// read-compare-write streaming. MV-0701 declares no `VerifyMode`, MV-0705
+/// declares `VerifyMode=1`.
+#[test]
+fn test_sys7_profile_from_hawk_verify_mode_meteodata_master() {
+    let Some(product) = meteodata_product() else {
+        eprintln!("BUSSARD_PRODUCT_CORPUS unset or Meteodata 140 S absent; skipping");
+        return;
+    };
+    let master = product
+        .master
+        .as_ref()
+        .expect("the Meteodata archive has a master");
+    let h0701 = master.hawk_config("0701").expect("MV-0701 Hawk block");
+    let h0705 = master.hawk_config("0705").expect("MV-0705 Hawk block");
+    assert_eq!(h0701.verify_mode(), None);
+    assert_eq!(h0705.verify_mode(), Some(1));
+    let p0701 = bussard_download::sys7_profile_from_hawk(h0701).expect("0701 profile");
+    let p0705 = bussard_download::sys7_profile_from_hawk(h0705).expect("0705 profile");
+    assert_eq!(p0701.verify_mode, None);
+    assert!(p0701.read_compare_write());
+    assert_eq!(p0705.verify_mode, Some(1));
+    assert!(!p0705.read_compare_write());
+
+    // The Meteodata app plans read-compare with its Hawk block and with the
+    // 0701 corpus default alike.
+    let app = product
+        .applications
+        .iter()
+        .find(|a| a.id.starts_with("M-0048_A-140C"))
+        .expect("Meteodata app");
+    for hawk in [Some(h0701), None] {
+        let plan = bussard_download::plan_flash_sys7_with_hawk(
+            app,
+            "1.1.202",
+            0x0701,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            hawk,
+            &BTreeMap::new(),
+        )
+        .expect("Meteodata plan");
+        assert!(plan.sys7_read_compare(), "hawk given: {}", hawk.is_some());
+        assert!(
+            bussard_download::trace(&plan)
+                .iter()
+                .any(|l| l.contains("stream segment (read-compare, ")),
+            "plan text names the read-compare stream"
+        );
+    }
+}
