@@ -288,6 +288,8 @@ pub async fn read_sys7_tables<Ch: L4Channel>(
             notes,
         },
         own_ia,
+        address_base,
+        association_base,
         group_object_base,
         group_object_image,
         group_objects,
