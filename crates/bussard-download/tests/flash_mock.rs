@@ -5243,3 +5243,109 @@ async fn test_require_factory_reset_adds_one_step_and_skip_removes_it()
     assert!(!plan.has_factory_reset());
     Ok(())
 }
+
+/// Issue #126, ABB BE/S16.230.3.2: the application's `Hardware2Program` also
+/// lists a `PeiProgram` (object 5). Its merged blocks fill MergeId 3 and 5 of
+/// the 07B0 template, so the plan opens, fill-allocates and streams object 5
+/// before object 4, writes the PEI program's own id to object 5's PID 13, and
+/// checks object 5's image, as ETS does.
+#[test]
+fn test_plan_flash_streams_a_companion_pei_program() -> Result<(), Box<dyn std::error::Error>> {
+    let mut app = app_da_tp();
+    let pei = r#"<KNX xmlns="http://knx.org/xml/project/23">
+     <ApplicationProgram Id="M-00FA_A-DB" ApplicationNumber="9472" ApplicationVersion="32"
+        ProgramType="PeiProgram" MaskVersion="MV-07B0" Name="Pei" LoadProcedureStyle="MergedProcedure">
+      <Static>
+       <Code>
+        <RelativeSegment Id="M-00FA_A-DB_RS-05" Size="4" LoadStateMachine="5" Offset="0"><Data>AQIDBA==</Data></RelativeSegment>
+       </Code>
+       <LoadProcedures>
+        <LoadProcedure MergeId="3">
+         <LdCtrlRelSegment AppliesTo="full" LsmIdx="5" Size="4" Mode="1" Fill="0" />
+         <LdCtrlRelSegment AppliesTo="par" LsmIdx="5" Size="4" Mode="0" Fill="0" />
+        </LoadProcedure>
+        <LoadProcedure MergeId="5">
+         <LdCtrlWriteRelMem AppliesTo="full,par" ObjIdx="5" Offset="0" Size="4" Verify="true" />
+        </LoadProcedure>
+        <LoadProcedure MergeId="7"><LdCtrlLoadImageProp ObjIdx="5" PropId="27" /></LoadProcedure>
+       </LoadProcedures>
+      </Static>
+     </ApplicationProgram></KNX>"#;
+    let pei = parse_application_program("M-00FA_A-DB", pei.as_bytes())?;
+    assert!(pei.is_pei_program());
+    app.companion_programs.push(pei);
+
+    let tables = BTreeMap::from([(1, vec![0, 0]), (2, vec![0, 0]), (3, vec![0, 0])]);
+    let template = master_template_all_ops();
+    let plan = plan_flash(
+        &app,
+        "1.1.39",
+        0x07B0,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        Some(&template),
+        &tables,
+    )?;
+    let pos = |pred: &dyn Fn(&FlashStep) -> bool| plan.steps.iter().position(pred);
+    let open5 = pos(&|s| matches!(s, FlashStep::StartLoading { target: Some(5) }));
+    let open4 = pos(&|s| matches!(s, FlashStep::StartLoading { target: Some(4) }));
+    assert!(
+        open5.is_some() && open5 < open4,
+        "object 5 opens before object 4"
+    );
+    assert_eq!(
+        plan.steps
+            .iter()
+            .filter(|s| matches!(
+                s,
+                FlashStep::AllocateSegment {
+                    target: Some(5),
+                    ..
+                }
+            ))
+            .count(),
+        1,
+        "the restated full/par allocation of object 5 is one step"
+    );
+    assert!(plan.steps.iter().any(|s| matches!(
+        s,
+        FlashStep::AllocateSegment {
+            size: 4,
+            target: Some(5),
+            fill: Some(0)
+        }
+    )));
+    let write5 = plan
+        .steps
+        .iter()
+        .find_map(|s| match s {
+            FlashStep::WriteRelMem {
+                target: Some(5),
+                image,
+                ..
+            } => Some(image.segment_id.clone()),
+            _ => None,
+        })
+        .ok_or("no write to object 5")?;
+    assert_eq!(write5, "M-00FA_A-DB_RS-05");
+    assert_eq!(plan.image_bytes(&write5), Some(&[1u8, 2, 3, 4][..]));
+    let pid13 = |obj: u32| {
+        plan.steps.iter().find_map(|s| match s {
+            FlashStep::WriteProp {
+                obj_idx,
+                prop_id: 13,
+                value,
+                ..
+            } if *obj_idx == obj => Some(value.clone()),
+            _ => None,
+        })
+    };
+    assert_eq!(pid13(5), Some(vec![0x00, 0xFA, 0x25, 0x00, 0x20]));
+    assert_eq!(pid13(4), Some(vec![0x00, 0xFA, 0x25, 0x00, 0x10]));
+    assert!(
+        plan.steps
+            .iter()
+            .any(|s| matches!(s, FlashStep::LoadImageProp { obj_idx: 5, .. }))
+    );
+    Ok(())
+}

@@ -72,7 +72,10 @@ use bussard_mgmt::load::{
     read_memory, read_table_reference, write_load_control, write_property,
 };
 use bussard_mgmt::tables::OT_APPLICATION_PROGRAM;
-use bussard_prod::application::{ApplicationProgram, LoadOp, LoadProcedure, SegmentKind};
+use bussard_prod::application::{
+    ApplicationProgram, CodeSegment, LoadOp, LoadProcedure, SegmentKind,
+};
+use std::collections::HashMap;
 
 /// A step of a validated flash, ready to render for the pre-flight display and
 /// to execute in order. Each corresponds to one supported [`LoadOp`].
@@ -1841,6 +1844,22 @@ pub fn plan_flash_with_object_flags(
     // incomplete (no application number/version), in which case a placeholder
     // PID-13 write is left as-is. Computed once, applied in the WriteProp branch.
     let app_id_value: Option<[u8; 5]> = app_program_version_value(app);
+    // A companion program (a PeiProgram, see
+    // `ApplicationProgram::companion_programs`) owns the objects its segments
+    // load into; its own id replaces the PID-13 placeholder on those (ETS wrote
+    // `0002A0ED20` to object 5 of the ABB BE/S16, `0002A0ED10` to object 4).
+    let companion_ids: BTreeMap<u32, [u8; 5]> = app
+        .companion_programs
+        .iter()
+        .filter_map(|c| Some((c, app_program_version_value(c)?)))
+        .flat_map(|(c, id)| {
+            c.code_segments
+                .values()
+                .filter_map(|seg| seg.load_state_machine)
+                .map(move |lsm| (lsm, id))
+        })
+        .collect();
+    let segments = plan_segments(app);
 
     // 4. Validate + lower each op into a FlashStep.
     let mut steps = Vec::new();
@@ -1848,6 +1867,11 @@ pub fn plan_flash_with_object_flags(
     // Track the segment id most-recently allocated so a following WriteRelMem
     // resolves to it when its own AppliesTo does not pin one.
     let mut last_rel_segment: Option<String> = None;
+    // The segment each object's allocation bound, so a write naming its object
+    // (`ObjIdx`) streams that object's segment even when another object was
+    // allocated in between (the ABB PEI program: object 5 is allocated before
+    // object 4, and written after it was allocated).
+    let mut rel_segment_by_object: BTreeMap<u32, String> = BTreeMap::new();
     // Track the image most-recently streamed into device memory so a following
     // LoadImageProp with no matching per-object image checks the device's MCB CRC
     // against the very bytes we wrote.
@@ -1969,7 +1993,7 @@ pub fn plan_flash_with_object_flags(
                 // it with the application's relative segments in document-ish
                 // order using the applies_to hint and remaining unallocated
                 // segments.
-                let seg = resolve_rel_segment(app, *lsm_idx, applies_to.as_deref(), &images);
+                let seg = resolve_rel_segment(&segments, *lsm_idx, applies_to.as_deref(), &images);
                 let size = size
                     .or_else(|| seg.as_ref().and_then(|(_, s)| *s))
                     .unwrap_or(0);
@@ -1990,8 +2014,11 @@ pub fn plan_flash_with_object_flags(
                 let prev_rel_segment = last_rel_segment.clone();
                 if let Some((seg_id, _)) = &seg {
                     last_rel_segment = Some(seg_id.clone());
+                    if let Some(idx) = lsm_idx {
+                        rel_segment_by_object.insert(*idx, seg_id.clone());
+                    }
                     // Record the code image so total-byte accounting is correct.
-                    if let Some(data) = app.code_segments.get(seg_id).and_then(|s| s.data.clone()) {
+                    if let Some(data) = segments.get(seg_id).and_then(|s| s.data.clone()) {
                         images.entry(seg_id.clone()).or_insert(data);
                     }
                 }
@@ -2114,10 +2141,13 @@ pub fn plan_flash_with_object_flags(
                 obj_idx,
                 ..
             } => {
+                let current = obj_idx
+                    .and_then(|idx| rel_segment_by_object.get(&idx))
+                    .or(last_rel_segment.as_ref());
                 let (segment_id, kind, bytes) = resolve_write_image(
-                    app,
+                    &segments,
                     applies_to.as_deref(),
-                    last_rel_segment.as_deref(),
+                    current.map(String::as_str),
                     &param_images,
                 )
                 .map_err(|reason| PlanError::UnresolvableImage {
@@ -2222,8 +2252,11 @@ pub fn plan_flash_with_object_flags(
                 // the same bytes ETS does. Only the all-zero placeholder of the
                 // right width is substituted — a template that already carries a
                 // concrete value is written verbatim.
-                let inline_data =
-                    maybe_substitute_app_id(prop_id, inline_data.as_deref(), app_id_value.as_ref());
+                let inline_data = maybe_substitute_app_id(
+                    prop_id,
+                    inline_data.as_deref(),
+                    companion_ids.get(&obj_idx).or(app_id_value.as_ref()),
+                );
 
                 match &inline_data {
                     Some(value) if !value.is_empty() => {
@@ -3338,11 +3371,36 @@ fn decode_hex(s: &str) -> Option<Vec<u8>> {
 /// no splicing: the blocks are concatenated by ascending `MergeId`, or the
 /// single richest block is used — preserving the previous single-object
 /// behaviour exactly. This keeps the `virtual-device-flash` CI path green.
+/// The code segments a System B plan streams from: the application's own and
+/// those of its companion programs (a PeiProgram's segment on object 5). A
+/// companion never shadows a segment id of the application.
+fn plan_segments(app: &ApplicationProgram) -> std::borrow::Cow<'_, HashMap<String, CodeSegment>> {
+    if app.companion_programs.is_empty() {
+        return std::borrow::Cow::Borrowed(&app.code_segments);
+    }
+    let mut all = app.code_segments.clone();
+    for companion in &app.companion_programs {
+        for (id, seg) in &companion.code_segments {
+            all.entry(id.clone()).or_insert_with(|| seg.clone());
+        }
+    }
+    std::borrow::Cow::Owned(all)
+}
+
 fn assemble_ops(app: &ApplicationProgram, template_ops: Option<&[LoadOp]>) -> (Vec<LoadOp>, bool) {
     let non_empty: Vec<&LoadProcedure> = app
         .load_procedures
         .iter()
         .filter(|p| !p.ops.is_empty())
+        .collect();
+    // A companion program's merged blocks join the application's under the
+    // same MergeId, after them (the ABB PEI program fills MergeId 3 and 5 of
+    // the 07B0 template and adds object 5's LoadImageProp to MergeId 7).
+    let companion_blocks: Vec<&LoadProcedure> = app
+        .companion_programs
+        .iter()
+        .flat_map(|c| c.load_procedures.iter())
+        .filter(|p| !p.ops.is_empty() && p.merge_id.is_some())
         .collect();
     if non_empty.is_empty() {
         return (Vec::new(), false);
@@ -3357,7 +3415,7 @@ fn assemble_ops(app: &ApplicationProgram, template_ops: Option<&[LoadOp]>) -> (V
             // App blocks keyed by parsed MergeId. A block whose id is not numeric
             // cannot match a numeric `<LdCtrlMerge MergeId=N>` and is ignored.
             let mut blocks: BTreeMap<u32, Vec<LoadOp>> = BTreeMap::new();
-            for p in &non_empty {
+            for p in non_empty.iter().chain(companion_blocks.iter()) {
                 if let Some(id) = p.merge_id.as_deref().and_then(|m| m.parse::<u32>().ok()) {
                     blocks.entry(id).or_default().extend(p.ops.clone());
                 }
@@ -3440,13 +3498,12 @@ fn assemble_ops(app: &ApplicationProgram, template_ops: Option<&[LoadOp]>) -> (V
 /// historical document-order fallback, so a single-segment app and the
 /// multi-segment fixtures whose segments share one LSM lower exactly as before.
 fn resolve_rel_segment(
-    app: &ApplicationProgram,
+    segments: &HashMap<String, CodeSegment>,
     lsm_idx: Option<u32>,
     _applies_to: Option<&str>,
     already: &BTreeMap<String, Vec<u8>>,
 ) -> Option<(String, Option<u32>)> {
-    let mut segs: Vec<_> = app
-        .code_segments
+    let mut segs: Vec<_> = segments
         .values()
         .filter(|s| s.kind == SegmentKind::Relative)
         .collect();
@@ -3486,7 +3543,7 @@ fn resolve_rel_segment(
 /// code `<Data>` — either way the segment's own bytes, so a following
 /// `LoadImageProp` MCB check runs over a real image.
 fn resolve_write_image(
-    app: &ApplicationProgram,
+    segments: &HashMap<String, CodeSegment>,
     applies_to: Option<&str>,
     current_segment: Option<&str>,
     param_images: &BTreeMap<String, Vec<u8>>,
@@ -3496,8 +3553,7 @@ fn resolve_write_image(
         .or_else(|| {
             // No allocation preceded this write: fall back to the first relative
             // segment that has data or a parameter image.
-            let mut segs: Vec<_> = app
-                .code_segments
+            let mut segs: Vec<_> = segments
                 .values()
                 .filter(|s| s.kind == SegmentKind::Relative)
                 .collect();
@@ -3533,15 +3589,14 @@ fn resolve_write_image(
         // `full,par` write (or a pure `par` write with no params) still owns the
         // segment's code `<Data>`. Fall back to that so the streamed image is never
         // spuriously empty.
-        if let Some(data) = app.code_segments.get(&seg_id).and_then(|s| s.data.clone()) {
+        if let Some(data) = segments.get(&seg_id).and_then(|s| s.data.clone()) {
             return Ok((seg_id, ImageKind::Code, data));
         }
         return Ok((seg_id, ImageKind::Parameters, Vec::new()));
     }
 
     // Code image: the segment's `<Data>`.
-    let bytes = app
-        .code_segments
+    let bytes = segments
         .get(&seg_id)
         .and_then(|s| s.data.clone())
         .ok_or_else(|| format!("segment {seg_id} carries no code image (<Data>)"))?;
