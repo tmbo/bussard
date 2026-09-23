@@ -34,6 +34,10 @@ pub enum ServiceType {
     SearchRequest = 0x0201,
     /// SEARCH_RESPONSE — a gateway's answer to a search.
     SearchResponse = 0x0202,
+    /// DESCRIPTION_REQUEST — ask one gateway's control endpoint to describe itself.
+    DescriptionRequest = 0x0203,
+    /// DESCRIPTION_RESPONSE — the gateway's DIBs (device info, tunnelling slots, …).
+    DescriptionResponse = 0x0204,
     /// CONNECT_REQUEST — open a tunneling connection.
     ConnectRequest = 0x0205,
     /// CONNECT_RESPONSE — the gateway's channel id + status.
@@ -64,6 +68,8 @@ impl ServiceType {
         Ok(match v {
             0x0201 => SearchRequest,
             0x0202 => SearchResponse,
+            0x0203 => DescriptionRequest,
+            0x0204 => DescriptionResponse,
             0x0205 => ConnectRequest,
             0x0206 => ConnectResponse,
             0x0207 => ConnectionstateRequest,
@@ -501,53 +507,213 @@ pub struct GatewayInfo {
     pub individual_address: Option<u16>,
     /// The friendly name (from the device-info DIB), if present.
     pub name: Option<String>,
+    /// Everything else the response's DIBs carried, including the tunnelling
+    /// slots when the gateway advertises them in a search answer.
+    pub description: GatewayDescription,
 }
 
 /// DIB type: device information.
-const DIB_DEVICE_INFO: u8 = 0x01;
+pub const DIB_DEVICE_INFO: u8 = 0x01;
+/// DIB type: KNX addresses — the gateway's own individual address followed by
+/// the *additional* individual addresses it hands out to tunnelling clients.
+pub const DIB_KNX_ADDRESSES: u8 = 0x05;
+/// DIB type: tunnelling information (KNXnet/IP Core v2) — max APDU plus one
+/// entry per tunnelling slot with its status flags.
+pub const DIB_TUNNELING_INFO: u8 = 0x07;
 
-/// Decodes a SEARCH_RESPONSE body into a [`GatewayInfo`].
+/// One tunnelling slot of a KNXnet/IP interface, from the tunnelling-info DIB.
 ///
-/// Layout: an HPAI (the control endpoint) followed by one or more DIBs. We parse
-/// the device-info DIB for the IA and friendly name; other DIBs are skipped.
-pub fn parse_search_response(body: &[u8]) -> Result<GatewayInfo> {
-    let mut cur = Cursor::new(body);
-    let endpoint = Hpai::decode(&mut cur)?.addr;
-    let mut individual_address = None;
-    let mut name = None;
+/// A tunnelling interface has a fixed number of slots (often one to five), each
+/// bound to an individual address. Home Assistant, ETS and bussard each occupy
+/// one while connected, which is why a connect can fail with
+/// `E_NO_MORE_CONNECTIONS` on a perfectly healthy gateway.
+///
+/// The status word's low three bits are, from bit 0 up: free, authorized,
+/// usable (KNXnet/IP Core v2, tunnelling-info DIB).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TunnelSlot {
+    /// The individual address bound to this slot.
+    pub individual_address: u16,
+    /// The slot is currently unoccupied.
+    pub free: bool,
+    /// The requesting client is authorized to use this slot.
+    pub authorized: bool,
+    /// The slot is usable (the interface is in normal operation).
+    pub usable: bool,
+}
 
-    // Walk the DIBs. Each begins with a length byte and a type byte.
+/// Bit 0 of a tunnelling slot status: the slot is free.
+const SLOT_FREE: u16 = 0x0001;
+/// Bit 1 of a tunnelling slot status: the client is authorized for the slot.
+const SLOT_AUTHORIZED: u16 = 0x0002;
+/// Bit 2 of a tunnelling slot status: the slot is usable.
+const SLOT_USABLE: u16 = 0x0004;
+
+/// How many tunnelling slots an interface has and how many are taken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TunnelCapacity {
+    /// Total slots the interface advertises.
+    pub total: usize,
+    /// Slots currently occupied by some client.
+    pub in_use: usize,
+}
+
+/// Everything a gateway's DIBs say about itself.
+///
+/// Filled from a DESCRIPTION_RESPONSE ([`parse_description_response`]) or from
+/// the DIBs of a SEARCH_RESPONSE. Every field is optional: a gateway may send
+/// only the device-info DIB, and older interfaces send no tunnelling-info DIB at
+/// all (`tunnel_slots` is then `None`, which means "not reported", never "zero").
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GatewayDescription {
+    /// The friendly name from the device-info DIB.
+    pub name: Option<String>,
+    /// The gateway's own KNX individual address.
+    pub individual_address: Option<u16>,
+    /// The KNX medium code from the device-info DIB (`0x02` = TP1, `0x20` = IP).
+    pub medium: Option<u8>,
+    /// The 6-byte KNX serial number from the device-info DIB.
+    pub serial_number: Option<[u8; 6]>,
+    /// The maximum APDU length the tunnelling-info DIB advertises.
+    pub max_apdu_length: Option<u16>,
+    /// The tunnelling slots, when the gateway sends a tunnelling-info DIB.
+    /// `None` means the gateway did not report them.
+    pub tunnel_slots: Option<Vec<TunnelSlot>>,
+    /// The additional individual addresses from the KNX-addresses DIB. On an
+    /// interface without a tunnelling-info DIB this is the best available
+    /// estimate of the slot count.
+    pub additional_individual_addresses: Vec<u16>,
+}
+
+impl GatewayDescription {
+    /// How many tunnelling slots the interface has, and how many are in use.
+    ///
+    /// Prefers the tunnelling-info DIB (which carries live slot status). Falls
+    /// back to the count of additional individual addresses, whose occupancy is
+    /// unknown and so reports `in_use: 0`. `None` when the gateway reported
+    /// neither.
+    pub fn tunnel_capacity(&self) -> Option<TunnelCapacity> {
+        if let Some(slots) = &self.tunnel_slots {
+            return Some(TunnelCapacity {
+                total: slots.len(),
+                in_use: slots.iter().filter(|s| !s.free).count(),
+            });
+        }
+        if self.additional_individual_addresses.is_empty() {
+            return None;
+        }
+        Some(TunnelCapacity {
+            total: self.additional_individual_addresses.len(),
+            in_use: 0,
+        })
+    }
+}
+
+/// Builds a DESCRIPTION_REQUEST body: a single control-endpoint HPAI.
+///
+/// Unlike SEARCH_REQUEST this is unicast to one gateway's control endpoint, so
+/// it works across subnets where multicast discovery does not.
+pub fn description_request(control: Hpai) -> Vec<u8> {
+    let mut body = Vec::with_capacity(8);
+    control.encode(&mut body);
+    frame(ServiceType::DescriptionRequest, &body)
+}
+
+/// Decodes a DESCRIPTION_RESPONSE body (a bare sequence of DIBs).
+pub fn parse_description_response(body: &[u8]) -> Result<GatewayDescription> {
+    let mut cur = Cursor::new(body);
+    Ok(parse_dibs(&mut cur))
+}
+
+/// Walks a sequence of DIBs, collecting the ones bussard understands.
+///
+/// Each DIB begins with a length byte and a type byte. A truncated or
+/// zero-length DIB ends the walk rather than failing the whole frame: a gateway
+/// that appends a DIB bussard does not model must still be usable.
+fn parse_dibs(cur: &mut Cursor<'_>) -> GatewayDescription {
+    let mut out = GatewayDescription::default();
     while cur.remaining() >= 2 {
-        let dib_len = cur.u8("DIB length")? as usize;
+        let Ok(dib_len) = cur.u8("DIB length") else {
+            break;
+        };
+        let dib_len = dib_len as usize;
         if dib_len < 2 {
             break;
         }
-        let dib_type = cur.u8("DIB type")?;
+        let Ok(dib_type) = cur.u8("DIB type") else {
+            break;
+        };
         // The DIB body is dib_len - 2 bytes (len + type already consumed).
         let body_len = dib_len - 2;
         if cur.remaining() < body_len {
             break;
         }
-        let dib_body = cur.take(body_len, "DIB body")?;
-        if dib_type == DIB_DEVICE_INFO && dib_body.len() >= 52 {
-            // Device-info DIB: [medium, status, KNX IA (2), project id (2),
-            // serial (6), multicast (4), mac (6), friendly name (30)].
-            individual_address = Some(u16::from_be_bytes([dib_body[2], dib_body[3]]));
-            let name_bytes = &dib_body[22..52];
-            let end = name_bytes.iter().position(|&b| b == 0).unwrap_or(30);
-            let n = String::from_utf8_lossy(&name_bytes[..end])
-                .trim()
-                .to_string();
-            if !n.is_empty() {
-                name = Some(n);
+        let Ok(dib_body) = cur.take(body_len, "DIB body") else {
+            break;
+        };
+        match dib_type {
+            DIB_DEVICE_INFO if dib_body.len() >= 52 => {
+                // [medium, status, KNX IA (2), project id (2), serial (6),
+                // multicast (4), mac (6), friendly name (30)].
+                out.medium = Some(dib_body[0]);
+                out.individual_address = Some(u16::from_be_bytes([dib_body[2], dib_body[3]]));
+                let mut serial = [0u8; 6];
+                serial.copy_from_slice(&dib_body[6..12]);
+                out.serial_number = Some(serial);
+                let name_bytes = &dib_body[22..52];
+                let end = name_bytes.iter().position(|&b| b == 0).unwrap_or(30);
+                let n = String::from_utf8_lossy(&name_bytes[..end])
+                    .trim()
+                    .to_string();
+                if !n.is_empty() {
+                    out.name = Some(n);
+                }
             }
+            DIB_KNX_ADDRESSES if dib_body.len() >= 2 => {
+                // The first address is the gateway's own; the rest are the
+                // additional addresses handed to tunnelling clients.
+                out.additional_individual_addresses = dib_body[2..]
+                    .chunks_exact(2)
+                    .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                    .collect();
+            }
+            DIB_TUNNELING_INFO if dib_body.len() >= 2 => {
+                out.max_apdu_length = Some(u16::from_be_bytes([dib_body[0], dib_body[1]]));
+                let slots: Vec<TunnelSlot> = dib_body[2..]
+                    .chunks_exact(4)
+                    .map(|c| {
+                        let status = u16::from_be_bytes([c[2], c[3]]);
+                        TunnelSlot {
+                            individual_address: u16::from_be_bytes([c[0], c[1]]),
+                            free: status & SLOT_FREE != 0,
+                            authorized: status & SLOT_AUTHORIZED != 0,
+                            usable: status & SLOT_USABLE != 0,
+                        }
+                    })
+                    .collect();
+                out.tunnel_slots = Some(slots);
+            }
+            _ => {}
         }
     }
+    out
+}
 
+/// Decodes a SEARCH_RESPONSE body into a [`GatewayInfo`].
+///
+/// Layout: an HPAI (the control endpoint) followed by one or more DIBs. The DIBs
+/// are decoded by the same walker the DESCRIPTION_RESPONSE uses, so a gateway
+/// that advertises its tunnelling slots in a search answer is understood there
+/// too.
+pub fn parse_search_response(body: &[u8]) -> Result<GatewayInfo> {
+    let mut cur = Cursor::new(body);
+    let endpoint = Hpai::decode(&mut cur)?.addr;
+    let description = parse_dibs(&mut cur);
     Ok(GatewayInfo {
         endpoint,
-        individual_address,
-        name,
+        individual_address: description.individual_address,
+        name: description.name.clone(),
+        description,
     })
 }
 

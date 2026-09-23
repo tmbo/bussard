@@ -59,8 +59,8 @@ pub mod wire_trace;
 
 pub use config::{ConnectionConfig, TransportKind};
 pub use conn::{BusConnection, TimestampedFrame};
-pub use discovery::{discover, discover_all, local_ipv4_interfaces};
-pub use error::{Result, TransportError};
+pub use discovery::{describe_gateway, discover, discover_all, local_ipv4_interfaces};
+pub use error::{E_NO_MORE_CONNECTIONS, Result, TransportError};
 pub use router::Router;
 pub use tunnel::Tunnel;
 

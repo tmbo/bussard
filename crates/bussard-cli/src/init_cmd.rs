@@ -17,11 +17,14 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use bussard_model::IndividualAddress;
 use bussard_transport::config::DEFAULT_PORT;
-use bussard_transport::knxnet::GatewayInfo;
+use bussard_transport::knxnet::{GatewayDescription, GatewayInfo};
 use bussard_transport::{BusConnection, ConnectionConfig, Transport};
 
 /// Per-interface discovery timeout.
 const DISCOVER_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Timeout for the unicast DESCRIPTION_REQUEST sent to the resolved gateway.
+const DESCRIBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// How a gateway (if any) was resolved, which decides the emitted transport.
 enum Resolution {
@@ -162,15 +165,42 @@ fn resolve_gateway(
     }
 }
 
-/// Renders a gateway for human output: `name (ip:port, IA a.l.d)`.
+/// Renders a gateway for human output: `name (ip:port, IA a.l.d, N tunnels, M in use)`.
+///
+/// The tunnel clause appears only when the gateway advertised its tunnelling
+/// slots (issue #105); older interfaces send no such DIB and are rendered
+/// exactly as before.
 fn describe_gateway(gw: &GatewayInfo) -> String {
     let name = gw.name.as_deref().unwrap_or("KNXnet/IP gateway");
-    match gw.individual_address {
-        Some(raw) => {
-            let ia = IndividualAddress::from_raw(raw);
-            format!("{name} ({}, IA {ia})", gw.endpoint)
-        }
-        None => format!("{name} ({})", gw.endpoint),
+    let mut parts = vec![gw.endpoint.to_string()];
+    if let Some(raw) = gw.individual_address {
+        parts.push(format!("IA {}", IndividualAddress::from_raw(raw)));
+    }
+    if let Some(tunnels) = tunnel_clause(&gw.description) {
+        parts.push(tunnels);
+    }
+    format!("{name} ({})", parts.join(", "))
+}
+
+/// Renders the tunnel budget as `N tunnels, M in use`, or `None` when the
+/// interface did not report its slots.
+fn tunnel_clause(description: &GatewayDescription) -> Option<String> {
+    let capacity = description.tunnel_capacity()?;
+    if description.tunnel_slots.is_some() {
+        Some(format!(
+            "{} tunnel{}, {} in use",
+            capacity.total,
+            if capacity.total == 1 { "" } else { "s" },
+            capacity.in_use
+        ))
+    } else {
+        // Only the additional-individual-addresses DIB was present: the count is
+        // the slot budget, but occupancy is unknown — do not claim "0 in use".
+        Some(format!(
+            "{} tunnel{} (usage not reported)",
+            capacity.total,
+            if capacity.total == 1 { "" } else { "s" }
+        ))
     }
 }
 
@@ -228,6 +258,16 @@ fn probe_reachability(endpoint: SocketAddrV4) {
             return;
         }
     };
+    // Ask the interface to describe itself first: it is a single unicast
+    // exchange, costs no tunnel slot, and carries the tunnelling budget the
+    // owner needs to see (issue #105).
+    if let Ok(description) = runtime.block_on(bussard_transport::describe_gateway(
+        endpoint,
+        DESCRIBE_TIMEOUT,
+    )) {
+        print_description(endpoint, &description);
+    }
+
     let config = ConnectionConfig::tunnel(endpoint);
     let result = runtime.block_on(async {
         let probe = async {
@@ -238,6 +278,10 @@ fn probe_reachability(endpoint: SocketAddrV4) {
     });
     match result {
         Ok(Ok(())) => println!("Reachability check: gateway {endpoint} responded."),
+        Ok(Err(bussard_transport::TransportError::NoMoreConnections)) => {
+            eprintln!("{}", crate::conn_cmd::no_free_tunnel_message(endpoint));
+            eprintln!("Writing the config anyway; free a tunnel before the first command.");
+        }
         Ok(Err(err)) => eprintln!(
             "warning: could not reach gateway {endpoint} ({err}); \
              writing the config anyway (you may be offline)."
@@ -245,6 +289,23 @@ fn probe_reachability(endpoint: SocketAddrV4) {
         Err(_) => eprintln!(
             "warning: gateway {endpoint} did not respond within 5s; \
              writing the config anyway (you may be offline)."
+        ),
+    }
+}
+
+/// Prints what a DESCRIPTION_RESPONSE said about the interface.
+fn print_description(endpoint: SocketAddrV4, description: &GatewayDescription) {
+    let name = description.name.as_deref().unwrap_or("KNXnet/IP gateway");
+    let ia = description
+        .individual_address
+        .map(|raw| format!(", IA {}", IndividualAddress::from_raw(raw)))
+        .unwrap_or_default();
+    println!("Gateway: {name} ({endpoint}{ia})");
+    match tunnel_clause(description) {
+        Some(clause) => println!("Tunnelling: {clause}."),
+        None => println!(
+            "Tunnelling: the interface does not report its slot count \
+             (older KNXnet/IP interfaces do not)."
         ),
     }
 }
@@ -415,6 +476,7 @@ mod tests {
             endpoint: SocketAddrV4::new(Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]), port),
             individual_address: ia,
             name: name.map(str::to_string),
+            description: Default::default(),
         }
     }
 

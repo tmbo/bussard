@@ -42,6 +42,19 @@ pub enum TransportError {
         context: &'static str,
     },
 
+    /// The gateway refused the CONNECT because every tunnelling slot is taken
+    /// (`E_NO_MORE_CONNECTIONS`, status `0x24`).
+    ///
+    /// This is a capacity refusal, not a network fault: the gateway answered
+    /// promptly and said no. A tunnelling interface has a fixed slot count
+    /// (often one to five) and Home Assistant, ETS and a second bussard each
+    /// hold one while connected.
+    #[error(
+        "the gateway has no free tunnelling connection (E_NO_MORE_CONNECTIONS, status 0x24): \
+         every tunnel slot is already in use"
+    )]
+    NoMoreConnections,
+
     /// An operation exceeded its configured timeout.
     #[error("timed out waiting for {0}")]
     Timeout(&'static str),
@@ -68,6 +81,10 @@ pub enum TransportError {
         source: io::Error,
     },
 }
+
+/// The KNXnet/IP CONNECT_RESPONSE status meaning "no more connections"
+/// (every tunnelling slot is occupied).
+pub const E_NO_MORE_CONNECTIONS: u8 = 0x24;
 
 impl From<io::Error> for TransportError {
     fn from(source: io::Error) -> Self {
