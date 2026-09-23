@@ -5,6 +5,8 @@
 //!
 //! - [`decode`] — the pure decode pipeline: a cEMI frame plus an optional
 //!   [`Model`](bussard_model::Model) becomes a [`DecodedTelegram`].
+//! - [`infer`] — pure DPT inference and name proposal from observed payloads,
+//!   the engine behind `bussard learn` and the `knx_infer_group` MCP tool.
 //! - [`filter`] — a comma-separated address filter ([`Filter`]) shared by the
 //!   CLI, the ring buffer and the store.
 //! - [`format`] — a coloured pretty line and stable JSON Lines.
@@ -20,6 +22,7 @@
 pub mod decode;
 pub mod filter;
 pub mod format;
+pub mod infer;
 pub mod ring;
 pub mod store;
 pub mod stream;
@@ -28,6 +31,9 @@ pub mod timefmt;
 pub use decode::{ApciKind, DecodedTelegram, DestinationRef};
 pub use filter::{Filter, FilterParseError};
 pub use format::{json_line, json_value, pretty_line};
+pub use infer::{
+    Confidence, DptCandidate, SendingObject, infer_dpt, propose_name, refine, sending_object,
+};
 pub use ring::{RingEvent, RingSubscription, TelegramRing};
 pub use store::{
     CaptureRecord, CaptureStore, CaptureWriter, QueryFilter, StoreError, StoredTelegram,
