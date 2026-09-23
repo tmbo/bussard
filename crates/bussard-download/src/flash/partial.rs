@@ -16,10 +16,16 @@
 //!   parameter image as an absolute write at the base the device reported
 //!   through `PID_TABLE_REFERENCE`, `LoadCompleted`, the procedure's MCB checks
 //!   on that object, and the terminal restart.
-//! - **System 7**: `StartLoading` the load-state machine that holds the
-//!   parameter segments, its `AbsSegment` records (the parameter segments with
-//!   their images, every other segment as an allocation record only), its task
-//!   segment and task-control ops, `LoadCompleted`, and the restart.
+//! - **System 7** (issue #146): `StartLoading` the load-state machine that
+//!   holds the parameter segments, each parameter image as an absolute write at
+//!   its segment address, `LoadCompleted`, the procedure's MCB reads, and the
+//!   restart. No `AbsSegment` record, no task segment and no task-control op:
+//!   the segments stay allocated where they are. A re-sent allocation (the
+//!   `0x0700` RAM region) put the Jung 3361-1MWW (`1.1.32`, mask 0705) into load
+//!   state Error; ETS's partial download of the same device
+//!   (`bad-eg-pm-1-1-18.pcapng`) opens and completes the application LSM
+//!   around plain `A_Memory_Write`s and sends nothing else to it. The executor
+//!   refuses before the `StartLoading` unless the machine reads `Loaded`.
 //!
 //! Every parameter image carries the octets the device holds today as its
 //! baseline, so the executor writes only the octets that differ. The address,
@@ -27,7 +33,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::{FlashPlan, FlashStep, ImageKind};
+use super::{FlashPlan, FlashStep, ImageKind, ImageRef};
 use crate::param_plan::ParamRegions;
 
 /// Why a full plan cannot be cut down to a parameter-only download.
@@ -69,10 +75,7 @@ impl FlashPlan {
         let baseline: BTreeMap<String, Vec<u8>> = steps
             .iter()
             .filter_map(|step| match step {
-                FlashStep::WriteMem { image, .. }
-                | FlashStep::Sys7AbsSegment {
-                    image: Some(image), ..
-                } => regions
+                FlashStep::WriteMem { image, .. } => regions
                     .get(&image.segment_id)
                     .map(|r| (image.segment_id.clone(), r.bytes.clone())),
                 _ => None,
@@ -208,43 +211,43 @@ impl FlashPlan {
         if lsms.is_empty() {
             return Err(PartialPlanError::NoParameterSegment);
         }
+        let mut written: BTreeSet<String> = BTreeSet::new();
         let mut steps = Vec::new();
         for step in &self.steps {
             match step {
-                FlashStep::Sys7StartLoading { lsm }
-                | FlashStep::Sys7TaskSegment { lsm, .. }
-                | FlashStep::Sys7TaskCtrl1 { lsm, .. }
-                | FlashStep::Sys7LoadCompleted { lsm }
+                FlashStep::Sys7StartLoading { lsm } | FlashStep::Sys7LoadCompleted { lsm }
                     if lsms.contains(lsm) =>
                 {
                     steps.push(step.clone());
                 }
+                // The parameter segments become plain absolute writes; every
+                // other segment record (the code, the RAM region) is left out,
+                // and so are the task segment and task-control ops.
                 FlashStep::Sys7AbsSegment {
-                    lsm,
                     address,
-                    size,
-                    mem_type,
-                    seg_flags,
-                    checksum_ctrl,
-                    image,
-                } if lsms.contains(lsm) => {
-                    // Re-declare every segment of the machine, as ETS does, but
-                    // stream only the parameter segments: a code segment keeps
-                    // its resident content.
-                    let image = image
-                        .clone()
-                        .filter(|image| carries_params(&image.segment_id));
-                    steps.push(FlashStep::Sys7AbsSegment {
-                        lsm: *lsm,
-                        address: *address,
-                        size: *size,
-                        mem_type: *mem_type,
-                        seg_flags: *seg_flags,
-                        checksum_ctrl: *checksum_ctrl,
-                        image,
+                    image: Some(image),
+                    ..
+                } if carries_params(&image.segment_id) => {
+                    if !written.insert(image.segment_id.clone()) {
+                        continue;
+                    }
+                    let address = regions
+                        .get(&image.segment_id)
+                        .map_or(*address, |region| region.address);
+                    steps.push(FlashStep::WriteMem {
+                        address,
+                        image: ImageRef {
+                            kind: ImageKind::Parameters,
+                            ..image.clone()
+                        },
                     });
                 }
-                FlashStep::Sys7CompareMem { .. } | FlashStep::CompareProp { .. } => {
+                // Read-only checks: the vendor's preconditions, and the MCB
+                // reads of objects 1 to 3 that ETS repeats after its partial
+                // download.
+                FlashStep::Sys7CompareMem { .. }
+                | FlashStep::CompareProp { .. }
+                | FlashStep::LoadImageProp { .. } => {
                     steps.push(step.clone());
                 }
                 FlashStep::Restart => steps.push(step.clone()),

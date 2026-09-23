@@ -31,8 +31,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bussard_download::{
-    Session, apply_sys7_tables, compute_tables, flash, plan, plan_flash, read_sys7_tables,
-    sys7_table_images,
+    FlashStep, Session, apply_sys7_tables, compute_tables, flash, plan, plan_flash,
+    read_sys7_tables, sys7_table_images,
 };
 use bussard_mgmt::LsmAccess;
 use bussard_mgmt::connection::Layer4Connection;
@@ -1957,22 +1957,21 @@ fn mdt_app_with_parameters() -> ApplicationProgram {
     parse_application_program("M-83_A-E", xml.as_bytes()).expect("parse MDT S7 app")
 }
 
-async fn run_parameters_only_sys7(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>> {
-    set_sys7_lsm_env(mode);
-    let (mut bus, state, handle) = setup(mode, Fault::None).await;
+/// The programmed MDT S7 device (defaults 4, 5 at `0x4400`) with LSM 3 in
+/// `lsm3`, and the full plan that moves the second parameter from 5 to 9.
+fn parameters_only_fixture(
+    state: &Shared,
+    lsm3: u8,
+) -> Result<(ApplicationProgram, bussard_download::FlashPlan), Box<dyn std::error::Error>> {
     {
-        // A programmed device holding the vendor defaults 4, 5 at 0x4400.
         let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-        for lsm in [1u8, 2, 3] {
-            s.lsm_states.insert(lsm, LS_LOADED);
-        }
+        s.lsm_states.insert(1, LS_LOADED);
+        s.lsm_states.insert(2, LS_LOADED);
+        s.lsm_states.insert(3, lsm3);
         s.memory.insert(0x4400, 4);
         s.memory.insert(0x4401, 5);
     }
-    let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
-    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
     let app = mdt_app_with_parameters();
-    // The model moves the second parameter from 5 to 9.
     let overrides = std::collections::BTreeMap::from([("P-1_R-2".to_string(), "9".to_string())]);
     let full = plan_flash(
         &app,
@@ -1983,6 +1982,76 @@ async fn run_parameters_only_sys7(mode: LsmMode) -> Result<(), Box<dyn std::erro
         None,
         &std::collections::BTreeMap::new(),
     )?;
+    Ok((app, full))
+}
+
+async fn run_parameters_only_refuses_unloaded_lsm3(
+    mode: LsmMode,
+) -> Result<(), Box<dyn std::error::Error>> {
+    set_sys7_lsm_env(mode);
+    let (mut bus, state, handle) = setup(mode, Fault::None).await;
+    let (_app, full) = parameters_only_fixture(&state, LS_ERROR)?;
+    let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await;
+    let regions = bussard_download::read_parameter_regions(session.l4(), &full).await;
+    let partial = full.parameters_only(&regions)?;
+    let result = flash(
+        &mut session,
+        &partial,
+        bussard_download::FlashOptions::default(),
+        |_p| {},
+    )
+    .await;
+    handle.abort();
+    let _ = session.into_disconnect().await;
+    let Err(err) = result else {
+        return Err("a device whose LSM 3 is not Loaded must be refused".into());
+    };
+    assert!(
+        matches!(
+            err,
+            bussard_mgmt::load::WriteError::NotLoaded {
+                object_index: 3,
+                actual: LoadState::Error,
+                ..
+            }
+        ),
+        "{err}"
+    );
+    assert!(err.to_string().contains("flash --force"), "{err}");
+    let s = state.lock().unwrap_or_else(|e| e.into_inner());
+    assert!(
+        s.segment_writes.is_empty(),
+        "nothing written: {:?}",
+        s.segment_writes
+    );
+    assert!(s.lsm_events.is_empty(), "no load event: {:?}", s.lsm_events);
+    assert_eq!(s.restarts_seen, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_parameters_only_sys7_memory_mapped_refuses_unloaded_lsm3()
+-> Result<(), Box<dyn std::error::Error>> {
+    run_parameters_only_refuses_unloaded_lsm3(LsmMode::MemoryMapped).await
+}
+
+#[tokio::test]
+async fn test_parameters_only_sys7_property_refuses_unloaded_lsm3()
+-> Result<(), Box<dyn std::error::Error>> {
+    run_parameters_only_refuses_unloaded_lsm3(LsmMode::Property).await
+}
+
+async fn run_parameters_only_sys7(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>> {
+    set_sys7_lsm_env(mode);
+    let (mut bus, state, handle) = setup(mode, Fault::None).await;
+    // A programmed device holding the vendor defaults 4, 5 at 0x4400; the
+    // model moves the second parameter from 5 to 9.
+    let (app, full) = parameters_only_fixture(&state, LS_LOADED)?;
+    let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
     let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
     let mut session = authed_session(l4).await;
     let regions = bussard_download::read_parameter_regions(session.l4(), &full).await;
@@ -1996,6 +2065,20 @@ async fn run_parameters_only_sys7(mode: LsmMode) -> Result<(), Box<dyn std::erro
 
     let partial = full.parameters_only(&regions)?;
     assert_eq!(partial.changed_octets(), 1);
+    // The plan: open LSM 3, one in-place write, complete, restart; no
+    // allocation record and no task segment (issue #146).
+    assert!(
+        !partial.steps.iter().any(|st| matches!(
+            st,
+            FlashStep::Sys7AbsSegment { .. }
+                | FlashStep::Sys7TaskSegment { .. }
+                | FlashStep::Sys7TaskCtrl1 { .. }
+                | FlashStep::Sys7Unload { .. }
+        )),
+        "{:?}",
+        partial.steps
+    );
+    assert!(matches!(partial.steps.last(), Some(FlashStep::Restart)));
     {
         let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
         s.lsm_events.clear();
@@ -2029,13 +2112,15 @@ async fn run_parameters_only_sys7(mode: LsmMode) -> Result<(), Box<dyn std::erro
     assert_eq!(s.segment_writes, vec![(0x4401, 1)]);
     assert_eq!(s.memory.get(&0x4401).copied(), Some(9));
     assert_eq!(s.memory.get(&0x4400).copied(), Some(4));
-    // Only LSM 3 was driven, and nothing was unloaded.
-    assert!(
-        s.lsm_events.iter().all(|(lsm, _)| *lsm == 3),
-        "{:?}",
-        s.lsm_events
+    // Only LSM 3 was driven, the way ETS's partial download of the Jung
+    // 3361-1MWW drives it (issue #146): opened and completed around the plain
+    // memory write, with no allocation, task segment or unload. A re-sent
+    // allocation put the real device into load state Error.
+    assert_eq!(
+        s.lsm_events,
+        vec![(3, LE_START_LOADING), (3, LE_LOAD_COMPLETED)],
+        "no allocation or task record, no unload"
     );
-    assert!(!s.lsm_events.iter().any(|(_, op)| *op == LE_UNLOAD));
     for lsm in [1u8, 2, 3] {
         assert_eq!(s.lsm_state(lsm), LS_LOADED, "LSM {lsm} stays Loaded");
     }

@@ -222,13 +222,17 @@ when:
 | No loaded application, or an object/LSM not `Loaded` | Refuses: there is nothing to patch. Use a full `flash`. |
 | An unreadable load state or parameter segment | Refuses: the base address or the current content is unknown. |
 | New values that show or hide a com-object | Refuses: the group-object table would change, and only a full `flash` rewrites it. The message names the objects. |
+| System 7 links that differ from the device's tables | Refuses: the table load-state machines are not reloaded. Run `apply` first. |
 | Values that already match | Prints `nothing to do`, exits 0, touches no load state. |
 
 System 7 exposes no application id, so there the identity check is every
 load-state machine `Loaded` plus the first octets of each code segment matching
-the product. If a parameter download fails midway, re-run it (it writes only
-the octets that still differ) or run a full `flash`; the backup file holds the
-memory as it was.
+the product. On System 7 the download opens LSM 3 and writes the parameter octets in
+place, with no allocation record, and the executor re-reads LSM 3 right before
+and writes nothing unless it is `Loaded` (issue #146). If a parameter download
+fails midway and the application still reads `Loaded`, re-run it (it writes
+only the octets that still differ); if it does not, recover with a full
+`flash --force`. The backup file holds the memory as it was.
 
 **`assign`** sets a device's individual address; **`adopt`** is the interactive
 wizard that assigns and flashes a new device. Both are gated the same way: they
