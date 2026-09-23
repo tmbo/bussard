@@ -500,7 +500,9 @@ pub fn uses_dynamic_image(app: &ApplicationProgram) -> bool {
 /// parameter's `<Memory>` offset, or for a `<Union>` member the union's base
 /// plus the member offset, in either case plus the module instance's value for
 /// the `BaseOffset` argument. A parameter behind a branch that is not taken is
-/// not written, so its bytes keep the template value, unless the application
+/// not written, so its bytes keep the template value (or the segment's fill),
+/// and so is one behind a `<choose>` whose controlling parameter is itself
+/// inactive, which selects no branch (issue #159), unless the application
 /// has ETS download hidden parameters too
 /// ([`ApplicationProgram::downloads_invisible_parameters`]): then every
 /// application parameter the walk did not reach carries its default first.
