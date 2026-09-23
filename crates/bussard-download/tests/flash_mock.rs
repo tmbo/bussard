@@ -3044,7 +3044,11 @@ async fn flash_cycles_l4_connection_before_the_exchange_budget_and_reaches_loade
             &BTreeMap::new(),
         )
         .unwrap();
-        let connector = LeaseConnector::plain(handle.clone(), target, source, None);
+        // Fast L4 timeouts: the drop the mock forces below is only observed as
+        // silence, so with the default 3 s ACK budget x repetitions each
+        // forced drop would cost seconds of pure waiting (~24 s for the test).
+        let connector =
+            LeaseConnector::plain(handle.clone(), target, source, Some(fast_timeouts()));
         let mut session = Session::open_with_key(connector, None).await.unwrap();
         let outcome = flash(
             &mut session,
@@ -3092,7 +3096,9 @@ async fn flash_cycles_l4_connection_before_the_exchange_budget_and_reaches_loade
             &BTreeMap::new(),
         )
         .unwrap();
-        let connector = LeaseConnector::plain(handle.clone(), target, source, None);
+        // Fast L4 timeouts, as in the first half.
+        let connector =
+            LeaseConnector::plain(handle.clone(), target, source, Some(fast_timeouts()));
         let mut session = Session::open_with_key(connector, None).await.unwrap();
         let outcome = flash(
             &mut session,

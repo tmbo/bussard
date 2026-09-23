@@ -79,6 +79,11 @@ fn knxnet_frame(service: ServiceType, body: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Runs the mock gateway + devices until the client disconnects.
+///
+/// The loop only returns after 5 s of silence, so tests end with
+/// `gw_task.abort()` rather than awaiting the task: awaiting it (even
+/// under a 1 s timeout) added that wait to every test.
 async fn run_mock(gw: UdpSocket, devices: Shared) {
     let mut gw_seq: u8 = 0;
     let mut dev_send_seq: HashMap<u16, u8> = HashMap::new();
@@ -390,7 +395,7 @@ async fn discover_write_and_verify_round_trip() {
         assert!(!devs[0].programming);
     }
 
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -405,7 +410,7 @@ async fn zero_devices_in_programming_mode_is_empty() {
         .await
         .unwrap();
     assert!(found.is_empty());
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -423,7 +428,7 @@ async fn two_devices_in_programming_mode_both_reported() {
         .await
         .unwrap();
     assert_eq!(found.len(), 2, "both responders surface: {found:?}");
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -455,7 +460,7 @@ async fn verify_fails_when_address_not_applied() {
         !err.device_present(),
         "no device at the new address: {err:?}"
     );
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -492,7 +497,7 @@ async fn serial_number_read_and_write_round_trip() {
         let devs = shared.lock().unwrap();
         assert_eq!(devs[0].address, target);
     }
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -515,5 +520,5 @@ async fn serial_read_unknown_serial_is_none() {
     .await
     .unwrap();
     assert_eq!(found, None);
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }

@@ -1042,7 +1042,35 @@ enum Command {
     },
 }
 
+/// Stack size for the thread that runs the CLI body.
+///
+/// Windows gives the main thread a 1 MiB stack. In debug builds clap's derive
+/// parser plus the large async state machines each command `block_on`s exceed
+/// that, so every command (even `bussard` with no arguments) died with
+/// "thread 'main' has overflowed its stack". A spawned thread gets an explicit,
+/// generous stack on every platform; it is reserved virtual memory, so the
+/// unused part costs nothing.
+const MAIN_THREAD_STACK_BYTES: usize = 64 * 1024 * 1024;
+
 fn main() -> ExitCode {
+    let body = std::thread::Builder::new()
+        .name("bussard-main".to_owned())
+        .stack_size(MAIN_THREAD_STACK_BYTES)
+        .spawn(cli_main);
+    match body.map(|handle| handle.join()) {
+        Ok(Ok(code)) => code,
+        // The panic message was already printed by the panic hook.
+        Ok(Err(_panic)) => ExitCode::FAILURE,
+        Err(err) => {
+            eprintln!("error: cannot start the bussard main thread: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The whole CLI: parse arguments, set up logging, run the subcommand. Runs on
+/// the `bussard-main` thread spawned by [`main`].
+fn cli_main() -> ExitCode {
     let cli = Cli::parse();
 
     tracing_subscriber::fmt()
