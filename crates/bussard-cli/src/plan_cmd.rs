@@ -51,6 +51,9 @@ struct PlanJson {
     resulting_association_count: usize,
     load_steps: Vec<String>,
     noop: bool,
+    /// The parameter read-back (issue #119), when a product file was available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parameters: Option<crate::param_readback::Readback>,
 }
 
 // The live read, the desired-table computation and the plan rendering are
@@ -87,6 +90,7 @@ pub fn run(
     dir: &Path,
     json: bool,
     overrides: ConnOverrides,
+    selection: crate::param_readback::Selection<'_>,
 ) -> anyhow::Result<ExitCode> {
     let target: IndividualAddress = address
         .parse()
@@ -120,6 +124,11 @@ pub fn run(
     crate::history_cmd::capture_external_edit(dir);
 
     let desired = compute_desired(&model, target)?;
+    // The product file the parameter read-back decodes with (issue #119), when
+    // one is given or cached.
+    let product = crate::param_readback::resolve(dir, selection, Some(&model), target)?;
+    let model_ref = &model;
+    let product_ref = product.as_ref();
 
     let runtime = tokio::runtime::Runtime::new()?;
     let read = runtime.block_on(async move {
@@ -139,8 +148,21 @@ pub fn run(
                     tracing::debug!("{target} authorize (free access) did not grant: {err}");
                 }
                 let r = read_live_tables(&mut l4).await;
+                let params = match (&r, product_ref) {
+                    (Ok(LiveRead::Tables(live)), Some(product)) => Some(
+                        crate::param_readback::read(
+                            &mut l4,
+                            product,
+                            Some(model_ref),
+                            target,
+                            live.tables().mask,
+                        )
+                        .await,
+                    ),
+                    _ => None,
+                };
                 let _ = l4.disconnect().await;
-                r
+                r.map(|r| (r, params))
             }
             Err(err) => Err(anyhow::Error::new(TablesError::Mgmt(err))
                 .context("connecting to the device")),
@@ -149,7 +171,8 @@ pub fn run(
         anyhow::Ok(result)
     })?;
 
-    let live = match read? {
+    let (read, params) = read?;
+    let live = match read {
         LiveRead::Tables(live) => live,
         LiveRead::UnsupportedMask { address, mask } => {
             report_unsupported_mask("plan", address, mask);
@@ -160,10 +183,15 @@ pub fn run(
 
     let report = plan(live, &desired);
     if json {
-        let out = to_json(target, live, &report);
+        let mut out = to_json(target, live, &report);
+        out.parameters = params;
         println!("{}", serde_json::to_string_pretty(&out)?);
     } else {
         print_text(target, live, &report);
+        match &params {
+            Some(params) => crate::param_readback::print_text(params, target),
+            None => crate::param_readback::print_missing_product_note(Some(&model), target),
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -200,6 +228,7 @@ fn to_json(target: IndividualAddress, live: &DeviceTables, report: &PlanReport) 
         resulting_association_count: report.resulting_association_count,
         load_steps: report.load_steps.iter().map(|s| s.to_string()).collect(),
         noop: report.is_noop(),
+        parameters: None,
     }
 }
 

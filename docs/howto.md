@@ -413,6 +413,37 @@ Flash plan for 1.1.12
 
 On a factory-fresh device there is nothing to read back, so the line reads `Night setback: unknown current value, will be 17 °C`. `--json` puts the same lines in a `parameters` array. One caveat: a `.knxproj` re-import replaces the whole `parameters:` block with ETS truth, so make the change in ETS too if you still re-import.
 
+For a device that already runs the application, `--parameters-only` does what ETS's partial download does: it rewrites only the parameter memory, octet by octet where it differs, and restarts. No unload, no tables, no factory reset:
+
+```console
+$ bussard flash 1.1.12 --product heating.knxprod --parameters-only --gateway 127.0.0.1:3671
+Parameter-only download for 1.1.12
+  application : M-0083_A-0042-10-1234 Heating actuator
+  parameters  : 1 change(s):
+      Night setback: 18 °C to 17 °C
+  memory      :
+      M-0083_A-0042-10-1234_RS-04-00000 at 0x004400: 1 of 312 octet(s) change
+  procedure   : open for loading (obj 4); write parameters image (312 bytes) at 0x00004400; complete load (obj 4); restart device (no unload, no table write)
+download the parameters (1 octet(s)) to 1.1.12 via 127.0.0.1:3671? [y/N] y
+parameter backup written to knx/captures/backups/parameters/1.1.12-1790182579.json
+parameters verified: 1 changed octet(s) read back from 1.1.12; the application is Loaded
+```
+
+It refuses when the device runs another application or is not `Loaded`, and when a changed parameter shows or hides a com-object: that changes the group-object table, which needs the full `flash`. [SAFETY.md](SAFETY.md#what-each-write-command-does-and-its-rails) has the table.
+
+To see what a device holds before you change anything, give `plan` or `reconstruct` the product file. Both read the parameter memory back (read-only), decode it, and list the values that differ from the vendor default and from the model:
+
+```console
+$ bussard reconstruct 1.1.12 --product heating.knxprod
+...
+parameters (application M-0083_A-0042-10-1234):
+  1 parameter(s) differ from the vendor default:
+      Night setback: 17 °C (default 18 °C)
+  the device matches the model's parameters: block
+```
+
+Without `--product` they use the archive `import-product` cached in `<dir>/vendor/` for the model's order number, when there is one.
+
 ## ... name the group addresses of a house without a project file?
 
 Let the assistant run the loop with you. Start the MCP server (`--passive` is enough, nothing here transmits) and say "help me name the group addresses". The assistant asks you to press a button, waits for the telegram with `knx_wait_for_telegram`, then calls `knx_infer_group`, which returns DPT candidates, the sending device, its channel and com object, and a proposed name such as "Kitchen ceiling light, switch". It tells you what it thinks the button is; you confirm or correct it in chat, and only then does it write the answer into the model with `knx_set_group` and `knx_add_link`. Press the same button again when the candidates are uncertain: every extra telegram narrows them.

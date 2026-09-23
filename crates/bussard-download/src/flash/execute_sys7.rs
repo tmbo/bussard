@@ -132,6 +132,24 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                                 .expect("System 7 segment image resolved at plan time");
                             let addr = seg_addr;
                             let mask = ctx.segment_masks.get(&img.segment_id);
+                            // A parameter-only download (issue #119) narrows the
+                            // write to the octets that differ from the resident
+                            // memory read before planning: the mask owns only
+                            // those runs, so read-compare reads and compares just
+                            // the chunks that hold them, and the plain writer
+                            // writes just them.
+                            let diff_mask = plan.baseline.get(&img.segment_id).map(|current| {
+                                let mut owned = vec![0u8; bytes.len()];
+                                for (start, end) in super::execute::diff_regions(
+                                    bytes,
+                                    current,
+                                    mask.map(Vec::as_slice),
+                                ) {
+                                    owned[start..end].fill(0xFF);
+                                }
+                                owned
+                            });
+                            let mask_slice = diff_mask.as_deref().or(mask.map(Vec::as_slice));
                             if ctx.profile.read_compare_write() {
                                 // No `VerifyMode` on this mask: read each chunk,
                                 // write only the differing ones, and let the
@@ -142,19 +160,13 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                                     session,
                                     addr,
                                     bytes,
-                                    mask.map(Vec::as_slice),
+                                    mask_slice,
                                     &mut progress,
                                 )
                                 .await?;
                             } else {
-                                write_sys7_segment(
-                                    session,
-                                    addr,
-                                    bytes,
-                                    mask.map(Vec::as_slice),
-                                    &mut progress,
-                                )
-                                .await?;
+                                write_sys7_segment(session, addr, bytes, mask_slice, &mut progress)
+                                    .await?;
                                 // Spot-check only unmasked, checksum-controlled segments: a
                                 // masked segment leaves device-owned bytes untouched, so the
                                 // image's leading octets do not equal the device's memory;

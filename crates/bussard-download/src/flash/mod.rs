@@ -96,6 +96,7 @@ use std::collections::BTreeMap;
 mod execute;
 mod execute_sys7;
 mod labels;
+mod partial;
 mod plan;
 mod plan_sys7;
 mod session;
@@ -107,6 +108,7 @@ pub(crate) use execute::probe_object_types;
 pub use execute::{discover_application_object, flash};
 use labels::step_label;
 pub use labels::trace;
+pub use partial::PartialPlanError;
 use plan::{MAX_MEMORY_END, insert_factory_reset, manufacturer_from_app_id};
 pub use plan::{plan_flash, plan_flash_with_object_flags, select_application};
 pub(crate) use plan_sys7::sys7_lsm_override;
@@ -680,6 +682,13 @@ pub struct FlashPlan {
     /// master reset with erase code 1 (the ETS form on System B devices whose
     /// download allocates filled segments) instead of a bare `A_Restart`.
     confirmed_restart: bool,
+    /// The octets the device holds today in each memory region a
+    /// parameter-only download rewrites (segment id → bytes), read back before
+    /// the plan was built (issue #119). When a write step's segment has an entry
+    /// here, the executor writes only the octets that differ from it, the way
+    /// ETS rewrites one changed octet of a resident parameter segment. Empty for
+    /// every full flash.
+    baseline: BTreeMap<String, Vec<u8>>,
 }
 
 /// The System 7 execution context attached to a [`FlashPlan`] for a mask
@@ -803,6 +812,18 @@ impl FlashPlan {
             .as_ref()
             .and_then(|s| s.segment_masks.get(segment_id))
             .map(Vec::as_slice)
+    }
+
+    /// The resident octets a parameter-only download diffs `segment_id`'s image
+    /// against, when this plan is one (see [`FlashPlan::parameters_only`]).
+    pub fn baseline(&self, segment_id: &str) -> Option<&[u8]> {
+        self.baseline.get(segment_id).map(Vec::as_slice)
+    }
+
+    /// Whether this is a parameter-only download (issue #119): it rewrites only
+    /// resident parameter memory, diffed against what the device holds.
+    pub fn is_parameters_only(&self) -> bool {
+        !self.baseline.is_empty()
     }
 
     /// Total octets written to device memory across all memory-write steps.

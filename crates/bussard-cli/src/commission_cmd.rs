@@ -401,6 +401,7 @@ fn commission_one(
             false,
             false,
             false,
+            false,
             options.allow_remote_gateway,
             None,
             tool_key_source,
@@ -597,7 +598,7 @@ async fn answers(handle: &BusHandle, source: IndividualAddress, addr: Individual
 
 /// Finds the `.knxprod` to flash: the explicit `--product`, else the first
 /// archive in `<dir>/vendor/` whose hardware catalogue carries `order`.
-fn resolve_product_file(
+pub(crate) fn resolve_product_file(
     dir: &Path,
     explicit: Option<&Path>,
     order: &str,

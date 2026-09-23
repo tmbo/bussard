@@ -63,6 +63,7 @@ pub fn run(
     force: bool,
     full: bool,
     no_factory_reset: bool,
+    parameters_only: bool,
     allow_remote_gateway: bool,
     bcu_key: Option<&str>,
     tool_key_source: crate::secure_key::ToolKeySource<'_>,
@@ -293,6 +294,30 @@ pub fn run(
         }
     };
 
+    // `--parameters-only` (issue #119): rewrite the parameter memory of a device
+    // that already runs this application, and nothing else.
+    if parameters_only {
+        return crate::flash_params::run(crate::flash_params::Context {
+            runtime: &runtime,
+            handle,
+            target,
+            source,
+            gateway: gateway.clone(),
+            dir,
+            yes,
+            json: output.json,
+            app,
+            plan: &plan,
+            overrides: &overrides_map,
+            base_offsets: &base_offsets,
+            resident: resident.as_ref(),
+            facts,
+            bcu_key,
+            tool_key,
+            secure_seq,
+        });
+    }
+
     // The factory-freshness verdict (issue #79), computed up front because it
     // also shapes the plan: a device that is not factory-fresh gets a factory
     // reset before the download (issue #117), on top of the one the planner adds
@@ -479,6 +504,46 @@ fn template_ops_for(
                 .and_then(|m| m.full_load_procedure(mask))
         })
         .map(|proc| proc.ops.clone())
+}
+
+/// The model's parameter inputs for `target`: the `parameters:` overrides
+/// re-keyed to app-relative ParameterRef ids, and the module-instance bases.
+pub(crate) fn model_parameters(
+    model: Option<&bussard_model::Model>,
+    target: IndividualAddress,
+) -> (BTreeMap<String, String>, BTreeMap<String, u32>) {
+    let overrides = collect_parameter_overrides(model, target);
+    let bases = model
+        .and_then(|m| m.devices.get(&target))
+        .map(|d| d.device.module_bases.clone())
+        .unwrap_or_default();
+    (overrides, bases)
+}
+
+/// The full flash plan for `target` against `device_mask`, built offline the
+/// way `flash` builds it. `plan` and `reconstruct` use it to locate the
+/// parameter memory they read back (issue #119).
+pub(crate) fn plan_for_readback(
+    product_data: &ProductData,
+    app: &ApplicationProgram,
+    model: Option<&bussard_model::Model>,
+    target: IndividualAddress,
+    device_mask: u16,
+) -> Result<FlashPlan, bussard_download::PlanError> {
+    let (overrides, bases) = model_parameters(model, target);
+    let template_ops = template_ops_for(product_data, app);
+    let table_images = build_table_images(model, target, app, &overrides);
+    let object_flags = linked_object_flags(model, target);
+    plan_flash_with_object_flags(
+        app,
+        &target.to_string(),
+        device_mask,
+        &overrides,
+        &bases,
+        template_ops.as_deref(),
+        &table_images,
+        &object_flags,
+    )
 }
 
 /// `flash --dry-run`: build the pre-flight plan against the application's own
@@ -835,7 +900,7 @@ fn build_module_obj3_descriptors(
 ///   numbers as candidates.
 /// - More than one → an error listing the candidate application ids so the user
 ///   can fall back to `--application`.
-fn resolve_by_order_number<'a>(
+pub(crate) fn resolve_by_order_number<'a>(
     product: &'a ProductData,
     order_number: &str,
 ) -> anyhow::Result<&'a ApplicationProgram> {
@@ -1064,7 +1129,7 @@ impl bussard_download::Connector for LeaseConnector<'_> {
 
 /// Runs the on-bus flash sequence with a progress line.
 #[allow(clippy::too_many_arguments)]
-async fn execute(
+pub(crate) async fn execute(
     handle: &BusHandle,
     target: IndividualAddress,
     source: IndividualAddress,

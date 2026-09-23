@@ -880,6 +880,7 @@ pub fn plan_flash_with_object_flags(
         spliced_from_template,
         sys7: None,
         confirmed_restart: sparse,
+        baseline: BTreeMap::new(),
     })
 }
 
