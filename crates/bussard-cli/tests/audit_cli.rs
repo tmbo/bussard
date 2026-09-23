@@ -428,3 +428,31 @@ fn test_audit_live_full_interface_exits_with_distinct_code() -> TestResult {
     assert!(stderr.contains("ETS"), "{stderr}");
     Ok(())
 }
+
+/// A command on the reconnecting bus actor (here `read`) also reports a full
+/// interface with its own message and exit code, not as a generic timeout.
+#[test]
+fn test_read_full_interface_exits_with_distinct_code() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let gw = rt.block_on(UdpSocket::bind("127.0.0.1:0"))?;
+    let port = gw.local_addr()?.port();
+    let mock = rt.spawn(run_mock(gw, Arc::new(Mutex::new(Vec::new())), true));
+
+    let dir = fixture("read-full")?;
+    let gateway = format!("127.0.0.1:{port}");
+    let out = bussard(&[
+        "read",
+        "1/0/2",
+        "--gateway",
+        &gateway,
+        "--dir",
+        dir.to_str().ok_or("path")?,
+    ])?;
+    mock.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(4), "stderr: {stderr}");
+    assert!(stderr.contains("E_NO_MORE_CONNECTIONS"), "{stderr}");
+    Ok(())
+}
