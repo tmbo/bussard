@@ -147,6 +147,11 @@ struct DeviceState {
     /// control). A memory-mapped device has no such property, so a correct
     /// memory-mapped flash of a post-restart LSM 5 must leave this at zero.
     lsm5_property_accesses: usize,
+    /// Every load event applied, as `(lsm, opcode)`, so a parameter-only
+    /// download can be shown to unload nothing and touch only LSM 3 (#119).
+    lsm_events: Vec<(u8, u8)>,
+    /// The address and length of every segment content write.
+    segment_writes: Vec<(u16, usize)>,
 }
 
 impl DeviceState {
@@ -178,6 +183,8 @@ fn fresh_device(mode: LsmMode, fault: Fault) -> Shared {
         revert_on_reboot: false,
         rebooting: false,
         lsm5_property_accesses: 0,
+        lsm_events: Vec::new(),
+        segment_writes: Vec::new(),
     }))
 }
 
@@ -442,6 +449,7 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
         // Otherwise a segment content write. Store it (corrupting one octet under
         // the fault). The read-back verify then sees exactly what we stored.
         s.memory_writes_seen += 1;
+        s.segment_writes.push((addr, data.len()));
         for (i, &b) in data.iter().enumerate() {
             let a = addr.wrapping_add(i as u16);
             let stored = if s.fault == Fault::CorruptStoredImage && i == 0 {
@@ -597,6 +605,7 @@ fn apply_lsm_event(s: &mut DeviceState, lsm: u8, event: &[u8]) {
         return;
     };
     let cur = s.lsm_state(lsm);
+    s.lsm_events.push((lsm, opcode));
     // The AdditionalLoadControls sub-command selector (octet 1); 0x02 = Task.
     let subtype = event.get(1).copied().unwrap_or(0);
     let next = match opcode {
@@ -1891,4 +1900,153 @@ async fn apply_system7_tables_fails_on_a_verify_mismatch() -> Result<(), Box<dyn
     let _ = l4.disconnect().await;
     handle.abort();
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Issue #119: parameter-only download on System 7.
+// ---------------------------------------------------------------------------
+
+/// [`mdt_canonical_app`] with two 8-bit parameters in the `0x4400` segment
+/// (defaults 4 and 5, the segment's own `<Data>`).
+fn mdt_app_with_parameters() -> ApplicationProgram {
+    let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+     <ApplicationProgram Id="M-83_A-E" ApplicationNumber="14" ApplicationVersion="35"
+        MaskVersion="MV-0705" Name="MDT S7" LoadProcedureStyle="ProductProcedure">
+      <Static>
+       <Code>
+        <AbsoluteSegment Id="M-83_A-E_AS-1" Size="4" Address="16384"><Data>AAECAw==</Data><Mask>//8A/w==</Mask></AbsoluteSegment>
+        <AbsoluteSegment Id="M-83_A-E_AS-2" Size="3" Address="16897"><Data>AQID</Data></AbsoluteSegment>
+        <AbsoluteSegment Id="M-83_A-E_AS-3" Size="8" Address="1792" />
+        <AbsoluteSegment Id="M-83_A-E_AS-4" Size="2" Address="17408"><Data>BAU=</Data></AbsoluteSegment>
+       </Code>
+       <ParameterTypes><ParameterType Id="M-83_A-E_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType></ParameterTypes>
+       <Parameters>
+        <Parameter Id="M-83_A-E_P-0" Name="delay" Text="Delay" ParameterType="M-83_A-E_PT-0" Value="4"><Memory CodeSegment="M-83_A-E_AS-4" Offset="0" BitOffset="0" /></Parameter>
+        <Parameter Id="M-83_A-E_P-1" Name="step" Text="Step" ParameterType="M-83_A-E_PT-0" Value="5"><Memory CodeSegment="M-83_A-E_AS-4" Offset="1" BitOffset="0" /></Parameter>
+       </Parameters>
+       <ParameterRefs>
+        <ParameterRef Id="M-83_A-E_P-0_R-1" RefId="M-83_A-E_P-0" />
+        <ParameterRef Id="M-83_A-E_P-1_R-2" RefId="M-83_A-E_P-1" />
+       </ParameterRefs>
+       <LoadProcedures>
+        <LoadProcedure>
+         <LdCtrlConnect />
+         <LdCtrlCompareProp ObjIdx="0" PropId="78" InlineData="00000000031200000000" />
+         <LdCtrlUnload LsmIdx="1" />
+         <LdCtrlUnload LsmIdx="2" />
+         <LdCtrlUnload LsmIdx="3" />
+         <LdCtrlLoad LsmIdx="1" />
+         <LdCtrlAbsSegment LsmIdx="1" Address="16384" Size="4" />
+         <LdCtrlTaskSegment LsmIdx="1" Address="16384" />
+         <LdCtrlLoadCompleted LsmIdx="1" />
+         <LdCtrlLoad LsmIdx="2" />
+         <LdCtrlAbsSegment LsmIdx="2" Address="16897" Size="3" />
+         <LdCtrlTaskSegment LsmIdx="2" Address="16897" />
+         <LdCtrlLoadCompleted LsmIdx="2" />
+         <LdCtrlLoad LsmIdx="3" />
+         <LdCtrlAbsSegment LsmIdx="3" Address="1792" Size="8" />
+         <LdCtrlAbsSegment LsmIdx="3" Address="17408" Size="2" />
+         <LdCtrlTaskSegment LsmIdx="3" Address="17408" />
+         <LdCtrlLoadCompleted LsmIdx="3" />
+         <LdCtrlRestart />
+         <LdCtrlDisconnect />
+        </LoadProcedure>
+       </LoadProcedures>
+      </Static>
+     </ApplicationProgram></KNX>"#;
+    parse_application_program("M-83_A-E", xml.as_bytes()).expect("parse MDT S7 app")
+}
+
+async fn run_parameters_only_sys7(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>> {
+    set_sys7_lsm_env(mode);
+    let (mut bus, state, handle) = setup(mode, Fault::None).await;
+    {
+        // A programmed device holding the vendor defaults 4, 5 at 0x4400.
+        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+        for lsm in [1u8, 2, 3] {
+            s.lsm_states.insert(lsm, LS_LOADED);
+        }
+        s.memory.insert(0x4400, 4);
+        s.memory.insert(0x4401, 5);
+    }
+    let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
+    let app = mdt_app_with_parameters();
+    // The model moves the second parameter from 5 to 9.
+    let overrides = std::collections::BTreeMap::from([("P-1_R-2".to_string(), "9".to_string())]);
+    let full = plan_flash(
+        &app,
+        "1.1.99",
+        MASK_0705,
+        &overrides,
+        &std::collections::BTreeMap::new(),
+        None,
+        &std::collections::BTreeMap::new(),
+    )?;
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await;
+    let regions = bussard_download::read_parameter_regions(session.l4(), &full).await;
+    let region = regions
+        .get("M-83_A-E_AS-4")
+        .ok_or("the System 7 parameter segment must be read back")?;
+    assert_eq!(
+        (region.address, region.bytes.as_slice()),
+        (0x4400, &[4u8, 5][..])
+    );
+
+    let partial = full.parameters_only(&regions)?;
+    assert_eq!(partial.changed_octets(), 1);
+    {
+        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+        s.lsm_events.clear();
+        s.segment_writes.clear();
+    }
+    let outcome = flash(
+        &mut session,
+        &partial,
+        bussard_download::FlashOptions::default(),
+        |_p| {},
+    )
+    .await?;
+    let after = bussard_download::read_parameter_regions(session.l4(), &full).await;
+    handle.abort();
+    let _ = session.into_disconnect().await;
+    assert!(
+        outcome.ok(),
+        "the parameter-only download must verify: {outcome:?}"
+    );
+    let readings =
+        bussard_download::non_default_parameters(&app, &bussard_download::regions_memory(&after));
+    assert_eq!(readings.len(), 1);
+    assert_eq!(readings[0].line(), "Step: 9 (default 5)");
+
+    let s = state.lock().unwrap_or_else(|e| e.into_inner());
+    // One octet written, at 0x4401; the tables at 0x4000 / 0x4201 untouched.
+    assert_eq!(s.segment_writes, vec![(0x4401, 1)]);
+    assert_eq!(s.memory.get(&0x4401).copied(), Some(9));
+    assert_eq!(s.memory.get(&0x4400).copied(), Some(4));
+    // Only LSM 3 was driven, and nothing was unloaded.
+    assert!(
+        s.lsm_events.iter().all(|(lsm, _)| *lsm == 3),
+        "{:?}",
+        s.lsm_events
+    );
+    assert!(!s.lsm_events.iter().any(|(_, op)| *op == LE_UNLOAD));
+    for lsm in [1u8, 2, 3] {
+        assert_eq!(s.lsm_state(lsm), LS_LOADED, "LSM {lsm} stays Loaded");
+    }
+    assert_eq!(s.restarts_seen, 1, "the device is restarted");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_parameters_only_sys7_memory_mapped_writes_one_octet()
+-> Result<(), Box<dyn std::error::Error>> {
+    run_parameters_only_sys7(LsmMode::MemoryMapped).await
+}
+
+#[tokio::test]
+async fn test_parameters_only_sys7_property_writes_one_octet()
+-> Result<(), Box<dyn std::error::Error>> {
+    run_parameters_only_sys7(LsmMode::Property).await
 }

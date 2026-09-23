@@ -376,6 +376,10 @@ struct DeviceState {
     /// The object index of every `PID_LOAD_STATE_CONTROL` write, in order — the
     /// StartLoading / allocate / LoadCompleted targets.
     load_control_targets: Vec<u8>,
+    /// Every `PID_LOAD_STATE_CONTROL` write as `(object index, event octet)`, in
+    /// order, so a parameter-only download can be shown to send no `Unload`
+    /// and no segment allocation (issue #119).
+    load_events: Vec<(u8, u8)>,
 
     // --- KNX Data Secure (issue #71, spec §5/§6) ---
     /// When set, the device is security-ACTIVATED: every management APDU must
@@ -846,6 +850,7 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
             // the LsmIdx-named object.
             s.load_control_targets.push(oi);
             let event = value.first().copied().unwrap_or(0);
+            s.load_events.push((oi, event));
             let is_app = loadable_object_index(&s) == Some(oi);
             let fault = s.fault;
 
@@ -1380,6 +1385,7 @@ fn fresh_device(fault: Fault) -> Shared {
         loadable_object_override: None,
         pid7_reads: Vec::new(),
         load_control_targets: Vec::new(),
+        load_events: Vec::new(),
         secure: None,
         secure_frames_accepted: 0,
         secure_refusals: 0,
@@ -5347,5 +5353,146 @@ fn test_plan_flash_streams_a_companion_pei_program() -> Result<(), Box<dyn std::
             .iter()
             .any(|s| matches!(s, FlashStep::LoadImageProp { obj_idx: 5, .. }))
     );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Issue #119: parameter-only download and parameter read-back.
+// ---------------------------------------------------------------------------
+
+/// A device that already runs [`fabricated_app`]: the code image at `0x4000`,
+/// the one-octet parameter segment (value `param`) at `0x4006`, which is the
+/// application object's last allocation and so the base `PID_TABLE_REFERENCE`
+/// reports. The application object is `Loaded`.
+fn device_running_fabricated_app(param: u8) -> Shared {
+    let state = fresh_device(Fault::None);
+    {
+        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+        s.app_load_state = LS_LOADED;
+        s.last_segment_base = 0x4006;
+        s.last_segment_size = 1;
+        for (i, b) in [0u8, 1, 2, 3, 4, 5].iter().enumerate() {
+            s.memory.insert(0x4000 + i as u32, *b);
+        }
+        s.memory.insert(0x4006, param);
+    }
+    state
+}
+
+#[tokio::test]
+async fn test_parameters_only_download_writes_only_the_changed_parameter()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (mut bus, state, handle) = setup_device(device_running_fabricated_app(7)).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
+
+    // The model changes the one parameter from its default 7 to 9.
+    let app = fabricated_app();
+    let overrides = BTreeMap::from([("P-0_R-0".to_string(), "9".to_string())]);
+    let full = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &overrides,
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await;
+    let regions = bussard_download::read_parameter_regions(session.l4(), &full).await;
+    let region = regions
+        .get("M-1_A-1_RS-2")
+        .ok_or("the parameter segment must be read back")?;
+    assert_eq!(
+        (region.address, region.bytes.as_slice()),
+        (0x4006, &[7u8][..])
+    );
+
+    // The read-back decodes to the vendor default, so nothing is non-default.
+    let current = bussard_download::regions_memory(&regions);
+    assert!(bussard_download::non_default_parameters(&app, &current).is_empty());
+
+    let partial = full.parameters_only(&regions)?;
+    assert_eq!(partial.changed_octets(), 1);
+    {
+        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+        s.load_events.clear();
+        s.memory_writes_seen = 0;
+    }
+    let outcome = flash(
+        &mut session,
+        &partial,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await?;
+
+    // Read back after the load: the new value decodes.
+    let after = bussard_download::read_parameter_regions(session.l4(), &full).await;
+    let _ = session.into_disconnect().await;
+    handle.abort();
+    assert!(
+        outcome.ok(),
+        "the parameter-only download must verify: {outcome:?}"
+    );
+    let readings =
+        bussard_download::non_default_parameters(&app, &bussard_download::regions_memory(&after));
+    assert_eq!(readings.len(), 1);
+    assert_eq!(readings[0].value, "9");
+    assert_eq!(readings[0].default, "7");
+
+    let s = state.lock().unwrap_or_else(|e| e.into_inner());
+    // Only the parameter octet was written: one memory write, the code intact.
+    assert_eq!(s.memory_writes_seen, 1);
+    assert_eq!(s.memory.get(&0x4006).copied(), Some(9));
+    let code: Vec<u8> = (0x4000u32..0x4006)
+        .map(|a| s.memory.get(&a).copied().unwrap_or(0))
+        .collect();
+    assert_eq!(code, vec![0, 1, 2, 3, 4, 5]);
+    // StartLoading then LoadCompleted on the app object: no Unload, no
+    // allocation, no table object touched.
+    let events: Vec<u8> = s.load_events.iter().map(|(_, e)| *e).collect();
+    assert_eq!(events, vec![LE_START_LOADING, LE_LOAD_COMPLETED]);
+    assert!(s.load_events.iter().all(|(oi, _)| *oi == 3));
+    assert!(s.saw_basic_restart, "the device is restarted");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_parameters_only_download_with_nothing_changed_writes_nothing()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (mut bus, state, handle) = setup_device(device_running_fabricated_app(9)).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
+    let app = fabricated_app();
+    let overrides = BTreeMap::from([("P-0_R-0".to_string(), "9".to_string())]);
+    let full = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &overrides,
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await;
+    let regions = bussard_download::read_parameter_regions(session.l4(), &full).await;
+    let _ = session.into_disconnect().await;
+    handle.abort();
+    let partial = full.parameters_only(&regions)?;
+    assert_eq!(partial.changed_octets(), 0);
+    let readings =
+        bussard_download::non_default_parameters(&app, &bussard_download::regions_memory(&regions));
+    assert_eq!(
+        readings.len(),
+        1,
+        "the read-back names the non-default value"
+    );
+    assert_eq!(readings[0].line(), "thr: 9 (default 7)");
+    let s = state.lock().unwrap_or_else(|e| e.into_inner());
+    assert_eq!(s.control_writes, 0, "planning writes nothing");
     Ok(())
 }

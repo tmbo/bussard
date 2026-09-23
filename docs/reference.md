@@ -147,6 +147,8 @@ Read a device's tables back over the bus and diff them against the model, or (wi
 | `--to <N>` | `255` | Last device number to probe in line mode (0-255). |
 | `--out <DIR>` | | Line mode only: the fresh model directory. Must be absent or empty; reconstruction never merges into an existing model. |
 | `--dir <DIR>` | `knx` | The model directory (line mode: connection defaults only). |
+| `--product <FILE>` | cached archive | Single-device mode: the device's `.knxprod`, to read back and decode its parameter memory too (see [parameter read-back](#parameter-read-back)). Without it the archive in `<dir>/vendor/` whose catalogue carries the model's order number is used, when cached. |
+| `--application <REF>` | model's application | The application program id to decode with (default: the model's `application_ref`, else the order number, else the sole application). |
 | `--json` | off | Emit JSON instead of the report format. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
@@ -225,6 +227,7 @@ The same pre-flight also checks the device is factory-fresh (issue #79), read-on
 | `--yes` | off | Skip the interactive confirmation (dangerous; for scripts). |
 | `--force` | off | Flash a device that is **not** factory-fresh: it already carries a different (or unidentifiable) application, or its load state could not be read. Destructive: the resident application, its parameters and its links are overwritten with no backup. Not needed to re-flash the same application. |
 | `--full` | off | Re-stream every object. By default, when the device already carries the same application (or none), an object whose resident image matches what would be written (MCB size and CRC) and which reports `Loaded` is skipped; the flash output lists each skipped step. A parameter-only change then re-downloads the parameter segment but not the code segment. Never skipped when `--force` replaces a different or unidentified application, or when the plan starts with a factory reset. |
+| `--parameters-only` | off | Rewrite only the parameter memory of a device that already runs this application (see [parameter-only download](#parameter-only-download)). Conflicts with `--full`, `--force`, `--no-factory-reset` and `--dry-run`. |
 | `--no-factory-reset` | off | Leave out the factory reset (System B). By default a download that writes filled segments sparsely, or that replaces an application with `--force`, starts with a confirmed master reset, erase code 7: the device erases its application, parameters and links, keeps its individual address, and reboots. Use this only when you know the device holds no stale image. |
 | `--bcu-key <HEX>` | free access | The device's BCU access key, in hex (`FFFFFFFF` or `0x11223344`), presented with A_Authorize on every management connect. Unset presents the free-access key (`FFFFFFFF`), correct for an unkeyed device; a keyed device needs its project key here or it denies access. |
 | `--keyring <FILE>` | | The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool key. Required for a security-activated device; the password comes from `BUSSARD_KEYRING_PASSWORD`. |
@@ -248,6 +251,28 @@ Supported load-procedure operations on System B: `Unload`, `Load`, `LoadComplete
 
 Only `flash` takes `--bcu-key`; `plan`, `apply` and `reconstruct` always authorize with the free-access key, so a device with a BCU key set denies them.
 
+#### Parameter-only download
+
+`flash --parameters-only <ADDRESS>` rewrites only the parameter memory of a device that already runs the application (issue #119). It builds the same plan a full flash would, then keeps only what touches the parameter memory:
+
+- **System B**: `StartLoading` on the object that holds the parameter segment, the procedure's property writes on that object (the `PID_MCB_TABLE` seed and `PID_PROGRAM_VERSION`), the parameter image written at the base the object reports through `PID_TABLE_REFERENCE`, `LoadCompleted`, the procedure's MCB checks on that object, and the terminal restart. No `Unload`, no segment allocation, no factory reset, no table object.
+- **System 7**: `StartLoading` on the load-state machine that holds the parameter segments (LSM 3), its `AbsSegment` records (the parameter segments with their images, the code segments as allocation records only), its task segment, `LoadCompleted`, and the restart. LSM 1 and 2 (the tables) are not touched and nothing is unloaded.
+
+Before planning it reads the parameter memory back, and every write goes out as the octets that differ from what the device holds, the way ETS rewrote a single octet in its partial downloads of `1.1.47` (System B) and `1.1.202` (System 7). The plan names each parameter that changes (`Threshold: 7 to 12`), the memory regions and how many of their octets change. When nothing differs it prints `nothing to do` and exits 0 without touching a load state.
+
+It refuses, before any write, when:
+
+- the device runs another application: on System B its `PID_PROGRAM_VERSION` differs from the product's, or cannot be read; System 7 has no readable application id, so every load-state machine must be `Loaded` and the first octets of each application code segment must read back as the product's bytes;
+- the application is not `Loaded`, or the load state cannot be read;
+- a parameter segment cannot be read back (its base or content is unknown);
+- the new values change the group-object table: the Dynamic section is evaluated with the values the device holds and with the model's values, and a com-object shown or hidden (or an object whose size or flags change) needs a full `flash`. The refusal names the objects.
+
+The confirmation, `--yes` and the gateway gate are the same as for `apply`. The parameter memory is backed up to `<dir>/captures/backups/parameters/<ia>-<unix time>.json` before the first write (kept apart from the table backups, so `restore` never picks it up). After the restart the memory is read back and every changed octet compared; a mismatch exits 1 with the backup path. `--json` prints the plan as JSON (`parameters`, `regions`, `procedure`).
+
+#### Parameter read-back
+
+`plan <ADDRESS>` and `reconstruct <ADDRESS>` read the parameter memory too when they have the device's product file (`--product`, or the cached archive for the model's order number). The memory is located through the application's load procedure (System B: `PID_TABLE_REFERENCE` of the object plus the write offset; System 7: the `AbsSegment` addresses) and decoded through the product's parameter types. The report lists the parameters whose value differs from the vendor default and those that differ from the model's `parameters:` block (`Threshold: device 9, model 12`); `--json` adds a `parameters` object with `non_default` and `differences`. When the device does not run the product's application the section carries a note instead of decoded values. Module parameters (one instance per channel) appear only through the model's override keys. Both commands stay read-only.
+
 ### `bussard plan <ADDRESS>`
 
 Read a device's live tables and show what `apply` would change. With `--line`, plan every device the model has on that line instead. Read-only on the bus. Refuses to compute an empty table set for a device with no links in the model (that would wipe it). System B (`x7B0`) and System 7 (`0705` / `0701`); on System 7 the tables are read straight out of the `0x4000` / `0x4201` memory regions, bounded by the region size.
@@ -257,6 +282,8 @@ Read a device's live tables and show what `apply` would change. With `--line`, p
 | `<ADDRESS>` | | The device to plan for, e.g. `1.1.4`. Omit with `--line`. |
 | `--line <LINE>` | | Plan every model device on this line, e.g. `1.1`, in address order (see [whole-line runs](#whole-line-runs)). |
 | `--dir <DIR>` | `knx` | The model directory. |
+| `--product <FILE>` | cached archive | Also read back the parameter memory and list the parameters that differ from the model, next to the link differences (see [parameter read-back](#parameter-read-back)). Without it the archive in `<dir>/vendor/` whose catalogue carries the model's order number is used, when cached. |
+| `--application <REF>` | model's application | The application program id to decode with. |
 | `--json` | off | Emit JSON instead of the report format. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |

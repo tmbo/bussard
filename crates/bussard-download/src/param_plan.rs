@@ -226,6 +226,177 @@ pub fn param_plan(
     }
 }
 
+/// One parameter value decoded out of a device's parameter memory, next to the
+/// vendor default (issue #119, `reconstruct` / `plan` read-back).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParamReading {
+    /// The app-relative parameter id (`P-…`).
+    pub key: String,
+    /// The human name (see [`ParamChange::name`]).
+    pub name: String,
+    /// The value the device holds, rendered.
+    pub value: String,
+    /// The vendor default, rendered.
+    pub default: String,
+    /// The unit the vendor shows after the value, when declared.
+    pub unit: Option<String>,
+}
+
+impl ParamReading {
+    /// `night setback: 17 °C (default 18 °C)`.
+    pub fn line(&self) -> String {
+        let unit = match &self.unit {
+            Some(u) if !u.is_empty() => format!(" {u}"),
+            _ => String::new(),
+        };
+        format!(
+            "{}: {}{unit} (default {}{unit})",
+            self.name, self.value, self.default
+        )
+    }
+}
+
+/// The parameters whose value in `current` differs from the vendor default,
+/// sorted by parameter id: what a device carries beyond a fresh download.
+///
+/// Module parameters (one instance per channel) have no single location and
+/// are left out; so is every parameter whose segment was not read.
+pub fn non_default_parameters(
+    app: &ApplicationProgram,
+    current: &CurrentMemory,
+) -> Vec<ParamReading> {
+    let mut params: Vec<&Parameter> = app.parameters.values().collect();
+    params.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut out = Vec::new();
+    for param in params {
+        if param
+            .memory
+            .as_ref()
+            .is_some_and(|m| m.base_offset.is_some())
+        {
+            continue;
+        }
+        let Some(location) = location(param, None, &BTreeMap::new()) else {
+            continue;
+        };
+        let ptype = parameter_type(app, param);
+        let Some(raw) = decode(current, &location, ptype) else {
+            continue;
+        };
+        let default = default_value(app, param).unwrap_or_else(|| "0".to_string());
+        if raw == default.trim() {
+            continue;
+        }
+        out.push(ParamReading {
+            key: relative_id(app, &param.id),
+            name: display_name(param),
+            value: render(&raw, ptype),
+            default: render(default.trim(), ptype),
+            unit: param.suffix_text.clone(),
+        });
+    }
+    out
+}
+
+/// The raw values the device holds, keyed by app-relative `ParameterRef` id:
+/// the override shape [`bussard_prod::dynamic::evaluate_dynamic`] takes.
+///
+/// Starts from `overrides` (the model's values) and replaces every value the
+/// device memory in `current` can answer for: each override key (module
+/// instances included, through `base_offsets`) and every `ParameterRef` of a
+/// plain memory-bearing parameter. A parameter with no memory (a display-only
+/// selector) keeps the model's value, since the device does not hold one.
+pub fn current_parameter_values(
+    app: &ApplicationProgram,
+    overrides: &BTreeMap<String, String>,
+    base_offsets: &BTreeMap<String, u32>,
+    current: &CurrentMemory,
+) -> BTreeMap<String, String> {
+    let mut out = overrides.clone();
+    for (ref_id, value) in out.iter_mut() {
+        let Some((param, instance)) = resolve(app, ref_id) else {
+            continue;
+        };
+        let Some(location) = location(param, instance.as_deref(), base_offsets) else {
+            continue;
+        };
+        if let Some(raw) = decode(current, &location, parameter_type(app, param)) {
+            *value = raw;
+        }
+    }
+    for pref in app.parameter_refs.values() {
+        let key = relative_id(app, &pref.id);
+        if out.contains_key(&key) {
+            continue;
+        }
+        let Some(param) = app.parameters.get(&pref.ref_id) else {
+            continue;
+        };
+        if param
+            .memory
+            .as_ref()
+            .is_some_and(|m| m.base_offset.is_some())
+        {
+            continue;
+        }
+        let Some(location) = location(param, None, base_offsets) else {
+            continue;
+        };
+        if let Some(raw) = decode(current, &location, parameter_type(app, param)) {
+            out.insert(key, raw);
+        }
+    }
+    out
+}
+
+/// How a parameter change would reshape the group-object table (issue #119).
+///
+/// A parameter that shows or hides a com-object, or changes its size or flags,
+/// changes the group-object table the full flash writes. A parameter-only
+/// download does not touch that table, so it must refuse such a change.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupObjectChange {
+    /// Com-object numbers the new parameters show that the current ones hide.
+    pub shown: Vec<u16>,
+    /// Com-object numbers the new parameters hide that the current ones show.
+    pub hidden: Vec<u16>,
+    /// Whether the table image differs at all (a size or flag change on an
+    /// object shown both before and after counts too).
+    pub table_differs: bool,
+}
+
+impl GroupObjectChange {
+    /// Whether the group-object table stays exactly the same.
+    pub fn is_empty(&self) -> bool {
+        !self.table_differs && self.shown.is_empty() && self.hidden.is_empty()
+    }
+}
+
+/// Compares the group-object table the application's Dynamic section yields for
+/// the `before` and `after` parameter values (both keyed like
+/// [`current_parameter_values`] returns them).
+pub fn group_object_change(
+    app: &ApplicationProgram,
+    before: &BTreeMap<String, String>,
+    after: &BTreeMap<String, String>,
+) -> GroupObjectChange {
+    let linked = BTreeMap::new();
+    let asaps = |values: &BTreeMap<String, String>| -> BTreeSet<u16> {
+        let config = bussard_prod::dynamic::evaluate_dynamic(app, values);
+        crate::compute::dynamic_group_object_descriptors(app, &config, &linked)
+            .iter()
+            .map(|d| d.asap)
+            .collect()
+    };
+    let (old, new) = (asaps(before), asaps(after));
+    GroupObjectChange {
+        shown: new.difference(&old).copied().collect(),
+        hidden: old.difference(&new).copied().collect(),
+        table_differs: crate::compute::dynamic_group_object_table(app, before, &linked)
+            != crate::compute::dynamic_group_object_table(app, after, &linked),
+    }
+}
+
 /// The note a System 7 flash prints instead of a parameter diff.
 ///
 /// System 7 writes whole absolute memory regions rather than a parameter image
@@ -538,8 +709,95 @@ pub async fn read_current_parameter_memory<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     plan: &FlashPlan,
 ) -> CurrentMemory {
-    let mut out = CurrentMemory::new();
     if plan.is_sys7() {
+        return CurrentMemory::new();
+    }
+    read_parameter_regions(l4, plan)
+        .await
+        .into_iter()
+        .map(|(segment, region)| (segment, region.bytes))
+        .collect()
+}
+
+/// One parameter-bearing memory region read back off a device: where it sits
+/// and the octets it holds (issue #119).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParamRegion {
+    /// The code-segment id the region belongs to.
+    pub segment_id: String,
+    /// The absolute device address the region starts at (the segment base from
+    /// `PID_TABLE_REFERENCE` plus the write offset on System B, the
+    /// `AbsSegment` address on System 7).
+    pub address: u32,
+    /// The octets the device holds, as long as the image the plan streams.
+    pub bytes: Vec<u8>,
+}
+
+/// The parameter regions of one device, keyed by code-segment id.
+pub type ParamRegions = BTreeMap<String, ParamRegion>;
+
+/// The bytes of each region, in the shape [`param_plan`] decodes.
+pub fn regions_memory(regions: &ParamRegions) -> CurrentMemory {
+    regions
+        .iter()
+        .map(|(segment, region)| (segment.clone(), region.bytes.clone()))
+        .collect()
+}
+
+/// Reads back every parameter-bearing region a [`FlashPlan`] writes, with the
+/// absolute address each one sits at.
+///
+/// **Read-only and best-effort**, like [`read_current_parameter_memory`]: a
+/// region that cannot be addressed or read is left out, never guessed at.
+///
+/// - **System B**: every `WriteRelMem` that streams a parameter image is read at
+///   its object's `PID_TABLE_REFERENCE` base plus the write offset. An image
+///   written after an earlier allocation on the same object is left out, since
+///   the object only reports the base of its last allocation.
+/// - **System 7**: every `AbsSegment` whose image carries parameters is read at
+///   the segment's absolute address.
+pub async fn read_parameter_regions<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    plan: &FlashPlan,
+) -> ParamRegions {
+    let mut out = ParamRegions::new();
+    if plan.is_sys7() {
+        for step in &plan.steps {
+            let FlashStep::Sys7AbsSegment {
+                address,
+                image: Some(image),
+                ..
+            } = step
+            else {
+                continue;
+            };
+            let carries_params = plan
+                .param_images
+                .get(&image.segment_id)
+                .is_some_and(|b| !b.is_empty());
+            if !carries_params || out.contains_key(&image.segment_id) {
+                continue;
+            }
+            match read_memory_range(l4, *address, image.len).await {
+                Ok(bytes) => {
+                    out.insert(
+                        image.segment_id.clone(),
+                        ParamRegion {
+                            segment_id: image.segment_id.clone(),
+                            address: *address,
+                            bytes,
+                        },
+                    );
+                }
+                Err(err) => {
+                    tracing::debug!(
+                        segment = %image.segment_id,
+                        %err,
+                        "System 7 parameter segment could not be read back"
+                    );
+                }
+            }
+        }
         return out;
     }
     // The same resolution the download engine applies: an op's index names a
@@ -580,10 +838,14 @@ pub async fn read_current_parameter_memory<Ch: L4Channel>(
 
     // Segment bases are per object; read each one once.
     let mut bases: BTreeMap<u8, Option<u32>> = BTreeMap::new();
-    let mut preceding_allocation: Option<(u8, usize)> = None;
+    // The allocation each object received most recently, as the steps run: a
+    // write streams into its own object's segment (the executor keeps one base
+    // per object), even when other objects were allocated in between, as the
+    // master template does (obj4, obj3, obj1, obj2 allocated, then written).
+    let mut allocated: BTreeMap<u8, usize> = BTreeMap::new();
     for (i, step) in plan.steps.iter().enumerate() {
         if let FlashStep::AllocateSegment { target, .. } = step {
-            preceding_allocation = Some((resolve_object(target), i));
+            allocated.insert(resolve_object(target), i);
             continue;
         }
         let FlashStep::WriteRelMem {
@@ -598,10 +860,8 @@ pub async fn read_current_parameter_memory<Ch: L4Channel>(
             continue;
         }
         let object = resolve_object(target);
-        let readable = match preceding_allocation {
-            Some((alloc_object, at)) => {
-                alloc_object == object && last_allocation.get(&object) == Some(&at)
-            }
+        let readable = match allocated.get(&object) {
+            Some(at) => last_allocation.get(&object) == Some(at),
             // No allocation in this plan: the object's current segment is the
             // one the write targets.
             None => !last_allocation.contains_key(&object),
@@ -630,7 +890,14 @@ pub async fn read_current_parameter_memory<Ch: L4Channel>(
         };
         match read_memory_range(l4, addr, image.len).await {
             Ok(bytes) => {
-                out.insert(image.segment_id.clone(), bytes);
+                out.insert(
+                    image.segment_id.clone(),
+                    ParamRegion {
+                        segment_id: image.segment_id.clone(),
+                        address: addr,
+                        bytes,
+                    },
+                );
             }
             Err(err) => {
                 tracing::debug!(
@@ -796,5 +1063,86 @@ mod tests {
         let (param, selector) = split_module_instance("P-1312");
         assert_eq!(param, "P-1312");
         assert_eq!(selector, None);
+    }
+
+    /// A one-segment app whose 1-bit parameter `P-1` shows com-object 2.
+    fn gated_app() -> ApplicationProgram {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-2" ApplicationNumber="2" ApplicationVersion="1"
+            MaskVersion="MV-07B0" Name="Gate" LoadProcedureStyle="ProductDefault">
+          <Static>
+           <Code>
+            <RelativeSegment Id="M-1_A-2_RS-1" Size="2" LoadStateMachine="4" Offset="0"><Data>AAA=</Data></RelativeSegment>
+           </Code>
+           <ParameterTypes>
+            <ParameterType Id="M-1_A-2_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType>
+            <ParameterType Id="M-1_A-2_PT-1" Name="onoff"><TypeRestriction Base="Value" SizeInBit="1">
+              <Enumeration Text="Off" Value="0" /><Enumeration Text="On" Value="1" />
+            </TypeRestriction></ParameterType>
+           </ParameterTypes>
+           <Parameters>
+            <Parameter Id="M-1_A-2_P-0" Name="thr" Text="Threshold" ParameterType="M-1_A-2_PT-0" Value="7"><Memory CodeSegment="M-1_A-2_RS-1" Offset="0" BitOffset="0" /></Parameter>
+            <Parameter Id="M-1_A-2_P-1" Name="obj2" Text="Object 2" ParameterType="M-1_A-2_PT-1" Value="0"><Memory CodeSegment="M-1_A-2_RS-1" Offset="1" BitOffset="0" /></Parameter>
+           </Parameters>
+           <ParameterRefs>
+            <ParameterRef Id="M-1_A-2_P-0_R-1" RefId="M-1_A-2_P-0" />
+            <ParameterRef Id="M-1_A-2_P-1_R-2" RefId="M-1_A-2_P-1" />
+           </ParameterRefs>
+           <ComObjects>
+            <ComObject Id="M-1_A-2_O-1" Number="1" ObjectSize="1 Bit" CommunicationFlag="Enabled" WriteFlag="Enabled" />
+            <ComObject Id="M-1_A-2_O-2" Number="2" ObjectSize="1 Bit" CommunicationFlag="Enabled" TransmitFlag="Enabled" />
+           </ComObjects>
+           <ComObjectRefs>
+            <ComObjectRef Id="M-1_A-2_O-1_R-1" RefId="M-1_A-2_O-1" />
+            <ComObjectRef Id="M-1_A-2_O-2_R-2" RefId="M-1_A-2_O-2" />
+           </ComObjectRefs>
+          </Static>
+          <Dynamic>
+           <ChannelIndependentBlock>
+            <ParameterBlock Id="M-1_A-2_PB-1" Name="main">
+             <ParameterRefRef RefId="M-1_A-2_P-0_R-1" />
+             <ParameterRefRef RefId="M-1_A-2_P-1_R-2" />
+             <ComObjectRefRef RefId="M-1_A-2_O-1_R-1" />
+             <choose ParamRefId="M-1_A-2_P-1_R-2">
+              <when test="1"><ComObjectRefRef RefId="M-1_A-2_O-2_R-2" /></when>
+             </choose>
+            </ParameterBlock>
+           </ChannelIndependentBlock>
+          </Dynamic>
+         </ApplicationProgram></KNX>"#;
+        parse_application_program("M-1_A-2", xml.as_bytes()).expect("the fixture parses")
+    }
+
+    #[test]
+    fn test_current_parameter_values_decodes_every_ref() {
+        let app = gated_app();
+        let current = BTreeMap::from([("M-1_A-2_RS-1".to_string(), vec![9, 0b1000_0000])]);
+        let values = current_parameter_values(&app, &BTreeMap::new(), &BTreeMap::new(), &current);
+        assert_eq!(values.get("P-0_R-1").map(String::as_str), Some("9"));
+        assert_eq!(values.get("P-1_R-2").map(String::as_str), Some("1"));
+    }
+
+    #[test]
+    fn test_group_object_change_detects_a_shown_object() {
+        let app = gated_app();
+        let off = BTreeMap::from([("P-1_R-2".to_string(), "0".to_string())]);
+        let on = BTreeMap::from([("P-1_R-2".to_string(), "1".to_string())]);
+        let change = group_object_change(&app, &off, &on);
+        assert_eq!(change.shown, vec![2]);
+        assert!(change.hidden.is_empty());
+        assert!(!change.is_empty());
+        assert_eq!(group_object_change(&app, &on, &off).hidden, vec![2]);
+        // A threshold change leaves the table alone.
+        let thr = BTreeMap::from([("P-0_R-1".to_string(), "12".to_string())]);
+        assert!(group_object_change(&app, &off, &thr).is_empty());
+    }
+
+    #[test]
+    fn test_non_default_parameters_lists_only_changed_values() {
+        let app = gated_app();
+        let current = BTreeMap::from([("M-1_A-2_RS-1".to_string(), vec![7, 0b1000_0000])]);
+        let readings = non_default_parameters(&app, &current);
+        assert_eq!(readings.len(), 1);
+        assert_eq!(readings[0].line(), "Object 2: On (default Off)");
     }
 }

@@ -205,6 +205,31 @@ timeout. If re-flashing does not recover the device, fall back to downloading it
 with ETS. Do not assume a device is functional until a flash reports the
 application `Loaded` and verified.
 
+**`flash --parameters-only <ADDRESS>`** rewrites only the parameter memory of
+a device that already runs the application (issue #119). Unlike a full flash
+it has something to lose, the parameters the device holds, so it works like
+`apply`: it reads the parameter memory first, shows the parameters that change,
+confirms (or needs `--yes`), backs the memory up to
+`<dir>/captures/backups/parameters/<ia>-<unix time>.json`, writes only the
+octets that differ, completes the load, restarts the device and verifies by
+reading the memory back. It never unloads, never allocates a segment, never
+factory-resets and never touches the link tables. It refuses before any write
+when:
+
+| What the device reports | What `--parameters-only` does |
+|---|---|
+| Another application (System B `PID_PROGRAM_VERSION` differs or cannot be read; System 7 code that does not match the product) | Refuses: its memory has another layout. Use a full `flash`. |
+| No loaded application, or an object/LSM not `Loaded` | Refuses: there is nothing to patch. Use a full `flash`. |
+| An unreadable load state or parameter segment | Refuses: the base address or the current content is unknown. |
+| New values that show or hide a com-object | Refuses: the group-object table would change, and only a full `flash` rewrites it. The message names the objects. |
+| Values that already match | Prints `nothing to do`, exits 0, touches no load state. |
+
+System 7 exposes no application id, so there the identity check is every
+load-state machine `Loaded` plus the first octets of each code segment matching
+the product. If a parameter download fails midway, re-run it (it writes only
+the octets that still differ) or run a full `flash`; the backup file holds the
+memory as it was.
+
 **`assign`** sets a device's individual address; **`adopt`** is the interactive
 wizard that assigns and flashes a new device. Both are gated the same way: they
 confirm on a terminal, and non-interactively they need `--yes`. An explicit

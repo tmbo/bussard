@@ -534,7 +534,22 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                             .get(&image.segment_id)
                             .cloned()
                             .unwrap_or_default();
-                        write_image(session, addr, &bytes, &mut progress).await?;
+                        match plan.baseline.get(&image.segment_id) {
+                            // A parameter-only download (issue #119): write only
+                            // the octets that differ from what the device holds.
+                            Some(current) => {
+                                for (start, end) in diff_regions(&bytes, current, None) {
+                                    write_image(
+                                        session,
+                                        addr + start as u32,
+                                        &bytes[start..end],
+                                        &mut progress,
+                                    )
+                                    .await?;
+                                }
+                            }
+                            None => write_image(session, addr, &bytes, &mut progress).await?,
+                        }
                         if !bytes.is_empty() {
                             written_samples.push((addr, take_sample(&bytes)));
                         }
@@ -1002,6 +1017,40 @@ pub(super) fn fill_regions(image: &[u8], fill: u8) -> Vec<(usize, &[u8])> {
         .collect()
 }
 
+/// The octet ranges `[start, end)` of `image` that differ from `current`, the
+/// memory the device holds today, in ascending order (issue #119). With a
+/// `mask`, only octets whose mask byte is `0xFF` are considered. Ranges
+/// separated by at most [`FILL_MERGE_GAP`] unchanged (and writable) octets are
+/// merged, since rewriting an octet with its own value is cheaper than another
+/// telegram. An octet past the end of `current` counts as different.
+pub(super) fn diff_regions(
+    image: &[u8],
+    current: &[u8],
+    mask: Option<&[u8]>,
+) -> Vec<(usize, usize)> {
+    let writable = |i: usize| mask.is_none_or(|m| m.get(i) == Some(&0xFF));
+    let differs = |i: usize| writable(i) && current.get(i) != Some(&image[i]);
+    let mut regions: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0;
+    while i < image.len() {
+        if !differs(i) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < image.len() && differs(i) {
+            i += 1;
+        }
+        match regions.last_mut() {
+            Some((_, end)) if start - *end <= FILL_MERGE_GAP && (*end..start).all(writable) => {
+                *end = i;
+            }
+            _ => regions.push((start, i)),
+        }
+    }
+    regions
+}
+
 /// Streams `bytes` to `addr` over the session's connection, emitting a
 /// byte-progress event per confirmed chunk, and **resuming at chunk granularity**
 /// across an unexpected connection death.
@@ -1075,6 +1124,26 @@ pub(super) async fn write_image<C: Connector, F: FnMut(Progress)>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_diff_regions_writes_only_changed_octets() {
+        let current = [0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+        let mut image = current;
+        image[1] = 0xAA;
+        image[10] = 0xBB;
+        assert_eq!(diff_regions(&image, &current, None), vec![(1, 2), (10, 11)]);
+        // Two changes two octets apart merge into one write.
+        image[4] = 0xCC;
+        assert_eq!(diff_regions(&image, &current, None), vec![(1, 5), (10, 11)]);
+        // A device-owned octet (mask 0x00) is never written nor merged across.
+        let mut mask = [0xFFu8; 12];
+        mask[3] = 0x00;
+        assert_eq!(
+            diff_regions(&image, &current, Some(&mask)),
+            vec![(1, 2), (4, 5), (10, 11)]
+        );
+        assert!(diff_regions(&current, &current, None).is_empty());
+    }
 
     #[test]
     fn test_fill_regions_skips_fill_and_merges_small_gaps() {
