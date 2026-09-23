@@ -152,6 +152,7 @@ pub fn run(
             // application, so the freshness refusal would always fire here. The
             // operator already consented to the whole run.
             true,
+            false,
             allow_remote_gateway,
             bcu_key,
             tool_key_source,

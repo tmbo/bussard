@@ -109,6 +109,16 @@ impl ResidentObject {
 pub struct ResidentState {
     /// Every object/LSM whose state the probe managed to read, in probe order.
     pub objects: Vec<ResidentObject>,
+    /// The raw interface-object table (`index → PID_OBJECT_TYPE`) the System B
+    /// walk discovered, in index order.
+    ///
+    /// This is the *full* table, including the device object (type 0), whose
+    /// load state is deliberately not read and which therefore has no entry in
+    /// [`objects`](ResidentState::objects). It is device-stable, so the caller
+    /// hands it to the write phase as part of
+    /// [`DeviceFacts`](crate::DeviceFacts) instead of walking it again. Empty on
+    /// System 7 (whose LSMs are not interface objects) and when the walk failed.
+    pub object_table: Vec<(u8, u16)>,
     /// The resident application id (`PID_PROGRAM_VERSION`), when a device object
     /// reported a non-zero one. The all-zero placeholder is treated as absent:
     /// it is what an object carries when no download ever stamped it.
@@ -250,6 +260,8 @@ async fn probe_system_b<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Residen
         );
         return state;
     }
+    // Keep the raw table: the write phase reuses it instead of re-walking it.
+    state.object_table = objects.clone();
 
     let mut failures: Vec<String> = Vec::new();
     for (index, object_type) in objects {
@@ -436,7 +448,7 @@ mod tests {
         let state = ResidentState {
             objects: vec![object(3, 3, LoadState::Loaded)],
             app_id: Some(vec![0x00, 0xFA, 0x25, 0x00, 0x10]),
-            unreadable: None,
+            ..ResidentState::default()
         };
         let verdict = assess_freshness(&state, &da_tp());
         assert_eq!(
@@ -455,7 +467,7 @@ mod tests {
         let state = ResidentState {
             objects: vec![object(3, 3, LoadState::Loaded)],
             app_id: Some(vec![0x00, 0xFA, 0x25, 0x00, 0x0A]),
-            unreadable: None,
+            ..ResidentState::default()
         };
         let verdict = assess_freshness(&state, &da_tp());
         assert!(!verdict.allows_flash());
@@ -476,7 +488,7 @@ mod tests {
         let state = ResidentState {
             objects: vec![object(4, 4, LoadState::Loaded)],
             app_id: None,
-            unreadable: None,
+            ..ResidentState::default()
         };
         let verdict = assess_freshness(&state, &da_tp());
         assert!(!verdict.allows_flash());
@@ -528,7 +540,7 @@ mod tests {
         let state = ResidentState {
             objects: vec![object(3, 3, LoadState::Loaded)],
             app_id: Some(vec![0x00, 0xFA, 0x25, 0x00, 0x10]),
-            unreadable: None,
+            ..ResidentState::default()
         };
         let verdict = assess_freshness(&state, &identity("M-00FA_A-2500", None, None));
         assert!(!verdict.allows_flash());
