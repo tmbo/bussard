@@ -44,7 +44,7 @@ use anyhow::{Context, bail};
 use bussard_download::backup::{DeviceBackup, backups_root, has_installation_backup};
 use bussard_download::{
     DesiredTables, PlanReport, Sys7LiveTables, Sys7TableImages, VerifyOutcome, apply_sys7_tables,
-    apply_tables, discover_table_objects, plan, sys7_table_images,
+    apply_tables, discover_table_objects, negotiate_session_apdu, plan, sys7_table_images,
 };
 use bussard_mgmt::tables::DeviceTables;
 use bussard_mgmt::{Layer4Connection, LeaseChannel, MaskProfile, system_type};
@@ -433,6 +433,9 @@ pub(crate) async fn execute_sys7(
         .map_err(|e| {
             bussard_download::Sys7ApplyError::Write(bussard_mgmt::load::WriteError::Mgmt(e))
         })?;
+    // Negotiate PID_MAX_APDU_LENGTH once, right after authorize, like ETS's
+    // opening property read (#116); the table writes then use its chunk size.
+    negotiate_session_apdu(&mut l4).await?;
     let profile = MaskProfile::from_mask(mask)
         .sys7_default_profile()
         .unwrap_or_else(bussard_mgmt::Sys7Profile::corpus_default);
@@ -475,6 +478,9 @@ pub(crate) async fn execute(
     l4.authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY)
         .await
         .map_err(bussard_mgmt::load::WriteError::Mgmt)?;
+    // Negotiate PID_MAX_APDU_LENGTH once, right after authorize, like ETS's
+    // opening property read (#116); the table writes then use its chunk size.
+    negotiate_session_apdu(&mut l4).await?;
     let objects = discover_table_objects(&mut l4).await?;
     let result = apply_tables(&mut l4, objects, desired).await;
     let _ = l4.disconnect().await;

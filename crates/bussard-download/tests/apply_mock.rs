@@ -82,6 +82,7 @@ const PID_OBJECT_TYPE: u8 = 1;
 const PID_LOAD_STATE_CONTROL: u8 = 5;
 const PID_TABLE_REFERENCE: u8 = 7;
 const PID_TABLE: u8 = 23;
+const PID_MAX_APDU_LENGTH: u8 = 56;
 
 const OT_DEVICE: u16 = 0;
 const OT_ADDRESS_TABLE: u16 = 1;
@@ -157,6 +158,8 @@ struct DeviceCfg {
     /// more drops the object into `Error` (KNX 3/5/2: "maximum table length
     /// exceeded").
     max_segment_size: u32,
+    /// `PID_MAX_APDU_LENGTH` on the device object; `None` refuses the read.
+    max_apdu: Option<u16>,
 }
 
 impl Default for DeviceCfg {
@@ -166,6 +169,7 @@ impl Default for DeviceCfg {
             segment_base: 0x4000,
             table_property_reads: true,
             max_segment_size: 0x400,
+            max_apdu: None,
         }
     }
 }
@@ -189,6 +193,9 @@ struct DeviceState {
     ops: Vec<Op>,
     /// The group object table element count (nice-to-have; read side counts it).
     go_count: u16,
+    /// `ops.len()` when the device served `PID_MAX_APDU_LENGTH` (the position of
+    /// the negotiation in the op log), `None` if it was never read.
+    max_apdu_read_at: Option<usize>,
 }
 
 impl DeviceState {
@@ -409,6 +416,17 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
                 Some(ot) => Reaction::Answer(
                     A_PROPERTY_VALUE_RESPONSE,
                     prop_response(oi, pid, 1, start, &ot.to_be_bytes()),
+                ),
+                None => Reaction::Answer(A_PROPERTY_VALUE_RESPONSE, prop_refused(oi, pid, start)),
+            };
+        }
+        // APDU negotiation: a 2-octet big-endian octet count on the device object.
+        if pid == PID_MAX_APDU_LENGTH && oi == 0 {
+            s.max_apdu_read_at = Some(s.ops.len());
+            return match s.cfg.max_apdu {
+                Some(v) => Reaction::Answer(
+                    A_PROPERTY_VALUE_RESPONSE,
+                    prop_response(oi, pid, 1, start, &v.to_be_bytes()),
                 ),
                 None => Reaction::Answer(A_PROPERTY_VALUE_RESPONSE, prop_refused(oi, pid, start)),
             };
@@ -694,6 +712,7 @@ fn fresh_device(cfg: DeviceCfg) -> Shared {
         table_property_writes: 0,
         ops: Vec::new(),
         go_count: 22,
+        max_apdu_read_at: None,
     }))
 }
 
@@ -826,6 +845,60 @@ async fn apply_uses_extended_memory_for_a_segment_above_16_bits() {
         );
     }
     handle.abort();
+}
+
+#[tokio::test]
+async fn test_apply_tables_negotiates_max_apdu_before_the_first_table_write()
+-> Result<(), Box<dyn std::error::Error>> {
+    // ETS reads obj0/PID_MAX_APDU_LENGTH first and then writes 228-octet
+    // A_MemoryExtended_Write chunks (issue #116). Without the read, the
+    // association table went out in 12-octet chunks.
+    let cfg = DeviceCfg {
+        segment_base: 0x01_3000,
+        max_apdu: Some(233),
+        ..DeviceCfg::default()
+    };
+    let (outcome, state, handle) = run_apply(cfg).await;
+    let outcome = outcome?;
+    assert!(outcome.ok(), "apply must verify: {outcome:?}");
+    {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        let first_write = s
+            .ops
+            .iter()
+            .position(|op| matches!(op, Op::MemWrite { .. }))
+            .ok_or("apply wrote no table memory")?;
+        let read_at = s
+            .max_apdu_read_at
+            .ok_or("apply never read PID_MAX_APDU_LENGTH")?;
+        assert!(
+            read_at <= first_write,
+            "PID 56 read at op {read_at}, first table write at op {first_write}: {:?}",
+            s.ops
+        );
+        assert_eq!(
+            read_at, 0,
+            "negotiation precedes every LSM event: {:?}",
+            s.ops
+        );
+        // Each image fits one negotiated extended chunk, so it goes out in a
+        // single write instead of 12-octet pieces.
+        let writes: Vec<usize> = s
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                Op::MemWrite { len, .. } => Some(*len),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(writes.len(), 2, "one write per table image: {writes:?}");
+        assert!(
+            writes.iter().any(|&len| len > 12),
+            "chunks must scale past the standard-frame floor: {writes:?}"
+        );
+    }
+    handle.abort();
+    Ok(())
 }
 
 #[tokio::test]

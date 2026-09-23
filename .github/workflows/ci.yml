@@ -246,7 +246,7 @@ jobs:
   # test execution, which is enough to catch use of newer-than-1.85 std/lang
   # features. The `test` matrix already exercises behaviour on stable.
   msrv:
-    name: MSRV 1.85 (cargo check)
+    name: MSRV 1.85 (cargo check --all-targets)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -266,7 +266,7 @@ jobs:
           shared-key: rust-msrv-1-85
 
       - name: cargo check (workspace)
-        run: cargo check --workspace
+        run: cargo check --workspace --all-targets
 
   # knx-sim is a SEPARATE Cargo workspace (it has its own `[workspace]` table and
   # the root manifest excludes it), so every job above — lint, test, deny, msrv —

@@ -151,6 +151,10 @@ fn apci_name(apci: u16) -> &'static str {
         0x03D7 => "A_PropertyValue_Write",
         0x03D8 => "A_PropertyDescription_Read",
         0x03D9 => "A_PropertyDescription_Response",
+        0x01FB => "A_MemoryExtended_Write",
+        0x01FC => "A_MemoryExtended_Write_Response",
+        0x01FD => "A_MemoryExtended_Read",
+        0x01FE => "A_MemoryExtended_Read_Response",
         _ => "A_service",
     }
 }
@@ -193,6 +197,17 @@ mod tests {
         assert_eq!(octets.as_slice(), &raw[raw.len() - octets.len()..]);
         // The APDU tail carries the property-read operands.
         assert!(octets.ends_with(&[0x00, 0x0c, 0x10, 0x01]));
+    }
+
+    #[test]
+    fn test_apci_name_memory_extended_services() {
+        assert_eq!(apci_name(0x01FB), "A_MemoryExtended_Write");
+        assert_eq!(apci_name(0x01FC), "A_MemoryExtended_Write_Response");
+        assert_eq!(apci_name(0x01FD), "A_MemoryExtended_Read");
+        assert_eq!(apci_name(0x01FE), "A_MemoryExtended_Read_Response");
+        // Neighbouring unknown APCIs still fall back to the generic label.
+        assert_eq!(apci_name(0x01FA), "A_service");
+        assert_eq!(apci_name(0x01FF), "A_service");
     }
 
     #[test]
