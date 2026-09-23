@@ -756,6 +756,7 @@ fn synthesize_model(found: &[LineDevice], overrides: &ConnOverrides, dir: &Path)
             name: format!("{} (reconstructed)", dev.address),
             description: Some(reconstruct_note(dev)),
             location: None,
+            replaced: None,
             product,
             channels: BTreeMap::new(),
             parameters: BTreeMap::new(),

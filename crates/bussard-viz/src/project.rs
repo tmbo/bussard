@@ -404,6 +404,7 @@ mod tests {
                 floor: Some("Ground Floor".to_string()),
                 room: Some("Utility Room".to_string()),
             }),
+            replaced: None,
             product: Some(Product {
                 manufacturer: Some("Meridian Sensors".to_string()),
                 manufacturer_ref: None,
@@ -425,6 +426,7 @@ mod tests {
             name: "Living Room Blind".to_string(),
             description: None,
             location: None,
+            replaced: None,
             product: None,
             channels: BTreeMap::new(),
             parameters: BTreeMap::new(),

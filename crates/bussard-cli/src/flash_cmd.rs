@@ -1076,6 +1076,7 @@ mod tests {
             name: "test".to_string(),
             description: None,
             location: None,
+            replaced: None,
             product: None,
             channels: Default::default(),
             parameters: params

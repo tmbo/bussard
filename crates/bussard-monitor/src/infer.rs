@@ -918,6 +918,7 @@ mod tests {
             module_bases: BTreeMap::new(),
             com_objects,
             security: None,
+            replaced: None,
         };
         let mut devices = BTreeMap::new();
         devices.insert(
