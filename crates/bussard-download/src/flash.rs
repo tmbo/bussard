@@ -1666,7 +1666,7 @@ pub fn plan_flash(
     // obj0/PID78 preflight all differ from System B, so it is a separate path
     // rather than a branchy overload of the System B lowering below.
     if profile.is_system_7() {
-        let sys7_tables = sys7_tables_from_system_b(table_images);
+        let tables = Sys7PlanTables::from_system_b(table_images);
         return plan_flash_sys7(
             app,
             device_mask,
@@ -1674,7 +1674,7 @@ pub fn plan_flash(
             base_offsets,
             profile,
             None,
-            &sys7_tables,
+            &tables,
         );
     }
 
@@ -2310,8 +2310,10 @@ fn plan_flash_sys7(
     base_offsets: &BTreeMap<String, u32>,
     profile: bussard_mgmt::MaskProfile,
     hawk: Option<&bussard_prod::HawkConfig>,
-    sys7_tables: &BTreeMap<u32, Sys7TableImage>,
+    tables: &Sys7PlanTables,
 ) -> std::result::Result<FlashPlan, PlanError> {
+    let sys7_tables = &tables.tables;
+    let linked_flags = &tables.linked_flags;
     let app_mask = app
         .mask_version
         .clone()
@@ -2589,7 +2591,15 @@ fn plan_flash_sys7(
         .get(&2)
         .map(|assoc| sys7_linked_asaps(&assoc.image))
         .unwrap_or_default();
-    apply_sys7_group_object_links(&steps, &mut images, &linked);
+    // Every declared com-object's default flags (the product's ComObjectRef
+    // flags), which ETS writes for unlinked objects too: the 1.1.31 capture
+    // (no links) turns template `db` into `4b`, i.e. the product's R T.
+    let default_flags: BTreeMap<u16, bussard_model::Flags> = app
+        .resolved_com_objects()
+        .iter()
+        .map(|c| (c.number(), c.flags()))
+        .collect();
+    apply_sys7_group_object_links(&steps, &mut images, &linked, linked_flags, &default_flags);
 
     Ok(FlashPlan {
         identity: AppIdentity {
@@ -2611,6 +2621,25 @@ fn plan_flash_sys7(
     })
 }
 
+/// The System 7 CONFIG octet for a linked object: the project's flags in bits
+/// 7 (U), 6 (T), 4 (W), 3 (R) and 2 (C), the template's bits 5, 1 and 0 kept.
+fn sys7_config_from_flags(template: u8, flags: bussard_model::Flags) -> u8 {
+    use bussard_model::Flags;
+    let mut c = template & 0b0010_0011;
+    for (bit, flag) in [
+        (7, Flags::UPDATE),
+        (6, Flags::TRANSMIT),
+        (4, Flags::WRITE),
+        (3, Flags::READ),
+        (2, Flags::COMMUNICATION),
+    ] {
+        if flags.contains(flag) {
+            c |= 1 << bit;
+        }
+    }
+    c
+}
+
 /// The ASAPs a System 7 association-table image (`[CNT][TSAP ASAP]…`) links.
 fn sys7_linked_asaps(assoc_image: &[u8]) -> BTreeSet<u16> {
     let Some((&count, pairs)) = assoc_image.split_first() else {
@@ -2623,9 +2652,19 @@ fn sys7_linked_asaps(assoc_image: &[u8]) -> BTreeSet<u16> {
         .collect()
 }
 
-/// Sets the communication flag (bit 2 of the CONFIG octet) on the group-object
-/// descriptors of the linked ASAPs and clears it on every other one, inside the
-/// LSM 3 segment image that carries the descriptor table.
+/// Rewrites the CONFIG octet of the group-object descriptors inside the LSM 3
+/// segment image that carries the descriptor table, the way ETS does. Bits 7
+/// (U), 6 (T), 4 (W), 3 (R) and 2 (C) come from the object's flags, bits 5, 1
+/// and 0 stay as the template has them:
+///
+/// - a linked ASAP takes the model's flags (`linked_flags`), else the product's
+///   default flags with C set, else the template with C set;
+/// - every other ASAP takes the product's default flags (`default_flags`) with
+///   C cleared, else the template with C cleared.
+///
+/// Captures: 1.1.31 (no links: template `db` became `4b`, `17` became `13`),
+/// 1.1.46 (four links: `df` became `4f`/`17`/`47`, the project's T R C / W C /
+/// T C), 1.1.1 (`47` became `5f`).
 ///
 /// The table is found by shape, since the mask declares no address for it:
 /// `[CNT:1][RAM-flags ptr:2]` followed by `CNT` 4-octet descriptors
@@ -2638,6 +2677,8 @@ fn apply_sys7_group_object_links(
     steps: &[FlashStep],
     images: &mut BTreeMap<String, Vec<u8>>,
     linked: &BTreeSet<u16>,
+    linked_flags: &BTreeMap<u16, bussard_model::Flags>,
+    default_flags: &BTreeMap<u16, bussard_model::Flags>,
 ) {
     let ram: Vec<(u32, u32)> = steps
         .iter()
@@ -2654,9 +2695,13 @@ fn apply_sys7_group_object_links(
     if ram.is_empty() {
         return;
     }
+    // An unused descriptor slot carries a zero data pointer (the 3361 image
+    // declares 200 slots and uses 125), so zero passes the shape check.
     let in_ram = |p: u16| {
-        ram.iter()
-            .any(|(lo, hi)| (*lo..*hi).contains(&u32::from(p)))
+        p == 0
+            || ram
+                .iter()
+                .any(|(lo, hi)| (*lo..*hi).contains(&u32::from(p)))
     };
     for step in steps {
         let FlashStep::Sys7AbsSegment {
@@ -2687,11 +2732,25 @@ fn apply_sys7_group_object_links(
         if !shaped {
             continue;
         }
+        use bussard_model::Flags;
         for (asap, d) in bytes[3..3 + 4 * count].chunks_exact_mut(4).enumerate() {
-            if linked.contains(&(asap as u16)) {
-                d[2] |= 0x04;
+            let asap = asap as u16;
+            if linked.contains(&asap) {
+                match linked_flags
+                    .get(&asap)
+                    .copied()
+                    .or_else(|| default_flags.get(&asap).map(|f| *f | Flags::COMMUNICATION))
+                {
+                    Some(flags) => d[2] = sys7_config_from_flags(d[2], flags),
+                    None => d[2] |= 0x04,
+                }
             } else {
-                d[2] &= !0x04;
+                match default_flags.get(&asap) {
+                    Some(flags) => {
+                        d[2] = sys7_config_from_flags(d[2], *flags - Flags::COMMUNICATION)
+                    }
+                    None => d[2] &= !0x04,
+                }
             }
         }
         return;
@@ -2734,7 +2793,7 @@ pub fn plan_flash_sys7_with_hawk(
             app_mask,
         });
     }
-    let sys7_tables = sys7_tables_from_system_b(table_images);
+    let tables = Sys7PlanTables::from_system_b(table_images);
     plan_flash_sys7(
         app,
         device_mask,
@@ -2742,8 +2801,63 @@ pub fn plan_flash_sys7_with_hawk(
         base_offsets,
         profile,
         hawk,
-        &sys7_tables,
+        &tables,
     )
+}
+
+/// The model-derived inputs of a System 7 plan: the table images for LSM 1/2
+/// and the flags of every linked com-object (for the descriptor CONFIG octets).
+#[derive(Debug, Clone, Default)]
+pub struct Sys7PlanTables {
+    /// Computed table images keyed by LSM index (1 = addresses, 2 = associations).
+    pub tables: BTreeMap<u32, Sys7TableImage>,
+    /// The linked objects' flags, keyed by ASAP.
+    pub linked_flags: BTreeMap<u16, bussard_model::Flags>,
+}
+
+impl Sys7PlanTables {
+    /// Derives both from the System B table images [`plan_flash`] receives.
+    pub fn from_system_b(table_images: &BTreeMap<u32, Vec<u8>>) -> Self {
+        Self {
+            tables: sys7_tables_from_system_b(table_images),
+            linked_flags: linked_flags_from_system_b(table_images),
+        }
+    }
+}
+
+/// The com-object flags of every linked object, decoded from the System B
+/// group-object table image (`[count:2][word per ASAP]`, see
+/// `compute::group_object_word`: bit 10 C, 11 R, 12 W, 13 I, 14 T, 15 U).
+/// A zero word is an unlinked ASAP and is left out.
+pub fn linked_flags_from_system_b(
+    table_images: &BTreeMap<u32, Vec<u8>>,
+) -> BTreeMap<u16, bussard_model::Flags> {
+    use bussard_model::Flags;
+    let mut out = BTreeMap::new();
+    let Some(img) = table_images.get(&3).filter(|img| img.len() >= 2) else {
+        return out;
+    };
+    for (i, w) in img[2..].chunks_exact(2).enumerate() {
+        let word = u16::from_be_bytes([w[0], w[1]]);
+        if word == 0 {
+            continue;
+        }
+        let mut flags = Flags::empty();
+        for (bit, flag) in [
+            (10, Flags::COMMUNICATION),
+            (11, Flags::READ),
+            (12, Flags::WRITE),
+            (13, Flags::INIT),
+            (14, Flags::TRANSMIT),
+            (15, Flags::UPDATE),
+        ] {
+            if word & (1 << bit) != 0 {
+                flags |= flag;
+            }
+        }
+        out.insert((i + 1) as u16, flags);
+    }
+    out
 }
 
 /// A computed System 7 table image bound to a table LSM's absolute segment in
@@ -5178,7 +5292,13 @@ mod tests {
         let mut images = BTreeMap::from([(seg_id.clone(), template.clone())]);
 
         // No links: ETS clears the flag everywhere (the 1.1.31 capture).
-        apply_sys7_group_object_links(&steps, &mut images, &BTreeSet::new());
+        apply_sys7_group_object_links(
+            &steps,
+            &mut images,
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
         assert_eq!(
             images[&seg_id],
             vec![
@@ -5191,15 +5311,45 @@ mod tests {
         let mut images = BTreeMap::from([(seg_id.clone(), template.clone())]);
         let linked = sys7_linked_asaps(&[0x01, 0x02, 0x01]);
         assert_eq!(linked, BTreeSet::from([1]));
-        apply_sys7_group_object_links(&steps, &mut images, &linked);
+        apply_sys7_group_object_links(
+            &steps,
+            &mut images,
+            &linked,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
         assert_eq!(images[&seg_id][5], 0x13);
         assert_eq!(images[&seg_id][9], 0x4F);
         assert_eq!(images[&seg_id][13], 0x13);
 
+        // With the project's flags known, the linked descriptor takes them
+        // (1.1.46: template `df` became `4f` = T R C, low priority kept).
+        let mut images = BTreeMap::from([(seg_id.clone(), template.clone())]);
+        let mut flags = BTreeMap::new();
+        flags.insert(
+            1u16,
+            bussard_model::Flags::COMMUNICATION
+                | bussard_model::Flags::READ
+                | bussard_model::Flags::TRANSMIT,
+        );
+        let mut tmpl = template.clone();
+        tmpl[9] = 0xDF;
+        let mut images_df = BTreeMap::from([(seg_id.clone(), tmpl)]);
+        apply_sys7_group_object_links(&steps, &mut images_df, &linked, &flags, &BTreeMap::new());
+        assert_eq!(images_df[&seg_id][9], 0x4F);
+        apply_sys7_group_object_links(&steps, &mut images, &linked, &flags, &BTreeMap::new());
+        assert_eq!(images[&seg_id][9], 0x4F);
+
         // A segment that does not look like the descriptor table is untouched.
         let odd = vec![0xFF; 15];
         let mut images = BTreeMap::from([(seg_id.clone(), odd.clone())]);
-        apply_sys7_group_object_links(&steps, &mut images, &BTreeSet::from([1]));
+        apply_sys7_group_object_links(
+            &steps,
+            &mut images,
+            &BTreeSet::from([1]),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        );
         assert_eq!(images[&seg_id], odd);
     }
     use bussard_prod::application::parse_application_program;
