@@ -424,6 +424,7 @@ pub fn run_line(
     // model is written to --out, never merged into it. A present-but-broken
     // model dir is still a hard error.
     let model = load_model_required(dir)?;
+    crate::history_cmd::capture_external_edit(dir);
     let config = resolve_config(model.as_ref(), &overrides)?;
 
     let count = to as u32 - from as u32 + 1;
@@ -462,6 +463,15 @@ pub fn run_line(
         .save(out)
         .with_context(|| format!("writing the reconstructed model to {}", out.display()))?;
     inject_reconstruct_banners(out)?;
+    // `--out` must be empty, so there is no prior state to preserve; the
+    // snapshot records the reconstructed model itself as the baseline the next
+    // edit is measured against (issue #110).
+    crate::history_cmd::snapshot(
+        out,
+        bussard_model::history::SnapshotReason::new("reconstruct")
+            .with_args([line.to_string()])
+            .with_result("the model reconstructed from the line sweep"),
+    );
 
     let summary = build_summary(line, out, &found, &model);
     if json {

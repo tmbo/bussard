@@ -1,0 +1,2 @@
+New group address 1/2/3.
+1.1.9 (com object 5) now listens to 1/2/3.

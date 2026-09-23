@@ -192,6 +192,19 @@ buffer. The tool list, parameters and tiers are in
   (actuators move; prefer asking the human when uncertain).
 - Programming and download (`plan`, `apply`, `flash`) stay CLI-only and out of the MCP
   surface: they run through a plan/confirm/backup/verify ladder a human drives.
+- **Model edits over MCP are first-class.** The primary operator is an assistant working
+  for an owner who does not read YAML, so the model is edited through structured tools
+  (`knx_set_group`, `knx_add_link`, `knx_remove_link`, `knx_set_device`,
+  `knx_set_parameter`, `knx_undo`), never by the assistant hand-writing files. Every edit
+  snapshots the model first (§ history, issue #110), applies one well-defined change,
+  saves, validates, and returns the change as plain-language sentences (issue #112) the
+  assistant quotes to the human. The edit tools write files only, so they are available in
+  every tier including `--passive`; `--no-model-edits` withholds them. Protected GAs are
+  refused exactly as `knx_write_group` refuses them, and no tool parameter can set or clear
+  `protected:`.
+- The line is therefore not read versus write, it is **files versus bus**. Files are
+  reversible without git (`bussard undo`) and reach nothing physical; the bus is where a
+  human confirms.
 
 ## 6. Roadmap
 

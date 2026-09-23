@@ -98,6 +98,10 @@ pub fn run(
         );
     }
 
+    // History (issue #110): capture an edit made outside bussard before the
+    // wizard starts writing device files.
+    crate::history_cmd::capture_external_edit(dir);
+
     println!("bussard adopt — the guided new-device flow");
     println!("  step 1/5  product data");
 
@@ -994,6 +998,13 @@ async fn warn_if_still_in_programming_mode(
 fn write_device_file(model: Option<&Model>, dir: &Path, device: Device) -> anyhow::Result<PathBuf> {
     let address = device.address;
     let file_stem = device_file_stem(&device);
+
+    crate::history_cmd::snapshot(
+        dir,
+        bussard_model::history::SnapshotReason::new("adopt")
+            .with_args([address.to_string()])
+            .with_result("before writing the adopted device file"),
+    );
 
     let mut model = model.cloned().unwrap_or_else(empty_model);
     model.devices.insert(

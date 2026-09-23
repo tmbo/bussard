@@ -1,0 +1,1 @@
+Wind alarm (3/2/0) is now protected against casual writes. This group address is protected.
