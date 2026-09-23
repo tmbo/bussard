@@ -13,10 +13,10 @@ use bussard_transport::knxnet::{
 };
 
 fn ga(s: &str) -> GroupAddress {
-    s.parse().unwrap()
+    s.parse().expect("valid fixture address")
 }
 fn ia(s: &str) -> IndividualAddress {
-    s.parse().unwrap()
+    s.parse().expect("valid fixture address")
 }
 
 /// A representative spread of valid cEMI frames covering every APDU/TPCI branch.
@@ -46,7 +46,7 @@ fn valid_cemi_frames() -> Vec<Vec<u8>> {
 }
 
 #[test]
-fn cemi_chopped_at_every_boundary_errors_not_panics() {
+fn cemi_chopped_at_every_boundary_errors_not_panics() -> Result<(), Box<dyn std::error::Error>> {
     for full in valid_cemi_frames() {
         // The full frame decodes.
         assert!(CemiFrame::decode(&full).is_ok(), "full frame should decode");
@@ -60,11 +60,12 @@ fn cemi_chopped_at_every_boundary_errors_not_panics() {
                 "PANIC decoding cEMI prefix len {cut}: {prefix:?}"
             );
             assert!(
-                r.unwrap().is_err(),
+                r.map_err(|_| "decoder panicked")?.is_err(),
                 "cEMI prefix len {cut} unexpectedly decoded: {prefix:?}"
             );
         }
     }
+    Ok(())
 }
 
 #[test]
@@ -76,17 +77,21 @@ fn cemi_full_frames_roundtrip_byte_for_byte() {
 }
 
 #[test]
-fn cemi_malformed_additional_info_length_errors() {
+fn cemi_malformed_additional_info_length_errors() -> Result<(), Box<dyn std::error::Error>> {
     // AI length says 200 but there aren't 200 bytes.
     let hex: &[u8] = &[
         0x29, 200, 0xBC, 0xE0, 0x11, 0x01, 0x18, 0x04, 0x01, 0x00, 0x81,
     ];
     let r = catch_unwind(AssertUnwindSafe(|| CemiFrame::decode(hex)));
-    assert!(r.is_ok() && r.unwrap().is_err(), "huge AI len must error");
+    assert!(
+        r.is_ok() && r.map_err(|_| "decoder panicked")?.is_err(),
+        "huge AI len must error"
+    );
+    Ok(())
 }
 
 #[test]
-fn cemi_bad_message_code_errors_for_all_unknown_codes() {
+fn cemi_bad_message_code_errors_for_all_unknown_codes() -> Result<(), Box<dyn std::error::Error>> {
     for code in 0u16..=255 {
         let code = code as u8;
         if matches!(code, 0x11 | 0x2E | 0x29) {
@@ -97,8 +102,12 @@ fn cemi_bad_message_code_errors_for_all_unknown_codes() {
         ];
         let r = catch_unwind(AssertUnwindSafe(|| CemiFrame::decode(&hex)));
         assert!(r.is_ok(), "panic for message code {code:#x}");
-        assert!(r.unwrap().is_err(), "code {code:#x} should be rejected");
+        assert!(
+            r.map_err(|_| "decoder panicked")?.is_err(),
+            "code {code:#x} should be rejected"
+        );
     }
+    Ok(())
 }
 
 #[test]
@@ -151,7 +160,7 @@ fn valid_knxnet_frames() -> Vec<Vec<u8>> {
 }
 
 #[test]
-fn knxnet_chopped_at_every_boundary_errors_not_panics() {
+fn knxnet_chopped_at_every_boundary_errors_not_panics() -> Result<(), Box<dyn std::error::Error>> {
     for full in valid_knxnet_frames() {
         assert!(parse(&full).is_ok(), "full KNXnet frame should parse");
         for cut in 0..full.len() {
@@ -160,11 +169,12 @@ fn knxnet_chopped_at_every_boundary_errors_not_panics() {
             assert!(r.is_ok(), "PANIC parsing KNXnet prefix len {cut}");
             // A truncated header/body should error.
             assert!(
-                r.unwrap().is_err(),
+                r.map_err(|_| "decoder panicked")?.is_err(),
                 "KNXnet prefix len {cut} unexpectedly parsed: {prefix:?}"
             );
         }
     }
+    Ok(())
 }
 
 #[test]
@@ -179,7 +189,7 @@ fn knxnet_bad_header_bytes_rejected() {
 }
 
 #[test]
-fn knxnet_unknown_service_types_rejected() {
+fn knxnet_unknown_service_types_rejected() -> Result<(), Box<dyn std::error::Error>> {
     // Sweep all u16 service codes; the known ones parse-header-ok, unknown error.
     let known: &[u16] = &[
         0x0201, 0x0202, 0x0203, 0x0204, 0x0205, 0x0206, 0x0207, 0x0208, 0x0209, 0x020A, 0x0420,
@@ -189,13 +199,14 @@ fn knxnet_unknown_service_types_rejected() {
         let hdr = [0x06, 0x10, (svc >> 8) as u8, (svc & 0xff) as u8, 0x00, 0x06];
         let r = catch_unwind(AssertUnwindSafe(|| parse(&hdr)));
         assert!(r.is_ok(), "panic on service {svc:#x}");
-        let parsed = r.unwrap();
+        let parsed = r.map_err(|_| "decoder panicked")?;
         if known.contains(&svc) {
             assert!(parsed.is_ok(), "known service {svc:#x} should parse header");
         } else {
             assert!(parsed.is_err(), "unknown service {svc:#x} should error");
         }
     }
+    Ok(())
 }
 
 #[test]
@@ -243,7 +254,8 @@ fn knxnet_service_body_parsers_never_panic_on_junk() {
 }
 
 #[test]
-fn knxnet_search_response_short_device_info_does_not_panic() {
+fn knxnet_search_response_short_device_info_does_not_panic()
+-> Result<(), Box<dyn std::error::Error>> {
     // A device-info DIB shorter than 52 bytes must be skipped, not indexed.
     let mut body = Vec::new();
     // control HPAI
@@ -252,20 +264,22 @@ fn knxnet_search_response_short_device_info_does_not_panic() {
     body.extend_from_slice(&[10, 0x01, 0, 0, 0, 0, 0, 0, 0, 0]);
     let r = catch_unwind(AssertUnwindSafe(|| parse_search_response(&body)));
     assert!(r.is_ok(), "short device-info DIB must not panic");
-    let info = r.unwrap().expect("parses");
+    let info = r.map_err(|_| "decoder panicked")?.expect("parses");
     // Too short to read the IA, so it stays None.
     assert!(info.individual_address.is_none());
+    Ok(())
 }
 
 #[test]
-fn knxnet_full_service_frames_roundtrip() {
+fn knxnet_full_service_frames_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
     // Round-trip the parseable service frames.
     let cemi = CemiFrame::group_write_packed(ga("3/0/4"), ia("1.1.1"), &[1]);
     let ri = knxnet::routing_indication(&cemi);
-    let parsed = parse(&ri).unwrap();
+    let parsed = parse(&ri)?;
     assert_eq!(parsed.service, ServiceType::RoutingIndication);
-    let back = knxnet::parse_routing_indication(parsed.body).unwrap();
+    let back = knxnet::parse_routing_indication(parsed.body)?;
     assert_eq!(back, cemi);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

@@ -438,6 +438,7 @@ name = "bussard-transport"
 version = "0.1.0"
 dependencies = [
  "bussard-model",
+ "bussard-testkit",
  "if-addrs",
  "socket2 0.5.10",
  "thiserror",

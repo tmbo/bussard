@@ -728,14 +728,15 @@ mod tests {
     }
 
     #[test]
-    fn header_roundtrip() {
+    fn header_roundtrip() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let body = [0xAA, 0xBB];
         let f = frame(ServiceType::TunnelingAck, &body);
         // 06 10 04 21 00 08 AA BB
         assert_eq!(&f[..6], &[0x06, 0x10, 0x04, 0x21, 0x00, 0x08]);
-        let parsed = parse(&f).unwrap();
+        let parsed = parse(&f)?;
         assert_eq!(parsed.service, ServiceType::TunnelingAck);
         assert_eq!(parsed.body, &body);
+        Ok(())
     }
 
     #[test]
@@ -745,11 +746,11 @@ mod tests {
     }
 
     #[test]
-    fn connect_request_layout() {
+    fn connect_request_layout() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let control = Hpai::new(ip(192, 168, 1, 10, 3672));
         let data = Hpai::new(ip(192, 168, 1, 10, 3672));
         let f = connect_request(control, data);
-        let parsed = parse(&f).unwrap();
+        let parsed = parse(&f)?;
         assert_eq!(parsed.service, ServiceType::ConnectRequest);
         // Two HPAIs (8 each) + 4-byte CRI = 20 bytes body.
         assert_eq!(parsed.body.len(), 20);
@@ -760,115 +761,125 @@ mod tests {
             &parsed.body[..8],
             &[0x08, 0x01, 192, 168, 1, 10, 0x0E, 0x58]
         );
+        Ok(())
     }
 
     #[test]
-    fn connect_response_ok() {
+    fn connect_response_ok() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // channel 0x15, status 0x00, data HPAI 192.0.2.10:3671, CRD tunnel IA 1.1.255.
         let hex: &[u8] = &[
             0x15, 0x00, // channel, status
             0x08, 0x01, 192, 0, 2, 10, 0x0E, 0x57, // data HPAI :3671
             0x04, 0x04, 0x11, 0xFF, // CRD: len 4, tunnel, IA 1.1.255
         ];
-        let r = parse_connect_response(hex).unwrap();
+        let r = parse_connect_response(hex)?;
         assert_eq!(r.channel_id, 0x15);
         assert_eq!(r.status, 0);
         assert_eq!(r.data_endpoint, Some(ip(192, 0, 2, 10, 3671)));
         assert_eq!(r.assigned_ia, Some(0x11FF));
+        Ok(())
     }
 
     #[test]
-    fn connect_response_error_status() {
+    fn connect_response_error_status() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let hex: &[u8] = &[0x00, 0x24]; // E_NO_MORE_CONNECTIONS-ish
-        let r = parse_connect_response(hex).unwrap();
+        let r = parse_connect_response(hex)?;
         assert_eq!(r.status, 0x24);
         assert_eq!(r.data_endpoint, None);
+        Ok(())
     }
 
     #[test]
-    fn connectionstate_roundtrip() {
+    fn connectionstate_roundtrip() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let control = Hpai::wildcard();
         let f = connectionstate_request(0x15, control);
-        let parsed = parse(&f).unwrap();
+        let parsed = parse(&f)?;
         assert_eq!(parsed.service, ServiceType::ConnectionstateRequest);
         assert_eq!(parsed.body[0], 0x15);
 
         let resp = connectionstate_response(0x15, 0x00);
-        let rp = parse(&resp).unwrap();
-        let cs = parse_channel_status(rp.body).unwrap();
+        let rp = parse(&resp)?;
+        let cs = parse_channel_status(rp.body)?;
         assert_eq!(cs.channel_id, 0x15);
         assert_eq!(cs.status, 0);
+        Ok(())
     }
 
     #[test]
-    fn tunneling_request_carries_group_write() {
-        let ga: GroupAddress = "3/0/4".parse().unwrap();
-        let ia: IndividualAddress = "1.1.255".parse().unwrap();
+    fn tunneling_request_carries_group_write() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
+        let ga: GroupAddress = "3/0/4".parse()?;
+        let ia: IndividualAddress = "1.1.255".parse()?;
         let cemi = CemiFrame::group_write_packed(ga, ia, &[1]);
         let header = ConnectionHeader {
             channel_id: 0x15,
             seq: 0,
         };
         let f = tunneling_request(header, &cemi);
-        let parsed = parse(&f).unwrap();
+        let parsed = parse(&f)?;
         assert_eq!(parsed.service, ServiceType::TunnelingRequest);
         // Connection header: 04 15 00 00.
         assert_eq!(&parsed.body[..4], &[0x04, 0x15, 0x00, 0x00]);
-        let tr = parse_tunneling_request(parsed.body).unwrap();
+        let tr = parse_tunneling_request(parsed.body)?;
         assert_eq!(tr.header.channel_id, 0x15);
         assert_eq!(tr.header.seq, 0);
         assert_eq!(tr.cemi, cemi);
+        Ok(())
     }
 
     #[test]
-    fn tunneling_ack_roundtrip() {
+    fn tunneling_ack_roundtrip() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let f = tunneling_ack(0x15, 0x07, 0x00);
-        let parsed = parse(&f).unwrap();
+        let parsed = parse(&f)?;
         assert_eq!(parsed.service, ServiceType::TunnelingAck);
-        let (hdr, status) = parse_tunneling_ack(parsed.body).unwrap();
+        let (hdr, status) = parse_tunneling_ack(parsed.body)?;
         assert_eq!(hdr.channel_id, 0x15);
         assert_eq!(hdr.seq, 0x07);
         assert_eq!(status, 0);
+        Ok(())
     }
 
     #[test]
-    fn routing_indication_roundtrip() {
-        let ga: GroupAddress = "1/2/3".parse().unwrap();
-        let ia: IndividualAddress = "1.1.1".parse().unwrap();
+    fn routing_indication_roundtrip() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let ga: GroupAddress = "1/2/3".parse()?;
+        let ia: IndividualAddress = "1.1.1".parse()?;
         let cemi = CemiFrame::group_write_packed(ga, ia, &[0]);
         let f = routing_indication(&cemi);
-        let parsed = parse(&f).unwrap();
+        let parsed = parse(&f)?;
         assert_eq!(parsed.service, ServiceType::RoutingIndication);
-        let back = parse_routing_indication(parsed.body).unwrap();
+        let back = parse_routing_indication(parsed.body)?;
         assert_eq!(back, cemi);
+        Ok(())
     }
 
     #[test]
-    fn routing_busy_and_lost_decode() {
+    fn routing_busy_and_lost_decode() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // ROUTING_BUSY: len 06, state 00, wait 100ms (0x0064), control 0000.
-        let busy = parse_routing_busy(&[0x06, 0x00, 0x00, 0x64, 0x00, 0x00]).unwrap();
+        let busy = parse_routing_busy(&[0x06, 0x00, 0x00, 0x64, 0x00, 0x00])?;
         assert_eq!(busy.wait_time_ms, 100);
 
         // ROUTING_LOST_MESSAGE: len 04, state 00, lost 5.
-        let lost = parse_routing_lost(&[0x04, 0x00, 0x00, 0x05]).unwrap();
+        let lost = parse_routing_lost(&[0x04, 0x00, 0x00, 0x05])?;
         assert_eq!(lost.lost, 5);
+        Ok(())
     }
 
     #[test]
-    fn disconnect_roundtrip() {
+    fn disconnect_roundtrip() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let f = disconnect_request(0x15, Hpai::wildcard());
-        let parsed = parse(&f).unwrap();
+        let parsed = parse(&f)?;
         assert_eq!(parsed.service, ServiceType::DisconnectRequest);
-        assert_eq!(parse_disconnect_request(parsed.body).unwrap(), 0x15);
+        assert_eq!(parse_disconnect_request(parsed.body)?, 0x15);
 
         let resp = disconnect_response(0x15, 0);
-        let rp = parse(&resp).unwrap();
-        let cs = parse_channel_status(rp.body).unwrap();
+        let rp = parse(&resp)?;
+        let cs = parse_channel_status(rp.body)?;
         assert_eq!(cs.channel_id, 0x15);
+        Ok(())
     }
 
     #[test]
-    fn search_response_parses_device_info() {
+    fn search_response_parses_device_info() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Control HPAI + one device-info DIB with IA 1.1.0 and name "GW".
         let mut body = Vec::new();
         Hpai::new(ip(192, 168, 1, 20, 3671)).encode(&mut body);
@@ -884,9 +895,10 @@ mod tests {
         dib.extend_from_slice(&name);
         body.extend_from_slice(&dib);
 
-        let info = parse_search_response(&body).unwrap();
+        let info = parse_search_response(&body)?;
         assert_eq!(info.endpoint, ip(192, 168, 1, 20, 3671));
         assert_eq!(info.individual_address, Some(0x1100));
         assert_eq!(info.name.as_deref(), Some("GW"));
+        Ok(())
     }
 }
