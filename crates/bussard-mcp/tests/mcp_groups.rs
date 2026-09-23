@@ -4,7 +4,7 @@
 //! and `bussard.yaml` there and reports what it added. No bus is involved.
 
 use std::error::Error;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bussard_mcp::SharedState;
@@ -31,11 +31,11 @@ fn model_dir() -> Result<PathBuf, Box<dyn Error>> {
     Ok(dir)
 }
 
-fn server_over(dir: &PathBuf) -> Result<BussardMcp, Box<dyn Error>> {
+fn server_over(dir: &Path) -> Result<BussardMcp, Box<dyn Error>> {
     let model = Model::load(dir)?;
     let state = Arc::new(SharedState {
-        model: bussard_mcp::model_handle::ModelHandle::new(dir.clone(), model),
-        dir: dir.clone(),
+        model: bussard_mcp::model_handle::ModelHandle::new(dir.to_path_buf(), model),
+        dir: dir.to_path_buf(),
         ring: bussard_monitor::TelegramRing::new(),
         bus: BusStatus::new(TransportKind::Tunnel),
         passive: true,
