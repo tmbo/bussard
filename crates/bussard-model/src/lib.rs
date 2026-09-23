@@ -14,12 +14,15 @@ pub mod bundle;
 pub mod change;
 pub mod codec;
 pub mod dpt;
+pub mod ets_export;
 pub mod flags;
 pub mod history;
+pub mod lint;
 pub mod loader;
 pub mod merge;
 pub mod param_model;
 pub mod reconcile;
+pub mod scaffold;
 pub mod schema;
 pub mod validate;
 
@@ -31,9 +34,12 @@ pub use codec::{
     encode, encode_float16, parse_value,
 };
 pub use dpt::{ApduSize, Dpt, DptParseError};
+pub use ets_export::{to_ets_csv, to_ets_xml};
 pub use flags::{Flags, FlagsParseError};
 pub use history::{History, HistoryError, Snapshot, SnapshotId, SnapshotReason};
+pub use lint::{GroupsLint, LintConfig, TopologyLint, lint};
 pub use loader::{LoadError, LoadedDevice, Model, SaveError};
 pub use merge::{Conflict, MergeReport, merge};
 pub use param_model::{ParamDef, ParamKind, ProductModel, ProductModels};
+pub use scaffold::{Plan, PlanRoom, Scheme, scaffold, scaffold_file};
 pub use validate::{Diagnostic, Severity, has_errors, validate, validate_in_dir};

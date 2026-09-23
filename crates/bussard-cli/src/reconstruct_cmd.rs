@@ -863,7 +863,11 @@ fn model_config(overrides: &ConnOverrides, dir: &Path) -> BussardConfig {
         // fall back to whatever the input model had.
         Err(_) => base.unwrap_or_default(),
     };
-    BussardConfig { connection }
+    BussardConfig {
+        connection,
+        // Reconstruction infers nothing about project lint policy.
+        lint: None,
+    }
 }
 
 /// Prepends [`RECONSTRUCT_BANNER`] to every synthesized YAML file, after

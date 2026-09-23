@@ -1,0 +1,10 @@
+# Fixture for lint L008: offset 1 of a light block is the "Dim" role (DPT 3.007).
+connection:
+  transport: tunnel
+  gateway: "127.0.0.1:3671"
+
+lint:
+  groups:
+    scheme: floor-trade-block
+    blocks:
+      light: 5

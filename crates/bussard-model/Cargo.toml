@@ -26,3 +26,7 @@ sha2 = { workspace = true }
 [dev-dependencies]
 anyhow = { workspace = true }
 serde_json = { workspace = true }
+# quick-xml: parses the emitted ETS group-address export back in the golden
+# tests, proving the hand-written XML is well-formed. Test-only; the exporter
+# itself has no XML dependency.
+quick-xml = { workspace = true }

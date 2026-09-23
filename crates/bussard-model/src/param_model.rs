@@ -21,6 +21,11 @@ use serde::Deserialize;
 /// One parsed product model file: its parameter definitions, indexed for lookup.
 #[derive(Debug, Clone, Default)]
 pub struct ProductModel {
+    /// The bus current this product draws, in mA, as declared by the vendor's
+    /// `Hardware.xml` (`BusCurrent`). Used by the `L002` topology lint to total
+    /// a line's draw against its power supply. `None` when the cached model
+    /// predates the field or the vendor omitted it.
+    pub bus_current_ma: Option<u32>,
     /// Parameter definitions keyed by their **application-relative** id
     /// (the full id with the `<application_ref>_` prefix stripped, e.g.
     /// `MD-1_P-3` or `P-1312`). A device parameter key resolves to this id by
@@ -77,6 +82,8 @@ pub enum ParamKind {
 
 #[derive(Debug, Deserialize)]
 struct RawModel {
+    #[serde(default)]
+    bus_current_ma: Option<u32>,
     #[serde(default)]
     parameters: Vec<RawParam>,
 }
@@ -160,7 +167,10 @@ impl ProductModel {
                 },
             );
         }
-        Ok(ProductModel { parameters })
+        Ok(ProductModel {
+            bus_current_ma: raw.bus_current_ma,
+            parameters,
+        })
     }
 }
 

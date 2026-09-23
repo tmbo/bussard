@@ -1,0 +1,4 @@
+address: "1.1.2"
+name: Actuator 2
+product:
+  application_ref: M-0001_A-1
