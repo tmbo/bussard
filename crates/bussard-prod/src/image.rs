@@ -305,8 +305,8 @@ pub fn compute_parameter_image(
 
         // Member offsets are relative to the union base; a missing member Offset
         // means "at the base".
-        let offset = base_offset as usize + member.offset.unwrap_or(0) as usize;
-        let bit_offset = member.bit_offset.unwrap_or(0);
+        let (offset, bit_offset) = union_member_position(base_offset, mem.bit_offset, member);
+        let offset = offset as usize;
         let seg_size = app.code_segments.get(seg_id).and_then(|s| s.size);
 
         let image = images
@@ -590,10 +590,11 @@ pub fn compute_dynamic_parameter_image(
             let (Some(seg), Some(off)) = (mem.code_segment.as_deref(), mem.offset) else {
                 continue;
             };
+            let (member_off, member_bit) = union_member_position(off, mem.bit_offset, member);
             (
                 seg,
-                i64::from(off) + i64::from(member.offset.unwrap_or(0)),
-                member.bit_offset.unwrap_or(0),
+                i64::from(member_off),
+                member_bit,
                 mem.base_offset.as_deref(),
             )
         } else {
@@ -648,13 +649,34 @@ fn union_member_memory(
     app.unions.iter().find_map(|union| {
         let member = union.members.iter().find(|m| m.parameter == param_id)?;
         let mem = union.memory.as_ref()?;
+        let (offset, bit_offset) = union_member_position(mem.offset?, mem.bit_offset, member);
         Some(bussard_ets::application::Memory {
             code_segment: mem.code_segment.clone(),
-            offset: Some(mem.offset?.checked_add(member.offset.unwrap_or(0))?),
-            bit_offset: member.bit_offset,
+            offset: Some(offset),
+            bit_offset: Some(bit_offset),
             base_offset: mem.base_offset.clone(),
         })
     })
+}
+
+/// The byte and bit offset of a `<Union>` member: the union's `<Memory>`
+/// `Offset`/`BitOffset` plus the member's own `Offset`/`BitOffset`, with a bit
+/// offset of 8 or more carried into the byte offset.
+///
+/// The union's own `BitOffset` counts: the Jung 3361-1MWW declares a 2-bit
+/// union at `Offset="0" BitOffset="4"` whose members sit at `BitOffset="0"`, and
+/// ETS writes them at bits 4-5. Dropping the union's bit offset wrote them at
+/// bits 0-1, over the neighbouring 1-bit parameter (issue #117).
+fn union_member_position(
+    union_offset: u32,
+    union_bit_offset: Option<u8>,
+    member: &bussard_ets::application::UnionMember,
+) -> (u32, u8) {
+    let bits = u32::from(union_bit_offset.unwrap_or(0)) + u32::from(member.bit_offset.unwrap_or(0));
+    let offset = union_offset
+        .saturating_add(member.offset.unwrap_or(0))
+        .saturating_add(bits / 8);
+    (offset, (bits % 8) as u8)
 }
 
 /// The set of application `Parameter` ids a module application's channel
@@ -2224,6 +2246,49 @@ mod tests {
         overrides.insert("UP-2_R-2".to_string(), "5".to_string());
         let images = compute_parameter_image(&app, &overrides, &BTreeMap::new())?;
         assert_eq!(images["B_RS-1"][3], 5);
+        Ok(())
+    }
+
+    /// The 3361-1MWW shape (issue #117): a 1-bit parameter at bit 0 of an
+    /// octet, and a 2-bit `<Union>` at `Offset="0" BitOffset="4"` whose member
+    /// sits at `BitOffset="0"`. The member lands at bits 4-5, not over bit 0.
+    #[test]
+    fn test_compute_parameter_image_union_bit_offset_adds_to_member_bit_offset() -> Result<()> {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/11"><ManufacturerData><Manufacturer RefId="M-1"><ApplicationPrograms>
+  <ApplicationProgram Id="M-1_A-1" MaskVersion="MV-0705"><Static>
+    <Code><AbsoluteSegment Id="M-1_A-1_AS-1" Address="18243" Size="2"><Data>AAA=</Data></AbsoluteSegment></Code>
+    <ParameterTypes>
+      <ParameterType Id="M-1_A-1_PT-1"><TypeNumber SizeInBit="1" Type="unsignedInt" minInclusive="0" maxInclusive="1" /></ParameterType>
+      <ParameterType Id="M-1_A-1_PT-2"><TypeNumber SizeInBit="2" Type="unsignedInt" minInclusive="0" maxInclusive="3" /></ParameterType>
+    </ParameterTypes>
+    <Parameters>
+      <Parameter Id="M-1_A-1_P-1" Name="enable" ParameterType="M-1_A-1_PT-1" Value="1"><Memory CodeSegment="M-1_A-1_AS-1" Offset="0" BitOffset="0" /></Parameter>
+      <Union SizeInBit="2">
+        <Memory CodeSegment="M-1_A-1_AS-1" Offset="0" BitOffset="4" />
+        <Parameter Id="M-1_A-1_UP-2" Name="type" ParameterType="M-1_A-1_PT-2" Offset="0" BitOffset="0" Value="3" />
+      </Union>
+      <Union SizeInBit="2">
+        <Memory CodeSegment="M-1_A-1_AS-1" Offset="0" BitOffset="7" />
+        <Parameter Id="M-1_A-1_UP-3" Name="carry" ParameterType="M-1_A-1_PT-2" Offset="0" BitOffset="2" Value="2" />
+      </Union>
+    </Parameters>
+    <ParameterRefs>
+      <ParameterRef Id="M-1_A-1_P-1_R-1" RefId="M-1_A-1_P-1" />
+      <ParameterRef Id="M-1_A-1_UP-2_R-2" RefId="M-1_A-1_UP-2" />
+      <ParameterRef Id="M-1_A-1_UP-3_R-3" RefId="M-1_A-1_UP-3" />
+    </ParameterRefs>
+  </Static><Dynamic><ChannelIndependentBlock><ParameterBlock Id="M-1_A-1_PB-1">
+    <ParameterRefRef RefId="M-1_A-1_P-1_R-1" />
+    <ParameterRefRef RefId="M-1_A-1_UP-2_R-2" />
+    <ParameterRefRef RefId="M-1_A-1_UP-3_R-3" />
+  </ParameterBlock></ChannelIndependentBlock></Dynamic></ApplicationProgram>
+</ApplicationPrograms></Manufacturer></ManufacturerData></KNX>"#;
+        let app = parse_application_program("M-1_A-1", xml.as_bytes())
+            .map_err(|e| param_err(&ApplicationProgram::default(), "fixture", &e.to_string()))?;
+        let images = compute_parameter_image(&app, &no_overrides(), &no_bases())?;
+        // Byte 0: P-1 at bit 0 (0x80), UP-2 = 3 at bits 4-5 (0x0C). UP-3 = 2
+        // at union bit 7 + member bit 2 = bit 9, i.e. byte 1 bits 1-2 (0x40).
+        assert_eq!(images.get("M-1_A-1_AS-1"), Some(&vec![0x8C, 0x40]));
         Ok(())
     }
 }
