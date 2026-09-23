@@ -649,8 +649,9 @@ fn test_flash_parameters_only_piped_output_is_unchanged() -> TestResult {
          \x20     Threshold: 7 to 12\n\
          \x20 memory      :\n\
          \x20     M-00FA_A-0002_RS-2 at 0x004006: 1 of 2 octet(s) change\n\
-         \x20 procedure   : open for loading (obj 4); write parameters image (2 bytes) at \
-         0x00004006; complete load (obj 4); restart device (no unload, no table write)\n\
+         \x20 procedure   : open for loading (obj 4); write the differing parameter octets \
+         (segment of 2 bytes) at 0x4006; complete load (obj 4); restart device (no unload, no \
+         table write)\n\
          parameter backup written to <backup>\n\
          \n\
          parameters verified: 1 changed octet(s) read back from 1.1.4; the application is Loaded\n"
@@ -665,7 +666,7 @@ fn test_flash_parameters_only_piped_output_is_unchanged() -> TestResult {
     assert_eq!(
         progress,
         "  [1/4] open for loading (obj 4)\n\
-         \x20 [2/4] write parameters image (2 bytes) at 0x00004006\n\
+         \x20 [2/4] write the differing parameter octets (segment of 2 bytes) at 0x4006\n\
          \r      1/1 bytes\n\
          \x20 [3/4] complete load (obj 4)\n\
          \x20 [4/4] restart device\n"
