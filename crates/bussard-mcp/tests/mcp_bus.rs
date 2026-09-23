@@ -117,6 +117,7 @@ fn state_for() -> Arc<SharedState> {
         ),
         capture_db: None,
         source_ia: "0.0.255".parse().unwrap(),
+        programming: None,
     })
 }
 

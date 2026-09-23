@@ -217,6 +217,26 @@ fn mcp_allow_writes_refuses_non_loopback_gateway_without_optin() {
 }
 
 #[test]
+fn mcp_allow_programming_refuses_non_loopback_gateway_without_optin() {
+    // The programming tier (issue #118) writes device tables: the server must
+    // refuse to start against a real gateway without the opt-in.
+    let dir = model_dir("mcp-program");
+    let (success, stderr) = run(
+        &[
+            "mcp",
+            "--allow-programming",
+            "--dir",
+            dir.to_str().expect("utf-8 dir"),
+            "--gateway",
+            NON_LOOPBACK,
+        ],
+        false,
+    );
+    assert_gate_refusal(success, &stderr);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn viz_allow_writes_refuses_non_loopback_gateway_without_optin() {
     let dir = model_dir("viz-write");
     let (success, stderr) = run(

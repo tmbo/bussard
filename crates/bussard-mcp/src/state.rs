@@ -210,6 +210,10 @@ pub struct SharedState {
     pub capture_db: Option<PathBuf>,
     /// The source IA to use for outgoing `GroupValueRead` requests.
     pub source_ia: bussard_model::IndividualAddress,
+    /// The programming tier (`--allow-programming`, issue #118): its gate
+    /// configuration and the plans produced this session. `None` keeps
+    /// `knx_plan_device` and `knx_apply_device` unregistered.
+    pub programming: Option<crate::tools_program::ProgrammingTier>,
 }
 
 #[cfg(test)]
