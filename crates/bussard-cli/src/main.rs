@@ -457,6 +457,15 @@ enum Command {
         /// not re-download the code segment.
         #[arg(long)]
         full: bool,
+        /// Skip the factory reset before the download. By default a System B
+        /// flash that writes filled segments sparsely, or that replaces a device
+        /// that is not factory-fresh, first sends a confirmed master reset (erase
+        /// code 7): the device erases its application, parameters and links and
+        /// keeps its individual address, so no octet of a previous image survives
+        /// where the new one writes nothing (issue #117). Use this only when you
+        /// know the device holds no stale image.
+        #[arg(long)]
+        no_factory_reset: bool,
         /// Permit a write to a non-loopback (real) gateway. Required for any
         /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
         #[arg(long)]
@@ -1403,6 +1412,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             yes,
             force,
             full,
+            no_factory_reset,
             allow_remote_gateway,
             bcu_key,
             keyring,
@@ -1422,6 +1432,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             yes,
             force,
             full,
+            no_factory_reset,
             allow_remote_gateway,
             bcu_key.as_deref(),
             secure_key::ToolKeySource {

@@ -42,6 +42,16 @@ pub const FREE_ACCESS_KEY: u32 = 0xFFFF_FFFF;
 /// a System 7 device carrying more than this is refused as a real device refuses.
 pub const SYS7_MAX_MEMORY_CHUNK: usize = 12;
 
+/// The master-reset erase code for a factory reset that keeps the individual
+/// address (KNX `A_Restart` erase code 7).
+pub const ERASE_CODE_FACTORY_RESET_KEEP_IA: u8 = 0x07;
+
+/// The process time (seconds) a device reports in its `A_Restart_Response` to a
+/// factory reset, unless set with [`Device::set_restart_process_time`]. The real
+/// Jung device in the issue #117 capture reports 8 s; the simulator answers
+/// faster so a simulated flash does not idle.
+pub const DEFAULT_RESTART_PROCESS_TIME_S: u16 = 1;
+
 use std::collections::BTreeMap;
 
 use crate::bus::event::{Event, EventSink};
@@ -231,6 +241,9 @@ pub struct Device {
     /// access must ride A_SecureData; a plain access to a protected function is
     /// refused (spec §6.4, §12.2).
     secure: Option<crate::secure::DataSecureSession>,
+    /// The process time (seconds) reported in the `A_Restart_Response` to a
+    /// factory reset (erase code 7).
+    restart_process_time_s: u16,
     events: std::sync::Arc<dyn EventSink>,
 }
 
@@ -600,6 +613,7 @@ impl Device {
             group_comm: None,
             prog_mode,
             secure,
+            restart_process_time_s: DEFAULT_RESTART_PROCESS_TIME_S,
             events,
         };
         // A device constructed already `Loaded` (a previously-programmed device)
@@ -728,6 +742,7 @@ impl Device {
             group_comm: None,
             prog_mode,
             secure,
+            restart_process_time_s: DEFAULT_RESTART_PROCESS_TIME_S,
             events,
         };
         device.refresh_group_comm();
@@ -2198,6 +2213,33 @@ impl Device {
         })
     }
 
+    /// Erase code 7: drop every loadable object back to `Unloaded` and erase its
+    /// segment, so a following download starts from a blank device. The
+    /// individual address, the interface-object table and the object bases are
+    /// not touched. The device's group runtime goes silent with its tables.
+    fn factory_reset_keep_address(&mut self) {
+        let objects: Vec<u8> = self.loadables.keys().copied().collect();
+        for object in objects {
+            self.memory.erase_owner(object);
+            if let Some(state) = self.loadables.get_mut(&object) {
+                state.lsm = LoadStateMachine::new(LoadState::Unloaded);
+            }
+            self.emit(Event::LoadStateChanged {
+                device: self.address,
+                object,
+                state: LoadState::Unloaded.to_byte(),
+            });
+        }
+        self.refresh_group_comm();
+    }
+
+    /// Sets the process time (seconds) the device reports in its
+    /// `A_Restart_Response` to a factory reset (erase code 7). Defaults to
+    /// [`DEFAULT_RESTART_PROCESS_TIME_S`].
+    pub fn set_restart_process_time(&mut self, seconds: u16) {
+        self.restart_process_time_s = seconds;
+    }
+
     fn on_restart(
         &mut self,
         tool: IndividualAddress,
@@ -2239,8 +2281,19 @@ impl Device {
             // the explicit Unload load-event, not by the restart. (A device that
             // truly erased here would fail the capture.)
             let _ = channel;
+            // Erase code 0x07 (factory reset without individual address, the
+            // ETS opening of an initial System B download, issue #117): erase
+            // every loadable object's image and load state, keep the individual
+            // address. The KNX-Virtual 0x04 behaviour above is left as observed.
+            let process_time = if erase_code == ERASE_CODE_FACTORY_RESET_KEEP_IA {
+                self.factory_reset_keep_address();
+                self.restart_process_time_s
+            } else {
+                0
+            };
             // A_Restart_Response (0x3A1): [error_code][process_time:2].
-            responses.push(self.respond(tool, 0x3A1, &[error_code, 0x00, 0x00]));
+            let [pt_hi, pt_lo] = process_time.to_be_bytes();
+            responses.push(self.respond(tool, 0x3A1, &[error_code, pt_hi, pt_lo]));
         }
 
         // Every restart drops the transport connection (side effect of reboot).
@@ -2315,6 +2368,64 @@ mod tests {
             dest: dev.address().raw(),
             tpdu,
         }
+    }
+
+    #[test]
+    fn test_master_reset_erase_code_7_clears_application_and_keeps_address()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut dev = system_b_device()?;
+        dev.set_restart_process_time(8);
+        // A previous image in the application object's segment (object 3).
+        let base = dev.loadables.get(&3).ok_or("object 3")?.base;
+        dev.memory.allocate(3, base, 6);
+        dev.memory.write(3, base, &[0xAA; 6])?;
+
+        connect(&mut dev)?;
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+        // The ETS request from the issue #117 capture: A_Restart master reset,
+        // erase code 7, channel 0.
+        let reaction = dev.handle_cemi(&data(&dev, 0x381, &[0x07, 0x00]))?;
+        assert!(reaction.did_master_reset);
+        let resp = reaction
+            .responses
+            .iter()
+            .find(|r| r.tpdu.len() == 5)
+            .ok_or("an A_Restart_Response")?;
+        // `.. a1 00 00 08`: APCI 0x3A1, error 0, process time 8 s.
+        let apci10 = ((resp.tpdu[0] as u16 & 0x03) << 8) | resp.tpdu[1] as u16;
+        assert_eq!(apci10, 0x3A1);
+        assert_eq!(&resp.tpdu[2..], &[0x00, 0x00, 0x08]);
+
+        // Application erased, every object Unloaded, address kept, rebooted.
+        for object in 1u8..=3 {
+            assert_eq!(dev.load_state(object), Some(LoadState::Unloaded));
+        }
+        assert_eq!(dev.memory().read(base, 6), vec![0x00; 6]);
+        assert!(dev.memory().segment_of(3).is_none());
+        assert_eq!(dev.address(), IndividualAddress::new(1, 1, 2));
+        assert!(!dev.connected);
+        Ok(())
+    }
+
+    #[test]
+    fn test_master_reset_confirmed_restart_erases_nothing() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut dev = system_b_device()?;
+        let base = dev.loadables.get(&3).ok_or("object 3")?.base;
+        dev.memory.allocate(3, base, 2);
+        dev.memory.write(3, base, &[0x12, 0x34])?;
+        connect(&mut dev)?;
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+        let reaction = dev.handle_cemi(&data(&dev, 0x381, &[0x01, 0x00]))?;
+        let resp = reaction
+            .responses
+            .iter()
+            .find(|r| r.tpdu.len() == 5)
+            .ok_or("an A_Restart_Response")?;
+        assert_eq!(&resp.tpdu[2..], &[0x00, 0x00, 0x00]);
+        assert_eq!(dev.load_state(3), Some(LoadState::Loaded));
+        assert_eq!(dev.memory().read(base, 2), vec![0x12, 0x34]);
+        Ok(())
     }
 
     #[test]

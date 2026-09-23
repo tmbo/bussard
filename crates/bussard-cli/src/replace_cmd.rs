@@ -155,6 +155,7 @@ pub fn run(
             // operator already consented to the whole run.
             true,
             false,
+            false,
             allow_remote_gateway,
             bcu_key,
             tool_key_source,

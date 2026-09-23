@@ -279,6 +279,37 @@ which is why the mock device and `knx-sim` both let the bug through. `apply` now
 allocates and memory-writes; the mock and the simulator both refuse a `PID_TABLE`
 write the way the Jung did, so the old path cannot come back unnoticed.
 
+**A sparse re-flash keeps the previous image's octets** (issues #117, #89). A
+Jung F50 (mask 07B0) that bussard had re-flashed kept a blinking status LED,
+even after a later plain ETS download; only "reset device" plus a full download
+in ETS fixed it. ETS allocates the application segment with the fill flag (fill
+byte 0) and then writes only the non-zero octets, and bussard does the same
+since PR #125. The device's fill is bookkeeping, not an erase, so a re-flash
+inherits whatever the previous image left where the new one writes nothing.
+ETS's own initial download of that device (`tastsensor-universal-2-download`,
+device 1.1.18) starts with a factory reset:
+
+```
+uv run tools/knxtrace/knxtrace.py trace <capture> --device 1.1.18 | grep -i restart
+```
+
+shows `A_Restart type=master-reset erase_code=7 channel=0` as a numbered request,
+answered by `A_Restart_Response error=0 process_time=8`, then a new connection and
+a fresh descriptor read before the download; the download ends with
+`A_Restart type=master-reset erase_code=1`. Seven more 07B0 downloads on file
+have the same shape; two (the KWL and Steinel captures) use a bare restart and
+no reset.
+
+`flash` now does the same on System B: a plan with a filled segment starts with
+the factory reset (erase code 7: application, parameters and links erased, the
+individual address kept) and ends with the confirmed restart (erase code 1). The
+plan and `--dry-run` list the reset as their first step; `--no-factory-reset`
+removes it. When comparing a bussard capture against ETS, expect the reset
+before the first `Unload` and the extra connection it costs. The mock device
+and `knx-sim` both erase on erase code 7 and answer with a process time, and a
+mock test proves a re-flash over stale octets matches the ETS image only
+because of the reset.
+
 ## Rehearsing on the simulator
 
 Every script has a loopback dry-run mode, so the runbook can be rehearsed

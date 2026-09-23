@@ -596,6 +596,47 @@ pub fn encode_master_reset(erase_code: u8, channel_number: u8) -> (u16, Vec<u8>)
     (A_RESTART_MASTER_RESET, vec![erase_code, channel_number])
 }
 
+/// `A_Restart` master-reset erase code 1: **confirmed restart**. Erases nothing;
+/// the device answers with an [`A_RESTART_RESPONSE`] and reboots. ETS ends a
+/// System B (mask 07B0) download with this instead of a bare basic restart
+/// (issue #117 captures).
+pub const ERASE_CODE_CONFIRMED_RESTART: u8 = 0x01;
+
+/// `A_Restart` master-reset erase code 7: **factory reset without individual
+/// address**. The device erases its application program, parameters, group
+/// addresses and links, keeps its individual address, answers with an
+/// [`A_RESTART_RESPONSE`] and reboots. ETS sends this at the start of an initial
+/// System B download (issue #117 captures: `4f 81 07 00`, answered by
+/// `4f a1 00 00 08`).
+pub const ERASE_CODE_FACTORY_RESET_KEEP_IA: u8 = 0x07;
+
+/// A decoded `A_Restart_Response`: the device's verdict on a master-reset
+/// request and how long it needs before it is reachable again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RestartResponse {
+    /// `0` = accepted; `1` = access denied, `2` = unsupported erase code,
+    /// `3` = invalid channel number (KNX spec). Other values are device errors.
+    pub error_code: u8,
+    /// The minimum time in seconds the device needs before it answers again
+    /// (big-endian 16-bit). `0` when the device omitted it.
+    pub process_time_s: u16,
+}
+
+/// Decodes a full `A_Restart_Response` payload `[error_code, pt_hi, pt_lo]`.
+///
+/// A short payload is tolerated like [`decode_restart_response`]: a missing
+/// process time reads as `0` and an empty payload as an accepted reset.
+pub fn decode_restart_response_full(payload: &[u8]) -> RestartResponse {
+    let process_time_s = match payload {
+        [_, hi, lo, ..] => u16::from_be_bytes([*hi, *lo]),
+        _ => 0,
+    };
+    RestartResponse {
+        error_code: decode_restart_response(payload),
+        process_time_s,
+    }
+}
+
 /// Decodes an `A_Restart_Response` payload into its error code.
 ///
 /// The payload is `[error_code, process_time_hi, process_time_lo]`; only the
@@ -1111,6 +1152,58 @@ mod tests {
         assert_eq!(apci, A_RESTART_MASTER_RESET);
         assert_eq!(apci, A_RESTART | 1);
         assert_eq!(payload, vec![0x04, 0x00]);
+    }
+
+    /// Rebuilds the connected TPDU `[tpci|apci_hi, apci_lo, payload…]` the way
+    /// the wire carries it, for comparing against capture bytes.
+    fn tpdu(seq: u8, apci: u16, payload: &[u8]) -> Vec<u8> {
+        let mut out = vec![
+            bussard_transport::tpci::ndt(seq) | ((apci >> 8) as u8 & 0x03),
+            (apci & 0xff) as u8,
+        ];
+        out.extend_from_slice(payload);
+        out
+    }
+
+    #[test]
+    fn test_encode_master_reset_factory_reset_matches_ets_capture() {
+        // tastsensor-universal-2-download.pcapng, device 1.1.18 (mask 07B0): ETS
+        // opens the initial download with `4f 81 07 00`, a numbered (seq 3)
+        // A_Restart master reset, erase code 7, channel 0.
+        let (apci, payload) = encode_master_reset(ERASE_CODE_FACTORY_RESET_KEEP_IA, 0);
+        assert_eq!(tpdu(3, apci, &payload), vec![0x4f, 0x81, 0x07, 0x00]);
+        // And closes it with the confirmed restart `43 81 01 00` (seq 0).
+        let (apci, payload) = encode_master_reset(ERASE_CODE_CONFIRMED_RESTART, 0);
+        assert_eq!(tpdu(0, apci, &payload), vec![0x43, 0x81, 0x01, 0x00]);
+    }
+
+    #[test]
+    fn test_decode_restart_response_full_matches_ets_capture() {
+        // The device answers the factory reset with `4f a1 00 00 08`: APCI 0x3A1,
+        // error 0, process time 8 s; the confirmed restart with `43 a1 00 00 00`.
+        let wire = [0x4f_u8, 0xa1, 0x00, 0x00, 0x08];
+        let apci = (u16::from(wire[0] & 0x03) << 8) | u16::from(wire[1]);
+        assert_eq!(apci, A_RESTART_RESPONSE);
+        assert_eq!(
+            decode_restart_response_full(&wire[2..]),
+            RestartResponse {
+                error_code: 0,
+                process_time_s: 8
+            }
+        );
+        assert_eq!(
+            decode_restart_response_full(&[0x00, 0x00, 0x00]).process_time_s,
+            0
+        );
+        // Short payloads: the error code alone, or nothing at all.
+        assert_eq!(
+            decode_restart_response_full(&[0x02]),
+            RestartResponse {
+                error_code: 2,
+                process_time_s: 0
+            }
+        );
+        assert_eq!(decode_restart_response_full(&[]).error_code, 0);
     }
 
     #[test]

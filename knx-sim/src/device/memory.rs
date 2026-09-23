@@ -81,6 +81,19 @@ impl Memory {
         self.segments.push(Segment { owner, base, len });
     }
 
+    /// Erase the segment owned by `owner`: drop its allocation and every cell
+    /// written inside it, so it reads back as `0x00` (a master reset with an
+    /// erasing code). A no-op when `owner` holds no segment.
+    pub fn erase_owner(&mut self, owner: u8) {
+        let Some(seg) = self.segment_of(owner) else {
+            return;
+        };
+        let end = u64::from(seg.base) + u64::from(seg.len);
+        self.cells
+            .retain(|&addr, _| u64::from(addr) < u64::from(seg.base) || u64::from(addr) >= end);
+        self.segments.retain(|s| s.owner != owner);
+    }
+
     /// The allocated segment owned by `owner`, if any.
     pub fn segment_of(&self, owner: u8) -> Option<Segment> {
         self.segments.iter().copied().find(|s| s.owner == owner)
@@ -183,6 +196,20 @@ impl Memory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_erase_owner_clears_only_that_segment() -> Result<(), MemoryError> {
+        let mut m = Memory::new();
+        m.allocate(1, 0x1000, 4);
+        m.allocate(4, 0x2000, 4);
+        m.write(1, 0x1000, &[1, 2, 3, 4])?;
+        m.write(4, 0x2000, &[5, 6, 7, 8])?;
+        m.erase_owner(4);
+        assert_eq!(m.read(0x2000, 4), vec![0, 0, 0, 0]);
+        assert!(m.segment_of(4).is_none());
+        assert_eq!(m.read(0x1000, 4), vec![1, 2, 3, 4]);
+        Ok(())
+    }
 
     #[test]
     fn test_write_within_segment_roundtrips() -> Result<(), MemoryError> {
