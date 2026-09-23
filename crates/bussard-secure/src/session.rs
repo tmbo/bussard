@@ -3,13 +3,18 @@
 //!
 //! [`DataSecureSession`] is the stateful counterpart of the pure [`crate::asdu`]
 //! codec: it wraps an outgoing `(apci, data)` into an A_SecureData ASDU with the
-//! next send sequence, and unwraps + freshness-checks an incoming ASDU. The
+//! next send sequence, and unwraps + freshness-checks an incoming ASDU. It also
+//! runs the S-A_Sync handshake (spec §6.3) that ETS performs before the first
+//! S-A_Data of every connection: [`DataSecureSession::sync_request`] on the tool
+//! side, [`DataSecureSession::answer_sync_request`] on the device side. The
 //! transport seam ([`SecureLayer`] over `DeviceConnection`, spec §6.1) holds one
 //! of these when a device is security-activated.
 
 use std::collections::HashMap;
 
-use crate::asdu::{self, AsduError, Scf, SecurityAlgorithm, TpAddressing};
+use crate::asdu::{
+    self, AsduError, Challenge, Scf, SecureService, SecurityAlgorithm, SyncRequest, TpAddressing,
+};
 use crate::key::Key16;
 use crate::sequence::{Sequence, SequenceHighWater};
 
@@ -31,6 +36,19 @@ pub struct DataSecureSession {
     /// The shared per-device send high-water mark, when the caller keeps one
     /// across connections (spec §5.9). Updated on every wrap.
     high_water: Option<SequenceHighWater>,
+    /// Where the S-A_Sync handshake stands (spec §6.3).
+    sync: SyncState,
+}
+
+/// The S-A_Sync handshake state of a [`DataSecureSession`] (spec §6.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SyncState {
+    /// No Sync_Req sent yet.
+    NotStarted,
+    /// A Sync_Req with this challenge is outstanding.
+    Pending(Challenge),
+    /// A Sync_Res verified; sequences are seeded from the device.
+    Done,
 }
 
 impl DataSecureSession {
@@ -44,6 +62,7 @@ impl DataSecureSession {
             send_seq: Sequence::now(),
             last_seen: HashMap::new(),
             high_water: None,
+            sync: SyncState::NotStarted,
         }
     }
 
@@ -81,6 +100,128 @@ impl DataSecureSession {
     /// The next sequence this session would send (for persistence, spec §5.9).
     pub fn send_sequence(&self) -> Sequence {
         self.send_seq
+    }
+
+    /// Whether an S-A_Sync_Res has been verified on this session (spec §6.3).
+    pub fn is_synced(&self) -> bool {
+        self.sync == SyncState::Done
+    }
+
+    /// Builds the connection-oriented S-A_Sync_Req that opens secured tool access
+    /// (spec §6.3), with a fresh random challenge.
+    ///
+    /// ETS sends this before the first S-A_Data of every connection (secure-1-1-12
+    /// capture, 2026-09-23). The request carries the current send sequence but
+    /// does **not** consume it: the device answers with the sequence it accepts
+    /// next (normally this same value) and the first S-A_Data reuses it, exactly
+    /// as ETS does. Returns the outer `(A_SECURE_DATA apci, asdu bytes)`.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`AsduError`] from the codec.
+    pub fn sync_request(&mut self, addr: &TpAddressing) -> Result<(u16, Vec<u8>), AsduError> {
+        self.sync_request_with_challenge(addr, fresh_challenge())
+    }
+
+    /// [`sync_request`](Self::sync_request) with a caller-chosen challenge, for
+    /// deterministic tests. Production code uses the random one.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`AsduError`] from the codec.
+    pub fn sync_request_with_challenge(
+        &mut self,
+        addr: &TpAddressing,
+        challenge: Challenge,
+    ) -> Result<(u16, Vec<u8>), AsduError> {
+        let req = SyncRequest {
+            sequence: self.send_seq,
+            // Connection-oriented: the serial field is zero (the capture's
+            // unicast Sync_Req frames all carry six zero bytes here).
+            serial: [0u8; asdu::SERIAL_LEN],
+            challenge,
+        };
+        let asdu = asdu::encode_sync_req(
+            &self.tool_key,
+            Scf::tool_sync(SecureService::SyncReq),
+            &req,
+            addr,
+        )?;
+        if let Some(hw) = &self.high_water {
+            hw.observe(req.sequence);
+        }
+        self.sync = SyncState::Pending(challenge);
+        Ok((asdu::A_SECURE_DATA, asdu))
+    }
+
+    /// Verifies an S-A_Sync_Res and applies it (spec §6.3).
+    ///
+    /// The next send sequence becomes `max(current, requester_sequence)` and the
+    /// device's freshness floor becomes `responder_sequence - 1`, so its next
+    /// S-A_Data (which carries `responder_sequence`) is accepted and anything
+    /// older is refused. The response is bound to our challenge, so it cannot be
+    /// a replay.
+    fn apply_sync_response(
+        &mut self,
+        addr: &TpAddressing,
+        asdu_bytes: &[u8],
+    ) -> Result<UnwrapOutcome, AsduError> {
+        let SyncState::Pending(challenge) = self.sync else {
+            return Err(AsduError::UnsolicitedSyncResponse);
+        };
+        let res = asdu::decode_sync_res(&self.tool_key, asdu_bytes, addr, &challenge)?;
+        if res.requester_sequence > self.send_seq {
+            self.send_seq = res.requester_sequence;
+        }
+        let floor = res.responder_sequence.value().saturating_sub(1);
+        self.last_seen.insert(addr.source, Sequence::new(floor));
+        self.sync = SyncState::Done;
+        Ok(UnwrapOutcome::Synced {
+            device_sequence: res.responder_sequence,
+            next_send_sequence: self.send_seq,
+        })
+    }
+
+    /// The **device** role of the Sync handshake: verifies an inbound
+    /// S-A_Sync_Req and builds the S-A_Sync_Res (spec §6.3).
+    ///
+    /// This is what an activated device does (and what bussard's mock devices use
+    /// to stand in for one): the response reports this session's own next send
+    /// sequence and the sequence it accepts next from the requester,
+    /// `max(request sequence, last accepted + 1)`. The Sync_Req itself does not
+    /// update the freshness table, so the requester's first S-A_Data may reuse
+    /// the request's sequence, as ETS does. `req_addr` is the request frame's
+    /// addressing, `res_addr` the response frame's.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`AsduError`] for a malformed or wrongly authenticated request.
+    pub fn answer_sync_request(
+        &mut self,
+        req_addr: &TpAddressing,
+        asdu_bytes: &[u8],
+        res_addr: &TpAddressing,
+    ) -> Result<(u16, Vec<u8>), AsduError> {
+        let (_, req) = asdu::decode_sync_req(&self.tool_key, asdu_bytes, req_addr)?;
+        let accepted_next = self
+            .last_seen
+            .get(&req_addr.source)
+            .map(|s| s.next())
+            .map_or(req.sequence, |n| n.max(req.sequence));
+        let res = asdu::SyncResponse {
+            responder_sequence: self.send_seq,
+            requester_sequence: accepted_next,
+        };
+        let nonce = Sequence::from_bytes(fresh_challenge());
+        let asdu = asdu::encode_sync_res(
+            &self.tool_key,
+            Scf::tool_sync(SecureService::SyncRes),
+            &res,
+            &req.challenge,
+            nonce,
+            res_addr,
+        )?;
+        Ok((asdu::A_SECURE_DATA, asdu))
     }
 
     /// Wraps a plain management `(apci, data)` into an A_SecureData ASDU using the
@@ -130,6 +271,16 @@ impl DataSecureSession {
             // secure link may still emit a plain transport/control frame.
             return Ok(UnwrapOutcome::Plain);
         }
+        match asdu_bytes.first().map(|&b| Scf::from_byte(b)) {
+            Some(Ok(scf)) if scf.service == SecureService::SyncRes => {
+                return self.apply_sync_response(addr, asdu_bytes);
+            }
+            Some(Ok(scf)) if scf.service == SecureService::SyncReq => {
+                // A tool never answers a device's sync request.
+                return Err(AsduError::UnexpectedService(scf.to_byte()));
+            }
+            _ => {}
+        }
         let decoded = asdu::decode(&self.tool_key, asdu_bytes, addr)?;
 
         // Freshness: strictly-greater than the last accepted from this source.
@@ -159,6 +310,7 @@ impl std::fmt::Debug for DataSecureSession {
             .field("algorithm", &self.algorithm)
             .field("send_seq", &self.send_seq)
             .field("known_sources", &self.last_seen.len())
+            .field("synced", &self.is_synced())
             .finish()
     }
 }
@@ -176,6 +328,35 @@ pub enum UnwrapOutcome {
     /// The frame was not an A_SecureData (a plain transport/control frame) and is
     /// handed back for the plain path to handle.
     Plain,
+    /// The frame was a verified S-A_Sync_Res answering our S-A_Sync_Req; the
+    /// session's sequences are now seeded from it (spec §6.3).
+    Synced {
+        /// The device's own next send sequence.
+        device_sequence: Sequence,
+        /// The sequence the next S-A_Data from us carries.
+        next_send_sequence: Sequence,
+    },
+}
+
+/// A fresh 6-byte S-A_Sync_Req challenge.
+///
+/// Drawn from std's randomly keyed SipHash (`RandomState` seeds its keys from
+/// the operating system's randomness source) over the clock and a process-wide
+/// counter, so no RNG crate is needed. The challenge only has to be
+/// unpredictable enough that an attacker cannot pre-record a matching
+/// S-A_Sync_Res; the Sync_Res MAC under the tool key does the rest.
+fn fresh_challenge() -> Challenge {
+    use std::hash::{BuildHasher, RandomState};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let value = RandomState::new().hash_one((nanos, count));
+    let b = value.to_be_bytes();
+    [b[0], b[1], b[2], b[3], b[4], b[5]]
 }
 
 #[cfg(test)]
@@ -268,6 +449,162 @@ mod tests {
             second.send_sequence().value() > after_first,
             "a reconnect must not replay sequences the device already accepted"
         );
+    }
+
+    /// The Sync handshake as the capture shows it: the Sync_Req carries the send
+    /// sequence without consuming it, the Sync_Res seeds both directions, and the
+    /// first S-A_Data reuses the Sync_Req's sequence.
+    #[test]
+    fn test_sync_handshake_seeds_both_directions() -> Result<(), AsduError> {
+        let key = [0x24u8; 16];
+        let mut tool =
+            DataSecureSession::new(Key16::new(key)).with_send_sequence(Sequence::new(5_000));
+        let to_dev = addr(0x1119);
+        let challenge = [1, 2, 3, 4, 5, 6];
+        let (apci, req) = tool.sync_request_with_challenge(&to_dev, challenge)?;
+        assert_eq!(apci, asdu::A_SECURE_DATA);
+        assert_eq!(req[0], 0x92);
+        assert!(!tool.is_synced());
+        assert_eq!(tool.send_sequence(), Sequence::new(5_000));
+
+        // The device side: verify the request and answer it.
+        let (_, parsed) = asdu::decode_sync_req(&Key16::new(key), &req, &to_dev)?;
+        assert_eq!(parsed.challenge, challenge);
+        assert_eq!(parsed.serial, [0u8; 6]);
+        let from_dev = TpAddressing {
+            source: 0x110C,
+            destination: 0x1119,
+            ..addr(0x110C)
+        };
+        let res = asdu::encode_sync_res(
+            &Key16::new(key),
+            Scf::tool_sync(SecureService::SyncRes),
+            &asdu::SyncResponse {
+                responder_sequence: Sequence::new(900),
+                // The device has seen 6_000 from us before: we must jump past it.
+                requester_sequence: Sequence::new(6_001),
+            },
+            &challenge,
+            Sequence::new(0x1234_5678_9ABC),
+            &from_dev,
+        )?;
+        match tool.unwrap(&from_dev, asdu::A_SECURE_DATA, &res)? {
+            UnwrapOutcome::Synced {
+                device_sequence,
+                next_send_sequence,
+            } => {
+                assert_eq!(device_sequence, Sequence::new(900));
+                assert_eq!(next_send_sequence, Sequence::new(6_001));
+            }
+            other => panic!("expected Synced, got {other:?}"),
+        }
+        assert!(tool.is_synced());
+        assert_eq!(tool.send_sequence(), Sequence::new(6_001));
+
+        // The device's next data frame carries 900: accepted. 899 would be stale.
+        let mut dev =
+            DataSecureSession::new(Key16::new(key)).with_send_sequence(Sequence::new(899));
+        let (_, stale) = dev.wrap(&from_dev, 0x3D2, &[0x00])?;
+        assert!(matches!(
+            tool.unwrap(&from_dev, asdu::A_SECURE_DATA, &stale),
+            Err(AsduError::StaleSequence { .. })
+        ));
+        let (_, fresh) = dev.wrap(&from_dev, 0x3D2, &[0x00])?;
+        assert!(matches!(
+            tool.unwrap(&from_dev, asdu::A_SECURE_DATA, &fresh)?,
+            UnwrapOutcome::Secured { apci: 0x3D2, .. }
+        ));
+        Ok(())
+    }
+
+    /// A Sync_Res that answers a different challenge does not verify.
+    #[test]
+    fn test_sync_response_to_another_challenge_is_rejected() -> Result<(), AsduError> {
+        let key = [0x24u8; 16];
+        let mut tool = DataSecureSession::new(Key16::new(key));
+        let a = addr(0x110C);
+        tool.sync_request_with_challenge(&a, [9; 6])?;
+        let res = asdu::encode_sync_res(
+            &Key16::new(key),
+            Scf::tool_sync(SecureService::SyncRes),
+            &asdu::SyncResponse {
+                responder_sequence: Sequence::new(1),
+                requester_sequence: Sequence::new(2),
+            },
+            &[8; 6],
+            Sequence::new(77),
+            &a,
+        )?;
+        assert_eq!(
+            tool.unwrap(&a, asdu::A_SECURE_DATA, &res),
+            Err(AsduError::MacMismatch)
+        );
+        assert!(!tool.is_synced());
+        Ok(())
+    }
+
+    #[test]
+    fn test_unsolicited_sync_response_is_rejected() -> Result<(), AsduError> {
+        let key = [0x24u8; 16];
+        let mut tool = DataSecureSession::new(Key16::new(key));
+        let a = addr(0x110C);
+        let res = asdu::encode_sync_res(
+            &Key16::new(key),
+            Scf::tool_sync(SecureService::SyncRes),
+            &asdu::SyncResponse {
+                responder_sequence: Sequence::new(1),
+                requester_sequence: Sequence::new(2),
+            },
+            &[8; 6],
+            Sequence::new(77),
+            &a,
+        )?;
+        assert_eq!(
+            tool.unwrap(&a, asdu::A_SECURE_DATA, &res),
+            Err(AsduError::UnsolicitedSyncResponse)
+        );
+        Ok(())
+    }
+
+    /// Tool and device sessions complete the handshake end to end; the device
+    /// asks the tool to move past what it has already accepted.
+    #[test]
+    fn test_answer_sync_request_round_trip() -> Result<(), AsduError> {
+        let key = [0x31u8; 16];
+        let to_dev = addr(0x1119);
+        let from_dev = TpAddressing {
+            source: 0x110A,
+            destination: 0x1119,
+            ..addr(0x110A)
+        };
+        let mut device =
+            DataSecureSession::new(Key16::new(key)).with_send_sequence(Sequence::new(70));
+        // The device already accepted 500 from the tool in an earlier session.
+        let mut earlier =
+            DataSecureSession::new(Key16::new(key)).with_send_sequence(Sequence::new(500));
+        let (_, old) = earlier.wrap(&to_dev, 0x300, &[0x00])?;
+        device.unwrap(&to_dev, asdu::A_SECURE_DATA, &old)?;
+
+        // A new tool session whose clock seed is behind the device's table.
+        let mut tool =
+            DataSecureSession::new(Key16::new(key)).with_send_sequence(Sequence::new(100));
+        let (_, req) = tool.sync_request(&to_dev)?;
+        let (_, res) = device.answer_sync_request(&to_dev, &req, &from_dev)?;
+        tool.unwrap(&from_dev, asdu::A_SECURE_DATA, &res)?;
+        assert!(tool.is_synced());
+        assert_eq!(tool.send_sequence(), Sequence::new(501));
+        // And the device accepts the tool's next data frame.
+        let (_, data) = tool.wrap(&to_dev, 0x300, &[0x00])?;
+        assert!(matches!(
+            device.unwrap(&to_dev, asdu::A_SECURE_DATA, &data)?,
+            UnwrapOutcome::Secured { .. }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_fresh_challenges_differ() {
+        assert_ne!(fresh_challenge(), fresh_challenge());
     }
 
     #[test]

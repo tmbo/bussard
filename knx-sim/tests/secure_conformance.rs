@@ -465,8 +465,10 @@ fn test_shared_known_answer_vector() {
     /// The inner APDU as it is authenticated: APCI high bits only in octet 0 (the
     /// carrier's transport-control bits are not part of the secured APDU).
     const KAT_INNER: [u8; 7] = [0x03, 0xD1, 0x00, 0xFF, 0xFF, 0xFF, 0xFF];
+    /// auth+enc: the payload keystream starts right after the 4 MAC bytes (the
+    /// ETS layout, secure-1-1-12 capture 2026-09-23).
     const KAT_AUTH_ENC: [u8; 18] = [
-        0x90, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2A, 0x08, 0x7D, 0x2A, 0xF4, 0x87, 0x75, 0xC3, 0x98,
+        0x90, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2A, 0xFB, 0xB8, 0x72, 0x5D, 0x14, 0x5F, 0xBE, 0x98,
         0xA5, 0x3D, 0xA2,
     ];
     const KAT_AUTH_ONLY: [u8; 18] = [
@@ -500,4 +502,99 @@ fn test_shared_known_answer_vector() {
             .expect("the vector verifies");
         assert_eq!(un.inner_tpdu, KAT_INNER.to_vec());
     }
+}
+
+/// The device answers a connection-oriented S-A_Sync_Req the way the real
+/// device does in the secure-1-1-12 capture (2026-09-23), and the tool's first
+/// S-A_Data may then carry the request's own sequence.
+///
+/// The request and response are built and checked here straight from the crypto
+/// primitives, independent of the device model's Sync code:
+/// Sync_Req = `0x92 || seq || serial(0) || enc(challenge) || MAC`, nonce = seq,
+/// AD = `SCF || serial`; Sync_Res = `0x93 || nonce^challenge || enc(dev seq ||
+/// tool seq) || MAC`, AD = `SCF`.
+#[test]
+fn test_secure_sync_handshake() -> Result<(), String> {
+    use knx_sim::secure::crypto;
+    let key_bytes: [u8; 16] = [
+        0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
+        0x10,
+    ];
+    let mut t = SecureTool::new(SecAlgorithm::AuthEnc);
+    t.control(0x80);
+
+    // The tool's clock seed is BELOW the device's freshness floor: the Sync must
+    // hand back floor + 1.
+    let req_seq: u64 = DEV_RX_FLOOR - 500;
+    let seq6 = |v: u64| -> [u8; 6] {
+        let b = v.to_be_bytes();
+        [b[2], b[3], b[4], b[5], b[6], b[7]]
+    };
+    let nonce_blocks = |seq: [u8; 6], src: u16, dst: u16, tpci: u8, len: u8| {
+        let mut b0 = [0u8; 16];
+        b0[..6].copy_from_slice(&seq);
+        b0[6..8].copy_from_slice(&src.to_be_bytes());
+        b0[8..10].copy_from_slice(&dst.to_be_bytes());
+        b0[12] = (tpci & 0xFC) | 0x03;
+        b0[13] = 0xF1;
+        b0[15] = len;
+        let mut c0 = [0u8; 16];
+        c0[..10].copy_from_slice(&b0[..10]);
+        c0[14] = 0x01;
+        (b0, c0)
+    };
+
+    let challenge = [0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6];
+    let tpci = 0x40 | (t.seq << 2) | 0x03;
+    let (b0, c0) = nonce_blocks(seq6(req_seq), TOOL, DEV, tpci, 6);
+    let mut ad = vec![0x92];
+    ad.extend_from_slice(&[0u8; 6]);
+    let mac = crypto::cbc_mac(&key_bytes, &ad, &challenge, &b0);
+    let (enc_challenge, enc_mac) = crypto::encrypt_data_ctr(&key_bytes, &c0, &mac[..4], &challenge);
+    let mut asdu = vec![0x92];
+    asdu.extend_from_slice(&seq6(req_seq));
+    asdu.extend_from_slice(&[0u8; 6]);
+    asdu.extend_from_slice(&enc_challenge);
+    asdu.extend_from_slice(&enc_mac);
+
+    let responses = t.deliver_raw_secure(&asdu);
+    assert_eq!(
+        responses.len(),
+        1,
+        "one S-A_Sync_Res: {:#?}",
+        t.secure_events()
+    );
+    let resp = &responses[0];
+    let apdu = Apdu::parse(&resp.tpdu).ok_or("response parses")?;
+    assert_eq!(apdu.apci_raw, A_SECURE_DATA_APCI);
+    let res = &apdu.data;
+    assert_eq!(res.len(), 1 + 6 + 12 + 4);
+    assert_eq!(res[0], 0x93, "SCF of S-A_Sync_Res");
+    let mut nonce = [0u8; 6];
+    for i in 0..6 {
+        nonce[i] = res[1 + i] ^ challenge[i];
+    }
+    let (rb0, rc0) = nonce_blocks(nonce, DEV, TOOL, resp.tpdu[0], 12);
+    let (plain, _) = crypto::decrypt_data_ctr(&key_bytes, &rc0, &res[19..23], &res[7..19]);
+    let rmac = crypto::cbc_mac(&key_bytes, &[0x93], &plain, &rb0);
+    let (_, expected) = crypto::encrypt_data_ctr(&key_bytes, &rc0, &rmac[..4], &[]);
+    assert_eq!(&expected[..], &res[19..23], "the Sync_Res MAC verifies");
+    assert_eq!(
+        &plain[..6],
+        &seq6(DEV_TX_SEQ),
+        "device reports its own next seq"
+    );
+    assert_eq!(
+        &plain[6..],
+        &seq6(DEV_RX_FLOOR + 1),
+        "device tells the tool to jump past its freshness floor"
+    );
+    assert!(t.rejections().is_empty(), "{:#?}", t.rejections());
+
+    // A Sync_Req under the wrong key is refused without an answer.
+    let mut bad = asdu.clone();
+    let last = bad.len() - 1;
+    bad[last] ^= 0xFF;
+    assert!(t.deliver_raw_secure(&bad).is_empty());
+    Ok(())
 }
