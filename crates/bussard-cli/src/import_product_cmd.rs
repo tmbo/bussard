@@ -579,7 +579,9 @@ fn param_type_model(app: &ApplicationProgram, type_id: Option<&str>) -> ParamTyp
             max: *max,
         },
         ParameterType::None => ParamTypeModel::None,
-        ParameterType::Other { kind, size_bits } => ParamTypeModel::Other {
+        ParameterType::Other {
+            kind, size_bits, ..
+        } => ParamTypeModel::Other {
             kind: kind.clone(),
             size: *size_bits,
         },
