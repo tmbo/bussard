@@ -381,6 +381,7 @@ pub(super) fn plan_flash_sys7(
                     // read-only confirm against the device's own CRC, so no
                     // tool-side image is bound here.
                     image: None,
+                    advisory: false,
                 });
             }
             LoadOp::Raw { name, attrs } if name == "LdCtrlCompareMem" => {

@@ -481,6 +481,10 @@ pub fn run(
                 "\nflash verified: application program {} is {} on {target}",
                 plan.identity.id, verify.load_state,
             );
+            // Advisory findings (issue #145) do not fail the flash.
+            for warning in &verify.warnings {
+                eprintln!("{warning}");
+            }
             Ok(ExitCode::SUCCESS)
         }
         Ok(verify) => {

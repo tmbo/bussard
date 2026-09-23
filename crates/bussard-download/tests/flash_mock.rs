@@ -5348,11 +5348,110 @@ fn test_plan_flash_streams_a_companion_pei_program() -> Result<(), Box<dyn std::
     };
     assert_eq!(pid13(5), Some(vec![0x00, 0xFA, 0x25, 0x00, 0x20]));
     assert_eq!(pid13(4), Some(vec![0x00, 0xFA, 0x25, 0x00, 0x10]));
-    assert!(
-        plan.steps
-            .iter()
-            .any(|s| matches!(s, FlashStep::LoadImageProp { obj_idx: 5, .. }))
+    // Only the companion program declares object 5's check, so a mismatch
+    // there warns rather than aborts (issue #145: ETS reads that MCB on the
+    // BE/S16 and the Busch-Wächter PRO 280 and carries on).
+    assert!(plan.steps.iter().any(|s| matches!(
+        s,
+        FlashStep::LoadImageProp {
+            obj_idx: 5,
+            advisory: true,
+            ..
+        }
+    )));
+    Ok(())
+}
+
+/// The 07B0 template with an extra `LdCtrlLoadImageProp` for object 4 after
+/// the MergeId 7 marker, to tell template checks apart from the app's own.
+fn master_template_with_image_check()
+-> Result<Vec<bussard_prod::LoadOp>, Box<dyn std::error::Error>> {
+    let mut ops = master_template_all_ops();
+    let at = ops
+        .iter()
+        .position(|op| matches!(op, bussard_prod::LoadOp::Restart))
+        .ok_or("template has no restart")?;
+    ops.insert(
+        at,
+        bussard_prod::LoadOp::LoadImageProp {
+            obj_idx: Some(4),
+            obj_type: None,
+            occurrence: None,
+            prop_id: Some(27),
+            count: None,
+        },
     );
+    Ok(ops)
+}
+
+/// The image checks a plan lowers, as `(object, advisory)`.
+fn image_checks(plan: &bussard_download::FlashPlan) -> Vec<(u32, bool)> {
+    plan.steps
+        .iter()
+        .filter_map(|s| match s {
+            FlashStep::LoadImageProp {
+                obj_idx, advisory, ..
+            } => Some((*obj_idx, *advisory)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Issue #145: when the application declares its own `LdCtrlLoadImageProp`
+/// checks, a template check for an object it does not name is dropped; the
+/// app's checks stay authoritative.
+#[test]
+fn test_plan_flash_image_checks_follow_the_app_procedure() -> Result<(), Box<dyn std::error::Error>>
+{
+    let mut app = app_da_tp();
+    app.load_procedures.push(bussard_prod::LoadProcedure {
+        merge_id: Some("7".to_string()),
+        ops: (1..=3)
+            .map(|obj| bussard_prod::LoadOp::LoadImageProp {
+                obj_idx: Some(obj),
+                obj_type: None,
+                occurrence: None,
+                prop_id: Some(27),
+                count: None,
+            })
+            .collect(),
+    });
+    let tables = BTreeMap::from([(1, vec![0, 0]), (2, vec![0, 0]), (3, vec![0, 0])]);
+    let template = master_template_with_image_check()?;
+    let plan = plan_flash(
+        &app,
+        "1.1.30",
+        0x07B0,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        Some(&template),
+        &tables,
+    )?;
+    assert_eq!(
+        image_checks(&plan),
+        vec![(1, false), (2, false), (3, false)]
+    );
+    Ok(())
+}
+
+/// Issue #145: an application that declares no check of its own (the pure
+/// template-driven KNX Virtual DA.tp shape) keeps the template's checks, and
+/// they stay authoritative.
+#[test]
+fn test_plan_flash_template_image_checks_kept_without_app_checks()
+-> Result<(), Box<dyn std::error::Error>> {
+    let tables = BTreeMap::from([(1, vec![0, 0]), (2, vec![0, 0]), (3, vec![0, 0])]);
+    let template = master_template_with_image_check()?;
+    let plan = plan_flash(
+        &app_da_tp(),
+        "1.1.4",
+        0x07B0,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        Some(&template),
+        &tables,
+    )?;
+    assert_eq!(image_checks(&plan), vec![(4, false)]);
     Ok(())
 }
 

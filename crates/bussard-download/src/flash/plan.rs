@@ -11,7 +11,7 @@ use super::{AppIdentity, FlashPlan, FlashStep, ImageKind, ImageRef, PlanError};
 use bussard_prod::application::{
     ApplicationProgram, CodeSegment, LoadOp, LoadProcedure, SegmentKind,
 };
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// The standard System B table object indices a master template programs, and
 /// their human names. Used to refuse a spliced template that writes one of these
@@ -316,6 +316,7 @@ pub fn plan_flash_with_object_flags(
         })
         .collect();
     let segments = plan_segments(app);
+    let image_checks = DeclaredImageChecks::of(app);
 
     // 4. Validate + lower each op into a FlashStep.
     let mut steps = Vec::new();
@@ -841,6 +842,13 @@ pub fn plan_flash_with_object_flags(
                 // check each object's MCB). Where no image was written into this
                 // procedure the op still executes as a read-only confirm.
                 let obj_idx = obj_idx.unwrap_or(0);
+                // Check what ETS checks (issue #145): the objects the
+                // application's own procedure names, plus a companion program's.
+                // A template check for an object neither names is only taken for
+                // an app that declares no check of its own (KNX Virtual DA.tp).
+                let Some(advisory) = image_checks.classify(obj_idx) else {
+                    continue;
+                };
                 let prop_id = prop_id.unwrap_or(u32::from(bussard_mgmt::PID_MCB_TABLE));
                 let count = count.unwrap_or(1).max(1);
                 // A table object (obj1/obj2/obj3) is checked against the image
@@ -856,6 +864,7 @@ pub fn plan_flash_with_object_flags(
                     prop_id,
                     count,
                     image,
+                    advisory,
                 });
             }
 
@@ -957,6 +966,69 @@ pub(super) fn insert_factory_reset(steps: &mut Vec<FlashStep>) {
 /// no splicing: the blocks are concatenated by ascending `MergeId`, or the
 /// single richest block is used — preserving the previous single-object
 /// behaviour exactly. This keeps the `virtual-device-flash` CI path green.
+/// The objects whose `LdCtrlLoadImageProp` MCB check the application's own
+/// load procedures declare, and those its companion programs' procedures add
+/// (issue #145).
+///
+/// ETS runs the checks of the procedure it assembles, but the master template's
+/// merge splice is not the application's word on which objects to verify. The
+/// application's own checks are authoritative and fail the download on a
+/// mismatch. A companion program's check (object 5 on the ABB BE/S16 and the
+/// Busch-Wächter PRO 280) is advisory: ETS reads that MCB and carries on,
+/// because those devices answer it with object 2's entry. A check only the
+/// template carries is kept (as authoritative) solely for an application that
+/// declares no check at all, the pure template-driven shape of KNX Virtual
+/// DA.tp; otherwise it is dropped and the post-restart spot check verifies.
+#[derive(Debug, Default)]
+struct DeclaredImageChecks {
+    /// Objects the application's own procedures check.
+    app: BTreeSet<u32>,
+    /// Objects only a companion program's procedures check.
+    companion: BTreeSet<u32>,
+}
+
+impl DeclaredImageChecks {
+    fn of(app: &ApplicationProgram) -> Self {
+        fn objects<'a>(procs: impl Iterator<Item = &'a LoadProcedure>) -> BTreeSet<u32> {
+            procs
+                .flat_map(|p| p.ops.iter())
+                .filter_map(|op| match op {
+                    LoadOp::LoadImageProp { obj_idx, .. } => Some(obj_idx.unwrap_or(0)),
+                    _ => None,
+                })
+                .collect()
+        }
+        let own = objects(app.load_procedures.iter());
+        let companion = objects(
+            app.companion_programs
+                .iter()
+                .flat_map(|c| c.load_procedures.iter()),
+        )
+        .difference(&own)
+        .copied()
+        .collect();
+        Self {
+            app: own,
+            companion,
+        }
+    }
+
+    /// Whether a check of `obj_idx` is lowered, and if so whether it is advisory:
+    /// `Some(false)` fails the flash on a mismatch, `Some(true)` only warns,
+    /// `None` drops a template check the application does not ask for.
+    fn classify(&self, obj_idx: u32) -> Option<bool> {
+        if self.app.contains(&obj_idx) {
+            Some(false)
+        } else if self.companion.contains(&obj_idx) {
+            Some(true)
+        } else if self.app.is_empty() {
+            Some(false)
+        } else {
+            None
+        }
+    }
+}
+
 /// The code segments a System B plan streams from: the application's own and
 /// those of its companion programs (a PeiProgram's segment on object 5). A
 /// companion never shadows a segment id of the application.
