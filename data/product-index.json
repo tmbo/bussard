@@ -7847,6 +7847,22 @@
       "manufacturer": "Albrecht Jung",
       "manufacturer_id": "M-0004",
       "order_numbers": [
+        "230161SR",
+        "2301.61 S R"
+      ],
+      "name": "Jung Switch actuator 16-gang / Blinds actuator 8-gang REG (2301.61 S R, System B)",
+      "url": "https://downloads.jung.de/Downloads/Produktdownloads/Datenbank%20ETS5%20-%20ETS6%20Secure/KNX/all_230xx1SR_V2-6_20250226.zip",
+      "sha256": "b516dc05b01423b53e931f39274e65d13bf4d37ea8d62144199d73ec4e48a43c",
+      "size": 19579635,
+      "filename": "all_230xx1SR_V2-6_20250226.zip",
+      "application_ref": "M-0004_A-20D6-26-FAEB-O000A",
+      "redistributable": false,
+      "notes": "HOUSE DEVICE. Same Jung 230xx1SR family bundle as the 230241SR entry; import with --inner all_230xx1SR_V2-6_20241213.knxprod (the ZIP root copy). That inner database's Hardware.xml lists 230061SR, 230161SR and 230241SR and carries M-0004_A-20D6-26-FAEB-O000A (mask 07B0), the program the 230161SR runs. No separate download; verified against the cached file 2026-09-23."
+    },
+    {
+      "manufacturer": "Albrecht Jung",
+      "manufacturer_id": "M-0004",
+      "order_numbers": [
         "52921ST",
         "LS 52921 ST"
       ],
@@ -7935,6 +7951,45 @@
       "application_ref": "M-0002_A-A0ED-10-9B4E",
       "redistributable": false,
       "notes": "User-provided 2026-09-18; ABB i-bus all-products ETS5/6 database (ABB Library DocumentID 9AKK107046A7479, DocumentPartId=ABB, Rev P, 2024-12-20), ~152 MB, holding 407 M-0002 application programs (ABB proper; distinct from the M-0007 Busch-Jaeger DocumentPartId=BJE database). Plain .knxprod (M-0002/ at root), no --inner needed. NOT auto-fetchable: unlike the BJE part, the DocumentPartId=ABB Download.aspx URL 404s in the open (the file sits behind the signed-CloudFront ETS product SPA), so this entry was indexed from the user's local download rather than a network fetch — verify against the recorded sha256+size. Contains the ETS capture app M-0002_A-A0ED-10-9B4E EXACTLY (BE/S 16.230.3.2 binary input, 'Binary Input 16f 230V/1.0', app 41197 v16, mask 07B0, IA 1.1.39); the v2.0 sibling A-A0ED-20-EC31 (v32) shares order 2CDG 110 283 R0011. NOTE: this ABB database does NOT contain the Busch-Waechter PRO 280 app A-6179-82 (M-0007, IA 1.1.30) - that is a Busch-Jaeger (M-0007) app absent from both this Rev P and the BJE Rev K DB."
+    },
+    {
+      "manufacturer": "Busch-Jaeger",
+      "manufacturer_id": "M-0007",
+      "order_numbers": [
+        "BM/A4.11-13x",
+        "BM/A4.11-131",
+        "BM/A4.11-133",
+        "BM/A4.11-134",
+        "BM/A4.11-135",
+        "BM/A4.11-136"
+      ],
+      "name": "Busch-Jaeger Busch-Waechter PRO 280 KNX (BM/A4.11-13x), application 8.2",
+      "url": "https://search.abb.com/library/Download.aspx?DocumentID=9AKK108471A0162&LanguageCode=en&DocumentPartId=&Action=Launch",
+      "sha256": "adfe26e8b3d9bf1b712bf3e35d30f7e84c5ce4fea432afc6cffd7f3421cfbc3c",
+      "size": 1634413,
+      "filename": "BM_A4_11_13X_V8-2_9AKK108471A0162.knxprod",
+      "application_ref": "M-0007_A-6179-82-036E",
+      "redistributable": false,
+      "notes": "HOUSE DEVICE. Product-specific ETS application (ABB Library DocumentID 9AKK108471A0162, Rev A, 2025-04-16, 'ETS Application (.KNXPROD) [EN] BM/A4.11-13x'); the device is newer than the combined IBUS_ETS5_BJE Rev K database, which lacks A-6179. Holds M-0007_A-6179-82-036E (mask 07B0, 'Movement Twilight Brightness Temperature Bluetooth/8.2', exactly the on-device program) plus the PEI program A-6179-83-A008. Found via the ABB Library discovery API (POST https://discoveryapi.library.abb.com/api/public/documents, free text BM/A4.11); the busch-jaeger.de catalogue page loads its downloads by script. Login-free. Verified by download 2026-09-23."
+    },
+    {
+      "manufacturer": "Steinel",
+      "manufacturer_id": "M-008E",
+      "order_numbers": [
+        "4007841059xxx",
+        "4007841059484",
+        "4007841079536",
+        "4007841058487",
+        "4007841058470"
+      ],
+      "name": "STEINEL Control Pro KNX V3.1 (HF 360 KNX, IR Quattro KNX, IR Quattro HD KNX)",
+      "url": "https://www.steinel.de/out/media/knxsoftware/89637_ControlPro_KNX_Hochfrequenz.zip",
+      "sha256": "52365f7db6cdd361a26448f1d227290a3a3afaf2666e006fb348210d738ef807",
+      "size": 342636,
+      "filename": "89637_ControlPro_KNX_Hochfrequenz.zip",
+      "application_ref": "M-008E_A-7188-31-1BFA",
+      "redistributable": false,
+      "notes": "HOUSE DEVICE (build mismatch). ZIP wrapper; import with --inner ControlPro_KNX_V3.1.knxprod (the other member is the ETS4 ControlPro_KNX_V2.vd5). Inner app M-008E_A-7188-31-1BFA (mask 07B0, 'Control Pro', app number 0x7188 version 0x31): same application number and version as the device's M-008E_A-7188-31-AF96 but a different build hash; no AF96 build found on steinel.de. The database's own order number is the placeholder 4007841059xxx; the product pages linking this file are HF 360 KNX (059484, 079536 V3.1), IR Quattro 8m KNX (058487) and IR Quattro HD 24m KNX (058470, which links 89662_ControlPro_KNX_IR Quttro.zip with a byte-identical inner knxprod). Verified by download 2026-09-23."
     }
   ]
 }
