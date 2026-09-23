@@ -10,6 +10,7 @@
 #![warn(missing_docs)]
 
 pub mod address;
+pub mod analysis;
 pub mod codec;
 pub mod dpt;
 pub mod flags;
@@ -20,6 +21,7 @@ pub mod schema;
 pub mod validate;
 
 pub use address::{AddressParseError, GroupAddress, IndividualAddress};
+pub use analysis::{ModelAnalysis, analyze};
 pub use codec::{
     DateTime, EncodeError, Float16RangeError, HvacMode, ParseValueError, Rgbw, TypedValue, decode,
     encode, encode_float16, parse_value,
