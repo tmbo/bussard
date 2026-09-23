@@ -17,11 +17,14 @@ use std::time::Duration;
 use anyhow::{Context, bail};
 use bussard_model::IndividualAddress;
 use bussard_transport::config::DEFAULT_PORT;
-use bussard_transport::knxnet::GatewayInfo;
+use bussard_transport::knxnet::{GatewayDescription, GatewayInfo};
 use bussard_transport::{BusConnection, ConnectionConfig, Transport};
 
 /// Per-interface discovery timeout.
 const DISCOVER_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Timeout for the unicast DESCRIPTION_REQUEST sent to the resolved gateway.
+const DESCRIBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// How a gateway (if any) was resolved, which decides the emitted transport.
 enum Resolution {
@@ -162,15 +165,42 @@ fn resolve_gateway(
     }
 }
 
-/// Renders a gateway for human output: `name (ip:port, IA a.l.d)`.
+/// Renders a gateway for human output: `name (ip:port, IA a.l.d, N tunnels, M in use)`.
+///
+/// The tunnel clause appears only when the gateway advertised its tunnelling
+/// slots (issue #105); older interfaces send no such DIB and are rendered
+/// exactly as before.
 fn describe_gateway(gw: &GatewayInfo) -> String {
     let name = gw.name.as_deref().unwrap_or("KNXnet/IP gateway");
-    match gw.individual_address {
-        Some(raw) => {
-            let ia = IndividualAddress::from_raw(raw);
-            format!("{name} ({}, IA {ia})", gw.endpoint)
-        }
-        None => format!("{name} ({})", gw.endpoint),
+    let mut parts = vec![gw.endpoint.to_string()];
+    if let Some(raw) = gw.individual_address {
+        parts.push(format!("IA {}", IndividualAddress::from_raw(raw)));
+    }
+    if let Some(tunnels) = tunnel_clause(&gw.description) {
+        parts.push(tunnels);
+    }
+    format!("{name} ({})", parts.join(", "))
+}
+
+/// Renders the tunnel budget as `N tunnels, M in use`, or `None` when the
+/// interface did not report its slots.
+fn tunnel_clause(description: &GatewayDescription) -> Option<String> {
+    let capacity = description.tunnel_capacity()?;
+    if description.tunnel_slots.is_some() {
+        Some(format!(
+            "{} tunnel{}, {} in use",
+            capacity.total,
+            if capacity.total == 1 { "" } else { "s" },
+            capacity.in_use
+        ))
+    } else {
+        // Only the additional-individual-addresses DIB was present: the count is
+        // the slot budget, but occupancy is unknown — do not claim "0 in use".
+        Some(format!(
+            "{} tunnel{} (usage not reported)",
+            capacity.total,
+            if capacity.total == 1 { "" } else { "s" }
+        ))
     }
 }
 
@@ -228,6 +258,16 @@ fn probe_reachability(endpoint: SocketAddrV4) {
             return;
         }
     };
+    // Ask the interface to describe itself first: it is a single unicast
+    // exchange, costs no tunnel slot, and carries the tunnelling budget the
+    // owner needs to see (issue #105).
+    if let Ok(description) = runtime.block_on(bussard_transport::describe_gateway(
+        endpoint,
+        DESCRIBE_TIMEOUT,
+    )) {
+        print_description(endpoint, &description);
+    }
+
     let config = ConnectionConfig::tunnel(endpoint);
     let result = runtime.block_on(async {
         let probe = async {
@@ -238,6 +278,10 @@ fn probe_reachability(endpoint: SocketAddrV4) {
     });
     match result {
         Ok(Ok(())) => println!("Reachability check: gateway {endpoint} responded."),
+        Ok(Err(bussard_transport::TransportError::NoMoreConnections)) => {
+            eprintln!("{}", crate::conn_cmd::no_free_tunnel_message(endpoint));
+            eprintln!("Writing the config anyway; free a tunnel before the first command.");
+        }
         Ok(Err(err)) => eprintln!(
             "warning: could not reach gateway {endpoint} ({err}); \
              writing the config anyway (you may be offline)."
@@ -245,6 +289,23 @@ fn probe_reachability(endpoint: SocketAddrV4) {
         Err(_) => eprintln!(
             "warning: gateway {endpoint} did not respond within 5s; \
              writing the config anyway (you may be offline)."
+        ),
+    }
+}
+
+/// Prints what a DESCRIPTION_RESPONSE said about the interface.
+fn print_description(endpoint: SocketAddrV4, description: &GatewayDescription) {
+    let name = description.name.as_deref().unwrap_or("KNXnet/IP gateway");
+    let ia = description
+        .individual_address
+        .map(|raw| format!(", IA {}", IndividualAddress::from_raw(raw)))
+        .unwrap_or_default();
+    println!("Gateway: {name} ({endpoint}{ia})");
+    match tunnel_clause(description) {
+        Some(clause) => println!("Tunnelling: {clause}."),
+        None => println!(
+            "Tunnelling: the interface does not report its slot count \
+             (older KNXnet/IP interfaces do not)."
         ),
     }
 }
@@ -275,6 +336,7 @@ fn write_skeleton(dir: &Path, resolution: &Resolution) -> anyhow::Result<()> {
         .with_context(|| format!("creating {}", captures_dir.display()))?;
     write_file(&captures_dir.join(".gitignore"), CAPTURES_GITIGNORE)?;
 
+    write_file(&dir.join(".gitignore"), GITIGNORE)?;
     write_file(&dir.join("README.md"), README_MD)?;
 
     Ok(())
@@ -349,32 +411,91 @@ const CAPTURES_GITIGNORE: &str = "\
 !.gitignore
 ";
 
+/// `knx/.gitignore`: keep bussard's own history (and the other local
+/// artefacts) out of git. The history is bussard's, not the repository's: a git
+/// user keeps one history in git and one in `.bussard/`, and `bussard undo`
+/// reads bussard's.
+const GITIGNORE: &str = "\
+# bussard's own history and undo data. Local to this machine; `bussard history`
+# and `bussard undo` read it. Never commit it.
+.bussard/
+
+# Local, vendor-derived or generated data (see docs/product-data.md).
+models/
+vendor/
+";
+
 /// `knx/README.md`: onboarding orientation.
 const README_MD: &str = "\
 # KNX model (bussard)
 
-This directory is your KNX installation as code. bussard reads it to decode the
-bus, and (in later phases) to push changes to devices. Everything here is plain
-YAML — review changes as git diffs.
+This directory is your KNX installation as a model. bussard reads it to decode
+the bus and to program your devices. The files are plain YAML, but you never
+have to edit them by hand: bussard and an assistant driving it write them for
+you.
 
-## Files
+## History and undo are built in
 
-- `bussard.yaml` — connection config: transport (tunnel or routing) and gateway.
-- `groups.yaml` — the group-address plan: address → name + DPT.
-- `links.yaml` — com-object → group-address links, keyed by device address.
-- `devices/` — one YAML file per device (identity, naming, com-objects).
-- `captures/` — local telegram captures (git-ignored).
+bussard keeps its own history in `.bussard/history/`. Before bussard writes the
+model or a device, it saves a full copy of these files, with a note saying which
+command did it and when.
+
+- `bussard status`: what has changed since the last save, in plain sentences.
+- `bussard history`: every save, oldest first, one line each.
+- `bussard show <n>`: what one save changed.
+- `bussard undo`: put the files back to the previous save.
+
+`undo` changes files only. Your devices keep working exactly as they are until
+you run `bussard plan <device>` and `bussard apply <device>`, which is where you
+confirm the change and it reaches the bus.
+
+Edits made in a text editor are picked up too: the next bussard command records
+them as an `external edit` save first, so nothing is lost.
+
+## Backups
+
+- `bussard backup`: read every device's tables into `captures/backups/`
+  before your first change. It only reads, so it is safe on a live house.
+- `bussard restore <backup-dir> <device>`: write one device back from a backup.
+- `bussard export house.bussard`: the whole model and its history as one file.
+  Keep a copy on a USB stick in the cabinet. `bussard import house.bussard`
+  brings it back on another computer.
+
+## Connect your assistant
+
+    claude mcp add knx -- bussard mcp --dir <this directory>
+
+The assistant can read the model, watch the bus, and edit the model; every edit
+is saved to the history first. Only you program devices, with `plan` and `apply`.
 
 ## Getting started
 
-Two onboarding paths:
+1. You have an ETS export: `bussard import project.knxproj --dir .`
+2. No ETS project: `bussard reconstruct --line 1.1 --out <new directory>` reads
+   what the devices carry into a fresh model. Then ask the assistant to help
+   you name the group addresses as you press buttons (`bussard learn` does the
+   same in a terminal).
+3. `bussard audit` reports what you have and what bussard can do with it.
 
-1. **You have an ETS export** — import it to populate the model:
-   `bussard import project.knxproj --dir .`
-2. **No ETS project** — watch the bus and build the model as you go:
-   `bussard monitor --dir .`
+## Files
 
-Docs: https://github.com/tmbo/bussard
+- `bussard.yaml`: connection config, transport (tunnel or routing) and gateway.
+- `groups.yaml`: the group-address plan, address to name and DPT.
+- `links.yaml`: com-object to group-address links, keyed by device address.
+- `devices/`: one YAML file per device (identity, naming, com-objects).
+- `tests.yaml`: optional acceptance tests for `bussard test`.
+- `captures/`: local telegram captures and device backups.
+- `.bussard/`: bussard's history (`bussard undo` reads it).
+
+## If you use git
+
+You do not have to. If you do: commit `bussard.yaml`, `groups.yaml`,
+`links.yaml`, `devices/` and `tests.yaml`. The generated `.gitignore` already
+excludes `.bussard/`, `models/`, `vendor/` and `captures/`, which are local to
+this machine. A git user then has two histories, one in git and one in bussard;
+`bussard undo` reads bussard's.
+
+Guide for new owners: https://github.com/tmbo/bussard/blob/main/docs/getting-started-owner.md
 ";
 
 /// Prints crisp next steps to stdout.
@@ -389,6 +510,10 @@ fn print_next_steps(dir: &Path) {
     println!("  - Connect Claude via MCP:   claude mcp add knx -- bussard mcp --dir {d}");
     println!();
     println!("Check the model any time:     bussard validate --dir {d}");
+    println!("See what changed, and undo it: bussard status --dir {d} / bussard undo --dir {d}");
+    println!(
+        "When it works, keep a copy:   bussard export --dir {d} (one file to back up or hand over)"
+    );
 }
 
 #[cfg(test)]
@@ -415,6 +540,7 @@ mod tests {
             endpoint: SocketAddrV4::new(Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]), port),
             individual_address: ia,
             name: name.map(str::to_string),
+            description: Default::default(),
         }
     }
 
@@ -566,7 +692,13 @@ mod tests {
         let dir = temp_dir("skeleton");
         run_with(&dir, None, true, no_gateways, no_probe).unwrap();
 
-        for f in ["bussard.yaml", "groups.yaml", "links.yaml", "README.md"] {
+        for f in [
+            "bussard.yaml",
+            "groups.yaml",
+            "links.yaml",
+            "README.md",
+            ".gitignore",
+        ] {
             assert!(dir.join(f).exists(), "missing {f}");
         }
         assert!(dir.join("devices").is_dir());

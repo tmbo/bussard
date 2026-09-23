@@ -89,7 +89,10 @@ pub use memory::{
     write_memory_verified,
 };
 pub use probe::{AddressProbe, probe_own_address, probe_own_address_on};
-pub use profile::{KnxMedium, LsmRealisation, MaskFamily, MaskProfile, Sys7Profile};
+pub use profile::{
+    KnxMedium, LsmRealisation, MaskCapabilities, MaskFamily, MaskProfile, Sys7Profile,
+    capability_table,
+};
 pub use secure::SecureLayer;
 pub use sys7::{
     LsmAccess, alloc_attr_octets, encode_alloc_segment, encode_task_ctrl1, encode_task_segment,

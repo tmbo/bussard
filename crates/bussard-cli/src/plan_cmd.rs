@@ -113,8 +113,10 @@ pub(crate) async fn read_live_tables<Ch: L4Channel>(
 ) -> anyhow::Result<LiveRead> {
     match read_tables(l4).await {
         Ok(tables) => Ok(LiveRead::Tables(LiveTables::SystemB(tables))),
+        // The System B reader refused: route to the System 7 memory-mapped reader
+        // when the central capability table says this mask has table support.
         Err(TablesError::UnsupportedMask { address, mask })
-            if MaskProfile::from_mask(mask).is_system_7() =>
+            if MaskProfile::from_mask(mask).capabilities().plan_apply =>
         {
             let live = read_sys7_tables(l4)
                 .await
@@ -129,11 +131,17 @@ pub(crate) async fn read_live_tables<Ch: L4Channel>(
 }
 
 /// Prints the friendly refusal for a mask no table reader speaks.
+///
+/// The wording is derived from the central capability table
+/// ([`MaskProfile::capabilities`]), so a mask that gains support cannot leave a
+/// stale refusal behind.
 pub(crate) fn report_unsupported_mask(command: &str, address: IndividualAddress, mask: u16) {
+    let caps = MaskProfile::from_mask(mask).capabilities();
     eprintln!(
         "{address} reports mask {mask:04X} ({}) — `bussard {command}` supports the \
-         System B (x7B0) and System 7 (0705 / 0701) families",
-        system_type(mask)
+         System B (x7B0) and System 7 (0705 / 0701) families; on this mask bussard can: {}",
+        system_type(mask),
+        caps.summary()
     );
 }
 
@@ -158,6 +166,22 @@ pub fn run(
         );
     };
     let config = resolve_config(Some(&model), &overrides)?;
+
+    // Issue #112: say in plain sentences what the model now asks for that the
+    // last snapshot did not, before the com-object table below says it in
+    // numbers. Text output only — `--json` stays a single JSON document.
+    if !json {
+        if let Some(pending) = crate::history_cmd::pending_changes(dir) {
+            println!(
+                "pending model changes since the last snapshot ({} change(s)):\n",
+                pending.changes.len()
+            );
+            print!("{}", bussard_model::change::render_text(&pending.changes));
+            println!();
+        }
+    }
+    // Whatever was edited outside bussard is now recorded, so it cannot be lost.
+    crate::history_cmd::capture_external_edit(dir);
 
     let desired = compute_desired(&model, target)?;
 

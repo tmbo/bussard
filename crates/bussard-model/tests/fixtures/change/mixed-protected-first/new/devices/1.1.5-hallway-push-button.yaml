@@ -1,0 +1,5 @@
+address: "1.1.5"
+name: Hallway rocker
+com_objects:
+  1:
+    flags: "CRT"

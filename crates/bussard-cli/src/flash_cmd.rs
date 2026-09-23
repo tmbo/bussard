@@ -32,10 +32,11 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
-use bussard_bus::{Bus, BusHandle};
+use bussard_bus::{BusHandle, ops};
 use bussard_download::{
-    FlashPlan, FlashStep, Freshness, Progress, assess_freshness, flash, plan_flash,
-    probe_resident_state, select_application, trace,
+    CurrentMemory, FlashPlan, FlashStep, Freshness, ParamPlan, ParamValue, Progress,
+    assess_freshness, flash, param_plan, plan_flash, probe_resident_state,
+    read_current_parameter_memory, select_application, trace,
 };
 use bussard_mgmt::load::WriteError;
 use bussard_mgmt::{DeviceConnection, Layer4Connection, LeaseChannel, MgmtError, Timeouts};
@@ -43,7 +44,7 @@ use bussard_model::IndividualAddress;
 use bussard_prod::{ApplicationProgram, ProductData, normalize_order_number};
 
 use crate::conn_cmd::{
-    ConnOverrides, checked_source_or_close, enforce_write_gate, gateway_display,
+    BusSession, ConnOverrides, checked_source, enforce_write_gate, gateway_display,
     load_model_required, resolve_config,
 };
 
@@ -60,10 +61,12 @@ pub fn run(
     dir: &Path,
     yes: bool,
     force: bool,
+    full: bool,
     allow_remote_gateway: bool,
     bcu_key: Option<&str>,
     tool_key_source: crate::secure_key::ToolKeySource<'_>,
     overrides: ConnOverrides,
+    output: FlashOutput,
 ) -> anyhow::Result<ExitCode> {
     let target: IndividualAddress = address
         .parse()
@@ -128,6 +131,8 @@ pub fn run(
     // gateway unless the operator opted in.
     enforce_write_gate(&config, allow_remote_gateway)?;
     let gateway = gateway_display(&config);
+    // An edit made outside bussard is recorded before this command acts on it.
+    crate::history_cmd::capture_external_edit(dir);
     let overrides_map = collect_parameter_overrides(model.as_ref(), target);
     // Module-instance base offsets persisted by the importer (issue #48): the
     // keys are module-instance selectors, byte-identical to what
@@ -139,22 +144,28 @@ pub fn run(
         .map(|d| d.device.module_bases.clone())
         .unwrap_or_default();
 
+    // ONE tunnel for the whole command: the read-only pre-flight below, the
+    // interactive confirmation, and the write phase all run over it, and
+    // `BusSession` closes it on every exit path. Opening a second tunnel for the
+    // write phase used to cost another CONNECT/DISCONNECT round trip — and the
+    // gateway's only tunnel slot — for no gain; the tunnel heartbeat holds the
+    // slot across the confirmation prompt.
+    let runtime = tokio::runtime::Runtime::new()?;
+    let bus = BusSession::open(&runtime, config);
+    let handle = bus.handle();
+    // The tunnel-assigned source address, resolved and checked against the bus
+    // once for both phases (they share this tunnel, so one probe covers both).
+    // `BusSession` closes the tunnel if the check refuses.
+    let source = runtime.block_on(checked_source(handle, &overrides))?;
+
     // Phase A (read-only): read the device descriptor and probe what is already
     // resident on the device (issue #79). Both run over one connection; neither
     // writes anything.
-    let runtime = tokio::runtime::Runtime::new()?;
     let secure_probe = tool_key.is_some();
     let probe = {
-        let config = config.clone();
         let probe_key = tool_key.clone();
         let probe_seq = secure_seq.clone();
-        let conn = overrides.clone();
-        runtime.block_on(async move {
-            let (handle, _task) = Bus::connect(config);
-            if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
-                eprintln!("warning: bus not connected yet; management traffic may use the 0.0.255 fallback source");
-            }
-            let source = checked_source_or_close(&handle, &conn).await?;
+        runtime.block_on(async {
             let lease = handle.lease().await.context("leasing the bus")?;
             let channel = LeaseChannel::new(lease);
             // Track whether the T_Connect established before the first read: a
@@ -164,6 +175,11 @@ pub fn run(
             // activated device (spec §6.4): probe it through the same secure
             // layer the flash will use, or plain when no tool key was given.
             let secure = crate::secure_key::layer(&probe_key, &probe_seq);
+            // What this read-only pass learns about the device, handed to the
+            // write phase so it does not rediscover any of it (the authorize
+            // outcome, the max APDU, and — filled in from the freshness probe
+            // below — the interface-object table).
+            let mut facts = bussard_download::DeviceFacts::default();
             let (connected, result, resident) = match DeviceConnection::connect_with_secure(
                 channel,
                 target,
@@ -180,9 +196,21 @@ pub fn run(
                     // first. Tolerate a device that does not implement authorize.
                     let key = bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY);
                     let r = match dev.authorize(key).await {
-                        Ok(_) => dev.device_descriptor().await,
+                        Ok(outcome) => {
+                            // Remember the verdict: a device that does not
+                            // implement authorize must not be asked again in the
+                            // write phase, where the unanswered request costs a
+                            // full RESPONSE_TIMEOUT per connection window.
+                            facts.authorize = Some(outcome);
+                            dev.device_descriptor().await
+                        }
                         Err(err) => Err(err),
                     };
+                    // PID_MAX_APDU_LENGTH is device-stable: negotiate it here, on
+                    // the read-only connection, so the write phase seeds it
+                    // instead of spending an exchange from its tight
+                    // per-connection budget on it.
+                    facts.max_apdu = dev.l4_mut().negotiate_max_apdu().await.ok().flatten();
                     // The factory-freshness probe (issue #79): read the load
                     // state (and, on System B, the resident application id) of
                     // the objects this flash would unload and rewrite. Purely
@@ -193,17 +221,19 @@ pub fn run(
                         Ok(mask) => Some(probe_resident_state(dev.l4_mut(), *mask, None).await),
                         Err(_) => None,
                     };
+                    if let Some(state) = &resident {
+                        facts.object_table = state.object_table.clone();
+                    }
                     let _ = dev.disconnect().await;
                     (true, r, resident)
                 }
                 Err(err) => (false, Err(err), None),
             };
-            let _ = handle.close().await;
-            anyhow::Ok((connected, result, resident))
+            anyhow::Ok((connected, result, resident, facts))
         })?
     };
 
-    let (connected, device_mask, resident) = probe;
+    let (connected, device_mask, resident, facts) = probe;
     let device_mask = match device_mask {
         Ok(mask) => mask,
         Err(err) => {
@@ -250,7 +280,51 @@ pub fn run(
         }
     };
 
-    print_plan(target, device_mask, &plan, &overrides_map);
+    // The parameter-level plan (issue #109): what this flash changes in the
+    // vendor's own words, before the memory-level plan. Reading the current
+    // values back is only meaningful on a device that already carries an
+    // application; a factory-fresh one has no segment to read, so every value is
+    // reported as an unknown current value.
+    let current_params = if resident
+        .as_ref()
+        .is_some_and(|r| r.has_loaded_application())
+    {
+        read_current_parameters(
+            &runtime,
+            handle,
+            target,
+            &plan,
+            bcu_key,
+            tool_key.clone(),
+            secure_seq.clone(),
+        )
+    } else {
+        CurrentMemory::new()
+    };
+    let params = if plan.is_sys7() {
+        // System 7 writes whole absolute memory regions rather than a parameter
+        // image over an allocated segment, so the memory-level plan is the
+        // authoritative one there.
+        ParamPlan {
+            note: Some(bussard_download::SYS7_NOTE.to_string()),
+            ..Default::default()
+        }
+    } else {
+        param_plan(app, &overrides_map, &base_offsets, &current_params)
+    };
+
+    if output.json {
+        print_plan_json(target, device_mask, &plan, &params)?;
+    } else {
+        print_plan(
+            target,
+            device_mask,
+            &plan,
+            &overrides_map,
+            &params,
+            output.verbose,
+        );
+    }
 
     // The factory-freshness gate (issue #79): a flash takes no backup, so a
     // device that already carries a *different* application is refused unless
@@ -283,36 +357,49 @@ pub fn run(
         return Ok(ExitCode::FAILURE);
     }
 
+    // History (issue #110): record the model state this flash is about to act
+    // on, together with the gateway it goes to.
+    crate::history_cmd::snapshot(
+        dir,
+        bussard_model::history::SnapshotReason::new("flash")
+            .with_args([target.to_string()])
+            .with_gateway(Some(gateway.clone()))
+            .with_result("before flashing the application program"),
+    );
+
     // Phase B (write): execute the flash with a progress line.
     let plan_ref = &plan;
     // Verify the flash *after* the terminal restart: a real device (KNX Virtual)
     // only holds the load if it survives the reboot, so bussard reconnects and
     // re-reads the load state once the device is back rather than trusting the
     // transient `Loaded` it reports before rebooting.
+    //
+    // Differential download (the ETS group-B behaviour): an object whose resident
+    // image already matches what bussard would stream (MCB size + CRC, and the
+    // object reports `Loaded`) is not re-streamed. Only taken when the device
+    // carries no application or the same one — never when `--force` is replacing
+    // a different or unidentified application, and never with `--full`.
+    let skip_unchanged = !full
+        && matches!(
+            freshness,
+            Freshness::Fresh | Freshness::SameApplication { .. }
+        );
+    if skip_unchanged && matches!(freshness, Freshness::SameApplication { .. }) {
+        eprintln!(
+            "differential download: objects whose resident image already matches are \
+             skipped (pass --full to re-stream everything)"
+        );
+    }
     let options = bussard_download::FlashOptions {
         bcu_key,
         verify_after_restart: true,
-        ..Default::default()
+        skip_matching_mcb: skip_unchanged,
     };
-    let outcome = runtime.block_on(async move {
-        let (handle, _task) = Bus::connect(config);
-        if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
-            eprintln!("warning: bus not connected yet; management traffic may use the 0.0.255 fallback source");
-        }
-        let source = checked_source_or_close(&handle, &overrides).await?;
-        let result = execute(
-            &handle,
-            target,
-            source,
-            plan_ref,
-            options,
-            tool_key,
-            secure_seq,
-        )
-        .await;
-        let _ = handle.close().await;
-        anyhow::Ok(result)
-    })?;
+    // The same tunnel phase A used: the pre-flight's L4 session and its bus lease
+    // are both released by now, so the write phase simply takes the lease again.
+    let outcome = runtime.block_on(execute(
+        handle, target, source, plan_ref, options, facts, tool_key, secure_seq,
+    ));
 
     match outcome {
         Ok(verify) if verify.ok() => {
@@ -749,12 +836,14 @@ impl bussard_download::Connector for LeaseConnector<'_> {
 }
 
 /// Runs the on-bus flash sequence with a progress line.
+#[allow(clippy::too_many_arguments)]
 async fn execute(
     handle: &BusHandle,
     target: IndividualAddress,
     source: IndividualAddress,
     plan: &FlashPlan,
     options: bussard_download::FlashOptions,
+    facts: bussard_download::DeviceFacts,
     secure_tool_key: Option<bussard_secure::Key16>,
     secure_seq: bussard_secure::SequenceHighWater,
 ) -> Result<bussard_download::FlashOutcome, WriteError> {
@@ -770,7 +859,11 @@ async fn execute(
     };
     // Authorize the management connect with the project BCU key (or free access
     // when unset) — issue #52 finding #1.
-    let mut session = bussard_download::Session::open_with_key(connector, options.bcu_key).await?;
+    // Opened with what the read-only pre-flight already learned (the object
+    // table, the authorize verdict, the max APDU), so the write phase does not
+    // rediscover any of it.
+    let mut session =
+        bussard_download::Session::open_with_facts(connector, options.bcu_key, facts).await?;
     // The session owns the open connection; from here the flash body runs and its
     // result is captured, then the session is disconnected unconditionally below —
     // regardless of whether the flash succeeded or failed mid-procedure. `flash`
@@ -803,11 +896,150 @@ async fn execute(
 /// Prints the pre-flight plan: application identity, mask compatibility, the
 /// applied parameter overrides, and the ordered step list with byte counts and
 /// time estimate.
+/// How the flash pre-flight reports itself: the `--json` switch and the global
+/// `-v` count that unfolds the memory-level plan.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FlashOutput {
+    /// Emit the pre-flight as JSON (including the `parameters` array) instead of
+    /// the human report.
+    pub json: bool,
+    /// The global `-v` repeat count. One or more unfolds the memory-level plan
+    /// (the step trace) under the parameter-level one.
+    pub verbose: u8,
+}
+
+/// Reads the device's current parameter memory over a read-only management
+/// session, so the parameter plan can name what the device holds today.
+///
+/// Best-effort: any failure yields an empty map and every parameter is then
+/// reported with an unknown current value. Nothing here writes to the device.
+#[allow(clippy::too_many_arguments)]
+fn read_current_parameters(
+    runtime: &tokio::runtime::Runtime,
+    handle: &BusHandle,
+    target: IndividualAddress,
+    plan: &FlashPlan,
+    bcu_key: Option<u32>,
+    tool_key: Option<bussard_secure::Key16>,
+    secure_seq: bussard_secure::SequenceHighWater,
+) -> CurrentMemory {
+    let result: anyhow::Result<CurrentMemory> = runtime.block_on(async {
+        // Runs over the command's tunnel: the lease below serialises it against
+        // the pre-flight and write phases, so no second tunnel is opened. The
+        // same tunnel means the same source, already checked by `run`.
+        let source = ops::group_source(handle);
+        let lease = handle.lease().await.context("leasing the bus")?;
+        let channel = LeaseChannel::new(lease);
+        let secure = crate::secure_key::layer(&tool_key, &secure_seq);
+        let current = match DeviceConnection::connect_with_secure(
+            channel,
+            target,
+            source,
+            Timeouts::default(),
+            secure,
+        )
+        .await
+        {
+            Ok(mut dev) => {
+                let key = bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY);
+                let _ = dev.authorize(key).await;
+                let current = read_current_parameter_memory(dev.l4_mut(), plan).await;
+                let _ = dev.disconnect().await;
+                current
+            }
+            Err(_) => CurrentMemory::new(),
+        };
+        anyhow::Ok(current)
+    });
+    match result {
+        Ok(current) => current,
+        Err(err) => {
+            tracing::debug!(%err, "the parameter read-back did not run; values stay unknown");
+            CurrentMemory::new()
+        }
+    }
+}
+
+/// Prints the parameter-level plan: what changes, in the vendor's own words.
+fn print_param_plan(params: &ParamPlan) {
+    if let Some(note) = &params.note {
+        println!("  note        : {note}");
+    }
+    if params.changes.is_empty() {
+        println!("  parameters  : no parameter change");
+        return;
+    }
+    println!(
+        "  parameters  : {} change(s){}:",
+        params.changes.len(),
+        if params.unknown > 0 {
+            format!(", {} without a readable current value", params.unknown)
+        } else {
+            String::new()
+        }
+    );
+    for change in &params.changes {
+        println!("      {}", change.line());
+    }
+}
+
+/// Emits the pre-flight as JSON, including the `parameters` array (issue #109).
+fn print_plan_json(
+    target: IndividualAddress,
+    device_mask: u16,
+    plan: &FlashPlan,
+    params: &ParamPlan,
+) -> anyhow::Result<()> {
+    let parameters: Vec<serde_json::Value> = params
+        .changes
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "key": c.key,
+                "name": c.name,
+                "old": match &c.old {
+                    ParamValue::Known(v) => serde_json::Value::String(v.clone()),
+                    ParamValue::Unknown => serde_json::Value::Null,
+                },
+                "new": match &c.new {
+                    ParamValue::Known(v) => serde_json::Value::String(v.clone()),
+                    ParamValue::Unknown => serde_json::Value::Null,
+                },
+                "unit": c.unit,
+            })
+        })
+        .collect();
+    let value = serde_json::json!({
+        "device": target.to_string(),
+        "device_mask": format!("{device_mask:04X}"),
+        "application": {
+            "id": plan.identity.id,
+            "name": plan.identity.name,
+            "number": plan.identity.application_number,
+            "version": plan.identity.application_version,
+            "mask": plan.identity.mask_version,
+        },
+        "parameters": parameters,
+        "parameter_note": params.note,
+        "memory": {
+            "write_bytes": plan.total_write_bytes(),
+            "steps": plan.steps.len(),
+            "frames": plan.estimated_write_frames(),
+            "estimated_seconds": plan.estimated_duration().as_secs_f64(),
+        },
+        "procedure": trace(plan),
+    });
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
+
 fn print_plan(
     target: IndividualAddress,
     device_mask: u16,
     plan: &FlashPlan,
     overrides: &BTreeMap<String, String>,
+    params: &ParamPlan,
+    verbose: u8,
 ) {
     println!("Flash plan for {target}");
     println!(
@@ -825,14 +1057,13 @@ fn print_plan(
         "  mask        : app {} vs device {device_mask:04X} — compatible",
         plan.identity.mask_version,
     );
-    // The parameter overrides that deviate from the vendor defaults, so the user
-    // confirms exactly what this flash changes. Keyed by the app-relative
-    // ParameterRef id (the #46 contract identity).
-    if overrides.is_empty() {
-        println!("  parameters  : none (flashing vendor defaults)");
-    } else {
+    // The parameter-level plan first (issue #109): an owner reads "night setback:
+    // 18 to 17 °C", not a byte offset. The model's own override keys follow only
+    // when asked for, and the memory-level plan only under `-v`.
+    print_param_plan(params);
+    if verbose > 0 && !overrides.is_empty() {
         println!(
-            "  parameters  : {} override(s) applied over vendor defaults:",
+            "  overrides   : {} model value(s), keyed by the app-relative ParameterRef id:",
             overrides.len()
         );
         for (key, value) in overrides {
@@ -846,9 +1077,16 @@ fn print_plan(
         plan.estimated_write_frames(),
         plan.estimated_duration().as_secs_f64(),
     );
-    println!("  procedure   :");
-    for line in trace(plan) {
-        println!("    {line}");
+    if verbose > 0 {
+        println!("  procedure   :");
+        for line in trace(plan) {
+            println!("    {line}");
+        }
+    } else {
+        println!(
+            "  procedure   : {} step(s); re-run with -v for the memory-level plan",
+            plan.steps.len()
+        );
     }
 }
 
@@ -1066,6 +1304,7 @@ mod tests {
             name: "test".to_string(),
             description: None,
             location: None,
+            replaced: None,
             product: None,
             channels: Default::default(),
             parameters: params

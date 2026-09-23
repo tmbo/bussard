@@ -300,6 +300,10 @@ struct Model {
     identity: Identity,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     order_numbers: Vec<String>,
+    /// The hardware's declared bus current in mA (`Hardware.xml` `BusCurrent`),
+    /// read by the `L002` topology lint to total a line's draw.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    bus_current_ma: Option<u32>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     com_objects: BTreeMap<u16, ComObjectModel>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -428,6 +432,7 @@ fn build_model(app: &ApplicationProgram, product: &ProductData) -> Model {
             schema_version: app.schema_version.clone(),
         },
         order_numbers: order_numbers_for(app, product),
+        bus_current_ma: bus_current_for(app, product),
         com_objects: com_objects_for(app),
         parameters: parameters_for(app),
         load_procedure: load_procedure_summary(&app.load_procedures),
@@ -446,6 +451,18 @@ fn order_numbers_for(app: &ApplicationProgram, product: &ProductData) -> Vec<Str
     orders.sort();
     orders.dedup();
     orders
+}
+
+/// The highest bus current declared for any order number that maps to this
+/// application program, in mA.
+///
+/// One application can be served by several catalogue parts; taking the maximum
+/// keeps the topology lint from under-reporting a line's draw.
+fn bus_current_for(app: &ApplicationProgram, product: &ProductData) -> Option<u32> {
+    order_numbers_for(app, product)
+        .iter()
+        .filter_map(|order| product.hardware.order_to_bus_current.get(order).copied())
+        .max()
 }
 
 /// The resolved com-objects keyed by number. When two refs share a number, the
@@ -630,11 +647,17 @@ fn load_op_summary(op: &LoadOp) -> String {
             lsm_idx,
             address,
             size,
+            access,
+            mem_type,
+            seg_flags,
         } => format!(
-            "abs_segment lsm={} addr={} size={}",
+            "abs_segment lsm={} addr={} size={} access={} mem_type={} seg_flags={}",
             opt(lsm_idx),
             opt(address),
-            opt(size)
+            opt(size),
+            opt(access),
+            opt(mem_type),
+            opt(seg_flags)
         ),
         LoadOp::WriteRelMem {
             obj_idx,
@@ -656,6 +679,7 @@ fn load_op_summary(op: &LoadOp) -> String {
             obj_type,
             prop_id,
             inline_data,
+            ..
         } => {
             let data = inline_data
                 .as_ref()

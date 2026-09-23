@@ -310,6 +310,7 @@ dependencies = [
  "bussard-mgmt",
  "bussard-model",
  "bussard-monitor",
+ "bussard-project",
  "bussard-transport",
  "rmcp",
  "serde",
@@ -338,10 +339,14 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bitflags",
+ "quick-xml",
  "serde",
+ "serde_json",
  "serde_norway",
  "serde_path_to_error",
+ "sha2",
  "thiserror",
+ "zip",
 ]
 
 [[package]]

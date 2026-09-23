@@ -505,13 +505,29 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
         }
         // PID_MCB_TABLE (Jung A-A011 objects): 8-octet entry with the device CRC
         // over the segment it holds. Model a plausible readable entry.
+        //
+        // ONE entry per request. A real Jung 3361-1MWW (mask 0705, application
+        // `M-0004_A-A011-13`) REFUSED a multi-element read — bussard sent
+        // `A_PropertyValue_Read obj=3 pid=27 count=6 start=1`, straight from
+        // `LdCtrlLoadImageProp ObjIdx="3" PropId="27" Count="6"`, and the device
+        // answered count 0 with no data (issue #89 campaign, 1.1.36). Six
+        // 8-octet entries are 48 octets of value, nowhere near a standard-frame
+        // APDU, and a real device does not partially answer: it refuses the
+        // whole read. The 1.1.31 ETS capture reads the six entries one at a
+        // time, `count=1` at index 1..=6, which is what bussard does now.
         if pid == PID_MCB_TABLE && s.mcb_objects.contains(&obj) {
+            if count > 1 {
+                return Reaction::Answer(
+                    A_PROPERTY_VALUE_RESPONSE,
+                    prop_response(obj, pid, 0, start, &[]),
+                );
+            }
             let crc = crc16_aug_ccitt(&[0u8; 4]);
             let mut entry = vec![0x00, 0x00, 0x00, 0x04, 0x00, 0xFF];
             entry.extend_from_slice(&crc.to_be_bytes());
             return Reaction::Answer(
                 A_PROPERTY_VALUE_RESPONSE,
-                prop_response(obj, pid, count.max(1), start, &entry),
+                prop_response(obj, pid, 1, start, &entry),
             );
         }
         // Anything else: count 0 (absent).
@@ -921,6 +937,7 @@ async fn flash_system7_resumes_across_a_connection_drop() -> Result<(), Box<dyn 
         handle: handle.clone(),
         target: "1.1.99".parse().unwrap(),
         source: "0.0.255".parse().unwrap(),
+        timeouts: Some(fast_timeouts()),
     };
     let mut session = Session::open_with_key(connector, None).await?;
     let app = mdt_canonical_app();
@@ -990,6 +1007,7 @@ async fn run_flash_with_reboot(
         handle: handle.clone(),
         target: "1.1.99".parse().unwrap(),
         source: "0.0.255".parse().unwrap(),
+        timeouts: None,
     };
     let mut session = Session::open_with_key(connector, None).await?;
     let app = mdt_canonical_app();
@@ -1072,6 +1090,22 @@ struct LeaseConnector {
     handle: bussard_bus::BusHandle,
     target: bussard_model::IndividualAddress,
     source: bussard_model::IndividualAddress,
+    /// The L4 timeout budget each opened connection uses. `None` keeps the
+    /// default (3 s ACK/response); the drop-and-resume test sets a tiny budget
+    /// so the modelled silence of a dropped connection is detected in
+    /// milliseconds rather than seconds. Mirrors `flash_mock.rs`.
+    timeouts: Option<bussard_mgmt::Timeouts>,
+}
+
+/// A tiny L4 timeout budget for the drop-and-resume test: the connection the
+/// mock drops goes silent, and with the default 3 s ACK budget x repetitions
+/// each drop costs seconds of pure waiting. Mirrors `flash_mock.rs`.
+fn fast_timeouts() -> bussard_mgmt::Timeouts {
+    bussard_mgmt::Timeouts {
+        ack_timeout: Duration::from_millis(50),
+        max_repetitions: 1,
+        response_timeout: Duration::from_millis(50),
+    }
 }
 
 impl bussard_download::Connector for LeaseConnector {
@@ -1086,7 +1120,8 @@ impl bussard_download::Connector for LeaseConnector {
             ))
         })?;
         let channel = bussard_mgmt::LeaseChannel::new(lease);
-        Layer4Connection::connect(channel, self.target, self.source)
+        let timeouts = self.timeouts.unwrap_or_default();
+        Layer4Connection::connect_with(channel, self.target, self.source, timeouts)
             .await
             .map_err(bussard_mgmt::load::WriteError::Mgmt)
     }

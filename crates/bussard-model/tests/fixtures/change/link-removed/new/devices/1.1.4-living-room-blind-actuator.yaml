@@ -1,0 +1,9 @@
+address: "1.1.4"
+name: Living room blind actuator
+channels:
+  CH-2:
+    name: B
+com_objects:
+  12:
+    flags: "CRT"
+    channel: CH-2

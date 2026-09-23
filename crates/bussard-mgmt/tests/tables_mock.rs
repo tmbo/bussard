@@ -124,6 +124,10 @@ async fn push_indication(
 }
 
 /// Runs the mock gateway + scripted device until the client disconnects.
+///
+/// The loop only returns after 5 s of silence, so tests end with
+/// `gw_task.abort()` rather than awaiting the task: awaiting it (even
+/// under a 1 s timeout) added that wait to every test.
 async fn run_mock(gw: UdpSocket, address: IndividualAddress, device: TableDevice) {
     let mut gw_seq: u8 = 0;
     let mut dev_send_seq: u8 = 0;
@@ -415,7 +419,7 @@ async fn reads_tables_via_property_path() {
         read.notes
     );
 
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -432,7 +436,7 @@ async fn chunk_capped_device_still_reads_full_table() {
     assert_eq!(read.addresses.len(), 3);
     assert_eq!(read.associations.len(), 4);
 
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -452,7 +456,7 @@ async fn non_system_b_mask_is_refused() {
         other => panic!("expected UnsupportedMask, got {other:?}"),
     }
 
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -505,7 +509,7 @@ async fn falls_back_to_memory_when_pid_table_is_unreadable() {
         read.notes
     );
 
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -557,7 +561,7 @@ async fn memory_table_above_64k_is_read_via_extended_memory() {
         read.sources
     );
 
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -584,7 +588,7 @@ async fn device_with_no_readable_table_is_a_clean_error() {
         other => panic!("expected TableUnreadable, got {other:?}"),
     }
 
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -609,5 +613,5 @@ async fn device_without_address_table_object_is_a_clean_error() {
         other => panic!("expected TableUnreadable, got {other:?}"),
     }
 
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }

@@ -1,0 +1,8 @@
+# Fixture for lint L001: more devices on a line than the configured limit.
+connection:
+  transport: tunnel
+  gateway: "127.0.0.1:3671"
+
+lint:
+  topology:
+    max_devices_per_line: 2

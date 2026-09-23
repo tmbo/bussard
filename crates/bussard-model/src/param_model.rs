@@ -21,6 +21,11 @@ use serde::Deserialize;
 /// One parsed product model file: its parameter definitions, indexed for lookup.
 #[derive(Debug, Clone, Default)]
 pub struct ProductModel {
+    /// The bus current this product draws, in mA, as declared by the vendor's
+    /// `Hardware.xml` (`BusCurrent`). Used by the `L002` topology lint to total
+    /// a line's draw against its power supply. `None` when the cached model
+    /// predates the field or the vendor omitted it.
+    pub bus_current_ma: Option<u32>,
     /// Parameter definitions keyed by their **application-relative** id
     /// (the full id with the `<application_ref>_` prefix stripped, e.g.
     /// `MD-1_P-3` or `P-1312`). A device parameter key resolves to this id by
@@ -36,6 +41,9 @@ pub struct ParamDef {
     pub kind: ParamKind,
     /// The vendor default value, if any.
     pub default: Option<String>,
+    /// The parameter's human-readable text as ETS shows it (e.g. "Night
+    /// setback"), when the product model carries one.
+    pub text: Option<String>,
 }
 
 /// A parameter's type, mirroring the `type:` tag in the model YAML.
@@ -75,6 +83,8 @@ pub enum ParamKind {
 #[derive(Debug, Deserialize)]
 struct RawModel {
     #[serde(default)]
+    bus_current_ma: Option<u32>,
+    #[serde(default)]
     parameters: Vec<RawParam>,
 }
 
@@ -85,6 +95,8 @@ struct RawParam {
     param_type: RawType,
     #[serde(default)]
     default: Option<String>,
+    #[serde(default)]
+    text: Option<String>,
 }
 
 // Some fields exist only to consume the YAML shape faithfully; the validator
@@ -151,10 +163,14 @@ impl ProductModel {
                 ParamDef {
                     kind: p.param_type.into_kind(),
                     default: p.default,
+                    text: p.text.filter(|t| !t.trim().is_empty()),
                 },
             );
         }
-        Ok(ProductModel { parameters })
+        Ok(ProductModel {
+            bus_current_ma: raw.bus_current_ma,
+            parameters,
+        })
     }
 }
 

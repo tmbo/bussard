@@ -41,7 +41,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
-use bussard_bus::Bus;
+use bussard_download::backup::{DeviceBackup, backups_root, has_installation_backup};
 use bussard_download::{
     DesiredTables, PlanReport, Sys7LiveTables, Sys7TableImages, VerifyOutcome, apply_sys7_tables,
     apply_tables, discover_table_objects, plan, sys7_table_images,
@@ -50,11 +50,45 @@ use bussard_mgmt::tables::DeviceTables;
 use bussard_mgmt::{Layer4Connection, LeaseChannel, MaskProfile, system_type};
 use bussard_model::IndividualAddress;
 
+use bussard_transport::ConnectionConfig;
+
 use crate::conn_cmd::{
-    ConnOverrides, checked_source_or_close, enforce_write_gate, gateway_display,
+    BusSession, ConnOverrides, checked_source, enforce_write_gate, gateway_display,
     load_model_required, resolve_config,
 };
 use crate::plan_cmd;
+
+/// Where the tables a write phase is about to load came from.
+///
+/// `apply` and `restore` are the same command with a different source of truth,
+/// so they share [`apply_desired`] and differ only in this: the verb they print,
+/// and whether the desired tables were computed from `links.yaml` or read out of
+/// a backup file (issue #96).
+#[derive(Debug, Clone)]
+pub(crate) enum DesiredSource {
+    /// The model's `links.yaml`, computed by `bussard plan`.
+    Model,
+    /// A device backup file written by `bussard backup` or a previous `apply`.
+    Backup(std::path::PathBuf),
+}
+
+impl DesiredSource {
+    /// The command verb, for the plan header, the confirmation and the errors.
+    pub(crate) fn verb(&self) -> &'static str {
+        match self {
+            DesiredSource::Model => "apply",
+            DesiredSource::Backup(_) => "restore",
+        }
+    }
+
+    /// A one-line description of where the desired tables came from.
+    fn origin(&self) -> String {
+        match self {
+            DesiredSource::Model => "the model's links.yaml".to_string(),
+            DesiredSource::Backup(path) => format!("the backup {}", path.display()),
+        }
+    }
+}
 
 /// Applies the model's link tables to a device (plan, confirm, write, verify).
 pub fn run(
@@ -68,13 +102,6 @@ pub fn run(
     let target: IndividualAddress = address
         .parse()
         .with_context(|| format!("parsing device address {address:?}"))?;
-    // KNX Data Secure (issue #71, spec §6.2): every management APDU below —
-    // the read pre-pass and the table writes — rides A_SecureData when the device
-    // is security-activated and a tool key is given. One high-water mark for the
-    // whole command keeps the send sequence monotonic across both connections
-    // (spec §5.9).
-    let tool_key = crate::secure_key::resolve(target, tool_key_source)?;
-    let secure_seq = bussard_secure::SequenceHighWater::new();
 
     // A parse error is a hard failure here (surfaced with the file detail); an
     // absent model still bails, since `apply` needs links.yaml.
@@ -86,25 +113,90 @@ pub fn run(
         );
     };
     let config = resolve_config(Some(&model), &overrides)?;
+    // An edit made outside bussard (an editor, an assistant writing YAML) is
+    // recorded before this command acts on it, so it is never lost.
+    crate::history_cmd::capture_external_edit(dir);
+    let desired = plan_cmd::compute_desired(&model, target)?;
+    hint_installation_backup(dir);
+    apply_desired(
+        target,
+        &desired,
+        dir,
+        config,
+        yes,
+        allow_remote_gateway,
+        tool_key_source,
+        &DesiredSource::Model,
+        &overrides,
+    )
+}
+
+/// Prints the one-line nudge when the model has no installation-wide backup.
+///
+/// `apply`'s own pre-write backup covers the device it is about to touch. It
+/// does not cover the installation, and the moment to take that snapshot is
+/// before the first write, not after (issue #96).
+fn hint_installation_backup(dir: &Path) {
+    if !has_installation_backup(dir) {
+        eprintln!(
+            "No installation-wide backup yet. Run `bussard backup` first. \
+             (Snapshots land in {}.)",
+            backups_root(dir).display()
+        );
+    }
+}
+
+/// The shared plan, confirm, back up, write and verify path behind both
+/// `bussard apply` and `bussard restore`.
+///
+/// `desired` is whatever the caller decided the device's tables should be. The
+/// device is read, diffed, shown, confirmed, backed up and written exactly the
+/// same way whichever it is.
+#[allow(clippy::too_many_arguments)] // one command's context; a struct would only move it
+pub(crate) fn apply_desired(
+    target: IndividualAddress,
+    desired: &DesiredTables,
+    dir: &Path,
+    config: ConnectionConfig,
+    yes: bool,
+    allow_remote_gateway: bool,
+    tool_key_source: crate::secure_key::ToolKeySource<'_>,
+    origin: &DesiredSource,
+    overrides: &ConnOverrides,
+) -> anyhow::Result<ExitCode> {
+    // KNX Data Secure (issue #71, spec §6.2): every management APDU below —
+    // the read pre-pass and the table writes — rides A_SecureData when the device
+    // is security-activated and a tool key is given. One high-water mark for the
+    // whole command keeps the send sequence monotonic across both connections
+    // (spec §5.9).
+    let tool_key = crate::secure_key::resolve(target, tool_key_source)?;
+    let secure_seq = bussard_secure::SequenceHighWater::new();
+    let desired = desired.clone();
+
     // Safety envelope (issue #74): refuse a write to a real (non-loopback)
     // gateway unless the operator opted in.
     enforce_write_gate(&config, allow_remote_gateway)?;
     let gateway = gateway_display(&config);
-    let desired = plan_cmd::compute_desired(&model, target)?;
+
+    // ONE tunnel for the whole command: the read-only pre-pass below, the
+    // interactive confirmation, the backup, and the write phase all run over it,
+    // and `BusSession` closes it on every exit path. Opening a second tunnel for
+    // the write phase used to cost another CONNECT/DISCONNECT round trip — and
+    // the gateway's only tunnel slot — for no gain; the tunnel heartbeat holds
+    // the slot across the confirmation prompt.
+    let runtime = tokio::runtime::Runtime::new()?;
+    let bus = BusSession::open(&runtime, config);
+    let handle = bus.handle();
+    // The tunnel-assigned source address, resolved and checked against the bus
+    // once for both phases (they share this tunnel, so one probe covers both).
+    // `BusSession` closes the tunnel if the check refuses.
+    let source = runtime.block_on(checked_source(handle, overrides))?;
 
     // Phase A (read-only): read the live tables and build the plan.
-    let runtime = tokio::runtime::Runtime::new()?;
     let read = {
-        let config = config.clone();
         let read_key = tool_key.clone();
         let read_seq = secure_seq.clone();
-        let conn = overrides.clone();
-        runtime.block_on(async move {
-            let (handle, _task) = Bus::connect(config);
-        if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
-            eprintln!("warning: bus not connected yet; management traffic may use the 0.0.255 fallback source");
-        }
-            let source = checked_source_or_close(&handle, &conn).await?;
+        runtime.block_on(async {
             let lease = handle.lease().await.context("leasing the bus")?;
             let channel = LeaseChannel::new(lease);
             let secure = crate::secure_key::layer(&read_key, &read_seq);
@@ -121,8 +213,9 @@ pub fn run(
                     // Authorize (free access) before reading, as ETS does (issue
                     // #52 finding #1) and as System 7 requires before any memory
                     // access. Best-effort on this read-only pre-pass.
-                    if let Err(err) =
-                        l4.authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY).await
+                    if let Err(err) = l4
+                        .authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY)
+                        .await
                     {
                         tracing::debug!("{target} authorize (free access) did not grant: {err}");
                     }
@@ -130,12 +223,11 @@ pub fn run(
                     let _ = l4.disconnect().await;
                     r
                 }
-                Err(err) => Err(anyhow::Error::new(
-                    bussard_mgmt::tables::TablesError::Mgmt(err),
-                )
-                .context("connecting to the device")),
+                Err(err) => Err(
+                    anyhow::Error::new(bussard_mgmt::tables::TablesError::Mgmt(err))
+                        .context("connecting to the device"),
+                ),
             };
-            let _ = handle.close().await;
             anyhow::Ok(result)
         })?
     };
@@ -143,7 +235,7 @@ pub fn run(
     let live = match read? {
         plan_cmd::LiveRead::Tables(live) => live,
         plan_cmd::LiveRead::UnsupportedMask { address, mask } => {
-            plan_cmd::report_unsupported_mask("apply", address, mask);
+            plan_cmd::report_unsupported_mask(origin.verb(), address, mask);
             return Ok(ExitCode::FAILURE);
         }
     };
@@ -154,7 +246,7 @@ pub fn run(
     // assert it here too as a belt-and-braces guard before any write. Routed
     // through the central MaskProfile seam.
     let profile = MaskProfile::from_mask(live.mask);
-    if !(profile.is_system_b() || profile.is_system_7()) {
+    if !profile.capabilities().plan_apply {
         eprintln!(
             "{target} reports mask {:04X} ({}) — refusing to write a device outside the \
              System B / System 7 families",
@@ -165,6 +257,9 @@ pub fn run(
     }
 
     let report = plan(live, &desired);
+    if matches!(origin, DesiredSource::Backup(_)) {
+        println!("restoring {} to {target}", origin.origin());
+    }
     plan_cmd::print_text(target, live, &report);
 
     // Compute the System 7 region images up front: an image that would not fit
@@ -185,14 +280,30 @@ pub fn run(
     }
 
     // Confirm unless --yes.
-    if !confirm(target, &gateway, yes, &report)? {
+    if !confirm(target, &gateway, yes, &report, origin)? {
         eprintln!("aborted — no changes written.");
         return Ok(ExitCode::FAILURE);
     }
 
-    // Back up the pre-state tables before writing anything.
-    let backup_path = write_backup(dir, target, live, sys7_live.as_ref())
-        .context("writing the pre-apply backup (refusing to write without a backup)")?;
+    // Snapshot the model before the bus write, so `bussard history` records what
+    // the installation was asked to become and `bussard undo` can go back.
+    crate::history_cmd::snapshot(
+        dir,
+        bussard_model::history::SnapshotReason::new(origin.verb())
+            .with_args([target.to_string()])
+            .with_gateway(Some(gateway.clone()))
+            .with_result("before writing the device tables"),
+    );
+
+    // Back up the pre-state tables before writing anything. A restore takes one
+    // too: the state it is about to overwrite is still the only copy of whatever
+    // is on the device right now.
+    let backup_path = write_backup(dir, target, live, sys7_live.as_ref()).with_context(|| {
+        format!(
+            "writing the pre-{} backup (refusing to write without a backup)",
+            origin.verb()
+        )
+    })?;
     println!("backup written to {}", backup_path.display());
 
     if let Some((_, images)) = &sys7 {
@@ -207,26 +318,29 @@ pub fn run(
 
     // Phase B (write): execute the load sequence and verify.
     let mask = live.mask;
-    let outcome = runtime.block_on(async move {
-        let (handle, _task) = Bus::connect(config);
-        if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
-            eprintln!("warning: bus not connected yet; management traffic may use the 0.0.255 fallback source");
-        }
-        let source = checked_source_or_close(&handle, &overrides).await?;
+    // The same tunnel phase A used: its L4 session and bus lease are both
+    // released by now, so the write phase simply takes the lease again.
+    let outcome = runtime.block_on(async {
         let lease = handle.lease().await.context("leasing the bus")?;
         let channel = LeaseChannel::new(lease);
         let result = match &sys7 {
-            Some((_, images)) => {
-                execute_sys7(channel, target, source, mask, images, &tool_key, &secure_seq)
-                    .await
-                    .map(|v| ApplySummary {
-                        ok: v.ok(),
-                        address_state: v.address_state,
-                        association_state: v.association_state,
-                        detail: format!("{v:?}"),
-                    })
-                    .map_err(|e| e.to_string())
-            }
+            Some((_, images)) => execute_sys7(
+                channel,
+                target,
+                source,
+                mask,
+                images,
+                &tool_key,
+                &secure_seq,
+            )
+            .await
+            .map(|v| ApplySummary {
+                ok: v.ok(),
+                address_state: v.address_state,
+                association_state: v.association_state,
+                detail: format!("{v:?}"),
+            })
+            .map_err(|e| e.to_string()),
             None => execute(channel, target, source, &desired, &tool_key, &secure_seq)
                 .await
                 .map(|v| ApplySummary {
@@ -237,28 +351,35 @@ pub fn run(
                 })
                 .map_err(|e| e.to_string()),
         };
-        let _ = handle.close().await;
         anyhow::Ok(result)
     })?;
 
     match outcome {
         Ok(summary) if summary.ok => {
             println!(
-                "\napply verified: address table {} ({} entries), association table {} ({} entries)",
+                "\n{} verified: address table {} ({} entries), association table {} ({} entries)",
+                origin.verb(),
                 summary.address_state,
                 report.resulting_address_count,
                 summary.association_state,
                 report.resulting_association_count,
             );
+            if let Some(hint) = crate::export_cmd::stale_export_hint(dir) {
+                eprintln!("{hint}");
+            }
             Ok(ExitCode::SUCCESS)
         }
         Ok(summary) => {
-            eprintln!("\nERROR: apply did not verify: {}", summary.detail);
+            eprintln!(
+                "\nERROR: {} did not verify: {}",
+                origin.verb(),
+                summary.detail
+            );
             recovery_notice(&backup_path, target);
             Ok(ExitCode::FAILURE)
         }
         Err(err) => {
-            eprintln!("\nERROR: apply failed: {err}");
+            eprintln!("\nERROR: {} failed: {err}", origin.verb());
             recovery_notice(&backup_path, target);
             Ok(ExitCode::FAILURE)
         }
@@ -284,7 +405,7 @@ struct ApplySummary {
 /// The LSM realisation (property-based on `0705`, memory-mapped on `0701`) comes
 /// from the mask-family default profile, exactly as the flash path selects it.
 #[allow(clippy::too_many_arguments)] // one connection's worth of context; splitting it hides nothing
-async fn execute_sys7(
+pub(crate) async fn execute_sys7(
     channel: LeaseChannel,
     target: IndividualAddress,
     source: IndividualAddress,
@@ -328,7 +449,7 @@ async fn execute_sys7(
 }
 
 /// Runs the on-bus write sequence: discover the table objects, then apply.
-async fn execute(
+pub(crate) async fn execute(
     channel: LeaseChannel,
     target: IndividualAddress,
     source: IndividualAddress,
@@ -367,6 +488,7 @@ fn confirm(
     gateway: &str,
     yes: bool,
     report: &PlanReport,
+    origin: &DesiredSource,
 ) -> anyhow::Result<bool> {
     if yes {
         return Ok(true);
@@ -375,11 +497,13 @@ fn confirm(
     if !stdin.is_terminal() {
         bail!(
             "refusing to write to {target} without a terminal to confirm on; \
-             pass --yes to apply non-interactively"
+             pass --yes to {} non-interactively",
+            origin.verb()
         );
     }
     eprint!(
-        "apply {} change(s) to {target} via {gateway}? [y/N] ",
+        "{} {} change(s) to {target} via {gateway}? [y/N] ",
+        origin.verb(),
         report.additions.len() + report.removals.len()
     );
     let _ = std::io::stderr().flush();
@@ -392,52 +516,21 @@ fn confirm(
 
 /// Serialises the live pre-state tables to a JSON backup under
 /// `<dir>/captures/backups/<ia>-<timestamp>.json`.
-fn write_backup(
+///
+/// The format itself lives in [`bussard_download::backup`], so `apply`,
+/// `bussard backup` and `bussard restore` all read and write one shape
+/// (issue #96).
+pub(crate) fn write_backup(
     dir: &Path,
     target: IndividualAddress,
     live: &DeviceTables,
     sys7: Option<&Sys7LiveTables>,
 ) -> anyhow::Result<std::path::PathBuf> {
-    let backups = dir.join("captures").join("backups");
-    std::fs::create_dir_all(&backups)
-        .with_context(|| format!("creating backup directory {}", backups.display()))?;
-    let ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let path = backups.join(format!("{target}-{ts}.json"));
-
-    // On System 7 the pre-state is not just the two tables: the group-object
-    // descriptors live in the same 0x4000 region and move with the address
-    // table, so the backup records them (hex) and where they were.
-    let sys7_detail = sys7.map(|s7| {
-        serde_json::json!({
-            "own_ia": format!("{:04X}", s7.own_ia),
-            "group_object_base": format!("{:04X}", s7.group_object_base),
-            "group_object_image": s7
-                .group_object_image
-                .iter()
-                .map(|b| format!("{b:02X}"))
-                .collect::<String>(),
-        })
-    });
-    let json = serde_json::json!({
-        "address": target.to_string(),
-        "mask": format!("{:04X}", live.mask),
-        "unix_timestamp": ts,
-        "system7": sys7_detail,
-        "addresses": live.addresses.iter().map(|g| g.to_string()).collect::<Vec<_>>(),
-        "associations": live.associations.iter().map(|&(tsap, asap)| {
-            serde_json::json!({ "tsap": tsap, "asap": asap })
-        }).collect::<Vec<_>>(),
-        "resolved": live.resolved.iter().map(|l| {
-            serde_json::json!({ "object": l.object, "ga": l.ga.to_string() })
-        }).collect::<Vec<_>>(),
-        "notes": live.notes,
-    });
-    std::fs::write(&path, serde_json::to_string_pretty(&json)?)
-        .with_context(|| format!("writing backup {}", path.display()))?;
-    Ok(path)
+    let backup = DeviceBackup::capture(target, live, sys7, None, std::time::SystemTime::now());
+    Ok(bussard_download::write_device_backup(
+        &backups_root(dir),
+        &backup,
+    )?)
 }
 
 /// Prints the loud recovery guidance on any apply failure.

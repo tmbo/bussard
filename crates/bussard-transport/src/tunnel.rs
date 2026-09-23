@@ -200,6 +200,12 @@ impl Tunnel {
             });
         }
         let resp = knxnet::parse_connect_response(parsed.body)?;
+        // A full interface is a capacity refusal, not a transport fault: give it
+        // its own variant so the CLI can name the likely other clients and exit
+        // with a distinct code (issue #105).
+        if resp.status == crate::error::E_NO_MORE_CONNECTIONS {
+            return Err(TransportError::NoMoreConnections);
+        }
         if resp.status != 0 {
             return Err(TransportError::GatewayStatus {
                 status: resp.status,

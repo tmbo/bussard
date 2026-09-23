@@ -47,7 +47,7 @@ with the password in a sealed envelope.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| A checklist of what to demand | Nothing. No doc mentions handover. | A one-page handover checklist an owner can attach to a purchase or acceptance protocol. | D2 |
+| A checklist of what to demand | [handover-checklist.md](../handover-checklist.md), one printed page following the KNX handover and security checklists, with a section for the bussard bundle and its checksum. | None. | D2 |
 
 ### Stage 1. Day one: what is in the cabinet?
 
@@ -59,9 +59,9 @@ password.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| Find the gateway | `bussard init` discovers gateways by multicast and writes `bussard.yaml`. | Discovery does not report the number of tunnelling slots or whether Home Assistant already holds one. Nothing tells her that a Secure-only interface is refused. | D1, D13 |
-| Know what devices exist | `bussard scan 1.1` lists every responding device with mask, manufacturer and order number, and flags devices missing from the model. | A scan of an unknown house takes minutes per line and has no "save what you found" step; the result is lost unless piped to JSON. | D1 |
-| Know what bussard can manage | The mask table in SAFETY.md. | She has to cross-reference masks by hand. The scan should say per device "bussard can plan/apply this" or "ETS only". | D1 |
+| Find the gateway | `bussard init` discovers gateways by multicast, writes `bussard.yaml`, and prints the tunnel budget (`4 tunnels, 1 in use`); a full interface is reported as such and exits 4 instead of timing out (pending merge). | A Secure-only interface is still refused. | D13, existing #71 |
+| Know what devices exist | `bussard scan 1.1` lists every responding device with mask, manufacturer and order number. `bussard audit --live` probes every modelled device and reports which answered (pending merge). | A scan of an unknown house takes minutes per line; `reconstruct --line` is the only way to keep what it found. | D1 |
+| Know what bussard can manage | `bussard audit` and the `knx_audit` MCP tool group devices by mask with what bussard can do for each, from the same table the refusals use (pending merge). The assistant answers "which of my devices can you program?" directly. | None. | D1 |
 
 ### Stage 2. Import what she was given (scenarios A and B)
 
@@ -70,9 +70,9 @@ result.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| Turn the project into something legible | `bussard import house.knxproj` handles password-protected ETS6 exports and produces named GAs, devices with rooms, links and parameters. `bussard viz` shows the house by floor and room. `bussard validate` lists problems. | The import summary is a line of counts. She needs a readiness report: how many GAs have a DPT, how many devices are unnamed, which devices are Secure, which masks bussard cannot write, whether the project used a BCU key. | D1 |
-| Handle the keyring | `bussard keyring house.knxkeys` inspects the export; `--keyring` unlocks tool access on `describe`, `apply`, `flash`. | Nothing checks that the keyring matches the devices in the model, or warns which secured devices have no key. KNXnet/IP Secure interfaces are unsupported. | D1, existing #71 |
-| Compare the file to the house (scenario B) | `bussard scan` shows devices not in the model; `bussard plan <ia>` diffs a device's live tables against the model one device at a time. | No installation-wide "does the file match the house" run. A whole-line plan would tell her at once how stale the file is. | D8 |
+| Turn the project into something legible | `bussard import house.knxproj`, then the assistant calls `knx_audit` and summarises: devices per mask, GAs without a DPT or name, devices without a room, one-sided links, Secure devices (pending merge). `bussard viz` shows the house by floor and room. | The audit does not report BCU key status per device. | D1 |
+| Handle the keyring | `bussard keyring house.knxkeys` inspects the export; `--keyring` unlocks tool access on `describe`, `apply`, `flash`; `audit --keyring` reports which Secure devices have a tool key in it (pending merge). | KNXnet/IP Secure interfaces are unsupported. | existing #71 |
+| Compare the file to the house (scenario B) | `bussard plan --line 1.1` diffs every model device on the line against its live tables in one run, with a summary table. `audit --live` adds the scan delta. | None. | D8 |
 
 ### Stage 3. Reconstruct from the bus (scenario C)
 
@@ -83,9 +83,9 @@ Or she sniffs the bus for weeks and writes down what each address does.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| Recover device tables | `bussard reconstruct --line 1.1 --out knx` sweeps a line and synthesises a model with placeholder names. System B (mask 07B0) only; other masks become stubs. | Older houses are full of System 7 (0705) and BCU1/2 devices that come back as stubs. Names and DPTs are placeholders. | existing #81, D3 |
-| Give GAs names and types | `bussard monitor` decodes traffic; unknown GAs show as raw hex until a DPT is added. Over MCP, `knx_wait_for_telegram` supports "press the button now". | Naming 300 GAs is a manual loop: press, watch, edit YAML. A learn mode should run that loop, infer the DPT from payload length and value range, propose a name from the sending device and channel, and write the YAML. | D3 |
-| Recover parameters | `bussard describe` reads interface objects; import-product gives the parameter schema. | Reading back parameter memory into the model is not offered. Parameters stay ETS or Reconstruction territory. | D3 (later) |
+| Recover device tables | `bussard reconstruct --line 1.1 --out house` sweeps a line and synthesises a model with placeholder names. System B in line mode; System 7 is read per device and recorded as a stub in line mode. | BCU1/2 devices come back as stubs. | existing #81 |
+| Give GAs names and types | The learn loop runs in chat: the assistant says "press the button", waits with `knx_wait_for_telegram`, calls `knx_infer_group` (ranked DPT candidates, sender, channel, com object, proposed name), confirms with her, and writes the answer with `knx_set_group` and `knx_add_link`. `bussard learn` is the terminal version. | None. | D3 |
+| Recover parameters | `bussard backup` reads the raw System B parameter segment; `describe` reads interface objects; import-product gives the parameter schema. | Decoding parameter memory back into the model's `parameters:` block is not offered. | D3 (later) |
 
 ### Stage 4. Understand and document
 
@@ -95,23 +95,23 @@ wants the button sheet the integrator never wrote.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| See it | `bussard viz` renders the topology, GA tree, live traffic and a Problems panel (unlinked objects, GAs without sender or listener). | No printable output. The house manual per room (each button, each channel, each GA it touches) can be generated from the model but is not. | D5 |
-| Ask about it | MCP tools `knx_project_summary`, `knx_model_lookup`, `knx_get_device`, `knx_recent_telegrams` let an LLM answer "what does 2/1/7 do". | Fine as is. The gap is on the documentation side. | D5 |
+| See it | `bussard viz` renders the topology, GA tree, live traffic and a Problems panel. `bussard doc` writes the device list, GA list with DPTs and one sheet per room, in Markdown or HTML. | None. | D5 |
+| Ask about it | The assistant answers from `knx_project_summary`, `knx_model_lookup`, `knx_get_device`, `knx_recent_telegrams` and `knx_audit`, and explains past changes with `knx_history` and `knx_describe_change`. | None. | D5 |
 
 ### Stage 5. Secure ownership
 
-What she does: takes a backup before she changes anything, puts the model in
-git, changes gateway defaults (some interfaces ship with the web password
+What she does: takes a backup before she changes anything, keeps a copy of
+the model off the laptop, changes gateway defaults (some interfaces ship with the web password
 "knxnetip"), and decides whether to set a BCU key. CVE-2023-4346 showed that
 anyone on the bus can lock unlocked devices with a key, and a set key cannot be
 reset, so the KNX checklist recommends setting one and documenting it.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| Full backup on day one | `apply` backs up the one device it touches to `captures/backups/`. `reconstruct --line` reads tables but writes a model, not a restorable backup. | No `bussard backup` that snapshots every device's tables before the first write, and no restore from such a snapshot. | D4 |
-| Keep history and undo | History exists only if she puts the model directory in git. The generated `knx/README.md` opens with what to commit. | She is not a git user. bussard needs its own history: a snapshot on every import, apply, flash and model edit, `bussard history` to list them, `bussard undo` to restore. Git stays optional on top. | D18 |
-| Keep a copy elsewhere | Copying the directory. | A single-file bundle (`bussard export house.bussard`) she can put on a USB stick in the cabinet, the way integrators do with ETS exports. | D19 |
-| Gateway and key hygiene | Nothing. | A hygiene section in the audit: default credentials reachable, port 3671 exposed, BCU key status per device (readable without key or not). Setting a BCU key is out of scope until the safety story for it is written. | D1, D2 |
+| Full backup on day one | `bussard backup` reads every device's tables (and System B parameters) into one snapshot with a manifest; `bussard restore` writes one device back through the `apply` path. `apply` hints when no backup exists. | System 7 parameters are not captured. | D4 |
+| Keep history and undo | Built in: every import, apply, flash and MCP model edit is snapshotted under `.bussard/history`. `status`, `history`, `show`, `undo`, and `knx_history`, `knx_describe_change`, `knx_undo` for the assistant. The generated `knx/README.md` leads with history and backups. | None. | D18 |
+| Keep a copy elsewhere | `bussard export house.bussard` (or `knx_export_bundle`) writes the model, history and checksum as one file for a USB stick; `apply` reminds her when the export is stale (pending merge). | None. | D19 |
+| Gateway and key hygiene | `audit` lists Secure devices and keyring coverage (pending merge). | No check for default gateway credentials, an exposed port 3671, or BCU key status. Setting a BCU key is out of scope until its safety story is written. | D1 |
 
 ### Stage 6. Make it hers
 
@@ -122,9 +122,9 @@ cannot make without a licence and the project file.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| Change a link | Edit `links.yaml`, `bussard plan 1.1.4`, `bussard apply 1.1.4`. Confirmed, backed up, verified. An LLM over MCP proposes the edit; she reviews the diff and runs plan and apply herself. | The review step is a YAML diff, which she will not read. The pending change needs a plain-language rendering ("Rocker 1 on the hallway button will also switch the porch light") in the CLI and in viz before `plan` runs. System B only. | D20, existing #81 |
-| Change a parameter | Edit `parameters:` in the device file, `bussard flash <ia> --product x.knxprod`. Product data downloads by order number through the pointer index. | `flash` has no backup and no per-parameter diff; the plan shows memory, not "night setback 18 to 17 degrees". A parameter-level plan would make this safe for an owner. | D17, D5 |
-| Change scenes, timers, setpoints | If exposed as GAs: `bussard write`. Otherwise parameters, as above. | Same as parameters. | |
+| Change a link | She says what she wants; the assistant calls `knx_add_link`, which snapshots, validates and returns the sentence ("Outdoor switch actuator, channel C, now listens to Hallway light (1/1/1)."). She confirms in chat, then runs `bussard plan` and `bussard apply` for the device. System B and System 7. | BCU1/2 devices stay ETS-only. | D20, existing #81 |
+| Change a parameter | The assistant calls `knx_set_parameter`, checked against the product model; `bussard flash` shows a parameter-level plan ("Night setback: 18 °C to 17 °C") on System B before it writes. | `flash` itself takes no backup; `bussard backup` beforehand covers System B parameters. | D17, D4 |
+| Change scenes, timers, setpoints | If exposed as GAs: `bussard write`, or `knx_write_group` with `--allow-writes`. Otherwise parameters, as above. | Same as parameters. | |
 
 ### Stage 7. Integrate
 
@@ -135,8 +135,8 @@ every auto-import tool struggles.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| HA configuration | `bussard ha-config --out ha.yaml` derives covers, lights, switches, sensors and climate entities from com-object flags, with `ha.yaml` overrides. | Solid. Owners need the tunnel-budget warning: HA and bussard on a one-tunnel interface fight. | D13 |
-| Get her curated names back into ETS | Nothing. Import is one-way. | An ETS-importable GA export (CSV or XML) lets a later integrator load her names and DPTs instead of retyping them. | D12 |
+| HA configuration | `bussard ha-config --out ha.yaml` derives covers, lights, switches, sensors and climate entities from com-object flags, with `ha.yaml` overrides. `init` and `audit --live` print the tunnel budget, so HA and bussard do not fight for one slot unnoticed (pending merge). | None. | D13 |
+| Get her curated names back into ETS | `bussard export-groups --format ets-csv` or `ets-xml` writes a file ETS imports, names, DPTs and descriptions included. | None. | D12 |
 
 ### Stage 8. Extend and repair
 
@@ -146,8 +146,8 @@ back to an integrator.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| Add a device | `bussard adopt --product x.knxprod` assigns an address, writes the device file and prints link snippets; then `flash`, `plan`, `apply`. | Good for System B. Snippets must be pasted by hand. | |
-| Replace a device | Assign the old address, `flash` the same application, `apply` the model links. Three commands, each with its own confirmation, and nothing checks that the new device is the same product. | A guided `bussard replace <ia>` that verifies order number and application, flashes, applies, verifies, and reports. | D6 |
+| Add a device | `bussard adopt --product x.knxprod` assigns an address and writes the device file; the assistant then links it with `knx_add_link` instead of pasted snippets; then `flash`, `plan`, `apply`. | None for System B and System 7. | |
+| Replace a device | `bussard replace <ia> --product x.knxprod` checks that the old device is gone and the new one has the same order number and mask, then assigns, flashes with the model's parameters, applies the links and records `replaced:`. | Replacement with a different product. | D6 |
 
 ### Stage 9. Keep it healthy
 
@@ -157,7 +157,7 @@ listener (three retries per telegram) or a device that stopped acknowledging.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| Watch | `monitor`, `capture --to bus.db`, viz Problems panel. | No rollup: repeated-telegram rate per GA, senders with no listener seen in traffic, devices that never answer a scan. | D1 |
+| Watch | `monitor`, `capture --to bus.db`, viz Problems panel. `audit --live` samples traffic: repetition rate per GA, GAs sent with no listener in the model, unknown source addresses (pending merge). | No long-term trend across captures. | D1 |
 
 ### Stage 10. Exchange with a professional, and hand it on
 
@@ -168,9 +168,9 @@ request and neither will they.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| Take an updated file from the integrator | `bussard import new.knxproj` merges: generated data follows ETS, her hand-authored names and descriptions are kept, disagreements are reported. | The merge exists but is invisible. It needs a plain-language conflict report and a place in the owner guide as the default exchange path. | D19, D2 |
-| Send her state to the integrator | Copying the directory. | `bussard export house.bussard` as the one file to email, plus the GA export (D12) so her names land in their ETS. | D19, D12 |
-| Hand a legible package to the next owner | `viz` in a browser. | The bundle (D19), the generated documentation (D5) and the handover checklist (D2). A `.knxproj` writer is not planned. | D5, D19 |
+| Take an updated file from the integrator | The assistant previews it with `knx_diff_project` and reads the change sentences; `bussard import` merges a `.knxproj` or bundle, keeps her hand-authored names, reports each disagreement as a sentence and exits 3 until settled (pending merge). [collaboration.md](../collaboration.md) documents the exchange. | None. | D19, D7, D16 |
+| Send her state to the integrator | `bussard export` or `knx_export_bundle` (pending merge), plus `export-groups` so her names land in their ETS. | None. | D19, D12 |
+| Hand a legible package to the next owner | The bundle, the `bussard doc` output and the handover checklist. | A `.knxproj` writer is not planned. | D5, D19, D2 |
 
 ## User stories
 
@@ -208,26 +208,26 @@ request and neither will they.
 
 ## What makes bussard the right tool for her, and what is missing
 
-Today bussard already covers the two moments that matter most: it turns a
-password-protected `.knxproj` into a readable model in seconds, and it lets her
-change links and parameters without ETS, behind a plan and a confirmation. The
-MCP server means her assistant can explain the house and propose changes.
+Nadia's operator is her assistant. It connects to `bussard mcp`, reads the
+audit, runs the learn loop with her, proposes each change as model edits, and
+quotes the sentences those edits return. She never reads YAML or a diff. She
+types the commands that program devices (`plan`, `apply`, `flash`) and does
+the physical steps (programming buttons, `replace`), because those stay on the
+command line behind a confirmation and the real-gateway gate. History and undo
+are built in, so a regret costs one sentence to the assistant and one `apply`.
 
-Two assumptions in the current design do not hold for her. History is git, and
-review is a YAML diff. Both work for the project's authors and fail for the
-owner. bussard should own its history (snapshots, `history`, `undo`, D18),
-exchange as a single file (D19), and render pending changes in plain language
-(D20), with git as an optional layer for people who already use it.
+What ships on main: built-in history and undo, the change renderer and the
+MCP model-edit tools (D18, D20), learn mode (D3), backup, restore and replace
+(D4, D6), the generated house manual (D5), the parameter-level flash plan
+(D17), whole-line plan and apply (D8), the ETS group-address export (D12) and
+package-manager installs (D14). Pending merge: the audit and the tunnel budget
+(D1, D13, D15) and the bundle with its diff (D19, D7). The owner guide, the
+handover checklist and the collaboration guide (D2, D16) are written.
 
-The other missing pieces are, in priority order: an audit that tells her what
-she has and what bussard can do about it (D1), an owner onboarding guide and
-handover checklist that do not mention git (D2), a learn mode for houses
-without a file (D3), a full backup (D4), generated documentation (D5), guided
-replacement (D6), the tunnel budget (D13), and package-manager installs so that
-"download a binary and verify a checksum" is not the first thing she reads
-(D14). Behind all of these sits mask coverage: until `apply` and `reconstruct`
-handle System 7, a fair share of houses from the 2000s and 2010s are read-only
-for bussard.
+What is still missing, in priority order: mask coverage for BCU1/2 devices,
+KNXnet/IP Secure (existing #71), a gateway and key hygiene check in the audit,
+decoding parameter memory back into the model, and replacement with a
+different product.
 
 ## Sources
 
