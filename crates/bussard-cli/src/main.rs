@@ -20,6 +20,7 @@ mod monitor_cmd;
 mod plan_cmd;
 mod read_cmd;
 mod reconstruct_cmd;
+mod restore_cmd;
 mod scan_cmd;
 mod secure_key;
 mod validate_cmd;
@@ -427,6 +428,43 @@ enum Command {
         #[arg(long)]
         routing: bool,
     },
+    /// Write a device's backed-up link tables back onto it (issue #96).
+    ///
+    /// Runs the same plan, confirm, back up, write and verify path as `apply`,
+    /// with the backup as the desired state instead of the model.
+    Restore {
+        /// The backup directory: a `bussard backup` run, or
+        /// `<dir>/captures/backups` for the per-device snapshots `apply` leaves.
+        #[arg(value_name = "BACKUP_DIR")]
+        backup_dir: PathBuf,
+        /// The device to restore, e.g. `1.1.4`.
+        #[arg(value_name = "ADDRESS")]
+        address: String,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Skip the interactive confirmation (dangerous; for scripts).
+        #[arg(long)]
+        yes: bool,
+        /// The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool
+        /// key (issue #71).
+        #[arg(long, value_name = "FILE")]
+        keyring: Option<PathBuf>,
+        /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
+        /// escape hatch.
+        #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
+        tool_key: Option<String>,
+        /// Override the gateway `host[:port]` for tunneling.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Force KNXnet/IP routing (multicast) transport.
+        #[arg(long)]
+        routing: bool,
+        /// Permit a write to a non-loopback (real) gateway. Required for any
+        /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
+        #[arg(long)]
+        allow_remote_gateway: bool,
+    },
     /// Validate the YAML model and report diagnostics.
     Validate {
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
@@ -808,6 +846,28 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             out.as_deref(),
             &dir,
             json,
+            secure_key::ToolKeySource {
+                keyring: keyring.as_deref(),
+                tool_key: tool_key.as_deref(),
+            },
+            conn_cmd::ConnOverrides { gateway, routing },
+        ),
+        Command::Restore {
+            backup_dir,
+            address,
+            dir,
+            yes,
+            keyring,
+            tool_key,
+            gateway,
+            routing,
+            allow_remote_gateway,
+        } => restore_cmd::run(
+            &backup_dir,
+            &address,
+            &dir,
+            yes,
+            allow_remote_gateway,
             secure_key::ToolKeySource {
                 keyring: keyring.as_deref(),
                 tool_key: tool_key.as_deref(),
