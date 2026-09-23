@@ -157,6 +157,17 @@ target address is not itself consent, so a scripted `assign` still needs
 `--yes`; `adopt` additionally needs a product file and an explicit target
 address to run without a TTY.
 
+**Whole-line runs** (`apply --line`, `commission --line`) ask one confirmation
+for the run instead of one per device. The prompt names the resolved gateway
+and the number of devices it will touch, and the same `--yes` and non-loopback
+gates apply. Each device still gets the full single-device rails: `apply
+--line` backs up and verifies every device, and `commission` refuses to address
+a device whose order number does not match the model. A device that fails is
+reported and the run moves on. `apply --line` records every outcome in
+`<dir>/captures/apply-line-<line>.json` as it goes, so after an interruption
+`--resume` continues without rewriting finished devices; a clean run deletes
+the file.
+
 ## Protected group addresses
 
 A GA marked `protected: true` in `groups.yaml` (wind alarms, central functions,

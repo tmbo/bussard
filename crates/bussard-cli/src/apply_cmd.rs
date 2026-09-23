@@ -282,7 +282,7 @@ struct ApplySummary {
 /// The LSM realisation (property-based on `0705`, memory-mapped on `0701`) comes
 /// from the mask-family default profile, exactly as the flash path selects it.
 #[allow(clippy::too_many_arguments)] // one connection's worth of context; splitting it hides nothing
-async fn execute_sys7(
+pub(crate) async fn execute_sys7(
     channel: LeaseChannel,
     target: IndividualAddress,
     source: IndividualAddress,
@@ -326,7 +326,7 @@ async fn execute_sys7(
 }
 
 /// Runs the on-bus write sequence: discover the table objects, then apply.
-async fn execute(
+pub(crate) async fn execute(
     channel: LeaseChannel,
     target: IndividualAddress,
     source: IndividualAddress,
@@ -390,7 +390,7 @@ fn confirm(
 
 /// Serialises the live pre-state tables to a JSON backup under
 /// `<dir>/captures/backups/<ia>-<timestamp>.json`.
-fn write_backup(
+pub(crate) fn write_backup(
     dir: &Path,
     target: IndividualAddress,
     live: &DeviceTables,
