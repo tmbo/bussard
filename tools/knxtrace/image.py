@@ -489,6 +489,14 @@ def plan_property_writes(plan: dict) -> List[Dict[str, object]]:
 def _plan_property_steps(plan: dict) -> List[Dict[str, object]]:
     out: List[Dict[str, object]] = []
     for step in plan.get("steps", []):
+        # A step that goes out as several writes (the Data Secure security
+        # object's chunked PID 61 flags) lists them under `properties`.
+        records = step.get("properties")
+        if isinstance(records, list) and records:
+            for rec in records:
+                if isinstance(rec, dict):
+                    out.append(_structured_entry(step, rec))
+            continue
         rec = step.get("property")
         if isinstance(rec, dict):
             if rec.get("object_type") is not None:
@@ -524,6 +532,27 @@ def _plan_property_steps(plan: dict) -> List[Dict[str, object]]:
                 }
             )
     return out
+
+
+def _structured_entry(step: dict, rec: dict) -> Dict[str, object]:
+    """One structured `property` record of a plan step as a comparable entry."""
+    if rec.get("object_type") is not None:
+        obj: Dict[str, int] = {
+            "type": int(rec["object_type"]),
+            "instance": int(rec.get("instance", 1)),
+        }
+    else:
+        obj = {"index": int(rec["object"])}
+    data = rec.get("data")
+    return {
+        "step": step.get("index"),
+        "object": obj,
+        "pid": int(rec["pid"]),
+        "index": rec.get("start_element"),
+        "length": int(rec.get("length", len(data) // 2 if isinstance(data, str) else 0)),
+        "data": data if isinstance(data, str) else None,
+        "sha256": rec.get("sha256"),
+    }
 
 
 def _obj_label(obj: Dict[str, int]) -> str:
