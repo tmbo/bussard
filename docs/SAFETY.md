@@ -171,6 +171,29 @@ group-object tables are rewritten from the model's links. On System 7 there is
 no application-id property, so a loaded device can never be recognised as "the
 same application": any loaded System 7 device needs `--force`.
 
+**The factory reset before the download (System B).** Many System B
+applications allocate their segment with a fill byte and bussard, like ETS,
+then writes only the octets that differ from it. The device's fill is
+bookkeeping, not an erase: on a re-flash, every octet the new image leaves out
+keeps whatever the previous image put there. On the #89 campaign a Jung F50
+re-flashed this way kept a blinking status LED until ETS ran "reset device" and
+a full download. So `flash` opens such a download the way ETS opens an initial
+one: a confirmed master reset with erase code 7 ("factory reset without
+individual address"). The device erases its application program, its
+parameters and its group addresses and links, keeps its individual address,
+answers with the time it needs to reboot, and reboots. `flash` waits that long
+(at most a minute), reconnects and runs the download on the blank device. The
+same reset is added when `--force` replaces an application `flash` did not
+recognise or could not read. A device that refuses the reset, or does not
+answer it, fails the flash before anything is written.
+
+The reset erases everything the download rewrites, so the plan shows it as its
+first step and the differential download (skipping objects whose resident image
+already matches) does not apply: every object is streamed in full. Pass
+`--no-factory-reset` to leave it out, but only when you know the device holds no
+stale image, for example a device fresh from the box. System 7 downloads write
+every region in full and never reset.
+
 **Recovery from a failed or interrupted flash.** The download is idempotent: it
 re-unloads and rewrites the whole application, so the fix for a partial flash is
 to re-run `bussard flash <ADDRESS>`. The bus lease resumes on drop, so an

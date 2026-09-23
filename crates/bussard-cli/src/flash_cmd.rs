@@ -62,6 +62,7 @@ pub fn run(
     yes: bool,
     force: bool,
     full: bool,
+    no_factory_reset: bool,
     allow_remote_gateway: bool,
     bcu_key: Option<&str>,
     tool_key_source: crate::secure_key::ToolKeySource<'_>,
@@ -150,6 +151,7 @@ pub fn run(
             &overrides_map,
             &base_offsets,
             dry.dump_images.as_deref(),
+            no_factory_reset,
             &output,
         );
     }
@@ -289,6 +291,29 @@ pub fn run(
         }
     };
 
+    // The factory-freshness verdict (issue #79), computed up front because it
+    // also shapes the plan: a device that is not factory-fresh gets a factory
+    // reset before the download (issue #117), on top of the one the planner adds
+    // for a sparse, filled-segment download.
+    let freshness = match &resident {
+        Some(state) => assess_freshness(state, &plan.identity),
+        // Unreachable in practice: the descriptor read succeeded above, so the
+        // probe ran. Treated as unknown rather than fresh all the same.
+        None => Freshness::Unknown {
+            reason: "the pre-flight probe did not run".to_string(),
+        },
+    };
+    let mut plan = plan;
+    if matches!(
+        freshness,
+        Freshness::Resident { .. } | Freshness::Unknown { .. }
+    ) {
+        plan.require_factory_reset();
+    }
+    if no_factory_reset {
+        plan.skip_factory_reset();
+    }
+
     // The parameter-level plan (issue #109): what this flash changes in the
     // vendor's own words, before the memory-level plan. Reading the current
     // values back is only meaningful on a device that already carries an
@@ -340,14 +365,6 @@ pub fn run(
     // `--force`, and an unreadable state is refused too (unknown is not fresh).
     // A re-flash of the same application — the documented recovery path — goes
     // through with a notice.
-    let freshness = match &resident {
-        Some(state) => assess_freshness(state, &plan.identity),
-        // Unreachable in practice: the descriptor read succeeded above, so the
-        // probe ran. Treated as unknown rather than fresh all the same.
-        None => Freshness::Unknown {
-            reason: "the pre-flight probe did not run".to_string(),
-        },
-    };
     let decision = decide_freshness(target, &gateway, dir, force, &freshness);
     eprintln!("{}", decision.message);
     if !decision.proceed {
@@ -388,11 +405,23 @@ pub fn run(
     // object reports `Loaded`) is not re-streamed. Only taken when the device
     // carries no application or the same one — never when `--force` is replacing
     // a different or unidentified application, and never with `--full`.
+    //
+    // A factory reset erases every object first, so nothing resident is left to
+    // match: the differential download only applies with `--no-factory-reset`.
     let skip_unchanged = !full
+        && !plan.has_factory_reset()
         && matches!(
             freshness,
             Freshness::Fresh | Freshness::SameApplication { .. }
         );
+    if plan.has_factory_reset() {
+        eprintln!(
+            "factory reset: the device's application, parameters and links are erased \
+             before the download (its individual address is kept); every object is \
+             streamed in full. Pass --no-factory-reset only when the device is known to \
+             hold no stale image."
+        );
+    }
     if skip_unchanged && matches!(freshness, Freshness::SameApplication { .. }) {
         eprintln!(
             "differential download: objects whose resident image already matches are \
@@ -464,6 +493,7 @@ fn dry_run(
     overrides_map: &BTreeMap<String, String>,
     base_offsets: &BTreeMap<String, u32>,
     dump_images: Option<&Path>,
+    no_factory_reset: bool,
     output: &FlashOutput,
 ) -> anyhow::Result<ExitCode> {
     // No device to read the descriptor from: the plan is checked against the
@@ -496,6 +526,13 @@ fn dry_run(
             return Ok(ExitCode::FAILURE);
         }
     };
+    // Offline there is no device to judge freshness on, so only the planner's
+    // own factory reset (a sparse, filled-segment download) shows, unless the
+    // operator waived it.
+    let mut plan = plan;
+    if no_factory_reset {
+        plan.skip_factory_reset();
+    }
     let params = if plan.is_sys7() {
         ParamPlan {
             note: Some(bussard_download::SYS7_NOTE.to_string()),

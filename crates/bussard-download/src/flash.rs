@@ -221,7 +221,33 @@ pub enum FlashStep {
         target: Option<u32>,
     },
     /// Restart the device (`LdCtrlRestart`).
+    ///
+    /// Sent as a bare `A_Restart` (APCI `0x380`), or, when the plan
+    /// [`uses_confirmed_restart`](FlashPlan::uses_confirmed_restart), as the
+    /// confirmed master reset with erase code 1 that ETS ends a System B download
+    /// with (issue #117 captures).
     Restart,
+    /// Factory-reset the device before the download (issue #117, #89).
+    ///
+    /// A confirmed master-reset `A_Restart` (APCI `0x381`, `[erase_code, 0]`)
+    /// sent as a numbered request. With erase code 7 ("factory reset without
+    /// individual address") the device erases its application program,
+    /// parameters, group addresses and links, keeps its individual address,
+    /// answers `A_Restart_Response` with a process time, and reboots. The engine
+    /// waits out the process time and reconnects before the next step.
+    ///
+    /// Not a load-procedure op: the planner inserts it before the first
+    /// `Unload` when the download allocates a filled segment and writes only the
+    /// octets that differ from the fill (a re-flash would otherwise inherit the
+    /// previous image's octets wherever the new one writes nothing), and the CLI
+    /// adds it when a device that is not factory-fresh is flashed. ETS opens an
+    /// initial System B download the same way (`4f 81 07 00`, answered
+    /// `4f a1 00 00 08`).
+    FactoryReset {
+        /// The master-reset erase code (7 = factory reset keeping the individual
+        /// address).
+        erase_code: u8,
+    },
     /// Master-reset the device mid-procedure (`LdCtrlMasterReset`).
     ///
     /// Sends a master-reset `A_Restart`, waits for the device to reboot and come
@@ -874,6 +900,10 @@ pub struct FlashPlan {
     /// (LSM realisation, authorize level, mem-types) and the per-segment `<Mask>`
     /// payloads the executor honours on masked writes (`[system7-spec §5]`).
     sys7: Option<Sys7Context>,
+    /// Whether the terminal [`FlashStep::Restart`] is sent as the confirmed
+    /// master reset with erase code 1 (the ETS form on System B devices whose
+    /// download allocates filled segments) instead of a bare `A_Restart`.
+    confirmed_restart: bool,
 }
 
 /// The System 7 execution context attached to a [`FlashPlan`] for a mask
@@ -891,6 +921,50 @@ pub struct Sys7Context {
 }
 
 impl FlashPlan {
+    /// Whether the plan starts with a [`FlashStep::FactoryReset`].
+    pub fn has_factory_reset(&self) -> bool {
+        self.steps
+            .iter()
+            .any(|s| matches!(s, FlashStep::FactoryReset { .. }))
+    }
+
+    /// Adds a [`FlashStep::FactoryReset`] (erase code 7) before the first
+    /// `Unload`, unless the plan already has one. The CLI calls this when the
+    /// device is not factory-fresh. A no-op on a System 7 plan, whose download
+    /// rewrites every region in full.
+    pub fn require_factory_reset(&mut self) {
+        if self.sys7.is_none() && !self.has_factory_reset() {
+            insert_factory_reset(&mut self.steps);
+        }
+    }
+
+    /// Removes the [`FlashStep::FactoryReset`] step (`flash --no-factory-reset`).
+    /// Only safe when the device is known to hold no stale image.
+    pub fn skip_factory_reset(&mut self) {
+        self.steps
+            .retain(|s| !matches!(s, FlashStep::FactoryReset { .. }));
+    }
+
+    /// Whether the terminal restart is sent as the confirmed master reset with
+    /// erase code 1 rather than a bare `A_Restart`. True for a System B plan that
+    /// allocates a filled segment, the download shape ETS ends with a confirmed
+    /// restart in the issue #117 captures; false for the KNX Virtual DA.tp and
+    /// thelsing shapes, which end with the bare restart.
+    pub fn uses_confirmed_restart(&self) -> bool {
+        self.confirmed_restart
+    }
+
+    /// The human label of one of this plan's steps, as the dry-run trace and the
+    /// progress line print it.
+    pub fn step_label(&self, step: &FlashStep) -> String {
+        match step {
+            FlashStep::Restart if self.confirmed_restart => {
+                "restart device (confirmed: A_Restart master reset, erase code 1)".to_string()
+            }
+            _ => step_label(step),
+        }
+    }
+
     /// Whether this is a System 7 (mask 0705/0701) plan.
     pub fn is_sys7(&self) -> bool {
         self.sys7.is_some()
@@ -1506,6 +1580,33 @@ impl<C: Connector> Session<C> {
         // probe already tore it down.
         let _ = l4.disconnect().await;
         alive
+    }
+
+    /// Waits out a confirmed master reset (factory reset or confirmed restart)
+    /// and re-establishes the authorized connection.
+    ///
+    /// The device answered the `A_Restart_Response` and is rebooting, so the old
+    /// connection is dropped without a `T_Disconnect` (the ETS capture sends none
+    /// after the factory reset either), then the session sleeps for `process_wait`
+    /// (the device's own process time, already capped by
+    /// [`bussard_mgmt::restart_process_wait`]) and finishes with the bounded
+    /// liveness poll and reconnect of
+    /// [`reconnect_after_reboot`](Session::reconnect_after_reboot).
+    ///
+    /// A session built from an already-open connection cannot reconnect and fails
+    /// with [`MgmtError::Transport`]`(Closed)` before sleeping.
+    async fn reconnect_after_master_reset(
+        &mut self,
+        process_wait: std::time::Duration,
+    ) -> Result<(), WriteError> {
+        if !self.can_reconnect() {
+            return Err(WriteError::Mgmt(bussard_mgmt::MgmtError::Transport(
+                bussard_transport::TransportError::Closed,
+            )));
+        }
+        self.l4 = None;
+        tokio::time::sleep(process_wait).await;
+        self.reconnect_after_reboot().await
     }
 
     /// Proactively cycles the L4 connection **between** flash steps to stay under
@@ -2262,6 +2363,19 @@ pub fn plan_flash(
         }
     }
 
+    // A filled segment is written sparsely (only the octets that differ from
+    // the fill, issue #123). The device's fill is bookkeeping, not an erase, so
+    // on a re-flash every octet the new image leaves out keeps whatever the
+    // previous image put there (issue #117: a Jung F50 kept a blinking status
+    // LED). ETS opens such a download with a factory reset (erase code 7) and
+    // ends it with a confirmed restart (erase code 1); do the same.
+    let sparse = steps
+        .iter()
+        .any(|s| matches!(s, FlashStep::AllocateSegment { fill: Some(_), .. }));
+    if sparse {
+        insert_factory_reset(&mut steps);
+    }
+
     Ok(FlashPlan {
         identity: AppIdentity {
             id: app.id.clone(),
@@ -2276,7 +2390,30 @@ pub fn plan_flash(
         param_images,
         spliced_from_template,
         sys7: None,
+        confirmed_restart: sparse,
     })
+}
+
+/// Inserts a [`FlashStep::FactoryReset`] with erase code 7 right before the
+/// first `Unload` (or at the start when the procedure has none), so read-only
+/// preconditions that precede the first state change still run on the intact
+/// device, and the reset lands before anything is torn down or written.
+fn insert_factory_reset(steps: &mut Vec<FlashStep>) {
+    let at = steps
+        .iter()
+        .position(|s| {
+            !matches!(
+                s,
+                FlashStep::CompareProp { .. } | FlashStep::CompareRelMem { .. }
+            )
+        })
+        .unwrap_or(steps.len());
+    steps.insert(
+        at,
+        FlashStep::FactoryReset {
+            erase_code: bussard_mgmt::apci::ERASE_CODE_FACTORY_RESET_KEEP_IA,
+        },
+    );
 }
 
 /// Lowers a System 7 (mask 0705 / 0701) application into an executable
@@ -2625,6 +2762,7 @@ fn plan_flash_sys7(
             profile: s7_profile,
             segment_masks,
         }),
+        confirmed_restart: false,
     })
 }
 
@@ -3997,7 +4135,11 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
     // NEVER taken on a fresh/blank device (no MCB entry) or a size/CRC mismatch —
     // those full-stream exactly as before. Disabled by default, so DA.tp and
     // every mock path are byte-identical.
-    let skip_objects: BTreeSet<u8> = if options.skip_matching_mcb {
+    //
+    // A plan that factory-resets the device first erases every object, so no
+    // resident image can survive to be matched: the pre-pass is skipped and every
+    // object streams in full.
+    let skip_objects: BTreeSet<u8> = if options.skip_matching_mcb && !plan.has_factory_reset() {
         resident_match_objects(session, plan, app_obj, &object_table).await?
     } else {
         BTreeSet::new()
@@ -4044,8 +4186,10 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
         // before them would be a wasted reconnect (they drop and re-open the
         // connection anyway). A single-connection session (mocks,
         // `from_connection`) cannot reconnect, so it keeps the one-connection path.
-        let self_reconnecting_step =
-            matches!(step, FlashStep::MasterReset { .. } | FlashStep::Restart);
+        let self_reconnecting_step = matches!(
+            step,
+            FlashStep::MasterReset { .. } | FlashStep::Restart | FlashStep::FactoryReset { .. }
+        );
         if reconnect_threshold > 0
             && session.can_reconnect()
             && !self_reconnecting_step
@@ -4056,7 +4200,7 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
         progress(Progress::Step {
             index: i + 1,
             total,
-            label: step_label(step),
+            label: plan.step_label(step),
         });
 
         // Resume-on-drop: run the step, and if it dies from an *unexpected* mid-flow
@@ -4461,6 +4605,38 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                             segment_fills.insert(reset_obj, last_alloc_fill);
                         }
                     }
+                    FlashStep::FactoryReset { erase_code } => {
+                        // The confirmed master reset ETS opens an initial System B
+                        // download with (issue #117): numbered A_Restart 0x381
+                        // [erase_code, channel 0], answered by A_Restart_Response
+                        // [error, process time]. A refusal (non-zero error) or silence
+                        // fails the flash before anything is written: the device may
+                        // still hold a stale image, and `--no-factory-reset` is the
+                        // explicit way past that.
+                        // Refuse before erasing anything when the session could not
+                        // reconnect to the rebooted device afterwards.
+                        if !session.can_reconnect() {
+                            return Err(WriteError::Mgmt(MgmtError::Transport(
+                                bussard_transport::TransportError::Closed,
+                            )));
+                        }
+                        let response =
+                            bussard_mgmt::master_reset(session.l4(), *erase_code, 0).await?;
+                        tracing::debug!(
+                            erase_code,
+                            process_time_s = response.process_time_s,
+                            "factory reset accepted; waiting out the reboot"
+                        );
+                        // Erase code 7 leaves the individual address and the
+                        // interface-object table alone, so the discovered table stays
+                        // valid; the objects are back to `Unloaded` and the following
+                        // Unload/StartLoading steps run as on a fresh device.
+                        session
+                            .reconnect_after_master_reset(bussard_mgmt::restart_process_wait(
+                                &response,
+                            ))
+                            .await?;
+                    }
                     FlashStep::Restart => {
                         // The terminal restart reboots the device, and the flash is only a
                         // real success if the load *persists* across that reboot. KNX
@@ -4481,12 +4657,52 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                         // no connector to reconnect with, and the mock does not reboot — so
                         // fall back to verifying over the still-open connection before the
                         // restart, preserving those tests' behaviour.
-                        let (apci, payload) = bussard_mgmt::apci::encode_restart(0);
+                        // A plan that allocates filled segments ends with the confirmed
+                        // form ETS uses on those devices (issue #117): A_Restart master
+                        // reset, erase code 1, answered by A_Restart_Response. Every
+                        // other plan (KNX Virtual DA.tp, thelsing) keeps the bare
+                        // A_Restart its captures show.
+                        let (apci, payload) = if plan.confirmed_restart {
+                            bussard_mgmt::apci::encode_master_reset(
+                                bussard_mgmt::apci::ERASE_CODE_CONFIRMED_RESTART,
+                                0,
+                            )
+                        } else {
+                            bussard_mgmt::apci::encode_restart(0)
+                        };
                         if verify_after_restart && session.can_reconnect() {
-                            let _ = session.l4().send_data_unacked(apci, &payload).await;
-                            // The device is unreachable while it reboots; poll for it
-                            // (bounded), then re-establish the authorized connection.
-                            session.reconnect_after_reboot().await?;
+                            if plan.confirmed_restart {
+                                // Wait the device's process time when it answered; a
+                                // device that reboots without answering is still
+                                // judged by the post-restart verify below.
+                                match bussard_mgmt::master_reset(
+                                    session.l4(),
+                                    bussard_mgmt::apci::ERASE_CODE_CONFIRMED_RESTART,
+                                    0,
+                                )
+                                .await
+                                {
+                                    Ok(response) => {
+                                        session
+                                            .reconnect_after_master_reset(
+                                                bussard_mgmt::restart_process_wait(&response),
+                                            )
+                                            .await?;
+                                    }
+                                    Err(err) => {
+                                        tracing::debug!(
+                                            %err,
+                                            "confirmed restart not answered; polling for the reboot"
+                                        );
+                                        session.reconnect_after_reboot().await?;
+                                    }
+                                }
+                            } else {
+                                let _ = session.l4().send_data_unacked(apci, &payload).await;
+                                // The device is unreachable while it reboots; poll for it
+                                // (bounded), then re-establish the authorized connection.
+                                session.reconnect_after_reboot().await?;
+                            }
                             // Re-confirm the application object on the fresh connection. The
                             // index is stable across the reboot, so a single `PID_OBJECT_TYPE`
                             // probe of the known index is enough; only if the device answers
@@ -5339,6 +5555,10 @@ fn step_label(step: &FlashStep) -> String {
             format!("complete load{}", target_suffix(*target))
         }
         FlashStep::Restart => "restart device".to_string(),
+        FlashStep::FactoryReset { erase_code } => format!(
+            "factory reset (A_Restart master reset, erase code {erase_code}): erase application, \
+             parameters and links, keep the individual address; reconnect"
+        ),
         FlashStep::MasterReset {
             erase_code,
             channel_number,
@@ -5387,7 +5607,7 @@ pub fn trace(plan: &FlashPlan) -> Vec<String> {
     plan.steps
         .iter()
         .enumerate()
-        .map(|(i, s)| format!("{:>3}. {}", i + 1, step_label(s)))
+        .map(|(i, s)| format!("{:>3}. {}", i + 1, plan.step_label(s)))
         .collect()
 }
 

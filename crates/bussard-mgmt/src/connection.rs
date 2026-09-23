@@ -1429,6 +1429,72 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_master_reset_factory_reset_reads_response_and_process_time()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // The issue #117 capture: ETS sends `A_Restart` master reset, erase code
+        // 7, channel 0 as a numbered request; the device T_ACKs it and answers
+        // `A_Restart_Response` error 0, process time 8 s.
+        let inbox = vec![
+            control_from_dev(tpci::t_ack(0)),
+            ndt_from_dev(0, crate::apci::A_RESTART_RESPONSE, &[0x00, 0x00, 0x08]),
+        ];
+        let mut bus = ScriptedBus::new(inbox);
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool()).await?;
+        let response = crate::load::master_reset(&mut l4, 7, 0).await?;
+        assert_eq!(response.error_code, 0);
+        assert_eq!(response.process_time_s, 8);
+        assert_eq!(
+            crate::load::restart_process_wait(&response),
+            Duration::from_secs(8)
+        );
+        // The request went out numbered, as APCI 0x381 + [07 00], and the
+        // response was acknowledged.
+        let (apci, data) = extract_apdu(&bus.sent[1]);
+        assert_eq!(bus.sent[1].tpci_octet() & 0xfc, tpci::ndt(0));
+        assert_eq!(apci, crate::apci::A_RESTART_MASTER_RESET);
+        assert_eq!(data, vec![0x07, 0x00]);
+        assert_eq!(bus.sent[2].tpci_octet(), tpci::t_ack(0));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_master_reset_nonzero_error_code_is_refused()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let inbox = vec![
+            control_from_dev(tpci::t_ack(0)),
+            ndt_from_dev(0, crate::apci::A_RESTART_RESPONSE, &[0x02, 0x00, 0x00]),
+        ];
+        let mut bus = ScriptedBus::new(inbox);
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool()).await?;
+        let err = crate::load::master_reset(&mut l4, 7, 0)
+            .await
+            .err()
+            .ok_or("a non-zero error code must fail")?;
+        assert!(matches!(
+            err,
+            crate::load::WriteError::RestartRefused {
+                error_code: 2,
+                erase_code: 7,
+                ..
+            }
+        ));
+        assert!(err.to_string().contains("unsupported erase code"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_restart_process_wait_is_bounded() {
+        let huge = crate::apci::RestartResponse {
+            error_code: 0,
+            process_time_s: u16::MAX,
+        };
+        assert_eq!(
+            crate::load::restart_process_wait(&huge),
+            crate::load::MAX_RESTART_PROCESS_WAIT
+        );
+    }
+
+    #[tokio::test]
     async fn retransmit_on_ack_timeout() {
         // Script: no ACK for the first send (empty inbox forces a timeout), then
         // after the retransmit, an ACK(0) + response. We prime the inbox so the
