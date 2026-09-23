@@ -210,6 +210,16 @@ Snapshots carry the four model inputs (`bussard.yaml`, `groups.yaml`,
 keyrings and project files are never copied into them, so a snapshot cannot
 leak a key, a password or vendor data.
 
+A `.bussard` bundle from `bussard export` (or `knx_export_bundle`) holds those
+same model files, the history snapshots and a manifest, and nothing else. It
+never contains `models/`, `vendor/`, `captures/`, keyrings, `.knxproj` or
+`.knxprod` files, or `.env`, because the export copies an allow-list rather
+than skipping a deny-list. The manifest names these exclusions. `bussard.yaml`
+does travel with it, so the recipient sees your gateway address; an import into
+an existing model keeps the recipient's own `bussard.yaml`. Importing a bundle
+writes files only and snapshots first; nothing reaches a device until someone
+runs `plan` and `apply`.
+
 ## Supported device masks
 
 Write commands refuse an unsupported device mask during the pre-flight, before
