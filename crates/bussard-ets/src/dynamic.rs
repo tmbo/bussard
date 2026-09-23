@@ -118,6 +118,43 @@ impl DynamicConfig {
             ))
     }
 
+    /// The vendor default of `param_ref_id` (app-relative) in the context of
+    /// `module`, ignoring every override and `<Assign>`: the ref's `Value`,
+    /// else the parameter's own `Value`, plus the instance's `BaseValue`
+    /// argument where the parameter declares one (see [`DynamicConfig::value`]).
+    pub fn vendor_default(
+        &self,
+        app: &ApplicationProgram,
+        module: Option<usize>,
+        param_ref_id: &str,
+    ) -> Option<String> {
+        value_of(
+            app,
+            &HashMap::new(),
+            self.instance_id(module),
+            self.module_args(module),
+            param_ref_id,
+        )
+    }
+
+    /// Whether the value of `param_ref_id` in `module` was set by a reached
+    /// `<Assign>` (and so is not the user's to choose).
+    pub fn is_assigned(&self, module: Option<usize>, param_ref_id: &str) -> bool {
+        let key = (
+            self.instance_id(module).to_string(),
+            param_ref_id.to_string(),
+        );
+        self.values.contains_key(&key) && !self.overridden.contains(&key)
+    }
+
+    /// The module instance id (e.g. `MD-15_M-26`) of `module`, `None` for the
+    /// application itself.
+    pub fn module_instance_id(&self, module: Option<usize>) -> Option<&str> {
+        module
+            .and_then(|i| self.modules.get(i))
+            .map(|m| m.id.as_str())
+    }
+
     /// The instance id used as the value key for `module`.
     fn instance_id(&self, module: Option<usize>) -> &str {
         module

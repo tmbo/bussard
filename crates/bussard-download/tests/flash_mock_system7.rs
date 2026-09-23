@@ -25,7 +25,7 @@
 //! **The flash and apply paths are only ever exercised here — never against a
 //! live bus.**
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -2015,8 +2015,12 @@ async fn run_parameters_only_sys7(mode: LsmMode) -> Result<(), Box<dyn std::erro
         outcome.ok(),
         "the parameter-only download must verify: {outcome:?}"
     );
-    let readings =
-        bussard_download::non_default_parameters(&app, &bussard_download::regions_memory(&after));
+    let readings = bussard_download::non_default_parameters(
+        &app,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &bussard_download::regions_memory(&after),
+    );
     assert_eq!(readings.len(), 1);
     assert_eq!(readings[0].line(), "Step: 9 (default 5)");
 

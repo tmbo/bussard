@@ -49,7 +49,11 @@ pub use container::{AppEntry, MAX_INNER_KNXPROD_SIZE};
 pub use error::{ProdError, Result};
 pub use fetch::{DownloadConsent, MAX_DOWNLOAD_BYTES, fetch_entry};
 pub use hardware::HardwareCatalog;
-pub use image::{compute_dynamic_parameter_image, compute_parameter_image, uses_dynamic_image};
+pub use image::{
+    ParameterSlot, canonical_parameter_value, compute_dynamic_parameter_image,
+    compute_parameter_image, decode_parameter_value, dynamic_parameter_slots, uses_dynamic_image,
+    write_parameter_value,
+};
 pub use index::{IndexEntry, ProductIndex, normalize_order_number};
 
 /// The parsed contents of a `.knxprod`.
