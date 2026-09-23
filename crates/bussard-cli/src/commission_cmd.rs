@@ -390,6 +390,7 @@ fn commission_one(
             None,
             tool_key_source,
             overrides.clone(),
+            crate::flash_cmd::FlashOutput::default(),
         );
         match flashed {
             Ok(code) if exited_ok(&code) => {}

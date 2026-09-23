@@ -170,6 +170,10 @@ The same pre-flight also checks the device is factory-fresh (issue #79), read-on
 | `--allow-remote-gateway` | off | Permit a flash to a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
+| `--json` | off | Print the pre-flight plan as JSON instead of the report. It carries a `parameters` array (`key`, `name`, `old`, `new`, `unit`; `old` is `null` when unreadable), the application identity, the write summary and the step trace. The confirmation and the flash itself are unchanged. |
+| `-v` | off | Show the memory-level plan (the step trace) and the raw override keys under the parameter-level plan. |
+
+The pre-flight report leads with the **parameter-level plan** (issue #109): one line per parameter the flash changes, named with the parameter text from the `.knxprod`, with old value, new value and unit (`Night setback: 18 °C to 17 °C`). Enumerations show the vendor's member text. The current values are read back, read-only, from the device's parameter segment when it already carries an application; on a factory-fresh device, or when a segment cannot be read, the line reads `unknown current value, will be <new>`. A parameter left at its vendor default is listed only when the device is known to hold something else. On System 7 the parameter diff is replaced by a note, and the memory-level plan is the authoritative one. The memory-level plan is always available with `-v`.
 
 The confirmation names the resolved gateway (`flash <app> to <target> via <host:port>?`).
 
@@ -399,6 +403,28 @@ Write the group-address plan in a format ETS's *Group Addresses -> Import* accep
 `ets-csv` is the three-level CSV ETS itself exports: UTF-8 with a BOM, semicolon separated, CRLF line endings, every field quoted, with the columns `Main`, `Middle`, `Sub`, `Address`, `Central`, `Unfiltered`, `Description`, `DatapointType`, `Security`. Main groups, middle groups and addresses each get their own row, and the DPT is in ETS notation (`DPST-1-1`, or `DPT-1` when the model has no sub number).
 
 `ets-xml` is the `GroupAddress-Export` document in the namespace `http://knx.org/xml/ga-export/01`: nested `GroupRange` elements carrying `Name`, `RangeStart` and `RangeEnd`, with `GroupAddress` leaves carrying `Name`, `Address`, `Description`, `DPTs` and `Security`.
+
+### `bussard doc`
+
+Render the handover documentation folder the KNX guidelines prescribe, straight from the model (issue #97). Offline: it reads the model and, when present, the cached product models in `models/`, and never touches the bus.
+
+| File | Contents |
+|---|---|
+| `index.md` | Links to everything below, including one entry per room sheet. |
+| `devices.md` | Individual address, name, location, manufacturer, order number, application, mask, Secure status. |
+| `groups.md` | Address, name, DPT, description, protected flag, senders and listeners (device and com-object names). |
+| `rooms/<floor>-<room>.md` | Every device in the room with its channels, and one plain-language line per com object: `Rocker 1 switches Kitchen ceiling light (1/0/10); status from 1/0/12.` Unnamed items fall back to their addresses. Devices without a `location:` get no room sheet. |
+| `connection.md` | Transport and gateway or multicast endpoint from `bussard.yaml`. Never credentials. |
+| `changelog.md` | The last 50 commits touching the model directory, from `git log`. Empty when the directory is not a git repository or `git` is missing. |
+
+The output is deterministic: two runs on the same model write identical bytes (no timestamps), so the folder can be committed and its diff reviewed after every change.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--dir <DIR>` | `knx` | The model directory. |
+| `--out <DIR>` | `docs/installation` | Where to write the files. Existing files with the same names are overwritten; others are left alone. |
+| `--format <FORMAT>` | `md` | `md` (Markdown) or `html` (one self-contained page per file, inline styles, no scripts). |
+| `--json` | off | Print the structured document model to stdout instead of writing files. |
 
 ### `bussard monitor`
 

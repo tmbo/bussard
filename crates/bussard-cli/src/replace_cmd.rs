@@ -156,6 +156,7 @@ pub fn run(
             bcu_key,
             tool_key_source,
             overrides.clone(),
+            crate::flash_cmd::FlashOutput::default(),
         )?;
         if code != ExitCode::SUCCESS {
             eprintln!(
