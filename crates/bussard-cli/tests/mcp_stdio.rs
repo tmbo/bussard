@@ -4,8 +4,9 @@
 //! handshake on its stdin/stdout, and asserts:
 //!
 //! - stdout carries **only** valid JSON-RPC (nothing else may print there), and
-//! - `tools/list` returns exactly the expected tool set (11 in `--passive`: the
-//!   nine model/bus read tools plus the two file-only history tools).
+//! - `tools/list` returns exactly the expected tool set (13 in `--passive`: the
+//!   nine model/bus read tools, the two file-only history tools and the two
+//!   bundle/diff tools).
 //!
 //! This is the stdout-purity guard the design brief calls for.
 
@@ -30,7 +31,7 @@ fn write_model(dir: &std::path::Path) {
 }
 
 #[test]
-fn mcp_stdio_handshake_is_pure_json_and_lists_nine_passive_tools() {
+fn mcp_stdio_handshake_is_pure_json_and_lists_the_passive_tools() {
     let tmp = std::env::temp_dir().join(format!("bussard-mcp-stdio-{}", std::process::id()));
     let knx = tmp.join("knx");
     write_model(&knx);
@@ -120,6 +121,8 @@ fn mcp_stdio_handshake_is_pure_json_and_lists_nine_passive_tools() {
     let mut expected = vec![
         "knx_audit",
         "knx_describe_change",
+        "knx_diff_project",
+        "knx_export_bundle",
         "knx_get_device",
         "knx_get_group",
         "knx_history",
@@ -133,7 +136,7 @@ fn mcp_stdio_handshake_is_pure_json_and_lists_nine_passive_tools() {
     expected.sort_unstable();
     assert_eq!(
         tools, expected,
-        "passive mode exposes exactly 11 tools: no bus tools, and no model edits \
+        "passive mode exposes exactly 13 tools: no bus tools, and no model edits \
          because this server runs with --no-model-edits"
     );
 

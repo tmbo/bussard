@@ -26,6 +26,7 @@ These apply to every subcommand:
 - `validate` exits non-zero when there are errors (warnings and infos alone exit 0).
 - `read` exits non-zero when no response arrives within the timeout, so scripts can detect a dead group object.
 - `plan` and `apply` exit 0 when there is nothing to do.
+- `import` exits `3` when a re-import kept hand-edited values that differ from the incoming side and no `--mine`, `--theirs` or `--interactive` settled them. The write still happened.
 - Refusals (protected GA without `--force`, non-TTY without `--yes`, unsupported device mask, unsupported load procedure) exit non-zero before anything is written.
 - `audit` exits 0 on a completed audit, whatever it found; findings are data, not failures.
 
@@ -61,16 +62,48 @@ The count comes from the tunnelling-info DIB (KNXnet/IP Core v2). An interface t
 
 ### `bussard import [PROJECT]`
 
-Import an existing `.knxproj` (or xknxproject JSON dump) into the model. Re-import is idempotent: hand edits to names, DPTs, descriptions and `protected:` flags survive where the address is unchanged; device files whose address left the project are pruned.
+Import an existing `.knxproj`, a `.bussard` bundle (see [`export`](#bussard-export-file)) or an xknxproject JSON dump into the model. Re-import is idempotent: hand edits to names, DPTs, descriptions and `protected:` flags survive where the address is unchanged; device files whose address left the project are pruned.
 
 | Flag / arg | Default | Meaning |
 |---|---|---|
-| `[PROJECT]` | | The `.knxproj` file to import (omit when using `--from-json`). |
+| `[PROJECT]` | | The `.knxproj` or `.bussard` file to import (omit when using `--from-json`). |
 | `--from-json <FILE>` | | Import from an xknxproject JSON dump instead of a `.knxproj`. |
 | `--password <PASSWORD>` | | Project password. Falls back to `BUSSARD_PROJECT_PASSWORD`, then an interactive prompt. |
 | `--dir <DIR>` | `knx` | The model directory to write. |
+| `--mine` | off | On a re-import, keep this model's value for every hand-edited conflict and exit 0. |
+| `--theirs` | off | On a re-import, take the incoming value for every hand-edited conflict. |
+| `--interactive` | off | On a re-import, ask per conflict (`m` keeps mine, `t` takes theirs). Needs a terminal. |
 
-A re-import always takes the generated sections (com-object tables, link wiring, parameters) from the project and always preserves hand-authored fields, reporting every difference instead of overwriting it. There is no flag for that: it is the only behaviour the merge implements.
+A re-import always takes the generated sections (com-object tables, link wiring, parameters) from the incoming side. Hand-authored fields (names, rooms, descriptions, DPTs, `protected:`, channel names) that differ are conflicts: each is printed as a sentence, e.g. `Group address Light Kitchen (1/0/1): the name is "Light Kitchen" here and "Kitchen ceiling" in the bundle. Kept this model's value.` Without a flag the local value is kept and the command exits `3` so a script notices; `--mine`, `--theirs` and `--interactive` settle the conflicts and exit 0. After the write, `import` prints what it changed in the model as the same sentences `bussard status` uses. Every import into an existing model snapshots it first, so `bussard undo` reverts it.
+
+A bundle imported into a directory without a model (no `groups.yaml`, no device file) is extracted byte for byte, history included: the copy is identical to the exported model. An existing `bussard.yaml`, for example from `bussard init`, is kept. A bundle imported into an existing model runs the merge above; the local history stays and the bundle's snapshots are not merged into it.
+
+### `bussard export [FILE]`
+
+Write the model and its history as one `.bussard` file: the handover file for an integrator and the owner's backup. See [The bundle format](#the-bundle-format).
+
+| Flag / arg | Default | Meaning |
+|---|---|---|
+| `[FILE]` | `<parent>/<dir name>-<YYYY-MM-DD>.bussard` | The bundle to write, next to the model directory by default. |
+| `--dir <DIR>` | `knx` | The model directory. |
+| `--no-history` | off | Leave the `.bussard/history` snapshots out. |
+| `--json` | off | Print `{"path", "manifest"}` as JSON. |
+
+The model must load; `export` refuses a broken model. It records the bundle's path, time and model digest in `<dir>/.bussard/last_export.json`. After a verified `apply`, bussard prints a one-line hint on stderr when that record is older than the newest `apply` snapshot and the model files have changed since the export, or when the model was never exported. An apply of an unchanged model stays quiet.
+
+### `bussard diff <A> <B>`
+
+Explain what changes from `A` to `B`, as the plain sentences `bussard status` prints. Each side is a `.knxproj`, a `.bussard` bundle, an xknxproject `.json` dump or a model directory. Both sides are loaded in memory; nothing is written. Exits 0 whether or not there are differences.
+
+| Flag / arg | Default | Meaning |
+|---|---|---|
+| `<A>`, `<B>` | | The two sides. |
+| `--json` | off | Emit `{"a", "b", "summary", "touches_protected", "changes": [...]}`, the same change objects as `status --json`. |
+| `--raw` | off | Print a file-level YAML diff instead of the sentences. |
+| `--password <PASSWORD>` | | Password for both `.knxproj` sides. Falls back to `BUSSARD_PROJECT_PASSWORD`. |
+| `--password-b <PASSWORD>` | | Password for the second side, when it differs. |
+
+Group addresses are matched by address and devices by individual address, so a GA renamed in a newer export is one rename, not a removal and an addition. Two exports of the same project give an empty diff. A parameter change is named by the parameter's text from the cached product model (`models/*.yaml`) when a model-directory side has one, and by its key otherwise.
 
 ### `bussard scan [LINE]`
 
@@ -637,7 +670,7 @@ knx/
   models/           # generated from .knxprod; git-ignored
   vendor/           # cached .knxprod originals; git-ignored
   captures/         # local captures, apply backups and apply-line-<line>.json resume state; git-ignored
-  .bussard/         # bussard's own history; git-ignored
+  .bussard/         # bussard's own history and last_export.json; git-ignored
 ```
 
 #### `.bussard/history`
@@ -658,6 +691,35 @@ One directory per snapshot, named by a UTC timestamp plus a sequence number, so 
 `import`, `apply`, `flash`, `adopt`, `reconstruct` and every MCP model edit snapshot before they write. `plan` and those commands also record an `external edit` snapshot first when the working files differ from the last one, so an edit made in an editor or by an assistant writing YAML is never lost. `bussard status`, `history`, `show` and `undo` read this directory; `bussard init` git-ignores it.
 
 `bussard.yaml`, `groups.yaml`, `links.yaml`, `devices/` and `tests.yaml` belong in git; the first four are the source of truth. `models/`, `vendor/` and `captures/` are local-only; `init` and `import-product` plant the `.gitignore` entries. All YAML is parsed strictly: unknown fields and duplicate keys are errors. Emission is deterministic and sorted, so re-imports and hand edits produce minimal diffs. Every generated file carries a banner naming what generated it and what is hand-editable.
+
+### The bundle format
+
+A `.bussard` file is a zip archive:
+
+```
+manifest.json                      # always the first entry
+bussard.yaml
+groups.yaml
+links.yaml
+devices/*.yaml
+.bussard/history/<id>/...          # unless exported with --no-history
+```
+
+Entries are sorted, with a fixed timestamp and permissions, so two exports of the same files differ only in the manifest's `exported_at`. The manifest:
+
+| Field | Meaning |
+|---|---|
+| `format`, `format_version` | `"bussard-bundle"`, `1`. |
+| `model_version` | The YAML model schema version, `1`. A reader refuses a newer one. |
+| `bussard_version` | The bussard that wrote the bundle. |
+| `exported_at` | RFC3339 in UTC. |
+| `project` | The project name from `groups.yaml`, when set. |
+| `devices`, `group_addresses`, `links`, `history_snapshots` | Counts. |
+| `files` | The SHA-256 of each model file, by path. |
+| `model_sha256` | SHA-256 over the lines `<file sha256>  <path>\n`, sorted by path (the `sha256sum` output format). |
+| `excluded` | What a bundle never contains (below). |
+
+A bundle never contains `models/`, `vendor/`, `captures/`, keyrings, `.knxproj` or `.knxprod` files, or `.env`: the export copies an allow-list of model files and nothing else. A reader rejects any entry outside the layout above, any model file whose hash does not match, and any entry larger than 64 MiB.
 
 ### `bussard.yaml`
 
@@ -915,9 +977,9 @@ CREATE INDEX idx_telegrams_dest_ts ON telegrams (destination, ts_utc);
 | Write | `--allow-writes` | Adds `knx_write_group` and `knx_run_tests`. |
 | No model edits | `--no-model-edits` | Withholds the six model-edit tools and `knx_scaffold_groups`. Orthogonal to the tiers above: they write YAML files, never the bus, so they are registered in every tier by default. |
 
-The model tools (`knx_describe_change`, `knx_history`, the six that edit, and `knx_scaffold_groups`) touch files under the model directory and nothing else.
+The model tools (`knx_describe_change`, `knx_history`, the six that edit, and `knx_scaffold_groups`) touch files under the model directory and nothing else. `knx_export_bundle` and `knx_diff_project` only read the model (the export writes one bundle file) and are registered in every tier, `--no-model-edits` included. Every edit snapshots the model first, validates after, and returns the change as sentences for the caller to quote to the human. Nothing reaches a device until a human runs `bussard plan` and `bussard apply`.
 
-Tool counts: 18 in `--passive`, 20 by default, 22 with `--allow-writes`. `--no-model-edits` takes seven away from each (11, 13 and 15). Every edit snapshots the model first, validates after, and returns the change as sentences for the caller to quote to the human. Nothing reaches a device until a human runs `bussard plan` and `bussard apply`.
+Tool counts: 20 in `--passive`, 22 by default, 24 with `--allow-writes`. `--no-model-edits` takes seven away from each (13, 15 and 17).
 
 Bus operations share one rate limiter (minimum 250 ms between operations, at most two in flight). A GA marked `protected: true` is hard-refused by `knx_write_group` and `knx_run_tests` with no MCP override; the LLM must ask a human, who can run `bussard write ... --force` from the CLI. Programming and download (`plan`, `apply`, `flash`) are CLI-only and not exposed over MCP.
 
@@ -947,6 +1009,8 @@ Bus operations share one rate limiter (minimum 250 ms between operations, at mos
 | `knx_set_device` | `address`, `name`, `floor`, `room` (all but `address` optional) | Renames a device or changes where it lives. |
 | `knx_set_parameter` | `address`, `parameter`, `value` | Sets one value in the device file's `parameters:` block, checked against the product model. Refuses when the device has no `parameters:` block or no product model to check against. |
 | `knx_undo` | `snapshot_id` (optional) | Restores the model files to a snapshot (default: the newest one that differs from the working files, i.e. undo the last change). Files only. |
+| `knx_export_bundle` | `path`, `include_history` (default true), both optional | Writes the model and its history as one `.bussard` file (default: next to the model directory) and returns the path and manifest. Available in every tier. |
+| `knx_diff_project` | `path` (a `.knxproj` or `.bussard`) | What that file would change compared with the working model: `{count, summary, touches_protected, sentences, changes, source}`. The assistant quotes the sentences before the human imports. A password-protected `.knxproj` needs `BUSSARD_PROJECT_PASSWORD` in the server's environment. Read-only; available in every tier. |
 
 The model is not frozen at startup: the server re-reads the model directory when its files change (and immediately after one of its own model edits), so a `protected: true` or a corrected `dpt:` added to `groups.yaml` mid-session is in force on the next tool call. A model that fails to parse is not swapped in; the server keeps the last good one and warns on stderr.
 

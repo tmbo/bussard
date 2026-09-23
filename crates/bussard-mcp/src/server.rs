@@ -48,16 +48,17 @@ impl BussardMcp {
     /// `--allow-writes` is set (and never in passive mode).
     pub fn new(state: Arc<SharedState>) -> Self {
         // The bus tools, the model-edit tools, the group-planning tools, the
-        // learn/acceptance tools and the audit tool live in separate
-        // `#[tool_router]` impl blocks (see `crate::tools_model`,
-        // `crate::tools_groups`, `crate::tools_learn` and `crate::tools_audit`,
-        // issue #93); rmcp's `ToolRouter` implements `Add`, so they
-        // combine into one instance router, then get trimmed for this tier.
+        // learn/acceptance tools, the audit tool and the bundle/diff tools live
+        // in separate `#[tool_router]` impl blocks (see `crate::tools_model`,
+        // `crate::tools_groups`, `crate::tools_learn`, `crate::tools_audit`
+        // and `crate::tools_diff`); rmcp's `ToolRouter` implements `Add`, so
+        // they combine into one instance router, then get trimmed for this tier.
         let mut tool_router = Self::tool_router()
             + Self::model_router()
             + Self::groups_router()
             + Self::learn_router()
-            + Self::audit_router();
+            + Self::audit_router()
+            + Self::diff_router();
         if state.no_model_edits {
             for name in crate::tools_model::MODEL_EDIT_TOOLS {
                 tool_router.remove_route(name);

@@ -37,13 +37,17 @@
 //! | `knx_set_device` | Rename a device or change its floor/room. |
 //! | `knx_set_parameter` | Set one device parameter, checked against the product model. |
 //! | `knx_undo` | Restore the model files to a history snapshot. |
+//! | `knx_export_bundle` | Write the model and history as one `.bussard` handover file. |
+//! | `knx_diff_project` | What a received `.knxproj` or bundle would change, as sentences. |
 //!
-//! The last eight are model tools: they read and write YAML files under the
-//! model directory and never touch the bus, so they are available in every tier
-//! including `--passive`. The six that edit, and `knx_scaffold_groups`, which
-//! writes `groups.yaml`, are withheld by `--no-model-edits`.
-//! Every edit snapshots first, validates after, and returns the change as
-//! sentences for the caller to quote to the human.
+//! The eight from `knx_describe_change` to `knx_undo` are model tools: they
+//! read and write YAML files under the model directory and never touch the bus,
+//! so they are available in every tier including `--passive`. The six that
+//! edit, and `knx_scaffold_groups`, which writes `groups.yaml`, are withheld by
+//! `--no-model-edits`. Every edit snapshots first, validates after, and returns
+//! the change as sentences for the caller to quote to the human. The last two
+//! only read the model (the export writes one file outside it) and are
+//! available in every tier.
 //!
 //! In `--passive` mode the two bus-touching read tools (`knx_read_group` and
 //! `knx_describe_device`) are unregistered and the server never transmits;
@@ -53,9 +57,9 @@
 //! started with `--allow-writes` (which conflicts with `--passive`); both write
 //! to the physical bus, and both hard-refuse `protected` GAs.
 //!
-//! Tool counts per tier: `--passive` 18, default 20, `--allow-writes` 22. With
+//! Tool counts per tier: `--passive` 20, default 22, `--allow-writes` 24. With
 //! `--no-model-edits` the seven model-edit tools (the six above plus
-//! `knx_scaffold_groups`) are withheld, giving 11, 13 and 15.
+//! `knx_scaffold_groups`) are withheld, giving 13, 15 and 17.
 //!
 //! # Connecting this to Claude Code
 //!
@@ -92,6 +96,7 @@ pub mod server;
 pub mod state;
 pub mod tools;
 pub mod tools_audit;
+pub mod tools_diff;
 pub mod tools_groups;
 pub mod tools_learn;
 pub mod tools_model;
@@ -203,18 +208,19 @@ pub async fn run(config: &McpConfig) -> anyhow::Result<()> {
 
 /// The set of tool names exposed, in registration order. Used by tests and docs.
 ///
-/// - passive mode: 18 tools (no bus-touching tools: no `knx_read_group`, no
+/// - passive mode: 20 tools (no bus-touching tools: no `knx_read_group`, no
 ///   `knx_describe_device`, no `knx_write_group`, no `knx_run_tests`).
 ///   `knx_infer_group` is there: it only reads the telegram ring. `knx_audit`
 ///   is there too, but refuses `live: true`.
-/// - default mode: 20 tools (adds `knx_read_group` and `knx_describe_device`).
-/// - `--allow-writes`: 22 tools (adds `knx_write_group` and `knx_run_tests`).
+/// - default mode: 22 tools (adds `knx_read_group` and `knx_describe_device`).
+/// - `--allow-writes`: 24 tools (adds `knx_write_group` and `knx_run_tests`).
 /// - `--no-model-edits` removes the seven model-edit tools
 ///   ([`tools_model::MODEL_EDIT_TOOLS`], including `knx_scaffold_groups`) from
-///   any of those (11, 13 and 15 tools).
+///   any of those (13, 15 and 17 tools).
 ///
-/// The two model/history read tools (`knx_describe_change`, `knx_history`) and
-/// the seven model-edit tools touch files only, so they are present in every tier
+/// The two model/history read tools (`knx_describe_change`, `knx_history`),
+/// the two bundle/diff tools (`knx_export_bundle`, `knx_diff_project`) and the
+/// seven model-edit tools touch files only, so they are present in every tier
 /// including `--passive`.
 pub fn tool_names(passive: bool, allow_writes: bool, no_model_edits: bool) -> Vec<&'static str> {
     let mut names = vec![
@@ -237,6 +243,7 @@ pub fn tool_names(passive: bool, allow_writes: bool, no_model_edits: bool) -> Ve
         names.push("knx_run_tests");
     }
     names.extend(tools_model::MODEL_READ_TOOLS);
+    names.extend(tools_diff::DIFF_TOOLS);
     if !no_model_edits {
         names.extend(tools_model::MODEL_EDIT_TOOLS);
     }
