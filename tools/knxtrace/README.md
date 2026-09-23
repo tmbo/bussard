@@ -20,6 +20,10 @@ uv run tools/knxtrace/knxtrace.py image   <capture> --device 1.1.5 --out <dir>
 uv run tools/knxtrace/knxtrace.py imgdiff <bussard-dump-dir> <image-dir> [--json]
 ```
 
+`devices`, `trace`, `ops`, `diff` and `image` also take `--keyring
+<file.knxkeys>` to decrypt KNX Data Secure frames (see [Data Secure](#data-secure)),
+and `trace` takes `--seq-check`.
+
 Tests:
 
 ```
@@ -131,7 +135,10 @@ sequence numbers, and numbered and unnumbered data PDUs.
 `_Response` with object index and name, PID and name, element count and start
 index, and for `PID_LOAD_STATE_CONTROL` the load event, the load state and the
 allocation records (`LdCtrlAbsSegment`, `LdCtrlRelSegment`, `LdCtrlTaskPtr`,
-`LdCtrlTaskCtrl1` / `2`, segment address, size, access and memory type);
+`LdCtrlTaskCtrl1` / `2`, segment address, size, access and memory type); the
+extended services `A_PropertyExtValue_*`, `A_PropertyExtDescription_*` and
+`A_FunctionPropertyExt_*` with object type, instance and PID (ETS uses them on
+the security object during Data Secure activation);
 `A_PropertyDescription_Read` / `_Response` with data type, element count and
 access levels; `A_Memory_Read` / `_Write` / `_Response` with address, count and
 data; `A_MemoryExtended_*` with the 3-octet address; `A_Authorize` and `A_Key`
@@ -139,7 +146,65 @@ with the level; `A_Restart` including the master-reset variant with erase code
 and channel; `A_IndividualAddress_Read` / `_Write` / `_Response` and the
 serial-number-addressed forms; `A_GroupValue_Read` / `_Write` / `_Response`
 including the 6-bit small-value form; and `A_SecureData` with its security
-control field and sequence number.
+control field and sequence number, plus, with a keyring, the decrypted inner
+APDU.
+
+## Data Secure
+
+```
+export BUSSARD_KEYRING_PASSWORD=...   # the password the .knxkeys was exported with
+uv run tools/knxtrace/knxtrace.py devices secure.pcapng --keyring project.knxkeys
+uv run tools/knxtrace/knxtrace.py trace   secure.pcapng --device 1.1.12 \
+    --keyring project.knxkeys --seq-check
+```
+
+`datasecure.py` reads the ETS keyring and verifies `A_SecureData` (APCI
+`0x3F1`) frames. It is a port of bussard's Rust implementation, which stays the
+reference: `crates/bussard-project/src/keyring.rs` for the keyring and
+`crates/bussard-secure/src/{crypto,asdu}.rs` for the frame. The tests pin it to
+the Rust known-answer vectors.
+
+- **Keyring.** PBKDF2-HMAC-SHA256 of the password, salt `1.keyring.ets.knx.org`,
+  65536 iterations, 16 bytes. The root `Signature` must verify, so a wrong
+  password is an error rather than a screen of `MAC FAIL`. `ToolKey`, `FDSK`
+  and group `Key` attributes are one AES-128-CBC block each, IV
+  `sha256(Created)[:16]`.
+- **Key choice.** Tool-access frames (SCF bit 7) try the device's tool key, then
+  its FDSK (ETS talks under the FDSK until activation installs the tool key).
+  The device is whichever end of the frame the keyring knows. Group frames use
+  the group address's key.
+- **S-A_Data.** `SCF(1) || seq(6) || APDU || MAC(4)`, AES-128-CCM with the TP
+  `block_0` / `counter_0` nonce over source, destination, frame flags and the
+  carrier's TPCI octet. The CBC-MAC is cut to 4 bytes before the CTR stage and
+  the keystream runs on over the payload, so the payload starts at byte 4 of
+  AES(counter_0). This was calibrated against a real ETS capture (bussard
+  PR #153). A tunnelled `L_Data.req` from `0.0.0` is also tried with the source
+  the interface reported in its `L_Data.con`.
+- **S-A_Sync_Req** (SCF `0x92`). `seq(6) || serial(6, clear) || enc(challenge(6))
+  || MAC(4)`. The nonce is the frame's own sequence; the additional data is
+  `SCF || serial`. The serial is zeros on the per-connection form and names the
+  target on the broadcast to `0/0/0`, which is how the key is found then.
+- **S-A_Sync_Res** (SCF `0x93`). `masked(6) || enc(responder_seq(6) ||
+  requester_seq(6)) || MAC(4)`, where `masked` is the CCM nonce XOR the
+  request's challenge. It verifies only against the challenge of the request it
+  answers.
+
+Per frame, `trace` prints `A_SecureData{scf=0x90 seq=N tool MAC ok} ->
+A_PropertyValue_Read ...`, `... -> S-A_Sync_Req serial=none challenge_len=6`,
+`... -> S-A_Sync_Res responder_seq=N requester_seq=M`, or `MAC FAIL` when keys
+were tried and none verified. The challenge itself is never printed.
+A frame with no key in the keyring prints as without `--keyring`. `devices` and
+`ops` count a verified frame as the operation it carries; both commands end
+with a summary by outcome, service and inner APDU, and the `S-A_Data` sequence
+range per sender.
+
+`--seq-check` reports every `S-A_Data` sequence number that did not increase per
+(sender, key). Sync frames are left out: the sequence field of an
+`S-A_Sync_Res` is not a counter, and ETS reuses a `Sync_Req`'s sequence for the
+next data frame.
+
+AES is pure Python so the tool keeps its empty dependency list. That is slow
+per block and fine for a capture's few hundred secure frames.
 
 ## Privacy
 
@@ -148,8 +213,15 @@ not to print anything that should not leave it:
 
 - `A_Authorize` / `A_Key_Write` keys are reported as `redacted:<hash>`, except
   the well-known free-access key `FFFFFFFF`, which is named.
-- `A_SecureData` payloads are reported as a length and a content hash. The
-  protected APDU and its MAC are never printed.
+- `A_SecureData` payloads are reported as a length and a content hash. Without
+  a keyring the protected APDU and its MAC are never printed. With `--keyring`,
+  a frame whose MAC verifies shows its inner APDU, decoded like plain traffic,
+  except that key material inside it is reported as `redacted:<hash>`: the
+  key PIDs (P2P and group key tables, tool key), anything key-sized (16 bytes
+  or more) addressed to the security object (type 17) by the extended
+  services, and any undecoded service with a key-sized payload. Keyring keys are never printed: output names them only as
+  `tool`, `fdsk` or `group`, and the keyring password is read from
+  `$BUSSARD_KEYRING_PASSWORD`, never the command line.
 - KNXnet/IP Secure frames are named, sized and hashed. Nothing is decrypted, and
   there is no code path that could decrypt.
 
@@ -164,6 +236,7 @@ captures in-process from RFC 5737 TEST-NET-1 addresses.
 | `knxtrace.py` | The CLI: `devices`, `trace`, `ops`, `diff`, `image`, `imgdiff`. |
 | `capture.py` | pcap / pcapng reading, link and IP layers, TCP reassembly. |
 | `knxip.py` | KNXnet/IP, cEMI, transport layer and APCI decoding. |
+| `datasecure.py` | ETS keyring, AES-128, and `A_SecureData` verification and decryption. |
 | `normalize.py` | Frame stream to per-device operation sequence. |
 | `opsdiff.py` | The differ and its classification rules. |
 | `image.py` | Composes the memory a download wrote and diffs it against a `bussard flash --dry-run --dump-images` directory (see [the offline oracle](../../docs/testing-campaign.md#before-a-flash-the-offline-oracle)). |
