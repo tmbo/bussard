@@ -489,9 +489,12 @@ sent to a device.
 - **KNX Secure: Data Secure tool-access only, simulator-verified.** `bussard`
   can program a KNX Data Secure device through its tool key (`--keyring
   <file.knxkeys>` with `BUSSARD_KEYRING_PASSWORD`, or `--tool-key` for tests) on
-  `flash`, `describe` and `apply`; `bussard keyring` inspects an ETS export. This
-  path is verified only against the knx-sim activated device, not yet against a
-  security-activated physical device. KNXnet/IP Secure (encrypted tunnel
+  `flash`, `describe` and `apply`; `bussard keyring` inspects an ETS export.
+  Each secured connection starts with the same S-A_Sync handshake ETS uses. The
+  crypto and the handshake are calibrated offline against an ETS 6.4.1 capture
+  of a physical device (every frame verifies), and the full path runs against
+  the knx-sim activated device; a live run against a physical activated device
+  is still pending. KNXnet/IP Secure (encrypted tunnel
   sessions to a Secure-only interface) is not implemented; a Secure-only
   interface refuses `bussard`. Phase B of
   [issue #71](https://github.com/tmbo/bussard/issues/71) tracks it.

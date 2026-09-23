@@ -25,8 +25,8 @@ pub const APCI_SEC_HIGH: u8 = 0x03;
 pub const APCI_SEC_LOW: u8 = 0xF1;
 
 /// The Data-Secure MAC length on TP: 4 bytes, the truncated `mac[..4]`
-/// (spec §5.3). `SEC-CAL:` confirm the gateway/device uses a 4-byte (not 16-byte)
-/// MAC on the tunnel management path — capture needed (spec §6.2, §12.4 #2).
+/// (spec §5.3). CONFIRMED on the tunnel management path (secure-1-1-12 capture,
+/// 2026-09-23): every ETS and device frame carries a 4-byte MAC.
 pub const TP_MAC_LEN: usize = 4;
 
 /// The CCM security algorithm carried in SCF bits 6-4 (spec §5.2).
@@ -66,10 +66,10 @@ impl SecurityAlgorithm {
 
 /// The S-A service selector carried in SCF bits 2-0 (spec §5.2).
 ///
-/// Values are read off the house-capture SCF bytes (`0x90`/`0x92`/`0x93`, spec
-/// §5.2): data = 0, Sync_Req = 2, Sync_Res = 3. The enum names are `INFERRED`
-/// from the tool-access flag + XKNX. `SEC-CAL:` confirm the SALService enum names
-/// against a live capture.
+/// Data = 0, Sync_Req = 2, Sync_Res = 3. CONFIRMED by decrypting the
+/// secure-1-1-12 capture (2026-09-23): `0x92` frames carry the serial +
+/// challenge request layout, `0x93` frames the two-sequence response, `0x90`
+/// frames wrapped management APDUs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecureService {
     /// S-A_Data (selector `0`): a wrapped data/management APDU.
@@ -123,6 +123,20 @@ impl Scf {
             algorithm,
             system_broadcast: false,
             service: SecureService::Data,
+        }
+    }
+
+    /// The SCF byte of a tool-access Sync frame, `0x92` (Sync_Req) or `0x93`
+    /// (Sync_Res): authentication + encryption, system-broadcast bit clear.
+    /// CONFIRMED (secure-1-1-12 capture, 2026-09-23): ETS and the device use
+    /// exactly these two bytes, on the connection-oriented exchange and on the
+    /// broadcast one to `0/0/0` alike.
+    pub fn tool_sync(service: SecureService) -> Self {
+        Scf {
+            tool_access: true,
+            algorithm: SecurityAlgorithm::AuthenticationEncryption,
+            system_broadcast: false,
+            service,
         }
     }
 
@@ -233,18 +247,103 @@ pub fn tp_counter_0(seq: Sequence, addr: &TpAddressing) -> [u8; 16] {
 }
 
 /// The wire bytes of a built A_SecureData ASDU: the payload of the `0x03F1`
-/// APDU (spec §5.3), laid out `SCF(1) || seq(6) || secured_apdu(var) || MAC(4)`.
+/// APDU (spec §5.3), laid out `SCF(1) || seq(6) || secured(var) || MAC(4)`.
 ///
 /// This is exactly what [`crate::session`] hands to the transport as the data
 /// octets of the `A_SECURE_DATA` APCI.
 pub type SecureAsdu = Vec<u8>;
 
+/// CCM-seals `payload` under the TP nonce for `seq` (spec §5.6).
+///
+/// `ad` is the additional data that precedes the payload in the CBC-MAC (the
+/// SCF, plus the serial number for an S-A_Sync_Req). In encrypt mode the payload
+/// is encrypted and the `block_0` length octet is its length; in auth-only mode
+/// the payload joins the additional data, travels in the clear, and the length
+/// octet is 0 (RFC 3610 §2.2: the field counts the encrypted payload only).
+///
+/// The CBC-MAC is truncated to [`TP_MAC_LEN`] **before** the CTR stage, so the
+/// payload keystream starts right after the 4 MAC bytes (see
+/// [`crypto::encrypt_ctr`]). Returns `(secured_payload, mac4)`.
+fn seal(
+    key: &Key16,
+    seq: Sequence,
+    addr: &TpAddressing,
+    ad: &[u8],
+    payload: &[u8],
+    encrypt: bool,
+) -> Result<(Vec<u8>, [u8; TP_MAC_LEN]), AsduError> {
+    let counter_0 = tp_counter_0(seq, addr);
+    let (secured, enc_mac) = if encrypt {
+        let len =
+            u8::try_from(payload.len()).map_err(|_| AsduError::PayloadTooLong(payload.len()))?;
+        let block_0 = tp_block_0(seq, addr, len);
+        let mac_cbc = crypto::cbc_mac(key, ad, payload, &block_0)?;
+        crypto::encrypt_ctr(key, &counter_0, &mac_cbc[..TP_MAC_LEN], payload)?
+    } else {
+        let mut full_ad = Vec::with_capacity(ad.len() + payload.len());
+        full_ad.extend_from_slice(ad);
+        full_ad.extend_from_slice(payload);
+        let block_0 = tp_block_0(seq, addr, 0);
+        let mac_cbc = crypto::cbc_mac(key, &full_ad, &[], &block_0)?;
+        let (_empty, enc_mac) = crypto::encrypt_ctr(key, &counter_0, &mac_cbc[..TP_MAC_LEN], &[])?;
+        (payload.to_vec(), enc_mac)
+    };
+    let mut mac4 = [0u8; TP_MAC_LEN];
+    mac4.copy_from_slice(&enc_mac[..TP_MAC_LEN]);
+    Ok((secured, mac4))
+}
+
+/// Inverse of [`seal`]: recovers the plaintext payload and checks the MAC in
+/// constant time.
+///
+/// # Errors
+///
+/// [`AsduError::MacMismatch`] when the recomputed MAC differs.
+fn open(
+    key: &Key16,
+    seq: Sequence,
+    addr: &TpAddressing,
+    ad: &[u8],
+    secured: &[u8],
+    received_mac: &[u8],
+    encrypt: bool,
+) -> Result<Vec<u8>, AsduError> {
+    let plain = if encrypt {
+        let counter_0 = tp_counter_0(seq, addr);
+        let (plain, _mac) = crypto::decrypt_ctr(key, &counter_0, received_mac, secured)?;
+        plain
+    } else {
+        secured.to_vec()
+    };
+    let (_resealed, expected) = seal(key, seq, addr, ad, &plain, encrypt)?;
+    if !crypto::constant_time_eq(&expected, received_mac) {
+        return Err(AsduError::MacMismatch);
+    }
+    Ok(plain)
+}
+
+/// An ASDU split into `(scf, seq_field, body, mac)`.
+type SplitAsdu<'a> = (Scf, [u8; SEQ_LEN], &'a [u8], &'a [u8]);
+
+/// Splits an ASDU into `(scf, seq_field, body, mac)` after the length check.
+fn split_asdu(asdu: &[u8]) -> Result<SplitAsdu<'_>, AsduError> {
+    // SCF(1) + seq(6) + at least the MAC(4).
+    if asdu.len() < 1 + SEQ_LEN + TP_MAC_LEN {
+        return Err(AsduError::TooShort(asdu.len()));
+    }
+    let scf = Scf::from_byte(asdu[0])?;
+    let mut seq = [0u8; SEQ_LEN];
+    seq.copy_from_slice(&asdu[1..1 + SEQ_LEN]);
+    let body = &asdu[1 + SEQ_LEN..asdu.len() - TP_MAC_LEN];
+    let mac = &asdu[asdu.len() - TP_MAC_LEN..];
+    Ok((scf, seq, body, mac))
+}
+
 /// Encodes an A_SecureData ASDU wrapping `inner_apci` + `inner_data` (spec §5.6).
 ///
 /// `inner_apci` is the plain management APCI (e.g. `A_Memory_Write`); it is
-/// serialized to its two APDU octets (10-bit APCI packed into the low 6 bits of
-/// octet 0 and the high 2 bits... — see [`inner_apdu_bytes`]) plus its data, and
-/// that byte string is the "apdu" the CCM authenticates/encrypts.
+/// serialized with its data by [`inner_apdu_bytes`], and that byte string is the
+/// "apdu" the CCM authenticates (auth-only) or authenticates and encrypts.
 ///
 /// # Errors
 ///
@@ -259,43 +358,13 @@ pub fn encode(
     inner_data: &[u8],
 ) -> Result<SecureAsdu, AsduError> {
     let apdu = inner_apdu_bytes(inner_apci, inner_data);
-    let full_len = u8::try_from(apdu.len()).map_err(|_| AsduError::PayloadTooLong(apdu.len()))?;
+    if u8::try_from(apdu.len()).is_err() {
+        return Err(AsduError::PayloadTooLong(apdu.len()));
+    }
     let scf_byte = scf.to_byte();
+    let (secured_apdu, mac4) = seal(key, seq, addr, &[scf_byte], &apdu, scf.algorithm.encrypts())?;
 
-    // CCM's block_0 length field is the length of the *encrypted payload*, not of
-    // the additional data (RFC 3610 §2.2). In auth-only mode the APDU is
-    // additional data and the payload is empty, so the field is 0; in encrypt
-    // mode the APDU is the payload.
-    let payload_len = if scf.algorithm.encrypts() {
-        full_len
-    } else {
-        0
-    };
-    let block_0 = tp_block_0(seq, addr, payload_len);
-    let counter_0 = tp_counter_0(seq, addr);
-
-    let (secured_apdu, mac4) = if scf.algorithm.encrypts() {
-        // CCM_ENCRYPTION: additional_data = SCF only; payload = apdu; encrypt
-        // both apdu and MAC (spec §5.6).
-        let mac_cbc = crypto::cbc_mac(key, &[scf_byte], &apdu, &block_0)?;
-        let (enc_payload, enc_mac) = crypto::encrypt_ctr(key, &counter_0, &mac_cbc, &apdu)?;
-        let mut mac4 = [0u8; TP_MAC_LEN];
-        mac4.copy_from_slice(&enc_mac[..TP_MAC_LEN]);
-        (enc_payload, mac4)
-    } else {
-        // CCM_AUTHENTICATION: additional_data = SCF || apdu; apdu in the clear;
-        // encrypt only the MAC (spec §5.6).
-        let mut ad = Vec::with_capacity(1 + apdu.len());
-        ad.push(scf_byte);
-        ad.extend_from_slice(&apdu);
-        let mac_cbc = crypto::cbc_mac(key, &ad, &[], &block_0)?;
-        let (_empty, enc_mac) = crypto::encrypt_ctr(key, &counter_0, &mac_cbc, &[])?;
-        let mut mac4 = [0u8; TP_MAC_LEN];
-        mac4.copy_from_slice(&enc_mac[..TP_MAC_LEN]);
-        (apdu, mac4)
-    };
-
-    let mut out = Vec::with_capacity(1 + 6 + secured_apdu.len() + TP_MAC_LEN);
+    let mut out = Vec::with_capacity(1 + SEQ_LEN + secured_apdu.len() + TP_MAC_LEN);
     out.push(scf_byte);
     out.extend_from_slice(&seq.to_bytes());
     out.extend_from_slice(&secured_apdu);
@@ -316,75 +385,265 @@ pub struct DecodedInner {
     pub data: Vec<u8>,
 }
 
-/// Decodes and verifies an A_SecureData ASDU, returning the inner APDU
+/// Decodes and verifies an S-A_Data ASDU, returning the inner APDU
 /// (spec §5.6). The MAC is checked constant-time; a mismatch is rejected.
 ///
 /// # Errors
 ///
 /// - [`AsduError::TooShort`] if the ASDU is shorter than `SCF+seq+MAC`.
+/// - [`AsduError::UnexpectedService`] if the SCF names a Sync service (use
+///   [`decode_sync_req`] / [`decode_sync_res`] for those).
 /// - [`AsduError::MacMismatch`] if the recomputed MAC does not match.
 /// - [`AsduError::UnknownScf`] / [`CryptoError`] for malformed input.
 pub fn decode(key: &Key16, asdu: &[u8], addr: &TpAddressing) -> Result<DecodedInner, AsduError> {
-    // SCF(1) + seq(6) + at least the MAC(4).
-    if asdu.len() < 1 + 6 + TP_MAC_LEN {
-        return Err(AsduError::TooShort(asdu.len()));
+    let (scf, seq_bytes, secured_apdu, received_mac) = split_asdu(asdu)?;
+    if scf.service != SecureService::Data {
+        return Err(AsduError::UnexpectedService(asdu[0]));
     }
-    let scf = Scf::from_byte(asdu[0])?;
-    let scf_byte = asdu[0];
-    let mut seq_bytes = [0u8; 6];
-    seq_bytes.copy_from_slice(&asdu[1..7]);
     let seq = Sequence::from_bytes(seq_bytes);
-
-    let secured_apdu = &asdu[7..asdu.len() - TP_MAC_LEN];
-    let received_mac = &asdu[asdu.len() - TP_MAC_LEN..];
-
-    // See `encode`: the block_0 length field counts the CCM payload, which is
-    // the (encrypted) APDU in encrypt mode and empty in auth-only mode.
-    let payload_len = if scf.algorithm.encrypts() {
-        u8::try_from(secured_apdu.len())
-            .map_err(|_| AsduError::PayloadTooLong(secured_apdu.len()))?
-    } else {
-        0
-    };
-    let block_0 = tp_block_0(seq, addr, payload_len);
-    let counter_0 = tp_counter_0(seq, addr);
-
-    let apdu = if scf.algorithm.encrypts() {
-        // Decrypt the MAC and the payload. We only have 4 MAC bytes on the wire;
-        // recover the plaintext apdu, then recompute and compare the MAC.
-        // First decrypt the payload with counter_0+1.. (the MAC uses block 0).
-        // We reuse `decrypt_ctr` with a placeholder MAC to peel the payload, then
-        // recompute the real MAC from the recovered apdu.
-        let placeholder = [0u8; crypto::BLOCK];
-        let (apdu, _discard) = crypto::decrypt_ctr(key, &counter_0, &placeholder, secured_apdu)?;
-        // Recompute the expected MAC over the recovered apdu (same length as the
-        // ciphertext, so `block_0` above already carries the right length field).
-        let mac_cbc = crypto::cbc_mac(key, &[scf_byte], &apdu, &block_0)?;
-        let (_e, enc_mac) = crypto::encrypt_ctr(key, &counter_0, &mac_cbc, &[])?;
-        if !crypto::constant_time_eq(&enc_mac[..TP_MAC_LEN], received_mac) {
-            return Err(AsduError::MacMismatch);
-        }
-        apdu
-    } else {
-        // AUTH-only: the apdu is in the clear; recompute the MAC over SCF||apdu.
-        let apdu = secured_apdu.to_vec();
-        let mut ad = Vec::with_capacity(1 + apdu.len());
-        ad.push(scf_byte);
-        ad.extend_from_slice(&apdu);
-        let mac_cbc = crypto::cbc_mac(key, &ad, &[], &block_0)?;
-        let (_e, enc_mac) = crypto::encrypt_ctr(key, &counter_0, &mac_cbc, &[])?;
-        if !crypto::constant_time_eq(&enc_mac[..TP_MAC_LEN], received_mac) {
-            return Err(AsduError::MacMismatch);
-        }
-        apdu
-    };
-
+    let apdu = open(
+        key,
+        seq,
+        addr,
+        &[asdu[0]],
+        secured_apdu,
+        received_mac,
+        scf.algorithm.encrypts(),
+    )?;
     let (apci, data) = parse_inner_apdu(&apdu)?;
     Ok(DecodedInner {
         scf,
         sequence: seq,
         apci,
         data,
+    })
+}
+
+/// The length of the serial-number field of an S-A_Sync_Req (spec §6.3).
+pub const SERIAL_LEN: usize = 6;
+/// The length of the S-A_Sync_Req challenge (spec §6.3).
+pub const CHALLENGE_LEN: usize = 6;
+/// The length of the sequence-number field of every secure ASDU (spec §5.3).
+pub const SEQ_LEN: usize = 6;
+
+/// A 6-byte S-A_Sync_Req challenge (spec §6.3).
+pub type Challenge = [u8; CHALLENGE_LEN];
+
+/// The content of an S-A_Sync_Req (spec §6.3). CONFIRMED layout (secure-1-1-12
+/// capture, 2026-09-23):
+///
+/// ```text
+/// SCF(0x92) || seq(6) || serial(6, clear) || challenge(6, encrypted) || MAC(4)
+/// ```
+///
+/// The CCM nonce is the frame's own `seq` field and the carrier addressing. The
+/// additional data is `SCF || serial`; the payload is the challenge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyncRequest {
+    /// The requester's current send sequence. The responder answers with the
+    /// sequence it will accept next from the requester (normally this value), and
+    /// ETS then sends its first S-A_Data with exactly this value.
+    pub sequence: Sequence,
+    /// The target's KNX serial number, or all zeros on a connection-oriented
+    /// (individually addressed) request. ETS fills it only on the broadcast form
+    /// sent to `0/0/0`.
+    pub serial: [u8; SERIAL_LEN],
+    /// A fresh random challenge that binds the S-A_Sync_Res to this request.
+    pub challenge: Challenge,
+}
+
+/// The content of an S-A_Sync_Res (spec §6.3). CONFIRMED layout (secure-1-1-12
+/// capture, 2026-09-23):
+///
+/// ```text
+/// SCF(0x93) || masked(6) || enc(responder_seq(6) || requester_seq(6)) || MAC(4)
+/// ```
+///
+/// The six bytes in the sequence slot are NOT a sequence: they are the CCM nonce
+/// sequence XOR the request's challenge. The receiver recovers the nonce as
+/// `masked XOR challenge` and verifies/decrypts with it, so a response only
+/// verifies against the request whose challenge it answers. The additional data
+/// is the SCF alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyncResponse {
+    /// The responder's own next send sequence. The device's next S-A_Data
+    /// carries exactly this value.
+    pub responder_sequence: Sequence,
+    /// The sequence the responder accepts next from the requester. In the
+    /// capture it equals the request's `sequence`.
+    pub requester_sequence: Sequence,
+}
+
+/// Encodes an S-A_Sync_Req ASDU (spec §6.3). `scf.service` must be
+/// [`SecureService::SyncReq`].
+///
+/// # Errors
+///
+/// [`AsduError::UnexpectedService`] for a non-Sync_Req SCF, or a
+/// [`CryptoError`] from the CCM primitives.
+pub fn encode_sync_req(
+    key: &Key16,
+    scf: Scf,
+    req: &SyncRequest,
+    addr: &TpAddressing,
+) -> Result<SecureAsdu, AsduError> {
+    let scf_byte = scf.to_byte();
+    if scf.service != SecureService::SyncReq {
+        return Err(AsduError::UnexpectedService(scf_byte));
+    }
+    let mut ad = Vec::with_capacity(1 + SERIAL_LEN);
+    ad.push(scf_byte);
+    ad.extend_from_slice(&req.serial);
+    let (secured, mac4) = seal(
+        key,
+        req.sequence,
+        addr,
+        &ad,
+        &req.challenge,
+        scf.algorithm.encrypts(),
+    )?;
+    let mut out = Vec::with_capacity(1 + SEQ_LEN + SERIAL_LEN + CHALLENGE_LEN + TP_MAC_LEN);
+    out.push(scf_byte);
+    out.extend_from_slice(&req.sequence.to_bytes());
+    out.extend_from_slice(&req.serial);
+    out.extend_from_slice(&secured);
+    out.extend_from_slice(&mac4);
+    Ok(out)
+}
+
+/// Decodes and verifies an S-A_Sync_Req ASDU (spec §6.3).
+///
+/// # Errors
+///
+/// [`AsduError::UnexpectedService`] if the SCF is not a Sync_Req,
+/// [`AsduError::TooShort`] on a wrong length, [`AsduError::MacMismatch`] on a
+/// bad MAC.
+pub fn decode_sync_req(
+    key: &Key16,
+    asdu: &[u8],
+    addr: &TpAddressing,
+) -> Result<(Scf, SyncRequest), AsduError> {
+    let (scf, seq_bytes, body, mac) = split_asdu(asdu)?;
+    if scf.service != SecureService::SyncReq {
+        return Err(AsduError::UnexpectedService(asdu[0]));
+    }
+    if body.len() != SERIAL_LEN + CHALLENGE_LEN {
+        return Err(AsduError::TooShort(asdu.len()));
+    }
+    let mut serial = [0u8; SERIAL_LEN];
+    serial.copy_from_slice(&body[..SERIAL_LEN]);
+    let mut ad = Vec::with_capacity(1 + SERIAL_LEN);
+    ad.push(asdu[0]);
+    ad.extend_from_slice(&serial);
+    let sequence = Sequence::from_bytes(seq_bytes);
+    let plain = open(
+        key,
+        sequence,
+        addr,
+        &ad,
+        &body[SERIAL_LEN..],
+        mac,
+        scf.algorithm.encrypts(),
+    )?;
+    let mut challenge = [0u8; CHALLENGE_LEN];
+    challenge.copy_from_slice(&plain);
+    Ok((
+        scf,
+        SyncRequest {
+            sequence,
+            serial,
+            challenge,
+        },
+    ))
+}
+
+/// XORs a 6-byte nonce sequence with a challenge (the S-A_Sync_Res masking).
+fn mask(value: [u8; SEQ_LEN], challenge: &Challenge) -> [u8; SEQ_LEN] {
+    let mut out = [0u8; SEQ_LEN];
+    for (o, (v, c)) in out.iter_mut().zip(value.iter().zip(challenge.iter())) {
+        *o = v ^ c;
+    }
+    out
+}
+
+/// Encodes an S-A_Sync_Res ASDU answering the request that carried `challenge`
+/// (spec §6.3). `nonce` is the responder's choice of CCM nonce sequence (a
+/// real device picks a fresh value per response); it travels masked with the
+/// challenge. `scf.service` must be [`SecureService::SyncRes`].
+///
+/// # Errors
+///
+/// [`AsduError::UnexpectedService`] for a non-Sync_Res SCF, or a
+/// [`CryptoError`] from the CCM primitives.
+pub fn encode_sync_res(
+    key: &Key16,
+    scf: Scf,
+    res: &SyncResponse,
+    challenge: &Challenge,
+    nonce: Sequence,
+    addr: &TpAddressing,
+) -> Result<SecureAsdu, AsduError> {
+    let scf_byte = scf.to_byte();
+    if scf.service != SecureService::SyncRes {
+        return Err(AsduError::UnexpectedService(scf_byte));
+    }
+    let mut payload = Vec::with_capacity(2 * SEQ_LEN);
+    payload.extend_from_slice(&res.responder_sequence.to_bytes());
+    payload.extend_from_slice(&res.requester_sequence.to_bytes());
+    let (secured, mac4) = seal(
+        key,
+        nonce,
+        addr,
+        &[scf_byte],
+        &payload,
+        scf.algorithm.encrypts(),
+    )?;
+    let mut out = Vec::with_capacity(1 + SEQ_LEN + secured.len() + TP_MAC_LEN);
+    out.push(scf_byte);
+    out.extend_from_slice(&mask(nonce.to_bytes(), challenge));
+    out.extend_from_slice(&secured);
+    out.extend_from_slice(&mac4);
+    Ok(out)
+}
+
+/// Decodes and verifies an S-A_Sync_Res ASDU against the `challenge` of the
+/// request it answers (spec §6.3).
+///
+/// # Errors
+///
+/// [`AsduError::UnexpectedService`] if the SCF is not a Sync_Res,
+/// [`AsduError::TooShort`] on a wrong length, [`AsduError::MacMismatch`] on a
+/// bad MAC (including a response to a different challenge).
+pub fn decode_sync_res(
+    key: &Key16,
+    asdu: &[u8],
+    addr: &TpAddressing,
+    challenge: &Challenge,
+) -> Result<SyncResponse, AsduError> {
+    let (scf, masked, body, mac) = split_asdu(asdu)?;
+    if scf.service != SecureService::SyncRes {
+        return Err(AsduError::UnexpectedService(asdu[0]));
+    }
+    if body.len() != 2 * SEQ_LEN {
+        return Err(AsduError::TooShort(asdu.len()));
+    }
+    let nonce = Sequence::from_bytes(mask(masked, challenge));
+    let plain = open(
+        key,
+        nonce,
+        addr,
+        &[asdu[0]],
+        body,
+        mac,
+        scf.algorithm.encrypts(),
+    )?;
+    let mut responder = [0u8; SEQ_LEN];
+    responder.copy_from_slice(&plain[..SEQ_LEN]);
+    let mut requester = [0u8; SEQ_LEN];
+    requester.copy_from_slice(&plain[SEQ_LEN..]);
+    Ok(SyncResponse {
+        responder_sequence: Sequence::from_bytes(responder),
+        requester_sequence: Sequence::from_bytes(requester),
     })
 }
 
@@ -440,6 +699,18 @@ pub enum AsduError {
     /// The SCF byte carried an unrecognised algorithm or service.
     #[error("unrecognised Security Control Field byte: {0:#04x}")]
     UnknownScf(u8),
+    /// The SCF named a secure service the caller did not expect here (e.g. a
+    /// Sync frame handed to the S-A_Data decoder).
+    #[error("unexpected secure service in SCF byte {0:#04x}")]
+    UnexpectedService(u8),
+    /// An S-A_Sync_Res arrived with no Sync_Req outstanding, so there is no
+    /// challenge to verify it against.
+    #[error("S-A_Sync_Res received without an outstanding S-A_Sync_Req")]
+    UnsolicitedSyncResponse,
+    /// The device did not answer the S-A_Sync_Req with an S-A_Sync_Res (spec
+    /// §6.3). ETS always opens secured tool access with this exchange.
+    #[error("the device did not answer the Data Secure sync request (S-A_Sync_Req)")]
+    SyncUnanswered,
     /// A crypto primitive rejected its input.
     #[error(transparent)]
     Crypto(#[from] CryptoError),
@@ -603,8 +874,11 @@ mod tests {
     const KAT_INNER_APCI: u16 = 0x3D1;
     const KAT_INNER_DATA: [u8; 5] = [0x00, 0xFF, 0xFF, 0xFF, 0xFF];
     /// auth+encrypt (SCF 0x90): the inner APDU and the MAC are both encrypted.
+    /// The payload keystream starts right after the 4 MAC bytes (the ETS layout,
+    /// secure-1-1-12 capture 2026-09-23); the MAC bytes are unchanged from the
+    /// earlier block-aligned vector, only the 7 payload bytes moved.
     const KAT_AUTH_ENC: [u8; 18] = [
-        0x90, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2A, 0x08, 0x7D, 0x2A, 0xF4, 0x87, 0x75, 0xC3, 0x98,
+        0x90, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2A, 0xFB, 0xB8, 0x72, 0x5D, 0x14, 0x5F, 0xBE, 0x98,
         0xA5, 0x3D, 0xA2,
     ];
     /// auth-only (SCF 0x80): the inner APDU rides in the clear under the MAC.
@@ -703,6 +977,88 @@ mod tests {
         let asdu = encode(&key, scf, seq, &a, 0x280, &[0x00, 0x10, 0x01]).unwrap();
         let wrong = Key16::new([0x99; 16]);
         assert_eq!(decode(&wrong, &asdu, &a), Err(AsduError::MacMismatch));
+    }
+
+    /// Sync_Req round trip: serial in the clear, challenge encrypted.
+    #[test]
+    fn test_sync_req_round_trip() -> Result<(), AsduError> {
+        let key = Key16::new(KAT_KEY);
+        let a = kat_addr();
+        let req = SyncRequest {
+            sequence: Sequence::new(0x0012_3456_789A),
+            serial: [0x00, 0xFA, 0x12, 0x34, 0x56, 0x78],
+            challenge: [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF],
+        };
+        let asdu = encode_sync_req(&key, Scf::tool_sync(SecureService::SyncReq), &req, &a)?;
+        assert_eq!(asdu.len(), 1 + 6 + 6 + 6 + 4);
+        assert_eq!(asdu[0], 0x92);
+        assert_eq!(&asdu[1..7], &req.sequence.to_bytes());
+        assert_eq!(&asdu[7..13], &req.serial, "the serial travels in the clear");
+        assert_ne!(&asdu[13..19], &req.challenge, "the challenge is encrypted");
+        let (scf, back) = decode_sync_req(&key, &asdu, &a)?;
+        assert_eq!(scf.to_byte(), 0x92);
+        assert_eq!(back, req);
+        // The serial is authenticated: flipping it breaks the MAC.
+        let mut forged = asdu.clone();
+        forged[8] ^= 0x01;
+        assert_eq!(
+            decode_sync_req(&key, &forged, &a),
+            Err(AsduError::MacMismatch)
+        );
+        Ok(())
+    }
+
+    /// Sync_Res round trip: the sequence slot carries the nonce masked with the
+    /// challenge, and only the right challenge verifies.
+    #[test]
+    fn test_sync_res_round_trip() -> Result<(), AsduError> {
+        let key = Key16::new(KAT_KEY);
+        let a = kat_addr();
+        let challenge = [0x10, 0x20, 0x30, 0x40, 0x50, 0x60];
+        let nonce = Sequence::new(0x0102_0304_0506);
+        let res = SyncResponse {
+            responder_sequence: Sequence::new(0x0012_3456_0001),
+            requester_sequence: Sequence::new(0x0012_3456_789A),
+        };
+        let asdu = encode_sync_res(
+            &key,
+            Scf::tool_sync(SecureService::SyncRes),
+            &res,
+            &challenge,
+            nonce,
+            &a,
+        )?;
+        assert_eq!(asdu.len(), 1 + 6 + 12 + 4);
+        assert_eq!(asdu[0], 0x93);
+        assert_eq!(&asdu[1..7], &[0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+        assert_eq!(decode_sync_res(&key, &asdu, &a, &challenge)?, res);
+        assert_eq!(
+            decode_sync_res(&key, &asdu, &a, &[0u8; 6]),
+            Err(AsduError::MacMismatch)
+        );
+        Ok(())
+    }
+
+    /// The data decoder refuses a Sync frame instead of mis-verifying it.
+    #[test]
+    fn test_decode_rejects_sync_service() -> Result<(), AsduError> {
+        let key = Key16::new(KAT_KEY);
+        let req = SyncRequest {
+            sequence: Sequence::new(1),
+            serial: [0; 6],
+            challenge: [0; 6],
+        };
+        let asdu = encode_sync_req(
+            &key,
+            Scf::tool_sync(SecureService::SyncReq),
+            &req,
+            &kat_addr(),
+        )?;
+        assert_eq!(
+            decode(&key, &asdu, &kat_addr()),
+            Err(AsduError::UnexpectedService(0x92))
+        );
+        Ok(())
     }
 
     #[test]

@@ -15,7 +15,7 @@
 //! [`DataSecureSession`] (spec §6.1) and are never printed or logged (spec §2.3).
 
 use bussard_model::IndividualAddress;
-use bussard_secure::{DataSecureSession, TpAddressing, UnwrapOutcome};
+use bussard_secure::{AsduError, DataSecureSession, TpAddressing, UnwrapOutcome};
 
 use crate::error::{MgmtError, Result};
 
@@ -47,6 +47,46 @@ impl SecureLayer {
     /// Whether this layer wraps management APDUs (the device is activated).
     pub fn is_active(&self) -> bool {
         self.session.is_some()
+    }
+
+    /// Whether the S-A_Sync handshake still has to run before the first wrapped
+    /// APDU (spec §6.3): `true` on an activated layer that has not verified a
+    /// Sync_Res yet, always `false` on a plain layer.
+    pub fn needs_sync(&self) -> bool {
+        self.session.as_ref().is_some_and(|s| !s.is_synced())
+    }
+
+    /// Whether an activated layer has completed the S-A_Sync handshake.
+    pub fn is_synced(&self) -> bool {
+        self.session.as_ref().is_some_and(|s| s.is_synced())
+    }
+
+    /// Builds the S-A_Sync_Req for a frame `source → target` with `tpci`,
+    /// returning the `(outer_apci, outer_data)` to send (spec §6.3).
+    ///
+    /// # Errors
+    ///
+    /// [`MgmtError::Secure`] if the layer is plain (there is nothing to sync) or
+    /// the codec rejects the request.
+    pub fn sync_request(
+        &mut self,
+        target: IndividualAddress,
+        source: IndividualAddress,
+        tpci: u8,
+    ) -> Result<(u16, Vec<u8>)> {
+        let addr = tp_addressing(source, target, tpci);
+        match &mut self.session {
+            None => Err(MgmtError::Secure {
+                address: target,
+                source: AsduError::UnexpectedService(0x92),
+            }),
+            Some(session) => session
+                .sync_request(&addr)
+                .map_err(|source| MgmtError::Secure {
+                    address: target,
+                    source,
+                }),
+        }
     }
 
     /// Wraps an outgoing `(apci, data)` for a frame addressed `source → target`
@@ -87,7 +127,9 @@ impl SecureLayer {
     /// On a plain layer this returns `(apci, data)` untouched. On an activated
     /// layer: an `A_SecureData` frame is MAC-verified, freshness-checked, and
     /// unwrapped; any non-secured frame passes through unchanged (a device may
-    /// still send plain transport/control frames, spec §6.1).
+    /// still send plain transport/control frames, spec §6.1). A verified
+    /// S-A_Sync_Res is applied to the session and surfaces as
+    /// `(A_SECURE_DATA, [])`; the caller checks [`is_synced`](Self::is_synced).
     ///
     /// # Errors
     ///
@@ -113,6 +155,7 @@ impl SecureLayer {
                     })? {
                     UnwrapOutcome::Secured { apci, data } => Ok((apci, data)),
                     UnwrapOutcome::Plain => Ok((apci, data.to_vec())),
+                    UnwrapOutcome::Synced { .. } => Ok((bussard_secure::A_SECURE_DATA, Vec::new())),
                 }
             }
         }

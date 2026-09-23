@@ -5,8 +5,8 @@
 //!
 //! - **AES-CBC-MAC** produces the authentication tag (§3.2). It CBC-encrypts a
 //!   zero-padded buffer with a zero IV and keeps the last cipher block.
-//! - **AES-CTR** encrypts the tag and the payload (§3.3). The first keystream
-//!   block encrypts the MAC; subsequent blocks encrypt the payload.
+//! - **AES-CTR** encrypts the tag and the payload (§3.3) as one continuous
+//!   keystream: the (truncated) MAC first, the payload right after it.
 //!
 //! This is exactly what CCM is under the hood (RFC 3610 / SP 800-38C). Keeping it
 //! decomposed lets the simulator depend only on `aes` + `cbc` + `ctr` (all
@@ -93,55 +93,37 @@ fn ctr_keystream(key: &[u8; 16], counter_0: &[u8; 16], blocks: usize) -> Vec<u8>
 
 /// CTR-encrypt the MAC and payload (spec §3.3).
 ///
-/// The first CTR keystream block (at `counter_0`) encrypts the 16-byte
-/// `mac_cbc`; subsequent blocks (at `counter_0 + 1, +2, …`) encrypt the payload.
-/// Returns `(encrypted_payload, encrypted_mac_full16)`; the caller truncates the
-/// encrypted MAC to the on-wire length.
+/// One continuous keystream from `counter_0` covers `mac || payload`: the MAC
+/// takes the first `mac.len()` keystream bytes and the payload starts at the
+/// very next byte. Data Secure passes the MAC already truncated to its 4 wire
+/// bytes, so the payload starts at keystream byte 4 (NOT at block 1). This is
+/// what ETS 6.4.1 and a real activated device do (secure-1-1-12 capture,
+/// 2026-09-23). Returns `(encrypted_payload, encrypted_mac)`.
 pub fn encrypt_data_ctr(
     key: &[u8; 16],
     counter_0: &[u8; 16],
-    mac_cbc: &[u8; 16],
+    mac: &[u8],
     payload: &[u8],
-) -> (Vec<u8>, [u8; 16]) {
-    // Need one block for the MAC plus enough for the payload.
-    let payload_blocks = payload.len().div_ceil(BLOCK);
-    let keystream = ctr_keystream(key, counter_0, 1 + payload_blocks);
-
-    let mut enc_mac = [0u8; 16];
-    enc_mac.copy_from_slice(&bytes_xor(mac_cbc, &keystream[..BLOCK]));
-
-    let enc_payload = if payload.is_empty() {
-        Vec::new()
-    } else {
-        bytes_xor(payload, &keystream[BLOCK..BLOCK + payload.len()])
-    };
+) -> (Vec<u8>, Vec<u8>) {
+    let total = mac.len() + payload.len();
+    let keystream = ctr_keystream(key, counter_0, total.div_ceil(BLOCK));
+    let enc_mac = bytes_xor(mac, &keystream[..mac.len()]);
+    let enc_payload = bytes_xor(payload, &keystream[mac.len()..total]);
     (enc_payload, enc_mac)
 }
 
 /// CTR-decrypt the MAC and payload (inverse of [`encrypt_data_ctr`]).
 ///
-/// CTR is symmetric, so decryption reuses the same keystream: the first block
-/// recovers `mac_cbc` from the received (encrypted) MAC, subsequent blocks
-/// recover the plaintext payload. `enc_mac` is the 16-byte encrypted MAC (the
-/// caller right-pads a truncated 4-byte wire MAC into this block before calling).
+/// CTR is symmetric: the same continuous keystream recovers the MAC (pass the
+/// wire-length MAC, 4 bytes for Data Secure) and then the payload. Returns
+/// `(payload, mac)`.
 pub fn decrypt_data_ctr(
     key: &[u8; 16],
     counter_0: &[u8; 16],
-    enc_mac: &[u8; 16],
+    enc_mac: &[u8],
     enc_payload: &[u8],
-) -> (Vec<u8>, [u8; 16]) {
-    let payload_blocks = enc_payload.len().div_ceil(BLOCK);
-    let keystream = ctr_keystream(key, counter_0, 1 + payload_blocks);
-
-    let mut mac_cbc = [0u8; 16];
-    mac_cbc.copy_from_slice(&bytes_xor(enc_mac, &keystream[..BLOCK]));
-
-    let payload = if enc_payload.is_empty() {
-        Vec::new()
-    } else {
-        bytes_xor(enc_payload, &keystream[BLOCK..BLOCK + enc_payload.len()])
-    };
-    (payload, mac_cbc)
+) -> (Vec<u8>, Vec<u8>) {
+    encrypt_data_ctr(key, counter_0, enc_mac, enc_payload)
 }
 
 /// Constant-time equality over two byte slices of equal length. Returns `false`
@@ -217,32 +199,30 @@ mod tests {
     }
 
     // Unit vector: a full CTR round-trip. Encrypting then decrypting must recover
-    // both the MAC and the payload, and the first keystream block must be what
-    // encrypts the MAC (spec §3.3).
+    // both the MAC and the payload (spec §3.3).
     #[test]
     fn test_ctr_roundtrip_recovers_mac_and_payload() {
         let key = [0x01u8; 16];
         let counter_0 = [0x02u8; 16];
-        let mac_cbc = [0xAAu8; 16];
+        let mac = [0xAAu8; 4];
         let payload = b"hello knx secure payload!!";
-        let (enc_payload, enc_mac) = encrypt_data_ctr(&key, &counter_0, &mac_cbc, payload);
-        assert_ne!(&enc_mac[..], &mac_cbc[..], "MAC is actually encrypted");
+        let (enc_payload, enc_mac) = encrypt_data_ctr(&key, &counter_0, &mac, payload);
+        assert_ne!(&enc_mac[..], &mac[..], "MAC is actually encrypted");
         assert_ne!(enc_payload.as_slice(), payload.as_slice());
         let (dec_payload, dec_mac) = decrypt_data_ctr(&key, &counter_0, &enc_mac, &enc_payload);
-        assert_eq!(dec_mac, mac_cbc);
+        assert_eq!(dec_mac, mac);
         assert_eq!(dec_payload, payload);
     }
 
     #[test]
-    fn test_ctr_mac_uses_counter0_first_block() {
-        // The MAC is XORed with keystream block 0; the payload with block 1+.
+    fn test_ctr_payload_starts_right_after_the_truncated_mac() {
+        // A 4-byte MAC takes keystream bytes 0..4; the payload starts at byte 4.
         let key = [0x07u8; 16];
         let counter_0 = [0x00u8; 16];
         let ks = ctr_keystream(&key, &counter_0, 2);
-        let mac_cbc = [0u8; 16];
-        let (_, enc_mac) = encrypt_data_ctr(&key, &counter_0, &mac_cbc, b"");
-        // enc_mac = mac_cbc XOR ks[0..16] = ks[0..16] (mac is zero).
-        assert_eq!(&enc_mac[..], &ks[..16]);
+        let (enc_payload, enc_mac) = encrypt_data_ctr(&key, &counter_0, &[0u8; 4], &[0u8; 8]);
+        assert_eq!(&enc_mac[..], &ks[..4]);
+        assert_eq!(&enc_payload[..], &ks[4..12]);
     }
 
     #[test]

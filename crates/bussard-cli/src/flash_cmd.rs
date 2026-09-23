@@ -1024,12 +1024,27 @@ fn descriptor_read_error(
     // reach bussard as "the device accepted the connection and then said
     // nothing", so the guidance has to name the secure cause before the
     // (identical-looking) IP-medium pattern below.
-    if connected
-        && matches!(
-            err,
-            MgmtError::Disconnected { .. } | MgmtError::NoResponse { .. }
-        )
-    {
+    // An activated device that cannot verify our S-A_Sync_Req (wrong tool key),
+    // or a plain device that ignores it, never sends the S-A_Sync_Res (spec §6.3).
+    let sync_unanswered = matches!(
+        err,
+        MgmtError::Secure {
+            source: bussard_secure::AsduError::SyncUnanswered,
+            ..
+        }
+    );
+    // The descriptor read can follow an authorize and a max-APDU read, so a
+    // silent device shows up as a mid-session silence rather than a bare
+    // `NoResponse`; it is the same symptom.
+    let silent = matches!(
+        err,
+        MgmtError::NoResponse { .. }
+            | MgmtError::MidSessionSilence {
+                kind: bussard_mgmt::SilenceKind::NoResponse,
+                ..
+            }
+    );
+    if connected && (sync_unanswered || silent || matches!(err, MgmtError::Disconnected { .. })) {
         if secure {
             return anyhow::anyhow!(
                 "{target} accepted the connection but never answered the SECURED management \
@@ -1039,7 +1054,7 @@ fn descriptor_read_error(
                  case flash it without --keyring/--tool-key. Nothing was written."
             );
         }
-        if matches!(err, MgmtError::NoResponse { .. }) {
+        if silent {
             return anyhow::anyhow!(
                 "{target} accepted the connection but never answered the plain management \
                  access. If this device is KNX Data Secure-activated it refuses unsecured \
@@ -1831,6 +1846,10 @@ mod tests {
         for err in [
             MgmtError::Disconnected { address: target },
             MgmtError::NoResponse { address: target },
+            MgmtError::Secure {
+                address: target,
+                source: bussard_secure::AsduError::SyncUnanswered,
+            },
         ] {
             let msg = descriptor_read_error(target, true, true, err).to_string();
             assert!(msg.contains("SECURED management access"), "{msg}");
@@ -1851,6 +1870,12 @@ mod tests {
         for err in [
             MgmtError::NoResponse { address: target },
             MgmtError::Disconnected { address: target },
+            MgmtError::MidSessionSilence {
+                address: target,
+                kind: bussard_mgmt::SilenceKind::NoResponse,
+                exchanges: 2,
+                wraps: 0,
+            },
         ] {
             let msg = descriptor_read_error(target, true, false, err).to_string();
             assert!(msg.contains("--keyring"), "{msg}");

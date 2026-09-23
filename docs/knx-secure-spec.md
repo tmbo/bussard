@@ -24,7 +24,9 @@ best-evidence default, leave a calibration TODO tagged with the greppable marker
 string `SEC-CAL:`". Do not hardcode an UNKNOWN as if it were CONFIRMED. There are
 five load-bearing UNKNOWNs (all `SEC-CAL:`-tagged) that only a live ETS capture
 settles - see §12 (test plan) and §13 (open questions). Until then, ship the
-seam with the best-evidence default.
+seam with the best-evidence default. The two Data Secure ones (Sync layout, MAC
+length) are now settled by the secure-1-1-12 capture (2026-09-23), see §12.4;
+the three IP Secure ones remain open.
 
 The two research inputs disagree on exactly one point of substance: whether
 Data Secure tool-access is *required* to flash the user's devices today. The
@@ -85,8 +87,8 @@ Phase A delivers:
    (ms since 2018-01-05), CCM-via-CBC-MAC+CTR, 4-byte MAC (§5).
 4. **Tool-key derivation** (from the keyring `ToolKey`; FDSK is the factory tool
    key before commissioning) (§2).
-5. **The sync preamble** (`S-A_Sync_Req`/`S-A_Sync_Res`) observed in the
-   captures - optional, ETS-style (§6.3).
+5. **The sync preamble** (`S-A_Sync_Req`/`S-A_Sync_Res`): ETS runs it before
+   the first S-A_Data of every secured connection, and so does bussard (§6.3).
 6. **Plain-inside-secure coexistence rules** (§6.4): a device that is not
    security-activated stays plain; a wrapper is applied only per-device when the
    keyring/knxproj says the device is activated.
@@ -209,21 +211,28 @@ calculate_message_authentication_code_cbc(key, additional_data, payload=b"", blo
     return ct[-16:]                                   # the CBC-MAC = last cipher block
 ```
 
-### 3.3 CTR (encrypt tag + payload) `[XKNX util.py, CONFIRMED]`
+### 3.3 CTR (encrypt tag + payload) `[XKNX util.py; CONFIRMED against ETS, secure-1-1-12 capture, 2026-09-23]`
 
 ```
-encrypt_data_ctr(key, counter_0, mac_cbc, payload=b""):
-    keystream = AES_CTR(key, iv=counter_0)            # CTR from counter_0
-    encrypted_mac     = mac_cbc XOR keystream_block_0 # FIRST CTR block encrypts the MAC
-    encrypted_payload = payload  XOR keystream_block_1.. # subsequent blocks encrypt payload
+encrypt_data_ctr(key, counter_0, mac, payload=b""):
+    stream = AES_CTR(key, iv=counter_0)               # ONE continuous keystream
+    encrypted_mac     = mac     XOR stream[0 : len(mac)]
+    encrypted_payload = payload XOR stream[len(mac) : len(mac)+len(payload)]
     return (encrypted_payload, encrypted_mac)
 
-decrypt_ctr(key, counter_0, mac, payload=b""):        # inverse
-    # decrypt MAC with counter 0, payload with incremented counters
+decrypt_ctr(key, counter_0, mac, payload=b""):        # identical (CTR is symmetric)
 ```
 
-Note the CTR counter used for the MAC is `counter_0`; the payload uses
-`counter_0 + 1, +2, …`. On the wire the transmitted MAC is the **encrypted** MAC.
+The keystream is a single stream over `mac || payload`, and the MAC handed to
+it is already truncated to its wire length. For Data Secure that is 4 bytes, so
+the payload starts at **byte 4 of the first keystream block**, not at
+`counter_0 + 1`. XKNX gets this for free because it truncates `mac_cbc[:4]`
+before calling a streaming CTR encryptor. bussard's first implementation encrypted
+the full 16-byte MAC first and started the payload at the second block: MACs
+matched but the payload did not, and 0 of 210 ETS/device frames verified. With
+the continuous stream all 210 verify (secure-1-1-12 capture, 2026-09-23). For IP
+Secure the MAC is 16 bytes, so the payload starts at the second block and the
+same rule holds. On the wire the transmitted MAC is the **encrypted** MAC.
 Verification = recompute `mac_cbc`, CTR-encrypt it with `counter_0`, compare
 constant-time against the received encrypted MAC (or decrypt the received MAC and
 compare to the recomputed `mac_cbc`). Use a constant-time compare.
@@ -385,9 +394,11 @@ Serialize: `scf = (tool_access<<7) | (algorithm<<4) | (system_broadcast<<3) |
 service`. Service selector values observed in captures `[corpus §2]`: SCF `0x90`
 (tool-access secure **data**), `0x92` (tool-access **Sync_Req**), `0x93`
 (**Sync_Res**). So `service` low bits: data = `0`, Sync_Req = `2`, Sync_Res = `3`
-(`0x90 = 1001_0000`, `0x92 = 1001_0010`, `0x93 = 1001_0011`). `[corpus §2,
-CONFIRMED from capture SCF bytes; the SALService enum names INFERRED from the
-tool-access flag + XKNX]`.
+(`0x90 = 1001_0000`, `0x92 = 1001_0010`, `0x93 = 1001_0011`). `[CONFIRMED:
+secure-1-1-12 capture, 2026-09-23, by decrypting the frames; each selector's
+frames carry exactly the layout of §5.3 / §6.3]`. The `system_broadcast` bit is
+clear on every frame in that capture, including the Sync_Req ETS sends to the
+broadcast address `0/0/0`.
 
 ### 5.3 ASDU layout
 
@@ -398,8 +409,9 @@ SCF(1) + sequence_number(6) + secured_apdu(variable) + MAC(4)
 ```
 
 `len(SecureData) = 10 + len(secured_apdu)` (10 = 6-byte seq + 4-byte MAC). The
-Data-Secure MAC for TP is **4 bytes**, truncated `mac[:4]`. `[research §3.3,
-CONFIRMED]`.
+Data-Secure MAC for TP is **4 bytes**, truncated `mac[:4]`. `[research §3.3;
+CONFIRMED on the tunnel management path, secure-1-1-12 capture, 2026-09-23]`.
+The Sync services reuse this frame with a different body, see §6.3.
 
 ### 5.4 CCM nonce (block_0) for TP frames `[XKNX data_secure_asdu.py, CONFIRMED]`
 
@@ -431,7 +443,8 @@ counter_0 = sequence_number(6) + address_fields_raw(4) + [0x00,0x00,0x00,0x00,0x
 - **CCM_ENCRYPTION (`algorithm=0b001`)**: `additional_data = SCF(1)` only;
   `payload = apdu`; CBC-MAC then `encrypt_data_ctr` (§3.3) encrypts BOTH the APDU
   and the MAC. `secured_apdu` = the encrypted APDU, MAC = the encrypted 4-byte
-  tag.
+  tag. The CBC-MAC is truncated to 4 bytes before the CTR stage, so the APDU's
+  keystream starts at byte 4 (§3.3).
 
 ### 5.7 Key selection
 
@@ -461,10 +474,13 @@ per-device sequence numbers and why a device reset needs an ETS seqnum update.
   new bussard run does not replay an old, lower value (which the device would
   reject as stale). Seed from the knxproj `<Security SequenceNumber>` if present,
   else from the epoch clock (§5.8). Store in a bussard state file (NOT in `knx/`;
-  it is machine state, not model), keyed by device IA. `SEC-CAL: confirm whether
-  a device rejects a from-clock seed that is lower than its stored value (i.e.
-  whether the Sync exchange (§6.3) is mandatory to learn the device's current
-  seqnum) - capture needed`.
+  it is machine state, not model), keyed by device IA. The Sync exchange (§6.3)
+  makes the seed self-correcting: the device's S-A_Sync_Res carries the sequence
+  it accepts next from the tool, and the tool continues from
+  `max(own seed, that value)`. ETS runs Sync on every secured connection
+  `[CONFIRMED, secure-1-1-12 capture, 2026-09-23]`, and bussard now does too.
+  Whether a device refuses S-A_Data that is not preceded by a Sync cannot be
+  seen in a capture where ETS always syncs; it no longer matters for bussard.
 - **Receive side (per source IA):** track last-seen sequence; refuse a received
   frame whose sequence is not strictly greater (replay protection). Update only
   after a successful MAC verify.
@@ -510,28 +526,70 @@ download engine does not know it is secure. `bussard-download` gains only a
 
 Default `algorithm` for wrapped management APDUs = **CCM_ENCRYPTION (0b001)**
 (the captures' `0x90` data frames; management content is sensitive). `tool_access
-= 1`. `SEC-CAL: confirm the gateway/device uses 4-byte MAC (not 16) on the
-tunnel management path, and whether every management APDU must be secured vs may
-stay plain once inside a secure link - capture needed`.
+= 1`. The MAC is 4 bytes on the tunnel management path `[CONFIRMED,
+secure-1-1-12 capture, 2026-09-23]`. In the same capture the activated device
+still answers a plain `A_DeviceDescriptor_Read` and a plain
+`A_PropertyValue_Read` of PID 56 (max APDU length) after `T_Connect`; ETS sends
+those plain, then the Sync, then every further management APDU as S-A_Data
+(including a second, secured descriptor read). bussard secures everything once
+a tool key is given, which the device accepts.
 
-### 6.3 The Sync preamble `[corpus §2, CONFIRMED behaviour; byte layout INFERRED]`
+### 6.3 The Sync preamble `[CONFIRMED: secure-1-1-12 capture, 2026-09-23; frames decrypted with the device tool key]`
 
-Before download, ETS performs a Data-Secure sequence-number sync against every
-secure-capable device:
+ETS opens every secured tool-access connection like this (a System B device
+that ETS 6.4.1 had security-activated):
 
-1. ETS broadcasts `IndAddrSerialRead(<target serial>)`; target answers.
-2. From ETS's own tunnel IA, one system-broadcast SCF `0x92` **Sync_Req** (target
-   serial embedded), then to the target one more `0x92` sync + the SCF `0x90`
-   secure-data frames.
-3. Target replies SCF `0x93` **Sync_Res** (broadcast + unicast).
+1. `T_Connect`, plain `A_DeviceDescriptor_Read`, plain `A_PropertyValue_Read`
+   (object 0, PID 56).
+2. ETS -> device, connection-oriented (numbered data telegram to the device's
+   individual address), SCF `0x92` **S-A_Sync_Req**.
+3. Device -> ETS, numbered data telegram, SCF `0x93` **S-A_Sync_Res**.
+4. ETS -> device, SCF `0x90` S-A_Data. Its sequence is **equal** to the
+   Sync_Req's sequence; the Sync_Req does not consume a sequence number. Later
+   S-A_Data frames count up by one. The device's first S-A_Data carries the
+   device sequence from the Sync_Res.
 
-This is how ETS learns/aligns the device's current 6-byte sequence so its own
-sends are accepted. It is **benign to omit today** (the device is unactivated),
-but **mandatory once the device is security-activated** to avoid a stale-seqnum
-rejection. bussard Phase A: implement Sync as an optional preamble, run it when
-the device is activated. `SEC-CAL: Sync_Req/Sync_Res exact ASDU byte layout
-(serial placement, whether the response carries the device seqnum) - capture the
-6 house captures' 0x3F1 frames or an ETS activation`.
+**S-A_Sync_Req** (body after the SCF, 22 bytes including the MAC):
+
+```
+seq(6) || serial(6, clear) || challenge(6, encrypted) || MAC(4)
+```
+
+- CCM nonce: `block_0` / `counter_0` of §5.4 / §5.5 with the frame's own `seq`
+  and addressing; `block_0` length octet = 6 (the challenge).
+- additional data = `SCF || serial`; payload = the 6-byte random challenge,
+  encrypted with the §3.3 stream (keystream bytes 4..10).
+- `serial` is all zero on the connection-oriented form. On the broadcast form
+  (unnumbered, to `0/0/0`, ETS used it once in the capture) it holds the
+  target's KNX serial number, which the device checks.
+
+**S-A_Sync_Res** (body after the SCF, 22 bytes including the MAC):
+
+```
+masked(6) || enc( responder_seq(6) || requester_seq(6) ) || MAC(4)
+```
+
+- The six bytes in the sequence slot are not a sequence: they are the CCM nonce
+  sequence XOR the request's challenge. The receiver computes
+  `nonce = masked XOR challenge` and uses it in `block_0` / `counter_0`; a
+  response therefore verifies only against the request it answers.
+- additional data = `SCF`; payload = 12 bytes, `block_0` length octet = 12.
+- `responder_seq` = the device's own next send sequence (its next S-A_Data
+  carries exactly this value, so the tool's freshness floor for the device is
+  `responder_seq - 1`).
+- `requester_seq` = the sequence the device accepts next from the tool. In all
+  four exchanges of the capture it equals the Sync_Req's sequence, and ETS uses
+  it as its next send sequence.
+
+bussard: `DataSecureSession::sync_request` builds the request with a fresh
+challenge; `unwrap` applies a verified Sync_Res (send sequence =
+`max(current, requester_seq)`, freshness floor = `responder_seq - 1`);
+`Layer4Connection` runs the exchange once, before the first wrapped APDU. A
+device that T_ACKs the Sync_Req but never answers it (wrong tool key, or not
+activated) surfaces as `AsduError::SyncUnanswered`. The earlier description of
+this exchange as "system broadcast" was wrong: the SCF system-broadcast bit is
+clear on every Sync frame, and the per-connection exchange is individually
+addressed.
 
 ### 6.4 Plain-inside-secure coexistence
 
@@ -824,10 +882,12 @@ The five `SEC-CAL:` UNKNOWNs are settled by **activating security on ONE house
 device via ETS and capturing it** (and, for Phase B, capturing a plain
 CONNECT_REQUEST against the gateway + a SEARCH_RESPONSE_EXTENDED):
 
-1. `SEC-CAL:` Sync_Req/Sync_Res ASDU byte layout + whether Sync is mandatory
-   (§5.9, §6.3).
-2. `SEC-CAL:` Data-Secure MAC length (4 vs 16) and secured-vs-plain scope on the
-   management path (§6.2).
+1. Sync_Req/Sync_Res ASDU byte layout + whether Sync is mandatory (§5.9, §6.3).
+   **Settled** by the secure-1-1-12 capture (2026-09-23): layout in §6.3; ETS
+   always syncs and bussard now does too.
+2. Data-Secure MAC length (4 vs 16) and secured-vs-plain scope on the
+   management path (§6.2). **Settled** by the same capture: 4 bytes; the device
+   answers two plain reads before the Sync, everything after it is secured.
 3. `SEC-CAL:` SecureWrapper `additional_data` exact bytes (§8.2).
 4. `SEC-CAL:` SEARCH_RESPONSE_EXTENDED Secure DIB type/layout + gateway
    secure-only mode (§8.4).
@@ -871,4 +931,6 @@ greppable.
   server (§7-§9). Gated on a secure-only interface.
 - **B2** - Secure ROUTING (multicast + TIMER_NOTIFY), deferred (§9.3).
 - **M2** - live ETS activation capture resolves the five `SEC-CAL:` markers; fix
-  any default that was wrong.
+  any default that was wrong. The Data Secure half is done (secure-1-1-12
+  capture, 2026-09-23): it fixed the CTR payload offset (§3.3) and the Sync
+  layout (§6.3).

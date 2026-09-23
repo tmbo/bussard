@@ -29,10 +29,11 @@ pub const A_SECURE_DATA_APCI: u16 = 0x3F1;
 /// The Data Secure MAC length on TP: 4 bytes, `mac[..4]` (spec §5.3). The full
 /// CBC-MAC is 16 bytes; only the first four ride the wire.
 ///
-/// SEC-CAL: confirm the device/gateway uses a 4-byte MAC (not 16) on the tunnel
-/// management path, and whether every management APDU must be secured vs may stay
-/// plain once inside a secure link (spec §6.2, §12.4). Best-evidence default: 4
-/// bytes, all management APDUs secured. Settled by a live ETS activation capture.
+/// CONFIRMED on the tunnel management path (secure-1-1-12 capture, 2026-09-23):
+/// every ETS and device frame carries a 4-byte MAC. The same capture shows the
+/// activated device still answering a plain `A_DeviceDescriptor_Read` and a plain
+/// `A_PropertyValue_Read` of PID 56 before the Sync; the sim's stricter
+/// "all protected management secured" rule is kept as the conservative default.
 pub const TP_MAC_LEN: usize = 4;
 
 /// Length of the 6-byte sequence number field (ms since 2018-01-05, §5.8).
@@ -72,15 +73,12 @@ impl SecAlgorithm {
 
 /// The S-A_Data service selector carried in SCF bits 2..0 (spec §5.2).
 ///
-/// The SCF byte for each service is decoded/encoded here (the wire form is
-/// CONFIRMED from the capture SCF bytes), but the sim does not yet run the Sync
-/// preamble exchange — it models the secure-DATA hot path (§12.2). The Sync seam
-/// is left clean for a later addition.
-///
-/// SEC-CAL: Sync_Req/Sync_Res exact ASDU byte layout (serial placement, whether
-/// the response carries the device seqnum) and whether Sync is mandatory once a
-/// device is activated (spec §5.9, §6.3, §12.4). Settled by an ETS activation
-/// capture.
+/// CONFIRMED by decrypting the secure-1-1-12 capture (2026-09-23): `0x92`
+/// frames are Sync_Req (`seq || serial(6, clear) || challenge(6, encrypted)`),
+/// `0x93` frames Sync_Res (`nonce^challenge || enc(device seq || tool seq)`),
+/// `0x90` frames wrapped management APDUs. The sim answers a connection-oriented
+/// Sync_Req (serial all zero) exactly like the real device; see
+/// [`DataSecureSession::answer_sync_request`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecService {
     /// Secure data transfer (`0`). SCF `0x90` in the captures.
@@ -180,6 +178,16 @@ pub enum SecureError {
     /// activated device (spec §6.4 / §12.2).
     #[error("plain access refused: device requires KNX Data Secure")]
     PlainAccessRefused,
+    /// A Sync frame arrived where only S-A_Data is valid (or vice versa).
+    #[error("unexpected secure service in SCF 0x{scf:02x}")]
+    UnexpectedService {
+        /// The offending SCF byte.
+        scf: u8,
+    },
+    /// A Sync_Req named a serial number that is not this device's. The sim
+    /// models only the connection-oriented form, whose serial field is zero.
+    #[error("Sync_Req addressed to another serial number")]
+    SyncSerialMismatch,
     /// An `A_SecureData` frame reached a device that is NOT security-activated,
     /// so it holds no tool key and cannot authenticate anything.
     ///
@@ -343,10 +351,11 @@ pub struct DataSecureSession {
     /// device that persisted a starting sequence rejects a from-clock seed that
     /// is lower). Seeded from config.
     ///
-    /// SEC-CAL: confirm whether a real device rejects a from-clock seed that is
-    /// lower than its stored value (i.e. whether the Sync exchange (§6.3) is
-    /// mandatory to learn the device's current seqnum) - capture needed (spec
-    /// §5.9, §12.4). Best-evidence default: strict rejection below the floor.
+    /// The S-A_Sync_Res reports `max(request seq, floor + 1)` as the sequence
+    /// the tool must use next, so a tool that syncs first (as ETS always does,
+    /// secure-1-1-12 capture 2026-09-23) never trips the floor. Whether a real
+    /// device refuses unsynced S-A_Data below its floor is not visible in a
+    /// capture where ETS always syncs; the sim keeps strict rejection.
     rx_floor: u64,
     /// Whether every management access to this device must be secured. When
     /// `true` a plain management APDU to a protected function is refused (spec
@@ -425,7 +434,8 @@ impl DataSecureSession {
                 ad.extend_from_slice(inner_tpdu);
                 let mac_cbc = crypto::cbc_mac(key, &ad, b"", &block_0);
                 let counter_0 = context.counter_0(seq);
-                let (_enc, enc_mac) = crypto::encrypt_data_ctr(key, &counter_0, &mac_cbc, b"");
+                let (_enc, enc_mac) =
+                    crypto::encrypt_data_ctr(key, &counter_0, &mac_cbc[..TP_MAC_LEN], b"");
                 let mut mac4 = [0u8; TP_MAC_LEN];
                 mac4.copy_from_slice(&enc_mac[..TP_MAC_LEN]);
                 (inner_tpdu.to_vec(), mac4)
@@ -436,7 +446,7 @@ impl DataSecureSession {
                 let mac_cbc = crypto::cbc_mac(key, &[scf_byte], inner_tpdu, &block_0);
                 let counter_0 = context.counter_0(seq);
                 let (enc_payload, enc_mac) =
-                    crypto::encrypt_data_ctr(key, &counter_0, &mac_cbc, inner_tpdu);
+                    crypto::encrypt_data_ctr(key, &counter_0, &mac_cbc[..TP_MAC_LEN], inner_tpdu);
                 let mut mac4 = [0u8; TP_MAC_LEN];
                 mac4.copy_from_slice(&enc_mac[..TP_MAC_LEN]);
                 (enc_payload, mac4)
@@ -468,6 +478,9 @@ impl DataSecureSession {
         }
         let scf_byte = asdu[0];
         let scf = Scf::from_byte(scf_byte).ok_or(SecureError::BadScf { scf: scf_byte })?;
+        if scf.service != SecService::Data {
+            return Err(SecureError::UnexpectedService { scf: scf_byte });
+        }
         let mut seq = [0u8; 6];
         seq.copy_from_slice(&asdu[1..1 + SEQ_LEN]);
         let body = &asdu[1 + SEQ_LEN..asdu.len() - TP_MAC_LEN];
@@ -495,27 +508,24 @@ impl DataSecureSession {
                 ad.extend_from_slice(body);
                 let mac_cbc = crypto::cbc_mac(key, &ad, b"", &block_0);
                 let counter_0 = carrier.counter_0(&seq);
-                let (_enc, enc_mac) = crypto::encrypt_data_ctr(key, &counter_0, &mac_cbc, b"");
+                let (_enc, enc_mac) =
+                    crypto::encrypt_data_ctr(key, &counter_0, &mac_cbc[..TP_MAC_LEN], b"");
                 (
                     body.to_vec(),
                     crypto::ct_eq(&enc_mac[..TP_MAC_LEN], wire_mac),
                 )
             }
             SecAlgorithm::AuthEnc => {
-                // body is the encrypted APDU. Right-pad the 4-byte wire MAC into
-                // a 16-byte block to run CTR-decrypt, recover the CBC-MAC, then
-                // recompute and compare only the first 4 bytes.
+                // body is the encrypted APDU. The keystream runs over
+                // `mac(4) || payload`, so decrypt with the 4-byte wire MAC in
+                // front, then recompute the MAC over the recovered plaintext.
                 let counter_0 = carrier.counter_0(&seq);
-                let mut enc_mac16 = [0u8; 16];
-                enc_mac16[..TP_MAC_LEN].copy_from_slice(wire_mac);
                 let (plain, _recovered_mac) =
-                    crypto::decrypt_data_ctr(key, &counter_0, &enc_mac16, body);
-                // Recompute the expected MAC over the recovered plaintext and
-                // compare the encrypted first 4 bytes constant-time.
+                    crypto::decrypt_data_ctr(key, &counter_0, wire_mac, body);
                 let block_0 = carrier.block_0(&seq, plain.len() as u8);
                 let mac_cbc = crypto::cbc_mac(key, &[scf_byte], &plain, &block_0);
                 let (_enc_payload, enc_mac) =
-                    crypto::encrypt_data_ctr(key, &counter_0, &mac_cbc, &plain);
+                    crypto::encrypt_data_ctr(key, &counter_0, &mac_cbc[..TP_MAC_LEN], &plain);
                 (plain, crypto::ct_eq(&enc_mac[..TP_MAC_LEN], wire_mac))
             }
         };
@@ -578,6 +588,101 @@ impl DataSecureSession {
         };
         let asdu = self.wrap_with_context(scf, &seq, inner_tpdu, &ctx);
         (asdu, seq)
+    }
+
+    /// Answer a connection-oriented S-A_Sync_Req (spec §6.3) the way the real
+    /// device in the secure-1-1-12 capture does.
+    ///
+    /// Request `SCF(0x92) || seq(6) || serial(6) || enc(challenge(6)) || MAC(4)`:
+    /// the CCM nonce is the request's own `seq`, the additional data
+    /// `SCF || serial`, the payload the 6-byte challenge (so block_0's length
+    /// octet is 6).
+    ///
+    /// Response `SCF(0x93) || masked(6) || enc(tx_seq(6) || accepted(6)) ||
+    /// MAC(4)`: the device picks a nonce sequence, sends it XOR the challenge in
+    /// the sequence slot, and encrypts its own next send sequence followed by the
+    /// sequence it accepts next from the tool: `max(request seq, last + 1)`. The
+    /// Sync_Req does not commit the freshness table, so the tool's first
+    /// S-A_Data may carry the request's sequence (ETS does exactly that).
+    ///
+    /// `carrier`/`tpci_int` describe the request frame, `resp_carrier` /
+    /// `resp_tpci_int` the response frame. Returns the response ASDU.
+    pub fn answer_sync_request(
+        &mut self,
+        carrier: &CemiLData,
+        tpci_int: u8,
+        asdu: &[u8],
+        resp_carrier: &CemiLData,
+        resp_tpci_int: u8,
+    ) -> Result<Vec<u8>, SecureError> {
+        const CHALLENGE_LEN: usize = 6;
+        if asdu.len() != 1 + SEQ_LEN + 6 + CHALLENGE_LEN + TP_MAC_LEN {
+            return Err(SecureError::TooShort { len: asdu.len() });
+        }
+        let scf_byte = asdu[0];
+        let scf = Scf::from_byte(scf_byte).ok_or(SecureError::BadScf { scf: scf_byte })?;
+        if scf.service != SecService::SyncReq {
+            return Err(SecureError::UnexpectedService { scf: scf_byte });
+        }
+        let mut seq = [0u8; 6];
+        seq.copy_from_slice(&asdu[1..7]);
+        let serial = &asdu[7..13];
+        let enc_challenge = &asdu[13..19];
+        let wire_mac = &asdu[19..23];
+
+        let key = self.tool_key.bytes();
+        let ctx = FrameContext::from_cemi(carrier, tpci_int);
+        let counter_0 = ctx.counter_0(&seq);
+        let (challenge, _) = crypto::decrypt_data_ctr(key, &counter_0, wire_mac, enc_challenge);
+        let mut ad = vec![scf_byte];
+        ad.extend_from_slice(serial);
+        let mac_cbc = crypto::cbc_mac(
+            key,
+            &ad,
+            &challenge,
+            &ctx.block_0(&seq, CHALLENGE_LEN as u8),
+        );
+        let (_, expected) = crypto::encrypt_data_ctr(key, &counter_0, &mac_cbc[..TP_MAC_LEN], &[]);
+        if !crypto::ct_eq(&expected, wire_mac) {
+            return Err(SecureError::BadMac);
+        }
+        if serial.iter().any(|&b| b != 0) {
+            return Err(SecureError::SyncSerialMismatch);
+        }
+
+        let source = carrier.source.raw();
+        let last = self.rx_last.get(&source).copied().unwrap_or(self.rx_floor);
+        let accepted = Self::seq_from_bytes(&seq).max(last.saturating_add(1));
+        let mut plain = Vec::with_capacity(12);
+        plain.extend_from_slice(&Self::seq_to_bytes(self.tx_seq));
+        plain.extend_from_slice(&Self::seq_to_bytes(accepted));
+
+        // Any nonce works as long as it travels masked; derive a per-response
+        // value from the device counter so two responses never share one.
+        let nonce = Self::seq_to_bytes(self.tx_seq ^ 0x5A5A_5A5A_5A5A);
+        let res_scf = Scf {
+            tool_access: scf.tool_access,
+            algorithm: SecAlgorithm::AuthEnc,
+            system_broadcast: false,
+            service: SecService::SyncRes,
+        }
+        .to_byte();
+        let rctx = FrameContext::from_cemi(resp_carrier, resp_tpci_int);
+        let rc0 = rctx.counter_0(&nonce);
+        let rmac = crypto::cbc_mac(
+            key,
+            &[res_scf],
+            &plain,
+            &rctx.block_0(&nonce, plain.len() as u8),
+        );
+        let (enc_plain, enc_mac) = crypto::encrypt_data_ctr(key, &rc0, &rmac[..TP_MAC_LEN], &plain);
+
+        let mut out = Vec::with_capacity(1 + SEQ_LEN + enc_plain.len() + TP_MAC_LEN);
+        out.push(res_scf);
+        out.extend(nonce.iter().zip(challenge.iter()).map(|(n, c)| n ^ c));
+        out.extend_from_slice(&enc_plain);
+        out.extend_from_slice(&enc_mac);
+        Ok(out)
     }
 
     /// A key-free, plaintext-free one-line description of a secure frame for the

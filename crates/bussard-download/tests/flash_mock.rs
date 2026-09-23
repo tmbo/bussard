@@ -1048,7 +1048,8 @@ fn unwrap_secure(
             s.secure_frames_accepted += 1;
             Some((apci, data))
         }
-        Ok(bussard_secure::UnwrapOutcome::Plain) | Err(_) => {
+        Ok(bussard_secure::UnwrapOutcome::Plain | bussard_secure::UnwrapOutcome::Synced { .. })
+        | Err(_) => {
             s.secure_refusals += 1;
             None
         }
@@ -1275,6 +1276,37 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
                             (Tpci::Other(_), Apdu::Other { apci, data }) => (*apci, data.clone()),
                             _ => continue,
                         };
+                        // KNX Data Secure S-A_Sync (spec §6.3): an activated
+                        // device answers the tool's Sync_Req with a Sync_Res, as
+                        // the real device does in the ETS capture.
+                        if wire_apci == bussard_secure::A_SECURE_DATA
+                            && wire_payload.first() == Some(&0x92)
+                        {
+                            let resp_tpci = tpci::ndt(dev_seq);
+                            let answered = {
+                                let mut s = state.lock().unwrap();
+                                s.secure.as_mut().map(|session| {
+                                    session.answer_sync_request(
+                                        &mock_addressing(tool, address, cemi.tpci_octet()),
+                                        &wire_payload,
+                                        &mock_addressing(address, tool, resp_tpci),
+                                    )
+                                })
+                            };
+                            let Some(Ok((rapci, rdata))) = answered else {
+                                // A Sync_Req that does not verify is dropped.
+                                state.lock().unwrap().secure_refusals += 1;
+                                continue;
+                            };
+                            let ack = CemiFrame::t_control(tool, address, tpci::t_ack(client_seq));
+                            push(&gw, from, &mut gw_seq, &ack).await;
+                            let resp = CemiFrame::t_data_connected(
+                                tool, address, resp_tpci, rapci, &rdata,
+                            );
+                            push(&gw, from, &mut gw_seq, &resp).await;
+                            dev_seq = (dev_seq + 1) & 0x0f;
+                            continue;
+                        }
                         // KNX Data Secure (issue #71): an activated device unwraps
                         // A_SecureData and refuses plain management outright. A
                         // refused frame is DROPPED — no ACK, no response — exactly

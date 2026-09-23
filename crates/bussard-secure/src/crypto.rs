@@ -99,32 +99,43 @@ pub fn cbc_mac(
     Ok(mac)
 }
 
-/// Encrypts the CBC-MAC and payload with AES-CTR from `counter_0` (spec §3.3).
+/// Encrypts the (truncated) CBC-MAC and the payload with one AES-CTR keystream
+/// from `counter_0` (spec §3.3).
 ///
-/// The first CTR keystream block (from `counter_0`) encrypts the MAC; subsequent
-/// blocks (`counter_0 + 1, +2, …`) encrypt the payload. Returns
-/// `(encrypted_payload, encrypted_mac)` — the encrypted MAC is truncated by the
-/// caller as needed (4 bytes for TP Data Secure, 16 for IP Secure).
+/// The keystream is a single continuous stream over `mac || payload`: the first
+/// `mac.len()` keystream bytes encrypt the MAC and the payload continues with the
+/// **next** keystream byte. For KNX Data Secure the caller passes the MAC
+/// already truncated to its 4 wire bytes, so the payload starts at byte 4 of the
+/// first keystream block, not at the second block. CONFIRMED against ETS 6.4.1
+/// (secure-1-1-12 capture, 2026-09-23): every ETS and device `A_SecureData`
+/// frame verifies with this layout and none with a block-aligned payload. For
+/// IP Secure the MAC is the full 16 bytes, which makes the payload start at the
+/// second block, so the same rule covers both.
+///
+/// Returns `(encrypted_payload, encrypted_mac)`, each as long as its input.
 ///
 /// # Errors
 ///
-/// Returns [`CryptoError::BadBlockLen`] if `counter_0` is not 16 bytes.
+/// Returns [`CryptoError::BadBlockLen`] if `counter_0` is not 16 bytes or the
+/// MAC is longer than one block.
 pub fn encrypt_ctr(
     key: &Key16,
     counter_0: &[u8],
-    mac_cbc: &[u8; BLOCK],
+    mac: &[u8],
     payload: &[u8],
-) -> Result<(Vec<u8>, [u8; BLOCK]), CryptoError> {
+) -> Result<(Vec<u8>, Vec<u8>), CryptoError> {
     if counter_0.len() != BLOCK {
         return Err(CryptoError::BadBlockLen(counter_0.len()));
     }
+    if mac.len() > BLOCK {
+        return Err(CryptoError::BadBlockLen(mac.len()));
+    }
     let mut cipher = Aes128Ctr::new(key.bytes().into(), counter_0.into());
 
-    // First keystream block encrypts the MAC.
-    let mut enc_mac = *mac_cbc;
+    // One stream: the MAC takes the first `mac.len()` keystream bytes, the
+    // payload the bytes right after it.
+    let mut enc_mac = mac.to_vec();
     cipher.apply_keystream(&mut enc_mac);
-
-    // Subsequent blocks encrypt the payload.
     let mut enc_payload = payload.to_vec();
     cipher.apply_keystream(&mut enc_payload);
 
@@ -133,19 +144,21 @@ pub fn encrypt_ctr(
 
 /// Decrypts an AES-CTR payload+MAC produced by [`encrypt_ctr`] (spec §3.3).
 ///
-/// CTR is symmetric, so this is the inverse of [`encrypt_ctr`]: the first
-/// keystream block recovers the plaintext MAC, later blocks recover the payload.
-/// Returns `(payload, mac_cbc)`.
+/// CTR is symmetric, so this is the inverse of [`encrypt_ctr`] with the same
+/// continuous-keystream rule: pass the MAC exactly as long as it was on the wire
+/// (4 bytes for Data Secure) so the payload lines up with the right keystream
+/// bytes. Returns `(payload, mac)`.
 ///
 /// # Errors
 ///
-/// Returns [`CryptoError::BadBlockLen`] if `counter_0` is not 16 bytes.
+/// Returns [`CryptoError::BadBlockLen`] if `counter_0` is not 16 bytes or the
+/// MAC is longer than one block.
 pub fn decrypt_ctr(
     key: &Key16,
     counter_0: &[u8],
-    enc_mac: &[u8; BLOCK],
+    enc_mac: &[u8],
     enc_payload: &[u8],
-) -> Result<(Vec<u8>, [u8; BLOCK]), CryptoError> {
+) -> Result<(Vec<u8>, Vec<u8>), CryptoError> {
     // CTR decryption is identical to encryption.
     encrypt_ctr(key, counter_0, enc_mac, enc_payload)
 }
@@ -272,7 +285,8 @@ pub fn latin1_bytes(s: &str) -> Vec<u8> {
 /// Errors from the KNX Secure crypto primitives.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum CryptoError {
-    /// A `block_0`/`counter_0` argument was not exactly 16 bytes.
+    /// A `block_0`/`counter_0` argument was not exactly 16 bytes, or a MAC
+    /// handed to the CTR stage was longer than one block.
     #[error("crypto block must be 16 bytes, got {0}")]
     BadBlockLen(usize),
     /// The additional-data length did not fit in the 2-byte length prefix.
@@ -348,17 +362,45 @@ mod tests {
 
     /// CTR encryption then decryption round-trips the MAC and payload.
     #[test]
-    fn test_ctr_round_trip() {
+    fn test_ctr_round_trip() -> Result<(), CryptoError> {
         let key = Key16::new([0x24; 16]);
         let counter_0 = [0x01u8; 16];
-        let mac_cbc = [0xEE; 16];
+        let mac_cbc = [0xEE; 4];
         let payload = b"secure management apdu".to_vec();
-        let (enc_payload, enc_mac) = encrypt_ctr(&key, &counter_0, &mac_cbc, &payload).unwrap();
+        let (enc_payload, enc_mac) = encrypt_ctr(&key, &counter_0, &mac_cbc, &payload)?;
         assert_ne!(enc_payload, payload);
         assert_ne!(enc_mac, mac_cbc);
-        let (dec_payload, dec_mac) = decrypt_ctr(&key, &counter_0, &enc_mac, &enc_payload).unwrap();
+        let (dec_payload, dec_mac) = decrypt_ctr(&key, &counter_0, &enc_mac, &enc_payload)?;
         assert_eq!(dec_payload, payload);
         assert_eq!(dec_mac, mac_cbc);
+        Ok(())
+    }
+
+    /// The keystream is one stream over `mac || payload`: with a 4-byte MAC the
+    /// payload starts at keystream byte 4, with a 16-byte MAC at byte 16. This is
+    /// the layout ETS uses (secure-1-1-12 capture, 2026-09-23).
+    #[test]
+    fn test_ctr_payload_continues_after_the_mac() -> Result<(), CryptoError> {
+        let key = Key16::new([0x5A; 16]);
+        let counter_0 = [0x02u8; 16];
+        // The raw keystream: encrypt 32 zero bytes with an empty MAC.
+        let (stream, _) = encrypt_ctr(&key, &counter_0, &[], &[0u8; 32])?;
+        let (enc4, mac4) = encrypt_ctr(&key, &counter_0, &[0u8; 4], &[0u8; 8])?;
+        assert_eq!(mac4, stream[..4].to_vec());
+        assert_eq!(enc4, stream[4..12].to_vec());
+        let (enc16, mac16) = encrypt_ctr(&key, &counter_0, &[0u8; 16], &[0u8; 8])?;
+        assert_eq!(mac16, stream[..16].to_vec());
+        assert_eq!(enc16, stream[16..24].to_vec());
+        Ok(())
+    }
+
+    #[test]
+    fn test_ctr_rejects_an_oversized_mac() {
+        let key = Key16::new([0u8; 16]);
+        assert_eq!(
+            encrypt_ctr(&key, &[0u8; 16], &[0u8; 17], &[]),
+            Err(CryptoError::BadBlockLen(17))
+        );
     }
 
     /// Spec §3.4 PBKDF2 vector: the keyring password key for a known password.

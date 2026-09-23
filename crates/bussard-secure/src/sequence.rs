@@ -87,9 +87,10 @@ impl Sequence {
 /// for the same device and each new session seeds from
 /// `max(clock, last_sent + 1)`.
 ///
-/// Cross-*process* monotonicity still rests on the clock (a later run starts
-/// with a later millisecond count) or, ultimately, on the Sync preamble of spec
-/// §6.3, which is not implemented yet; see the `SEC-CAL:` note there.
+/// Cross-*process* monotonicity rests on the clock (a later run starts with a
+/// later millisecond count) and, on a security-activated device, on the S-A_Sync
+/// handshake of spec §6.3: the device's Sync_Res names the sequence it accepts
+/// next, and the session jumps to it when the clock seed is behind.
 #[derive(Debug, Clone, Default)]
 pub struct SequenceHighWater(Arc<AtomicU64>);
 
