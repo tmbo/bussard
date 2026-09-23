@@ -74,8 +74,8 @@ use bussard_mgmt::{LsmAccess, Sys7Profile, alloc_attr_octets};
 
 use crate::compute::DesiredTables;
 use crate::compute_sys7::{
-    SYS7_ADDRESS_REGION_LEN, SYS7_ADDRESS_TABLE_ADDR, SYS7_ASSOCIATION_REGION_LEN,
-    SYS7_ASSOCIATION_TABLE_ADDR, sys7_address_table, sys7_association_table,
+    SYS7_ADDRESS_REGION_LEN, SYS7_ASSOCIATION_REGION_LEN, sys7_address_table,
+    sys7_association_table,
 };
 use crate::tables_sys7::{Sys7LiveTables, read_region};
 
@@ -260,13 +260,7 @@ pub async fn apply_sys7_tables<Ch: L4Channel>(
         images.address_region.len(),
     )
     .await?;
-    write_verified(
-        l4,
-        "address",
-        images.address_base,
-        &images.address_region,
-    )
-    .await?;
+    write_verified(l4, "address", images.address_base, &images.address_region).await?;
 
     // 4: the LSM 2 region — its TSAPs index the content just written.
     alloc_region(
@@ -310,12 +304,8 @@ pub async fn apply_sys7_tables<Ch: L4Channel>(
 
     // Verify by reading both regions back off the loaded device.
     let addr_back = read_region(l4, images.address_base, images.address_region.len()).await?;
-    let assoc_back = read_region(
-        l4,
-        images.association_base,
-        images.association_image.len(),
-    )
-    .await?;
+    let assoc_back =
+        read_region(l4, images.association_base, images.association_image.len()).await?;
 
     Ok(Sys7VerifyOutcome {
         address_state,
@@ -395,6 +385,8 @@ mod tests {
     use bussard_mgmt::tables::DeviceTables;
     use bussard_model::schema::Link;
 
+    use crate::compute_sys7::{SYS7_ADDRESS_TABLE_ADDR, SYS7_ASSOCIATION_TABLE_ADDR};
+
     fn live(own_ia: u16, go_image: Vec<u8>, go_base: u16) -> Sys7LiveTables {
         Sys7LiveTables {
             tables: DeviceTables {
@@ -406,6 +398,8 @@ mod tests {
                 notes: Vec::new(),
             },
             own_ia,
+            address_base: SYS7_ADDRESS_TABLE_ADDR,
+            association_base: SYS7_ASSOCIATION_TABLE_ADDR,
             group_object_base: go_base,
             group_object_image: go_image,
             group_objects: Vec::new(),
