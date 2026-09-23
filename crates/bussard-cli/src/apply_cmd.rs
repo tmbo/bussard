@@ -320,13 +320,22 @@ pub(crate) fn apply_desired(
     let mask = live.mask;
     // The same tunnel phase A used: its L4 session and bus lease are both
     // released by now, so the write phase simply takes the lease again.
+    // Progress (issue #147): the table write emits no finer events, so the live
+    // view is a spinner with elapsed time and the last bus event; plain runs
+    // print nothing extra.
+    let display = crate::progress::TaskDisplay::new(
+        format!("{} {target}: writing the tables", origin.verb()),
+        false,
+    );
     let outcome = runtime.block_on(async {
         let lease = handle.lease().await.context("leasing the bus")?;
         let channel = LeaseChannel::new(lease);
         let secure = crate::secure_key::layer(&tool_key, &secure_seq);
         let images = sys7.as_ref().map(|(_, images)| images);
         anyhow::Ok(write_tables(channel, target, source, mask, &desired, images, secure).await)
-    })?;
+    });
+    display.finish(matches!(&outcome, Ok(Ok(summary)) if summary.ok));
+    let outcome = outcome?;
 
     match outcome {
         Ok(summary) if summary.ok => {

@@ -31,6 +31,7 @@ mod mcp_cmd;
 mod monitor_cmd;
 mod param_readback;
 mod plan_cmd;
+mod progress;
 mod read_cmd;
 mod reconstruct_cmd;
 mod replace_cmd;
@@ -60,6 +61,10 @@ struct Cli {
     /// Print the invocation's wall-clock time to stderr on exit.
     #[arg(long, global = true)]
     timing: bool,
+    /// Never draw the live progress display on a terminal; print the plain
+    /// progress lines a piped run prints.
+    #[arg(long, global = true)]
+    no_progress: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -1261,10 +1266,28 @@ fn main() -> ExitCode {
 fn cli_main() -> ExitCode {
     let cli = Cli::parse();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(verbosity_filter(cli.verbose))
-        .with_writer(std::io::stderr)
-        .init();
+    // The live progress display (issue #147) is only possible on a terminal;
+    // when it is, bus-layer events also feed its "last event" line, and log
+    // lines hide the bar while they print. Off a terminal both are inert.
+    let live_progress = progress::init(cli.no_progress);
+    {
+        use tracing_subscriber::Layer as _;
+        use tracing_subscriber::layer::SubscriberExt as _;
+        use tracing_subscriber::util::SubscriberInitExt as _;
+        let events = live_progress.then(|| {
+            progress::EventLayer.with_filter(tracing_subscriber::filter::filter_fn(
+                progress::is_bus_event,
+            ))
+        });
+        tracing_subscriber::registry()
+            .with(
+                tracing_subscriber::fmt::layer()
+                    .with_writer(progress::LogWriter)
+                    .with_filter(verbosity_filter(cli.verbose)),
+            )
+            .with(events)
+            .init();
+    }
 
     // Opt-in wall-clock telemetry (issue #78): `--timing` reports the
     // invocation's elapsed time on stderr. Speed is a project goal, so this stays
