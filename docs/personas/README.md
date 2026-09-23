@@ -26,9 +26,10 @@ persona file ends with its sources.
   integrator persona wins on throughput. Both are stated in DESIGN.md as the
   primary target (owners and small installations first) and the follow-on
   (larger installations later).
-- The journey tables use three columns for bussard: "today" is what ships at
-  HEAD, "gap" is what the persona still has to do by hand or with ETS, and the
-  issue column points at the draft that closes the gap.
+- The journey tables use three columns for bussard: "today" is what ships on
+  `main` (marked "pending merge" when it sits on a feature branch), "gap" is
+  what the persona still has to do by hand or with ETS, and the issue column
+  points at the draft that closes the gap.
 
 ## What both personas share
 
@@ -64,3 +65,30 @@ has a fixed number of connections, often one to five, and Home Assistant, ETS
 and bussard each need their own. A failed download leaves a device unloaded.
 Both personas need plan-before-apply, verification and backups, and the
 integrator additionally needs to do it sixty times in an afternoon.
+
+## How the personas work with bussard in 2026: the assistant is the operator
+
+Neither Nadia nor Jonas drives bussard command by command. Each works with an
+LLM assistant connected to `bussard mcp`, and the assistant does the reading,
+the proposing and the model editing. The split:
+
+| The assistant does, over MCP | The human does, on the CLI |
+|---|---|
+| Answers "what do I have" from `knx_audit` and `knx_project_summary`. | Installs bussard, runs `init`, connects the assistant. |
+| Runs the learn loop: "press the button", `knx_wait_for_telegram`, `knx_infer_group`, then `knx_set_group` and `knx_add_link` once the human confirms. | Presses the buttons. |
+| Edits the model with `knx_set_group`, `knx_add_link`, `knx_remove_link`, `knx_set_device`, `knx_set_parameter`, and quotes the sentence each edit returns. | Reads the sentence and says yes or no. |
+| Explains the past with `knx_history` and `knx_describe_change`, and reverts with `knx_undo`. | Programs devices: `plan`, `apply`, `flash`, behind a confirmation and the real-gateway gate. |
+| Drafts `tests.yaml` and, on a write-enabled server, runs it with `knx_run_tests`. | Runs the physical ceremonies: `commission`, `replace`, `adopt`. |
+| Explains what a received `.knxproj` or bundle would change with `knx_diff_project`, and exports with `knx_export_bundle`. | Imports the file with `bussard import` and exports a bundle to a USB stick. |
+
+Three properties make this safe. Every model edit is snapshotted before it is
+written and rendered in plain sentences, so the human judges a sentence, not a
+YAML diff, and any edit is one undo away. Protected group addresses are
+refused over MCP with no override. Programming a device is not an MCP tool at
+all, so nothing an assistant does changes a device's tables or parameters until
+a human runs `apply` or `flash`. Group writes over MCP exist only on a server
+started with `--allow-writes`.
+
+Git is optional throughout. History and undo are built in, and exchange with a
+professional is by file ([collaboration.md](../collaboration.md)). The owner's
+path is written up in [the first weekend guide](../getting-started-owner.md).

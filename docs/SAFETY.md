@@ -378,3 +378,28 @@ corpus cache) is gitignored. Fixtures, examples and tests use invented names
 and TEST-NET addresses; review a diff for room names, device names and LAN
 addresses before you commit it.
 If you flash your own house, keep your `knx/` out of any fork you publish.
+
+## For professionals
+
+The rails above are tuned for an owner doing a first write. An integrator writes to real gateways every day, and the settings below keep the rails without the friction.
+
+### Arm the service laptop, not the project
+
+Set the real-gateway opt-in once, in the shell profile of the machine that commissions:
+
+```sh
+export BUSSARD_ALLOW_REAL_GATEWAY=1
+```
+
+It has the same effect as passing `--allow-remote-gateway` to every write command, and to `mcp --allow-writes` and `viz --allow-writes` at startup. It removes nothing else: every confirmation still names the gateway, protected group addresses still need `--force`, and the MCP server still has no path to `plan`, `apply` or `flash`.
+
+The opt-in is per machine on purpose. The question it answers is "is this computer meant to write to real buses?", and only the machine knows that. A setting in `bussard.yaml` would travel with the model: into every bundle handed to a customer, every repository clone, and every assistant session started on that model. The owner who imports the handover bundle would receive an armed tool without choosing it. Keep the variable out of `.env` files that live next to a model for the same reason.
+
+### Share the interface with ETS
+
+An integrator often has ETS and bussard open against the same interface. The [tunnel budget](#the-tunnel-budget) section explains the slot count and exit code `4`. On top of that:
+
+- Check the budget before the session. `bussard init --gateway <ip>` or `bussard audit --live` prints `N tunnels, M in use`. Home Assistant or a visualisation server usually holds one slot permanently.
+- Close the ETS bus connection before a long bussard run such as `apply --line` or `commission`, and close bussard before an ETS download. Each running bussard command holds a slot, and so do `bussard mcp` and `bussard viz` for as long as they run.
+- Never program one device from both tools at once. A device accepts one management connection at a time, so a second tool's download fails or interleaves with the first. Finish in one tool, then plan in the other: `bussard plan <ia>` after an ETS download shows exactly what ETS left on the device.
+- After a crash, a tunnel slot stays taken until the interface times it out, about two minutes. Wait instead of retrying in a loop.
