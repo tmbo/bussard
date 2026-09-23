@@ -17,7 +17,7 @@
 use std::path::Path;
 
 use bussard_download::{
-    Freshness, ParamValue, assess_freshness, non_default_parameters, param_plan,
+    DecodedParameters, Freshness, ParamValue, assess_freshness, decode_parameters,
     probe_resident_state, read_parameter_regions, regions_memory,
 };
 use bussard_mgmt::{L4Channel, Layer4Connection};
@@ -225,7 +225,20 @@ pub(crate) async fn read<Ch: L4Channel>(
     }
     let current = regions_memory(&regions);
     let (overrides, bases) = crate::flash_cmd::model_parameters(model, target);
-    let non_default = non_default_parameters(app, &current)
+    let decoded = decode_parameters(app, &overrides, &bases, &current);
+    let (non_default, differences) = report(decoded);
+    Readback {
+        application: app.id.clone(),
+        non_default,
+        differences,
+        note: None,
+    }
+}
+
+/// The JSON report rows of a decoded parameter memory.
+fn report(decoded: DecodedParameters) -> (Vec<ReadingJson>, Vec<DifferenceJson>) {
+    let non_default = decoded
+        .non_default
         .into_iter()
         .map(|r| ReadingJson {
             key: r.key,
@@ -235,9 +248,8 @@ pub(crate) async fn read<Ch: L4Channel>(
             unit: r.unit,
         })
         .collect();
-    let plan = param_plan(app, &overrides, &bases, &current);
-    let differences = plan
-        .changes
+    let differences = decoded
+        .differences
         .into_iter()
         .map(|c| DifferenceJson {
             key: c.key,
@@ -250,12 +262,7 @@ pub(crate) async fn read<Ch: L4Channel>(
             unit: c.unit,
         })
         .collect();
-    Readback {
-        application: app.id.clone(),
-        non_default,
-        differences,
-        note: plan.note,
-    }
+    (non_default, differences)
 }
 
 /// Appends the unit, when there is one.

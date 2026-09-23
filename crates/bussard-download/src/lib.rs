@@ -28,6 +28,7 @@ pub mod backup;
 pub mod compute;
 pub mod compute_sys7;
 pub mod flash;
+pub mod param_decode;
 pub mod param_plan;
 pub mod plan;
 pub mod preflight;
@@ -68,11 +69,12 @@ pub use flash::{
     Sys7Context, discover_application_object, flash, plan_flash, plan_flash_sys7_with_hawk,
     plan_flash_with_object_flags, select_application, sys7_profile_from_hawk, trace,
 };
+pub use param_decode::{DecodedParameters, decode_parameters};
 pub use param_plan::{
     CurrentMemory, GroupObjectChange, ParamChange, ParamPlan, ParamReading, ParamRegion,
     ParamRegions, ParamValue, SYS7_NOTE, current_parameter_values, group_object_change,
-    non_default_parameters, param_plan, read_current_parameter_memory, read_parameter_regions,
-    regions_memory,
+    non_default_parameters, param_plan, planned_parameter_regions, read_current_parameter_memory,
+    read_parameter_regions, regions_memory,
 };
 pub use plan::{LoadStep, ObjectGa, PlanReport, plan};
 pub use preflight::{

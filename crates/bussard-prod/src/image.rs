@@ -531,13 +531,6 @@ pub fn compute_dynamic_parameter_image(
         ));
     }
 
-    let mut union_of = UnionIndex::new();
-    for (ui, union) in app.unions.iter().enumerate() {
-        for (mi, member) in union.members.iter().enumerate() {
-            union_of.insert(member.parameter.as_str(), (ui, mi));
-        }
-    }
-
     // Seed every segment a parameter can land in, so the image set matches the
     // vendor-default path even where no reached parameter falls.
     let mut images: BTreeMap<String, Vec<u8>> = BTreeMap::new();
@@ -553,38 +546,19 @@ pub fn compute_dynamic_parameter_image(
             .or_insert_with(|| base_image(app, seg));
     }
 
-    if app.downloads_invisible_parameters() {
-        write_invisible_parameters(app, &config, &union_of, &mut images)?;
-    }
-
-    for active in &config.parameters {
-        let full_ref = format!("{}_{}", app.id, active.param_ref_id);
-        let Some(pref) = app.parameter_refs.get(&full_ref) else {
-            continue;
+    for slot in dynamic_parameter_slots(app, &config)? {
+        let (value, source) = match slot.param_ref_id.as_deref() {
+            Some(ref_id) => (
+                config.value(app, slot.module, ref_id),
+                if config.is_override(app, slot.module, ref_id) {
+                    ValueSource::UserOverride
+                } else {
+                    ValueSource::VendorDefault
+                },
+            ),
+            None => (slot.parameter.default.clone(), ValueSource::VendorDefault),
         };
-        let Some(param) = app.parameters.get(&pref.ref_id) else {
-            continue;
-        };
-        // Display-only parameters (no location) steer the evaluation only.
-        let Some(at) = location(app, &union_of, param) else {
-            continue;
-        };
-        let value = config.value(app, active.module, &active.param_ref_id);
-        let source = if config.is_override(app, active.module, &active.param_ref_id) {
-            ValueSource::UserOverride
-        } else {
-            ValueSource::VendorDefault
-        };
-        write_parameter(
-            app,
-            &config,
-            &mut images,
-            param,
-            at,
-            active.module,
-            value.as_deref(),
-            source,
-        )?;
+        write_slot(app, &mut images, &slot, value.as_deref(), source)?;
     }
 
     // A segment's image spans its declared size (the template may be shorter).
@@ -644,19 +618,101 @@ fn location<'a>(
     })
 }
 
-/// Encodes `value` for `param` and places it at `at` in its segment's image,
-/// the byte offset shifted by the module instance's `BaseOffset` argument.
-#[allow(clippy::too_many_arguments)] // one call per parameter; a struct would only rename them
-fn write_parameter(
-    app: &ApplicationProgram,
+/// One value the Dynamic image builder writes: the parameter, the ref (and
+/// module instance) whose value it carries, and where it lands.
+///
+/// [`dynamic_parameter_slots`] lists them in write order; where two slots
+/// cover the same bits, the later one is what the image holds. The read-back
+/// decoder walks the same list, so it reads every value exactly where the
+/// encoder put it.
+#[derive(Debug, Clone)]
+pub struct ParameterSlot<'a> {
+    /// Index into [`DynamicConfig::modules`] of the ref's module instance;
+    /// `None` for a parameter of the application itself.
+    ///
+    /// [`DynamicConfig::modules`]: bussard_ets::dynamic::DynamicConfig::modules
+    pub module: Option<usize>,
+    /// The app-relative `ParameterRef` id whose value is written; `None` for a
+    /// parameter the configuration does not show, written at its own default
+    /// because the application downloads hidden parameters
+    /// ([`ApplicationProgram::downloads_invisible_parameters`]).
+    pub param_ref_id: Option<String>,
+    /// The parameter written.
+    pub parameter: &'a bussard_ets::application::Parameter,
+    /// The code segment the value lands in.
+    pub segment: &'a str,
+    /// The byte offset within the segment, module base included.
+    pub offset: usize,
+    /// The MSB-first bit offset within the byte.
+    pub bit_offset: u8,
+}
+
+/// The values the Dynamic image builder ([`compute_dynamic_parameter_image`])
+/// writes for `config`, in write order: first the hidden parameters at their
+/// defaults (when the application downloads them), then every reached
+/// parameter ref that has a location.
+///
+/// # Errors
+///
+/// [`ProdError::ParameterImage`] when a module base places a parameter at a
+/// negative or out-of-range offset.
+pub fn dynamic_parameter_slots<'a>(
+    app: &'a ApplicationProgram,
     config: &bussard_ets::dynamic::DynamicConfig,
-    images: &mut BTreeMap<String, Vec<u8>>,
-    param: &bussard_ets::application::Parameter,
-    at: Location<'_>,
+) -> Result<Vec<ParameterSlot<'a>>> {
+    let mut union_of = UnionIndex::new();
+    for (ui, union) in app.unions.iter().enumerate() {
+        for (mi, member) in union.members.iter().enumerate() {
+            union_of.insert(member.parameter.as_str(), (ui, mi));
+        }
+    }
+    dynamic_parameter_slots_with(app, config, &union_of)
+}
+
+/// [`dynamic_parameter_slots`] with a prebuilt union index.
+fn dynamic_parameter_slots_with<'a>(
+    app: &'a ApplicationProgram,
+    config: &bussard_ets::dynamic::DynamicConfig,
+    union_of: &UnionIndex<'_>,
+) -> Result<Vec<ParameterSlot<'a>>> {
+    let mut slots = Vec::new();
+    if app.downloads_invisible_parameters() {
+        invisible_parameter_slots(app, config, union_of, &mut slots)?;
+    }
+    for active in &config.parameters {
+        let full_ref = format!("{}_{}", app.id, active.param_ref_id);
+        let Some(pref) = app.parameter_refs.get(&full_ref) else {
+            continue;
+        };
+        let Some(param) = app.parameters.get(&pref.ref_id) else {
+            continue;
+        };
+        // Display-only parameters (no location) steer the evaluation only.
+        let Some(at) = location(app, union_of, param) else {
+            continue;
+        };
+        slots.push(slot_at(
+            app,
+            config,
+            param,
+            at,
+            active.module,
+            Some(active.param_ref_id.clone()),
+        )?);
+    }
+    Ok(slots)
+}
+
+/// Resolves `at` to a slot, the byte offset shifted by the module instance's
+/// `BaseOffset` argument.
+fn slot_at<'a>(
+    app: &'a ApplicationProgram,
+    config: &bussard_ets::dynamic::DynamicConfig,
+    param: &'a bussard_ets::application::Parameter,
+    at: Location<'a>,
     module: Option<usize>,
-    value: Option<&str>,
-    source: ValueSource,
-) -> Result<()> {
+    param_ref_id: Option<String>,
+) -> Result<ParameterSlot<'a>> {
     let pname = param.name.as_deref().unwrap_or(&param.id);
     let base = at
         .base
@@ -670,29 +726,58 @@ fn write_parameter(
             "module-instance base offset places the parameter at an out-of-range address",
         )
     })?;
-    let ptype = param
-        .parameter_type
-        .as_deref()
-        .and_then(|id| app.parameter_types.get(id))
-        .map(|d| &d.kind);
-    let placement = encode_value(app, pname, ptype, value, source)?;
-    let seg_size = app.code_segments.get(at.segment).and_then(|s| s.size);
+    Ok(ParameterSlot {
+        module,
+        param_ref_id,
+        parameter: param,
+        segment: at.segment,
+        offset,
+        bit_offset: at.bit_offset,
+    })
+}
+
+/// Encodes `value` for the slot's parameter and places it in its segment's
+/// image.
+fn write_slot(
+    app: &ApplicationProgram,
+    images: &mut BTreeMap<String, Vec<u8>>,
+    slot: &ParameterSlot<'_>,
+    value: Option<&str>,
+    source: ValueSource,
+) -> Result<()> {
+    let param = slot.parameter;
+    let pname = param.name.as_deref().unwrap_or(&param.id);
+    let placement = encode_value(app, pname, parameter_type_of(app, param), value, source)?;
+    let seg_size = app.code_segments.get(slot.segment).and_then(|s| s.size);
     let image = images
-        .entry(at.segment.to_string())
-        .or_insert_with(|| base_image(app, at.segment));
+        .entry(slot.segment.to_string())
+        .or_insert_with(|| base_image(app, slot.segment));
     place_checked(
         app,
         pname,
         image,
-        offset,
-        at.bit_offset,
+        slot.offset,
+        slot.bit_offset,
         &placement,
         seg_size,
     )
 }
 
-/// Writes the parameters the configuration does not show, for an application
-/// whose download carries them ([`ApplicationProgram::downloads_invisible_parameters`]).
+/// The declared type of `param`.
+fn parameter_type_of<'a>(
+    app: &'a ApplicationProgram,
+    param: &bussard_ets::application::Parameter,
+) -> Option<&'a ParameterType> {
+    param
+        .parameter_type
+        .as_deref()
+        .and_then(|id| app.parameter_types.get(id))
+        .map(|d| &d.kind)
+}
+
+/// The slots of the parameters the configuration does not show, for an
+/// application whose download carries them
+/// ([`ApplicationProgram::downloads_invisible_parameters`]).
 ///
 /// Every application-level parameter with a location that the walk did not
 /// reach gets its default, the parameter's own `Value`: ETS does not write a
@@ -703,11 +788,11 @@ fn write_parameter(
 /// a reached member is left to that member. Module parameters are not
 /// instantiated here (their instances are the walk's business). The caller
 /// writes the reached parameters afterwards, so they win where they overlap.
-fn write_invisible_parameters(
-    app: &ApplicationProgram,
+fn invisible_parameter_slots<'a>(
+    app: &'a ApplicationProgram,
     config: &bussard_ets::dynamic::DynamicConfig,
     union_of: &UnionIndex<'_>,
-    images: &mut BTreeMap<String, Vec<u8>>,
+    slots: &mut Vec<ParameterSlot<'a>>,
 ) -> Result<()> {
     let prefix = format!("{}_", app.id);
     // The application-level parameters the walk reached, and the unions they
@@ -746,16 +831,7 @@ fn write_invisible_parameters(
         let Some(at) = location(app, union_of, param) else {
             continue;
         };
-        write_parameter(
-            app,
-            config,
-            images,
-            param,
-            at,
-            None,
-            param.default.as_deref(),
-            ValueSource::VendorDefault,
-        )?;
+        slots.push(slot_at(app, config, param, at, None, None)?);
     }
     Ok(())
 }
@@ -1489,6 +1565,254 @@ fn place(image: &mut Vec<u8>, offset: usize, bit_offset: u8, placement: &Placeme
                 image[byte] |= (bit_val as u8) << shift;
             }
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Decoding: the inverse of `encode_value` + `place`
+// ---------------------------------------------------------------------------
+
+/// Decodes the value of `param` out of a segment image, at the byte `offset`
+/// and MSB-first `bit_offset` a [`ParameterSlot`] names: the exact inverse of
+/// what the image builder writes there (issue #142).
+///
+/// Integers and plain enumerations read their bit field (two's complement for
+/// a signed number), a `BinaryValue` enumeration the member whose octets sit
+/// there, text its octets up to the first trailing NUL, a DPT 9 float its
+/// value, an IEEE-754 float its bits, a packed `TypeTime` its seconds and
+/// `TypeRawData` the base64 of the octets behind its length word. Returns
+/// `None` when the field runs past `image` or the type carries no memory.
+///
+/// The string is canonical: two values that encode to the same octets decode
+/// to the same string, so a comparison against
+/// [`canonical_parameter_value`] is a comparison of what the device holds.
+pub fn decode_parameter_value(
+    app: &ApplicationProgram,
+    param: &bussard_ets::application::Parameter,
+    image: &[u8],
+    offset: usize,
+    bit_offset: u8,
+) -> Option<String> {
+    decode_value(parameter_type_of(app, param), image, offset, bit_offset)
+}
+
+/// What `value` reads back as once written for `param`: the value encoded the
+/// way the image builder encodes it, then decoded by
+/// [`decode_parameter_value`]. `None` when the value cannot be encoded for the
+/// parameter's type.
+///
+/// This is how a desired value is compared with a decoded one: a DPT 9 value
+/// the encoder rounds (`999.7` is written as `999.68`), an integer written
+/// with a leading zero or a text shorter than its field all compare equal to
+/// what the device reads back.
+pub fn canonical_parameter_value(
+    app: &ApplicationProgram,
+    param: &bussard_ets::application::Parameter,
+    value: Option<&str>,
+) -> Option<String> {
+    let pname = param.name.as_deref().unwrap_or(&param.id);
+    let ptype = parameter_type_of(app, param);
+    let placement = encode_value(app, pname, ptype, value, ValueSource::VendorDefault).ok()?;
+    if matches!(placement, Placement::Empty) {
+        // An empty raw-data value writes nothing; it reads back as empty.
+        return match ptype {
+            Some(ParameterType::Other { kind, .. }) if kind == "TypeRawData" => Some(String::new()),
+            _ => None,
+        };
+    }
+    let mut scratch = Vec::new();
+    place(&mut scratch, 0, 0, &placement);
+    decode_value(ptype, &scratch, 0, 0)
+}
+
+/// Encodes `value` for `param` and writes it into `image` at the byte
+/// `offset` and MSB-first `bit_offset`, exactly as the image builder places it
+/// (growing `image` with zeros where needed). Bits outside the field keep
+/// their value.
+///
+/// # Errors
+///
+/// [`ProdError::ParameterImage`] when the value cannot be encoded for the
+/// parameter's type or the field would end past the image size cap.
+pub fn write_parameter_value(
+    app: &ApplicationProgram,
+    param: &bussard_ets::application::Parameter,
+    value: Option<&str>,
+    image: &mut Vec<u8>,
+    offset: usize,
+    bit_offset: u8,
+) -> Result<()> {
+    let pname = param.name.as_deref().unwrap_or(&param.id);
+    let placement = encode_value(
+        app,
+        pname,
+        parameter_type_of(app, param),
+        value,
+        ValueSource::VendorDefault,
+    )?;
+    place_checked(app, pname, image, offset, bit_offset, &placement, None)
+}
+
+/// [`decode_parameter_value`] on a resolved type.
+fn decode_value(
+    ptype: Option<&ParameterType>,
+    image: &[u8],
+    offset: usize,
+    bit_offset: u8,
+) -> Option<String> {
+    let bytes = |len: usize| image.get(offset..offset.checked_add(len)?);
+    match ptype? {
+        ParameterType::Int {
+            size_bits, signed, ..
+        } => {
+            let bits = size_bits.unwrap_or(8);
+            if bits > 64 {
+                return decode_wide_int(bytes((bits / 8) as usize)?, bits, *signed)
+                    .map(|n| n.to_string());
+            }
+            let raw = read_field(image, offset, bit_offset, bits)?;
+            Some(if *signed {
+                sign_extend(raw, bits).to_string()
+            } else {
+                raw.to_string()
+            })
+        }
+        ParameterType::Enum { size_bits, values } => {
+            let bits = size_bits.unwrap_or(8);
+            if values.iter().any(|v| v.binary_value.is_some()) {
+                let member = values.iter().find(|v| {
+                    v.binary_value.as_deref().is_some_and(|bv| {
+                        field_matches(image, offset, bit_offset, &binary_value_placement(bits, bv))
+                    })
+                })?;
+                return Some(member.value.to_string());
+            }
+            read_field(image, offset, bit_offset, bits).map(|raw| raw.to_string())
+        }
+        ParameterType::Text { size_bits } => {
+            let slice = bytes((size_bits.unwrap_or(0) / 8) as usize)?;
+            let end = slice.iter().rposition(|b| *b != 0).map_or(0, |i| i + 1);
+            Some(String::from_utf8_lossy(&slice[..end]).into_owned())
+        }
+        ParameterType::Float { encoding, .. } => {
+            match encoding
+                .as_deref()
+                .map(|e| e.trim().to_ascii_lowercase())
+                .as_deref()
+            {
+                Some("ieee-754 single")
+                | Some("ieee 754 single")
+                | Some("dpt 14")
+                | Some("dpt14") => {
+                    let b = bytes(4)?;
+                    Some(f32::from_be_bytes([b[0], b[1], b[2], b[3]]).to_string())
+                }
+                Some("ieee-754 double") | Some("ieee 754 double") => {
+                    let mut arr = [0u8; 8];
+                    arr.copy_from_slice(bytes(8)?);
+                    Some(f64::from_be_bytes(arr).to_string())
+                }
+                _ => {
+                    let b = bytes(2)?;
+                    Some(decode_dpt9_parameter([b[0], b[1]]).to_string())
+                }
+            }
+        }
+        ParameterType::None => None,
+        ParameterType::Other { kind, .. } if kind == "TypeRawData" => {
+            use base64::Engine as _;
+            let len = bytes(4)?;
+            let len = u32::from_be_bytes([len[0], len[1], len[2], len[3]]) as usize;
+            let data =
+                image.get(offset.checked_add(4)?..offset.checked_add(4)?.checked_add(len)?)?;
+            Some(base64::engine::general_purpose::STANDARD.encode(data))
+        }
+        ParameterType::Other {
+            kind,
+            size_bits: Some(24),
+            unit: Some(unit),
+        } if kind == "TypeTime" && unit == "PackedDaysHoursMinutesAndSeconds" => {
+            let b = bytes(3)?;
+            let secs = u32::from(b[0]) + u32::from(b[1]) * 60 + u32::from(b[2]) * 3600;
+            Some(secs.to_string())
+        }
+        ParameterType::Other { size_bits, .. } => {
+            let bits = (*size_bits).filter(|b| *b > 0 && *b <= 64 && b % 8 == 0)?;
+            read_field(image, offset, bit_offset, bits).map(|raw| raw.to_string())
+        }
+    }
+}
+
+/// The DPT 9 value of a parameter's two octets: `0.01 * M * 2^E`.
+fn decode_dpt9_parameter(b: [u8; 2]) -> f64 {
+    let raw = u16::from_be_bytes(b);
+    let exponent = (raw >> 11) & 0x0f;
+    let mut mantissa = i32::from(raw & 0x07ff);
+    if raw & 0x8000 != 0 {
+        mantissa -= 2048;
+    }
+    f64::from(mantissa) * f64::from(1u32 << exponent) / 100.0
+}
+
+/// An integer field wider than 64 bits, laid down big-endian and sign-extended
+/// by the encoder: the value its last eight octets hold, when the octets
+/// before them are the matching extension.
+fn decode_wide_int(bytes: &[u8], bits: u32, signed: bool) -> Option<i64> {
+    if bits % 8 != 0 || bytes.len() < 8 {
+        return None;
+    }
+    let (head, tail) = bytes.split_at(bytes.len() - 8);
+    let mut arr = [0u8; 8];
+    arr.copy_from_slice(tail);
+    let n = i64::from_be_bytes(arr);
+    let fill = if n < 0 { 0xFF } else { 0x00 };
+    (head.iter().all(|b| *b == fill) && (signed || n >= 0)).then_some(n)
+}
+
+/// Reads an MSB-first bit field of `bits` (1..=64) starting at
+/// `offset * 8 + bit_offset`: the inverse of [`place`] for a
+/// [`Placement::Field`]. `None` when the field runs past `image`.
+fn read_field(image: &[u8], offset: usize, bit_offset: u8, bits: u32) -> Option<u64> {
+    if bits == 0 || bits > 64 {
+        return None;
+    }
+    let start = offset
+        .checked_mul(8)?
+        .checked_add(usize::from(bit_offset))?;
+    let end = start.checked_add(bits as usize)?;
+    if end.div_ceil(8) > image.len() {
+        return None;
+    }
+    Some((start..end).fold(0u64, |acc, pos| {
+        (acc << 1) | u64::from((image[pos / 8] >> (7 - pos % 8)) & 1)
+    }))
+}
+
+/// Whether `placement` at `offset`/`bit_offset` would leave `image` unchanged,
+/// i.e. whether the image already holds exactly those bits.
+fn field_matches(image: &[u8], offset: usize, bit_offset: u8, placement: &Placement) -> bool {
+    match placement {
+        Placement::Empty => true,
+        Placement::Bytes(bytes) => offset
+            .checked_add(bytes.len())
+            .and_then(|end| image.get(offset..end))
+            .is_some_and(|held| held == bytes.as_slice()),
+        Placement::Field { bits, value } => {
+            read_field(image, offset, bit_offset, *bits) == Some(*value)
+        }
+    }
+}
+
+/// Interprets an unsigned bit pattern of `bits` width as two's complement.
+fn sign_extend(raw: u64, bits: u32) -> i64 {
+    if bits >= 64 {
+        return raw as i64;
+    }
+    let sign = 1u64 << (bits - 1);
+    if raw & sign != 0 {
+        (raw as i64) - (1i64 << bits)
+    } else {
+        raw as i64
     }
 }
 

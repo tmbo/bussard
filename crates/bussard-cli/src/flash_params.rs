@@ -32,8 +32,7 @@ use bussard_download::backup::{
 };
 use bussard_download::{
     FlashPlan, FlashStep, Freshness, ParamPlan, ParamRegions, ResidentState, assess_freshness,
-    current_parameter_values, group_object_change, param_plan, read_parameter_regions,
-    regions_memory,
+    decode_parameters, group_object_change, read_parameter_regions, regions_memory,
 };
 use bussard_mgmt::memory::read_memory_range;
 use bussard_mgmt::{DeviceConnection, LeaseChannel, Timeouts};
@@ -105,9 +104,12 @@ pub(crate) fn run(ctx: Context<'_>) -> anyhow::Result<ExitCode> {
 
     // A parameter that shows or hides a com-object changes the group-object
     // table, which this download does not rewrite.
+    // The device's values come from the same decoder the read-back uses: the
+    // encoder's own placements, so a device holding the model's image decodes
+    // to the model and the check cannot misfire on it (issue #142).
     let current = regions_memory(&regions);
-    let before = current_parameter_values(ctx.app, ctx.overrides, ctx.base_offsets, &current);
-    let change = group_object_change(ctx.app, &before, ctx.overrides);
+    let decoded = decode_parameters(ctx.app, ctx.overrides, ctx.base_offsets, &current);
+    let change = group_object_change(ctx.app, &decoded.values, ctx.overrides);
     if !change.is_empty() {
         eprintln!(
             "refusing the parameter-only download to {target}: the new parameter values \
@@ -118,7 +120,11 @@ pub(crate) fn run(ctx: Context<'_>) -> anyhow::Result<ExitCode> {
         return Ok(ExitCode::FAILURE);
     }
 
-    let params = param_plan(ctx.app, ctx.overrides, ctx.base_offsets, &current);
+    let params = ParamPlan {
+        changes: decoded.differences,
+        unknown: decoded.unknown,
+        note: None,
+    };
     if ctx.json {
         print_json(target, &partial, &regions, &params)?;
     } else {

@@ -1,0 +1,103 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Synthetic application for the parameter read-back round trip (issue #142).
+  Written by hand, not taken from a vendor product. One 16-octet parameter
+  segment:
+
+    0      threshold (8-bit number, always shown)
+    1      union: mode (4-bit enum, default member) or level (8-bit number)
+    2      hidden (8-bit number, shown only for concept 1; written at its
+           default otherwise, as ETS does when <Options> does not opt out)
+    3      flag (1-bit enum at BitOffset 3)
+    4..5   module instance M-1 (BaseOffset 4): App-ID, delay
+    6..7   module instance M-2 (BaseOffset 6): App-ID, delay
+    8..9   setpoint (DPT 9 float)
+    10..12 switch-off delay (packed seconds, minutes, hours)
+    14     template octet 0xAA, no parameter
+
+  The module's display-only "intcomm" parameter takes its default from the
+  instance argument (BaseValue) and picks which ref of the App-ID parameter
+  is shown (R-4, default 66, or R-5, default 68). The display-only "concept"
+  chooses the union member and whether "hidden" is shown.
+-->
+<KNX xmlns="http://knx.org/xml/project/20">
+ <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="readback">
+  <Static>
+   <Code><RelativeSegment Id="A_RS-1" Size="16" LoadStateMachine="4" Offset="0"><Data>AAAAAAAAAAAAAAAAAACqAA==</Data></RelativeSegment></Code>
+   <ParameterTypes>
+    <ParameterType Id="A_PT-1" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+    <ParameterType Id="A_PT-2" Name="mode"><TypeRestriction Base="Value" SizeInBit="4">
+     <Enumeration Text="Off" Value="0" /><Enumeration Text="Auto" Value="1" /><Enumeration Text="On" Value="2" />
+    </TypeRestriction></ParameterType>
+    <ParameterType Id="A_PT-3" Name="onoff"><TypeRestriction Base="Value" SizeInBit="1">
+     <Enumeration Text="No" Value="0" /><Enumeration Text="Yes" Value="1" />
+    </TypeRestriction></ParameterType>
+    <ParameterType Id="A_PT-4" Name="temp"><TypeFloat Encoding="DPT 9" minInclusive="-50" maxInclusive="1000" /></ParameterType>
+    <ParameterType Id="A_PT-5" Name="dur"><TypeTime SizeInBit="24" Unit="PackedDaysHoursMinutesAndSeconds" minInclusive="0" maxInclusive="86399" /></ParameterType>
+   </ParameterTypes>
+   <Parameters>
+    <Parameter Id="A_P-1" Name="concept" Text="Concept" ParameterType="A_PT-3" Value="0" />
+    <Parameter Id="A_P-10" Name="threshold" Text="Threshold" ParameterType="A_PT-1" Value="10"><Memory CodeSegment="A_RS-1" Offset="0" BitOffset="0" /></Parameter>
+    <Union SizeInBit="8">
+     <Memory CodeSegment="A_RS-1" Offset="1" BitOffset="0" />
+     <Parameter Id="A_UP-3" Name="mode" Text="Mode" ParameterType="A_PT-2" Value="1" Offset="0" BitOffset="0" DefaultUnionParameter="true" />
+     <Parameter Id="A_UP-4" Name="level" Text="Level" ParameterType="A_PT-1" Value="50" Offset="0" BitOffset="0" />
+    </Union>
+    <Parameter Id="A_P-2" Name="hidden" Text="Hidden" ParameterType="A_PT-1" Value="7"><Memory CodeSegment="A_RS-1" Offset="2" BitOffset="0" /></Parameter>
+    <Parameter Id="A_P-7" Name="flag" Text="Flag" ParameterType="A_PT-3" Value="0"><Memory CodeSegment="A_RS-1" Offset="3" BitOffset="3" /></Parameter>
+    <Parameter Id="A_P-5" Name="setpoint" Text="Setpoint" SuffixText="°C" ParameterType="A_PT-4" Value="21"><Memory CodeSegment="A_RS-1" Offset="8" BitOffset="0" /></Parameter>
+    <Parameter Id="A_P-6" Name="delay" Text="Switch-off delay" SuffixText="s" ParameterType="A_PT-5" Value="300"><Memory CodeSegment="A_RS-1" Offset="10" BitOffset="0" /></Parameter>
+   </Parameters>
+   <ParameterRefs>
+    <ParameterRef Id="A_P-1_R-1" RefId="A_P-1" />
+    <ParameterRef Id="A_P-10_R-10" RefId="A_P-10" />
+    <ParameterRef Id="A_UP-3_R-3" RefId="A_UP-3" />
+    <ParameterRef Id="A_UP-4_R-4" RefId="A_UP-4" />
+    <ParameterRef Id="A_P-2_R-2" RefId="A_P-2" />
+    <ParameterRef Id="A_P-7_R-7" RefId="A_P-7" />
+    <ParameterRef Id="A_P-5_R-5" RefId="A_P-5" />
+    <ParameterRef Id="A_P-6_R-6" RefId="A_P-6" />
+   </ParameterRefs>
+  </Static>
+  <ModuleDefs>
+   <ModuleDef Id="A_MD-1" Name="input">
+    <Arguments><Argument Id="A_MD-1_A-1" Name="base" /><Argument Id="A_MD-1_A-2" Name="intcomm" /></Arguments>
+    <Static>
+     <Parameters>
+      <Parameter Id="A_MD-1_P-1" Name="intcomm" ParameterType="A_PT-1" Value="0" BaseValue="A_MD-1_A-2" />
+      <Parameter Id="A_MD-1_P-2" Name="appid" Text="App-ID" ParameterType="A_PT-1" Value="0"><Memory CodeSegment="A_RS-1" Offset="0" BitOffset="0" BaseOffset="A_MD-1_A-1" /></Parameter>
+      <Parameter Id="A_MD-1_P-3" Name="delay" Text="Debounce" ParameterType="A_PT-1" Value="5"><Memory CodeSegment="A_RS-1" Offset="1" BitOffset="0" BaseOffset="A_MD-1_A-1" /></Parameter>
+     </Parameters>
+     <ParameterRefs>
+      <ParameterRef Id="A_MD-1_P-1_R-1" RefId="A_MD-1_P-1" />
+      <ParameterRef Id="A_MD-1_P-2_R-4" RefId="A_MD-1_P-2" Value="66" />
+      <ParameterRef Id="A_MD-1_P-2_R-5" RefId="A_MD-1_P-2" Value="68" />
+      <ParameterRef Id="A_MD-1_P-3_R-6" RefId="A_MD-1_P-3" />
+     </ParameterRefs>
+    </Static>
+    <Dynamic><ParameterBlock Id="A_MD-1_PB-1">
+     <choose ParamRefId="A_MD-1_P-1_R-1">
+      <when test="0"><ParameterRefRef RefId="A_MD-1_P-2_R-4" /></when>
+      <when test="4 5"><ParameterRefRef RefId="A_MD-1_P-2_R-5" /></when>
+     </choose>
+     <ParameterRefRef RefId="A_MD-1_P-3_R-6" />
+    </ParameterBlock></Dynamic>
+   </ModuleDef>
+  </ModuleDefs>
+  <Dynamic>
+   <ChannelIndependentBlock><ParameterBlock Id="A_PB-1">
+    <ParameterRefRef RefId="A_P-1_R-1" />
+    <ParameterRefRef RefId="A_P-10_R-10" />
+    <ParameterRefRef RefId="A_P-7_R-7" />
+    <ParameterRefRef RefId="A_P-5_R-5" />
+    <ParameterRefRef RefId="A_P-6_R-6" />
+    <choose ParamRefId="A_P-1_R-1">
+     <when test="0"><ParameterRefRef RefId="A_UP-3_R-3" /></when>
+     <when test="1"><ParameterRefRef RefId="A_UP-4_R-4" /><ParameterRefRef RefId="A_P-2_R-2" /></when>
+    </choose>
+   </ParameterBlock></ChannelIndependentBlock>
+   <Module Id="A_MD-1_M-1" RefId="A_MD-1"><NumericArg RefId="A_MD-1_A-1" Value="4" /><NumericArg RefId="A_MD-1_A-2" Value="0" /></Module>
+   <Module Id="A_MD-1_M-2" RefId="A_MD-1"><NumericArg RefId="A_MD-1_A-1" Value="6" /><NumericArg RefId="A_MD-1_A-2" Value="4" /></Module>
+  </Dynamic>
+ </ApplicationProgram>
+</KNX>
