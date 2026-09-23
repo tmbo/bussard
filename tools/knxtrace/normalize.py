@@ -13,6 +13,8 @@ differs between two downloads of the same application:
 and keeps everything that is the actual programming of the device: load events
 per interface object, allocation records, memory writes (as address / length /
 content hash), verify reads, restarts, address writes and secure envelopes.
+A secure envelope whose MAC verified under a keyring (`datasecure.py`) is
+replaced by the operation it carries, tagged with the key that protected it.
 
 The same normalizer runs over a capture file and over the committed
 `knx-sim/tests/fixtures/*_flash_requests.txt` TPDU streams, so a fixture can be
@@ -314,6 +316,15 @@ def op_from_apdu(apdu: Apdu, direction: str, ts: float) -> Optional[Op]:
 
     if name.startswith("A_GroupValue"):
         return Op(KIND_GROUP, name.replace("A_GroupValue_", ""), dict(f), direction, ts)
+
+    if name == "A_SecureData" and apdu.inner is not None:
+        # Decrypted with a keyring: the operation is the inner APDU. Which key
+        # protected it stays visible; the sequence number does not, because it
+        # legitimately advances between two runs.
+        op = op_from_apdu(apdu.inner, direction, ts)
+        if op is not None:
+            op.detail["secured"] = apdu.fields.get("key", "?")
+        return op
 
     if name == "A_SecureData":
         return Op(KIND_SECURE, str(f.get("service", "S-A_Data")), dict(f), direction, ts)
