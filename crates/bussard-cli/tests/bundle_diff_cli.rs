@@ -73,8 +73,11 @@ fn run(args: &[&str], code: i32) -> Result<String, Box<dyn std::error::Error>> {
     Ok(String::from_utf8(out.stdout)?)
 }
 
+/// One model file: its relative path and bytes.
+type ModelFile = (String, Vec<u8>);
+
 /// The model files of a directory as (relative path, bytes), sorted.
-fn model_bytes(dir: &Path) -> Result<Vec<(String, Vec<u8>)>, Box<dyn std::error::Error>> {
+fn model_bytes(dir: &Path) -> Result<Vec<ModelFile>, Box<dyn std::error::Error>> {
     let mut out = Vec::new();
     for name in ["bussard.yaml", "groups.yaml", "links.yaml"] {
         if dir.join(name).is_file() {
