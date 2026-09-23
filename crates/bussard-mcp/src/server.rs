@@ -42,7 +42,10 @@ impl BussardMcp {
     /// `knx_read_group` in passive mode, and `knx_write_group` unless
     /// `--allow-writes` is set (and never in passive mode).
     pub fn new(state: Arc<SharedState>) -> Self {
-        let mut tool_router = Self::tool_router();
+        // The group-planning tools live in their own router (see
+        // `crate::tools_groups`); rmcp's `ToolRouter` implements `Add`, so the
+        // two blocks combine into one instance router.
+        let mut tool_router = Self::tool_router() + Self::groups_router();
         if state.passive {
             tool_router.remove_route("knx_read_group");
             // Introspection actively transmits management traffic, so it is a

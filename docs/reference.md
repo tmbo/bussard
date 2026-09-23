@@ -250,6 +250,52 @@ Validate the YAML model and report diagnostics (see [the diagnostics table](#val
 | `--dir <DIR>` | `knx` | The model directory. |
 | `--format <FORMAT>` | `text` | `text` (rustc-style diagnostics) or `json` (a JSON array). |
 
+### `bussard scaffold <PLAN>`
+
+Draft a group-address plan from a room and function list. Reserves the conventional block per function (five addresses for a light, ten for a blind or a heating zone), names every address `<Floor> <Room> <Function> <Role>`, fills the DPTs, and leaves the unused slots in each block free for growth. Re-running on an extended plan adds addresses and never renumbers or renames the ones already there.
+
+The plan file is device-free:
+
+```yaml
+rooms:
+  - floor: Ground floor
+    room: Kitchen
+    functions: [light, light-dim, blind, heating]
+```
+
+Functions: `light` (switch + feedback), `light-dim` (switch, dim, value, both feedbacks), `blind`, `heating`, `socket`.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--dir <DIR>` | `knx` | The model directory. |
+| `--scheme <SCHEME>` | `lint.groups.scheme`, else `floor-trade-block` | `floor-trade-block` (main = floor, middle = trade) or `function-floor` (main = trade, middle = floor). |
+| `--out <FILE>` | `<dir>/groups.yaml` | Write (and extend) this file instead. |
+| `--json` | off | Emit JSON instead of the table. |
+| `--no-lint-config` | off | Do not append a matching `lint:` block to `bussard.yaml`. |
+
+Addressing under the two schemes:
+
+| Scheme | main | middle | sub |
+|---|---|---|---|
+| `floor-trade-block` | floor | trade | block start + role offset |
+| `function-floor` | trade | floor | block start + role offset |
+
+Floors and trades count from 1 (index 0 stays free for central functions, which also keeps the reserved `0/0/0` out of reach). Trades are `light` 1, `blind` 2, `heating` 3, `socket` 4. The middle level is three bits, so `function-floor` supports at most seven floors. Role offsets inside a block are fixed: a light block is switch (0), dim (1), value (2), switch status (3), value status (4); a blind block is move, step, position, slat, position status, slat status, moving status (0-6); a heating block is setpoint, operating mode, actual temperature, control value, setpoint status, operating mode status (0-5).
+
+### `bussard export-groups`
+
+Write the group-address plan in a format ETS's *Group Addresses -> Import* accepts. Names, descriptions and DPTs cross over; the `protected:` flag, which ETS has no field for, is carried into the description as a leading `[protected]` marker.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--dir <DIR>` | `knx` | The model directory. |
+| `--format <FORMAT>` | required | `ets-csv` or `ets-xml`. |
+| `--out <FILE>` | required | The file to write. |
+
+`ets-csv` is the three-level CSV ETS itself exports: UTF-8 with a BOM, semicolon separated, CRLF line endings, every field quoted, with the columns `Main`, `Middle`, `Sub`, `Address`, `Central`, `Unfiltered`, `Description`, `DatapointType`, `Security`. Main groups, middle groups and addresses each get their own row, and the DPT is in ETS notation (`DPST-1-1`, or `DPT-1` when the model has no sub number).
+
+`ets-xml` is the `GroupAddress-Export` document in the namespace `http://knx.org/xml/ga-export/01`: nested `GroupRange` elements carrying `Name`, `RangeStart` and `RangeEnd`, with `GroupAddress` leaves carrying `Name`, `Address`, `Description`, `DPTs` and `Security`.
+
 ### `bussard monitor`
 
 Live-monitor the bus, decoding telegrams against the model. Unknown GAs and DPTs degrade to raw hex, never a failure.
@@ -388,6 +434,31 @@ connection:
 | `connection.gateway` | string, optional | Gateway `host:port` for tunneling. |
 | `connection.multicast` | string, optional | Multicast `addr:port` for routing; defaults to `224.0.23.12:3671`. |
 
+An optional `lint:` block turns on the topology and convention rules (`L001`-`L008` in [the diagnostics table](#validation-diagnostics)). Without it nothing extra is reported, so adding the feature cannot change an existing project. `bussard scaffold` writes the block for you.
+
+```yaml
+lint:
+  topology:
+    max_devices_per_line: 64
+    supply_ma: { "1.1": 640 }
+  groups:
+    scheme: floor-trade-block    # or function-floor
+    blocks: { light: 5, blind: 10, heating: 10 }
+    feedback_pairing: true
+    name_pattern: "* * *"
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `lint.topology.max_devices_per_line` | integer, optional | The most devices one line may carry (the KNX TP limit is 64). Drives `L001`. |
+| `lint.topology.supply_ma` | map line -> mA, optional | Each line's power-supply budget. Drives `L002`, and declaring a line here also declares that it exists, which drives `L003`. |
+| `lint.groups.scheme` | `floor-trade-block` \| `function-floor`, optional | Which address level carries the floor and which the trade. The convention lints need it. |
+| `lint.groups.blocks` | map trade -> size, optional | How many consecutive sub addresses each trade reserves per room. A trade that is absent is not part of the plan. |
+| `lint.groups.feedback_pairing` | bool, default false | Require the feedback address the block layout reserves for each command address. |
+| `lint.groups.name_pattern` | string, optional | A glob every GA name must match: `*` is any run of characters (including none), `?` exactly one, everything else literal. |
+
+Bus current for `L002` comes from the cached product data (`models/*.yaml`, written by `import-product` from the `.knxprod` `Hardware.xml` `BusCurrent`). Devices with no cached product contribute nothing and are counted in the warning.
+
 ### `groups.yaml`
 
 ```yaml
@@ -516,6 +587,19 @@ One file per application program, generated by `import-product` and never hand-e
 | I017 | parameter value equals the vendor default (redundant) | info |
 | I018 | device has `parameters:` but no product model in `models/` to validate against | info |
 
+These rules are opt-in and run only when `bussard.yaml` carries a [`lint:` block](#bussardyaml):
+
+| Code | Rule | Severity |
+|---|---|---|
+| L001 | more devices on a line than `topology.max_devices_per_line` | warning |
+| L002 | a line's summed device bus current exceeds its `topology.supply_ma` budget | warning |
+| L003 | a device sits on a line `topology.supply_ma` does not declare | warning |
+| L004 | a KNX Secure device sits behind a line coupler that is not Secure-capable | warning |
+| L005 | a GA falls outside every block declared in `groups.blocks` | warning |
+| L006 | a command GA has no feedback GA on the offset its block reserves | warning |
+| L007 | a GA name does not match `groups.name_pattern` | warning |
+| L008 | a GA's DPT contradicts the role its block offset stands for | warning |
+
 ## Telegram JSON contract
 
 `monitor --json` emits one object per line; the MCP telegram tools mirror the same fields. Absent fields are `null`, so the schema is uniform.
@@ -575,6 +659,7 @@ Bus operations share one rate limiter (minimum 250 ms between operations, at mos
 | `knx_recent_telegrams` | `limit` (default 50, max 1000), `ga` (GA or prefix), `source` (IA), `since` (RFC3339), all optional | Recent decoded telegrams, oldest first. With `--capture-db`, windows that predate the in-memory ring are topped up from the capture database. |
 | `knx_wait_for_telegram` | `timeout_seconds` (max 300), `ga`, `source` (optional) | Blocks until a matching telegram arrives or the timeout elapses. A timeout is a normal result, not an error. Enables "press the button now" debugging. |
 | `knx_validate` | none | Every diagnostic (code, severity, message, location) plus counts. |
+| `knx_scaffold_groups` | `plan` (JSON `{rooms: [{floor, room, functions}]}`), `scheme` (optional) | Writes `groups.yaml` from a room and function list, returns the addresses added and the model's validation counts. Confirm the room list with the human first. |
 | `knx_read_group` | `ga` | Transmits a GroupValueRead and returns the decoded response. Omitted in `--passive` mode. |
 | `knx_describe_device` | `address` | Introspects a device: enumerates its interface objects and each property's description (PID, type, element count, access levels). Read-only on the bus. Omitted in `--passive` mode. |
 | `knx_write_group` | `ga`, `value` (human-typed), `dpt` (optional override) | A GroupValueWrite. Registered only with `--allow-writes`; refuses protected GAs outright, and refuses a `dpt` that contradicts the GA's DPT in the model (the override is for GAs the model does not type). |

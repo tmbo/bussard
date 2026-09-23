@@ -246,6 +246,55 @@ Then ask in plain language: "What devices are on my bus?", "Watch for telegrams 
 
 The payoff is closing the loop between an intent and a reviewed change. "I added a presence detector in the hall, it should switch the hall light": Claude finds the detector's GA from recent telegrams, reads the light state, checks the model, and proposes the `links.yaml` edit. You review the diff, then run `plan` and `apply` yourself.
 
+## ... plan the group addresses for a new house?
+
+Write the room book as a plan file and let bussard do the numbering:
+
+```yaml
+# plan.yaml
+rooms:
+  - floor: Ground floor
+    room: Kitchen
+    functions: [light, light-dim, blind, heating]
+  - floor: Ground floor
+    room: Living room
+    functions: [light-dim, blind, heating, socket]
+  - floor: First floor
+    room: Bedroom
+    functions: [light, blind, heating]
+```
+
+```console
+$ bussard scaffold plan.yaml --dir knx
+Scaffolded 62 group address(es) into knx/groups.yaml using the floor-trade-block scheme.
+  1/1/0     1.001    Ground floor Kitchen Light Switch
+  1/1/3     1.001    Ground floor Kitchen Light Switch status
+  1/1/5     1.001    Ground floor Kitchen Dimmer Switch
+  ...
+Wrote a matching lint: block to knx/bussard.yaml - `bussard validate` now checks the convention.
+Validation: 0 error(s), 0 warning(s).
+```
+
+Each function reserves a fixed block (five addresses for a light, ten for a blind or heating zone) and fills only the roles it needs, so the unused slots are there when the plain light later becomes a dimmer. Pick the other scheme with `--scheme function-floor` (trade on the main group, floor on the middle). Add rooms to `plan.yaml` and re-run: existing addresses and names are kept verbatim, only the new rooms are numbered.
+
+The written `lint:` block makes `bussard validate` check the convention from then on: a GA outside its block, a switch with no feedback address, a DPT that contradicts its role ([codes L005-L008](reference.md#validation-diagnostics)).
+
+An assistant driving `bussard mcp` can do the same over the `knx_scaffold_groups` tool, drafting the room list from a conversation. Confirm the floors, rooms and functions before it writes.
+
+## ... get my names into ETS?
+
+Import is otherwise one-way. `export-groups` writes the plan in the two formats ETS's *Group Addresses -> Import* accepts:
+
+```console
+$ bussard export-groups --format ets-csv --out groups.csv
+Wrote 62 group address(es) to groups.csv (ETS CSV).
+Import it in ETS: Group Addresses -> Import, then pick this file.
+```
+
+In ETS, open the project, select *Group Addresses* in the project tree, and use *Import* on the toolbar. The CSV is the three-level form ETS itself exports (UTF-8 with a BOM, semicolon separated); `--format ets-xml` writes the `GroupAddress-Export` XML instead, which keeps the main and middle range names as a tree.
+
+Names, descriptions and DPTs cross over as they are. ETS has no equivalent of bussard's `protected:` flag, so a guarded address carries a leading `[protected]` marker in its description and stays recognisable on the other side.
+
 ## ... capture history and query it?
 
 ```console

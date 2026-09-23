@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::address::{GroupAddress, IndividualAddress};
 use crate::dpt::Dpt;
 use crate::flags::Flags;
+use crate::lint::LintConfig;
 
 /// The default routing multicast endpoint (`224.0.23.12:3671`).
 pub const DEFAULT_MULTICAST: &str = "224.0.23.12:3671";
@@ -35,6 +36,10 @@ pub struct BussardConfig {
     /// Connection settings.
     #[serde(default)]
     pub connection: Connection,
+    /// Opt-in topology and convention lint rules (issue #102). Absent means the
+    /// `L0xx` lints do not run, so an existing model gains no new warnings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lint: Option<LintConfig>,
 }
 
 /// The `connection` block of `bussard.yaml`.
