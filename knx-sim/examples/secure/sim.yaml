@@ -5,9 +5,10 @@
 # run.sh (next to this file) starts the simulator on the port below, flashes
 # 1.1.2 with the synthetic tool key in both CCM modes, and asserts the negatives.
 #
-# Two devices, same product (KNX Virtual DA.tp, mask 07B0):
-#   1.1.2  security-ACTIVATED — every management APDU must ride A_SecureData
-#   1.1.3  plain (no `security:` block) — the coexistence / regression peer
+# Three devices, same product (KNX Virtual DA.tp, mask 07B0):
+#   1.1.2   security-ACTIVATED — every management APDU must ride A_SecureData
+#   1.1.10  security-ACTIVATED, driven with the synthetic keyring (issue #156)
+#   1.1.3   plain (no `security:` block) — the coexistence / regression peer
 #
 # All key material here is SYNTHETIC. No FDSK, tool key, group key or password
 # derived from a real installation may ever be committed (spec §12.3).
@@ -33,6 +34,21 @@ devices:
       initial_tx_seq: 200
       # The receive-freshness floor: a first inbound frame must strictly exceed
       # this, so a tool replaying an old sequence is rejected (spec §5.9).
+      initial_rx_seq: 1000
+
+  # The keyring peer (issue #156): security-activated with the tool key of
+  # device 1.1.10 in `synthetic.knxkeys` (0x42 * 16, SYNTHETIC). run.sh flashes
+  # and applies it with `--keyring`, so the download also programs its security
+  # interface object (group key table from the keyring's key for 1/2/3,
+  # group-object security flags).
+  - address: "1.1.10"
+    knxprod: "../../tests/fixtures/KNX_Virtual_M-00FA.knxprod"
+    application: "M-00FA_A-2500-10-51CB"
+    initial_state: unloaded
+    security:
+      status: activated
+      tool_key: "42424242424242424242424242424242"
+      initial_tx_seq: 300
       initial_rx_seq: 1000
 
   # The plain peer: a non-activated device on the same bus. It proves the mixed

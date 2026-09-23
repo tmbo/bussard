@@ -19,10 +19,11 @@
 //! below names the *source* of the problem (file, address, length) and never the
 //! bytes (spec §2.3).
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, anyhow};
-use bussard_model::IndividualAddress;
+use bussard_model::{GroupAddress, IndividualAddress};
 use bussard_secure::{DataSecureSession, Key16, SecurityAlgorithm, SequenceHighWater};
 
 /// The environment variable carrying the `.knxkeys` password (spec §2.2).
@@ -59,20 +60,55 @@ pub fn resolve(
     target: IndividualAddress,
     source: ToolKeySource<'_>,
 ) -> anyhow::Result<Option<Key16>> {
+    Ok(resolve_material(target, source)?.tool_key)
+}
+
+/// The Data Secure key material a secured download needs: the target's tool
+/// key and, when it came from a keyring, the keyring's group keys (issue #156:
+/// the group key table of the security object is built from them). `Debug` is
+/// redacted by [`Key16`].
+#[derive(Debug, Clone, Default)]
+pub struct SecureMaterial {
+    /// The target's tool key, or `None` for the plain path.
+    pub tool_key: Option<Key16>,
+    /// The keyring's group keys; `None` with `--tool-key` (which carries none)
+    /// or on the plain path.
+    pub group_keys: Option<HashMap<GroupAddress, Key16>>,
+}
+
+/// Like [`resolve`], but also returns the keyring's group keys. The keyring is
+/// decrypted once.
+///
+/// # Errors
+///
+/// As [`resolve`].
+pub fn resolve_material(
+    target: IndividualAddress,
+    source: ToolKeySource<'_>,
+) -> anyhow::Result<SecureMaterial> {
     match (source.keyring, source.tool_key) {
         (Some(_), Some(_)) => Err(anyhow!(
             "--keyring and --tool-key are mutually exclusive: pass the keyring for a real \
              installation, or the raw tool key only for a test/bench device"
         )),
-        (Some(path), None) => from_keyring(target, path).map(Some),
-        (None, Some(hex)) => parse_hex_key(hex).map(Some),
-        (None, None) => Ok(None),
+        (Some(path), None) => {
+            let keyring = load_keyring(path)?;
+            let tool_key = tool_key_from(&keyring, target, path)?;
+            Ok(SecureMaterial {
+                tool_key: Some(tool_key),
+                group_keys: Some(keyring.group_keys.clone()),
+            })
+        }
+        (None, Some(hex)) => Ok(SecureMaterial {
+            tool_key: Some(parse_hex_key(hex)?),
+            group_keys: None,
+        }),
+        (None, None) => Ok(SecureMaterial::default()),
     }
 }
 
-/// Loads `path`, decrypts it with the env password, and extracts `target`'s tool
-/// key (spec §2.1: the keyring `ToolKey` is the device's management key).
-fn from_keyring(target: IndividualAddress, path: &Path) -> anyhow::Result<Key16> {
+/// Loads and decrypts `path` with the env password.
+fn load_keyring(path: &Path) -> anyhow::Result<bussard_project::Keyring> {
     let password = std::env::var(KEYRING_PASSWORD_ENV).map_err(|_| {
         anyhow!(
             "the keyring password must be set in the {KEYRING_PASSWORD_ENV} environment \
@@ -81,8 +117,17 @@ fn from_keyring(target: IndividualAddress, path: &Path) -> anyhow::Result<Key16>
     })?;
     let xml = std::fs::read_to_string(path)
         .with_context(|| format!("reading keyring {}", path.display()))?;
-    let keyring = bussard_project::parse_keyring(&xml, &password)
-        .with_context(|| format!("loading keyring {}", path.display()))?;
+    bussard_project::parse_keyring(&xml, &password)
+        .with_context(|| format!("loading keyring {}", path.display()))
+}
+
+/// Extracts `target`'s tool key (spec §2.1: the keyring `ToolKey` is the
+/// device's management key).
+fn tool_key_from(
+    keyring: &bussard_project::Keyring,
+    target: IndividualAddress,
+    path: &Path,
+) -> anyhow::Result<Key16> {
     keyring.tool_key(target).cloned().ok_or_else(|| {
         anyhow!(
             "the keyring {} has no tool key for {target}: it lists {} device(s). A device is \

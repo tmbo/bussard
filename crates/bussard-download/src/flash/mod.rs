@@ -323,6 +323,35 @@ pub enum FlashStep {
         channel_number: u8,
     },
 
+    // --- KNX Data Secure security interface object (issue #156) --------------
+    //
+    // Added by [`FlashPlan::add_security_program`] when the device is flashed
+    // over a secured connection. They address the security object by type (17,
+    // instance 1) through the extended property services, in the order and at
+    // the place ETS uses them (see [`crate::security`]).
+    /// Drive the security object's load-state machine with `control`
+    /// (`A_FunctionPropertyExt_Command` PID 5 with the 10-octet load-control
+    /// value) and check the state it reports.
+    SecurityLoadControl {
+        /// `Unload`, `StartLoading` or `LoadCompleted`.
+        control: bussard_mgmt::LoadControl,
+    },
+    /// Empty the security individual address table (PID 54, element 0 =
+    /// `00 00`), as ETS does in every secured download.
+    SecurityClearAddressTable,
+    /// Write the group key table (PID 53): one 18-octet element per keyed group
+    /// address. Key bytes are held in redacting [`Key16`](bussard_secure::Key16)s.
+    SecurityGroupKeys {
+        /// The entries, ascending address-table index.
+        entries: Vec<crate::security::GroupKeyEntry>,
+    },
+    /// Write the group-object security flags (PID 61) from element 1, one octet
+    /// per group object, chunked to the APDU budget.
+    SecurityGoFlags {
+        /// The flags; index 0 is group object 1.
+        flags: Vec<u8>,
+    },
+
     // --- System 7 (mask 0705 / 0701) steps -----------------------------------
     //
     // System 7 is memory-mapped and absolute-addressed (`[system7-spec §2/§3]`):
@@ -744,6 +773,74 @@ impl FlashPlan {
             .retain(|s| !matches!(s, FlashStep::FactoryReset { .. }));
     }
 
+    /// Adds the KNX Data Secure security-object steps (issue #156) at the
+    /// places ETS runs them in a secured download:
+    ///
+    /// - `SecurityLoadControl(Unload)` right after the opening `Unload` run,
+    ///   before the first `StartLoading`;
+    /// - `SecurityLoadControl(StartLoading)`, the IA-table clear, the group key
+    ///   table (when there are keys), the group-object flags and
+    ///   `SecurityLoadControl(LoadCompleted)` after the last memory write, before
+    ///   the property writes (`PID_PROGRAM_VERSION`) that precede the first
+    ///   `LoadCompleted`.
+    ///
+    /// A no-op on a System 7 plan (no security object) and when the plan
+    /// already carries security steps.
+    pub fn add_security_program(&mut self, program: crate::security::SecurityProgram) {
+        if self.sys7.is_some() || self.has_security_program() {
+            return;
+        }
+        let first_load_completed = self
+            .steps
+            .iter()
+            .position(|s| matches!(s, FlashStep::LoadCompleted { .. }))
+            .unwrap_or(self.steps.len());
+        let mut block_at = first_load_completed;
+        while block_at > 0 && matches!(self.steps[block_at - 1], FlashStep::WriteProp { .. }) {
+            block_at -= 1;
+        }
+        let mut block = vec![
+            FlashStep::SecurityLoadControl {
+                control: bussard_mgmt::LoadControl::StartLoading,
+            },
+            FlashStep::SecurityClearAddressTable,
+        ];
+        if !program.group_keys.is_empty() {
+            block.push(FlashStep::SecurityGroupKeys {
+                entries: program.group_keys,
+            });
+        }
+        if !program.go_flags.is_empty() {
+            block.push(FlashStep::SecurityGoFlags {
+                flags: program.go_flags,
+            });
+        }
+        block.push(FlashStep::SecurityLoadControl {
+            control: bussard_mgmt::LoadControl::LoadCompleted,
+        });
+        self.steps.splice(block_at..block_at, block);
+
+        let unload_at = self
+            .steps
+            .iter()
+            .position(|s| matches!(s, FlashStep::StartLoading { .. }))
+            .unwrap_or(0);
+        self.steps.insert(
+            unload_at,
+            FlashStep::SecurityLoadControl {
+                control: bussard_mgmt::LoadControl::Unload,
+            },
+        );
+    }
+
+    /// Whether the plan programs the security object (see
+    /// [`add_security_program`](Self::add_security_program)).
+    pub fn has_security_program(&self) -> bool {
+        self.steps
+            .iter()
+            .any(|s| matches!(s, FlashStep::SecurityLoadControl { .. }))
+    }
+
     /// Whether the terminal restart is sent as the confirmed master reset with
     /// erase code 1 rather than a bare `A_Restart`. True for a System B plan that
     /// allocates a filled segment, the download shape ETS ends with a confirmed
@@ -1043,4 +1140,97 @@ mod tests {
     // ---------------------------------------------------------------------
     // Issue #53: address-arithmetic bounds at plan pre-flight.
     // ---------------------------------------------------------------------
+
+    /// The security steps land where ETS runs them (issue #156): the unload
+    /// right before the first `StartLoading`, the load bracket after the last
+    /// memory write and before the first `LoadCompleted`.
+    #[test]
+    fn test_add_security_program_places_steps_like_ets() -> Result<(), Box<dyn std::error::Error>> {
+        use super::FlashStep;
+        use bussard_mgmt::LoadControl;
+        let app = fabricated_app();
+        let mut plan = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?;
+        let before = plan.steps.len();
+        let program = crate::security::SecurityProgram {
+            group_keys: vec![crate::security::GroupKeyEntry {
+                address_index: 1,
+                group_address: "1/0/1".parse()?,
+                key: bussard_secure::Key16::new([7; 16]),
+            }],
+            go_flags: vec![0, 3],
+        };
+        plan.add_security_program(program.clone());
+        assert_eq!(plan.steps.len(), before + 6);
+        let pos = |f: &dyn Fn(&FlashStep) -> bool| plan.steps.iter().position(f);
+        let sec_unload = pos(&|s| {
+            matches!(
+                s,
+                FlashStep::SecurityLoadControl {
+                    control: LoadControl::Unload
+                }
+            )
+        })
+        .ok_or("no security unload")?;
+        let first_start = pos(&|s| matches!(s, FlashStep::StartLoading { .. })).ok_or("start")?;
+        assert_eq!(sec_unload + 1, first_start);
+        let sec_start = pos(&|s| {
+            matches!(
+                s,
+                FlashStep::SecurityLoadControl {
+                    control: LoadControl::StartLoading
+                }
+            )
+        })
+        .ok_or("no security start")?;
+        let last_write = plan
+            .steps
+            .iter()
+            .rposition(|s| matches!(s, FlashStep::WriteRelMem { .. }))
+            .ok_or("write")?;
+        let first_complete =
+            pos(&|s| matches!(s, FlashStep::LoadCompleted { .. })).ok_or("complete")?;
+        assert!(sec_start > last_write && sec_start < first_complete);
+        assert!(matches!(
+            plan.steps[sec_start + 1],
+            FlashStep::SecurityClearAddressTable
+        ));
+        assert!(matches!(
+            plan.steps[sec_start + 2],
+            FlashStep::SecurityGroupKeys { .. }
+        ));
+        assert!(matches!(
+            plan.steps[sec_start + 3],
+            FlashStep::SecurityGoFlags { .. }
+        ));
+        assert!(matches!(
+            plan.steps[sec_start + 4],
+            FlashStep::SecurityLoadControl {
+                control: LoadControl::LoadCompleted
+            }
+        ));
+        // Idempotent: a second call adds nothing.
+        plan.add_security_program(program);
+        assert_eq!(plan.steps.len(), before + 6);
+        // The labels never print a key and name the secured object.
+        let labels: Vec<String> = super::trace(&plan);
+        assert!(
+            labels
+                .iter()
+                .any(|l| l.contains("PID 61") && l.contains("secured: 2"))
+        );
+        assert!(
+            labels
+                .iter()
+                .any(|l| l.contains("PID 53") && l.contains("keys not shown"))
+        );
+        Ok(())
+    }
 }

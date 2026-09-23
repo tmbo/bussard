@@ -87,5 +87,6 @@ pub fn run(
         tool_key_source,
         &DesiredSource::Backup(path),
         &overrides,
+        model.as_ref(),
     )
 }

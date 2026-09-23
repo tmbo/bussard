@@ -236,6 +236,17 @@ impl Timeouts {
     }
 }
 
+/// The octets KNX Data Secure adds to a management APDU: the wrapped frame is
+/// the `A_SecureData` APCI (2), the security control field (1), the sequence
+/// number (6), the whole plain APDU and the truncated MAC (4), so it is 13
+/// octets longer than the plain APDU. CONFIRMED from the ETS capture (issue
+/// #156, see [`Layer4Connection::inner_max_apdu`]).
+pub const SECURE_APDU_OVERHEAD: u16 = 13;
+
+/// The APDU budget of a standard (short) frame, used when a device's
+/// `PID_MAX_APDU_LENGTH` is unknown.
+pub const STANDARD_FRAME_APDU: u16 = 15;
+
 /// A live connection-oriented (layer-4) session to a single device.
 ///
 /// Borrow-based: it drives an existing [`BusConnection`] and does not own it, so
@@ -842,7 +853,7 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
     /// conservative [`CONSERVATIVE_MEMORY_CHUNK`](crate::apci::CONSERVATIVE_MEMORY_CHUNK)
     /// standard-frame floor.
     pub fn max_memory_chunk(&self) -> u8 {
-        match self.max_apdu {
+        match self.inner_max_apdu() {
             Some(v) => crate::apci::memory_chunk_for_apdu(v),
             None => crate::apci::CONSERVATIVE_MEMORY_CHUNK,
         }
@@ -859,7 +870,7 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
     /// 6-bit APCI field), so a capable device (`PID_MAX_APDU=233`) takes 228-octet
     /// chunks instead of the plain service's 63.
     pub fn max_extended_memory_chunk(&self) -> u16 {
-        match self.max_apdu {
+        match self.inner_max_apdu() {
             Some(v) => crate::apci::extended_memory_chunk_for_apdu(v),
             None => u16::from(crate::apci::CONSERVATIVE_MEMORY_CHUNK),
         }
@@ -869,10 +880,42 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
     /// scaled from `PID_MAX_APDU_LENGTH` when negotiated, else the conservative
     /// [`CONSERVATIVE_PROPERTY_READ_OCTETS`](crate::apci::CONSERVATIVE_PROPERTY_READ_OCTETS).
     pub fn max_property_read_octets(&self) -> u8 {
-        match self.max_apdu {
+        match self.inner_max_apdu() {
             Some(v) => crate::apci::property_read_octets_for_apdu(v),
             None => crate::apci::CONSERVATIVE_PROPERTY_READ_OCTETS,
         }
+    }
+
+    /// The negotiated APDU budget left for the **inner** (plain) APDU: the
+    /// device's `PID_MAX_APDU_LENGTH` minus [`SECURE_APDU_OVERHEAD`] when this
+    /// connection wraps every APDU in `A_SecureData`, or `None` when the
+    /// property was never negotiated.
+    ///
+    /// CONFIRMED against the decrypted ETS capture of a secured download
+    /// (issue #156): the device advertises 233, and ETS writes 215-octet
+    /// `A_MemoryExtended_Write` chunks (`233 - 13 - 5`) and 211-element
+    /// `A_PropertyExtValue_WriteCon` chunks (`233 - 13 - 9`) instead of the
+    /// 228 it uses on a plain connection. A chunk sized to the plain budget
+    /// would overflow the device's frame limit once wrapped.
+    pub fn inner_max_apdu(&self) -> Option<u16> {
+        let v = self.max_apdu?;
+        if self.secure.is_active() {
+            Some(v.saturating_sub(SECURE_APDU_OVERHEAD).max(1))
+        } else {
+            Some(v)
+        }
+    }
+
+    /// The inner APDU budget as a number: [`inner_max_apdu`](Self::inner_max_apdu)
+    /// or, when `PID_MAX_APDU_LENGTH` was never negotiated, the 15-octet
+    /// standard-frame floor.
+    pub fn effective_max_apdu(&self) -> u16 {
+        self.inner_max_apdu().unwrap_or(STANDARD_FRAME_APDU)
+    }
+
+    /// Whether this connection wraps management APDUs in KNX Data Secure.
+    pub fn is_secure(&self) -> bool {
+        self.secure.is_active()
     }
 
     /// Replaces this connection's timeout/retry budget.

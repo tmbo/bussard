@@ -367,6 +367,7 @@ mod tests {
                 dpt: Some("1.005".parse().expect("dpt")),
                 description: Some("wind alarm".to_string()),
                 protected: true,
+                secure: false,
             },
         );
 
@@ -401,6 +402,7 @@ mod tests {
                 flags: "CWT".parse().expect("flags"),
                 reference: None,
                 channel: Some("CH-1".to_string()),
+                secure: false,
             },
         );
         let sender = Device {

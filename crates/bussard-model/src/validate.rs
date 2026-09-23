@@ -665,6 +665,7 @@ mod tests {
             dpt: dpt_str.map(dpt),
             description: None,
             protected: false,
+            secure: false,
         }
     }
 
@@ -677,6 +678,7 @@ mod tests {
             flags: flags.parse().unwrap(),
             reference: None,
             channel: None,
+            secure: false,
         }
     }
 
@@ -921,6 +923,7 @@ mod tests {
                 dpt: Some("1.005".parse().unwrap()),
                 description: None,
                 protected: true,
+                secure: false,
             },
         );
         groups.insert(
@@ -930,6 +933,7 @@ mod tests {
                 dpt: Some("1.001".parse().unwrap()),
                 description: None,
                 protected: true,
+                secure: false,
             },
         );
         groups.insert(ga("2/0/0"), group("Plain", Some("1.001")));

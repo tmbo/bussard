@@ -14,6 +14,48 @@ pub(super) fn target_suffix(target: Option<u32>) -> String {
 /// A short human label for a step, for the progress line and the dry-run trace.
 pub(super) fn step_label(step: &FlashStep) -> String {
     match step {
+        FlashStep::SecurityLoadControl { control } => {
+            let what = match control {
+                bussard_mgmt::LoadControl::Unload => "unload",
+                bussard_mgmt::LoadControl::StartLoading => "open for loading",
+                bussard_mgmt::LoadControl::LoadCompleted => "complete load",
+                _ => "load control",
+            };
+            format!(
+                "Data Secure: {what} security object (A_FunctionPropertyExt_Command type 17 PID 5)"
+            )
+        }
+        FlashStep::SecurityClearAddressTable => {
+            "Data Secure: clear security individual address table (PID 54 := 0 entries)".to_string()
+        }
+        FlashStep::SecurityGroupKeys { entries } => {
+            let gas: Vec<String> = entries
+                .iter()
+                .map(|e| format!("{}@{}", e.group_address, e.address_index))
+                .collect();
+            format!(
+                "Data Secure: write group key table (PID 53, {} key(s) for {}; keys not shown)",
+                entries.len(),
+                gas.join(", ")
+            )
+        }
+        FlashStep::SecurityGoFlags { flags } => {
+            let secured: Vec<String> = flags
+                .iter()
+                .enumerate()
+                .filter(|(_, f)| **f != 0)
+                .map(|(i, _)| (i + 1).to_string())
+                .collect();
+            let which = if secured.is_empty() {
+                "none secured".to_string()
+            } else {
+                format!("secured: {}", secured.join(", "))
+            };
+            format!(
+                "Data Secure: write group-object security flags (PID 61, {} object(s), {which})",
+                flags.len()
+            )
+        }
         FlashStep::Unload { target } => format!("unload{}", target_suffix(*target)),
         FlashStep::StartLoading { target } => {
             format!("open for loading{}", target_suffix(*target))

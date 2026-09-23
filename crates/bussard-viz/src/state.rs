@@ -292,6 +292,7 @@ mod tests {
                 dpt: Some("1.001".parse().expect("dpt")),
                 description: None,
                 protected,
+                secure: false,
             },
         );
         Model {

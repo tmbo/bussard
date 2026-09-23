@@ -269,6 +269,7 @@ pub fn model_from_json(json: &str) -> Result<Model> {
                     flags: co.flags.to_flags(),
                     reference: None,
                     channel: co.channel.clone().filter(|s| !s.is_empty()),
+                    secure: false,
                 },
             );
         }

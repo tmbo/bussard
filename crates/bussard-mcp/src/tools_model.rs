@@ -323,6 +323,7 @@ impl BussardMcp {
                             dpt,
                             description,
                             protected: false,
+                            secure: false,
                         },
                     );
                 }

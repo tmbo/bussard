@@ -34,6 +34,8 @@ struct ResolvedComObject {
     reference: String,
     /// GA references (suffixes) in link order; first is the sending GA.
     link_suffixes: Vec<String>,
+    /// The instance's ETS `Security` setting (absent = the `Auto` default).
+    security: Option<crate::project::SecuritySetting>,
 }
 
 /// Normalizes an ETS `ObjectSize` string (e.g. `"1 Bit"`, `"2 Bytes"`) to the
@@ -233,8 +235,13 @@ pub fn build_model(project: RawProject, container: &mut Container) -> Result<Mod
 
     // GA suffix (`GA-213`) -> its address, for resolving links.
     let mut ga_by_suffix: HashMap<String, GroupAddress> = HashMap::new();
+    // The group addresses ETS runs with Data Secure (issue #156).
+    let mut secure_gas: std::collections::HashSet<GroupAddress> = std::collections::HashSet::new();
     for ga in &project.group_addresses {
         ga_by_suffix.insert(ga.ref_suffix.clone(), ga.address);
+        if ga.secure {
+            secure_gas.insert(ga.address);
+        }
     }
 
     // Cache of parsed application programs (by app id) and per-manufacturer
@@ -302,6 +309,19 @@ pub fn build_model(project: RawProject, container: &mut Container) -> Result<Mod
                     flags: r.flags,
                     reference: Some(r.reference.clone()),
                     channel: r.channel.clone(),
+                    // `On` secures the object; `Auto` (also the meaning of an
+                    // absent attribute) follows its linked group addresses.
+                    // CONFIRMED (issue #156): the post-activation export carries
+                    // no `Security` attribute on any ComObjectInstanceRef, yet
+                    // ETS wrote flag 0x03 for group object 1289, the one linked
+                    // to the keyed GA 0/3/47.
+                    secure: match r.security {
+                        Some(crate::project::SecuritySetting::On) => true,
+                        Some(crate::project::SecuritySetting::Off) => false,
+                        Some(crate::project::SecuritySetting::Auto) | None => {
+                            gas.iter().any(|ga| secure_gas.contains(ga))
+                        }
+                    },
                 },
             );
             // Channel labels (issue #11): the com-object keeps its raw channel
@@ -383,15 +403,20 @@ pub fn build_model(project: RawProject, container: &mut Container) -> Result<Mod
         let security = if secure_capable
             || raw_dev.has_device_certificate
             || raw_dev.secure_sequence_number.is_some()
+            || raw_dev.has_tool_key
+            || raw_dev.has_loaded_tool_key
         {
             Some(bussard_model::schema::DeviceSecurity {
                 secure_capable,
-                // A device is treated as activated only once a keyring/knxproj
-                // signal says so; the knxproj alone (FDSK + seqnum, no tool key)
-                // means capable-but-not-activated — the state of the house today
-                // (spec §1.1). SEC-CAL: confirm the activation signal from a live
-                // ETS activation capture (spec §12.4).
-                activated: false,
+                // CONFIRMED activation signal (issue #156, the export ETS made
+                // after activating 1.1.12, `…_20260923_2.knxproj`): the device's
+                // `<Security>` child gains `ToolKey` and `LoadedToolKey`. The
+                // sequence number is no signal: every secure-capable device
+                // carries one before activation too. `ToolKey` alone (1.1.10 in
+                // the same export) is secure commissioning configured but not
+                // yet downloaded.
+                activated: raw_dev.has_loaded_tool_key,
+                secure_commissioning: raw_dev.has_tool_key,
                 has_fdsk_certificate: raw_dev.has_device_certificate,
                 sequence_number: raw_dev.secure_sequence_number,
             })
@@ -429,6 +454,7 @@ pub fn build_model(project: RawProject, container: &mut Container) -> Result<Mod
                 name: ga.name.clone(),
                 dpt,
                 description: ga.description.clone(),
+                secure: ga.secure,
                 ..Default::default()
             },
         );
@@ -641,6 +667,7 @@ fn resolve_com_object(
         channel: ci.channel.clone(),
         reference: ci.ref_id.clone(),
         link_suffixes: ci.links.clone(),
+        security: ci.security,
     })
 }
 
@@ -1258,6 +1285,8 @@ mod tests {
             parameters: Vec::new(),
             secure_sequence_number: None,
             has_device_certificate: false,
+            has_tool_key: false,
+            has_loaded_tool_key: false,
         }
     }
 

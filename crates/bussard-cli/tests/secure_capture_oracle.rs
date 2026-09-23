@@ -389,3 +389,190 @@ fn test_every_ets_capture_frame_verifies() -> TestResult {
     );
     Ok(())
 }
+
+/// The security-object program bussard builds equals what ETS wrote (issue
+/// #156), byte for byte, without printing a key.
+///
+/// From the decrypted capture it takes ETS's own address, association and
+/// group-object tables (the `A_MemoryExtended_Write`s following each object's
+/// `PID_TABLE_REFERENCE` read), feeds them with the keyring's group keys to
+/// `security_inputs_for` + `build_security_program`, and compares the result
+/// with ETS's `PID_GRP_KEY_TABLE` (53), `PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE`
+/// (54) and `PID_GO_SECURITY_FLAGS` (61) writes and with the order of the
+/// security-object operations. Only lengths, counts and verdicts are printed.
+#[test]
+#[ignore = "needs BUSSARD_SECURE_PCAP, BUSSARD_SECURE_KEYRING, BUSSARD_KEYRING_PASSWORD and BUSSARD_SECURE_DEVICE"]
+fn test_security_object_program_matches_ets() -> TestResult {
+    use bussard_mgmt::property_ext::{
+        self, PID_GO_SECURITY_FLAGS, PID_GRP_KEY_TABLE, PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE,
+        PID_SECURITY_LOAD_STATE_CONTROL,
+    };
+    use std::collections::BTreeMap;
+
+    let pcap = std::env::var("BUSSARD_SECURE_PCAP")?;
+    let keyring = std::env::var("BUSSARD_SECURE_KEYRING")?;
+    let password = std::env::var("BUSSARD_KEYRING_PASSWORD")?;
+    let device: IndividualAddress = std::env::var("BUSSARD_SECURE_DEVICE")?.parse()?;
+    let keys = bussard_project::parse_keyring(&std::fs::read_to_string(keyring)?, &password)?;
+    let tool_key: Key16 = keys
+        .tool_key(device)
+        .ok_or("the keyring has no tool key for the device")?
+        .clone();
+    let dev = device.raw();
+
+    // The decrypted ETS -> device management APDUs of the LAST download session
+    // (the capture also holds the activation session before it).
+    let mut inner: Vec<(u16, Vec<u8>)> = Vec::new();
+    for f in cemi_frames(&std::fs::read(pcap)?) {
+        if f.mc == 0x2E || f.dst != dev || f.src == dev {
+            continue;
+        }
+        if apci_of(&f.npdu) != Some(asdu::A_SECURE_DATA) {
+            continue;
+        }
+        let body = &f.npdu[2..];
+        if Scf::from_byte(body[0])?.service != SecureService::Data {
+            continue;
+        }
+        let addr = TpAddressing {
+            source: f.src,
+            destination: f.dst,
+            address_type_group: false,
+            extended_frame_format: f.ctrl2 & 0x0F,
+            tpci: f.npdu[0],
+        };
+        if let Ok(d) = asdu::decode(&tool_key, body, &addr) {
+            inner.push((d.apci, d.data));
+        }
+    }
+
+    // Table images: memory writes after `A_PropertyValue_Read obj=N pid=7`.
+    let mut images: BTreeMap<u8, Vec<u8>> = BTreeMap::new();
+    let mut current: Option<u8> = None;
+    // Security object operations in order: (pid, start, data).
+    let mut sec_ops: Vec<(u16, u16, Vec<u8>)> = Vec::new();
+    for (apci, data) in &inner {
+        match *apci {
+            0x3D5 if data.len() >= 2 && data[1] == 7 => {
+                current = Some(data[0]);
+                images.insert(data[0], Vec::new());
+            }
+            0x1FB if data.len() >= 4 => {
+                if let Some(obj) = current {
+                    images.entry(obj).or_default().extend_from_slice(&data[4..]);
+                }
+            }
+            0x1D4 => {
+                let cmd = property_ext::decode_function_property_ext(data).ok_or("fpe")?;
+                if cmd.addr.object_type == 17 {
+                    sec_ops.push((cmd.addr.property_id, 0, cmd.data));
+                }
+            }
+            0x1CE => {
+                let w = property_ext::decode_property_ext_value(data).ok_or("writecon")?;
+                if w.addr.object_type == 17 {
+                    sec_ops.push((w.addr.property_id, w.start, w.data));
+                }
+            }
+            _ => {}
+        }
+    }
+    // Keep the download session's operations: from the last PID 5 Unload on.
+    let unload = sec_ops
+        .iter()
+        .rposition(|(pid, _, d)| *pid == PID_SECURITY_LOAD_STATE_CONTROL && d.first() == Some(&4))
+        .ok_or("no security-object Unload in the capture")?;
+    let sec_ops = &sec_ops[unload..];
+
+    let word = |b: &[u8], i: usize| -> Option<u16> {
+        Some(u16::from_be_bytes([*b.get(i)?, *b.get(i + 1)?]))
+    };
+    let addr_img = images.get(&1).ok_or("no address table image")?;
+    let assoc_img = images.get(&2).ok_or("no association table image")?;
+    let go_img = images.get(&3).ok_or("no group-object table image")?;
+    let n_addr = usize::from(word(addr_img, 0).ok_or("addr count")?);
+    let addresses: Vec<bussard_model::GroupAddress> = (0..n_addr)
+        .filter_map(|i| word(addr_img, 2 + 2 * i))
+        .map(bussard_model::GroupAddress::from_raw)
+        .collect();
+    let n_assoc = usize::from(word(assoc_img, 0).ok_or("assoc count")?);
+    let associations: Vec<(u16, u16)> = (0..n_assoc)
+        .filter_map(|i| Some((word(assoc_img, 2 + 4 * i)?, word(assoc_img, 4 + 4 * i)?)))
+        .collect();
+    let go_count = word(go_img, 0).ok_or("GO count")?;
+    println!(
+        "ETS tables: {} address(es), {} association(s), {} group object(s)",
+        addresses.len(),
+        associations.len(),
+        go_count
+    );
+
+    let desired = bussard_download::DesiredTables {
+        addresses: addresses.clone(),
+        associations,
+    };
+    let inputs = bussard_download::security_inputs_for(None, device, &desired, &keys.group_keys);
+    let program = bussard_download::build_security_program(
+        device,
+        &addresses,
+        go_count,
+        &inputs.secure_objects,
+        &inputs.secure_gas,
+        &inputs.group_keys,
+    )?;
+
+    let ets_concat = |pid: u16| -> Vec<u8> {
+        sec_ops
+            .iter()
+            .filter(|(p, _, _)| *p == pid)
+            .flat_map(|(_, _, d)| d.clone())
+            .collect()
+    };
+    let ets_53 = ets_concat(PID_GRP_KEY_TABLE);
+    let ets_54: Vec<(u16, Vec<u8>)> = sec_ops
+        .iter()
+        .filter(|(p, _, _)| *p == PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE)
+        .map(|(_, s, d)| (*s, d.clone()))
+        .collect();
+    let ets_61 = ets_concat(PID_GO_SECURITY_FLAGS);
+    let ours_53 = program.group_key_table_bytes();
+    println!(
+        "PID 53: ETS {} octet(s), bussard {} octet(s), equal: {}",
+        ets_53.len(),
+        ours_53.len(),
+        ets_53 == ours_53
+    );
+    println!(
+        "PID 61: ETS {} flag(s), bussard {} flag(s), equal: {}, secured objects {:?}",
+        ets_61.len(),
+        program.go_flags.len(),
+        ets_61 == program.go_flags,
+        program.secured_objects()
+    );
+    println!("PID 54: ETS writes {:?}", ets_54);
+    let order: Vec<String> = sec_ops
+        .iter()
+        .map(|(p, _, d)| match *p {
+            PID_SECURITY_LOAD_STATE_CONTROL => {
+                format!("PID5:{:02x}", d.first().copied().unwrap_or(0xFF))
+            }
+            other => format!("PID{other}"),
+        })
+        .collect();
+    let mut dedup = order.clone();
+    dedup.dedup();
+    println!("ETS security-object order: {dedup:?}");
+
+    assert_eq!(ets_53, ours_53, "group key table differs from ETS");
+    assert_eq!(
+        ets_61, program.go_flags,
+        "GO security flags differ from ETS"
+    );
+    assert_eq!(ets_54, vec![(0u16, vec![0u8, 0u8])]);
+    assert_eq!(
+        dedup,
+        vec!["PID5:04", "PID5:01", "PID54", "PID53", "PID61", "PID5:02"],
+        "the security-object procedure differs from ETS"
+    );
+    Ok(())
+}

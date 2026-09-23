@@ -197,6 +197,36 @@ already matches) does not apply: every object is streamed in full. Pass
 stale image, for example a device fresh from the box. System 7 downloads write
 every region in full and never reset.
 
+**Data Secure devices: the security object is part of the download.** A
+security-activated device keeps its group keys and the per-group-object
+security flags in its security interface object, not in the link tables. With
+`--keyring` (or `--tool-key`), `flash` programs that object the way the ETS
+secured download does (issue #156): it unloads it right after the other
+objects, and after the tables and parameters it reloads it with an empty
+security individual address table, the group key table (one entry per keyed
+group address the device links, from the keyring) and the group-object
+security flags, then completes it. `apply --keyring` (and `restore`, and
+`apply --line` with a keyring) rewrites the security object next to the tables,
+because the key table indexes the address table. The dry run lists each of
+these steps; key bytes are never printed. Use the project's current keyring: a
+group address the model marks `secure` without a key in the keyring refuses
+the plan before anything is written. `--tool-key` carries no group keys, so it
+only suits a device without secured group addresses.
+
+The factory reset stays in secured downloads. ETS does not send one in its
+secured download, but it does send one (erase code 7) while activating Data
+Secure, and the decrypted capture shows the device keeps its tool key across
+it: every frame before and after verifies under the same key. The reset clears
+what the download rewrites anyway, the security object included, and the
+download then programs the object again. Nothing in the capture or the
+specification shows harm, so the rule above applies unchanged: the reset runs
+when the device carries an image `flash` did not recognise or when the
+download is sparse. `--no-factory-reset` still leaves it out.
+
+Activation itself (turning Data Secure on, writing the tool key and the
+sending sequence number) is ETS's job: bussard operates devices ETS has
+activated and never activates or deactivates one.
+
 **Recovery from a failed or interrupted flash.** The download is idempotent: it
 re-unloads and rewrites the whole application, so the fix for a partial flash is
 to re-run `bussard flash <ADDRESS>`. The bus lease resumes on drop, so an
@@ -490,11 +520,14 @@ sent to a device.
   can program a KNX Data Secure device through its tool key (`--keyring
   <file.knxkeys>` with `BUSSARD_KEYRING_PASSWORD`, or `--tool-key` for tests) on
   `flash`, `describe` and `apply`; `bussard keyring` inspects an ETS export.
-  Each secured connection starts with the same S-A_Sync handshake ETS uses. The
-  crypto and the handshake are calibrated offline against an ETS 6.4.1 capture
-  of a physical device (every frame verifies), and the full path runs against
-  the knx-sim activated device; a live run against a physical activated device
-  is still pending. KNXnet/IP Secure (encrypted tunnel
+  Each secured connection starts with the same S-A_Sync handshake ETS uses, and
+  a secured `flash` or `apply` also programs the security object (group key
+  table, group-object security flags). The crypto, the handshake and the
+  security-object bytes are calibrated offline against an ETS 6.4.1 capture of
+  a physical device (every frame verifies; the group key table and flags
+  bussard builds equal the ones ETS wrote), and the full path runs against the
+  knx-sim activated device; a live run against a physical activated device is
+  still pending. KNXnet/IP Secure (encrypted tunnel
   sessions to a Secure-only interface) is not implemented; a Secure-only
   interface refuses `bussard`. Phase B of
   [issue #71](https://github.com/tmbo/bussard/issues/71) tracks it.

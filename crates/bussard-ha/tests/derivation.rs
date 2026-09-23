@@ -92,6 +92,7 @@ impl ModelBuilder {
                 flags: flags(fl),
                 reference: None,
                 channel: channel.map(str::to_string),
+                secure: false,
             },
         );
         self.links.push(Link {
@@ -397,6 +398,7 @@ fn no_duplicate_entity_for_shared_command_ga() {
                     flags: flags("CRT"),
                     reference: None,
                     channel: None,
+                    secure: false,
                 },
             );
             m
@@ -542,6 +544,7 @@ fn cover_requires_command_ga_not_a_button_sender() {
                         flags: flags("CRT"),
                         reference: None,
                         channel: None,
+                        secure: false,
                     },
                 );
                 m
