@@ -49,7 +49,9 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
-    fn new(
+    /// Builds a diagnostic. Crate-internal so every rule pass (including the
+    /// opt-in lints in [`crate::lint`]) constructs them the same way.
+    pub(crate) fn new(
         code: &'static str,
         severity: Severity,
         location: impl Into<String>,
@@ -102,6 +104,11 @@ pub fn validate(model: &Model) -> Vec<Diagnostic> {
     check_ga_consistency(model, &mut diags);
     check_orphans_and_unlinked(model, &mut diags);
     check_protected_gas(model, &mut diags);
+    // Opt-in topology/convention lints (issue #102). Without a `lint:` block in
+    // `bussard.yaml` this contributes nothing, so existing models are unchanged.
+    // The bus-current rule (L002) needs the on-disk product cache and therefore
+    // only runs from `validate_in_dir`.
+    diags.extend(crate::lint::lint(model, None));
 
     diags.sort_by(|a, b| a.location.cmp(&b.location).then(a.code.cmp(b.code)));
     diags
@@ -127,6 +134,8 @@ pub fn validate_in_dir(model: &Model, dir: &Path) -> Vec<Diagnostic> {
 
     let models = ProductModels::load(dir);
     check_parameters(model, &models, &mut diags);
+    // Opt-in lints, with the product cache so L002 can total the bus current.
+    diags.extend(crate::lint::lint(model, Some(&models)));
 
     diags.sort_by(|a, b| a.location.cmp(&b.location).then(a.code.cmp(b.code)));
     diags
