@@ -103,7 +103,7 @@ pub enum FlashStep {
         /// the per-object base) from — this object.
         target: Option<u32>,
         /// The device-side pre-fill the allocation requests, from the source
-        /// `LdCtrlRelSegment`'s `Fill`/`FillByte` (see
+        /// `LdCtrlRelSegment`'s fill (`Mode`/`Fill`) (see
         /// [`bussard_ets::LoadOp::RelSegment::fill`]). `Some(b)` sets the
         /// relative-segment structure's fill flag with byte `b`; `None` (the
         /// DA.tp default) leaves it clear, byte-identical to the historical
@@ -1904,7 +1904,7 @@ pub fn plan_flash(
                 let is_duplicate = same_segment
                     && matches!(steps.last(), Some(FlashStep::AllocateSegment { size: prev, .. }) if *prev == size);
                 if !is_duplicate {
-                    // Thread the source procedure's `Fill`/`FillByte` through:
+                    // Thread the source procedure's fill (`Mode`/`Fill`) through:
                     // `None` (the DA.tp default) keeps the historical no-fill
                     // allocation byte-identical; `Some(b)` requests the device
                     // pre-fill the segment (the code-segment behaviour on
@@ -3679,7 +3679,7 @@ async fn start_loading<Ch: L4Channel>(
 /// application). This folds the targeted object's discovered interface-object type
 /// and the full discovered object table into any such failure so it is actionable.
 ///
-/// `fill` mirrors the source `LdCtrlRelSegment`'s `Fill`/`FillByte`: `None` (the
+/// `fill` mirrors the source `LdCtrlRelSegment`'s fill (`Mode`/`Fill`): `None` (the
 /// DA.tp default) asks for a no-fill allocation, byte-identical to before;
 /// `Some(b)` requests the device pre-fill the segment with `b`.
 async fn allocate_with_context<Ch: L4Channel>(
@@ -3874,11 +3874,14 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
     // address — before the resumed `WriteRelMem` targets it. `None` until the
     // first `AllocateSegment`.
     let mut last_alloc_size: Option<u32> = None;
-    // The pre-fill (`Fill`/`FillByte`) the most-recent `AllocateSegment`
+    // The pre-fill (`Mode`/`Fill`) the most-recent `AllocateSegment`
     // requested, so a `MasterReset` re-allocation reproduces the same fill flag
     // as the original op rather than silently dropping it. `None` = no-fill (the
     // DA.tp default).
     let mut last_alloc_fill: Option<u8> = None;
+    // The pre-fill each object's segment was allocated with, so its
+    // `WriteRelMem` streams only what differs from the fill (issue #123).
+    let mut segment_fills: BTreeMap<u8, Option<u8>> = BTreeMap::new();
     // The object index the most-recent `AllocateSegment` targeted, so a
     // `MasterReset` re-opens and re-allocates *that* object (the one whose segment
     // the reset dropped) rather than the type-discovered application object. On
@@ -4036,6 +4039,7 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                         .await?;
                         segment_base = Some(alloc.address);
                         segment_bases.insert(obj, alloc.address);
+                        segment_fills.insert(obj, *fill);
                         last_alloc_size = Some(*size);
                         last_alloc_fill = *fill;
                         last_alloc_target = Some(obj);
@@ -4049,15 +4053,22 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                         // template allocates every object before writing any, so the
                         // shared `segment_base` may belong to a later allocation). Fall
                         // back to the most-recent allocation for the single-object shape.
-                        let base = resolve_object_target_opt(
+                        let obj = resolve_object_target_opt(
                             *target,
                             &object_table,
                             app_obj,
                             plan.spliced_from_template,
-                        )
-                        .and_then(|obj| segment_bases.get(&obj).copied())
-                        .or(segment_base)
-                        .unwrap_or(0);
+                        );
+                        let base = obj
+                            .and_then(|obj| segment_bases.get(&obj).copied())
+                            .or(segment_base)
+                            .unwrap_or(0);
+                        // The fill the target segment was allocated with (the
+                        // most-recent allocation's for the single-object shape).
+                        let fill = match obj.and_then(|obj| segment_fills.get(&obj).copied()) {
+                            Some(fill) => fill,
+                            None => last_alloc_fill,
+                        };
                         // The device-supplied segment base plus the vendor offset must fit
                         // the 24-bit extended-memory space. `write_image` picks the plain
                         // A_Memory_Write (≤0xFFFF, byte-identical to before) or the
@@ -4076,7 +4087,18 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                             .get(&image.segment_id)
                             .cloned()
                             .unwrap_or_default();
-                        write_image(session, addr, &bytes, &mut progress).await?;
+                        match fill {
+                            // A pre-filled segment already holds the fill byte
+                            // everywhere: write only the runs that differ, as ETS
+                            // does (the F50 obj4 image is 276 of 6152 octets).
+                            Some(fill) => {
+                                for (start, run) in fill_regions(&bytes, fill) {
+                                    write_image(session, addr + start as u32, run, &mut progress)
+                                        .await?;
+                                }
+                            }
+                            None => write_image(session, addr, &bytes, &mut progress).await?,
+                        }
                         if let Some(sample) = bytes.first().map(|_| take_sample(&bytes)) {
                             written_samples.push((addr, sample));
                         }
@@ -4349,6 +4371,7 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                             // this object prefers its per-object base, which must be the
                             // freshly-returned one, not the dropped pre-reset value.
                             segment_bases.insert(reset_obj, alloc.address);
+                            segment_fills.insert(reset_obj, last_alloc_fill);
                         }
                     }
                     FlashStep::Restart => {
@@ -5018,6 +5041,38 @@ async fn verify_outcome<C: Connector>(
         object_states,
         spot_checks_match,
     })
+}
+
+/// Gaps of up to this many fill octets between two differing runs are written
+/// through rather than split: a new memory-write telegram costs more than a few
+/// payload octets.
+const FILL_MERGE_GAP: usize = 4;
+
+/// The regions of `image` that differ from a segment pre-filled with `fill`, as
+/// `(offset, bytes)` pairs in ascending order. Runs separated by at most
+/// [`FILL_MERGE_GAP`] fill octets are merged. Writing only these regions over
+/// the pre-filled segment leaves the same memory as writing the whole image.
+fn fill_regions(image: &[u8], fill: u8) -> Vec<(usize, &[u8])> {
+    let mut regions: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0;
+    while i < image.len() {
+        if image[i] == fill {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < image.len() && image[i] != fill {
+            i += 1;
+        }
+        match regions.last_mut() {
+            Some((_, end)) if start - *end <= FILL_MERGE_GAP => *end = i,
+            _ => regions.push((start, i)),
+        }
+    }
+    regions
+        .into_iter()
+        .map(|(start, end)| (start, &image[start..end]))
+        .collect()
 }
 
 /// Streams `bytes` to `addr` over the session's connection, emitting a
@@ -5985,6 +6040,24 @@ mod tests {
         );
         // The trace names the reconnect-and-resume master-reset step.
         assert!(trace(&plan).iter().any(|l| l.contains("master reset")));
+    }
+
+    #[test]
+    fn test_fill_regions_skips_fill_and_merges_small_gaps() {
+        let image = [0, 0, 1, 2, 0, 3, 0, 0, 0, 0, 0, 0, 4, 0];
+        let regions = fill_regions(&image, 0);
+        assert_eq!(
+            regions,
+            vec![(2usize, &image[2..6]), (12usize, &image[12..13])]
+        );
+        // All fill: nothing to write.
+        assert!(fill_regions(&[0xFF; 8], 0xFF).is_empty());
+        // Composing the regions over the fill reproduces the image.
+        let mut composed = vec![0u8; image.len()];
+        for (start, run) in fill_regions(&image, 0) {
+            composed[start..start + run.len()].copy_from_slice(run);
+        }
+        assert_eq!(composed, image);
     }
 
     #[test]

@@ -26,6 +26,7 @@
 pub mod application;
 pub mod attrs;
 pub mod dpt;
+pub mod dynamic;
 pub mod error;
 pub mod flags;
 pub mod hardware;
