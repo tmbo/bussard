@@ -35,7 +35,7 @@ use anyhow::{Context, bail};
 use bussard_bus::{BusHandle, ops};
 use bussard_download::{
     CurrentMemory, FlashPlan, FlashStep, Freshness, ParamPlan, ParamValue, Progress,
-    assess_freshness, flash, param_plan, plan_flash, probe_resident_state,
+    assess_freshness, flash, param_plan, plan_flash_with_object_flags, probe_resident_state,
     read_current_parameter_memory, select_application, trace,
 };
 use bussard_mgmt::load::WriteError;
@@ -272,10 +272,11 @@ pub fn run(
     // template writes these objects; a self-contained (thelsing) app's does not,
     // so an empty map simply leaves the single-object flash untouched.
     let table_images = build_table_images(model.as_ref(), target, app, &overrides_map);
+    let object_flags = linked_object_flags(model.as_ref(), target);
 
     // Pre-flight: build and validate the plan (System B gate, mask match,
     // unsupported-op refusal all happen here).
-    let plan = match plan_flash(
+    let plan = match plan_flash_with_object_flags(
         app,
         address,
         device_mask,
@@ -283,6 +284,7 @@ pub fn run(
         &base_offsets,
         template_ops.as_deref(),
         &table_images,
+        &object_flags,
     ) {
         Ok(plan) => plan,
         Err(err) => {
@@ -511,7 +513,8 @@ fn dry_run(
     };
     let template_ops = template_ops_for(product_data, app);
     let table_images = build_table_images(model, target, app, overrides_map);
-    let plan = match plan_flash(
+    let object_flags = linked_object_flags(model, target);
+    let plan = match plan_flash_with_object_flags(
         app,
         address,
         device_mask,
@@ -519,6 +522,7 @@ fn dry_run(
         base_offsets,
         template_ops.as_deref(),
         &table_images,
+        &object_flags,
     ) {
         Ok(plan) => plan,
         Err(err) => {
@@ -627,6 +631,37 @@ fn collect_parameter_overrides(
 ///
 /// Returns an empty map when the model is absent or the device has no links —
 /// which leaves a self-contained (thelsing) single-object flash untouched.
+/// The model's flags of every com-object the device links, keyed by object
+/// number. A System 7 plan writes them into the linked descriptors; the System B
+/// group-object table image cannot carry object 0 (issue #126, 1.1.1).
+fn linked_object_flags(
+    model: Option<&bussard_model::Model>,
+    target: IndividualAddress,
+) -> BTreeMap<u16, bussard_model::Flags> {
+    let Some(model) = model else {
+        return BTreeMap::new();
+    };
+    let linked: std::collections::BTreeSet<u16> = model
+        .links
+        .links
+        .get(&target)
+        .map(|links| links.iter().map(|l| l.object).collect())
+        .unwrap_or_default();
+    model
+        .devices
+        .get(&target)
+        .map(|loaded| {
+            loaded
+                .device
+                .com_objects
+                .iter()
+                .filter(|(number, _)| linked.contains(number))
+                .map(|(number, co)| (*number, co.flags))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn build_table_images(
     model: Option<&bussard_model::Model>,
     target: IndividualAddress,

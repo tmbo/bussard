@@ -371,6 +371,7 @@ dependencies = [
 name = "bussard-prod"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "bussard-ets",
  "bussard-model",
  "serde",

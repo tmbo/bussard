@@ -461,6 +461,12 @@ pub struct EnumValue {
     pub value: i64,
     /// The display `Text`.
     pub text: String,
+    /// The decoded `BinaryValue` of a `<TypeRestriction Base="BinaryValue">`
+    /// member: the octets ETS writes to memory for it, in place of `Value`
+    /// (the ABB BE/S16's `…Select` parameters: `Value="0"`,
+    /// `BinaryValue="4AY="`, ETS writes `e0 06`). `None` for a `Base="Value"`
+    /// enumeration.
+    pub binary_value: Option<Vec<u8>>,
 }
 
 /// A named parameter type declaration (`<ParameterType>` wrapping one shape).
@@ -887,6 +893,15 @@ pub struct ApplicationProgram {
     pub name: Option<String>,
     /// The declared `LoadProcedureStyle`.
     pub load_procedure_style: Option<String>,
+    /// The declared `ProgramType`: absent (or `ApplicationProgram`) for an
+    /// application, `PeiProgram` for the second program a device loads next to
+    /// it (the ABB BE/S16.230.3.2 loads `A-A0ED-20` into object 5).
+    pub program_type: Option<String>,
+    /// The other programs the same `Hardware2Program` loads alongside this one
+    /// (a `PeiProgram`), attached by the product reader. A download of this
+    /// application runs their merged load-procedure blocks and streams their
+    /// segments too, as ETS does. Empty for a single-program device.
+    pub companion_programs: Vec<ApplicationProgram>,
     /// Whether the application declares `IsSecureEnabled="true"`: it is KNX
     /// Data-Secure-capable (issue #71, spec §11). Capability, not activation.
     pub is_secure_enabled: bool,
@@ -935,6 +950,14 @@ pub struct ApplicationProgram {
 }
 
 impl ApplicationProgram {
+    /// Whether this is a `PeiProgram` (a second loadable program, not an
+    /// application a device is selected by).
+    pub fn is_pei_program(&self) -> bool {
+        self.program_type
+            .as_deref()
+            .is_some_and(|t| t.eq_ignore_ascii_case("PeiProgram"))
+    }
+
     /// Iterates resolved com-objects (ref merged onto base) sorted by number,
     /// skipping refs whose base is missing.
     pub fn resolved_com_objects(&self) -> Vec<ResolvedComObject<'_>> {
@@ -1242,6 +1265,7 @@ fn handle_start(
             }
             app.name = get(m, b"Name").map(str::to_string);
             app.load_procedure_style = get(m, b"LoadProcedureStyle").map(str::to_string);
+            app.program_type = get(m, b"ProgramType").map(str::to_string);
             // KNX Secure capability (issue #71, spec §11): the application
             // declares whether it can run Data Secure. Preserve it (previously
             // dropped); it is a capability flag, not key material.
@@ -1461,9 +1485,16 @@ fn handle_empty(
                     get(m, b"Value").and_then(|s| s.parse::<i64>().ok()),
                     get(m, b"Text"),
                 ) {
+                    let binary_value = get(m, b"BinaryValue").and_then(|b| {
+                        use base64::Engine as _;
+                        base64::engine::general_purpose::STANDARD
+                            .decode(b.trim())
+                            .ok()
+                    });
                     values.push(EnumValue {
                         value,
                         text: text.to_string(),
+                        binary_value,
                     });
                 }
             }

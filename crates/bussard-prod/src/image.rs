@@ -836,6 +836,30 @@ enum Placement {
     Empty,
 }
 
+/// Places an enumeration member's `BinaryValue` octets in a field of `bits`:
+/// whole octets as they are (cut or zero-padded on the right to the field), a
+/// narrower field as the big-endian number the octets spell.
+fn binary_value_placement(bits: u32, bytes: &[u8]) -> Placement {
+    if bits % 8 == 0 {
+        let mut buf = bytes.to_vec();
+        buf.resize((bits / 8) as usize, 0);
+        return Placement::Bytes(buf);
+    }
+    let value = bytes
+        .iter()
+        .take(8)
+        .fold(0u64, |acc, b| (acc << 8) | u64::from(*b));
+    let mask = if bits >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << bits) - 1
+    };
+    Placement::Field {
+        bits,
+        value: value & mask,
+    }
+}
+
 /// Resolves the width/encoding of a value from its parameter type.
 ///
 /// `source` selects the enum-membership leniency (see [`ValueSource`]): a
@@ -890,6 +914,14 @@ fn encode_value(
                     }
                 }
             }
+            // A `Base="BinaryValue"` member carries the octets ETS writes.
+            if let Some(bytes) = values
+                .iter()
+                .find(|e| e.value == n)
+                .and_then(|e| e.binary_value.as_deref())
+            {
+                return Ok(binary_value_placement(size_bits.unwrap_or(8), bytes));
+            }
             encode_int_bits(app, pname, size_bits.unwrap_or(8), false, n)
         }
         Some(ParameterType::Text { size_bits }) => {
@@ -914,6 +946,9 @@ fn encode_value(
             encode_float(app, pname, encoding.as_deref(), value)
         }
         Some(ParameterType::None) | None => Ok(Placement::Empty),
+        Some(ParameterType::Other { kind, .. }) if kind == "TypeRawData" => {
+            encode_raw_data(app, pname, value)
+        }
         Some(ParameterType::Other { size_bits, kind }) => {
             // Unknown shape: if it declares a byte-multiple width and the value
             // is a plain integer, place it big-endian; else refuse rather than
@@ -929,6 +964,30 @@ fn encode_value(
             }
         }
     }
+}
+
+/// Encodes a `<TypeRawData>` value: the base64 `Value` decoded, behind its
+/// length as a 4-octet big-endian count, which is what ETS writes (the Jung
+/// 390041SR dimming curves: `MaxSize="516"`, a 512-octet curve written as
+/// `00 00 02 00` and the curve, issue #126). An empty value writes nothing.
+fn encode_raw_data(
+    app: &ApplicationProgram,
+    pname: &str,
+    value: Option<&str>,
+) -> Result<Placement> {
+    use base64::Engine as _;
+    let raw = value.map(str::trim).unwrap_or("");
+    if raw.is_empty() {
+        return Ok(Placement::Empty);
+    }
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(raw)
+        .map_err(|e| param_err(app, pname, &format!("raw data value is not base64: {e}")))?;
+    let len = u32::try_from(data.len())
+        .map_err(|_| param_err(app, pname, "raw data value is too long"))?;
+    let mut bytes = len.to_be_bytes().to_vec();
+    bytes.extend_from_slice(&data);
+    Ok(Placement::Bytes(bytes))
 }
 
 /// Encodes a `<TypeFloat>` value at the width its `Encoding` attribute declares.
@@ -2368,6 +2427,104 @@ mod tests {
         // Byte 0: P-1 at bit 0 (0x80), UP-2 = 3 at bits 4-5 (0x0C). UP-3 = 2
         // at union bit 7 + member bit 2 = bit 9, i.e. byte 1 bits 1-2 (0x40).
         assert_eq!(images.get("M-1_A-1_AS-1"), Some(&vec![0x8C, 0x40]));
+        Ok(())
+    }
+
+    fn fixture_app(xml: &str) -> Result<ApplicationProgram> {
+        parse_application_program("M-1_A-1", xml.as_bytes())
+            .map_err(|e| param_err(&ApplicationProgram::default(), "fixture", &e.to_string()))
+    }
+
+    /// Issue #126, ABB BE/S16 (A-A0ED-10): a `<TypeRestriction
+    /// Base="BinaryValue">` member is written as its `BinaryValue` octets,
+    /// not its `Value` (`Value="0" BinaryValue="4AY="` is `e0 06`), and a
+    /// `TypeRawData` value as its length (4 octets, big-endian) and its octets
+    /// (Jung 390041SR dimming curve: `00 00 02 00` and 512 octets).
+    #[test]
+    fn test_compute_parameter_image_binary_value_enum_and_raw_data() -> Result<()> {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/20"><ManufacturerData><Manufacturer RefId="M-1"><ApplicationPrograms>
+  <ApplicationProgram Id="M-1_A-1" MaskVersion="MV-07B0"><Static>
+    <Code><RelativeSegment Id="M-1_A-1_RS-1" Size="12" LoadStateMachine="4" Offset="0" /></Code>
+    <ParameterTypes>
+      <ParameterType Id="M-1_A-1_PT-1"><TypeRestriction Base="BinaryValue" SizeInBit="16">
+        <Enumeration Text="Device" Value="0" Id="M-1_A-1_PT-1_EN-0" BinaryValue="4AY=" />
+        <Enumeration Text="Off" Value="8" Id="M-1_A-1_PT-1_EN-8" BinaryValue="//8=" />
+      </TypeRestriction></ParameterType>
+      <ParameterType Id="M-1_A-1_PT-2"><TypeRawData MaxSize="8" /></ParameterType>
+    </ParameterTypes>
+    <Parameters>
+      <Parameter Id="M-1_A-1_P-1" Name="central" ParameterType="M-1_A-1_PT-1" Value="0"><Memory CodeSegment="M-1_A-1_RS-1" Offset="0" BitOffset="0" /></Parameter>
+      <Parameter Id="M-1_A-1_P-2" Name="select" ParameterType="M-1_A-1_PT-1" Value="0"><Memory CodeSegment="M-1_A-1_RS-1" Offset="2" BitOffset="0" /></Parameter>
+      <Parameter Id="M-1_A-1_P-3" Name="curve" ParameterType="M-1_A-1_PT-2" Value="ABAAIA=="><Memory CodeSegment="M-1_A-1_RS-1" Offset="4" BitOffset="0" /></Parameter>
+    </Parameters>
+    <ParameterRefs>
+      <ParameterRef Id="M-1_A-1_P-1_R-1" RefId="M-1_A-1_P-1" />
+      <ParameterRef Id="M-1_A-1_P-2_R-2" RefId="M-1_A-1_P-2" />
+      <ParameterRef Id="M-1_A-1_P-3_R-3" RefId="M-1_A-1_P-3" />
+    </ParameterRefs>
+  </Static><Dynamic><ChannelIndependentBlock><ParameterBlock Id="M-1_A-1_PB-1">
+    <ParameterRefRef RefId="M-1_A-1_P-1_R-1" />
+    <ParameterRefRef RefId="M-1_A-1_P-2_R-2" />
+    <ParameterRefRef RefId="M-1_A-1_P-3_R-3" />
+  </ParameterBlock></ChannelIndependentBlock></Dynamic></ApplicationProgram>
+</ApplicationPrograms></Manufacturer></ManufacturerData></KNX>"#;
+        let app = fixture_app(xml)?;
+        let overrides = BTreeMap::from([("P-2_R-2".to_string(), "8".to_string())]);
+        let images = compute_parameter_image(&app, &overrides, &no_bases())?;
+        assert_eq!(
+            images.get("M-1_A-1_RS-1"),
+            Some(&vec![
+                0xE0, 0x06, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x04, 0x00, 0x10, 0x00, 0x20
+            ])
+        );
+        Ok(())
+    }
+
+    /// Issue #126, ABB BE/S16 template channel: a `<choose>` on a union member
+    /// the Dynamic section does not show reads the union's shared memory,
+    /// which the shown sibling set (`Par_Operation_2` = 2), not the member's
+    /// own default (`Par_Operation_11` = 3). So the `when test="3"` member of
+    /// the second union is not shown and its sibling's 0 is written, as ETS
+    /// does.
+    #[test]
+    fn test_compute_parameter_image_choose_on_hidden_union_member_reads_shared_bits() -> Result<()>
+    {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/20"><ManufacturerData><Manufacturer RefId="M-1"><ApplicationPrograms>
+  <ApplicationProgram Id="M-1_A-1" MaskVersion="MV-07B0"><Static>
+    <Code><RelativeSegment Id="M-1_A-1_RS-1" Size="2" LoadStateMachine="4" Offset="0" /></Code>
+    <ParameterTypes>
+      <ParameterType Id="M-1_A-1_PT-2"><TypeNumber SizeInBit="2" Type="unsignedInt" minInclusive="0" maxInclusive="3" /></ParameterType>
+    </ParameterTypes>
+    <Parameters>
+      <Union SizeInBit="2">
+        <Memory CodeSegment="M-1_A-1_RS-1" Offset="0" BitOffset="5" />
+        <Parameter Id="M-1_A-1_UP-1" Name="op2" ParameterType="M-1_A-1_PT-2" Offset="0" BitOffset="0" Value="2" />
+        <Parameter Id="M-1_A-1_UP-2" Name="op11" ParameterType="M-1_A-1_PT-2" Offset="0" BitOffset="0" Value="3" />
+      </Union>
+      <Union SizeInBit="2">
+        <Memory CodeSegment="M-1_A-1_RS-1" Offset="1" BitOffset="6" />
+        <Parameter Id="M-1_A-1_UP-4" Name="op4" ParameterType="M-1_A-1_PT-2" Offset="0" BitOffset="0" Value="0" />
+        <Parameter Id="M-1_A-1_UP-5" Name="op5" ParameterType="M-1_A-1_PT-2" Offset="0" BitOffset="0" Value="3" />
+      </Union>
+    </Parameters>
+    <ParameterRefs>
+      <ParameterRef Id="M-1_A-1_UP-1_R-1" RefId="M-1_A-1_UP-1" />
+      <ParameterRef Id="M-1_A-1_UP-2_R-2" RefId="M-1_A-1_UP-2" />
+      <ParameterRef Id="M-1_A-1_UP-4_R-4" RefId="M-1_A-1_UP-4" />
+      <ParameterRef Id="M-1_A-1_UP-5_R-5" RefId="M-1_A-1_UP-5" />
+    </ParameterRefs>
+  </Static><Dynamic><ChannelIndependentBlock><ParameterBlock Id="M-1_A-1_PB-1">
+    <choose ParamRefId="M-1_A-1_UP-2_R-2">
+      <when test="3"><ParameterRefRef RefId="M-1_A-1_UP-5_R-5" /></when>
+      <when default="true"><ParameterRefRef RefId="M-1_A-1_UP-4_R-4" /></when>
+    </choose>
+    <ParameterRefRef RefId="M-1_A-1_UP-1_R-1" />
+  </ParameterBlock></ChannelIndependentBlock></Dynamic></ApplicationProgram>
+</ApplicationPrograms></Manufacturer></ManufacturerData></KNX>"#;
+        let app = fixture_app(xml)?;
+        let images = compute_parameter_image(&app, &no_overrides(), &no_bases())?;
+        // Byte 0: op2 = 2 at bits 5-6 (0x04). Byte 1: op4 = 0 (op5's 3 would be 0x03).
+        assert_eq!(images.get("M-1_A-1_RS-1"), Some(&vec![0x04, 0x00]));
         Ok(())
     }
 }

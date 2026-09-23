@@ -10,6 +10,9 @@ license.workspace = true
 [dependencies]
 bussard-model = { workspace = true }
 bussard-ets = { workspace = true }
+# Decodes `TypeRawData` parameter values (base64). Already in the tree via
+# bussard-ets; MIT OR Apache-2.0.
+base64 = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
