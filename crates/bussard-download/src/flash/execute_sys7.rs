@@ -404,6 +404,7 @@ pub(super) async fn verify_sys7<C: Connector>(
         },
         object_states,
         spot_checks_match,
+        warnings: Vec::new(),
     })
 }
 

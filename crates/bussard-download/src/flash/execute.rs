@@ -12,7 +12,10 @@ use super::session::{
     read_load_state_resumable, reconnect_exchange_threshold, resumable_death,
     start_loading_resumable, write_load_control_resumable,
 };
-use super::verify::{mcb_skip_target, resident_match_objects, take_sample, verify_outcome};
+use super::verify::{
+    advisory_mcb_warning, mcb_read_object, mcb_skip_target, resident_match_objects, take_sample,
+    verify_outcome,
+};
 use super::{FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, Progress};
 use bussard_mgmt::MgmtError;
 use bussard_mgmt::connection::{L4Channel, Layer4Connection};
@@ -275,6 +278,9 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
     // post-flash verify checks every programmed object reached `Loaded` — not
     // only the app object (the verify_outcome bug fix).
     let mut completed_objects: Vec<u8> = Vec::new();
+    // Advisory findings (an MCB check the application's procedure does not
+    // declare that did not match), carried into the outcome.
+    let mut warnings: Vec<String> = Vec::new();
     // The size of the most-recently allocated relative segment, remembered so a
     // `MasterReset` step (which reboots the device and, on KNX Virtual, wipes the
     // app object's load state back to `Unloaded` and drops the segment allocated
@@ -669,6 +675,7 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                         prop_id,
                         count,
                         image,
+                        advisory,
                     } => {
                         // Read the loaded object's PID_MCB_TABLE and, where we wrote the
                         // object's image, validate the device's CRC over the stored
@@ -695,18 +702,45 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                             // each table-object check read the application segment's
                             // MCB, so the CRC never matched on a multi-object System B
                             // procedure (the MDT actuators).
-                            let read_obj = match image.as_ref().map(|i| i.kind) {
-                                Some(ImageKind::Table) => (*obj_idx).min(u32::from(u8::MAX)) as u8,
-                                _ => app_obj,
+                            //
+                            // A code image the plan wrote to the very object the
+                            // check names (a companion program's segment on object
+                            // 5) lives on that object, not on `app_obj`: reading
+                            // `app_obj` there compared object 4's CRC with object
+                            // 5's image (issue #145, 1.1.30 and 1.1.39).
+                            let read_obj = match image.as_ref() {
+                                Some(img) if img.kind == ImageKind::Table => {
+                                    (*obj_idx).min(u32::from(u8::MAX)) as u8
+                                }
+                                Some(img) => mcb_read_object(
+                                    &plan.steps,
+                                    plan.spliced_from_template,
+                                    img,
+                                    *obj_idx,
+                                    &object_table,
+                                    app_obj,
+                                ),
+                                None => app_obj,
                             };
-                            read_mcb_table(
+                            match read_mcb_table(
                                 session.l4(),
                                 read_obj,
                                 1,
                                 (*count).min(255) as u8,
                                 expected,
                             )
-                            .await?;
+                            .await
+                            {
+                                Ok(_) => {}
+                                // A check the application's own procedure does not
+                                // declare warns instead of aborting (issue #145), so
+                                // the download still reaches its restart.
+                                Err(err @ WriteError::ImagePropMismatch { .. }) if *advisory => {
+                                    tracing::warn!(%err, "advisory MCB check did not match");
+                                    warnings.push(advisory_mcb_warning(*obj_idx, &err));
+                                }
+                                Err(err) => return Err(err),
+                            }
                         }
                     }
                     FlashStep::LoadCompleted { target } => {
@@ -979,10 +1013,12 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
     // internally resume-on-drop (each read reconnects and retries), so a connection
     // death here — after all the writes landed — is recovered rather than reported
     // as a flash failure.
-    match verified {
-        Some(outcome) => Ok(outcome),
-        None => verify_outcome(session, app_obj, &completed_objects, &written_samples).await,
-    }
+    let mut outcome = match verified {
+        Some(outcome) => outcome,
+        None => verify_outcome(session, app_obj, &completed_objects, &written_samples).await?,
+    };
+    outcome.warnings = warnings;
+    Ok(outcome)
 }
 
 /// Gaps of up to this many fill octets between two differing runs are written
