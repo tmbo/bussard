@@ -44,8 +44,8 @@ use bussard_model::IndividualAddress;
 use bussard_prod::{ApplicationProgram, ProductData, normalize_order_number};
 
 use crate::conn_cmd::{
-    BusSession, ConnOverrides, enforce_write_gate, gateway_display, load_model_required,
-    resolve_config,
+    BusSession, ConnOverrides, checked_source, enforce_write_gate, gateway_display,
+    load_model_required, resolve_config,
 };
 
 /// Flashes an application program from vendor product data into a device.
@@ -153,8 +153,10 @@ pub fn run(
     let runtime = tokio::runtime::Runtime::new()?;
     let bus = BusSession::open(&runtime, config);
     let handle = bus.handle();
-    // The tunnel-assigned source address, resolved once for both phases.
-    let source = ops::group_source(handle);
+    // The tunnel-assigned source address, resolved and checked against the bus
+    // once for both phases (they share this tunnel, so one probe covers both).
+    // `BusSession` closes the tunnel if the check refuses.
+    let source = runtime.block_on(checked_source(handle, &overrides))?;
 
     // Phase A (read-only): read the device descriptor and probe what is already
     // resident on the device (issue #79). Both run over one connection; neither
@@ -923,7 +925,8 @@ fn read_current_parameters(
 ) -> CurrentMemory {
     let result: anyhow::Result<CurrentMemory> = runtime.block_on(async {
         // Runs over the command's tunnel: the lease below serialises it against
-        // the pre-flight and write phases, so no second tunnel is opened.
+        // the pre-flight and write phases, so no second tunnel is opened. The
+        // same tunnel means the same source, already checked by `run`.
         let source = ops::group_source(handle);
         let lease = handle.lease().await.context("leasing the bus")?;
         let channel = LeaseChannel::new(lease);

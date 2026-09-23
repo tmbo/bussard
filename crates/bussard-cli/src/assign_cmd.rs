@@ -20,7 +20,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow, bail};
-use bussard_bus::{Bus, BusHandle, ops};
+use bussard_bus::{Bus, BusHandle};
 use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO, PID_SERIAL_NUMBER};
 use bussard_mgmt::{
     DeviceConnection, LeaseChannel, broadcast, manufacturers, system_type, write_individual_address,
@@ -28,7 +28,9 @@ use bussard_mgmt::{
 use bussard_model::schema::{Device, Product};
 use bussard_model::{IndividualAddress, LoadedDevice, Model};
 
-use crate::conn_cmd::{ConnOverrides, enforce_write_gate, gateway_display, resolve_config};
+use crate::conn_cmd::{
+    ConnOverrides, checked_source_or_close, enforce_write_gate, gateway_display, resolve_config,
+};
 
 /// The line to allocate on when the model has no devices to infer one from.
 const FALLBACK_LINE: (u8, u8) = (1, 1);
@@ -82,7 +84,7 @@ pub fn run(
         handle
             .wait_connected(std::time::Duration::from_secs(10))
             .await;
-        let source = ops::group_source(&handle);
+        let source = checked_source_or_close(&handle, &overrides).await?;
         // Guard the assign flow with Ctrl-C: on interrupt, fall through to a
         // clean `handle.close()` so the gateway tunnel slot is released rather
         // than leaked — see issue #31.

@@ -39,7 +39,7 @@ use std::process::ExitCode;
 use std::time::SystemTime;
 
 use anyhow::{Context, anyhow, bail};
-use bussard_bus::{Bus, BusHandle, ops};
+use bussard_bus::{Bus, BusHandle};
 use bussard_download::backup::{
     BackupManifest, BackupStatus, DeviceBackup, ManifestEntry, ParameterMemory, ParameterStatus,
     backups_root, encode_hex, rfc3339_utc, timestamp_dir_name, write_device_backup, write_manifest,
@@ -51,7 +51,9 @@ use bussard_mgmt::{
 };
 use bussard_model::{IndividualAddress, Model};
 
-use crate::conn_cmd::{ConnOverrides, gateway_display, load_model_required, resolve_config};
+use crate::conn_cmd::{
+    ConnOverrides, checked_source_or_close, gateway_display, load_model_required, resolve_config,
+};
 use crate::plan_cmd::{self, LiveRead};
 
 /// The largest parameter image `backup` will pull off a device.
@@ -111,7 +113,7 @@ pub fn run(
                 "warning: bus not connected yet; management traffic may use the 0.0.255 fallback source"
             );
         }
-        let source = ops::group_source(&handle);
+        let source = checked_source_or_close(&handle, &overrides).await?;
         let captured = tokio::select! {
             captured = capture_all(&handle, source, &targets, tool_key_source) => captured,
             _ = tokio::signal::ctrl_c() => {

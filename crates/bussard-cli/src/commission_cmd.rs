@@ -34,7 +34,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
-use bussard_bus::{Bus, BusHandle, ops};
+use bussard_bus::{Bus, BusHandle};
 use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO};
 use bussard_mgmt::{DeviceConnection, LeaseChannel, manufacturers, write_individual_address};
 use bussard_model::{IndividualAddress, Model};
@@ -42,7 +42,8 @@ use bussard_prod::normalize_order_number;
 
 use crate::assign_cmd;
 use crate::conn_cmd::{
-    ConnOverrides, enforce_write_gate, gateway_display, load_model_required, resolve_config,
+    ConnOverrides, checked_source_or_close, enforce_write_gate, gateway_display,
+    load_model_required, resolve_config,
 };
 use crate::secure_key::ToolKeySource;
 
@@ -216,12 +217,13 @@ pub fn run(
     let present = {
         let config = config.clone();
         let addresses: Vec<IndividualAddress> = targets.iter().map(|t| t.address).collect();
+        let conn = overrides.clone();
         runtime.block_on(async move {
             let (handle, _task) = Bus::connect(config);
             let _ = handle
                 .wait_connected(std::time::Duration::from_secs(10))
                 .await;
-            let source = ops::group_source(&handle);
+            let source = checked_source_or_close(&handle, &conn).await?;
             let mut present = Vec::new();
             for addr in addresses {
                 eprint!("\rchecking {addr}…   ");
@@ -232,8 +234,8 @@ pub fn run(
             }
             eprintln!("\r                       ");
             let _ = handle.close().await;
-            present
-        })
+            anyhow::Ok(present)
+        })?
     };
 
     let pending = targets.len() - present.len();
@@ -360,7 +362,7 @@ fn commission_one(
             let _ = handle
                 .wait_connected(std::time::Duration::from_secs(10))
                 .await;
-            let source = ops::group_source(&handle);
+            let source = checked_source_or_close(&handle, overrides).await?;
             let result = assign_on_bus(&handle, source, target).await;
             let _ = handle.close().await;
             result

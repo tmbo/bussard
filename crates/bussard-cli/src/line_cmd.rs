@@ -37,14 +37,15 @@ use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, bail};
-use bussard_bus::{Bus, BusHandle, ops};
+use bussard_bus::{Bus, BusHandle};
 use bussard_download::{DesiredTables, compute_tables, plan, sys7_table_images};
 use bussard_mgmt::{Layer4Connection, LeaseChannel, MaskProfile, system_type};
 use bussard_model::{IndividualAddress, Model};
 
 use crate::apply_cmd;
 use crate::conn_cmd::{
-    ConnOverrides, enforce_write_gate, gateway_display, load_model_required, resolve_config,
+    ConnOverrides, checked_source_or_close, enforce_write_gate, gateway_display,
+    load_model_required, resolve_config,
 };
 use crate::plan_cmd;
 use crate::secure_key::ToolKeySource;
@@ -442,6 +443,7 @@ fn run_line(
         let collected = Arc::clone(&outcomes);
         let config = config.clone();
         let state_path = state_path.clone();
+        let conn = overrides.clone();
         runtime.block_on(async move {
             let (handle, _task) = Bus::connect(config);
             if !handle
@@ -452,7 +454,7 @@ fn run_line(
                     "warning: bus not connected yet; management traffic may use the 0.0.255 fallback source"
                 );
             }
-            let source = ops::group_source(&handle);
+            let source = checked_source_or_close(&handle, &conn).await?;
             // Guard the run with Ctrl-C (issue #31): the state file is already
             // current, so the interrupt only needs to release the tunnel slot.
             let interrupted = tokio::select! {
@@ -473,8 +475,8 @@ fn run_line(
                 }
             };
             let _ = handle.close().await;
-            (interrupted, state)
-        })
+            anyhow::Ok((interrupted, state))
+        })?
     };
 
     let outcomes = std::mem::take(&mut *outcomes.lock().map_err(|_| {

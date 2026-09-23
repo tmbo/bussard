@@ -20,14 +20,16 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::anyhow;
-use bussard_bus::{Bus, BusHandle, ops};
+use bussard_bus::{Bus, BusHandle};
 use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO, PID_SERIAL_NUMBER};
 use bussard_mgmt::{
     DeviceConnection, L4Channel, LeaseChannel, Timeouts, manufacturers, system_type,
 };
 use bussard_model::IndividualAddress;
 
-use crate::conn_cmd::{ConnOverrides, load_model_required, resolve_config};
+use crate::conn_cmd::{
+    ConnOverrides, checked_source_or_close, load_model_required, resolve_config,
+};
 
 /// Environment variable that overrides the per-attempt discovery timeout in
 /// milliseconds. Set only by the integration test to keep a full-line mock sweep
@@ -121,7 +123,7 @@ pub fn run(
         handle
             .wait_connected(std::time::Duration::from_secs(10))
             .await;
-        let source = ops::group_source(&handle);
+        let source = checked_source_or_close(&handle, &overrides).await?;
         // Guard the sweep with Ctrl-C: on interrupt, stop sweeping and fall
         // through to a clean `handle.close()` so the gateway tunnel slot is
         // released rather than leaked (~2 min hold) — see issue #31.

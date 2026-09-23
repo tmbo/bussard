@@ -86,5 +86,6 @@ pub fn run(
         allow_remote_gateway,
         tool_key_source,
         &DesiredSource::Backup(path),
+        &overrides,
     )
 }

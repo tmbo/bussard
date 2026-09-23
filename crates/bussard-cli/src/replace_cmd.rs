@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, anyhow, bail};
-use bussard_bus::{Bus, BusHandle, ops};
+use bussard_bus::{Bus, BusHandle};
 use bussard_download::backup::rfc3339_utc;
 use bussard_mgmt::apci::PID_ORDER_INFO;
 use bussard_mgmt::{
@@ -46,7 +46,8 @@ use bussard_model::{IndividualAddress, Model};
 
 use crate::assign_cmd;
 use crate::conn_cmd::{
-    ConnOverrides, enforce_write_gate, gateway_display, load_model_required, resolve_config,
+    ConnOverrides, checked_source_or_close, enforce_write_gate, gateway_display,
+    load_model_required, resolve_config,
 };
 
 /// Runs `bussard replace`.
@@ -107,6 +108,7 @@ pub fn run(
         let runtime = tokio::runtime::Runtime::new()?;
         let config = config.clone();
         let gateway = gateway.clone();
+        let conn = overrides.clone();
         runtime.block_on(async move {
             let (handle, _task) = Bus::connect(config);
             if !handle
@@ -117,7 +119,7 @@ pub fn run(
                     "warning: bus not connected yet; management traffic may use the 0.0.255 fallback source"
                 );
             }
-            let source = ops::group_source(&handle);
+            let source = checked_source_or_close(&handle, &conn).await?;
             let result = tokio::select! {
                 result = swap_flow(&handle, source, target, &expected, &gateway, yes, force) => result,
                 _ = tokio::signal::ctrl_c() => {

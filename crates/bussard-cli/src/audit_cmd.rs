@@ -17,14 +17,16 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow, bail};
-use bussard_bus::{Bus, BusHandle, ops};
+use bussard_bus::{Bus, BusHandle};
 use bussard_mcp::tools_audit::{self, SampledTelegram};
 use bussard_model::{IndividualAddress, Model};
 use bussard_transport::cemi::{Apdu, Destination, MessageCode};
 use bussard_transport::{BusConnection, ConnectionConfig, Transport, TransportKind};
 use serde_json::{Value, json};
 
-use crate::conn_cmd::{ConnOverrides, load_model_required, resolve_config};
+use crate::conn_cmd::{
+    ConnOverrides, checked_source_or_close, load_model_required, resolve_config,
+};
 use crate::secure_key::KEYRING_PASSWORD_ENV;
 
 /// Options for one `bussard audit` run.
@@ -62,7 +64,8 @@ pub fn run(
     if options.live {
         let config = resolve_config(Some(&model), &overrides)?;
         let runtime = tokio::runtime::Runtime::new().context("starting the tokio runtime")?;
-        report["live"] = runtime.block_on(live_report(&model, config, options.window))?;
+        report["live"] =
+            runtime.block_on(live_report(&model, config, options.window, &overrides))?;
     }
 
     if options.json {
@@ -93,6 +96,7 @@ async fn live_report(
     model: &Model,
     config: ConnectionConfig,
     window: Duration,
+    overrides: &ConnOverrides,
 ) -> anyhow::Result<Value> {
     // 1. The interface's own description: one UDP exchange, no tunnel slot.
     let is_tunnel = config.transport == TransportKind::Tunnel;
@@ -137,8 +141,12 @@ async fn live_report(
     let telegrams = sample_traffic(&handle, window).await;
     let traffic = tools_audit::traffic_report(model, window, &telegrams);
 
-    // 4. Probe each modelled device, line by line.
-    let scan = scan_model_devices(&handle, model).await;
+    // 4. Probe each modelled device, line by line. The probes are
+    //    connection-oriented, so check our own source address first. The check
+    //    runs after the sample, not before it, so listening starts as soon as
+    //    the tunnel is up instead of after the probe's ~600 ms wait.
+    let source = checked_source_or_close(&handle, overrides).await?;
+    let scan = scan_model_devices(&handle, model, source).await;
     let _ = handle.close().await;
 
     Ok(json!({
@@ -189,8 +197,7 @@ async fn sample_traffic(handle: &BusHandle, window: Duration) -> Vec<SampledTele
 ///
 /// Probes are sequential (one connection-oriented session at a time, TP1
 /// etiquette) and spaced by the MCP read limiter's minimum interval.
-async fn scan_model_devices(handle: &BusHandle, model: &Model) -> Value {
-    let source = ops::group_source(handle);
+async fn scan_model_devices(handle: &BusHandle, model: &Model, source: IndividualAddress) -> Value {
     let mut lines: BTreeMap<(u8, u8), Vec<Value>> = BTreeMap::new();
     let mut not_answering: BTreeMap<(u8, u8), Vec<Value>> = BTreeMap::new();
     let mut answered_count = 0usize;

@@ -257,6 +257,48 @@ an existing model keeps the recipient's own `bussard.yaml`. Importing a bundle
 writes files only and snapshots first; nothing reaches a device until someone
 runs `plan` and `apply`.
 
+## Source address check
+
+Every command that opens a connection to a device (`scan`, `assign`, `adopt`,
+`describe`, `plan`, `apply`, `flash`, `reconstruct`, `backup`, `restore`,
+`replace`, `commission`, `audit --live`, and `plan --line` / `apply --line`)
+first checks that no device on the bus answers at the individual address
+bussard itself will use as its source: the address the gateway assigned to the
+tunnel, or `0.0.255` on routing. If a device answers, the command refuses before
+touching anything:
+
+```
+refusing to continue: a device on the bus (mask 07B0) already answers at
+1.1.255, the individual address this connection would use as its source.
+```
+
+This matters because a KNX device tells its management clients apart by source
+individual address and nothing else. If a real device sits at our address, both
+parties' numbered telegrams land inside one layer-4 session at the target: a
+memory write can be applied on behalf of the wrong session while both sides
+still see an acknowledgement. That is silent configuration corruption rather
+than a loud failure. ETS runs the same check before it uses an interface.
+
+The check runs once per tunnel. `flash`, `apply` and `restore` hold one tunnel
+for their read-only pre-flight and their write phase, so they check once. A
+command that opens several tunnels in turn (`commission`, `replace`) checks on
+each. Group-only commands (`read`, `write`, `monitor`, `capture`, `learn`,
+`test`) never open a device connection and skip it.
+
+The check costs one telegram and about 0.6 seconds on a free address. The fix is
+almost always on the gateway: give the tunnel an individual address no device
+owns (many gateways ship with a default that collides on a busy line).
+
+`--skip-address-check` turns it off, for a gateway that misbehaves on the probe
+itself. Nothing else disables it.
+
+**What it does not catch.** The check proves that no *device* answers at our
+address. It cannot see a second passive tool that shares the address without
+answering, for example another bussard in routing mode also sourcing from
+`0.0.255`, or an ETS session on a second tunnel. It also reports free when a
+device replies with something other than a device descriptor, since only a real
+`A_DeviceDescriptor_Response` is treated as proof.
+
 ## Supported device masks
 
 Write commands refuse an unsupported device mask during the pre-flight, before
