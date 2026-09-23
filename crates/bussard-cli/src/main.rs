@@ -591,6 +591,12 @@ enum Command {
         /// gate as `bussard write` (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
         #[arg(long)]
         allow_remote_gateway: bool,
+        /// Refuse model edits: omits the `knx_set_group`, `knx_add_link`,
+        /// `knx_remove_link`, `knx_set_device`, `knx_set_parameter` and
+        /// `knx_undo` tools. The read tools stay available. Model edits only
+        /// touch YAML files (never the bus), so they are on by default.
+        #[arg(long)]
+        no_model_edits: bool,
         /// Path to a capture SQLite database to extend `knx_recent_telegrams`
         /// history beyond the in-memory ring window.
         #[arg(long, value_name = "PATH")]
@@ -899,13 +905,17 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             passive,
             allow_writes,
             allow_remote_gateway,
+            no_model_edits,
             capture_db,
         } => mcp_cmd::run(
             &dir,
             conn_cmd::ConnOverrides { gateway, routing },
-            passive,
-            allow_writes,
-            allow_remote_gateway,
+            mcp_cmd::McpModes {
+                passive,
+                allow_writes,
+                allow_remote_gateway,
+                no_model_edits,
+            },
             capture_db,
         ),
     }

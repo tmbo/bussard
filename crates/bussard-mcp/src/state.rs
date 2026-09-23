@@ -183,6 +183,10 @@ pub struct SharedState {
     /// Whether bus writes are allowed (registers `knx_write_group`). Mutually
     /// exclusive with `passive`.
     pub allow_writes: bool,
+    /// Whether the model-edit tools are withheld (`--no-model-edits`). They
+    /// write YAML files behind a history snapshot and never touch the bus, so
+    /// they are registered by default.
+    pub no_model_edits: bool,
     /// The read rate limiter (shared by reads and writes).
     pub read_limiter: ReadLimiter,
     /// Optional capture database path, used to extend `knx_recent_telegrams`

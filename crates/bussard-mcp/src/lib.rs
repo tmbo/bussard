@@ -26,13 +26,26 @@
 //! | `knx_read_group` | Send a GroupValueRead and return the value (omitted in `--passive`). |
 //! | `knx_describe_device` | Introspect a device: enumerate its interface objects and each property's description (omitted in `--passive`). |
 //! | `knx_write_group` | Send a GroupValueWrite (registered only with `--allow-writes`). |
+//! | `knx_describe_change` | Pending or between-snapshot model changes, as plain sentences. |
+//! | `knx_history` | The model's history snapshots with a one-line summary each. |
+//! | `knx_set_group` | Create or update a group address (refuses to rename or retype a protected one). |
+//! | `knx_add_link` / `knx_remove_link` | Bind or unbind a com object and a GA (refuses protected GAs). |
+//! | `knx_set_device` | Rename a device or change its floor/room. |
+//! | `knx_set_parameter` | Set one device parameter, checked against the product model. |
+//! | `knx_undo` | Restore the model files to a history snapshot. |
+//!
+//! The last eight are model tools: they read and write YAML files under the
+//! model directory and never touch the bus, so they are available in every tier
+//! including `--passive`. The six that edit are withheld by `--no-model-edits`.
+//! Every edit snapshots first, validates after, and returns the change as
+//! sentences for the caller to quote to the human.
 //!
 //! In `--passive` mode the two bus-touching read tools (`knx_read_group` and
-//! `knx_describe_device`) are unregistered, so `tools/list` contains seven tools
-//! instead of nine and the server never transmits. `knx_write_group` is
+//! `knx_describe_device`) are unregistered, so `tools/list` contains nine tools
+//! instead of eleven and the server never transmits. `knx_write_group` is
 //! registered only when the server is started with `--allow-writes` (which
-//! conflicts with `--passive`), making ten tools; it writes to the physical bus
-//! and hard-refuses `protected` GAs.
+//! conflicts with `--passive`), making twelve tools; it writes to the physical
+//! bus and hard-refuses `protected` GAs.
 //!
 //! # Connecting this to Claude Code
 //!
@@ -68,6 +81,7 @@ pub mod run;
 pub mod server;
 pub mod state;
 pub mod tools;
+pub mod tools_model;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -96,6 +110,10 @@ pub struct McpConfig {
     /// Allow bus writes: registers `knx_write_group`. Mutually exclusive with
     /// `passive` (enforced by the CLI).
     pub allow_writes: bool,
+    /// Withhold the model-edit tools (`--no-model-edits`). They only write YAML
+    /// files, behind a history snapshot, so they are registered by default in
+    /// every tier including `--passive`.
+    pub no_model_edits: bool,
     /// Optional capture database to extend `knx_recent_telegrams` history.
     pub capture_db: Option<PathBuf>,
 }
@@ -145,6 +163,7 @@ pub fn build_state_from_model(
         bus,
         passive: config.passive,
         allow_writes: config.allow_writes,
+        no_model_edits: config.no_model_edits,
         read_limiter: state::ReadLimiter::new(READ_MIN_INTERVAL, READ_MAX_CONCURRENT),
         capture_db: config.capture_db.clone(),
         source_ia,
@@ -170,11 +189,16 @@ pub async fn run(config: &McpConfig) -> anyhow::Result<()> {
 
 /// The set of tool names exposed, in registration order. Used by tests and docs.
 ///
-/// - passive mode: 7 tools (no bus-touching tools: no `knx_read_group`, no
+/// - passive mode: 9 tools (no bus-touching tools: no `knx_read_group`, no
 ///   `knx_describe_device`, no `knx_write_group`).
-/// - default mode: 9 tools (adds `knx_read_group` and `knx_describe_device`).
-/// - `--allow-writes`: 10 tools (adds `knx_write_group`).
-pub fn tool_names(passive: bool, allow_writes: bool) -> Vec<&'static str> {
+/// - default mode: 11 tools (adds `knx_read_group` and `knx_describe_device`).
+/// - `--allow-writes`: 12 tools (adds `knx_write_group`).
+/// - `--no-model-edits` removes the six model-edit tools from any of those.
+///
+/// The two model/history read tools (`knx_describe_change`, `knx_history`) and
+/// the six model-edit tools touch files only, so they are present in every tier
+/// including `--passive`.
+pub fn tool_names(passive: bool, allow_writes: bool, no_model_edits: bool) -> Vec<&'static str> {
     let mut names = vec![
         "knx_project_summary",
         "knx_model_lookup",
@@ -190,6 +214,10 @@ pub fn tool_names(passive: bool, allow_writes: bool) -> Vec<&'static str> {
     }
     if allow_writes && !passive {
         names.push("knx_write_group");
+    }
+    names.extend(tools_model::MODEL_READ_TOOLS);
+    if !no_model_edits {
+        names.extend(tools_model::MODEL_EDIT_TOOLS);
     }
     names
 }

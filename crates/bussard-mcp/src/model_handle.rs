@@ -86,6 +86,15 @@ impl ModelHandle {
         self.read().version
     }
 
+    /// Forces a re-read of the directory now, bypassing the debounce.
+    ///
+    /// Used after this process itself wrote the model (the MCP model-edit
+    /// tools), so the very next tool call serves what was just saved instead of
+    /// a copy up to [`RECHECK_INTERVAL`] old.
+    pub fn reload(&self) -> Arc<Model> {
+        self.refresh()
+    }
+
     /// Re-stats the directory and reloads when the fingerprint changed.
     fn refresh(&self) -> Arc<Model> {
         let current = fingerprint(&self.dir);
