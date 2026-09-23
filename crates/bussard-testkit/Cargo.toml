@@ -1,0 +1,23 @@
+[package]
+name = "bussard-testkit"
+description = "Test-only support for bussard: a configurable mock KNXnet/IP gateway and mock KNX devices"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+# A dev-dependency of the other crates; never released on its own.
+publish = false
+
+[dependencies]
+bussard-model = { workspace = true }
+bussard-transport = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full", "test-util"] }
+
+[lints]
+workspace = true

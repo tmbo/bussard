@@ -424,6 +424,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "bussard-testkit"
+version = "0.1.0"
+dependencies = [
+ "bussard-model",
+ "bussard-transport",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "bussard-transport"
 version = "0.1.0"
 dependencies = [
