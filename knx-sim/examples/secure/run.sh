@@ -233,6 +233,26 @@ else
   bad "the simulator did not report the not-activated refusal"
 fi
 
+# 4. describe (issue #155): with the tool key the secured walk reports objects;
+#    without it bussard must exit non-zero and point at --keyring, never exit 0
+#    with an empty object list.
+out="$("$BUSSARD" describe 1.1.2 --json --dir "$MODEL" --gateway "$GATEWAY" --tool-key "$TOOL_KEY" 2>/dev/null)"
+rc=$?
+if [[ $rc -eq 0 ]] && grep -q '"secured_management": "used"' <<<"$out" && grep -q '"object_type"' <<<"$out"; then
+  ok "describe 1.1.2 with the tool key: secured walk returned objects"
+else
+  bad "describe 1.1.2 with the tool key did not report a secured walk (exit $rc)"
+  tail -4 <<<"$out" | sed 's/^/      /'
+fi
+out="$("$BUSSARD" describe 1.1.2 --json --dir "$MODEL" --gateway "$GATEWAY" 2>&1)"
+rc=$?
+if [[ $rc -ne 0 ]] && grep -q -- "--keyring" <<<"$out"; then
+  ok "describe 1.1.2 without a key: exit $rc with the --keyring hint"
+else
+  bad "describe 1.1.2 without a key did not fail with the --keyring hint (exit $rc)"
+  tail -4 <<<"$out" | sed 's/^/      /'
+fi
+
 unset BUSSARD_FLASH_L4_TIMEOUT_MS
 
 # --- Verdict ----------------------------------------------------------------
