@@ -5,6 +5,7 @@
 mod adopt_cmd;
 mod apply_cmd;
 mod assign_cmd;
+mod backup_cmd;
 mod capture_cmd;
 mod conn_cmd;
 mod describe_cmd;
@@ -386,6 +387,46 @@ enum Command {
         #[arg(long)]
         allow_remote_gateway: bool,
     },
+    /// Snapshot every device in the installation: tables, and where bussard can
+    /// bound the read, the writable parameter memory (issue #96).
+    ///
+    /// Read-only on the bus. Writes one JSON file per device plus a
+    /// `manifest.json` that lists every device considered, including the ones
+    /// whose mask bussard cannot read.
+    Backup {
+        /// Back up only these devices, e.g. `1.1.4 1.1.7` (default: every device
+        /// in the model).
+        #[arg(value_name = "ADDRESS")]
+        addresses: Vec<String>,
+        /// Back up only the model devices on this line, e.g. `1.1`.
+        #[arg(long, value_name = "LINE", conflicts_with = "addresses")]
+        line: Option<String>,
+        /// Where to write the snapshot (default:
+        /// `<dir>/captures/backups/<UTC timestamp>/`).
+        #[arg(long, value_name = "DIR")]
+        out: Option<PathBuf>,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Emit the manifest as JSON instead of the text summary.
+        #[arg(long)]
+        json: bool,
+        /// The ETS `.knxkeys` keyring holding the targets' KNX Data Secure tool
+        /// keys (issue #71). The keyring password comes from
+        /// `BUSSARD_KEYRING_PASSWORD`, never a CLI argument.
+        #[arg(long, value_name = "FILE")]
+        keyring: Option<PathBuf>,
+        /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
+        /// escape hatch for a simulator or a device with a synthetic key.
+        #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
+        tool_key: Option<String>,
+        /// Override the gateway `host[:port]` for tunneling.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Force KNXnet/IP routing (multicast) transport.
+        #[arg(long)]
+        routing: bool,
+    },
     /// Validate the YAML model and report diagnostics.
     Validate {
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
@@ -745,6 +786,28 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             &dir,
             yes,
             allow_remote_gateway,
+            secure_key::ToolKeySource {
+                keyring: keyring.as_deref(),
+                tool_key: tool_key.as_deref(),
+            },
+            conn_cmd::ConnOverrides { gateway, routing },
+        ),
+        Command::Backup {
+            addresses,
+            line,
+            out,
+            dir,
+            json,
+            keyring,
+            tool_key,
+            gateway,
+            routing,
+        } => backup_cmd::run(
+            &addresses,
+            line.as_deref(),
+            out.as_deref(),
+            &dir,
+            json,
             secure_key::ToolKeySource {
                 keyring: keyring.as_deref(),
                 tool_key: tool_key.as_deref(),
