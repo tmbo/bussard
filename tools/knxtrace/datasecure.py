@@ -648,10 +648,26 @@ def unwrap_frames(frames: Iterable, ring: Keyring) -> None:
 
 
 # Security interface object (type 17) properties that carry key material:
-# PID_P2P_KEY_TABLE, PID_GRP_KEY_TABLE, PID_TOOL_KEY. (56 on the device object
-# is PID_MAX_APDU_LENGTH, which is why object 0 is exempt.)
-KEY_PIDS = frozenset({52, 53, 56})
+# PID_P2P_KEY_TABLE, PID_GRP_KEY_TABLE, PID_TOOL_KEY, PID_ZONE_KEY_TABLE. (56 on
+# the device object is PID_MAX_APDU_LENGTH, which is why object 0 is exempt.)
+KEY_PIDS = frozenset({52, 53, 56, 60})
 SECURITY_OBJECT_TYPE = 17
+KEY_SIZED = 16  # octets: anything this long on the security object may be a key
+
+
+def is_key_material(
+    obj_type: Optional[int], obj_index: Optional[int], pid: object, length: int
+) -> bool:
+    """Whether a property value may carry key material and must be hashed.
+
+    `obj_type` is set for the extended services, which name the object by
+    type; `obj_index` for the plain ones, which name it by index. By type:
+    the key PIDs, or anything key-sized, on the security object. By index
+    (the type is unknown): a key PID on any object but the device object.
+    """
+    if obj_type is not None:
+        return obj_type == SECURITY_OBJECT_TYPE and (pid in KEY_PIDS or length >= KEY_SIZED)
+    return pid in KEY_PIDS and obj_index != 0
 
 
 def redact_keys(apdu):
@@ -671,12 +687,12 @@ def redact_keys(apdu):
     if not isinstance(data, str):
         return apdu
     secret = False
-    if apdu.name.startswith("A_PropertyValue") and f.get("pid") in KEY_PIDS and f.get("obj") != 0:
-        secret = True
-    elif f.get("obj_type") == SECURITY_OBJECT_TYPE and (f.get("pid") in KEY_PIDS or len(data) >= 32):
+    if apdu.name.startswith("A_PropertyValue"):
+        secret = is_key_material(None, f.get("obj"), f.get("pid"), len(data) // 2)
+    elif "obj_type" in f:
         # Extended services name the object by type: anything key-sized
         # written to or read from the security object is treated as a key.
-        secret = True
+        secret = is_key_material(f.get("obj_type"), None, f.get("pid"), len(data) // 2)
     elif apdu.name.startswith("APCI_0x") and len(data) >= 32:
         secret = True
     if secret:

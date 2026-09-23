@@ -10,21 +10,35 @@ its base. An allocation with the fill flag set is fully determined even where
 nothing was written (the device pre-fills it), so it is also composed as
 fill + sparse writes.
 
+`property_writes` lists the property writes of the same download
+(`A_PropertyValue_Write`, `A_PropertyExtValue_WriteCon`/`_WriteUnCon`,
+`A_FunctionPropertyExt_Command`), decrypted when the capture was read with a
+keyring; `compose` writes them as `properties.json`. A value that may be key
+material (see `datasecure.is_key_material`: the key PIDs or anything key-sized
+on the security object, type 17) is reduced to `redacted:<sha256[:8]>` and its
+length, so the file can be shared like the rest of the image directory.
+
 `compare` diffs a `bussard flash --dry-run --dump-images` directory against a
 composed image directory, one bussard image at a time: identical, differs (how
 many octets, the first differing offset, both hex excerpts), or not comparable
-(and why). This is the offline conformance oracle of the physical campaign
-(issue #89).
+(and why). It then aligns bussard's property-write steps with
+`properties.json`: the same sequence of (object, PID, length), and equal
+values where both sides carry one (bytes, or the hash when redacted). That
+parity gets its own verdict next to the image verdict. This is the offline
+conformance oracle of the physical campaign (issue #89).
 """
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import os
+import re
 import struct
 from typing import Dict, List, Optional, Tuple
 
+from datasecure import is_key_material
 from normalize import KIND_ALLOC, KIND_MEM_WRITE, DeviceOps, coalesce
 
 # LdCtrl subtypes of an `AdditionalLoadControls` (event 3) record.
@@ -141,6 +155,64 @@ def memory_writes(ops: DeviceOps) -> List[Tuple[int, bytes]]:
     return writes
 
 
+# Property services whose request writes a value. Header octets before the
+# value: plain (obj, pid, count/index:2), extended value (type:2, inst/pid:3,
+# count, index:2), extended function property (type:2, inst/pid:3).
+PROPERTY_WRITE_SERVICES = {
+    "A_PropertyValue_Write": 4,
+    "A_PropertyExtValue_WriteCon": 8,
+    "A_PropertyExtValue_WriteUnCon": 8,
+    "A_FunctionPropertyExt_Command": 5,
+}
+PID_LOAD_STATE_CONTROL = 5
+
+
+def _value_field(obj_type: Optional[int], obj_index: Optional[int], pid, data: bytes) -> str:
+    if is_key_material(obj_type, obj_index, pid, len(data)):
+        return "redacted:%s" % sha256(data)[:8]
+    return data.hex()
+
+
+def property_writes(ops: DeviceOps) -> List[Dict[str, object]]:
+    """Every property write the tool sent the device, in order.
+
+    Each entry names the object (`{"index": n}` for the plain services,
+    `{"type": t, "instance": i}` for the extended ones), the PID, the element
+    count and start index where the service has them, the value length and
+    the value: hex, or `redacted:<sha256[:8]>` for possible key material.
+    `secured` is the key a decrypted frame verified under, else null.
+    """
+    out: List[Dict[str, object]] = []
+    for op in ops.ops:
+        apdu = op.apdu
+        if op.direction != "req" or apdu is None or apdu.name not in PROPERTY_WRITE_SERVICES:
+            continue
+        f = apdu.fields
+        if f.get("truncated") or "pid" not in f:
+            continue
+        data = bytes(apdu.payload[PROPERTY_WRITE_SERVICES[apdu.name]:])
+        if "obj_type" in f:
+            obj_type, obj_index = int(f["obj_type"]), None
+            obj: Dict[str, int] = {"type": obj_type, "instance": int(f.get("instance", 0))}
+        else:
+            obj_type, obj_index = None, int(f.get("obj", 0))
+            obj = {"index": obj_index}
+        out.append(
+            {
+                "seq": len(out) + 1,
+                "service": apdu.name,
+                "object": obj,
+                "pid": f["pid"],
+                "count": f.get("count"),
+                "index": f.get("index"),
+                "length": len(data),
+                "data": _value_field(obj_type, obj_index, f["pid"], data),
+                "secured": op.detail.get("secured"),
+            }
+        )
+    return out
+
+
 def compose(ops: DeviceOps, out_dir: str, source: str = "") -> Dict[str, object]:
     """Writes the composed image of one device's download into `out_dir`.
 
@@ -186,12 +258,18 @@ def compose(ops: DeviceOps, out_dir: str, source: str = "") -> Dict[str, object]
                 fh.write(bytes(buf))
             rec["composed_file"] = name
 
+    props = property_writes(ops)
+    with open(os.path.join(out_dir, "properties.json"), "w", encoding="utf-8") as fh:
+        json.dump(props, fh, indent=2)
+        fh.write("\n")
+
     index = {
         "device": ops.device,
         "source": os.path.basename(source),
         "regions": regions,
         "allocations": allocs,
         "table_refs": {str(k): v for k, v in sorted(table_refs(ops).items())},
+        "property_writes": len(props),
     }
     with open(os.path.join(out_dir, "regions.json"), "w", encoding="utf-8") as fh:
         json.dump(index, fh, indent=2)
@@ -286,8 +364,9 @@ def compare(plan_dir: str, image_dir: str) -> Dict[str, object]:
                 )
                 continue
             addr = base + int(image.get("offset") or 0)
-        compared = diffs = 0
+        compared = diffs = fill_diffs = 0
         first = None
+        fill_offsets: List[int] = []
         for i, b in enumerate(ours):
             if mask is not None and i < len(mask) and mask[i] != 0xFF:
                 continue
@@ -300,6 +379,11 @@ def compare(plan_dir: str, image_dir: str) -> Dict[str, object]:
                 diffs += 1
                 if first is None:
                     first = i
+                if (addr + i) not in ets.written:
+                    # ETS never wrote this octet: its value is the fill of
+                    # the allocation, i.e. ETS's image held the fill there.
+                    fill_diffs += 1
+                    fill_offsets.append(i)
         rec = _result(step, name, ours, IDENTICAL, "")
         rec["address"] = addr
         rec["compared"] = compared
@@ -320,11 +404,17 @@ def compare(plan_dir: str, image_dir: str) -> Dict[str, object]:
                     "excerpt_offset": lo,
                     "bussard_hex": ours[lo:hi].hex(),
                     "ets_hex": theirs.hex(),
+                    "fill_diff_octets": fill_diffs,
+                    "fill_diff_offsets": fill_offsets[:20],
                 }
             )
         results.append(rec)
 
     ets_only = sorted(a for a in ets.written if a not in covered_addrs)
+    # The property parity has its own verdict: `verdict` stays the image
+    # verdict the pre-flash gate reads, so a known extra property write does
+    # not hide whether the memory images match.
+    props = compare_properties(plan, image_dir)
     verdicts = {r["verdict"] for r in results}
     if DIFFERS in verdicts:
         overall = DIFFERS
@@ -340,6 +430,195 @@ def compare(plan_dir: str, image_dir: str) -> Dict[str, object]:
         "regions": results,
         "ets_only_octets": len(ets_only),
         "ets_only_ranges": _ranges(ets_only)[:20],
+        "properties": props,
+    }
+
+
+# `write property (object 4, type 0, PID 27, 10 byte(s) from element 1)`, the
+# label bussard-download gives a `FlashStep::WriteProp`.
+WRITE_PROP_LABEL = re.compile(
+    r"write property \(object (\d+), type (\d+), PID (\d+), (\d+) byte\(s\) from element (\d+)\)"
+)
+
+
+PID_MCB_TABLE = 27
+MCB_ENTRY_LEN = 8
+
+
+def _wire_writes(entry: Dict[str, object]) -> List[Dict[str, object]]:
+    """The writes one plan step becomes on the wire.
+
+    Mirrors bussard-download's executor: a `PID_MCB_TABLE` value longer than
+    one 8-octet entry (the vendor pads it to 10) is sent one entry per request
+    from the start element, and a trailing partial entry (the padding) is
+    dropped. Everything else goes out as one write.
+    """
+    length = int(entry["length"])
+    if not (
+        "index" in entry["object"] and entry["pid"] == PID_MCB_TABLE and length > MCB_ENTRY_LEN
+    ):
+        return [entry]
+    out = []
+    data = entry.get("data")
+    start = int(entry.get("index") or 1)
+    for i in range(length // MCB_ENTRY_LEN):
+        chunk = dict(entry, index=start + i, length=MCB_ENTRY_LEN, sha256=None)
+        if isinstance(data, str) and not data.startswith("redacted:"):
+            chunk["data"] = data[i * 2 * MCB_ENTRY_LEN:(i + 1) * 2 * MCB_ENTRY_LEN]
+        else:
+            chunk["data"] = None
+        out.append(chunk)
+    return out
+
+
+def plan_property_writes(plan: dict) -> List[Dict[str, object]]:
+    """bussard's property writes, in plan order, as they go out on the wire.
+
+    A step may carry a structured `property` record (`object` index, or
+    `object_type` and `instance`; `pid`, `start_element`, `length` and either
+    `data` hex or `sha256`); otherwise the step label is parsed, which gives
+    the object, PID, length and start element but no value. Today's
+    `plan.json` has labels only.
+    """
+    out: List[Dict[str, object]] = []
+    for entry in _plan_property_steps(plan):
+        out.extend(_wire_writes(entry))
+    return out
+
+
+def _plan_property_steps(plan: dict) -> List[Dict[str, object]]:
+    out: List[Dict[str, object]] = []
+    for step in plan.get("steps", []):
+        rec = step.get("property")
+        if isinstance(rec, dict):
+            if rec.get("object_type") is not None:
+                obj: Dict[str, int] = {
+                    "type": int(rec["object_type"]),
+                    "instance": int(rec.get("instance", 1)),
+                }
+            else:
+                obj = {"index": int(rec["object"])}
+            data = rec.get("data")
+            entry = {
+                "step": step.get("index"),
+                "object": obj,
+                "pid": int(rec["pid"]),
+                "index": rec.get("start_element"),
+                "length": int(rec.get("length", len(data) // 2 if isinstance(data, str) else 0)),
+                "data": data if isinstance(data, str) else None,
+                "sha256": rec.get("sha256"),
+            }
+            out.append(entry)
+            continue
+        m = WRITE_PROP_LABEL.search(step.get("label", ""))
+        if m:
+            out.append(
+                {
+                    "step": step.get("index"),
+                    "object": {"index": int(m.group(1))},
+                    "pid": int(m.group(3)),
+                    "index": int(m.group(5)),
+                    "length": int(m.group(4)),
+                    "data": None,
+                    "sha256": None,
+                }
+            )
+    return out
+
+
+def _obj_label(obj: Dict[str, int]) -> str:
+    if "type" in obj:
+        return "type%d.%d" % (obj["type"], obj.get("instance", 1))
+    return "obj%d" % obj["index"]
+
+
+def _prop_key(entry: Dict[str, object]) -> Tuple[str, int, int]:
+    return (_obj_label(entry["object"]), int(entry["pid"]), int(entry["length"]))
+
+
+def _value_check(ours: Dict[str, object], theirs: Dict[str, object]) -> Tuple[str, str]:
+    """(outcome, why): `equal`, `hash-equal`, `differs` or `no-value`."""
+    ets_value = str(theirs.get("data") or "")
+    redacted = ets_value.startswith("redacted:")
+    ours_hex = ours.get("data")
+    ours_sha = ours.get("sha256")
+    if isinstance(ours_hex, str) and ours_hex.startswith("redacted:"):
+        ours_hash = ours_hex[len("redacted:"):]
+    elif isinstance(ours_hex, str):
+        ours_hash = sha256(bytes.fromhex(ours_hex))[:8]
+    elif isinstance(ours_sha, str):
+        ours_hash = ours_sha[:8]
+    else:
+        return "no-value", "plan.json carries no value for this step"
+    if redacted:
+        same = ours_hash == ets_value[len("redacted:"):]
+        return ("hash-equal", "") if same else ("differs", "hash differs")
+    if isinstance(ours_hex, str) and not ours_hex.startswith("redacted:"):
+        return ("equal", "") if ours_hex == ets_value else ("differs", "bytes differ")
+    same = ours_hash == sha256(bytes.fromhex(ets_value))[:8]
+    return ("hash-equal", "") if same else ("differs", "hash differs")
+
+
+def compare_properties(plan: dict, image_dir: str) -> Dict[str, object]:
+    """Aligns bussard's property-write steps with ETS's `properties.json`.
+
+    PID_LOAD_STATE_CONTROL writes on the plain services are left out on the
+    ETS side: they are the load state machine (unload, allocate, complete),
+    which the plan carries as its own step kinds, not as property writes.
+    """
+    path = os.path.join(image_dir, "properties.json")
+    if not os.path.exists(path):
+        return {"verdict": NOT_COMPARABLE, "reason": "no properties.json (re-run `knxtrace image`)"}
+    with open(path, encoding="utf-8") as fh:
+        ets_all = json.load(fh)
+    ets = [
+        e
+        for e in ets_all
+        if not ("index" in e["object"] and e["pid"] == PID_LOAD_STATE_CONTROL
+                and e["service"] == "A_PropertyValue_Write")
+    ]
+    ours = plan_property_writes(plan)
+    matcher = difflib.SequenceMatcher(
+        None, [_prop_key(e) for e in ours], [_prop_key(e) for e in ets], autojunk=False
+    )
+    matched: List[Dict[str, object]] = []
+    bussard_only: List[Dict[str, object]] = []
+    ets_only: List[Dict[str, object]] = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for a, b in zip(ours[i1:i2], ets[j1:j2]):
+                outcome, why = _value_check(a, b)
+                if outcome != "differs" and a.get("index") is not None and b.get("index") is not None \
+                        and a["index"] != b["index"]:
+                    outcome, why = "differs", "start index %s vs %s" % (a["index"], b["index"])
+                matched.append(
+                    {"step": a["step"], "ets_seq": b["seq"], "key": list(_prop_key(a)),
+                     "value": outcome, "why": why, "ets_data": b["data"]}
+                )
+            continue
+        for a in ours[i1:i2]:
+            bussard_only.append({"step": a["step"], "key": list(_prop_key(a))})
+        for b in ets[j1:j2]:
+            ets_only.append({"ets_seq": b["seq"], "service": b["service"], "key": list(_prop_key(b)),
+                             "data": b["data"]})
+    counts: Dict[str, int] = {}
+    for m in matched:
+        counts[m["value"]] = counts.get(m["value"], 0) + 1
+    if bussard_only or ets_only or counts.get("differs"):
+        verdict = DIFFERS
+    elif not matched:
+        verdict = NOT_COMPARABLE
+    else:
+        verdict = IDENTICAL
+    return {
+        "verdict": verdict,
+        "bussard_writes": len(ours),
+        "ets_writes": len(ets),
+        "ets_load_controls_skipped": len(ets_all) - len(ets),
+        "matched": matched,
+        "value_counts": counts,
+        "bussard_only": bussard_only,
+        "ets_only": ets_only,
     }
 
 
@@ -380,6 +659,14 @@ def render(report: Dict[str, object]) -> List[str]:
             )
             lines.append("      bussard +0x%04X: %s" % (r["excerpt_offset"], r["bussard_hex"]))
             lines.append("      ets     +0x%04X: %s" % (r["excerpt_offset"], r["ets_hex"]))
+            if r.get("fill_diff_octets"):
+                lines.append(
+                    "      %d of them ETS never wrote (they hold the allocation's fill): %s"
+                    % (
+                        r["fill_diff_octets"],
+                        ", ".join("+0x%X" % o for o in r["fill_diff_offsets"][:8]),
+                    )
+                )
         else:
             lines.append(head + "not comparable: %s" % r["reason"])
     if report["ets_only_octets"]:
@@ -389,5 +676,40 @@ def render(report: Dict[str, object]) -> List[str]:
                 report["ets_only_octets"],
                 ", ".join("0x%06X+%d" % (a, b - a) for a, b in report["ets_only_ranges"][:6]),
             )
+        )
+    lines.extend(render_properties(report.get("properties")))
+    return lines
+
+
+def _key_text(key) -> str:
+    return "%s PID %d (%d octets)" % (key[0], key[1], key[2])
+
+
+def render_properties(props: Optional[Dict[str, object]]) -> List[str]:
+    if not props:
+        return []
+    if props["verdict"] == NOT_COMPARABLE and "reason" in props:
+        return ["  property writes: not comparable: %s" % props["reason"]]
+    if not (props["bussard_writes"] or props["ets_writes"]):
+        return ["  property writes: none on either side"]
+    counts = props["value_counts"]
+    lines = [
+        "  property writes: %s (bussard %d, ETS %d; %d matched: %s)"
+        % (
+            props["verdict"],
+            props["bussard_writes"],
+            props["ets_writes"],
+            len(props["matched"]),
+            ", ".join("%s %d" % kv for kv in sorted(counts.items())) or "none",
+        )
+    ]
+    for m in props["matched"]:
+        if m["value"] == "differs":
+            lines.append("      step %3s %s: %s" % (m["step"], _key_text(m["key"]), m["why"]))
+    for b in props["bussard_only"]:
+        lines.append("      bussard only: step %3s %s" % (b["step"], _key_text(b["key"])))
+    for e in props["ets_only"]:
+        lines.append(
+            "      ETS only:     #%-3s %s %s" % (e["ets_seq"], e["service"], _key_text(e["key"]))
         )
     return lines
