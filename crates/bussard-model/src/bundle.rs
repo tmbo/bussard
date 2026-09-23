@@ -409,19 +409,25 @@ impl Bundle {
     }
 
     /// Writes the bundled files byte for byte into `dir`, which must not hold
-    /// a model yet. With `include_history`, the history snapshots are restored
-    /// too, so `bussard history` and `undo` work on the copy.
+    /// a model yet (no `groups.yaml`, no device file). With `include_history`,
+    /// the history snapshots are restored too, so `bussard history` and `undo`
+    /// work on the copy.
     ///
-    /// This is the fresh-import path: the result is identical to the exported
-    /// directory's model files.
+    /// An existing `bussard.yaml` (for example from `bussard init`) is left
+    /// untouched: the connection is local, exactly as a re-import keeps it.
+    /// Into an empty directory the result is identical to the exported model.
     pub fn extract(&self, dir: &Path, include_history: bool) -> Result<(), BundleError> {
-        if !read_model_files(dir)?.is_empty() {
+        let existing = read_model_files(dir)?;
+        if existing.keys().any(|k| k != "bussard.yaml") {
             return Err(BundleError::TargetHasModel {
                 dir: dir.to_path_buf(),
             });
         }
         let history = include_history.then_some(&self.history_files);
         for (name, bytes) in self.model_files.iter().chain(history.into_iter().flatten()) {
+            if existing.contains_key(name) {
+                continue;
+            }
             let path = dir.join(name);
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).map_err(|source| BundleError::Io {
@@ -468,6 +474,12 @@ pub fn export(
 pub fn last_export(dir: &Path) -> Option<LastExport> {
     let text = fs::read_to_string(dir.join(LAST_EXPORT)).ok()?;
     serde_json::from_str(&text).ok()
+}
+
+/// The model files currently in `dir` (`bussard.yaml`, `groups.yaml`,
+/// `links.yaml`, `devices/*.yaml`), keyed by model-relative path, as bytes.
+pub fn model_files(dir: &Path) -> Result<BTreeMap<String, Vec<u8>>, BundleError> {
+    read_model_files(dir)
 }
 
 /// The model digest of the files currently in `dir`, in the manifest's format.

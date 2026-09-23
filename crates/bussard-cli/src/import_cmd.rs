@@ -16,6 +16,8 @@ use std::process::ExitCode;
 
 use bussard_model::{MergeReport, Model};
 
+use crate::import_bundle::ConflictChoice;
+
 /// Exit code returned when a re-import left hand-authored conflicts un-applied.
 /// Distinct from success (0) so scripts/CI can detect that a human must
 /// reconcile the reported fields; the write still happened (hand edits intact).
@@ -35,6 +37,7 @@ pub fn run_knxproj(
     path: &Path,
     dir: &Path,
     password_flag: Option<String>,
+    choice: ConflictChoice,
 ) -> anyhow::Result<ExitCode> {
     let password = resolve_password(password_flag);
 
@@ -55,13 +58,13 @@ pub fn run_knxproj(
         Err(e) => return Err(e.into()),
     };
 
-    write_model(model, dir)
+    write_model(model, dir, choice, "project")
 }
 
 /// Runs `bussard import --from-json`.
-pub fn run_json(path: &Path, dir: &Path) -> anyhow::Result<ExitCode> {
+pub fn run_json(path: &Path, dir: &Path, choice: ConflictChoice) -> anyhow::Result<ExitCode> {
     let model = bussard_project::import_from_json(path)?;
-    write_model(model, dir)
+    write_model(model, dir, choice, "project")
 }
 
 /// Writes the freshly-imported `model` to `dir`.
@@ -73,7 +76,15 @@ pub fn run_json(path: &Path, dir: &Path) -> anyhow::Result<ExitCode> {
 /// of being overwritten. Returns [`EXIT_CONFLICTS`] when conflicts were
 /// reported so the outcome is non-zero-ish while the on-disk hand edits stay
 /// intact.
-fn write_model(model: Model, dir: &Path) -> anyhow::Result<ExitCode> {
+///
+/// `choice` settles hand-authored conflicts (see [`ConflictChoice`]); `source`
+/// names the incoming side in sentences (`"project"` or `"bundle"`).
+pub(crate) fn write_model(
+    model: Model,
+    dir: &Path,
+    choice: ConflictChoice,
+    source: &str,
+) -> anyhow::Result<ExitCode> {
     // History (issue #110): record an edit made outside bussard before the
     // import overwrites it, then snapshot the pre-import state so `bussard undo`
     // can put it back.
@@ -89,8 +100,16 @@ fn write_model(model: Model, dir: &Path) -> anyhow::Result<ExitCode> {
 
     let (to_save, merge_report) = match existing {
         Some(ours) => {
-            let (merged, report) = bussard_model::merge(&ours, &model);
-            (merged, Some(report))
+            let (mut merged, report) = bussard_model::merge(&ours, &model);
+            let kept = crate::import_bundle::resolve_conflicts(
+                &ours,
+                &model,
+                &mut merged,
+                &report,
+                choice,
+                source,
+            )?;
+            (merged, Some((ours, report, kept)))
         }
         None => (model, None),
     };
@@ -110,8 +129,9 @@ fn write_model(model: Model, dir: &Path) -> anyhow::Result<ExitCode> {
         println!("pruned {} stale device file(s)", report.pruned.len());
     }
 
-    if let Some(merge) = merge_report {
-        return Ok(report_merge(&merge));
+    if let Some((ours, merge, kept)) = merge_report {
+        crate::import_bundle::print_changes(&ours, &to_save);
+        return Ok(report_merge(&merge, kept, choice));
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -135,7 +155,12 @@ fn load_existing_model(dir: &Path) -> Option<Model> {
 }
 
 /// Prints the re-import merge outcome and returns the process exit code.
-fn report_merge(report: &MergeReport) -> ExitCode {
+///
+/// `kept` is how many conflicts still hold the local value. They exit
+/// [`EXIT_CONFLICTS`] only when nobody chose (no `--mine`, `--theirs` or
+/// `--interactive`); the sentences were already printed by
+/// [`crate::import_bundle::resolve_conflicts`].
+fn report_merge(report: &MergeReport, kept: usize, choice: ConflictChoice) -> ExitCode {
     if report.groups_added + report.devices_added > 0 {
         println!(
             "re-import: added {} new device(s), {} new group address(es)",
@@ -160,22 +185,13 @@ fn report_merge(report: &MergeReport) -> ExitCode {
         println!("re-import: generated sections refreshed; no hand-edited conflicts.");
         return ExitCode::SUCCESS;
     }
-
-    eprintln!(
-        "\nre-import: {} hand-edited field(s) differ from the project and were KEPT \
-         (not overwritten):",
-        report.conflicts.len()
-    );
-    for c in &report.conflicts {
-        eprintln!(
-            "  {} · {}: ours={:?} theirs={:?}",
-            c.path, c.field, c.ours, c.theirs
-        );
+    if choice != ConflictChoice::Report || kept == 0 {
+        return ExitCode::SUCCESS;
     }
     eprintln!(
         "\nGenerated sections (com_objects, links wiring, parameters) were refreshed. \
-         The hand-edited fields above were preserved; reconcile them by hand if the \
-         project's values are the ones you want."
+         The {kept} hand-edited field(s) above were KEPT. Re-run with --theirs to take the \
+         incoming values, --mine to keep these and exit 0, or --interactive to choose each."
     );
     ExitCode::from(EXIT_CONFLICTS)
 }
