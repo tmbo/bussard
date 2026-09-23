@@ -422,6 +422,17 @@ fn run_line(
             eprintln!("aborted — no changes written.");
             return Ok(ExitCode::FAILURE);
         }
+
+        // One history snapshot for the whole run, before the first bus write, so
+        // `bussard history` records what the line was asked to become (#110).
+        crate::history_cmd::capture_external_edit(dir);
+        crate::history_cmd::snapshot(
+            dir,
+            bussard_model::history::SnapshotReason::new("apply")
+                .with_args(["--line".to_string(), line.clone()])
+                .with_gateway(Some(gateway.clone()))
+                .with_result("before writing the line's device tables"),
+        );
     }
 
     let target_count = targets.len();

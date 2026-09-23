@@ -588,7 +588,7 @@ Run the MCP server over stdio (see [the MCP server](#the-mcp-server)).
 | `--passive` | off | Never transmit on the bus; omits the `knx_read_group` tool. |
 | `--allow-writes` | off | Register the `knx_write_group` tool. Mutually exclusive with `--passive`. |
 | `--allow-remote-gateway` | off | Permit `--allow-writes` against a non-loopback (real) gateway. The same gate as `bussard write`; without it a write-enabled server pointed at a real gateway refuses to start. |
-| `--no-model-edits` | off | Withhold the model-edit tools (`knx_set_group`, `knx_add_link`, `knx_remove_link`, `knx_set_device`, `knx_set_parameter`, `knx_undo`). They write YAML files behind a history snapshot and never touch the bus, so they are registered by default. |
+| `--no-model-edits` | off | Withhold the model-edit tools (`knx_set_group`, `knx_add_link`, `knx_remove_link`, `knx_set_device`, `knx_set_parameter`, `knx_undo`, `knx_scaffold_groups`). They write YAML files behind a history snapshot and never touch the bus, so they are registered by default. |
 | `--capture-db <PATH>` | | A `bussard capture` database to extend `knx_recent_telegrams` history beyond the in-memory ring. |
 
 ### `bussard viz`
@@ -913,9 +913,11 @@ CREATE INDEX idx_telegrams_dest_ts ON telegrams (destination, ts_utc);
 | Passive | `--passive` | Never transmits. The bus-touching read tools (`knx_read_group`, `knx_describe_device`) are not registered, and `knx_audit` refuses `live: true`. |
 | Read (default) | none | May send GroupValueReads, rate-limited. |
 | Write | `--allow-writes` | Adds `knx_write_group` and `knx_run_tests`. |
-| No model edits | `--no-model-edits` | Withholds the six model-edit tools. Orthogonal to the tiers above: they write YAML files, never the bus, so they are registered in every tier by default. |
+| No model edits | `--no-model-edits` | Withholds the six model-edit tools and `knx_scaffold_groups`. Orthogonal to the tiers above: they write YAML files, never the bus, so they are registered in every tier by default. |
 
-The model tools (`knx_describe_change`, `knx_history`, and the six that edit) touch files under the model directory and nothing else. Every edit snapshots the model first, validates after, and returns the change as sentences for the caller to quote to the human. Nothing reaches a device until a human runs `bussard plan` and `bussard apply`.
+The model tools (`knx_describe_change`, `knx_history`, the six that edit, and `knx_scaffold_groups`) touch files under the model directory and nothing else.
+
+Tool counts: 18 in `--passive`, 20 by default, 22 with `--allow-writes`. `--no-model-edits` takes seven away from each (11, 13 and 15). Every edit snapshots the model first, validates after, and returns the change as sentences for the caller to quote to the human. Nothing reaches a device until a human runs `bussard plan` and `bussard apply`.
 
 Bus operations share one rate limiter (minimum 250 ms between operations, at most two in flight). A GA marked `protected: true` is hard-refused by `knx_write_group` and `knx_run_tests` with no MCP override; the LLM must ask a human, who can run `bussard write ... --force` from the CLI. Programming and download (`plan`, `apply`, `flash`) are CLI-only and not exposed over MCP.
 

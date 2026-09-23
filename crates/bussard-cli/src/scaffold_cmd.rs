@@ -42,6 +42,16 @@ pub fn run(
         None => dir.join("groups.yaml"),
     };
 
+    // History (issue #110): keep the pre-scaffold files so `bussard undo` can
+    // put them back, recording any edit made outside bussard first.
+    crate::history_cmd::capture_external_edit(dir);
+    crate::history_cmd::snapshot(
+        dir,
+        bussard_model::history::SnapshotReason::new("scaffold")
+            .with_args([plan_path.display().to_string()])
+            .with_result("before writing the scaffolded group addresses"),
+    );
+
     let report = scaffold::scaffold_file(&groups_path, &plan, scheme)
         .with_context(|| format!("scaffolding into {}", groups_path.display()))?;
 

@@ -16,6 +16,7 @@ use rmcp::{tool, tool_router};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use bussard_model::history::{History, SnapshotReason};
 use bussard_model::scaffold::{self, Plan, Scheme};
 use bussard_model::{Model, Severity};
 
@@ -88,6 +89,25 @@ impl BussardMcp {
                 .unwrap_or(Scheme::FloorTradeBlock),
         };
 
+        // Snapshot before writing, like every other MCP model edit, so the
+        // scaffold can be undone (issue #110). An empty directory has nothing
+        // to keep; a failed snapshot refuses the write.
+        let history = History::open(&state.dir);
+        let snapshot = if history.has_model_files() {
+            let reason = SnapshotReason::new("mcp knx_scaffold_groups")
+                .with_result("before scaffolding group addresses");
+            Some(history.snapshot(reason).map_err(|e| {
+                ErrorData::internal_error(
+                    format!(
+                        "refusing to scaffold: the history snapshot could not be written ({e})"
+                    ),
+                    None,
+                )
+            })?)
+        } else {
+            None
+        };
+
         let groups_path = state.dir.join("groups.yaml");
         let report = scaffold::scaffold_file(&groups_path, &plan, scheme)
             .map_err(|e| ErrorData::internal_error(format!("scaffolding failed: {e}"), None))?;
@@ -133,6 +153,7 @@ impl BussardMcp {
             "added_count": added.len(),
             "added": added,
             "lint_config_written": lint_written,
+            "snapshot": snapshot,
             "validation": { "errors": errors, "warnings": warnings },
         })))
     }

@@ -88,6 +88,11 @@ async fn test_knx_scaffold_groups_writes_the_plan() -> Result<(), Box<dyn Error>
     assert_eq!(model.groups.groups.len(), 9);
     assert!(model.config.lint.is_some());
 
+    // The write is undoable: one history snapshot was taken before it.
+    assert!(structured["snapshot"].is_string(), "{structured}");
+    let snapshots = bussard_model::History::open(&dir).list()?;
+    assert_eq!(snapshots.len(), 1, "one snapshot before the scaffold write");
+
     client.cancel().await?;
     server_task.abort();
     std::fs::remove_dir_all(&dir)?;
