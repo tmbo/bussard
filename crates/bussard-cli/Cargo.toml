@@ -37,6 +37,8 @@ serde_json = { workspace = true }
 # tree via bussard-model / bussard-secure). MIT OR Apache-2.0.
 sha2 = { workspace = true }
 owo-colors = { workspace = true }
+# Live progress display on a TTY stderr (issue #147). MIT.
+indicatif = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

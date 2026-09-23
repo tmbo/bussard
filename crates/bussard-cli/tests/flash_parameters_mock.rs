@@ -605,6 +605,74 @@ fn test_flash_parameters_only_writes_only_the_changed_octet() -> TestResult {
     Ok(())
 }
 
+/// Issue #147: a piped run (stdout and stderr not a TTY) keeps today's plain,
+/// line-oriented progress output byte for byte, with no cursor-control codes
+/// beyond the `\r` the byte counter has always used.
+#[test]
+fn test_flash_parameters_only_piped_output_is_unchanged() -> TestResult {
+    let Some(bench) = Bench::start(
+        "params-piped",
+        MockDevice::running([7, 0]),
+        "  thr@P-0_R-1: \"12\"\n",
+    )?
+    else {
+        return Ok(());
+    };
+    let out = bench.bussard(&[
+        "flash",
+        "1.1.4",
+        "--product",
+        bench.product()?,
+        "--parameters-only",
+        "--yes",
+    ])?;
+    let (stdout, stderr) = text(&out);
+    assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
+    // No escape sequence (cursor movement, colour, line erase) anywhere.
+    assert!(!stdout.contains('\x1b'), "{stdout:?}");
+    assert!(!stderr.contains('\x1b'), "{stderr:?}");
+
+    // stdout, with the temp-dir backup path normalised, is today's report.
+    let backup_marker = "parameter backup written to ";
+    let normalised: String = stdout
+        .lines()
+        .map(|line| match line.find(backup_marker) {
+            Some(at) => format!("{}<backup>\n", &line[..at + backup_marker.len()]),
+            None => format!("{line}\n"),
+        })
+        .collect();
+    assert_eq!(
+        normalised,
+        "Parameter-only download for 1.1.4\n\
+         \x20 application : M-00FA_A-0002 bussard parameter test app\n\
+         \x20 parameters  : 1 change(s):\n\
+         \x20     Threshold: 7 to 12\n\
+         \x20 memory      :\n\
+         \x20     M-00FA_A-0002_RS-2 at 0x004006: 1 of 2 octet(s) change\n\
+         \x20 procedure   : open for loading (obj 4); write parameters image (2 bytes) at \
+         0x00004006; complete load (obj 4); restart device (no unload, no table write)\n\
+         parameter backup written to <backup>\n\
+         \n\
+         parameters verified: 1 changed octet(s) read back from 1.1.4; the application is Loaded\n"
+    );
+
+    // stderr after the history line is the exact step / byte-counter trace.
+    let (history, progress) = stderr.split_once('\n').ok_or("stderr has no lines")?;
+    assert!(
+        history.starts_with("recorded the current model"),
+        "{stderr:?}"
+    );
+    assert_eq!(
+        progress,
+        "  [1/4] open for loading (obj 4)\n\
+         \x20 [2/4] write parameters image (2 bytes) at 0x00004006\n\
+         \r      1/1 bytes\n\
+         \x20 [3/4] complete load (obj 4)\n\
+         \x20 [4/4] restart device\n"
+    );
+    Ok(())
+}
+
 #[test]
 fn test_flash_parameters_only_with_nothing_to_change_touches_nothing() -> TestResult {
     let Some(bench) = Bench::start(

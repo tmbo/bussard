@@ -14,7 +14,6 @@
 //!
 //! It always exits 0 — it is a report, not a check.
 
-use std::io::Write;
 use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -128,7 +127,7 @@ pub fn run(
         // through to a clean `handle.close()` so the gateway tunnel slot is
         // released rather than leaked (~2 min hold) — see issue #31.
         let found = tokio::select! {
-            found = sweep(&handle, area, line_no, from, to, source) => found,
+            found = sweep(&handle, area, line_no, from, to, source, json) => found,
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\ninterrupted; closing the bus connection");
                 Vec::new()
@@ -160,21 +159,29 @@ async fn sweep(
     from: u8,
     to: u8,
     source: IndividualAddress,
+    json: bool,
 ) -> Vec<Found> {
     let mut found = Vec::new();
+    // Progress to stderr (issue #147): a line rewritten in place, or the live
+    // view on an interactive terminal.
+    let display = crate::progress::SweepDisplay::new(
+        "scanning",
+        usize::from(to.saturating_sub(from)) + 1,
+        json,
+    );
     for device in from..=to {
         let addr = match IndividualAddress::new(area, line_no, device) {
             Ok(a) => a,
             Err(_) => continue,
         };
-        // Progress line to stderr, rewritten in place.
-        eprint!("\rscanning {addr}…  {} found   ", found.len());
-        let _ = std::io::stderr().flush();
+        display.probing(addr, found.len());
 
         if let Some(dev) = probe(handle, addr, source).await {
             found.push(dev);
         }
+        display.advance();
     }
+    display.finish();
     eprintln!(
         "\rscan complete: {} device(s) found            ",
         found.len()
