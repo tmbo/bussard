@@ -124,6 +124,34 @@ pub fn read_knxprod_inner(path: &Path, inner: Option<&str>) -> Result<ProductDat
     read_product(container::Container::open_with_inner(path, inner)?)
 }
 
+/// Attaches to every application the `PeiProgram`s its `Hardware2Program`
+/// lists next to it (see [`ApplicationProgram::companion_programs`]).
+///
+/// The ABB BE/S16.230.3.2 pairs `A-A0ED-10` (object 4) with the PEI program
+/// `A-A0ED-20` (object 5, 75,662 octets); ETS downloads both in one session.
+fn attach_companion_programs(hardware: &HardwareCatalog, applications: &mut [ApplicationProgram]) {
+    let peis: HashMap<String, ApplicationProgram> = applications
+        .iter()
+        .filter(|a| a.is_pei_program())
+        .map(|a| (a.id.clone(), a.clone()))
+        .collect();
+    if peis.is_empty() {
+        return;
+    }
+    let mut groups: Vec<&Vec<String>> = hardware.hardware2program.values().collect();
+    groups.sort();
+    for app in applications.iter_mut().filter(|a| !a.is_pei_program()) {
+        for group in groups.iter().filter(|g| g.contains(&app.id)) {
+            for id in group.iter() {
+                let known = app.companion_programs.iter().any(|c| &c.id == id);
+                if let (Some(pei), false) = (peis.get(id), known) {
+                    app.companion_programs.push(pei.clone());
+                }
+            }
+        }
+    }
+}
+
 /// Reads product data from an already-opened (and already-unwrapped) container.
 fn read_product(mut container: container::Container) -> Result<ProductData> {
     let manufacturers = container.manufacturer_ids();
@@ -147,6 +175,7 @@ fn read_product(mut container: container::Container) -> Result<ProductData> {
         applications.push(app);
     }
     applications.sort_by(|a, b| a.id.cmp(&b.id));
+    attach_companion_programs(&hardware, &mut applications);
 
     // The master template is optional; a `.knxprod` without `knx_master.xml`
     // (or produced without one) parses fine and stays on the single-object path.
@@ -161,4 +190,51 @@ fn read_product(mut container: container::Container) -> Result<ProductData> {
         applications,
         master,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn program(id: &str, program_type: Option<&str>) -> ApplicationProgram {
+        ApplicationProgram {
+            id: id.to_string(),
+            program_type: program_type.map(str::to_string),
+            ..ApplicationProgram::default()
+        }
+    }
+
+    /// Issue #126, ABB BE/S16.230.3.2: the `Hardware2Program` that lists
+    /// `A-A0ED-10` also lists the PEI program `A-A0ED-20`, which the
+    /// application then carries; an application of another hardware does not.
+    #[test]
+    fn test_attach_companion_programs_pairs_the_pei_program() {
+        let mut hardware = HardwareCatalog::default();
+        hardware.hardware2program.insert(
+            "M-0002_H-1_HP-1".to_string(),
+            vec![
+                "M-0002_A-A0ED-10".to_string(),
+                "M-0002_A-A0ED-20".to_string(),
+            ],
+        );
+        hardware.hardware2program.insert(
+            "M-0002_H-2_HP-2".to_string(),
+            vec!["M-0002_A-1111-10".to_string()],
+        );
+        let mut apps = vec![
+            program("M-0002_A-1111-10", None),
+            program("M-0002_A-A0ED-10", None),
+            program("M-0002_A-A0ED-20", Some("PeiProgram")),
+        ];
+        attach_companion_programs(&hardware, &mut apps);
+        let ids = |a: &ApplicationProgram| -> Vec<String> {
+            a.companion_programs.iter().map(|c| c.id.clone()).collect()
+        };
+        assert!(ids(&apps[0]).is_empty());
+        assert_eq!(ids(&apps[1]), vec!["M-0002_A-A0ED-20".to_string()]);
+        assert!(
+            ids(&apps[2]).is_empty(),
+            "a PEI program carries no companion"
+        );
+    }
 }

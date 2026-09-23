@@ -17,7 +17,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-use crate::application::{ApplicationProgram, DynamicNode, WhenTest};
+use crate::application::{ApplicationProgram, DynamicNode, ParameterType, WhenTest};
 
 /// How deep `<Module>` instantiations may nest before the walk stops (real
 /// products nest at most one level; the bound only guards a malformed file).
@@ -165,11 +165,18 @@ pub fn evaluate_dynamic(
         }
     }
 
+    let unions = UnionIndex::new(app);
+    let mut shared = SharedUnions::default();
     let mut walk = Walk::default();
     for _ in 0..MAX_ASSIGN_PASSES {
-        walk = Walk::default();
+        walk = Walk {
+            shared: std::mem::take(&mut shared),
+            ..Walk::default()
+        };
         walk.run(app, &values, &app.dynamic, None, 0);
-        let mut changed = false;
+        let next = unions.shared_memory(app, &values, &walk);
+        let mut changed = next.images != walk.shared.images;
+        shared = next;
         for assign in &walk.assigns {
             let instance = walk.instance_id(assign.target_module).to_string();
             let new = match (&assign.value, &assign.source) {
@@ -353,6 +360,165 @@ struct Walk {
     parameters: Vec<ActiveParameter>,
     com_objects: Vec<ActiveComObject>,
     assigns: Vec<ReachedAssign>,
+    /// What the previous pass left in the unions' shared memory.
+    shared: SharedUnions,
+}
+
+/// The shared memory of every union a pass reached a member of, and the values
+/// the members it did not reach read from it.
+///
+/// Union members overlay one memory region, so in ETS a member that is not
+/// shown has whatever value the shown member left in those bits, not its own
+/// default. A `<choose>` on such a member branches on that value (the ABB
+/// BE/S16's template channel: `Par_Operation_11` defaults to 3, but its union
+/// sibling `Par_Operation_2` is the one shown, with 2, so the `when test="3"`
+/// block with `Par_Operation_5` is not shown and ETS writes `Par_Operation_4`).
+#[derive(Debug, Default)]
+struct SharedUnions {
+    /// Keyed by (module instance id or `""`, union index): the region's bits.
+    images: BTreeMap<(String, usize), Vec<u8>>,
+    /// Keyed by (module instance id or `""`, app-relative `ParameterRef` id):
+    /// the value an unreached member reads.
+    values: HashMap<(String, String), String>,
+}
+
+/// Where each union member parameter sits: parameter id to (union index,
+/// member bit position relative to the union, member width in bits, signed).
+struct UnionIndex {
+    members: HashMap<String, (usize, u32, u32, bool)>,
+}
+
+impl UnionIndex {
+    fn new(app: &ApplicationProgram) -> Self {
+        let mut members = HashMap::new();
+        for (ui, union) in app.unions.iter().enumerate() {
+            for member in &union.members {
+                let Some((bits, signed)) = integer_width(app, &member.parameter) else {
+                    continue;
+                };
+                let pos =
+                    member.offset.unwrap_or(0) * 8 + u32::from(member.bit_offset.unwrap_or(0));
+                members.insert(member.parameter.clone(), (ui, pos, bits, signed));
+            }
+        }
+        Self { members }
+    }
+
+    /// Lays the reached members' values into their unions' memory, then reads
+    /// every other ref of a member of those unions back out of it.
+    fn shared_memory(
+        &self,
+        app: &ApplicationProgram,
+        values: &HashMap<(String, String), String>,
+        walk: &Walk,
+    ) -> SharedUnions {
+        let mut out = SharedUnions::default();
+        if self.members.is_empty() {
+            return out;
+        }
+        let mut reached: HashSet<(String, String)> = HashSet::new();
+        for p in &walk.parameters {
+            let instance = walk.instance_id(p.module).to_string();
+            reached.insert((instance.clone(), p.param_ref_id.clone()));
+            let Some(&(ui, pos, bits, _)) =
+                parameter_id(app, &p.param_ref_id).and_then(|id| self.members.get(id))
+            else {
+                continue;
+            };
+            let Some(v) = value_of(
+                app,
+                values,
+                &instance,
+                walk.module_args(p.module),
+                &p.param_ref_id,
+            )
+            .and_then(|v| v.trim().parse::<i64>().ok()) else {
+                continue;
+            };
+            let size = app.unions[ui].size_bits.unwrap_or(0).max(pos + bits);
+            let image = out
+                .images
+                .entry((instance, ui))
+                .or_insert_with(|| vec![0; size.div_ceil(8) as usize]);
+            put_bits(image, pos, bits, v as u64);
+        }
+        let mut by_union: HashMap<usize, Vec<(&String, &Vec<u8>)>> = HashMap::new();
+        for ((instance, ui), image) in &out.images {
+            by_union.entry(*ui).or_default().push((instance, image));
+        }
+        let prefix = format!("{}_", app.id);
+        let mut read = HashMap::new();
+        for pref in app.parameter_refs.values() {
+            let Some(&(ui, pos, bits, signed)) = self.members.get(&pref.ref_id) else {
+                continue;
+            };
+            let (Some(rel), Some(images)) = (pref.id.strip_prefix(&prefix), by_union.get(&ui))
+            else {
+                continue;
+            };
+            for (instance, image) in images {
+                let key = ((*instance).clone(), rel.to_string());
+                if reached.contains(&key) {
+                    continue;
+                }
+                let raw = get_bits(image, pos, bits);
+                let v = if signed && bits > 0 && bits < 64 && raw >> (bits - 1) & 1 == 1 {
+                    (raw as i64) - (1i64 << bits)
+                } else {
+                    raw as i64
+                };
+                read.insert(key, v.to_string());
+            }
+        }
+        out.values = read;
+        out
+    }
+}
+
+/// The width and signedness of an integer or enumeration parameter, `None` for
+/// any other type (text, float, …), whose shared bits are not read back.
+fn integer_width(app: &ApplicationProgram, parameter: &str) -> Option<(u32, bool)> {
+    let ptype = app.parameters.get(parameter)?.parameter_type.as_deref()?;
+    match &app.parameter_types.get(ptype)?.kind {
+        ParameterType::Int {
+            size_bits, signed, ..
+        } => Some(((*size_bits)?, *signed)),
+        ParameterType::Enum { size_bits, values } => {
+            // A `BinaryValue` enumeration's memory is not its `Value`.
+            if values.iter().any(|v| v.binary_value.is_some()) {
+                return None;
+            }
+            Some(((*size_bits)?, false))
+        }
+        _ => None,
+    }
+    .filter(|(bits, _)| (1..=64).contains(bits))
+}
+
+/// Writes the low `bits` of `value` MSB-first at bit `pos` of `image`.
+fn put_bits(image: &mut [u8], pos: u32, bits: u32, value: u64) {
+    for i in 0..bits {
+        let bit = (value >> (bits - 1 - i)) & 1;
+        let at = (pos + i) as usize;
+        let Some(byte) = image.get_mut(at / 8) else {
+            return;
+        };
+        let mask = 0x80u8 >> (at % 8);
+        if bit == 1 {
+            *byte |= mask;
+        } else {
+            *byte &= !mask;
+        }
+    }
+}
+
+/// Reads `bits` MSB-first from bit `pos` of `image` (missing bits read 0).
+fn get_bits(image: &[u8], pos: u32, bits: u32) -> u64 {
+    (0..bits).fold(0u64, |acc, i| {
+        let at = (pos + i) as usize;
+        let bit = image.get(at / 8).map_or(0, |b| (b >> (7 - at % 8)) & 1);
+        (acc << 1) | u64::from(bit)
+    })
 }
 
 impl Walk {
@@ -411,14 +577,16 @@ impl Walk {
                     whens,
                 } => {
                     let scope = self.scope(module, param_ref_id);
-                    let value = value_of(
-                        app,
-                        values,
-                        self.instance_id(scope),
-                        self.module_args(scope),
-                        param_ref_id,
-                    )
-                    .and_then(|v| v.trim().parse::<f64>().ok());
+                    let instance = self.instance_id(scope);
+                    let key = (instance.to_string(), param_ref_id.clone());
+                    let shared = (!values.contains_key(&key))
+                        .then(|| self.shared.values.get(&key).cloned())
+                        .flatten();
+                    let value = shared
+                        .or_else(|| {
+                            value_of(app, values, instance, self.module_args(scope), param_ref_id)
+                        })
+                        .and_then(|v| v.trim().parse::<f64>().ok());
                     let hits: Vec<_> = whens
                         .iter()
                         .filter(|w| when_matches(&w.test, value))

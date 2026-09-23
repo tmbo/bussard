@@ -72,7 +72,10 @@ use bussard_mgmt::load::{
     read_memory, read_table_reference, write_load_control, write_property,
 };
 use bussard_mgmt::tables::OT_APPLICATION_PROGRAM;
-use bussard_prod::application::{ApplicationProgram, LoadOp, LoadProcedure, SegmentKind};
+use bussard_prod::application::{
+    ApplicationProgram, CodeSegment, LoadOp, LoadProcedure, SegmentKind,
+};
+use std::collections::HashMap;
 
 /// A step of a validated flash, ready to render for the pre-flight display and
 /// to execute in order. Each corresponds to one supported [`LoadOp`].
@@ -1736,6 +1739,37 @@ pub fn plan_flash(
     template_ops: Option<&[LoadOp]>,
     table_images: &BTreeMap<u32, Vec<u8>>,
 ) -> std::result::Result<FlashPlan, PlanError> {
+    plan_flash_with_object_flags(
+        app,
+        device,
+        device_mask,
+        overrides,
+        base_offsets,
+        template_ops,
+        table_images,
+        &BTreeMap::new(),
+    )
+}
+
+/// [`plan_flash`] with the project's flags of the linked com-objects, keyed by
+/// object number.
+///
+/// Only a System 7 plan reads them (the CONFIG octet of a linked descriptor).
+/// They take precedence over the flags decoded from the System B group-object
+/// table image, which cannot carry object 0: that table is 1-based, word 0 is
+/// its count (1.1.1, 2116REG: object 0 is linked with the project's T W R C,
+/// ETS wrote `5f`, the ref's own T W C gave `57`).
+#[allow(clippy::too_many_arguments)] // plan_flash's inputs plus one map.
+pub fn plan_flash_with_object_flags(
+    app: &ApplicationProgram,
+    device: &str,
+    device_mask: u16,
+    overrides: &BTreeMap<String, String>,
+    base_offsets: &BTreeMap<String, u32>,
+    template_ops: Option<&[LoadOp]>,
+    table_images: &BTreeMap<u32, Vec<u8>>,
+    object_flags: &BTreeMap<u16, bussard_model::Flags>,
+) -> std::result::Result<FlashPlan, PlanError> {
     // 1. Family gate. System B and System 7 (mask 0705/0701, issue #49) are the
     //    two supported families; every other mask refuses cleanly. System 7 is
     //    dispatched to its own lowering below (after the shared mask-match check).
@@ -1767,7 +1801,8 @@ pub fn plan_flash(
     // obj0/PID78 preflight all differ from System B, so it is a separate path
     // rather than a branchy overload of the System B lowering below.
     if profile.is_system_7() {
-        let tables = Sys7PlanTables::from_system_b(table_images);
+        let mut tables = Sys7PlanTables::from_system_b(table_images);
+        tables.linked_flags.extend(object_flags);
         return plan_flash_sys7(
             app,
             device_mask,
@@ -1809,6 +1844,22 @@ pub fn plan_flash(
     // incomplete (no application number/version), in which case a placeholder
     // PID-13 write is left as-is. Computed once, applied in the WriteProp branch.
     let app_id_value: Option<[u8; 5]> = app_program_version_value(app);
+    // A companion program (a PeiProgram, see
+    // `ApplicationProgram::companion_programs`) owns the objects its segments
+    // load into; its own id replaces the PID-13 placeholder on those (ETS wrote
+    // `0002A0ED20` to object 5 of the ABB BE/S16, `0002A0ED10` to object 4).
+    let companion_ids: BTreeMap<u32, [u8; 5]> = app
+        .companion_programs
+        .iter()
+        .filter_map(|c| Some((c, app_program_version_value(c)?)))
+        .flat_map(|(c, id)| {
+            c.code_segments
+                .values()
+                .filter_map(|seg| seg.load_state_machine)
+                .map(move |lsm| (lsm, id))
+        })
+        .collect();
+    let segments = plan_segments(app);
 
     // 4. Validate + lower each op into a FlashStep.
     let mut steps = Vec::new();
@@ -1816,6 +1867,11 @@ pub fn plan_flash(
     // Track the segment id most-recently allocated so a following WriteRelMem
     // resolves to it when its own AppliesTo does not pin one.
     let mut last_rel_segment: Option<String> = None;
+    // The segment each object's allocation bound, so a write naming its object
+    // (`ObjIdx`) streams that object's segment even when another object was
+    // allocated in between (the ABB PEI program: object 5 is allocated before
+    // object 4, and written after it was allocated).
+    let mut rel_segment_by_object: BTreeMap<u32, String> = BTreeMap::new();
     // Track the image most-recently streamed into device memory so a following
     // LoadImageProp with no matching per-object image checks the device's MCB CRC
     // against the very bytes we wrote.
@@ -1937,7 +1993,7 @@ pub fn plan_flash(
                 // it with the application's relative segments in document-ish
                 // order using the applies_to hint and remaining unallocated
                 // segments.
-                let seg = resolve_rel_segment(app, *lsm_idx, applies_to.as_deref(), &images);
+                let seg = resolve_rel_segment(&segments, *lsm_idx, applies_to.as_deref(), &images);
                 let size = size
                     .or_else(|| seg.as_ref().and_then(|(_, s)| *s))
                     .unwrap_or(0);
@@ -1958,8 +2014,11 @@ pub fn plan_flash(
                 let prev_rel_segment = last_rel_segment.clone();
                 if let Some((seg_id, _)) = &seg {
                     last_rel_segment = Some(seg_id.clone());
+                    if let Some(idx) = lsm_idx {
+                        rel_segment_by_object.insert(*idx, seg_id.clone());
+                    }
                     // Record the code image so total-byte accounting is correct.
-                    if let Some(data) = app.code_segments.get(seg_id).and_then(|s| s.data.clone()) {
+                    if let Some(data) = segments.get(seg_id).and_then(|s| s.data.clone()) {
                         images.entry(seg_id.clone()).or_insert(data);
                     }
                 }
@@ -2082,10 +2141,13 @@ pub fn plan_flash(
                 obj_idx,
                 ..
             } => {
+                let current = obj_idx
+                    .and_then(|idx| rel_segment_by_object.get(&idx))
+                    .or(last_rel_segment.as_ref());
                 let (segment_id, kind, bytes) = resolve_write_image(
-                    app,
+                    &segments,
                     applies_to.as_deref(),
-                    last_rel_segment.as_deref(),
+                    current.map(String::as_str),
                     &param_images,
                 )
                 .map_err(|reason| PlanError::UnresolvableImage {
@@ -2190,8 +2252,11 @@ pub fn plan_flash(
                 // the same bytes ETS does. Only the all-zero placeholder of the
                 // right width is substituted — a template that already carries a
                 // concrete value is written verbatim.
-                let inline_data =
-                    maybe_substitute_app_id(prop_id, inline_data.as_deref(), app_id_value.as_ref());
+                let inline_data = maybe_substitute_app_id(
+                    prop_id,
+                    inline_data.as_deref(),
+                    companion_ids.get(&obj_idx).or(app_id_value.as_ref()),
+                );
 
                 match &inline_data {
                     Some(value) if !value.is_empty() => {
@@ -2743,7 +2808,22 @@ fn plan_flash_sys7(
     // device's parameter values make visible, as in ETS (issue #117).
     let config = bussard_prod::dynamic::evaluate_dynamic(app, overrides);
     let default_flags = sys7_object_defaults(app, &config);
-    apply_sys7_group_object_links(&steps, &mut images, &linked, linked_flags, &default_flags);
+    // Module instances shift numbers past the declared ones: count those too.
+    let last_object = app
+        .resolved_com_objects()
+        .iter()
+        .map(|c| c.number())
+        .chain(default_flags.keys().copied())
+        .chain(linked.iter().copied())
+        .max();
+    apply_sys7_group_object_links(
+        &steps,
+        &mut images,
+        &linked,
+        linked_flags,
+        &default_flags,
+        last_object,
+    );
 
     Ok(FlashPlan {
         identity: AppIdentity {
@@ -2884,6 +2964,13 @@ fn sys7_linked_asaps(assoc_image: &[u8]) -> BTreeSet<u16> {
 /// An ASAP whose default carries a TYPE octet (the visible ref's object size)
 /// takes that too.
 ///
+/// `last_object` is the highest com-object `Number` the application declares:
+/// ETS rewrites the descriptors up to it (numbering gaps included) and leaves
+/// the template slots past it alone (1.1.1, 2116REG: the template declares 129
+/// descriptors, the application objects up to 126, and ETS keeps the `17` of
+/// descriptors 127 and 128 while it clears C on the gaps 6, 7, 14, …). `None`
+/// rewrites every descriptor.
+///
 /// Captures: 1.1.31 (no links: template `db` became `4b`, `17` became `13`),
 /// 1.1.46 (four links: `df` became `4f`/`17`/`47`, the project's T R C / W C /
 /// T C), 1.1.1 (`47` became `5f`); objects no `<when>` branch shows keep the
@@ -2902,6 +2989,7 @@ fn apply_sys7_group_object_links(
     linked: &BTreeSet<u16>,
     linked_flags: &BTreeMap<u16, bussard_model::Flags>,
     default_flags: &BTreeMap<u16, Sys7ObjectDefault>,
+    last_object: Option<u16>,
 ) {
     let ram: Vec<(u32, u32)> = steps
         .iter()
@@ -2958,6 +3046,9 @@ fn apply_sys7_group_object_links(
         use bussard_model::Flags;
         for (asap, d) in bytes[3..3 + 4 * count].chunks_exact_mut(4).enumerate() {
             let asap = asap as u16;
+            if last_object.is_some_and(|last| asap > last) {
+                break;
+            }
             let default = default_flags.get(&asap);
             if linked.contains(&asap) {
                 match linked_flags
@@ -3280,11 +3371,36 @@ fn decode_hex(s: &str) -> Option<Vec<u8>> {
 /// no splicing: the blocks are concatenated by ascending `MergeId`, or the
 /// single richest block is used — preserving the previous single-object
 /// behaviour exactly. This keeps the `virtual-device-flash` CI path green.
+/// The code segments a System B plan streams from: the application's own and
+/// those of its companion programs (a PeiProgram's segment on object 5). A
+/// companion never shadows a segment id of the application.
+fn plan_segments(app: &ApplicationProgram) -> std::borrow::Cow<'_, HashMap<String, CodeSegment>> {
+    if app.companion_programs.is_empty() {
+        return std::borrow::Cow::Borrowed(&app.code_segments);
+    }
+    let mut all = app.code_segments.clone();
+    for companion in &app.companion_programs {
+        for (id, seg) in &companion.code_segments {
+            all.entry(id.clone()).or_insert_with(|| seg.clone());
+        }
+    }
+    std::borrow::Cow::Owned(all)
+}
+
 fn assemble_ops(app: &ApplicationProgram, template_ops: Option<&[LoadOp]>) -> (Vec<LoadOp>, bool) {
     let non_empty: Vec<&LoadProcedure> = app
         .load_procedures
         .iter()
         .filter(|p| !p.ops.is_empty())
+        .collect();
+    // A companion program's merged blocks join the application's under the
+    // same MergeId, after them (the ABB PEI program fills MergeId 3 and 5 of
+    // the 07B0 template and adds object 5's LoadImageProp to MergeId 7).
+    let companion_blocks: Vec<&LoadProcedure> = app
+        .companion_programs
+        .iter()
+        .flat_map(|c| c.load_procedures.iter())
+        .filter(|p| !p.ops.is_empty() && p.merge_id.is_some())
         .collect();
     if non_empty.is_empty() {
         return (Vec::new(), false);
@@ -3299,7 +3415,7 @@ fn assemble_ops(app: &ApplicationProgram, template_ops: Option<&[LoadOp]>) -> (V
             // App blocks keyed by parsed MergeId. A block whose id is not numeric
             // cannot match a numeric `<LdCtrlMerge MergeId=N>` and is ignored.
             let mut blocks: BTreeMap<u32, Vec<LoadOp>> = BTreeMap::new();
-            for p in &non_empty {
+            for p in non_empty.iter().chain(companion_blocks.iter()) {
                 if let Some(id) = p.merge_id.as_deref().and_then(|m| m.parse::<u32>().ok()) {
                     blocks.entry(id).or_default().extend(p.ops.clone());
                 }
@@ -3382,13 +3498,12 @@ fn assemble_ops(app: &ApplicationProgram, template_ops: Option<&[LoadOp]>) -> (V
 /// historical document-order fallback, so a single-segment app and the
 /// multi-segment fixtures whose segments share one LSM lower exactly as before.
 fn resolve_rel_segment(
-    app: &ApplicationProgram,
+    segments: &HashMap<String, CodeSegment>,
     lsm_idx: Option<u32>,
     _applies_to: Option<&str>,
     already: &BTreeMap<String, Vec<u8>>,
 ) -> Option<(String, Option<u32>)> {
-    let mut segs: Vec<_> = app
-        .code_segments
+    let mut segs: Vec<_> = segments
         .values()
         .filter(|s| s.kind == SegmentKind::Relative)
         .collect();
@@ -3428,7 +3543,7 @@ fn resolve_rel_segment(
 /// code `<Data>` — either way the segment's own bytes, so a following
 /// `LoadImageProp` MCB check runs over a real image.
 fn resolve_write_image(
-    app: &ApplicationProgram,
+    segments: &HashMap<String, CodeSegment>,
     applies_to: Option<&str>,
     current_segment: Option<&str>,
     param_images: &BTreeMap<String, Vec<u8>>,
@@ -3438,8 +3553,7 @@ fn resolve_write_image(
         .or_else(|| {
             // No allocation preceded this write: fall back to the first relative
             // segment that has data or a parameter image.
-            let mut segs: Vec<_> = app
-                .code_segments
+            let mut segs: Vec<_> = segments
                 .values()
                 .filter(|s| s.kind == SegmentKind::Relative)
                 .collect();
@@ -3475,15 +3589,14 @@ fn resolve_write_image(
         // `full,par` write (or a pure `par` write with no params) still owns the
         // segment's code `<Data>`. Fall back to that so the streamed image is never
         // spuriously empty.
-        if let Some(data) = app.code_segments.get(&seg_id).and_then(|s| s.data.clone()) {
+        if let Some(data) = segments.get(&seg_id).and_then(|s| s.data.clone()) {
             return Ok((seg_id, ImageKind::Code, data));
         }
         return Ok((seg_id, ImageKind::Parameters, Vec::new()));
     }
 
     // Code image: the segment's `<Data>`.
-    let bytes = app
-        .code_segments
+    let bytes = segments
         .get(&seg_id)
         .and_then(|s| s.data.clone())
         .ok_or_else(|| format!("segment {seg_id} carries no code image (<Data>)"))?;
@@ -5660,6 +5773,7 @@ mod tests {
             &BTreeSet::new(),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            None,
         );
         assert_eq!(
             images[&seg_id],
@@ -5679,6 +5793,7 @@ mod tests {
             &linked,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            None,
         );
         assert_eq!(images[&seg_id][5], 0x13);
         assert_eq!(images[&seg_id][9], 0x4F);
@@ -5697,9 +5812,16 @@ mod tests {
         let mut tmpl = template.clone();
         tmpl[9] = 0xDF;
         let mut images_df = BTreeMap::from([(seg_id.clone(), tmpl)]);
-        apply_sys7_group_object_links(&steps, &mut images_df, &linked, &flags, &BTreeMap::new());
+        apply_sys7_group_object_links(
+            &steps,
+            &mut images_df,
+            &linked,
+            &flags,
+            &BTreeMap::new(),
+            None,
+        );
         assert_eq!(images_df[&seg_id][9], 0x4F);
-        apply_sys7_group_object_links(&steps, &mut images, &linked, &flags, &BTreeMap::new());
+        apply_sys7_group_object_links(&steps, &mut images, &linked, &flags, &BTreeMap::new(), None);
         assert_eq!(images[&seg_id][9], 0x4F);
 
         // A segment that does not look like the descriptor table is untouched.
@@ -5711,8 +5833,69 @@ mod tests {
             &BTreeSet::from([1]),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            None,
         );
         assert_eq!(images[&seg_id], odd);
+    }
+
+    /// Issue #126, 1.1.1 (2116REG): object 0 is linked and takes the
+    /// project's T W R C (`47` became `5f`), and the template slots past the
+    /// highest declared object keep their `17` (ETS only rewrites descriptors up
+    /// to the last com-object `Number`).
+    #[test]
+    fn test_apply_sys7_group_object_links_object_zero_and_trailing_slots() {
+        use bussard_model::Flags;
+        let seg_id = "M-0004_A-7066-11-94AD-O000A_AS-43FE".to_string();
+        let steps = vec![
+            FlashStep::Sys7AbsSegment {
+                lsm: 3,
+                address: 0x0700,
+                size: 450,
+                mem_type: 2,
+                seg_flags: 0xF2,
+                checksum_ctrl: 0x00,
+                image: None,
+            },
+            FlashStep::Sys7AbsSegment {
+                lsm: 3,
+                address: 0x43FE,
+                size: 883,
+                mem_type: 3,
+                seg_flags: 0xF2,
+                checksum_ctrl: 0x80,
+                image: Some(ImageRef {
+                    segment_id: seg_id.clone(),
+                    kind: ImageKind::Code,
+                    len: 15,
+                }),
+            },
+        ];
+        // The 2116REG template head: [CNT][RAM flags 0x0835], descriptor 0
+        // `0702 47 00`, then two `17` slots standing in for 127 and 128.
+        let template = vec![
+            0x03, 0x08, 0x35, 0x07, 0x02, 0x47, 0x00, 0x08, 0x18, 0x17, 0x00, 0x08, 0x19, 0x17,
+            0x00,
+        ];
+        let mut images = BTreeMap::from([(seg_id.clone(), template)]);
+        let flags = BTreeMap::from([(
+            0u16,
+            Flags::COMMUNICATION | Flags::READ | Flags::WRITE | Flags::TRANSMIT,
+        )]);
+        apply_sys7_group_object_links(
+            &steps,
+            &mut images,
+            &BTreeSet::from([0]),
+            &flags,
+            &BTreeMap::new(),
+            Some(0),
+        );
+        assert_eq!(
+            images[&seg_id],
+            vec![
+                0x03, 0x08, 0x35, 0x07, 0x02, 0x5F, 0x00, 0x08, 0x18, 0x17, 0x00, 0x08, 0x19, 0x17,
+                0x00
+            ]
+        );
     }
 
     /// Issue #117: the unlinked System 7 descriptors take the ComObjectRef the
@@ -5797,6 +5980,7 @@ mod tests {
                 &BTreeSet::new(),
                 &BTreeMap::new(),
                 &defaults,
+                None,
             );
             images.remove(&seg_id).unwrap_or_default()
         };
