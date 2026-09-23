@@ -265,7 +265,7 @@ async fn swap_flow(
         }
         eprintln!("warning: {target} still answers (mask {mask:04X}); --force given, continuing");
     } else {
-        println!("{target} does not answer — consistent with a failed or removed device");
+        println!("{target} does not answer, consistent with a failed or removed device");
     }
 
     // 2. The replacement, via its programming button.
@@ -287,12 +287,12 @@ async fn swap_flow(
             );
             return Ok(None);
         }
-        eprintln!("\nwarning: {problem} — --force given, continuing");
+        eprintln!("\nwarning: {problem}; --force given, continuing");
     }
 
     // 4. One confirmation for the whole run.
     if !confirm(target, current, gateway, yes)? {
-        eprintln!("aborted — nothing was written.");
+        eprintln!("aborted; nothing was written.");
         return Ok(None);
     }
 
