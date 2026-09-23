@@ -82,7 +82,7 @@ fn from_keyring(target: IndividualAddress, path: &Path) -> anyhow::Result<Key16>
     let xml = std::fs::read_to_string(path)
         .with_context(|| format!("reading keyring {}", path.display()))?;
     let keyring = bussard_project::parse_keyring(&xml, &password)
-        .with_context(|| format!("parsing keyring {}", path.display()))?;
+        .with_context(|| format!("loading keyring {}", path.display()))?;
     keyring.tool_key(target).cloned().ok_or_else(|| {
         anyhow!(
             "the keyring {} has no tool key for {target}: it lists {} device(s). A device is \
