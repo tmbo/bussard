@@ -16,6 +16,7 @@ mod doc_cmd;
 mod export_cmd;
 mod export_groups_cmd;
 mod flash_cmd;
+mod flash_dump;
 mod ha_config_cmd;
 mod history_cmd;
 mod import_bundle;
@@ -497,6 +498,14 @@ enum Command {
         /// instead of the human report.
         #[arg(long)]
         json: bool,
+        /// Plan offline and stop: no gateway is resolved and no connection is
+        /// opened. The plan is checked against the application's own mask.
+        #[arg(long)]
+        dry_run: bool,
+        /// With `--dry-run`, write `plan.json` and the exact memory images the
+        /// flash would stream (one `.bin` each, plus the table images) into DIR.
+        #[arg(long, value_name = "DIR", requires = "dry_run")]
+        dump_images: Option<PathBuf>,
     },
     /// Read a device's live tables and show what `apply` would change, or (with
     /// `--line`) plan every model device on a whole line.
@@ -1402,6 +1411,8 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             routing,
             skip_address_check,
             json,
+            dry_run,
+            dump_images,
         } => flash_cmd::run(
             &address,
             &product,
@@ -1422,7 +1433,11 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 routing,
                 skip_address_check,
             },
-            flash_cmd::FlashOutput { json, verbose },
+            flash_cmd::FlashOutput {
+                json,
+                verbose,
+                dry_run: dry_run.then_some(flash_cmd::DryRun { dump_images }),
+            },
         ),
         Command::Plan {
             address,

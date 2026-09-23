@@ -33,6 +33,9 @@ anyhow = { workspace = true }
 serde = { workspace = true }
 serde_norway = { workspace = true }
 serde_json = { workspace = true }
+# SHA-256 of the images `flash --dry-run --dump-images` writes (already in the
+# tree via bussard-model / bussard-secure). MIT OR Apache-2.0.
+sha2 = { workspace = true }
 owo-colors = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
