@@ -56,6 +56,13 @@ pub struct DecodedParameters {
     /// The shown parameters whose value differs from the model's, sorted by
     /// key: what a parameter download of the model would change.
     pub differences: Vec<ParamChange>,
+    /// The shown parameters the application owns at runtime (`Access="None"`,
+    /// e.g. a "download flag" ETS writes and the application resets after the
+    /// restart), with the value the device holds. They are part of the image
+    /// a download writes, but what the device holds says nothing about the
+    /// model, so they carry no verdict: never in `non_default` or
+    /// `differences`, and never fed into `values`.
+    pub device_managed: Vec<ParamReading>,
     /// How many of the model's overrides could not be read back.
     pub unknown: usize,
 }
@@ -84,7 +91,7 @@ pub fn decode_parameters(
     let mut device = placements(&values);
     for _ in 0..MAX_PASSES {
         let mut changed = false;
-        for p in device.iter().filter(|p| p.user_value) {
+        for p in device.iter().filter(|p| p.reported(app)) {
             let Some(held) = p.decode(app, current) else {
                 continue;
             };
@@ -100,15 +107,22 @@ pub fn decode_parameters(
     }
 
     let mut non_default = Vec::new();
+    let mut device_managed = Vec::new();
     for p in device.iter().filter(|p| p.user_value) {
         let Some(held) = p.decode(app, current) else {
             continue;
         };
-        if p.default.as_deref() == Some(held.as_str()) {
+        let managed = p.device_managed(app);
+        if !managed && p.default.as_deref() == Some(held.as_str()) {
             continue;
         }
         let ptype = parameter_type(app, p.param);
-        non_default.push(ParamReading {
+        let list = if managed {
+            &mut device_managed
+        } else {
+            &mut non_default
+        };
+        list.push(ParamReading {
             key: p.key.clone(),
             name: display_name(p.param),
             value: render(&held, ptype),
@@ -121,10 +135,12 @@ pub fn decode_parameters(
         });
     }
     non_default.sort_by(|a, b| a.key.cmp(&b.key));
+    device_managed.sort_by(|a, b| a.key.cmp(&b.key));
+    device_managed.dedup_by(|a, b| a.key == b.key);
 
     let mut differences = Vec::new();
     let mut unknown = 0usize;
-    for p in placements(overrides).iter().filter(|p| p.user_value) {
+    for p in placements(overrides).iter().filter(|p| p.reported(app)) {
         let ptype = parameter_type(app, p.param);
         let Some(desired) = p.desired.as_deref() else {
             continue;
@@ -154,6 +170,7 @@ pub fn decode_parameters(
         values,
         non_default,
         differences,
+        device_managed,
         unknown,
     }
 }
@@ -183,6 +200,23 @@ struct Placed<'a> {
 }
 
 impl Placed<'_> {
+    /// Whether the value is the user's and not the application's own
+    /// (see [`DecodedParameters::device_managed`]).
+    fn reported(&self, app: &ApplicationProgram) -> bool {
+        self.user_value && !self.device_managed(app)
+    }
+
+    /// Whether the parameter is runtime-owned: its effective `Access` (the
+    /// ref's, else the parameter's) is `None`.
+    fn device_managed(&self, app: &ApplicationProgram) -> bool {
+        let pref = app
+            .parameter_refs
+            .get(&format!("{}_{}", app.id, split_selector(&self.key).1));
+        pref.and_then(|r| r.access.as_deref())
+            .or(self.param.access.as_deref())
+            .is_some_and(|a| a.trim().eq_ignore_ascii_case("none"))
+    }
+
     /// The value the device holds here, `None` when the segment was not read
     /// or the field lies past what was.
     fn decode(&self, app: &ApplicationProgram, current: &CurrentMemory) -> Option<String> {
@@ -692,7 +726,7 @@ mod tests {
         assert_eq!(
             current["A_RS-1"],
             [
-                12, 9, 5, 0x10, 66, 8, 70, 5, 0x06, 0xD6, 30, 1, 0, 0, 0xAA, 0
+                12, 9, 5, 0x10, 66, 8, 70, 5, 0x06, 0xD6, 30, 1, 0, 1, 0xAA, 0
             ]
         );
         let decoded = decode_parameters(&app, &model, &BTreeMap::new(), &current);
@@ -779,6 +813,25 @@ mod tests {
                 .map(String::as_str),
             Some("9")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_decode_parameters_reports_access_none_without_verdict() -> TestResult {
+        let app = app()?;
+        let model = map(&[("P-1_R-1", "1"), ("P-10_R-10", "12")]);
+        let mut current = device(&app, &model)?;
+        // The download writes the flag's 1; the application resets it.
+        let segment = current.get_mut("A_RS-1").ok_or("no segment")?;
+        assert_eq!(segment[13], 1);
+        segment[13] = 0;
+        let decoded = decode_parameters(&app, &model, &BTreeMap::new(), &current);
+        assert!(decoded.differences.is_empty(), "{:?}", decoded.differences);
+        assert_eq!(keys(&decoded.non_default), ["P-10_R-10"]);
+        assert_eq!(keys(&decoded.device_managed), ["P-8_R-8"]);
+        assert_eq!(decoded.device_managed[0].value, "0");
+        // The device's reset value is not taken for a user value.
+        assert!(!decoded.values.contains_key("P-8_R-8"));
         Ok(())
     }
 
