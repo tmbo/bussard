@@ -578,6 +578,7 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
     /// an authorize outcome but a dead session.
     pub async fn authorize(&mut self, key: u32) -> Result<AuthorizeOutcome> {
         let payload = crate::apci::encode_authorize_request(key);
+        let exchanges_before = self.numbered_exchanges;
         let (resp_apci, data) = match self
             .request(crate::apci::A_AUTHORIZE_REQUEST, &payload)
             .await
@@ -591,6 +592,14 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
                 kind: SilenceKind::NoResponse,
                 ..
             }) => {
+                // The response timeout marked the connection closed. If the
+                // device T_ACKed the request (it counts as an exchange), the
+                // peer is alive and the sequence numbers are consistent: re-open
+                // the connection, or the next request fails with `Disconnected`
+                // on a device that merely lacks authorize.
+                if self.numbered_exchanges > exchanges_before {
+                    self.closed = false;
+                }
                 return Ok(AuthorizeOutcome::Unsupported {
                     detail: "device did not answer A_Authorize_Request".to_string(),
                 });
@@ -1742,6 +1751,31 @@ mod tests {
             matches!(outcome, AuthorizeOutcome::Unsupported { .. }),
             "got {outcome:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_authorize_silent_device_keeps_the_connection_usable() -> Result<()> {
+        // The device T_ACKs the authorize request but never answers it (it does
+        // not implement authorize). The outcome is Unsupported AND the connection
+        // must stay open: before the fix the response timeout left it marked
+        // closed, so the very next request failed with `Disconnected` without
+        // ever reaching the wire.
+        let inbox = vec![control_from_dev(tpci::t_ack(0))];
+        let mut bus = ScriptedBus::new(inbox);
+        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast()).await?;
+        let outcome = l4.authorize(crate::apci::FREE_ACCESS_KEY).await?;
+        assert!(
+            matches!(outcome, AuthorizeOutcome::Unsupported { .. }),
+            "got {outcome:?}"
+        );
+        // The script is exhausted, so the next request times out on the wire;
+        // what matters is that it is *sent* rather than refused as Disconnected.
+        let err = l4.send_data(crate::apci::A_AUTHORIZE_REQUEST, &[]).await;
+        assert!(
+            !matches!(err, Err(MgmtError::Disconnected { .. })),
+            "a device without authorize must leave the connection usable, got {err:?}"
+        );
+        Ok(())
     }
 
     // --- KNX Data Secure seam (issue #71, spec §6) ---
