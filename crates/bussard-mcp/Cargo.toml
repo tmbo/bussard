@@ -16,6 +16,11 @@ bussard-transport = { workspace = true }
 bussard-monitor = { workspace = true }
 bussard-bus = { workspace = true }
 bussard-mgmt = { workspace = true }
+# The table plan / backup / write flow behind the programming tier (issue #118),
+# shared with `bussard plan` and `bussard apply`.
+bussard-download = { workspace = true }
+# SHA-256 for the programming tier's plan digest. MIT OR Apache-2.0.
+sha2 = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }

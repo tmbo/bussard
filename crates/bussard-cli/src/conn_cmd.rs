@@ -8,11 +8,9 @@
 
 use std::net::{Ipv4Addr, SocketAddrV4, ToSocketAddrs};
 use std::path::Path;
-use std::time::Duration;
 
 use anyhow::{Context, anyhow};
-use bussard_bus::{Bus, BusHandle, ops};
-use bussard_mgmt::{AddressProbe, Timeouts, probe_own_address};
+use bussard_bus::{Bus, BusHandle};
 use bussard_model::IndividualAddress;
 use bussard_model::Model;
 use bussard_model::schema::Transport as ModelTransport;
@@ -31,30 +29,10 @@ pub struct ConnOverrides {
     pub skip_address_check: bool,
 }
 
-/// Environment variable that overrides the per-attempt source-address probe
-/// timeout in milliseconds. Set by the integration tests to keep the mock runs
-/// fast; unset in normal use, where [`bussard_mgmt::PROBE_TIMEOUT`] applies.
-pub const ADDRESS_PROBE_MS_ENV: &str = "BUSSARD_ADDRESS_PROBE_MS";
-
-/// The source-address probe budget, honouring [`ADDRESS_PROBE_MS_ENV`] when set.
-fn probe_timeouts() -> Timeouts {
-    match std::env::var(ADDRESS_PROBE_MS_ENV)
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-    {
-        Some(ms) => Timeouts {
-            ack_timeout: Duration::from_millis(ms),
-            max_repetitions: 0,
-            response_timeout: Duration::from_millis(ms),
-        },
-        None => Timeouts::probe(),
-    }
-}
-
 /// The source individual address for a **connection-oriented** device command,
 /// checked against the bus first.
 ///
-/// Resolves the source exactly as [`ops::group_source`] does (the tunnel-assigned
+/// Resolves the source exactly as [`bussard_bus::ops::group_source`] does (the tunnel-assigned
 /// individual address, or the `0.0.255` fallback on routing), then — unless
 /// `--skip-address-check` was passed — probes the bus for a device answering at
 /// that very address and refuses to continue if one does.
@@ -74,28 +52,9 @@ pub async fn checked_source(
     handle: &BusHandle,
     overrides: &ConnOverrides,
 ) -> anyhow::Result<IndividualAddress> {
-    let source = ops::group_source(handle);
-    if overrides.skip_address_check {
-        tracing::debug!(%source, "source-address check skipped (--skip-address-check)");
-        return Ok(source);
-    }
-    let probe = probe_own_address(handle, source, probe_timeouts())
-        .await
-        .with_context(|| {
-            format!("probing whether a device answers at our source address {source}")
-        })?;
-    match probe {
-        AddressProbe::Free => {
-            tracing::debug!(%source, "source-address check passed: no device answers there");
-            Ok(source)
-        }
-        AddressProbe::Occupied { mask } => Err(anyhow!(
-            "refusing to continue: a device on the bus (mask {mask:04X}) already answers at \
-             {source}, the individual address this connection would use as its source. Sharing a \
-             source address with a live device can silently corrupt device downloads. Fix the \
-             gateway's tunnel address assignment, or pass --skip-address-check if you are sure."
-        )),
-    }
+    // The probe and its refusal live in `bussard_mgmt` so the MCP programming
+    // tier refuses on the same evidence.
+    Ok(bussard_mgmt::checked_source(handle, overrides.skip_address_check).await?)
 }
 
 /// [`checked_source`], closing `handle` before returning an error.
@@ -311,78 +270,32 @@ pub fn resolve_config(
     })
 }
 
-/// Environment opt-in that permits a write against a **non-loopback** gateway.
-///
-/// A write command aimed at a real (non-loopback) gateway refuses to run unless
-/// the operator opts in, either by setting this variable to `1` or by passing
-/// the `--allow-remote-gateway` flag. This is the safety envelope that stops a
-/// scripted or fat-fingered command from silently mutating the real house
-/// (issue #74). The local simulator and the test suite use loopback gateways,
-/// which are exempt.
-pub const ALLOW_REAL_GATEWAY_ENV: &str = "BUSSARD_ALLOW_REAL_GATEWAY";
-
-/// Renders the resolved gateway of a [`ConnectionConfig`] for a confirmation
-/// line, e.g. `192.0.2.10:3671` for a tunnel or `multicast 224.0.23.12:3671`
-/// for routing.
-pub fn gateway_display(config: &ConnectionConfig) -> String {
-    match (&config.transport, config.gateway) {
-        (TransportKind::Tunnel, Some(gw)) => gw.to_string(),
-        (TransportKind::Routing, _) => format!("multicast {}", config.multicast),
-        // A tunnel with no gateway cannot be constructed by `resolve_config`,
-        // but render something honest rather than panicking.
-        (TransportKind::Tunnel, None) => "<no gateway>".to_string(),
-    }
-}
-
-/// Returns `true` if the resolved gateway is a loopback endpoint (127.0.0.0/8 or
-/// `::1`). Loopback is exempt from the non-loopback write gate because that is
-/// where the local simulator and the test suite live.
-///
-/// Routing (multicast) is treated as **non-loopback**: a multicast write reaches
-/// the real bus, so it must go through the same opt-in gate.
-pub fn is_loopback_gateway(config: &ConnectionConfig) -> bool {
-    match config.transport {
-        TransportKind::Tunnel => config
-            .gateway
-            .map(|gw| gw.ip().is_loopback())
-            .unwrap_or(false),
-        TransportKind::Routing => false,
-    }
-}
+// The write-gate policy (issue #74) lives in `bussard_transport::write_gate` so
+// the MCP programming tier applies the same rule; the CLI re-exports it.
+pub use bussard_transport::write_gate::gateway_display;
 
 /// Enforces the non-loopback write gate (issue #74).
 ///
 /// A write command whose resolved gateway is **not** loopback refuses to run
-/// unless the operator has explicitly opted in — either by passing
+/// unless the operator has explicitly opted in, either by passing
 /// `--allow-remote-gateway` (`allow_flag = true`) or by setting
-/// [`ALLOW_REAL_GATEWAY_ENV`] to `1`. Loopback gateways (the local simulator,
+/// [`bussard_transport::write_gate::ALLOW_REAL_GATEWAY_ENV`] to `1`. Loopback gateways (the local simulator,
 /// the test suite) are always permitted. On refusal this returns a loud error
-/// naming the host and both ways to proceed.
-///
-/// `command` is the verb used in the message (e.g. `"flash"`, `"write"`); this
-/// keeps the guidance specific to the command the operator actually ran.
+/// naming the host and both ways to proceed. The policy itself is
+/// [`bussard_transport::write_gate::check_write_gate`]; this adds the CLI's
+/// stderr warning on an acknowledged opt-in.
 pub fn enforce_write_gate(config: &ConnectionConfig, allow_flag: bool) -> anyhow::Result<()> {
-    if is_loopback_gateway(config) {
-        return Ok(());
+    match bussard_transport::write_gate::check_write_gate(config, allow_flag) {
+        Ok(bussard_transport::write_gate::WriteGate::Loopback) => Ok(()),
+        Ok(bussard_transport::write_gate::WriteGate::OptedIn) => {
+            eprintln!(
+                "warning: writing to non-loopback gateway {} (opt-in acknowledged)",
+                gateway_display(config)
+            );
+            Ok(())
+        }
+        Err(refused) => Err(anyhow!(refused)),
     }
-    let env_ok = std::env::var(ALLOW_REAL_GATEWAY_ENV)
-        .map(|v| v == "1")
-        .unwrap_or(false);
-    if allow_flag || env_ok {
-        eprintln!(
-            "warning: writing to non-loopback gateway {} (opt-in acknowledged)",
-            gateway_display(config)
-        );
-        return Ok(());
-    }
-    Err(anyhow!(
-        "refusing to write to non-loopback gateway {gw}: this looks like a real KNX bus.\n\
-         If you really mean to write to it, re-run with --allow-remote-gateway or set \
-         {env}=1.\n\
-         (Loopback gateways such as 127.0.0.1 — the local simulator — are always allowed.)",
-        gw = gateway_display(config),
-        env = ALLOW_REAL_GATEWAY_ENV,
-    ))
 }
 
 /// Parses `host[:port]`, defaulting the port to the KNXnet/IP default, and
@@ -409,6 +322,7 @@ fn parse_socket(s: &str) -> anyhow::Result<SocketAddrV4> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bussard_transport::write_gate::{ALLOW_REAL_GATEWAY_ENV, is_loopback_gateway};
 
     /// Builds a tunnel [`ConnectionConfig`] pointed at `host` for gate tests.
     fn tunnel_to(host: &str) -> ConnectionConfig {

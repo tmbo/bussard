@@ -71,6 +71,89 @@ pub enum AddressProbe {
 /// produces.
 const MAX_INBOUND_APDUS: usize = 4;
 
+/// Environment variable that overrides the per-attempt source-address probe
+/// timeout in milliseconds. Set by the integration tests to keep the mock runs
+/// fast; unset in normal use, where [`crate::PROBE_TIMEOUT`] applies.
+pub const ADDRESS_PROBE_MS_ENV: &str = "BUSSARD_ADDRESS_PROBE_MS";
+
+/// The source-address probe budget, honouring [`ADDRESS_PROBE_MS_ENV`] when set.
+pub fn probe_timeouts_from_env() -> Timeouts {
+    match std::env::var(ADDRESS_PROBE_MS_ENV)
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+    {
+        Some(ms) => Timeouts {
+            ack_timeout: std::time::Duration::from_millis(ms),
+            max_repetitions: 0,
+            response_timeout: std::time::Duration::from_millis(ms),
+        },
+        None => Timeouts::probe(),
+    }
+}
+
+/// Why [`checked_source`] refused to hand out a source address.
+#[derive(Debug, thiserror::Error)]
+pub enum SourceCheckError {
+    /// The probe itself failed on the transport (the bus actor is gone).
+    #[error("probing whether a device answers at our source address {address}")]
+    Probe {
+        /// The source address that was being probed.
+        address: IndividualAddress,
+        /// The transport failure.
+        #[source]
+        error: MgmtError,
+    },
+    /// A device on the bus already answers at our source address.
+    #[error(
+        "refusing to continue: a device on the bus (mask {mask:04X}) already answers at \
+         {address}, the individual address this connection would use as its source. Sharing a \
+         source address with a live device can silently corrupt device downloads. Fix the \
+         gateway's tunnel address assignment, or pass --skip-address-check if you are sure."
+    )]
+    Occupied {
+        /// Our source address.
+        address: IndividualAddress,
+        /// The mask version the occupant reported.
+        mask: u16,
+    },
+}
+
+/// The source individual address for a **connection-oriented** device
+/// operation, checked against the bus first.
+///
+/// Resolves the source exactly as [`bussard_bus::ops::group_source`] does (the
+/// tunnel-assigned individual address, or the `0.0.255` fallback on routing),
+/// then, unless `skip` is set, probes the bus for a device answering at that
+/// very address and refuses if one does. The budget is
+/// [`probe_timeouts_from_env`]. Shared by every CLI device command and the MCP
+/// programming tier, so both refuse on the same evidence.
+pub async fn checked_source(
+    handle: &BusHandle,
+    skip: bool,
+) -> std::result::Result<IndividualAddress, SourceCheckError> {
+    let source = bussard_bus::ops::group_source(handle);
+    if skip {
+        tracing::debug!(%source, "source-address check skipped");
+        return Ok(source);
+    }
+    let probe = probe_own_address(handle, source, probe_timeouts_from_env())
+        .await
+        .map_err(|error| SourceCheckError::Probe {
+            address: source,
+            error,
+        })?;
+    match probe {
+        AddressProbe::Free => {
+            tracing::debug!(%source, "source-address check passed: no device answers there");
+            Ok(source)
+        }
+        AddressProbe::Occupied { mask } => Err(SourceCheckError::Occupied {
+            address: source,
+            mask,
+        }),
+    }
+}
+
 /// Probes whether a device on the bus answers at `address` — the address this
 /// tool is about to use as its own management **source**.
 ///

@@ -15,6 +15,9 @@ startup rather than per command:
 
 - `bussard mcp --allow-writes`, which registers the `knx_write_group` tool and
   hands an LLM the bus for the session.
+- `bussard mcp --allow-programming`, which registers `knx_plan_device` and
+  `knx_apply_device` so an LLM can write one device's link tables after the
+  human approves the plan (see [MCP programming tier](#mcp-programming-tier)).
 - `bussard viz --allow-writes` (arms `POST /api/group-write`) and
   `bussard viz --watch-prog` (puts broadcast reads on the bus on a timer).
 
@@ -252,6 +255,40 @@ is reported as refused and nothing is written to that GA. The `knx_run_tests`
 MCP tool refuses such a test whatever the file says. `bussard learn` never
 transmits at all.
 
+## MCP programming tier
+
+`bussard mcp --allow-programming` exposes the single-device table write of
+`bussard apply` to an assistant. It is off by default and never available with
+`--passive`. Every gate the CLI has applies, plus one the CLI does not need:
+
+1. **Write gate.** A non-loopback gateway needs `BUSSARD_ALLOW_REAL_GATEWAY=1`
+   or `--allow-remote-gateway`. The server refuses to start without it, and
+   both tools check it again on every call. The policy is the same code the CLI
+   runs.
+2. **Source-address check.** Both tools run the probe described in
+   [Source address check](#source-address-check) before they open a connection.
+3. **Plan digest.** `knx_plan_device` reads the device and returns the plan the
+   CLI prints plus a `plan_digest`: a SHA-256 over the device address, the
+   model's links for it, the desired tables and the live tables it read.
+   `knx_apply_device` writes only when that digest was produced by the same
+   server session within `--plan-ttl-minutes` (default 10), and a fresh read of
+   the device, with the current model, reproduces it. If the device was changed
+   by ETS or another tool, or the model was edited, the apply is refused and the
+   digest is retired. A digest is single use.
+4. **Human approval.** Both tool descriptions tell the assistant to show the
+   plan to the human and to call `knx_apply_device` only after an explicit yes
+   in the conversation. The digest makes this checkable: an apply can only
+   write what a plan showed.
+5. **Protected GAs.** A plan whose additions or removals touch a
+   `protected: true` GA is refused. There is no override over MCP.
+
+An apply then runs exactly the CLI rails: the pre-apply backup to
+`captures/backups/` (no backup, no write), a history snapshot
+`mcp knx_apply_device <address> <digest>` that names the gateway (the audit
+line in `bussard history`), the write, and a read-back verify. The result
+carries the verify outcome and the backup path. One device per call; `flash`
+and `apply --line` stay CLI-only.
+
 ## History and undo
 
 bussard keeps a full copy of the model files under `<dir>/.bussard/history`
@@ -284,7 +321,8 @@ runs `plan` and `apply`.
 
 Every command that opens a connection to a device (`scan`, `assign`, `adopt`,
 `describe`, `plan`, `apply`, `flash`, `reconstruct`, `backup`, `restore`,
-`replace`, `commission`, `audit --live`, and `plan --line` / `apply --line`)
+`replace`, `commission`, `audit --live`, `plan --line` / `apply --line`, and the
+MCP tools `knx_plan_device` / `knx_apply_device`)
 first checks that no device on the bus answers at the individual address
 bussard itself will use as its source: the address the gateway assigned to the
 tunnel, or `0.0.255` on routing. If a device answers, the command refuses before

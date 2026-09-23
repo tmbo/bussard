@@ -47,6 +47,7 @@ fn server_over(dir: &Path) -> Result<BussardMcp, Box<dyn Error>> {
         ),
         capture_db: None,
         source_ia: "0.0.255".parse()?,
+        programming: None,
     });
     Ok(BussardMcp::new(state))
 }
