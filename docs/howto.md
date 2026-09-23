@@ -140,6 +140,15 @@ $ bussard ha-config --out ha-knx.yaml
 
 The output is a complete `knx:` document; `!include` it or paste it into your Home Assistant configuration. Read the footer: it counts the derived entities and lists every unmapped GA by DPT, so nothing is silently dropped. Tune the result with an `ha.yaml` next to the model (rename entities, promote a switch to a light, exclude GAs, merge extra state addresses). Derivation rules and `ha.yaml` fields are in [ha-config.md](ha-config.md).
 
+## ... generate the handover documentation?
+
+```console
+$ bussard doc --out docs/installation
+$ bussard doc --format html --out handover/
+```
+
+`doc` writes the folder the KNX guidelines ask for: a device list, a group-address list with senders and listeners, one sheet per room in plain language, the connection details (never credentials), and a change log from git. Give devices a `location:` (floor and room) to get room sheets. The output is deterministic, so commit it and regenerate after every change; the diff then shows what moved. `--json` prints the same content as one structured document. Details in the [reference](reference.md#bussard-doc).
+
 ## ... bootstrap without any ETS project?
 
 `init` discovers the gateway and writes an empty model; if discovery finds nothing (multicast does not cross subnets), pass `--gateway <ip>` directly:

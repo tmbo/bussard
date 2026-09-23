@@ -8,6 +8,7 @@ mod assign_cmd;
 mod capture_cmd;
 mod conn_cmd;
 mod describe_cmd;
+mod doc_cmd;
 mod flash_cmd;
 mod ha_config_cmd;
 mod import_cmd;
@@ -68,6 +69,24 @@ enum Format {
     Text,
     /// A JSON array.
     Json,
+}
+
+/// The rendered format for `bussard doc`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum DocOutputFormat {
+    /// Markdown, one `.md` file per section.
+    Md,
+    /// Self-contained HTML, one `.html` file per section.
+    Html,
+}
+
+impl From<DocOutputFormat> for bussard_model::DocFormat {
+    fn from(value: DocOutputFormat) -> Self {
+        match value {
+            DocOutputFormat::Md => bussard_model::DocFormat::Markdown,
+            DocOutputFormat::Html => bussard_model::DocFormat::Html,
+        }
+    }
 }
 
 /// The top-level subcommands.
@@ -394,6 +413,21 @@ enum Command {
         /// Output format.
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
+    },
+    /// Render the handover documentation folder from the model.
+    Doc {
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// The directory to write the rendered documentation into.
+        #[arg(long, default_value = "docs/installation")]
+        out: PathBuf,
+        /// The rendered format.
+        #[arg(long, value_enum, default_value_t = DocOutputFormat::Md)]
+        format: DocOutputFormat,
+        /// Print the structured document model as JSON instead of writing files.
+        #[arg(long)]
+        json: bool,
     },
     /// Live-monitor the bus, decoding telegrams against the model.
     Monitor {
@@ -752,6 +786,12 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             conn_cmd::ConnOverrides { gateway, routing },
         ),
         Command::Validate { dir, format } => validate_cmd::run(&dir, format == Format::Json),
+        Command::Doc {
+            dir,
+            out,
+            format,
+            json,
+        } => doc_cmd::run(&dir, &out, format.into(), json),
         Command::Init {
             dir,
             gateway,
