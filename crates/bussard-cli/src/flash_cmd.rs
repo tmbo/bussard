@@ -34,9 +34,9 @@ use std::process::ExitCode;
 use anyhow::{Context, bail};
 use bussard_bus::{BusHandle, ops};
 use bussard_download::{
-    CurrentMemory, FlashPlan, FlashStep, Freshness, ParamPlan, ParamValue, Progress,
-    assess_freshness, flash, param_plan, plan_flash_with_object_flags, probe_resident_state,
-    read_current_parameter_memory, select_application, trace,
+    CurrentMemory, FlashPlan, FlashStep, Freshness, ParamPlan, ParamValue, assess_freshness, flash,
+    param_plan, plan_flash_with_object_flags, probe_resident_state, read_current_parameter_memory,
+    select_application, trace,
 };
 use bussard_mgmt::load::WriteError;
 use bussard_mgmt::{DeviceConnection, Layer4Connection, LeaseChannel, MgmtError, Timeouts};
@@ -463,7 +463,15 @@ pub fn run(
     // The same tunnel phase A used: the pre-flight's L4 session and its bus lease
     // are both released by now, so the write phase simply takes the lease again.
     let outcome = runtime.block_on(execute(
-        handle, target, source, plan_ref, options, facts, tool_key, secure_seq,
+        handle,
+        target,
+        source,
+        plan_ref,
+        options,
+        facts,
+        tool_key,
+        secure_seq,
+        output.json,
     ));
 
     match outcome {
@@ -1138,6 +1146,7 @@ pub(crate) async fn execute(
     facts: bussard_download::DeviceFacts,
     secure_tool_key: Option<bussard_secure::Key16>,
     secure_seq: bussard_secure::SequenceHighWater,
+    json: bool,
 ) -> Result<bussard_download::FlashOutcome, WriteError> {
     let connector = LeaseConnector {
         handle,
@@ -1164,24 +1173,13 @@ pub(crate) async fn execute(
     // releases the L4 session. (finding 3: a stuck session after a failed flash
     // traces to a skipped disconnect; keeping the disconnect on every arm is the
     // guarantee.)
-    let result = flash(&mut session, plan, options, |p| match p {
-        Progress::Step {
-            index,
-            total,
-            label,
-        } => {
-            eprintln!("  [{index}/{total}] {label}");
-        }
-        Progress::Bytes { written, total } => {
-            eprint!("\r      {written}/{total} bytes");
-            let _ = std::io::stderr().flush();
-            if written == total {
-                eprintln!();
-            }
-        }
-    })
-    .await;
+    //
+    // Progress (issue #147): the plain `  [k/n] label` / `n/m bytes` lines, or
+    // the live view on an interactive terminal.
+    let mut display = crate::progress::FlashDisplay::new(plan, json);
+    let result = flash(&mut session, plan, options, |p| display.on_progress(p)).await;
     let _ = session.into_disconnect().await;
+    display.finish(result.as_ref().is_ok_and(|outcome| outcome.ok()));
     result
 }
 

@@ -170,6 +170,7 @@ pub(crate) fn run(ctx: Context<'_>) -> anyhow::Result<ExitCode> {
         ctx.facts.clone(),
         ctx.tool_key.clone(),
         ctx.secure_seq.clone(),
+        ctx.json,
     ));
     match outcome {
         Ok(outcome) if outcome.ok() => {}

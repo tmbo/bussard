@@ -19,6 +19,13 @@ These apply to every subcommand:
 
 - `-v` / `--verbose` (repeatable): raise log verbosity. `-v` = `info`, `-vv` = `debug`, `-vvv` = `trace`. The default (no flag) is `warn`. An explicit `RUST_LOG` overrides this entirely, so `RUST_LOG=bussard_transport=trace` still works for targeted tracing.
 - `--timing`: print the invocation's wall-clock time to stderr on exit (e.g. `took 1.23s`). Off by default.
+- `--no-progress`: never draw the live progress display; print the plain progress lines instead, as a piped run does.
+
+#### Progress display
+
+`flash` (including `--parameters-only`), `apply`, `reconstruct --line` and `scan` show a live progress view on stderr when both stdout and stderr are terminals. It shows the current step `k/n` and its label, a byte bar for the segment being streamed, the elapsed time, an ETA and the last bus event (a reboot wait, a reconnect, a connect retry). The flash ETA starts from the plan's TP1 frame estimate and switches to the measured rate once 5% of the bytes are written. A successful run clears the view and ends with the same final lines as before; a failed run leaves it on screen so the step it stopped at stays visible.
+
+The view is off, and the output is the plain line-oriented text byte for byte, whenever stdout or stderr is not a terminal, `TERM=dumb`, `BUSSARD_WIRE_TRACE=1` is set, the command runs with `--json`, or `--no-progress` is given. The plain lines never contain cursor-control codes beyond the `\r` the byte and address counters have always used, so logs, the campaign wrapper's `step.log`, the MCP server and scripts see the same text as before. Progress never goes to stdout.
 
 ### Exit codes
 

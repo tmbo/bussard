@@ -22,7 +22,6 @@
 //! model `listen:` entry are treated alike.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Write as _;
 use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
@@ -482,7 +481,7 @@ pub fn run_line(
         }
         let source = checked_source_or_close(&handle, &conn).await?;
         let found = tokio::select! {
-            found = sweep_line(&handle, area, line_no, from, to, source) => found,
+            found = sweep_line(&handle, area, line_no, from, to, source, json) => found,
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\ninterrupted; closing the bus connection");
                 Vec::new()
@@ -566,18 +565,27 @@ async fn sweep_line(
     from: u8,
     to: u8,
     source: IndividualAddress,
+    json: bool,
 ) -> Vec<LineDevice> {
     let mut found = Vec::new();
+    // Progress to stderr (issue #147): a line rewritten in place, or the live
+    // view on an interactive terminal.
+    let display = crate::progress::SweepDisplay::new(
+        "reconstructing",
+        usize::from(to.saturating_sub(from)) + 1,
+        json,
+    );
     for device in from..=to {
         let Ok(addr) = IndividualAddress::new(area, line_no, device) else {
             continue;
         };
-        eprint!("\rreconstructing {addr}…  {} found   ", found.len());
-        let _ = std::io::stderr().flush();
+        display.probing(addr, found.len());
         if let Some(dev) = probe_line(handle, addr, source).await {
             found.push(dev);
         }
+        display.advance();
     }
+    display.finish();
     eprintln!(
         "\rsweep complete: {} device(s) found            ",
         found.len()
