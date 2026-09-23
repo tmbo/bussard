@@ -32,7 +32,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
-use bussard_bus::{Bus, BusHandle, ops};
+use bussard_bus::{BusHandle, ops};
 use bussard_download::{
     CurrentMemory, FlashPlan, FlashStep, Freshness, ParamPlan, ParamValue, Progress,
     assess_freshness, flash, param_plan, plan_flash, probe_resident_state,
@@ -44,7 +44,8 @@ use bussard_model::IndividualAddress;
 use bussard_prod::{ApplicationProgram, ProductData, normalize_order_number};
 
 use crate::conn_cmd::{
-    ConnOverrides, enforce_write_gate, gateway_display, load_model_required, resolve_config,
+    BusSession, ConnOverrides, enforce_write_gate, gateway_display, load_model_required,
+    resolve_config,
 };
 
 /// Flashes an application program from vendor product data into a device.
@@ -142,21 +143,26 @@ pub fn run(
         .map(|d| d.device.module_bases.clone())
         .unwrap_or_default();
 
+    // ONE tunnel for the whole command: the read-only pre-flight below, the
+    // interactive confirmation, and the write phase all run over it, and
+    // `BusSession` closes it on every exit path. Opening a second tunnel for the
+    // write phase used to cost another CONNECT/DISCONNECT round trip — and the
+    // gateway's only tunnel slot — for no gain; the tunnel heartbeat holds the
+    // slot across the confirmation prompt.
+    let runtime = tokio::runtime::Runtime::new()?;
+    let bus = BusSession::open(&runtime, config);
+    let handle = bus.handle();
+    // The tunnel-assigned source address, resolved once for both phases.
+    let source = ops::group_source(handle);
+
     // Phase A (read-only): read the device descriptor and probe what is already
     // resident on the device (issue #79). Both run over one connection; neither
     // writes anything.
-    let runtime = tokio::runtime::Runtime::new()?;
     let secure_probe = tool_key.is_some();
     let probe = {
-        let config = config.clone();
         let probe_key = tool_key.clone();
         let probe_seq = secure_seq.clone();
-        runtime.block_on(async move {
-            let (handle, _task) = Bus::connect(config);
-            if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
-                eprintln!("warning: bus not connected yet; management traffic may use the 0.0.255 fallback source");
-            }
-            let source = ops::group_source(&handle);
+        runtime.block_on(async {
             let lease = handle.lease().await.context("leasing the bus")?;
             let channel = LeaseChannel::new(lease);
             // Track whether the T_Connect established before the first read: a
@@ -200,7 +206,6 @@ pub fn run(
                 }
                 Err(err) => (false, Err(err), None),
             };
-            let _ = handle.close().await;
             anyhow::Ok((connected, result, resident))
         })?
     };
@@ -350,25 +355,11 @@ pub fn run(
         verify_after_restart: true,
         ..Default::default()
     };
-    let outcome = runtime.block_on(async move {
-        let (handle, _task) = Bus::connect(config);
-        if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
-            eprintln!("warning: bus not connected yet; management traffic may use the 0.0.255 fallback source");
-        }
-        let source = ops::group_source(&handle);
-        let result = execute(
-            &handle,
-            target,
-            source,
-            plan_ref,
-            options,
-            tool_key,
-            secure_seq,
-        )
-        .await;
-        let _ = handle.close().await;
-        anyhow::Ok(result)
-    })?;
+    // The same tunnel phase A used: the pre-flight's L4 session and its bus lease
+    // are both released by now, so the write phase simply takes the lease again.
+    let outcome = runtime.block_on(execute(
+        handle, target, source, plan_ref, options, tool_key, secure_seq,
+    ));
 
     match outcome {
         Ok(verify) if verify.ok() => {

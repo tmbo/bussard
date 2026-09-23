@@ -41,7 +41,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
-use bussard_bus::{Bus, ops};
+use bussard_bus::ops;
 use bussard_download::backup::{DeviceBackup, backups_root, has_installation_backup};
 use bussard_download::{
     DesiredTables, PlanReport, Sys7LiveTables, Sys7TableImages, VerifyOutcome, apply_sys7_tables,
@@ -54,7 +54,8 @@ use bussard_model::IndividualAddress;
 use bussard_transport::ConnectionConfig;
 
 use crate::conn_cmd::{
-    ConnOverrides, enforce_write_gate, gateway_display, load_model_required, resolve_config,
+    BusSession, ConnOverrides, enforce_write_gate, gateway_display, load_model_required,
+    resolve_config,
 };
 use crate::plan_cmd;
 
@@ -176,18 +177,23 @@ pub(crate) fn apply_desired(
     enforce_write_gate(&config, allow_remote_gateway)?;
     let gateway = gateway_display(&config);
 
-    // Phase A (read-only): read the live tables and build the plan.
+    // ONE tunnel for the whole command: the read-only pre-pass below, the
+    // interactive confirmation, the backup, and the write phase all run over it,
+    // and `BusSession` closes it on every exit path. Opening a second tunnel for
+    // the write phase used to cost another CONNECT/DISCONNECT round trip — and
+    // the gateway's only tunnel slot — for no gain; the tunnel heartbeat holds
+    // the slot across the confirmation prompt.
     let runtime = tokio::runtime::Runtime::new()?;
+    let bus = BusSession::open(&runtime, config);
+    let handle = bus.handle();
+    // The tunnel-assigned source address, resolved once for both phases.
+    let source = ops::group_source(handle);
+
+    // Phase A (read-only): read the live tables and build the plan.
     let read = {
-        let config = config.clone();
         let read_key = tool_key.clone();
         let read_seq = secure_seq.clone();
-        runtime.block_on(async move {
-            let (handle, _task) = Bus::connect(config);
-        if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
-            eprintln!("warning: bus not connected yet; management traffic may use the 0.0.255 fallback source");
-        }
-            let source = ops::group_source(&handle);
+        runtime.block_on(async {
             let lease = handle.lease().await.context("leasing the bus")?;
             let channel = LeaseChannel::new(lease);
             let secure = crate::secure_key::layer(&read_key, &read_seq);
@@ -204,8 +210,9 @@ pub(crate) fn apply_desired(
                     // Authorize (free access) before reading, as ETS does (issue
                     // #52 finding #1) and as System 7 requires before any memory
                     // access. Best-effort on this read-only pre-pass.
-                    if let Err(err) =
-                        l4.authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY).await
+                    if let Err(err) = l4
+                        .authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY)
+                        .await
                     {
                         tracing::debug!("{target} authorize (free access) did not grant: {err}");
                     }
@@ -213,12 +220,11 @@ pub(crate) fn apply_desired(
                     let _ = l4.disconnect().await;
                     r
                 }
-                Err(err) => Err(anyhow::Error::new(
-                    bussard_mgmt::tables::TablesError::Mgmt(err),
-                )
-                .context("connecting to the device")),
+                Err(err) => Err(
+                    anyhow::Error::new(bussard_mgmt::tables::TablesError::Mgmt(err))
+                        .context("connecting to the device"),
+                ),
             };
-            let _ = handle.close().await;
             anyhow::Ok(result)
         })?
     };
@@ -309,26 +315,29 @@ pub(crate) fn apply_desired(
 
     // Phase B (write): execute the load sequence and verify.
     let mask = live.mask;
-    let outcome = runtime.block_on(async move {
-        let (handle, _task) = Bus::connect(config);
-        if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
-            eprintln!("warning: bus not connected yet; management traffic may use the 0.0.255 fallback source");
-        }
-        let source = ops::group_source(&handle);
+    // The same tunnel phase A used: its L4 session and bus lease are both
+    // released by now, so the write phase simply takes the lease again.
+    let outcome = runtime.block_on(async {
         let lease = handle.lease().await.context("leasing the bus")?;
         let channel = LeaseChannel::new(lease);
         let result = match &sys7 {
-            Some((_, images)) => {
-                execute_sys7(channel, target, source, mask, images, &tool_key, &secure_seq)
-                    .await
-                    .map(|v| ApplySummary {
-                        ok: v.ok(),
-                        address_state: v.address_state,
-                        association_state: v.association_state,
-                        detail: format!("{v:?}"),
-                    })
-                    .map_err(|e| e.to_string())
-            }
+            Some((_, images)) => execute_sys7(
+                channel,
+                target,
+                source,
+                mask,
+                images,
+                &tool_key,
+                &secure_seq,
+            )
+            .await
+            .map(|v| ApplySummary {
+                ok: v.ok(),
+                address_state: v.address_state,
+                association_state: v.association_state,
+                detail: format!("{v:?}"),
+            })
+            .map_err(|e| e.to_string()),
             None => execute(channel, target, source, &desired, &tool_key, &secure_seq)
                 .await
                 .map(|v| ApplySummary {
@@ -339,7 +348,6 @@ pub(crate) fn apply_desired(
                 })
                 .map_err(|e| e.to_string()),
         };
-        let _ = handle.close().await;
         anyhow::Ok(result)
     })?;
 
