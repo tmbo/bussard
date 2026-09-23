@@ -61,6 +61,7 @@ pub fn run(
     dir: &Path,
     yes: bool,
     force: bool,
+    full: bool,
     allow_remote_gateway: bool,
     bcu_key: Option<&str>,
     tool_key_source: crate::secure_key::ToolKeySource<'_>,
@@ -370,10 +371,27 @@ pub fn run(
     // only holds the load if it survives the reboot, so bussard reconnects and
     // re-reads the load state once the device is back rather than trusting the
     // transient `Loaded` it reports before rebooting.
+    //
+    // Differential download (the ETS group-B behaviour): an object whose resident
+    // image already matches what bussard would stream (MCB size + CRC, and the
+    // object reports `Loaded`) is not re-streamed. Only taken when the device
+    // carries no application or the same one — never when `--force` is replacing
+    // a different or unidentified application, and never with `--full`.
+    let skip_unchanged = !full
+        && matches!(
+            freshness,
+            Freshness::Fresh | Freshness::SameApplication { .. }
+        );
+    if skip_unchanged && matches!(freshness, Freshness::SameApplication { .. }) {
+        eprintln!(
+            "differential download: objects whose resident image already matches are \
+             skipped (pass --full to re-stream everything)"
+        );
+    }
     let options = bussard_download::FlashOptions {
         bcu_key,
         verify_after_restart: true,
-        ..Default::default()
+        skip_matching_mcb: skip_unchanged,
     };
     // The same tunnel phase A used: the pre-flight's L4 session and its bus lease
     // are both released by now, so the write phase simply takes the lease again.

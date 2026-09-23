@@ -274,6 +274,10 @@ struct DeviceState {
     /// an older/simpler device that does not implement authorize. The tool must
     /// tolerate this and proceed (the gate is also open in this mode).
     authorize_unsupported: bool,
+    /// If set, the device keeps answering its last segment's `PID_MCB_TABLE`
+    /// entry even while the object is not `Loaded` — an app-unload or an
+    /// interrupted load flips the load state without erasing the stored image.
+    mcb_survives_unload: bool,
     /// Count of `PID_OBJECT_TYPE` reads, so a test can assert the flash reused a
     /// pre-flight's object table instead of walking it again.
     object_type_reads: usize,
@@ -736,7 +740,9 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
                     prop_response(oi, pid, 0, start, &[]),
                 );
             }
-            if loadable_object_index(&s) != Some(oi) || s.app_load_state != LS_LOADED {
+            if loadable_object_index(&s) != Some(oi)
+                || (s.app_load_state != LS_LOADED && !s.mcb_survives_unload)
+            {
                 return Reaction::Answer(
                     A_PROPERTY_VALUE_RESPONSE,
                     prop_response(oi, pid, 0, start, &[]),
@@ -1314,6 +1320,7 @@ fn fresh_device(fault: Fault) -> Shared {
         authorized: false,
         grant_level: 0,
         authorize_unsupported: false,
+        mcb_survives_unload: false,
         object_type_reads: 0,
         authorizes_seen: 0,
         last_authorize_payload: Vec::new(),
@@ -1747,6 +1754,64 @@ async fn flash_skips_restream_when_resident_mcb_matches() {
         "a resident-MCB match must stream ZERO body bytes"
     );
     handle.abort();
+}
+
+#[tokio::test]
+async fn test_flash_full_streams_when_resident_mcb_matches_but_object_not_loaded()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Differential download guard: the device still describes the exact image
+    // bussard would stream (MCB size+CRC match) but the object is NOT Loaded —
+    // an interrupted flash or an app-unload leaves the stored bytes intact while
+    // the load state says Unloaded. Skipping the re-load here would also skip the
+    // StartLoading/LoadCompleted that bring the object back, so the flash must
+    // full-stream and end Loaded.
+    let image = [0u8, 1, 2, 3, 4, 5];
+    let state = preloaded_device(&image);
+    {
+        let mut s = state.lock().map_err(|e| e.to_string())?;
+        s.app_load_state = LS_UNLOADED;
+        s.mcb_survives_unload = true;
+    }
+    let (mut bus, state, handle) = setup_device(state).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
+
+    let app = app_with_image_prop();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions {
+            skip_matching_mcb: true,
+            ..Default::default()
+        },
+        |_| {},
+    )
+    .await?;
+    let _ = session.into_disconnect().await;
+
+    assert!(
+        outcome.ok(),
+        "a not-Loaded object must be re-loaded: {outcome:?}"
+    );
+    let s = state.lock().map_err(|e| e.to_string())?;
+    assert!(
+        s.memory_writes_seen > 0,
+        "an object that is not Loaded must full-stream even when its MCB matches"
+    );
+    handle.abort();
+    Ok(())
 }
 
 #[tokio::test]
