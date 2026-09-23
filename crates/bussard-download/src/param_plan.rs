@@ -35,7 +35,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use bussard_mgmt::load::read_table_reference;
 use bussard_mgmt::memory::read_memory_range;
 use bussard_mgmt::{L4Channel, Layer4Connection};
-use bussard_prod::application::{ApplicationProgram, Parameter, ParameterType};
+use bussard_prod::application::ApplicationProgram;
+
+use crate::param_decode::{decode_parameters, display_name, parameter_type, render, resolve_key};
 
 use crate::flash::{FlashPlan, FlashStep, ImageKind};
 
@@ -134,94 +136,45 @@ pub fn param_plan(
     base_offsets: &BTreeMap<String, u32>,
     current: &CurrentMemory,
 ) -> ParamPlan {
+    if !current.is_empty() {
+        let decoded = decode_parameters(app, overrides, base_offsets, current);
+        return ParamPlan {
+            changes: decoded.differences,
+            unknown: decoded.unknown,
+            note: None,
+        };
+    }
+    // Nothing was read: every override that lands in memory is a change to an
+    // unknown current value.
     let mut changes = Vec::new();
-    let mut unknown = 0usize;
-    let mut overridden_params: BTreeSet<String> = BTreeSet::new();
-
-    // 1. Every explicit override, in key order.
-    for (ref_id, desired_raw) in overrides {
-        let Some((param, module_instance)) = resolve(app, ref_id) else {
+    for (key, desired) in overrides {
+        let Some((param, _)) = resolve_key(app, key) else {
             continue;
         };
-        overridden_params.insert(param.id.clone());
-        let Some(location) = location(param, module_instance.as_deref(), base_offsets) else {
+        let in_union = app
+            .unions
+            .iter()
+            .any(|u| u.members.iter().any(|m| m.parameter == param.id));
+        if param.memory.is_none() && !in_union {
             continue;
-        };
+        }
         let ptype = parameter_type(app, param);
-        let old_raw = decode(current, &location, ptype);
-        if old_raw.as_deref() == Some(desired_raw.trim()) {
-            continue;
-        }
-        if old_raw.is_none() {
-            unknown += 1;
-        }
         changes.push(ParamChange {
-            key: ref_id.clone(),
+            key: key.clone(),
             name: display_name(param),
-            old: match &old_raw {
-                Some(raw) => ParamValue::Known(render(raw, ptype)),
-                None => ParamValue::Unknown,
-            },
-            new: ParamValue::Known(render(desired_raw.trim(), ptype)),
+            old: ParamValue::Unknown,
+            new: ParamValue::Known(render(desired.trim(), ptype)),
             unit: param.suffix_text.clone(),
         });
     }
-
-    // 2. Every other memory-bearing parameter whose current value is readable and
-    //    differs from the vendor default the flash would restore. These are the
-    //    changes the operator did not ask for but the flash performs anyway
-    //    (a device configured by ETS being brought back to the model's truth).
-    if !current.is_empty() {
-        let mut params: Vec<&Parameter> = app.parameters.values().collect();
-        params.sort_by(|a, b| a.id.cmp(&b.id));
-        for param in params {
-            if overridden_params.contains(&param.id) {
-                continue;
-            }
-            // A module parameter has one instance per channel and no single
-            // location; its values are only ever reported through an explicit
-            // override key, which names the instance.
-            if param
-                .memory
-                .as_ref()
-                .is_some_and(|m| m.base_offset.is_some())
-            {
-                continue;
-            }
-            let Some(location) = location(param, None, base_offsets) else {
-                continue;
-            };
-            let ptype = parameter_type(app, param);
-            let Some(old_raw) = decode(current, &location, ptype) else {
-                continue;
-            };
-            let desired_raw = default_value(app, param).unwrap_or_else(|| "0".to_string());
-            if old_raw == desired_raw.trim() {
-                continue;
-            }
-            changes.push(ParamChange {
-                key: relative_id(app, &param.id),
-                name: display_name(param),
-                old: ParamValue::Known(render(&old_raw, ptype)),
-                new: ParamValue::Known(render(desired_raw.trim(), ptype)),
-                unit: param.suffix_text.clone(),
-            });
-        }
-    }
-
-    changes.sort_by(|a, b| a.key.cmp(&b.key));
-    let note = if current.is_empty() && !changes.is_empty() {
-        Some(
-            "the device's current parameter memory could not be read, so every value \
-             below is shown as an unknown current value"
-                .to_string(),
-        )
-    } else {
-        None
-    };
+    let note = (!changes.is_empty()).then(|| {
+        "the device's current parameter memory could not be read, so every value \
+         below is shown as an unknown current value"
+            .to_string()
+    });
     ParamPlan {
+        unknown: changes.len(),
         changes,
-        unknown,
         note,
     }
 }
@@ -256,97 +209,36 @@ impl ParamReading {
     }
 }
 
-/// The parameters whose value in `current` differs from the vendor default,
-/// sorted by parameter id: what a device carries beyond a fresh download.
+/// The shown parameters whose value in `current` differs from the vendor
+/// default, sorted by key: what a device carries beyond a fresh download.
 ///
-/// Module parameters (one instance per channel) have no single location and
-/// are left out; so is every parameter whose segment was not read.
+/// `overrides` (the model's values) steer which refs are shown where the
+/// memory cannot (display-only parameters); see
+/// [`crate::param_decode::decode_parameters`].
 pub fn non_default_parameters(
     app: &ApplicationProgram,
+    overrides: &BTreeMap<String, String>,
+    base_offsets: &BTreeMap<String, u32>,
     current: &CurrentMemory,
 ) -> Vec<ParamReading> {
-    let mut params: Vec<&Parameter> = app.parameters.values().collect();
-    params.sort_by(|a, b| a.id.cmp(&b.id));
-    let mut out = Vec::new();
-    for param in params {
-        if param
-            .memory
-            .as_ref()
-            .is_some_and(|m| m.base_offset.is_some())
-        {
-            continue;
-        }
-        let Some(location) = location(param, None, &BTreeMap::new()) else {
-            continue;
-        };
-        let ptype = parameter_type(app, param);
-        let Some(raw) = decode(current, &location, ptype) else {
-            continue;
-        };
-        let default = default_value(app, param).unwrap_or_else(|| "0".to_string());
-        if raw == default.trim() {
-            continue;
-        }
-        out.push(ParamReading {
-            key: relative_id(app, &param.id),
-            name: display_name(param),
-            value: render(&raw, ptype),
-            default: render(default.trim(), ptype),
-            unit: param.suffix_text.clone(),
-        });
-    }
-    out
+    decode_parameters(app, overrides, base_offsets, current).non_default
 }
 
-/// The raw values the device holds, keyed by app-relative `ParameterRef` id:
-/// the override shape [`bussard_prod::dynamic::evaluate_dynamic`] takes.
+/// The raw values the device holds, keyed like a device file's
+/// `parameters:` block: the override shape
+/// [`bussard_prod::dynamic::evaluate_dynamic`] takes.
 ///
 /// Starts from `overrides` (the model's values) and replaces every value the
-/// device memory in `current` can answer for: each override key (module
-/// instances included, through `base_offsets`) and every `ParameterRef` of a
-/// plain memory-bearing parameter. A parameter with no memory (a display-only
-/// selector) keeps the model's value, since the device does not hold one.
+/// device memory in `current` answers for. A parameter with no memory (a
+/// display-only selector) keeps the model's value, since the device does not
+/// hold one.
 pub fn current_parameter_values(
     app: &ApplicationProgram,
     overrides: &BTreeMap<String, String>,
     base_offsets: &BTreeMap<String, u32>,
     current: &CurrentMemory,
 ) -> BTreeMap<String, String> {
-    let mut out = overrides.clone();
-    for (ref_id, value) in out.iter_mut() {
-        let Some((param, instance)) = resolve(app, ref_id) else {
-            continue;
-        };
-        let Some(location) = location(param, instance.as_deref(), base_offsets) else {
-            continue;
-        };
-        if let Some(raw) = decode(current, &location, parameter_type(app, param)) {
-            *value = raw;
-        }
-    }
-    for pref in app.parameter_refs.values() {
-        let key = relative_id(app, &pref.id);
-        if out.contains_key(&key) {
-            continue;
-        }
-        let Some(param) = app.parameters.get(&pref.ref_id) else {
-            continue;
-        };
-        if param
-            .memory
-            .as_ref()
-            .is_some_and(|m| m.base_offset.is_some())
-        {
-            continue;
-        }
-        let Some(location) = location(param, None, base_offsets) else {
-            continue;
-        };
-        if let Some(raw) = decode(current, &location, parameter_type(app, param)) {
-            out.insert(key, raw);
-        }
-    }
-    out
+    decode_parameters(app, overrides, base_offsets, current).values
 }
 
 /// How a parameter change would reshape the group-object table (issue #119).
@@ -406,289 +298,6 @@ pub const SYS7_NOTE: &str = "System 7 device: parameters are written as whole ab
      the memory-level plan below is the authoritative one";
 
 // ---------------------------------------------------------------------------
-// Resolution
-// ---------------------------------------------------------------------------
-
-/// Where a parameter's value sits in a code segment.
-struct Location {
-    segment: String,
-    offset: usize,
-    bit_offset: u8,
-}
-
-/// Resolves an app-relative `ParameterRef` id to its `Parameter` and, for a
-/// module parameter, the `MD-<d>_M-<m>_MI-<n>` instance selector.
-///
-/// Mirrors `bussard_prod`'s own override-key resolution; it is reimplemented
-/// here (a dozen lines) rather than exposed, so the image builder's contract
-/// stays private to the encoder.
-fn resolve<'a>(
-    app: &'a ApplicationProgram,
-    ref_id: &str,
-) -> Option<(&'a Parameter, Option<String>)> {
-    let param_ref = ref_id.rsplit_once("_R-").map(|(head, _)| head)?;
-    let (param_rel, module_instance) = split_module_instance(param_ref);
-    let full = format!("{}_{param_rel}", app.id);
-    let param = app
-        .parameters
-        .get(&full)
-        .or_else(|| app.parameters.get(param_rel.as_str()))?;
-    Some((param, module_instance))
-}
-
-/// Splits an app-relative parameter ref into `(param_rel, module_instance)`.
-fn split_module_instance(param_ref: &str) -> (String, Option<String>) {
-    if !param_ref.starts_with("MD-") {
-        return (param_ref.to_string(), None);
-    }
-    let Some(m_pos) = param_ref.find("_M-") else {
-        return (param_ref.to_string(), None);
-    };
-    let module_def = &param_ref[..m_pos];
-    let after = &param_ref[m_pos + 1..];
-    let Some(mi_pos) = after.find("_MI-") else {
-        return (param_ref.to_string(), None);
-    };
-    let rest = &after[mi_pos + "_MI-".len()..];
-    let Some(obj_pos) = rest.find('_') else {
-        return (param_ref.to_string(), None);
-    };
-    let selector = format!("{module_def}_{}", &after[..mi_pos + "_MI-".len() + obj_pos]);
-    (
-        format!("{module_def}_{}", &rest[obj_pos + 1..]),
-        Some(selector),
-    )
-}
-
-/// The parameter's effective location, applying the per-instance base offset a
-/// module parameter needs. `None` when the parameter carries no placeable
-/// memory (a display-only parameter, or a module instance with no known base).
-fn location(
-    param: &Parameter,
-    module_instance: Option<&str>,
-    base_offsets: &BTreeMap<String, u32>,
-) -> Option<Location> {
-    let mem = param.memory.as_ref()?;
-    let segment = mem.code_segment.clone()?;
-    let declared = mem.offset?;
-    let offset = if mem.base_offset.is_some() {
-        let base = base_offsets.get(module_instance?)?;
-        declared.checked_add(*base)?
-    } else {
-        declared
-    };
-    Some(Location {
-        segment,
-        offset: usize::try_from(offset).ok()?,
-        bit_offset: mem.bit_offset.unwrap_or(0),
-    })
-}
-
-fn parameter_type<'a>(app: &'a ApplicationProgram, param: &Parameter) -> Option<&'a ParameterType> {
-    param
-        .parameter_type
-        .as_deref()
-        .and_then(|id| app.parameter_types.get(id))
-        .map(|decl| &decl.kind)
-}
-
-/// The vendor default for a parameter: the first `ParameterRef` value pointing
-/// at it (refs are the per-channel instances), else the parameter's own `Value`.
-/// Mirrors steps 1-3 of the image builder's override chain.
-fn default_value(app: &ApplicationProgram, param: &Parameter) -> Option<String> {
-    let mut refs: Vec<_> = app
-        .parameter_refs
-        .values()
-        .filter(|r| r.ref_id == param.id)
-        .collect();
-    refs.sort_by(|a, b| a.id.cmp(&b.id));
-    refs.iter()
-        .find_map(|r| r.value.clone())
-        .or_else(|| param.default.clone())
-}
-
-/// The human name for a parameter: its display `Text`, else its `Name`, else its
-/// app-relative id.
-fn display_name(param: &Parameter) -> String {
-    param
-        .text
-        .clone()
-        .filter(|t| !t.trim().is_empty())
-        .or_else(|| param.name.clone().filter(|n| !n.trim().is_empty()))
-        .unwrap_or_else(|| param.id.clone())
-}
-
-/// Strips the application prefix from a fully-qualified id.
-fn relative_id(app: &ApplicationProgram, id: &str) -> String {
-    id.strip_prefix(&format!("{}_", app.id))
-        .unwrap_or(id)
-        .to_string()
-}
-
-// ---------------------------------------------------------------------------
-// Decoding: the inverse of the image builder's placement
-// ---------------------------------------------------------------------------
-
-/// Decodes the current raw value at `location` out of the read-back memory.
-///
-/// Returns `None` when the segment was not read back, the field lies past the
-/// bytes that were read, or the type carries no memory.
-fn decode(
-    current: &CurrentMemory,
-    location: &Location,
-    ptype: Option<&ParameterType>,
-) -> Option<String> {
-    let bytes = current.get(&location.segment)?;
-    match ptype? {
-        ParameterType::Int {
-            size_bits, signed, ..
-        } => {
-            let bits = (*size_bits)?;
-            let raw = read_bits(bytes, location.offset, location.bit_offset, bits)?;
-            Some(if *signed {
-                sign_extend(raw, bits).to_string()
-            } else {
-                raw.to_string()
-            })
-        }
-        ParameterType::Enum { size_bits, .. } => {
-            let bits = size_bits.unwrap_or(8);
-            let raw = read_bits(bytes, location.offset, location.bit_offset, bits)?;
-            Some(raw.to_string())
-        }
-        ParameterType::Text { size_bits } => {
-            let len = (size_bits.unwrap_or(0) / 8) as usize;
-            let end = location.offset.checked_add(len)?;
-            let slice = bytes.get(location.offset..end)?;
-            let text: String = String::from_utf8_lossy(slice)
-                .trim_end_matches('\0')
-                .to_string();
-            Some(text)
-        }
-        ParameterType::Float { encoding, .. } => {
-            let slice = |len: usize| -> Option<&[u8]> {
-                let end = location.offset.checked_add(len)?;
-                bytes.get(location.offset..end)
-            };
-            match float_width(encoding.as_deref()) {
-                FloatWidth::Dpt9 => {
-                    let b = slice(2)?;
-                    Some(format_float(f64::from(decode_float16(b[0], b[1]))))
-                }
-                FloatWidth::Single => {
-                    let b = slice(4)?;
-                    let v = f32::from_be_bytes([b[0], b[1], b[2], b[3]]);
-                    Some(format_float(f64::from(v)))
-                }
-                FloatWidth::Double => {
-                    let b = slice(8)?;
-                    let mut arr = [0u8; 8];
-                    arr.copy_from_slice(b);
-                    Some(format_float(f64::from_be_bytes(arr)))
-                }
-            }
-        }
-        ParameterType::None => None,
-        ParameterType::Other { size_bits, .. } => {
-            let bits = (*size_bits).filter(|b| *b > 0 && *b <= 64 && b % 8 == 0)?;
-            let raw = read_bits(bytes, location.offset, location.bit_offset, bits)?;
-            Some(raw.to_string())
-        }
-    }
-}
-
-/// Reads an MSB-first bit field of `bits` width starting at
-/// `offset * 8 + bit_offset`, the exact inverse of the image builder's
-/// placement. `None` when the field runs past the bytes that were read, or when
-/// it is wider than a `u64`.
-fn read_bits(bytes: &[u8], offset: usize, bit_offset: u8, bits: u32) -> Option<u64> {
-    if bits == 0 || bits > 64 {
-        return None;
-    }
-    let start = offset
-        .checked_mul(8)?
-        .checked_add(usize::from(bit_offset))?;
-    let end = start.checked_add(bits as usize)?;
-    if end.div_ceil(8) > bytes.len() {
-        return None;
-    }
-    let mut value: u64 = 0;
-    for i in 0..bits as usize {
-        let pos = start + i;
-        let bit = (bytes[pos / 8] >> (7 - (pos % 8))) & 1;
-        value = (value << 1) | u64::from(bit);
-    }
-    Some(value)
-}
-
-/// Interprets an unsigned bit pattern of `bits` width as two's complement.
-fn sign_extend(raw: u64, bits: u32) -> i64 {
-    if bits >= 64 {
-        return raw as i64;
-    }
-    let sign = 1u64 << (bits - 1);
-    if raw & sign != 0 {
-        (raw as i64) - (1i64 << bits)
-    } else {
-        raw as i64
-    }
-}
-
-/// The three float encodings ETS product data uses.
-enum FloatWidth {
-    /// The KNX 2-byte float (`"DPT 9"`), and the fallback for an absent encoding.
-    Dpt9,
-    /// A 4-byte big-endian IEEE-754 single.
-    Single,
-    /// An 8-byte big-endian IEEE-754 double.
-    Double,
-}
-
-fn float_width(encoding: Option<&str>) -> FloatWidth {
-    match encoding.map(|e| e.trim().to_ascii_lowercase()).as_deref() {
-        Some("ieee-754 single") | Some("ieee 754 single") | Some("dpt 14") | Some("dpt14") => {
-            FloatWidth::Single
-        }
-        Some("ieee-754 double") | Some("ieee 754 double") => FloatWidth::Double,
-        _ => FloatWidth::Dpt9,
-    }
-}
-
-/// Decodes the KNX 2-octet float (DPT 9) through the workspace's one DPT codec.
-fn decode_float16(hi: u8, lo: u8) -> f32 {
-    match bussard_model::decode(&bussard_model::Dpt::new(9, None), &[hi, lo]) {
-        bussard_model::TypedValue::Float { value, .. } => value,
-        _ => f32::NAN,
-    }
-}
-
-/// Renders a float without a trailing `.0` on a whole number, so a temperature
-/// reads `18` and `17.5` rather than `18.0000001`.
-fn format_float(value: f64) -> String {
-    let rounded = (value * 1000.0).round() / 1000.0;
-    if rounded.fract() == 0.0 {
-        format!("{}", rounded as i64)
-    } else {
-        format!("{rounded}")
-    }
-}
-
-/// Renders a raw value for a human: an enumeration shows the vendor's own text
-/// for the member, everything else shows the value as written.
-fn render(raw: &str, ptype: Option<&ParameterType>) -> String {
-    if let Some(ParameterType::Enum { values, .. }) = ptype {
-        if let Ok(n) = raw.trim().parse::<i64>() {
-            if let Some(member) = values.iter().find(|v| v.value == n) {
-                if !member.text.trim().is_empty() {
-                    return member.text.clone();
-                }
-            }
-        }
-    }
-    raw.to_string()
-}
-
-// ---------------------------------------------------------------------------
 // Reading the current parameter memory off a device
 // ---------------------------------------------------------------------------
 
@@ -742,6 +351,88 @@ pub fn regions_memory(regions: &ParamRegions) -> CurrentMemory {
         .iter()
         .map(|(segment, region)| (segment.clone(), region.bytes.clone()))
         .collect()
+}
+
+/// The parameter regions [`read_parameter_regions`] reads off a device, as
+/// they read once `plan` has run: the same segments, each holding the bytes
+/// the plan streams into it. The offline half of the read-back round trip
+/// (issue #142): decoding these must give back the parameters the plan was
+/// built from.
+///
+/// The selection mirrors [`read_parameter_regions`]: on System 7 every
+/// `AbsSegment` whose image carries parameters, at its absolute address; on
+/// System B every parameter `WriteRelMem` that writes into its object's last
+/// allocation, with the write offset as its address (the segment base is the
+/// device's to choose, so it is not known offline).
+pub fn planned_parameter_regions(plan: &FlashPlan) -> ParamRegions {
+    let mut out = ParamRegions::new();
+    let mut add = |segment: &str, address: u32, len: usize| {
+        if out.contains_key(segment) {
+            return;
+        }
+        if let Some(bytes) = plan.image_bytes(segment) {
+            out.insert(
+                segment.to_string(),
+                ParamRegion {
+                    segment_id: segment.to_string(),
+                    address,
+                    bytes: bytes[..len.min(bytes.len())].to_vec(),
+                },
+            );
+        }
+    };
+    if plan.is_sys7() {
+        for step in &plan.steps {
+            if let FlashStep::Sys7AbsSegment {
+                address,
+                image: Some(image),
+                ..
+            } = step
+            {
+                if plan
+                    .param_images
+                    .get(&image.segment_id)
+                    .is_some_and(|b| !b.is_empty())
+                {
+                    add(&image.segment_id, *address, image.len);
+                }
+            }
+        }
+        return out;
+    }
+    // Object indices as the plan names them; `None`/`0` is the application
+    // object.
+    let object = |target: &Option<u32>| target.filter(|t| *t != 0);
+    let mut last_allocation: BTreeMap<Option<u32>, usize> = BTreeMap::new();
+    for (i, step) in plan.steps.iter().enumerate() {
+        if let FlashStep::AllocateSegment { target, .. } = step {
+            last_allocation.insert(object(target), i);
+        }
+    }
+    let mut allocated: BTreeMap<Option<u32>, usize> = BTreeMap::new();
+    for (i, step) in plan.steps.iter().enumerate() {
+        match step {
+            FlashStep::AllocateSegment { target, .. } => {
+                allocated.insert(object(target), i);
+            }
+            FlashStep::WriteRelMem {
+                offset,
+                image,
+                target,
+            } if image.kind == ImageKind::Parameters => {
+                let obj = object(target);
+                let readable = match allocated.get(&obj) {
+                    Some(at) => last_allocation.get(&obj) == Some(at),
+                    None => !last_allocation.contains_key(&obj),
+                };
+                if readable {
+                    add(&image.segment_id, *offset, image.len);
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// Reads back every parameter-bearing region a [`FlashPlan`] writes, with the
@@ -1027,42 +718,9 @@ mod tests {
         let current = BTreeMap::from([("M-1_A-1_RS-2".to_string(), vec![21, 0b0100_0000, 0, 0])]);
         let plan = param_plan(&app, &BTreeMap::new(), &BTreeMap::new(), &current);
         assert_eq!(plan.changes.len(), 1, "changes: {:?}", plan.changes);
-        assert_eq!(plan.changes[0].key, "P-0");
+        assert_eq!(plan.changes[0].key, "P-0_R-1");
         assert_eq!(plan.changes[0].old, ParamValue::Known("21".to_string()));
         assert_eq!(plan.changes[0].new, ParamValue::Known("18".to_string()));
-    }
-
-    #[test]
-    fn test_read_bits_msb_first_across_a_byte_boundary() {
-        // A 4-bit field at bit offset 6 spans bytes 0 and 1: 0b??00_1101 → 0b1101.
-        let bytes = [0b0000_0011u8, 0b0100_0000];
-        assert_eq!(read_bits(&bytes, 0, 6, 4), Some(0b1101));
-        // Past the end of what was read.
-        assert_eq!(read_bits(&bytes, 4, 0, 8), None);
-    }
-
-    #[test]
-    fn test_sign_extend_two_s_complement() {
-        assert_eq!(sign_extend(0b1111_1111, 8), -1);
-        assert_eq!(sign_extend(0b0111_1111, 8), 127);
-        assert_eq!(sign_extend(0b11, 2), -1);
-    }
-
-    #[test]
-    fn test_decode_float16_matches_knx_vectors() {
-        // DPT 9 reference: 0x0C 0x1A is 21.00, 0x8A 0x24 is -30.00.
-        assert!((decode_float16(0x0C, 0x1A) - 21.0).abs() < 0.01);
-        assert!((decode_float16(0x8A, 0x24) + 30.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn test_split_module_instance_recovers_the_selector() {
-        let (param, selector) = split_module_instance("MD-1_M-3_MI-1_P-3");
-        assert_eq!(param, "MD-1_P-3");
-        assert_eq!(selector.as_deref(), Some("MD-1_M-3_MI-1"));
-        let (param, selector) = split_module_instance("P-1312");
-        assert_eq!(param, "P-1312");
-        assert_eq!(selector, None);
     }
 
     /// A one-segment app whose 1-bit parameter `P-1` shows com-object 2.
@@ -1141,7 +799,7 @@ mod tests {
     fn test_non_default_parameters_lists_only_changed_values() {
         let app = gated_app();
         let current = BTreeMap::from([("M-1_A-2_RS-1".to_string(), vec![7, 0b1000_0000])]);
-        let readings = non_default_parameters(&app, &current);
+        let readings = non_default_parameters(&app, &BTreeMap::new(), &BTreeMap::new(), &current);
         assert_eq!(readings.len(), 1);
         assert_eq!(readings[0].line(), "Object 2: On (default Off)");
     }

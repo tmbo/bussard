@@ -5412,7 +5412,15 @@ async fn test_parameters_only_download_writes_only_the_changed_parameter()
 
     // The read-back decodes to the vendor default, so nothing is non-default.
     let current = bussard_download::regions_memory(&regions);
-    assert!(bussard_download::non_default_parameters(&app, &current).is_empty());
+    assert!(
+        bussard_download::non_default_parameters(
+            &app,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &current
+        )
+        .is_empty()
+    );
 
     let partial = full.parameters_only(&regions)?;
     assert_eq!(partial.changed_octets(), 1);
@@ -5437,8 +5445,12 @@ async fn test_parameters_only_download_writes_only_the_changed_parameter()
         outcome.ok(),
         "the parameter-only download must verify: {outcome:?}"
     );
-    let readings =
-        bussard_download::non_default_parameters(&app, &bussard_download::regions_memory(&after));
+    let readings = bussard_download::non_default_parameters(
+        &app,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &bussard_download::regions_memory(&after),
+    );
     assert_eq!(readings.len(), 1);
     assert_eq!(readings[0].value, "9");
     assert_eq!(readings[0].default, "7");
@@ -5484,8 +5496,12 @@ async fn test_parameters_only_download_with_nothing_changed_writes_nothing()
     handle.abort();
     let partial = full.parameters_only(&regions)?;
     assert_eq!(partial.changed_octets(), 0);
-    let readings =
-        bussard_download::non_default_parameters(&app, &bussard_download::regions_memory(&regions));
+    let readings = bussard_download::non_default_parameters(
+        &app,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &bussard_download::regions_memory(&regions),
+    );
     assert_eq!(
         readings.len(),
         1,
