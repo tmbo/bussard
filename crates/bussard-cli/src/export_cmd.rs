@@ -79,3 +79,53 @@ pub fn stale_export_hint(dir: &Path) -> Option<String> {
         last.path, last.exported_at
     ))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bussard_model::history::SnapshotReason;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn test_stale_export_hint_follows_apply_and_model_changes() -> TestResult {
+        let dir = std::env::temp_dir().join(format!(
+            "bussard-export-hint-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?
+        ));
+        std::fs::create_dir_all(dir.join("devices"))?;
+        std::fs::write(dir.join("groups.yaml"), "groups: {}\n")?;
+        let history = History::open(&dir);
+
+        // No apply yet: nothing to say.
+        assert_eq!(stale_export_hint(&dir), None);
+
+        // An apply without any export: hint.
+        history.snapshot(SnapshotReason::new("apply"))?;
+        assert!(stale_export_hint(&dir).is_some_and(|h| h.contains("never been exported")));
+
+        // An export after the apply: quiet.
+        bundle::export(&dir, &dir.join("house.bussard"), ExportOptions::default())?;
+        assert_eq!(stale_export_hint(&dir), None);
+
+        // A later apply of an unchanged model: still quiet. The record's second
+        // resolution means the apply may share its timestamp, so backdate it.
+        let record_path = dir.join(bundle::LAST_EXPORT);
+        let mut record = bundle::last_export(&dir).ok_or("record")?;
+        record.exported_at = "2000-01-01T00:00:00Z".to_string();
+        std::fs::write(&record_path, serde_json::to_string(&record)?)?;
+        history.snapshot(SnapshotReason::new("apply"))?;
+        assert_eq!(stale_export_hint(&dir), None);
+
+        // The model changed and was applied: hint.
+        std::fs::write(
+            dir.join("groups.yaml"),
+            "groups:\n  \"0/0/1\":\n    name: A\n",
+        )?;
+        history.snapshot(SnapshotReason::new("apply"))?;
+        assert!(stale_export_hint(&dir).is_some_and(|h| h.contains("predates this apply")));
+        std::fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+}
