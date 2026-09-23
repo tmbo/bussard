@@ -27,6 +27,14 @@ These apply to every subcommand:
 - `read` exits non-zero when no response arrives within the timeout, so scripts can detect a dead group object.
 - `plan` and `apply` exit 0 when there is nothing to do.
 - Refusals (protected GA without `--force`, non-TTY without `--yes`, unsupported device mask, unsupported load procedure) exit non-zero before anything is written.
+- `audit` exits 0 on a completed audit, whatever it found; findings are data, not failures.
+
+| Code | Meaning |
+|---|---|
+| `0` | Success. |
+| `1` | Any other error or refusal. |
+| `3` | `import` re-imported the project but left hand-authored conflicts un-applied. The files were written with your edits intact; reconcile the reported fields. |
+| `4` | The gateway has no free tunnelling connection (`E_NO_MORE_CONNECTIONS`, status `0x24`). Every tunnel slot is taken, usually by Home Assistant, an open ETS project or another bussard process. Distinct from a network timeout, which exits `1`. See [the tunnel budget](SAFETY.md#the-tunnel-budget). |
 
 ## Commands
 
@@ -41,6 +49,15 @@ Create a fresh model directory: discover the gateway, write the skeleton.
 | `--routing` | off | Configure KNXnet/IP routing (multicast) instead of tunneling. |
 
 Gateway discovery is multicast and does not cross subnets. If it finds nothing, `init` still writes a valid skeleton with a placeholder gateway.
+
+With a resolved tunnelling gateway, `init` asks the interface to describe itself (a unicast DESCRIPTION_REQUEST, no tunnel slot used) and prints its tunnel budget:
+
+```
+Gateway: Jung IP Interface (192.0.2.10:3671, IA 1.1.0)
+Tunnelling: 4 tunnels, 1 in use.
+```
+
+The count comes from the tunnelling-info DIB (KNXnet/IP Core v2). An interface that sends only its additional individual addresses prints `N tunnels (usage not reported)`; an older interface that reports neither says so. If the reachability check finds every slot taken, `init` prints the no-free-tunnel message (see [exit codes](#exit-codes)) and still writes the skeleton.
 
 ### `bussard import [PROJECT]`
 
@@ -107,10 +124,12 @@ Introspect a device over the bus: discover its interface objects and, for each, 
 | `<ADDRESS>` | | The device to introspect, e.g. `1.1.4`. |
 | `--dir <DIR>` | `knx` | The model directory (connection defaults). |
 | `--json` | off | Emit JSON instead of the table format. |
+| `--keyring <FILE>` | | The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool key. Required for a security-activated device. The keyring password comes from `BUSSARD_KEYRING_PASSWORD`, never a flag. |
+| `--tool-key <HEX>` | | The raw 32-hex-character tool key, for a simulator or bench device with a synthetic key. Conflicts with `--keyring`. A process argument is visible to other users on the machine, so do not use it for a real installation. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
 
-When the model marks the device secure-capable, the output carries a `KNX Secure:` line (and a `secure` object in `--json`, with `secure_capable` and the Data Secure state). That is inspection only: `bussard` cannot program a Secure device — see [SAFETY.md](SAFETY.md#known-limitations).
+When the model marks the device secure-capable, the output carries a `KNX Secure:` line (and a `secure` object in `--json`, with `secure_capable` and the Data Secure state). A security-activated device refuses plain management access; pass its tool key with `--keyring` (or `--tool-key` for a test device) and `describe` runs over KNX Data Secure. The same two flags work on `flash` and `apply`. See [SAFETY.md](SAFETY.md#known-limitations) for what is verified.
 
 ### `bussard keyring <FILE>`
 
@@ -121,7 +140,7 @@ Inspect an ETS KNX Secure keyring export (`.knxkeys`): print what it carries —
 | `<FILE>` | | The `.knxkeys` file to inspect. |
 | `--json` | off | Emit JSON instead of the text summary. |
 
-The keyring password comes from `BUSSARD_KEYRING_PASSWORD` and is deliberately **not** a flag, so it never lands in shell history or a process listing. Reading a keyring does not enable Secure writes; see [SAFETY.md](SAFETY.md#known-limitations).
+The keyring password comes from `BUSSARD_KEYRING_PASSWORD` and is deliberately **not** a flag, so it never lands in shell history or a process listing. Reading a keyring changes nothing on the bus; to program a Data Secure device, pass the same file to `flash`, `apply` or `describe` with `--keyring`. See [SAFETY.md](SAFETY.md#known-limitations).
 
 ### `bussard import-product [FILE]`
 
@@ -167,6 +186,8 @@ The same pre-flight also checks the device is factory-fresh (issue #79), read-on
 | `--yes` | off | Skip the interactive confirmation (dangerous; for scripts). |
 | `--force` | off | Flash a device that is **not** factory-fresh: it already carries a different (or unidentifiable) application, or its load state could not be read. Destructive: the resident application, its parameters and its links are overwritten with no backup. Not needed to re-flash the same application. |
 | `--bcu-key <HEX>` | free access | The device's BCU access key, in hex (`FFFFFFFF` or `0x11223344`), presented with A_Authorize on every management connect. Unset presents the free-access key (`FFFFFFFF`), correct for an unkeyed device; a keyed device needs its project key here or it denies access. |
+| `--keyring <FILE>` | | The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool key. Required for a security-activated device; the password comes from `BUSSARD_KEYRING_PASSWORD`. |
+| `--tool-key <HEX>` | | The raw 32-hex-character tool key, for a simulator or bench device. Conflicts with `--keyring`; unsuitable for a real key (process arguments are visible). |
 | `--allow-remote-gateway` | off | Permit a flash to a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
@@ -177,7 +198,7 @@ The pre-flight report leads with the **parameter-level plan** (issue #109): one 
 
 The confirmation names the resolved gateway (`flash <app> to <target> via <host:port>?`).
 
-Supported load-procedure operations: `Unload`, `Load`, `LoadCompleted`, `RelSegment`, `WriteRelMem`, `WriteMem`, `WriteProp`, `CompareProp`, `LoadImageProp`, `Restart` on a single-LSM System B device. Procedures containing `LdCtrlAbsSegment`, `LdCtrlTaskSegment`, `LdCtrlTaskCtrl1`, or unrecognized ops (e.g. `LdCtrlCompareRelMem`) are refused whole, before any write. After writing, `flash` verifies the application reads back as `Loaded` and spot-checks written segments byte-for-byte.
+Supported load-procedure operations on System B: `Unload`, `Load`, `LoadCompleted`, `RelSegment`, `WriteRelMem`, `WriteMem`, `WriteProp`, `CompareProp`, `LoadImageProp`, `Restart`. On System 7 the procedure runs on its own absolute-addressed lowering: `Unload`, `Load`, `AbsSegment` (allocate and stream), `TaskSegment`, `TaskCtrl1`, `LoadCompleted`, the obj0/PID78 `CompareProp`, `CompareMem`, `LoadImageProp` and `Restart`. Procedures with unrecognized ops (e.g. `LdCtrlCompareRelMem`) are refused whole, before any write. After writing, `flash` verifies the application reads back as `Loaded` and spot-checks written segments byte-for-byte.
 
 Only `flash` takes `--bcu-key`; `plan`, `apply` and `reconstruct` always authorize with the free-access key, so a device with a BCU key set denies them.
 
@@ -206,6 +227,8 @@ Apply the model's link tables to a device: plan, confirm, back up, write, verify
 | `--json` | off | Line mode only: emit the summary as JSON. |
 | `--dir <DIR>` | `knx` | The model directory. |
 | `--yes` | off | Skip the interactive confirmation (dangerous; for scripts). |
+| `--keyring <FILE>` | | The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool key. Required for a security-activated device; the password comes from `BUSSARD_KEYRING_PASSWORD`. |
+| `--tool-key <HEX>` | | The raw 32-hex-character tool key, for a simulator or bench device. Conflicts with `--keyring`. |
 | `--allow-remote-gateway` | off | Permit a write to a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
@@ -524,6 +547,35 @@ Generate the Home Assistant KNX integration YAML from the model. Derivation rule
 | `--dir <DIR>` | `knx` | The model directory. |
 | `--out <FILE>` | stdout | Output file. |
 
+### `bussard audit`
+
+Report what the installation holds and what bussard can do with it. Read-only. The static part reads only the model; `--live` adds a read-tier look at the gateway and the bus. Exits 0 on a completed audit.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--dir <DIR>` | `knx` | The model directory. |
+| `--json` | off | Emit one JSON object instead of the sectioned text report. The same object the `knx_audit` MCP tool returns. |
+| `--live` | off | Add the live part: gateway description, traffic sample, scan of the modelled devices. |
+| `--window <SECS>` | `30` | Traffic-sample window for `--live`. |
+| `--keyring <FILE>` | | An ETS `.knxkeys` keyring; each Secure device is reported with or without a tool-key entry. Password from `BUSSARD_KEYRING_PASSWORD`. No key material is printed. |
+| `--gateway <HOST>` | | Gateway override. |
+| `--routing` | off | Force routing transport. |
+
+Static sections (JSON keys in brackets):
+
+- **Model** (`model`): device count per line, devices without a name or a location, GAs without a DPT or a name (including GAs that exist only in `links.yaml`), links to com-objects the device file does not declare, links for addresses with no device file, protected GAs, project name and import source.
+- **Findings** (`model.findings`): one-sided links only, a GA with senders but no listener or listeners but no sender. Unlinked com-objects and unused GAs are counted in `model.info` as neutral information. The viz Problems panel renders this same analysis.
+- **Devices per mask** (`masks`): devices grouped by the `product.mask` their file records, with what bussard can do (`plan_apply`, `flash`, `reconstruct`, `describe`). The column comes from the same table the `plan`, `apply`, `flash` and `reconstruct` refusals use ([SAFETY.md](SAFETY.md#supported-device-masks)).
+- **KNX Secure** (`secure`): Secure-capable and activated devices, and with `--keyring` whether the keyring holds each one's tool key.
+
+Live sections (`live`, with `--live`):
+
+- **Gateway** (`live.gateway`): name, individual address and `N tunnels, M in use` from the interface's description. A full interface stops the audit with exit code `4`.
+- **Traffic sample** (`live.traffic`): group telegrams seen during `--window`, per GA with its repetition rate (frames marked repeated in the cEMI control field, or identical telegrams from the same source within 500 ms), GAs sent on the bus that have no listener in the model, and source addresses the model does not know.
+- **Scan delta** (`live.scan`): every modelled device probed with the `scan` machinery, one at a time and at most one probe per 250 ms, per line: which answered (with a mask mismatch against the model flagged) and which did not. Only modelled addresses are probed; unexpected devices show up as unknown traffic sources, or run `bussard scan`.
+
+The live part sends only management reads (device descriptor, authorize, device-object properties) to individual addresses and never a group telegram.
+
 ### `bussard mcp`
 
 Run the MCP server over stdio (see [the MCP server](#the-mcp-server)).
@@ -559,7 +611,7 @@ Serve the network-visualization website: an HTTP server that renders the model a
 | Variable | Meaning |
 |---|---|
 | `BUSSARD_PROJECT_PASSWORD` | Password for a protected `.knxproj` when `--password` is not given. Keep it in an untracked `.env`, never in the repo. |
-| `BUSSARD_KEYRING_PASSWORD` | Password for a `.knxkeys` keyring read by `bussard keyring`. There is deliberately no flag for it, so it never lands in shell history or a process listing. |
+| `BUSSARD_KEYRING_PASSWORD` | Password for a `.knxkeys` keyring read by `bussard keyring`, or passed with `--keyring` to `flash`, `apply`, `describe` and `audit`. There is deliberately no flag for it, so it never lands in shell history or a process listing. |
 | `BUSSARD_ALLOW_REAL_GATEWAY` | Set to `1` to permit a write command against a non-loopback (real) gateway, equivalent to `--allow-remote-gateway`. Loopback gateways never need it. |
 | `RUST_LOG` | Log filter (e.g. `debug`, `bussard_transport=trace`). Overrides `-v`/`--verbose` when set. |
 | `BUSSARD_ADOPT_ADDRESS` | The target address for `adopt`, for driving the wizard from a script or test (together with `--product`). |
@@ -858,7 +910,7 @@ CREATE INDEX idx_telegrams_dest_ts ON telegrams (destination, ts_utc);
 
 | Tier | Flag | On the bus |
 |---|---|---|
-| Passive | `--passive` | Never transmits. The bus-touching read tools (`knx_read_group`, `knx_describe_device`) are not registered. |
+| Passive | `--passive` | Never transmits. The bus-touching read tools (`knx_read_group`, `knx_describe_device`) are not registered, and `knx_audit` refuses `live: true`. |
 | Read (default) | none | May send GroupValueReads, rate-limited. |
 | Write | `--allow-writes` | Adds `knx_write_group` and `knx_run_tests`. |
 | No model edits | `--no-model-edits` | Withholds the six model-edit tools. Orthogonal to the tiers above: they write YAML files, never the bus, so they are registered in every tier by default. |
@@ -878,6 +930,7 @@ Bus operations share one rate limiter (minimum 250 ms between operations, at mos
 | `knx_recent_telegrams` | `limit` (default 50, max 1000), `ga` (GA or prefix), `source` (IA), `since` (RFC3339), all optional | Recent decoded telegrams, oldest first. With `--capture-db`, windows that predate the in-memory ring are topped up from the capture database. |
 | `knx_wait_for_telegram` | `timeout_seconds` (max 300), `ga`, `source` (optional) | Blocks until a matching telegram arrives or the timeout elapses. A timeout is a normal result, not an error. Enables "press the button now" debugging. |
 | `knx_validate` | none | Every diagnostic (code, severity, message, location) plus counts. |
+| `knx_audit` | `live` (default false), `window_seconds` (default 30, max 3600) | The `bussard audit --json` object. With `live: true` it adds the gateway description with tunnel slots and a traffic sample taken from the server's telegram buffer; `live.scan` is `null` (line scans are CLI-only) and the keyring check is not available. `live: true` is refused in `--passive` mode; the static audit is always available. |
 | `knx_scaffold_groups` | `plan` (JSON `{rooms: [{floor, room, functions}]}`), `scheme` (optional) | Writes `groups.yaml` from a room and function list, returns the addresses added and the model's validation counts. Confirm the room list with the human first. |
 | `knx_read_group` | `ga` | Transmits a GroupValueRead and returns the decoded response. Omitted in `--passive` mode. |
 | `knx_describe_device` | `address` | Introspects a device: enumerates its interface objects and each property's description (PID, type, element count, access levels). Read-only on the bus. Omitted in `--passive` mode. |

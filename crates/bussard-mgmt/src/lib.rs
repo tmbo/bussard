@@ -87,7 +87,10 @@ pub use memory::{
     read_memory, read_memory_range, select_extended_memory, write_memory, write_memory_chunked,
     write_memory_verified,
 };
-pub use profile::{KnxMedium, LsmRealisation, MaskFamily, MaskProfile, Sys7Profile};
+pub use profile::{
+    KnxMedium, LsmRealisation, MaskCapabilities, MaskFamily, MaskProfile, Sys7Profile,
+    capability_table,
+};
 pub use secure::SecureLayer;
 pub use sys7::{
     LsmAccess, alloc_attr_octets, encode_alloc_segment, encode_task_ctrl1, encode_task_segment,

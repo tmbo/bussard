@@ -10,6 +10,7 @@
 #![warn(missing_docs)]
 
 pub mod address;
+pub mod analysis;
 pub mod change;
 pub mod codec;
 pub mod doc;
@@ -27,6 +28,7 @@ pub mod tests_schema;
 pub mod validate;
 
 pub use address::{AddressParseError, GroupAddress, IndividualAddress};
+pub use analysis::{ModelAnalysis, analyze};
 pub use change::{Change, ChangeKind, ChangeSet, LinkRole, describe, render_text};
 pub use codec::{
     DateTime, EncodeError, Float16RangeError, HvacMode, ParseValueError, Rgbw, TypedValue, decode,

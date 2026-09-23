@@ -22,6 +22,30 @@ pub struct ConnOverrides {
     pub routing: bool,
 }
 
+/// The exit code for "the gateway has no free tunnelling connection"
+/// (`E_NO_MORE_CONNECTIONS`, issue #105).
+///
+/// Distinct from the generic failure code `1` so a script can tell a full
+/// interface from a network timeout or a refusal.
+pub const EXIT_NO_FREE_TUNNEL: u8 = 4;
+
+/// The message printed when a gateway refuses a connect for want of a free
+/// tunnelling slot.
+///
+/// Names the clients that most often hold the slots, because the fix is almost
+/// always "stop one of them", not "retry".
+pub fn no_free_tunnel_message(gateway: impl std::fmt::Display) -> String {
+    format!(
+        "error: {gateway} has no free tunnelling connection (E_NO_MORE_CONNECTIONS).\n\
+         A KNXnet/IP interface has a fixed number of tunnel slots, often one to five, and each \
+         client holds one for as long as it is connected. The usual occupants are Home \
+         Assistant's KNX integration, an open ETS project, and another bussard command or \
+         `bussard viz` / `bussard mcp` still running.\n\
+         Close one of them (or wait for its connection to time out) and retry; \
+         `bussard init --gateway {gateway}` prints the slot count when the interface reports it."
+    )
+}
+
 /// Loads the model from `dir` for a **monitoring** command that may safely
 /// degrade to numeric addresses. An absent directory or a parse error both warn
 /// and return `None` (monitor still runs). Write and management commands must

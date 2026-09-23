@@ -5,6 +5,7 @@
 mod adopt_cmd;
 mod apply_cmd;
 mod assign_cmd;
+mod audit_cmd;
 mod backup_cmd;
 mod capture_cmd;
 mod commission_cmd;
@@ -926,6 +927,34 @@ enum Command {
         #[arg(long)]
         allow_remote_gateway: bool,
     },
+    /// Audit the installation: model gaps, one-sided links, what bussard can do
+    /// per device mask, KNX Secure coverage; with `--live`, the gateway's tunnel
+    /// slots, a traffic sample and a scan of the modelled devices. Read-only.
+    Audit {
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Emit one JSON object instead of the sectioned text report.
+        #[arg(long)]
+        json: bool,
+        /// Add the live part: gateway description, traffic sample and a probe of
+        /// every modelled device. Read tier only; never sends a group telegram.
+        #[arg(long)]
+        live: bool,
+        /// Traffic-sample window in seconds for `--live`.
+        #[arg(long, value_name = "SECS", default_value_t = 30, requires = "live")]
+        window: u64,
+        /// An ETS `.knxkeys` keyring to check Secure devices against (password in
+        /// `BUSSARD_KEYRING_PASSWORD`). Key material is never printed.
+        #[arg(long, value_name = "FILE")]
+        keyring: Option<PathBuf>,
+        /// Override the gateway `host[:port]` for tunneling.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Force KNXnet/IP routing (multicast) transport.
+        #[arg(long)]
+        routing: bool,
+    },
     /// Run the read-only MCP server over stdio.
     Mcp {
         /// The directory containing the model (required for the MCP server).
@@ -975,16 +1004,45 @@ fn main() -> ExitCode {
     // available for regression spotting, but a plain 0.1.0 run is quiet.
     let started = std::time::Instant::now();
     let code = match run(cli.command, cli.verbose) {
-        Ok(code) => code,
+        Ok(code) if code == ExitCode::SUCCESS => code,
+        Ok(code) => no_free_tunnel_or(code),
+        // A gateway with no free tunnel slot gets its own message and exit code
+        // (issue #105); it is a capacity refusal, not a generic failure.
+        Err(err) if is_no_free_tunnel(&err) => {
+            eprintln!("{}", conn_cmd::no_free_tunnel_message("the gateway"));
+            ExitCode::from(conn_cmd::EXIT_NO_FREE_TUNNEL)
+        }
         Err(err) => {
             eprintln!("error: {err:#}");
-            ExitCode::FAILURE
+            no_free_tunnel_or(ExitCode::FAILURE)
         }
     };
     if cli.timing {
         eprintln!("took {:.2?}", started.elapsed());
     }
     code
+}
+
+/// Maps a failed run to the no-free-tunnel exit code when the bus actor saw the
+/// gateway refuse every connect with `E_NO_MORE_CONNECTIONS` (the actor retries
+/// such refusals, so the command itself only sees a bus that never came up).
+fn no_free_tunnel_or(code: ExitCode) -> ExitCode {
+    if bussard_bus::no_free_tunnel_seen() {
+        eprintln!("{}", conn_cmd::no_free_tunnel_message("the gateway"));
+        ExitCode::from(conn_cmd::EXIT_NO_FREE_TUNNEL)
+    } else {
+        code
+    }
+}
+
+/// Whether an error chain carries the "no free tunnelling connection" refusal.
+fn is_no_free_tunnel(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<bussard_transport::TransportError>(),
+            Some(bussard_transport::TransportError::NoMoreConnections)
+        )
+    })
 }
 
 /// Dispatches a subcommand, returning the process exit code on success.
@@ -1457,6 +1515,24 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 only,
                 yes,
                 allow_remote_gateway,
+            },
+            conn_cmd::ConnOverrides { gateway, routing },
+        ),
+        Command::Audit {
+            dir,
+            json,
+            live,
+            window,
+            keyring,
+            gateway,
+            routing,
+        } => audit_cmd::run(
+            &dir,
+            audit_cmd::AuditOptions {
+                json,
+                live,
+                window: std::time::Duration::from_secs(window),
+                keyring: keyring.as_deref(),
             },
             conn_cmd::ConnOverrides { gateway, routing },
         ),

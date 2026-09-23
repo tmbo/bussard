@@ -57,12 +57,12 @@ const PER_ADDRESS_ESTIMATE: Duration = Duration::from_millis(3200);
 
 /// A single discovered device and everything read from it.
 #[derive(Debug, Clone)]
-struct Found {
-    address: IndividualAddress,
-    mask: u16,
-    manufacturer_id: Option<u16>,
-    serial: Option<Vec<u8>>,
-    order: Option<String>,
+pub(crate) struct Found {
+    pub(crate) address: IndividualAddress,
+    pub(crate) mask: u16,
+    pub(crate) manufacturer_id: Option<u16>,
+    pub(crate) serial: Option<Vec<u8>>,
+    pub(crate) order: Option<String>,
 }
 
 /// The final cross-referenced report.
@@ -184,7 +184,7 @@ async fn sweep(
 /// present — best-effort read manufacturer/serial/order. Returns `None` for an
 /// absent or refusing device. The lease is released when the [`LeaseChannel`] is
 /// dropped at the end of this function.
-async fn probe(
+pub(crate) async fn probe(
     handle: &BusHandle,
     addr: IndividualAddress,
     source: IndividualAddress,

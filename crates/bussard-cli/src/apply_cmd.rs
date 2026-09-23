@@ -237,7 +237,7 @@ pub(crate) fn apply_desired(
     // assert it here too as a belt-and-braces guard before any write. Routed
     // through the central MaskProfile seam.
     let profile = MaskProfile::from_mask(live.mask);
-    if !(profile.is_system_b() || profile.is_system_7()) {
+    if !profile.capabilities().plan_apply {
         eprintln!(
             "{target} reports mask {:04X} ({}) — refusing to write a device outside the \
              System B / System 7 families",

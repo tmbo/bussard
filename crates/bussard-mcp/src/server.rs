@@ -6,9 +6,9 @@
 //! `knx_run_tests` write tools over the Model Context Protocol. The per-tier
 //! tool counts are listed on [`crate::tool_names`]. The model and history tools
 //! live in [`crate::tools_model`], the group-planning tools in
-//! [`crate::tools_groups`], and the learn and acceptance tools in
-//! [`crate::tools_learn`]; each is its own `#[tool_router]` block, combined in
-//! [`BussardMcp::new`].
+//! [`crate::tools_groups`], the learn and acceptance tools in
+//! [`crate::tools_learn`], and `knx_audit` in [`crate::tools_audit`]; each is
+//! its own `#[tool_router]` block, combined in [`BussardMcp::new`].
 //! Each `#[tool]`
 //! method is a thin adapter: it parses arguments, calls the pure logic in
 //! [`crate::tools`], and boxes the JSON in a `CallToolResult::structured`.
@@ -47,15 +47,17 @@ impl BussardMcp {
     /// `knx_read_group` in passive mode, and `knx_write_group` unless
     /// `--allow-writes` is set (and never in passive mode).
     pub fn new(state: Arc<SharedState>) -> Self {
-        // The bus tools, the model-edit tools, the group-planning tools and the
-        // learn/acceptance tools live in separate `#[tool_router]` impl blocks
-        // (see `crate::tools_model`, `crate::tools_groups` and
-        // `crate::tools_learn`); rmcp's `ToolRouter` implements `Add`, so they
+        // The bus tools, the model-edit tools, the group-planning tools, the
+        // learn/acceptance tools and the audit tool live in separate
+        // `#[tool_router]` impl blocks (see `crate::tools_model`,
+        // `crate::tools_groups`, `crate::tools_learn` and `crate::tools_audit`,
+        // issue #93); rmcp's `ToolRouter` implements `Add`, so they
         // combine into one instance router, then get trimmed for this tier.
         let mut tool_router = Self::tool_router()
             + Self::model_router()
             + Self::groups_router()
-            + Self::learn_router();
+            + Self::learn_router()
+            + Self::audit_router();
         if state.no_model_edits {
             for name in crate::tools_model::MODEL_EDIT_TOOLS {
                 tool_router.remove_route(name);
