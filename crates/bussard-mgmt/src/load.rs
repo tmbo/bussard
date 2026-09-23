@@ -61,7 +61,7 @@
 //! ever driven by `bussard apply`, which first shows a plan, takes confirmation,
 //! and writes a backup — see `bussard-download`.
 
-use crate::apci::{self};
+use crate::apci::{self, RestartResponse};
 use crate::connection::{L4Channel, Layer4Connection, property_request, property_write_request};
 use crate::error::MgmtError;
 use crate::tables::{PID_TABLE, PID_TABLE_REFERENCE};
@@ -377,9 +377,38 @@ pub enum WriteError {
         detail: String,
     },
 
+    /// The device answered a master-reset `A_Restart` with a non-zero error code
+    /// in its `A_Restart_Response`: it refused the reset and erased nothing.
+    #[error(
+        "{address}: device refused the master reset (erase code {erase_code}, channel \
+         {channel_number}): A_Restart_Response error code {error_code} ({meaning})",
+        meaning = restart_error_meaning(*error_code)
+    )]
+    RestartRefused {
+        /// The device.
+        address: IndividualAddress,
+        /// The erase code that was requested.
+        erase_code: u8,
+        /// The channel number that was requested.
+        channel_number: u8,
+        /// The non-zero error code the device answered.
+        error_code: u8,
+    },
+
     /// An underlying management error (absent, NAK, disconnect, malformed).
     #[error(transparent)]
     Mgmt(#[from] MgmtError),
+}
+
+/// A readable name for an `A_Restart_Response` error code (KNX spec values).
+fn restart_error_meaning(error_code: u8) -> &'static str {
+    match error_code {
+        0x00 => "accepted",
+        0x01 => "access denied",
+        0x02 => "unsupported erase code",
+        0x03 => "invalid channel number",
+        _ => "device-specific error",
+    }
 }
 
 /// Discovery context attached to an [`WriteError::UnexpectedLoadState`] so a
@@ -552,6 +581,67 @@ pub async fn master_reset_via_basic_restart<Ch: L4Channel>(
     // out the reboot and reconnects.
     l4.send_data_unacked(apci, &payload).await?;
     Ok(())
+}
+
+/// The longest bussard waits on a device's `A_Restart_Response` process time.
+///
+/// The process time is a 16-bit count of seconds, so a corrupt or hostile answer
+/// could ask for 18 hours. The ETS captures (issue #117) show 8 s for a factory
+/// reset and 0 s for a confirmed restart; a minute is well past both.
+pub const MAX_RESTART_PROCESS_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How long to wait after a confirmed master reset before reconnecting: the
+/// device's reported process time, capped at [`MAX_RESTART_PROCESS_WAIT`].
+pub fn restart_process_wait(response: &RestartResponse) -> std::time::Duration {
+    std::time::Duration::from_secs(u64::from(response.process_time_s)).min(MAX_RESTART_PROCESS_WAIT)
+}
+
+/// Sends a **confirmed master reset**: `A_Restart` with the master-reset
+/// restart-type bit (APCI `0x381`) and the two octets `[erase_code,
+/// channel_number]`, as a numbered request, and reads the device's
+/// `A_Restart_Response` (APCI `0x3A1`).
+///
+/// This is the ETS wire shape for the factory reset that opens an initial System
+/// B download (`4f 81 07 00` answered by `4f a1 00 00 08`, erase code 7) and for
+/// the confirmed restart that ends it (erase code 1), both from the issue #117
+/// captures. After answering, the device reboots and drops the L4 connection, so
+/// the caller must wait [`restart_process_wait`] and reconnect; this function
+/// only performs the exchange.
+///
+/// Returns the decoded response on error code `0`. A non-zero error code is
+/// [`WriteError::RestartRefused`]; a response with another APCI is
+/// [`MgmtError::MalformedResponse`]; silence surfaces the connection's own error.
+///
+/// `LdCtrlMasterReset` ops in a load procedure keep using
+/// [`master_reset_via_basic_restart`], which is what KNX Virtual expects.
+pub async fn master_reset<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    erase_code: u8,
+    channel_number: u8,
+) -> Result<RestartResponse> {
+    let address = l4.target();
+    let (apci, payload) = crate::apci::encode_master_reset(erase_code, channel_number);
+    let (resp_apci, resp) = l4.request(apci, &payload).await?;
+    if resp_apci != crate::apci::A_RESTART_RESPONSE {
+        return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
+            address,
+            reason: format!(
+                "expected A_Restart_Response (APCI {:#05X}) to a master reset, got APCI \
+                 {resp_apci:#05X}",
+                crate::apci::A_RESTART_RESPONSE
+            ),
+        }));
+    }
+    let response = crate::apci::decode_restart_response_full(&resp);
+    if response.error_code != 0 {
+        return Err(WriteError::RestartRefused {
+            address,
+            erase_code,
+            channel_number,
+            error_code: response.error_code,
+        });
+    }
+    Ok(response)
 }
 
 /// Reads an interface-object property and compares it byte-for-byte against

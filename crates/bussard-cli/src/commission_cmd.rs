@@ -400,6 +400,7 @@ fn commission_one(
             true,
             false,
             false,
+            false,
             options.allow_remote_gateway,
             None,
             tool_key_source,
