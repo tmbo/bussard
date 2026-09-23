@@ -690,6 +690,9 @@ pub enum LoadOp {
         /// The value bytes to write, decoded from the hex `InlineData` attribute.
         /// `None` for a bare op that carries no value.
         inline_data: Option<Vec<u8>>,
+        /// `StartElement`: the 1-based element the value is written from
+        /// (absent = element 1). ETS writes one element per request from here.
+        start_element: Option<u32>,
     },
     /// `<LdCtrlCompareProp …>`: read an interface-object property and compare it
     /// against expected data — the verify twin of [`LoadOp::WriteProp`]. The
@@ -1812,6 +1815,7 @@ pub(crate) fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m
             obj_type: u(b"ObjType"),
             prop_id: u(b"PropId"),
             inline_data: get(m, b"InlineData").and_then(decode_hex_bytes),
+            start_element: u(b"StartElement"),
         },
         b"LdCtrlCompareProp" => LoadOp::CompareProp {
             obj_idx: u(b"ObjIdx"),

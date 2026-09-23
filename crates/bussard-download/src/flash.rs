@@ -146,6 +146,8 @@ pub enum FlashStep {
         prop_id: u32,
         /// The value bytes to write (decoded `InlineData`), echo-validated.
         value: Vec<u8>,
+        /// The 1-based element the value is written from (`StartElement`, default 1).
+        start_element: u16,
     },
     /// Verify an interface-object property against expected data
     /// (`LdCtrlCompareProp`) — the read-only precondition check that is the twin
@@ -1826,8 +1828,13 @@ pub fn plan_flash(
                 obj_type,
                 prop_id,
                 inline_data,
+                start_element,
             } => {
                 let obj_type = obj_type.unwrap_or(0);
+                let start_element = start_element
+                    .and_then(|e| u16::try_from(e).ok())
+                    .unwrap_or(1)
+                    .max(1);
                 let prop_id = prop_id.unwrap_or(0);
                 // The property write targets an object index. When the op names
                 // one directly (`ObjIdx`) use it; otherwise it is object 0 (the
@@ -1877,6 +1884,7 @@ pub fn plan_flash(
                             obj_type,
                             prop_id,
                             value: value.clone(),
+                            start_element,
                         });
                     }
                     _ => {
@@ -3603,6 +3611,7 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                         obj_type,
                         prop_id,
                         value,
+                        start_element,
                     } => {
                         // A spliced template writes properties on obj4 and obj5 (the app
                         // id, PID 13). Skip a write to an object index the device does not
@@ -3616,16 +3625,29 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                         {
                             return Ok(());
                         }
-                        write_property(
-                            session.l4(),
-                            (*obj_idx).min(u32::from(u8::MAX)) as u8,
-                            (*prop_id).min(u32::from(u8::MAX)) as u8,
-                            1,
-                            1,
-                            value,
-                            None,
-                        )
-                        .await?;
+                        let obj = (*obj_idx).min(u32::from(u8::MAX)) as u8;
+                        let pid = (*prop_id).min(u32::from(u8::MAX)) as u8;
+                        // PID_MCB_TABLE is an array of 8-octet entries and the vendor
+                        // InlineData is padded to 10: ETS writes one 8-octet element per
+                        // request from `StartElement` (1.1.18 capture: `count=1 index=1
+                        // len=8`, then `index=2`). The Jung F50 refuses the padded
+                        // 10-octet write with a zero-count response (issue #89).
+                        if pid == bussard_mgmt::PID_MCB_TABLE
+                            && value.len() > bussard_mgmt::MCB_ENTRY_LEN
+                        {
+                            for (i, entry) in value.chunks(bussard_mgmt::MCB_ENTRY_LEN).enumerate()
+                            {
+                                if entry.len() < bussard_mgmt::MCB_ENTRY_LEN {
+                                    break; // the vendor's zero padding, never an entry
+                                }
+                                let index = start_element.saturating_add(i as u16);
+                                write_property(session.l4(), obj, pid, 1, index, entry, None)
+                                    .await?;
+                            }
+                        } else {
+                            write_property(session.l4(), obj, pid, 1, *start_element, value, None)
+                                .await?;
+                        }
                     }
                     FlashStep::CompareProp {
                         obj_idx,
@@ -4626,9 +4648,10 @@ fn step_label(step: &FlashStep) -> String {
             obj_type,
             prop_id,
             value,
+            start_element,
         } => {
             format!(
-                "write property (object {obj_idx}, type {obj_type}, PID {prop_id}, {} byte(s))",
+                "write property (object {obj_idx}, type {obj_type}, PID {prop_id}, {} byte(s) from element {start_element})",
                 value.len()
             )
         }
