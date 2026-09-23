@@ -12,6 +12,7 @@
 pub mod address;
 pub mod codec;
 pub mod dpt;
+pub mod ets_export;
 pub mod flags;
 pub mod lint;
 pub mod loader;
@@ -27,6 +28,7 @@ pub use codec::{
     encode, encode_float16, parse_value,
 };
 pub use dpt::{ApduSize, Dpt, DptParseError};
+pub use ets_export::{to_ets_csv, to_ets_xml};
 pub use flags::{Flags, FlagsParseError};
 pub use lint::{GroupsLint, LintConfig, TopologyLint, lint};
 pub use loader::{LoadError, LoadedDevice, Model, SaveError};
