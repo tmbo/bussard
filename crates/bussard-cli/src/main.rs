@@ -17,6 +17,7 @@ mod export_cmd;
 mod export_groups_cmd;
 mod flash_cmd;
 mod flash_dump;
+mod flash_params;
 mod ha_config_cmd;
 mod history_cmd;
 mod import_bundle;
@@ -28,6 +29,7 @@ mod learn_cmd;
 mod line_cmd;
 mod mcp_cmd;
 mod monitor_cmd;
+mod param_readback;
 mod plan_cmd;
 mod read_cmd;
 mod reconstruct_cmd;
@@ -289,6 +291,15 @@ enum Command {
         /// In line mode this only supplies connection defaults.
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
+        /// The device's vendor `.knxprod`, to read back and decode its parameter
+        /// memory too (issue #119). Without it the archive in `<dir>/vendor/`
+        /// whose catalogue carries the model's order number is used, when cached.
+        #[arg(long, value_name = "FILE", conflicts_with = "line")]
+        product: Option<PathBuf>,
+        /// The application program id to decode the parameters with (default:
+        /// the model's application ref, else the order number, else the sole one).
+        #[arg(long, value_name = "REF", conflicts_with = "line")]
+        application: Option<String>,
         /// Emit JSON instead of the report format.
         #[arg(long)]
         json: bool,
@@ -466,6 +477,15 @@ enum Command {
         /// know the device holds no stale image.
         #[arg(long)]
         no_factory_reset: bool,
+        /// Rewrite only the parameter memory of a device that already runs this
+        /// application (issue #119): no unload, no segment allocation, no table
+        /// write. Only the octets that differ from what the device holds are
+        /// written, then the load completes and the device restarts. Refused when
+        /// the device runs another application or is not Loaded, and when a
+        /// changed parameter shows or hides a com-object (that needs a full flash).
+        /// The parameter memory is backed up first.
+        #[arg(long, conflicts_with_all = ["full", "force", "no_factory_reset", "dry_run"])]
+        parameters_only: bool,
         /// Permit a write to a non-loopback (real) gateway. Required for any
         /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
         #[arg(long)]
@@ -530,6 +550,15 @@ enum Command {
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
+        /// The device's vendor `.knxprod`, to read back and decode its parameter
+        /// memory too (issue #119). Without it the archive in `<dir>/vendor/`
+        /// whose catalogue carries the model's order number is used, when cached.
+        #[arg(long, value_name = "FILE", conflicts_with = "line")]
+        product: Option<PathBuf>,
+        /// The application program id to decode the parameters with (default:
+        /// the model's application ref, else the order number, else the sole one).
+        #[arg(long, value_name = "REF", conflicts_with = "line")]
+        application: Option<String>,
         /// Emit JSON instead of the report format.
         #[arg(long)]
         json: bool,
@@ -1335,6 +1364,8 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             to,
             out,
             dir,
+            product,
+            application,
             json,
             gateway,
             routing,
@@ -1358,7 +1389,16 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 None => {
                     // clap guarantees ADDRESS is present when --line is absent.
                     let address = address.expect("clap requires ADDRESS without --line");
-                    reconstruct_cmd::run(&address, &dir, json, overrides)
+                    reconstruct_cmd::run(
+                        &address,
+                        &dir,
+                        json,
+                        overrides,
+                        param_readback::Selection {
+                            product: product.as_deref(),
+                            application: application.as_deref(),
+                        },
+                    )
                 }
             }
         }
@@ -1430,6 +1470,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             force,
             full,
             no_factory_reset,
+            parameters_only,
             allow_remote_gateway,
             bcu_key,
             keyring,
@@ -1450,6 +1491,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             force,
             full,
             no_factory_reset,
+            parameters_only,
             allow_remote_gateway,
             bcu_key.as_deref(),
             secure_key::ToolKeySource {
@@ -1471,6 +1513,8 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             address,
             line,
             dir,
+            product,
+            application,
             json,
             gateway,
             routing,
@@ -1486,7 +1530,16 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 None => {
                     // clap guarantees ADDRESS is present when --line is absent.
                     let address = address.expect("clap requires ADDRESS without --line");
-                    plan_cmd::run(&address, &dir, json, overrides)
+                    plan_cmd::run(
+                        &address,
+                        &dir,
+                        json,
+                        overrides,
+                        param_readback::Selection {
+                            product: product.as_deref(),
+                            application: application.as_deref(),
+                        },
+                    )
                 }
             }
         }

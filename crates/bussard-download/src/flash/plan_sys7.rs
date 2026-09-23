@@ -451,6 +451,7 @@ pub(super) fn plan_flash_sys7(
             segment_masks,
         }),
         confirmed_restart: false,
+        baseline: BTreeMap::new(),
     })
 }
 

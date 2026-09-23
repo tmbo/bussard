@@ -45,9 +45,9 @@ pub use apply_sys7::{
 };
 pub use backup::{
     AssociationEntry, BackupError, BackupManifest, BackupStatus, DeviceBackup, ManifestEntry,
-    ParameterMemory, ParameterStatus, ResolvedEntry, Sys7Detail, backups_root, find_device_backup,
-    has_installation_backup, read_device_backup, read_manifest, write_device_backup,
-    write_manifest,
+    ParameterBackup, ParameterMemory, ParameterStatus, ResolvedEntry, Sys7Detail, backups_root,
+    find_device_backup, has_installation_backup, parameter_backups_dir, read_device_backup,
+    read_manifest, write_device_backup, write_manifest, write_parameter_backup,
 };
 pub use compute::{
     ChannelConfig, DesiredTables, GroupObjectDescriptor, LinkedObject, Priority,
@@ -64,13 +64,15 @@ pub use compute_sys7::{
 };
 pub use flash::{
     AppIdentity, Connector, DeviceFacts, FlashOptions, FlashOutcome, FlashPlan, FlashStep,
-    ImageKind, ImageRef, PlanError, Progress, Session, SingleConnector, Sys7Context,
-    discover_application_object, flash, plan_flash, plan_flash_sys7_with_hawk,
+    ImageKind, ImageRef, PartialPlanError, PlanError, Progress, Session, SingleConnector,
+    Sys7Context, discover_application_object, flash, plan_flash, plan_flash_sys7_with_hawk,
     plan_flash_with_object_flags, select_application, sys7_profile_from_hawk, trace,
 };
 pub use param_plan::{
-    CurrentMemory, ParamChange, ParamPlan, ParamValue, SYS7_NOTE, param_plan,
-    read_current_parameter_memory,
+    CurrentMemory, GroupObjectChange, ParamChange, ParamPlan, ParamReading, ParamRegion,
+    ParamRegions, ParamValue, SYS7_NOTE, current_parameter_values, group_object_change,
+    non_default_parameters, param_plan, read_current_parameter_memory, read_parameter_regions,
+    regions_memory,
 };
 pub use plan::{LoadStep, ObjectGa, PlanReport, plan};
 pub use preflight::{

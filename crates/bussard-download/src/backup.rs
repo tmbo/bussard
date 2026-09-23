@@ -458,6 +458,55 @@ pub fn write_device_backup(dir: &Path, backup: &DeviceBackup) -> Result<PathBuf,
     Ok(path)
 }
 
+/// The parameter memory a parameter-only download is about to rewrite, saved
+/// before the first write (issue #119).
+///
+/// Kept apart from [`DeviceBackup`] (which `bussard restore` rewrites tables
+/// from) in its own directory, [`parameter_backups_dir`], so a table restore can
+/// never pick it up.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParameterBackup {
+    /// The device's individual address.
+    pub address: String,
+    /// The mask version, four hex digits.
+    pub mask: String,
+    /// The application program the parameters belong to.
+    pub application: String,
+    /// When the memory was read, as seconds since the Unix epoch.
+    pub unix_timestamp: u64,
+    /// When the memory was read, as an RFC3339 UTC timestamp.
+    pub read_time: String,
+    /// Every parameter region, as read.
+    pub regions: Vec<ParameterMemory>,
+}
+
+/// Where parameter backups live: `<model dir>/captures/backups/parameters`.
+pub fn parameter_backups_dir(model_dir: &Path) -> PathBuf {
+    backups_root(model_dir).join("parameters")
+}
+
+/// Writes a [`ParameterBackup`] into `dir` as `<address>-<unix time>.json`,
+/// creating the directory if needed, and returns the file written.
+pub fn write_parameter_backup(
+    dir: &Path,
+    backup: &ParameterBackup,
+) -> Result<PathBuf, BackupError> {
+    std::fs::create_dir_all(dir).map_err(|source| BackupError::Io {
+        path: dir.to_path_buf(),
+        source,
+    })?;
+    let path = dir.join(device_backup_file_name(
+        &backup.address,
+        backup.unix_timestamp,
+    ));
+    let body = serde_json::to_string_pretty(backup).map_err(BackupError::Encode)?;
+    std::fs::write(&path, body).map_err(|source| BackupError::Io {
+        path: path.clone(),
+        source,
+    })?;
+    Ok(path)
+}
+
 /// Reads one device's backup back from disk.
 pub fn read_device_backup(path: &Path) -> Result<DeviceBackup, BackupError> {
     let body = std::fs::read_to_string(path).map_err(|source| BackupError::Io {
