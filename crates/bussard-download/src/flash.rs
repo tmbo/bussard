@@ -1736,6 +1736,37 @@ pub fn plan_flash(
     template_ops: Option<&[LoadOp]>,
     table_images: &BTreeMap<u32, Vec<u8>>,
 ) -> std::result::Result<FlashPlan, PlanError> {
+    plan_flash_with_object_flags(
+        app,
+        device,
+        device_mask,
+        overrides,
+        base_offsets,
+        template_ops,
+        table_images,
+        &BTreeMap::new(),
+    )
+}
+
+/// [`plan_flash`] with the project's flags of the linked com-objects, keyed by
+/// object number.
+///
+/// Only a System 7 plan reads them (the CONFIG octet of a linked descriptor).
+/// They take precedence over the flags decoded from the System B group-object
+/// table image, which cannot carry object 0: that table is 1-based, word 0 is
+/// its count (1.1.1, 2116REG: object 0 is linked with the project's T W R C,
+/// ETS wrote `5f`, the ref's own T W C gave `57`).
+#[allow(clippy::too_many_arguments)] // plan_flash's inputs plus one map.
+pub fn plan_flash_with_object_flags(
+    app: &ApplicationProgram,
+    device: &str,
+    device_mask: u16,
+    overrides: &BTreeMap<String, String>,
+    base_offsets: &BTreeMap<String, u32>,
+    template_ops: Option<&[LoadOp]>,
+    table_images: &BTreeMap<u32, Vec<u8>>,
+    object_flags: &BTreeMap<u16, bussard_model::Flags>,
+) -> std::result::Result<FlashPlan, PlanError> {
     // 1. Family gate. System B and System 7 (mask 0705/0701, issue #49) are the
     //    two supported families; every other mask refuses cleanly. System 7 is
     //    dispatched to its own lowering below (after the shared mask-match check).
@@ -1767,7 +1798,8 @@ pub fn plan_flash(
     // obj0/PID78 preflight all differ from System B, so it is a separate path
     // rather than a branchy overload of the System B lowering below.
     if profile.is_system_7() {
-        let tables = Sys7PlanTables::from_system_b(table_images);
+        let mut tables = Sys7PlanTables::from_system_b(table_images);
+        tables.linked_flags.extend(object_flags);
         return plan_flash_sys7(
             app,
             device_mask,
@@ -2743,7 +2775,22 @@ fn plan_flash_sys7(
     // device's parameter values make visible, as in ETS (issue #117).
     let config = bussard_prod::dynamic::evaluate_dynamic(app, overrides);
     let default_flags = sys7_object_defaults(app, &config);
-    apply_sys7_group_object_links(&steps, &mut images, &linked, linked_flags, &default_flags);
+    // Module instances shift numbers past the declared ones: count those too.
+    let last_object = app
+        .resolved_com_objects()
+        .iter()
+        .map(|c| c.number())
+        .chain(default_flags.keys().copied())
+        .chain(linked.iter().copied())
+        .max();
+    apply_sys7_group_object_links(
+        &steps,
+        &mut images,
+        &linked,
+        linked_flags,
+        &default_flags,
+        last_object,
+    );
 
     Ok(FlashPlan {
         identity: AppIdentity {
@@ -2884,6 +2931,13 @@ fn sys7_linked_asaps(assoc_image: &[u8]) -> BTreeSet<u16> {
 /// An ASAP whose default carries a TYPE octet (the visible ref's object size)
 /// takes that too.
 ///
+/// `last_object` is the highest com-object `Number` the application declares:
+/// ETS rewrites the descriptors up to it (numbering gaps included) and leaves
+/// the template slots past it alone (1.1.1, 2116REG: the template declares 129
+/// descriptors, the application objects up to 126, and ETS keeps the `17` of
+/// descriptors 127 and 128 while it clears C on the gaps 6, 7, 14, …). `None`
+/// rewrites every descriptor.
+///
 /// Captures: 1.1.31 (no links: template `db` became `4b`, `17` became `13`),
 /// 1.1.46 (four links: `df` became `4f`/`17`/`47`, the project's T R C / W C /
 /// T C), 1.1.1 (`47` became `5f`); objects no `<when>` branch shows keep the
@@ -2902,6 +2956,7 @@ fn apply_sys7_group_object_links(
     linked: &BTreeSet<u16>,
     linked_flags: &BTreeMap<u16, bussard_model::Flags>,
     default_flags: &BTreeMap<u16, Sys7ObjectDefault>,
+    last_object: Option<u16>,
 ) {
     let ram: Vec<(u32, u32)> = steps
         .iter()
@@ -2958,6 +3013,9 @@ fn apply_sys7_group_object_links(
         use bussard_model::Flags;
         for (asap, d) in bytes[3..3 + 4 * count].chunks_exact_mut(4).enumerate() {
             let asap = asap as u16;
+            if last_object.is_some_and(|last| asap > last) {
+                break;
+            }
             let default = default_flags.get(&asap);
             if linked.contains(&asap) {
                 match linked_flags
@@ -5660,6 +5718,7 @@ mod tests {
             &BTreeSet::new(),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            None,
         );
         assert_eq!(
             images[&seg_id],
@@ -5679,6 +5738,7 @@ mod tests {
             &linked,
             &BTreeMap::new(),
             &BTreeMap::new(),
+            None,
         );
         assert_eq!(images[&seg_id][5], 0x13);
         assert_eq!(images[&seg_id][9], 0x4F);
@@ -5697,9 +5757,16 @@ mod tests {
         let mut tmpl = template.clone();
         tmpl[9] = 0xDF;
         let mut images_df = BTreeMap::from([(seg_id.clone(), tmpl)]);
-        apply_sys7_group_object_links(&steps, &mut images_df, &linked, &flags, &BTreeMap::new());
+        apply_sys7_group_object_links(
+            &steps,
+            &mut images_df,
+            &linked,
+            &flags,
+            &BTreeMap::new(),
+            None,
+        );
         assert_eq!(images_df[&seg_id][9], 0x4F);
-        apply_sys7_group_object_links(&steps, &mut images, &linked, &flags, &BTreeMap::new());
+        apply_sys7_group_object_links(&steps, &mut images, &linked, &flags, &BTreeMap::new(), None);
         assert_eq!(images[&seg_id][9], 0x4F);
 
         // A segment that does not look like the descriptor table is untouched.
@@ -5711,8 +5778,69 @@ mod tests {
             &BTreeSet::from([1]),
             &BTreeMap::new(),
             &BTreeMap::new(),
+            None,
         );
         assert_eq!(images[&seg_id], odd);
+    }
+
+    /// Issue #126, 1.1.1 (2116REG): object 0 is linked and takes the
+    /// project's T W R C (`47` became `5f`), and the template slots past the
+    /// highest declared object keep their `17` (ETS only rewrites descriptors up
+    /// to the last com-object `Number`).
+    #[test]
+    fn test_apply_sys7_group_object_links_object_zero_and_trailing_slots() {
+        use bussard_model::Flags;
+        let seg_id = "M-0004_A-7066-11-94AD-O000A_AS-43FE".to_string();
+        let steps = vec![
+            FlashStep::Sys7AbsSegment {
+                lsm: 3,
+                address: 0x0700,
+                size: 450,
+                mem_type: 2,
+                seg_flags: 0xF2,
+                checksum_ctrl: 0x00,
+                image: None,
+            },
+            FlashStep::Sys7AbsSegment {
+                lsm: 3,
+                address: 0x43FE,
+                size: 883,
+                mem_type: 3,
+                seg_flags: 0xF2,
+                checksum_ctrl: 0x80,
+                image: Some(ImageRef {
+                    segment_id: seg_id.clone(),
+                    kind: ImageKind::Code,
+                    len: 15,
+                }),
+            },
+        ];
+        // The 2116REG template head: [CNT][RAM flags 0x0835], descriptor 0
+        // `0702 47 00`, then two `17` slots standing in for 127 and 128.
+        let template = vec![
+            0x03, 0x08, 0x35, 0x07, 0x02, 0x47, 0x00, 0x08, 0x18, 0x17, 0x00, 0x08, 0x19, 0x17,
+            0x00,
+        ];
+        let mut images = BTreeMap::from([(seg_id.clone(), template)]);
+        let flags = BTreeMap::from([(
+            0u16,
+            Flags::COMMUNICATION | Flags::READ | Flags::WRITE | Flags::TRANSMIT,
+        )]);
+        apply_sys7_group_object_links(
+            &steps,
+            &mut images,
+            &BTreeSet::from([0]),
+            &flags,
+            &BTreeMap::new(),
+            Some(0),
+        );
+        assert_eq!(
+            images[&seg_id],
+            vec![
+                0x03, 0x08, 0x35, 0x07, 0x02, 0x5F, 0x00, 0x08, 0x18, 0x17, 0x00, 0x08, 0x19, 0x17,
+                0x00
+            ]
+        );
     }
 
     /// Issue #117: the unlinked System 7 descriptors take the ComObjectRef the
@@ -5797,6 +5925,7 @@ mod tests {
                 &BTreeSet::new(),
                 &BTreeMap::new(),
                 &defaults,
+                None,
             );
             images.remove(&seg_id).unwrap_or_default()
         };
