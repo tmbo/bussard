@@ -356,12 +356,13 @@ def cmd_image(args) -> int:
     ops = resolve_device(load_ops(args.capture, load_keyring(args)), args.device)
     index = memimage.compose(ops, args.out, source=args.capture)
     print(
-        "%s: %d region(s), %d octet(s) written, %d allocation(s) -> %s"
+        "%s: %d region(s), %d octet(s) written, %d allocation(s), %d property write(s) -> %s"
         % (
             ops.device,
             len(index["regions"]),
             sum(r["length"] for r in index["regions"]),
             len(index["allocations"]),
+            index["property_writes"],
             args.out,
         )
     )
@@ -440,7 +441,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_diff)
 
     p = sub.add_parser(
-        "image", help="compose the memory a download wrote (one .bin per region)"
+        "image",
+        help="compose the memory a download wrote (one .bin per region) and its "
+        "property writes (properties.json, key material redacted)",
     )
     p.add_argument("capture")
     p.add_argument("--device", help="the target individual address, e.g. 1.1.5")

@@ -743,6 +743,159 @@ class TestImage(unittest.TestCase):
         self.assertEqual(main(["imgdiff", plan_dir, ets]), 1)
 
 
+    def test_compare_fill_diff_counts_octets_ets_never_wrote(self):
+        ets = self.tmpdir()
+        main(["image", self.download_capture(), "--device", "1.1.5", "--out", ets])
+        # Offset 0 is fill (ETS never wrote it), offset 2 was written by ETS.
+        plan_dir = self.write_plan(
+            [self.step(1, "parameters", 4, "p.bin", 16)],
+            {"p.bin": b"\x00\xaa\x09\x02\x03" + b"\xaa" * 11},
+        )
+        report = memimage.compare(plan_dir, ets)
+        par = report["regions"][0]
+        self.assertEqual(par["verdict"], memimage.DIFFERS)
+        self.assertEqual(par["diff_octets"], 2)
+        self.assertEqual((par["fill_diff_octets"], par["fill_diff_offsets"]), (1, [0]))
+        self.assertIn("1 of them ETS never wrote", "\n".join(memimage.render(report)))
+
+
+def ext_write(obj_type: int, pid: int, count: int, index: int, data: bytes, seq: int = 0) -> bytes:
+    """A_PropertyExtValue_WriteCon on instance 1 of an object type."""
+    head = struct.pack("!H", obj_type) + ((1 << 12) | pid).to_bytes(3, "big")
+    return numbered(seq, 0x1CE, head + bytes([count]) + struct.pack("!H", index) + data)
+
+
+def func_command(obj_type: int, pid: int, data: bytes, seq: int = 0) -> bytes:
+    """A_FunctionPropertyExt_Command on instance 1 of an object type."""
+    head = struct.pack("!H", obj_type) + ((1 << 12) | pid).to_bytes(3, "big")
+    return numbered(seq, 0x1D4, head + data)
+
+
+class TestPropertyWrites(unittest.TestCase):
+    """`properties.json` and its parity check against bussard's plan."""
+
+    GROUP_KEYS = bytes(range(0x40, 0x52))  # 18 octets, like a PID 53 write
+    GO_FLAGS = bytes([0x03] * 20)
+
+    def capture(self) -> str:
+        path = tempfile.mkstemp(suffix=".pcapng")[1]
+        self.addCleanup(os.unlink, path)
+        tool, dev = "0.0.0", "1.1.5"
+        mcb = bytes.fromhex("0000180400330000")
+        frames = [
+            cemi_ldata(tool, dev, t_connect()),
+            cemi_ldata(tool, dev, prop_write(4, 5, 1, 1, bytes([4]) + bytes(9), seq=0)),
+            cemi_ldata(tool, dev, prop_write(4, 27, 1, 1, mcb, seq=1)),
+            cemi_ldata(tool, dev, func_command(17, 5, bytes([1]) + bytes(9), seq=2)),
+            cemi_ldata(tool, dev, ext_write(17, 54, 1, 0, b"\x00\x00", seq=3)),
+            cemi_ldata(tool, dev, ext_write(17, 53, 1, 1, self.GROUP_KEYS, seq=4)),
+            cemi_ldata(tool, dev, ext_write(17, 61, 20, 1, self.GO_FLAGS, seq=5)),
+            cemi_ldata(tool, dev, prop_write(4, 13, 1, 1, bytes.fromhex("00fa000112"), seq=6)),
+            cemi_ldata(tool, dev, t_disconnect()),
+        ]
+        udp_capture(path, [(tunneling_request(f, seq=n), True) for n, f in enumerate(frames)])
+        return path
+
+    def image_dir(self) -> str:
+        out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, out, ignore_errors=True)
+        self.assertEqual(main(["image", self.capture(), "--device", "1.1.5", "--out", out]), 0)
+        return out
+
+    @staticmethod
+    def redacted(data: bytes) -> str:
+        import hashlib
+
+        return "redacted:" + hashlib.sha256(data).hexdigest()[:8]
+
+    def test_compose_writes_properties_json_with_redaction(self):
+        out = self.image_dir()
+        with open(os.path.join(out, "properties.json")) as fh:
+            text = fh.read()
+        props = json.loads(text)
+        self.assertEqual(
+            [(p["service"], p["object"], p["pid"], p["length"]) for p in props],
+            [
+                ("A_PropertyValue_Write", {"index": 4}, 5, 10),
+                ("A_PropertyValue_Write", {"index": 4}, 27, 8),
+                ("A_FunctionPropertyExt_Command", {"type": 17, "instance": 1}, 5, 10),
+                ("A_PropertyExtValue_WriteCon", {"type": 17, "instance": 1}, 54, 2),
+                ("A_PropertyExtValue_WriteCon", {"type": 17, "instance": 1}, 53, 18),
+                ("A_PropertyExtValue_WriteCon", {"type": 17, "instance": 1}, 61, 20),
+                ("A_PropertyValue_Write", {"index": 4}, 13, 5),
+            ],
+        )
+        self.assertEqual(props[1]["data"], "0000180400330000")
+        self.assertEqual((props[3]["count"], props[3]["index"], props[3]["data"]), (1, 0, "0000"))
+        self.assertIsNone(props[2]["count"])
+        # The group key table and the key-sized GO flags are hashed, never hex.
+        self.assertEqual(props[4]["data"], self.redacted(self.GROUP_KEYS))
+        self.assertEqual(props[5]["data"], self.redacted(self.GO_FLAGS))
+        self.assertNotIn(self.GROUP_KEYS.hex(), text)
+        with open(os.path.join(out, "regions.json")) as fh:
+            self.assertEqual(json.load(fh)["property_writes"], 7)
+
+    def test_is_key_material_rules(self):
+        self.assertTrue(ds.is_key_material(17, None, 60, 16))  # zone key table
+        self.assertTrue(ds.is_key_material(17, None, 53, 2))
+        self.assertTrue(ds.is_key_material(17, None, 61, 16))  # key-sized
+        self.assertFalse(ds.is_key_material(17, None, 61, 15))
+        self.assertFalse(ds.is_key_material(17, None, 59, 6))
+        self.assertFalse(ds.is_key_material(4, None, 56, 32))  # not the security object
+        self.assertTrue(ds.is_key_material(None, 4, 56, 16))
+        self.assertFalse(ds.is_key_material(None, 0, 56, 2))  # PID_MAX_APDU_LENGTH
+
+    def test_compare_properties_aligns_plan_steps(self):
+        ets = self.image_dir()
+        plan_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, plan_dir, ignore_errors=True)
+        label = "%d. write property (object %d, type 0, PID %d, %d byte(s) from element 1)"
+        plan = {
+            "device": "1.1.5", "system": "B", "application": {"id": "M-00FA_A-1"}, "tables": [],
+            "steps": [
+                # The vendor pads the MCB entry to 10; it goes out as one 8-octet write.
+                {"index": 1, "label": label % (1, 4, 27, 10)},
+                {"index": 2, "label": "2. load"},
+                # A structured record: the key table's hash matches the redacted ETS value.
+                {"index": 3, "label": "3.", "property": {
+                    "object_type": 17, "instance": 1, "pid": 53, "start_element": 1,
+                    "length": 18, "data": self.redacted(self.GROUP_KEYS)}},
+                {"index": 4, "label": label % (4, 5, 13, 5)},
+                {"index": 5, "label": "5.", "property": {
+                    "object": 4, "pid": 13, "start_element": 1, "length": 5, "data": "00fa000113"}},
+            ],
+        }
+        with open(os.path.join(plan_dir, "plan.json"), "w") as fh:
+            json.dump(plan, fh)
+        props = memimage.compare(plan_dir, ets)["properties"]
+        self.assertEqual(props["verdict"], memimage.DIFFERS)
+        self.assertEqual(props["ets_load_controls_skipped"], 1)
+        self.assertEqual(
+            [(m["key"], m["value"]) for m in props["matched"]],
+            [
+                (["obj4", 27, 8], "no-value"),
+                (["type17.1", 53, 18], "hash-equal"),
+                (["obj4", 13, 5], "differs"),
+            ],
+        )
+        self.assertEqual([b["key"] for b in props["bussard_only"]], [["obj5", 13, 5]])
+        self.assertEqual(
+            [e["key"] for e in props["ets_only"]],
+            [["type17.1", 5, 10], ["type17.1", 54, 2], ["type17.1", 61, 20]],
+        )
+        # The image verdict stays its own: no images here, so not comparable.
+        self.assertEqual(memimage.compare(plan_dir, ets)["verdict"], memimage.NOT_COMPARABLE)
+        lines = "\n".join(memimage.render(memimage.compare(plan_dir, ets)))
+        self.assertIn("bussard only: step   4 obj5 PID 13 (5 octets)", lines)
+        self.assertNotIn(self.GROUP_KEYS.hex(), lines)
+
+    def test_compare_properties_without_properties_json(self):
+        ets = self.image_dir()
+        os.unlink(os.path.join(ets, "properties.json"))
+        props = memimage.compare_properties({"steps": []}, ets)
+        self.assertEqual(props["verdict"], memimage.NOT_COMPARABLE)
+
+
 class TestCli(unittest.TestCase):
     def run_cli(self, argv):
         import io
@@ -1056,6 +1209,15 @@ class TestDataSecure(unittest.TestCase):
         self.assertIn("fdsk MAC ok} -> A_PropertyValue_Write", summary)
         self.assertIn("data=redacted:", summary)
         self.assertNotIn(new_key.hex(), summary)
+        # Normalizing a redacted write keeps the real octets for hashing, and
+        # the property dump shows only the hash.
+        ops = norm.normalize(frames)["1.1.12"]
+        self.assertEqual(ops.ops[0].kind, norm.KIND_PROP_WRITE)
+        self.assertEqual(ops.ops[0].data, new_key)
+        props = memimage.property_writes(ops)
+        self.assertEqual((props[0]["object"], props[0]["pid"], props[0]["length"]), ({"index": 4}, 56, 16))
+        self.assertEqual(props[0]["data"], "redacted:" + knxip.sha8(new_key))
+        self.assertEqual(props[0]["secured"], "fdsk")
 
     def test_decode_apdu_property_ext_and_redaction(self):
         """Extended property services decode; a key written to object type 17 is hidden."""
