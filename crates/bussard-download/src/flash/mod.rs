@@ -54,9 +54,13 @@
 //! and any `Raw`), and a procedure whose segment references it cannot resolve.
 //! `LoadImageProp` is executable: it lowers to an MCB-table integrity read that
 //! validates the device's CRC over the segment it stored against the bytes
-//! bussard wrote. Only a fully-executable [`FlashPlan`] reaches [`flash`], so
-//! the engine never begins writing a procedure it cannot finish. Every
-//! property/load-control write is confirmed by the device's echo, and memory
+//! bussard wrote. The checks follow the application's own procedure (issue
+//! #145): a check only a companion program declares is advisory (a mismatch is
+//! a warning in [`FlashOutcome::warnings`]), and a template check is taken only
+//! when the application declares none. Only a fully-executable [`FlashPlan`]
+//! reaches [`flash`], so the engine never begins writing a procedure it cannot
+//! finish. Every property/load-control write is confirmed by the device's
+//! echo, and memory
 //! content is confirmed after the load by the device's own MCB CRC
 //! (`LdCtrlLoadImageProp`) plus the end-of-segment spot check — the segment stream
 //! itself is not read back chunk by chunk, exactly as ETS streams it (see
@@ -258,6 +262,16 @@ pub enum FlashStep {
         /// this engine wrote the target object's image; `None` when the op
         /// targets an object bussard did not itself write (read-only confirm).
         image: Option<ImageRef>,
+        /// Whether a CRC mismatch is only a warning rather than a hard error
+        /// (issue #145). Set for a check the application's own load procedure
+        /// does not declare, i.e. one a companion program's procedure adds: ETS
+        /// reads such an MCB (object 5 of the ABB BE/S16 and the Busch-Wächter
+        /// PRO 280) but carries on when it does not match, since those devices
+        /// report object 2's entry there. An advisory mismatch is recorded in
+        /// [`FlashOutcome::warnings`] and the download continues through its
+        /// restart; the object's load state and the post-restart spot check
+        /// remain the verification.
+        advisory: bool,
     },
     /// Persist and activate the load (`LdCtrlLoadCompleted`).
     LoadCompleted {
@@ -983,6 +997,10 @@ pub struct FlashOutcome {
     pub object_states: Vec<(u8, LoadState)>,
     /// Whether the sampled read-backs of written memory matched what was written.
     pub spot_checks_match: bool,
+    /// Findings that do not fail the flash: an advisory MCB check that did not
+    /// match (see [`FlashStep::LoadImageProp::advisory`]). Empty when every
+    /// check passed.
+    pub warnings: Vec<String>,
 }
 
 impl FlashOutcome {

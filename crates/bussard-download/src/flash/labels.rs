@@ -92,11 +92,17 @@ pub(super) fn step_label(step: &FlashStep) -> String {
             obj_idx,
             prop_id,
             image,
+            advisory,
             ..
         } => match image {
             Some(img) => format!(
-                "verify image (object {obj_idx}, PID {prop_id} MCB CRC over {} bytes)",
-                img.len
+                "verify image (object {obj_idx}, PID {prop_id} MCB CRC over {} bytes{})",
+                img.len,
+                if *advisory {
+                    "; advisory: a mismatch only warns"
+                } else {
+                    ""
+                }
             ),
             None => format!("read image MCB (object {obj_idx}, PID {prop_id})"),
         },

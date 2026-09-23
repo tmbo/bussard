@@ -7,7 +7,7 @@
 
 use super::execute::resolve_object_target_opt;
 use super::session::{Connector, Session, read_load_state_resumable, read_memory_resumable};
-use super::{FlashOutcome, FlashPlan, FlashStep};
+use super::{FlashOutcome, FlashPlan, FlashStep, ImageRef};
 use bussard_mgmt::load::{LoadState, WriteError, read_load_state, read_mcb_table};
 use std::collections::BTreeSet;
 
@@ -209,10 +209,136 @@ pub(super) async fn verify_outcome<C: Connector>(
         load_state,
         object_states,
         spot_checks_match,
+        warnings: Vec::new(),
     })
+}
+
+/// The object whose `PID_MCB_TABLE` covers a code or parameter `image` checked
+/// by a `LoadImageProp` naming `obj_idx`.
+///
+/// When the plan wrote `image` to that very object (a companion program's
+/// segment on object 5 of the ABB BE/S16), the MCB lives there, resolved the
+/// way the write resolved its target. Otherwise the check names an object whose
+/// image bussard streamed elsewhere (the single-segment DA.tp and mock shapes,
+/// where several indices verify one application image) and the MCB is the
+/// discovered application object's.
+pub(super) fn mcb_read_object(
+    steps: &[FlashStep],
+    spliced: bool,
+    image: &ImageRef,
+    obj_idx: u32,
+    object_table: &[(u8, u16)],
+    app_obj: u8,
+) -> u8 {
+    let written_to_checked_object = steps.iter().any(|s| {
+        matches!(
+            s,
+            FlashStep::WriteRelMem { image: w, target: Some(t), .. }
+                if *t == obj_idx && w.segment_id == image.segment_id
+        )
+    });
+    if !written_to_checked_object {
+        return app_obj;
+    }
+    resolve_object_target_opt(Some(obj_idx), object_table, app_obj, spliced).unwrap_or(app_obj)
+}
+
+/// The outcome text for an advisory MCB check that did not match (issue #145):
+/// what differed, and why it does not fail the flash.
+pub(super) fn advisory_mcb_warning(obj_idx: u32, err: &WriteError) -> String {
+    let detail = match err {
+        WriteError::ImagePropMismatch {
+            object_index,
+            expected_crc,
+            device_crc,
+            ..
+        } => format!(
+            "device PID_MCB_TABLE CRC {device_crc:#06X} on object {object_index}, \
+             written image CRC {expected_crc:#06X}"
+        ),
+        other => other.to_string(),
+    };
+    format!(
+        "warning: MCB check of object {obj_idx} did not match ({detail}); advisory only, \
+         the application's own load procedure does not verify this object (ETS reads it \
+         without failing), so the download continued through its restart"
+    )
 }
 
 /// The first up-to-4 octets of an image, used as the post-flash read-back sample.
 pub(super) fn take_sample(bytes: &[u8]) -> Vec<u8> {
     bytes[..bytes.len().min(4)].to_vec()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::flash::ImageKind;
+
+    fn image(segment_id: &str) -> ImageRef {
+        ImageRef {
+            segment_id: segment_id.to_string(),
+            kind: ImageKind::Code,
+            len: 4,
+        }
+    }
+
+    fn write(segment_id: &str, target: u32) -> FlashStep {
+        FlashStep::WriteRelMem {
+            offset: 0,
+            image: image(segment_id),
+            target: Some(target),
+        }
+    }
+
+    /// The ABB BE/S16 / Busch-Wächter PRO 280 shape (issue #145): the
+    /// application image on object 4, a companion program's on object 5.
+    const TABLE: [(u8, u16); 5] = [(1, 1), (2, 2), (3, 9), (4, 3), (5, 3)];
+
+    #[test]
+    fn test_mcb_read_object_reads_the_companion_object_it_wrote() {
+        let steps = [write("app", 4), write("pei", 5)];
+        assert_eq!(
+            mcb_read_object(&steps, true, &image("pei"), 5, &TABLE, 4),
+            5,
+            "object 5's check reads object 5's MCB, not the application object's"
+        );
+        assert_eq!(
+            mcb_read_object(&steps, true, &image("app"), 4, &TABLE, 4),
+            4
+        );
+    }
+
+    #[test]
+    fn test_mcb_read_object_falls_back_to_the_app_object() {
+        // A check naming an object the image was not written to (the DA.tp
+        // shape: several indices verify the one application image).
+        let steps = [write("app", 4)];
+        assert_eq!(
+            mcb_read_object(&steps, true, &image("app"), 2, &TABLE, 4),
+            4
+        );
+        // Written to an index the device does not expose: the app object.
+        let steps = [write("app", 7)];
+        assert_eq!(
+            mcb_read_object(&steps, true, &image("app"), 7, &TABLE, 4),
+            4
+        );
+    }
+
+    #[test]
+    fn test_advisory_mcb_warning_names_both_crcs_and_why() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let err = WriteError::ImagePropMismatch {
+            address: "1.1.30".parse()?,
+            object_index: 5,
+            expected_crc: 0x62E5,
+            device_crc: 0xB0DA,
+        };
+        let text = advisory_mcb_warning(5, &err);
+        assert!(text.starts_with("warning: MCB check of object 5"), "{text}");
+        assert!(text.contains("0xB0DA") && text.contains("0x62E5"), "{text}");
+        assert!(text.contains("advisory only"), "{text}");
+        Ok(())
+    }
 }
