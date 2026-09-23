@@ -192,6 +192,14 @@ also no tool parameter that sets or clears `protected:`; only a human editing
 sentence "This group address is protected." and sorted to the top of
 `bussard status`, so it is the first thing anyone reads.
 
+`bussard test` runs scripted writes, so it takes the same rails as `bussard
+write` (the non-loopback gateway gate and a confirmation naming the gateway),
+and a protected GA needs two opt-ins instead of one: `allow_protected: true` in
+`tests.yaml` and `--force` on the command line. With either missing, the test
+is reported as refused and nothing is written to that GA. The `knx_run_tests`
+MCP tool refuses such a test whatever the file says. `bussard learn` never
+transmits at all.
+
 ## History and undo
 
 bussard keeps a full copy of the model files under `<dir>/.bussard/history`
