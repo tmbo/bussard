@@ -16,7 +16,9 @@ what a live capture must reduce to.
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import struct
 import sys
 import tempfile
@@ -25,6 +27,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import capture as cap  # noqa: E402
+import image as memimage  # noqa: E402
 import knxip  # noqa: E402
 import normalize as norm  # noqa: E402
 import opsdiff  # noqa: E402
@@ -621,6 +624,122 @@ class TestDiff(unittest.TestCase):
         report = opsdiff.diff(ops, ops, "fixture", "fixture")
         self.assertEqual(report.verdict, opsdiff.IDENTICAL)
         self.assertIn("verdict: IDENTICAL", "\n".join(report.summary_lines()))
+
+
+def prop_response(obj: int, pid: int, count: int, index: int, data: bytes, seq: int = 0) -> bytes:
+    return numbered(
+        seq, 0x3D6, bytes([obj, pid, (count << 4) | (index >> 8), index & 0xFF]) + data
+    )
+
+
+class TestImage(unittest.TestCase):
+    """`knxtrace image` / `imgdiff`: compose what a download wrote, diff it."""
+
+    def download_capture(self) -> str:
+        """A System B download of 1.1.5: a fill-flagged app segment on obj4 whose
+        base (0x4000) is read back, sparse parameter writes into it, and a
+        non-filled address table on obj1 at 0x1000."""
+        path = tempfile.mkstemp(suffix=".pcapng")[1]
+        self.addCleanup(os.unlink, path)
+        tool, dev = "0.0.0", "1.1.5"
+
+        def rel_seg(size: int, fill: int) -> bytes:
+            return bytes([3, 0x0B]) + struct.pack("!I", size) + bytes([fill, 0xAA])
+
+        frames = [
+            cemi_ldata(tool, dev, t_connect()),
+            cemi_ldata(tool, dev, prop_write(4, 5, 1, 1, rel_seg(16, 1), seq=0)),
+            cemi_ldata(dev, tool, prop_response(4, 7, 1, 1, struct.pack("!I", 0x4000)), mc=0x29),
+            cemi_ldata(tool, dev, mem_write(0x4002, b"\x01\x02", seq=1)),
+            cemi_ldata(tool, dev, mem_write(0x4004, b"\x03", seq=2)),
+            cemi_ldata(tool, dev, prop_write(1, 5, 1, 1, rel_seg(4, 0), seq=3)),
+            cemi_ldata(dev, tool, prop_response(1, 7, 1, 1, struct.pack("!I", 0x1000)), mc=0x29),
+            cemi_ldata(tool, dev, mem_write(0x1000, b"\x00\x01\x08\x01", seq=4)),
+            cemi_ldata(tool, dev, t_disconnect()),
+        ]
+        udp_capture(
+            path, [(tunneling_request(f, seq=n), True) for n, f in enumerate(frames)]
+        )
+        return path
+
+    def tmpdir(self) -> str:
+        path = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, path, ignore_errors=True)
+        return path
+
+    def test_compose_regions_allocations_and_fill(self):
+        out = self.tmpdir()
+        code = main(["image", self.download_capture(), "--device", "1.1.5", "--out", out])
+        self.assertEqual(code, 0)
+        with open(os.path.join(out, "regions.json")) as fh:
+            index = json.load(fh)
+        self.assertEqual(
+            [(r["start"], r["length"]) for r in index["regions"]], [(0x1000, 4), (0x4002, 3)]
+        )
+        with open(os.path.join(out, "0x004002.bin"), "rb") as fh:
+            self.assertEqual(fh.read(), b"\x01\x02\x03")
+        allocs = index["allocations"]
+        self.assertEqual(len(allocs), 2)
+        self.assertEqual((allocs[0]["object"], allocs[0]["base"]), (4, 0x4000))
+        self.assertTrue(allocs[0]["fill"])
+        self.assertEqual(allocs[0]["written_octets"], 3)
+        self.assertEqual((allocs[1]["object"], allocs[1]["base"]), (1, 0x1000))
+        self.assertNotIn("composed_file", allocs[1])
+        # The fill-flagged allocation composes as fill + sparse writes.
+        with open(os.path.join(out, allocs[0]["composed_file"]), "rb") as fh:
+            self.assertEqual(fh.read(), b"\xaa\xaa\x01\x02\x03" + b"\xaa" * 11)
+
+    def write_plan(self, steps: list, files: dict) -> str:
+        plan_dir = self.tmpdir()
+        for name, data in files.items():
+            with open(os.path.join(plan_dir, name), "wb") as fh:
+                fh.write(data)
+        plan = {"device": "1.1.5", "system": "B", "application": {"id": "M-00FA_A-1"},
+                "steps": steps, "tables": []}
+        with open(os.path.join(plan_dir, "plan.json"), "w") as fh:
+            json.dump(plan, fh)
+        return plan_dir
+
+    @staticmethod
+    def step(n, kind, obj, name, length, address=None):
+        return {"index": n, "label": "", "image": {
+            "image_kind": kind, "object": obj, "offset": 0, "address": address,
+            "file": name, "length": length, "mask_file": None}}
+
+    def test_compare_identical_differs_and_not_comparable(self):
+        ets = self.tmpdir()
+        main(["image", self.download_capture(), "--device", "1.1.5", "--out", ets])
+        plan_dir = self.write_plan(
+            [
+                # Matches the fill + writes exactly.
+                self.step(1, "parameters", 4, "p.bin", 16),
+                # One octet differs in the address table.
+                self.step(2, "table", 1, "t.bin", 4),
+                # An object ETS never allocated.
+                self.step(3, "table", 3, "g.bin", 2),
+            ],
+            {
+                "p.bin": b"\xaa\xaa\x01\x02\x03" + b"\xaa" * 11,
+                "t.bin": b"\x00\x01\x08\x02",
+                "g.bin": b"\x00\x00",
+            },
+        )
+        report = memimage.compare(plan_dir, ets)
+        verdicts = [(r["region"], r["verdict"]) for r in report["regions"]]
+        self.assertEqual(
+            verdicts,
+            [
+                ("parameters", memimage.IDENTICAL),
+                ("address table", memimage.DIFFERS),
+                ("group-object table", memimage.NOT_COMPARABLE),
+            ],
+        )
+        table = report["regions"][1]
+        self.assertEqual((table["diff_octets"], table["first_offset"]), (1, 3))
+        self.assertEqual((table["bussard_hex"], table["ets_hex"]), ("00010802", "00010801"))
+        self.assertEqual(report["verdict"], memimage.DIFFERS)
+        self.assertEqual(report["ets_only_octets"], 0)
+        self.assertEqual(main(["imgdiff", plan_dir, ets]), 1)
 
 
 class TestCli(unittest.TestCase):

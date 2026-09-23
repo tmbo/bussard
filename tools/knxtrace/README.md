@@ -16,6 +16,8 @@ uv run tools/knxtrace/knxtrace.py devices <capture>
 uv run tools/knxtrace/knxtrace.py trace   <capture> [--device 1.1.5] [--service TUNNELING_REQUEST]
 uv run tools/knxtrace/knxtrace.py ops     <capture> [--device 1.1.5] [--json]
 uv run tools/knxtrace/knxtrace.py diff    <a> <b> --device 1.1.5 [--json] [--only-real]
+uv run tools/knxtrace/knxtrace.py image   <capture> --device 1.1.5 --out <dir>
+uv run tools/knxtrace/knxtrace.py imgdiff <bussard-dump-dir> <image-dir> [--json]
 ```
 
 Tests:
@@ -159,11 +161,12 @@ captures in-process from RFC 5737 TEST-NET-1 addresses.
 
 | File | What it holds |
 | --- | --- |
-| `knxtrace.py` | The CLI: `devices`, `trace`, `ops`, `diff`. |
+| `knxtrace.py` | The CLI: `devices`, `trace`, `ops`, `diff`, `image`, `imgdiff`. |
 | `capture.py` | pcap / pcapng reading, link and IP layers, TCP reassembly. |
 | `knxip.py` | KNXnet/IP, cEMI, transport layer and APCI decoding. |
 | `normalize.py` | Frame stream to per-device operation sequence. |
 | `opsdiff.py` | The differ and its classification rules. |
+| `image.py` | Composes the memory a download wrote and diffs it against a `bussard flash --dry-run --dump-images` directory (see [the offline oracle](../../docs/testing-campaign.md#before-a-flash-the-offline-oracle)). |
 | `test_knxtrace.py` | Tests, on synthetic captures and the `knx-sim` fixtures. |
 
 See [`docs/testing-campaign.md`](../../docs/testing-campaign.md) for how this
