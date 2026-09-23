@@ -12,6 +12,7 @@ mod lsm;
 mod mcb;
 mod memory;
 pub mod profile;
+pub mod security_object;
 mod sys7_group_comm;
 pub mod sys7_lsm;
 
@@ -30,6 +31,7 @@ pub use profile::{
     LsmAccess, MaskFamily, MemoryMappedLsm, Profile, Sys7MemoryMap, Sys7Profile, mask_family,
     parse_mask,
 };
+pub use security_object::{SecLoadState, SecurityLimits, SecurityObject};
 pub use sys7_group_comm::Sys7GroupComm;
 pub use sys7_lsm::{Sys7Event, Sys7EventError};
 
@@ -241,6 +243,10 @@ pub struct Device {
     /// access must ride A_SecureData; a plain access to a protected function is
     /// refused (spec §6.4, §12.2).
     secure: Option<crate::secure::DataSecureSession>,
+    /// The KNX Data Secure security interface object (IOT 17), present exactly
+    /// when the device is security-activated. Served through the extended
+    /// property services (see [`security_object`]).
+    security_object: Option<SecurityObject>,
     /// The process time (seconds) reported in the `A_Restart_Response` to a
     /// factory reset (erase code 7).
     restart_process_time_s: u16,
@@ -612,6 +618,7 @@ impl Device {
             l4_exchanges: 0,
             group_comm: None,
             prog_mode,
+            security_object: secure.as_ref().map(|_| SecurityObject::new_activated()),
             secure,
             restart_process_time_s: DEFAULT_RESTART_PROCESS_TIME_S,
             events,
@@ -741,6 +748,7 @@ impl Device {
             l4_exchanges: 0,
             group_comm: None,
             prog_mode,
+            security_object: secure.as_ref().map(|_| SecurityObject::new_activated()),
             secure,
             restart_process_time_s: DEFAULT_RESTART_PROCESS_TIME_S,
             events,
@@ -1324,6 +1332,13 @@ impl Device {
             // (type, element count, access levels) so a tool can introspect and
             // enumerate the device's property set (issue #72).
             Apci::PropertyDescriptionRead => self.on_property_description_read(tool, apdu),
+            // The extended property services reach the security interface object
+            // of an activated device (issue #156).
+            Apci::PropertyExtValueRead
+            | Apci::PropertyExtValueWriteCon
+            | Apci::PropertyExtDescriptionRead
+            | Apci::FunctionPropertyExtCommand
+            | Apci::FunctionPropertyExtStateRead => self.on_extended_property(tool, apdu),
             _ => Ok(DeviceReaction::default()),
         }
     }
@@ -1340,6 +1355,11 @@ impl Device {
                 | Apci::PropertyValueRead
                 | Apci::PropertyValueWrite
                 | Apci::PropertyDescriptionRead
+                | Apci::PropertyExtValueRead
+                | Apci::PropertyExtValueWriteCon
+                | Apci::PropertyExtDescriptionRead
+                | Apci::FunctionPropertyExtCommand
+                | Apci::FunctionPropertyExtStateRead
                 | Apci::MemoryRead(_)
                 | Apci::MemoryWrite(_)
                 | Apci::MemoryExtendedRead
@@ -2137,6 +2157,77 @@ impl Device {
         // captured flow (the tool relies on the transport T_ACK), so no APDU
         // response is produced.
         Ok(DeviceReaction::default())
+    }
+
+    /// The entry count of a System B table object (by LSM index), read from the
+    /// big-endian count word at its segment base, but only once that object is
+    /// `Loaded` (a table being rewritten has no trustworthy count yet). `None`
+    /// on System 7, for an unloaded object, or when the count word lies outside
+    /// the object's segment.
+    fn loaded_table_count(&self, lsm_index: u8) -> Option<u16> {
+        if self.sys7.is_some() || self.load_state(lsm_index) != Some(LoadState::Loaded) {
+            return None;
+        }
+        let base = self.loadables.get(&lsm_index)?.base;
+        let word = self.memory.read_bounded(base, 2)?;
+        Some(u16::from_be_bytes([word[0], word[1]]))
+    }
+
+    /// The range facts the security object checks against: the group-object
+    /// count from the loaded group-object table (obj 3) and the address-table
+    /// length from the loaded address table (obj 1).
+    fn security_limits(&self) -> SecurityLimits {
+        SecurityLimits {
+            group_objects: self.loaded_table_count(3),
+            address_table_len: self.loaded_table_count(1),
+        }
+    }
+
+    /// Handle an extended property service (`A_PropertyExtValue_*`,
+    /// `A_PropertyExtDescription_Read`, `A_FunctionPropertyExt_*`).
+    ///
+    /// Only a security-activated device carries the security interface object;
+    /// a plain device does not implement these services and stays silent (the
+    /// numbered frame is still T_ACKed). An activated device only reaches this
+    /// through A_SecureData: a plain request is refused by the secure
+    /// interception in [`Device::handle_apdu`].
+    fn on_extended_property(
+        &mut self,
+        tool: IndividualAddress,
+        apdu: &Apdu,
+    ) -> Result<DeviceReaction, DeviceError> {
+        let limits = self.security_limits();
+        let Some(obj) = self.security_object.as_mut() else {
+            return Ok(DeviceReaction::default());
+        };
+        let reply = obj
+            .handle(apdu.apci, &apdu.data, limits)
+            .map_err(|e| match e {
+                security_object::ExtServiceError::Malformed { service, detail } => {
+                    DeviceError::Malformed {
+                        service: service.into(),
+                        detail,
+                    }
+                }
+            })?;
+        let Some(reply) = reply else {
+            return Ok(DeviceReaction::default());
+        };
+        self.emit(Event::SecurityObject {
+            device: self.address,
+            summary: reply.summary,
+        });
+        let resp = self.respond(tool, reply.apci.to_u10(), &reply.data);
+        Ok(DeviceReaction {
+            responses: vec![resp],
+            did_master_reset: false,
+        })
+    }
+
+    /// The security interface object, when the device is security-activated
+    /// (for tests/observability).
+    pub fn security_object(&self) -> Option<&SecurityObject> {
+        self.security_object.as_ref()
     }
 
     /// Handle an `A_MemoryExtended_Write` (APCI 0x1FB): the System B extended

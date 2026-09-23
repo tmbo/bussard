@@ -779,6 +779,7 @@ fn synthesize_model(found: &[LineDevice], overrides: &ConnOverrides, dir: &Path)
                         flags: placeholder_flags(),
                         reference: None,
                         channel: None,
+                        secure: false,
                     },
                 );
                 device_links.push(Link {
@@ -836,6 +837,7 @@ fn reconstructed_group(ga: GroupAddress) -> Group {
         dpt: None::<Dpt>,
         description: None,
         protected: false,
+        secure: false,
     }
 }
 

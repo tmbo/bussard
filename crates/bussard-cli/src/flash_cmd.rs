@@ -77,7 +77,8 @@ pub fn run(
     // KNX Data Secure (issue #71, spec §6.2): the target's tool key, from the
     // keyring (the real flow) or a raw `--tool-key` (test/bench). `None` is the
     // plain, byte-identical path. The key is never printed or logged (§2.3).
-    let tool_key = crate::secure_key::resolve(target, tool_key_source)?;
+    let secure_material = crate::secure_key::resolve_material(target, tool_key_source)?;
+    let tool_key = secure_material.tool_key.clone();
     // One send-sequence high-water mark for the whole command (spec §5.9): the
     // pre-flight probe, the flash, and every mid-flash reconnect share it, so no
     // session ever replays a sequence the device already accepted.
@@ -154,6 +155,7 @@ pub fn run(
             dry.dump_images.as_deref(),
             no_factory_reset,
             parameters_only,
+            &secure_material,
             &output,
         );
     }
@@ -340,6 +342,17 @@ pub fn run(
     }
     if no_factory_reset {
         plan.skip_factory_reset();
+    }
+    // A secured download also programs the security object (issue #156).
+    if let Err(err) = add_security_steps(
+        &mut plan,
+        model.as_ref(),
+        target,
+        &table_images,
+        &secure_material,
+    ) {
+        eprintln!("cannot flash: {err}");
+        return Ok(ExitCode::FAILURE);
     }
 
     // The parameter-level plan (issue #109): what this flash changes in the
@@ -575,6 +588,7 @@ fn dry_run(
     dump_images: Option<&Path>,
     no_factory_reset: bool,
     parameters_only: bool,
+    secure_material: &crate::secure_key::SecureMaterial,
     output: &FlashOutput,
 ) -> anyhow::Result<ExitCode> {
     // No device to read the descriptor from: the plan is checked against the
@@ -619,6 +633,10 @@ fn dry_run(
     if parameters_only {
         return crate::flash_params::dry_run(target, &plan, output.json);
     }
+    if let Err(err) = add_security_steps(&mut plan, model, target, &table_images, secure_material) {
+        eprintln!("cannot flash: {err}");
+        return Ok(ExitCode::FAILURE);
+    }
     let params = if plan.is_sys7() {
         ParamPlan {
             note: Some(bussard_download::SYS7_NOTE.to_string()),
@@ -646,6 +664,54 @@ fn dry_run(
     }
     eprintln!("dry run: no connection opened, nothing written.");
     Ok(ExitCode::SUCCESS)
+}
+
+/// Adds the KNX Data Secure security-object steps to a full flash over a
+/// secured connection (issue #156): the group key table from the keyring's keys
+/// for the GAs in the address table this flash writes, and the group-object
+/// security flags sized to the group-object table it writes. A plain flash (no
+/// tool key) is left untouched.
+fn add_security_steps(
+    plan: &mut bussard_download::FlashPlan,
+    model: Option<&bussard_model::Model>,
+    target: IndividualAddress,
+    table_images: &BTreeMap<u32, Vec<u8>>,
+    material: &crate::secure_key::SecureMaterial,
+) -> Result<(), bussard_download::SecurityPlanError> {
+    if material.tool_key.is_none() || plan.is_sys7() {
+        return Ok(());
+    }
+    let empty = std::collections::HashMap::new();
+    let group_keys = material.group_keys.as_ref().unwrap_or(&empty);
+    let links: &[bussard_model::schema::Link] = model
+        .and_then(|m| m.links.links.get(&target))
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let addresses = bussard_download::compute_tables(links).addresses;
+    // The group-object count is the count word of the obj3 image this flash
+    // writes (1333 for the 1.1.12 reference download, matching ETS's PID 61
+    // element count); without one, the highest group object the model knows.
+    let go_count = table_images
+        .get(&3)
+        .and_then(|img| img.get(..2))
+        .map(|w| u16::from_be_bytes([w[0], w[1]]))
+        .or_else(|| {
+            model
+                .and_then(|m| m.devices.get(&target))
+                .and_then(|d| d.device.com_objects.keys().max().copied())
+        })
+        .unwrap_or(0);
+    let view = bussard_download::device_security_view(model, target, group_keys);
+    let program = bussard_download::build_security_program(
+        target,
+        &addresses,
+        go_count,
+        &view.secure_objects,
+        &view.secure_gas,
+        group_keys,
+    )?;
+    plan.add_security_program(program);
+    Ok(())
 }
 
 /// Collects the target device's parameter overrides from the model, re-keyed
@@ -1401,6 +1467,26 @@ fn print_plan(
         plan.estimated_write_frames(),
         plan.estimated_duration().as_secs_f64(),
     );
+    if plan.has_security_program() {
+        // Data Secure (issue #156): the security object is part of the
+        // download; name what it receives, never a key.
+        let (keys, secured) = plan
+            .steps
+            .iter()
+            .fold((0usize, 0usize), |(k, o), step| match step {
+                bussard_download::FlashStep::SecurityGroupKeys { entries } => {
+                    (k + entries.len(), o)
+                }
+                bussard_download::FlashStep::SecurityGoFlags { flags } => {
+                    (k, o + flags.iter().filter(|f| **f != 0).count())
+                }
+                _ => (k, o),
+            });
+        println!(
+            "  data secure : security object reprogrammed: {keys} group key(s), {secured} secured \
+             group object(s)"
+        );
+    }
     if verbose > 0 {
         println!("  procedure   :");
         for line in trace(plan) {

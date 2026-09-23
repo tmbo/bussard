@@ -98,6 +98,16 @@ pub enum Event {
         /// A key-free, plaintext-free one-line description.
         summary: String,
     },
+    /// A security-activated device served its security interface object
+    /// (IOT 17) through an extended property service. The `summary` reads
+    /// `SECOBJ <service> iot=17/1 pid=<pid>[ start=<s> count=<c>] rc=0x<rc>
+    /// state=<load state>` and NEVER carries key bytes.
+    SecurityObject {
+        /// The device address.
+        device: IndividualAddress,
+        /// A key-free one-line description.
+        summary: String,
+    },
     /// A device updated a com-object's value from an inbound group write it
     /// listens to (the runtime group-communication path).
     GroupObjectUpdated {
@@ -155,6 +165,9 @@ impl EventSink for TracingSink {
                 new_address,
             } => tracing::info!(%device, %new_address, "individual address changed"),
             Event::SecureFrame { device, summary } => {
+                tracing::info!(%device, "{summary}")
+            }
+            Event::SecurityObject { device, summary } => {
                 tracing::info!(%device, "{summary}")
             }
             Event::GroupObjectUpdated { device, object, ga } => {

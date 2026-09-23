@@ -112,6 +112,15 @@ pub struct Group {
     /// only when `true`, so unprotected GAs stay diff-clean.
     #[serde(default, skip_serializing_if = "is_false")]
     pub protected: bool,
+    /// Whether ETS runs this group address with KNX Data Secure group
+    /// communication (issue #156). Imported from the project: the GA carries a
+    /// group key there (or `Security="On"`). The key itself lives only in the
+    /// `.knxkeys` keyring, never here. A secured GA's telegrams are encrypted,
+    /// and `flash --keyring` / `apply --keyring` program its group key and the
+    /// security flags of the group objects linked to it. Serialized only when
+    /// `true`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub secure: bool,
 }
 
 /// Serde helper: skip a `bool` field when it is `false`.
@@ -282,14 +291,20 @@ pub struct DeviceSecurity {
     /// Data Secure (spec §11). Capability, not activation.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub secure_capable: bool,
-    /// Security has been **activated** on the device (ETS commissioned it with a
-    /// tool key). When true, all management access must go behind A_SecureData
-    /// tool-access (spec §6.4). Inferred from a non-empty `<Security>` state /
-    /// keyring tool key; the house's 25 capable devices are all `false` today
-    /// (spec §1.1). SEC-CAL: confirm the exact activation signal from a live ETS
-    /// activation (spec §12.4).
+    /// Security has been **activated** on the device (ETS loaded its tool key
+    /// into it). When true, all management access must go behind A_SecureData
+    /// tool-access (spec §6.4). CONFIRMED signal (issue #156, the export made
+    /// after ETS activated 1.1.12): the device's `<Security>` child carries a
+    /// `LoadedToolKey` attribute. A sequence number alone is not the signal:
+    /// every secure-capable device carries one before activation too.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub activated: bool,
+    /// Secure commissioning is enabled for the device in the project (its
+    /// `<Security>` child carries a `ToolKey`), whether or not ETS has
+    /// downloaded it yet. `secure_commissioning && !activated` is a device ETS
+    /// will activate on its next download. Presence only, never the key.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub secure_commissioning: bool,
     /// A factory `<DeviceCertificate FDSK=…>` was present in the imported
     /// knxproj (spec §11). Presence only — the FDSK value is never stored here.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -371,4 +386,11 @@ pub struct ComObject {
     /// Owning channel key, if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,
+    /// Whether this group object communicates with KNX Data Secure (issue
+    /// #156): its ETS `Security` setting is `On`, or `Auto` (the default) with
+    /// a secured group address linked. A secured download writes `0x03`
+    /// (authentication + confidentiality) for it into the security object's
+    /// `PID_GO_SECURITY_FLAGS`. Serialized only when `true`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub secure: bool,
 }

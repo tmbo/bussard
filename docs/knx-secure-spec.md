@@ -837,6 +837,42 @@ Cheap, independent of the crypto, do first `[corpus §5]`:
   tool key, group key, or any password (§2.2, §2.3). `knx/` is reviewed and
   committed; key bytes must never enter it.
 
+- Activation and per-object security `[CONFIRMED: two exports of the same
+  project, before and after ETS activated 1.1.12, issue #156]`: the device's
+  `<Security>` child gains `ToolKey` and `LoadedToolKey` on activation
+  (`LoadedToolKey` present = `activated`; `ToolKey` alone = secure
+  commissioning configured, not downloaded). A secured group address carries
+  its encrypted group key as the `Key` attribute of its `<GroupAddress>`. No
+  `ComObjectInstanceRef` and no `GroupAddress` carried a `Security` attribute,
+  so a group object is secure when it links a keyed GA (ETS's `Auto`). The
+  importer still honours an explicit `Security="On"|"Off"` should one appear.
+  Only booleans reach the model.
+
+### 11.1 The security interface object in a secured download `[CONFIRMED: secure-1-1-12 capture, decrypted; issue #156]`
+
+Every full download of an activated device reprograms the security object
+(object type 17, instance 1) with the extended property services:
+
+| step | service | payload after the 5-octet header |
+|---|---|---|
+| after the other objects' Unload | `A_FunctionPropertyExt_Command` PID 5 | `04` + 9 × `00` (Unload); answer `rc=00 state=00` |
+| after the tables and parameters | `A_FunctionPropertyExt_Command` PID 5 | `01` + 9 × `00` (StartLoading); answer `state=02` |
+| | `A_PropertyExtValue_WriteCon` PID 54 | count 1, start 0, `00 00` (empty IA table) |
+| | `A_PropertyExtValue_WriteCon` PID 53 | from start 1, 18-octet elements `[address-table index:16][group key:16]` |
+| | `A_PropertyExtValue_WriteCon` PID 61 | from start 1, one flag octet per group object (element n = object n), all objects of the GO table, `0x03` for a secured object |
+| before PID 13 and LoadCompleted | `A_FunctionPropertyExt_Command` PID 5 | `02` + 9 × `00` (LoadCompleted); answer `state=01` |
+
+The header is `[object type:16][instance:12 | PID:12]`; the value services
+follow with `[count:8][start:16]`, the write-con response with `[count][start]
+[return code]`, the function state response with `[return code][data]`.
+Chunks follow the inner APDU budget: `PID_MAX_APDU_LENGTH` minus 13 octets of
+Data Secure overhead (ETS: 233 → 215-octet `A_MemoryExtended_Write` chunks,
+211-element PID 61 chunks). The group key table and flags bussard builds from
+the keyring and the tables equal ETS's bytes (`secure_capture_oracle.rs`,
+`test_security_object_program_matches_ets`). INFERRED: the order and packing
+of several PID 53 entries (the capture has one), the meaning of the flag bits
+(bit 0/1 = authentication/confidentiality).
+
 ---
 
 ## 12. Test plan

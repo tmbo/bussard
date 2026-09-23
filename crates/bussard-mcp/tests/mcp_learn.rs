@@ -50,6 +50,7 @@ fn model() -> Result<Model, Box<dyn std::error::Error>> {
             flags: Flags::COMMUNICATION | Flags::TRANSMIT,
             reference: None,
             channel: Some("A".to_string()),
+            secure: false,
         },
     );
     let device = Device {

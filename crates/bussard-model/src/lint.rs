@@ -446,6 +446,7 @@ mod tests {
                     dpt: dpt.map(|d| d.parse().expect("test DPT parses")),
                     description: None,
                     protected: false,
+                    secure: false,
                 },
             );
         }

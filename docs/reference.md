@@ -863,6 +863,7 @@ groups:
 | `groups.<ga>.dpt` | string, optional | Datapoint type, e.g. `"1.008"`. Without it, `monitor` cannot decode the value (W011). |
 | `groups.<ga>.description` | string, optional | Free text. |
 | `groups.<ga>.protected` | bool, default `false` | Safety-critical GA: the CLI refuses writes without `--force`, MCP refuses outright. Serialized only when `true`. |
+| `groups.<ga>.secure` | bool, default `false` | ETS runs the GA with KNX Data Secure: the project stores a group key for it (the `Key` attribute of its `GroupAddress`, or `Security="On"`). Imported from the project and replaced on re-import; the key itself lives only in the `.knxkeys` keyring. A secured `flash`/`apply` refuses when the keyring has no key for a linked `secure` GA. Serialized only when `true`. |
 
 ### `links.yaml`
 
@@ -909,6 +910,12 @@ module_bases:
   MD-1_M-3_MI-1: 1797
 com_objects:
   12: { dpt: "1.008", flags: "CW", channel: "A" }
+  14: { dpt: "9.001", flags: "CRT", secure: true }   # Data Secure group object
+security:                    # only for a Data-Secure-capable device
+  secure_capable: true
+  activated: true
+  secure_commissioning: true
+  sequence_number: 275080325586
 ```
 
 | Field | Type | Meaning |
@@ -931,6 +938,14 @@ com_objects:
 | `com_objects.<n>.flags` | string | Compact `CRWTUI` flag string. W = accepts writes (a command input), T = transmits (a status output). |
 | `com_objects.<n>.ref` | string, optional | Cross-reference id from the product data. |
 | `com_objects.<n>.channel` | string, optional | Owning channel key. |
+| `com_objects.<n>.secure` | bool, generated, default `false` | The group object communicates with KNX Data Secure: its ETS `Security` setting is `On`, or `Auto` (the default, also when the attribute is absent) with a `secure` GA linked. A secured download writes flag `0x03` for it into the security object's `PID_GO_SECURITY_FLAGS`; a linked GA with a keyring key flags the object too. Serialized only when `true`. |
+| `security.secure_capable` | bool, generated | The application can run KNX Data Secure (`IsSecureEnabled`). Capability, not activation. |
+| `security.activated` | bool, generated | ETS has loaded the device's tool key (`LoadedToolKey` in the device's `<Security>` element): all management access must use `--keyring`. A sequence number alone is not this signal. |
+| `security.secure_commissioning` | bool, generated | Secure commissioning is enabled in the project (`ToolKey` present), whether or not ETS has downloaded it yet. |
+| `security.has_fdsk_certificate` | bool, generated | The project holds the device's factory certificate (FDSK). Presence only. |
+| `security.sequence_number` | number, generated | The Data Secure sequence number ETS last recorded for the device. |
+
+The `security:` block never carries key material: tool keys, group keys and the FDSK stay in the keyring.
 
 Com-object entries carry no `name` (it lives in `links.yaml`).
 

@@ -34,6 +34,7 @@ fn small_model() -> Model {
                 dpt: Some("1.001".parse().unwrap()),
                 description: None,
                 protected: false,
+                secure: false,
             },
         );
     }

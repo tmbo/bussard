@@ -889,6 +889,30 @@ class TestPropertyWrites(unittest.TestCase):
         self.assertIn("bussard only: step   4 obj5 PID 13 (5 octets)", lines)
         self.assertNotIn(self.GROUP_KEYS.hex(), lines)
 
+    def test_compare_properties_accepts_a_list_of_records(self):
+        # One plan step that goes out as several writes lists them under
+        # `properties` (the security object's chunked writes, issue #156).
+        ets = self.image_dir()
+        plan_dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, plan_dir, ignore_errors=True)
+        plan = {
+            "device": "1.1.5", "system": "B", "application": {"id": "M-00FA_A-1"}, "tables": [],
+            "steps": [
+                {"index": 1, "label": "1.", "properties": [
+                    {"object_type": 17, "instance": 1, "pid": 5, "length": 10},
+                    {"object_type": 17, "instance": 1, "pid": 54, "start_element": 0,
+                     "length": 2},
+                ]},
+            ],
+        }
+        with open(os.path.join(plan_dir, "plan.json"), "w") as fh:
+            json.dump(plan, fh)
+        entries = memimage.plan_property_writes(plan)
+        self.assertEqual(
+            [(e["step"], memimage._prop_key(e)) for e in entries],
+            [(1, ("type17.1", 5, 10)), (1, ("type17.1", 54, 2))],
+        )
+
     def test_compare_properties_without_properties_json(self):
         ets = self.image_dir()
         os.unlink(os.path.join(ets, "properties.json"))

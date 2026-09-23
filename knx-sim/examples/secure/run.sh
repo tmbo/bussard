@@ -12,6 +12,9 @@
 #   POSITIVE  flash 1.1.2 with the right tool key, CCM auth+encrypt  -> verified Loaded
 #   POSITIVE  flash 1.1.2 with the right tool key, CCM auth-only     -> verified Loaded
 #   POSITIVE  flash 1.1.3 plain (no tool key)                        -> verified Loaded
+#   POSITIVE  flash + apply 1.1.10 with --keyring (synthetic.knxkeys) -> the
+#             security object is unloaded, reloaded with the IA-table clear,
+#             the group key table and the GO security flags, and completed
 #   NEGATIVE  flash 1.1.2 with a WRONG tool key  -> fails, sim refuses the MAC, nothing written
 #   NEGATIVE  flash 1.1.2 with NO tool key       -> fails, sim refuses plain access, nothing written
 #   NEGATIVE  flash 1.1.3 (plain device) WITH a tool key -> fails, sim refuses (not activated)
@@ -83,9 +86,54 @@ connection:
   transport: tunnel
   gateway: $GATEWAY
 EOF
-printf 'project: secure\ngroups: {}\n' > "$MODEL/groups.yaml"
-printf 'links: {}\n'                   > "$MODEL/links.yaml"
-ok "bare model at $MODEL"
+# 1.1.2 and 1.1.3 have no links (a bare vendor-default flash). 1.1.10, the
+# keyring peer, links object 1 to the keyed 1/2/3 (group key in
+# synthetic.knxkeys, `secure: true` as an import records it) and object 2 to
+# plain GAs.
+mkdir -p "$MODEL/devices"
+cat > "$MODEL/groups.yaml" <<'EOF'
+project: secure
+groups:
+  1/2/1:
+    name: Plain early
+    dpt: '5.001'
+  1/2/3:
+    name: Secured dimming
+    dpt: '3.007'
+    secure: true
+  1/2/4:
+    name: Plain value
+    dpt: '5.001'
+EOF
+cat > "$MODEL/devices/1.1.10-secure-dimmer.yaml" <<'EOF'
+address: 1.1.10
+name: Secure dimmer
+product:
+  manufacturer_ref: M-00FA
+  application_ref: M-00FA_A-2500-10-51CB
+  mask: 07B0
+com_objects:
+  1:
+    dpt: '3.007'
+    flags: CW
+    secure: true
+  2:
+    dpt: '5.001'
+    flags: CW
+security:
+  secure_capable: true
+  activated: true
+EOF
+# write_links <GA...>: 1.1.10 object 1 listens on 1/2/3, object 2 on the GAs given.
+write_links() {
+  {
+    printf 'links:\n  1.1.10:\n    - object: 1\n      listen:\n        - 1/2/3\n'
+    printf '    - object: 2\n      listen:\n'
+    for ga in "$@"; do printf '        - %s\n' "$ga"; done
+  } > "$MODEL/links.yaml"
+}
+write_links 1/2/4
+ok "model at $MODEL (1.1.10 linked to the keyed 1/2/3)"
 
 # --- Start the simulator ----------------------------------------------------
 say "start simulator"
@@ -174,6 +222,72 @@ if log_has "$mark" "SECURE"; then
 else
   ok "the plain path emitted no A_SecureData at all"
 fi
+
+# --- POSITIVE: --keyring programs the security object (issue #156) ----------
+say "positive: --keyring flash and apply program the security object"
+KEYRING="$HERE/synthetic.knxkeys"
+export BUSSARD_KEYRING_PASSWORD="synthetic-keyring-pw"   # SYNTHETIC
+
+out="$(flash 1.1.10 --keyring "$KEYRING" --dry-run -v)"
+if grep -qF "Data Secure: write group key table (PID 53, 1 key(s) for 1/2/3@1" <<<"$out" \
+   && grep -qF "Data Secure: write group-object security flags (PID 61" <<<"$out" \
+   && grep -qF "secured: 1)" <<<"$out"; then
+  ok "dry run lists the security-object steps (PID 53 key for 1/2/3 at index 1, PID 61 flags object 1)"
+else
+  bad "the dry run did not list the expected security-object steps"
+  grep -i "data secure" <<<"$out" | sed 's/^/      /'
+fi
+
+mark=$(log_mark)
+out="$(flash 1.1.10 --keyring "$KEYRING")"
+if grep -q "is Loaded on 1.1.10" <<<"$out"; then
+  ok "1.1.10 flashed to verified Loaded with --keyring"
+else
+  bad "keyring flash of 1.1.10 failed"; tail -8 <<<"$out" | sed 's/^/      /'
+fi
+for want in \
+  "SECOBJ FunctionCommand iot=17/1 pid=5 event=Unload rc=0x00 state=Unloaded" \
+  "SECOBJ FunctionCommand iot=17/1 pid=5 event=StartLoading rc=0x00 state=Loading" \
+  "SECOBJ WriteCon iot=17/1 pid=54 start=0 count=1 rc=0x00" \
+  "SECOBJ WriteCon iot=17/1 pid=53 start=1 count=1 rc=0x00" \
+  "SECOBJ WriteCon iot=17/1 pid=61 start=1 count=" \
+  "SECOBJ FunctionCommand iot=17/1 pid=5 event=LoadCompleted rc=0x00 state=Loaded"; do
+  if log_has "$mark" "$want"; then
+    ok "flash: sim saw '${want#SECOBJ }'"
+  else
+    bad "flash: sim did not see '$want'"
+  fi
+done
+if log_since "$mark" | grep -E "SECOBJ .* rc=0x[fF]" >/dev/null; then
+  bad "flash: the security object refused an operation"
+  log_since "$mark" | grep -E "SECOBJ .* rc=0x[fF]" | head -3 | sed 's/^/      /'
+else
+  ok "flash: every security-object operation answered rc=0x00"
+fi
+
+# A link change moves the keyed GA to address-table index 2 (1/2/1 sorts
+# first): apply must reprogram the key table next to the tables.
+write_links 1/2/1 1/2/4
+mark=$(log_mark)
+out="$("$BUSSARD" apply 1.1.10 --dir "$MODEL" --yes --gateway "$GATEWAY" --keyring "$KEYRING" 2>&1)"
+if grep -q "verified" <<<"$out" && grep -qF "Data Secure: the security object is reprogrammed" <<<"$out"; then
+  ok "apply --keyring verified and announced the security-object reprogramming"
+else
+  bad "apply --keyring failed"; tail -8 <<<"$out" | sed 's/^/      /'
+fi
+for want in \
+  "SECOBJ ValueRead iot=17/1 pid=61 start=0" \
+  "SECOBJ FunctionCommand iot=17/1 pid=5 event=Unload rc=0x00" \
+  "SECOBJ WriteCon iot=17/1 pid=53 start=1 count=1 rc=0x00" \
+  "SECOBJ FunctionCommand iot=17/1 pid=5 event=LoadCompleted rc=0x00 state=Loaded"; do
+  if log_has "$mark" "$want"; then
+    ok "apply: sim saw '${want#SECOBJ }'"
+  else
+    bad "apply: sim did not see '$want'"
+  fi
+done
+unset BUSSARD_KEYRING_PASSWORD
+write_links 1/2/4
 
 # --- NEGATIVES --------------------------------------------------------------
 say "negatives"

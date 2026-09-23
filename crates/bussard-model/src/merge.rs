@@ -541,6 +541,7 @@ mod tests {
                 flags: Flags::default(),
                 reference: None,
                 channel: None,
+                secure: false,
             },
         );
         let ours = model_with(vec![our_dev], Groups::default(), Links::default());
@@ -555,6 +556,7 @@ mod tests {
                 flags: Flags::default(),
                 reference: None,
                 channel: None,
+                secure: false,
             },
         );
         their_dev.com_objects.insert(
@@ -565,6 +567,7 @@ mod tests {
                 flags: Flags::default(),
                 reference: None,
                 channel: None,
+                secure: false,
             },
         );
         let theirs = model_with(vec![their_dev], Groups::default(), Links::default());
@@ -600,6 +603,7 @@ mod tests {
                 dpt: Some(Dpt::new(1, Some(1))),
                 description: None,
                 protected: true,
+                secure: false,
             },
         );
         let ours = model_with(vec![our_dev], our_groups, Links::default());
@@ -617,6 +621,7 @@ mod tests {
                 dpt: Some(Dpt::new(1, Some(1))),
                 description: None,
                 protected: false,
+                secure: false,
             },
         );
         let theirs = model_with(vec![their_dev], their_groups, Links::default());

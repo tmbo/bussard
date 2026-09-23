@@ -33,11 +33,12 @@ pub mod param_plan;
 pub mod plan;
 pub mod preflight;
 pub mod program;
+pub mod security;
 pub mod sweep;
 pub mod tables_sys7;
 
 pub use apply::{
-    TableObjectIndexes, VerifyOutcome, apply_tables, discover_table_objects,
+    TableObjectIndexes, VerifyOutcome, apply_tables, apply_tables_secured, discover_table_objects,
     negotiate_session_apdu, read_states,
 };
 pub use apply_sys7::{
@@ -83,7 +84,12 @@ pub use preflight::{
 pub use program::{
     LiveRead, LiveReadError, LiveTables, NoLinks, TableWriteSummary, desired_tables_for,
     read_live_tables, render_plan_text, write_pre_write_backup, write_sys7, write_system_b,
-    write_tables,
+    write_system_b_secured, write_tables, write_tables_secured,
+};
+pub use security::{
+    DeviceSecurityView, GO_FLAGS_SECURE, GroupKeyEntry, SecurityInputs, SecurityPlanError,
+    SecurityProgram, build_security_program, device_security_view, program_security_object,
+    security_inputs_for,
 };
 pub use sweep::{
     AppSweep, FamilyCoverage, ImageClass, ParseClass, PlanClass, ProductSweep, RankedReason,

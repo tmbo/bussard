@@ -260,6 +260,7 @@ mod tests {
                 dpt: Some(Dpt::new(1, Some(1))),
                 description: None,
                 protected: false,
+                secure: false,
             },
         );
         groups.groups.insert(
@@ -269,6 +270,7 @@ mod tests {
                 dpt: Some(Dpt::new(1, Some(5))),
                 description: Some("guarded".to_string()),
                 protected: true,
+                secure: false,
             },
         );
         groups

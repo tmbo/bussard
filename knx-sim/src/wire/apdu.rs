@@ -109,6 +109,25 @@ pub enum Apci {
     MemoryExtendedRead,
     /// `A_MemoryExtended_Read_Response` (0x1FE).
     MemoryExtendedReadResponse,
+    /// `A_PropertyExtValue_Read` (0x1CC): extended property read addressed by
+    /// `[object_type:16][instance:12|pid:12][count][start:16]`.
+    PropertyExtValueRead,
+    /// `A_PropertyExtValue_Response` (0x1CD).
+    PropertyExtValueResponse,
+    /// `A_PropertyExtValue_WriteCon` (0x1CE): confirmed extended property write.
+    PropertyExtValueWriteCon,
+    /// `A_PropertyExtValue_WriteConResponse` (0x1CF).
+    PropertyExtValueWriteConResponse,
+    /// `A_PropertyExtDescription_Read` (0x1D2).
+    PropertyExtDescriptionRead,
+    /// `A_PropertyExtDescription_Response` (0x1D3).
+    PropertyExtDescriptionResponse,
+    /// `A_FunctionPropertyExt_Command` (0x1D4).
+    FunctionPropertyExtCommand,
+    /// `A_FunctionPropertyExt_State_Read` (0x1D5).
+    FunctionPropertyExtStateRead,
+    /// `A_FunctionPropertyExt_State_Response` (0x1D6).
+    FunctionPropertyExtStateResponse,
     /// `A_DeviceDescriptor_Read` (descriptor type in low bits).
     DeviceDescriptorRead(u8),
     /// `A_DeviceDescriptor_Response`.
@@ -164,6 +183,15 @@ impl Apci {
             0x0C0 => Apci::IndividualAddressWrite,
             0x100 => Apci::IndividualAddressRead,
             0x140 => Apci::IndividualAddressResponse,
+            0x1CC => Apci::PropertyExtValueRead,
+            0x1CD => Apci::PropertyExtValueResponse,
+            0x1CE => Apci::PropertyExtValueWriteCon,
+            0x1CF => Apci::PropertyExtValueWriteConResponse,
+            0x1D2 => Apci::PropertyExtDescriptionRead,
+            0x1D3 => Apci::PropertyExtDescriptionResponse,
+            0x1D4 => Apci::FunctionPropertyExtCommand,
+            0x1D5 => Apci::FunctionPropertyExtStateRead,
+            0x1D6 => Apci::FunctionPropertyExtStateResponse,
             0x1FB => Apci::MemoryExtendedWrite,
             0x1FC => Apci::MemoryExtendedWriteResponse,
             0x1FD => Apci::MemoryExtendedRead,
@@ -194,6 +222,15 @@ impl Apci {
             Apci::MemoryRead(n) => 0x200 | (n as u16 & 0x3F),
             Apci::MemoryResponse(n) => 0x240 | (n as u16 & 0x3F),
             Apci::MemoryWrite(n) => 0x280 | (n as u16 & 0x3F),
+            Apci::PropertyExtValueRead => 0x1CC,
+            Apci::PropertyExtValueResponse => 0x1CD,
+            Apci::PropertyExtValueWriteCon => 0x1CE,
+            Apci::PropertyExtValueWriteConResponse => 0x1CF,
+            Apci::PropertyExtDescriptionRead => 0x1D2,
+            Apci::PropertyExtDescriptionResponse => 0x1D3,
+            Apci::FunctionPropertyExtCommand => 0x1D4,
+            Apci::FunctionPropertyExtStateRead => 0x1D5,
+            Apci::FunctionPropertyExtStateResponse => 0x1D6,
             Apci::MemoryExtendedWrite => 0x1FB,
             Apci::MemoryExtendedWriteResponse => 0x1FC,
             Apci::MemoryExtendedRead => 0x1FD,
@@ -313,6 +350,19 @@ mod tests {
         assert_eq!(Apci::MemoryExtendedReadResponse.to_u10(), 0x1FE);
         // The extended selectors do NOT collide with the plain memory family.
         assert!(matches!(Apci::from_u10(0x280), Apci::MemoryWrite(_)));
+    }
+
+    #[test]
+    fn test_apci_extended_property_services_roundtrip() {
+        for v in [
+            0x1CCu16, 0x1CD, 0x1CE, 0x1CF, 0x1D2, 0x1D3, 0x1D4, 0x1D5, 0x1D6,
+        ] {
+            let apci = Apci::from_u10(v);
+            assert!(!matches!(apci, Apci::Other(_)), "0x{v:03x} is decoded");
+            assert_eq!(apci.to_u10(), v);
+        }
+        assert_eq!(Apci::from_u10(0x1D4), Apci::FunctionPropertyExtCommand);
+        assert_eq!(Apci::from_u10(0x1CE), Apci::PropertyExtValueWriteCon);
     }
 
     #[test]

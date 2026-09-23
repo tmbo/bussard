@@ -13,6 +13,9 @@ bussard-prod = { path = "../bussard-prod" }
 bussard-mgmt = { path = "../bussard-mgmt" }
 bussard-bus = { workspace = true }
 bussard-transport = { workspace = true }
+# Group keys for the KNX Data Secure security-object program (issue #156),
+# held as the redacting, zeroizing `Key16`. First-party crate.
+bussard-secure = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
@@ -25,10 +28,6 @@ serde_json = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
-# The KNX Data Secure mock device in `tests/flash_mock.rs` (issue #71): it holds
-# a `DataSecureSession` so the mock unwraps A_SecureData and wraps its responses,
-# exercising the flash engine end to end through the secure seam.
-bussard-secure = { workspace = true }
 # For the env-gated dry-run trace test that reads the developer's local
 # `home_test.knxproj` (a plain-zip container) and for the committed-fixture sweep
 # test, which assembles fabricated `.app.xml` fixtures into `.knxprod` ZIPs in a

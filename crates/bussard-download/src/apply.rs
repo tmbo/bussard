@@ -172,6 +172,21 @@ pub async fn apply_tables<Ch: L4Channel>(
     objects: TableObjectIndexes,
     desired: &DesiredTables,
 ) -> Result<VerifyOutcome, WriteError> {
+    apply_tables_secured(l4, objects, desired, None).await
+}
+
+/// [`apply_tables`] for a KNX Data Secure device (issue #156): with
+/// `security`, the security object is reprogrammed for the new address table
+/// (group key table indices follow it) after both table images are written and
+/// before either table is completed, so the device never activates tables whose
+/// keys point at the wrong entries. See
+/// [`program_security_object`](crate::security::program_security_object).
+pub async fn apply_tables_secured<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    objects: TableObjectIndexes,
+    desired: &DesiredTables,
+    security: Option<&crate::security::SecurityInputs>,
+) -> Result<VerifyOutcome, WriteError> {
     let addr_elems = desired.address_elements();
     let assoc_elems = desired.association_elements();
 
@@ -190,6 +205,10 @@ pub async fn apply_tables<Ch: L4Channel>(
 
     // 4: write the association table (TSAPs now index the new address content).
     write_table_image(l4, assoc_seg, ASSOCIATION_ELEM_SIZE, &assoc_elems).await?;
+    // 4b (Data Secure): reprogram the security object for the new address table.
+    if let Some(inputs) = security {
+        crate::security::program_security_object(l4, &desired.addresses, inputs).await?;
+    }
 
     // 5: complete the address load first (activate the GA table).
     let address_state = write_load_control(l4, objects.address, LoadControl::LoadCompleted).await?;

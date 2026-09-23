@@ -32,6 +32,7 @@ fn model() -> Result<Model, Box<dyn std::error::Error>> {
             dpt: Some("1.001".parse()?),
             description: None,
             protected: false,
+            secure: false,
         },
     );
     groups.insert(
@@ -41,6 +42,7 @@ fn model() -> Result<Model, Box<dyn std::error::Error>> {
             dpt: None,
             description: None,
             protected: true,
+            secure: false,
         },
     );
     let mut links = BTreeMap::new();

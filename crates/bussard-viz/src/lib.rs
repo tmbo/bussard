@@ -478,6 +478,7 @@ mod tests {
                 dpt: dpt.map(|d| d.parse().expect("dpt")),
                 description: None,
                 protected,
+                secure: false,
             },
         );
         let model = Model {
