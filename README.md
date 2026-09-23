@@ -83,13 +83,7 @@ With Homebrew:
 $ brew install tmbo/tap/bussard
 ```
 
-Windows:
-
-```console
-> winget install tmbo.bussard
-```
-
-or, in PowerShell:
+Windows, in PowerShell:
 
 ```console
 > irm https://raw.githubusercontent.com/tmbo/bussard/main/install.ps1 | iex

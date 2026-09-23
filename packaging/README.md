@@ -1,7 +1,7 @@
 # Packaging
 
-How `bussard` reaches a user who is not a Rust developer: a shell installer, a
-Homebrew tap, and a winget package. All three serve the binaries that
+How `bussard` reaches a user who is not a Rust developer: a shell installer
+for each platform and a Homebrew tap. Both serve the binaries that
 `.github/workflows/release.yml` already builds, so nothing here compiles
 anything.
 
@@ -10,7 +10,6 @@ anything.
 | Shell installer | `curl -fsSL https://raw.githubusercontent.com/tmbo/bussard/main/install.sh \| sh` | `install.sh` on `main` |
 | PowerShell installer | `irm https://raw.githubusercontent.com/tmbo/bussard/main/install.ps1 \| iex` | `install.ps1` on `main` |
 | Homebrew | `brew install tmbo/tap/bussard` | `Formula/bussard.rb` in `tmbo/homebrew-tap` |
-| winget | `winget install tmbo.bussard` | `manifests/t/tmbo/bussard/` in `microsoft/winget-pkgs` |
 
 ## Release flow
 
@@ -23,25 +22,25 @@ Pushing a version tag (`0.2.0` or `v0.2.0`) runs `release.yml`:
    uploads each with a `.sha256` file.
 3. `homebrew` renders `Formula/bussard.rb` with the new version and the four
    checksums and commits it to `tmbo/homebrew-tap`.
-4. `winget` runs `wingetcreate update` and opens a pull request against
-   `microsoft/winget-pkgs`.
 
 The shell installers need no release step: they read the release from the
 GitHub API at install time, so they pick up a new version the moment it is
 published.
 
-Steps 3 and 4 each need a token for a repository outside this one. Without the
-secret the job prints a notice and does nothing, so a release never fails
-because packaging is not set up yet.
+Step 3 needs a token for a repository outside this one. Without the secret the
+job prints a notice and does nothing, so a release never fails because
+packaging is not set up yet.
+
+Windows users install with the PowerShell script; a winget package was
+considered and dropped, since the direct download does the same job.
 
 ## One-time setup
 
 ### Homebrew tap
 
-1. Create a public repository named `homebrew-tap` under the `tmbo` account.
-   The name matters: `brew install tmbo/tap/bussard` expands to
-   `github.com/tmbo/homebrew-tap`. An empty repository with a README is enough;
-   the release job creates `Formula/bussard.rb` on the first run.
+1. The public repository `tmbo/homebrew-tap` exists (done). The name matters:
+   `brew install tmbo/tap/bussard` expands to `github.com/tmbo/homebrew-tap`.
+   The release job creates `Formula/bussard.rb` on its first run.
 2. Create a fine-grained personal access token with **Contents: read and write**
    on `tmbo/homebrew-tap` only.
 3. Add it to this repository as the secret `HOMEBREW_TAP_TOKEN`
@@ -49,31 +48,7 @@ because packaging is not set up yet.
 
 The next release commits the rendered formula to the tap.
 
-### winget
-
-The first version of a package has to be submitted once by hand; after that the
-release job keeps it current.
-
-1. Create a personal access token with **public_repo** scope and add it as the
-   secret `WINGET_TOKEN`. `wingetcreate` uses it to fork
-   `microsoft/winget-pkgs` and open the pull request, so the token must belong
-   to an account that can fork.
-2. After the first release exists, submit the initial manifests from a Windows
-   machine:
-
-   ```console
-   > winget install Microsoft.WingetCreate
-   > wingetcreate submit --token <WINGET_TOKEN> packaging/winget
-   ```
-
-   Update `PackageVersion`, `InstallerUrl` and `InstallerSha256` in
-   `packaging/winget/` to the real release values first: the copies in this
-   repository are placeholders (`0.0.0`, a zero hash) that keep the manifest set
-   readable and lintable.
-3. Microsoft's validation pipeline reviews the pull request. Once it is merged,
-   `winget install tmbo.bussard` works and the release job can take over.
-
-## How the formula and the manifests are updated
+## How the formula is updated
 
 `Formula/bussard.rb` in this repository is a **template**. It carries
 `@VERSION@`, `@TAG@` and one `@SHA256_...@` placeholder per platform. The
@@ -98,14 +73,6 @@ $ sed -e "s|@VERSION@|${tag#v}|g" -e "s|@TAG@|$tag|g" \
     Formula/bussard.rb > /tmp/bussard.rb
 $ brew install --formula /tmp/bussard.rb
 ```
-
-The winget manifests are updated the other way round: `wingetcreate update`
-reads the published manifests from `microsoft/winget-pkgs`, not the copies here,
-and rewrites the version, installer URL and installer hash. The copies in
-`packaging/winget/` are the record of the package's shape (identifier, portable
-installer type, command alias, description, tags). Edit them when that shape
-changes, then submit them with `wingetcreate submit` so the published manifests
-and this repository agree.
 
 ## Testing
 

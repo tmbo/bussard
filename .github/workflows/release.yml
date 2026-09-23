@@ -128,9 +128,9 @@ jobs:
           gh release upload "${{ github.ref_name }}" \
             "${{ matrix.asset }}" "${{ matrix.asset }}.sha256" --clobber
 
-  # Package managers. Both jobs need a token for a repository outside this one,
-  # so both are no-ops until the maintainer adds the secret (packaging/README.md
-  # has the one-time setup). A missing secret skips the job with a notice rather
+  # Homebrew tap. The job needs a token for a repository outside this one, so
+  # it is a no-op until the maintainer adds the secret (packaging/README.md has
+  # the one-time setup). A missing secret skips the job with a notice rather
   # than failing the release.
   homebrew:
     name: update the Homebrew tap
@@ -199,37 +199,3 @@ jobs:
           fi
           git commit -m "bussard $version"
           git push
-
-  winget:
-    name: submit the winget manifest
-    needs: build
-    runs-on: windows-latest
-    timeout-minutes: 15
-    env:
-      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
-    steps:
-      - name: Skip without a winget token
-        if: env.WINGET_TOKEN == ''
-        shell: bash
-        run: |
-          echo "::notice::WINGET_TOKEN is not set, so no winget manifest was \
-          submitted. See packaging/README.md for the one-time setup."
-      # wingetcreate reads the published manifests for tmbo.bussard from
-      # microsoft/winget-pkgs, swaps in the new version and installer URL,
-      # recomputes the installer hash from the release asset, and opens the pull
-      # request. The first submission is manual (packaging/README.md); from then
-      # on this keeps the package current.
-      - name: Update and submit with wingetcreate
-        if: env.WINGET_TOKEN != ''
-        shell: pwsh
-        run: |
-          $tag = "${{ github.ref_name }}"
-          $version = $tag -replace '^v', ''
-          $url = "https://github.com/${{ github.repository }}/releases/download/$tag/bussard-windows-x64.exe"
-          Invoke-WebRequest -Uri https://aka.ms/wingetcreate/latest `
-            -OutFile wingetcreate.exe -UseBasicParsing
-          .\wingetcreate.exe update tmbo.bussard `
-            --version $version `
-            --urls "$url|x64" `
-            --submit `
-            --token $env:WINGET_TOKEN

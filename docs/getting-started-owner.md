@@ -21,10 +21,10 @@ On macOS or Linux with Homebrew:
 $ brew install tmbo/tap/bussard
 ```
 
-On Windows:
+On Windows, in PowerShell:
 
 ```console
-> winget install tmbo.bussard
+> irm https://raw.githubusercontent.com/tmbo/bussard/main/install.ps1 | iex
 ```
 
 Without a package manager, use the install script from the [README](../README.md#install); it downloads the binary and checks its SHA-256 checksum. `bussard --version` confirms it is on the PATH.
