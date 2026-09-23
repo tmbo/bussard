@@ -6,8 +6,7 @@
 #   1. Print the plan, then stop unless --go was passed.
 #   2. Resolve the gateway once, print it, and refuse a real bus without the
 #      explicit opt-in (the same rule bussard itself applies to writes).
-#   3. Write everything under captures/campaign/<date>/, which is gitignored and
-#      which the private-data hook refuses to commit.
+#   3. Write everything under captures/campaign/<date>/, which is gitignored.
 #
 # Nothing here writes to a device. The scripts that do call bussard, which runs
 # its own confirmation and its own gateway gate; these wrappers are belt and

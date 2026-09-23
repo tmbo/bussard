@@ -1,0 +1,85 @@
+# Getting started
+
+bussard is an open-source command line tool for KNX. Your installation is
+described in YAML files that you keep in git. bussard writes that model to the
+devices over a KNXnet/IP gateway and decodes what happens on the bus using the
+same model.
+
+You need a KNXnet/IP gateway (tunneling or routing). An ETS project export
+(`.knxproj`) and vendor product data (`.knxprod`) are optional, but they give
+you a fully named model from the first minute.
+
+## Install
+
+Download the binary for your system from the
+[latest release](https://github.com/tmbo/bussard/releases/latest), or from the
+[landing page](../). Each file comes with a `.sha256` checksum. On macOS and
+Linux:
+
+```console
+$ chmod +x bussard-macos-arm64
+$ mv bussard-macos-arm64 /usr/local/bin/bussard
+$ xattr -d com.apple.quarantine /usr/local/bin/bussard   # macOS only, the binary is not notarized
+```
+
+Or build from source with Rust 1.85 or newer:
+
+```console
+$ git clone https://github.com/tmbo/bussard
+$ cd bussard
+$ cargo install --path crates/bussard-cli
+```
+
+## First commands
+
+With an ETS export:
+
+```console
+$ bussard import demo-house.knxproj
+imported 33 group addresses, 10 devices, 55 link entries → knx
+$ bussard validate
+0 errors, 4 warnings
+$ bussard monitor
+12:03:44.809  1.1.1 Push Button Hallway → 0/0/0 Hallway Light Switch = On (1.001, obj "Rocker 1")
+12:03:44.981  1.1.3 Switch Actuator     → 0/0/1 Hallway Light Status = On (1.001)
+```
+
+Without one, start empty and adopt devices as you go:
+
+```console
+$ bussard init
+Found gateway: KNX IP Interface (192.0.2.10:3671, IA 1.1.250)
+Created a fresh KNX model in knx.
+$ bussard adopt --product actuator.knxprod    # press the programming button
+adopted 15.15.255 → 1.1.5
+$ bussard flash 1.1.5 --product actuator.knxprod
+```
+
+From there:
+
+```console
+$ bussard read 4/1/11                # 21.4 °C (9.001)
+$ bussard write 3/0/4 down           # the blind moves
+$ bussard plan 1.1.5                 # diff the device's live tables against the model
+$ bussard apply 1.1.5                # write them: confirm, backup, verify
+$ bussard viz                        # the whole network in a browser, live
+$ bussard ha-config --out ha.yaml    # Home Assistant config from the same model
+$ claude mcp add knx -- bussard mcp --dir knx    # let Claude debug your bus
+```
+
+## Before your first write
+
+bussard writes to real building hardware. Read [Safety](SAFETY.md) once before
+you use `write`, `apply` or `flash` against a live installation. The short
+version: writes to a gateway that is not on localhost are refused until you
+pass `--allow-remote-gateway`, every device write is plan-before-apply with a
+backup, and group addresses marked `protected: true` need `--force` on the CLI
+and cannot be changed over MCP at all.
+
+## Where next
+
+- [How do I ...](howto.md): recipes, from watching the bus to flashing a device.
+- [Reference](reference.md): every command, flag, YAML field and MCP tool.
+- [Home Assistant](ha-config.md): how `ha-config` derives entities from the model.
+- [Product data](product-data.md): `.knxprod` handling and what you may and may not commit.
+- [Design](DESIGN.md): architecture, feasibility and roadmap.

@@ -46,10 +46,9 @@ scripts/campaign/00-preflight.sh --i-have-an-ets-backup --go \
     --allow-remote-gateway --iface en0
 ```
 
-Confirms the ETS backup, installs the private-data pre-commit hook, checks the
-binary and validates the model, starts `tcpdump` and `bussard capture` into the
-campaign directory, and writes `session.env` for the later scripts. It touches no
-device.
+Confirms the ETS backup, checks the binary and validates the model, starts
+`tcpdump` and `bussard capture` into the campaign directory, and writes
+`session.env` for the later scripts. It touches no device.
 
 `tcpdump` normally needs `sudo`. Without it the script warns and carries on: a
 per-step window file records the time range instead, so a capture taken elsewhere
@@ -193,15 +192,33 @@ The repository must never describe a real installation. See
 the full rule; for this campaign specifically:
 
 - Everything the scripts write goes under `captures/`, which is gitignored.
-- `scripts/check-no-house-data.sh` refuses any `.pcap`, `.pcapng`, `.knxproj`,
-  `.knxkeys` or `captures/` path in a commit, plus the private LAN literal and
-  the hashed room and device names. `00-preflight.sh` installs it as a
-  pre-commit hook; CI runs it over every tracked file.
+- `.pcap`, `.pcapng`, `.knxproj`, `.knxkeys` and `captures/` are gitignored;
+  check a diff for the LAN address and for room or device names before
+  committing anything derived from a campaign.
 - `knxtrace` never prints key material: `A_Authorize` keys are hashed,
   `A_SecureData` payloads are a length and a hash, and KNXnet/IP Secure frames
   are named but never decrypted.
 - When a finding becomes an issue, paste the decoded `knxtrace` excerpt, not the
   raw capture, and replace addresses with TEST-NET ones.
+
+## Findings
+
+**A real device will not take its tables through `PID_TABLE`** (issue #89).
+`bussard apply` against a Jung F50 push-button module (52911ST, application
+`M-0004_A-D141-22`) failed on the link-table download: the device rejected the
+`A_PropertyValue_Write` to `PID_TABLE` (PID 23) with a zero-count response,
+writing nothing and echoing no elements. Two ETS captures taken alongside it (a
+Jung F50 sibling at 1.1.18, and the KNX Virtual DA.tp) show ETS never attempts
+that path. After each `StartLoading` it writes a 10-octet
+`AdditionalLoadControls` / `LdCtrlRelSegment` sized to the whole image (the
+2-octet count word plus `n * elem_size`), reads `PID_TABLE_REFERENCE` for the
+placement, streams the image with `A_Memory_Write` / `A_MemoryExtended_Write`,
+and only then sends `LoadCompleted`.
+
+Only the lenient KNX Virtual stack also accepts a property write to `PID_TABLE`,
+which is why the mock device and `knx-sim` both let the bug through. `apply` now
+allocates and memory-writes; the mock and the simulator both refuse a `PID_TABLE`
+write the way the Jung did, so the old path cannot come back unnoticed.
 
 ## Rehearsing on the simulator
 

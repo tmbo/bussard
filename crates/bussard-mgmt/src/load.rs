@@ -995,22 +995,21 @@ pub async fn read_table_reference<Ch: L4Channel>(
     object_index: u8,
 ) -> Result<u32> {
     let resp = property_request(l4, object_index, PID_TABLE_REFERENCE, 1, 1).await?;
-    if resp.count == 0 || resp.data.len() < 4 {
-        return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
+    // 4 octets on System B (PDT_UNSIGNED_LONG); System 7 devices answer the
+    // 2-octet form (the Jung 0705 presence detectors, issue #89). Either way the
+    // address is the trailing big-endian word.
+    match (resp.count, resp.data.as_slice()) {
+        (c, [a, b, c2, d]) if c > 0 => Ok(u32::from_be_bytes([*a, *b, *c2, *d])),
+        (c, [hi, lo]) if c > 0 => Ok(u32::from(u16::from_be_bytes([*hi, *lo]))),
+        _ => Err(WriteError::Mgmt(MgmtError::MalformedResponse {
             address: l4.target(),
             reason: format!(
-                "table reference is not a readable u32 (object {object_index}, count {}, {} octet(s))",
+                "table reference is not a readable address (object {object_index}, count {}, {} octet(s))",
                 resp.count,
                 resp.data.len()
             ),
-        }));
+        })),
     }
-    Ok(u32::from_be_bytes([
-        resp.data[0],
-        resp.data[1],
-        resp.data[2],
-        resp.data[3],
-    ]))
 }
 
 // --- PID_MCB_TABLE (memory control block) + CRC-16/AUG-CCITT ------------------
@@ -1155,22 +1154,31 @@ pub async fn read_mcb_table<Ch: L4Channel>(
     expected: Option<&[u8]>,
 ) -> Result<Vec<McbEntry>> {
     let address = l4.target();
-    let resp = property_request(l4, object_index, PID_MCB_TABLE, start, count.max(1)).await?;
-    if resp.count == 0 || resp.data.len() < MCB_ENTRY_LEN {
-        return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
-            address,
-            reason: format!(
-                "object {object_index} did not answer a readable PID_MCB_TABLE entry (count {}, {} octet(s))",
-                resp.count,
-                resp.data.len()
-            ),
-        }));
+    // One element per request, exactly as ETS reads a multi-entry MCB table
+    // (`LdCtrlLoadImageProp Count="6"` on the Jung 3361-1MWW capture goes out as
+    // six `count=1` reads at index 1..=6). A single `count=6` request was refused
+    // by the real device with a zero-count response (issue #89 campaign,
+    // 1.1.36): six 8-octet entries do not fit a standard-frame APDU, and the
+    // device does not partially answer.
+    let mut entries: Vec<McbEntry> = Vec::with_capacity(usize::from(count.max(1)));
+    for element in start..start.saturating_add(u16::from(count.max(1))) {
+        let resp = property_request(l4, object_index, PID_MCB_TABLE, element, 1).await?;
+        if resp.count == 0 || resp.data.len() < MCB_ENTRY_LEN {
+            return Err(WriteError::Mgmt(MgmtError::MalformedResponse {
+                address,
+                reason: format!(
+                    "object {object_index} did not answer a readable PID_MCB_TABLE entry {element} (count {}, {} octet(s))",
+                    resp.count,
+                    resp.data.len()
+                ),
+            }));
+        }
+        entries.extend(
+            resp.data
+                .chunks_exact(MCB_ENTRY_LEN)
+                .filter_map(McbEntry::decode),
+        );
     }
-    let entries: Vec<McbEntry> = resp
-        .data
-        .chunks_exact(MCB_ENTRY_LEN)
-        .filter_map(McbEntry::decode)
-        .collect();
     let first = entries.first().ok_or_else(|| {
         WriteError::Mgmt(MgmtError::MalformedResponse {
             address,

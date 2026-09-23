@@ -1,0 +1,66 @@
+# Builds the website (landing page + rendered docs) and deploys it to GitHub
+# Pages. See website/README.md. Requires Pages to be set to "GitHub Actions"
+# as its source in the repository settings.
+name: Site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "website/**"
+      - "docs/**"
+      - ".github/workflows/site.yml"
+  workflow_dispatch:
+
+# Deploying to Pages needs the OIDC token and the pages scope; nothing here
+# writes to the repository itself.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one deployment at a time; a newer push supersedes an in-flight one.
+concurrency:
+  group: site
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build site
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: website/requirements.txt
+
+      - name: Install MkDocs Material
+        run: pip install -r website/requirements.txt
+
+      - name: Build
+        run: |
+          mkdir -p _site
+          cp website/index.html _site/
+          mkdocs build --strict -f website/mkdocs.yml -d "$PWD/_site/docs"
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    name: deploy to Pages
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,10 +1,36 @@
 //! Executing a plan over the bus: the load-state download sequence.
 //!
 //! [`apply_tables`] drives the write side of [`bussard_mgmt::load`] against a
-//! live (or mock) System B device: it opens both loadable table objects, writes
-//! the new address and association tables, completes the loads, and verifies the
-//! result by reading the tables back and comparing them byte-for-byte to the
-//! desired tables.
+//! live (or mock) System B device: it opens both loadable table objects,
+//! allocates a backing segment for each, streams the new address and association
+//! table images into those segments, completes the loads, and verifies the result
+//! by reading the tables back and comparing them byte-for-byte to the desired
+//! tables.
+//!
+//! # How a table is realised: allocate + memory write, never `PID_TABLE`
+//!
+//! A loadable table lives in the object's **allocated segment**, not in a
+//! writable property array. `PID_TABLE` (PID 23) is readable on most devices,
+//! but it is not a download path.
+//!
+//! This cost a field session to learn (issue #89 campaign). `bussard apply`
+//! against a Jung F50 push-button module (52911ST, application
+//! `M-0004_A-D141-22`) failed: the device **rejected** the
+//! `A_PropertyValue_Write` to `PID_TABLE` with a zero-count response — it wrote
+//! nothing and echoed no elements (`wrote [00, 04], device echoed []`). Two
+//! independent ETS captures then confirmed ETS never uses that path: for a Jung
+//! F50 sibling at 1.1.18 and for the KNX Virtual DA.tp, ETS follows each
+//! `StartLoading` with a 10-octet `AdditionalLoadControls` / `LdCtrlRelSegment`
+//! write (size = the 2-octet count word plus `n * elem_size`), reads
+//! `PID_TABLE_REFERENCE` for the placement, streams the image with
+//! `A_Memory_Write` / `A_MemoryExtended_Write`, and only then sends
+//! `LoadCompleted`. Only the lenient KNX Virtual stack *also* accepts property
+//! writes to `PID_TABLE`, which is why bussard's mock and the simulator let the
+//! bug through until both were taught the real behaviour.
+//!
+//! The image written into a segment is the count word followed by the elements
+//! (`table_image`) — the same layout [`read_tables`]'s memory path reads back,
+//! so the verification agrees whichever path the device serves.
 //!
 //! # Op-sequence ordering (decision + rationale)
 //!
@@ -19,12 +45,21 @@
 //! association** within a single connection:
 //!
 //! 1. `StartLoading` the **association** table (→ `Loading`).
-//! 2. `StartLoading` the **address** table (→ `Loading`).
-//! 3. Write the new **address** table (count word + elements).
-//! 4. Write the new **association** table (count word + elements). Its TSAPs now
-//!    index the just-written address content.
-//! 5. `LoadCompleted` the **address** table (→ `Loaded`).
-//! 6. `LoadCompleted` the **association** table (→ `Loaded`).
+//! 2. Allocate its segment (`LdCtrlRelSegment`, sized `2 + 4 * associations`) and
+//!    read the placement from `PID_TABLE_REFERENCE`.
+//! 3. `StartLoading` the **address** table (→ `Loading`).
+//! 4. Allocate its segment (sized `2 + 2 * addresses`) and read its placement.
+//! 5. Write the new **address** image (count word + elements) into its segment
+//!    with `A_Memory_Write` / `A_MemoryExtended_Write`, chunked to the negotiated
+//!    APDU.
+//! 6. Write the new **association** image the same way. Its TSAPs now index the
+//!    just-written address content.
+//! 7. `LoadCompleted` the **address** table (→ `Loaded`).
+//! 8. `LoadCompleted` the **association** table (→ `Loaded`).
+//!
+//! The allocation sits immediately after each `StartLoading` because that is
+//! where ETS puts it in both captures, and because the standard only dispatches
+//! `AdditionalLoadControls` from the `Loading` state.
 //!
 //! Both objects are in `Loading` before either is written, so no
 //! partially-updated table is ever *active*: a device evaluates group telegrams
@@ -40,13 +75,17 @@
 //! There is no clean rollback mid-write: once an object is in `Loading`, a
 //! failure leaves it unloaded/inactive until re-applied. [`apply_tables`] never
 //! swallows an error — every failure surfaces with the object and step that
-//! failed. `bussard apply` prints the backup path and recovery guidance loudly
-//! on any error, so a half-applied device is never left silent. Recovery is
-//! re-running `apply` (idempotent — the tables are rewritten wholesale) or ETS.
+//! failed. A device that refuses the allocation (segment too large, out of
+//! memory) drops the object into `Error`, which surfaces before a single octet of
+//! table content is sent. `bussard apply` prints the backup path and recovery
+//! guidance loudly on any error, so a half-applied device is never left silent.
+//! Recovery is re-running `apply` (idempotent — the tables are rewritten
+//! wholesale) or ETS.
 
 use bussard_mgmt::connection::{L4Channel, Layer4Connection};
 use bussard_mgmt::load::{
-    self, LoadControl, LoadState, WriteError, read_load_state, write_load_control, write_table,
+    self, LoadControl, LoadState, WriteError, allocate_segment, read_load_state,
+    write_load_control, write_memory_chunked,
 };
 use bussard_mgmt::tables::{OT_ADDRESS_TABLE, OT_ASSOCIATION_TABLE, read_tables};
 
@@ -134,15 +173,18 @@ pub async fn apply_tables<Ch: L4Channel>(
     let addr_elems = desired.address_elements();
     let assoc_elems = desired.association_elements();
 
-    // 1 + 2: open both tables for writing.
+    // 1 + 2: open both tables for writing, each followed by its `RelSegment`
+    // allocation (ETS allocates right after each StartLoading — both captures).
     write_load_control(l4, objects.association, LoadControl::StartLoading).await?;
+    let assoc_seg = allocate_table_segment(l4, objects.association, &assoc_elems).await?;
     write_load_control(l4, objects.address, LoadControl::StartLoading).await?;
+    let addr_seg = allocate_table_segment(l4, objects.address, &addr_elems).await?;
 
-    // 3: write the address table.
-    write_table(l4, objects.address, ADDRESS_ELEM_SIZE, &addr_elems).await?;
+    // 3: write the address table into its segment.
+    write_table_image(l4, addr_seg, ADDRESS_ELEM_SIZE, &addr_elems).await?;
 
     // 4: write the association table (TSAPs now index the new address content).
-    write_table(l4, objects.association, ASSOCIATION_ELEM_SIZE, &assoc_elems).await?;
+    write_table_image(l4, assoc_seg, ASSOCIATION_ELEM_SIZE, &assoc_elems).await?;
 
     // 5: complete the address load first (activate the GA table).
     let address_state = write_load_control(l4, objects.address, LoadControl::LoadCompleted).await?;
@@ -165,6 +207,44 @@ pub async fn apply_tables<Ch: L4Channel>(
         addresses_match,
         associations_match,
     })
+}
+
+/// The memory image of a loadable table: the big-endian `u16` element count
+/// followed by the elements — the layout `PID_TABLE_REFERENCE` points at and
+/// [`read_tables`]'s memory path reads back.
+fn table_image(elem_size: usize, elements: &[u8]) -> Vec<u8> {
+    debug_assert!(elem_size > 0 && elements.len() % elem_size == 0);
+    let count = (elements.len() / elem_size) as u16;
+    let mut image = Vec::with_capacity(2 + elements.len());
+    image.extend_from_slice(&count.to_be_bytes());
+    image.extend_from_slice(elements);
+    image
+}
+
+/// Allocates the backing segment of a table object for `elements`: one
+/// `AdditionalLoadControls` / `LdCtrlRelSegment` write sized to the whole image
+/// (count word + elements), exactly as ETS does after every `StartLoading` of a
+/// table object. The device places the segment and reports it through
+/// `PID_TABLE_REFERENCE`.
+async fn allocate_table_segment<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    object_index: u8,
+    elements: &[u8],
+) -> Result<load::SegmentAllocation, WriteError> {
+    let size = (2 + elements.len()) as u32;
+    allocate_segment(l4, object_index, size, None).await
+}
+
+/// Writes a table image (count word + elements) into its allocated segment with
+/// `A_Memory_Write` / `A_MemoryExtended_Write`, chunked to the negotiated APDU.
+async fn write_table_image<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    segment: load::SegmentAllocation,
+    elem_size: usize,
+    elements: &[u8],
+) -> Result<(), WriteError> {
+    let image = table_image(elem_size, elements);
+    write_memory_chunked(l4, segment.address, &image, |_| {}).await
 }
 
 /// Reads both table objects' current load states — used by callers that want to

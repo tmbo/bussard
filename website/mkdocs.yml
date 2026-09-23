@@ -1,0 +1,92 @@
+# Documentation site: renders the Markdown in ../docs with MkDocs Material.
+# Built by .github/workflows/site.yml together with index.html (the landing
+# page) and deployed to GitHub Pages. Local preview:
+#   uvx --from mkdocs-material mkdocs serve -f website/mkdocs.yml
+site_name: bussard docs
+site_url: https://bussard.tmbo.dev/docs/
+site_description: Open-source CLI for KNX. Configuration in YAML, programming over KNXnet/IP, live decoding of the bus.
+repo_url: https://github.com/tmbo/bussard
+repo_name: tmbo/bussard
+edit_uri: edit/main/docs/
+docs_dir: ../docs
+copyright: bussard is an independent project, not affiliated with or certified by the KNX Association. KNX is a registered trademark of the KNX Association.
+
+theme:
+  name: material
+  custom_dir: overrides
+  language: en
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
+  font:
+    text: Instrument Sans
+    code: JetBrains Mono
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.action.edit
+
+extra:
+  # The logo and title link back to the landing page, not the docs index.
+  homepage: https://bussard.tmbo.dev/
+
+extra_css:
+  - assets/stylesheets/site.css
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      # heading anchors use GitHub's slug style, set in hooks.py (on_config)
+  - pymdownx.details
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+
+plugins:
+  - search
+
+hooks:
+  - hooks.py
+
+nav:
+  - Getting started: index.md
+  - Safety: SAFETY.md
+  - How do I ...: howto.md
+  - Reference: reference.md
+  - Home Assistant: ha-config.md
+  - Product data: product-data.md
+  - Project:
+      - Design: DESIGN.md
+      - Test campaign: testing-campaign.md
+      - Personas:
+          - Overview: personas/README.md
+          - Nadia, the new owner: personas/homeowner.md
+          - Jonas, the integrator: personas/integrator.md
+          - Issue drafts: personas/issues.md
+  - Specs:
+      - System 7 download: system7-spec.md
+      - KNX Secure: knx-secure-spec.md
+      - flash op coverage: flash-op-coverage.md
