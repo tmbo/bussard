@@ -16,6 +16,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context, anyhow};
 use bussard_bus::Bus;
+use bussard_mgmt::profile::{MaskFamily, MaskProfile};
 use bussard_mgmt::tables::{
     OT_ADDRESS_TABLE, OT_APPLICATION_PROGRAM, OT_ASSOCIATION_TABLE, OT_DEVICE,
     OT_GROUP_OBJECT_TABLE, discover_interface_objects,
@@ -73,27 +74,83 @@ struct Report {
     mask: String,
     /// Human-readable system type for the mask.
     system_type: String,
-    /// The interface objects and their properties.
-    objects: Vec<ObjectReport>,
-    /// KNX Secure status from the model, when the device is secure-capable
-    /// (issue #71). `None` for a plain device (no secure block in the model).
+    /// `"refused"` when the device answered the plain descriptor read but
+    /// refused the unsecured interface-object walk (issue #155). Absent on a
+    /// successful walk.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    unsecured_management: Option<&'static str>,
+    /// `"unanswered"` when a tool key was presented but the secured walk
+    /// yielded no interface object (issue #155). Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    secured_management: Option<&'static str>,
+    /// Why the run failed, with the KNX Data Secure hint, when it did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    /// The interface objects and their properties. Absent when the walk was
+    /// refused: an empty walk is a failure, not an empty device.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    objects: Option<Vec<ObjectReport>>,
+    /// KNX Secure status (issue #71, #155): what the model says and what the
+    /// device did this run. Present when the model has a security block, a tool
+    /// key was used, or plain management was refused; absent for a plain device.
     #[serde(skip_serializing_if = "Option::is_none")]
     secure: Option<SecureReport>,
 }
 
-/// The KNX Secure status surfaced from the committed model (issue #71, spec §5
-/// CLI surface). Flags only — never any key material.
+/// KNX Secure status, split into the imported model's claims and what this run
+/// observed on the bus (issue #155). Flags only, never any key material.
 #[derive(Debug, serde::Serialize)]
 struct SecureReport {
-    /// The device's application is Data-Secure-capable (`IsSecureEnabled`).
+    /// What the knxproj import recorded. It can be stale: an export made before
+    /// ETS activated security says `activated: false`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<ModelSecure>,
+    /// What the device did in this run.
+    device: DeviceSecure,
+}
+
+/// The security flags from the committed model (the knxproj import, spec §5).
+#[derive(Debug, serde::Serialize)]
+struct ModelSecure {
+    /// The application is Data-Secure-capable (`IsSecureEnabled`).
     secure_capable: bool,
-    /// Security has been activated (management goes behind A_SecureData).
+    /// The project recorded security as activated at export time.
     activated: bool,
     /// A factory FDSK certificate was present in the imported knxproj.
     has_fdsk_certificate: bool,
-    /// The ETS-tracked Data Secure sequence number, if any.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    sequence_number: Option<u64>,
+}
+
+/// How the device answered management in this run.
+#[derive(Debug, serde::Serialize)]
+struct DeviceSecure {
+    /// Plain (unsecured) management access.
+    plain_management: PlainManagement,
+    /// Secured (A_SecureData) management access.
+    secured_management: SecuredManagement,
+}
+
+/// The device's answer to plain management access in this run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum PlainManagement {
+    /// The plain walk returned interface objects.
+    Answered,
+    /// The descriptor read was answered but the interface-object walk was not.
+    Refused,
+    /// A tool key was presented, so every access rode A_SecureData.
+    NotAttempted,
+}
+
+/// The device's answer to secured management access in this run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SecuredManagement {
+    /// The secured walk returned interface objects.
+    Used,
+    /// No tool key was available, so no secured frame was sent.
+    NotAttempted,
+    /// A tool key was presented but the secured walk returned no object.
+    Unanswered,
 }
 
 /// Runs `bussard describe`.
@@ -161,27 +218,86 @@ pub fn run(
     })
     .map_err(|err| secure_hint(target, presented_tool_key, err))?;
 
-    let mut result = result;
-    // Surface KNX Secure status from the model (issue #71, spec §5). Flags only.
-    if let Some(sec) = model
+    // An empty walk after a successful descriptor read is a refusal, not an
+    // empty device (issue #155): an activated device answers the plain
+    // descriptor read and PID 56 but not the interface-object walk. System 1
+    // (BCU1) devices have no interface objects at all, so they are exempt.
+    let refused = result.report.objects.as_ref().is_some_and(Vec::is_empty)
+        && !matches!(result.mask_family, MaskFamily::System1);
+    let (plain, secured) = match (presented_tool_key, refused) {
+        (false, false) => (PlainManagement::Answered, SecuredManagement::NotAttempted),
+        (false, true) => (PlainManagement::Refused, SecuredManagement::NotAttempted),
+        (true, false) => (PlainManagement::NotAttempted, SecuredManagement::Used),
+        (true, true) => (PlainManagement::NotAttempted, SecuredManagement::Unanswered),
+    };
+    let mut report = result.report;
+    let model_secure = model
         .as_ref()
         .and_then(|m| m.devices.get(&target))
         .and_then(|d| d.device.security.as_ref())
-    {
-        result.secure = Some(SecureReport {
+        .map(|sec| ModelSecure {
             secure_capable: sec.secure_capable,
             activated: sec.activated,
             has_fdsk_certificate: sec.has_fdsk_certificate,
-            sequence_number: sec.sequence_number,
         });
+    if model_secure.is_some() || presented_tool_key || refused {
+        report.secure = Some(SecureReport {
+            model: model_secure,
+            device: DeviceSecure {
+                plain_management: plain,
+                secured_management: secured,
+            },
+        });
+    }
+    if refused {
+        let message = refused_walk_message(target, presented_tool_key);
+        report.objects = None;
+        if presented_tool_key {
+            report.secured_management = Some("unanswered");
+        } else {
+            report.unsecured_management = Some("refused");
+        }
+        report.error = Some(message.clone());
+        if json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            print_text(&report);
+        }
+        eprintln!("error: {message}");
+        return Ok(ExitCode::FAILURE);
     }
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
-        print_text(&result);
+        print_text(&report);
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// The guidance for a device without a tool key that may be Data Secure-activated
+/// (issue #71, spec §6.4).
+fn no_key_guidance() -> &'static str {
+    "if this device is KNX Data Secure-activated it refuses unsecured management — pass its \
+     tool key with --keyring <file.knxkeys> (password in BUSSARD_KEYRING_PASSWORD), or \
+     --tool-key <32 hex> for a test device"
+}
+
+/// The error for a walk that found no interface object after the device
+/// answered the descriptor read (issue #155).
+fn refused_walk_message(target: IndividualAddress, presented_tool_key: bool) -> String {
+    if presented_tool_key {
+        format!(
+            "{target} answered the secured device descriptor read but returned no interface \
+             object: the tool key may lack the access level for the walk"
+        )
+    } else {
+        format!(
+            "{target} answered the device descriptor read but refused the interface-object walk: \
+             {}",
+            no_key_guidance()
+        )
+    }
 }
 
 /// Adds KNX Data Secure guidance to a failed introspection (issue #71,
@@ -202,11 +318,7 @@ fn secure_hint(
              (retry without --keyring/--tool-key)"
         ))
     } else {
-        err.context(format!(
-            "{target} did not answer: if this device is KNX Data Secure-activated it refuses \
-             unsecured management — pass its tool key with --keyring <file.knxkeys> (password in \
-             BUSSARD_KEYRING_PASSWORD), or --tool-key <32 hex> for a test device"
-        ))
+        err.context(format!("{target} did not answer: {}", no_key_guidance()))
     }
 }
 
@@ -214,7 +326,7 @@ fn secure_hint(
 /// object's properties.
 async fn introspect<Ch: bussard_mgmt::L4Channel>(
     l4: &mut Layer4Connection<Ch>,
-) -> anyhow::Result<Report> {
+) -> anyhow::Result<Introspection> {
     let address = l4.target();
     // Scale property reads to the device's max APDU when available (best-effort).
     let _ = l4.negotiate_max_apdu().await;
@@ -252,14 +364,28 @@ async fn introspect<Ch: bussard_mgmt::L4Channel>(
         });
     }
 
-    Ok(Report {
-        address: address.to_string(),
-        mask: format!("{mask:04X}"),
-        system_type: system_type(mask).to_string(),
-        objects: object_reports,
-        // Filled in by `run` from the model (introspect has no model handle).
-        secure: None,
+    Ok(Introspection {
+        mask_family: MaskProfile::from_mask(mask).family(),
+        report: Report {
+            address: address.to_string(),
+            mask: format!("{mask:04X}"),
+            system_type: system_type(mask).to_string(),
+            unsecured_management: None,
+            secured_management: None,
+            error: None,
+            objects: Some(object_reports),
+            // Filled in by `run` from the model (introspect has no model handle).
+            secure: None,
+        },
     })
+}
+
+/// What [`introspect`] read off the bus, before `run` adds the model's view.
+struct Introspection {
+    /// The mask family, which decides whether an empty walk is legitimate.
+    mask_family: MaskFamily,
+    /// The report, with `secure` still unset.
+    report: Report,
 }
 
 /// Builds a [`PropertyReport`] row from a [`PropertyDesc`].
@@ -316,27 +442,40 @@ fn print_text(report: &Report) {
         report.address, report.mask, report.system_type
     );
     if let Some(sec) = &report.secure {
-        let state = if sec.activated {
-            "activated (management requires KNX Data Secure)"
-        } else if sec.secure_capable {
-            "capable, not activated"
-        } else {
-            "not secure-capable"
+        if let Some(model) = &sec.model {
+            let state = if model.activated {
+                "activated"
+            } else if model.secure_capable {
+                "capable, not activated"
+            } else {
+                "not secure-capable"
+            };
+            print!("  KNX Secure (model): {state}");
+            if model.has_fdsk_certificate {
+                print!("; FDSK certificate present");
+            }
+            println!();
+        }
+        let plain = match sec.device.plain_management {
+            PlainManagement::Answered => "answered",
+            PlainManagement::Refused => "refused",
+            PlainManagement::NotAttempted => "not attempted",
         };
-        print!("  KNX Secure: {state}");
-        if sec.has_fdsk_certificate {
-            print!("; FDSK certificate present");
-        }
-        if let Some(seq) = sec.sequence_number {
-            print!("; seqnum {seq}");
-        }
-        println!();
+        let secured = match sec.device.secured_management {
+            SecuredManagement::Used => "used",
+            SecuredManagement::NotAttempted => "not attempted",
+            SecuredManagement::Unanswered => "unanswered",
+        };
+        println!("  KNX Secure (this run): plain management {plain}; secured management {secured}");
     }
-    if report.objects.is_empty() {
+    let Some(objects) = &report.objects else {
+        return;
+    };
+    if objects.is_empty() {
         println!("  no interface objects discoverable");
         return;
     }
-    for obj in &report.objects {
+    for obj in objects {
         println!(
             "\nobject {} — type {} ({}), {} propert{}",
             obj.index,
