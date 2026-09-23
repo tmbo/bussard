@@ -1187,14 +1187,41 @@ pub async fn read_mcb_table<Ch: L4Channel>(
     })?;
 
     if let Some(image) = expected {
-        let want = crc16_ccitt(image);
-        if first.crc16 != want {
-            return Err(WriteError::ImagePropMismatch {
-                address,
-                object_index,
-                expected_crc: want,
-                device_crc: first.crc16,
-            });
+        // Each MCB entry covers `segment_size` octets of the object's image, in
+        // order: the Jung F50 splits its 6152-octet application into a 6148-octet
+        // entry and a 4-octet tail (1.1.18, issue #89), so a CRC over the whole
+        // image never matches entry 1. Walk the entries over consecutive slices;
+        // when the declared sizes do not fit the image (a device that reports
+        // one entry for everything), fall back to the whole image against entry 1.
+        let mut offset = 0usize;
+        let mut checked = 0usize;
+        for entry in &entries {
+            let size = entry.segment_size as usize;
+            let Some(end) = offset.checked_add(size).filter(|end| *end <= image.len()) else {
+                break;
+            };
+            let want = crc16_ccitt(&image[offset..end]);
+            if entry.crc16 != want {
+                return Err(WriteError::ImagePropMismatch {
+                    address,
+                    object_index,
+                    expected_crc: want,
+                    device_crc: entry.crc16,
+                });
+            }
+            offset = end;
+            checked += 1;
+        }
+        if checked == 0 {
+            let want = crc16_ccitt(image);
+            if first.crc16 != want {
+                return Err(WriteError::ImagePropMismatch {
+                    address,
+                    object_index,
+                    expected_crc: want,
+                    device_crc: first.crc16,
+                });
+            }
         }
     }
     Ok(entries)
