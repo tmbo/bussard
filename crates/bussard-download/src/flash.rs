@@ -2559,6 +2559,18 @@ fn plan_flash_sys7(
         }
     }
 
+    // The group-object descriptors live inside the application's own EEPROM
+    // segment on these devices (`GroupObjectTable AddressSpace="None"` in the
+    // mask's Hawk data), with the vendor template's communication flag set on
+    // every object. ETS enables the flag only on linked objects (captures
+    // 1.1.31 with no links: none set; 1.1.46 with four links: exactly the four
+    // association ASAPs). Mirror that here (issue #89, 1.1.32).
+    let linked: BTreeSet<u16> = sys7_tables
+        .get(&2)
+        .map(|assoc| sys7_linked_asaps(&assoc.image))
+        .unwrap_or_default();
+    apply_sys7_group_object_links(&steps, &mut images, &linked);
+
     Ok(FlashPlan {
         identity: AppIdentity {
             id: app.id.clone(),
@@ -2577,6 +2589,93 @@ fn plan_flash_sys7(
             segment_masks,
         }),
     })
+}
+
+/// The ASAPs a System 7 association-table image (`[CNT][TSAP ASAP]…`) links.
+fn sys7_linked_asaps(assoc_image: &[u8]) -> BTreeSet<u16> {
+    let Some((&count, pairs)) = assoc_image.split_first() else {
+        return BTreeSet::new();
+    };
+    pairs
+        .chunks_exact(2)
+        .take(usize::from(count))
+        .map(|p| u16::from(p[1]))
+        .collect()
+}
+
+/// Sets the communication flag (bit 2 of the CONFIG octet) on the group-object
+/// descriptors of the linked ASAPs and clears it on every other one, inside the
+/// LSM 3 segment image that carries the descriptor table.
+///
+/// The table is found by shape, since the mask declares no address for it:
+/// `[CNT:1][RAM-flags ptr:2]` followed by `CNT` 4-octet descriptors
+/// `[data ptr:2 BE][CONFIG][TYPE]`, where every data pointer and the RAM-flags
+/// pointer fall inside a RAM (`mem_type` 2) segment the same plan allocates.
+/// Descriptor `i` is ASAP `i` (the 1.1.46 capture: association ASAPs 1, 5, 7,
+/// 13 are exactly the descriptors ETS enabled). A plan without such a segment
+/// is left untouched.
+fn apply_sys7_group_object_links(
+    steps: &[FlashStep],
+    images: &mut BTreeMap<String, Vec<u8>>,
+    linked: &BTreeSet<u16>,
+) {
+    let ram: Vec<(u32, u32)> = steps
+        .iter()
+        .filter_map(|s| match s {
+            FlashStep::Sys7AbsSegment {
+                address,
+                size,
+                mem_type: 2,
+                ..
+            } => Some((*address, *address + *size)),
+            _ => None,
+        })
+        .collect();
+    if ram.is_empty() {
+        return;
+    }
+    let in_ram = |p: u16| {
+        ram.iter()
+            .any(|(lo, hi)| (*lo..*hi).contains(&u32::from(p)))
+    };
+    for step in steps {
+        let FlashStep::Sys7AbsSegment {
+            lsm: 3,
+            mem_type: 3,
+            image: Some(img),
+            ..
+        } = step
+        else {
+            continue;
+        };
+        let Some(bytes) = images.get_mut(&img.segment_id) else {
+            continue;
+        };
+        let Some((&count, rest)) = bytes.split_first() else {
+            continue;
+        };
+        let count = usize::from(count);
+        if count == 0 || rest.len() < 2 + 4 * count {
+            continue;
+        }
+        let ram_flags = u16::from_be_bytes([rest[0], rest[1]]);
+        let descriptors = &rest[2..2 + 4 * count];
+        let shaped = in_ram(ram_flags)
+            && descriptors
+                .chunks_exact(4)
+                .all(|d| in_ram(u16::from_be_bytes([d[0], d[1]])));
+        if !shaped {
+            continue;
+        }
+        for (asap, d) in bytes[3..3 + 4 * count].chunks_exact_mut(4).enumerate() {
+            if linked.contains(&(asap as u16)) {
+                d[2] |= 0x04;
+            } else {
+                d[2] &= !0x04;
+            }
+        }
+        return;
+    }
 }
 
 /// Plans a System 7 flash using a `.knxprod`'s parsed `HawkConfigurationData` to
@@ -5019,6 +5118,70 @@ pub fn trace(plan: &FlashPlan) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The System 7 group-object post-pass: the communication flag follows the
+    /// association table (1.1.31: no links, none set; 1.1.46: exactly the
+    /// linked ASAPs), everything else in the descriptor is left alone.
+    #[test]
+    fn test_apply_sys7_group_object_links_follows_the_association_table() {
+        let seg_id = "M-0004_A-A011-13-60BC-O000A_AS-43FF".to_string();
+        let steps = vec![
+            FlashStep::Sys7AbsSegment {
+                lsm: 3,
+                address: 0x0700,
+                size: 450,
+                mem_type: 2,
+                seg_flags: 0xF2,
+                checksum_ctrl: 0x00,
+                image: None,
+            },
+            FlashStep::Sys7AbsSegment {
+                lsm: 3,
+                address: 0x43FF,
+                size: 811,
+                mem_type: 3,
+                seg_flags: 0xF2,
+                checksum_ctrl: 0x80,
+                image: Some(ImageRef {
+                    segment_id: seg_id.clone(),
+                    kind: ImageKind::Code,
+                    len: 15,
+                }),
+            },
+        ];
+        // [CNT=3][RAM flags 0x07F9] then three descriptors with the vendor
+        // template's communication flag set on every one.
+        let template = vec![
+            0x03, 0x07, 0xF9, 0x07, 0x00, 0x17, 0x00, 0x07, 0x01, 0x4F, 0x08, 0x07, 0x03, 0x17,
+            0x08,
+        ];
+        let mut images = BTreeMap::from([(seg_id.clone(), template.clone())]);
+
+        // No links: ETS clears the flag everywhere (the 1.1.31 capture).
+        apply_sys7_group_object_links(&steps, &mut images, &BTreeSet::new());
+        assert_eq!(
+            images[&seg_id],
+            vec![
+                0x03, 0x07, 0xF9, 0x07, 0x00, 0x13, 0x00, 0x07, 0x01, 0x4B, 0x08, 0x07, 0x03, 0x13,
+                0x08
+            ]
+        );
+
+        // ASAP 1 linked: only descriptor 1 carries the flag.
+        let mut images = BTreeMap::from([(seg_id.clone(), template.clone())]);
+        let linked = sys7_linked_asaps(&[0x01, 0x02, 0x01]);
+        assert_eq!(linked, BTreeSet::from([1]));
+        apply_sys7_group_object_links(&steps, &mut images, &linked);
+        assert_eq!(images[&seg_id][5], 0x13);
+        assert_eq!(images[&seg_id][9], 0x4F);
+        assert_eq!(images[&seg_id][13], 0x13);
+
+        // A segment that does not look like the descriptor table is untouched.
+        let odd = vec![0xFF; 15];
+        let mut images = BTreeMap::from([(seg_id.clone(), odd.clone())]);
+        apply_sys7_group_object_links(&steps, &mut images, &BTreeSet::from([1]));
+        assert_eq!(images[&seg_id], odd);
+    }
     use bussard_prod::application::parse_application_program;
 
     /// A minimal single-application System B app: two relative segments (code +
