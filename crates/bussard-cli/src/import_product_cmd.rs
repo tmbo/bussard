@@ -630,6 +630,7 @@ fn load_op_summary(op: &LoadOp) -> String {
             lsm_idx,
             address,
             size,
+            ..
         } => format!(
             "abs_segment lsm={} addr={} size={}",
             opt(lsm_idx),
