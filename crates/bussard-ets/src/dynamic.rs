@@ -14,8 +14,25 @@
 //! reached module instances, parameter refs and com-object refs, and the
 //! resolved parameter values (overrides, `<Assign>` results, then the vendor
 //! defaults).
+//!
+//! A `<choose>` whose controlling parameter is itself inactive selects no
+//! branch at all, not even a `<when default="true">` one (issue #159). ETS
+//! decides activity by the same walk: a parameter is active while one of its
+//! `<ParameterRefRef>`s is reached, i.e. its enclosing channel, parameter
+//! block, `<when>` branch and module instance are all shown under the current
+//! values. In the ETS schema a `<Channel>` or `<ParameterBlock>` is never
+//! gated by an attribute of its own (its `Number`/`Text` only label it); it is
+//! shown or hidden by the `<choose>`/`<when>` it sits in, and a module
+//! instance is shown when its `<Module>` element is reached. So the reached
+//! set of this walk is exactly the active set. Two cases stay active without
+//! a reached `<ParameterRefRef>`: a parameter the Dynamic section never shows
+//! anywhere (a pure steering parameter, which only ever has its value), and an
+//! unreached `<Union>` member whose union has a reached member (its shared
+//! memory is live, see [`SharedUnions`]). The target of a reached `<Assign>`
+//! counts as active too: ETS writes it.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::rc::Rc;
 
 use crate::application::{ApplicationProgram, DynamicNode, ParameterType, WhenTest};
 
@@ -203,17 +220,28 @@ pub fn evaluate_dynamic(
     }
 
     let unions = UnionIndex::new(app);
+    let placed = Rc::new(placed_parameters(app));
     let mut shared = SharedUnions::default();
+    // The active parameters start empty and grow pass by pass (the least
+    // fixpoint): a choose whose parameter is shown only later in document
+    // order, or only through another gated choose, is taken once a pass has
+    // reached that parameter.
+    let mut active = HashSet::new();
     let mut walk = Walk::default();
     for _ in 0..MAX_ASSIGN_PASSES {
         walk = Walk {
             shared: std::mem::take(&mut shared),
+            placed: Rc::clone(&placed),
+            active_before: std::mem::take(&mut active),
             ..Walk::default()
         };
         walk.run(app, &values, &app.dynamic, None, 0);
         let next = unions.shared_memory(app, &values, &walk);
         let mut changed = next.images != walk.shared.images;
         shared = next;
+        let now = walk.active_set(app);
+        changed |= now != walk.active_before;
+        active = now;
         for assign in &walk.assigns {
             let instance = walk.instance_id(assign.target_module).to_string();
             let new = match (&assign.value, &assign.source) {
@@ -303,6 +331,38 @@ pub fn split_selector(key: &str) -> (Option<String>, String) {
         Some((instance, param_ref)) => (Some(instance), param_ref),
         None => (None, key.to_string()),
     }
+}
+
+/// The `Parameter` ids (full) the Dynamic section shows somewhere: every
+/// parameter with a `<ParameterRefRef>` in the application's Dynamic section
+/// or in any `<ModuleDef>`'s, in any branch. A `<choose>` on a parameter
+/// outside this set is never gated by activity (see the module docs).
+fn placed_parameters(app: &ApplicationProgram) -> HashSet<String> {
+    fn visit(app: &ApplicationProgram, nodes: &[DynamicNode], out: &mut HashSet<String>) {
+        for node in nodes {
+            match node {
+                DynamicNode::ParameterRefRef(r) => {
+                    if let Some(id) = parameter_id(app, r) {
+                        out.insert(id.to_string());
+                    }
+                }
+                DynamicNode::Choose { whens, .. } => {
+                    for w in whens {
+                        visit(app, &w.children, out);
+                    }
+                }
+                DynamicNode::ComObjectRefRef(_)
+                | DynamicNode::Module { .. }
+                | DynamicNode::Assign { .. } => {}
+            }
+        }
+    }
+    let mut out = HashSet::new();
+    visit(app, &app.dynamic, &mut out);
+    for body in app.module_dynamics.values() {
+        visit(app, body, &mut out);
+    }
+    out
 }
 
 /// The full `Parameter` id an app-relative `ParameterRef` id points at.
@@ -399,6 +459,14 @@ struct Walk {
     assigns: Vec<ReachedAssign>,
     /// What the previous pass left in the unions' shared memory.
     shared: SharedUnions,
+    /// The parameters the Dynamic section shows somewhere
+    /// ([`placed_parameters`]).
+    placed: Rc<HashSet<String>>,
+    /// The active parameters the previous pass reached, keyed by (module
+    /// instance id or `""`, full `Parameter` id).
+    active_before: HashSet<(String, String)>,
+    /// The parameters this pass has reached so far, same keys.
+    active_now: HashSet<(String, String)>,
 }
 
 /// The shared memory of every union a pass reached a member of, and the values
@@ -559,6 +627,34 @@ fn get_bits(image: &[u8], pos: u32, bits: u32) -> u64 {
 }
 
 impl Walk {
+    /// The active parameters this pass reached: every reached
+    /// `<ParameterRefRef>` and every reached `<Assign>` target.
+    fn active_set(&self, app: &ApplicationProgram) -> HashSet<(String, String)> {
+        let mut out = self.active_now.clone();
+        for a in &self.assigns {
+            if let Some(id) = parameter_id(app, &a.target) {
+                out.insert((
+                    self.instance_id(a.target_module).to_string(),
+                    id.to_string(),
+                ));
+            }
+        }
+        out
+    }
+
+    /// Whether the parameter of `param_ref_id` in `instance` is active, so a
+    /// `<choose>` on it may select a branch (issue #159, see the module docs).
+    fn is_active(&self, app: &ApplicationProgram, instance: &str, param_ref_id: &str) -> bool {
+        let Some(id) = parameter_id(app, param_ref_id) else {
+            return true;
+        };
+        if !self.placed.contains(id) {
+            return true;
+        }
+        let key = (instance.to_string(), id.to_string());
+        self.active_now.contains(&key) || self.active_before.contains(&key)
+    }
+
     fn module_args(&self, module: Option<usize>) -> Option<&HashMap<String, i64>> {
         module.and_then(|i| self.modules.get(i)).map(|m| &m.args)
     }
@@ -601,10 +697,17 @@ impl Walk {
     ) {
         for node in nodes {
             match node {
-                DynamicNode::ParameterRefRef(r) => self.parameters.push(ActiveParameter {
-                    module: self.scope(module, r),
-                    param_ref_id: r.clone(),
-                }),
+                DynamicNode::ParameterRefRef(r) => {
+                    let scope = self.scope(module, r);
+                    if let Some(id) = parameter_id(app, r) {
+                        self.active_now
+                            .insert((self.instance_id(scope).to_string(), id.to_string()));
+                    }
+                    self.parameters.push(ActiveParameter {
+                        module: scope,
+                        param_ref_id: r.clone(),
+                    });
+                }
                 DynamicNode::ComObjectRefRef(r) => self.com_objects.push(ActiveComObject {
                     module: self.scope(module, r),
                     com_object_ref_id: r.clone(),
@@ -619,6 +722,12 @@ impl Walk {
                     let shared = (!values.contains_key(&key))
                         .then(|| self.shared.values.get(&key).cloned())
                         .flatten();
+                    // An inactive controlling parameter selects no branch, not
+                    // even the default one; a union member reading live shared
+                    // memory is active.
+                    if shared.is_none() && !self.is_active(app, instance, param_ref_id) {
+                        continue;
+                    }
                     let value = shared
                         .or_else(|| {
                             value_of(app, values, instance, self.module_args(scope), param_ref_id)
@@ -970,6 +1079,92 @@ mod tests {
         assert!(!config.is_override(&app, None, "P-2_R-21"));
         assert_eq!(config.value(&app, None, "P-2_R-20").as_deref(), Some("0"));
         assert!(config.is_override(&app, None, "P-2_R-20"));
+        Ok(())
+    }
+
+    /// Issue #159 (the 1.1.12 F50 Secure module's extension channel): `ext`
+    /// is shown only inside a channel gated by `en`; chooses on it (one with a
+    /// `default` branch, one placed before the channel in document order) show
+    /// `inst` refs. `steer` is never shown anywhere and keeps steering.
+    const INACTIVE_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/20">
+     <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="t">
+      <Static>
+       <Parameters>
+        <Parameter Id="A_P-1" Name="en" Value="0" />
+        <Parameter Id="A_P-2" Name="ext" Value="1" />
+        <Parameter Id="A_P-3" Name="inst" Value="0" />
+        <Parameter Id="A_P-4" Name="steer" Value="1" />
+       </Parameters>
+       <ParameterRefs>
+        <ParameterRef Id="A_P-1_R-1" RefId="A_P-1" />
+        <ParameterRef Id="A_P-2_R-2" RefId="A_P-2" />
+        <ParameterRef Id="A_P-3_R-30" RefId="A_P-3" />
+        <ParameterRef Id="A_P-3_R-31" RefId="A_P-3" Value="46" />
+        <ParameterRef Id="A_P-3_R-32" RefId="A_P-3" />
+        <ParameterRef Id="A_P-3_R-33" RefId="A_P-3" />
+        <ParameterRef Id="A_P-4_R-4" RefId="A_P-4" />
+       </ParameterRefs>
+      </Static>
+      <Dynamic>
+       <ChannelIndependentBlock><ParameterBlock Id="A_PB-1">
+        <ParameterRefRef RefId="A_P-1_R-1" />
+        <choose ParamRefId="A_P-2_R-2">
+         <when test="1"><ParameterRefRef RefId="A_P-3_R-32" /></when>
+        </choose>
+       </ParameterBlock></ChannelIndependentBlock>
+       <choose ParamRefId="A_P-1_R-1">
+        <when test="1 2">
+         <Channel Id="A_CH-1" Number="1" Text="ext"><ParameterBlock Id="A_PB-2">
+          <ParameterRefRef RefId="A_P-2_R-2" />
+         </ParameterBlock></Channel>
+        </when>
+       </choose>
+       <Channel Id="A_CH-2" Number="2" Text="main"><ParameterBlock Id="A_PB-3">
+        <choose ParamRefId="A_P-2_R-2">
+         <when test="0"><ParameterRefRef RefId="A_P-3_R-30" /></when>
+         <when default="true"><ParameterRefRef RefId="A_P-3_R-31" /></when>
+        </choose>
+        <choose ParamRefId="A_P-4_R-4">
+         <when test="1"><ParameterRefRef RefId="A_P-3_R-33" /></when>
+        </choose>
+       </ParameterBlock></Channel>
+      </Dynamic>
+     </ApplicationProgram></KNX>"#;
+
+    fn reached_refs(cfg: &DynamicConfig) -> Vec<&str> {
+        cfg.parameters
+            .iter()
+            .map(|p| p.param_ref_id.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn test_evaluate_dynamic_inactive_controlling_parameter_selects_nothing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let app = parse_application_program_str("A", INACTIVE_XML)?;
+        // `en` = 0: `ext` is not shown, so neither choose on it selects a
+        // branch (not even the default one); the never-shown `steer` still
+        // steers.
+        let cfg = evaluate_dynamic(&app, &BTreeMap::new());
+        assert_eq!(reached_refs(&cfg), ["P-1_R-1", "P-3_R-33"]);
+
+        // `en` = 1: `ext` is shown with its default 1, which takes the
+        // default branch and (on a later pass) the choose placed before it.
+        let on: BTreeMap<String, String> = [("P-1_R-1".to_string(), "1".to_string())].into();
+        let cfg = evaluate_dynamic(&app, &on);
+        assert_eq!(
+            reached_refs(&cfg),
+            ["P-1_R-1", "P-3_R-32", "P-2_R-2", "P-3_R-31", "P-3_R-33"]
+        );
+
+        // An explicit test value of an active parameter behaves as before.
+        let mut zero = on.clone();
+        zero.insert("P-2_R-2".to_string(), "0".to_string());
+        let cfg = evaluate_dynamic(&app, &zero);
+        assert_eq!(
+            reached_refs(&cfg),
+            ["P-1_R-1", "P-2_R-2", "P-3_R-30", "P-3_R-33"]
+        );
         Ok(())
     }
 }

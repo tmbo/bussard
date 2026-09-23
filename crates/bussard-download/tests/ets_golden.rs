@@ -348,3 +348,79 @@ fn test_helios_tables_match_ets() -> TestResult {
     assert_image("Helios obj4", ours, &fixture("helios-obj4.hex")?);
     Ok(())
 }
+
+/// The Jung F50 Secure module of the house's 1.1.12 (`M-0004_A-D141-22-151B`).
+/// No vendor product in the corpus carries this application version; it comes
+/// from an ETS project export (`.knxproj`), whose `M-0004/` product XML is not
+/// encrypted, named by `BUSSARD_ETS_PROJECT`.
+const D141_22: &str = "M-0004_A-D141-22-151B-O000A";
+const D141_22_SEGMENT: &str = "M-0004_A-D141-22-151B-O000A_RS-04-00000";
+
+/// The application `app_id` from the ETS project export `BUSSARD_ETS_PROJECT`,
+/// or `None` (skip) when the variable is unset or the export lacks it.
+fn load_from_project(app_id: &str) -> Result<Option<ApplicationProgram>, Error> {
+    let Some(path) = std::env::var_os("BUSSARD_ETS_PROJECT") else {
+        eprintln!("BUSSARD_ETS_PROJECT unset; skipping the {app_id} test.");
+        return Ok(None);
+    };
+    let manufacturer = app_id.split('_').next().unwrap_or_default();
+    let name = format!("{manufacturer}/{app_id}.xml");
+    let mut archive = zip::ZipArchive::new(Cursor::new(std::fs::read(path)?))?;
+    let Ok(mut entry) = archive.by_name(&name) else {
+        eprintln!("{name} not in the project export; skipping.");
+        return Ok(None);
+    };
+    let mut xml = Vec::new();
+    entry.read_to_end(&mut xml)?;
+    Ok(Some(parse_application_program(app_id, &xml)?))
+}
+
+/// Issue #159: `_AppInstanz 51` (`P-643`, obj4 +0xA5) and `_AppInstanz 52`
+/// (`P-733`, +0xA8) are shown through a `<choose>` on `UP-394` / `P-1119`,
+/// which live only in the extension-module channel, itself shown only while
+/// `P-388` is 1 to 4. With `P-388` = 0 those controlling parameters are
+/// inactive, the chooses select no ref, and ETS leaves both octets at the
+/// segment's fill (0x00), so the sparse download skips them. With the
+/// extension module enabled, the defaults of `UP-394`/`P-1119` (1) show the
+/// refs defaulting to 46.
+#[test]
+fn test_d141_22_inactive_channel_condition_leaves_the_fill() -> TestResult {
+    let Some(app) = load_from_project(D141_22)? else {
+        return Ok(());
+    };
+    let with = |p388: &str| -> BTreeMap<String, String> {
+        [("P-388_R-471".to_string(), p388.to_string())].into()
+    };
+
+    let plan = plan_flash(
+        &app,
+        "1.1.12",
+        0x07B0,
+        &with("0"),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    let fill = plan
+        .steps
+        .iter()
+        .find_map(|s| match s {
+            FlashStep::AllocateSegment { fill, .. } => *fill,
+            _ => None,
+        })
+        .ok_or("the parameter segment is not allocated with a fill")?;
+    let images = compute_parameter_image(&app, &with("0"), &BTreeMap::new())?;
+    let ours = images
+        .get(D141_22_SEGMENT)
+        .ok_or("no image for the parameter segment")?;
+    assert_eq!((ours[0xA5], ours[0xA8]), (fill, fill));
+    // The neighbouring instance byte of an active channel is still written.
+    assert_eq!(ours[0xA2], 0x2E);
+
+    let images = compute_parameter_image(&app, &with("1"), &BTreeMap::new())?;
+    let ours = images
+        .get(D141_22_SEGMENT)
+        .ok_or("no image for the parameter segment")?;
+    assert_eq!((ours[0xA5], ours[0xA8]), (0x2E, 0x2E));
+    Ok(())
+}
