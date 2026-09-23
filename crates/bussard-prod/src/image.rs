@@ -107,6 +107,9 @@ pub fn compute_parameter_image(
     overrides: &BTreeMap<String, String>,
     base_offsets: &BTreeMap<String, u32>,
 ) -> Result<BTreeMap<String, Vec<u8>>> {
+    if uses_dynamic_image(app) {
+        return compute_dynamic_parameter_image(app, overrides);
+    }
     // Pre-index the first ParameterRef Value override per parameter id, in a
     // deterministic order (sorted by ref id) so a fixed ref wins reproducibly.
     let mut ref_value: BTreeMap<&str, &str> = BTreeMap::new();
@@ -120,53 +123,7 @@ pub fn compute_parameter_image(
         }
     }
 
-    // Validate every segment's decoded `<Data>`/`<Mask>` against its declared
-    // `Size` before building any image. Both payloads are base64 decoded from
-    // vendor XML; a payload longer than the segment claims (or, when `Size` is
-    // absent, longer than the sane cap) means corrupt/hostile product data, and
-    // is refused rather than seeding an oversized base image.
-    let mut seg_ids: Vec<&String> = app.code_segments.keys().collect();
-    seg_ids.sort();
-    for seg_id in seg_ids {
-        let seg = &app.code_segments[seg_id];
-        // A declared `Size` is bounded by the same cap as an absent one: it is
-        // what every `image.resize` below is allowed to grow to, so a hostile
-        // `Size="4294967295"` must not become a 4 GiB allocation.
-        if let Some(sz) = seg.size {
-            if u64::from(sz) > MAX_SEGMENT_IMAGE {
-                return Err(param_err(
-                    app,
-                    seg_id,
-                    &format!(
-                        "segment declares Size {sz}, above the {MAX_SEGMENT_IMAGE}-byte image cap \
-                         (refusing an over-sized segment image)"
-                    ),
-                ));
-            }
-        }
-        let limit = match seg.size {
-            Some(sz) => u64::from(sz),
-            None => MAX_SEGMENT_IMAGE,
-        };
-        for (what, payload) in [("<Data>", &seg.data), ("<Mask>", &seg.mask)] {
-            if let Some(bytes) = payload {
-                if bytes.len() as u64 > limit {
-                    return Err(param_err(
-                        app,
-                        seg_id,
-                        &format!(
-                            "segment {what} is {} bytes but the segment declares Size {} \
-                             (refusing an over-sized segment image)",
-                            bytes.len(),
-                            seg.size.map(|s| s.to_string()).unwrap_or_else(|| format!(
-                                "absent, capped at {MAX_SEGMENT_IMAGE}"
-                            )),
-                        ),
-                    ));
-                }
-            }
-        }
-    }
+    validate_segments(app)?;
 
     // Seed each targeted segment's image from its `<Data>` base (if any), else
     // empty; grow lazily as parameters are placed.
@@ -368,14 +325,19 @@ pub fn compute_parameter_image(
         let param = resolved.param;
         let pname = param.name.as_deref().unwrap_or(&param.id);
 
-        let Some(mem) = param.memory.as_ref() else {
-            // A display-only parameter (no <Memory>) never reaches an image; an
-            // override targeting one is a caller error worth surfacing.
-            return Err(param_err(
-                app,
-                ref_id,
-                "parameter has no <Memory> location, so it cannot be flashed",
-            ));
+        // A `<Union>` member has no memory of its own: it is written at the
+        // union's location plus its member offset. A display-only parameter (no
+        // memory, no union) only steers the Dynamic section and is not written.
+        let union_mem;
+        let mem = match param.memory.as_ref() {
+            Some(mem) => mem,
+            None => match union_member_memory(app, &param.id) {
+                Some(mem) => {
+                    union_mem = mem;
+                    &union_mem
+                }
+                None => continue,
+            },
         };
         let Some(seg_id) = mem.code_segment.as_deref() else {
             return Err(param_err(app, ref_id, "memory block names no CodeSegment"));
@@ -463,6 +425,236 @@ pub fn compute_parameter_image(
     }
 
     Ok(images)
+}
+
+/// Validates every segment's decoded `<Data>`/`<Mask>` against its declared
+/// `Size` (and the [`MAX_SEGMENT_IMAGE`] cap) before any image is built.
+fn validate_segments(app: &ApplicationProgram) -> Result<()> {
+    // Validate every segment's decoded `<Data>`/`<Mask>` against its declared
+    // `Size` before building any image. Both payloads are base64 decoded from
+    // vendor XML; a payload longer than the segment claims (or, when `Size` is
+    // absent, longer than the sane cap) means corrupt/hostile product data, and
+    // is refused rather than seeding an oversized base image.
+    let mut seg_ids: Vec<&String> = app.code_segments.keys().collect();
+    seg_ids.sort();
+    for seg_id in seg_ids {
+        let seg = &app.code_segments[seg_id];
+        // A declared `Size` is bounded by the same cap as an absent one: it is
+        // what every `image.resize` below is allowed to grow to, so a hostile
+        // `Size="4294967295"` must not become a 4 GiB allocation.
+        if let Some(sz) = seg.size {
+            if u64::from(sz) > MAX_SEGMENT_IMAGE {
+                return Err(param_err(
+                    app,
+                    seg_id,
+                    &format!(
+                        "segment declares Size {sz}, above the {MAX_SEGMENT_IMAGE}-byte image cap \
+                         (refusing an over-sized segment image)"
+                    ),
+                ));
+            }
+        }
+        let limit = match seg.size {
+            Some(sz) => u64::from(sz),
+            None => MAX_SEGMENT_IMAGE,
+        };
+        for (what, payload) in [("<Data>", &seg.data), ("<Mask>", &seg.mask)] {
+            if let Some(bytes) = payload {
+                if bytes.len() as u64 > limit {
+                    return Err(param_err(
+                        app,
+                        seg_id,
+                        &format!(
+                            "segment {what} is {} bytes but the segment declares Size {} \
+                             (refusing an over-sized segment image)",
+                            bytes.len(),
+                            seg.size.map(|s| s.to_string()).unwrap_or_else(|| format!(
+                                "absent, capped at {MAX_SEGMENT_IMAGE}"
+                            )),
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether `app`'s parameter image and group-object table are built by
+/// evaluating its Dynamic section ([`compute_dynamic_parameter_image`]), the
+/// way ETS does (issue #123): true for every application with a Dynamic
+/// section, except one that instantiates `<Module>`s without declaring their
+/// `<ModuleDef>`s (nothing to evaluate them against), which keeps the
+/// vendor-default path.
+pub fn uses_dynamic_image(app: &ApplicationProgram) -> bool {
+    !app.dynamic.is_empty() && (app.module_instances.is_empty() || !app.module_dynamics.is_empty())
+}
+
+/// Builds the per-segment parameter images the way ETS does: the segment's
+/// `<Data>` template, overlaid with the value of every parameter the device's
+/// configuration actually shows.
+///
+/// The Dynamic section is evaluated with `overrides`
+/// ([`bussard_ets::dynamic::evaluate_dynamic`]); each reached parameter ref
+/// (plus both ends of each reached `<Assign>`) is written at its location: a
+/// parameter's `<Memory>` offset, or for a `<Union>` member the union's base
+/// plus the member offset, in either case plus the module instance's value for
+/// the `BaseOffset` argument. A parameter behind a branch that is not taken is
+/// not written, so its bytes keep the template value. Display-only parameters
+/// (no memory) only steer the evaluation.
+///
+/// This reproduces the ETS 6 image of a Jung 52921ST (F50, app A-D142-21)
+/// byte for byte, where the template-plus-every-default image differed in 240
+/// of 6152 octets (see the `f50_golden` test in `bussard-download`). Values an
+/// application computes with `<ParameterCalculation>` scripts (a Jung A-3030
+/// LED dimmer's dimming curves) are not produced.
+///
+/// # Errors
+///
+/// [`ProdError::ParameterImage`] when an override key names no parameter ref
+/// of the application, a value cannot be encoded for its type, or a location
+/// falls outside its segment.
+pub fn compute_dynamic_parameter_image(
+    app: &ApplicationProgram,
+    overrides: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, Vec<u8>>> {
+    validate_segments(app)?;
+    let config = bussard_ets::dynamic::evaluate_dynamic(app, overrides);
+    if let Some(key) = config.unresolved_overrides.first() {
+        return Err(param_err(
+            app,
+            key,
+            "names a parameter ref this application does not define",
+        ));
+    }
+
+    // Union membership: parameter id -> (union, member).
+    let mut union_of: std::collections::HashMap<&str, (usize, usize)> =
+        std::collections::HashMap::new();
+    for (ui, union) in app.unions.iter().enumerate() {
+        for (mi, member) in union.members.iter().enumerate() {
+            union_of.insert(member.parameter.as_str(), (ui, mi));
+        }
+    }
+
+    // Seed every segment a parameter can land in, so the image set matches the
+    // vendor-default path even where no reached parameter falls.
+    let mut images: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let segments = app
+        .parameters
+        .values()
+        .filter_map(|p| p.memory.as_ref())
+        .chain(app.unions.iter().filter_map(|u| u.memory.as_ref()))
+        .filter_map(|m| m.code_segment.as_deref());
+    for seg in segments {
+        images
+            .entry(seg.to_string())
+            .or_insert_with(|| base_image(app, seg));
+    }
+
+    let arg_value = |module: Option<usize>, base: Option<&str>| -> i64 {
+        let Some(base) = base else { return 0 };
+        let rel = base.strip_prefix(&format!("{}_", app.id)).unwrap_or(base);
+        config
+            .module_args(module)
+            .and_then(|args| args.get(rel).copied())
+            .unwrap_or(0)
+    };
+
+    for active in &config.parameters {
+        let full_ref = format!("{}_{}", app.id, active.param_ref_id);
+        let Some(pref) = app.parameter_refs.get(&full_ref) else {
+            continue;
+        };
+        let Some(param) = app.parameters.get(&pref.ref_id) else {
+            continue;
+        };
+        let pname = param.name.as_deref().unwrap_or(&param.id);
+        // The location: own memory, else the union the parameter belongs to.
+        let (seg_id, declared, bit_offset, base) = if let Some(mem) = param.memory.as_ref() {
+            let (Some(seg), Some(off)) = (mem.code_segment.as_deref(), mem.offset) else {
+                continue;
+            };
+            (
+                seg,
+                i64::from(off),
+                mem.bit_offset.unwrap_or(0),
+                mem.base_offset.as_deref(),
+            )
+        } else if let Some(&(ui, mi)) = union_of.get(param.id.as_str()) {
+            let union = &app.unions[ui];
+            let member = &union.members[mi];
+            let Some(mem) = union.memory.as_ref() else {
+                continue;
+            };
+            let (Some(seg), Some(off)) = (mem.code_segment.as_deref(), mem.offset) else {
+                continue;
+            };
+            (
+                seg,
+                i64::from(off) + i64::from(member.offset.unwrap_or(0)),
+                member.bit_offset.unwrap_or(0),
+                mem.base_offset.as_deref(),
+            )
+        } else {
+            // Display-only: steers the evaluation, never written.
+            continue;
+        };
+        let offset = usize::try_from(declared + arg_value(active.module, base)).map_err(|_| {
+            param_err(
+                app,
+                pname,
+                "module-instance base offset places the parameter at an out-of-range address",
+            )
+        })?;
+
+        let value = config.value(app, active.module, &active.param_ref_id);
+        let source = if config.is_override(app, active.module, &active.param_ref_id) {
+            ValueSource::UserOverride
+        } else {
+            ValueSource::VendorDefault
+        };
+        let ptype = param
+            .parameter_type
+            .as_deref()
+            .and_then(|id| app.parameter_types.get(id))
+            .map(|d| &d.kind);
+        let placement = encode_value(app, pname, ptype, value.as_deref(), source)?;
+        let seg_size = app.code_segments.get(seg_id).and_then(|s| s.size);
+        let image = images
+            .entry(seg_id.to_string())
+            .or_insert_with(|| base_image(app, seg_id));
+        place_checked(app, pname, image, offset, bit_offset, &placement, seg_size)?;
+    }
+
+    // A segment's image spans its declared size (the template may be shorter).
+    for (seg_id, image) in images.iter_mut() {
+        if let Some(size) = app.code_segments.get(seg_id).and_then(|s| s.size) {
+            if image.len() < size as usize {
+                image.resize(size as usize, 0);
+            }
+        }
+    }
+    Ok(images)
+}
+
+/// The effective memory location of a `<Union>` member parameter: the union's
+/// `<Memory>` with the member's offset added and its bit offset, or `None` when
+/// `param_id` is no union member (or the union has no location).
+fn union_member_memory(
+    app: &ApplicationProgram,
+    param_id: &str,
+) -> Option<bussard_ets::application::Memory> {
+    app.unions.iter().find_map(|union| {
+        let member = union.members.iter().find(|m| m.parameter == param_id)?;
+        let mem = union.memory.as_ref()?;
+        Some(bussard_ets::application::Memory {
+            code_segment: mem.code_segment.clone(),
+            offset: Some(mem.offset?.checked_add(member.offset.unwrap_or(0))?),
+            bit_offset: member.bit_offset,
+            base_offset: mem.base_offset.clone(),
+        })
+    })
 }
 
 /// The set of application `Parameter` ids a module application's channel
@@ -1928,5 +2120,110 @@ mod tests {
             ets[par + 1] = if ch == 0 { 0x05 } else { 0x04 }; // steps: ch1=5, else 4
         }
         assert_eq!(image, &ets);
+    }
+
+    /// A module-based app in the Jung F50 shape (issue #123): a display-only
+    /// selector picks which module instance the configuration shows; the module
+    /// has a plain parameter and a union member placed at the instance's
+    /// `BaseOffset`; an application parameter sits behind a branch.
+    const DYN_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/21">
+     <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="dyn">
+      <Static>
+       <Code><RelativeSegment Id="A_RS-1" Size="8" LoadStateMachine="4" Offset="0"><Data>SQAAAAAAAAA=</Data></RelativeSegment></Code>
+       <ParameterTypes><ParameterType Id="A_PT-1" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType></ParameterTypes>
+       <Parameters>
+        <Parameter Id="A_P-1" Name="concept" ParameterType="A_PT-1" Value="0" />
+        <Parameter Id="A_P-2" Name="hidden" ParameterType="A_PT-1" Value="7"><Memory CodeSegment="A_RS-1" Offset="7" BitOffset="0" /></Parameter>
+       </Parameters>
+       <ParameterRefs>
+        <ParameterRef Id="A_P-1_R-1" RefId="A_P-1" />
+        <ParameterRef Id="A_P-2_R-2" RefId="A_P-2" />
+       </ParameterRefs>
+      </Static>
+      <ModuleDefs>
+       <ModuleDef Id="A_MD-1" Name="m">
+        <Arguments><Argument Id="A_MD-1_A-1" Name="par" /></Arguments>
+        <Static>
+         <Parameters>
+          <Parameter Id="A_MD-1_P-1" Name="cmd" ParameterType="A_PT-1" Value="3"><Memory CodeSegment="A_RS-1" Offset="0" BitOffset="0" BaseOffset="A_MD-1_A-1" /></Parameter>
+          <Union SizeInBit="8">
+           <Memory CodeSegment="A_RS-1" Offset="1" BitOffset="0" BaseOffset="A_MD-1_A-1" />
+           <Parameter Id="A_MD-1_UP-2" Name="mode" ParameterType="A_PT-1" Value="0" Offset="0" BitOffset="0" />
+          </Union>
+         </Parameters>
+         <ParameterRefs>
+          <ParameterRef Id="A_MD-1_P-1_R-1" RefId="A_MD-1_P-1" />
+          <ParameterRef Id="A_MD-1_UP-2_R-2" RefId="A_MD-1_UP-2" />
+         </ParameterRefs>
+        </Static>
+        <Dynamic><ParameterBlock Id="A_MD-1_PB-1">
+         <ParameterRefRef RefId="A_MD-1_P-1_R-1" />
+         <ParameterRefRef RefId="A_MD-1_UP-2_R-2" />
+        </ParameterBlock></Dynamic>
+       </ModuleDef>
+      </ModuleDefs>
+      <Dynamic>
+       <ChannelIndependentBlock><ParameterBlock Id="A_PB-1"><ParameterRefRef RefId="A_P-1_R-1" /></ParameterBlock></ChannelIndependentBlock>
+       <choose ParamRefId="A_P-1_R-1">
+        <when test="0">
+         <Module Id="A_MD-1_M-1" RefId="A_MD-1"><NumericArg RefId="A_MD-1_A-1" Value="2" /></Module>
+        </when>
+        <when test="1">
+         <Module Id="A_MD-1_M-2" RefId="A_MD-1"><NumericArg RefId="A_MD-1_A-1" Value="4" /></Module>
+         <ParameterRefRef RefId="A_P-2_R-2" />
+        </when>
+       </choose>
+      </Dynamic>
+     </ApplicationProgram></KNX>"#;
+
+    #[test]
+    fn test_compute_parameter_image_dynamic_writes_only_shown_parameters() -> Result<()> {
+        let app = parse_application_program("A", DYN_XML.as_bytes())?;
+        assert!(uses_dynamic_image(&app));
+        // Defaults: instance M-1 (base 2) is shown; the template's `49` stays.
+        let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
+        assert_eq!(images["A_RS-1"], [0x49, 0, 3, 0, 0, 0, 0, 0]);
+        // The display-only concept switches to instance M-2 (base 4) and the
+        // hidden parameter; the union member of that instance is overridden.
+        let mut overrides = BTreeMap::new();
+        overrides.insert("P-1_R-1".to_string(), "1".to_string());
+        overrides.insert("MD-1_M-2_MI-1_UP-2_R-2".to_string(), "9".to_string());
+        let images = compute_parameter_image(&app, &overrides, &BTreeMap::new())?;
+        assert_eq!(images["A_RS-1"], [0x49, 0, 0, 0, 3, 9, 0, 7]);
+        // An override naming no ref of the application is refused.
+        overrides.insert("P-99_R-1".to_string(), "1".to_string());
+        assert!(compute_parameter_image(&app, &overrides, &BTreeMap::new()).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_compute_parameter_image_skips_display_only_and_places_union_overrides() -> Result<()> {
+        // The vendor-default path (a non-module app): a display-only override is
+        // not written and does not fail the image; a union member override lands
+        // at the union's location plus its member offset.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/21">
+         <ApplicationProgram Id="B" MaskVersion="MV-07B0" Name="flat"><Static>
+          <Code><RelativeSegment Id="B_RS-1" Size="4" LoadStateMachine="4" Offset="0" /></Code>
+          <ParameterTypes><ParameterType Id="B_PT-1" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType></ParameterTypes>
+          <Parameters>
+           <Parameter Id="B_P-1" Name="ui" ParameterType="B_PT-1" Value="0" />
+           <Union SizeInBit="16">
+            <Memory CodeSegment="B_RS-1" Offset="2" BitOffset="0" />
+            <Parameter Id="B_UP-2" Name="u" ParameterType="B_PT-1" Value="0" Offset="1" BitOffset="0" DefaultUnionParameter="true" />
+           </Union>
+          </Parameters>
+          <ParameterRefs>
+           <ParameterRef Id="B_P-1_R-1" RefId="B_P-1" />
+           <ParameterRef Id="B_UP-2_R-2" RefId="B_UP-2" />
+          </ParameterRefs>
+         </Static></ApplicationProgram></KNX>"#;
+        let app = parse_application_program("B", xml.as_bytes())?;
+        assert!(!uses_dynamic_image(&app));
+        let mut overrides = BTreeMap::new();
+        overrides.insert("P-1_R-1".to_string(), "1".to_string());
+        overrides.insert("UP-2_R-2".to_string(), "5".to_string());
+        let images = compute_parameter_image(&app, &overrides, &BTreeMap::new())?;
+        assert_eq!(images["B_RS-1"][3], 5);
+        Ok(())
     }
 }

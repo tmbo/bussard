@@ -269,7 +269,7 @@ pub fn run(
     // group-object) this device requires, from its model links. A merged app's
     // template writes these objects; a self-contained (thelsing) app's does not,
     // so an empty map simply leaves the single-object flash untouched.
-    let table_images = build_table_images(model.as_ref(), target, app);
+    let table_images = build_table_images(model.as_ref(), target, app, &overrides_map);
 
     // Pre-flight: build and validate the plan (System B gate, mask match,
     // unsupported-op refusal all happen here).
@@ -480,7 +480,7 @@ fn dry_run(
         return Ok(ExitCode::FAILURE);
     };
     let template_ops = template_ops_for(product_data, app);
-    let table_images = build_table_images(model, target, app);
+    let table_images = build_table_images(model, target, app, overrides_map);
     let plan = match plan_flash(
         app,
         address,
@@ -579,12 +579,22 @@ fn collect_parameter_overrides(
 /// linked instance with Communication set and an unlinked one with it cleared).
 /// A non-module application keeps the flat per-com-object table.
 ///
+/// An application with a Dynamic section (every real product; issue #123) is
+/// evaluated like ETS does instead: the device's parameter `overrides` decide
+/// which modules and com-objects the configuration shows, only those get
+/// descriptors (Communication set when linked, the model's per-object flags
+/// for a linked one), at ASAP `Number` + the module instance's `BaseNumber`
+/// argument, and the table is counted up to the application's highest own
+/// com-object number ([`bussard_download::dynamic_group_object_table`]). The
+/// two paths below remain for applications without one.
+///
 /// Returns an empty map when the model is absent or the device has no links —
 /// which leaves a self-contained (thelsing) single-object flash untouched.
 fn build_table_images(
     model: Option<&bussard_model::Model>,
     target: IndividualAddress,
     app: &ApplicationProgram,
+    overrides: &BTreeMap<String, String>,
 ) -> BTreeMap<u32, Vec<u8>> {
     use bussard_download::compute::{
         GroupObjectDescriptor, Priority, compute_group_object_table,
@@ -643,7 +653,23 @@ fn build_table_images(
         }
         descriptors
     };
-    let obj3 = if !app.module_instances.is_empty() && app.channel_membership.is_some() {
+    let obj3 = if bussard_prod::uses_dynamic_image(app) {
+        let model_objects = model
+            .and_then(|m| m.devices.get(&target))
+            .map(|d| &d.device.com_objects);
+        let linked_objects: BTreeMap<u16, bussard_download::LinkedObject> = linked
+            .iter()
+            .map(|&object| {
+                let info = model_objects.and_then(|objects| objects.get(&object));
+                let entry = bussard_download::LinkedObject {
+                    com_object_ref: info.and_then(|c| c.reference.clone()),
+                    flags: info.map(|c| c.flags),
+                };
+                (object, entry)
+            })
+            .collect();
+        bussard_download::dynamic_group_object_table(app, overrides, &linked_objects)
+    } else if !app.module_instances.is_empty() && app.channel_membership.is_some() {
         // Module-based application: instantiate the com-objects across channels.
         // Each channel is linked when any of the com-objects it carries appears
         // in the model links; `<choose>` selectors fall back to their parameter

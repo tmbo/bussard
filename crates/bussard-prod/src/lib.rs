@@ -39,6 +39,9 @@ pub use application::{
     Memory, Parameter, ParameterRef, ParameterType, ParameterTypeDecl, ResolvedComObject,
     ResolvedParameter, SegmentKind, parse_application_program,
 };
+/// Dynamic-section evaluation (what a device configuration shows), re-exported
+/// for the image and table builders.
+pub use bussard_ets::dynamic;
 pub use bussard_ets::master::{
     HawkConfig, HawkResource, MaskLoadProcedure, MasterTemplate, parse_master_template,
 };
@@ -46,7 +49,7 @@ pub use container::{AppEntry, MAX_INNER_KNXPROD_SIZE};
 pub use error::{ProdError, Result};
 pub use fetch::{DownloadConsent, MAX_DOWNLOAD_BYTES, fetch_entry};
 pub use hardware::HardwareCatalog;
-pub use image::compute_parameter_image;
+pub use image::{compute_dynamic_parameter_image, compute_parameter_image, uses_dynamic_image};
 pub use index::{IndexEntry, ProductIndex, normalize_order_number};
 
 /// The parsed contents of a `.knxprod`.

@@ -354,8 +354,8 @@ pub fn build_model(project: RawProject, container: &mut Container) -> Result<Mod
         }
 
         // Per-device parameter values (issue #46): resolve each configured
-        // ParameterInstanceRef to its stable key + value, keeping only the
-        // memory-bearing ones whose value differs from the vendor default.
+        // ParameterInstanceRef to its stable key + value, keeping the ones whose
+        // value differs from the vendor default (display-only ones included).
         let parameters = resolve_parameters(raw_dev, &apps);
 
         // Per-module-instance memory base offsets (issue #48): resolve each of
@@ -650,12 +650,21 @@ fn resolve_com_object(
 /// For each `(ref_id, value)` the ref is resolved against the device's
 /// application programs to its `ParameterRef` → `Parameter`, which supplies the
 /// vendor default (the resolved ref/parameter `Value`), the display name (for
-/// the human key prefix) and the memory location. A value is emitted only when:
+/// the human key prefix) and the memory location. A value is emitted when it
+/// **differs from the vendor default** (diff-friendly: only real deltas land in
+/// the file). Every kind of parameter counts, because each one reaches the
+/// download (issue #123):
 ///
-/// * the parameter is **memory-bearing** (a display-only parameter never reaches
-///   a download image, so storing it would be noise), and
-/// * the configured value **differs from the vendor default** (diff-friendly:
-///   only real deltas land in the file).
+/// * a **display-only** parameter (no `<Memory>`) decides, through the Dynamic
+///   section's `<choose>`s, which modules, com-objects and parameters the device
+///   carries (the Jung F50's button/rocker concept is one);
+/// * a **`<Union>` member** has no memory of its own but is written at the
+///   union's location;
+/// * a parameter with **several refs whose defaults differ** is emitted even
+///   when its value equals the default of the ref it was stored under: the value
+///   belongs to the parameter, and which ref's default applies depends on which
+///   ref the configuration shows, so leaving it out would let another ref's
+///   default take over.
 ///
 /// The key is `<name-slug>@<app-relative-ref-id>`, where the app-relative ref id
 /// preserves the module-instance selector (`MD-2_M-20_MI-1_P-15_R-17`), the
@@ -683,14 +692,10 @@ fn resolve_parameters(
             continue;
         };
 
-        // Only memory-bearing parameters flash; skip display-only ones.
-        if resolved.param.memory.is_none() {
-            continue;
-        }
-
-        // Diff against the vendor default (ref Value override, else param Value).
+        // Diff against the vendor default (ref Value override, else param
+        // Value), unless the parameter's refs disagree on the default.
         let vendor_default = resolved.value().unwrap_or("");
-        if value == vendor_default {
+        if value == vendor_default && !has_ambiguous_default(app, &resolved.param.id) {
             continue;
         }
 
@@ -699,9 +704,27 @@ fn resolve_parameters(
         // Determinism: an app-relative ref id is unique per device, so keys do
         // not collide; the first write wins if a malformed file repeats one.
         out.entry(key).or_insert_with(|| value.clone());
-        let _ = app; // app kept for symmetry / future per-app disambiguation.
     }
     out
+}
+
+/// Whether the refs of parameter `param_id` (a full id) declare different
+/// defaults (a ref's `Value`, else the parameter's own), so a value equal to one
+/// of them is still a real setting.
+fn has_ambiguous_default(app: &ApplicationProgram, param_id: &str) -> bool {
+    let own = app
+        .parameters
+        .get(param_id)
+        .and_then(|p| p.default.as_deref());
+    let mut defaults = app
+        .parameter_refs
+        .values()
+        .filter(|r| r.ref_id == param_id)
+        .map(|r| r.value.as_deref().or(own));
+    match defaults.next() {
+        Some(first) => defaults.any(|d| d != first),
+        None => false,
+    }
 }
 
 /// Resolves a device's per-module-instance **memory base offsets** into the
@@ -1142,6 +1165,55 @@ mod tests {
             "MD-1_A-2"
         );
         assert_eq!(strip_app_prefix("MD-1_A-2"), "MD-1_A-2");
+    }
+
+    // ---- issue #123: parameters that steer the Dynamic section ----------
+
+    #[test]
+    fn test_resolve_parameters_keeps_display_only_union_and_multi_ref_values()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/21">
+         <ApplicationProgram Id="M-0004_A-1" Name="x"><Static>
+          <ParameterTypes><ParameterType Id="M-0004_A-1_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType></ParameterTypes>
+          <Parameters>
+           <Parameter Id="M-0004_A-1_P-1" Name="concept" ParameterType="M-0004_A-1_PT-0" Value="0" />
+           <Parameter Id="M-0004_A-1_P-2" Name="inst" ParameterType="M-0004_A-1_PT-0" Value="0">
+            <Memory CodeSegment="M-0004_A-1_RS-1" Offset="0" BitOffset="0" />
+           </Parameter>
+           <Union SizeInBit="8">
+            <Memory CodeSegment="M-0004_A-1_RS-1" Offset="1" BitOffset="0" />
+            <Parameter Id="M-0004_A-1_UP-3" Name="led" ParameterType="M-0004_A-1_PT-0" Value="2" Offset="0" BitOffset="0" />
+           </Union>
+           <Parameter Id="M-0004_A-1_P-4" Name="plain" ParameterType="M-0004_A-1_PT-0" Value="5">
+            <Memory CodeSegment="M-0004_A-1_RS-1" Offset="2" BitOffset="0" />
+           </Parameter>
+          </Parameters>
+          <ParameterRefs>
+           <ParameterRef Id="M-0004_A-1_P-1_R-1" RefId="M-0004_A-1_P-1" />
+           <ParameterRef Id="M-0004_A-1_P-2_R-2" RefId="M-0004_A-1_P-2" />
+           <ParameterRef Id="M-0004_A-1_P-2_R-3" RefId="M-0004_A-1_P-2" Value="46" />
+           <ParameterRef Id="M-0004_A-1_UP-3_R-4" RefId="M-0004_A-1_UP-3" />
+           <ParameterRef Id="M-0004_A-1_P-4_R-5" RefId="M-0004_A-1_P-4" />
+          </ParameterRefs>
+         </Static></ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-0004_A-1", xml.as_bytes())?;
+        let mut raw = raw_dev_with_module_instances(&[]);
+        raw.parameters = [
+            ("M-0004_A-1_P-1_R-1", "1"),  // display-only, changed
+            ("M-0004_A-1_P-2_R-2", "0"),  // equals R-2's default, but R-3 says 46
+            ("M-0004_A-1_UP-3_R-4", "4"), // union member, changed
+            ("M-0004_A-1_P-4_R-5", "5"),  // single default, unchanged
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+        let params = resolve_parameters(&raw, &[&app]);
+        let keys: Vec<&str> = params
+            .keys()
+            .filter_map(|k| k.split_once('@').map(|(_, r)| r))
+            .collect();
+        assert_eq!(keys, ["P-1_R-1", "P-2_R-2", "UP-3_R-4"]);
+        Ok(())
     }
 
     // ---- issue #48: module-instance memory base offsets ------------------
