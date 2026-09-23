@@ -10,10 +10,23 @@ description = "Core KNX domain model for bussard: GA/IA/DPT/flags types, DPT cod
 
 [dependencies]
 serde = { workspace = true }
+# JSON for the history manifest (`.bussard/history/<id>/manifest.json`) and for
+# the change-set payload the MCP tools return. Already a workspace dependency.
+serde_json = { workspace = true }
 serde_norway = { workspace = true }
 serde_path_to_error = { workspace = true }
 thiserror = { workspace = true }
 bitflags = { workspace = true }
+# The `.bussard` bundle (issue #111): a deflate zip with a SHA-256 manifest.
+# Both are already workspace dependencies (bussard-ets/-prod/-project and
+# bussard-secure/-project), so the tree gains no new crate.
+zip = { workspace = true }
+sha2 = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
+serde_json = { workspace = true }
+# quick-xml: parses the emitted ETS group-address export back in the golden
+# tests, proving the hand-written XML is well-formed. Test-only; the exporter
+# itself has no XML dependency.
+quick-xml = { workspace = true }

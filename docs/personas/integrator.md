@@ -34,7 +34,7 @@ forum users share home-grown sheets with GA generators because "nothing exists".
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| Capture rooms and functions in a form the rest of the pipeline reads | The YAML model has `location.{floor,room}` per device and free-text GA names. | No device-free planning stage. A rooms-and-functions file that generates a GA plan is missing. | D11 |
+| Capture rooms and functions in a form the rest of the pipeline reads | `bussard scaffold plan.yaml` turns a device-free room and function list into `groups.yaml`; over MCP, `knx_scaffold_groups` does the same after the assistant confirms the room list with him. | No import of an existing Excel room book. | D11 |
 
 ### Stage 2. Planning: topology, power, devices
 
@@ -47,7 +47,7 @@ priorities set, and cable lengths documented.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| Catch topology mistakes before the download | `bussard validate` checks the model for structural errors (missing DPTs, dangling links, duplicate keys). | No topology lints: devices per line, individual-address ranges, bus current per line versus the power supply (`.knxprod` carries the device's bus current), Secure devices on non-Secure couplers. | D10 |
+| Catch topology mistakes before the download | `bussard validate` checks structure, and with a `lint:` block in `bussard.yaml` adds devices per line, bus current per line against the supply, undeclared lines and Secure devices behind non-Secure couplers (L001 to L004). | None. | D10 |
 
 ### Stage 3. ETS project setup: naming and group addresses
 
@@ -62,9 +62,9 @@ the plan, the schematic and ETS, and keeps the ETS project log on.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| Generate the GA plan from the room book | Nothing. | A scaffold that turns rooms and functions into `groups.yaml` following a chosen convention, with the reserved blocks and gaps the guidelines recommend. | D11 |
-| Enforce the convention across the project | `validate` has no notion of a scheme. | Configurable convention lints: block sizes, feedback GA pairing, naming pattern, unused reserved addresses. | D10 |
-| Version the project | `bussard import` twice into a git repo yields a textual diff of everything ETS exported. ETS itself offers restore points, "compare versions" on import, and since 6.4 an auto-archive on close; the ETS5-only Project Comparison app does not run on ETS6. | Import into git is a workaround, not a workflow. A direct `bussard diff a.knxproj b.knxproj` and a documented "ETS with git" practice would make bussard the missing diff tool for ETS6. | D7 |
+| Generate the GA plan from the room book | `bussard scaffold` reserves the conventional block per function under `floor-trade-block` or `function-floor`, names every address and fills the DPTs; re-running extends without renumbering. | None. | D11 |
+| Enforce the convention across the project | Convention lints L005 to L008: block membership, feedback pairing, naming pattern, DPT per block role. | None. | D10 |
+| Version the project | `bussard diff a.knxproj b.knxproj` explains two ETS exports in sentences, a renamed GA as one rename; each side can also be a bundle or a model directory (pending merge). The "ETS with git" practice is documented in the how-to. `bussard history` records every import. | None. | D7 |
 
 ### Stage 4. Bench work: individual addresses and labels
 
@@ -77,8 +77,8 @@ with its address.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| Assign addresses fast | `bussard assign 1.1.7` sets the address of the device in programming mode and verifies it. `bussard adopt` wraps it with product data and a device file. | One device per invocation, each with its own confirmation. Nothing verifies the pressed device is the product the model expects at that address. No label output. | D8 |
-| Pre-load applications on the bench | `bussard flash <ia> --product x.knxprod` downloads the application from vendor data; System B and System 7 supported. | Per device, per command. A bench mode that walks the model's device list, prompts for each programming button, assigns, flashes, applies and prints the label would compress an afternoon into an hour. | D8 |
+| Assign addresses fast | `bussard commission --line 1.1` walks the model's devices, prompts for each programming button, checks the order number against the model, assigns and verifies. | None. | D8 |
+| Pre-load applications on the bench | `commission --flash --apply` flashes and links each device as it is assigned, and `--labels labels.csv` writes the label rows. | None. | D8 |
 
 ### Stage 5. Commissioning on site: the download pass
 
@@ -90,9 +90,9 @@ connection.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| Write the whole installation | `plan` and `apply` per device; `apply` is System B only. | No `apply --line` or `plan --line`. A resumable whole-line pass with a summary table (done, skipped: unsupported mask, failed: retry) is what commissioning day needs. | D8 |
-| Coexist with ETS on the same interface | Documented tunnel-contention warning in DESIGN.md. | bussard should report the interface's tunnel count at `init` and refuse politely when none is free, instead of timing out. | D13 |
-| Mask coverage | System B for tables; System B and System 7 for flash. | Any BCU1/BCU2 or System 7 device in the cabinet is ETS-only for links. Coverage decides whether bussard can be the commissioning tool or only a companion. | existing #81 |
+| Write the whole installation | `bussard plan --line` and `apply --line` run one line in address order with a summary table (`applied`, `unchanged`, `skipped: <reason>`, `failed`), one confirmation, per-device backup, and `--resume` after a dropped tunnel. System B and System 7. | None. | D8 |
+| Coexist with ETS on the same interface | `init` and `audit --live` print `N tunnels, M in use`; a full interface is reported as `E_NO_MORE_CONNECTIONS` with exit code 4 instead of a timeout (pending merge). SAFETY.md has tunnel etiquette for professionals. | None. | D13, D2 |
+| Mask coverage | System B and System 7 for tables and flash. | BCU1/BCU2 devices stay ETS-only for links. | existing #81 |
 
 ### Stage 6. Functional test and acceptance
 
@@ -107,8 +107,8 @@ installation behaves.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| Scripted acceptance test | `bussard write` and `bussard read` exist; a shell loop can chain them. | A test file (write this GA, expect that GA to report this value within two seconds; press this button, expect this) with a pass/fail report that becomes the acceptance protocol. Repeatable at the follow-up visit and after every change. | D9 |
-| Protected functions during test | `protected: true` GAs need `--force`. | Right default. The test runner needs an explicit allow-list for wind alarm and central-off tests. | D9 |
+| Scripted acceptance test | `bussard test` runs `tests.yaml` (write this GA, expect that one within two seconds; or a manual step) and prints a timestamp-free pass/fail report. The assistant drafts `tests.yaml` from the model and runs it with `knx_run_tests` on a write-enabled server. | None. | D9 |
+| Protected functions during test | A test that writes a protected GA needs `allow_protected: true` in the file and `--force`; `knx_run_tests` refuses it whatever the file says. | None. | D9 |
 
 ### Stage 7. Documentation and handover
 
@@ -123,10 +123,10 @@ pictures copied "1:1 from ETS", and dread redoing it after every change.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| Generate the documentation from the model | Nothing beyond `viz` in a browser. | `bussard doc` producing device list with addresses, order numbers and locations, GA list with DPTs, per-room button and channel sheets, gateway details, all regenerated after every change. This is the same document the owner needs. | D5 |
-| Deliver the configuration as a file | A directory of YAML. | Integrators deliver files: the `.knxproj` goes on a USB stick in the cabinet. `bussard export house.bussard` gives the bussard model the same shape, with history and a checksum, and `bussard import` takes it back. | D19 |
-| Export for the customer's ETS | Nothing. | GA export in ETS-importable CSV or XML so names and DPTs curated in bussard land in the customer's project. | D12 |
-| Handover checklist | Nothing. | A handover doc that lists what to deliver, mirroring the KNX checklist. | D2 |
+| Generate the documentation from the model | `bussard doc` writes the device list, GA list with DPTs, per-room sheets with one sentence per com object, and connection details, deterministically, in Markdown or HTML. | None. | D5 |
+| Deliver the configuration as a file | `bussard export house.bussard` writes the model, its history and a manifest with the model's SHA-256; `bussard import` takes it back byte for byte (pending merge). | None. | D19 |
+| Export for the customer's ETS | `bussard export-groups --format ets-csv` or `ets-xml`. | None. | D12 |
+| Handover checklist | [handover-checklist.md](../handover-checklist.md), one page, with the bundle checksum, `doc` output and `test` report as the bussard-managed delivery. | None. | D2 |
 
 ### Stage 8. After-sales: change requests and remote support
 
@@ -139,9 +139,9 @@ password, and screenshots of the delivered state.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| Absorb small changes without a visit | If the customer runs bussard, the change is a diff to `links.yaml`. `plan` shows the device delta. | Most customers are not git users, so the default exchange is by file: the customer sends `bussard export`, the integrator reviews with `bussard diff` (D7) in plain language, sends back an updated file or `.knxproj`, and the customer's `import` merges it while keeping their own names. A shared repository with pull requests and `plan --json` in CI is the second track for customers who want it. | D16, D19, D7 |
-| Know the delivered state | Whatever was in the directory at handover. | The handover bundle (D19) is the delivered state, with a checksum on the acceptance protocol. bussard's own history (D18) shows what changed since, on either side, which is the answer to the warranty question. The acceptance test (D9) reruns after every change. | D19, D18, D9 |
-| Real-gateway gate | Every write to a non-loopback gateway needs `--allow-remote-gateway` or the environment variable. | Correct for owners. For a professional who only ever writes to real gateways, the environment variable in the shell profile is the intended answer; document it. | D2 |
+| Absorb small changes without a visit | The customer's assistant sends a bundle or describes the wish. He runs `bussard diff` against the delivered bundle, makes the change in ETS or bussard, and sends a file back; the customer's assistant previews it with `knx_diff_project` and her `import` keeps her names (pending merge). [collaboration.md](../collaboration.md) documents this and the optional repository track. | `plan` needs a live device, so the repository track's CI runs `validate` and `diff` only. | D16, D19, D7 |
+| Know the delivered state | The handover bundle and its checksum on the acceptance protocol (pending merge). `bussard history` on either side shows who changed what, when, and through which gateway. `bussard test` reruns after every change. | None. | D19, D18, D9 |
+| Real-gateway gate | Every write to a non-loopback gateway needs `--allow-remote-gateway` or `BUSSARD_ALLOW_REAL_GATEWAY=1`. SAFETY.md's section for professionals says to set the variable in the service laptop's shell profile, and why it is per machine. | None. | D2 |
 
 ### Stage 9. Repairs and device replacement
 
@@ -153,7 +153,7 @@ workaround.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| Replace with the same product | `assign`, `flash`, `apply` in sequence. | A guided `bussard replace` that checks order number and application, offers the model's parameters, flashes, applies, verifies. | D6 |
+| Replace with the same product | `bussard replace <ia> --product x.knxprod` checks order number and mask, flashes with the model's parameters, applies, verifies and records `replaced:`. | None. | D6 |
 | Replace with a different but similar product | Nothing. | Channel-level mapping between two applications. Later. | D6 (later) |
 
 ### Stage 10. KNX Secure
@@ -166,7 +166,7 @@ Manager was enabled.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| Work on a Secure installation | Data Secure tool access via `--keyring` or `--tool-key` on `describe`, `apply`, `flash`; `bussard keyring` inspects an export. KNXnet/IP Secure is not implemented. | IP Secure tunnelling is the one Secure feature integrators actually deploy; without it bussard cannot reach a Secure-only interface at all. FDSK commissioning is further out. | existing #71 |
+| Work on a Secure installation | Data Secure tool access via `--keyring` or `--tool-key` on `describe`, `apply`, `flash`; `bussard keyring` inspects an export; `audit --keyring` shows which Secure devices have a key (pending merge). KNXnet/IP Secure is not implemented. | IP Secure tunnelling, the one Secure feature integrators deploy. FDSK commissioning is further out. | existing #71 |
 
 ## User stories
 
@@ -200,16 +200,26 @@ Manager was enabled.
 
 ## What makes bussard the right tool for him, and what is missing
 
-For Jonas, bussard is a companion to ETS before it is a replacement. Its
-strengths today are the ones ETS lacks: a textual, versioned, diffable model;
-a scriptable CLI; an LLM interface; and ETS-free downloads for System B and
-System 7 devices. The parts that would change his week are, in order: batch
-commissioning (D8), scripted acceptance tests (D9), generated documentation
-(D5), the ETS diff (D7), file-based exchange with customers and the optional
-shared-repository track (D19, D16), topology and convention lints (D10), and
-the GA export back to ETS (D12). Two platform facts bound all of it: `apply` is System B only, and
-KNXnet/IP Secure is unsupported, so a cabinet with older actuators or a
-Secure-only interface keeps him in ETS regardless.
+For Jonas, bussard is a companion to ETS before it is a replacement, and his
+assistant is the one who talks to it. Over `bussard mcp` the assistant
+scaffolds the GA plan from his room list, reads the audit, drafts and runs
+`tests.yaml`, and explains what a customer's bundle changed. Jonas does the
+physical work at the cabinet (`commission`, `replace`) and the bus
+programming (`plan --line`, `apply --line`, `flash`), which stay on the
+command line. With `BUSSARD_ALLOW_REAL_GATEWAY=1` in his service laptop's
+profile, the real-gateway gate does not slow him down.
+
+What ships on main: bench commissioning and whole-line plan and apply (D8),
+the acceptance test runner (D9), generated documentation (D5), topology and
+convention lints (D10), the GA scaffold (D11), the ETS group-address export
+(D12), guided replacement (D6), and built-in history (D18). Pending merge: the
+ETS and bundle diff (D7), the handover bundle (D19), the audit and tunnel
+budget (D1, D13). The collaboration guide and the handover checklist (D16, D2)
+are written.
+
+Two platform facts still bound all of it: BCU1/BCU2 devices are ETS-only for
+links, and KNXnet/IP Secure is unsupported, so a cabinet with older actuators
+or a Secure-only interface keeps him in ETS regardless.
 
 ## Sources
 

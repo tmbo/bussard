@@ -11,7 +11,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow};
-use bussard_bus::{BusHandle, ops};
+use bussard_bus::{Bus, BusHandle, ops};
 use bussard_mgmt::{AddressProbe, Timeouts, probe_own_address};
 use bussard_model::IndividualAddress;
 use bussard_model::Model;
@@ -68,7 +68,7 @@ fn probe_timeouts() -> Timeouts {
 /// see a `T_ACK`. That is silent configuration corruption, which is why ETS runs
 /// the same check before it uses an interface.
 ///
-/// Group-only commands (`read`, `write`, `monitor`, `capture`) are
+/// Group-only commands (`read`, `write`, `monitor`, `capture`, `learn`, `test`) are
 /// connectionless and do not need this.
 pub async fn checked_source(
     handle: &BusHandle,
@@ -115,6 +115,88 @@ pub async fn checked_source_or_close(
             let _ = handle.close().await;
             Err(err)
         }
+    }
+}
+
+/// The exit code for "the gateway has no free tunnelling connection"
+/// (`E_NO_MORE_CONNECTIONS`, issue #105).
+///
+/// Distinct from the generic failure code `1` so a script can tell a full
+/// interface from a network timeout or a refusal.
+pub const EXIT_NO_FREE_TUNNEL: u8 = 4;
+
+/// The message printed when a gateway refuses a connect for want of a free
+/// tunnelling slot.
+///
+/// Names the clients that most often hold the slots, because the fix is almost
+/// always "stop one of them", not "retry".
+pub fn no_free_tunnel_message(gateway: impl std::fmt::Display) -> String {
+    format!(
+        "error: {gateway} has no free tunnelling connection (E_NO_MORE_CONNECTIONS).\n\
+         A KNXnet/IP interface has a fixed number of tunnel slots, often one to five, and each \
+         client holds one for as long as it is connected. The usual occupants are Home \
+         Assistant's KNX integration, an open ETS project, and another bussard command or \
+         `bussard viz` / `bussard mcp` still running.\n\
+         Close one of them (or wait for its connection to time out) and retry; \
+         `bussard init --gateway {gateway}` prints the slot count when the interface reports it."
+    )
+}
+
+/// One KNXnet/IP tunnel held open for a whole command, closed on every exit path.
+///
+/// A management command that reads first and writes second (`flash`, `apply`)
+/// used to open a tunnel for the read-only pre-flight, close it, and open a
+/// second one for the write phase. Each open costs a CONNECT_REQUEST round trip
+/// plus the tunnel's own-address setup, each close can wait out the DISCONNECT
+/// timeout on a silent gateway, and a gateway with a single tunnel slot can
+/// refuse the second connect outright.
+///
+/// This holds **one** tunnel across both phases — the transport's heartbeat keeps
+/// the slot alive across the interactive confirmation — and closes it from
+/// `Drop`, so every early return, refusal, declined confirmation and error path
+/// releases the gateway slot exactly once (issue #31's guarantee, now on one
+/// connection instead of two).
+pub struct BusSession {
+    handle: BusHandle,
+    runtime: tokio::runtime::Handle,
+}
+
+impl BusSession {
+    /// Opens the tunnel on `runtime` and waits (bounded) for it to come up.
+    ///
+    /// A gateway that has not answered in time only warns: management traffic
+    /// then presents the 0.0.255 fallback source, exactly as before.
+    pub fn open(runtime: &tokio::runtime::Runtime, config: ConnectionConfig) -> BusSession {
+        let handle = runtime.block_on(async {
+            let (handle, _task) = Bus::connect(config);
+            if !handle
+                .wait_connected(std::time::Duration::from_secs(10))
+                .await
+            {
+                eprintln!(
+                    "warning: bus not connected yet; management traffic may use the 0.0.255 fallback source"
+                );
+            }
+            handle
+        });
+        BusSession {
+            handle,
+            runtime: runtime.handle().clone(),
+        }
+    }
+
+    /// The bus handle every phase of the command runs over.
+    pub fn handle(&self) -> &BusHandle {
+        &self.handle
+    }
+}
+
+impl Drop for BusSession {
+    fn drop(&mut self) {
+        // Close the tunnel cleanly (release the gateway's slot) whichever way the
+        // command exited. `run` is synchronous here, so blocking on the runtime
+        // handle is safe; a gone actor makes this a no-op.
+        let _ = self.runtime.block_on(self.handle.close());
     }
 }
 

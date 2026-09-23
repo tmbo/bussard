@@ -1,0 +1,1 @@
+Porch light (0/0/4) changes type from 1.001 to 1.002.

@@ -1,0 +1,1 @@
+Group address 0/0/4 is now called "Front light" (was "Porch light").

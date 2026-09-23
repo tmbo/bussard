@@ -45,7 +45,7 @@
 //! Everything here is **read-only on the bus**.
 
 use bussard_mgmt::connection::{L4Channel, Layer4Connection};
-use bussard_mgmt::load::{WriteError, read_memory};
+use bussard_mgmt::load::{WriteError, read_memory, read_table_reference};
 use bussard_mgmt::tables::{DeviceTables, ResolvedLink, TableSource};
 use bussard_mgmt::{MaskProfile, apci};
 use bussard_model::IndividualAddress;
@@ -94,6 +94,14 @@ pub enum Sys7TablesError {
 pub struct Sys7LiveTables {
     /// The decoded tables in the shared [`DeviceTables`] shape.
     pub tables: DeviceTables,
+    /// Where the LSM 1 region (address table) starts: the device's
+    /// `PID_TABLE_REFERENCE` of object 1, else [`SYS7_ADDRESS_TABLE_ADDR`].
+    pub address_base: u16,
+    /// Where the LSM 2 region (association table) starts: the device's
+    /// `PID_TABLE_REFERENCE` of object 2, else [`SYS7_ASSOCIATION_TABLE_ADDR`].
+    /// The Jung 0705 products place it at `0x41FF`, right after a 511-octet
+    /// address segment; the constant assumed 513 (issue #89, 1.1.32).
+    pub association_base: u16,
     /// The device's own individual address, from address-table entry 0 (TSAP 0).
     pub own_ia: u16,
     /// Where the group-object descriptor table starts: immediately after the
@@ -126,10 +134,17 @@ pub async fn read_sys7_tables<Ch: L4Channel>(
 
     let mut notes = Vec::new();
 
-    // --- LSM 1 region (0x4000): address table, then the group-object table ---
+    // The table regions live where the device says they do: each table object's
+    // `PID_TABLE_REFERENCE` names its segment start (the Jung 0705 devices expose
+    // PID 7 on objects 1 and 2). The spec constants are only the fallback for a
+    // device that does not answer.
+    let address_base = table_base(l4, 1, SYS7_ADDRESS_TABLE_ADDR, &mut notes).await;
+    let association_base = table_base(l4, 2, SYS7_ASSOCIATION_TABLE_ADDR, &mut notes).await;
+
+    // --- LSM 1 region: address table, then the group-object table ---
     let addr_image = read_counted_table(
         l4,
-        SYS7_ADDRESS_TABLE_ADDR,
+        address_base,
         SYS7_ADDRESS_REGION_LEN,
         sys7_address_table_span,
     )
@@ -158,7 +173,7 @@ pub async fn read_sys7_tables<Ch: L4Channel>(
     // `S7-CAL: confirm the group-object table's placement inside the 0x4000
     // region (co-located after the GrAT vs a fixed sub-address) against a live
     // 0705 read-back.`
-    let group_object_base = SYS7_ADDRESS_TABLE_ADDR.wrapping_add(addr_image.len() as u16);
+    let group_object_base = address_base.wrapping_add(addr_image.len() as u16);
     let go_capacity = SYS7_ADDRESS_REGION_LEN.saturating_sub(addr_image.len());
     let (group_object_image, group_objects) = if go_capacity >= SYS7_GROUP_OBJECT_HEADER_LEN {
         match read_counted_table(
@@ -196,10 +211,10 @@ pub async fn read_sys7_tables<Ch: L4Channel>(
         (Vec::new(), Vec::new())
     };
 
-    // --- LSM 2 region (0x4201): the association table ---
+    // --- LSM 2 region: the association table ---
     let assoc_image = read_counted_table(
         l4,
-        SYS7_ASSOCIATION_TABLE_ADDR,
+        association_base,
         SYS7_ASSOCIATION_REGION_LEN,
         sys7_association_table_span,
     )
@@ -273,6 +288,8 @@ pub async fn read_sys7_tables<Ch: L4Channel>(
             notes,
         },
         own_ia,
+        address_base,
+        association_base,
         group_object_base,
         group_object_image,
         group_objects,
@@ -331,6 +348,31 @@ fn empty_read<Ch: L4Channel>(l4: &Layer4Connection<Ch>, at: u16) -> WriteError {
 }
 
 /// Reads the device descriptor (mask version) on an open connection.
+/// The start of a table object's segment as the device reports it through
+/// `PID_TABLE_REFERENCE`, or `default` (with a note) when the property is not
+/// readable or names an address outside the System 7 table window.
+async fn table_base<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    object_index: u8,
+    default: u16,
+    notes: &mut Vec<String>,
+) -> u16 {
+    match read_table_reference(l4, object_index).await {
+        Ok(base) if (0x4000..0x8000).contains(&base) => base as u16,
+        Ok(base) => {
+            notes.push(format!(
+                "object {object_index} reports table reference {base:#06X}, outside the \
+                 System 7 table window; using {default:#06X}"
+            ));
+            default
+        }
+        // No readable PID_TABLE_REFERENCE: the spec default, silently. This is
+        // the normal shape for a device (or mock) that does not expose PID 7 on
+        // its table objects, not a finding worth a note.
+        Err(_) => default,
+    }
+}
+
 async fn device_descriptor<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
 ) -> Result<u16, Sys7TablesError> {

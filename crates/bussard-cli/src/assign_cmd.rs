@@ -224,7 +224,7 @@ async fn assign_flow(
 /// Returns `Ok(Some(addr))` for the single found device, or `Ok(None)` after
 /// printing friendly guidance for the zero-found (timeout) and multiple-found
 /// cases — both of which are a clean command failure, not an error.
-async fn wait_for_single_device(
+pub(crate) async fn wait_for_single_device(
     handle: &BusHandle,
     source: IndividualAddress,
 ) -> anyhow::Result<Option<IndividualAddress>> {
@@ -432,16 +432,20 @@ fn confirm_assignment(
 
 /// What the post-write verification read back from the device.
 #[derive(Default)]
-struct Verified {
-    mask: Option<u16>,
-    manufacturer_id: Option<u16>,
-    serial: Option<Vec<u8>>,
-    order: Option<String>,
+pub(crate) struct Verified {
+    /// The mask version read back from the device.
+    pub(crate) mask: Option<u16>,
+    /// The KNX manufacturer id, when readable.
+    pub(crate) manufacturer_id: Option<u16>,
+    /// The device serial number, when readable.
+    pub(crate) serial: Option<Vec<u8>>,
+    /// The device's order info string, when readable.
+    pub(crate) order: Option<String>,
     /// Whether the explicit `PID_PROGMODE = 0` write to clear programming mode was
     /// confirmed by the device (it echoed the stored `0x00`). `false` when the
     /// write was not confirmed or the device refused it — the broadcast-based
     /// persistence check then remains the fallback.
-    programming_mode_cleared: bool,
+    pub(crate) programming_mode_cleared: bool,
 }
 
 /// Verifies the write by connecting to `target` and reading its descriptor plus
@@ -450,7 +454,7 @@ struct Verified {
 /// A device descriptor read is the proof the address took: if it fails, the
 /// write did not land (or the device dropped programming mode without applying
 /// it), which is a clear error naming both the old and new addresses.
-async fn verify_assignment(
+pub(crate) async fn verify_assignment(
     handle: &BusHandle,
     source: IndividualAddress,
     target: IndividualAddress,
@@ -542,7 +546,7 @@ async fn verify_assignment(
 /// Best-effort and non-fatal: any bus error while re-checking is swallowed (the
 /// assignment already succeeded), so this never turns a good write into a
 /// failure.
-async fn warn_if_still_in_programming_mode(
+pub(crate) async fn warn_if_still_in_programming_mode(
     handle: &BusHandle,
     source: IndividualAddress,
     target: IndividualAddress,
@@ -575,7 +579,7 @@ async fn warn_if_still_in_programming_mode(
 /// Builds the stub [`Device`] from the verified read-back. Fields that could not
 /// be read are left empty; the whole product block is omitted when nothing was
 /// readable.
-fn build_stub_device(address: IndividualAddress, v: &Verified) -> Device {
+pub(crate) fn build_stub_device(address: IndividualAddress, v: &Verified) -> Device {
     let manufacturer = v.manufacturer_id.map(manufacturers::display);
     let order_number = v.order.clone();
     let mask = v.mask.map(|m| format!("{m:#06X}"));
@@ -598,6 +602,7 @@ fn build_stub_device(address: IndividualAddress, v: &Verified) -> Device {
         name: "New device (assign)".to_string(),
         description: None,
         location: None,
+        replaced: None,
         product,
         channels: Default::default(),
         parameters: Default::default(),
@@ -672,12 +677,12 @@ fn empty_model() -> Model {
 }
 
 /// Formats a byte slice as lowercase hex.
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Cleans a raw property value to printable ASCII, trimming trailing NULs/space.
-fn clean_ascii(bytes: &[u8]) -> String {
+pub(crate) fn clean_ascii(bytes: &[u8]) -> String {
     let s: String = bytes
         .iter()
         .take_while(|b| **b != 0)
@@ -703,6 +708,7 @@ mod tests {
                         name: "d".to_string(),
                         description: None,
                         location: None,
+                        replaced: None,
                         product: None,
                         channels: Default::default(),
                         parameters: Default::default(),

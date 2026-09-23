@@ -346,6 +346,10 @@ fn overlay_device(
     theirs.name = ours.name.clone();
     theirs.description = ours.description.clone();
     theirs.location = ours.location.clone();
+    // `replaced:` is bus history written by `bussard replace`, not project data:
+    // a re-import from ETS knows nothing about it, so keeping ours is the only
+    // way the record survives (issue #98).
+    theirs.replaced = ours.replaced.clone();
 
     // A com-object may name the channel it belongs to; after the merge that name
     // must resolve, or the model points at a channel that does not exist.
@@ -467,6 +471,7 @@ mod tests {
             name: name.to_string(),
             description: None,
             location: None,
+            replaced: None,
             product: None,
             channels: BTreeMap::new(),
             parameters: BTreeMap::new(),

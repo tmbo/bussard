@@ -1,0 +1,1 @@
+Channel CH-2 on Living room blind actuator (1.1.4) is now called "Bedroom" (was "B").

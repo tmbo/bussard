@@ -29,7 +29,7 @@ pub const RECHECK_INTERVAL: Duration = Duration::from_secs(1);
 /// A cheap summary of the model directory's state on disk: how many files it
 /// holds and the newest modification time among them. Any edit, addition or
 /// removal changes one of the two.
-type Fingerprint = (usize, SystemTime);
+type Fingerprint = (usize, SystemTime, u64);
 
 /// The current model plus the disk state it was loaded from.
 struct Snapshot {
@@ -86,6 +86,15 @@ impl ModelHandle {
         self.read().version
     }
 
+    /// Forces a re-read of the directory now, bypassing the debounce.
+    ///
+    /// Used after this process itself wrote the model (the MCP model-edit
+    /// tools), so the very next tool call serves what was just saved instead of
+    /// a copy up to [`RECHECK_INTERVAL`] old.
+    pub fn reload(&self) -> Arc<Model> {
+        self.refresh()
+    }
+
     /// Re-stats the directory and reloads when the fingerprint changed.
     fn refresh(&self) -> Arc<Model> {
         let current = fingerprint(&self.dir);
@@ -134,20 +143,24 @@ impl ModelHandle {
     }
 }
 
-/// Fingerprints a model directory: the number of model files and the newest
-/// modification time among them.
+/// Fingerprints a model directory: the number of model files, the newest
+/// modification time among them, and their total size in bytes.
 ///
 /// Covers `bussard.yaml`, `groups.yaml`, `links.yaml`, `ha.yaml` and every file
-/// under `devices/`. An unreadable directory fingerprints as `(0, UNIX_EPOCH)`,
+/// under `devices/`. An unreadable directory fingerprints as `(0, UNIX_EPOCH, 0)`,
 /// which simply means "nothing changed" until it becomes readable again.
 fn fingerprint(dir: &Path) -> Fingerprint {
     let mut count = 0usize;
     let mut newest = SystemTime::UNIX_EPOCH;
+    // Total size as a third component: two writes inside one filesystem
+    // timestamp tick (coarse on Windows) would otherwise be indistinguishable.
+    let mut total_len = 0u64;
 
     let mut visit = |path: &Path| {
         if let Ok(meta) = std::fs::metadata(path) {
             if meta.is_file() {
                 count += 1;
+                total_len += meta.len();
                 if let Ok(modified) = meta.modified() {
                     if modified > newest {
                         newest = modified;
@@ -166,7 +179,7 @@ fn fingerprint(dir: &Path) -> Fingerprint {
         }
     }
 
-    (count, newest)
+    (count, newest, total_len)
 }
 
 #[cfg(test)]

@@ -49,7 +49,9 @@ pub struct Diagnostic {
 }
 
 impl Diagnostic {
-    fn new(
+    /// Builds a diagnostic. Crate-internal so every rule pass (including the
+    /// opt-in lints in [`crate::lint`]) constructs them the same way.
+    pub(crate) fn new(
         code: &'static str,
         severity: Severity,
         location: impl Into<String>,
@@ -102,6 +104,11 @@ pub fn validate(model: &Model) -> Vec<Diagnostic> {
     check_ga_consistency(model, &mut diags);
     check_orphans_and_unlinked(model, &mut diags);
     check_protected_gas(model, &mut diags);
+    // Opt-in topology/convention lints (issue #102). Without a `lint:` block in
+    // `bussard.yaml` this contributes nothing, so existing models are unchanged.
+    // The bus-current rule (L002) needs the on-disk product cache and therefore
+    // only runs from `validate_in_dir`.
+    diags.extend(crate::lint::lint(model, None));
 
     diags.sort_by(|a, b| a.location.cmp(&b.location).then(a.code.cmp(b.code)));
     diags
@@ -127,6 +134,8 @@ pub fn validate_in_dir(model: &Model, dir: &Path) -> Vec<Diagnostic> {
 
     let models = ProductModels::load(dir);
     check_parameters(model, &models, &mut diags);
+    // Opt-in lints, with the product cache so L002 can total the bus current.
+    diags.extend(crate::lint::lint(model, Some(&models)));
 
     diags.sort_by(|a, b| a.location.cmp(&b.location).then(a.code.cmp(b.code)));
     diags
@@ -217,6 +226,16 @@ fn check_parameters(model: &Model, models: &ProductModels, diags: &mut Vec<Diagn
             }
         }
     }
+}
+
+/// Checks a parameter value against its definition, returning the reason it is
+/// unacceptable, or `None` when it is fine.
+///
+/// The public face of the `E017` rule, so a caller that wants to reject a bad
+/// value *before* writing it (the MCP `knx_set_parameter` tool) uses exactly the
+/// same check the validator applies afterwards.
+pub fn parameter_value_error(kind: &ParamKind, value: &str) -> Option<String> {
+    value_error(kind, value)
 }
 
 /// Checks a value against a parameter kind, returning an error message if it is
@@ -668,6 +687,7 @@ mod tests {
                 name: "dev".to_string(),
                 description: None,
                 location: None,
+                replaced: None,
                 product: None,
                 channels: BTreeMap::new(),
                 parameters: BTreeMap::new(),
@@ -996,6 +1016,7 @@ mod tests {
             name: "dev".to_string(),
             description: None,
             location: None,
+            replaced: None,
             product: Some(Product {
                 manufacturer: None,
                 manufacturer_ref: None,

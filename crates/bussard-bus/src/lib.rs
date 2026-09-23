@@ -43,7 +43,7 @@
 pub mod ops;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, Ordering};
 use std::time::{Duration, Instant};
 
 use bussard_transport::cemi::{CemiFrame, MessageCode};
@@ -78,6 +78,21 @@ pub struct InboundFrame {
     pub frame: TimestampedFrame,
     /// The cEMI message code the frame arrived with.
     pub message_code: MessageCode,
+}
+
+/// Set when any bus actor in this process had a connect refused with
+/// `E_NO_MORE_CONNECTIONS` (issue #105).
+static NO_FREE_TUNNEL_SEEN: AtomicBool = AtomicBool::new(false);
+
+/// Whether any bus actor in this process has seen the gateway refuse a connect
+/// because every tunnelling slot was taken (`E_NO_MORE_CONNECTIONS`).
+///
+/// The actor retries such a refusal like any other connect failure, so the
+/// command on top only sees a bus that never came up. This process-wide flag
+/// lets the CLI tell a full interface apart from a dead network when it reports
+/// the failure (a distinct message and exit code).
+pub fn no_free_tunnel_seen() -> bool {
+    NO_FREE_TUNNEL_SEEN.load(Ordering::Relaxed)
 }
 
 /// The live connection status, as observed on a [`BusHandle`].
@@ -509,7 +524,15 @@ impl Actor {
                     }
                 }
                 Err(err) => {
-                    tracing::warn!("bus connect failed: {err}; retrying in {backoff:?}");
+                    if matches!(err, TransportError::NoMoreConnections) {
+                        NO_FREE_TUNNEL_SEEN.store(true, Ordering::Relaxed);
+                        tracing::warn!(
+                            "the gateway has no free tunnelling connection (E_NO_MORE_CONNECTIONS); \
+                             another client holds every slot. Retrying in {backoff:?}"
+                        );
+                    } else {
+                        tracing::warn!("bus connect failed: {err}; retrying in {backoff:?}");
+                    }
                     self.shared.set_state(BusState::Reconnecting);
                 }
             }

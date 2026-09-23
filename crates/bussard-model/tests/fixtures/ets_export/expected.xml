@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<GroupAddress-Export xmlns="http://knx.org/xml/ga-export/01">
+  <GroupRange Name="Light" RangeStart="2048" RangeEnd="4095">
+    <GroupRange Name="Ground floor" RangeStart="2048" RangeEnd="2303">
+      <GroupAddress Name="Ground floor Kitchen Light Switch" Address="1/0/0" Description="" DPTs="DPST-1-1" Security="Auto" />
+      <GroupAddress Name="Ground floor Kitchen Light Switch status" Address="1/0/3" Description="Feedback from the actuator" DPTs="DPST-1-1" Security="Auto" />
+    </GroupRange>
+  </GroupRange>
+  <GroupRange Name="Safety" RangeStart="4096" RangeEnd="6143">
+    <GroupRange Name="Alarms" RangeStart="4096" RangeEnd="4351">
+      <GroupAddress Name="Wind alarm" Address="2/0/0" Description="[protected] Roof &amp; facade" DPTs="DPST-1-5" Security="Auto" />
+      <GroupAddress Name="Untyped scene trigger" Address="2/0/1" Description="" DPTs="" Security="Auto" />
+    </GroupRange>
+  </GroupRange>
+</GroupAddress-Export>

@@ -1,0 +1,5 @@
+groups:
+  "0/0/4":
+    name: Porch light
+    dpt: "1.001"
+    description: Switched by the hallway rocker

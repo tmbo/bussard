@@ -274,6 +274,13 @@ struct DeviceState {
     /// an older/simpler device that does not implement authorize. The tool must
     /// tolerate this and proceed (the gate is also open in this mode).
     authorize_unsupported: bool,
+    /// If set, the device keeps answering its last segment's `PID_MCB_TABLE`
+    /// entry even while the object is not `Loaded` — an app-unload or an
+    /// interrupted load flips the load state without erasing the stored image.
+    mcb_survives_unload: bool,
+    /// Count of `PID_OBJECT_TYPE` reads, so a test can assert the flash reused a
+    /// pre-flight's object table instead of walking it again.
+    object_type_reads: usize,
     /// Count of `A_Authorize_Request` frames seen, so a test can assert the tool
     /// authorized on each connection window.
     authorizes_seen: usize,
@@ -667,10 +674,11 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
     }
 
     if req_apci == A_PROPERTY_VALUE_READ {
-        let Some((oi, pid, _count, start)) = decode_prop_header(data) else {
+        let Some((oi, pid, req_count, start)) = decode_prop_header(data) else {
             return Reaction::Nak;
         };
         if pid == PID_OBJECT_TYPE {
+            s.object_type_reads += 1;
             return match s.object_types.get(usize::from(oi)) {
                 Some(ot) => Reaction::Answer(
                     A_PROPERTY_VALUE_RESPONSE,
@@ -719,7 +727,22 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
             // 8-octet PDT_GENERIC_08 entry
             // `[size u32 BE][crc_ctrl=0x00][access=0xFF][crc16 u16 BE]`, valid
             // only while Loaded. A wrong tool-side CRC must NOT match this.
-            if loadable_object_index(&s) != Some(oi) || s.app_load_state != LS_LOADED {
+            //
+            // ONE entry per request. A real Jung 3361-1MWW refused a
+            // `count=6` read of PID 27 with a zero-count response (issue #89
+            // campaign, 1.1.36); ETS reads the entries one at a time, `count=1`
+            // at index 1..=6. Several 8-octet entries do not fit a
+            // standard-frame APDU and a real device does not partially answer,
+            // so a multi-element read is refused whole here too.
+            if req_count > 1 {
+                return Reaction::Answer(
+                    A_PROPERTY_VALUE_RESPONSE,
+                    prop_response(oi, pid, 0, start, &[]),
+                );
+            }
+            if loadable_object_index(&s) != Some(oi)
+                || (s.app_load_state != LS_LOADED && !s.mcb_survives_unload)
+            {
                 return Reaction::Answer(
                     A_PROPERTY_VALUE_RESPONSE,
                     prop_response(oi, pid, 0, start, &[]),
@@ -1297,6 +1320,8 @@ fn fresh_device(fault: Fault) -> Shared {
         authorized: false,
         grant_level: 0,
         authorize_unsupported: false,
+        mcb_survives_unload: false,
+        object_type_reads: 0,
         authorizes_seen: 0,
         last_authorize_payload: Vec::new(),
         prop_writes: HashMap::new(),
@@ -1729,6 +1754,64 @@ async fn flash_skips_restream_when_resident_mcb_matches() {
         "a resident-MCB match must stream ZERO body bytes"
     );
     handle.abort();
+}
+
+#[tokio::test]
+async fn test_flash_full_streams_when_resident_mcb_matches_but_object_not_loaded()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Differential download guard: the device still describes the exact image
+    // bussard would stream (MCB size+CRC match) but the object is NOT Loaded —
+    // an interrupted flash or an app-unload leaves the stored bytes intact while
+    // the load state says Unloaded. Skipping the re-load here would also skip the
+    // StartLoading/LoadCompleted that bring the object back, so the flash must
+    // full-stream and end Loaded.
+    let image = [0u8, 1, 2, 3, 4, 5];
+    let state = preloaded_device(&image);
+    {
+        let mut s = state.lock().map_err(|e| e.to_string())?;
+        s.app_load_state = LS_UNLOADED;
+        s.mcb_survives_unload = true;
+    }
+    let (mut bus, state, handle) = setup_device(state).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
+
+    let app = app_with_image_prop();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions {
+            skip_matching_mcb: true,
+            ..Default::default()
+        },
+        |_| {},
+    )
+    .await?;
+    let _ = session.into_disconnect().await;
+
+    assert!(
+        outcome.ok(),
+        "a not-Loaded object must be re-loaded: {outcome:?}"
+    );
+    let s = state.lock().map_err(|e| e.to_string())?;
+    assert!(
+        s.memory_writes_seen > 0,
+        "an object that is not Loaded must full-stream even when its MCB matches"
+    );
+    handle.abort();
+    Ok(())
 }
 
 #[tokio::test]
@@ -3031,7 +3114,11 @@ async fn flash_cycles_l4_connection_before_the_exchange_budget_and_reaches_loade
             &BTreeMap::new(),
         )
         .unwrap();
-        let connector = LeaseConnector::plain(handle.clone(), target, source, None);
+        // Fast L4 timeouts: the drop the mock forces below is only observed as
+        // silence, so with the default 3 s ACK budget x repetitions each
+        // forced drop would cost seconds of pure waiting (~24 s for the test).
+        let connector =
+            LeaseConnector::plain(handle.clone(), target, source, Some(fast_timeouts()));
         let mut session = Session::open_with_key(connector, None).await.unwrap();
         let outcome = flash(
             &mut session,
@@ -3079,7 +3166,9 @@ async fn flash_cycles_l4_connection_before_the_exchange_budget_and_reaches_loade
             &BTreeMap::new(),
         )
         .unwrap();
-        let connector = LeaseConnector::plain(handle.clone(), target, source, None);
+        // Fast L4 timeouts, as in the first half.
+        let connector =
+            LeaseConnector::plain(handle.clone(), target, source, Some(fast_timeouts()));
         let mut session = Session::open_with_key(connector, None).await.unwrap();
         let outcome = flash(
             &mut session,
@@ -3202,6 +3291,80 @@ async fn authorize_is_cached_and_not_repeated_on_a_device_without_authorize() {
         std::env::remove_var("BUSSARD_FLASH_RECONNECT_EXCHANGES");
         std::env::remove_var("BUSSARD_FLASH_REBOOT_WAIT_MS");
     }
+}
+
+#[tokio::test]
+async fn test_open_with_facts_reuses_the_preflight_table_and_authorize_verdict()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The CLI's read-only pre-flight already walked PID_OBJECT_TYPE and found the
+    // device does not implement authorize. A session opened with those facts
+    // must neither walk the object table again nor re-present the key, and the
+    // flash must still verify.
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let (handle, state, gw) = setup_bus(Fault::None).await;
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .authorize_unsupported = true;
+    let source = bussard_bus::ops::group_source(&handle);
+
+    // Phase A, as the CLI runs it: its own connection, table walk, disconnect.
+    let mut preflight = LeaseConnector::plain(handle.clone(), target, source, None);
+    let mut l4 = bussard_download::Connector::connect(&mut preflight).await?;
+    let object_table = bussard_mgmt::probe_object_types(&mut l4).await?;
+    let _ = l4.disconnect().await;
+    let (reads_before, authorizes_before) = {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        (s.object_type_reads, s.authorizes_seen)
+    };
+    assert!(reads_before > 0, "the pre-flight walked the table");
+
+    let facts = bussard_download::DeviceFacts {
+        object_table,
+        authorize: Some(bussard_mgmt::AuthorizeOutcome::Unsupported {
+            detail: "pre-flight: no answer".to_string(),
+        }),
+        max_apdu: None,
+    };
+    let app = fabricated_app();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    let connector = LeaseConnector::plain(handle.clone(), target, source, None);
+    let mut session = Session::open_with_facts(connector, None, facts).await?;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await?;
+    let _ = session.into_disconnect().await;
+    assert!(
+        outcome.ok(),
+        "a facts-seeded flash must verify: {outcome:?}"
+    );
+
+    {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        assert_eq!(
+            s.object_type_reads, reads_before,
+            "the write phase must not walk the object table again"
+        );
+        assert_eq!(
+            s.authorizes_seen, authorizes_before,
+            "a device known not to implement authorize must not be asked again"
+        );
+    }
+    let _ = handle.close().await;
+    gw.abort();
+    Ok(())
 }
 
 /// A single-application System B app whose code segment is 256 bytes of 0xFF, so
@@ -4714,4 +4877,113 @@ async fn flash_with_a_wrong_tool_key_is_refused() {
         assert!(s.memory.is_empty(), "nothing may be written: {err:?}");
     }
     gw.abort();
+}
+
+// --- Parameter-level plan (issue #109) ---------------------------------------
+
+/// Flashes the vendor defaults onto the mock, then plans a flash that changes the
+/// one parameter: the read-back must decode the device's current value and the
+/// parameter plan must show exactly one line, old value to new.
+#[tokio::test]
+async fn test_param_plan_one_changed_parameter_on_mock_device() {
+    let (mut bus, _state, handle) = setup(Fault::None).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+    let app = fabricated_app();
+
+    // 1. The device carries the vendor-default application (parameter = 7).
+    let default_plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    let mut session = authed_session(l4).await;
+    let outcome = flash(
+        &mut session,
+        &default_plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .unwrap();
+    let _ = session.into_disconnect().await;
+    assert!(outcome.ok(), "the default flash must verify: {outcome:?}");
+
+    // 2. The device file now changes the one parameter to 42.
+    let overrides = BTreeMap::from([("P-0_R-1".to_string(), "42".to_string())]);
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &overrides,
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+
+    // 3. Read the current parameter memory back (read-only) and diff.
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    l4.authorize_or_fail(0xFFFF_FFFF).await.unwrap();
+    let current = bussard_download::read_current_parameter_memory(&mut l4, &plan).await;
+    let _ = l4.disconnect().await;
+    assert_eq!(
+        current.get("M-1_A-1_RS-2").map(Vec::as_slice),
+        Some(&[7u8][..]),
+        "the read-back must return the parameter segment the device holds"
+    );
+
+    let params = bussard_download::param_plan(&app, &overrides, &BTreeMap::new(), &current);
+    assert_eq!(params.changes.len(), 1, "changes: {:?}", params.changes);
+    assert_eq!(params.changes[0].line(), "thr: 7 to 42");
+    assert_eq!(params.unknown, 0);
+    handle.abort();
+}
+
+/// On a factory-fresh mock nothing is loaded, so nothing is read back and the
+/// one changed parameter is listed with an unknown current value.
+#[tokio::test]
+async fn test_param_plan_fresh_mock_device_reports_unknown() {
+    let (mut bus, _state, handle) = setup(Fault::None).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+    let app = fabricated_app();
+    let overrides = BTreeMap::from([("P-0_R-1".to_string(), "42".to_string())]);
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &overrides,
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    l4.authorize_or_fail(0xFFFF_FFFF).await.unwrap();
+    let current = bussard_download::read_current_parameter_memory(&mut l4, &plan).await;
+    let _ = l4.disconnect().await;
+    assert!(
+        current.is_empty(),
+        "a fresh device has no segment to read: {current:?}"
+    );
+
+    let params = bussard_download::param_plan(&app, &overrides, &BTreeMap::new(), &current);
+    assert_eq!(params.changes.len(), 1);
+    assert_eq!(params.changes[0].old, bussard_download::ParamValue::Unknown);
+    assert_eq!(params.unknown, 1);
+    handle.abort();
 }

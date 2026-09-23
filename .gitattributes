@@ -1,0 +1,11 @@
+# Check out every text file with LF line endings on every platform.
+# Several tests compare committed fixtures and docs byte for byte with
+# generated text (viz fixture-model.json, golden files, the SAFETY.md mask
+# table), and a CRLF checkout on Windows made those fail in CI.
+* text=auto eol=lf
+*.png binary
+*.knxprod binary
+*.knxproj binary
+*.pcap binary
+*.pcapng binary
+*.db binary

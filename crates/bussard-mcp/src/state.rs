@@ -64,6 +64,9 @@ pub struct BusStatus {
     /// Wired once by the runner after the actor is spawned. Cheap to share.
     handle: Arc<OnceLock<BusHandle>>,
     transport: TransportKind,
+    /// The tunnelling gateway's control endpoint, when the transport is a
+    /// tunnel. Used by `knx_audit` to ask the interface for its tunnel slots.
+    gateway: Option<std::net::SocketAddrV4>,
 }
 
 impl BusStatus {
@@ -72,6 +75,7 @@ impl BusStatus {
         BusStatus {
             handle: Arc::new(OnceLock::new()),
             transport,
+            gateway: None,
         }
     }
 
@@ -82,7 +86,19 @@ impl BusStatus {
         BusStatus {
             handle: Arc::new(cell),
             transport,
+            gateway: None,
         }
+    }
+
+    /// Records the tunnelling gateway endpoint (builder style).
+    pub fn with_gateway(mut self, gateway: Option<std::net::SocketAddrV4>) -> Self {
+        self.gateway = gateway;
+        self
+    }
+
+    /// The tunnelling gateway endpoint, if one is configured.
+    pub fn gateway(&self) -> Option<std::net::SocketAddrV4> {
+        self.gateway
     }
 
     /// Wires the bus handle once (called by the runner after spawning the
@@ -183,6 +199,10 @@ pub struct SharedState {
     /// Whether bus writes are allowed (registers `knx_write_group`). Mutually
     /// exclusive with `passive`.
     pub allow_writes: bool,
+    /// Whether the model-edit tools are withheld (`--no-model-edits`). They
+    /// write YAML files behind a history snapshot and never touch the bus, so
+    /// they are registered by default.
+    pub no_model_edits: bool,
     /// The read rate limiter (shared by reads and writes).
     pub read_limiter: ReadLimiter,
     /// Optional capture database path, used to extend `knx_recent_telegrams`

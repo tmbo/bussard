@@ -4,7 +4,9 @@
 //! handshake on its stdin/stdout, and asserts:
 //!
 //! - stdout carries **only** valid JSON-RPC (nothing else may print there), and
-//! - `tools/list` returns exactly the expected tool set (7 in `--passive`).
+//! - `tools/list` returns exactly the expected tool set (13 in `--passive`: the
+//!   nine model/bus read tools, the two file-only history tools and the two
+//!   bundle/diff tools).
 //!
 //! This is the stdout-purity guard the design brief calls for.
 
@@ -29,7 +31,7 @@ fn write_model(dir: &std::path::Path) {
 }
 
 #[test]
-fn mcp_stdio_handshake_is_pure_json_and_lists_seven_passive_tools() {
+fn mcp_stdio_handshake_is_pure_json_and_lists_the_passive_tools() {
     let tmp = std::env::temp_dir().join(format!("bussard-mcp-stdio-{}", std::process::id()));
     let knx = tmp.join("knx");
     write_model(&knx);
@@ -39,6 +41,7 @@ fn mcp_stdio_handshake_is_pure_json_and_lists_seven_passive_tools() {
         .args(["mcp", "--dir"])
         .arg(&knx)
         .arg("--passive")
+        .arg("--no-model-edits")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -116,8 +119,14 @@ fn mcp_stdio_handshake_is_pure_json_and_lists_seven_passive_tools() {
     let mut tools = tools.expect("received a tools/list response");
     tools.sort();
     let mut expected = vec![
+        "knx_audit",
+        "knx_describe_change",
+        "knx_diff_project",
+        "knx_export_bundle",
         "knx_get_device",
         "knx_get_group",
+        "knx_history",
+        "knx_infer_group",
         "knx_model_lookup",
         "knx_project_summary",
         "knx_recent_telegrams",
@@ -125,7 +134,11 @@ fn mcp_stdio_handshake_is_pure_json_and_lists_seven_passive_tools() {
         "knx_wait_for_telegram",
     ];
     expected.sort_unstable();
-    assert_eq!(tools, expected, "passive mode exposes exactly 7 tools");
+    assert_eq!(
+        tools, expected,
+        "passive mode exposes exactly 13 tools: no bus tools, and no model edits \
+         because this server runs with --no-model-edits"
+    );
 
     let _ = std::fs::remove_dir_all(&tmp);
 }

@@ -1,0 +1,8 @@
+address: "1.1.7"
+name: Bathroom thermostat
+location:
+  floor: OG
+  room: Flur
+product:
+  manufacturer: Jung
+  order_number: "2118REGHE"

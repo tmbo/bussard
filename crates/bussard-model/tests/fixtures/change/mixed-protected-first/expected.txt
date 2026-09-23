@@ -1,0 +1,3 @@
+Rocker 1 on Hallway rocker now listens to Wind alarm (3/2/0). This group address is protected.
+Device 1.1.5 is now called "Hallway rocker" (was "Hallway push button").
+Rocker 1 on Hallway rocker now switches Porch light (0/0/4).

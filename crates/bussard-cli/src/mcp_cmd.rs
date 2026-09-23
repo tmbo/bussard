@@ -16,6 +16,10 @@ use crate::conn_cmd::{ConnOverrides, enforce_write_gate, resolve_config};
 
 /// Runs `bussard mcp`.
 ///
+/// The model-edit tools (`knx_set_group`, `knx_add_link`, …) are registered
+/// unless `--no-model-edits` is passed: they write YAML files behind a history
+/// snapshot and never touch the bus, so they are safe in every tier.
+///
 /// With `--allow-writes` the server registers `knx_write_group`, so an LLM can
 /// put telegrams on the bus for the whole session. That goes through the same
 /// non-loopback gate as `bussard write` (issue #74), applied once here at
@@ -23,14 +27,32 @@ use crate::conn_cmd::{ConnOverrides, enforce_write_gate, resolve_config};
 /// unless the operator passed `--allow-remote-gateway` or set
 /// `BUSSARD_ALLOW_REAL_GATEWAY=1`. A read-only or `--passive` server never
 /// transmits, so it is allowed against any gateway.
+/// The server's tier flags, bundled so the subcommand's five booleans do not
+/// become five positional arguments.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct McpModes {
+    /// Never transmit on the bus.
+    pub passive: bool,
+    /// Register `knx_write_group`.
+    pub allow_writes: bool,
+    /// Permit `--allow-writes` against a non-loopback gateway.
+    pub allow_remote_gateway: bool,
+    /// Omit the model-edit tools.
+    pub no_model_edits: bool,
+}
+
 pub fn run(
     dir: &Path,
     overrides: ConnOverrides,
-    passive: bool,
-    allow_writes: bool,
-    allow_remote_gateway: bool,
+    modes: McpModes,
     capture_db: Option<PathBuf>,
 ) -> anyhow::Result<ExitCode> {
+    let McpModes {
+        passive,
+        allow_writes,
+        allow_remote_gateway,
+        no_model_edits,
+    } = modes;
     if !dir.exists() {
         anyhow::bail!(
             "model directory {} not found; the MCP server needs a loaded model (pass --dir)",
@@ -54,6 +76,7 @@ pub fn run(
         connection,
         passive,
         allow_writes,
+        no_model_edits,
         capture_db,
     };
 

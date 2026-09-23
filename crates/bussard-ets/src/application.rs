@@ -430,6 +430,10 @@ pub struct Parameter {
     pub default: Option<String>,
     /// The `Access` attribute (`None`/`Read`/`ReadWrite`).
     pub access: Option<String>,
+    /// The `SuffixText` attribute: the unit ETS shows after the value field
+    /// (`"s"`, `"min"`, `"\u{b0}C"`). It is display metadata, not part of the
+    /// encoding, and is absent on most parameters.
+    pub suffix_text: Option<String>,
     /// The memory location this parameter's value occupies, if any.
     pub memory: Option<Memory>,
 }
@@ -643,6 +647,15 @@ pub enum LoadOp {
         address: Option<u32>,
         /// Declared size in bytes.
         size: Option<u32>,
+        /// `Access` attribute: the segment's access-attribute octet as ETS puts
+        /// it into the allocation record (`242` = `0xF2`, `243` = `0xF3` on the
+        /// Jung System 7 apps).
+        access: Option<u32>,
+        /// `MemType` attribute: `2` = RAM, `3` = EEPROM.
+        mem_type: Option<u32>,
+        /// `SegFlags` attribute: `128` marks a checksum-controlled segment,
+        /// `0` a segment the application rewrites at runtime.
+        seg_flags: Option<u32>,
     },
     /// `<LdCtrlWriteRelMem …>`: write into relative (parameter) memory.
     WriteRelMem {
@@ -677,6 +690,9 @@ pub enum LoadOp {
         /// The value bytes to write, decoded from the hex `InlineData` attribute.
         /// `None` for a bare op that carries no value.
         inline_data: Option<Vec<u8>>,
+        /// `StartElement`: the 1-based element the value is written from
+        /// (absent = element 1). ETS writes one element per request from here.
+        start_element: Option<u32>,
     },
     /// `<LdCtrlCompareProp …>`: read an interface-object property and compare it
     /// against expected data — the verify twin of [`LoadOp::WriteProp`]. The
@@ -1493,6 +1509,7 @@ fn insert_parameter_start(app: &mut ApplicationProgram, m: &Attrs) -> Option<Str
             parameter_type: get(m, b"ParameterType").map(str::to_string),
             default: get(m, b"Value").map(str::to_string),
             access: get(m, b"Access").map(str::to_string),
+            suffix_text: get(m, b"SuffixText").map(str::to_string),
             memory: None,
         },
     );
@@ -1779,6 +1796,9 @@ pub(crate) fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m
             lsm_idx: u(b"LsmIdx"),
             address: u(b"Address"),
             size: u(b"Size"),
+            access: u(b"Access"),
+            mem_type: u(b"MemType"),
+            seg_flags: u(b"SegFlags"),
         },
         b"LdCtrlWriteRelMem" => LoadOp::WriteRelMem {
             obj_idx: u(b"ObjIdx"),
@@ -1795,6 +1815,7 @@ pub(crate) fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m
             obj_type: u(b"ObjType"),
             prop_id: u(b"PropId"),
             inline_data: get(m, b"InlineData").and_then(decode_hex_bytes),
+            start_element: u(b"StartElement"),
         },
         b"LdCtrlCompareProp" => LoadOp::CompareProp {
             obj_idx: u(b"ObjIdx"),

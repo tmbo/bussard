@@ -24,9 +24,11 @@
 
 pub mod apply;
 pub mod apply_sys7;
+pub mod backup;
 pub mod compute;
 pub mod compute_sys7;
 pub mod flash;
+pub mod param_plan;
 pub mod plan;
 pub mod preflight;
 pub mod sweep;
@@ -38,6 +40,12 @@ pub use apply::{
 pub use apply_sys7::{
     SYS7_ADDRESS_LSM, SYS7_ASSOCIATION_LSM, Sys7ApplyError, Sys7TableImages, Sys7VerifyOutcome,
     apply_sys7_tables, sys7_table_images,
+};
+pub use backup::{
+    AssociationEntry, BackupError, BackupManifest, BackupStatus, DeviceBackup, ManifestEntry,
+    ParameterMemory, ParameterStatus, ResolvedEntry, Sys7Detail, backups_root, find_device_backup,
+    has_installation_backup, read_device_backup, read_manifest, write_device_backup,
+    write_manifest,
 };
 pub use compute::{
     ChannelConfig, DesiredTables, GroupObjectDescriptor, Priority, app_program_version,
@@ -51,9 +59,14 @@ pub use compute_sys7::{
     sys7_association_table, sys7_config_byte, sys7_group_object_table, sys7_group_objects,
 };
 pub use flash::{
-    AppIdentity, Connector, FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, ImageRef,
-    PlanError, Progress, Session, SingleConnector, Sys7Context, discover_application_object, flash,
-    plan_flash, plan_flash_sys7_with_hawk, select_application, sys7_profile_from_hawk, trace,
+    AppIdentity, Connector, DeviceFacts, FlashOptions, FlashOutcome, FlashPlan, FlashStep,
+    ImageKind, ImageRef, PlanError, Progress, Session, SingleConnector, Sys7Context,
+    discover_application_object, flash, plan_flash, plan_flash_sys7_with_hawk, select_application,
+    sys7_profile_from_hawk, trace,
+};
+pub use param_plan::{
+    CurrentMemory, ParamChange, ParamPlan, ParamValue, SYS7_NOTE, param_plan,
+    read_current_parameter_memory,
 };
 pub use plan::{LoadStep, ObjectGa, PlanReport, plan};
 pub use preflight::{

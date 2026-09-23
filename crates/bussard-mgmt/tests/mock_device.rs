@@ -130,6 +130,10 @@ fn knxnet_frame(service: ServiceType, body: &[u8]) -> Vec<u8> {
 /// The gateway's own outbound tunneling sequence (for pushing indications back
 /// to the client) is tracked in `gw_seq`. Each device tracks its own KNX TPCI
 /// receive/send sequence numbers.
+///
+/// The loop only returns after 5 s of silence, so tests end with
+/// `gw_task.abort()` rather than awaiting the task: awaiting it (even
+/// under a 1 s timeout) added that wait to every test.
 async fn run_mock(gw: UdpSocket, devices: Vec<MockDevice>) {
     let mut gw_seq: u8 = 0;
     // Per-device KNX send sequence (for the response NDTs the device emits).
@@ -596,7 +600,7 @@ async fn device_read_over_a_lease_and_group_subscriber_both_see_frames() {
     );
 
     let _ = handle.close().await;
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -637,7 +641,7 @@ async fn device_descriptor_property_and_memory() {
     assert_eq!(mem, vec![0xDE, 0xAD, 0xBE, 0xEF]);
 
     dev.disconnect().await.unwrap();
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -688,7 +692,7 @@ async fn max_apdu_negotiation_scales_memory_chunk() {
         l4.disconnect().await.unwrap();
     }
 
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -724,7 +728,7 @@ async fn retransmitted_previous_response_does_not_desync() {
     }
 
     dev.disconnect().await.unwrap();
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -750,7 +754,7 @@ async fn wraparound_across_many_requests() {
         assert_eq!(manu, vec![0x00, 0x83]);
     }
     dev.disconnect().await.unwrap();
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -784,7 +788,7 @@ async fn folded_ack_device_still_delivers_response() {
     );
 
     dev.disconnect().await.unwrap();
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -806,7 +810,7 @@ async fn nak_device_is_present_but_refuses() {
     let err = dev.device_descriptor().await.unwrap_err();
     assert!(matches!(err, MgmtError::Nak { .. }), "got {err:?}");
     assert!(err.device_present(), "a NAK means the device is present");
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -846,7 +850,7 @@ async fn malformed_descriptor_error_carries_raw_hex() {
         }
         other => panic!("expected MalformedResponse, got {other:?}"),
     }
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -891,7 +895,7 @@ async fn descriptor_echo_is_named_in_the_error() {
         }
         other => panic!("expected MalformedResponse, got {other:?}"),
     }
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -921,7 +925,7 @@ async fn silent_device_is_absent() {
     let err = dev.device_descriptor().await.unwrap_err();
     assert!(matches!(err, MgmtError::NoResponse { .. }), "got {err:?}");
     assert!(!err.device_present(), "silence means the device is absent");
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -963,7 +967,7 @@ async fn describe_property_reads_one_descriptor() {
     assert_eq!(desc.write_level, 15);
 
     dev.disconnect().await.unwrap();
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -1014,7 +1018,7 @@ async fn describe_object_enumerates_all_properties_and_terminates() {
     }
 
     dev.disconnect().await.unwrap();
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }
 
 #[tokio::test]
@@ -1040,5 +1044,5 @@ async fn describe_object_on_device_without_descriptions_is_empty() {
     assert!(props.is_empty(), "no descriptions → empty enumeration");
 
     dev.disconnect().await.unwrap();
-    let _ = tokio::time::timeout(Duration::from_secs(1), gw_task).await;
+    gw_task.abort();
 }

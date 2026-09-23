@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::address::{GroupAddress, IndividualAddress};
 use crate::dpt::Dpt;
 use crate::flags::Flags;
+use crate::lint::LintConfig;
 
 /// The default routing multicast endpoint (`224.0.23.12:3671`).
 pub const DEFAULT_MULTICAST: &str = "224.0.23.12:3671";
@@ -35,6 +36,10 @@ pub struct BussardConfig {
     /// Connection settings.
     #[serde(default)]
     pub connection: Connection,
+    /// Opt-in topology and convention lint rules (issue #102). Absent means the
+    /// `L0xx` lints do not run, so an existing model gains no new warnings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lint: Option<LintConfig>,
 }
 
 /// The `connection` block of `bussard.yaml`.
@@ -154,6 +159,16 @@ pub struct Device {
     /// Physical location.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<Location>,
+    /// When this device was last replaced by `bussard replace`, as an RFC3339
+    /// UTC date-time (issue #98).
+    ///
+    /// A replacement swaps the physical hardware behind an individual address.
+    /// Nothing else in the model changes, so without this field the history of a
+    /// device that died and was swapped is invisible. Absent on every device that
+    /// was never replaced, and skipped on serialization, so existing device files
+    /// round-trip byte-identically.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaced: Option<String>,
     /// Product identity (for matching `.knxprod` in later phases).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub product: Option<Product>,

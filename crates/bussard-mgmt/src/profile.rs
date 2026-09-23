@@ -258,7 +258,122 @@ impl MaskProfile {
             None
         }
     }
+    /// What bussard can do with a device carrying this mask.
+    ///
+    /// This is the **single source of truth** for mask support: `plan`, `apply`,
+    /// `flash` and `reconstruct` all refuse through it, `bussard audit` renders
+    /// it as a column, and [`capability_table`] renders it as the table in
+    /// `docs/SAFETY.md` (a test asserts the doc matches this function).
+    pub fn capabilities(self) -> MaskCapabilities {
+        match self.family {
+            MaskFamily::SystemB => MaskCapabilities {
+                plan_apply: true,
+                flash: true,
+                describe: true,
+                reconstruct: true,
+                note: "tables live in device-allocated segments found via PID_TABLE_REFERENCE; \
+                       full read and write support",
+            },
+            MaskFamily::System7 => MaskCapabilities {
+                plan_apply: true,
+                flash: true,
+                describe: true,
+                reconstruct: true,
+                note: "memory-mapped tables (default 0x4000 / 0x4201), A_Authorize required; \
+                       line-mode `reconstruct --line` records a stub instead of tables",
+            },
+            MaskFamily::System2 => MaskCapabilities {
+                plan_apply: false,
+                flash: false,
+                describe: true,
+                reconstruct: false,
+                note: "classified but unsupported; program it with ETS",
+            },
+            MaskFamily::System1 => MaskCapabilities {
+                plan_apply: false,
+                flash: false,
+                describe: true,
+                reconstruct: false,
+                note: "classified but unsupported; program it with ETS",
+            },
+            MaskFamily::Unknown => MaskCapabilities {
+                plan_apply: false,
+                flash: false,
+                describe: true,
+                reconstruct: false,
+                note: "mask not recognised; program it with ETS",
+            },
+        }
+    }
 }
+
+/// What bussard can do with one mask version: the capability row behind every
+/// mask refusal and the `docs/SAFETY.md` support table.
+///
+/// Build one with [`MaskProfile::capabilities`]. `describe` is `true` for every
+/// mask because `bussard describe` enumerates interface objects and property
+/// descriptions on any device that answers, without a mask gate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MaskCapabilities {
+    /// `bussard plan` can read the live link tables and `bussard apply` can
+    /// rewrite them.
+    pub plan_apply: bool,
+    /// `bussard flash` can download an application program.
+    pub flash: bool,
+    /// `bussard describe` can enumerate the device's interface objects.
+    pub describe: bool,
+    /// Single-device `bussard reconstruct` can read the live tables back.
+    pub reconstruct: bool,
+    /// A short human note for the support table; never contains a `|`, so it is
+    /// safe to render inside a Markdown table cell.
+    pub note: &'static str,
+}
+
+impl MaskCapabilities {
+    /// A compact "bussard can: ..." summary for a report column.
+    ///
+    /// Lists the write-capable commands first, then the always-available
+    /// `describe`; a mask with no table support renders as `describe only`.
+    pub fn summary(self) -> String {
+        let mut parts: Vec<&str> = Vec::new();
+        if self.plan_apply {
+            parts.push("plan/apply");
+        }
+        if self.flash {
+            parts.push("flash");
+        }
+        if self.reconstruct {
+            parts.push("reconstruct");
+        }
+        if self.describe {
+            parts.push("describe");
+        }
+        if parts.len() == 1 {
+            return format!("{} only", parts[0]);
+        }
+        parts.join(", ")
+    }
+}
+
+/// Every mask version bussard classifies, in ascending order, with its
+/// capabilities.
+///
+/// This is what `docs/SAFETY.md`'s "Supported device masks" table is rendered
+/// from and what `bussard audit` groups devices by. Adding a mask to
+/// [`MaskProfile::from_mask`] means adding it here too, or the doc test fails.
+pub fn capability_table() -> Vec<(u16, MaskCapabilities)> {
+    KNOWN_MASKS
+        .iter()
+        .map(|&mask| (mask, MaskProfile::from_mask(mask).capabilities()))
+        .collect()
+}
+
+/// Every mask [`MaskProfile::from_mask`] classifies into a named family, in
+/// ascending order.
+const KNOWN_MASKS: &[u16] = &[
+    0x0010, 0x0011, 0x0012, 0x0013, 0x0020, 0x0021, 0x0025, 0x0300, 0x0310, 0x0311, 0x0700, 0x0701,
+    0x0705, 0x07B0, 0x27B0, 0x57B0,
+];
 
 /// How a System 7 device realises its load-state machines (the single most
 /// load-bearing System 7 design decision — `[system7-spec §5]`).
@@ -473,6 +588,60 @@ mod tests {
         assert_eq!(MaskProfile::from_mask(0x0025).family(), MaskFamily::System1);
         assert_eq!(MaskProfile::from_mask(0x0300).family(), MaskFamily::System2);
         assert_eq!(MaskProfile::from_mask(0x1234).family(), MaskFamily::Unknown);
+    }
+
+    #[test]
+    fn test_capabilities_match_the_families() {
+        for mask in [0x07B0u16, 0x27B0, 0x57B0] {
+            let caps = MaskProfile::from_mask(mask).capabilities();
+            assert!(caps.plan_apply && caps.flash && caps.describe && caps.reconstruct);
+        }
+        for mask in [0x0700u16, 0x0701, 0x0705] {
+            let caps = MaskProfile::from_mask(mask).capabilities();
+            assert!(caps.plan_apply && caps.flash && caps.describe && caps.reconstruct);
+        }
+        for mask in [0x0012u16, 0x0021, 0x0300, 0x1234] {
+            let caps = MaskProfile::from_mask(mask).capabilities();
+            assert!(!caps.plan_apply, "{mask:04X}");
+            assert!(!caps.flash, "{mask:04X}");
+            assert!(!caps.reconstruct, "{mask:04X}");
+            // `describe` is never mask-gated.
+            assert!(caps.describe, "{mask:04X}");
+            assert_eq!(caps.summary(), "describe only", "{mask:04X}");
+        }
+    }
+
+    #[test]
+    fn test_capability_table_covers_every_known_mask() {
+        let table = capability_table();
+        // Every row classifies into a named family (no Unknown leaked in), and
+        // the masks are unique and ascending.
+        let mut previous = None;
+        for (mask, caps) in &table {
+            let profile = MaskProfile::from_mask(*mask);
+            assert_ne!(
+                profile.family(),
+                MaskFamily::Unknown,
+                "{mask:04X} is in the table but classifies as Unknown"
+            );
+            assert_eq!(*caps, profile.capabilities(), "{mask:04X}");
+            assert!(!caps.note.contains('|'), "{mask:04X} note breaks Markdown");
+            if let Some(prev) = previous {
+                assert!(
+                    prev < *mask,
+                    "the table must ascend ({prev:04X} >= {mask:04X})"
+                );
+            }
+            previous = Some(*mask);
+        }
+        // The three supported System B media and the three System 7 masks are
+        // present; a regression that dropped one would silently shrink the doc.
+        for mask in [0x07B0u16, 0x27B0, 0x57B0, 0x0700, 0x0701, 0x0705] {
+            assert!(
+                table.iter().any(|(m, _)| *m == mask),
+                "{mask:04X} missing from the capability table"
+            );
+        }
     }
 
     #[test]
