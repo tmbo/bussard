@@ -14,6 +14,7 @@ mod import_cmd;
 mod import_product_cmd;
 mod init_cmd;
 mod keyring_cmd;
+mod line_cmd;
 mod mcp_cmd;
 mod monitor_cmd;
 mod plan_cmd;
@@ -335,11 +336,17 @@ enum Command {
         #[arg(long)]
         routing: bool,
     },
-    /// Read a device's live tables and show what `apply` would change.
+    /// Read a device's live tables and show what `apply` would change, or (with
+    /// `--line`) plan every model device on a whole line.
     Plan {
-        /// The device to plan for, e.g. `1.1.4`.
-        #[arg(value_name = "ADDRESS")]
-        address: String,
+        /// The device to plan for, e.g. `1.1.4` (mutually exclusive with
+        /// `--line`).
+        #[arg(value_name = "ADDRESS", required_unless_present = "line")]
+        address: Option<String>,
+        /// Plan every device the model has on this line, e.g. `1.1`, in address
+        /// order, and print one summary table (issue #100).
+        #[arg(long, value_name = "LINE", conflicts_with = "address")]
+        line: Option<String>,
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
@@ -353,11 +360,26 @@ enum Command {
         #[arg(long)]
         routing: bool,
     },
-    /// Apply the model's link tables to a device (plan, confirm, write, verify).
+    /// Apply the model's link tables to a device (plan, confirm, write, verify),
+    /// or (with `--line`) to every model device on a whole line.
     Apply {
-        /// The device to program, e.g. `1.1.4`.
-        #[arg(value_name = "ADDRESS")]
-        address: String,
+        /// The device to program, e.g. `1.1.4` (mutually exclusive with
+        /// `--line`).
+        #[arg(value_name = "ADDRESS", required_unless_present = "line")]
+        address: Option<String>,
+        /// Apply to every device the model has on this line, e.g. `1.1`, in
+        /// address order: one confirmation for the run, one summary table, and a
+        /// resumable state file (issue #100).
+        #[arg(long, value_name = "LINE", conflicts_with = "address")]
+        line: Option<String>,
+        /// Line mode only: emit the JSON summary instead of the table.
+        #[arg(long, requires = "line")]
+        json: bool,
+        /// Line mode only: continue the run recorded in
+        /// `<dir>/captures/apply-line-<line>.json`, skipping the devices it
+        /// already finished.
+        #[arg(long, requires = "line")]
+        resume: bool,
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
@@ -721,18 +743,27 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
         ),
         Command::Plan {
             address,
+            line,
             dir,
             json,
             gateway,
             routing,
-        } => plan_cmd::run(
-            &address,
-            &dir,
-            json,
-            conn_cmd::ConnOverrides { gateway, routing },
-        ),
+        } => {
+            let overrides = conn_cmd::ConnOverrides { gateway, routing };
+            match line {
+                Some(line) => line_cmd::run_plan(&line, &dir, json, overrides),
+                None => {
+                    // clap guarantees ADDRESS is present when --line is absent.
+                    let address = address.expect("clap requires ADDRESS without --line");
+                    plan_cmd::run(&address, &dir, json, overrides)
+                }
+            }
+        }
         Command::Apply {
             address,
+            line,
+            json,
+            resume,
             dir,
             yes,
             keyring,
@@ -740,17 +771,37 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             gateway,
             routing,
             allow_remote_gateway,
-        } => apply_cmd::run(
-            &address,
-            &dir,
-            yes,
-            allow_remote_gateway,
-            secure_key::ToolKeySource {
+        } => {
+            let overrides = conn_cmd::ConnOverrides { gateway, routing };
+            let tool_key_source = secure_key::ToolKeySource {
                 keyring: keyring.as_deref(),
                 tool_key: tool_key.as_deref(),
-            },
-            conn_cmd::ConnOverrides { gateway, routing },
-        ),
+            };
+            match line {
+                Some(line) => line_cmd::run_apply(
+                    &line,
+                    &dir,
+                    yes,
+                    json,
+                    resume,
+                    allow_remote_gateway,
+                    tool_key_source,
+                    overrides,
+                ),
+                None => {
+                    // clap guarantees ADDRESS is present when --line is absent.
+                    let address = address.expect("clap requires ADDRESS without --line");
+                    apply_cmd::run(
+                        &address,
+                        &dir,
+                        yes,
+                        allow_remote_gateway,
+                        tool_key_source,
+                        overrides,
+                    )
+                }
+            }
+        }
         Command::Validate { dir, format } => validate_cmd::run(&dir, format == Format::Json),
         Command::Init {
             dir,
