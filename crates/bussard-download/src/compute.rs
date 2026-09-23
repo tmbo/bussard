@@ -506,6 +506,175 @@ pub fn expand_group_object_descriptors(
     descriptors
 }
 
+/// What the device model says about one linked com-object, for
+/// [`dynamic_group_object_descriptors`].
+#[derive(Debug, Clone, Default)]
+pub struct LinkedObject {
+    /// The com-object ref the project instantiated, app-relative and with the
+    /// module-instance selector a device file carries (its `ref`, e.g.
+    /// `MD-3_M-1_MI-1_O-2-0_R-1` or `O-89_R-89`), if known.
+    pub com_object_ref: Option<String>,
+    /// The project's flags for the object, if known. ETS lets the user change
+    /// an object's flags per device, and writes those into the descriptor.
+    pub flags: Option<bussard_model::Flags>,
+}
+
+/// Builds the group-object descriptors of an application from its evaluated
+/// Dynamic section, the way ETS does (issue #123).
+///
+/// Every com-object ref the evaluation reached gets a descriptor at its ASAP:
+/// the com-object's `Number`, plus, for a module com-object, the module
+/// instance's value for the argument its `BaseNumber` names. A com-object behind
+/// a branch that is not taken gets none. The flags are the ref merged onto the
+/// base, with Communication set exactly when the ASAP is linked (ETS registers
+/// a shown but unlinked object with Communication cleared, e.g. the F50's
+/// parameter-enabled object 7 as `1300`). The size code comes from the ref's
+/// (else the base's) `ObjectSize`; `"2 Bytes"` is code 8, which is the `08` in
+/// the F50 temperature object's `cf08`.
+///
+/// For a linked object the device model decides where it knows better: its
+/// flags replace the product's (Communication kept set), and a linked object
+/// the evaluation did not reach still gets a descriptor from the model's ref,
+/// because the link proves the project shows it (the evaluation misses it when
+/// the model lacks a display-only parameter that selects it).
+///
+/// Returns one descriptor per ASAP, sorted by ASAP.
+pub fn dynamic_group_object_descriptors(
+    app: &bussard_prod::ApplicationProgram,
+    config: &bussard_prod::dynamic::DynamicConfig,
+    linked: &BTreeMap<u16, LinkedObject>,
+) -> Vec<GroupObjectDescriptor> {
+    use bussard_model::Flags;
+
+    let descriptor = |asap: u16,
+                      base: &bussard_prod::ComObject,
+                      cref: &bussard_prod::ComObjectRef|
+     -> GroupObjectDescriptor {
+        let mut flags = base.flags.merge(cref.flags).to_flags();
+        match linked.get(&asap) {
+            Some(link) => {
+                if let Some(project) = link.flags {
+                    flags = project;
+                }
+                flags |= Flags::COMMUNICATION;
+            }
+            None => flags -= Flags::COMMUNICATION,
+        }
+        GroupObjectDescriptor {
+            asap,
+            flags,
+            size_code: size_code_from_object_size(
+                cref.object_size.as_deref().or(base.object_size.as_deref()),
+            ),
+            priority: Priority::default(),
+        }
+    };
+
+    let mut by_asap: BTreeMap<u16, GroupObjectDescriptor> = BTreeMap::new();
+    for active in &config.com_objects {
+        let Some((base, cref)) = app.resolve(&active.com_object_ref_id) else {
+            continue;
+        };
+        let offset = base
+            .base_number_ref
+            .as_deref()
+            .map(|arg| arg.strip_prefix(&format!("{}_", app.id)).unwrap_or(arg))
+            .and_then(|arg| config.module_args(active.module)?.get(arg).copied())
+            .unwrap_or(0);
+        let Some(asap) = u16::try_from(i64::from(base.number) + offset)
+            .ok()
+            .filter(|&a| a != 0)
+        else {
+            continue;
+        };
+        by_asap.insert(asap, descriptor(asap, base, cref));
+    }
+    for (&asap, link) in linked {
+        if asap == 0 || by_asap.contains_key(&asap) {
+            continue;
+        }
+        let Some(model_ref) = link.com_object_ref.as_deref() else {
+            continue;
+        };
+        let (_, cref_id) = bussard_prod::dynamic::split_selector(model_ref);
+        if let Some((base, cref)) = app.resolve(&cref_id) {
+            by_asap.insert(asap, descriptor(asap, base, cref));
+        }
+    }
+    by_asap.into_values().collect()
+}
+
+/// The element count of an application's group-object table: the highest
+/// `Number` among the application's own (non-module) com-objects, or the
+/// highest descriptor ASAP if that is larger.
+///
+/// The Jung F50 app declares placeholder com-objects numbered 1 to 1333 and ETS
+/// allocates and counts all 1333 entries although the highest shown object is
+/// 1289; the same holds for flat applications (a Jung A-3030 LED dimmer: 470
+/// entries, an ABB BE/S16: 232). An application with no own com-objects (the
+/// DA.tp shape) is counted up to its highest descriptor, as before.
+pub fn group_object_table_count(
+    app: &bussard_prod::ApplicationProgram,
+    descriptors: &[GroupObjectDescriptor],
+) -> usize {
+    let declared = app
+        .com_objects
+        .values()
+        .filter(|c| c.base_number_ref.is_none() && !c.id.contains("_MD-"))
+        .map(|c| c.number)
+        .max()
+        .unwrap_or(0);
+    let used = descriptors.iter().map(|d| d.asap).max().unwrap_or(0);
+    usize::from(declared.max(used))
+}
+
+/// Builds the group-object table image like [`compute_group_object_table`] but
+/// with at least `count` entries (zero descriptors pad the tail). Returns `None`
+/// when the table would be empty.
+pub fn compute_group_object_table_with_count(
+    descriptors: &[GroupObjectDescriptor],
+    count: usize,
+) -> Option<Vec<u8>> {
+    let used = descriptors
+        .iter()
+        .map(|d| usize::from(d.asap))
+        .max()
+        .unwrap_or(0);
+    let count = count.max(used);
+    if count == 0 {
+        return None;
+    }
+    let mut words: Vec<u16> = vec![0u16; count];
+    for d in descriptors {
+        if d.asap == 0 {
+            continue;
+        }
+        words[usize::from(d.asap) - 1] = group_object_word(d.flags, d.size_code, d.priority);
+    }
+    let mut body = Vec::with_capacity(count * 2);
+    for w in words {
+        body.extend_from_slice(&w.to_be_bytes());
+    }
+    Some(table_image_with_count(count, &body))
+}
+
+/// The group-object table (obj3) image of an application, from the device's
+/// parameter overrides and its linked com-objects: the
+/// Dynamic section is evaluated with `overrides`
+/// ([`bussard_prod::dynamic::evaluate_dynamic`]), each shown com-object gets its
+/// descriptor ([`dynamic_group_object_descriptors`]) and the table is counted
+/// by [`group_object_table_count`]. `None` when the table would be empty.
+pub fn dynamic_group_object_table(
+    app: &bussard_prod::ApplicationProgram,
+    overrides: &BTreeMap<String, String>,
+    linked: &BTreeMap<u16, LinkedObject>,
+) -> Option<Vec<u8>> {
+    let config = bussard_prod::dynamic::evaluate_dynamic(app, overrides);
+    let descriptors = dynamic_group_object_descriptors(app, &config, linked);
+    let count = group_object_table_count(app, &descriptors);
+    compute_group_object_table_with_count(&descriptors, count)
+}
+
 /// The declared default value of a parameter a `<choose>` gates, by its
 /// `ParameterRef` id, as an `i64` — the fallback when a caller supplies no
 /// explicit channel value for that selector.
@@ -916,6 +1085,58 @@ mod tests {
             app_program_version(0x00FA, 9472, 16),
             [0x00, 0xFA, 0x25, 0x00, 0x10]
         );
+    }
+
+    /// The Jung F50 shape (issue #123): placeholder application com-objects
+    /// 1..=6 fix the table size, a display-only selector picks the module
+    /// instance, a module com-object lands at `Number + BaseNumber` argument,
+    /// and an application object behind a branch is shown unlinked.
+    #[test]
+    fn test_dynamic_group_object_table_counts_declared_objects_and_shown_ones()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/21">
+         <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="dyn">
+          <Static>
+           <Parameters><Parameter Id="A_P-1" Name="sel" Value="0" /></Parameters>
+           <ParameterRefs><ParameterRef Id="A_P-1_R-1" RefId="A_P-1" /></ParameterRefs>
+           <ComObjects>
+            <ComObject Id="A_O-1" Number="1" ObjectSize="1 Bit" /><ComObject Id="A_O-2" Number="2" />
+            <ComObject Id="A_O-3" Number="3" /><ComObject Id="A_O-4" Number="4" />
+            <ComObject Id="A_O-5" Number="5" /><ComObject Id="A_O-6" Number="6" />
+           </ComObjects>
+           <ComObjectRefs><ComObjectRef Id="A_O-1_R-1" RefId="A_O-1" WriteFlag="Enabled" CommunicationFlag="Enabled" /></ComObjectRefs>
+          </Static>
+          <ModuleDefs><ModuleDef Id="A_MD-1">
+           <Arguments><Argument Id="A_MD-1_A-2" Name="obj" /></Arguments>
+           <Static>
+            <ComObjects><ComObject Id="A_MD-1_O-1" Number="0" ObjectSize="2 Bytes" BaseNumber="A_MD-1_A-2" /></ComObjects>
+            <ComObjectRefs><ComObjectRef Id="A_MD-1_O-1_R-1" RefId="A_MD-1_O-1" ReadFlag="Enabled" CommunicationFlag="Enabled" TransmitFlag="Enabled" UpdateFlag="Enabled" /></ComObjectRefs>
+           </Static>
+           <Dynamic><ParameterBlock Id="A_MD-1_PB-1"><ComObjectRefRef RefId="A_MD-1_O-1_R-1" /></ParameterBlock></Dynamic>
+          </ModuleDef></ModuleDefs>
+          <Dynamic>
+           <choose ParamRefId="A_P-1_R-1">
+            <when test="0"><Module Id="A_MD-1_M-1" RefId="A_MD-1"><NumericArg RefId="A_MD-1_A-2" Value="2" /></Module></when>
+            <when test="1">
+             <Module Id="A_MD-1_M-2" RefId="A_MD-1"><NumericArg RefId="A_MD-1_A-2" Value="4" /></Module>
+             <ComObjectRefRef RefId="A_O-1_R-1" />
+            </when>
+           </choose>
+          </Dynamic>
+         </ApplicationProgram></KNX>"#;
+        let app = bussard_prod::parse_application_program("A", xml.as_bytes())?;
+        let mut linked = BTreeMap::new();
+        linked.insert(4u16, LinkedObject::default());
+        let mut overrides = BTreeMap::new();
+        overrides.insert("P-1_R-1".to_string(), "1".to_string());
+        let table = dynamic_group_object_table(&app, &overrides, &linked).ok_or("empty table")?;
+        // Count 6 (the declared objects), object 1 shown unlinked (W, low
+        // priority: 0x1300), object 4 = module base 4 + 0, linked 2-byte
+        // (U T R C, low, size code 8: 0xcf08); everything else zero.
+        let mut want = vec![0x00, 0x06];
+        want.extend_from_slice(&[0x13, 0x00, 0, 0, 0, 0, 0xcf, 0x08, 0, 0, 0, 0]);
+        assert_eq!(table, want);
+        Ok(())
     }
 
     #[test]

@@ -99,6 +99,9 @@ pub struct ChannelDef {
 /// [`ComObject::base_number_ref`] and [`Memory::base_offset`] carry.
 #[derive(Debug, Clone, Default)]
 pub struct ModuleInstance {
+    /// The module instance id (its `Id`, app-relative, e.g. `MD-1_M-3`). A
+    /// project's module-instance selector is this id plus `_MI-<n>`.
+    pub id: String,
     /// The module definition id this instance instantiates (its `RefId`,
     /// app-relative, e.g. `MD-1`).
     pub module_def: String,
@@ -295,6 +298,62 @@ impl ConditionalGroup {
             None => &[],
         }
     }
+}
+
+/// One node of an application program's Dynamic section, kept as a tree so the
+/// section can be evaluated against a device's parameter values (see
+/// [`crate::dynamic::evaluate_dynamic`]).
+///
+/// Containers that carry no condition (`<ChannelIndependentBlock>`,
+/// `<Channel>`, `<ParameterBlock>`, `<Rows>`/`<Columns>`) are flattened into
+/// their parent: only what decides visibility and what it makes visible is
+/// kept. All ids are app-relative (the program-id prefix stripped).
+#[derive(Debug, Clone, PartialEq)]
+pub enum DynamicNode {
+    /// `<ParameterRefRef RefId>`: the parameter ref is shown (and its memory
+    /// written) when this node is reached.
+    ParameterRefRef(String),
+    /// `<ComObjectRefRef RefId>`: the com-object ref is instantiated when this
+    /// node is reached.
+    ComObjectRefRef(String),
+    /// `<choose ParamRefId>`: the branches whose test matches the parameter's
+    /// value are evaluated (the `default` branches when none matches).
+    Choose {
+        /// The `ParameterRef` id whose value selects the branches.
+        param_ref_id: String,
+        /// The `<when>` branches in document order.
+        whens: Vec<DynamicWhen>,
+    },
+    /// `<Module RefId>`: one instantiation of a `<ModuleDef>`; reaching it
+    /// evaluates that module definition's own Dynamic section with these
+    /// argument values.
+    Module {
+        /// The module instance id (e.g. `MD-13_M-44`).
+        id: String,
+        /// The module definition it instantiates (e.g. `MD-13`).
+        module_def: String,
+        /// The `<NumericArg>` values, keyed by app-relative argument id.
+        args: HashMap<String, i64>,
+    },
+    /// `<Assign TargetParamRefRef SourceParamRefRef|Value>`: while reached, the
+    /// target parameter takes the source parameter's value (or the literal).
+    Assign {
+        /// The assigned `ParameterRef` id.
+        target: String,
+        /// The `ParameterRef` id whose value is copied, if any.
+        source: Option<String>,
+        /// The literal value assigned when there is no source.
+        value: Option<String>,
+    },
+}
+
+/// One `<when>` branch of a [`DynamicNode::Choose`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct DynamicWhen {
+    /// The branch condition.
+    pub test: WhenTest,
+    /// The nodes evaluated when the branch is taken.
+    pub children: Vec<DynamicNode>,
 }
 
 /// A resolved com-object: a ref merged onto its base.
@@ -630,13 +689,14 @@ pub enum LoadOp {
         /// `AppliesTo` filter (e.g. `"full"`, `"par"`, `"full,par"`).
         applies_to: Option<String>,
         /// The device-side pre-fill the allocation requests, decoded from the
-        /// op's `Fill` / `FillByte` attributes. `Some(b)` means the ETS
-        /// procedure sets `Fill="1"` — the device pre-fills the freshly
+        /// op's `Mode` (fill flag) / `Fill` (fill byte) attributes, or the older
+        /// `Fill` / `FillByte` spelling. `Some(b)` means the ETS procedure asks
+        /// for the fill (`Mode="1"`) — the device pre-fills the freshly
         /// allocated segment with `b` before the writes land (the app-code
         /// segment on some products, e.g. Jung LED A-3030 obj4 alloc
-        /// `030b000028c1 01 00 0000`). `None` means `Fill` is absent or `"0"` —
-        /// no pre-fill, the DA.tp behaviour bussard has always emitted.
-        /// `FillByte` defaults to `0` when `Fill` is set but `FillByte` absent.
+        /// `030b000028c1 01 00 0000`). `None` means no fill was asked for
+        /// (`Mode="0"`, or no fill attribute at all): the DA.tp behaviour
+        /// bussard has always emitted.
         fill: Option<u8>,
     },
     /// `<LdCtrlAbsSegment …>`: an absolute-segment control op.
@@ -857,6 +917,13 @@ pub struct ApplicationProgram {
     /// instantiates, unconditionally or under a `<choose>`). `None` for an
     /// application with no module channel membership to expand.
     pub channel_membership: Option<ChannelMembership>,
+    /// The application's top-level Dynamic section as a tree (see
+    /// [`DynamicNode`]); empty when the program has none.
+    pub dynamic: Vec<DynamicNode>,
+    /// Each `<ModuleDef>`'s own Dynamic section, keyed by app-relative module
+    /// definition id (e.g. `MD-13`); a [`DynamicNode::Module`] reached in
+    /// [`Self::dynamic`] evaluates the body stored here.
+    pub module_dynamics: HashMap<String, Vec<DynamicNode>>,
 }
 
 impl ApplicationProgram {
@@ -1027,7 +1094,12 @@ pub fn parse_application_program(id: &str, xml: &[u8]) -> Result<ApplicationProg
                     &mut state,
                 )?;
             }
-            Event::End(e) => match e.local_name().as_ref() {
+            Event::End(e) => match {
+                state.tree.end(e.local_name().as_ref(), Some(&mut app));
+                e.local_name()
+            }
+            .as_ref()
+            {
                 b"Data" | b"Mask" => {
                     if let (Some(field), Some(seg_id)) =
                         (seg_capture.take(), cur_segment_id.as_deref())
@@ -1144,6 +1216,7 @@ fn handle_start(
 ) -> Result<()> {
     attrs.parse_into(e, context)?;
     let m = &*attrs;
+    state.tree.start(e.local_name().as_ref(), m, &app.id);
     match e.local_name().as_ref() {
         b"KNX" => {
             // The XML schema version is declared as the default namespace on the
@@ -1213,6 +1286,10 @@ fn handle_start(
         b"Module" => {
             // Begin accumulating a `<Module>` instance's argument values.
             state.dynamic.cur_module = Some(ModuleInstance {
+                id: get(m, b"Id")
+                    .and_then(|id| app_relative_id(id, &app.id))
+                    .map(str::to_string)
+                    .unwrap_or_default(),
                 module_def: get(m, b"RefId")
                     .and_then(|id| app_relative_id(id, &app.id))
                     .map(str::to_string)
@@ -1280,6 +1357,7 @@ fn handle_empty(
 ) -> Result<()> {
     attrs.parse_into(e, context)?;
     let m = &*attrs;
+    state.tree.empty(e.local_name().as_ref(), m, &app.id);
     match e.local_name().as_ref() {
         b"ComObject" => insert_com_object(app, m),
         b"ComObjectRef" => insert_com_object_ref(app, m),
@@ -1614,6 +1692,200 @@ struct ParseState {
     union: Option<Union>,
     /// Dynamic-section module-instance / channel-membership accumulation.
     dynamic: DynamicState,
+    /// The Dynamic-section tree being built (see [`DynamicNode`]).
+    tree: DynTreeBuilder,
+}
+
+/// Builds the [`DynamicNode`] trees of the application's Dynamic section and of
+/// each `<ModuleDef>`'s Dynamic section from streaming events.
+#[derive(Debug, Default)]
+struct DynTreeBuilder {
+    /// The app-relative id of the `<ModuleDef>` currently open, if any.
+    module_def: Option<String>,
+    /// The open frames, outermost first; non-empty exactly while inside a
+    /// `<Dynamic>` element.
+    frames: Vec<DynFrame>,
+}
+
+/// One open element of the Dynamic tree under construction.
+#[derive(Debug)]
+enum DynFrame {
+    /// The `<Dynamic>` element itself.
+    Root(Vec<DynamicNode>),
+    /// An open `<choose>`.
+    Choose {
+        param_ref_id: String,
+        whens: Vec<DynamicWhen>,
+    },
+    /// An open `<when>`.
+    When(DynamicWhen),
+    /// An open `<Module>` collecting its `<NumericArg>`s.
+    Module {
+        id: String,
+        module_def: String,
+        args: HashMap<String, i64>,
+    },
+}
+
+impl DynTreeBuilder {
+    /// Appends a finished node to the innermost frame that holds children.
+    fn push_node(&mut self, node: DynamicNode) {
+        match self.frames.last_mut() {
+            Some(DynFrame::Root(children)) | Some(DynFrame::When(DynamicWhen { children, .. })) => {
+                children.push(node);
+            }
+            // A node directly under `<choose>` or `<Module>` is not valid
+            // schema; drop it rather than guess where it belongs.
+            _ => {}
+        }
+    }
+
+    /// A leaf element (`ParameterRefRef`, `ComObjectRefRef`, `Assign`), whether
+    /// it arrived as a start or an empty event. Returns whether it was one.
+    fn leaf(&mut self, name: &[u8], m: &Attrs, app_id: &str) -> bool {
+        let rel = |key: &[u8]| {
+            get(m, key).map(|id| app_relative_id(id, app_id).unwrap_or(id).to_string())
+        };
+        let node = match name {
+            b"ParameterRefRef" => rel(b"RefId").map(DynamicNode::ParameterRefRef),
+            b"ComObjectRefRef" => rel(b"RefId").map(DynamicNode::ComObjectRefRef),
+            b"Assign" => rel(b"TargetParamRefRef").map(|target| DynamicNode::Assign {
+                target,
+                source: rel(b"SourceParamRefRef"),
+                value: get(m, b"Value").map(str::to_string),
+            }),
+            _ => return false,
+        };
+        if let Some(node) = node {
+            self.push_node(node);
+        }
+        true
+    }
+
+    /// A start event.
+    fn start(&mut self, name: &[u8], m: &Attrs, app_id: &str) {
+        let rel = |key: &[u8]| {
+            get(m, key)
+                .map(|id| app_relative_id(id, app_id).unwrap_or(id).to_string())
+                .unwrap_or_default()
+        };
+        if self.frames.is_empty() {
+            match name {
+                b"ModuleDef" => self.module_def = Some(rel(b"Id")),
+                b"Dynamic" => self.frames.push(DynFrame::Root(Vec::new())),
+                _ => {}
+            }
+            return;
+        }
+        match name {
+            b"choose" => self.frames.push(DynFrame::Choose {
+                param_ref_id: rel(b"ParamRefId"),
+                whens: Vec::new(),
+            }),
+            b"when" => self.frames.push(DynFrame::When(DynamicWhen {
+                test: WhenTest::parse(get(m, b"test"), get(m, b"default")),
+                children: Vec::new(),
+            })),
+            b"Module" => self.frames.push(DynFrame::Module {
+                id: rel(b"Id"),
+                module_def: rel(b"RefId"),
+                args: HashMap::new(),
+            }),
+            _ => {
+                self.leaf(name, m, app_id);
+            }
+        }
+    }
+
+    /// An empty (self-closing) event.
+    fn empty(&mut self, name: &[u8], m: &Attrs, app_id: &str) {
+        if self.frames.is_empty() {
+            return;
+        }
+        match name {
+            b"NumericArg" => {
+                if let Some(DynFrame::Module { args, .. }) = self.frames.last_mut() {
+                    if let (Some(arg), Some(value)) = (
+                        get(m, b"RefId").map(|id| app_relative_id(id, app_id).unwrap_or(id)),
+                        get(m, b"Value").and_then(|v| v.trim().parse::<i64>().ok()),
+                    ) {
+                        args.insert(arg.to_string(), value);
+                    }
+                }
+            }
+            b"when" | b"choose" | b"Module" => {
+                // An empty branch, choose or argument-less module: open and
+                // close it at once.
+                self.start(name, m, app_id);
+                self.end(name, None);
+            }
+            _ => {
+                self.leaf(name, m, app_id);
+            }
+        }
+    }
+
+    /// An end event. `app` receives a finished `<Dynamic>` tree.
+    fn end(&mut self, name: &[u8], app: Option<&mut ApplicationProgram>) {
+        match name {
+            b"ModuleDef" if self.frames.is_empty() => self.module_def = None,
+            b"when" => {
+                if let Some(DynFrame::When(_)) = self.frames.last() {
+                    if let Some(DynFrame::When(branch)) = self.frames.pop() {
+                        if let Some(DynFrame::Choose { whens, .. }) = self.frames.last_mut() {
+                            whens.push(branch);
+                        }
+                    }
+                }
+            }
+            b"choose" => {
+                if let Some(DynFrame::Choose { .. }) = self.frames.last() {
+                    if let Some(DynFrame::Choose {
+                        param_ref_id,
+                        whens,
+                    }) = self.frames.pop()
+                    {
+                        self.push_node(DynamicNode::Choose {
+                            param_ref_id,
+                            whens,
+                        });
+                    }
+                }
+            }
+            b"Module" => {
+                if let Some(DynFrame::Module { .. }) = self.frames.last() {
+                    if let Some(DynFrame::Module {
+                        id,
+                        module_def,
+                        args,
+                    }) = self.frames.pop()
+                    {
+                        self.push_node(DynamicNode::Module {
+                            id,
+                            module_def,
+                            args,
+                        });
+                    }
+                }
+            }
+            b"Dynamic" => {
+                // Unwind whatever malformed XML left open, then store the root.
+                while self.frames.len() > 1 {
+                    self.frames.pop();
+                }
+                if let (Some(DynFrame::Root(children)), Some(app)) = (self.frames.pop(), app) {
+                    match &self.module_def {
+                        Some(md) => {
+                            app.module_dynamics.insert(md.clone(), children);
+                        }
+                        None => app.dynamic = children,
+                    }
+                }
+                self.frames.clear();
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Mutable state for parsing the Dynamic section's module instances and channel
@@ -1720,24 +1992,24 @@ fn decode_hex_bytes(s: &str) -> Option<Vec<u8>> {
     Some(out)
 }
 
-/// Decodes a `LdCtrlRelSegment`'s `Fill` / `FillByte` attributes into the
-/// pre-fill value to request.
+/// Decodes a `LdCtrlRelSegment`'s fill attributes into the pre-fill value to
+/// request.
 ///
-/// `Fill` is truthy when it is `"1"` or `"true"` (ETS writes `"0"`/`"1"`); any
-/// other value — including the attribute being absent — means no pre-fill. When
-/// `Fill` is set the fill byte comes from `FillByte` (a `u8`, decimal or `0x`
-/// hex), defaulting to `0` when that attribute is absent or unparseable. This
-/// keeps the DA.tp shape (`Fill` absent → `None` → the historical no-fill
-/// allocation) byte-identical while letting a product whose procedure sets
-/// `Fill="1"` (e.g. Jung LED A-3030 obj4) request the pre-fill ETS emits.
+/// The KNX schema spells the allocation's fill as `Mode` (the fill flag: `1`
+/// pre-fills the freshly allocated segment, `0` does not) plus `Fill` (the fill
+/// byte). A real Jung F50 procedure reads
+/// `<LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="6152" Mode="1" Fill="0"/>`
+/// and ETS sends `03 0b 00 00 18 08 01 00 00 00` for it: flag set, byte `00`
+/// (issue #123). So when `Mode` is present it decides: non-zero → `Some(Fill)`
+/// (`Fill` defaulting to `0`), zero → `None`.
+///
+/// Without a `Mode` attribute the older reading applies: `Fill="1"`/`"true"` is
+/// the flag and `FillByte` the byte (decimal or `0x` hex, default `0`). Any
+/// other value, or no attribute at all, means no pre-fill (the DA.tp shape,
+/// byte-identical to the historical no-fill allocation).
 fn parse_fill(m: &Attrs) -> Option<u8> {
-    let raw = get(m, b"Fill")?;
-    let on = matches!(raw.trim(), "1" | "true" | "True" | "TRUE");
-    if !on {
-        return None;
-    }
-    let byte = get(m, b"FillByte")
-        .and_then(|s| {
+    let byte = |raw: Option<&str>| {
+        raw.and_then(|s| {
             let s = s.trim();
             if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
                 u8::from_str_radix(hex, 16).ok()
@@ -1745,8 +2017,18 @@ fn parse_fill(m: &Attrs) -> Option<u8> {
                 s.parse::<u8>().ok()
             }
         })
-        .unwrap_or(0);
-    Some(byte)
+        .unwrap_or(0)
+    };
+    if let Some(mode) = get(m, b"Mode") {
+        let on = mode.trim().parse::<u8>().map(|v| v != 0).unwrap_or(false);
+        return on.then(|| byte(get(m, b"Fill")));
+    }
+    let raw = get(m, b"Fill")?;
+    let on = matches!(raw.trim(), "1" | "true" | "True" | "TRUE");
+    if !on {
+        return None;
+    }
+    Some(byte(get(m, b"FillByte")))
 }
 
 /// Parses one `LdCtrl*` element into a typed [`LoadOp`], appending to the
@@ -2244,6 +2526,98 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn test_push_load_op_rel_segment_mode_is_the_fill_flag() -> Result<()> {
+        // The schema spelling (issue #123): `Mode` is the fill flag and `Fill`
+        // the fill byte. The Jung F50 app allocates obj4 with `Mode="1"
+        // Fill="0"` and ETS sends the fill flag set with byte 00; its `par`
+        // twin `Mode="0" Fill="0"` does not fill.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/21">
+         <ApplicationProgram Id="M-1_A-1" Name="x">
+          <LoadProcedures><LoadProcedure MergeId="2">
+           <LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="6152" Mode="1" Fill="0" />
+           <LdCtrlRelSegment AppliesTo="par" LsmIdx="4" Size="6152" Mode="0" Fill="0" />
+           <LdCtrlRelSegment LsmIdx="4" Size="2" Mode="1" Fill="255" />
+          </LoadProcedure></LoadProcedures>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program_str("M-1_A-1", xml)?;
+        let ops = &app.load_procedures[0].ops;
+        assert!(matches!(ops[0], LoadOp::RelSegment { fill: Some(0), .. }));
+        assert!(matches!(ops[1], LoadOp::RelSegment { fill: None, .. }));
+        assert!(matches!(
+            ops[2],
+            LoadOp::RelSegment {
+                fill: Some(0xFF),
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_dynamic_tree_keeps_modules_and_nested_chooses() -> Result<()> {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/21">
+         <ApplicationProgram Id="A" Name="x">
+          <ModuleDefs><ModuleDef Id="A_MD-1">
+           <Dynamic><ParameterBlock Id="A_MD-1_PB-1"><ComObjectRefRef RefId="A_MD-1_O-1_R-1" /></ParameterBlock></Dynamic>
+          </ModuleDef></ModuleDefs>
+          <Dynamic>
+           <Channel Id="A_CH-1"><ParameterBlock Id="A_PB-1">
+            <ParameterRefRef RefId="A_P-1_R-1" />
+            <choose ParamRefId="A_P-1_R-1">
+             <when test="0" />
+             <when test="1">
+              <choose ParamRefId="A_P-2_R-2"><when default="true">
+               <Module Id="A_MD-1_M-3" RefId="A_MD-1"><NumericArg RefId="A_MD-1_A-1" Value="65" /></Module>
+              </when></choose>
+             </when>
+            </choose>
+            <Assign TargetParamRefRef="A_P-3_R-3" SourceParamRefRef="A_P-1_R-1" />
+           </ParameterBlock></Channel>
+          </Dynamic>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program_str("A", xml)?;
+        assert_eq!(
+            app.module_dynamics.get("MD-1"),
+            Some(&vec![DynamicNode::ComObjectRefRef("MD-1_O-1_R-1".into())])
+        );
+        assert_eq!(app.dynamic.len(), 3);
+        assert_eq!(
+            app.dynamic[0],
+            DynamicNode::ParameterRefRef("P-1_R-1".into())
+        );
+        let DynamicNode::Choose {
+            param_ref_id,
+            whens,
+        } = &app.dynamic[1]
+        else {
+            panic!("expected a choose, got {:?}", app.dynamic[1]);
+        };
+        assert_eq!(param_ref_id, "P-1_R-1");
+        assert_eq!(whens.len(), 2);
+        assert!(whens[0].children.is_empty());
+        let DynamicNode::Choose { whens: inner, .. } = &whens[1].children[0] else {
+            panic!("expected a nested choose");
+        };
+        assert_eq!(inner[0].test, WhenTest::Default);
+        let DynamicNode::Module {
+            id,
+            module_def,
+            args,
+        } = &inner[0].children[0]
+        else {
+            panic!("expected a module");
+        };
+        assert_eq!((id.as_str(), module_def.as_str()), ("MD-1_M-3", "MD-1"));
+        assert_eq!(args.get("MD-1_A-1"), Some(&65));
+        assert!(
+            matches!(&app.dynamic[2], DynamicNode::Assign { target, source: Some(src), .. }
+            if target == "P-3_R-3" && src == "P-1_R-1")
+        );
+        assert_eq!(app.module_instances[0].id, "MD-1_M-3");
+        Ok(())
     }
 
     #[test]

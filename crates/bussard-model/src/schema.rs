@@ -222,8 +222,10 @@ pub struct Device {
     /// (`MD-1_P-3` / `P-1312`), which keys `models/<application_ref>.yaml` — so
     /// both the flasher and the validator can resolve a key to its definition.
     ///
-    /// Only memory-bearing parameters are stored: display-only parameters (no
-    /// `<Memory>`) never reach a download image, so emitting them would be noise.
+    /// Display-only parameters (no `<Memory>`) and `<Union>` members are stored
+    /// like any other: a display-only parameter decides through the Dynamic
+    /// section which modules, com-objects and parameters the device carries, and
+    /// a union member is written at the union's location (issue #123).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub parameters: BTreeMap<String, String>,
     /// Per-module-instance memory **base offsets**, keyed by the module-instance
