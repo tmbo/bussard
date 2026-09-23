@@ -59,6 +59,9 @@ const LS_LOADING: u8 = 2;
 const LE_START_LOADING: u8 = 1;
 const LE_LOAD_COMPLETED: u8 = 2;
 const LE_UNLOAD: u8 = 4;
+/// `AdditionalLoadControls`, whose sub-code 0x0B is `LdCtrlRelSegment`.
+const LE_ADDITIONAL: u8 = 3;
+const SUB_REL_SEGMENT: u8 = 0x0B;
 
 /// The object index of the application-program object in every mock device.
 const APP_OBJECT: u8 = 3;
@@ -85,6 +88,10 @@ struct MockDevice {
     tables: HashMap<u8, TableObject>,
     program_version: [u8; 5],
     parameters: Vec<u8>,
+    /// Per-table-object allocated segment base (`LdCtrlRelSegment`).
+    segments: HashMap<u8, u32>,
+    /// Device memory written with `A_Memory_Write`.
+    memory: HashMap<u32, u8>,
     /// Every A_PropertyValue_Write / A_Memory_Write / A_MemoryExtended_Write.
     writes: usize,
     progmode_cleared: bool,
@@ -131,6 +138,8 @@ impl MockDevice {
             tables,
             program_version: [0x00, 0x83, 0x00, 0x42, 0x10],
             parameters: (0u8..40).collect(),
+            segments: HashMap::new(),
+            memory: HashMap::new(),
             writes: 0,
             progmode_cleared: false,
         }
@@ -222,10 +231,11 @@ fn respond(dev: &mut MockDevice, req_apci: u16, data: &[u8]) -> Option<(u16, Vec
         let mut out = Vec::with_capacity(count);
         for i in 0..count {
             let at = u32::from(addr) + i as u32;
-            let byte = at
-                .checked_sub(PARAM_BASE)
-                .and_then(|off| dev.parameters.get(off as usize).copied())
-                .unwrap_or(0xFF);
+            let byte = dev.memory.get(&at).copied().unwrap_or_else(|| {
+                at.checked_sub(PARAM_BASE)
+                    .and_then(|off| dev.parameters.get(off as usize).copied())
+                    .unwrap_or(0xFF)
+            });
             out.push(byte);
         }
         return Some(apci::encode_memory_response(addr, &out));
@@ -235,6 +245,15 @@ fn respond(dev: &mut MockDevice, req_apci: u16, data: &[u8]) -> Option<(u16, Vec
         || req_apci == apci::A_PROPERTY_VALUE_WRITE
     {
         dev.writes += 1;
+    }
+    // A_Memory_Write lands in device memory and is echoed, as a verify-mode
+    // device does (the table images `apply` streams into its segments).
+    if selector == apci::A_MEMORY_WRITE && data.len() >= 2 {
+        let addr = u16::from_be_bytes([data[0], data[1]]);
+        for (i, b) in data[2..].iter().enumerate() {
+            dev.memory.insert(u32::from(addr) + i as u32, *b);
+        }
+        return Some(apci::encode_memory_response(addr, &data[2..]));
     }
     if req_apci == apci::A_PROPERTY_VALUE_READ {
         let (oi, pid, count, start) = decode_prop_header(data)?;
@@ -257,6 +276,9 @@ fn respond(dev: &mut MockDevice, req_apci: u16, data: &[u8]) -> Option<(u16, Vec
                 answer(&mcb)
             }
             (4, PID_TABLE) if start == 0 => answer(&4u16.to_be_bytes()),
+            (1 | 2, PID_TABLE_REFERENCE) => {
+                answer(&dev.segments.get(&oi).copied().unwrap_or(0).to_be_bytes())
+            }
             (_, PID_LOAD_STATE_CONTROL) => {
                 let st = dev
                     .tables
@@ -295,8 +317,26 @@ fn respond(dev: &mut MockDevice, req_apci: u16, data: &[u8]) -> Option<(u16, Vec
                 }
             }
             (1 | 2, PID_LOAD_STATE_CONTROL) => {
+                let event = value.first().copied().unwrap_or(0);
+                if event == LE_ADDITIONAL && value.get(1) == Some(&SUB_REL_SEGMENT) {
+                    // The device places the segment itself; deterministic here.
+                    let base = if oi == 1 { 0x1000 } else { 0x1800 };
+                    dev.segments.insert(oi, base);
+                } else if event == LE_LOAD_COMPLETED {
+                    // Activate what was streamed into the segment: count word,
+                    // then the elements.
+                    if let Some(&base) = dev.segments.get(&oi) {
+                        let size = if oi == 2 { 4 } else { 2 };
+                        let byte = |i: u32| dev.memory.get(&(base + i)).copied().unwrap_or(0);
+                        let n = u32::from(u16::from_be_bytes([byte(0), byte(1)]));
+                        let elements: Vec<u8> = (0..n * size).map(|i| byte(2 + i)).collect();
+                        let t = dev.tables.entry(oi).or_default();
+                        t.elements = elements;
+                        t.elem_size = size as usize;
+                    }
+                }
                 let t = dev.tables.entry(oi).or_default();
-                t.load_state = match value.first().copied().unwrap_or(0) {
+                t.load_state = match event {
                     LE_START_LOADING => LS_LOADING,
                     LE_LOAD_COMPLETED => LS_LOADED,
                     LE_UNLOAD => LS_UNLOADED,
