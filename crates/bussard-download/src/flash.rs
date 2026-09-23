@@ -915,6 +915,26 @@ impl FlashPlan {
             .map(|s| bussard_mgmt::lsm_access_from_profile(&s.profile))
     }
 
+    /// The exact bytes a memory-write step streams for `segment_id` (the
+    /// [`ImageRef::segment_id`] a step carries), as resolved at plan time.
+    ///
+    /// This is what the executor sends, so an offline dump of it (`bussard
+    /// flash --dry-run --dump-images`) can be diffed against a capture of what
+    /// ETS wrote to the same device.
+    pub fn image_bytes(&self, segment_id: &str) -> Option<&[u8]> {
+        self.images.get(segment_id).map(Vec::as_slice)
+    }
+
+    /// The System 7 per-octet write mask for `segment_id`, when the segment
+    /// carries one (`0xFF` = written, anything else = device-owned, skipped).
+    /// Always `None` for a System B plan.
+    pub fn segment_mask(&self, segment_id: &str) -> Option<&[u8]> {
+        self.sys7
+            .as_ref()
+            .and_then(|s| s.segment_masks.get(segment_id))
+            .map(Vec::as_slice)
+    }
+
     /// Total octets written to device memory across all memory-write steps.
     pub fn total_write_bytes(&self) -> usize {
         self.steps

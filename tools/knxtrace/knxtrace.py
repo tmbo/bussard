@@ -8,6 +8,8 @@
     uv run tools/knxtrace/knxtrace.py trace flash.pcapng
     uv run tools/knxtrace/knxtrace.py ops flash.pcapng --device 1.1.5
     uv run tools/knxtrace/knxtrace.py diff ets.pcapng bussard.pcapng --device 1.1.5
+    uv run tools/knxtrace/knxtrace.py image ets.pcapng --device 1.1.5 --out ets-img/
+    uv run tools/knxtrace/knxtrace.py imgdiff bussard-dump/ ets-img/
 
 Why no scapy: the campaign machine reads captures offline, and this repository
 refuses copyleft dependencies (scapy is GPLv2, see CLAUDE.md "License Policy").
@@ -37,6 +39,7 @@ from normalize import (  # noqa: E402
     resolve_device,
 )
 from opsdiff import DIFFERENT, diff  # noqa: E402
+import image as memimage  # noqa: E402
 
 TPDU_SUFFIXES = (".txt", ".tpdu")
 
@@ -243,6 +246,37 @@ def cmd_diff(args) -> int:
 
 
 # --------------------------------------------------------------------------
+# image / imgdiff
+# --------------------------------------------------------------------------
+
+
+def cmd_image(args) -> int:
+    ops = resolve_device(load_ops(args.capture), args.device)
+    index = memimage.compose(ops, args.out, source=args.capture)
+    print(
+        "%s: %d region(s), %d octet(s) written, %d allocation(s) -> %s"
+        % (
+            ops.device,
+            len(index["regions"]),
+            sum(r["length"] for r in index["regions"]),
+            len(index["allocations"]),
+            args.out,
+        )
+    )
+    return 0
+
+
+def cmd_imgdiff(args) -> int:
+    report = memimage.compare(args.plan_dir, args.image_dir)
+    if args.json:
+        print(json.dumps(report, indent=2))
+    else:
+        for line in memimage.render(report):
+            print(line)
+    return 1 if report["verdict"] == memimage.DIFFERS else 0
+
+
+# --------------------------------------------------------------------------
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -284,6 +318,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--no-bytes", action="store_true", help="omit payload hex")
     p.set_defaults(func=cmd_diff)
+
+    p = sub.add_parser(
+        "image", help="compose the memory a download wrote (one .bin per region)"
+    )
+    p.add_argument("capture")
+    p.add_argument("--device", help="the target individual address, e.g. 1.1.5")
+    p.add_argument("--out", required=True, help="output directory")
+    p.set_defaults(func=cmd_image)
+
+    p = sub.add_parser(
+        "imgdiff",
+        help="diff a `bussard flash --dry-run --dump-images` dir against an `image` dir",
+    )
+    p.add_argument("plan_dir")
+    p.add_argument("image_dir")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_imgdiff)
 
     return parser
 

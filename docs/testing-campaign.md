@@ -25,7 +25,9 @@ recovery path before you need it.
 
 ## The scripts
 
-All four live in `scripts/campaign/`. They share three habits:
+They live in `scripts/campaign/`. The four that talk to the bus share three
+habits (`95-offline-oracle.sh` never touches the bus, see
+[below](#before-a-flash-the-offline-oracle)):
 
 - **They print the plan and stop.** Nothing runs until you add `--go`, so the
   gateway, the model and the device list are read before anything happens, not
@@ -98,6 +100,17 @@ Re-runs the Phase 0 reads and diffs every artefact against the baseline into
 `reconcile/diff.md`. Read-only. A device that reads back differently is not
 automatically a problem, because the campaign reprograms devices on purpose, but
 every difference belongs in the findings log with a classification.
+
+### `95-offline-oracle.sh`: before a flash
+
+```
+scripts/campaign/95-offline-oracle.sh --rows rows.txt --dir knx
+scripts/campaign/95-offline-oracle.sh --row '1.1.5|ets.pcapng|vendor.knxprod|M-00FA_A-0001'
+```
+
+Offline and read-only. Diffs the images `bussard flash` would write against an
+existing ETS download of the same device. See
+[Before a flash: the offline oracle](#before-a-flash-the-offline-oracle).
 
 ## Phases to scripts
 
@@ -184,6 +197,52 @@ uv run tools/knxtrace/knxtrace.py ops   bussard.pcapng --device 1.1.5   # normal
 
 When `tcpdump` could not run per step, `window.txt` names the `editcap` command
 that slices the step out of the campaign-wide capture.
+
+## Before a flash: the offline oracle
+
+A flash that writes a wrong image only shows it on the device. When an ETS
+download of the same device is on file, the images can be compared first,
+without the bus:
+
+```
+bussard flash 1.1.5 --product vendor.knxprod --dir knx --dry-run --dump-images out/bussard
+uv run tools/knxtrace/knxtrace.py image ets.pcapng --device 1.1.5 --out out/ets
+uv run tools/knxtrace/knxtrace.py imgdiff out/bussard out/ets
+```
+
+`flash --dry-run` builds the pre-flight plan against the application's own mask
+and stops. It resolves no gateway and opens no connection, so it works with no
+gateway configured. `--dump-images` writes `plan.json` (the steps, and for each
+streamed image its address or target object, segment id, length and SHA-256,
+plus the allocations and the table images) and one `.bin` per image with the
+exact bytes the executor sends: `0x<addr>.bin` for an absolute write,
+`obj<N>_<segment>.bin` for a System B relative segment (the device picks its
+base), `table-obj<N>.bin` or `table-lsm<N>.bin` for the tables. A System 7
+segment with device-owned octets also gets a `.mask.bin`.
+
+`knxtrace image` composes what ETS wrote: one `.bin` per contiguous written
+region and `regions.json` with the allocation records. A relative segment's base
+is the `PID_TABLE_REFERENCE` ETS reads back after allocating it, and a
+fill-flagged allocation is also written out as fill plus the sparse writes.
+
+`imgdiff` compares each bussard image with the ETS memory at the same place:
+`identical`, `differs` (octets, first differing offset, a hex excerpt of both),
+or `not comparable` (ETS wrote nothing there, or no base is known). Octets
+inside a fill-flagged allocation count as written. Octets ETS wrote outside
+every bussard image are counted separately, which is how a missing segment or a
+table bussard makes shorter shows up. It exits `1` on `differs`.
+
+`95-offline-oracle.sh` runs all three for a list of devices and prints one
+summary table. A row is `device|capture|product|application|note`. The product
+may be `wrapper.zip!inner/file.knxprod` to pick one file out of a vendor ZIP,
+or `-` when there is no product data (the row is reported as not comparable
+with the note). Results land in `captures/campaign/<date>/offline-oracle/`
+unless `--out` says otherwise. A row file names real captures, so keep it
+under `captures/` as well.
+
+Read a `differs` with the capture's context in mind: ETS downloads the
+parameters the ETS project held that day, and a partial download writes only
+what changed, so compare against a capture made from the same model state.
 
 ## Private data
 

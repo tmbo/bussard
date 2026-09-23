@@ -126,13 +126,6 @@ pub fn run(
     // A flash is a management command: a present-but-broken model is a hard
     // error (its parameter overrides drive what is written to the device).
     let model = load_model_required(dir)?;
-    let config = resolve_config(model.as_ref(), &overrides)?;
-    // Safety envelope (issue #74): refuse a flash to a real (non-loopback)
-    // gateway unless the operator opted in.
-    enforce_write_gate(&config, allow_remote_gateway)?;
-    let gateway = gateway_display(&config);
-    // An edit made outside bussard is recorded before this command acts on it.
-    crate::history_cmd::capture_external_edit(dir);
     let overrides_map = collect_parameter_overrides(model.as_ref(), target);
     // Module-instance base offsets persisted by the importer (issue #48): the
     // keys are module-instance selectors, byte-identical to what
@@ -143,6 +136,31 @@ pub fn run(
         .and_then(|m| m.devices.get(&target))
         .map(|d| d.device.module_bases.clone())
         .unwrap_or_default();
+
+    // `--dry-run` (the offline conformance oracle, #89): plan against the
+    // application's own mask and stop. No gateway is resolved, no connection is
+    // opened, nothing is recorded in the history.
+    if let Some(dry) = &output.dry_run {
+        return dry_run(
+            target,
+            address,
+            &product_data,
+            app,
+            model.as_ref(),
+            &overrides_map,
+            &base_offsets,
+            dry.dump_images.as_deref(),
+            &output,
+        );
+    }
+
+    let config = resolve_config(model.as_ref(), &overrides)?;
+    // Safety envelope (issue #74): refuse a flash to a real (non-loopback)
+    // gateway unless the operator opted in.
+    enforce_write_gate(&config, allow_remote_gateway)?;
+    let gateway = gateway_display(&config);
+    // An edit made outside bussard is recorded before this command acts on it.
+    crate::history_cmd::capture_external_edit(dir);
 
     // ONE tunnel for the whole command: the read-only pre-flight below, the
     // interactive confirmation, and the write phase all run over it, and
@@ -245,16 +263,7 @@ pub fn run(
     // shipped a `knx_master.xml`. A merged application (e.g. KNX Virtual DA.tp)
     // only carries its own app-segment blocks; the load-control ops for the
     // table objects (obj1/obj2/obj3) live in the template and are spliced in.
-    let template_ops = app
-        .mask_version
-        .as_deref()
-        .and_then(|mask| {
-            product_data
-                .master
-                .as_ref()
-                .and_then(|m| m.full_load_procedure(mask))
-        })
-        .map(|proc| proc.ops.clone());
+    let template_ops = template_ops_for(&product_data, app);
 
     // The computed table images (obj1 address, obj2 association, obj3
     // group-object) this device requires, from its model links. A merged app's
@@ -420,6 +429,100 @@ pub fn run(
             Ok(ExitCode::FAILURE)
         }
     }
+}
+
+/// The master-template `Load` procedure for `app`'s mask, if the archive
+/// shipped a `knx_master.xml`. A merged application (e.g. KNX Virtual DA.tp)
+/// only carries its own app-segment blocks; the load-control ops for the table
+/// objects (obj1/obj2/obj3) live in the template and are spliced in.
+fn template_ops_for(
+    product_data: &ProductData,
+    app: &ApplicationProgram,
+) -> Option<Vec<bussard_prod::application::LoadOp>> {
+    app.mask_version
+        .as_deref()
+        .and_then(|mask| {
+            product_data
+                .master
+                .as_ref()
+                .and_then(|m| m.full_load_procedure(mask))
+        })
+        .map(|proc| proc.ops.clone())
+}
+
+/// `flash --dry-run`: build the pre-flight plan against the application's own
+/// mask, print it, and (with `--dump-images`) write the images it would
+/// stream. Opens no connection and resolves no gateway, so it runs with no
+/// gateway configured at all.
+#[allow(clippy::too_many_arguments)] // the planner's inputs, passed through 1:1
+fn dry_run(
+    target: IndividualAddress,
+    address: &str,
+    product_data: &ProductData,
+    app: &ApplicationProgram,
+    model: Option<&bussard_model::Model>,
+    overrides_map: &BTreeMap<String, String>,
+    base_offsets: &BTreeMap<String, u32>,
+    dump_images: Option<&Path>,
+    output: &FlashOutput,
+) -> anyhow::Result<ExitCode> {
+    // No device to read the descriptor from: the plan is checked against the
+    // mask the application declares, which is what a matching device reports.
+    let Some(device_mask) = app
+        .mask_version
+        .as_deref()
+        .and_then(|m| u16::from_str_radix(m.trim(), 16).ok())
+    else {
+        eprintln!(
+            "cannot plan offline: application program {} declares no usable mask version",
+            app.id
+        );
+        return Ok(ExitCode::FAILURE);
+    };
+    let template_ops = template_ops_for(product_data, app);
+    let table_images = build_table_images(model, target, app);
+    let plan = match plan_flash(
+        app,
+        address,
+        device_mask,
+        overrides_map,
+        base_offsets,
+        template_ops.as_deref(),
+        &table_images,
+    ) {
+        Ok(plan) => plan,
+        Err(err) => {
+            eprintln!("cannot flash: {err}");
+            return Ok(ExitCode::FAILURE);
+        }
+    };
+    let params = if plan.is_sys7() {
+        ParamPlan {
+            note: Some(bussard_download::SYS7_NOTE.to_string()),
+            ..Default::default()
+        }
+    } else {
+        // Offline there is no current value to read back: every value is new.
+        param_plan(app, overrides_map, base_offsets, &CurrentMemory::new())
+    };
+    if output.json {
+        print_plan_json(target, device_mask, &plan, &params)?;
+    } else {
+        print_plan(
+            target,
+            device_mask,
+            &plan,
+            overrides_map,
+            &params,
+            output.verbose,
+        );
+    }
+    if let Some(dir) = dump_images {
+        crate::flash_dump::write_dump(dir, &target.to_string(), device_mask, &plan, &table_images)?;
+        eprintln!("dry run: images written to {}", dir.display());
+    }
+    eprintln!("dry run: no connection opened, nothing written.");
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Collects the target device's parameter overrides from the model, re-keyed
@@ -898,7 +1001,7 @@ async fn execute(
 /// time estimate.
 /// How the flash pre-flight reports itself: the `--json` switch and the global
 /// `-v` count that unfolds the memory-level plan.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct FlashOutput {
     /// Emit the pre-flight as JSON (including the `parameters` array) instead of
     /// the human report.
@@ -906,6 +1009,16 @@ pub struct FlashOutput {
     /// The global `-v` repeat count. One or more unfolds the memory-level plan
     /// (the step trace) under the parameter-level one.
     pub verbose: u8,
+    /// `--dry-run`: plan offline and stop, optionally dumping the images.
+    pub dry_run: Option<DryRun>,
+}
+
+/// The `--dry-run` options: plan without any bus access.
+#[derive(Debug, Clone, Default)]
+pub struct DryRun {
+    /// `--dump-images <dir>`: write `plan.json` and one `.bin` per streamed
+    /// image (plus the table images) into this directory.
+    pub dump_images: Option<std::path::PathBuf>,
 }
 
 /// Reads the device's current parameter memory over a read-only management
