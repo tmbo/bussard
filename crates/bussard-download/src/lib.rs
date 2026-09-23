@@ -35,7 +35,8 @@ pub mod sweep;
 pub mod tables_sys7;
 
 pub use apply::{
-    TableObjectIndexes, VerifyOutcome, apply_tables, discover_table_objects, read_states,
+    TableObjectIndexes, VerifyOutcome, apply_tables, discover_table_objects,
+    negotiate_session_apdu, read_states,
 };
 pub use apply_sys7::{
     SYS7_ADDRESS_LSM, SYS7_ASSOCIATION_LSM, Sys7ApplyError, Sys7TableImages, Sys7VerifyOutcome,

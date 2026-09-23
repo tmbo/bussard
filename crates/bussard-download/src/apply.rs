@@ -44,6 +44,8 @@
 //! The safe order chosen here is **open-both, write-both, complete-address-then-
 //! association** within a single connection:
 //!
+//! 0. Read `PID_MAX_APDU_LENGTH` once (ETS's first operation in every session)
+//!    so the image writes below are chunked to the device's APDU budget.
 //! 1. `StartLoading` the **association** table (→ `Loading`).
 //! 2. Allocate its segment (`LdCtrlRelSegment`, sized `2 + 4 * associations`) and
 //!    read the placement from `PID_TABLE_REFERENCE`.
@@ -173,6 +175,9 @@ pub async fn apply_tables<Ch: L4Channel>(
     let addr_elems = desired.address_elements();
     let assoc_elems = desired.association_elements();
 
+    // 0: negotiate the APDU size before any table write (issue #116).
+    negotiate_session_apdu(l4).await?;
+
     // 1 + 2: open both tables for writing, each followed by its `RelSegment`
     // allocation (ETS allocates right after each StartLoading — both captures).
     write_load_control(l4, objects.association, LoadControl::StartLoading).await?;
@@ -207,6 +212,23 @@ pub async fn apply_tables<Ch: L4Channel>(
         addresses_match,
         associations_match,
     })
+}
+
+/// Reads `PID_MAX_APDU_LENGTH` (device object, PID 56) once for this session so
+/// the table writes are chunked to the device's real APDU budget.
+///
+/// ETS opens every download session with this property read, then streams the
+/// tables in chunks sized to it (228 octets per `A_MemoryExtended_Write` on a
+/// device advertising 233). Without it, the connection stays at the
+/// standard-frame floor and a table above 0xFFFF goes out in 12-octet chunks
+/// (issue #116). The value is cached on the connection, so calling this again
+/// (the CLI already negotiates right after authorize) costs no telegram. A device
+/// without the property keeps the conservative chunk sizes; only a dead
+/// connection is an error.
+pub async fn negotiate_session_apdu<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+) -> Result<Option<u16>, WriteError> {
+    l4.negotiate_max_apdu().await.map_err(WriteError::Mgmt)
 }
 
 /// The memory image of a loadable table: the big-endian `u16` element count
