@@ -662,6 +662,7 @@ fn load_op_summary(op: &LoadOp) -> String {
             obj_type,
             prop_id,
             inline_data,
+            ..
         } => {
             let data = inline_data
                 .as_ref()
