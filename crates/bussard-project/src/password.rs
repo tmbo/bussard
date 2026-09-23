@@ -21,8 +21,8 @@
 //! remains the public ETS 6 primitive (also re-exported at the crate root).
 
 use base64::Engine;
-use pbkdf2::pbkdf2_hmac;
-use sha2::Sha256;
+use bussard_secure::pbkdf2_sha256;
+use zeroize::Zeroizing;
 
 use crate::version::SchemaVersion;
 
@@ -57,15 +57,14 @@ const ETS6_KEY_LEN: usize = 32;
 /// detail that differs from a naive UTF-8 implementation and is required to
 /// match ETS / xknxproject).
 pub fn derive_zip_password(project_password: &str) -> String {
-    let mut utf16 = Vec::with_capacity(project_password.len() * 2);
+    let mut utf16 = Zeroizing::new(Vec::with_capacity(project_password.len() * 2));
     for unit in project_password.encode_utf16() {
         utf16.extend_from_slice(&unit.to_le_bytes());
     }
 
-    let mut key = [0u8; ETS6_KEY_LEN];
-    pbkdf2_hmac::<Sha256>(&utf16, ETS6_SALT, ETS6_ITERATIONS, &mut key);
+    let key = pbkdf2_sha256(&utf16, ETS6_SALT, ETS6_ITERATIONS, ETS6_KEY_LEN);
 
-    base64::engine::general_purpose::STANDARD.encode(key)
+    base64::engine::general_purpose::STANDARD.encode(key.as_slice())
 }
 
 #[cfg(test)]

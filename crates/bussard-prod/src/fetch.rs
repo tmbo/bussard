@@ -115,24 +115,18 @@ fn http_get(url: &str) -> Result<Box<dyn Read + Send + Sync>, ProdError> {
 /// Reads at most `cap` bytes; errors (rather than truncating) if the source has
 /// more, so an oversize response is a hard failure.
 fn read_capped<R: Read>(reader: R, cap: u64, url: &str) -> Result<Vec<u8>, ProdError> {
-    // Read cap+1 so we can distinguish "exactly cap" from "over cap".
-    let mut limited = reader.take(cap.saturating_add(1));
-    let mut buf = Vec::new();
-    limited
-        .read_to_end(&mut buf)
-        .map_err(|e| ProdError::Fetch {
+    bussard_ets::read_to_cap(reader, cap).map_err(|e| match e {
+        bussard_ets::CappedReadError::Io(e) => ProdError::Fetch {
             reason: format!("reading response body from {url}: {e}"),
-        })?;
-    if buf.len() as u64 > cap {
-        return Err(ProdError::Fetch {
+        },
+        bussard_ets::CappedReadError::TooLarge { cap } => ProdError::Fetch {
             reason: format!(
                 "download from {url} exceeds the expected size (> {cap} bytes); \
                  refusing to buffer it. If the vendor legitimately grew the file, \
                  the index needs refreshing — please report it."
             ),
-        });
-    }
-    Ok(buf)
+        },
+    })
 }
 
 #[cfg(test)]

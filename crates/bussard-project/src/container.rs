@@ -10,6 +10,7 @@ use std::fs::File;
 use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 
+use bussard_ets::{ZipOpenError, strip_bom, strip_bom_bytes};
 use zip::ZipArchive;
 
 use crate::error::{ImportError, Result};
@@ -36,13 +37,15 @@ impl Container {
     /// `password` is the user's project password; it is only consulted if the
     /// inner project archive is encrypted.
     pub fn open(path: &Path, password: Option<&str>) -> Result<Self> {
-        let file = File::open(path).map_err(|source| ImportError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        let mut archive = ZipArchive::new(file).map_err(|source| ImportError::Zip {
-            path: path.to_path_buf(),
-            source,
+        let mut archive = bussard_ets::open_zip(path, |f| f).map_err(|e| match e {
+            ZipOpenError::Io(source) => ImportError::Io {
+                path: path.to_path_buf(),
+                source,
+            },
+            ZipOpenError::Zip(source) => ImportError::Zip {
+                path: path.to_path_buf(),
+                source,
+            },
         })?;
 
         // Detect the ETS schema version from `knx_master.xml` (always in the
@@ -151,14 +154,6 @@ impl Container {
                 device: device.to_string(),
             }),
         }
-    }
-}
-
-/// Drops a leading UTF-8 BOM from raw bytes, if present.
-fn strip_bom_bytes(bytes: Vec<u8>) -> Vec<u8> {
-    match bytes.strip_prefix(b"\xEF\xBB\xBF") {
-        Some(rest) => rest.to_vec(),
-        None => bytes,
     }
 }
 
@@ -329,11 +324,6 @@ fn read_entry_to_string<R: Read + Seek>(
             entry: name.to_string(),
         }),
     }
-}
-
-/// Converts bytes to a `String`, dropping a leading UTF-8 BOM if present.
-fn strip_bom(bytes: Vec<u8>) -> String {
-    bussard_ets::strip_bom(bytes)
 }
 
 #[cfg(test)]

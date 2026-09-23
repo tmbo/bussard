@@ -26,7 +26,6 @@ quick-xml = { workspace = true }
 # encrypted, so this crate (and only this crate) adds the `aes-crypto` feature.
 zip = { workspace = true, features = ["aes-crypto"] }
 # ETS6 zip-password derivation: PBKDF2-HMAC-SHA256 then base64. All MIT/Apache-2.0.
-pbkdf2 = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
 # zeroize: wipes decrypted keyring passwords (and the Latin-1 buffers derived

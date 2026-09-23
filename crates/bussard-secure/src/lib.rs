@@ -36,7 +36,7 @@ pub mod session;
 pub use asdu::{
     A_SECURE_DATA, AsduError, DecodedInner, Scf, SecureService, SecurityAlgorithm, TpAddressing,
 };
-pub use crypto::{CryptoError, aes_cbc_decrypt, aes_cbc_encrypt, pbkdf2_key, salt};
+pub use crypto::{CryptoError, aes_cbc_decrypt, aes_cbc_encrypt, pbkdf2_key, pbkdf2_sha256, salt};
 pub use key::Key16;
 pub use sequence::{Sequence, SequenceHighWater};
 pub use session::{DataSecureSession, UnwrapOutcome};
