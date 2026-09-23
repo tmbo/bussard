@@ -232,26 +232,19 @@ impl Default for TelegramRing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bussard_testkit::{TestResult, ga, ia};
     use std::time::SystemTime;
 
     use bussard_model::codec::TypedValue;
-    use bussard_model::{GroupAddress, IndividualAddress};
 
     use crate::decode::{ApciKind, DestinationRef};
 
-    fn ga(s: &str) -> GroupAddress {
-        s.parse().unwrap()
-    }
-    fn ia(s: &str) -> IndividualAddress {
-        s.parse().unwrap()
-    }
-
-    fn tel(dest: &str) -> DecodedTelegram {
-        DecodedTelegram {
+    fn tel(dest: &str) -> TestResult<DecodedTelegram> {
+        Ok(DecodedTelegram {
             timestamp: SystemTime::UNIX_EPOCH,
-            source: ia("1.1.1"),
+            source: ia("1.1.1")?,
             source_name: None,
-            destination: DestinationRef::Group(ga(dest)),
+            destination: DestinationRef::Group(ga(dest)?),
             destination_name: None,
             apci: ApciKind::Write,
             payload: vec![1],
@@ -259,14 +252,14 @@ mod tests {
             dpt: None,
             object_name: None,
             decode_note: None,
-        }
+        })
     }
 
     #[test]
-    fn fills_and_evicts() {
+    fn fills_and_evicts() -> TestResult {
         let ring = TelegramRing::with_capacity(3);
         for i in 0..5u8 {
-            ring.push(tel(&format!("1/0/{i}")));
+            ring.push(tel(&format!("1/0/{i}"))?);
         }
         assert_eq!(ring.len(), 3);
         // Newest first: 1/0/4, 1/0/3, 1/0/2.
@@ -274,16 +267,17 @@ mod tests {
         assert_eq!(recent.len(), 3);
         assert_eq!(recent[0].destination.to_string(), "1/0/4");
         assert_eq!(recent[2].destination.to_string(), "1/0/2");
+        Ok(())
     }
 
     #[test]
-    fn recent_filters_and_limits() {
+    fn recent_filters_and_limits() -> TestResult {
         let ring = TelegramRing::with_capacity(10);
-        ring.push(tel("3/2/0"));
-        ring.push(tel("4/0/0"));
-        ring.push(tel("3/2/1"));
+        ring.push(tel("3/2/0")?);
+        ring.push(tel("4/0/0")?);
+        ring.push(tel("3/2/1")?);
 
-        let f = Filter::parse("3/").unwrap();
+        let f = Filter::parse("3/")?;
         let all = ring.recent(&f, None);
         assert_eq!(all.len(), 2);
         assert_eq!(all[0].destination.to_string(), "3/2/1");
@@ -291,54 +285,58 @@ mod tests {
         let limited = ring.recent(&f, Some(1));
         assert_eq!(limited.len(), 1);
         assert_eq!(limited[0].destination.to_string(), "3/2/1");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn wait_for_times_out() {
+    async fn wait_for_times_out() -> TestResult {
         let ring = TelegramRing::with_capacity(10);
         let got = ring
             .wait_for(&Filter::default(), Duration::from_millis(50))
             .await;
         assert!(got.is_none());
+        Ok(())
     }
 
     #[tokio::test]
-    async fn subscription_buffers_pushes_before_first_await() {
+    async fn subscription_buffers_pushes_before_first_await() -> TestResult {
         // Issue #32 (waiter race): a subscription taken before the send must see
         // a telegram pushed before the waiter is first polled.
         let ring = TelegramRing::with_capacity(10);
         let mut sub = ring.subscribe();
         // Push BEFORE awaiting: the broadcast buffers it for the subscription.
-        ring.push(tel("3/2/0"));
+        ring.push(tel("3/2/0")?);
         let got = sub
             .wait_for_matching(Duration::from_millis(200), |t, _| {
                 t.destination.to_string() == "3/2/0"
             })
             .await
-            .expect("the pre-await push must be delivered");
+            .ok_or("the pre-await push must be delivered")?;
         assert_eq!(got.destination.to_string(), "3/2/0");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn predicate_wait_skips_con_echo() {
+    async fn predicate_wait_skips_con_echo() -> TestResult {
         // Issue #32 (echo-skip): the gateway's L_Data.con echo of our own
         // request must be skipped; the L_Data.ind response is the answer.
         let ring = TelegramRing::with_capacity(10);
         let mut sub = ring.subscribe();
         // The con echo arrives first (same GA), then the real indication.
-        ring.push_with_code(tel("3/2/0"), MessageCode::LDataCon);
-        ring.push_with_code(tel("3/2/0"), MessageCode::LDataInd);
+        ring.push_with_code(tel("3/2/0")?, MessageCode::LDataCon);
+        ring.push_with_code(tel("3/2/0")?, MessageCode::LDataInd);
         let got = sub
             .wait_for_matching(Duration::from_millis(200), |t, code| {
                 t.destination.to_string() == "3/2/0" && code != MessageCode::LDataCon
             })
             .await
-            .expect("the indication must be delivered");
+            .ok_or("the indication must be delivered")?;
         assert_eq!(got.destination.to_string(), "3/2/0");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn lagged_subscription_recovers_and_matches() {
+    async fn lagged_subscription_recovers_and_matches() -> TestResult {
         // Overrun the broadcast buffer (depth is max(16)) with a subscription
         // that has not been polled yet, forcing a Lagged on its first recv, then
         // confirm the waiter recovers and still delivers a later matching frame.
@@ -346,35 +344,38 @@ mod tests {
         let mut sub = ring.subscribe();
         // Push well past the broadcast depth so `sub` is guaranteed lagged.
         for i in 0..64u16 {
-            ring.push(tel(&format!("1/0/{}", i % 8)));
+            ring.push(tel(&format!("1/0/{}", i % 8))?);
         }
         // Now push the frame we actually want, after the lag.
-        ring.push(tel("3/2/0"));
+        ring.push(tel("3/2/0")?);
         let got = sub
             .wait_for_matching(Duration::from_millis(500), |t, _| {
                 t.destination.to_string() == "3/2/0"
             })
             .await
-            .expect("the waiter must recover from Lagged and match the fresh frame");
+            .ok_or("the waiter must recover from Lagged and match the fresh frame")?;
         assert_eq!(got.destination.to_string(), "3/2/0");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn wait_for_matches() {
+    async fn wait_for_matches() -> TestResult {
         let ring = TelegramRing::with_capacity(10);
         let ring2 = ring.clone();
         // Push a matching telegram shortly after the wait begins.
         let pusher = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(20)).await;
-            ring2.push(tel("9/1/9")); // non-matching, should be skipped
-            ring2.push(tel("3/2/0")); // matching
+            ring2.push(tel("9/1/9")?); // non-matching, should be skipped
+            ring2.push(tel("3/2/0")?); // matching
+            Ok::<(), bussard_testkit::BoxError>(())
         });
-        let f = Filter::parse("3/2/0").unwrap();
+        let f = Filter::parse("3/2/0")?;
         let got = ring
             .wait_for(&f, Duration::from_secs(2))
             .await
-            .expect("should get the matching telegram");
+            .ok_or("should get the matching telegram")?;
         assert_eq!(got.destination.to_string(), "3/2/0");
-        pusher.await.unwrap();
+        pusher.await??;
+        Ok(())
     }
 }

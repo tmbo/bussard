@@ -16,3 +16,7 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full", "test-util"] }
+bussard-testkit = { workspace = true }
+
+[lints]
+workspace = true

@@ -225,6 +225,7 @@ name = "bussard-bus"
 version = "0.1.0"
 dependencies = [
  "bussard-model",
+ "bussard-testkit",
  "bussard-transport",
  "thiserror",
  "tokio",
@@ -359,6 +360,7 @@ version = "0.1.0"
 dependencies = [
  "bussard-bus",
  "bussard-model",
+ "bussard-testkit",
  "bussard-transport",
  "owo-colors",
  "rusqlite",

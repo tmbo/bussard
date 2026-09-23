@@ -438,107 +438,96 @@ impl CaptureStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bussard_testkit::{TestResult, ga, ia};
     use std::time::Duration;
 
     use bussard_transport::cemi::CemiFrame;
 
-    fn ga(s: &str) -> GroupAddress {
-        s.parse().unwrap()
-    }
-    fn ia(s: &str) -> IndividualAddress {
-        s.parse().unwrap()
-    }
-
-    fn frame(dest: &str, src: &str, at: SystemTime) -> TimestampedFrame {
-        TimestampedFrame {
+    fn frame(dest: &str, src: &str, at: SystemTime) -> TestResult<TimestampedFrame> {
+        Ok(TimestampedFrame {
             received_at: at,
-            frame: CemiFrame::group_write_packed(ga(dest), ia(src), &[1]),
-        }
+            frame: CemiFrame::group_write_packed(ga(dest)?, ia(src)?, &[1]),
+        })
     }
 
     #[tokio::test]
-    async fn insert_and_query_roundtrip() {
-        let dir = tempfile::tempdir().unwrap();
+    async fn insert_and_query_roundtrip() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("bus.db");
 
-        let writer = CaptureWriter::open(&path).unwrap();
+        let writer = CaptureWriter::open(&path)?;
         let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
         for i in 0..3u8 {
             let f = frame(
                 &format!("3/2/{i}"),
                 "1.1.30",
                 base + Duration::from_secs(i as u64),
-            );
+            )?;
             let decoded = DecodedTelegram::from_frame(&f, None);
             assert!(writer.record(CaptureRecord::from_decoded(&decoded, &f)));
         }
-        let written = writer.finish().unwrap();
+        let written = writer.finish()?;
         assert_eq!(written, 3);
 
-        let store = CaptureStore::open(&path).unwrap();
-        assert_eq!(store.count().unwrap(), 3);
+        let store = CaptureStore::open(&path)?;
+        assert_eq!(store.count()?, 3);
 
         // All rows, newest first.
-        let all = store.query(&QueryFilter::default()).unwrap();
+        let all = store.query(&QueryFilter::default())?;
         assert_eq!(all.len(), 3);
         assert_eq!(all[0].destination, "3/2/2");
 
         // Filter by GA.
-        let by_ga = store
-            .query(&QueryFilter {
-                ga: Some(ga("3/2/1")),
-                ..Default::default()
-            })
-            .unwrap();
+        let by_ga = store.query(&QueryFilter {
+            ga: Some(ga("3/2/1")?),
+            ..Default::default()
+        })?;
         assert_eq!(by_ga.len(), 1);
         assert_eq!(by_ga[0].destination, "3/2/1");
 
         // Filter by source + limit.
-        let by_src = store
-            .query(&QueryFilter {
-                source: Some(ia("1.1.30")),
-                limit: Some(2),
-                ..Default::default()
-            })
-            .unwrap();
+        let by_src = store.query(&QueryFilter {
+            source: Some(ia("1.1.30")?),
+            limit: Some(2),
+            ..Default::default()
+        })?;
         assert_eq!(by_src.len(), 2);
 
         // Filter by since.
-        let since = store
-            .query(&QueryFilter {
-                since: Some(base + Duration::from_secs(2)),
-                ..Default::default()
-            })
-            .unwrap();
+        let since = store.query(&QueryFilter {
+            since: Some(base + Duration::from_secs(2)),
+            ..Default::default()
+        })?;
         assert_eq!(since.len(), 1);
         assert_eq!(since[0].destination, "3/2/2");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn batch_flushes_on_size_boundary() {
+    async fn batch_flushes_on_size_boundary() -> TestResult {
         // Writing exactly BATCH_SIZE records fills one batch; those rows must be
         // committed and visible to an independent reader even before `finish`,
         // because the size boundary triggers a flush.
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("batch-size.db");
 
-        let writer = CaptureWriter::open(&path).unwrap();
+        let writer = CaptureWriter::open(&path)?;
         for i in 0..BATCH_SIZE {
             let f = frame(
                 &format!("3/2/{}", i % 200),
                 "1.1.30",
                 SystemTime::UNIX_EPOCH,
-            );
+            )?;
             let decoded = DecodedTelegram::from_frame(&f, None);
             assert!(writer.record(CaptureRecord::from_decoded(&decoded, &f)));
         }
 
         // Poll a separate reader until the size-triggered batch commits. No
         // `finish` yet: this proves the flush happened mid-stream, not at close.
-        let store = CaptureStore::open(&path).unwrap();
+        let store = CaptureStore::open(&path)?;
         let mut seen = 0;
         for _ in 0..100 {
-            seen = store.count().unwrap();
+            seen = store.count()?;
             if seen as usize >= BATCH_SIZE {
                 break;
             }
@@ -549,30 +538,31 @@ mod tests {
             "the full batch must commit at the size boundary before finish"
         );
 
-        writer.finish().unwrap();
+        writer.finish()?;
+        Ok(())
     }
 
     #[tokio::test]
-    async fn batch_flushes_on_interval() {
+    async fn batch_flushes_on_interval() -> TestResult {
         // A sub-batch trickle (fewer than BATCH_SIZE) must still land within
         // BATCH_INTERVAL, not sit uncommitted until shutdown.
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("batch-interval.db");
 
-        let writer = CaptureWriter::open(&path).unwrap();
+        let writer = CaptureWriter::open(&path)?;
         for i in 0..3u8 {
-            let f = frame(&format!("3/2/{i}"), "1.1.30", SystemTime::UNIX_EPOCH);
+            let f = frame(&format!("3/2/{i}"), "1.1.30", SystemTime::UNIX_EPOCH)?;
             let decoded = DecodedTelegram::from_frame(&f, None);
             assert!(writer.record(CaptureRecord::from_decoded(&decoded, &f)));
         }
 
-        let store = CaptureStore::open(&path).unwrap();
+        let store = CaptureStore::open(&path)?;
         // Wait comfortably longer than one interval, then confirm the trickle is
         // visible without `finish` having been called.
         let mut seen = 0;
         for _ in 0..50 {
             tokio::time::sleep(BATCH_INTERVAL / 2 + Duration::from_millis(20)).await;
-            seen = store.count().unwrap();
+            seen = store.count()?;
             if seen == 3 {
                 break;
             }
@@ -582,67 +572,70 @@ mod tests {
             "the interval flush must commit a sub-batch trickle"
         );
 
-        writer.finish().unwrap();
+        writer.finish()?;
+        Ok(())
     }
 
     #[tokio::test]
-    async fn finish_flushes_partial_tail() {
+    async fn finish_flushes_partial_tail() -> TestResult {
         // A partial batch (< BATCH_SIZE) left open at shutdown must be committed
         // by `finish` — the shutdown-flush guarantee — and counted.
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("batch-tail.db");
 
-        let writer = CaptureWriter::open(&path).unwrap();
+        let writer = CaptureWriter::open(&path)?;
         let n = BATCH_SIZE + 7; // one full batch plus a partial tail
         for i in 0..n {
             let f = frame(
                 &format!("3/2/{}", i % 200),
                 "1.1.30",
                 SystemTime::UNIX_EPOCH,
-            );
+            )?;
             let decoded = DecodedTelegram::from_frame(&f, None);
             assert!(writer.record(CaptureRecord::from_decoded(&decoded, &f)));
         }
-        let written = writer.finish().unwrap();
+        let written = writer.finish()?;
         assert_eq!(
             written as usize, n,
             "finish must count every row it flushed"
         );
 
-        let store = CaptureStore::open(&path).unwrap();
-        assert_eq!(store.count().unwrap() as usize, n);
+        let store = CaptureStore::open(&path)?;
+        assert_eq!(store.count()? as usize, n);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn wal_mode_is_set() {
-        let dir = tempfile::tempdir().unwrap();
+    async fn wal_mode_is_set() -> TestResult {
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("wal.db");
-        let store = CaptureStore::open(&path).unwrap();
-        assert_eq!(store.journal_mode().unwrap().to_lowercase(), "wal");
+        let store = CaptureStore::open(&path)?;
+        assert_eq!(store.journal_mode()?.to_lowercase(), "wal");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn redecode_uses_model_then_falls_back() {
+    async fn redecode_uses_model_then_falls_back() -> TestResult {
         use bussard_model::schema::{BussardConfig, Group, Groups, Links};
         use std::collections::BTreeMap;
 
-        let dir = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir()?;
         let path = dir.path().join("redecode.db");
 
         // Capture a 1-bit write to 3/2/0 with NO model (snapshot is raw).
-        let writer = CaptureWriter::open(&path).unwrap();
-        let f = frame("3/2/0", "1.1.30", SystemTime::UNIX_EPOCH);
+        let writer = CaptureWriter::open(&path)?;
+        let f = frame("3/2/0", "1.1.30", SystemTime::UNIX_EPOCH)?;
         let decoded_nomodel = DecodedTelegram::from_frame(&f, None);
         writer.record(CaptureRecord::from_decoded(&decoded_nomodel, &f));
-        writer.finish().unwrap();
+        writer.finish()?;
 
         // Later: a model that knows 3/2/0 is DPT 1.005 (alarm).
         let mut groups = BTreeMap::new();
         groups.insert(
-            ga("3/2/0"),
+            ga("3/2/0")?,
             Group {
                 name: "Windalarm".to_string(),
-                dpt: Some("1.005".parse().unwrap()),
+                dpt: Some("1.005".parse()?),
                 description: None,
                 ..Default::default()
             },
@@ -661,12 +654,14 @@ mod tests {
             devices: BTreeMap::new(),
         };
 
-        let store = CaptureStore::open(&path).unwrap();
-        let rows = store.query(&QueryFilter::default()).unwrap();
+        let store = CaptureStore::open(&path)?;
+        let rows = store.query(&QueryFilter::default())?;
         assert_eq!(rows.len(), 1);
 
         // Re-decoding against the model now resolves the name + value.
-        let redecoded = rows[0].redecode(Some(&model)).expect("raw bytes decode");
+        let redecoded = rows[0]
+            .redecode(Some(&model))
+            .map_err(|snap| format!("raw bytes must decode, got snapshot {snap:?}"))?;
         assert_eq!(redecoded.destination_name.as_deref(), Some("Windalarm"));
         assert!(matches!(
             redecoded.value,
@@ -675,10 +670,11 @@ mod tests {
 
         // The stored snapshot is still available as the durable fallback.
         assert!(rows[0].decoded_snapshot.is_some());
+        Ok(())
     }
 
     #[tokio::test]
-    async fn redecode_fallback_on_corrupt_bytes() {
+    async fn redecode_fallback_on_corrupt_bytes() -> TestResult {
         // A row whose raw_cemi is not a valid frame yields the snapshot.
         let stored = StoredTelegram {
             id: 1,
@@ -690,6 +686,7 @@ mod tests {
             decoded_snapshot: Some("{\"snapshot\":true}".to_string()),
         };
         let res = stored.redecode(None);
-        assert_eq!(res.unwrap_err().as_deref(), Some("{\"snapshot\":true}"));
+        assert_eq!(res.err().flatten().as_deref(), Some("{\"snapshot\":true}"));
+        Ok(())
     }
 }
