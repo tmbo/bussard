@@ -5,7 +5,8 @@
 //! tool keys, and per-group-address runtime keys. Sensitive attributes are
 //! AES-128-CBC encrypted under a key derived from a keyring password (PBKDF2), and
 //! the whole document is signed with a truncated SHA-256 over a canonical
-//! serialization.
+//! serialization that ends with the password-derived key, so the signature
+//! doubles as the password check (spec §4.4).
 //!
 //! This module decodes that format into a typed [`Keyring`] (spec §4.6):
 //!
@@ -55,12 +56,24 @@ const EXTRACT_PREFIX_LEN: usize = 8;
 /// The AES block size, and so the largest legal PKCS#7 pad length.
 const AES_BLOCK_LEN: usize = 16;
 
+/// Canonical-serialization marker byte for an element start (spec §4.4).
+const ELEMENT_START: u8 = 0x01;
+
+/// Canonical-serialization marker byte for an element end (spec §4.4).
+const ELEMENT_END: u8 = 0x02;
+
+/// The longest string the one-byte length prefix of the canonical serialization
+/// can frame (spec §4.4).
+const MAX_FRAMED_LEN: usize = u8::MAX as usize;
+
 /// A parsed `.knxkeys` keyring (spec §4.6).
 ///
 /// Holds the decrypted, typed key material. See the module docs for the hygiene
 /// guarantees; this type is intentionally neither `Serialize` nor `Clone`, and
 /// its `Debug` redacts all key material.
 pub struct Keyring {
+    /// The ETS project name from the root `Project` attribute (empty if absent).
+    pub project: String,
     /// The keyring's `Created` timestamp attribute (the AES-CBC IV seed, §4.2).
     pub created: String,
     /// The backbone (routing/multicast) key material, if the keyring carries a
@@ -93,6 +106,7 @@ impl Keyring {
 impl std::fmt::Debug for Keyring {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Keyring")
+            .field("project", &self.project)
             .field("created", &self.created)
             .field("backbone", &self.backbone)
             .field("interfaces", &self.interfaces)
@@ -107,7 +121,7 @@ impl std::fmt::Debug for Keyring {
 
 /// The backbone (routing/multicast) key material (spec §4.5).
 pub struct Backbone {
-    /// The multicast/routing key (raw 16 bytes, base64 in the XML).
+    /// The multicast/routing key (decrypted from the AES-CBC `Key` attribute).
     pub key: Key16,
     /// The routing multicast address.
     pub multicast: Ipv4Addr,
@@ -134,11 +148,12 @@ pub struct Interface {
     /// The tunnel/management user id.
     pub user_id: u8,
     /// The derived user-password key (from the decrypted `Password`, PBKDF2 with
-    /// the user-password salt).
-    pub user_key: Key16,
+    /// the user-password salt). `None` when the interface carries no `Password`
+    /// (a USB interface, for example).
+    pub user_key: Option<Key16>,
     /// The derived device-authentication key (from the decrypted `Authentication`,
-    /// PBKDF2 with the device-authentication-code salt).
-    pub device_auth: Key16,
+    /// PBKDF2 with the device-authentication-code salt). `None` when absent.
+    pub device_auth: Option<Key16>,
     /// The group addresses this interface may send to.
     pub gas: Vec<GroupAddress>,
 }
@@ -149,8 +164,11 @@ impl std::fmt::Debug for Interface {
             .field("ia", &self.ia)
             .field("host", &self.host)
             .field("user_id", &self.user_id)
-            .field("user_key", &"<redacted>")
-            .field("device_auth", &"<redacted>")
+            .field("user_key", &self.user_key.as_ref().map(|_| "<redacted>"))
+            .field(
+                "device_auth",
+                &self.device_auth.as_ref().map(|_| "<redacted>"),
+            )
             .field("gas", &self.gas)
             .finish()
     }
@@ -160,7 +178,7 @@ impl std::fmt::Debug for Interface {
 pub struct Device {
     /// The device's individual address.
     pub ia: IndividualAddress,
-    /// The device's tool key (raw 16 bytes, base64 in the XML).
+    /// The device's tool key (decrypted from the AES-CBC `ToolKey` attribute).
     pub tool_key: Key16,
     /// The device's last-known Data Secure sequence number (defaults to 0).
     pub seq: u64,
@@ -229,16 +247,27 @@ pub enum KeyringError {
         /// What was wrong with the padding.
         reason: String,
     },
-    /// The keyring signature did not match: the password is wrong or the keyring
-    /// was tampered with.
+    /// The keyring signature did not verify under the key derived from the given
+    /// password (spec §4.4).
     ///
-    /// Note (spec §4.4, `SEC-CAL:`): the exact canonicalization is not yet
-    /// confirmed against a real ETS keyring, so a genuine keyring may report this
-    /// even with the correct password until the canonicalization is calibrated.
+    /// The canonical serialization ends with that key, so a well-formed file
+    /// reaching this point means the password is wrong (or the file was edited
+    /// after export). Malformed files fail earlier with a parse variant.
     #[error(
-        "the .knxkeys signature did not verify (wrong keyring password, or a canonicalization mismatch that needs calibration; see SEC-CAL in keyring.rs)"
+        "wrong keyring password: the .knxkeys signature does not verify with the key derived from it (or the file was modified after export)"
     )]
     SignatureMismatch,
+    /// A string in the signed content is too long for the one-byte length
+    /// prefix of the canonical serialization (spec §4.4).
+    #[error(
+        "`{what}` in .knxkeys is {len} bytes; the signature framing allows at most {MAX_FRAMED_LEN}"
+    )]
+    FramedTooLong {
+        /// What was being framed (element name, attribute name or value).
+        what: String,
+        /// The byte length of the offending string.
+        len: usize,
+    },
     /// A crypto primitive rejected its input while decrypting an attribute.
     #[error("decrypting a .knxkeys attribute: {0}")]
     Crypto(#[from] bussard_secure::CryptoError),
@@ -306,21 +335,13 @@ fn created_iv(created: &str) -> [u8; KEY_LEN] {
 
 /// Verifies the keyring signature (spec §4.4).
 ///
-/// The canonical serialization is a SAX walk emitting element markers (`0x01`
-/// start, `0x02` end) and attribute names + values (excluding `xmlns` and
-/// `Signature`), followed by the base64 of the hashed keyring password. The
-/// signature is `sha256(serialized)[..16]`, compared against the base64-decoded
-/// `Signature` attribute.
-///
-// SEC-CAL: exact .knxkeys signature canonicalization byte order (verify against
-// a real/synthetic keyring). This matches the XKNX reference as reasoned from the
-// public source, and round-trips against our synthetic fixtures by construction,
-// but the byte-exact ordering has not been confirmed against a genuine ETS export
-// - a real keyring may need calibration here.
+/// The signature is `sha256(canonical)[..16]`, compared in constant time against
+/// the base64-decoded `Signature` attribute; see [`canonical_serialization`] for
+/// the byte layout. Settled against a genuine ETS 6 export (issue #84).
 fn verify_signature(xml: &str, keyring_key: &Key16) -> Result<(), KeyringError> {
     let signature = read_signature(xml)?;
     let serialized = canonical_serialization(xml, keyring_key)?;
-    let digest = Sha256::digest(&serialized);
+    let digest = Sha256::digest(serialized.as_slice());
     if bussard_secure::crypto::constant_time_eq(&digest[..KEY_LEN], &signature) {
         Ok(())
     } else {
@@ -359,53 +380,83 @@ fn read_signature(xml: &str) -> Result<Vec<u8>, KeyringError> {
 }
 
 /// Builds the canonical serialization the signature is computed over (§4.4).
-fn canonical_serialization(xml: &str, keyring_key: &Key16) -> Result<Vec<u8>, KeyringError> {
+///
+/// A document-order walk over the elements. Every "string" below is framed as
+/// one length byte followed by its UTF-8 bytes:
+///
+/// - element start: `0x01`, the element name, then for each attribute except
+///   `xmlns`, `xmlns:*` and `Signature`, sorted by name (ordinal): the name,
+///   then the (unescaped) value;
+/// - element end: `0x02` (a self-closing element is a start plus an end);
+/// - after the walk: the base64 of the 16-byte PBKDF2 keyring key.
+///
+/// Text content and comments are not signed. The buffer ends with key-derived
+/// material, so it is wiped on drop.
+fn canonical_serialization(
+    xml: &str,
+    keyring_key: &Key16,
+) -> Result<Zeroizing<Vec<u8>>, KeyringError> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
-    let mut out: Vec<u8> = Vec::new();
+    let mut out: Zeroizing<Vec<u8>> = Zeroizing::new(Vec::new());
 
     loop {
         match reader.read_event() {
-            Ok(Event::Start(e)) => {
-                out.push(0x01);
-                serialize_attributes(&e, &mut out)?;
-            }
+            Ok(Event::Start(e)) => serialize_start(&e, &mut out)?,
             Ok(Event::Empty(e)) => {
-                // An empty element is a start immediately followed by an end.
-                out.push(0x01);
-                serialize_attributes(&e, &mut out)?;
-                out.push(0x02);
+                serialize_start(&e, &mut out)?;
+                out.push(ELEMENT_END);
             }
-            Ok(Event::End(_)) => {
-                out.push(0x02);
-            }
+            Ok(Event::End(_)) => out.push(ELEMENT_END),
             Ok(Event::Eof) => break,
             Err(e) => return Err(KeyringError::Xml(e.to_string())),
             _ => {}
         }
     }
 
-    // Append the base64 of the hashed keyring password (the derived keyring key).
-    let key_b64 = BASE64.encode(keyring_key.bytes());
-    out.extend_from_slice(key_b64.as_bytes());
+    let key_b64 = Zeroizing::new(BASE64.encode(keyring_key.bytes()));
+    push_framed(&mut out, key_b64.as_bytes(), "keyring key")?;
     Ok(out)
 }
 
-/// Emits an element's attribute names and values into the canonical buffer,
-/// skipping `xmlns` and `Signature` (§4.4).
-fn serialize_attributes(e: &BytesStart, out: &mut Vec<u8>) -> Result<(), KeyringError> {
+/// Emits an element start into the canonical buffer: the start marker, the
+/// framed element name, then the framed attribute names and values sorted by
+/// name, skipping `xmlns`, `xmlns:*` and `Signature` (§4.4).
+fn serialize_start(e: &BytesStart, out: &mut Vec<u8>) -> Result<(), KeyringError> {
+    out.push(ELEMENT_START);
+    push_framed(out, e.name().as_ref(), "element name")?;
+
+    let mut attrs: Vec<(Vec<u8>, String)> = Vec::new();
     for a in e.attributes() {
         let a = a.map_err(|source| KeyringError::Xml(source.to_string()))?;
         let key = a.key.as_ref();
         if key == b"xmlns" || key == b"Signature" || key.starts_with(b"xmlns:") {
             continue;
         }
-        out.extend_from_slice(key);
         let value = a
             .unescape_value()
             .map_err(|source| KeyringError::Xml(source.to_string()))?;
-        out.extend_from_slice(value.as_bytes());
+        attrs.push((key.to_vec(), value.into_owned()));
     }
+    attrs.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (key, value) in &attrs {
+        let name = String::from_utf8_lossy(key);
+        push_framed(out, key, &name)?;
+        push_framed(out, value.as_bytes(), &name)?;
+    }
+    Ok(())
+}
+
+/// Appends one length-prefixed string (one length byte, then the bytes) to the
+/// canonical buffer (§4.4).
+fn push_framed(out: &mut Vec<u8>, bytes: &[u8], what: &str) -> Result<(), KeyringError> {
+    let len = u8::try_from(bytes.len()).map_err(|_| KeyringError::FramedTooLong {
+        what: what.to_string(),
+        len: bytes.len(),
+    })?;
+    out.push(len);
+    out.extend_from_slice(bytes);
     Ok(())
 }
 
@@ -415,6 +466,7 @@ fn parse_body(xml: &str, keyring_key: &Key16, iv: &[u8; KEY_LEN]) -> Result<Keyr
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
 
+    let mut project = String::new();
     let mut created = String::new();
     let mut backbone: Option<Backbone> = None;
     let mut interfaces: Vec<Interface> = Vec::new();
@@ -424,19 +476,24 @@ fn parse_body(xml: &str, keyring_key: &Key16, iv: &[u8; KEY_LEN]) -> Result<Keyr
     // The interface currently being assembled (its child <Group> elements follow
     // the <Interface> start before the matching end).
     let mut current_interface: Option<Interface> = None;
+    // Inside `<GroupAddresses>`, a `<Group>` carries a group key; inside an
+    // `<Interface>` it names a GA the interface may send to.
+    let mut in_group_addresses = false;
 
     loop {
         let event = reader
             .read_event()
             .map_err(|e| KeyringError::Xml(e.to_string()))?;
+        let is_empty = matches!(event, Event::Empty(_));
         match event {
             Event::Start(e) | Event::Empty(e) => {
                 match e.local_name().as_ref() {
                     b"Keyring" => {
+                        project = attr(&e, b"Project")?.unwrap_or_default();
                         created = attr(&e, b"Created")?.unwrap_or_default();
                     }
                     b"Backbone" => {
-                        backbone = Some(parse_backbone(&e)?);
+                        backbone = Some(parse_backbone(&e, keyring_key, iv)?);
                     }
                     b"Interface" => {
                         // A new <Interface> begins; flush any prior one (defensive,
@@ -444,45 +501,53 @@ fn parse_body(xml: &str, keyring_key: &Key16, iv: &[u8; KEY_LEN]) -> Result<Keyr
                         if let Some(iface) = current_interface.take() {
                             interfaces.push(iface);
                         }
-                        current_interface = Some(parse_interface(&e, keyring_key, iv)?);
+                        let iface = parse_interface(&e, keyring_key, iv)?;
+                        if is_empty {
+                            interfaces.push(iface);
+                        } else {
+                            current_interface = Some(iface);
+                        }
+                    }
+                    b"GroupAddresses" => {
+                        in_group_addresses = !is_empty;
                     }
                     b"Group" => {
-                        // A <Group> child of the current <Interface>: a sending GA.
-                        if let Some(iface) = current_interface.as_mut() {
+                        if in_group_addresses {
+                            let (ga, key) = parse_group_key(&e, keyring_key, iv)?;
+                            group_keys.insert(ga, key);
+                        } else if let Some(iface) = current_interface.as_mut() {
                             if let Some(addr) = attr(&e, b"Address")? {
-                                iface.gas.push(parse_ga("Group/Address", &addr)?);
+                                iface.gas.push(parse_ga("Interface/Group/Address", &addr)?);
                             }
                         }
                     }
                     b"Device" => {
-                        devices.push(parse_device(&e)?);
-                    }
-                    b"GroupAddress" => {
-                        let (ga, key) = parse_group_address(&e)?;
-                        group_keys.insert(ga, key);
+                        devices.push(parse_device(&e, keyring_key, iv)?);
                     }
                     _ => {}
                 }
             }
-            Event::End(e) => {
-                if e.local_name().as_ref() == b"Interface" {
+            Event::End(e) => match e.local_name().as_ref() {
+                b"Interface" => {
                     if let Some(iface) = current_interface.take() {
                         interfaces.push(iface);
                     }
                 }
-            }
+                b"GroupAddresses" => in_group_addresses = false,
+                _ => {}
+            },
             Event::Eof => break,
             _ => {}
         }
     }
 
-    // Flush a trailing interface if the document ended without an explicit end
-    // (empty <Interface/> elements are handled here).
+    // Flush a trailing interface if the document ended without an explicit end.
     if let Some(iface) = current_interface.take() {
         interfaces.push(iface);
     }
 
     Ok(Keyring {
+        project,
         created,
         backbone,
         interfaces,
@@ -492,8 +557,12 @@ fn parse_body(xml: &str, keyring_key: &Key16, iv: &[u8; KEY_LEN]) -> Result<Keyr
 }
 
 /// Parses a `<Backbone>` element (§4.5).
-fn parse_backbone(e: &BytesStart) -> Result<Backbone, KeyringError> {
-    let key = raw_key(e, b"Key", "Backbone/Key")?;
+fn parse_backbone(
+    e: &BytesStart,
+    keyring_key: &Key16,
+    iv: &[u8; KEY_LEN],
+) -> Result<Backbone, KeyringError> {
+    let key = decrypt_key(e, b"Key", "Backbone/Key", keyring_key, iv)?;
     let multicast = require(e, b"MulticastAddress", "Backbone")?;
     let multicast: Ipv4Addr = multicast
         .parse()
@@ -540,23 +609,33 @@ fn parse_interface(
 
     // The Password/Authentication attributes are encrypted; decrypt, extract the
     // password string, then derive the key with the appropriate salt (§4.5, §3.4).
-    let password = decrypt_password(e, b"Password", "Interface/Password", keyring_key, iv)?;
-    let user_key = pbkdf2_key(
-        &Zeroizing::new(latin1_bytes(&password)),
-        salt::USER_PASSWORD,
-    );
-
-    let auth = decrypt_password(
-        e,
-        b"Authentication",
-        "Interface/Authentication",
-        keyring_key,
-        iv,
-    )?;
-    let device_auth = pbkdf2_key(
-        &Zeroizing::new(latin1_bytes(&auth)),
-        salt::DEVICE_AUTHENTICATION_CODE,
-    );
+    // Both are optional: a USB interface has neither.
+    let user_key = match attr(e, b"Password")? {
+        Some(_) => {
+            let password = decrypt_password(e, b"Password", "Interface/Password", keyring_key, iv)?;
+            Some(pbkdf2_key(
+                &Zeroizing::new(latin1_bytes(&password)),
+                salt::USER_PASSWORD,
+            ))
+        }
+        None => None,
+    };
+    let device_auth = match attr(e, b"Authentication")? {
+        Some(_) => {
+            let auth = decrypt_password(
+                e,
+                b"Authentication",
+                "Interface/Authentication",
+                keyring_key,
+                iv,
+            )?;
+            Some(pbkdf2_key(
+                &Zeroizing::new(latin1_bytes(&auth)),
+                salt::DEVICE_AUTHENTICATION_CODE,
+            ))
+        }
+        None => None,
+    };
 
     Ok(Interface {
         ia,
@@ -569,12 +648,16 @@ fn parse_interface(
 }
 
 /// Parses a `<Device>` element (§4.5).
-fn parse_device(e: &BytesStart) -> Result<Device, KeyringError> {
+fn parse_device(
+    e: &BytesStart,
+    keyring_key: &Key16,
+    iv: &[u8; KEY_LEN],
+) -> Result<Device, KeyringError> {
     let ia = parse_ia(
         "Device/IndividualAddress",
         &require(e, b"IndividualAddress", "Device")?,
     )?;
-    let tool_key = raw_key(e, b"ToolKey", "Device/ToolKey")?;
+    let tool_key = decrypt_key(e, b"ToolKey", "Device/ToolKey", keyring_key, iv)?;
     let seq = match attr(e, b"SequenceNumber")? {
         Some(s) => s.parse().map_err(|_| KeyringError::InvalidAttribute {
             attribute: "Device/SequenceNumber".to_string(),
@@ -585,13 +668,17 @@ fn parse_device(e: &BytesStart) -> Result<Device, KeyringError> {
     Ok(Device { ia, tool_key, seq })
 }
 
-/// Parses a top-level `<GroupAddress>` element into `(address, key)` (§4.5).
-fn parse_group_address(e: &BytesStart) -> Result<(GroupAddress, Key16), KeyringError> {
+/// Parses a `<GroupAddresses>/<Group>` element into `(address, key)` (§4.5).
+fn parse_group_key(
+    e: &BytesStart,
+    keyring_key: &Key16,
+    iv: &[u8; KEY_LEN],
+) -> Result<(GroupAddress, Key16), KeyringError> {
     let ga = parse_ga(
-        "GroupAddress/Address",
-        &require(e, b"Address", "GroupAddress")?,
+        "GroupAddresses/Group/Address",
+        &require(e, b"Address", "Group")?,
     )?;
-    let key = raw_key(e, b"Key", "GroupAddress/Key")?;
+    let key = decrypt_key(e, b"Key", "GroupAddresses/Group/Key", keyring_key, iv)?;
     Ok((ga, key))
 }
 
@@ -603,24 +690,35 @@ fn require(e: &BytesStart, key: &[u8], element: &str) -> Result<String, KeyringE
     })
 }
 
-/// Reads a base64 attribute and decodes it to a raw 16-byte [`Key16`] (§4.3:
-/// raw keys are base64 → 16 bytes directly, not run through `extract_password`).
-fn raw_key(e: &BytesStart, key: &[u8], attribute: &str) -> Result<Key16, KeyringError> {
+/// Reads an encrypted key attribute (`ToolKey`, `Backbone/@Key`, group `@Key`)
+/// and decrypts it to a 16-byte [`Key16`] (§4.2, §4.3).
+///
+/// The value is base64 of exactly one AES-128-CBC block (keyring key, IV from
+/// `Created`), with no prefix and no padding, so it is not run through
+/// [`extract_password`].
+fn decrypt_key(
+    e: &BytesStart,
+    key: &[u8],
+    attribute: &str,
+    keyring_key: &Key16,
+    iv: &[u8; KEY_LEN],
+) -> Result<Key16, KeyringError> {
     let b64 = require(e, key, attribute)?;
-    let bytes = BASE64
+    let ciphertext = BASE64
         .decode(b64.as_bytes())
         .map_err(|source| KeyringError::Base64 {
             attribute: attribute.to_string(),
             source,
         })?;
-    if bytes.len() != KEY_LEN {
+    if ciphertext.len() != KEY_LEN {
         return Err(KeyringError::BadKeyLength {
             attribute: attribute.to_string(),
-            found: bytes.len(),
+            found: ciphertext.len(),
         });
     }
+    let plaintext = Zeroizing::new(aes_cbc_decrypt(keyring_key, iv, &ciphertext)?);
     let mut arr = [0u8; KEY_LEN];
-    arr.copy_from_slice(&bytes);
+    arr.copy_from_slice(&plaintext[..KEY_LEN]);
     Ok(Key16::new(arr))
 }
 
@@ -717,8 +815,18 @@ fn parse_ia(attribute: &str, value: &str) -> Result<IndividualAddress, KeyringEr
     })
 }
 
-/// Parses a group address attribute value.
+/// Parses a group address attribute value: ETS writes the raw 16-bit integer
+/// (`2563`); the three-level form (`1/2/3`) is accepted too.
 fn parse_ga(attribute: &str, value: &str) -> Result<GroupAddress, KeyringError> {
+    if !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
+        return value
+            .parse::<u16>()
+            .map(GroupAddress::from_raw)
+            .map_err(|_| KeyringError::InvalidAttribute {
+                attribute: attribute.to_string(),
+                reason: format!("raw group address out of range: {value:?}"),
+            });
+    }
     value.parse().map_err(|_| KeyringError::InvalidAttribute {
         attribute: attribute.to_string(),
         reason: format!("not a group address: {value:?}"),
@@ -728,164 +836,220 @@ fn parse_ga(attribute: &str, value: &str) -> Result<GroupAddress, KeyringError> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bussard_secure::aes_cbc_encrypt;
 
-    const PASSWORD: &str = "test";
-    const CREATED: &str = "2024-01-02T03:04:05";
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    /// Base64-encodes a raw 16-byte key for embedding in a synthetic keyring.
-    fn b64_key(bytes: [u8; 16]) -> String {
-        BASE64.encode(bytes)
-    }
+    // SYNTHETIC fixtures, generated outside this crate by an independent
+    // implementation of the documented algorithm (spec §4) with a made-up
+    // password. They pin the byte layout: a regression in the canonicalization
+    // or the key decryption fails these, which self-signed fixtures cannot do.
+    // Never replace them with a real export.
+    const PASSWORD: &str = "synthetic-keyring-pw";
 
-    /// Encrypts a password into the keyring's encrypted-attribute base64 form:
-    /// an 8-byte prefix + the UTF-8 password + PKCS#7 padding, AES-CBC-encrypted
-    /// under the keyring key and the created-derived IV (spec §4.2, §4.3).
-    fn encrypt_password(plaintext: &str, keyring_key: &Key16, iv: &[u8; 16]) -> String {
-        let mut blob = Vec::new();
-        // 8-byte salt/prefix (arbitrary in a synthetic fixture).
-        blob.extend_from_slice(&[0xA5; EXTRACT_PREFIX_LEN]);
-        blob.extend_from_slice(plaintext.as_bytes());
-        // PKCS#7 pad to a 16-byte multiple.
-        let pad = 16 - (blob.len() % 16);
-        let pad = if pad == 0 { 16 } else { pad };
-        blob.extend(std::iter::repeat_n(pad as u8, pad));
-        let ct = aes_cbc_encrypt(keyring_key, iv, &blob).expect("synthetic encrypt");
-        BASE64.encode(ct)
-    }
+    /// An empty keyring (no children), the same shape as an ETS export of a
+    /// project without Secure devices.
+    const EMPTY: &str = r#"<Keyring Project="Synthetic" CreatedBy="bussard-test" Created="2026-01-02T03:04:05" Signature="w3ZTlYHQfH8/GYKciFYCkA==" xmlns="http://knx.org/xml/keyring/1" />"#;
 
-    /// Builds a synthetic `.knxkeys` document with known fake keys, computing the
-    /// signature via the same canonicalization the parser verifies (so it
-    /// round-trips by construction — spec §12.3).
-    fn synthetic_keyring(
-        tool_key: [u8; 16],
-        group_key: [u8; 16],
-        user_password: &str,
-        auth_password: &str,
-    ) -> String {
-        let keyring_key = pbkdf2_key(&latin1_bytes(PASSWORD), salt::KEYRING);
-        let iv = created_iv(CREATED);
-
-        let enc_pw = encrypt_password(user_password, &keyring_key, &iv);
-        let enc_auth = encrypt_password(auth_password, &keyring_key, &iv);
-        let backbone_key = b64_key([0x11; 16]);
-
-        // Build the document body without the Signature attribute first, then
-        // compute the signature over its canonical serialization, then splice
-        // the Signature into the root element.
-        let body = format!(
-            r#"<Keyring Project="Synthetic" Created="{CREATED}">
-  <Backbone Key="{backbone_key}" MulticastAddress="224.0.23.12" Latency="1000" />
-  <Interface Type="Tunneling" IndividualAddress="1.1.200" Host="1.1.0" UserID="2" Password="{enc_pw}" Authentication="{enc_auth}">
-    <Group Address="1/2/3" Senders="1.1.200" />
+    /// A keyring with a backbone, a tunnelling interface, one group key and one
+    /// device. Keys: backbone `0x11 * 16`, group 1/2/3 (raw 2563) `0x77 * 16`,
+    /// tool key `0x42 * 16`; interface password `tunnel-user-pw`, device
+    /// authentication `device-auth-pw`.
+    const FULL: &str = r#"<Keyring Project="Synthetic" CreatedBy="bussard-test" Created="2026-02-03T04:05:06" Signature="BwFnB3x3sq9qwzQsIIYDHQ==" xmlns="http://knx.org/xml/keyring/1">
+  <Backbone MulticastAddress="224.0.23.12" Latency="1000" Key="XXLSoIYX1PClHpjLLr06xw==" />
+  <Interface Type="Tunneling" Host="1.1.0" IndividualAddress="1.1.200" UserID="2" Password="CEuTO5HdZ/da1DOMrSJhAQZ94w6kq3rM2I2EFv/3fWw=" Authentication="fj0EBnFwaOJuRN85Aovn5Z8UU1ndm0p0F5tkraeg72Y=">
+    <Group Address="2563" Senders="1.1.10" />
   </Interface>
-  <Device IndividualAddress="1.1.10" ToolKey="{tool}" SequenceNumber="42" />
-  <GroupAddress Address="1/2/3" Key="{gkey}" />
-</Keyring>"#,
-            tool = b64_key(tool_key),
-            gkey = b64_key(group_key),
-        );
+  <GroupAddresses>
+    <Group Address="2563" Key="9gsADI4+cx1p65cAhr5GDA==" />
+  </GroupAddresses>
+  <Devices>
+    <Device IndividualAddress="1.1.10" ToolKey="4KejWFAOVLtfuK2uo4tiyA==" ManagementPassword="v66sERBaqXzGcl6zuAsdsA==" Authentication="Qoy1wZsb3MhAe+PdJd6p4uHl3mt02IukjeAPcy2BWrE=" SequenceNumber="42" />
+  </Devices>
+</Keyring>"#;
 
-        // Compute the signature over the canonical serialization of the body as
-        // written (the root element carries no Signature attribute yet, so it is
-        // naturally excluded).
-        let serialized = canonical_serialization(&body, &keyring_key).expect("canonicalize");
-        let sig = Sha256::digest(&serialized);
-        let sig_b64 = BASE64.encode(&sig[..16]);
+    fn keyring_key(password: &str) -> Key16 {
+        pbkdf2_key(&latin1_bytes(password), salt::KEYRING)
+    }
 
-        // Splice the Signature attribute into the root element.
-        body.replacen(
-            r#"<Keyring Project="Synthetic""#,
-            &format!(r#"<Keyring Signature="{sig_b64}" Project="Synthetic""#),
-            1,
-        )
+    /// Signs `body` (a keyring whose root has no `Signature`) with [`PASSWORD`]
+    /// by splicing the computed signature into the root start tag. Only for
+    /// structural tests; the byte layout itself is pinned by the fixtures.
+    fn sign(body: &str) -> Result<String, KeyringError> {
+        let serialized = canonical_serialization(body, &keyring_key(PASSWORD))?;
+        let sig = BASE64.encode(&Sha256::digest(serialized.as_slice())[..KEY_LEN]);
+        Ok(body.replacen("<Keyring ", &format!("<Keyring Signature=\"{sig}\" "), 1))
     }
 
     #[test]
-    fn test_parse_keyring_decrypts_tool_key() {
-        let tool_key = [0x42; 16];
-        let xml = synthetic_keyring(tool_key, [0x77; 16], "userpw", "authpw");
-        let keyring = parse_keyring(&xml, PASSWORD).expect("parse");
-        let ia: IndividualAddress = "1.1.10".parse().unwrap();
-        assert_eq!(keyring.tool_key(ia).map(|k| *k.bytes()), Some(tool_key));
-        assert_eq!(keyring.devices[0].seq, 42);
+    fn test_canonical_serialization_empty_keyring_layout() -> TestResult {
+        let key = keyring_key(PASSWORD);
+        let mut expected = vec![ELEMENT_START];
+        // Element name, then attributes sorted by name; Signature and xmlns
+        // are excluded. Each string is one length byte plus its bytes.
+        for s in [
+            "Keyring",
+            "Created",
+            "2026-01-02T03:04:05",
+            "CreatedBy",
+            "bussard-test",
+            "Project",
+            "Synthetic",
+        ] {
+            expected.push(u8::try_from(s.len())?);
+            expected.extend_from_slice(s.as_bytes());
+        }
+        expected.push(ELEMENT_END);
+        let key_b64 = BASE64.encode(key.bytes());
+        expected.push(u8::try_from(key_b64.len())?);
+        expected.extend_from_slice(key_b64.as_bytes());
+
+        let serialized = canonical_serialization(EMPTY, &key)?;
+        assert_eq!(serialized.as_slice(), expected.as_slice());
+        Ok(())
     }
 
     #[test]
-    fn test_parse_keyring_extracts_user_password() {
-        let xml = synthetic_keyring([0x42; 16], [0x77; 16], "userpw", "authpw");
-        let keyring = parse_keyring(&xml, PASSWORD).expect("parse");
-        // The parser should derive user_key = pbkdf2(user_password, USER_PASSWORD).
-        let expected = pbkdf2_key(&latin1_bytes("userpw"), salt::USER_PASSWORD);
-        assert_eq!(keyring.interfaces.len(), 1);
-        assert_eq!(keyring.interfaces[0].user_key.bytes(), expected.bytes());
-        // And device_auth = pbkdf2(auth_password, DEVICE_AUTHENTICATION_CODE).
-        let expected_auth = pbkdf2_key(&latin1_bytes("authpw"), salt::DEVICE_AUTHENTICATION_CODE);
-        assert_eq!(
-            keyring.interfaces[0].device_auth.bytes(),
-            expected_auth.bytes()
-        );
-        assert_eq!(keyring.interfaces[0].user_id, 2);
-        assert_eq!(keyring.interfaces[0].host, Some("1.1.0".parse().unwrap()));
-        // The child <Group> sending GA was captured.
-        assert_eq!(keyring.interfaces[0].gas, vec!["1/2/3".parse().unwrap()]);
+    fn test_parse_keyring_empty_verifies() -> TestResult {
+        let keyring = parse_keyring(EMPTY, PASSWORD)?;
+        assert_eq!(keyring.project, "Synthetic");
+        assert_eq!(keyring.created, "2026-01-02T03:04:05");
+        assert!(keyring.backbone.is_none());
+        assert!(keyring.interfaces.is_empty());
+        assert!(keyring.devices.is_empty());
+        assert!(keyring.group_keys.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn test_parse_keyring_reads_group_and_backbone_keys() {
-        let group_key = [0x77; 16];
-        let xml = synthetic_keyring([0x42; 16], group_key, "userpw", "authpw");
-        let keyring = parse_keyring(&xml, PASSWORD).expect("parse");
-        let ga: GroupAddress = "1/2/3".parse().unwrap();
-        assert_eq!(keyring.group_key(ga).map(|k| *k.bytes()), Some(group_key));
-        let backbone = keyring.backbone.expect("backbone present");
+    fn test_parse_keyring_attribute_order_is_irrelevant() -> TestResult {
+        // The canonical form sorts attributes, so a reordered root verifies.
+        let reordered = r#"<Keyring xmlns="http://knx.org/xml/keyring/1" Signature="w3ZTlYHQfH8/GYKciFYCkA==" Created="2026-01-02T03:04:05" Project="Synthetic" CreatedBy="bussard-test"></Keyring>"#;
+        parse_keyring(reordered, PASSWORD)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_keyring_full_decrypts_keys() -> TestResult {
+        let keyring = parse_keyring(FULL, PASSWORD)?;
+        assert_eq!(keyring.created, "2026-02-03T04:05:06");
+
+        let backbone = keyring.backbone.as_ref().ok_or("backbone missing")?;
         assert_eq!(backbone.key.bytes(), &[0x11; 16]);
         assert_eq!(backbone.multicast, Ipv4Addr::new(224, 0, 23, 12));
         assert_eq!(backbone.latency_ms, 1000);
+
+        let ga: GroupAddress = "1/2/3".parse()?;
+        assert_eq!(keyring.group_key(ga).map(|k| *k.bytes()), Some([0x77; 16]));
+        assert_eq!(keyring.group_keys.len(), 1);
+
+        let ia: IndividualAddress = "1.1.10".parse()?;
+        assert_eq!(keyring.tool_key(ia).map(|k| *k.bytes()), Some([0x42; 16]));
+        assert_eq!(keyring.devices.len(), 1);
+        assert_eq!(keyring.devices[0].seq, 42);
+        Ok(())
     }
 
     #[test]
-    fn test_parse_keyring_signature_verifies() {
-        // A well-formed synthetic keyring verifies with the correct password.
-        let xml = synthetic_keyring([0x42; 16], [0x77; 16], "userpw", "authpw");
-        assert!(parse_keyring(&xml, PASSWORD).is_ok());
+    fn test_parse_keyring_full_decrypts_interface_passwords() -> TestResult {
+        let keyring = parse_keyring(FULL, PASSWORD)?;
+        assert_eq!(keyring.interfaces.len(), 1);
+        let iface = &keyring.interfaces[0];
+        assert_eq!(iface.ia, "1.1.200".parse()?);
+        assert_eq!(iface.host, Some("1.1.0".parse()?));
+        assert_eq!(iface.user_id, 2);
+        let expected_user = pbkdf2_key(&latin1_bytes("tunnel-user-pw"), salt::USER_PASSWORD);
+        let user_key = iface.user_key.as_ref().ok_or("user key missing")?;
+        assert_eq!(user_key.bytes(), expected_user.bytes());
+        let expected_auth = pbkdf2_key(
+            &latin1_bytes("device-auth-pw"),
+            salt::DEVICE_AUTHENTICATION_CODE,
+        );
+        let device_auth = iface.device_auth.as_ref().ok_or("device auth missing")?;
+        assert_eq!(device_auth.bytes(), expected_auth.bytes());
+        // The interface's <Group> child is a sending GA, not a group key.
+        assert_eq!(iface.gas, vec!["1/2/3".parse::<GroupAddress>()?]);
+        Ok(())
     }
 
     #[test]
     fn test_parse_keyring_wrong_password() {
-        let xml = synthetic_keyring([0x42; 16], [0x77; 16], "userpw", "authpw");
-        let err = parse_keyring(&xml, "wrong-password").unwrap_err();
+        for xml in [EMPTY, FULL] {
+            let err = parse_keyring(xml, "wrong-password").err();
+            assert!(
+                matches!(err, Some(KeyringError::SignatureMismatch)),
+                "expected SignatureMismatch, got {err:?}"
+            );
+        }
+        let message = KeyringError::SignatureMismatch.to_string();
+        assert!(message.starts_with("wrong keyring password"), "{message}");
+    }
+
+    #[test]
+    fn test_parse_keyring_tampered_content() {
+        // Change a signed attribute value; the signature no longer verifies.
+        let tampered = FULL.replacen("1.1.10\" ToolKey", "1.1.11\" ToolKey", 1);
+        assert_ne!(tampered, FULL);
+        let err = parse_keyring(&tampered, PASSWORD).err();
         assert!(
-            matches!(err, KeyringError::SignatureMismatch),
+            matches!(err, Some(KeyringError::SignatureMismatch)),
             "expected SignatureMismatch, got {err:?}"
         );
     }
 
     #[test]
-    fn test_parse_keyring_tampered_signature() {
-        let xml = synthetic_keyring([0x42; 16], [0x77; 16], "userpw", "authpw");
-        // Flip a character inside the Device element (a signed attribute value),
-        // which invalidates the signature.
-        let tampered = xml.replacen("1.1.10", "1.1.11", 1);
-        let err = parse_keyring(&tampered, PASSWORD).unwrap_err();
+    fn test_parse_keyring_malformed_xml_is_a_parse_error() {
+        // A broken file must not be reported as a wrong password.
+        let broken = FULL.replacen("</Devices>", "</Devicez>", 1);
+        let err = parse_keyring(&broken, PASSWORD).err();
         assert!(
-            matches!(err, KeyringError::SignatureMismatch),
-            "expected SignatureMismatch, got {err:?}"
+            matches!(err, Some(KeyringError::Xml(_))),
+            "expected Xml, got {err:?}"
+        );
+        let err = parse_keyring("<Keyring Created=\"x\" />", PASSWORD).err();
+        assert!(
+            matches!(err, Some(KeyringError::MissingAttribute { .. })),
+            "expected MissingAttribute, got {err:?}"
         );
     }
 
     #[test]
-    fn test_extract_password_strips_prefix_and_padding() {
+    fn test_parse_keyring_usb_interface_without_credentials() -> TestResult {
+        let xml = sign(
+            r#"<Keyring Project="P" Created="2026-03-04T05:06:07"><Interface Type="USB" IndividualAddress="1.1.254" /></Keyring>"#,
+        )?;
+        let keyring = parse_keyring(&xml, PASSWORD)?;
+        assert_eq!(keyring.interfaces.len(), 1);
+        assert!(keyring.interfaces[0].user_key.is_none());
+        assert!(keyring.interfaces[0].device_auth.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_push_framed_rejects_long_strings() {
+        let mut out = Vec::new();
+        let long = vec![b'a'; MAX_FRAMED_LEN + 1];
+        assert!(matches!(
+            push_framed(&mut out, &long, "value"),
+            Err(KeyringError::FramedTooLong { len: 256, .. })
+        ));
+    }
+
+    #[test]
+    fn test_parse_ga_accepts_raw_and_three_level() -> TestResult {
+        assert_eq!(parse_ga("a", "2563")?, "1/2/3".parse()?);
+        assert_eq!(parse_ga("a", "1/2/3")?, "1/2/3".parse()?);
+        assert!(parse_ga("a", "70000").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_extract_password_strips_prefix_and_padding() -> TestResult {
         // 8-byte prefix + "hi" + PKCS#7 pad of 6.
         let mut blob = vec![0u8; 8];
         blob.extend_from_slice(b"hi");
         blob.extend(std::iter::repeat_n(6u8, 6));
-        assert_eq!(
-            extract_password(&blob, "test")
-                .expect("valid padding")
-                .as_str(),
-            "hi"
-        );
+        assert_eq!(extract_password(&blob, "test")?.as_str(), "hi");
+        Ok(())
     }
 
     /// Regression: the pad length was read with `.expect()` (the only
@@ -894,7 +1058,7 @@ mod tests {
     /// as "the password" — and an inconsistent pad were both accepted, turning a
     /// wrong password into a silently wrong derived key.
     #[test]
-    fn test_extract_password_rejects_invalid_pkcs7_padding() {
+    fn test_extract_password_rejects_invalid_pkcs7_padding() -> TestResult {
         let with_pad = |pad: &[u8]| {
             let mut blob = vec![0u8; EXTRACT_PREFIX_LEN];
             blob.extend_from_slice(b"hi");
@@ -946,12 +1110,8 @@ mod tests {
         let mut full = vec![0u8; EXTRACT_PREFIX_LEN];
         full.extend_from_slice(b"hi");
         full.extend(std::iter::repeat_n(16u8, 16));
-        assert_eq!(
-            extract_password(&full, "test")
-                .expect("a full pad block is valid")
-                .as_str(),
-            "hi"
-        );
+        assert_eq!(extract_password(&full, "test")?.as_str(), "hi");
+        Ok(())
     }
 
     #[test]
@@ -963,13 +1123,14 @@ mod tests {
     }
 
     #[test]
-    fn test_debug_redacts_keys() {
-        let xml = synthetic_keyring([0xAB; 16], [0xCD; 16], "userpw", "authpw");
-        let keyring = parse_keyring(&xml, PASSWORD).expect("parse");
+    fn test_debug_redacts_keys() -> TestResult {
+        let keyring = parse_keyring(FULL, PASSWORD)?;
         let rendered = format!("{keyring:?}");
-        assert!(rendered.contains("<redacted>") || rendered.contains("redacted"));
-        // No raw key byte value should leak.
-        assert!(!rendered.contains("ab, ab"));
-        assert!(!rendered.contains("171"));
+        assert!(rendered.contains("<redacted>"));
+        // No raw key byte value should leak (0x42 = 66, 0x11 = 17, 0x77 = 119).
+        for leak in ["66, 66", "17, 17", "119, 119", "0x42", "[66"] {
+            assert!(!rendered.contains(leak), "leaked {leak}");
+        }
+        Ok(())
     }
 }

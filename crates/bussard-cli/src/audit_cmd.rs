@@ -87,7 +87,7 @@ fn keyring_devices(path: &Path) -> anyhow::Result<Vec<IndividualAddress>> {
     let xml = std::fs::read_to_string(path)
         .with_context(|| format!("reading keyring {}", path.display()))?;
     let keyring = bussard_project::parse_keyring(&xml, &password)
-        .with_context(|| format!("parsing keyring {}", path.display()))?;
+        .with_context(|| format!("loading keyring {}", path.display()))?;
     Ok(keyring.devices.iter().map(|d| d.ia).collect())
 }
 
