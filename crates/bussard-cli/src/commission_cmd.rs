@@ -397,6 +397,7 @@ fn commission_one(
             dir,
             true,
             false,
+            false,
             options.allow_remote_gateway,
             None,
             tool_key_source,

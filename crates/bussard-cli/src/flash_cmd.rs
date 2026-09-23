@@ -289,7 +289,7 @@ pub fn run(
     {
         read_current_parameters(
             &runtime,
-            config.clone(),
+            handle,
             target,
             &plan,
             bcu_key,
@@ -914,7 +914,7 @@ pub struct FlashOutput {
 #[allow(clippy::too_many_arguments)]
 fn read_current_parameters(
     runtime: &tokio::runtime::Runtime,
-    config: bussard_transport::ConnectionConfig,
+    handle: &BusHandle,
     target: IndividualAddress,
     plan: &FlashPlan,
     bcu_key: Option<u32>,
@@ -922,14 +922,9 @@ fn read_current_parameters(
     secure_seq: bussard_secure::SequenceHighWater,
 ) -> CurrentMemory {
     let result: anyhow::Result<CurrentMemory> = runtime.block_on(async {
-        let (handle, _task) = Bus::connect(config);
-        if !handle
-            .wait_connected(std::time::Duration::from_secs(10))
-            .await
-        {
-            return Ok(CurrentMemory::new());
-        }
-        let source = ops::group_source(&handle);
+        // Runs over the command's tunnel: the lease below serialises it against
+        // the pre-flight and write phases, so no second tunnel is opened.
+        let source = ops::group_source(handle);
         let lease = handle.lease().await.context("leasing the bus")?;
         let channel = LeaseChannel::new(lease);
         let secure = crate::secure_key::layer(&tool_key, &secure_seq);
@@ -951,7 +946,6 @@ fn read_current_parameters(
             }
             Err(_) => CurrentMemory::new(),
         };
-        let _ = handle.close().await;
         anyhow::Ok(current)
     });
     match result {
