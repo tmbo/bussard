@@ -362,6 +362,7 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
                 address: self.target,
             });
         }
+        self.ensure_secure_sync().await?;
         self.last_send_apci = apci;
         let seq = self.send_seq;
         let tpci_octet = tpci::ndt(seq);
@@ -371,13 +372,20 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
         let (wire_apci, wire_data) =
             self.secure
                 .wrap_outgoing(self.target, self.source, tpci_octet, apci, data)?;
-        let frame = CemiFrame::t_data_connected(
-            self.target,
-            self.source,
-            tpci_octet,
-            wire_apci,
-            &wire_data,
-        );
+        self.send_numbered(tpci_octet, wire_apci, &wire_data).await
+    }
+
+    /// Sends one numbered data telegram with the already-final `(wire_apci,
+    /// wire_data)` and waits for its `T_ACK`, retransmitting on timeout or NAK.
+    async fn send_numbered(
+        &mut self,
+        tpci_octet: u8,
+        wire_apci: u16,
+        wire_data: &[u8],
+    ) -> Result<()> {
+        let seq = self.send_seq;
+        let frame =
+            CemiFrame::t_data_connected(self.target, self.source, tpci_octet, wire_apci, wire_data);
 
         let mut attempt = 0;
         loop {
@@ -415,6 +423,53 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
                     attempt += 1;
                 }
             }
+        }
+    }
+
+    /// Runs the KNX Data Secure S-A_Sync handshake once per connection, before
+    /// the first wrapped APDU (spec §6.3).
+    ///
+    /// ETS opens every secured tool-access connection this way (secure-1-1-12
+    /// capture, 2026-09-23): an S-A_Sync_Req (SCF `0x92`) as a numbered data
+    /// telegram, the device's S-A_Sync_Res (SCF `0x93`), then S-A_Data frames
+    /// whose first sequence is the one the Sync_Res hands back. A plain layer, or
+    /// one already synced, returns immediately.
+    ///
+    /// # Errors
+    ///
+    /// A device that T_ACKs the request but never answers with a verifiable
+    /// Sync_Res surfaces as [`MgmtError::Secure`] with
+    /// [`AsduError::SyncUnanswered`](bussard_secure::AsduError::SyncUnanswered);
+    /// a device that does not even acknowledge it is reported absent as usual.
+    async fn ensure_secure_sync(&mut self) -> Result<()> {
+        if !self.secure.needs_sync() {
+            return Ok(());
+        }
+        let tpci_octet = tpci::ndt(self.send_seq);
+        let (wire_apci, wire_data) =
+            self.secure
+                .sync_request(self.target, self.source, tpci_octet)?;
+        self.last_send_apci = wire_apci;
+        self.send_numbered(tpci_octet, wire_apci, &wire_data)
+            .await?;
+        let unanswered = |address| MgmtError::Secure {
+            address,
+            source: bussard_secure::AsduError::SyncUnanswered,
+        };
+        match self.recv_response().await {
+            Ok(_) if self.secure.is_synced() => Ok(()),
+            Ok((apci, _)) => {
+                tracing::debug!(
+                    target = %self.target,
+                    apci = format_args!("{apci:#05x}"),
+                    "device answered the Data Secure sync request with something else"
+                );
+                Err(unanswered(self.target))
+            }
+            Err(MgmtError::MidSessionSilence { .. } | MgmtError::NoResponse { .. }) => {
+                Err(unanswered(self.target))
+            }
+            Err(other) => Err(other),
         }
     }
 
@@ -474,6 +529,7 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
                 address: self.target,
             });
         }
+        self.ensure_secure_sync().await?;
         self.last_send_apci = apci;
         let seq = self.send_seq;
         let tpci_octet = tpci::ndt(seq);
@@ -1884,6 +1940,84 @@ mod tests {
         }
     }
 
+    /// A scripted bus that also plays the device side of the S-A_Sync handshake:
+    /// when the tool sends an S-A_Sync_Req it decodes it with `key` and queues the
+    /// device's T_ACK and S-A_Sync_Res (device transport sequence 0) in front of
+    /// the scripted inbox. Scripted frames therefore use tool sequence 1 and
+    /// device sequence 1 onwards, exactly like the ETS capture.
+    struct SyncingBus {
+        inner: ScriptedBus,
+        key: [u8; 16],
+        /// The device's next Data Secure send sequence, reported in the Sync_Res.
+        device_sequence: u64,
+        /// When false the device T_ACKs the Sync_Req but never answers it.
+        answer: bool,
+    }
+
+    impl SyncingBus {
+        fn new(key: [u8; 16], inbox: Vec<CemiFrame>) -> Self {
+            SyncingBus {
+                inner: ScriptedBus::new(inbox),
+                key,
+                device_sequence: 1,
+                answer: true,
+            }
+        }
+
+        fn sent(&self) -> &[CemiFrame] {
+            &self.inner.sent
+        }
+    }
+
+    impl BusConnection for SyncingBus {
+        async fn send(&mut self, frame: CemiFrame) -> bussard_transport::Result<()> {
+            if let (Tpci::Other(t), Apdu::Other { apci, data }) = (&frame.tpci, &frame.apdu) {
+                if *apci == A_SECURE_DATA && data.first() == Some(&0x92) {
+                    let req_addr = TpAddressing {
+                        source: frame.source.raw(),
+                        destination: dev().raw(),
+                        address_type_group: false,
+                        extended_frame_format: 0,
+                        tpci: *t,
+                    };
+                    let key = Key16::new(self.key);
+                    if let Ok((_, req)) = asdu::decode_sync_req(&key, data, &req_addr) {
+                        let mut front = vec![control_from_dev(tpci::t_ack((t >> 2) & 0x0F))];
+                        if self.answer {
+                            let res = asdu::encode_sync_res(
+                                &key,
+                                bussard_secure::Scf::tool_sync(
+                                    bussard_secure::SecureService::SyncRes,
+                                ),
+                                &asdu::SyncResponse {
+                                    responder_sequence: Sequence::new(self.device_sequence),
+                                    requester_sequence: req.sequence,
+                                },
+                                &req.challenge,
+                                Sequence::new(0x0000_1234_5678),
+                                &dev_to_tool_addr(tpci::ndt(0)),
+                            )
+                            .map_err(|_| bussard_transport::TransportError::Closed)?;
+                            front.push(ndt_from_dev(0, A_SECURE_DATA, &res));
+                        }
+                        for f in front.into_iter().rev() {
+                            self.inner.inbox.push_front(f);
+                        }
+                    }
+                }
+            }
+            self.inner.send(frame).await
+        }
+
+        async fn recv(&mut self) -> bussard_transport::Result<TimestampedFrame> {
+            self.inner.recv().await
+        }
+
+        async fn close(self) -> bussard_transport::Result<()> {
+            Ok(())
+        }
+    }
+
     /// PLAIN PATH BYTE-IDENTITY: a plain connection emits NO A_SecureData
     /// (`0x03F1`) anywhere on the wire — the sent APDU is exactly the caller's.
     #[tokio::test]
@@ -1912,33 +2046,34 @@ mod tests {
     /// A_SecureData (`0x03F1`) with a valid SCF, 6-byte sequence, and MAC; the
     /// device (a peer session with the same tool key) decodes it exactly.
     #[tokio::test]
-    async fn activated_path_wraps_management_apdu() {
+    async fn activated_path_wraps_management_apdu() -> Result<()> {
         let key = [0x24u8; 16];
-        // Device-side session that will unwrap the tool's request and build the
-        // secured response, sharing the tool key.
-        let mut device = DataSecureSession::new(Key16::new(key));
+        // Device-side session that builds the secured response, sharing the
+        // tool key. Its sequence starts above the Sync_Res's device sequence (1).
+        let mut device =
+            DataSecureSession::new(Key16::new(key)).with_send_sequence(Sequence::new(1));
 
         // The tool's secure layer with a fixed starting sequence.
         let tool_session =
             DataSecureSession::new(Key16::new(key)).with_send_sequence(Sequence::new(1000));
         let secure = crate::secure::SecureLayer::activated(tool_session);
 
-        // Build the secured RESPONSE the device will send back (inner =
-        // A_DeviceDescriptor_Response 0x340, data 07B0), from the device's own
-        // session, addressed device→tool at recv-seq 0's TPCI.
-        let resp_tpci = tpci::ndt(0);
-        let (resp_apci, resp_asdu) = {
-            // Wrap from the device session; addressing is device→tool.
-            let addr = dev_to_tool_addr(resp_tpci);
-            device.wrap(&addr, 0x340, &[0x07, 0xB0]).unwrap()
-        };
+        // The secured RESPONSE (inner = A_DeviceDescriptor_Response 0x340, data
+        // 07B0) at device transport sequence 1 (0 carried the Sync_Res).
+        let resp_tpci = tpci::ndt(1);
+        let (resp_apci, resp_asdu) = device
+            .wrap(&dev_to_tool_addr(resp_tpci), 0x340, &[0x07, 0xB0])
+            .map_err(|source| MgmtError::Secure {
+                address: dev(),
+                source,
+            })?;
         assert_eq!(resp_apci, A_SECURE_DATA);
 
         let inbox = vec![
-            control_from_dev(tpci::t_ack(0)),
-            ndt_from_dev(0, resp_apci, &resp_asdu),
+            control_from_dev(tpci::t_ack(1)),
+            ndt_from_dev(1, resp_apci, &resp_asdu),
         ];
-        let mut bus = ScriptedBus::new(inbox);
+        let mut bus = SyncingBus::new(key, inbox);
         let mut l4 = Layer4Connection::connect_with_secure(
             &mut bus,
             dev(),
@@ -1946,25 +2081,33 @@ mod tests {
             Timeouts::default(),
             secure,
         )
-        .await
-        .unwrap();
+        .await?;
 
-        // Send a plain-looking request; it must go out wrapped.
-        let (apci, data) = l4.request(0x300, &[0x00]).await.unwrap();
-        // The response is transparently unwrapped back to the inner APDU.
+        // Send a plain-looking request; it must go out wrapped, after the sync.
+        let (apci, data) = l4.request(0x300, &[0x00]).await?;
         assert_eq!(apci, 0x340);
         assert_eq!(data, vec![0x07, 0xB0]);
+        drop(l4);
 
-        // The request NDT on the wire is an A_SecureData, not the plain 0x300.
-        let request_ndt = bus
-            .sent
+        let numbered: Vec<&CemiFrame> = bus
+            .sent()
             .iter()
-            .find(|f| matches!(tpci::classify(f.tpci_octet()), TpciKind::NumberedData(_)))
-            .expect("a numbered request was sent");
-        let (wire_apci, wire_data) = match (&request_ndt.tpci, &request_ndt.apdu) {
-            (Tpci::Other(_), Apdu::Other { apci, data }) => (*apci, data.clone()),
-            other => panic!("expected Apdu::Other, got {other:?}"),
+            .filter(|f| matches!(tpci::classify(f.tpci_octet()), TpciKind::NumberedData(_)))
+            .collect();
+        assert_eq!(numbered.len(), 2, "Sync_Req, then the wrapped request");
+        let payload = |f: &CemiFrame| match (&f.tpci, &f.apdu) {
+            (Tpci::Other(_), Apdu::Other { apci, data }) => Some((*apci, data.clone())),
+            _ => None,
         };
+        let (sync_apci, sync_data) =
+            payload(numbered[0]).ok_or(MgmtError::Disconnected { address: dev() })?;
+        assert_eq!(sync_apci, A_SECURE_DATA);
+        assert_eq!(
+            sync_data[0], 0x92,
+            "the first numbered frame is S-A_Sync_Req"
+        );
+        let (wire_apci, wire_data) =
+            payload(numbered[1]).ok_or(MgmtError::Disconnected { address: dev() })?;
         assert_eq!(wire_apci, A_SECURE_DATA, "activated path must emit 0x03F1");
 
         // Decode the wrapped request from the device side and confirm the SCF,
@@ -1974,13 +2117,48 @@ mod tests {
             destination: dev().raw(),
             address_type_group: false,
             extended_frame_format: 0,
-            tpci: request_ndt.tpci_octet(),
+            tpci: numbered[1].tpci_octet(),
         };
-        let decoded = asdu::decode(&Key16::new(key), &wire_data, &req_addr).unwrap();
+        let decoded = asdu::decode(&Key16::new(key), &wire_data, &req_addr).map_err(|source| {
+            MgmtError::Secure {
+                address: dev(),
+                source,
+            }
+        })?;
         assert!(decoded.scf.tool_access, "tool-access SCF bit set");
+        // As in the ETS capture: the first S-A_Data reuses the Sync_Req's
+        // sequence, which the Sync_Res handed back.
         assert_eq!(decoded.sequence, Sequence::new(1000), "the seeded sequence");
+        assert_eq!(&sync_data[1..7], &Sequence::new(1000).to_bytes());
         assert_eq!(decoded.apci, 0x300);
         assert_eq!(decoded.data, vec![0x00]);
+        Ok(())
+    }
+
+    /// A device that T_ACKs the S-A_Sync_Req but never answers it surfaces as a
+    /// dedicated Data Secure error, not as "device absent".
+    #[tokio::test]
+    async fn activated_path_reports_an_unanswered_sync() -> Result<()> {
+        let key = [0x24u8; 16];
+        let secure = crate::secure::SecureLayer::activated(
+            DataSecureSession::new(Key16::new(key)).with_send_sequence(Sequence::new(1000)),
+        );
+        let mut bus = SyncingBus::new(key, Vec::new());
+        bus.answer = false;
+        let mut l4 =
+            Layer4Connection::connect_with_secure(&mut bus, dev(), tool(), fast(), secure).await?;
+        let err = l4.request(0x300, &[0x00]).await.err();
+        assert!(
+            matches!(
+                err,
+                Some(MgmtError::Secure {
+                    source: bussard_secure::AsduError::SyncUnanswered,
+                    ..
+                })
+            ),
+            "got {err:?}"
+        );
+        Ok(())
     }
 
     /// WIRE ROUND-TRIP: the peer must be able to rebuild the CCM nonce from the
@@ -1999,8 +2177,8 @@ mod tests {
             DataSecureSession::new(Key16::new(key)).with_send_sequence(Sequence::new(1000));
         let secure = crate::secure::SecureLayer::activated(tool_session);
 
-        let inbox = vec![control_from_dev(tpci::t_ack(0))];
-        let mut bus = ScriptedBus::new(inbox);
+        let inbox = vec![control_from_dev(tpci::t_ack(1))];
+        let mut bus = SyncingBus::new(key, inbox);
         let mut l4 = Layer4Connection::connect_with_secure(
             &mut bus,
             dev(),
@@ -2014,11 +2192,13 @@ mod tests {
             .await
             .unwrap();
 
+        drop(l4);
         let request = bus
-            .sent
+            .sent()
             .iter()
-            .find(|f| matches!(tpci::classify(f.tpci_octet()), TpciKind::NumberedData(_)))
-            .expect("a numbered request was sent");
+            .filter(|f| matches!(tpci::classify(f.tpci_octet()), TpciKind::NumberedData(_)))
+            .nth(1)
+            .expect("a numbered request was sent after the Sync_Req");
 
         // Round-trip through the wire encoding: this is exactly what a device
         // (or the simulator) receives.
@@ -2059,19 +2239,19 @@ mod tests {
             DataSecureSession::new(Key16::new(key)).with_send_sequence(Sequence::new(1000));
         let secure = crate::secure::SecureLayer::activated(tool_session);
 
-        let resp_tpci = tpci::ndt(0);
+        let resp_tpci = tpci::ndt(1);
         let (resp_apci, resp_asdu) = {
             let addr = dev_to_tool_addr(resp_tpci);
             evil.wrap(&addr, 0x340, &[0x07, 0xB0]).unwrap()
         };
 
         let inbox = vec![
-            control_from_dev(tpci::t_ack(0)),
-            ndt_from_dev(0, resp_apci, &resp_asdu),
+            control_from_dev(tpci::t_ack(1)),
+            ndt_from_dev(1, resp_apci, &resp_asdu),
             // After the bad response is rejected, the connection times out waiting
             // for a real one (empty inbox), which is fine for this assertion.
         ];
-        let mut bus = ScriptedBus::new(inbox);
+        let mut bus = SyncingBus::new(key, inbox);
         let mut l4 = Layer4Connection::connect_with_secure(&mut bus, dev(), tool(), fast(), secure)
             .await
             .unwrap();

@@ -1377,6 +1377,16 @@ impl Device {
         apdu: &Apdu,
     ) -> Result<DeviceReaction, DeviceError> {
         let tpci_int = Self::carrier_tpci_int(cemi);
+        // S-A_Sync_Req (SCF service 2): answer with S-A_Sync_Res as the real
+        // device does (secure-1-1-12 capture), before any S-A_Data.
+        if apdu
+            .data
+            .first()
+            .and_then(|&b| crate::secure::Scf::from_byte(b))
+            .is_some_and(|scf| scf.service == crate::secure::SecService::SyncReq)
+        {
+            return self.handle_sync_request(cemi, tpci_int, apdu);
+        }
         // The ASDU is the bytes after the two APCI bytes, i.e. apdu.data.
         let unwrapped = {
             let session = self
@@ -1467,6 +1477,45 @@ impl Device {
         Ok(DeviceReaction {
             responses: secured,
             did_master_reset: reaction.did_master_reset,
+        })
+    }
+
+    /// Answer an S-A_Sync_Req (spec §6.3): T_ACK it and send the S-A_Sync_Res as
+    /// a connected data telegram. A request that does not verify is dropped.
+    fn handle_sync_request(
+        &mut self,
+        cemi: &CemiLData,
+        tpci_int: u8,
+        apdu: &Apdu,
+    ) -> Result<DeviceReaction, DeviceError> {
+        let tool = cemi.source;
+        // Build the response carrier first so the ASDU's nonce context matches
+        // the frame that carries it (connected NDT with the device's sequence).
+        let mut resp = self.respond(tool, crate::secure::A_SECURE_DATA_APCI, &[]);
+        let resp_tpci_int = Self::carrier_tpci_int(&resp);
+        let asdu = {
+            let session = self
+                .secure
+                .as_mut()
+                .expect("handle_sync_request requires an activated session");
+            match session.answer_sync_request(cemi, tpci_int, &apdu.data, &resp, resp_tpci_int) {
+                Ok(asdu) => asdu,
+                Err(err) => {
+                    // The response sequence was reserved by `respond`; give it
+                    // back since nothing is sent.
+                    self.tx_seq = self.tx_seq.wrapping_sub(1) & 0x0F;
+                    return Err(err.into());
+                }
+            }
+        };
+        self.emit(Event::SecureFrame {
+            device: self.address,
+            summary: "SECURE recv S-A_Sync_Req, send S-A_Sync_Res".to_string(),
+        });
+        resp.tpdu.extend_from_slice(&asdu);
+        Ok(DeviceReaction {
+            responses: vec![resp],
+            did_master_reset: false,
         })
     }
 
