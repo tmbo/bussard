@@ -121,6 +121,58 @@ apply verified: address table Loaded (5 entries), association table Loaded (5 en
 
 `plan` is read-only on the bus. `apply` backs up the pre-state tables before any write; the tables are rewritten wholesale, so re-running `apply` after a failure is safe and idempotent. If the model already matches the device, `plan` prints `nothing to do` and `apply` exits 0.
 
+## ... undo a change?
+
+bussard keeps its own history, so undo does not need git. Every command that writes the model or the bus saves a full copy of the model files first.
+
+```console
+$ bussard status
+2 pending change(s) since snapshot 20260922T101112Z-001 (2026-09-22T10:11:12Z):
+
+Rocker 1 on Hallway push button now switches Porch light (0/0/4).
+Porch light (0/0/4) changes type from 1.001 to 1.002.
+
+Nothing has reached any device yet. Run `bussard plan <ia>` to check a device,
+`bussard apply <ia>` to write it, or `bussard undo` to put the files back.
+$ bussard history
+  1  20260922T100000Z-001  import home.knxproj (before writing the imported model)
+     the first snapshot of the model
+  2  20260922T101112Z-001  apply 1.1.5 → 192.0.2.10:3671 (before writing the device tables)
+     Rocker 1 on Hallway push button now switches Porch light (0/0/4) and 1 more
+$ bussard undo
+Restored the model files to snapshot 20260922T100000Z-001 (2026-09-22T10:00:00Z).
+The state before this undo is kept as snapshot 20260922T103000Z-001.
+
+Rocker 1 on Hallway push button no longer switches Porch light (0/0/4).
+
+Run `bussard plan 1.1.5` and `bussard apply 1.1.5` to push this to devices.
+```
+
+`undo` changes files only: the devices keep working exactly as before until you run `plan` and `apply`. The state before the undo is snapshotted too, so an undo can be undone. `bussard show 2` renders what one snapshot changed; `bussard status --raw` prints the file-level diff for anyone who does want to read YAML.
+
+An edit you make in an editor is not lost either: the next command records it as an `external edit` snapshot before doing anything else.
+
+## ... see what my assistant changed?
+
+Model edits made over MCP go through the same history, and every edit tool returns the change as sentences so the assistant can read them back to you before you agree. Afterwards:
+
+```console
+$ bussard status
+1 pending change(s) since snapshot 20260922T104500Z-001 (2026-09-22T10:45:00Z):
+
+Living room blind actuator, channel B, now listens to Central down (3/0/1).
+$ bussard history --json | jq '.[-1]'
+{
+  "index": 7,
+  "id": "20260922T104500Z-001",
+  "command": "mcp knx_add_link",
+  "args": ["1.1.4", "12", "3/0/1", "listen"],
+  "summary": "Living room blind actuator, channel B, now listens to Central down (3/0/1)"
+}
+```
+
+Nothing an assistant does over MCP reaches the bus: the model-edit tools write YAML files, and `plan`/`apply`/`flash` are CLI-only. A change touching a `protected: true` group address ends with "This group address is protected." and is sorted first, and the MCP tools refuse such a change outright. If you dislike what you see, `bussard undo`. To run the server without the edit tools at all, start it with `bussard mcp --no-model-edits`.
+
 ## ... clean stale links off a device?
 
 Same pair. A link left on the device by an earlier ETS download but absent from `links.yaml` shows up in the plan as a removal:
@@ -230,4 +282,4 @@ $ claude mcp add knx -- bussard mcp --dir knx --capture-db knx/captures/bus.db
 
 ## What goes in git?
 
-`bussard.yaml`, `groups.yaml`, `links.yaml`, and `devices/` are the source of truth and belong in the repo. Keep out: `vendor/` and `models/` (derived from copyrighted `.knxprod` files; `import-product` plants a `.gitignore`), `captures/` (`init` git-ignores it), and `.env` (secrets like `BUSSARD_PROJECT_PASSWORD`).
+Git is optional: `bussard history` and `bussard undo` work without it. If you do use git, `bussard.yaml`, `groups.yaml`, `links.yaml`, and `devices/` are the source of truth and belong in the repo. Keep out: `.bussard/` (bussard's own history, local to the machine; `init` git-ignores it), `vendor/` and `models/` (derived from copyrighted `.knxprod` files; `import-product` plants a `.gitignore`), `captures/` (`init` git-ignores it), and `.env` (secrets like `BUSSARD_PROJECT_PASSWORD`).

@@ -423,7 +423,8 @@ enum Command {
     /// Put the model files back to a history snapshot (files only, no devices).
     Undo {
         /// The snapshot to restore: its id, or its number from `bussard history`
-        /// (default: the one before the latest).
+        /// (default: the newest one that differs from the working files, which
+        /// reverts the last change).
         #[arg(value_name = "SNAPSHOT")]
         snapshot: Option<String>,
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
