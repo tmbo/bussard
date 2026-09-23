@@ -106,11 +106,20 @@ pub fn select_application<'a>(
     wanted: Option<&str>,
 ) -> std::result::Result<&'a ApplicationProgram, PlanError> {
     if let Some(id) = wanted {
-        return candidates
+        if let Some(app) = candidates.iter().find(|a| a.id == id) {
+            return Ok(app);
+        }
+        // The same program (manufacturer, number, version) under another
+        // build hash: a project names it with the hash of the product it was
+        // imported from (issue #142).
+        let same: Vec<&&ApplicationProgram> = candidates
             .iter()
-            .find(|a| a.id == id)
-            .copied()
-            .ok_or_else(|| PlanError::NoApplication(id.to_string()));
+            .filter(|a| same_program(&a.id, id))
+            .collect();
+        return match same.as_slice() {
+            [only] => Ok(only),
+            _ => Err(PlanError::NoApplication(id.to_string())),
+        };
     }
     match candidates {
         [only] => Ok(only),
@@ -123,6 +132,29 @@ pub fn select_application<'a>(
                 .collect::<Vec<_>>()
                 .join(", "),
         }),
+    }
+}
+
+/// Whether two application-program ids name the same program: the same
+/// manufacturer, application number and version, whatever the build hash and
+/// suffix (`M-0004_A-A011-13-400D-O000A` and `M-0004_A-A011-13-60BC-O000A`).
+///
+/// That triple is also all a device's `PID_PROGRAM_VERSION` records, so it is
+/// the identity every resident-application check compares; the hash only
+/// tells product-file builds apart (issue #142).
+pub fn same_program(a: &str, b: &str) -> bool {
+    fn program(id: &str) -> Option<(&str, &str, &str)> {
+        let (mfr, rest) = id.split_once("_A-")?;
+        let mut parts = rest.split('-');
+        Some((mfr, parts.next()?, parts.next()?))
+    }
+    match (program(a), program(b)) {
+        (Some(x), Some(y)) => {
+            x.0.eq_ignore_ascii_case(y.0)
+                && x.1.eq_ignore_ascii_case(y.1)
+                && x.2.eq_ignore_ascii_case(y.2)
+        }
+        _ => a == b,
     }
 }
 
@@ -1195,6 +1227,32 @@ mod tests {
     use crate::flash::labels::trace;
     use bussard_prod::application::ApplicationProgram;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn test_same_program_ignores_the_build_hash() {
+        assert!(same_program(
+            "M-0004_A-A011-13-400D-O000A",
+            "M-0004_A-A011-13-60BC-O000A"
+        ));
+        assert!(!same_program(
+            "M-0004_A-A011-12-400D-O000A",
+            "M-0004_A-A011-13-60BC-O000A"
+        ));
+        assert!(!same_program(
+            "M-0004_A-A011-13-60BC",
+            "M-0002_A-A011-13-60BC"
+        ));
+    }
+
+    #[test]
+    fn test_select_application_accepts_another_build_of_the_same_program() {
+        let mut other = fabricated_app();
+        other.id = "M-0004_A-A011-13-60BC-O000A".to_string();
+        let candidates = [&other];
+        let picked = select_application(&candidates, Some("M-0004_A-A011-13-400D-O000A"));
+        assert_eq!(picked.map(|a| a.id.as_str()).ok(), Some(other.id.as_str()));
+        assert!(select_application(&candidates, Some("M-0004_A-A011-14-400D-O000A")).is_err());
+    }
 
     #[test]
     fn plan_lowers_supported_procedure() {

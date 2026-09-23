@@ -206,7 +206,18 @@ pub(crate) fn run(ctx: Context<'_>) -> anyhow::Result<ExitCode> {
 
 /// The resident-application rule: the device must run the application the
 /// product file describes, and it must be `Loaded`.
-fn identity_gate(plan: &FlashPlan, resident: Option<&ResidentState>) -> Result<(), String> {
+///
+/// One rule for every caller that trusts the resident parameter layout (the
+/// parameter-only download and the `plan`/`reconstruct` read-back, issue
+/// #142). System B compares `PID_PROGRAM_VERSION` (manufacturer, application
+/// number and version: a product build with another hash is the same
+/// program). System 7 has no readable id: every load-state machine the
+/// application's procedure drives must be `Loaded`, and the caller samples the
+/// code segments with [`sys7_code_mismatch`].
+pub(crate) fn identity_gate(
+    plan: &FlashPlan,
+    resident: Option<&ResidentState>,
+) -> Result<(), String> {
     let Some(state) = resident else {
         return Err(
             "the pre-flight probe did not run, so the resident application is unknown".into(),
@@ -232,9 +243,20 @@ fn identity_gate(plan: &FlashPlan, resident: Option<&ResidentState>) -> Result<(
             // System 7 exposes no application id. Every load-state machine must
             // be Loaded; the code-segment comparison in `read_device` stands in
             // for the id.
+            let driven: std::collections::BTreeSet<u32> = plan
+                .steps
+                .iter()
+                .filter_map(|step| match step {
+                    FlashStep::Sys7StartLoading { lsm } => Some(*lsm),
+                    _ => None,
+                })
+                .collect();
             let unloaded: Vec<String> = state
                 .objects
                 .iter()
+                // An LSM the application's procedure never loads (the probe
+                // reads every one the mask defines) says nothing about it.
+                .filter(|o| driven.is_empty() || driven.contains(&u32::from(o.index)))
                 .filter(|o| o.state != bussard_mgmt::load::LoadState::Loaded)
                 .map(|o| format!("{} is {}", o.label(), o.state))
                 .collect();
@@ -301,7 +323,7 @@ const CODE_SAMPLE: usize = 32;
 /// readable application id, so resident code that differs is the evidence of a
 /// different application. `None` when every sampled segment matches, or when
 /// there is none to sample.
-async fn sys7_code_mismatch<Ch: bussard_mgmt::L4Channel>(
+pub(crate) async fn sys7_code_mismatch<Ch: bussard_mgmt::L4Channel>(
     l4: &mut bussard_mgmt::Layer4Connection<Ch>,
     plan: &FlashPlan,
 ) -> Option<String> {
@@ -661,6 +683,81 @@ mod tests {
         let err = identity_gate(&plan()?, Some(&st)).err().unwrap_or_default();
         assert!(err.contains("no answer"), "{err}");
         assert!(identity_gate(&plan()?, None).is_err());
+        Ok(())
+    }
+
+    /// A System 7 application (mask 0705) whose procedure loads LSMs 1 and 3.
+    fn sys7_plan() -> Result<FlashPlan, Box<dyn std::error::Error>> {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-0083_A-000E-23-0000" ApplicationNumber="14" ApplicationVersion="35"
+            MaskVersion="MV-0705" Name="S7" LoadProcedureStyle="ProductProcedure">
+          <Static>
+           <Code>
+            <AbsoluteSegment Id="M-0083_A-000E-23-0000_AS-1" Size="4" Address="16384"><Data>AAECAw==</Data></AbsoluteSegment>
+            <AbsoluteSegment Id="M-0083_A-000E-23-0000_AS-4" Size="2" Address="17408"><Data>BAU=</Data></AbsoluteSegment>
+           </Code>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlConnect />
+             <LdCtrlUnload LsmIdx="1" />
+             <LdCtrlUnload LsmIdx="3" />
+             <LdCtrlLoad LsmIdx="1" />
+             <LdCtrlAbsSegment LsmIdx="1" Address="16384" Size="4" />
+             <LdCtrlTaskSegment LsmIdx="1" Address="16384" />
+             <LdCtrlLoadCompleted LsmIdx="1" />
+             <LdCtrlLoad LsmIdx="3" />
+             <LdCtrlAbsSegment LsmIdx="3" Address="17408" Size="2" />
+             <LdCtrlTaskSegment LsmIdx="3" Address="17408" />
+             <LdCtrlLoadCompleted LsmIdx="3" />
+             <LdCtrlRestart />
+             <LdCtrlDisconnect />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-0083_A-000E-23-0000", xml.as_bytes())?;
+        Ok(plan_flash(
+            &app,
+            "1.1.32",
+            0x0705,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?)
+    }
+
+    fn lsm(index: u8, state: LoadState) -> ResidentObject {
+        ResidentObject {
+            index,
+            object_type: None,
+            state,
+        }
+    }
+
+    #[test]
+    fn test_identity_gate_system7_ignores_lsms_the_procedure_never_loads()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let plan = sys7_plan()?;
+        assert!(plan.is_sys7());
+        // LSM 2 and 5 are not the application's: their state does not matter.
+        let st = ResidentState {
+            objects: vec![
+                lsm(1, LoadState::Loaded),
+                lsm(2, LoadState::Unloaded),
+                lsm(3, LoadState::Loaded),
+                lsm(5, LoadState::Unloaded),
+            ],
+            ..ResidentState::default()
+        };
+        assert_eq!(identity_gate(&plan, Some(&st)), Ok(()));
+        // An application LSM that is not Loaded still refuses.
+        let st = ResidentState {
+            objects: vec![lsm(1, LoadState::Loaded), lsm(3, LoadState::Unloaded)],
+            ..ResidentState::default()
+        };
+        let err = identity_gate(&plan, Some(&st)).err().unwrap_or_default();
+        assert!(err.contains("not fully Loaded"), "{err}");
         Ok(())
     }
 

@@ -17,8 +17,8 @@
 use std::path::Path;
 
 use bussard_download::{
-    DecodedParameters, Freshness, ParamValue, assess_freshness, decode_parameters,
-    probe_resident_state, read_parameter_regions, regions_memory,
+    DecodedParameters, ParamValue, decode_parameters, probe_resident_state, read_parameter_regions,
+    regions_memory,
 };
 use bussard_mgmt::{L4Channel, Layer4Connection};
 use bussard_model::{IndividualAddress, Model};
@@ -94,16 +94,16 @@ fn select_app(
     order: Option<&str>,
 ) -> anyhow::Result<String> {
     if let Some(id) = application {
-        return product
-            .application_by_id(id)
+        let candidates: Vec<&ApplicationProgram> = product.applications.iter().collect();
+        return bussard_download::select_application(&candidates, Some(id))
             .map(|a| a.id.clone())
-            .ok_or_else(|| anyhow::anyhow!("no application program {id:?} in the product data"));
+            .map_err(|_| anyhow::anyhow!("no application program {id:?} in the product data"));
     }
-    if let Some(app) = device_product
-        .and_then(|p| p.application_ref.as_deref())
-        .and_then(|r| product.application_by_id(r))
-    {
-        return Ok(app.id.clone());
+    if let Some(wanted) = device_product.and_then(|p| p.application_ref.as_deref()) {
+        let candidates: Vec<&ApplicationProgram> = product.applications.iter().collect();
+        if let Ok(app) = bussard_download::select_application(&candidates, Some(wanted)) {
+            return Ok(app.id.clone());
+        }
     }
     if let Some(order) = order {
         if let Ok(app) = crate::flash_cmd::resolve_by_order_number(product, order) {
@@ -150,6 +150,11 @@ pub(crate) struct Readback {
     non_default: Vec<ReadingJson>,
     /// The parameters whose device value differs from the model.
     differences: Vec<DifferenceJson>,
+    /// The runtime-owned parameters (`Access="None"`, e.g. a download flag the
+    /// application resets after the restart): what the device holds, with no
+    /// verdict against the default or the model.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    device_managed: Vec<ReadingJson>,
     /// Why the read-back is partial or absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     note: Option<String>,
@@ -192,32 +197,15 @@ pub(crate) async fn read<Ch: L4Channel>(
         };
     let access = plan.sys7_lsm_access();
     let resident = probe_resident_state(l4, device_mask, access.as_ref()).await;
-    let runs_app = match assess_freshness(&resident, &plan.identity) {
-        Freshness::SameApplication { .. } => Ok(()),
-        // System 7 has no readable application id: accept a fully Loaded device.
-        Freshness::Resident { resident: None, .. }
-            if plan.is_sys7()
-                && resident
-                    .objects
-                    .iter()
-                    .all(|o| o.state == bussard_mgmt::load::LoadState::Loaded) =>
-        {
-            Ok(())
+    // The parameter-only download's rule: the same program (any build hash)
+    // on System B, every driven LSM Loaded and the product's code on System 7.
+    if let Err(why) = crate::flash_params::identity_gate(&plan, Some(&resident)) {
+        return Readback::noted(&app.id, format!("parameters not decoded: {why}"));
+    }
+    if plan.is_sys7() {
+        if let Some(why) = crate::flash_params::sys7_code_mismatch(l4, &plan).await {
+            return Readback::noted(&app.id, format!("parameters not decoded: {why}"));
         }
-        Freshness::Fresh => Err("the device holds no loaded application".to_string()),
-        Freshness::Resident {
-            resident: Some(id), ..
-        } => Err(format!("the device runs {id}")),
-        Freshness::Resident { resident: None, .. } => {
-            Err("the device's application id cannot be read".to_string())
-        }
-        Freshness::Unknown { reason } => Err(format!("its load state is unreadable ({reason})")),
-    };
-    if let Err(why) = runs_app {
-        return Readback::noted(
-            &app.id,
-            format!("parameters not decoded: {why}, not {}", app.id),
-        );
     }
     let regions = read_parameter_regions(l4, &plan).await;
     if regions.is_empty() {
@@ -226,28 +214,36 @@ pub(crate) async fn read<Ch: L4Channel>(
     let current = regions_memory(&regions);
     let (overrides, bases) = crate::flash_cmd::model_parameters(model, target);
     let decoded = decode_parameters(app, &overrides, &bases, &current);
+    let device_managed = decoded
+        .device_managed
+        .iter()
+        .cloned()
+        .map(reading_json)
+        .collect();
     let (non_default, differences) = report(decoded);
     Readback {
         application: app.id.clone(),
         non_default,
         differences,
+        device_managed,
         note: None,
+    }
+}
+
+/// One decoded value as a JSON report row.
+fn reading_json(r: bussard_download::ParamReading) -> ReadingJson {
+    ReadingJson {
+        key: r.key,
+        name: r.name,
+        value: r.value,
+        default: r.default,
+        unit: r.unit,
     }
 }
 
 /// The JSON report rows of a decoded parameter memory.
 fn report(decoded: DecodedParameters) -> (Vec<ReadingJson>, Vec<DifferenceJson>) {
-    let non_default = decoded
-        .non_default
-        .into_iter()
-        .map(|r| ReadingJson {
-            key: r.key,
-            name: r.name,
-            value: r.value,
-            default: r.default,
-            unit: r.unit,
-        })
-        .collect();
+    let non_default = decoded.non_default.into_iter().map(reading_json).collect();
     let differences = decoded
         .differences
         .into_iter()
@@ -278,6 +274,12 @@ pub(crate) fn print_text(readback: &Readback, target: IndividualAddress) {
     println!("\nparameters (application {}):", readback.application);
     if let Some(note) = &readback.note {
         println!("  note: {note}");
+    }
+    if !readback.device_managed.is_empty() {
+        println!("  device-managed (written by a download, owned by the application; no verdict):");
+        for r in &readback.device_managed {
+            println!("      {}: {}", r.name, with_unit(&r.value, &r.unit));
+        }
     }
     if readback.non_default.is_empty() && readback.differences.is_empty() {
         if readback.note.is_none() {

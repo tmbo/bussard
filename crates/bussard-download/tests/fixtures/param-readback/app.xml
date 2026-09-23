@@ -13,6 +13,8 @@
     6..7   module instance M-2 (BaseOffset 6): App-ID, delay
     8..9   setpoint (DPT 9 float)
     10..12 switch-off delay (packed seconds, minutes, hours)
+    13     download flag (Access="None": ETS writes 1, the application
+           resets it to 0 after the restart)
     14     template octet 0xAA, no parameter
 
   The module's display-only "intcomm" parameter takes its default from the
@@ -46,6 +48,7 @@
     <Parameter Id="A_P-2" Name="hidden" Text="Hidden" ParameterType="A_PT-1" Value="7"><Memory CodeSegment="A_RS-1" Offset="2" BitOffset="0" /></Parameter>
     <Parameter Id="A_P-7" Name="flag" Text="Flag" ParameterType="A_PT-3" Value="0"><Memory CodeSegment="A_RS-1" Offset="3" BitOffset="3" /></Parameter>
     <Parameter Id="A_P-5" Name="setpoint" Text="Setpoint" SuffixText="°C" ParameterType="A_PT-4" Value="21"><Memory CodeSegment="A_RS-1" Offset="8" BitOffset="0" /></Parameter>
+    <Parameter Id="A_P-8" Name="download" Text="Download flag" ParameterType="A_PT-1" Value="1" Access="None"><Memory CodeSegment="A_RS-1" Offset="13" BitOffset="0" /></Parameter>
     <Parameter Id="A_P-6" Name="delay" Text="Switch-off delay" SuffixText="s" ParameterType="A_PT-5" Value="300"><Memory CodeSegment="A_RS-1" Offset="10" BitOffset="0" /></Parameter>
    </Parameters>
    <ParameterRefs>
@@ -57,6 +60,7 @@
     <ParameterRef Id="A_P-7_R-7" RefId="A_P-7" />
     <ParameterRef Id="A_P-5_R-5" RefId="A_P-5" />
     <ParameterRef Id="A_P-6_R-6" RefId="A_P-6" />
+    <ParameterRef Id="A_P-8_R-8" RefId="A_P-8" />
    </ParameterRefs>
   </Static>
   <ModuleDefs>
@@ -91,6 +95,7 @@
     <ParameterRefRef RefId="A_P-7_R-7" />
     <ParameterRefRef RefId="A_P-5_R-5" />
     <ParameterRefRef RefId="A_P-6_R-6" />
+    <ParameterRefRef RefId="A_P-8_R-8" />
     <choose ParamRefId="A_P-1_R-1">
      <when test="0"><ParameterRefRef RefId="A_UP-3_R-3" /></when>
      <when test="1"><ParameterRefRef RefId="A_UP-4_R-4" /><ParameterRefRef RefId="A_P-2_R-2" /></when>
