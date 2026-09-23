@@ -140,6 +140,13 @@ size 256; object 3 (com-object table) → `0x8000`, size 148; object 2
 size 12. The device reports these bases via PID 7; the simulator assigns them
 deterministically so a tool that reads PID 7 gets a stable, real-looking map.
 
+A table only ever arrives this way. An `A_PropertyValue_Write` to `PID_TABLE`
+(PID 23) is **refused** with a zero-count `A_PropertyValue_Response`, exactly as
+a Jung F50 52911ST refused it on the physical campaign (issue #89). ETS never
+attempts that path either; only the lenient KNX Virtual stack accepts it, so a
+tool validated against KNX Virtual alone can ship a download no real device
+performs. The simulator takes the real device's side, with no opt-out.
+
 ## System 7 devices (mask 0705 / 0701)
 
 Alongside System B the simulator models a **System 7** device, the conformance

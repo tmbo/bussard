@@ -41,6 +41,17 @@ pub const PID_OBJECT_TYPE: u8 = 1;
 pub const PID_LOAD_STATE_CONTROL: u8 = 5;
 /// `PID_TABLE_REFERENCE` — the segment base address of a table object.
 pub const PID_TABLE_REFERENCE: u8 = 7;
+/// `PID_TABLE` (23) — the global "loadable table as a property array" PID.
+///
+/// **Read-only on a real device.** A loadable table (group address, association,
+/// group object) is realised in the object's allocated *segment*: a tool sizes
+/// the segment with an `AdditionalLoadControls` / `LdCtrlRelSegment` write, reads
+/// the placement from [`PID_TABLE_REFERENCE`], and streams the image (a
+/// big-endian `u16` element count followed by the elements) with
+/// `A_Memory_Write` / `A_MemoryExtended_Write`. Writing the table *through*
+/// PID 23 is not a download path any real device implements — see
+/// `Device::on_property_write`, which refuses it.
+pub const PID_TABLE: u8 = 23;
 /// `PID_MCB_TABLE` (27) — a loadable object's memory-control-block table. On
 /// System B it is a device-computed, read-only array of 8-octet entries, each an
 /// integrity block over a stored segment (size + a CRC the device computes). A

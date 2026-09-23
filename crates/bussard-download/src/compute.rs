@@ -162,10 +162,12 @@ pub fn compute_tables(links: &[Link]) -> DesiredTables {
 /// producing the full memory image a `WriteRelMem` streams.
 ///
 /// The read side (`bussard_mgmt::tables`) documents word 0 of every loadable
-/// table's memory image as the entry count; the flash path writes raw memory
-/// (not the `PID_TABLE` property array `bussard apply` uses, which prepends the
-/// count itself), so the count word must be part of the streamed bytes here.
-/// `count` is truncated to `u16` — no real table approaches 65 535 entries.
+/// table's memory image as the entry count. Both write paths stream that image
+/// into the object's allocated segment — the flash path through a `WriteRelMem`,
+/// `bussard apply` through `A_Memory_Write` / `A_MemoryExtended_Write` after its
+/// own `LdCtrlRelSegment` allocation — so the count word must be part of the
+/// streamed bytes here. `count` is truncated to `u16` — no real table approaches
+/// 65 535 entries.
 pub fn table_image_with_count(count: usize, elements: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(2 + elements.len());
     out.extend_from_slice(&(count as u16).to_be_bytes());

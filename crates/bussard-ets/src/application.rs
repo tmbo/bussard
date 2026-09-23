@@ -643,6 +643,15 @@ pub enum LoadOp {
         address: Option<u32>,
         /// Declared size in bytes.
         size: Option<u32>,
+        /// `Access` attribute: the segment's access-attribute octet as ETS puts
+        /// it into the allocation record (`242` = `0xF2`, `243` = `0xF3` on the
+        /// Jung System 7 apps).
+        access: Option<u32>,
+        /// `MemType` attribute: `2` = RAM, `3` = EEPROM.
+        mem_type: Option<u32>,
+        /// `SegFlags` attribute: `128` marks a checksum-controlled segment,
+        /// `0` a segment the application rewrites at runtime.
+        seg_flags: Option<u32>,
     },
     /// `<LdCtrlWriteRelMem …>`: write into relative (parameter) memory.
     WriteRelMem {
@@ -1779,6 +1788,9 @@ pub(crate) fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m
             lsm_idx: u(b"LsmIdx"),
             address: u(b"Address"),
             size: u(b"Size"),
+            access: u(b"Access"),
+            mem_type: u(b"MemType"),
+            seg_flags: u(b"SegFlags"),
         },
         b"LdCtrlWriteRelMem" => LoadOp::WriteRelMem {
             obj_idx: u(b"ObjIdx"),

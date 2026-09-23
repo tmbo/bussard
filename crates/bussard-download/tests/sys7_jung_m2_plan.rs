@@ -66,6 +66,7 @@ fn test_bussard_property_plan_matches_m2_jung_shape() {
         &BTreeMap::new(),
         &BTreeMap::new(),
         None,
+        &BTreeMap::new(),
     )
     .expect("Jung property-mode plan builds");
 
