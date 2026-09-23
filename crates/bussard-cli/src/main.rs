@@ -6,6 +6,7 @@ mod adopt_cmd;
 mod apply_cmd;
 mod assign_cmd;
 mod capture_cmd;
+mod commission_cmd;
 mod conn_cmd;
 mod describe_cmd;
 mod flash_cmd;
@@ -395,6 +396,55 @@ enum Command {
         /// escape hatch for a simulator or a device with a synthetic key. Prefer
         /// `--keyring` for a real installation: a process argument is visible to
         /// other users on the machine.
+        #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
+        tool_key: Option<String>,
+        /// Override the gateway `host[:port]` for tunneling.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Force KNXnet/IP routing (multicast) transport.
+        #[arg(long)]
+        routing: bool,
+        /// Permit a write to a non-loopback (real) gateway. Required for any
+        /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
+        #[arg(long)]
+        allow_remote_gateway: bool,
+    },
+    /// Bench mode: walk the model's devices on a line, prompt for each device's
+    /// programming button, verify its order number, assign its address, and
+    /// print a label (issue #100).
+    Commission {
+        /// The line to commission, e.g. `1.1`.
+        #[arg(long, value_name = "LINE")]
+        line: String,
+        /// Also flash each device's application program after assigning it.
+        #[arg(long)]
+        flash: bool,
+        /// Also apply the model's link tables after assigning (and flashing).
+        #[arg(long)]
+        apply: bool,
+        /// Append one label row per commissioned device to this CSV file
+        /// (columns `address;name;order_number;floor;room`).
+        #[arg(long, value_name = "FILE")]
+        labels: Option<PathBuf>,
+        /// The vendor `.knxprod` to flash from. Without it, `--flash` searches
+        /// `<dir>/vendor/` for an archive carrying the device's order number.
+        #[arg(long, value_name = "FILE", requires = "flash")]
+        product: Option<PathBuf>,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Skip the interactive confirmation (dangerous; for scripts).
+        #[arg(long)]
+        yes: bool,
+        /// Emit the JSON summary instead of the table.
+        #[arg(long)]
+        json: bool,
+        /// The ETS `.knxkeys` keyring holding each target's KNX Data Secure tool
+        /// key (issue #71), used by `--flash` and `--apply`.
+        #[arg(long, value_name = "FILE")]
+        keyring: Option<PathBuf>,
+        /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
+        /// escape hatch. Prefer `--keyring` for a real installation.
         #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
         tool_key: Option<String>,
         /// Override the gateway `host[:port]` for tunneling.
@@ -802,6 +852,38 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
                 }
             }
         }
+        Command::Commission {
+            line,
+            flash,
+            apply,
+            labels,
+            product,
+            dir,
+            yes,
+            json,
+            keyring,
+            tool_key,
+            gateway,
+            routing,
+            allow_remote_gateway,
+        } => commission_cmd::run(
+            &line,
+            &dir,
+            commission_cmd::CommissionOptions {
+                flash,
+                apply,
+                labels: labels.as_deref(),
+                product: product.as_deref(),
+                yes,
+                json,
+                allow_remote_gateway,
+            },
+            secure_key::ToolKeySource {
+                keyring: keyring.as_deref(),
+                tool_key: tool_key.as_deref(),
+            },
+            conn_cmd::ConnOverrides { gateway, routing },
+        ),
         Command::Validate { dir, format } => validate_cmd::run(&dir, format == Format::Json),
         Command::Init {
             dir,
