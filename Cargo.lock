@@ -315,6 +315,7 @@ dependencies = [
  "bussard-model",
  "bussard-monitor",
  "bussard-project",
+ "bussard-testkit",
  "bussard-transport",
  "rmcp",
  "serde",
