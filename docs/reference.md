@@ -176,7 +176,23 @@ Introspect a device over the bus: discover its interface objects and, for each, 
 | `--routing` | off | Force routing transport. |
 | `--skip-address-check` | off | Skip the pre-flight check that no bus device answers at bussard's own source address. See [SAFETY.md](SAFETY.md#source-address-check). |
 
-When the model marks the device secure-capable, the output carries a `KNX Secure:` line (and a `secure` object in `--json`, with `secure_capable` and the Data Secure state). A security-activated device refuses plain management access; pass its tool key with `--keyring` (or `--tool-key` for a test device) and `describe` runs over KNX Data Secure. The same two flags work on `flash` and `apply`. See [SAFETY.md](SAFETY.md#known-limitations) for what is verified.
+A security-activated device refuses plain management access; pass its tool key with `--keyring` (or `--tool-key` for a test device) and `describe` runs over KNX Data Secure. The same two flags work on `flash` and `apply`. See [SAFETY.md](SAFETY.md#known-limitations) for what is verified.
+
+An activated device still answers the plain `A_DeviceDescriptor_Read` and the PID 56 read, then refuses the interface-object walk. `describe` treats a walk that finds no interface object after a successful descriptor read as a failure, not an empty device: it exits 1 with the `--keyring` hint on stderr. System 1 (BCU1) devices have no interface objects and are exempt.
+
+The `--json` output has these fields:
+
+| Field | Present | Meaning |
+|---|---|---|
+| `address`, `mask`, `system_type` | always | The device and its mask version. |
+| `objects` | on success | The interface objects and their properties. Absent on a refused walk. |
+| `unsecured_management` | refused walk, no key | `"refused"`: the device answered the descriptor read but not the plain walk. |
+| `secured_management` | refused walk, with a key | `"unanswered"`: the secured walk returned no interface object. |
+| `error` | refused walk | The error message, with the KNX Secure hint. |
+| `secure.model` | the model has a security block | What the knxproj import recorded: `secure_capable`, `activated`, `has_fdsk_certificate`. An export made before ETS activated the device says `activated: false`. |
+| `secure.device` | model security, a tool key, or a refused walk | What the device did in this run: `plain_management` (`answered`, `refused`, or `not_attempted` when a key was given) and `secured_management` (`used`, `not_attempted` without a key, or `unanswered`). |
+
+The text output prints the same split as `KNX Secure (model):` and `KNX Secure (this run):` lines. No key material appears in either form.
 
 ### `bussard keyring <FILE>`
 
