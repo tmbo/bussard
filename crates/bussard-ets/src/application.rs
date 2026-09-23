@@ -430,6 +430,10 @@ pub struct Parameter {
     pub default: Option<String>,
     /// The `Access` attribute (`None`/`Read`/`ReadWrite`).
     pub access: Option<String>,
+    /// The `SuffixText` attribute: the unit ETS shows after the value field
+    /// (`"s"`, `"min"`, `"\u{b0}C"`). It is display metadata, not part of the
+    /// encoding, and is absent on most parameters.
+    pub suffix_text: Option<String>,
     /// The memory location this parameter's value occupies, if any.
     pub memory: Option<Memory>,
 }
@@ -1502,6 +1506,7 @@ fn insert_parameter_start(app: &mut ApplicationProgram, m: &Attrs) -> Option<Str
             parameter_type: get(m, b"ParameterType").map(str::to_string),
             default: get(m, b"Value").map(str::to_string),
             access: get(m, b"Access").map(str::to_string),
+            suffix_text: get(m, b"SuffixText").map(str::to_string),
             memory: None,
         },
     );

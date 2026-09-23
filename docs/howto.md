@@ -203,7 +203,19 @@ parameters:
   "windalarm-1@MD-1_M-3_MI-1_P-3_R-45": "1"
 ```
 
-Edit the value, then validate: with the device's product model generated (`import-product`), `validate` checks that the key exists and the value is in range (E016/E017). The new value reaches the device via `flash`, which recomputes the full parameter memory image from the vendor defaults plus your overrides. One caveat: a `.knxproj` re-import replaces the whole `parameters:` block with ETS truth, so make the change in ETS too if you still re-import.
+Edit the value, then validate: with the device's product model generated (`import-product`), `validate` checks that the key exists and the value is in range (E016/E017). The new value reaches the device via `flash`, which recomputes the full parameter memory image from the vendor defaults plus your overrides. Its pre-flight names each change in the vendor's words, with the value the device holds now:
+
+```console
+$ bussard flash 1.1.12 --product heating.knxprod --gateway 127.0.0.1:3671
+Flash plan for 1.1.12
+  ...
+  parameters  : 1 change(s):
+      Night setback: 18 °C to 17 °C
+  writes      : 312 byte(s) across 9 step(s), ~24 memory frame(s), est. 1.0s on TP1
+  procedure   : 9 step(s); re-run with -v for the memory-level plan
+```
+
+On a factory-fresh device there is nothing to read back, so the line reads `Night setback: unknown current value, will be 17 °C`. `--json` puts the same lines in a `parameters` array. One caveat: a `.knxproj` re-import replaces the whole `parameters:` block with ETS truth, so make the change in ETS too if you still re-import.
 
 ## ... let Claude debug the bus?
 

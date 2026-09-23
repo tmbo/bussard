@@ -4728,3 +4728,112 @@ async fn flash_with_a_wrong_tool_key_is_refused() {
     }
     gw.abort();
 }
+
+// --- Parameter-level plan (issue #109) ---------------------------------------
+
+/// Flashes the vendor defaults onto the mock, then plans a flash that changes the
+/// one parameter: the read-back must decode the device's current value and the
+/// parameter plan must show exactly one line, old value to new.
+#[tokio::test]
+async fn test_param_plan_one_changed_parameter_on_mock_device() {
+    let (mut bus, _state, handle) = setup(Fault::None).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+    let app = fabricated_app();
+
+    // 1. The device carries the vendor-default application (parameter = 7).
+    let default_plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    let l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    let mut session = authed_session(l4).await;
+    let outcome = flash(
+        &mut session,
+        &default_plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .unwrap();
+    let _ = session.into_disconnect().await;
+    assert!(outcome.ok(), "the default flash must verify: {outcome:?}");
+
+    // 2. The device file now changes the one parameter to 42.
+    let overrides = BTreeMap::from([("P-0_R-1".to_string(), "42".to_string())]);
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &overrides,
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+
+    // 3. Read the current parameter memory back (read-only) and diff.
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    l4.authorize_or_fail(0xFFFF_FFFF).await.unwrap();
+    let current = bussard_download::read_current_parameter_memory(&mut l4, &plan).await;
+    let _ = l4.disconnect().await;
+    assert_eq!(
+        current.get("M-1_A-1_RS-2").map(Vec::as_slice),
+        Some(&[7u8][..]),
+        "the read-back must return the parameter segment the device holds"
+    );
+
+    let params = bussard_download::param_plan(&app, &overrides, &BTreeMap::new(), &current);
+    assert_eq!(params.changes.len(), 1, "changes: {:?}", params.changes);
+    assert_eq!(params.changes[0].line(), "thr: 7 to 42");
+    assert_eq!(params.unknown, 0);
+    handle.abort();
+}
+
+/// On a factory-fresh mock nothing is loaded, so nothing is read back and the
+/// one changed parameter is listed with an unknown current value.
+#[tokio::test]
+async fn test_param_plan_fresh_mock_device_reports_unknown() {
+    let (mut bus, _state, handle) = setup(Fault::None).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+    let app = fabricated_app();
+    let overrides = BTreeMap::from([("P-0_R-1".to_string(), "42".to_string())]);
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &overrides,
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
+        .await
+        .unwrap();
+    l4.authorize_or_fail(0xFFFF_FFFF).await.unwrap();
+    let current = bussard_download::read_current_parameter_memory(&mut l4, &plan).await;
+    let _ = l4.disconnect().await;
+    assert!(
+        current.is_empty(),
+        "a fresh device has no segment to read: {current:?}"
+    );
+
+    let params = bussard_download::param_plan(&app, &overrides, &BTreeMap::new(), &current);
+    assert_eq!(params.changes.len(), 1);
+    assert_eq!(params.changes[0].old, bussard_download::ParamValue::Unknown);
+    assert_eq!(params.unknown, 1);
+    handle.abort();
+}

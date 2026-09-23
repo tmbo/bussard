@@ -170,6 +170,10 @@ The same pre-flight also checks the device is factory-fresh (issue #79), read-on
 | `--allow-remote-gateway` | off | Permit a flash to a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
+| `--json` | off | Print the pre-flight plan as JSON instead of the report. It carries a `parameters` array (`key`, `name`, `old`, `new`, `unit`; `old` is `null` when unreadable), the application identity, the write summary and the step trace. The confirmation and the flash itself are unchanged. |
+| `-v` | off | Show the memory-level plan (the step trace) and the raw override keys under the parameter-level plan. |
+
+The pre-flight report leads with the **parameter-level plan** (issue #109): one line per parameter the flash changes, named with the parameter text from the `.knxprod`, with old value, new value and unit (`Night setback: 18 °C to 17 °C`). Enumerations show the vendor's member text. The current values are read back, read-only, from the device's parameter segment when it already carries an application; on a factory-fresh device, or when a segment cannot be read, the line reads `unknown current value, will be <new>`. A parameter left at its vendor default is listed only when the device is known to hold something else. On System 7 the parameter diff is replaced by a note, and the memory-level plan is the authoritative one. The memory-level plan is always available with `-v`.
 
 The confirmation names the resolved gateway (`flash <app> to <target> via <host:port>?`).
 
