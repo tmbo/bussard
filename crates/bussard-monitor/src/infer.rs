@@ -902,6 +902,7 @@ mod tests {
                 flags: Flags::COMMUNICATION | Flags::TRANSMIT,
                 reference: None,
                 channel: Some("A".to_string()),
+                secure: false,
             },
         );
         let device = Device {

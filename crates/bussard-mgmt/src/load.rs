@@ -271,6 +271,34 @@ pub enum WriteError {
         context: LoadStateContext,
     },
 
+    /// The KNX Data Secure security interface object (type 17) did not reach
+    /// the load state a load-control command should leave it in (issue #156).
+    #[error(
+        "{address}: the Data Secure security object did not reach {expected} after {control} \
+         (device reports {actual})"
+    )]
+    SecurityObjectState {
+        /// The device.
+        address: IndividualAddress,
+        /// The control event sent.
+        control: LoadControl,
+        /// The state it should have reached.
+        expected: LoadState,
+        /// The state the device reported.
+        actual: LoadState,
+    },
+
+    /// The Data Secure security-object program could not be built for the
+    /// device (a secured group address without a key, a group object outside
+    /// the table). Nothing was written to the security object.
+    #[error("{address}: cannot program the Data Secure security object: {reason}")]
+    SecurityProgram {
+        /// The device.
+        address: IndividualAddress,
+        /// Why (names addresses and objects, never a key).
+        reason: String,
+    },
+
     /// The object went into `Error` during a load — recover with `Unload`/ETS.
     #[error(
         "{address}: object {object_index} entered the load Error state (a bad table or refused \

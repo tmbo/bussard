@@ -51,6 +51,7 @@ fn device_with_comobject(addr: &str, name: &str, dpt: Dpt) -> LoadedDevice {
             flags: Flags::default(),
             reference: None,
             channel: None,
+            secure: false,
         },
     );
     let device = Device {
@@ -96,6 +97,7 @@ fn test_reimport_preserves_hand_edits_and_refreshes_generated() -> anyhow::Resul
             dpt: Some(Dpt::new(1, Some(1))),
             description: None,
             protected: false,
+            secure: false,
         },
     );
     let base = model(
@@ -133,6 +135,7 @@ fn test_reimport_preserves_hand_edits_and_refreshes_generated() -> anyhow::Resul
             dpt: Some(Dpt::new(1, Some(1))),
             description: None,
             protected: false,
+            secure: false,
         },
     );
     let mut fresh_dev = device_with_comobject("1.1.4", "Switch Actuator", Dpt::new(5, Some(1)));
@@ -144,6 +147,7 @@ fn test_reimport_preserves_hand_edits_and_refreshes_generated() -> anyhow::Resul
             flags: Flags::default(),
             reference: None,
             channel: None,
+            secure: false,
         },
     );
     let fresh = model(vec![fresh_dev], fresh_groups);
@@ -290,6 +294,7 @@ fn test_reimport_takes_the_new_application_ref_with_the_new_tables() -> anyhow::
             flags: Flags::default(),
             reference: None,
             channel: Some("ch9".to_string()),
+            secure: false,
         },
     );
     let fresh = model(vec![fresh_dev], Groups::default());

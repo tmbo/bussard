@@ -44,7 +44,7 @@ use anyhow::{Context, bail};
 use bussard_download::backup::{backups_root, has_installation_backup};
 use bussard_download::{
     DesiredTables, PlanReport, Sys7LiveTables, Sys7TableImages, VerifyOutcome, plan,
-    sys7_table_images, write_tables,
+    sys7_table_images, write_tables_secured,
 };
 use bussard_mgmt::tables::DeviceTables;
 use bussard_mgmt::{Layer4Connection, LeaseChannel, MaskProfile, system_type};
@@ -128,6 +128,7 @@ pub fn run(
         tool_key_source,
         &DesiredSource::Model,
         &overrides,
+        Some(&model),
     )
 }
 
@@ -163,15 +164,24 @@ pub(crate) fn apply_desired(
     tool_key_source: crate::secure_key::ToolKeySource<'_>,
     origin: &DesiredSource,
     overrides: &ConnOverrides,
+    model: Option<&bussard_model::Model>,
 ) -> anyhow::Result<ExitCode> {
     // KNX Data Secure (issue #71, spec §6.2): every management APDU below —
     // the read pre-pass and the table writes — rides A_SecureData when the device
     // is security-activated and a tool key is given. One high-water mark for the
     // whole command keeps the send sequence monotonic across both connections
     // (spec §5.9).
-    let tool_key = crate::secure_key::resolve(target, tool_key_source)?;
+    let material = crate::secure_key::resolve_material(target, tool_key_source)?;
+    let tool_key = material.tool_key.clone();
     let secure_seq = bussard_secure::SequenceHighWater::new();
     let desired = desired.clone();
+    // A secured System B write also reprograms the security object (issue
+    // #156): its group key table indexes the address table being written.
+    let security = tool_key.as_ref().map(|_| {
+        let empty = std::collections::HashMap::new();
+        let keys = material.group_keys.as_ref().unwrap_or(&empty);
+        bussard_download::security_inputs_for(model, target, &desired, keys)
+    });
 
     // Safety envelope (issue #74): refuse a write to a real (non-loopback)
     // gateway unless the operator opted in.
@@ -279,6 +289,36 @@ pub(crate) fn apply_desired(
         return Ok(ExitCode::SUCCESS);
     }
 
+    // Data Secure: say what the security object will receive (never a key).
+    let security = if sys7.is_none() { security } else { None };
+    if let Some(inputs) = &security {
+        let keyed: Vec<String> = desired
+            .addresses
+            .iter()
+            .filter(|ga| inputs.group_keys.contains_key(ga))
+            .map(ToString::to_string)
+            .collect();
+        let objects: Vec<String> = inputs
+            .secure_objects
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        println!(
+            "Data Secure: the security object is reprogrammed too (unload, group key table: {}, \
+             group-object flags: {}, complete)",
+            if keyed.is_empty() {
+                "no keys".to_string()
+            } else {
+                keyed.join(", ")
+            },
+            if objects.is_empty() {
+                "none secured".to_string()
+            } else {
+                format!("secured {}", objects.join(", "))
+            },
+        );
+    }
+
     // Confirm unless --yes.
     if !confirm(target, &gateway, yes, &report, origin)? {
         eprintln!("aborted — no changes written.");
@@ -332,7 +372,19 @@ pub(crate) fn apply_desired(
         let channel = LeaseChannel::new(lease);
         let secure = crate::secure_key::layer(&tool_key, &secure_seq);
         let images = sys7.as_ref().map(|(_, images)| images);
-        anyhow::Ok(write_tables(channel, target, source, mask, &desired, images, secure).await)
+        anyhow::Ok(
+            write_tables_secured(
+                channel,
+                target,
+                source,
+                mask,
+                &desired,
+                images,
+                secure,
+                security.as_ref(),
+            )
+            .await,
+        )
     });
     display.finish(matches!(&outcome, Ok(Ok(summary)) if summary.ok));
     let outcome = outcome?;
@@ -396,9 +448,11 @@ pub(crate) async fn execute(
     desired: &DesiredTables,
     tool_key: &Option<bussard_secure::Key16>,
     secure_seq: &bussard_secure::SequenceHighWater,
+    security: Option<&bussard_download::SecurityInputs>,
 ) -> Result<VerifyOutcome, bussard_mgmt::load::WriteError> {
     let secure = crate::secure_key::layer(tool_key, secure_seq);
-    bussard_download::write_system_b(channel, target, source, desired, secure).await
+    bussard_download::write_system_b_secured(channel, target, source, desired, secure, security)
+        .await
 }
 
 /// Confirms on a TTY (y/N), naming the resolved gateway (issue #74).

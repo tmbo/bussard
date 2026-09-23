@@ -17,7 +17,7 @@ use bussard_mgmt::tables::{DeviceTables, TablesError, read_tables};
 use bussard_mgmt::{L4Channel, Layer4Connection, MaskProfile, SecureLayer, system_type};
 use bussard_model::{IndividualAddress, Model};
 
-use crate::apply::{VerifyOutcome, apply_tables, discover_table_objects, negotiate_session_apdu};
+use crate::apply::{VerifyOutcome, discover_table_objects, negotiate_session_apdu};
 use crate::apply_sys7::{Sys7ApplyError, Sys7TableImages, Sys7VerifyOutcome, apply_sys7_tables};
 use crate::backup::{BackupError, DeviceBackup, backups_root, write_device_backup};
 use crate::compute::{DesiredTables, compute_tables};
@@ -216,13 +216,27 @@ pub fn write_pre_write_backup(
 }
 
 /// Runs the on-bus write sequence for a **System B** device: connect,
-/// authorize, discover the table objects, then [`apply_tables`].
+/// authorize, discover the table objects, then [`crate::apply::apply_tables`].
 pub async fn write_system_b<Ch: L4Channel>(
     channel: Ch,
     target: IndividualAddress,
     source: IndividualAddress,
     desired: &DesiredTables,
     secure: SecureLayer,
+) -> Result<VerifyOutcome, WriteError> {
+    write_system_b_secured(channel, target, source, desired, secure, None).await
+}
+
+/// [`write_system_b`] that also reprograms the KNX Data Secure security object
+/// when `security` is given (issue #156, see
+/// [`apply_tables_secured`](crate::apply::apply_tables_secured)).
+pub async fn write_system_b_secured<Ch: L4Channel>(
+    channel: Ch,
+    target: IndividualAddress,
+    source: IndividualAddress,
+    desired: &DesiredTables,
+    secure: SecureLayer,
+    security: Option<&crate::security::SecurityInputs>,
 ) -> Result<VerifyOutcome, WriteError> {
     let mut l4 = Layer4Connection::connect_with_secure(
         channel,
@@ -245,7 +259,7 @@ pub async fn write_system_b<Ch: L4Channel>(
     // opening property read (#116); the table writes then use its chunk size.
     negotiate_session_apdu(&mut l4).await?;
     let objects = discover_table_objects(&mut l4).await?;
-    let result = apply_tables(&mut l4, objects, desired).await;
+    let result = crate::apply::apply_tables_secured(&mut l4, objects, desired, security).await;
     let _ = l4.disconnect().await;
     result
 }
@@ -323,6 +337,33 @@ pub async fn write_tables<Ch: L4Channel>(
     sys7_images: Option<&Sys7TableImages>,
     secure: SecureLayer,
 ) -> Result<TableWriteSummary, String> {
+    write_tables_secured(
+        channel,
+        target,
+        source,
+        mask,
+        desired,
+        sys7_images,
+        secure,
+        None,
+    )
+    .await
+}
+
+/// [`write_tables`] that also reprograms the KNX Data Secure security object of
+/// a System B device when `security` is given (issue #156). System 7 devices
+/// have no security object; `security` is ignored for them.
+#[allow(clippy::too_many_arguments)] // `write_tables`' inputs plus the security inputs
+pub async fn write_tables_secured<Ch: L4Channel>(
+    channel: Ch,
+    target: IndividualAddress,
+    source: IndividualAddress,
+    mask: u16,
+    desired: &DesiredTables,
+    sys7_images: Option<&Sys7TableImages>,
+    secure: SecureLayer,
+    security: Option<&crate::security::SecurityInputs>,
+) -> Result<TableWriteSummary, String> {
     match sys7_images {
         Some(images) => write_sys7(channel, target, source, mask, images, secure)
             .await
@@ -333,7 +374,7 @@ pub async fn write_tables<Ch: L4Channel>(
                 detail: format!("{v:?}"),
             })
             .map_err(|e| e.to_string()),
-        None => write_system_b(channel, target, source, desired, secure)
+        None => write_system_b_secured(channel, target, source, desired, secure, security)
             .await
             .map(|v| TableWriteSummary {
                 ok: v.ok(),

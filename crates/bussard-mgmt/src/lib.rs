@@ -58,6 +58,7 @@ pub mod manufacturers;
 pub mod memory;
 pub mod probe;
 pub mod profile;
+pub mod property_ext;
 pub mod secure;
 pub mod sys7;
 pub mod tables;
@@ -69,8 +70,8 @@ pub use broadcast::{
 };
 pub use connection::{
     AuthorizeOutcome, L4Channel, Layer4Connection, LeaseChannel, MAX_OBJECT_INDEX, PID_OBJECT_TYPE,
-    PROBE_TIMEOUT, PropertyDesc, Timeouts, describe_object_properties, probe_object_type,
-    probe_object_types, read_device_descriptor,
+    PROBE_TIMEOUT, PropertyDesc, SECURE_APDU_OVERHEAD, STANDARD_FRAME_APDU, Timeouts,
+    describe_object_properties, probe_object_type, probe_object_types, read_device_descriptor,
 };
 pub use device::DeviceConnection;
 pub use error::{MgmtError, Result, SilenceKind};

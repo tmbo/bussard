@@ -727,6 +727,7 @@ mod tests {
                 flags: "CW".parse().unwrap(),
                 reference: None,
                 channel: Some("A".to_string()),
+                secure: false,
             },
         );
 

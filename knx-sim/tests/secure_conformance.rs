@@ -598,3 +598,180 @@ fn test_secure_sync_handshake() -> Result<(), String> {
     assert!(t.deliver_raw_secure(&bad).is_empty());
     Ok(())
 }
+
+// --- Security interface object (IOT 17) over the extended property services ---
+
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+/// Decode a hex string with optional spaces.
+fn hex(s: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let s: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    (0..s.len())
+        .step_by(2)
+        .map(|i| Ok(u8::from_str_radix(&s[i..i + 2], 16)?))
+        .collect()
+}
+
+/// The plain APDU of an unwrapped response: the two APCI octets (10-bit APCI,
+/// transport bits cleared) followed by the data, the form the capture shows.
+fn plain_apdu(un: &Unwrapped) -> Vec<u8> {
+    let mut v = un.inner_tpdu.clone();
+    if let Some(b) = v.first_mut() {
+        *b &= 0x03;
+    }
+    v
+}
+
+impl SecureTool {
+    /// Send a plain APDU given as capture hex (`APCI APCI data...`) wrapped in
+    /// A_SecureData and return the single unwrapped response as a plain APDU.
+    fn secure_hex(&mut self, apdu_hex: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let apdu = hex(apdu_hex)?;
+        let apci10 = (u16::from(apdu[0] & 0x03) << 8) | u16::from(apdu[1]);
+        let responses = self.secure_ndt(apci10, &apdu[2..]);
+        let [one] = responses.as_slice() else {
+            return Err(format!("expected one response, got {}", responses.len()).into());
+        };
+        Ok(plain_apdu(one))
+    }
+
+    /// Load a System B table object (`obj`, base `base`) with `image` through
+    /// PID 5 plus A_MemoryExtended_Write, all wrapped in A_SecureData, and
+    /// verify the image with A_MemoryExtended_Read.
+    fn load_table_extended(&mut self, obj: u8, base: u32, image: &[u8]) -> TestResult {
+        self.secure_ndt(0x3D7, &[obj, 0x05, 0x10, 0x01, 0x01]); // StartLoading
+        self.secure_ndt(
+            0x3D7,
+            &[obj, 0x05, 0x10, 0x01, 0x03, 0x0b, 0x00, 0x00, 0x01, 0x00],
+        ); // allocate 256
+        let [a2, a1, a0] = [(base >> 16) as u8, (base >> 8) as u8, base as u8];
+        let mut write = vec![image.len() as u8, a2, a1, a0];
+        write.extend_from_slice(image);
+        let resp = self.secure_hex(&format!("01fb {}", to_hex(&write)))?;
+        assert_eq!(resp, [vec![0x01, 0xfc, 0x00, a2, a1, a0]].concat());
+        let read = self.secure_hex(&format!(
+            "01fd {:02x} {a2:02x}{a1:02x}{a0:02x}",
+            image.len()
+        ))?;
+        assert_eq!(
+            read,
+            [vec![0x01, 0xfe, 0x00, a2, a1, a0], image.to_vec()].concat()
+        );
+        self.secure_ndt(0x3D7, &[obj, 0x05, 0x10, 0x01, 0x02]); // LoadCompleted
+        Ok(())
+    }
+
+    fn secobj_events(&self) -> Vec<String> {
+        self.sink
+            .events()
+            .into_iter()
+            .filter_map(|e| match e {
+                Event::SecurityObject { summary, .. } => Some(summary),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+fn to_hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// The ETS-order security-object load, byte-exact against the decrypted capture,
+/// driven end to end through A_SecureData on an activated device.
+#[test]
+fn test_security_object_ets_sequence_over_secure_data() -> TestResult {
+    let mut t = SecureTool::new(SecAlgorithm::AuthEnc);
+    t.control(0x80);
+    t.secure_ndt(0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]);
+
+    let unload = "01d4 0011 001005 04000000000000000000";
+    let start = "01d4 0011 001005 01000000000000000000";
+    let complete = "01d4 0011 001005 02000000000000000000";
+    assert_eq!(t.secure_hex(unload)?, hex("01d6 0011 001005 00 00")?);
+    assert_eq!(t.secure_hex(start)?, hex("01d6 0011 001005 00 02")?);
+    assert_eq!(
+        t.secure_hex("01ce 0011 001036 01 0000 0000")?,
+        hex("01cf 0011 001036 01 0000 00")?
+    );
+    let key_row = format!("01ce 0011 001035 01 0001 0001 {}", "a5".repeat(16));
+    assert_eq!(t.secure_hex(&key_row)?, hex("01cf 0011 001035 01 0001 00")?);
+    let first = format!("01ce 0011 00103d d3 0001 {}", "03".repeat(211));
+    assert_eq!(t.secure_hex(&first)?, hex("01cf 0011 00103d d3 0001 00")?);
+    assert_eq!(t.secure_hex(complete)?, hex("01d6 0011 001005 00 01")?);
+    assert_eq!(
+        t.secure_hex("01d4 0011 001033 000001")?,
+        hex("01d6 0011 001033 00 00")?
+    );
+    assert!(t.rejections().is_empty(), "{:#?}", t.rejections());
+
+    let events = t.secobj_events();
+    assert!(
+        events.contains(
+            &"SECOBJ WriteCon iot=17/1 pid=61 start=1 count=211 rc=0x00 state=Loading".into()
+        ),
+        "{events:#?}"
+    );
+    assert!(
+        events.contains(
+            &"SECOBJ FunctionCommand iot=17/1 pid=5 event=LoadCompleted rc=0x00 state=Loaded"
+                .into()
+        ),
+        "{events:#?}"
+    );
+    for e in &events {
+        assert!(!e.contains("a5a5"), "key bytes leaked: {e}");
+    }
+    Ok(())
+}
+
+/// A plain (unwrapped) extended property service to an activated device is
+/// refused like every other management service.
+#[test]
+fn test_security_object_plain_access_refused() {
+    let mut t = SecureTool::new(SecAlgorithm::AuthEnc);
+    t.control(0x80);
+    let responses = t.plain_ndt(
+        0x1D4,
+        &[
+            0x00, 0x11, 0x00, 0x10, 0x05, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ],
+    );
+    assert!(responses.is_empty());
+    assert!(t.rejections().iter().any(|r| r.contains("PLAIN")));
+    assert!(t.secobj_events().is_empty());
+}
+
+/// The device derives its limits from its own loaded tables: the address table
+/// length bounds PID 53 indices and the group-object table count bounds PID 61.
+/// The tables are written with A_MemoryExtended_Write inside A_SecureData.
+#[test]
+fn test_security_object_limits_follow_loaded_tables() -> TestResult {
+    let mut t = SecureTool::new(SecAlgorithm::AuthOnly);
+    t.control(0x80);
+    t.secure_ndt(0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]);
+    // Address table (obj 1 at 0xA000): 3 group addresses.
+    t.load_table_extended(1, 0xA000, &hex("0003 0801 0802 0803")?)?;
+    // Group-object table (obj 3 at 0x8000): 2 descriptors.
+    t.load_table_extended(3, 0x8000, &hex("0002 0000 0000")?)?;
+
+    t.secure_hex("01d4 0011 001005 01000000000000000000")?;
+    let row = |index: u16| format!("01ce 0011 001035 01 0001 {index:04x} {}", "a5".repeat(16));
+    assert_eq!(t.secure_hex(&row(4))?, hex("01cf 0011 001035 01 0001 f7")?);
+    assert_eq!(t.secure_hex(&row(3))?, hex("01cf 0011 001035 01 0001 00")?);
+    assert_eq!(
+        t.secure_hex("01ce 0011 00103d 03 0001 030303")?,
+        hex("01cf 0011 00103d 03 0001 f7")?
+    );
+    assert_eq!(
+        t.secure_hex("01ce 0011 00103d 02 0001 0300")?,
+        hex("01cf 0011 00103d 02 0001 00")?
+    );
+    // The element count of PID 61 is the group-object count.
+    assert_eq!(
+        t.secure_hex("01cc 0011 00103d 01 0000")?,
+        hex("01cd 0011 00103d 01 0000 0002")?
+    );
+    assert!(t.rejections().is_empty(), "{:#?}", t.rejections());
+    Ok(())
+}

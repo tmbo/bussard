@@ -412,6 +412,21 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
         'resume: loop {
             let step_result: Result<(), WriteError> = async {
                 match step {
+                    FlashStep::SecurityLoadControl { control } => {
+                        crate::security::security_transition(session.l4(), *control).await?;
+                    }
+                    FlashStep::SecurityClearAddressTable => {
+                        crate::security::clear_security_address_table(session.l4()).await?;
+                    }
+                    FlashStep::SecurityGroupKeys { entries } => {
+                        crate::security::write_group_key_table(session.l4(), entries).await?;
+                    }
+                    FlashStep::SecurityGoFlags { flags } => {
+                        // No byte progress: the ETA accounts memory images only,
+                        // and this is a few telegrams (7 for 1333 objects).
+                        crate::security::write_go_security_flags(session.l4(), flags, |_| {})
+                            .await?;
+                    }
                     FlashStep::Unload { target } => {
                         // Skip a load-control op that names an object index the device
                         // does not expose (a template LSM5 op on a device without obj5).

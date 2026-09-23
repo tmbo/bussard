@@ -478,6 +478,7 @@ fn build_device(
                             flags: shape.flags,
                             reference: Some(shape.ref_id.clone()),
                             channel: None,
+                            secure: false,
                         },
                     )
                 })

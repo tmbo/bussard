@@ -100,6 +100,63 @@ fn image_record(
     }))
 }
 
+/// The `PID_MAX_APDU_LENGTH` the dump assumes when it splits the security
+/// object's element writes into telegrams: the reference device of issue #156
+/// (Jung 52911ST) advertises 233. The executor uses the negotiated value; the
+/// dump has no device, and the offline oracle compares against that capture.
+const DUMP_NOMINAL_MAX_APDU: u16 = 233;
+
+/// The wire writes of a Data Secure security-object step as `plan.json`
+/// property records (`knxtrace imgdiff` aligns them with ETS's
+/// `properties.json`, issue #156). A group key table value is reduced to the
+/// same `redacted:<sha256[:8]>` the tool writes, never the key bytes.
+fn security_property_records(step: &FlashStep) -> Vec<serde_json::Value> {
+    use bussard_mgmt::property_ext::{
+        OT_SECURITY, PID_GO_SECURITY_FLAGS, PID_GRP_KEY_TABLE,
+        PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE, PID_SECURITY_LOAD_STATE_CONTROL,
+        PROPERTY_EXT_WRITE_OVERHEAD,
+    };
+    let budget = usize::from(
+        DUMP_NOMINAL_MAX_APDU - bussard_mgmt::SECURE_APDU_OVERHEAD - PROPERTY_EXT_WRITE_OVERHEAD,
+    );
+    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+    let chunked = |pid: u16, elem: usize, bytes: &[u8], secret: bool| -> Vec<serde_json::Value> {
+        let per = (budget / elem).max(1) * elem;
+        bytes
+            .chunks(per)
+            .enumerate()
+            .map(|(i, chunk)| {
+                let data = if secret {
+                    format!("redacted:{}", &sha256_hex(chunk)[..8])
+                } else {
+                    hex(chunk)
+                };
+                json!({
+                    "object_type": OT_SECURITY, "instance": 1, "pid": pid,
+                    "start_element": 1 + i * per / elem, "length": chunk.len(), "data": data,
+                })
+            })
+            .collect()
+    };
+    match step {
+        FlashStep::SecurityLoadControl { control } => vec![json!({
+            "object_type": OT_SECURITY, "instance": 1, "pid": PID_SECURITY_LOAD_STATE_CONTROL,
+            "length": 10, "data": hex(&control.encode_full()),
+        })],
+        FlashStep::SecurityClearAddressTable => vec![json!({
+            "object_type": OT_SECURITY, "instance": 1,
+            "pid": PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE, "start_element": 0, "length": 2,
+            "data": "0000",
+        })],
+        FlashStep::SecurityGroupKeys { entries } => {
+            let table: Vec<u8> = entries.iter().flat_map(|e| e.encode()).collect();
+            chunked(PID_GRP_KEY_TABLE, 18, &table, true)
+        }
+        FlashStep::SecurityGoFlags { flags } => chunked(PID_GO_SECURITY_FLAGS, 1, flags, false),
+        _ => Vec::new(),
+    }
+}
+
 /// Writes the dry-run dump for `plan` into `dir` (created if missing).
 ///
 /// `table_images` are the System B table images keyed by object index (1 =
@@ -219,6 +276,12 @@ pub fn write_dump(
                     "fill": fill.is_some(),
                     "fill_byte": fill,
                 }));
+            }
+            FlashStep::SecurityLoadControl { .. }
+            | FlashStep::SecurityClearAddressTable
+            | FlashStep::SecurityGroupKeys { .. }
+            | FlashStep::SecurityGoFlags { .. } => {
+                record["properties"] = json!(security_property_records(step));
             }
             _ => {}
         }

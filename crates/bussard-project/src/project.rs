@@ -36,6 +36,12 @@ pub struct RawGroupAddress {
     pub dpt: Option<Dpt>,
     /// Free-text description.
     pub description: Option<String>,
+    /// Whether ETS runs this group address with KNX Data Secure: the element
+    /// carries its (encrypted) group `Key`, or `Security="On"`. CONFIRMED from
+    /// the post-activation export (issue #156): the one secured GA 0/3/47 is
+    /// `<GroupAddress … Key="…"/>` and no GA carries a `Security` attribute.
+    /// The key value is never read.
+    pub secure: bool,
 }
 
 /// A two-level named range around a set of group addresses.
@@ -62,6 +68,9 @@ pub struct RawComObjectInstance {
     pub channel: Option<String>,
     /// Instance-level object-size override.
     pub object_size: Option<String>,
+    /// The instance's `Security` attribute, when ETS wrote one (absent means
+    /// the ETS default, `Auto`).
+    pub security: Option<SecuritySetting>,
 }
 
 /// A device instance as read from the topology.
@@ -99,6 +108,13 @@ pub struct RawDevice {
     /// for this device in the knxproj (issue #71, spec §11). Presence only; the
     /// FDSK value is deliberately NOT captured (spec §2.2).
     pub has_device_certificate: bool,
+    /// The device's `<Security>` child carries a `ToolKey`: secure
+    /// commissioning is enabled for it in the project. Presence only.
+    pub has_tool_key: bool,
+    /// The device's `<Security>` child carries a `LoadedToolKey`: ETS has
+    /// loaded the tool key into the device, i.e. Data Secure is activated.
+    /// Presence only.
+    pub has_loaded_tool_key: bool,
 }
 
 /// A device's location within the building.
@@ -382,12 +398,7 @@ pub fn parse_project(xml: &str, schema: SchemaVersion) -> Result<RawProject> {
                     // number attribute. Flags/state only, never a key.
                     b"Security" => {
                         if let Some(dev) = current_device.as_mut() {
-                            if let Some(seq) = attr(&e, b"SequenceNumber", context)?
-                                .as_deref()
-                                .and_then(|s| s.parse::<u64>().ok())
-                            {
-                                dev.secure_sequence_number = Some(seq);
-                            }
+                            apply_device_security(dev, &e, context)?;
                         }
                     }
                     _ => {}
@@ -460,12 +471,7 @@ pub fn parse_project(xml: &str, schema: SchemaVersion) -> Result<RawProject> {
                     // `<Security SequenceNumber="…">` child. Flags/state only.
                     b"Security" => {
                         if let Some(dev) = current_device.as_mut() {
-                            if let Some(seq) = attr(&e, b"SequenceNumber", context)?
-                                .as_deref()
-                                .and_then(|s| s.parse::<u64>().ok())
-                            {
-                                dev.secure_sequence_number = Some(seq);
-                            }
+                            apply_device_security(dev, &e, context)?;
                         }
                     }
                     // Factory FDSK certificate presence (spec §11 / §2.2): record
@@ -567,7 +573,55 @@ fn parse_device_start(
         parameters: Vec::new(),
         secure_sequence_number: None,
         has_device_certificate: false,
+        has_tool_key: false,
+        has_loaded_tool_key: false,
     }))
+}
+
+/// Records a device's `<Security>` child: the sequence number, and whether the
+/// project holds a tool key (`ToolKey`) and whether ETS has loaded it into the
+/// device (`LoadedToolKey`).
+///
+/// CONFIRMED against two exports of the same project (issue #156): before ETS
+/// activated Data Secure on 1.1.12 its child was
+/// `<Security SequenceNumber=… SequenceNumberTimestamp=…/>`; after the secured
+/// download it is `<Security ToolKey=… LoadedToolKey=… SequenceNumber=… …/>`,
+/// while 1.1.10 (secure commissioning enabled, never downloaded) carries
+/// `ToolKey` without `LoadedToolKey`. The key values themselves are never read
+/// into the model: only their presence is recorded (keys come from the
+/// `.knxkeys` keyring).
+fn apply_device_security(dev: &mut RawDevice, e: &BytesStart, context: &str) -> Result<()> {
+    let m = attrs(e, context)?;
+    if let Some(seq) = get(&m, b"SequenceNumber").and_then(|s| s.parse::<u64>().ok()) {
+        dev.secure_sequence_number = Some(seq);
+    }
+    dev.has_tool_key |= get(&m, b"ToolKey").is_some_and(|v| !v.is_empty());
+    dev.has_loaded_tool_key |= get(&m, b"LoadedToolKey").is_some_and(|v| !v.is_empty());
+    Ok(())
+}
+
+/// The ETS per-object / per-address Data Secure setting (`Security` attribute).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecuritySetting {
+    /// `Security="On"`: always Data Secure.
+    On,
+    /// `Security="Off"`: never Data Secure.
+    Off,
+    /// `Security="Auto"` (the ETS default): secure when the linked group
+    /// addresses are.
+    Auto,
+}
+
+impl SecuritySetting {
+    /// Parses an ETS `Security` attribute value; unknown values map to `None`.
+    pub fn from_attr(value: &str) -> Option<Self> {
+        match value {
+            "On" => Some(Self::On),
+            "Off" => Some(Self::Off),
+            "Auto" => Some(Self::Auto),
+            _ => None,
+        }
+    }
 }
 
 /// Parses a `GroupAddress` element.
@@ -587,6 +641,11 @@ fn parse_group_address(e: &BytesStart, context: &str) -> Result<Option<RawGroupA
         name: get(&m, b"Name").unwrap_or_default().to_string(),
         dpt: get(&m, b"DatapointType").and_then(parse_ets_dpt),
         description: non_empty(get(&m, b"Description")),
+        secure: match get(&m, b"Security").and_then(SecuritySetting::from_attr) {
+            Some(SecuritySetting::On) => true,
+            Some(SecuritySetting::Off) => false,
+            Some(SecuritySetting::Auto) | None => get(&m, b"Key").is_some_and(|k| !k.is_empty()),
+        },
     }))
 }
 
@@ -622,6 +681,7 @@ fn parse_com_object_instance(
         flags,
         channel: non_empty(get(&m, b"ChannelId")),
         object_size: non_empty(get(&m, b"ObjectSize")),
+        security: get(&m, b"Security").and_then(SecuritySetting::from_attr),
     }))
 }
 
@@ -733,6 +793,73 @@ mod tests {
         let dev = &project.devices[0];
         assert_eq!(dev.com_objects.len(), 1);
         assert_eq!(dev.com_objects[0].links, vec!["GA-10", "GA-11"]);
+    }
+
+    #[test]
+    fn test_parse_project_secure_state_and_group_keys()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // Synthetic data shaped like the post-activation ETS 6.4 export (issue
+        // #156): an activated device (ToolKey + LoadedToolKey), one with secure
+        // commissioning configured only (ToolKey), a keyed GA and explicit
+        // `Security` settings. The attribute values are placeholders, not keys.
+        let xml = r#"<?xml version="1.0" encoding="utf-8"?>
+<KNX xmlns="http://knx.org/xml/project/23">
+  <Project Id="P-0001">
+    <Installations><Installation>
+      <Topology>
+        <Area Address="1"><Line Address="1">
+          <DeviceInstance Id="P-0001-0_DI-1" Address="12" Name="Activated">
+            <ComObjectInstanceRefs>
+              <ComObjectInstanceRef RefId="O-1_R-1" Links="GA-1"/>
+              <ComObjectInstanceRef RefId="O-2_R-2" Links="GA-2" Security="On"/>
+              <ComObjectInstanceRef RefId="O-3_R-3" Links="GA-1" Security="Off"/>
+            </ComObjectInstanceRefs>
+            <Security ToolKey="cGxhY2Vob2xkZXI=" LoadedToolKey="cGxhY2Vob2xkZXI=" SequenceNumber="42" SequenceNumberTimestamp="2026-09-23T19:12:40Z" />
+          </DeviceInstance>
+          <DeviceInstance Id="P-0001-0_DI-2" Address="10" Name="Configured">
+            <Security ToolKey="cGxhY2Vob2xkZXI=" SequenceNumber="7" />
+          </DeviceInstance>
+          <DeviceInstance Id="P-0001-0_DI-3" Address="11" Name="Capable">
+            <Security SequenceNumber="9" />
+          </DeviceInstance>
+        </Line></Area>
+      </Topology>
+      <GroupAddresses><GroupRanges><GroupRange Id="P-0001-0_GR-1" RangeStart="1" RangeEnd="2047" Name="R">
+        <GroupAddress Id="P-0001-0_GA-1" Address="815" Name="Secured" Key="cGxhY2Vob2xkZXI=" />
+        <GroupAddress Id="P-0001-0_GA-2" Address="816" Name="Plain" />
+        <GroupAddress Id="P-0001-0_GA-3" Address="817" Name="Forced" Security="On" />
+        <GroupAddress Id="P-0001-0_GA-4" Address="818" Name="Off" Security="Off" Key="cGxhY2Vob2xkZXI=" />
+      </GroupRange></GroupRanges></GroupAddresses>
+    </Installation></Installations>
+  </Project>
+</KNX>"#;
+        let schema = SchemaVersion::from_version(23)?;
+        let project = parse_project(xml, schema)?;
+        let dev = |a: u8| project.devices.iter().find(|d| d.address.device() == a);
+        let activated = dev(12).ok_or("1.1.12")?;
+        assert!(activated.has_tool_key && activated.has_loaded_tool_key);
+        assert_eq!(activated.secure_sequence_number, Some(42));
+        assert_eq!(activated.com_objects[0].security, None);
+        assert_eq!(activated.com_objects[1].security, Some(SecuritySetting::On));
+        assert_eq!(
+            activated.com_objects[2].security,
+            Some(SecuritySetting::Off)
+        );
+        let configured = dev(10).ok_or("1.1.10")?;
+        assert!(configured.has_tool_key && !configured.has_loaded_tool_key);
+        let capable = dev(11).ok_or("1.1.11")?;
+        assert!(!capable.has_tool_key && !capable.has_loaded_tool_key);
+        assert_eq!(capable.secure_sequence_number, Some(9));
+        let secure: Vec<(u16, bool)> = project
+            .group_addresses
+            .iter()
+            .map(|g| (g.address.raw(), g.secure))
+            .collect();
+        assert_eq!(
+            secure,
+            vec![(815, true), (816, false), (817, true), (818, false)]
+        );
+        Ok(())
     }
 
     #[test]

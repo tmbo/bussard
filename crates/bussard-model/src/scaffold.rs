@@ -583,6 +583,7 @@ pub fn scaffold(
                         dpt: Some(dpt),
                         description: None,
                         protected: false,
+                        secure: false,
                     },
                 );
                 names.insert(name.clone());

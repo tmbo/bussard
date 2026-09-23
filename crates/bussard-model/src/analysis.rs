@@ -405,6 +405,7 @@ mod tests {
             dpt: dpt.map(|d| d.parse().expect("a DPT")),
             description: None,
             protected: false,
+            secure: false,
         }
     }
 
@@ -468,6 +469,7 @@ mod tests {
                 flags: Flags::default(),
                 reference: None,
                 channel: None,
+                secure: false,
             },
         );
         dev.com_objects.insert(
@@ -478,6 +480,7 @@ mod tests {
                 flags: Flags::default(),
                 reference: None,
                 channel: None,
+                secure: false,
             },
         );
         let model = model_with(
@@ -553,6 +556,7 @@ mod tests {
             activated: true,
             has_fdsk_certificate: false,
             sequence_number: None,
+            secure_commissioning: false,
         });
         let model = model_with(vec![("9/0/1", protected)], vec![("1.1.4", secure)], vec![]);
 

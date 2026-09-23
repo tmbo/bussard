@@ -429,6 +429,7 @@ pub(crate) mod test_fixtures {
                 dpt: Some("1.005".parse().unwrap()),
                 description: Some("wind alarm".to_string()),
                 protected: true,
+                secure: false,
             },
         );
         groups.insert(
@@ -438,6 +439,7 @@ pub(crate) mod test_fixtures {
                 dpt: Some("1.008".parse().unwrap()),
                 description: None,
                 protected: false,
+                secure: false,
             },
         );
 

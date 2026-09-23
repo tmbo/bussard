@@ -41,6 +41,7 @@ fn model() -> Model {
             dpt: Some("1.005".parse().unwrap()),
             description: None,
             protected: true,
+            secure: false,
         },
     );
     // An unprotected blinds GA used by the write round-trip test.
@@ -51,6 +52,7 @@ fn model() -> Model {
             dpt: Some("1.008".parse().unwrap()),
             description: None,
             protected: false,
+            secure: false,
         },
     );
     Model {

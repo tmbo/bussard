@@ -132,6 +132,25 @@ pub enum MgmtError {
         source: bussard_secure::AsduError,
     },
 
+    /// The device answered a confirmed service with a refusal: a non-zero
+    /// return code, or (for a value read) a zero element count. Raised by the
+    /// extended property services (issue #156). The message names the service
+    /// and the property, never the value (it may be a key).
+    #[error("{address} refused {service} on {target}{}", match return_code {
+        Some(rc) => format!(" (return code {rc:#04x})"),
+        None => String::new(),
+    })]
+    ServiceRejected {
+        /// The device that refused.
+        address: IndividualAddress,
+        /// The service name, e.g. `A_PropertyExtValue_WriteCon`.
+        service: &'static str,
+        /// What was addressed (object type, instance, PID, range).
+        target: String,
+        /// The device's return code, when the service carries one.
+        return_code: Option<u8>,
+    },
+
     /// An underlying transport error (socket, gateway, framing).
     #[error(transparent)]
     Transport(#[from] TransportError),

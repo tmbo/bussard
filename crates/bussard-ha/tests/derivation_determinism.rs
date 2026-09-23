@@ -44,6 +44,7 @@ fn colliding_switch_model(n: u16) -> Model {
                 dpt: Some(dpt("1.001")),
                 description: None,
                 protected: false,
+                secure: false,
             },
         );
         // A distinct, in-range individual address per index.
@@ -63,6 +64,7 @@ fn colliding_switch_model(n: u16) -> Model {
                 flags: flags("CWU"),
                 reference: None,
                 channel: None,
+                secure: false,
             },
         );
         devices.insert(
@@ -169,6 +171,7 @@ fn one_switch_model() -> Model {
             dpt: Some(dpt("1.001")),
             description: None,
             protected: false,
+            secure: false,
         },
     );
     let mut com_objects = BTreeMap::new();
@@ -180,6 +183,7 @@ fn one_switch_model() -> Model {
             flags: flags("CWU"),
             reference: None,
             channel: None,
+            secure: false,
         },
     );
     let mut devices = BTreeMap::new();
