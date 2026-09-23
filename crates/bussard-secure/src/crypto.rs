@@ -258,12 +258,33 @@ pub const PBKDF2_ITERATIONS: u32 = 65_536;
 ///
 /// `password_latin1` must already be Latin-1-encoded bytes (the IP-handshake and
 /// keyring passwords use Latin-1; the ETS6 *project* zip password uses UTF-16-LE
-/// and lives in `bussard-project::password`, not here). PBKDF2-HMAC-SHA256,
-/// [`PBKDF2_ITERATIONS`] iterations, 16-byte output wrapped in a [`Key16`].
+/// and is encoded in `bussard-project::password` before it calls
+/// [`pbkdf2_sha256`]). PBKDF2-HMAC-SHA256, [`PBKDF2_ITERATIONS`] iterations,
+/// 16-byte output wrapped in a [`Key16`].
 pub fn pbkdf2_key(password_latin1: &[u8], salt: &[u8]) -> Key16 {
+    let derived = pbkdf2_sha256(password_latin1, salt, PBKDF2_ITERATIONS, BLOCK);
     let mut out = [0u8; BLOCK];
-    pbkdf2_hmac::<Sha256>(password_latin1, salt, PBKDF2_ITERATIONS, &mut out);
+    out.copy_from_slice(&derived);
     Key16::new(out)
+}
+
+/// PBKDF2-HMAC-SHA256 over already-encoded password bytes: the one key
+/// derivation behind every KNX Secure and ETS password in bussard.
+///
+/// The caller owns the password encoding, which differs per use and is
+/// calibrated against real files: Latin-1 for the keyring and IP-secure
+/// passwords ([`pbkdf2_key`]), UTF-16-LE for the ETS 6 project-zip password
+/// (`bussard-project::password`). The derived bytes are returned in a
+/// [`zeroize::Zeroizing`] buffer so they are wiped when dropped.
+pub fn pbkdf2_sha256(
+    password_bytes: &[u8],
+    salt: &[u8],
+    iterations: u32,
+    out_len: usize,
+) -> zeroize::Zeroizing<Vec<u8>> {
+    let mut out = zeroize::Zeroizing::new(vec![0u8; out_len]);
+    pbkdf2_hmac::<Sha256>(password_bytes, salt, iterations, &mut out);
+    out
 }
 
 /// Encodes a `&str` as Latin-1 (ISO-8859-1) bytes, the encoding KNX Secure uses

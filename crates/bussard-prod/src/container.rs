@@ -5,9 +5,9 @@
 //! ETS; they are not access control and are irrelevant to reading).
 //!
 //! Unlike a `.knxproj`, a `.knxprod` is never password-protected, so this is a
-//! straight ZIP reader. Big application-program entries (20+ MB) are read into a
-//! single owned `String` and then handed to the streaming XML parser; we never
-//! hold more than one entry's bytes at a time.
+//! straight ZIP reader. Big application-program entries (20+ MB) are inflated
+//! into one byte buffer and handed as `&[u8]` to the streaming XML parser, with
+//! no `String` copy; we never hold more than one entry's bytes at a time.
 //!
 //! # ZIP-served wrappers
 //!
@@ -25,6 +25,7 @@ use std::fs::File;
 use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
+use bussard_ets::{CappedReadError, ZipOpenError, strip_bom, strip_bom_bytes};
 use zip::ZipArchive;
 
 use crate::error::{ProdError, Result};
@@ -98,15 +99,7 @@ impl Container {
     /// (inner `.knxprod` that is itself a wrapper) is rejected, so unwrapping
     /// happens at most once.
     pub fn open(path: &Path) -> Result<Self> {
-        let file = File::open(path).map_err(|source| ProdError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        let archive = ZipArchive::new(Source::File(file)).map_err(|source| ProdError::Zip {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        Self::from_archive(path.to_path_buf(), archive, None)
+        Self::open_with_inner(path, None)
     }
 
     /// Opens a `.knxprod`, selecting a specific inner `.knxprod` when the file is
@@ -117,13 +110,15 @@ impl Container {
     /// plain `.knxprod`, or a wrapper with a single inner, `inner` is ignored and
     /// this behaves like [`Container::open`].
     pub fn open_with_inner(path: &Path, inner: Option<&str>) -> Result<Self> {
-        let file = File::open(path).map_err(|source| ProdError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        let archive = ZipArchive::new(Source::File(file)).map_err(|source| ProdError::Zip {
-            path: path.to_path_buf(),
-            source,
+        let archive = bussard_ets::open_zip(path, Source::File).map_err(|e| match e {
+            ZipOpenError::Io(source) => ProdError::Io {
+                path: path.to_path_buf(),
+                source,
+            },
+            ZipOpenError::Zip(source) => ProdError::Zip {
+                path: path.to_path_buf(),
+                source,
+            },
         })?;
         Self::from_archive(path.to_path_buf(), archive, inner)
     }
@@ -317,11 +312,15 @@ impl Container {
         Ok(self.read_entry_opt("knx_master.xml")?.map(strip_bom))
     }
 
-    /// Reads a named archive entry to a UTF-8 string (BOM stripped), erroring if
-    /// the entry is absent.
-    pub fn read_to_string(&mut self, entry: &str) -> Result<String> {
+    /// Reads a named archive entry as raw bytes (BOM stripped in place),
+    /// erroring if the entry is absent.
+    ///
+    /// This is the application-program path: the byte parser reads UTF-8 event
+    /// by event, so the ~28 MB entry goes straight from the inflater's buffer to
+    /// the parser with no `String` copy or eager whole-file UTF-8 validation.
+    pub fn read_raw(&mut self, entry: &str) -> Result<Vec<u8>> {
         match self.read_entry_opt(entry)? {
-            Some(bytes) => Ok(strip_bom(bytes)),
+            Some(bytes) => Ok(strip_bom_bytes(bytes)),
             None => Err(ProdError::MissingEntry {
                 path: self.path.clone(),
                 entry: entry.to_string(),
@@ -347,23 +346,17 @@ fn is_manufacturer_dir(dir: &str) -> bool {
 /// bytes. Errors ([`ProdError::InnerTooLarge`]) if the entry decompresses past
 /// the cap, so a zip-bomb payload is never fully buffered.
 fn read_capped<R: Read>(reader: R, entry: &str, cap: u64, path: &Path) -> Result<Vec<u8>> {
-    // Read at most cap + 1 bytes: cap + 1 means the entry is over the cap.
-    let mut buf = Vec::new();
-    let mut limited = reader.take(cap.saturating_add(1));
-    limited
-        .read_to_end(&mut buf)
-        .map_err(|source| ProdError::Io {
+    bussard_ets::read_to_cap(reader, cap).map_err(|e| match e {
+        CappedReadError::Io(source) => ProdError::Io {
             path: path.to_path_buf(),
             source,
-        })?;
-    if buf.len() as u64 > cap {
-        return Err(ProdError::InnerTooLarge {
+        },
+        CappedReadError::TooLarge { cap } => ProdError::InnerTooLarge {
             path: path.to_path_buf(),
             entry: entry.to_string(),
             cap,
-        });
-    }
-    Ok(buf)
+        },
+    })
 }
 
 /// Is `name` a `.knxprod` entry (case-insensitive extension, and a real file —
@@ -374,12 +367,6 @@ fn is_knxprod_entry(name: &str) -> bool {
         && std::path::Path::new(name)
             .extension()
             .is_some_and(|ext| ext.eq_ignore_ascii_case("knxprod"))
-}
-
-/// Converts bytes to a `String`, dropping a leading UTF-8 BOM if present.
-fn strip_bom(bytes: Vec<u8>) -> String {
-    let s = String::from_utf8_lossy(&bytes).into_owned();
-    s.strip_prefix('\u{feff}').map(str::to_string).unwrap_or(s)
 }
 
 #[cfg(test)]
