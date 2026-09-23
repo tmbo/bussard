@@ -239,6 +239,9 @@ pub async fn apply_sys7_tables<Ch: L4Channel>(
     images: &Sys7TableImages,
     task_marker: [u8; 4],
 ) -> Result<Sys7VerifyOutcome, Sys7ApplyError> {
+    // 0: negotiate the APDU size before any table write, as ETS does (#116).
+    crate::apply::negotiate_session_apdu(l4).await?;
+
     // 1: tear both table LSMs down.
     lsm.drive(l4, SYS7_ASSOCIATION_LSM, LoadControl::Unload)
         .await?;
