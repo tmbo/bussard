@@ -404,6 +404,9 @@ pub fn build_model(project: RawProject, container: &mut Container) -> Result<Mod
             name,
             description: raw_dev.description.clone(),
             location,
+            // An ETS import knows nothing about bus history, so a freshly built
+            // device carries no replacement date; the merge keeps ours (#98).
+            replaced: None,
             product,
             channels,
             parameters,
