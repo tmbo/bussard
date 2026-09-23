@@ -3,6 +3,8 @@
 #
 #   scripts/campaign/95-offline-oracle.sh --rows rows.txt [--dir knx] [--out DIR]
 #   scripts/campaign/95-offline-oracle.sh --row '1.1.5|ets.pcapng|vendor.knxprod|M-0001_A-...'
+#   BUSSARD_KEYRING_PASSWORD=... scripts/campaign/95-offline-oracle.sh \
+#       --keyring project.knxkeys --row '1.1.12|secure.pcapng|project.knxproj|M-0004_A-...'
 #
 # Before a real device is flashed, compare the memory images bussard WOULD
 # write to it against what ETS actually wrote to the same device in an existing
@@ -15,22 +17,36 @@
 #
 #   device       the individual address, e.g. 1.1.5
 #   capture      the ETS download capture (.pcap/.pcapng) that programs it
-#   product      the vendor .knxprod; `wrapper.zip!inner/path.knxprod` picks an
-#                inner file out of a ZIP wrapper; `-` means there is no product
-#                data (the row is reported as not comparable, with the note)
+#   product      the vendor .knxprod, or a .knxproj project export (it carries
+#                the product data of every device in the project, so name the
+#                application); `wrapper.zip!inner/path.knxprod` picks an inner
+#                file out of a ZIP wrapper; `-` means there is no product data
+#                (the row is reported as not comparable, with the note). Paths
+#                may contain spaces (ETS names exports `Name  Project_date`);
+#                only the `|` separators and the ends of a field are trimmed.
 #   application  optional --application ref (empty: the sole application)
 #   note         optional free text, shown when the row is not comparable
 #
+# --keyring FILE names the ETS .knxkeys export for KNX Data Secure captures. It
+# is passed to `knxtrace image`, which then verifies and decrypts the secured
+# frames (without it a Secure download composes to nothing), and to the
+# bussard dry run, which then plans the secured download. The password comes
+# from $BUSSARD_KEYRING_PASSWORD, never the command line. `knxtrace imgdiff`
+# reads the already decrypted image directory and needs no keyring.
+#
 # Per device the result is identical / differs (octets, first differing
-# offset, both hex excerpts, per region) / not comparable (why). Everything is
-# written under captures/campaign/<date>/offline-oracle/ (gitignored) unless
-# --out says otherwise; the rows file and the results stay local.
+# offset, both hex excerpts, per region) / not comparable (why), plus the
+# property-write parity against `properties.json` (security-object key
+# material redacted to a hash). Everything is written under
+# captures/campaign/<date>/offline-oracle/ (gitignored) unless --out says
+# otherwise; the rows file and the results stay local.
 
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/common.sh"
 
 ROWS_FILE=""
 SINGLE_ROW=""
 OUT=""
+KEYRING=""
 PYTHON="${PYTHON:-python3}"
 
 while [ $# -gt 0 ]; do
@@ -45,7 +61,9 @@ while [ $# -gt 0 ]; do
     --out=*)   OUT="${1#*=}" ;;
     --date)    CAMPAIGN_DATE="${2:?--date needs YYYY-MM-DD}"; shift ;;
     --date=*)  CAMPAIGN_DATE="${1#*=}" ;;
-    -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
+    --keyring) KEYRING="${2:?--keyring needs a .knxkeys file}"; shift ;;
+    --keyring=*) KEYRING="${1#*=}" ;;
+    -h|--help) sed -n '2,42p' "$0"; exit 0 ;;
     *)         die "unknown argument: $1" ;;
   esac
   shift
@@ -55,6 +73,13 @@ done
 [ -n "$OUT" ] || OUT="$(campaign_root)/offline-oracle"
 [ -x "$BUSSARD_BIN" ] || die "no bussard binary at $BUSSARD_BIN (cargo build, or export BUSSARD_BIN)"
 ensure_dir "$OUT"
+
+KEYRING_ARGS=()
+if [ -n "$KEYRING" ]; then
+  [ -f "$KEYRING" ] || die "no keyring at $KEYRING"
+  [ -n "${BUSSARD_KEYRING_PASSWORD:-}" ] || die "--keyring needs the keyring password in \$BUSSARD_KEYRING_PASSWORD"
+  KEYRING_ARGS=(--keyring "$KEYRING")
+fi
 
 trim() { local s="$1"; s="${s#"${s%%[![:space:]]*}"}"; printf '%s' "${s%"${s##*[![:space:]]}"}"; }
 
@@ -117,7 +142,7 @@ run_row() {
 
   # 1. What ETS wrote.
   if ! "$PYTHON" "$KNXTRACE" image "$capture" --device "$device" --out "$dir/ets" \
-       >"$dir/ets.log" 2>&1; then
+       ${KEYRING_ARGS+"${KEYRING_ARGS[@]}"} >"$dir/ets.log" 2>&1; then
     not_comparable "$dir" "$device" "capture: $(tail -1 "$dir/ets.log")"
     return 0
   fi
@@ -132,6 +157,7 @@ run_row() {
   local app_args=()
   [ -n "$application" ] && app_args=(--application "$application")
   if ! "$BUSSARD_BIN" flash "$device" --product "$prod" ${app_args+"${app_args[@]}"} \
+       ${KEYRING_ARGS+"${KEYRING_ARGS[@]}"} \
        --dir "$MODEL_DIR" --dry-run --dump-images "$dir/bussard" --json \
        >"$dir/plan.log" 2>"$dir/plan.err"; then
     not_comparable "$dir" "$device" "bussard refused to plan: $(grep -v '^\s*$' "$dir/plan.err" | tail -1 | cut -c1-160)"
@@ -196,5 +222,12 @@ for dev in devices:
     detail = " ".join(parts) if parts else r.get("reason", "")
     if r.get("ets_only_octets"):
         detail += "  [ets-only %d]" % r["ets_only_octets"]
+    props = r.get("properties") or {}
+    if props.get("verdict") == "identical":
+        detail += "  props=ok(%d)" % len(props.get("matched", []))
+    elif props.get("verdict") == "differs":
+        detail += "  props=differs(bussard-only %d, ets-only %d, value %d)" % (
+            len(props.get("bussard_only", [])), len(props.get("ets_only", [])),
+            props.get("value_counts", {}).get("differs", 0))
     print("%-9s %-6s %-15s %s" % (dev, r.get("system") or "-", r["verdict"], detail))
 EOF

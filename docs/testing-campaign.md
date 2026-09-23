@@ -106,6 +106,8 @@ every difference belongs in the findings log with a classification.
 ```
 scripts/campaign/95-offline-oracle.sh --rows rows.txt --dir knx
 scripts/campaign/95-offline-oracle.sh --row '1.1.5|ets.pcapng|vendor.knxprod|M-00FA_A-0001'
+scripts/campaign/95-offline-oracle.sh --keyring project.knxkeys \
+    --row '1.1.12|secure.pcapng|Project  Name_20260923.knxproj|M-0004_A-...'
 ```
 
 Offline and read-only. Diffs the images `bussard flash` would write against an
@@ -224,19 +226,46 @@ segment with device-owned octets also gets a `.mask.bin`.
 region and `regions.json` with the allocation records. A relative segment's base
 is the `PID_TABLE_REFERENCE` ETS reads back after allocating it, and a
 fill-flagged allocation is also written out as fill plus the sparse writes.
+It also writes `properties.json`: every `A_PropertyValue_Write`,
+`A_PropertyExtValue_WriteCon` and `A_FunctionPropertyExt_Command` of the
+download, with the object (index, or type and instance), PID, count, index,
+length and value. A value that may be key material (the key-table and tool-key
+PIDs 52, 53, 56 and 60, or anything of 16 octets or more, on the security
+object, type 17) is written as `redacted:<sha256[:8]>`, so the directory stays
+shareable. For a KNX Data Secure capture pass `--keyring <file.knxkeys>` with
+the password in `BUSSARD_KEYRING_PASSWORD`: without it the secured download is
+opaque and composes to nothing.
 
 `imgdiff` compares each bussard image with the ETS memory at the same place:
 `identical`, `differs` (octets, first differing offset, a hex excerpt of both),
 or `not comparable` (ETS wrote nothing there, or no base is known). Octets
 inside a fill-flagged allocation count as written. Octets ETS wrote outside
 every bussard image are counted separately, which is how a missing segment or a
-table bussard makes shorter shows up. It exits `1` on `differs`.
+table bussard makes shorter shows up. A `differs` also says how many of the
+differing octets ETS never wrote. Those hold the allocation's fill: ETS's own
+image had the fill value there, so its sparse download skipped them, while
+bussard computed another value. It exits `1` on `differs`.
+
+`imgdiff` then aligns bussard's property-write steps with `properties.json`:
+the same sequence of (object, PID, length), and, where both sides carry a
+value, equal bytes, or equal hashes where the ETS value is redacted. The
+`PID_LOAD_STATE_CONTROL` writes of the plain services are left out, since the
+plan carries unload, allocate and complete as their own steps. A padded
+`PID_MCB_TABLE` value counts as the 8-octet entries bussard sends. Today's
+`plan.json` names each property write in its label but carries no value, so a
+matched write reports `no-value`; the structural check (what is written, where,
+how long, in which order) still runs. The property parity has its own verdict
+and does not change the image verdict or the exit code.
 
 `95-offline-oracle.sh` runs all three for a list of devices and prints one
 summary table. A row is `device|capture|product|application|note`. The product
-may be `wrapper.zip!inner/file.knxprod` to pick one file out of a vendor ZIP,
-or `-` when there is no product data (the row is reported as not comparable
-with the note). Results land in `captures/campaign/<date>/offline-oracle/`
+may be a `.knxprod`, a `.knxproj` project export (name the application, the
+export holds every device's), `wrapper.zip!inner/file.knxprod` to pick one file
+out of a vendor ZIP, or `-` when there is no product data (the row is reported
+as not comparable with the note). Paths may contain spaces; only the ends of a
+field are trimmed. `--keyring <file.knxkeys>` is passed to `knxtrace image` and
+to the bussard dry run, with the password from `BUSSARD_KEYRING_PASSWORD`. The
+summary adds `props=ok(n)` or `props=differs(...)` for the property parity. Results land in `captures/campaign/<date>/offline-oracle/`
 unless `--out` says otherwise. A row file names real captures, so keep it
 under `captures/` as well.
 

@@ -78,6 +78,10 @@ class Op:
     ts: float = 0.0
     index: int = 0
     data: bytes = b""
+    # The decoded APDU this op came from (the inner one for a decrypted
+    # A_SecureData), for consumers that need the raw payload, such as the
+    # property-write dump of `image.py`. Never part of a comparison.
+    apdu: Optional[Apdu] = field(default=None, repr=False, compare=False)
 
     @property
     def signature(self) -> Tuple[str, str, str]:
@@ -202,6 +206,30 @@ def coalesce(writes: Iterable[Tuple[int, bytes]]) -> List[MemRegion]:
 
 def op_from_apdu(apdu: Apdu, direction: str, ts: float) -> Optional[Op]:
     """Maps one decoded APDU onto a normalized op, or None to drop it."""
+    op = _op_from_apdu(apdu, direction, ts)
+    if op is not None and op.apdu is None:
+        op.apdu = apdu
+    return op
+
+
+def _hex_or_payload(f: Dict[str, object], payload: bytes, skip: int) -> bytes:
+    """The value octets of a decoded APDU.
+
+    A redacted value (`redacted:<hash>`, see datasecure.redact_keys) is taken
+    from the raw payload instead, past its `skip` header octets: the op keeps
+    the real octets in memory so hashes and lengths stay comparable, and
+    nothing that prints an op prints `data`.
+    """
+    text = f.get("data")
+    if not text:
+        return b""
+    text = str(text)
+    if text.startswith("redacted:"):
+        return bytes(payload[skip:])
+    return bytes.fromhex(text)
+
+
+def _op_from_apdu(apdu: Apdu, direction: str, ts: float) -> Optional[Op]:
     name = apdu.name
     f = apdu.fields
 
@@ -215,7 +243,7 @@ def op_from_apdu(apdu: Apdu, direction: str, ts: float) -> Optional[Op]:
         obj = f.get("obj")
         pid = f.get("pid")
         key = "obj%s/%s" % (obj, f.get("pid_name", pid))
-        data = bytes.fromhex(str(f.get("data", ""))) if f.get("data") else b""
+        data = _hex_or_payload(f, apdu.payload, 4)
         if name == "A_PropertyValue_Write" and pid == 5:  # PID_LOAD_STATE_CONTROL
             kind = KIND_ALLOC if "ld_ctrl" in f else KIND_LOAD_EVENT
             detail = {

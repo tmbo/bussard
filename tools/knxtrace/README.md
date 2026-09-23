@@ -203,6 +203,12 @@ range per sender.
 `S-A_Sync_Res` is not a counter, and ETS reuses a `Sync_Req`'s sequence for the
 next data frame.
 
+`image --keyring` composes a Secure download like a plain one, and also writes
+the property writes of the download to `properties.json` (see
+[the offline oracle](../../docs/testing-campaign.md#before-a-flash-the-offline-oracle)):
+object, PID, count, index, length and value, with security-object key material
+reduced to `redacted:<sha256[:8]>` by the same rule as the trace.
+
 AES is pure Python so the tool keeps its empty dependency list. That is slow
 per block and fine for a capture's few hundred secure frames.
 
@@ -217,7 +223,7 @@ not to print anything that should not leave it:
   a keyring the protected APDU and its MAC are never printed. With `--keyring`,
   a frame whose MAC verifies shows its inner APDU, decoded like plain traffic,
   except that key material inside it is reported as `redacted:<hash>`: the
-  key PIDs (P2P and group key tables, tool key), anything key-sized (16 bytes
+  key PIDs (P2P, group and zone key tables, tool key), anything key-sized (16 bytes
   or more) addressed to the security object (type 17) by the extended
   services, and any undecoded service with a key-sized payload. Keyring keys are never printed: output names them only as
   `tool`, `fdsk` or `group`, and the keyring password is read from
@@ -239,7 +245,7 @@ captures in-process from RFC 5737 TEST-NET-1 addresses.
 | `datasecure.py` | ETS keyring, AES-128, and `A_SecureData` verification and decryption. |
 | `normalize.py` | Frame stream to per-device operation sequence. |
 | `opsdiff.py` | The differ and its classification rules. |
-| `image.py` | Composes the memory a download wrote and diffs it against a `bussard flash --dry-run --dump-images` directory (see [the offline oracle](../../docs/testing-campaign.md#before-a-flash-the-offline-oracle)). |
+| `image.py` | Composes the memory and the property writes (`properties.json`) a download wrote and diffs both against a `bussard flash --dry-run --dump-images` directory (see [the offline oracle](../../docs/testing-campaign.md#before-a-flash-the-offline-oracle)). |
 | `test_knxtrace.py` | Tests, on synthetic captures and the `knx-sim` fixtures. |
 
 See [`docs/testing-campaign.md`](../../docs/testing-campaign.md) for how this
