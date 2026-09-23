@@ -5,6 +5,7 @@
 mod adopt_cmd;
 mod apply_cmd;
 mod assign_cmd;
+mod audit_cmd;
 mod capture_cmd;
 mod conn_cmd;
 mod describe_cmd;
@@ -524,6 +525,34 @@ enum Command {
         #[arg(long, value_name = "HOST")]
         allow_host: Vec<String>,
     },
+    /// Audit the installation: model gaps, one-sided links, what bussard can do
+    /// per device mask, KNX Secure coverage; with `--live`, the gateway's tunnel
+    /// slots, a traffic sample and a scan of the modelled devices. Read-only.
+    Audit {
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Emit one JSON object instead of the sectioned text report.
+        #[arg(long)]
+        json: bool,
+        /// Add the live part: gateway description, traffic sample and a probe of
+        /// every modelled device. Read tier only; never sends a group telegram.
+        #[arg(long)]
+        live: bool,
+        /// Traffic-sample window in seconds for `--live`.
+        #[arg(long, value_name = "SECS", default_value_t = 30, requires = "live")]
+        window: u64,
+        /// An ETS `.knxkeys` keyring to check Secure devices against (password in
+        /// `BUSSARD_KEYRING_PASSWORD`). Key material is never printed.
+        #[arg(long, value_name = "FILE")]
+        keyring: Option<PathBuf>,
+        /// Override the gateway `host[:port]` for tunneling.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Force KNXnet/IP routing (multicast) transport.
+        #[arg(long)]
+        routing: bool,
+    },
     /// Run the read-only MCP server over stdio.
     Mcp {
         /// The directory containing the model (required for the MCP server).
@@ -857,6 +886,24 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
                 allow_remote_gateway,
                 allowed_hosts: allow_host,
             },
+        ),
+        Command::Audit {
+            dir,
+            json,
+            live,
+            window,
+            keyring,
+            gateway,
+            routing,
+        } => audit_cmd::run(
+            &dir,
+            audit_cmd::AuditOptions {
+                json,
+                live,
+                window: std::time::Duration::from_secs(window),
+                keyring: keyring.as_deref(),
+            },
+            conn_cmd::ConnOverrides { gateway, routing },
         ),
         Command::Mcp {
             dir,
