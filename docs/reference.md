@@ -8,6 +8,7 @@ The complete surface of `bussard`: every command and flag, the environment varia
 - `--dir <DIR>` (default `knx`): the model directory. Every command that touches the model takes it.
 - `--gateway <HOST>`: override the gateway `host[:port]` for tunneling (port defaults to 3671).
 - `--routing`: force KNXnet/IP routing (multicast) instead of tunneling.
+- `--skip-address-check`: on the commands that open a connection to a device, skip the pre-flight probe that no bus device answers at bussard's own source individual address. See [SAFETY.md](SAFETY.md#source-address-check).
 - Filters (`monitor --filter`, `capture --filter`): a comma-separated list of GAs (`3/2/0`), GA prefixes (`3/` or `3/2/`), or IAs (`1.1.30`).
 - Confirmation: commands that write to devices confirm on a terminal (`y/N`), naming the resolved gateway (`host:port`). Without a TTY they refuse unless `--yes` is passed (`--yes-download` for `import-product`). This covers `write`, `flash`, `apply`, `assign` and `adopt`.
 - Real-gateway safety: a write command whose resolved gateway is **not** loopback (not `127.0.0.0/8` or `::1`) refuses to run unless you opt in with `--allow-remote-gateway` or `BUSSARD_ALLOW_REAL_GATEWAY=1`. Loopback gateways (the local simulator, the test suite) are always allowed. Reads (`monitor`, `read`, `scan`, `plan`, `reconstruct`) are never gated. The two long-running servers pass the same gate once, at startup, when they are able to transmit: `mcp --allow-writes`, `viz --allow-writes`, and `viz --watch-prog`. Without those flags neither server can write, so neither is gated. [SAFETY.md](SAFETY.md) is the read-before-your-first-write guide to all of this.
@@ -118,6 +119,7 @@ Scan a line for devices: mask version, manufacturer, order number, and the delta
 | `--json` | off | Emit JSON instead of the table format. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
+| `--skip-address-check` | off | Skip the pre-flight check that no bus device answers at bussard's own source address. See [SAFETY.md](SAFETY.md#source-address-check). |
 
 ### `bussard assign [ADDRESS]`
 
@@ -130,6 +132,7 @@ Assign an individual address to the device in programming mode. Refuses when mor
 | `--dir <DIR>` | `knx` | The model directory. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
+| `--skip-address-check` | off | Skip the pre-flight check that no bus device answers at bussard's own source address. See [SAFETY.md](SAFETY.md#source-address-check). |
 | `--allow-remote-gateway` | off | Permit a write to a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
 
 ### `bussard reconstruct [ADDRESS]`
@@ -147,6 +150,7 @@ Read a device's tables back over the bus and diff them against the model, or (wi
 | `--json` | off | Emit JSON instead of the report format. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
+| `--skip-address-check` | off | Skip the pre-flight check that no bus device answers at bussard's own source address. See [SAFETY.md](SAFETY.md#source-address-check). |
 
 ### `bussard describe <ADDRESS>`
 
@@ -161,6 +165,7 @@ Introspect a device over the bus: discover its interface objects and, for each, 
 | `--tool-key <HEX>` | | The raw 32-hex-character tool key, for a simulator or bench device with a synthetic key. Conflicts with `--keyring`. A process argument is visible to other users on the machine, so do not use it for a real installation. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
+| `--skip-address-check` | off | Skip the pre-flight check that no bus device answers at bussard's own source address. See [SAFETY.md](SAFETY.md#source-address-check). |
 
 When the model marks the device secure-capable, the output carries a `KNX Secure:` line (and a `secure` object in `--json`, with `secure_capable` and the Data Secure state). A security-activated device refuses plain management access; pass its tool key with `--keyring` (or `--tool-key` for a test device) and `describe` runs over KNX Data Secure. The same two flags work on `flash` and `apply`. See [SAFETY.md](SAFETY.md#known-limitations) for what is verified.
 
@@ -201,6 +206,7 @@ Guide a new device from programming mode into the model: product data, address a
 | `--dir <DIR>` | `knx` | The model directory. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
+| `--skip-address-check` | off | Skip the pre-flight check that no bus device answers at bussard's own source address. See [SAFETY.md](SAFETY.md#source-address-check). |
 | `--allow-remote-gateway` | off | Permit a write to a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
 
 ### `bussard flash --product <FILE> <ADDRESS>`
@@ -225,6 +231,7 @@ The same pre-flight also checks the device is factory-fresh (issue #79), read-on
 | `--allow-remote-gateway` | off | Permit a flash to a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
+| `--skip-address-check` | off | Skip the pre-flight check that no bus device answers at bussard's own source address. See [SAFETY.md](SAFETY.md#source-address-check). |
 | `--json` | off | Print the pre-flight plan as JSON instead of the report. It carries a `parameters` array (`key`, `name`, `old`, `new`, `unit`; `old` is `null` when unreadable), the application identity, the write summary and the step trace. The confirmation and the flash itself are unchanged. |
 | `-v` | off | Show the memory-level plan (the step trace) and the raw override keys under the parameter-level plan. |
 
@@ -248,6 +255,7 @@ Read a device's live tables and show what `apply` would change. With `--line`, p
 | `--json` | off | Emit JSON instead of the report format. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
+| `--skip-address-check` | off | Skip the pre-flight check that no bus device answers at bussard's own source address. See [SAFETY.md](SAFETY.md#source-address-check). |
 
 ### `bussard apply <ADDRESS>`
 
@@ -266,6 +274,7 @@ Apply the model's link tables to a device: plan, confirm, back up, write, verify
 | `--allow-remote-gateway` | off | Permit a write to a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
+| `--skip-address-check` | off | Skip the pre-flight check that no bus device answers at bussard's own source address. See [SAFETY.md](SAFETY.md#source-address-check). |
 
 #### Whole-line runs
 
@@ -301,6 +310,7 @@ The summary table lists each device as `commissioned`, `present` or `failed: <re
 | `--allow-remote-gateway` | off | Permit a write to a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
+| `--skip-address-check` | off | Skip the pre-flight check that no bus device answers at bussard's own source address. See [SAFETY.md](SAFETY.md#source-address-check). |
 
 ### `bussard status`
 
@@ -365,6 +375,7 @@ Snapshot the installation before you change it. For every device in the model (o
 | `--keyring <FILE>` / `--tool-key <HEX>` | | KNX Data Secure tool keys, as for `apply`. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
+| `--skip-address-check` | off | Skip the pre-flight check that no bus device answers at bussard's own source address. See [SAFETY.md](SAFETY.md#source-address-check). |
 
 ### `bussard restore <BACKUP_DIR> <ADDRESS>`
 
@@ -380,6 +391,7 @@ Write one device's backed-up link tables back. `restore` picks the newest `<ia>-
 | `--keyring <FILE>` / `--tool-key <HEX>` | | KNX Data Secure tool key. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
+| `--skip-address-check` | off | Skip the pre-flight check that no bus device answers at bussard's own source address. See [SAFETY.md](SAFETY.md#source-address-check). |
 
 ### `bussard replace <ADDRESS> --product <FILE>`
 
@@ -405,6 +417,7 @@ Put a new device of the same product in place of a dead one. The steps:
 | `--keyring <FILE>` / `--tool-key <HEX>` | | KNX Data Secure tool key. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
+| `--skip-address-check` | off | Skip the pre-flight check that no bus device answers at bussard's own source address. See [SAFETY.md](SAFETY.md#source-address-check). |
 
 ### `bussard validate`
 
@@ -594,6 +607,7 @@ Report what the installation holds and what bussard can do with it. Read-only. T
 | `--keyring <FILE>` | | An ETS `.knxkeys` keyring; each Secure device is reported with or without a tool-key entry. Password from `BUSSARD_KEYRING_PASSWORD`. No key material is printed. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
+| `--skip-address-check` | off | With `--live`, skip the check that no bus device answers at bussard's own source address before the scan. See [SAFETY.md](SAFETY.md#source-address-check). |
 
 Static sections (JSON keys in brackets):
 
@@ -651,6 +665,7 @@ Serve the network-visualization website: an HTTP server that renders the model a
 | `BUSSARD_ADOPT_ADDRESS` | The target address for `adopt`, for driving the wizard from a script or test (together with `--product`). |
 | `BUSSARD_ASSIGN_WAIT_MS` | Test knob: shrinks the programming-mode wait budget of `assign` and `adopt`. Unset in normal use. |
 | `BUSSARD_SCAN_DISCOVERY_MS` | Test knob: shrinks the per-address probe timeout of `scan` and `reconstruct --line`. Unset in normal use. |
+| `BUSSARD_ADDRESS_PROBE_MS` | Test knob: shrinks the per-attempt timeout of the source-address check (default 600 ms). Unset in normal use. |
 | `BUSSARD_WIRE_TRACE` | Set to `1` to log every KNXnet/IP datagram as hex on stderr. The diagnostic of last resort when a gateway behaves unexpectedly; very noisy. |
 | `BUSSARD_FLASH_L4_TIMEOUT_MS` | Flash knob: the per-exchange Layer 4 timeout. Raise it for a slow device or a lossy link. |
 | `BUSSARD_FLASH_REBOOT_WAIT_MS` | Flash knob: how long to wait for a device to come back after a restart. |

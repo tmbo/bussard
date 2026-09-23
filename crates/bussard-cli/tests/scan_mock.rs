@@ -319,3 +319,128 @@ fn scan_reports_devices_and_model_delta() {
         .collect();
     assert_eq!(missing, vec!["1.1.6"], "1.1.6 is in the model but silent");
 }
+
+/// The pre-flight source-address check: the mock hands out tunnel address
+/// `1.1.255` in its CONNECT_RESPONSE *and* answers management traffic there, so
+/// a real device sits exactly where bussard would speak from. Sharing a source
+/// address with a live device interleaves two management sessions inside one
+/// layer-4 connection at the device, so the command must refuse.
+#[test]
+fn scan_refuses_when_a_device_answers_at_our_source_address() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (gw, port) = rt.block_on(async {
+        let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = sock.local_addr().unwrap().port();
+        (sock, port)
+    });
+
+    // 1.1.255 is the tunnel address this mock assigns (see
+    // `connect_response_body`): here it is also a live device.
+    let devices = vec![
+        device("1.1.4", 0x07B0, 0x0083, b"MDT-JAL0410"),
+        device("1.1.255", 0x07B0, 0x0083, b"MDT-JAL0410"),
+    ];
+    let handle = rt.spawn(run_gateway(gw, devices));
+
+    let tmp = std::env::temp_dir().join(format!("bussard-scan-dup-ia-{}", std::process::id()));
+    let model_dir = tmp.join("knx");
+    write_model(&model_dir);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bussard"))
+        .args([
+            "scan",
+            "1.1",
+            "--from",
+            "1",
+            "--to",
+            "8",
+            "--dir",
+            model_dir.to_str().unwrap(),
+            "--gateway",
+            &format!("127.0.0.1:{port}"),
+            "--json",
+        ])
+        .env("BUSSARD_SCAN_DISCOVERY_MS", "40")
+        .env("BUSSARD_ADDRESS_PROBE_MS", "200")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run bussard scan");
+
+    rt.block_on(async { handle.abort() });
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "scan must refuse to run; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("already answers at 1.1.255"),
+        "the refusal must name the shared address; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("--skip-address-check"),
+        "the refusal must name the escape hatch; stderr:\n{stderr}"
+    );
+}
+
+/// `--skip-address-check` is the escape hatch for a gateway that misbehaves on
+/// the probe: the same colliding bus still scans.
+#[test]
+fn scan_with_skip_address_check_runs_despite_a_shared_source_address() {
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    let (gw, port) = rt.block_on(async {
+        let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = sock.local_addr().unwrap().port();
+        (sock, port)
+    });
+
+    let devices = vec![
+        device("1.1.4", 0x07B0, 0x0083, b"MDT-JAL0410"),
+        device("1.1.255", 0x07B0, 0x0083, b"MDT-JAL0410"),
+    ];
+    let handle = rt.spawn(run_gateway(gw, devices));
+
+    let tmp = std::env::temp_dir().join(format!("bussard-scan-skip-ia-{}", std::process::id()));
+    let model_dir = tmp.join("knx");
+    write_model(&model_dir);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bussard"))
+        .args([
+            "scan",
+            "1.1",
+            "--from",
+            "1",
+            "--to",
+            "8",
+            "--dir",
+            model_dir.to_str().unwrap(),
+            "--gateway",
+            &format!("127.0.0.1:{port}"),
+            "--skip-address-check",
+            "--json",
+        ])
+        .env("BUSSARD_SCAN_DISCOVERY_MS", "40")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("run bussard scan");
+
+    rt.block_on(async { handle.abort() });
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "--skip-address-check must let the scan run; stderr:\n{stderr}"
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("scan --json must emit valid JSON: {e}\n{stdout}"));
+    let found = json["found"].as_array().expect("found array");
+    assert!(
+        found.iter().any(|d| d["address"] == "1.1.4"),
+        "the sweep still reports the devices it saw: {stdout}"
+    );
+}

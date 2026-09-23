@@ -222,6 +222,15 @@ enum Command {
         /// Force KNXnet/IP routing (multicast) transport.
         #[arg(long)]
         routing: bool,
+        /// Skip the pre-flight check that no bus device answers at bussard's own
+        /// source individual address.
+        ///
+        /// That check is what stops two management clients sharing one source
+        /// address, which interleaves their numbered telegrams inside a single
+        /// layer-4 session at the device and can silently corrupt a download.
+        /// Only pass this for a gateway that misbehaves on the probe itself.
+        #[arg(long)]
+        skip_address_check: bool,
     },
     /// Assign an individual address to the device in programming mode.
     Assign {
@@ -240,6 +249,15 @@ enum Command {
         /// Force KNXnet/IP routing (multicast) transport.
         #[arg(long)]
         routing: bool,
+        /// Skip the pre-flight check that no bus device answers at bussard's own
+        /// source individual address.
+        ///
+        /// That check is what stops two management clients sharing one source
+        /// address, which interleaves their numbered telegrams inside a single
+        /// layer-4 session at the device and can silently corrupt a download.
+        /// Only pass this for a gateway that misbehaves on the probe itself.
+        #[arg(long)]
+        skip_address_check: bool,
         /// Permit a write to a non-loopback (real) gateway. Required for any
         /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
         #[arg(long)]
@@ -279,6 +297,15 @@ enum Command {
         /// Force KNXnet/IP routing (multicast) transport.
         #[arg(long)]
         routing: bool,
+        /// Skip the pre-flight check that no bus device answers at bussard's own
+        /// source individual address.
+        ///
+        /// That check is what stops two management clients sharing one source
+        /// address, which interleaves their numbered telegrams inside a single
+        /// layer-4 session at the device and can silently corrupt a download.
+        /// Only pass this for a gateway that misbehaves on the probe itself.
+        #[arg(long)]
+        skip_address_check: bool,
     },
     /// Introspect a device: enumerate its interface objects and each property's
     /// description (PID, type, element count, access levels) over the bus.
@@ -309,6 +336,15 @@ enum Command {
         /// Force KNXnet/IP routing (multicast) transport.
         #[arg(long)]
         routing: bool,
+        /// Skip the pre-flight check that no bus device answers at bussard's own
+        /// source individual address.
+        ///
+        /// That check is what stops two management clients sharing one source
+        /// address, which interleaves their numbered telegrams inside a single
+        /// layer-4 session at the device and can silently corrupt a download.
+        /// Only pass this for a gateway that misbehaves on the probe itself.
+        #[arg(long)]
+        skip_address_check: bool,
     },
     /// Inspect a KNX Secure keyring (`.knxkeys`): list the devices, interfaces
     /// and group addresses it carries (issue #71). Key material is NEVER printed.
@@ -371,6 +407,15 @@ enum Command {
         /// Force KNXnet/IP routing (multicast) transport.
         #[arg(long)]
         routing: bool,
+        /// Skip the pre-flight check that no bus device answers at bussard's own
+        /// source individual address.
+        ///
+        /// That check is what stops two management clients sharing one source
+        /// address, which interleaves their numbered telegrams inside a single
+        /// layer-4 session at the device and can silently corrupt a download.
+        /// Only pass this for a gateway that misbehaves on the probe itself.
+        #[arg(long)]
+        skip_address_check: bool,
         /// Permit a write to a non-loopback (real) gateway. Required for any
         /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
         #[arg(long)]
@@ -439,6 +484,15 @@ enum Command {
         /// Force KNXnet/IP routing (multicast) transport.
         #[arg(long)]
         routing: bool,
+        /// Skip the pre-flight check that no bus device answers at bussard's own
+        /// source individual address.
+        ///
+        /// That check is what stops two management clients sharing one source
+        /// address, which interleaves their numbered telegrams inside a single
+        /// layer-4 session at the device and can silently corrupt a download.
+        /// Only pass this for a gateway that misbehaves on the probe itself.
+        #[arg(long)]
+        skip_address_check: bool,
         /// Emit the pre-flight plan as JSON (including the `parameters` array)
         /// instead of the human report.
         #[arg(long)]
@@ -467,6 +521,15 @@ enum Command {
         /// Force KNXnet/IP routing (multicast) transport.
         #[arg(long)]
         routing: bool,
+        /// Skip the pre-flight check that no bus device answers at bussard's own
+        /// source individual address.
+        ///
+        /// That check is what stops two management clients sharing one source
+        /// address, which interleaves their numbered telegrams inside a single
+        /// layer-4 session at the device and can silently corrupt a download.
+        /// Only pass this for a gateway that misbehaves on the probe itself.
+        #[arg(long)]
+        skip_address_check: bool,
     },
     /// Apply the model's link tables to a device (plan, confirm, write, verify),
     /// or (with `--line`) to every model device on a whole line.
@@ -511,6 +574,15 @@ enum Command {
         /// Force KNXnet/IP routing (multicast) transport.
         #[arg(long)]
         routing: bool,
+        /// Skip the pre-flight check that no bus device answers at bussard's own
+        /// source individual address.
+        ///
+        /// That check is what stops two management clients sharing one source
+        /// address, which interleaves their numbered telegrams inside a single
+        /// layer-4 session at the device and can silently corrupt a download.
+        /// Only pass this for a gateway that misbehaves on the probe itself.
+        #[arg(long)]
+        skip_address_check: bool,
         /// Permit a write to a non-loopback (real) gateway. Required for any
         /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
         #[arg(long)]
@@ -560,6 +632,15 @@ enum Command {
         /// Force KNXnet/IP routing (multicast) transport.
         #[arg(long)]
         routing: bool,
+        /// Skip the pre-flight check that no bus device answers at bussard's own
+        /// source individual address.
+        ///
+        /// That check is what stops two management clients sharing one source
+        /// address, which interleaves their numbered telegrams inside a single
+        /// layer-4 session at the device and can silently corrupt a download.
+        /// Only pass this for a gateway that misbehaves on the probe itself.
+        #[arg(long)]
+        skip_address_check: bool,
         /// Permit a write to a non-loopback (real) gateway. Required for any
         /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
         #[arg(long)]
@@ -648,6 +729,15 @@ enum Command {
         /// Force KNXnet/IP routing (multicast) transport.
         #[arg(long)]
         routing: bool,
+        /// Skip the pre-flight check that no bus device answers at bussard's own
+        /// source individual address.
+        ///
+        /// That check is what stops two management clients sharing one source
+        /// address, which interleaves their numbered telegrams inside a single
+        /// layer-4 session at the device and can silently corrupt a download.
+        /// Only pass this for a gateway that misbehaves on the probe itself.
+        #[arg(long)]
+        skip_address_check: bool,
     },
     /// Write a device's backed-up link tables back onto it (issue #96).
     ///
@@ -681,6 +771,15 @@ enum Command {
         /// Force KNXnet/IP routing (multicast) transport.
         #[arg(long)]
         routing: bool,
+        /// Skip the pre-flight check that no bus device answers at bussard's own
+        /// source individual address.
+        ///
+        /// That check is what stops two management clients sharing one source
+        /// address, which interleaves their numbered telegrams inside a single
+        /// layer-4 session at the device and can silently corrupt a download.
+        /// Only pass this for a gateway that misbehaves on the probe itself.
+        #[arg(long)]
+        skip_address_check: bool,
         /// Permit a write to a non-loopback (real) gateway. Required for any
         /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
         #[arg(long)]
@@ -728,6 +827,15 @@ enum Command {
         /// Force KNXnet/IP routing (multicast) transport.
         #[arg(long)]
         routing: bool,
+        /// Skip the pre-flight check that no bus device answers at bussard's own
+        /// source individual address.
+        ///
+        /// That check is what stops two management clients sharing one source
+        /// address, which interleaves their numbered telegrams inside a single
+        /// layer-4 session at the device and can silently corrupt a download.
+        /// Only pass this for a gateway that misbehaves on the probe itself.
+        #[arg(long)]
+        skip_address_check: bool,
         /// Permit a write to a non-loopback (real) gateway. Required for any
         /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
         #[arg(long)]
@@ -1011,6 +1119,15 @@ enum Command {
         /// Force KNXnet/IP routing (multicast) transport.
         #[arg(long)]
         routing: bool,
+        /// Skip the pre-flight check that no bus device answers at bussard's own
+        /// source individual address.
+        ///
+        /// That check is what stops two management clients sharing one source
+        /// address, which interleaves their numbered telegrams inside a single
+        /// layer-4 session at the device and can silently corrupt a download.
+        /// Only pass this for a gateway that misbehaves on the probe itself.
+        #[arg(long)]
+        skip_address_check: bool,
     },
     /// Run the read-only MCP server over stdio.
     Mcp {
@@ -1144,13 +1261,18 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             json,
             gateway,
             routing,
+            skip_address_check,
         } => scan_cmd::run(
             &line,
             from,
             to,
             &dir,
             json,
-            conn_cmd::ConnOverrides { gateway, routing },
+            conn_cmd::ConnOverrides {
+                gateway,
+                routing,
+                skip_address_check,
+            },
         ),
         Command::Assign {
             address,
@@ -1158,13 +1280,18 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             yes,
             gateway,
             routing,
+            skip_address_check,
             allow_remote_gateway,
         } => assign_cmd::run(
             address.as_deref(),
             &dir,
             yes,
             allow_remote_gateway,
-            conn_cmd::ConnOverrides { gateway, routing },
+            conn_cmd::ConnOverrides {
+                gateway,
+                routing,
+                skip_address_check,
+            },
         ),
         Command::Reconstruct {
             address,
@@ -1176,8 +1303,13 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             json,
             gateway,
             routing,
+            skip_address_check,
         } => {
-            let overrides = conn_cmd::ConnOverrides { gateway, routing };
+            let overrides = conn_cmd::ConnOverrides {
+                gateway,
+                routing,
+                skip_address_check,
+            };
             match line {
                 Some(line) => reconstruct_cmd::run_line(
                     &line,
@@ -1203,6 +1335,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             tool_key,
             gateway,
             routing,
+            skip_address_check,
         } => describe_cmd::run(
             &address,
             &dir,
@@ -1211,7 +1344,11 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 keyring: keyring.as_deref(),
                 tool_key: tool_key.as_deref(),
             },
-            conn_cmd::ConnOverrides { gateway, routing },
+            conn_cmd::ConnOverrides {
+                gateway,
+                routing,
+                skip_address_check,
+            },
         ),
         Command::Keyring { file, json } => keyring_cmd::run(&file, json),
         Command::ImportProduct {
@@ -1235,13 +1372,18 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             yes,
             gateway,
             routing,
+            skip_address_check,
             allow_remote_gateway,
         } => adopt_cmd::run(
             product.as_deref(),
             &dir,
             yes,
             allow_remote_gateway,
-            conn_cmd::ConnOverrides { gateway, routing },
+            conn_cmd::ConnOverrides {
+                gateway,
+                routing,
+                skip_address_check,
+            },
         ),
         Command::Flash {
             address,
@@ -1258,6 +1400,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             tool_key,
             gateway,
             routing,
+            skip_address_check,
             json,
         } => flash_cmd::run(
             &address,
@@ -1274,7 +1417,11 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 keyring: keyring.as_deref(),
                 tool_key: tool_key.as_deref(),
             },
-            conn_cmd::ConnOverrides { gateway, routing },
+            conn_cmd::ConnOverrides {
+                gateway,
+                routing,
+                skip_address_check,
+            },
             flash_cmd::FlashOutput { json, verbose },
         ),
         Command::Plan {
@@ -1284,8 +1431,13 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             json,
             gateway,
             routing,
+            skip_address_check,
         } => {
-            let overrides = conn_cmd::ConnOverrides { gateway, routing };
+            let overrides = conn_cmd::ConnOverrides {
+                gateway,
+                routing,
+                skip_address_check,
+            };
             match line {
                 Some(line) => line_cmd::run_plan(&line, &dir, json, overrides),
                 None => {
@@ -1306,9 +1458,14 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             tool_key,
             gateway,
             routing,
+            skip_address_check,
             allow_remote_gateway,
         } => {
-            let overrides = conn_cmd::ConnOverrides { gateway, routing };
+            let overrides = conn_cmd::ConnOverrides {
+                gateway,
+                routing,
+                skip_address_check,
+            };
             let tool_key_source = secure_key::ToolKeySource {
                 keyring: keyring.as_deref(),
                 tool_key: tool_key.as_deref(),
@@ -1351,6 +1508,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             tool_key,
             gateway,
             routing,
+            skip_address_check,
             allow_remote_gateway,
         } => commission_cmd::run(
             &line,
@@ -1368,7 +1526,11 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 keyring: keyring.as_deref(),
                 tool_key: tool_key.as_deref(),
             },
-            conn_cmd::ConnOverrides { gateway, routing },
+            conn_cmd::ConnOverrides {
+                gateway,
+                routing,
+                skip_address_check,
+            },
         ),
         Command::Status { dir, json, raw } => history_cmd::run_status(&dir, json, raw),
         Command::History { dir, json } => history_cmd::run_history(&dir, json),
@@ -1386,6 +1548,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             tool_key,
             gateway,
             routing,
+            skip_address_check,
         } => backup_cmd::run(
             &addresses,
             line.as_deref(),
@@ -1396,7 +1559,11 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 keyring: keyring.as_deref(),
                 tool_key: tool_key.as_deref(),
             },
-            conn_cmd::ConnOverrides { gateway, routing },
+            conn_cmd::ConnOverrides {
+                gateway,
+                routing,
+                skip_address_check,
+            },
         ),
         Command::Restore {
             backup_dir,
@@ -1407,6 +1574,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             tool_key,
             gateway,
             routing,
+            skip_address_check,
             allow_remote_gateway,
         } => restore_cmd::run(
             &backup_dir,
@@ -1418,7 +1586,11 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 keyring: keyring.as_deref(),
                 tool_key: tool_key.as_deref(),
             },
-            conn_cmd::ConnOverrides { gateway, routing },
+            conn_cmd::ConnOverrides {
+                gateway,
+                routing,
+                skip_address_check,
+            },
         ),
         Command::Replace {
             address,
@@ -1432,6 +1604,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             tool_key,
             gateway,
             routing,
+            skip_address_check,
             allow_remote_gateway,
         } => replace_cmd::run(
             &address,
@@ -1446,7 +1619,11 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 keyring: keyring.as_deref(),
                 tool_key: tool_key.as_deref(),
             },
-            conn_cmd::ConnOverrides { gateway, routing },
+            conn_cmd::ConnOverrides {
+                gateway,
+                routing,
+                skip_address_check,
+            },
         ),
         Command::Validate { dir, format } => validate_cmd::run(&dir, format == Format::Json),
         Command::Scaffold {
@@ -1522,7 +1699,11 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             &dir,
             json,
             filter.as_deref(),
-            conn_cmd::ConnOverrides { gateway, routing },
+            conn_cmd::ConnOverrides {
+                gateway,
+                routing,
+                skip_address_check: false,
+            },
         ),
         Command::Capture {
             to,
@@ -1534,14 +1715,26 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             &to,
             &dir,
             filter.as_deref(),
-            conn_cmd::ConnOverrides { gateway, routing },
+            conn_cmd::ConnOverrides {
+                gateway,
+                routing,
+                skip_address_check: false,
+            },
         ),
         Command::Read {
             ga,
             dir,
             gateway,
             routing,
-        } => read_cmd::run(&ga, &dir, conn_cmd::ConnOverrides { gateway, routing }),
+        } => read_cmd::run(
+            &ga,
+            &dir,
+            conn_cmd::ConnOverrides {
+                gateway,
+                routing,
+                skip_address_check: false,
+            },
+        ),
         Command::Write {
             ga,
             value,
@@ -1560,7 +1753,11 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             yes,
             allow_remote_gateway,
             &dir,
-            conn_cmd::ConnOverrides { gateway, routing },
+            conn_cmd::ConnOverrides {
+                gateway,
+                routing,
+                skip_address_check: false,
+            },
         ),
         Command::HaConfig { dir, out } => ha_config_cmd::run(&dir, out.as_deref()),
         Command::Viz {
@@ -1575,7 +1772,11 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
         } => viz_cmd::run(
             listen,
             &dir,
-            conn_cmd::ConnOverrides { gateway, routing },
+            conn_cmd::ConnOverrides {
+                gateway,
+                routing,
+                skip_address_check: false,
+            },
             viz_cmd::VizOptions {
                 allow_writes,
                 watch_prog,
@@ -1601,7 +1802,11 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 yes,
                 timeout_seconds: timeout,
             },
-            conn_cmd::ConnOverrides { gateway, routing },
+            conn_cmd::ConnOverrides {
+                gateway,
+                routing,
+                skip_address_check: false,
+            },
         ),
         Command::Test {
             file,
@@ -1625,7 +1830,11 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 yes,
                 allow_remote_gateway,
             },
-            conn_cmd::ConnOverrides { gateway, routing },
+            conn_cmd::ConnOverrides {
+                gateway,
+                routing,
+                skip_address_check: false,
+            },
         ),
         Command::Audit {
             dir,
@@ -1635,6 +1844,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             keyring,
             gateway,
             routing,
+            skip_address_check,
         } => audit_cmd::run(
             &dir,
             audit_cmd::AuditOptions {
@@ -1643,7 +1853,11 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 window: std::time::Duration::from_secs(window),
                 keyring: keyring.as_deref(),
             },
-            conn_cmd::ConnOverrides { gateway, routing },
+            conn_cmd::ConnOverrides {
+                gateway,
+                routing,
+                skip_address_check,
+            },
         ),
         Command::Mcp {
             dir,
@@ -1656,7 +1870,11 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             capture_db,
         } => mcp_cmd::run(
             &dir,
-            conn_cmd::ConnOverrides { gateway, routing },
+            conn_cmd::ConnOverrides {
+                gateway,
+                routing,
+                skip_address_check: false,
+            },
             mcp_cmd::McpModes {
                 passive,
                 allow_writes,

@@ -15,7 +15,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, anyhow};
-use bussard_bus::{Bus, ops};
+use bussard_bus::Bus;
 use bussard_mgmt::tables::{
     OT_ADDRESS_TABLE, OT_APPLICATION_PROGRAM, OT_ASSOCIATION_TABLE, OT_DEVICE,
     OT_GROUP_OBJECT_TABLE, discover_interface_objects,
@@ -25,7 +25,9 @@ use bussard_mgmt::{
 };
 use bussard_model::IndividualAddress;
 
-use crate::conn_cmd::{ConnOverrides, load_model_required, resolve_config};
+use crate::conn_cmd::{
+    ConnOverrides, checked_source_or_close, load_model_required, resolve_config,
+};
 
 /// One interface object plus its enumerated properties, shaped for text and
 /// `--json`.
@@ -126,7 +128,7 @@ pub fn run(
                 "warning: bus not connected yet; management traffic may use the 0.0.255 fallback source"
             );
         }
-        let source = ops::group_source(&handle);
+        let source = checked_source_or_close(&handle, &overrides).await?;
         let lease = handle.lease().await.context("leasing the bus")?;
         let channel = LeaseChannel::new(lease);
         let secure = crate::secure_key::layer(&tool_key, &secure_seq);

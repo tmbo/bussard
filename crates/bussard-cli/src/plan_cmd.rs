@@ -19,7 +19,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
-use bussard_bus::{Bus, ops};
+use bussard_bus::Bus;
 use bussard_download::{
     DesiredTables, PlanReport, Sys7LiveTables, compute_tables, plan, read_sys7_tables,
 };
@@ -27,7 +27,9 @@ use bussard_mgmt::tables::{DeviceTables, TablesError, read_tables};
 use bussard_mgmt::{L4Channel, Layer4Connection, LeaseChannel, MaskProfile, system_type};
 use bussard_model::{IndividualAddress, Model};
 
-use crate::conn_cmd::{ConnOverrides, load_model_required, resolve_config};
+use crate::conn_cmd::{
+    ConnOverrides, checked_source_or_close, load_model_required, resolve_config,
+};
 
 /// A serialisable `(object, GA)` pair for the JSON output.
 #[derive(Debug, serde::Serialize)]
@@ -189,7 +191,7 @@ pub fn run(
         if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
             eprintln!("warning: bus not connected yet; management traffic may use the 0.0.255 fallback source");
         }
-        let source = ops::group_source(&handle);
+        let source = checked_source_or_close(&handle, &overrides).await?;
         let lease = handle.lease().await.context("leasing the bus")?;
         let channel = LeaseChannel::new(lease);
         let result = match Layer4Connection::connect(channel, target, source).await {

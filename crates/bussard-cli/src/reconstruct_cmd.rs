@@ -28,7 +28,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow};
-use bussard_bus::{Bus, BusHandle, ops};
+use bussard_bus::{Bus, BusHandle};
 use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO, PID_SERIAL_NUMBER};
 use bussard_mgmt::tables::{DeviceTables, TablesError, read_tables};
 use bussard_mgmt::{
@@ -42,7 +42,10 @@ use bussard_model::schema::{
 use bussard_model::{Dpt, Flags, GroupAddress, IndividualAddress, LoadedDevice, Model};
 use bussard_transport::TransportKind;
 
-use crate::conn_cmd::{ConnOverrides, load_model_optional, load_model_required, resolve_config};
+use crate::conn_cmd::{
+    ConnOverrides, checked_source_or_close, load_model_optional, load_model_required,
+    resolve_config,
+};
 
 /// One (object, GA) pair in the diff.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
@@ -126,7 +129,7 @@ pub fn run(
         // Present the tunnel-assigned address as the source — devices commonly
         // ignore management frames from any other address (falling back to
         // 0.0.255 on routing, issue #30).
-        let source = ops::group_source(&handle);
+        let source = checked_source_or_close(&handle, &overrides).await?;
         // Lease the bus for this connection-oriented session; group traffic and
         // other subscribers keep flowing on the shared connection.
         let lease = handle.lease().await.context("leasing the bus")?;
@@ -435,6 +438,9 @@ pub fn run_line(
         estimate.as_secs() % 60
     );
 
+    // The sweep's runtime block consumes what it captures, but `overrides` is
+    // still needed afterwards to seed the synthesized model's connection block.
+    let conn = overrides.clone();
     let runtime = tokio::runtime::Runtime::new()?;
     let found = runtime.block_on(async move {
         let (handle, _task) = Bus::connect(config);
@@ -446,7 +452,7 @@ pub fn run_line(
                 "warning: bus not connected yet; management traffic may use the 0.0.255 fallback source"
             );
         }
-        let source = ops::group_source(&handle);
+        let source = checked_source_or_close(&handle, &conn).await?;
         let found = tokio::select! {
             found = sweep_line(&handle, area, line_no, from, to, source) => found,
             _ = tokio::signal::ctrl_c() => {

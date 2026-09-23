@@ -41,7 +41,6 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
-use bussard_bus::ops;
 use bussard_download::backup::{DeviceBackup, backups_root, has_installation_backup};
 use bussard_download::{
     DesiredTables, PlanReport, Sys7LiveTables, Sys7TableImages, VerifyOutcome, apply_sys7_tables,
@@ -54,8 +53,8 @@ use bussard_model::IndividualAddress;
 use bussard_transport::ConnectionConfig;
 
 use crate::conn_cmd::{
-    BusSession, ConnOverrides, enforce_write_gate, gateway_display, load_model_required,
-    resolve_config,
+    BusSession, ConnOverrides, checked_source, enforce_write_gate, gateway_display,
+    load_model_required, resolve_config,
 };
 use crate::plan_cmd;
 
@@ -128,6 +127,7 @@ pub fn run(
         allow_remote_gateway,
         tool_key_source,
         &DesiredSource::Model,
+        &overrides,
     )
 }
 
@@ -162,6 +162,7 @@ pub(crate) fn apply_desired(
     allow_remote_gateway: bool,
     tool_key_source: crate::secure_key::ToolKeySource<'_>,
     origin: &DesiredSource,
+    overrides: &ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
     // KNX Data Secure (issue #71, spec §6.2): every management APDU below —
     // the read pre-pass and the table writes — rides A_SecureData when the device
@@ -186,8 +187,10 @@ pub(crate) fn apply_desired(
     let runtime = tokio::runtime::Runtime::new()?;
     let bus = BusSession::open(&runtime, config);
     let handle = bus.handle();
-    // The tunnel-assigned source address, resolved once for both phases.
-    let source = ops::group_source(handle);
+    // The tunnel-assigned source address, resolved and checked against the bus
+    // once for both phases (they share this tunnel, so one probe covers both).
+    // `BusSession` closes the tunnel if the check refuses.
+    let source = runtime.block_on(checked_source(handle, overrides))?;
 
     // Phase A (read-only): read the live tables and build the plan.
     let read = {

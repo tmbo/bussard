@@ -56,6 +56,7 @@ pub mod error;
 pub mod load;
 pub mod manufacturers;
 pub mod memory;
+pub mod probe;
 pub mod profile;
 pub mod secure;
 pub mod sys7;
@@ -68,8 +69,8 @@ pub use broadcast::{
 };
 pub use connection::{
     AuthorizeOutcome, L4Channel, Layer4Connection, LeaseChannel, MAX_OBJECT_INDEX, PID_OBJECT_TYPE,
-    PropertyDesc, Timeouts, describe_object_properties, probe_object_type, probe_object_types,
-    read_device_descriptor,
+    PROBE_TIMEOUT, PropertyDesc, Timeouts, describe_object_properties, probe_object_type,
+    probe_object_types, read_device_descriptor,
 };
 pub use device::DeviceConnection;
 pub use error::{MgmtError, Result, SilenceKind};
@@ -87,6 +88,7 @@ pub use memory::{
     read_memory, read_memory_range, select_extended_memory, write_memory, write_memory_chunked,
     write_memory_verified,
 };
+pub use probe::{AddressProbe, probe_own_address, probe_own_address_on};
 pub use profile::{
     KnxMedium, LsmRealisation, MaskCapabilities, MaskFamily, MaskProfile, Sys7Profile,
     capability_table,
