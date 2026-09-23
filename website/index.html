@@ -1,42 +1,70 @@
 <!doctype html>
 <html lang="en">
+
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>bussard</title>
-<meta name="description" content="bussard is an open-source command line tool for KNX. Configuration lives in YAML files, bussard programs the devices over KNXnet/IP and decodes the bus.">
-<meta property="og:title" content="bussard">
-<meta property="og:description" content="Open-source CLI for KNX. Configuration in YAML, programming over KNXnet/IP, live decoding of the bus.">
-<meta property="og:type" content="website">
-<meta property="og:url" content="https://bussard.tmbo.dev/">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231d8a54'/%3E%3Cpath d='M4 20h24' stroke='%23fff' stroke-width='3' stroke-linecap='round'/%3E%3Ccircle cx='11' cy='20' r='3.5' fill='%23f2b544'/%3E%3Cpath d='M20 12h6M23 12v8' stroke='%23fff' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
-<style>
-  :root {
-    color-scheme: light dark;
-    --bg: #f2f5f3;
-    --surface: #ffffff;
-    --surface-2: #e8eeea;
-    --ink: #121815;
-    --muted: #5a6661;
-    --line: #d3dcd6;
-    --green: #1d8a54;
-    --green-ink: #177a48;
-    --green-soft: #dcf1e4;
-    --amber: #e7a62a;
-    --amber-ink: #9a6508;
-    --amber-soft: #fbefd3;
-    --term-bg: #0f1f18;
-    --term-ink: #d9e6de;
-    --term-dim: #7f948a;
-    --term-green: #7fd9a3;
-    --term-amber: #f2c76a;
-    --shadow: 0 1px 2px rgba(18,24,21,.06), 0 12px 32px -12px rgba(18,24,21,.18);
-  }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>bussard</title>
+  <meta name="description"
+    content="bussard is an open-source command line tool for KNX. Configuration lives in YAML files, bussard programs the devices over KNXnet/IP and decodes the bus.">
+  <meta property="og:title" content="bussard">
+  <meta property="og:description"
+    content="Open-source CLI for KNX. Configuration in YAML, programming over KNXnet/IP, live decoding of the bus.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://bussard.tmbo.dev/">
+  <link rel="icon"
+    href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231d8a54'/%3E%3Cpath d='M4 20h24' stroke='%23fff' stroke-width='3' stroke-linecap='round'/%3E%3Ccircle cx='11' cy='20' r='3.5' fill='%23f2b544'/%3E%3Cpath d='M20 12h6M23 12v8' stroke='%23fff' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet"
+    href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f2f5f3;
+      --surface: #ffffff;
+      --surface-2: #e8eeea;
+      --ink: #121815;
+      --muted: #5a6661;
+      --line: #d3dcd6;
+      --green: #1d8a54;
+      --green-ink: #177a48;
+      --green-soft: #dcf1e4;
+      --amber: #e7a62a;
+      --amber-ink: #9a6508;
+      --amber-soft: #fbefd3;
+      --term-bg: #0f1f18;
+      --term-ink: #d9e6de;
+      --term-dim: #7f948a;
+      --term-green: #7fd9a3;
+      --term-amber: #f2c76a;
+      --shadow: 0 1px 2px rgba(18, 24, 21, .06), 0 12px 32px -12px rgba(18, 24, 21, .18);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) {
+        --bg: #0d1210;
+        --surface: #151c18;
+        --surface-2: #1c2520;
+        --ink: #e7ede9;
+        --muted: #93a09a;
+        --line: #27332d;
+        --green: #4fd08a;
+        --green-ink: #6fdc9f;
+        --green-soft: #143523;
+        --amber: #f0b43a;
+        --amber-ink: #f0b43a;
+        --amber-soft: #3a2c10;
+        --term-bg: #090f0c;
+        --term-ink: #d9e6de;
+        --term-dim: #6f8278;
+        --term-green: #7fd9a3;
+        --term-amber: #f2c76a;
+        --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 12px 32px -12px rgba(0, 0, 0, .6);
+      }
+    }
+
+    :root[data-theme="dark"] {
       --bg: #0d1210;
       --surface: #151c18;
       --surface-2: #1c2520;
@@ -54,644 +82,1644 @@
       --term-dim: #6f8278;
       --term-green: #7fd9a3;
       --term-amber: #f2c76a;
-      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 32px -12px rgba(0,0,0,.6);
+      --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 12px 32px -12px rgba(0, 0, 0, .6);
     }
-  }
-  :root[data-theme="dark"] {
-    --bg: #0d1210;
-    --surface: #151c18;
-    --surface-2: #1c2520;
-    --ink: #e7ede9;
-    --muted: #93a09a;
-    --line: #27332d;
-    --green: #4fd08a;
-    --green-ink: #6fdc9f;
-    --green-soft: #143523;
-    --amber: #f0b43a;
-    --amber-ink: #f0b43a;
-    --amber-soft: #3a2c10;
-    --term-bg: #090f0c;
-    --term-ink: #d9e6de;
-    --term-dim: #6f8278;
-    --term-green: #7fd9a3;
-    --term-amber: #f2c76a;
-    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 12px 32px -12px rgba(0,0,0,.6);
-  }
 
-  * { box-sizing: border-box; }
-  html { height: 100%; scroll-behavior: smooth; }
-  body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--ink);
-    font: 16px/1.55 "Instrument Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    padding-block: 0 4rem;
-    padding-inline: 16px;
-    -webkit-font-smoothing: antialiased;
-  }
-  .wrap { max-width: 1040px; margin: 0 auto; }
-  h1, h2, h3, .display {
-    font-family: "Bricolage Grotesque", "Instrument Sans", system-ui, sans-serif;
-    letter-spacing: -0.015em;
-    text-wrap: balance;
-  }
-  code, pre, .mono {
-    font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-    font-size: 0.92em;
-  }
-  a { color: var(--green-ink); text-decoration-thickness: 1px; text-underline-offset: 3px; }
-  a:hover { text-decoration-thickness: 2px; }
-  a:focus-visible, button:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; border-radius: 4px; }
-  p { margin: 0 0 1rem; }
-  svg { max-width: 100%; height: auto; display: block; }
-
-  /* top bar */
-  .top { display: flex; align-items: center; gap: 1.2rem; padding-block: 1.1rem; }
-  .top nav { margin-left: auto; }
-  .lang { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 2px; background: var(--surface); }
-  .lang button { border: 0; background: transparent; color: var(--muted); font: inherit; font-size: .78rem; font-weight: 600; letter-spacing: .04em; padding: .25rem .6rem; border-radius: 999px; cursor: pointer; }
-  .lang button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
-  /* language variants: English is the default without JavaScript */
-  :root:not([data-lang="de"]) [data-lang="de"] { display: none !important; }
-  :root[data-lang="de"] [data-lang="en"] { display: none !important; }
-  .brand { display: flex; align-items: center; gap: .6rem; font-family: "Bricolage Grotesque", system-ui, sans-serif; font-weight: 800; font-size: 1.25rem; color: var(--ink); text-decoration: none; }
-  .brand svg { width: 28px; height: 28px; }
-  .top nav { display: flex; gap: 1.4rem; font-size: .95rem; font-weight: 500; }
-  .top nav a { color: var(--ink); text-decoration: none; }
-  .top nav a:hover { color: var(--green-ink); }
-  @media (max-width: 520px) { .top nav a.hide-sm { display: none; } }
-
-  /* hero */
-  .hero { display: grid; grid-template-columns: 1fr; gap: 2.5rem; align-items: center; padding-block: 2.5rem 2rem; }
-  @media (min-width: 900px) { .hero { grid-template-columns: 1.05fr .95fr; gap: 3.5rem; padding-block: 3.5rem 2.5rem; } }
-  .eyebrow { display: inline-flex; align-items: center; gap: .5rem; font-size: .8rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--green-ink); margin-bottom: 1.1rem; }
-  .eyebrow::before { content: ""; width: 22px; height: 3px; background: var(--green); border-radius: 2px; }
-  h1 { font-size: clamp(2.3rem, 5.2vw, 3.7rem); line-height: 1.02; font-weight: 800; margin: 0 0 1.1rem; }
-  h1 em { font-style: normal; color: var(--green-ink); }
-  .lede { font-size: 1.15rem; color: var(--muted); max-width: 32em; margin-bottom: 1.6rem; }
-  .cta { display: flex; gap: .75rem; flex-wrap: wrap; align-items: center; }
-  .btn { display: inline-flex; align-items: center; gap: .5rem; padding: .7rem 1.1rem; border-radius: 10px; font-weight: 600; text-decoration: none; font-size: .98rem; border: 1px solid transparent; }
-  .btn.primary { background: var(--green); color: #fff; }
-  .btn.primary:hover { filter: brightness(1.06); }
-  .btn.ghost { border-color: var(--line); color: var(--ink); background: var(--surface); }
-  .btn.ghost:hover { border-color: var(--muted); }
-  .cta .ver { color: var(--muted); font-size: .9rem; margin-left: .25rem; }
-
-  .term {
-    background: var(--term-bg); color: var(--term-ink);
-    border-radius: 14px; box-shadow: var(--shadow);
-    overflow: hidden; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: .8rem; line-height: 1.6;
-  }
-  .term-bar { display: flex; align-items: center; gap: .4rem; padding: .65rem .9rem; background: rgba(255,255,255,.04); border-bottom: 1px solid rgba(255,255,255,.06); color: var(--term-dim); font-size: .72rem; }
-  .term-bar i { width: 10px; height: 10px; border-radius: 50%; background: rgba(255,255,255,.14); display: inline-block; }
-  .term-bar span { margin-left: .5rem; }
-  .term pre { margin: 0; padding: 1rem 1.1rem 1.1rem; overflow-x: auto; }
-  .term .p { color: var(--term-dim); }
-  .term .g { color: var(--term-green); }
-  .term .a { color: var(--term-amber); }
-  .term .d { color: var(--term-dim); }
-  .term .cur { display: inline-block; width: .55em; height: 1.05em; background: var(--term-green); vertical-align: -0.15em; animation: blink 1.1s steps(1) infinite; }
-  @keyframes blink { 50% { opacity: 0; } }
-
-  /* bus band */
-  .bus { margin-block: 1rem 3rem; }
-  .bus svg { width: 100%; color: var(--muted); }
-  .bus .line { stroke: var(--green); }
-  .bus .dev { fill: var(--surface); stroke: var(--line); }
-  .bus .lbl { fill: var(--muted); font: 500 11px "JetBrains Mono", monospace; }
-  .bus .pulse { fill: var(--amber); animation: run 7s linear infinite; }
-  .bus .pulse.two { animation-delay: -3.5s; }
-  @keyframes run { from { transform: translateX(0); } to { transform: translateX(1200px); } }
-  @media (prefers-reduced-motion: reduce) {
-    .bus .pulse { animation: none; transform: translateX(300px); }
-    .bus .pulse.two { transform: translateX(860px); }
-    .term .cur { animation: none; }
-  }
-
-  /* sections */
-  section { padding-block: 2.5rem; }
-  .sec-head { max-width: 40em; margin-bottom: 1.75rem; }
-  .sec-head h2 { font-size: clamp(1.6rem, 3vw, 2.2rem); margin: 0 0 .6rem; font-weight: 700; line-height: 1.1; }
-  .sec-head p { color: var(--muted); margin: 0; }
-  .kicker { font-size: .78rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--green-ink); margin-bottom: .6rem; }
-
-  figure { margin: 0; }
-  figcaption { color: var(--muted); font-size: .9rem; margin-top: .9rem; max-width: 50em; }
-  .diagram { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: clamp(.75rem, 2vw, 1.5rem); }
-  .diagram svg { width: 100%; color: var(--ink); }
-  .diagram .box { fill: var(--surface-2); stroke: var(--line); }
-  .diagram .box.hi { fill: var(--green-soft); stroke: var(--green); }
-  .diagram .box.dark { fill: var(--term-bg); stroke: var(--term-bg); }
-  .diagram .t { font: 600 14px "Instrument Sans", system-ui, sans-serif; fill: var(--ink); }
-  .diagram .t.inv { fill: var(--term-ink); }
-  .diagram .s { font: 400 12px "Instrument Sans", system-ui, sans-serif; fill: var(--muted); }
-  .diagram .s.inv { fill: var(--term-dim); }
-  .diagram .m { font: 500 12px "JetBrains Mono", monospace; }
-  .diagram .edge { stroke: var(--muted); stroke-width: 1.5; fill: none; }
-  .diagram .edge.w { stroke: var(--green); stroke-width: 2.5; }
-  .diagram .edge.o { stroke: var(--amber); stroke-width: 2.5; }
-  .diagram .lab { font: 500 12px "Instrument Sans", system-ui, sans-serif; fill: var(--muted); }
-  .diagram .lab.w { fill: var(--green-ink); font-weight: 600; }
-  .diagram .lab.o { fill: var(--amber-ink); font-weight: 600; }
-  .diagram .busline { stroke: var(--green); stroke-width: 4; stroke-linecap: round; }
-
-  /* feature grid */
-  .grid { display: grid; grid-template-columns: 1fr; gap: 1rem; }
-  @media (min-width: 640px) { .grid { grid-template-columns: 1fr 1fr; } }
-  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 1.3rem 1.3rem 1.2rem; }
-  .card .ico { width: 40px; height: 40px; border-radius: 10px; background: var(--green-soft); color: var(--green-ink); display: grid; place-items: center; margin-bottom: 1rem; }
-  .card .ico svg { width: 22px; height: 22px; }
-  .card h3 { margin: 0 0 .4rem; font-size: 1.12rem; font-weight: 700; }
-  .card p { margin: 0; color: var(--muted); font-size: .96rem; }
-  .card code { color: var(--ink); }
-
-  /* steps */
-  .steps { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr; gap: .75rem; counter-reset: step; }
-  @media (min-width: 720px) { .steps { grid-template-columns: repeat(6, 1fr); gap: .5rem; } }
-  .steps li { position: relative; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 1rem .95rem .9rem; counter-increment: step; }
-  .steps li::before { content: counter(step, decimal-leading-zero); font-family: "JetBrains Mono", monospace; font-size: .75rem; color: var(--green-ink); font-weight: 500; display: block; margin-bottom: .55rem; }
-  .steps li strong { display: block; font-family: "Bricolage Grotesque", system-ui, sans-serif; font-size: 1.05rem; margin-bottom: .25rem; }
-  .steps li span { color: var(--muted); font-size: .88rem; line-height: 1.45; display: block; }
-  .steps li.write { border-color: var(--green); background: var(--green-soft); }
-  @media (min-width: 720px) {
-    .steps li:not(:last-child)::after { content: ""; position: absolute; right: -.5rem; top: 50%; width: .5rem; height: 2px; background: var(--line); }
-  }
-
-  /* telegram anatomy */
-  .tg { background: var(--term-bg); border-radius: 14px; padding: 1.4rem 1.2rem 1.2rem; box-shadow: var(--shadow); }
-  .tg-row { display: flex; flex-wrap: wrap; align-items: flex-start; row-gap: 1.6rem; }
-  .seg { display: flex; flex-direction: column; gap: .55rem; padding-inline: .35rem; }
-  .seg .tok { font-family: "JetBrains Mono", monospace; font-size: .95rem; color: var(--term-ink); white-space: pre; }
-  .seg .tok.g { color: var(--term-green); }
-  .seg .tok.a { color: var(--term-amber); }
-  .seg .tok.d { color: var(--term-dim); }
-  .seg .lab { font-size: .72rem; line-height: 1.3; color: var(--term-dim); border-top: 2px solid var(--term-dim); padding-top: .4rem; max-width: 9em; }
-  .seg .lab.g { border-color: var(--term-green); color: var(--term-green); }
-  .seg .lab.a { border-color: var(--term-amber); color: var(--term-amber); }
-  .seg.gap .lab { border-color: transparent; }
-
-  /* two-up */
-  .two { display: grid; grid-template-columns: 1fr; gap: 1.5rem; }
-  @media (min-width: 900px) { .two { grid-template-columns: 1fr 1fr; gap: 2rem; } }
-
-  /* mcp tiers */
-  .tiers { display: grid; gap: .6rem; }
-  .tier { display: grid; grid-template-columns: 7.5rem 1fr; gap: 1rem; align-items: start; }
-  .tier .bar { height: 100%; min-height: 3.2rem; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--line); display: flex; align-items: center; padding-inline: .9rem; font-family: "JetBrains Mono", monospace; font-size: .85rem; font-weight: 500; }
-  .tier.t1 .bar { width: 100%; }
-  .tier .txt { padding-top: .35rem; font-size: .94rem; }
-  .tier .txt strong { display: block; font-weight: 600; margin-bottom: .1rem; }
-  .tier .txt span { color: var(--muted); }
-  .tier.t2 .bar { background: var(--green-soft); border-color: var(--green); color: var(--green-ink); }
-  .tier.t3 .bar { background: var(--amber-soft); border-color: var(--amber); color: var(--amber-ink); }
-  .tier .bar svg { width: 16px; height: 16px; margin-left: auto; }
-  .tag { display: inline-block; font-size: .7rem; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; padding: .15rem .45rem; border-radius: 999px; background: var(--surface-2); color: var(--muted); vertical-align: middle; margin-left: .35rem; }
-
-  /* downloads */
-  .dl-grid { display: grid; grid-template-columns: 1fr; gap: .9rem; }
-  @media (min-width: 560px) { .dl-grid { grid-template-columns: 1fr 1fr; } }
-  @media (min-width: 900px) { .dl-grid { grid-template-columns: repeat(5, 1fr); } }
-  .dl { position: relative; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 1.1rem 1rem 1rem; display: flex; flex-direction: column; gap: .35rem; }
-  .dl .os { font-family: "Bricolage Grotesque", system-ui, sans-serif; font-weight: 700; font-size: 1.15rem; }
-  .dl .arch { color: var(--muted); font-size: .88rem; margin-bottom: .6rem; }
-  .dl .get { margin-top: auto; display: block; text-align: center; padding: .55rem .6rem; border-radius: 9px; background: var(--ink); color: var(--bg); text-decoration: none; font-weight: 600; font-size: .9rem; }
-  .dl .get:hover { background: var(--green); color: #fff; }
-  .dl .file { font-size: .74rem; color: var(--muted); word-break: break-all; margin-top: .5rem; }
-  .dl .file a { color: var(--muted); }
-  .dl.you { border-color: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
-  .dl .badge { display: none; position: absolute; top: -.7rem; left: 1rem; background: var(--green); color: #fff; font-size: .68rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; padding: .2rem .55rem; border-radius: 999px; }
-  .dl.you .badge { display: inline-block; }
-  .dl.you .get { background: var(--green); color: #fff; }
-
-  .note { color: var(--muted); font-size: .92rem; max-width: 46em; }
-  pre.sh { background: var(--surface); border: 1px solid var(--line); padding: .85rem 1rem; border-radius: 10px; overflow-x: auto; margin: 0 0 1rem; font-size: .85rem; line-height: 1.6; }
-  pre.sh .p { color: var(--muted); }
-
-  /* docs */
-  .docs { list-style: none; padding: 0; margin: 0; display: grid; grid-template-columns: 1fr; gap: .6rem; }
-  @media (min-width: 560px) { .docs { grid-template-columns: 1fr 1fr; } }
-  @media (min-width: 900px) { .docs { grid-template-columns: repeat(4, 1fr); } }
-  .docs a { display: block; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: .95rem 1rem; text-decoration: none; color: var(--ink); height: 100%; }
-  .docs a:hover { border-color: var(--green); }
-  .docs strong { display: block; font-weight: 600; margin-bottom: .15rem; }
-  .docs span { color: var(--muted); font-size: .88rem; }
-
-  .warn { display: grid; grid-template-columns: auto 1fr; gap: .9rem; align-items: start; background: var(--amber-soft); border: 1px solid var(--amber); border-radius: 14px; padding: 1rem 1.1rem; margin-top: 2rem; }
-  .warn svg { width: 22px; height: 22px; color: var(--amber-ink); margin-top: .1rem; }
-  .warn p { margin: 0; font-size: .95rem; }
-  .warn a { color: var(--ink); }
-
-  footer { margin-top: 2rem; padding-top: 1.5rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .88rem; display: grid; gap: .5rem; }
-  footer p { margin: 0; max-width: 60em; }
-</style>
-<script>
-  // Pick the language before the first paint: saved choice, then browser language. English otherwise.
-  (function () {
-    var lang = null;
-    try { lang = localStorage.getItem("bussard-lang"); } catch (e) {}
-    if (lang !== "en" && lang !== "de") {
-      var nav = (navigator.languages && navigator.languages[0]) || navigator.language || "";
-      lang = /^de/i.test(nav) ? "de" : "en";
+    * {
+      box-sizing: border-box;
     }
-    document.documentElement.setAttribute("data-lang", lang);
-    document.documentElement.lang = lang;
-  })();
-</script>
+
+    html {
+      height: 100%;
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 16px/1.55 "Instrument Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      padding-block: 0 4rem;
+      padding-inline: 16px;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .wrap {
+      max-width: 1040px;
+      margin: 0 auto;
+    }
+
+    h1,
+    h2,
+    h3,
+    .display {
+      font-family: "Bricolage Grotesque", "Instrument Sans", system-ui, sans-serif;
+      letter-spacing: -0.015em;
+      text-wrap: balance;
+    }
+
+    code,
+    pre,
+    .mono {
+      font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    a {
+      color: var(--green-ink);
+      text-decoration-thickness: 1px;
+      text-underline-offset: 3px;
+    }
+
+    a:hover {
+      text-decoration-thickness: 2px;
+    }
+
+    a:focus-visible,
+    button:focus-visible {
+      outline: 2px solid var(--green);
+      outline-offset: 3px;
+      border-radius: 4px;
+    }
+
+    p {
+      margin: 0 0 1rem;
+    }
+
+    svg {
+      max-width: 100%;
+      height: auto;
+      display: block;
+    }
+
+    /* top bar */
+    .top {
+      display: flex;
+      align-items: center;
+      gap: 1.2rem;
+      padding-block: 1.1rem;
+    }
+
+    .top nav {
+      margin-left: auto;
+    }
+
+    .lang {
+      display: inline-flex;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 2px;
+      background: var(--surface);
+    }
+
+    .lang button {
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font: inherit;
+      font-size: .78rem;
+      font-weight: 600;
+      letter-spacing: .04em;
+      padding: .25rem .6rem;
+      border-radius: 999px;
+      cursor: pointer;
+    }
+
+    .lang button[aria-pressed="true"] {
+      background: var(--ink);
+      color: var(--bg);
+    }
+
+    /* language variants: English is the default without JavaScript */
+    :root:not([data-lang="de"]) [data-lang="de"] {
+      display: none !important;
+    }
+
+    :root[data-lang="de"] [data-lang="en"] {
+      display: none !important;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: .6rem;
+      font-family: "Bricolage Grotesque", system-ui, sans-serif;
+      font-weight: 800;
+      font-size: 1.25rem;
+      color: var(--ink);
+      text-decoration: none;
+    }
+
+    .brand svg {
+      width: 28px;
+      height: 28px;
+    }
+
+    .top nav {
+      display: flex;
+      gap: 1.4rem;
+      font-size: .95rem;
+      font-weight: 500;
+    }
+
+    .top nav a {
+      color: var(--ink);
+      text-decoration: none;
+    }
+
+    .top nav a:hover {
+      color: var(--green-ink);
+    }
+
+    @media (max-width: 520px) {
+      .top nav a.hide-sm {
+        display: none;
+      }
+    }
+
+    /* hero */
+    .hero {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 2.5rem;
+      align-items: center;
+      padding-block: 2.5rem 2rem;
+    }
+
+    @media (min-width: 900px) {
+      .hero {
+        grid-template-columns: 1.05fr .95fr;
+        gap: 3.5rem;
+        padding-block: 3.5rem 2.5rem;
+      }
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: .5rem;
+      font-size: .8rem;
+      font-weight: 600;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--green-ink);
+      margin-bottom: 1.1rem;
+    }
+
+    .eyebrow::before {
+      content: "";
+      width: 22px;
+      height: 3px;
+      background: var(--green);
+      border-radius: 2px;
+    }
+
+    h1 {
+      font-size: clamp(2.3rem, 5.2vw, 3.7rem);
+      line-height: 1.02;
+      font-weight: 800;
+      margin: 0 0 1.1rem;
+    }
+
+    h1 em {
+      font-style: normal;
+      color: var(--green-ink);
+    }
+
+    .lede {
+      font-size: 1.15rem;
+      color: var(--muted);
+      max-width: 32em;
+      margin-bottom: 1.6rem;
+    }
+
+    .cta {
+      display: flex;
+      gap: .75rem;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: .5rem;
+      padding: .7rem 1.1rem;
+      border-radius: 10px;
+      font-weight: 600;
+      text-decoration: none;
+      font-size: .98rem;
+      border: 1px solid transparent;
+    }
+
+    .btn.primary {
+      background: var(--green);
+      color: #fff;
+    }
+
+    .btn.primary:hover {
+      filter: brightness(1.06);
+    }
+
+    .btn.ghost {
+      border-color: var(--line);
+      color: var(--ink);
+      background: var(--surface);
+    }
+
+    .btn.ghost:hover {
+      border-color: var(--muted);
+    }
+
+    .cta .ver {
+      color: var(--muted);
+      font-size: .9rem;
+      margin-left: .25rem;
+    }
+
+    .term {
+      background: var(--term-bg);
+      color: var(--term-ink);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: .8rem;
+      line-height: 1.6;
+    }
+
+    .term-bar {
+      display: flex;
+      align-items: center;
+      gap: .4rem;
+      padding: .65rem .9rem;
+      background: rgba(255, 255, 255, .04);
+      border-bottom: 1px solid rgba(255, 255, 255, .06);
+      color: var(--term-dim);
+      font-size: .72rem;
+    }
+
+    .term-bar i {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, .14);
+      display: inline-block;
+    }
+
+    .term-bar span {
+      margin-left: .5rem;
+    }
+
+    .term pre {
+      margin: 0;
+      padding: 1rem 1.1rem 1.1rem;
+      overflow-x: auto;
+    }
+
+    .term .p {
+      color: var(--term-dim);
+    }
+
+    .term .g {
+      color: var(--term-green);
+    }
+
+    .term .a {
+      color: var(--term-amber);
+    }
+
+    .term .d {
+      color: var(--term-dim);
+    }
+
+    .term .cur {
+      display: inline-block;
+      width: .55em;
+      height: 1.05em;
+      background: var(--term-green);
+      vertical-align: -0.15em;
+      animation: blink 1.1s steps(1) infinite;
+    }
+
+    @keyframes blink {
+      50% {
+        opacity: 0;
+      }
+    }
+
+    /* bus band */
+    .bus {
+      margin-block: 1rem 3rem;
+    }
+
+    .bus svg {
+      width: 100%;
+      color: var(--muted);
+    }
+
+    .bus .line {
+      stroke: var(--green);
+    }
+
+    .bus .dev {
+      fill: var(--surface);
+      stroke: var(--line);
+    }
+
+    .bus .lbl {
+      fill: var(--muted);
+      font: 500 11px "JetBrains Mono", monospace;
+    }
+
+    .bus .pulse {
+      fill: var(--amber);
+      animation: run 7s linear infinite;
+    }
+
+    .bus .pulse.two {
+      animation-delay: -3.5s;
+    }
+
+    @keyframes run {
+      from {
+        transform: translateX(0);
+      }
+
+      to {
+        transform: translateX(1200px);
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .bus .pulse {
+        animation: none;
+        transform: translateX(300px);
+      }
+
+      .bus .pulse.two {
+        transform: translateX(860px);
+      }
+
+      .term .cur {
+        animation: none;
+      }
+    }
+
+    /* sections */
+    section {
+      padding-block: 2.5rem;
+    }
+
+    .sec-head {
+      max-width: 40em;
+      margin-bottom: 1.75rem;
+    }
+
+    .sec-head h2 {
+      font-size: clamp(1.6rem, 3vw, 2.2rem);
+      margin: 0 0 .6rem;
+      font-weight: 700;
+      line-height: 1.1;
+    }
+
+    .sec-head p {
+      color: var(--muted);
+      margin: 0;
+    }
+
+    .kicker {
+      font-size: .78rem;
+      font-weight: 600;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--green-ink);
+      margin-bottom: .6rem;
+    }
+
+    figure {
+      margin: 0;
+    }
+
+    figcaption {
+      color: var(--muted);
+      font-size: .9rem;
+      margin-top: .9rem;
+      max-width: 50em;
+    }
+
+    .diagram {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: clamp(.75rem, 2vw, 1.5rem);
+    }
+
+    .diagram svg {
+      width: 100%;
+      color: var(--ink);
+    }
+
+    .diagram .box {
+      fill: var(--surface-2);
+      stroke: var(--line);
+    }
+
+    .diagram .box.hi {
+      fill: var(--green-soft);
+      stroke: var(--green);
+    }
+
+    .diagram .box.dark {
+      fill: var(--term-bg);
+      stroke: var(--term-bg);
+    }
+
+    .diagram .t {
+      font: 600 14px "Instrument Sans", system-ui, sans-serif;
+      fill: var(--ink);
+    }
+
+    .diagram .t.inv {
+      fill: var(--term-ink);
+    }
+
+    .diagram .s {
+      font: 400 12px "Instrument Sans", system-ui, sans-serif;
+      fill: var(--muted);
+    }
+
+    .diagram .s.inv {
+      fill: var(--term-dim);
+    }
+
+    .diagram .m {
+      font: 500 12px "JetBrains Mono", monospace;
+    }
+
+    .diagram .edge {
+      stroke: var(--muted);
+      stroke-width: 1.5;
+      fill: none;
+    }
+
+    .diagram .edge.w {
+      stroke: var(--green);
+      stroke-width: 2.5;
+    }
+
+    .diagram .edge.o {
+      stroke: var(--amber);
+      stroke-width: 2.5;
+    }
+
+    .diagram .lab {
+      font: 500 12px "Instrument Sans", system-ui, sans-serif;
+      fill: var(--muted);
+    }
+
+    .diagram .lab.w {
+      fill: var(--green-ink);
+      font-weight: 600;
+    }
+
+    .diagram .lab.o {
+      fill: var(--amber-ink);
+      font-weight: 600;
+    }
+
+    .diagram .busline {
+      stroke: var(--green);
+      stroke-width: 4;
+      stroke-linecap: round;
+    }
+
+    /* feature grid */
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1rem;
+    }
+
+    @media (min-width: 640px) {
+      .grid {
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 1.3rem 1.3rem 1.2rem;
+    }
+
+    .card .ico {
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      background: var(--green-soft);
+      color: var(--green-ink);
+      display: grid;
+      place-items: center;
+      margin-bottom: 1rem;
+    }
+
+    .card .ico svg {
+      width: 22px;
+      height: 22px;
+    }
+
+    .card h3 {
+      margin: 0 0 .4rem;
+      font-size: 1.12rem;
+      font-weight: 700;
+    }
+
+    .card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: .96rem;
+    }
+
+    .card code {
+      color: var(--ink);
+    }
+
+    /* steps */
+    .steps {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: .75rem;
+      counter-reset: step;
+    }
+
+    @media (min-width: 720px) {
+      .steps {
+        grid-template-columns: repeat(6, 1fr);
+        gap: .5rem;
+      }
+    }
+
+    .steps li {
+      position: relative;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 1rem .95rem .9rem;
+      counter-increment: step;
+    }
+
+    .steps li::before {
+      content: counter(step, decimal-leading-zero);
+      font-family: "JetBrains Mono", monospace;
+      font-size: .75rem;
+      color: var(--green-ink);
+      font-weight: 500;
+      display: block;
+      margin-bottom: .55rem;
+    }
+
+    .steps li strong {
+      display: block;
+      font-family: "Bricolage Grotesque", system-ui, sans-serif;
+      font-size: 1.05rem;
+      margin-bottom: .25rem;
+    }
+
+    .steps li span {
+      color: var(--muted);
+      font-size: .88rem;
+      line-height: 1.45;
+      display: block;
+    }
+
+    .steps li.write {
+      border-color: var(--green);
+      background: var(--green-soft);
+    }
+
+    @media (min-width: 720px) {
+      .steps li:not(:last-child)::after {
+        content: "";
+        position: absolute;
+        right: -.5rem;
+        top: 50%;
+        width: .5rem;
+        height: 2px;
+        background: var(--line);
+      }
+    }
+
+    /* telegram anatomy */
+    .tg {
+      background: var(--term-bg);
+      border-radius: 14px;
+      padding: 1.4rem 1.2rem 1.2rem;
+      box-shadow: var(--shadow);
+    }
+
+    .tg-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-start;
+      row-gap: 1.6rem;
+    }
+
+    .seg {
+      display: flex;
+      flex-direction: column;
+      gap: .55rem;
+      padding-inline: .35rem;
+    }
+
+    .seg .tok {
+      font-family: "JetBrains Mono", monospace;
+      font-size: .95rem;
+      color: var(--term-ink);
+      white-space: pre;
+    }
+
+    .seg .tok.g {
+      color: var(--term-green);
+    }
+
+    .seg .tok.a {
+      color: var(--term-amber);
+    }
+
+    .seg .tok.d {
+      color: var(--term-dim);
+    }
+
+    .seg .lab {
+      font-size: .72rem;
+      line-height: 1.3;
+      color: var(--term-dim);
+      border-top: 2px solid var(--term-dim);
+      padding-top: .4rem;
+      max-width: 9em;
+    }
+
+    .seg .lab.g {
+      border-color: var(--term-green);
+      color: var(--term-green);
+    }
+
+    .seg .lab.a {
+      border-color: var(--term-amber);
+      color: var(--term-amber);
+    }
+
+    .seg.gap .lab {
+      border-color: transparent;
+    }
+
+    /* two-up */
+    .two {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 1.5rem;
+    }
+
+    @media (min-width: 900px) {
+      .two {
+        grid-template-columns: 1fr 1fr;
+        gap: 2rem;
+      }
+    }
+
+    /* mcp tiers */
+    .tiers {
+      display: grid;
+      gap: .6rem;
+    }
+
+    .tier {
+      display: grid;
+      grid-template-columns: 7.5rem 1fr;
+      gap: 1rem;
+      align-items: start;
+    }
+
+    .tier .bar {
+      height: 100%;
+      min-height: 3.2rem;
+      border-radius: 10px;
+      background: var(--surface-2);
+      border: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      padding-inline: .9rem;
+      font-family: "JetBrains Mono", monospace;
+      font-size: .85rem;
+      font-weight: 500;
+    }
+
+    .tier.t1 .bar {
+      width: 100%;
+    }
+
+    .tier .txt {
+      padding-top: .35rem;
+      font-size: .94rem;
+    }
+
+    .tier .txt strong {
+      display: block;
+      font-weight: 600;
+      margin-bottom: .1rem;
+    }
+
+    .tier .txt span {
+      color: var(--muted);
+    }
+
+    .tier.t2 .bar {
+      background: var(--green-soft);
+      border-color: var(--green);
+      color: var(--green-ink);
+    }
+
+    .tier.t3 .bar {
+      background: var(--amber-soft);
+      border-color: var(--amber);
+      color: var(--amber-ink);
+    }
+
+    .tier .bar svg {
+      width: 16px;
+      height: 16px;
+      margin-left: auto;
+    }
+
+    .tag {
+      display: inline-block;
+      font-size: .7rem;
+      font-weight: 600;
+      letter-spacing: .05em;
+      text-transform: uppercase;
+      padding: .15rem .45rem;
+      border-radius: 999px;
+      background: var(--surface-2);
+      color: var(--muted);
+      vertical-align: middle;
+      margin-left: .35rem;
+    }
+
+    /* downloads */
+    .dl-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: .9rem;
+    }
+
+    @media (min-width: 560px) {
+      .dl-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+
+    @media (min-width: 900px) {
+      .dl-grid {
+        grid-template-columns: repeat(5, 1fr);
+      }
+    }
+
+    .dl {
+      position: relative;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 1.1rem 1rem 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: .35rem;
+    }
+
+    .dl .os {
+      font-family: "Bricolage Grotesque", system-ui, sans-serif;
+      font-weight: 700;
+      font-size: 1.15rem;
+    }
+
+    .dl .arch {
+      color: var(--muted);
+      font-size: .88rem;
+      margin-bottom: .6rem;
+    }
+
+    .dl .get {
+      margin-top: auto;
+      display: block;
+      text-align: center;
+      padding: .55rem .6rem;
+      border-radius: 9px;
+      background: var(--ink);
+      color: var(--bg);
+      text-decoration: none;
+      font-weight: 600;
+      font-size: .9rem;
+    }
+
+    .dl .get:hover {
+      background: var(--green);
+      color: #fff;
+    }
+
+    .dl .file {
+      font-size: .74rem;
+      color: var(--muted);
+      word-break: break-all;
+      margin-top: .5rem;
+    }
+
+    .dl .file a {
+      color: var(--muted);
+    }
+
+    .dl.you {
+      border-color: var(--green);
+      box-shadow: 0 0 0 3px var(--green-soft);
+    }
+
+    .dl .badge {
+      display: none;
+      position: absolute;
+      top: -.7rem;
+      left: 1rem;
+      background: var(--green);
+      color: #fff;
+      font-size: .68rem;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      padding: .2rem .55rem;
+      border-radius: 999px;
+    }
+
+    .dl.you .badge {
+      display: inline-block;
+    }
+
+    .dl.you .get {
+      background: var(--green);
+      color: #fff;
+    }
+
+    .note {
+      color: var(--muted);
+      font-size: .92rem;
+      max-width: 46em;
+    }
+
+    pre.sh {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      padding: .85rem 1rem;
+      border-radius: 10px;
+      overflow-x: auto;
+      margin: 0 0 1rem;
+      font-size: .85rem;
+      line-height: 1.6;
+    }
+
+    pre.sh .p {
+      color: var(--muted);
+    }
+
+    /* docs */
+    .docs {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: .6rem;
+    }
+
+    @media (min-width: 560px) {
+      .docs {
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+
+    @media (min-width: 900px) {
+      .docs {
+        grid-template-columns: repeat(4, 1fr);
+      }
+    }
+
+    .docs a {
+      display: block;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: .95rem 1rem;
+      text-decoration: none;
+      color: var(--ink);
+      height: 100%;
+    }
+
+    .docs a:hover {
+      border-color: var(--green);
+    }
+
+    .docs strong {
+      display: block;
+      font-weight: 600;
+      margin-bottom: .15rem;
+    }
+
+    .docs span {
+      color: var(--muted);
+      font-size: .88rem;
+    }
+
+    .warn {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: .9rem;
+      align-items: start;
+      background: var(--amber-soft);
+      border: 1px solid var(--amber);
+      border-radius: 14px;
+      padding: 1rem 1.1rem;
+      margin-top: 2rem;
+    }
+
+    .warn svg {
+      width: 22px;
+      height: 22px;
+      color: var(--amber-ink);
+      margin-top: .1rem;
+    }
+
+    .warn p {
+      margin: 0;
+      font-size: .95rem;
+    }
+
+    .warn a {
+      color: var(--ink);
+    }
+
+    footer {
+      margin-top: 2rem;
+      padding-top: 1.5rem;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: .88rem;
+      display: grid;
+      gap: .5rem;
+    }
+
+    footer p {
+      margin: 0;
+      max-width: 60em;
+    }
+  </style>
+  <script>
+    // Pick the language before the first paint: saved choice, then browser language. English otherwise.
+    (function () {
+      var lang = null;
+      try { lang = localStorage.getItem("bussard-lang"); } catch (e) { }
+      if (lang !== "en" && lang !== "de") {
+        var nav = (navigator.languages && navigator.languages[0]) || navigator.language || "";
+        lang = /^de/i.test(nav) ? "de" : "en";
+      }
+      document.documentElement.setAttribute("data-lang", lang);
+      document.documentElement.lang = lang;
+    })();
+  </script>
 </head>
+
 <body>
-<div class="wrap">
+  <div class="wrap">
 
-  <div class="top">
-    <a class="brand" href="#">
-      <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#1d8a54"/><path d="M4 20h24" stroke="#fff" stroke-width="3" stroke-linecap="round"/><circle cx="11" cy="20" r="3.5" fill="#f2b544"/><path d="M20 12h6M23 12v8" stroke="#fff" stroke-width="3" stroke-linecap="round"/></svg>
-      bussard
-    </a>
-    <nav>
-      <a href="#how" class="hide-sm"><span data-lang="en">How it works</span><span data-lang="de">So funktioniert es</span></a>
-      <a href="#download">Download</a>
-      <a href="#docs"><span data-lang="en">Docs</span><span data-lang="de">Doku</span></a>
-      <a href="https://github.com/tmbo/bussard">GitHub</a>
-    </nav>
-    <div class="lang" role="group" aria-label="Language">
-      <button type="button" data-set-lang="en" aria-pressed="true">EN</button>
-      <button type="button" data-set-lang="de" aria-pressed="false">DE</button>
-    </div>
-  </div>
-
-  <header class="hero">
-    <div>
-      <div class="eyebrow"><span data-lang="en">Open-source CLI for KNX</span><span data-lang="de">Open-Source-CLI für KNX</span></div>
-      <h1><span data-lang="en">Your KNX installation, <em>in plain YAML</em>. Programmed from the terminal.</span><span data-lang="de">Deine KNX-Anlage, <em>in einfachem YAML</em>. Programmiert aus dem Terminal.</span></h1>
-      <p class="lede"><span data-lang="en">bussard imports your ETS project into YAML files you can keep in git, pushes changes to the devices over your KNXnet/IP gateway, and decodes everything that happens on the bus. Built so an LLM can work on your installation with you.</span><span data-lang="de">bussard importiert dein ETS-Projekt in YAML-Dateien, die du in git versionieren kannst, überträgt Änderungen über dein KNXnet/IP-Gateway auf die Geräte und decodiert alles, was auf dem Bus passiert. Gebaut, damit ein LLM mit dir an deiner Anlage arbeiten kann.</span></p>
-      <div class="cta">
-        <a class="btn primary" href="#download">Download</a>
-        <a class="btn ghost" href="docs/"><span data-lang="en">Read the docs</span><span data-lang="de">Zur Doku</span></a>
-        <span class="ver">v0.1.0 · macOS, Linux, Windows</span>
-      </div>
-    </div>
-    <div class="term" aria-label="Terminal session" data-aria-de="Terminalsitzung">
-      <div class="term-bar"><i></i><i></i><i></i><span>bussard monitor</span></div>
-<pre><span class="p">$</span> bussard import demo-house.knxproj
-<span class="d">33 group addresses, 10 devices, 55 links → knx</span>
-<span class="p">$</span> bussard monitor
-<span class="d">12:03:41</span> 1.1.7 Weather Station → <span class="g">3/0/0</span> Wind Alarm = <span class="a">Alarm</span>
-<span class="d">12:03:44</span> 1.1.1 Push Button Hall → <span class="g">0/0/0</span> Hall Light = <span class="a">On</span>
-<span class="d">12:03:44</span> 1.1.3 Switch Actuator → <span class="g">0/0/1</span> Hall Light Status = <span class="a">On</span>
-<span class="p">$</span> bussard read 4/1/11
-<span class="a">21.4 °C</span> <span class="d">(9.001)</span>
-<span class="p">$</span> <span class="cur"></span></pre>
-    </div>
-  </header>
-
-  <div class="bus" aria-hidden="true">
-    <svg viewBox="0 0 1200 90">
-      <line class="line" x1="0" y1="45" x2="1200" y2="45" stroke-width="4" stroke-linecap="round"/>
-      <g class="dev">
-        <line x1="120" y1="45" x2="120" y2="62" stroke="var(--line)" stroke-width="2"/><rect x="85" y="62" width="70" height="22" rx="5"/>
-        <line x1="360" y1="45" x2="360" y2="62" stroke="var(--line)" stroke-width="2"/><rect x="325" y="62" width="70" height="22" rx="5"/>
-        <line x1="600" y1="45" x2="600" y2="62" stroke="var(--line)" stroke-width="2"/><rect x="565" y="62" width="70" height="22" rx="5"/>
-        <line x1="840" y1="45" x2="840" y2="62" stroke="var(--line)" stroke-width="2"/><rect x="805" y="62" width="70" height="22" rx="5"/>
-        <line x1="1080" y1="45" x2="1080" y2="62" stroke="var(--line)" stroke-width="2"/><rect x="1045" y="62" width="70" height="22" rx="5"/>
-      </g>
-      <g class="lbl" text-anchor="middle">
-        <text x="120" y="78">1.1.1</text><text x="360" y="78">1.1.3</text><text x="600" y="78">1.1.5</text><text x="840" y="78">1.1.7</text><text x="1080" y="78">1.1.250</text>
-      </g>
-      <circle class="pulse" cx="0" cy="45" r="6"/>
-      <circle class="pulse two" cx="0" cy="45" r="6"/>
-    </svg>
-  </div>
-
-  <section id="how">
-    <div class="sec-head">
-      <div class="kicker"><span data-lang="en">How it fits together</span><span data-lang="de">So passt es zusammen</span></div>
-      <h2><span data-lang="en">One model in git. Two paths to the bus.</span><span data-lang="de">Ein Modell in git. Zwei Wege zum Bus.</span></h2>
-      <p><span data-lang="en">Everything bussard knows about your installation lives in a folder of YAML files. Commands either write that model to the devices, or read the bus and explain it using the model.</span><span data-lang="de">Alles, was bussard über deine Anlage weiß, liegt in einem Ordner mit YAML-Dateien. Befehle schreiben entweder dieses Modell auf die Geräte oder lesen den Bus und erklären ihn mit Hilfe des Modells.</span></p>
-    </div>
-    <figure>
-      <div class="diagram">
-        <svg viewBox="0 0 900 560" role="img" data-aria-de="ETS-Exporte und Herstellerdaten werden in ein YAML-Modell in git importiert. bussard schreibt das Modell über validate, plan, apply und flash auf die Geräte und beobachtet den Bus über monitor, capture und read. Ein LLM bearbeitet das YAML und spricht über MCP mit bussard. bussard erreicht den KNX-Bus über ein KNXnet/IP-Gateway." aria-label="ETS exports and vendor product data are imported into a YAML model kept in git. bussard writes the model to devices through validate, plan, apply and flash, and observes the bus through monitor, capture and read. An LLM edits the YAML and talks to bussard over MCP. bussard reaches the KNX bus through a KNXnet/IP gateway.">
-          <defs>
-            <marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 1 L8 5 L0 9 z" fill="currentColor" style="fill:var(--muted)"/></marker>
-            <marker id="ar-w" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 1 L8 5 L0 9 z" style="fill:var(--green)"/></marker>
-            <marker id="ar-o" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 1 L8 5 L0 9 z" style="fill:var(--amber)"/></marker>
-          </defs>
-
-          <!-- inputs -->
-          <rect class="box" x="40" y="20" width="270" height="56" rx="10"/>
-          <text class="t m" x="60" y="43">.knxproj</text>
-          <text class="s" x="60" y="62" data-lang="en">ETS project export, optional</text>
-          <text class="s" x="60" y="62" data-lang="de">ETS-Projektexport, optional</text>
-          <rect class="box" x="370" y="20" width="270" height="56" rx="10"/>
-          <text class="t m" x="390" y="43">.knxprod</text>
-          <text class="s" x="390" y="62" data-lang="en">vendor product data, optional</text>
-          <text class="s" x="390" y="62" data-lang="de">Herstellerdaten, optional</text>
-          <line class="edge" x1="175" y1="76" x2="175" y2="136" marker-end="url(#ar)"/>
-          <text class="lab" x="185" y="110">import</text>
-          <line class="edge" x1="505" y1="76" x2="505" y2="136" marker-end="url(#ar)"/>
-          <text class="lab" x="515" y="110">import-product</text>
-
-          <!-- model -->
-          <rect class="box hi" x="40" y="140" width="600" height="64" rx="10"/>
-          <text class="t" x="60" y="166" data-lang="en">YAML model in git</text>
-          <text class="t" x="60" y="166" data-lang="de">YAML-Modell in git</text>
-          <text class="s" x="60" y="186" data-lang="en">devices.yaml · groups.yaml · links.yaml · reviewable diffs, edited by people and LLMs</text>
-          <text class="s" x="60" y="186" data-lang="de">devices.yaml · groups.yaml · links.yaml · prüfbare Diffs, bearbeitet von Menschen und LLMs</text>
-
-          <!-- llm -->
-          <rect class="box" x="700" y="220" width="180" height="64" rx="10"/>
-          <text class="t" x="720" y="246" data-lang="en">Claude / any LLM</text>
-          <text class="t" x="720" y="246" data-lang="de">Claude / beliebiges LLM</text>
-          <text class="s" x="720" y="266" data-lang="en">edits YAML, uses MCP</text>
-          <text class="s" x="720" y="266" data-lang="de">bearbeitet YAML, nutzt MCP</text>
-          <polyline class="edge" points="790,220 790,172 646,172" marker-end="url(#ar)"/>
-          <text class="lab" x="660" y="212" data-lang="en">edits the model</text>
-          <text class="lab" x="660" y="212" data-lang="de">bearbeitet das Modell</text>
-          <polyline class="edge" points="790,284 790,332 646,332" marker-end="url(#ar)"/>
-          <text class="lab" x="660" y="356">MCP</text>
-
-          <!-- write / observe -->
-          <line class="edge w" x1="110" y1="204" x2="110" y2="296" marker-end="url(#ar-w)"/>
-          <text class="lab w" x="125" y="243" data-lang="en">write path</text>
-          <text class="lab w" x="125" y="243" data-lang="de">Schreibweg</text>
-          <text class="lab m" x="125" y="262" style="fill:var(--green-ink)">validate · plan · apply · flash</text>
-          <line class="edge o" x1="590" y1="296" x2="590" y2="208" marker-end="url(#ar-o)"/>
-          <text class="lab o" x="575" y="243" text-anchor="end" data-lang="en">observe path</text>
-          <text class="lab o" x="575" y="243" text-anchor="end" data-lang="de">Beobachtungsweg</text>
-          <text class="lab m" x="575" y="262" text-anchor="end" style="fill:var(--amber-ink)">monitor · capture · read · viz</text>
-
-          <!-- bussard -->
-          <rect class="box dark" x="40" y="300" width="600" height="64" rx="10"/>
-          <text class="t inv" x="60" y="326" style="font-weight:700">bussard</text>
-          <text class="s inv" x="60" y="346" data-lang="en">one binary: CLI, MCP server, live network view</text>
-          <text class="s inv" x="60" y="346" data-lang="de">eine Binary: CLI, MCP-Server, Live-Netzwerkansicht</text>
-
-          <!-- gateway -->
-          <line class="edge" x1="340" y1="364" x2="340" y2="396" marker-end="url(#ar)"/>
-          <rect class="box" x="190" y="400" width="300" height="50" rx="10"/>
-          <text class="t" x="340" y="421" text-anchor="middle" data-lang="en">KNXnet/IP gateway</text>
-          <text class="t" x="340" y="421" text-anchor="middle" data-lang="de">KNXnet/IP-Gateway</text>
-          <text class="s" x="340" y="439" text-anchor="middle" data-lang="en">tunneling or routing</text>
-          <text class="s" x="340" y="439" text-anchor="middle" data-lang="de">Tunneling oder Routing</text>
-          <line class="edge" x1="340" y1="450" x2="340" y2="496" marker-end="url(#ar)"/>
-
-          <!-- bus -->
-          <line class="busline" x1="40" y1="505" x2="640" y2="505"/>
-          <text class="lab" x="660" y="509" data-lang="en">KNX bus</text>
-          <text class="lab" x="660" y="509" data-lang="de">KNX-Bus</text>
-          <g class="box">
-            <line x1="120" y1="505" x2="120" y2="520" style="stroke:var(--line);stroke-width:2"/><rect x="80" y="520" width="80" height="26" rx="6"/>
-            <line x1="240" y1="505" x2="240" y2="520" style="stroke:var(--line);stroke-width:2"/><rect x="200" y="520" width="80" height="26" rx="6"/>
-            <line x1="360" y1="505" x2="360" y2="520" style="stroke:var(--line);stroke-width:2"/><rect x="320" y="520" width="80" height="26" rx="6"/>
-            <line x1="480" y1="505" x2="480" y2="520" style="stroke:var(--line);stroke-width:2"/><rect x="440" y="520" width="80" height="26" rx="6"/>
-          </g>
-          <g class="s" text-anchor="middle" style="font-size:11px">
-            <g data-lang="en"><text x="120" y="538">actuator</text><text x="240" y="538">push button</text><text x="360" y="538">sensor</text><text x="480" y="538">weather</text></g>
-            <g data-lang="de"><text x="120" y="538">Aktor</text><text x="240" y="538">Taster</text><text x="360" y="538">Sensor</text><text x="480" y="538">Wetter</text></g>
-          </g>
+    <div class="top">
+      <a class="brand" href="#">
+        <svg viewBox="0 0 32 32" aria-hidden="true">
+          <rect width="32" height="32" rx="7" fill="#1d8a54" />
+          <path d="M4 20h24" stroke="#fff" stroke-width="3" stroke-linecap="round" />
+          <circle cx="11" cy="20" r="3.5" fill="#f2b544" />
+          <path d="M20 12h6M23 12v8" stroke="#fff" stroke-width="3" stroke-linecap="round" />
         </svg>
-      </div>
-      <figcaption><span data-lang="en">Green is the write path: bussard turns the model into device tables and downloads them. Amber is the observe path: telegrams from the bus get device names, group address names and typed values from the same model.</span><span data-lang="de">Grün ist der Schreibweg: bussard macht aus dem Modell Gerätetabellen und lädt sie auf die Geräte. Gelb ist der Beobachtungsweg: Telegramme vom Bus bekommen Gerätenamen, Gruppenadressnamen und typisierte Werte aus demselben Modell.</span></figcaption>
-    </figure>
-  </section>
-
-  <section>
-    <div class="sec-head">
-      <div class="kicker"><span data-lang="en">What it does</span><span data-lang="de">Was es kann</span></div>
-      <h2><span data-lang="en">Day-to-day KNX work without opening ETS.</span><span data-lang="de">Tägliche KNX-Arbeit, ohne die ETS zu öffnen.</span></h2>
-      <p><span data-lang="en">ETS stays in the drawer for the things only ETS can do: certification, planning and the odd exotic device.</span><span data-lang="de">Die ETS bleibt in der Schublade für das, was nur die ETS kann: Zertifizierung, Planung und das eine exotische Gerät.</span></p>
-    </div>
-    <div class="grid">
-      <div class="card">
-        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11"/><path d="M8 10l4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg></div>
-        <h3><span data-lang="en">Import your ETS project</span><span data-lang="de">ETS-Projekt importieren</span></h3>
-        <p><span data-lang="en">One command turns a <code>.knxproj</code> into YAML with named devices, group addresses and links. Keep it in git and review every change as a diff.</span><span data-lang="de">Ein Befehl macht aus einer <code>.knxproj</code> YAML-Dateien mit benannten Geräten, Gruppenadressen und Verknüpfungen. Versioniere sie in git und prüfe jede Änderung als Diff.</span></p>
-      </div>
-      <div class="card">
-        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h3l2-6 4 12 3-8 2 2h4"/></svg></div>
-        <h3><span data-lang="en">Watch the bus, decoded</span><span data-lang="de">Den Bus beobachten, decodiert</span></h3>
-        <p><span data-lang="en">Every telegram shows the sending device, the group address by name and the value as a typed unit. Filter by address or sender, or stream JSON to your own tools.</span><span data-lang="de">Jedes Telegramm zeigt das sendende Gerät, die Gruppenadresse mit Namen und den Wert als typisierte Einheit. Filtere nach Adresse oder Sender, oder streame JSON in deine eigenen Tools.</span></p>
-      </div>
-      <div class="card">
-        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/></svg></div>
-        <h3><span data-lang="en">Program devices</span><span data-lang="de">Geräte programmieren</span></h3>
-        <p><span data-lang="en">Adopt a new device, flash its application from the vendor <code>.knxprod</code>, and write group and association tables. Every write is planned, confirmed and verified.</span><span data-lang="de">Nimm ein neues Gerät in Betrieb, flashe seine Applikation aus der <code>.knxprod</code> des Herstellers und schreibe Gruppen- und Assoziationstabellen. Jeder Schreibvorgang wird geplant, bestätigt und verifiziert.</span></p>
-      </div>
-      <div class="card">
-        <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.8 4.6L18.5 9.5l-4.7 1.9L12 16l-1.8-4.6L5.5 9.5l4.7-1.9z"/><path d="M19 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z"/></svg></div>
-        <h3><span data-lang="en">Let an LLM help</span><span data-lang="de">Ein LLM helfen lassen</span></h3>
-        <p><span data-lang="en"><code>bussard mcp</code> exposes the model and the bus to Claude or another agent. Writes are off unless you turn them on, and protected group addresses stay out of reach.</span><span data-lang="de"><code>bussard mcp</code> macht Modell und Bus für Claude oder einen anderen Agenten zugänglich. Schreiben ist aus, bis du es einschaltest, und geschützte Gruppenadressen bleiben außer Reichweite.</span></p>
+        bussard
+      </a>
+      <nav>
+        <a href="#how" class="hide-sm"><span data-lang="en">How it works</span><span data-lang="de">So funktioniert
+            es</span></a>
+        <a href="#download">Download</a>
+        <a href="#docs"><span data-lang="en">Docs</span><span data-lang="de">Doku</span></a>
+        <a href="https://github.com/tmbo/bussard">GitHub</a>
+      </nav>
+      <div class="lang" role="group" aria-label="Language">
+        <button type="button" data-set-lang="en" aria-pressed="true">EN</button>
+        <button type="button" data-set-lang="de" aria-pressed="false">DE</button>
       </div>
     </div>
-  </section>
 
-  <section>
-    <div class="sec-head">
-      <div class="kicker"><span data-lang="en">Writing to devices</span><span data-lang="de">Auf Geräte schreiben</span></div>
-      <h2><span data-lang="en">Every device write follows the same six steps.</span><span data-lang="de">Jeder Schreibvorgang folgt denselben sechs Schritten.</span></h2>
-      <p><span data-lang="en">You see what will change before anything is sent, and the previous state is saved so you can go back.</span><span data-lang="de">Du siehst, was sich ändert, bevor etwas gesendet wird. Der vorherige Zustand wird gesichert, damit du zurück kannst.</span></p>
-    </div>
-    <ol class="steps">
-      <li><strong><span data-lang="en">Read</span><span data-lang="de">Lesen</span></strong><span><span data-lang="en">Fetch the live tables from the device.</span><span data-lang="de">Die aktuellen Tabellen vom Gerät holen.</span></span></li>
-      <li><strong><span data-lang="en">Diff</span><span data-lang="de">Vergleichen</span></strong><span><span data-lang="en">Compare them to your YAML model.</span><span data-lang="de">Mit deinem YAML-Modell abgleichen.</span></span></li>
-      <li><strong><span data-lang="en">Confirm</span><span data-lang="de">Bestätigen</span></strong><span><span data-lang="en">The plan names the gateway and asks for a yes.</span><span data-lang="de">Der Plan nennt das Gateway und fragt nach einem Ja.</span></span></li>
-      <li><strong><span data-lang="en">Back up</span><span data-lang="de">Sichern</span></strong><span><span data-lang="en">Save the current tables to disk.</span><span data-lang="de">Die aktuellen Tabellen auf die Platte schreiben.</span></span></li>
-      <li class="write"><strong><span data-lang="en">Write</span><span data-lang="de">Schreiben</span></strong><span><span data-lang="en">Download the new tables to the device.</span><span data-lang="de">Die neuen Tabellen auf das Gerät laden.</span></span></li>
-      <li><strong><span data-lang="en">Verify</span><span data-lang="de">Prüfen</span></strong><span><span data-lang="en">Read back and check every byte.</span><span data-lang="de">Zurücklesen und jedes Byte vergleichen.</span></span></li>
-    </ol>
-    <p class="note" style="margin-top:1rem"><span data-lang="en"><code>flash</code> writes a whole application image and is the one command that skips the backup. Writes to a gateway that is not on localhost are refused until you pass <code>--allow-remote-gateway</code>.</span><span data-lang="de"><code>flash</code> schreibt ein komplettes Applikations-Image und ist der einzige Befehl, der die Sicherung überspringt. Schreibvorgänge an ein Gateway, das nicht auf localhost läuft, werden abgelehnt, bis du <code>--allow-remote-gateway</code> übergibst.</span></p>
-  </section>
-
-  <section>
-    <div class="sec-head">
-      <div class="kicker"><span data-lang="en">Reading the bus</span><span data-lang="de">Den Bus lesen</span></div>
-      <h2><span data-lang="en">One telegram, fully decoded.</span><span data-lang="de">Ein Telegramm, vollständig decodiert.</span></h2>
-      <p><span data-lang="en">Raw KNX telegrams carry addresses and bytes. bussard resolves both against your model, so a line in <code>monitor</code> reads like a sentence.</span><span data-lang="de">Rohe KNX-Telegramme enthalten Adressen und Bytes. bussard löst beides gegen dein Modell auf, sodass sich eine Zeile in <code>monitor</code> wie ein Satz liest.</span></p>
-    </div>
-    <figure>
-      <div class="tg">
-        <div class="tg-row">
-          <div class="seg"><span class="tok d">12:03:44.809</span><span class="lab"><span data-lang="en">time received</span><span data-lang="de">Empfangszeit</span></span></div>
-          <div class="seg gap"><span class="tok"> </span><span class="lab"> </span></div>
-          <div class="seg"><span class="tok g">1.1.1</span><span class="lab g"><span data-lang="en">sender, individual address</span><span data-lang="de">Sender, physikalische Adresse</span></span></div>
-          <div class="seg"><span class="tok">Push Button Hallway</span><span class="lab"><span data-lang="en">device name from devices.yaml</span><span data-lang="de">Gerätename aus devices.yaml</span></span></div>
-          <div class="seg gap"><span class="tok d">→</span><span class="lab"> </span></div>
-          <div class="seg"><span class="tok g">0/0/0</span><span class="lab g"><span data-lang="en">group address</span><span data-lang="de">Gruppenadresse</span></span></div>
-          <div class="seg"><span class="tok">Hallway Light Switch</span><span class="lab"><span data-lang="en">GA name from groups.yaml</span><span data-lang="de">GA-Name aus groups.yaml</span></span></div>
-          <div class="seg"><span class="tok a">= On</span><span class="lab a"><span data-lang="en">decoded value</span><span data-lang="de">decodierter Wert</span></span></div>
-          <div class="seg"><span class="tok d">(1.001,</span><span class="lab"><span data-lang="en">datapoint type, sets the decoder</span><span data-lang="de">Datenpunkttyp, bestimmt den Decoder</span></span></div>
-          <div class="seg"><span class="tok d">obj "Rocker 1")</span><span class="lab"><span data-lang="en">com object that sent it, from links.yaml</span><span data-lang="de">sendendes Kommunikationsobjekt, aus links.yaml</span></span></div>
-        </div>
-      </div>
-      <figcaption><span data-lang="en">Addresses come from the telegram. Names, datapoint types and com objects come from the three YAML files. A group address missing from the model shows as raw hex until you add it.</span><span data-lang="de">Adressen kommen aus dem Telegramm. Namen, Datenpunkttypen und Kommunikationsobjekte kommen aus den drei YAML-Dateien. Eine Gruppenadresse, die im Modell fehlt, erscheint als rohes Hex, bis du sie ergänzt.</span></figcaption>
-    </figure>
-  </section>
-
-  <section>
-    <div class="two">
+    <header class="hero">
       <div>
-        <div class="sec-head">
-          <div class="kicker"><span data-lang="en">LLM access</span><span data-lang="de">LLM-Zugriff</span></div>
-          <h2><span data-lang="en">Three tiers for the MCP server.</span><span data-lang="de">Drei Stufen für den MCP-Server.</span></h2>
-          <p><span data-lang="en">An agent connected over MCP gets exactly the access you start the server with. Nothing an LLM says can raise it.</span><span data-lang="de">Ein über MCP verbundener Agent bekommt genau den Zugriff, mit dem du den Server startest. Nichts, was ein LLM sagt, kann ihn erweitern.</span></p>
-        </div>
-        <pre class="sh"><span class="p">$</span> claude mcp add knx -- bussard mcp --dir knx</pre>
-        <p class="note"><span data-lang="en">Home Assistant users get the same model twice: <code>bussard ha-config</code> writes the KNX integration config from the YAML files.</span><span data-lang="de">Home-Assistant-Nutzer bekommen dasselbe Modell doppelt: <code>bussard ha-config</code> erzeugt die Konfiguration der KNX-Integration aus den YAML-Dateien.</span></p>
-      </div>
-      <div class="tiers" role="img" aria-label="Three MCP tiers: passive never transmits, read is the default and rate-limited, write is opt-in and still refuses protected group addresses." data-aria-de="Drei MCP-Stufen: passiv sendet nie, lesen ist Standard und ratenbegrenzt, schreiben ist Opt-in und lehnt geschützte Gruppenadressen weiter ab.">
-        <div class="tier t1">
-          <div class="bar" style="width:55%">passive</div>
-          <div class="txt"><strong><span data-lang="en">Never transmits</span><span data-lang="de">Sendet nie</span></strong><span><span data-lang="en">Reads the model, listens to the bus, answers questions.</span><span data-lang="de">Liest das Modell, hört den Bus mit, beantwortet Fragen.</span></span></div>
-        </div>
-        <div class="tier t2">
-          <div class="bar" style="width:78%">read <span class="tag"><span data-lang="en">default</span><span data-lang="de">Standard</span></span></div>
-          <div class="txt"><strong><span data-lang="en">Group reads, rate-limited</span><span data-lang="de">Gruppen-Lesen, ratenbegrenzt</span></strong><span><span data-lang="en">Can ask devices for values. Cannot change anything.</span><span data-lang="de">Kann Geräte nach Werten fragen. Kann nichts ändern.</span></span></div>
-        </div>
-        <div class="tier t3">
-          <div class="bar">write<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></div>
-          <div class="txt"><strong><span data-lang="en">Opt-in with <code>--allow-writes</code></span><span data-lang="de">Opt-in mit <code>--allow-writes</code></span></strong><span><span data-lang="en">Group writes and device changes. Group addresses marked <code>protected</code> are still refused, with no override over MCP.</span><span data-lang="de">Gruppen-Schreiben und Geräteänderungen. Gruppenadressen mit <code>protected</code> werden weiter abgelehnt, ohne Ausnahme über MCP.</span></span></div>
+        <div class="eyebrow"><span data-lang="en">Open-source CLI for KNX</span><span data-lang="de">Open-Source CLI für
+            KNX</span></div>
+        <h1><span data-lang="en">Your KNX installation, <em>in plain text</em>.</span><span data-lang="de">Deine
+            KNX-Installation, <em>in Textform</em>.</span></h1>
+        <p class="lede"><span data-lang="en">Start from scratch or import your ETS project. bussard keeps your KNX
+            configuration in YAML files
+            that you edit by hand or with your favorite LLM. It flashes your devices, monitors the bus and rolls back
+            any change.</span><span data-lang="de">Starte von Null oder importiere dein ETS-Projekt. bussard hält deine
+            KNX-Konfiguration in
+            YAML-Dateien, die du von Hand oder mit deinem bevorzugten LLM bearbeitest. Es flasht deine Geräte,
+            überwacht den Bus und nimmt jede Änderung zurück.</span></p>
+        <div class="cta">
+          <a class="btn primary" href="#download">Download</a>
+          <a class="btn ghost" href="docs/"><span data-lang="en">Read the docs</span><span data-lang="de">Zur
+              Doku</span></a>
+          <span class="ver">v0.1.0 · macOS, Linux, Windows</span>
         </div>
       </div>
-    </div>
-  </section>
+      <div class="term" aria-label="Terminal session" data-aria-de="Terminalsitzung">
+        <div class="term-bar"><i></i><i></i><i></i><span>bussard</span></div>
+        <pre><span class="p">$</span> bussard import house.knxproj
+<span class="d">imported 318 group addresses, 72 devices → knx</span>
+<span class="p">$</span> claude mcp add knx -- bussard mcp --dir knx
+<span class="p">&gt;</span> <span data-lang="en">The hallway button should also switch the porch light.</span><span data-lang="de">Der Flurtaster soll auch das Terrassenlicht schalten.</span>
+<span class="g">✓</span> <span data-lang="en">Outdoor actuator, channel C, now listens to
+  <span class="a">Hallway light (1/1/1)</span>. Config only, saved to history.</span><span data-lang="de">Außenaktor, Kanal C, hört jetzt auf
+  <span class="a">Flurlicht (1/1/1)</span>. Nur Konfiguration, gesichert.</span>
+<span class="p">$</span> bussard plan 1.1.7
+<span class="d">  + add: object 4 → <span class="a">1/1/1</span></span>
+<span class="p">$</span> bussard apply 1.1.7 --allow-remote-gateway
+<span class="d">apply 1 change to 1.1.7 via 192.0.2.10:3671? [y/N]</span> y
+<span class="d">backup written · <span class="g">verified</span></span>
+<span class="p">$</span> <span class="cur"></span></pre>
+      </div>
+    </header>
 
-  <section id="download">
-    <div class="sec-head">
-      <div class="kicker">Download</div>
-      <h2><span data-lang="en">One binary. No installer.</span><span data-lang="de">Eine Binary. Kein Installer.</span></h2>
-      <p><span data-lang="en">Built by GitHub Actions for every release. Each file has a <code>.sha256</code> checksum next to it. Links always point to the <a href="https://github.com/tmbo/bussard/releases/latest">latest release</a>.</span><span data-lang="de">Von GitHub Actions für jedes Release gebaut. Zu jeder Datei gibt es eine <code>.sha256</code>-Prüfsumme. Die Links zeigen immer auf das <a href="https://github.com/tmbo/bussard/releases/latest">neueste Release</a>.</span></p>
-    </div>
-    <div class="dl-grid">
-      <div class="dl" data-os="mac-arm">
-        <span class="badge"><span data-lang="en">This machine</span><span data-lang="de">Dieser Rechner</span></span>
-        <div class="os">macOS</div>
-        <div class="arch">Apple Silicon</div>
-        <a class="get" href="https://github.com/tmbo/bussard/releases/latest/download/bussard-macos-arm64">Download</a>
-        <div class="file mono">bussard-macos-arm64 · <a href="https://github.com/tmbo/bussard/releases/latest/download/bussard-macos-arm64.sha256">sha256</a></div>
-      </div>
-      <div class="dl" data-os="mac-x64">
-        <span class="badge"><span data-lang="en">This machine</span><span data-lang="de">Dieser Rechner</span></span>
-        <div class="os">macOS</div>
-        <div class="arch">Intel</div>
-        <a class="get" href="https://github.com/tmbo/bussard/releases/latest/download/bussard-macos-x64">Download</a>
-        <div class="file mono">bussard-macos-x64 · <a href="https://github.com/tmbo/bussard/releases/latest/download/bussard-macos-x64.sha256">sha256</a></div>
-      </div>
-      <div class="dl" data-os="linux-x64">
-        <span class="badge"><span data-lang="en">This machine</span><span data-lang="de">Dieser Rechner</span></span>
-        <div class="os">Linux</div>
-        <div class="arch">x86_64</div>
-        <a class="get" href="https://github.com/tmbo/bussard/releases/latest/download/bussard-linux-x64">Download</a>
-        <div class="file mono">bussard-linux-x64 · <a href="https://github.com/tmbo/bussard/releases/latest/download/bussard-linux-x64.sha256">sha256</a></div>
-      </div>
-      <div class="dl" data-os="linux-arm">
-        <span class="badge"><span data-lang="en">This machine</span><span data-lang="de">Dieser Rechner</span></span>
-        <div class="os">Linux</div>
-        <div class="arch"><span data-lang="en">arm64, Raspberry Pi 4 and later</span><span data-lang="de">arm64, Raspberry Pi 4 und neuer</span></div>
-        <a class="get" href="https://github.com/tmbo/bussard/releases/latest/download/bussard-linux-arm64">Download</a>
-        <div class="file mono">bussard-linux-arm64 · <a href="https://github.com/tmbo/bussard/releases/latest/download/bussard-linux-arm64.sha256">sha256</a></div>
-      </div>
-      <div class="dl" data-os="win">
-        <span class="badge"><span data-lang="en">This machine</span><span data-lang="de">Dieser Rechner</span></span>
-        <div class="os">Windows</div>
-        <div class="arch">x64</div>
-        <a class="get" href="https://github.com/tmbo/bussard/releases/latest/download/bussard-windows-x64.exe">Download</a>
-        <div class="file mono">bussard-windows-x64.exe · <a href="https://github.com/tmbo/bussard/releases/latest/download/bussard-windows-x64.exe.sha256">sha256</a></div>
-      </div>
+    <div class="bus" aria-hidden="true">
+      <svg viewBox="0 0 1200 90">
+        <line class="line" x1="0" y1="45" x2="1200" y2="45" stroke-width="4" stroke-linecap="round" />
+        <g class="dev">
+          <line x1="120" y1="45" x2="120" y2="62" stroke="var(--line)" stroke-width="2" />
+          <rect x="85" y="62" width="70" height="22" rx="5" />
+          <line x1="360" y1="45" x2="360" y2="62" stroke="var(--line)" stroke-width="2" />
+          <rect x="325" y="62" width="70" height="22" rx="5" />
+          <line x1="600" y1="45" x2="600" y2="62" stroke="var(--line)" stroke-width="2" />
+          <rect x="565" y="62" width="70" height="22" rx="5" />
+          <line x1="840" y1="45" x2="840" y2="62" stroke="var(--line)" stroke-width="2" />
+          <rect x="805" y="62" width="70" height="22" rx="5" />
+          <line x1="1080" y1="45" x2="1080" y2="62" stroke="var(--line)" stroke-width="2" />
+          <rect x="1045" y="62" width="70" height="22" rx="5" />
+        </g>
+        <g class="lbl" text-anchor="middle">
+          <text x="120" y="78">1.1.1</text><text x="360" y="78">1.1.3</text><text x="600" y="78">1.1.5</text><text
+            x="840" y="78">1.1.7</text><text x="1080" y="78">1.1.250</text>
+        </g>
+        <circle class="pulse" cx="0" cy="45" r="6" />
+        <circle class="pulse two" cx="0" cy="45" r="6" />
+      </svg>
     </div>
 
-    <div class="two" style="margin-top:2rem">
-      <div>
-        <h3 style="margin:0 0 .6rem;font-size:1.1rem"><span data-lang="en">Install on macOS and Linux</span><span data-lang="de">Installation auf macOS und Linux</span></h3>
-<pre class="sh"><span class="p"><span data-lang="en"># make it executable and put it on your path</span><span data-lang="de"># ausführbar machen und in den Pfad legen</span></span>
-chmod +x bussard-macos-arm64
-mv bussard-macos-arm64 /usr/local/bin/bussard
-
-<span class="p"><span data-lang="en"># macOS only: the binary is not notarized, allow it once</span><span data-lang="de"># nur macOS: die Binary ist nicht notarisiert, einmal erlauben</span></span>
-xattr -d com.apple.quarantine /usr/local/bin/bussard
-
-<span class="p"><span data-lang="en"># optional: verify the download</span><span data-lang="de"># optional: den Download prüfen</span></span>
-shasum -a 256 -c bussard-macos-arm64.sha256</pre>
-        <p class="note"><span data-lang="en">Windows shows a SmartScreen warning for the same reason. Homebrew, winget and a <code>curl | sh</code> installer are not available yet.</span><span data-lang="de">Windows zeigt aus demselben Grund eine SmartScreen-Warnung. Homebrew, winget und einen <code>curl | sh</code>-Installer gibt es noch nicht.</span></p>
+    <section>
+      <div class="sec-head">
+        <div class="kicker"><span data-lang="en">What it does</span><span data-lang="de">Was es kann</span></div>
+        <h2><span data-lang="en">Day-to-day KNX work using Claude or ChatGPT.</span><span data-lang="de">Tägliche
+            KNX-Arbeit mit Claude oder ChatGPT.</span></h2>
+        <p><span data-lang="en">Edit your project in your editor or ask Claude to do it. ETS stays in the drawer for
+            what only ETS can do: certification, planning and the odd exotic device.</span><span
+            data-lang="de">Bearbeite dein Projekt in deinem Editor oder bitte Claude darum. Die ETS bleibt in der
+            Schublade für das, was nur die ETS kann: Zertifizierung, Planung und das eine exotische Gerät.</span></p>
       </div>
-      <div>
-        <h3 style="margin:0 0 .6rem;font-size:1.1rem"><span data-lang="en">Or build from source</span><span data-lang="de">Oder aus dem Quellcode bauen</span></h3>
-<pre class="sh"><span class="p"><span data-lang="en"># needs Rust 1.85 or newer</span><span data-lang="de"># braucht Rust 1.85 oder neuer</span></span>
+      <div class="grid">
+        <div class="card">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+              stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3v11" />
+              <path d="M8 10l4 4 4-4" />
+              <path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+            </svg></div>
+          <h3><span data-lang="en">Import your ETS project</span><span data-lang="de">ETS-Projekt importieren</span>
+          </h3>
+          <p><span data-lang="en">One command turns a <code>.knxproj</code> into YAML with named devices, group
+              addresses and links. Every later change can be undone.</span><span data-lang="de">Ein Befehl macht aus
+              einer <code>.knxproj</code> YAML-Dateien mit benannten Geräten, Gruppenadressen und Verknüpfungen. Jede
+              spätere Änderung lässt sich zurücknehmen.</span></p>
+        </div>
+        <div class="card">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+              stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 12h3l2-6 4 12 3-8 2 2h4" />
+            </svg></div>
+          <h3><span data-lang="en">Watch the bus, decoded</span><span data-lang="de">Den Bus beobachten,
+              decodiert</span></h3>
+          <p><span data-lang="en">Every telegram shows the sending device, the group address by name and the value with
+              its unit. Filter by address or sender, or stream JSON to your own tools.</span><span data-lang="de">Jedes
+              Telegramm zeigt das sendende Gerät, die Gruppenadresse mit Namen und den Wert mit
+              Einheit. Filtere nach Adresse oder Sender, oder streame JSON in deine eigenen Tools.</span></p>
+        </div>
+        <div class="card">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+              stroke-linecap="round" stroke-linejoin="round">
+              <rect x="6" y="6" width="12" height="12" rx="2" />
+              <path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4" />
+            </svg></div>
+          <h3><span data-lang="en">Program devices</span><span data-lang="de">Geräte programmieren</span></h3>
+          <p><span data-lang="en">Adopt a new device, flash its application from the vendor <code>.knxprod</code>, write
+              its group and association tables. Every write is planned, confirmed and verified.</span><span
+              data-lang="de">Nimm ein neues Gerät in Betrieb, flashe seine Applikation aus der <code>.knxprod</code> des
+              Herstellers, schreibe seine Gruppen- und Assoziationstabellen. Jeder Schreibvorgang wird geplant,
+              bestätigt und verifiziert.</span></p>
+        </div>
+        <div class="card">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+              stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3l1.8 4.6L18.5 9.5l-4.7 1.9L12 16l-1.8-4.6L5.5 9.5l4.7-1.9z" />
+              <path d="M19 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z" />
+            </svg></div>
+          <h3><span data-lang="en">Let an LLM help</span><span data-lang="de">Ein LLM helfen lassen</span></h3>
+          <p><span data-lang="en"><code>bussard mcp</code> lets Claude or another agent read the config, watch the bus
+              and propose changes in plain sentences. Bus writes are off until you turn them on, protected group
+              addresses stay out of reach, and only you program devices.</span><span
+              data-lang="de"><code>bussard mcp</code> lässt Claude oder einen anderen Agenten die Konfiguration lesen,
+              den Bus beobachten und Änderungen in klaren Sätzen vorschlagen. Schreiben auf den Bus ist aus, bis du es
+              einschaltest, geschützte Gruppenadressen bleiben außer Reichweite, und Geräte programmierst nur
+              du.</span></p>
+        </div>
+      </div>
+    </section>
+
+
+    <section id="how">
+      <div class="sec-head">
+        <div class="kicker"><span data-lang="en">How it works</span><span data-lang="de">So funktioniert
+            es</span></div>
+        <h2><span data-lang="en">A KNX project, configured in YAML.</span><span data-lang="de">Ein KNX-Projekt,
+            konfiguriert in YAML.</span></h2>
+        <p><span data-lang="en">Everything bussard knows about your installation is a folder of YAML files. Edit them in
+            any editor, or let Claude or ChatGPT do it. Commands either write that config to devices or read the bus
+            and explain it with the same config. Every edit can be undone.</span><span data-lang="de">Alles, was
+            bussard über deine Anlage weiß, ist ein Ordner mit YAML-Dateien. Bearbeite sie in einem beliebigen Editor
+            oder lass Claude oder ChatGPT das machen. Befehle schreiben diese Konfiguration auf die Geräte oder lesen
+            den Bus und erklären ihn mit derselben Konfiguration. Jede Änderung lässt sich zurücknehmen.</span></p>
+      </div>
+      <figure>
+        <div class="diagram">
+          <svg viewBox="0 0 900 560" role="img"
+            data-aria-de="ETS-Exporte und Herstellerdaten werden in einen Ordner mit YAML-Dateien importiert, den Menschen und Assistenten bearbeiten. bussard schreibt die Konfiguration über validate, plan, apply und flash auf die Geräte und beobachtet den Bus über monitor, capture, read und viz. Ein LLM bearbeitet die Konfiguration und spricht über MCP mit bussard. bussard erreicht den KNX-Bus über ein KNXnet/IP-Gateway."
+            aria-label="ETS exports and vendor product data are imported into a folder of YAML files that people and assistants edit. bussard writes the config to devices through validate, plan, apply and flash, and observes the bus through monitor, capture, read and viz. An LLM edits the config and talks to bussard over MCP. bussard reaches the KNX bus through a KNXnet/IP gateway.">
+            <defs>
+              <marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7"
+                orient="auto-start-reverse">
+                <path d="M0 1 L8 5 L0 9 z" fill="currentColor" style="fill:var(--muted)" />
+              </marker>
+              <marker id="ar-w" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6"
+                orient="auto-start-reverse">
+                <path d="M0 1 L8 5 L0 9 z" style="fill:var(--green)" />
+              </marker>
+              <marker id="ar-o" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6"
+                orient="auto-start-reverse">
+                <path d="M0 1 L8 5 L0 9 z" style="fill:var(--amber)" />
+              </marker>
+            </defs>
+
+            <!-- inputs -->
+            <rect class="box" x="40" y="20" width="270" height="56" rx="10" />
+            <text class="t m" x="60" y="43">.knxproj</text>
+            <text class="s" x="60" y="62" data-lang="en">ETS project export, optional</text>
+            <text class="s" x="60" y="62" data-lang="de">ETS-Projektexport, optional</text>
+            <rect class="box" x="370" y="20" width="270" height="56" rx="10" />
+            <text class="t m" x="390" y="43">.knxprod</text>
+            <text class="s" x="390" y="62" data-lang="en">vendor product data, optional</text>
+            <text class="s" x="390" y="62" data-lang="de">Herstellerdaten, optional</text>
+            <line class="edge" x1="175" y1="76" x2="175" y2="136" marker-end="url(#ar)" />
+            <text class="lab" x="185" y="110">import</text>
+            <line class="edge" x1="505" y1="76" x2="505" y2="136" marker-end="url(#ar)" />
+            <text class="lab" x="515" y="110">import-product</text>
+
+            <!-- model -->
+            <rect class="box hi" x="40" y="140" width="600" height="64" rx="10" />
+            <text class="t" x="60" y="166" data-lang="en">Your KNX config as YAML files</text>
+            <text class="t" x="60" y="166" data-lang="de">Deine KNX-Konfiguration als YAML-Dateien</text>
+            <text class="s" x="60" y="186" data-lang="en">groups.yaml · links.yaml · devices/ · edited by hand or by
+              an assistant · history and undo built in</text>
+            <text class="s" x="60" y="186" data-lang="de">groups.yaml · links.yaml · devices/ · von Hand oder per
+              Assistent bearbeitet · Historie und Undo eingebaut</text>
+
+            <!-- llm -->
+            <rect class="box" x="700" y="220" width="180" height="64" rx="10" />
+            <text class="t" x="720" y="246" data-lang="en">Claude / ChatGPT</text>
+            <text class="t" x="720" y="246" data-lang="de">Claude / ChatGPT</text>
+            <text class="s" x="720" y="266" data-lang="en">edits the files or uses MCP</text>
+            <text class="s" x="720" y="266" data-lang="de">bearbeitet Dateien oder nutzt MCP</text>
+            <polyline class="edge" points="790,220 790,172 646,172" marker-end="url(#ar)" />
+            <text class="lab" x="660" y="212" data-lang="en">edits the files</text>
+            <text class="lab" x="660" y="212" data-lang="de">bearbeitet die Dateien</text>
+            <polyline class="edge" points="790,284 790,332 646,332" marker-end="url(#ar)" />
+            <text class="lab" x="660" y="356">MCP</text>
+
+            <!-- write / observe -->
+            <line class="edge w" x1="110" y1="204" x2="110" y2="296" marker-end="url(#ar-w)" />
+            <text class="lab w" x="125" y="243" data-lang="en">write path</text>
+            <text class="lab w" x="125" y="243" data-lang="de">Schreibweg</text>
+            <text class="lab m" x="125" y="262" style="fill:var(--green-ink)">validate · plan · apply · flash</text>
+            <line class="edge o" x1="590" y1="296" x2="590" y2="208" marker-end="url(#ar-o)" />
+            <text class="lab o" x="575" y="243" text-anchor="end" data-lang="en">observe path</text>
+            <text class="lab o" x="575" y="243" text-anchor="end" data-lang="de">Beobachtungsweg</text>
+            <text class="lab m" x="575" y="262" text-anchor="end" style="fill:var(--amber-ink)">monitor · capture · read
+              · viz</text>
+
+            <!-- bussard -->
+            <rect class="box dark" x="40" y="300" width="600" height="64" rx="10" />
+            <text class="t inv" x="60" y="326" style="font-weight:700">bussard</text>
+            <text class="s inv" x="60" y="346" data-lang="en">one binary: CLI, MCP server, live network view</text>
+            <text class="s inv" x="60" y="346" data-lang="de">eine Binary: CLI, MCP-Server, Live-Netzwerkansicht</text>
+
+            <!-- gateway -->
+            <line class="edge" x1="340" y1="364" x2="340" y2="396" marker-end="url(#ar)" />
+            <rect class="box" x="190" y="400" width="300" height="50" rx="10" />
+            <text class="t" x="340" y="421" text-anchor="middle" data-lang="en">KNXnet/IP gateway</text>
+            <text class="t" x="340" y="421" text-anchor="middle" data-lang="de">KNXnet/IP-Gateway</text>
+            <text class="s" x="340" y="439" text-anchor="middle" data-lang="en">tunneling or routing</text>
+            <text class="s" x="340" y="439" text-anchor="middle" data-lang="de">Tunneling oder Routing</text>
+            <line class="edge" x1="340" y1="450" x2="340" y2="496" marker-end="url(#ar)" />
+
+            <!-- bus -->
+            <line class="busline" x1="40" y1="505" x2="640" y2="505" />
+            <text class="lab" x="660" y="509" data-lang="en">KNX bus</text>
+            <text class="lab" x="660" y="509" data-lang="de">KNX-Bus</text>
+            <g class="box">
+              <line x1="120" y1="505" x2="120" y2="520" style="stroke:var(--line);stroke-width:2" />
+              <rect x="80" y="520" width="80" height="26" rx="6" />
+              <line x1="240" y1="505" x2="240" y2="520" style="stroke:var(--line);stroke-width:2" />
+              <rect x="200" y="520" width="80" height="26" rx="6" />
+              <line x1="360" y1="505" x2="360" y2="520" style="stroke:var(--line);stroke-width:2" />
+              <rect x="320" y="520" width="80" height="26" rx="6" />
+              <line x1="480" y1="505" x2="480" y2="520" style="stroke:var(--line);stroke-width:2" />
+              <rect x="440" y="520" width="80" height="26" rx="6" />
+            </g>
+            <g class="s" text-anchor="middle" style="font-size:11px">
+              <g data-lang="en"><text x="120" y="538">actuator</text><text x="240" y="538">push button</text><text
+                  x="360" y="538">sensor</text><text x="480" y="538">weather</text></g>
+              <g data-lang="de"><text x="120" y="538">Aktor</text><text x="240" y="538">Taster</text><text x="360"
+                  y="538">Sensor</text><text x="480" y="538">Wetter</text></g>
+            </g>
+          </svg>
+        </div>
+        <figcaption><span data-lang="en">Green is the write path: bussard turns the config into device tables and
+            downloads them. Amber is the observe path: telegrams get device names, group address names and typed values
+            from the same config.</span><span data-lang="de">Grün ist der Schreibweg: bussard macht aus der
+            Konfiguration Gerätetabellen und lädt sie auf die Geräte. Gelb ist der Beobachtungsweg: Telegramme bekommen
+            Gerätenamen, Gruppenadressnamen und typisierte Werte aus derselben Konfiguration.</span></figcaption>
+      </figure>
+    </section>
+
+    <section>
+      <div class="sec-head">
+        <div class="kicker"><span data-lang="en">Writing to devices</span><span data-lang="de">Auf Geräte
+            schreiben</span></div>
+        <h2><span data-lang="en">Every device write follows the same six steps.</span><span data-lang="de">Jeder
+            Schreibvorgang folgt denselben sechs Schritten.</span></h2>
+        <p><span data-lang="en">You see what will change before anything is sent, and the previous state is saved so you
+            can go back. An assistant edits the config; only a person runs <code>plan</code> and
+            <code>apply</code>.</span><span data-lang="de">Du siehst, was sich ändert, bevor etwas gesendet wird. Der
+            vorherige Zustand wird gesichert, damit du zurück kannst. Ein Assistent bearbeitet die Konfiguration; nur
+            ein Mensch führt <code>plan</code> und <code>apply</code> aus.</span></p>
+      </div>
+      <ol class="steps">
+        <li><strong><span data-lang="en">Read</span><span data-lang="de">Lesen</span></strong><span><span
+              data-lang="en">Fetch the live tables from the device.</span><span data-lang="de">Die aktuellen Tabellen
+              vom Gerät holen.</span></span></li>
+        <li><strong><span data-lang="en">Diff</span><span data-lang="de">Vergleichen</span></strong><span><span
+              data-lang="en">Compare them to your YAML config.</span><span data-lang="de">Mit deiner YAML-Konfiguration
+              abgleichen.</span></span></li>
+        <li><strong><span data-lang="en">Confirm</span><span data-lang="de">Bestätigen</span></strong><span><span
+              data-lang="en">The plan names the gateway and asks for a yes.</span><span data-lang="de">Der Plan nennt
+              das Gateway und fragt nach einem Ja.</span></span></li>
+        <li><strong><span data-lang="en">Back up</span><span data-lang="de">Sichern</span></strong><span><span
+              data-lang="en">Save the current tables to disk.</span><span data-lang="de">Die aktuellen Tabellen auf die
+              Platte schreiben.</span></span></li>
+        <li class="write"><strong><span data-lang="en">Write</span><span
+              data-lang="de">Schreiben</span></strong><span><span data-lang="en">Download the new tables to the
+              device.</span><span data-lang="de">Die neuen Tabellen auf das Gerät laden.</span></span></li>
+        <li><strong><span data-lang="en">Verify</span><span data-lang="de">Prüfen</span></strong><span><span
+              data-lang="en">Read back and check every byte.</span><span data-lang="de">Zurücklesen und jedes Byte
+              vergleichen.</span></span></li>
+      </ol>
+      <p class="note" style="margin-top:1rem"><span data-lang="en"><code>flash</code> writes a whole application image
+          and is the one command that skips the backup. Writes to a gateway that is not on localhost are refused until
+          you pass <code>--allow-remote-gateway</code>.</span><span data-lang="de"><code>flash</code> schreibt ein
+          komplettes Applikations-Image und ist der einzige Befehl, der die Sicherung überspringt. Schreibvorgänge an
+          ein Gateway, das nicht auf localhost läuft, werden abgelehnt, bis du <code>--allow-remote-gateway</code>
+          übergibst.</span></p>
+    </section>
+
+    <section>
+      <div class="sec-head">
+        <div class="kicker"><span data-lang="en">Reading the bus</span><span data-lang="de">Den Bus lesen</span></div>
+        <h2><span data-lang="en">One telegram, fully decoded.</span><span data-lang="de">Ein Telegramm, vollständig
+            decodiert.</span></h2>
+        <p><span data-lang="en">Raw KNX telegrams carry addresses and bytes. bussard resolves both against your config,
+            so a line in <code>monitor</code> reads like a sentence.</span><span data-lang="de">Rohe KNX-Telegramme
+            enthalten Adressen und Bytes. bussard löst beides gegen deine Konfiguration auf, sodass sich eine Zeile in
+            <code>monitor</code> wie ein Satz liest.</span></p>
+      </div>
+      <figure>
+        <div class="tg">
+          <div class="tg-row">
+            <div class="seg"><span class="tok d">12:03:44.809</span><span class="lab"><span data-lang="en">time
+                  received</span><span data-lang="de">Empfangszeit</span></span></div>
+            <div class="seg gap"><span class="tok"> </span><span class="lab"> </span></div>
+            <div class="seg"><span class="tok g">1.1.1</span><span class="lab g"><span data-lang="en">sender, individual
+                  address</span><span data-lang="de">Sender, physikalische Adresse</span></span></div>
+            <div class="seg"><span class="tok">Push Button Hallway</span><span class="lab"><span data-lang="en">device
+                  name from its file in devices/</span><span data-lang="de">Gerätename aus seiner Datei in
+                  devices/</span></span></div>
+            <div class="seg gap"><span class="tok d">→</span><span class="lab"> </span></div>
+            <div class="seg"><span class="tok g">0/0/0</span><span class="lab g"><span data-lang="en">group
+                  address</span><span data-lang="de">Gruppenadresse</span></span></div>
+            <div class="seg"><span class="tok">Hallway Light Switch</span><span class="lab"><span data-lang="en">GA name
+                  from groups.yaml</span><span data-lang="de">GA-Name aus groups.yaml</span></span></div>
+            <div class="seg"><span class="tok a">= On</span><span class="lab a"><span data-lang="en">decoded
+                  value</span><span data-lang="de">decodierter Wert</span></span></div>
+            <div class="seg"><span class="tok d">(1.001,</span><span class="lab"><span data-lang="en">datapoint type,
+                  sets the decoder</span><span data-lang="de">Datenpunkttyp, bestimmt den Decoder</span></span></div>
+            <div class="seg"><span class="tok d">obj "Rocker 1")</span><span class="lab"><span data-lang="en">com object
+                  that sent it, from links.yaml</span><span data-lang="de">sendendes Kommunikationsobjekt, aus
+                  links.yaml</span></span></div>
+          </div>
+        </div>
+        <figcaption><span data-lang="en">Addresses come from the telegram. Names, datapoint types and com objects come
+            from the YAML files. A group address missing from the config shows as raw hex until you add
+            it.</span><span data-lang="de">Adressen kommen aus dem Telegramm. Namen, Datenpunkttypen und
+            Kommunikationsobjekte kommen aus den YAML-Dateien. Eine Gruppenadresse, die in der Konfiguration fehlt,
+            erscheint
+            als rohes Hex, bis du sie ergänzt.</span></figcaption>
+      </figure>
+    </section>
+
+    <section>
+      <div class="two">
+        <div>
+          <div class="sec-head">
+            <div class="kicker"><span data-lang="en">LLM access</span><span data-lang="de">LLM-Zugriff</span></div>
+            <h2><span data-lang="en">Three tiers for the MCP server.</span><span data-lang="de">Drei Stufen für den
+                MCP-Server.</span></h2>
+            <p><span data-lang="en">An agent gets exactly the access you start the server with. Nothing an LLM says can
+                raise it.</span><span data-lang="de">Ein Agent bekommt genau den Zugriff, mit dem du den Server
+                startest. Nichts, was ein LLM sagt, kann ihn erweitern.</span>
+            </p>
+          </div>
+          <pre class="sh"><span class="p">$</span> claude mcp add knx -- bussard mcp --dir knx</pre>
+          <p class="note"><span data-lang="en">Home Assistant users: <code>bussard ha-config</code> writes the KNX
+              integration config from the same YAML files.</span><span data-lang="de">Für Home Assistant erzeugt
+              <code>bussard ha-config</code> die Konfiguration der KNX-Integration aus denselben
+              YAML-Dateien.</span></p>
+        </div>
+        <div class="tiers" role="img"
+          aria-label="Three MCP tiers: passive never transmits, read is the default with rate-limited group reads and config edits, write is opt-in and still refuses protected group addresses. Device programming is never an MCP tool."
+          data-aria-de="Drei MCP-Stufen: passiv sendet nie, lesen ist Standard mit ratenbegrenzten Gruppen-Lesezugriffen und Konfigurationsänderungen, schreiben ist Opt-in und lehnt geschützte Gruppenadressen weiter ab. Geräteprogrammierung ist nie ein MCP-Tool.">
+          <div class="tier t1">
+            <div class="bar" style="width:55%">passive</div>
+            <div class="txt"><strong><span data-lang="en">Never transmits</span><span data-lang="de">Sendet
+                  nie</span></strong><span><span data-lang="en">Reads the config, listens to the bus, answers
+                  questions.</span><span data-lang="de">Liest die Konfiguration, hört den Bus mit, beantwortet
+                  Fragen.</span></span></div>
+          </div>
+          <div class="tier t2">
+            <div class="bar" style="width:78%">read <span class="tag"><span data-lang="en">default</span><span
+                  data-lang="de">Standard</span></span></div>
+            <div class="txt"><strong><span data-lang="en">Group reads, rate-limited</span><span
+                  data-lang="de">Gruppen-Lesen, ratenbegrenzt</span></strong><span><span data-lang="en">Can ask devices
+                  for values and edit the config, each edit read back as a sentence. Cannot write to the bus or
+                  program a device.</span><span data-lang="de">Kann Geräte nach Werten fragen und die Konfiguration
+                  bearbeiten, jede Änderung als Satz zurückgemeldet. Kann nicht auf den Bus schreiben und kein Gerät
+                  programmieren.</span></span></div>
+          </div>
+          <div class="tier t3">
+            <div class="bar">write<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="4" y="11" width="16" height="10" rx="2" />
+                <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+              </svg></div>
+            <div class="txt"><strong><span data-lang="en">Opt-in with <code>--allow-writes</code></span><span
+                  data-lang="de">Opt-in mit <code>--allow-writes</code></span></strong><span><span data-lang="en">Group
+                  writes and device changes. Group addresses marked <code>protected</code> are still refused, with no
+                  override over MCP.</span><span data-lang="de">Gruppen-Schreiben und Geräteänderungen. Gruppenadressen
+                  mit <code>protected</code> werden weiter abgelehnt, ohne Ausnahme über MCP.</span></span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="download">
+      <div class="sec-head">
+        <div class="kicker">Download</div>
+        <h2><span data-lang="en">Simple Installation. </span><span data-lang="de">Einfache Installation.</span></h2>
+        <p><span data-lang="en">Just download and run. Each file has a <code>.sha256</code> checksum
+            next to it. Links always point to the <a href="https://github.com/tmbo/bussard/releases/latest">latest
+              release</a>.</span><span data-lang="de">Einfach herunterladen und starten. Zu jeder Datei gibt es eine
+            <code>.sha256</code>-Prüfsumme. Die Links zeigen immer auf das <a
+              href="https://github.com/tmbo/bussard/releases/latest">neueste Release</a>.</span></p>
+      </div>
+      <div class="dl-grid">
+        <div class="dl" data-os="mac-arm">
+          <span class="badge"><span data-lang="en">This machine</span><span data-lang="de">Dieser Rechner</span></span>
+          <div class="os">macOS</div>
+          <div class="arch">Apple Silicon</div>
+          <a class="get"
+            href="https://github.com/tmbo/bussard/releases/latest/download/bussard-macos-arm64">Download</a>
+          <div class="file mono">bussard-macos-arm64 · <a
+              href="https://github.com/tmbo/bussard/releases/latest/download/bussard-macos-arm64.sha256">sha256</a>
+          </div>
+        </div>
+        <div class="dl" data-os="mac-x64">
+          <span class="badge"><span data-lang="en">This machine</span><span data-lang="de">Dieser Rechner</span></span>
+          <div class="os">macOS</div>
+          <div class="arch">Intel</div>
+          <a class="get" href="https://github.com/tmbo/bussard/releases/latest/download/bussard-macos-x64">Download</a>
+          <div class="file mono">bussard-macos-x64 · <a
+              href="https://github.com/tmbo/bussard/releases/latest/download/bussard-macos-x64.sha256">sha256</a></div>
+        </div>
+        <div class="dl" data-os="linux-x64">
+          <span class="badge"><span data-lang="en">This machine</span><span data-lang="de">Dieser Rechner</span></span>
+          <div class="os">Linux</div>
+          <div class="arch">x86_64</div>
+          <a class="get" href="https://github.com/tmbo/bussard/releases/latest/download/bussard-linux-x64">Download</a>
+          <div class="file mono">bussard-linux-x64 · <a
+              href="https://github.com/tmbo/bussard/releases/latest/download/bussard-linux-x64.sha256">sha256</a></div>
+        </div>
+        <div class="dl" data-os="linux-arm">
+          <span class="badge"><span data-lang="en">This machine</span><span data-lang="de">Dieser Rechner</span></span>
+          <div class="os">Linux</div>
+          <div class="arch"><span data-lang="en">arm64, Raspberry Pi 4 and later</span><span data-lang="de">arm64,
+              Raspberry Pi 4 und neuer</span></div>
+          <a class="get"
+            href="https://github.com/tmbo/bussard/releases/latest/download/bussard-linux-arm64">Download</a>
+          <div class="file mono">bussard-linux-arm64 · <a
+              href="https://github.com/tmbo/bussard/releases/latest/download/bussard-linux-arm64.sha256">sha256</a>
+          </div>
+        </div>
+        <div class="dl" data-os="win">
+          <span class="badge"><span data-lang="en">This machine</span><span data-lang="de">Dieser Rechner</span></span>
+          <div class="os">Windows</div>
+          <div class="arch">x64</div>
+          <a class="get"
+            href="https://github.com/tmbo/bussard/releases/latest/download/bussard-windows-x64.exe">Download</a>
+          <div class="file mono">bussard-windows-x64.exe · <a
+              href="https://github.com/tmbo/bussard/releases/latest/download/bussard-windows-x64.exe.sha256">sha256</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="two" style="margin-top:2rem">
+        <div>
+          <h3 style="margin:0 0 .6rem;font-size:1.1rem"><span data-lang="en">Or let an installer do it</span><span
+              data-lang="de">Oder ein Installer macht es</span></h3>
+          <pre class="sh"><span class="p"><span data-lang="en"># macOS and Linux</span><span data-lang="de"># macOS und Linux</span></span>
+curl -fsSL https://raw.githubusercontent.com/tmbo/bussard/main/install.sh | sh
+
+<span class="p"><span data-lang="en"># or with Homebrew</span><span data-lang="de"># oder mit Homebrew</span></span>
+brew install tmbo/tap/bussard
+
+<span class="p"><span data-lang="en"># Windows, in PowerShell</span><span data-lang="de"># Windows, in der PowerShell</span></span>
+irm https://raw.githubusercontent.com/tmbo/bussard/main/install.ps1 | iex</pre>
+          <p class="note"><span data-lang="en">The installers verify the checksum and put <code>bussard</code> on your
+              PATH. A binary downloaded by hand needs <code>chmod +x</code>, and on macOS once
+              <code>xattr -d com.apple.quarantine</code>, because it is not notarized. Windows shows a SmartScreen
+              warning for the same reason.</span><span data-lang="de">Die Installer prüfen die Prüfsumme und legen
+              <code>bussard</code> in den PATH. Eine von Hand geladene Binary braucht <code>chmod +x</code> und auf
+              macOS einmal <code>xattr -d com.apple.quarantine</code>, weil sie nicht notarisiert ist. Windows zeigt aus
+              demselben Grund eine SmartScreen-Warnung.</span></p>
+        </div>
+        <div>
+          <h3 style="margin:0 0 .6rem;font-size:1.1rem"><span data-lang="en">Or build from source</span><span
+              data-lang="de">Oder aus dem Quellcode bauen</span></h3>
+          <pre class="sh"><span class="p"><span data-lang="en"># needs Rust 1.85 or newer</span><span data-lang="de"># braucht Rust 1.85 oder neuer</span></span>
 git clone https://github.com/tmbo/bussard
 cd bussard
 cargo install --path crates/bussard-cli</pre>
-        <p class="note"><span data-lang="en">You need a KNXnet/IP gateway to talk to a bus. An ETS export and vendor <code>.knxprod</code> files are optional but make the first minutes much nicer.</span><span data-lang="de">Du brauchst ein KNXnet/IP-Gateway, um mit einem Bus zu sprechen. Ein ETS-Export und <code>.knxprod</code>-Dateien der Hersteller sind optional, machen die ersten Minuten aber deutlich angenehmer.</span></p>
+          <p class="note"><span data-lang="en">You need a KNXnet/IP gateway to talk to a bus. An ETS export and vendor
+              <code>.knxprod</code> files are optional but make the first minutes much nicer.</span><span
+              data-lang="de">Du brauchst ein KNXnet/IP-Gateway, um mit einem Bus zu sprechen. Ein ETS-Export und
+              <code>.knxprod</code>-Dateien der Hersteller sind optional, machen die ersten Minuten aber deutlich
+              angenehmer.</span></p>
+        </div>
       </div>
-    </div>
 
-    <div class="warn">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2.5 20h19z"/><path d="M12 10v4M12 17.5v.5"/></svg>
-      <p><span data-lang="en"><strong>This is early software that writes to real building hardware.</strong> Device programming currently covers System B devices (mask 07B0). Read the <a href="docs/SAFETY/">safety notes</a> before your first write, and try it on a spare device or the simulator first.</span><span data-lang="de"><strong>Das ist frühe Software, die auf echte Gebäudetechnik schreibt.</strong> Geräteprogrammierung deckt derzeit System-B-Geräte (Maske 07B0) ab. Lies die <a href="docs/SAFETY/">Sicherheitshinweise</a> vor dem ersten Schreiben und probiere es zuerst an einem Ersatzgerät oder im Simulator.</span></p>
-    </div>
-  </section>
+      <div class="warn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+          stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 3 2.5 20h19z" />
+          <path d="M12 10v4M12 17.5v.5" />
+        </svg>
+        <p><span data-lang="en"><strong>This is early software that writes to real building hardware.</strong> Device
+            programming covers System B (mask 07B0) and System 7 (mask 0705) devices. Read the <a
+              href="docs/SAFETY/">safety notes</a>
+            before your first write, and try it on a spare device or the simulator first.</span><span
+            data-lang="de"><strong>Das ist frühe Software, die auf echte Gebäudetechnik schreibt.</strong>
+            Geräteprogrammierung deckt System-B-Geräte (Maske 07B0) und System-7-Geräte (Maske 0705) ab. Lies die <a
+              href="docs/SAFETY/">Sicherheitshinweise</a> vor dem ersten Schreiben und probiere es zuerst an einem
+            Ersatzgerät oder im Simulator.</span></p>
+      </div>
+    </section>
 
-  <section id="docs">
-    <div class="sec-head">
-      <div class="kicker"><span data-lang="en">Documentation</span><span data-lang="de">Dokumentation</span></div>
-      <h2><span data-lang="en">Everything from the first command to the wire format.</span><span data-lang="de">Alles vom ersten Befehl bis zum Protokoll.</span></h2>
-      <p><span data-lang="en">Rendered from the Markdown files in the repository, so the docs always match the code.</span><span data-lang="de">Erzeugt aus den Markdown-Dateien im Repository, deshalb passen die Docs immer zum Code. Sie sind auf Englisch.</span></p>
-    </div>
-    <ul class="docs">
-      <li><a href="docs/"><strong><span data-lang="en">Getting started</span><span data-lang="de">Erste Schritte</span></strong><span><span data-lang="en">Install and first commands</span><span data-lang="de">Installation und erste Befehle</span></span></a></li>
-      <li><a href="docs/SAFETY/"><strong><span data-lang="en">Safety</span><span data-lang="de">Sicherheit</span></strong><span><span data-lang="en">Read before your first write</span><span data-lang="de">Vor dem ersten Schreiben lesen</span></span></a></li>
-      <li><a href="docs/howto/"><strong>How do I ...</strong><span><span data-lang="en">Recipes for everyday tasks</span><span data-lang="de">Rezepte für den Alltag</span></span></a></li>
-      <li><a href="docs/reference/"><strong><span data-lang="en">Reference</span><span data-lang="de">Referenz</span></strong><span><span data-lang="en">Every command, flag, YAML field and MCP tool</span><span data-lang="de">Jeder Befehl, jedes Flag, YAML-Feld und MCP-Tool</span></span></a></li>
-      <li><a href="docs/ha-config/"><strong>Home Assistant</strong><span><span data-lang="en">Generate the KNX config from the model</span><span data-lang="de">KNX-Konfiguration aus dem Modell erzeugen</span></span></a></li>
-      <li><a href="docs/product-data/"><strong><span data-lang="en">Product data</span><span data-lang="de">Produktdaten</span></strong><span><span data-lang="en">Working with .knxprod files</span><span data-lang="de">Arbeiten mit .knxprod-Dateien</span></span></a></li>
-      <li><a href="docs/DESIGN/"><strong>Design</strong><span><span data-lang="en">Architecture and roadmap</span><span data-lang="de">Architektur und Roadmap</span></span></a></li>
-      <li><a href="https://github.com/tmbo/bussard/issues"><strong>Issues</strong><span><span data-lang="en">Bugs, questions, ideas</span><span data-lang="de">Fehler, Fragen, Ideen</span></span></a></li>
-    </ul>
-  </section>
+    <section id="docs">
+      <div class="sec-head">
+        <div class="kicker"><span data-lang="en">Documentation</span><span data-lang="de">Dokumentation</span></div>
+        <h2><span data-lang="en">Everything from the first command to the wire format.</span><span data-lang="de">Alles
+            vom ersten Befehl bis zum Protokoll.</span></h2>
+      </div>
+      <ul class="docs">
+        <li><a href="docs/"><strong><span data-lang="en">Getting started</span><span data-lang="de">Erste
+                Schritte</span></strong><span><span data-lang="en">Install and first commands</span><span
+                data-lang="de">Installation und erste Befehle</span></span></a></li>
+        <li><a href="docs/SAFETY/"><strong><span data-lang="en">Safety</span><span
+                data-lang="de">Sicherheit</span></strong><span><span data-lang="en">Read before your first
+                write</span><span data-lang="de">Vor dem ersten Schreiben lesen</span></span></a></li>
+        <li><a href="docs/getting-started-owner/"><strong><span data-lang="en">The first weekend</span><span
+                data-lang="de">Das erste Wochenende</span></strong><span><span data-lang="en">The owner's guide, from
+                install to a backup on a USB stick</span><span data-lang="de">Der Leitfaden für Eigentümer, von der
+                Installation bis zum Backup auf dem USB-Stick</span></span></a></li>
+        <li><a href="docs/collaboration/"><strong><span data-lang="en">Working with an integrator</span><span
+                data-lang="de">Mit einem Integrator arbeiten</span></strong><span><span data-lang="en">Exchange changes
+                by file or by repository</span><span data-lang="de">Änderungen per Datei oder Repository
+                austauschen</span></span></a></li>
+        <li><a href="docs/howto/"><strong>How do I ...</strong><span><span data-lang="en">Recipes for everyday
+                tasks</span><span data-lang="de">Rezepte für den Alltag</span></span></a></li>
+        <li><a href="docs/reference/"><strong><span data-lang="en">Reference</span><span
+                data-lang="de">Referenz</span></strong><span><span data-lang="en">Every command, flag, YAML field and
+                MCP tool</span><span data-lang="de">Jeder Befehl, jedes Flag, YAML-Feld und MCP-Tool</span></span></a>
+        </li>
+        <li><a href="docs/ha-config/"><strong>Home Assistant</strong><span><span data-lang="en">Generate the integration
+                config
+                from your YAML</span><span data-lang="de">Integrations-Konfiguration aus deinem YAML
+                erzeugen</span></span></a>
+        </li>
+        <li><a href="docs/product-data/"><strong><span data-lang="en">Product data</span><span
+                data-lang="de">Produktdaten</span></strong><span><span data-lang="en">Working with .knxprod
+                files</span><span data-lang="de">Arbeiten mit .knxprod-Dateien</span></span></a></li>
+        <li><a href="docs/DESIGN/"><strong>Design</strong><span><span data-lang="en">Architecture and
+                roadmap</span><span data-lang="de">Architektur und Roadmap</span></span></a></li>
+        <li><a href="https://github.com/tmbo/bussard/issues"><strong>Issues</strong><span><span data-lang="en">Bugs,
+                questions, ideas</span><span data-lang="de">Fehler, Fragen, Ideen</span></span></a></li>
+      </ul>
+    </section>
 
-  <footer>
-    <p><span data-lang="en">bussard is an independent project by <a href="https://github.com/tmbo">Tom Bocklisch</a>. It is not affiliated with or certified by the KNX Association. KNX is a registered trademark of the KNX Association.</span><span data-lang="de">bussard ist ein unabhängiges Projekt von <a href="https://github.com/tmbo">Tom Bocklisch</a>. Es ist nicht mit der KNX Association verbunden und nicht von ihr zertifiziert. KNX ist eine eingetragene Marke der KNX Association.</span></p>
-    <p><span data-lang="en">Never commit <code>.knxproj</code> or <code>.knxprod</code> files: the application data in them belongs to the manufacturers. You supply your own, free from manufacturer sites or the MyKNX catalogue.</span><span data-lang="de">Committe nie <code>.knxproj</code>- oder <code>.knxprod</code>-Dateien: die Applikationsdaten darin gehören den Herstellern. Du besorgst dir deine eigenen, kostenlos bei den Herstellern oder im MyKNX-Katalog.</span></p>
-  </footer>
-</div>
+    <footer>
+      <p><span data-lang="en">bussard is an independent project by <a href="https://github.com/tmbo">Tom Bocklisch</a>.
+          It is not affiliated with or certified by the KNX Association. KNX is a registered trademark of the KNX
+          Association.</span><span data-lang="de">bussard ist ein unabhängiges Projekt von <a
+            href="https://github.com/tmbo">Tom Bocklisch</a>. Es ist nicht mit der KNX Association verbunden und nicht
+          von ihr zertifiziert. KNX ist eine eingetragene Marke der KNX Association.</span></p>
+    </footer>
+  </div>
 
-<script>
-  // Language toggle. Remembers the choice in this browser.
-  (function () {
-    var DESC = {
-      en: "bussard is an open-source command line tool for KNX. Configuration lives in YAML files, bussard programs the devices over KNXnet/IP and decodes the bus.",
-      de: "bussard ist ein Open-Source-Kommandozeilentool für KNX. Die Konfiguration liegt in YAML-Dateien, bussard programmiert die Geräte über KNXnet/IP und decodiert den Bus."
-    };
-    var buttons = document.querySelectorAll("[data-set-lang]");
-    var ariaEls = document.querySelectorAll("[data-aria-de]");
-    ariaEls.forEach(function (el) { el.setAttribute("data-aria-en", el.getAttribute("aria-label")); });
-    function apply(lang) {
-      document.documentElement.setAttribute("data-lang", lang);
-      document.documentElement.lang = lang;
-      var meta = document.querySelector('meta[name="description"]');
-      if (meta) meta.setAttribute("content", DESC[lang]);
-      ariaEls.forEach(function (el) { el.setAttribute("aria-label", el.getAttribute("data-aria-" + lang)); });
-      buttons.forEach(function (b) { b.setAttribute("aria-pressed", String(b.getAttribute("data-set-lang") === lang)); });
-    }
-    apply(document.documentElement.getAttribute("data-lang") || "en");
-    buttons.forEach(function (b) {
-      b.addEventListener("click", function () {
-        var lang = b.getAttribute("data-set-lang");
-        try { localStorage.setItem("bussard-lang", lang); } catch (e) {}
-        apply(lang);
+  <script>
+    // Language toggle. Remembers the choice in this browser.
+    (function () {
+      var DESC = {
+        en: "bussard is an open-source command line tool for KNX. Configuration lives in YAML files, bussard programs the devices over KNXnet/IP and decodes the bus.",
+        de: "bussard ist ein Open-Source-Kommandozeilentool für KNX. Die Konfiguration liegt in YAML-Dateien, bussard programmiert die Geräte über KNXnet/IP und decodiert den Bus."
+      };
+      var buttons = document.querySelectorAll("[data-set-lang]");
+      var ariaEls = document.querySelectorAll("[data-aria-de]");
+      ariaEls.forEach(function (el) { el.setAttribute("data-aria-en", el.getAttribute("aria-label")); });
+      function apply(lang) {
+        document.documentElement.setAttribute("data-lang", lang);
+        document.documentElement.lang = lang;
+        var meta = document.querySelector('meta[name="description"]');
+        if (meta) meta.setAttribute("content", DESC[lang]);
+        ariaEls.forEach(function (el) { el.setAttribute("aria-label", el.getAttribute("data-aria-" + lang)); });
+        buttons.forEach(function (b) { b.setAttribute("aria-pressed", String(b.getAttribute("data-set-lang") === lang)); });
+      }
+      apply(document.documentElement.getAttribute("data-lang") || "en");
+      buttons.forEach(function (b) {
+        b.addEventListener("click", function () {
+          var lang = b.getAttribute("data-set-lang");
+          try { localStorage.setItem("bussard-lang", lang); } catch (e) { }
+          apply(lang);
+        });
       });
-    });
-  })();
+    })();
 
-  // Mark the download for this machine. The page works without this.
-  (function () {
-    var ua = navigator.userAgent || "";
-    var plat = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "";
-    var key = null;
-    if (/Windows/i.test(plat) || /Windows/i.test(ua)) key = "win";
-    else if (/Mac/i.test(plat) || /Macintosh/i.test(ua)) key = "mac-arm";  // browsers hide the CPU; Apple silicon is the safer guess
-    else if (/Linux/i.test(plat) || /Linux/i.test(ua)) key = /aarch64|arm/i.test(ua) ? "linux-arm" : "linux-x64";
-    if (!key) return;
-    var el = document.querySelector('.dl[data-os="' + key + '"]');
-    if (el) el.classList.add("you");
-  })();
-</script>
+    // Mark the download for this machine. The page works without this.
+    (function () {
+      var ua = navigator.userAgent || "";
+      var plat = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "";
+      var key = null;
+      if (/Windows/i.test(plat) || /Windows/i.test(ua)) key = "win";
+      else if (/Mac/i.test(plat) || /Macintosh/i.test(ua)) key = "mac-arm";  // browsers hide the CPU; Apple silicon is the safer guess
+      else if (/Linux/i.test(plat) || /Linux/i.test(ua)) key = /aarch64|arm/i.test(ua) ? "linux-arm" : "linux-x64";
+      if (!key) return;
+      var el = document.querySelector('.dl[data-os="' + key + '"]');
+      if (el) el.classList.add("you");
+    })();
+  </script>
 </body>
+
 </html>
