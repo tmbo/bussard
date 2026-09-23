@@ -2602,14 +2602,10 @@ fn plan_flash_sys7(
         .get(&2)
         .map(|assoc| sys7_linked_asaps(&assoc.image))
         .unwrap_or_default();
-    // Every declared com-object's default flags (the product's ComObjectRef
-    // flags), which ETS writes for unlinked objects too: the 1.1.31 capture
-    // (no links) turns template `db` into `4b`, i.e. the product's R T.
-    let default_flags: BTreeMap<u16, bussard_model::Flags> = app
-        .resolved_com_objects()
-        .iter()
-        .map(|c| (c.number(), c.flags()))
-        .collect();
+    // Every unlinked object's CONFIG (and TYPE) comes from the ComObjectRef the
+    // device's parameter values make visible, as in ETS (issue #117).
+    let config = bussard_prod::dynamic::evaluate_dynamic(app, overrides);
+    let default_flags = sys7_object_defaults(app, &config);
     apply_sys7_group_object_links(&steps, &mut images, &linked, linked_flags, &default_flags);
 
     Ok(FlashPlan {
@@ -2630,6 +2626,79 @@ fn plan_flash_sys7(
             segment_masks,
         }),
     })
+}
+
+/// What the System 7 post-pass writes for one object that the project does not
+/// link: the flags of its ComObjectRef and, when known, its TYPE octet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Sys7ObjectDefault {
+    /// The ref's flags (ref merged onto the base object).
+    flags: bussard_model::Flags,
+    /// The TYPE octet (the size code of the ref's object size), `None` to keep
+    /// the template's.
+    type_code: Option<u8>,
+}
+
+/// The per-ASAP defaults the System 7 post-pass writes, from the Dynamic walk.
+///
+/// ETS writes, for every object the device's parameter values make visible,
+/// the flags of the visible ComObjectRef (the 3361-1MWW and 3181 captures of
+/// issue #117: the same object `Number` has refs with different flags under
+/// different `<when>` branches), and leaves an object no branch shows at the
+/// template (C cleared). An application without a Dynamic section (the walk
+/// reaches no com-object) falls back to the flat product defaults: every
+/// declared ref's flags, with the template's TYPE.
+fn sys7_object_defaults(
+    app: &ApplicationProgram,
+    config: &bussard_prod::dynamic::DynamicConfig,
+) -> BTreeMap<u16, Sys7ObjectDefault> {
+    if config.com_objects.is_empty() {
+        return app
+            .resolved_com_objects()
+            .iter()
+            .map(|c| {
+                (
+                    c.number(),
+                    Sys7ObjectDefault {
+                        flags: c.flags(),
+                        type_code: None,
+                    },
+                )
+            })
+            .collect();
+    }
+    let mut out = BTreeMap::new();
+    for active in &config.com_objects {
+        let Some((base, cref)) = app.resolve(&active.com_object_ref_id) else {
+            continue;
+        };
+        let offset = base
+            .base_number_ref
+            .as_deref()
+            .map(|arg| arg.strip_prefix(&format!("{}_", app.id)).unwrap_or(arg))
+            .and_then(|arg| config.module_args(active.module)?.get(arg).copied())
+            .unwrap_or(0);
+        let Ok(asap) = u16::try_from(i64::from(base.number) + offset) else {
+            continue;
+        };
+        let size = cref.object_size.as_deref().or(base.object_size.as_deref());
+        out.insert(
+            asap,
+            Sys7ObjectDefault {
+                flags: base.flags.merge(cref.flags).to_flags(),
+                type_code: size.and_then(sys7_type_code),
+            },
+        );
+    }
+    out
+}
+
+/// The System 7 TYPE octet for an `ObjectSize` (the KNX size code: `1 Bit` is
+/// 0, `1 Byte` 7, `2 Bytes` 8), `None` for a size the table does not know.
+fn sys7_type_code(object_size: &str) -> Option<u8> {
+    let code = crate::compute::size_code_from_object_size(Some(object_size));
+    let one_bit = object_size.trim().eq_ignore_ascii_case("1 bit");
+    (code != 0 || one_bit).then_some(code)
 }
 
 /// The System 7 CONFIG octet for a linked object: the project's flags in bits
@@ -2668,14 +2737,19 @@ fn sys7_linked_asaps(assoc_image: &[u8]) -> BTreeSet<u16> {
 /// (U), 6 (T), 4 (W), 3 (R) and 2 (C) come from the object's flags, bits 5, 1
 /// and 0 stay as the template has them:
 ///
-/// - a linked ASAP takes the model's flags (`linked_flags`), else the product's
-///   default flags with C set, else the template with C set;
-/// - every other ASAP takes the product's default flags (`default_flags`) with
-///   C cleared, else the template with C cleared.
+/// - a linked ASAP takes the model's flags (`linked_flags`), else its default
+///   flags with C set, else the template with C set;
+/// - every other ASAP takes its default flags (`default_flags`, see
+///   [`sys7_object_defaults`]) with C cleared, else the template with C
+///   cleared.
+///
+/// An ASAP whose default carries a TYPE octet (the visible ref's object size)
+/// takes that too.
 ///
 /// Captures: 1.1.31 (no links: template `db` became `4b`, `17` became `13`),
 /// 1.1.46 (four links: `df` became `4f`/`17`/`47`, the project's T R C / W C /
-/// T C), 1.1.1 (`47` became `5f`).
+/// T C), 1.1.1 (`47` became `5f`); objects no `<when>` branch shows keep the
+/// template (`db`) on the 3361-1MWW and 3181 captures (issue #117).
 ///
 /// The table is found by shape, since the mask declares no address for it:
 /// `[CNT:1][RAM-flags ptr:2]` followed by `CNT` 4-octet descriptors
@@ -2689,7 +2763,7 @@ fn apply_sys7_group_object_links(
     images: &mut BTreeMap<String, Vec<u8>>,
     linked: &BTreeSet<u16>,
     linked_flags: &BTreeMap<u16, bussard_model::Flags>,
-    default_flags: &BTreeMap<u16, bussard_model::Flags>,
+    default_flags: &BTreeMap<u16, Sys7ObjectDefault>,
 ) {
     let ram: Vec<(u32, u32)> = steps
         .iter()
@@ -2746,22 +2820,24 @@ fn apply_sys7_group_object_links(
         use bussard_model::Flags;
         for (asap, d) in bytes[3..3 + 4 * count].chunks_exact_mut(4).enumerate() {
             let asap = asap as u16;
+            let default = default_flags.get(&asap);
             if linked.contains(&asap) {
                 match linked_flags
                     .get(&asap)
                     .copied()
-                    .or_else(|| default_flags.get(&asap).map(|f| *f | Flags::COMMUNICATION))
+                    .or_else(|| default.map(|o| o.flags | Flags::COMMUNICATION))
                 {
                     Some(flags) => d[2] = sys7_config_from_flags(d[2], flags),
                     None => d[2] |= 0x04,
                 }
             } else {
-                match default_flags.get(&asap) {
-                    Some(flags) => {
-                        d[2] = sys7_config_from_flags(d[2], *flags - Flags::COMMUNICATION)
-                    }
+                match default {
+                    Some(o) => d[2] = sys7_config_from_flags(d[2], o.flags - Flags::COMMUNICATION),
                     None => d[2] &= !0x04,
                 }
+            }
+            if let Some(t) = default.and_then(|o| o.type_code) {
+                d[3] = t;
             }
         }
         return;
@@ -5417,6 +5493,118 @@ mod tests {
             &BTreeMap::new(),
         );
         assert_eq!(images[&seg_id], odd);
+    }
+
+    /// Issue #117: the unlinked System 7 descriptors take the ComObjectRef the
+    /// parameter values make visible. Object 0 has two refs behind a
+    /// `<choose>` (T R, 1 bit / W, 2 bytes), object 1 is always shown, object
+    /// 2 only under a branch that is not taken, so it keeps the template with C
+    /// cleared. The bytes follow the 3361-1MWW capture (`df`/`0b` became
+    /// `4b`, `13` or `db`).
+    #[test]
+    fn test_apply_sys7_group_object_links_takes_the_visible_ref()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/20">
+         <ApplicationProgram Id="A" MaskVersion="MV-0705" Name="s7dyn">
+          <Static>
+           <Parameters><Parameter Id="A_P-1" Name="type" Value="0" /></Parameters>
+           <ParameterRefs><ParameterRef Id="A_P-1_R-1" RefId="A_P-1" /></ParameterRefs>
+           <ComObjects>
+            <ComObject Id="A_O-0" Number="0" ObjectSize="1 Bit" />
+            <ComObject Id="A_O-1" Number="1" ObjectSize="1 Byte" />
+            <ComObject Id="A_O-2" Number="2" ObjectSize="1 Bit" />
+           </ComObjects>
+           <ComObjectRefs>
+            <ComObjectRef Id="A_O-0_R-1" RefId="A_O-0" TransmitFlag="Enabled" ReadFlag="Enabled" CommunicationFlag="Enabled" />
+            <ComObjectRef Id="A_O-0_R-2" RefId="A_O-0" ObjectSize="2 Bytes" WriteFlag="Enabled" CommunicationFlag="Enabled" />
+            <ComObjectRef Id="A_O-1_R-3" RefId="A_O-1" WriteFlag="Enabled" CommunicationFlag="Enabled" />
+            <ComObjectRef Id="A_O-2_R-4" RefId="A_O-2" TransmitFlag="Enabled" CommunicationFlag="Enabled" />
+           </ComObjectRefs>
+          </Static>
+          <Dynamic>
+           <ChannelIndependentBlock>
+            <ParameterBlock Id="A_PB-1" Name="main">
+             <ParameterRefRef RefId="A_P-1_R-1" />
+             <ComObjectRefRef RefId="A_O-1_R-3" />
+             <choose ParamRefId="A_P-1_R-1">
+              <when test="0"><ComObjectRefRef RefId="A_O-0_R-1" /></when>
+              <when test="1"><ComObjectRefRef RefId="A_O-0_R-2" /></when>
+              <when test="2"><ComObjectRefRef RefId="A_O-2_R-4" /></when>
+             </choose>
+            </ParameterBlock>
+           </ChannelIndependentBlock>
+          </Dynamic>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("A", xml.as_bytes())?;
+        let seg_id = "A_AS-43FF".to_string();
+        let steps = vec![
+            FlashStep::Sys7AbsSegment {
+                lsm: 3,
+                address: 0x0700,
+                size: 16,
+                mem_type: 2,
+                seg_flags: 0xF2,
+                checksum_ctrl: 0x00,
+                image: None,
+            },
+            FlashStep::Sys7AbsSegment {
+                lsm: 3,
+                address: 0x43FF,
+                size: 15,
+                mem_type: 3,
+                seg_flags: 0xF2,
+                checksum_ctrl: 0x80,
+                image: Some(ImageRef {
+                    segment_id: seg_id.clone(),
+                    kind: ImageKind::Code,
+                    len: 15,
+                }),
+            },
+        ];
+        // [CNT=3][RAM flags 0x070F][ptr CONFIG TYPE] x3, the template's C set.
+        let template = vec![
+            0x03, 0x07, 0x0F, 0x07, 0x00, 0xDF, 0x00, 0x07, 0x01, 0xDF, 0x07, 0x07, 0x02, 0xDF,
+            0x00,
+        ];
+        let run = |value: &str| {
+            let overrides = BTreeMap::from([("P-1_R-1".to_string(), value.to_string())]);
+            let config = bussard_prod::dynamic::evaluate_dynamic(&app, &overrides);
+            let defaults = sys7_object_defaults(&app, &config);
+            let mut images = BTreeMap::from([(seg_id.clone(), template.clone())]);
+            apply_sys7_group_object_links(
+                &steps,
+                &mut images,
+                &BTreeSet::new(),
+                &BTreeMap::new(),
+                &defaults,
+            );
+            images.remove(&seg_id).unwrap_or_default()
+        };
+        // Type 0: object 0 shows R-1 (T R), object 2 is hidden.
+        assert_eq!(
+            run("0"),
+            vec![
+                0x03, 0x07, 0x0F, 0x07, 0x00, 0x4B, 0x00, 0x07, 0x01, 0x13, 0x07, 0x07, 0x02, 0xDB,
+                0x00
+            ]
+        );
+        // Type 1: object 0 shows R-2 (W, 2 bytes: TYPE 8).
+        assert_eq!(
+            run("1"),
+            vec![
+                0x03, 0x07, 0x0F, 0x07, 0x00, 0x13, 0x08, 0x07, 0x01, 0x13, 0x07, 0x07, 0x02, 0xDB,
+                0x00
+            ]
+        );
+        // Type 2: object 0 is hidden, object 2 shows R-4 (T).
+        assert_eq!(
+            run("2"),
+            vec![
+                0x03, 0x07, 0x0F, 0x07, 0x00, 0xDB, 0x00, 0x07, 0x01, 0x13, 0x07, 0x07, 0x02, 0x43,
+                0x00
+            ]
+        );
+        Ok(())
     }
     use bussard_prod::application::parse_application_program;
 
