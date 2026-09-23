@@ -153,6 +153,7 @@ pub fn run(
             &base_offsets,
             dry.dump_images.as_deref(),
             no_factory_reset,
+            parameters_only,
             &output,
         );
     }
@@ -561,6 +562,7 @@ fn dry_run(
     base_offsets: &BTreeMap<String, u32>,
     dump_images: Option<&Path>,
     no_factory_reset: bool,
+    parameters_only: bool,
     output: &FlashOutput,
 ) -> anyhow::Result<ExitCode> {
     // No device to read the descriptor from: the plan is checked against the
@@ -601,6 +603,9 @@ fn dry_run(
     let mut plan = plan;
     if no_factory_reset {
         plan.skip_factory_reset();
+    }
+    if parameters_only {
+        return crate::flash_params::dry_run(target, &plan, output.json);
     }
     let params = if plan.is_sys7() {
         ParamPlan {

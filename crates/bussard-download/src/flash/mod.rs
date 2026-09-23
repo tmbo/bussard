@@ -755,6 +755,20 @@ impl FlashPlan {
                 "[S7] alloc + stream segment (read-compare, {} octets) to {address:#06X} on LSM {lsm}",
                 img.len
             ),
+            FlashStep::Sys7StartLoading { lsm } if self.is_parameters_only() => {
+                format!("[S7] check LSM {lsm} is Loaded, then open it for loading (no allocation)")
+            }
+            FlashStep::WriteMem { address, image } if self.is_parameters_only() => {
+                let how = if self.sys7_read_compare() {
+                    ", read-compare"
+                } else {
+                    ""
+                };
+                format!(
+                    "write the differing parameter octets (segment of {} bytes{how}) at {address:#06X}",
+                    image.len
+                )
+            }
             _ => step_label(step),
         }
     }

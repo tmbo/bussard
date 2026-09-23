@@ -26,11 +26,15 @@ const MASK_0705: u16 = 0x0705;
 
 /// Resolve the Jung 3361-1M product from the corpus cache, or `None` to skip.
 fn jung_knxprod_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("tests-support")
-        .join("product-corpus")
+    std::env::var_os("BUSSARD_PRODUCT_CORPUS")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("..")
+                .join("tests-support")
+                .join("product-corpus")
+        })
         .join("cache")
         .join("vendor")
         .join("de_3361-1m_V1.3_2020-05.knxprod")
@@ -162,4 +166,80 @@ fn test_bussard_property_plan_matches_m2_jung_shape() {
             "LSM {lsm} must be driven to LoadCompleted"
         );
     }
+}
+
+/// Issue #146: the parameter-only download of the Jung 3361-1MWW (1.1.32,
+/// capture `bad-eg-pm-1-1-18.pcapng`) opens and completes LSM 3 around plain
+/// memory writes. It sends no allocation record (the `0x0700` RAM region put
+/// the real device into load state Error), no task segment and no task
+/// control, keeps the MCB reads of objects 1 to 3, and ends with the restart.
+#[test]
+fn test_parameters_only_jung_plan_writes_in_place() -> Result<(), Box<dyn std::error::Error>> {
+    let path = jung_knxprod_path();
+    let Ok(product) = bussard_prod::read_knxprod(&path) else {
+        eprintln!("SKIP: Jung 3361-1M .knxprod not in the product-corpus cache");
+        return Ok(());
+    };
+    let app = select_application(
+        &[product
+            .application_by_id(JUNG_APP)
+            .ok_or("Jung app present")?],
+        None,
+    )?;
+    let full = plan_flash_sys7_with_hawk(
+        app,
+        "1.1.32",
+        MASK_0705,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    let regions = bussard_download::planned_parameter_regions(&full);
+    let partial = full.parameters_only(&regions)?;
+    let shape: Vec<String> = partial
+        .steps
+        .iter()
+        .map(|step| match step {
+            FlashStep::Sys7StartLoading { lsm } => format!("start {lsm}"),
+            FlashStep::Sys7LoadCompleted { lsm } => format!("complete {lsm}"),
+            FlashStep::WriteMem { address, .. } => format!("write {address:#06X}"),
+            FlashStep::LoadImageProp { obj_idx, .. } => format!("mcb {obj_idx}"),
+            FlashStep::CompareProp { .. } => "compare".to_string(),
+            FlashStep::Restart => "restart".to_string(),
+            other => format!("unexpected {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        shape.first().map(String::as_str),
+        Some("start 3"),
+        "{shape:?}"
+    );
+    assert!(
+        shape.iter().all(|s| !s.starts_with("unexpected")),
+        "{shape:?}"
+    );
+    assert!(shape.iter().any(|s| s.starts_with("write ")), "{shape:?}");
+    assert!(!shape.iter().any(|s| s == "write 0x0700"), "{shape:?}");
+    let tail: Vec<&str> = shape
+        .iter()
+        .rev()
+        .take(5)
+        .rev()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        tail,
+        ["complete 3", "mcb 1", "mcb 2", "mcb 3", "restart"],
+        "{shape:?}"
+    );
+    // No write lands in the table regions of LSM 1 and 2.
+    assert!(
+        partial.steps.iter().all(|s| !matches!(
+            s,
+            FlashStep::WriteMem { address, .. } if *address < 0x43FF
+        )),
+        "{shape:?}"
+    );
+    Ok(())
 }
