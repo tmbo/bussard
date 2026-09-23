@@ -11,7 +11,11 @@ A port of bussard's Rust implementation, which stays the reference:
   from a right one.
 - `crates/bussard-secure/src/{crypto,asdu}.rs`: the `A_SecureData` ASDU,
   `SCF(1) || seq(6) || secured APDU || MAC(4)`, protected with AES-128-CCM
-  using the KNX TP `block_0` / `counter_0` layouts.
+  using the KNX TP `block_0` / `counter_0` layouts. The CTR keystream is one
+  continuous stream over `mac(4) || payload`, so the payload's keystream
+  starts at byte 4 of AES(counter_0) (calibrated against an ETS capture; see
+  bussard PR #153). S-A_Sync_Req and S-A_Sync_Res use their own layouts,
+  documented at `decode_sync_req` / `decode_sync_res`.
 
 Everything is stdlib. AES-128 is implemented here in pure Python because the
 tool has no third-party dependencies (see the README); it is slow, but a
@@ -232,25 +236,50 @@ class Addressing:
     tpci: int = 0x40
 
 
-def encode(key: bytes, scf: int, seq: int, addr: Addressing, apdu: bytes) -> bytes:
-    """Builds an A_SecureData ASDU around `apdu` (asdu.rs `encode`). Tests only."""
+def _encrypts(scf: int) -> bool:
+    return ((scf >> 4) & 0x07) == 0b001
+
+
+def seal(key: bytes, seq: int, addr: Addressing, ad: bytes, payload: bytes, encrypt: bool) -> Tuple[bytes, bytes]:
+    """CCM-seals `payload` under the TP nonce for `seq` (asdu.rs `seal`).
+
+    Returns `(secured_payload, mac4)`. The CBC-MAC is truncated to 4 bytes
+    before the CTR stage, and the keystream is one continuous stream over
+    `mac(4) || payload`: the payload's keystream starts at byte 4 of
+    AES(counter_0), not at the next counter block. In auth-only mode the
+    payload joins the additional data, travels in the clear, and the
+    `block_0` length octet is 0.
+    """
     aes = Aes128(key)
-    encrypts = ((scf >> 4) & 0x07) == 0b001
-    b0 = tp_block_0(seq, addr.src, addr.dst, addr.group, addr.ext_ff, addr.tpci, len(apdu) if encrypts else 0)
     c0 = tp_counter_0(seq, addr.src, addr.dst)
-    if encrypts:
-        mac = cbc_mac(aes, bytes([scf]), apdu, b0)
-        ks = ctr_keystream(aes, c0, BLOCK + len(apdu))
-        body = _xor(apdu, ks[BLOCK:])
-    else:
-        mac = cbc_mac(aes, bytes([scf]) + apdu, b"", b0)
-        ks = ctr_keystream(aes, c0, BLOCK)
-        body = apdu
-    return bytes([scf]) + seq.to_bytes(6, "big") + body + _xor(mac, ks)[:MAC_LEN]
+    if encrypt:
+        b0 = tp_block_0(seq, addr.src, addr.dst, addr.group, addr.ext_ff, addr.tpci, len(payload))
+        mac = cbc_mac(aes, ad, payload, b0)[:MAC_LEN]
+        ks = ctr_keystream(aes, c0, MAC_LEN + len(payload))
+        return _xor(payload, ks[MAC_LEN:]), _xor(mac, ks)
+    b0 = tp_block_0(seq, addr.src, addr.dst, addr.group, addr.ext_ff, addr.tpci, 0)
+    mac = cbc_mac(aes, ad + payload, b"", b0)[:MAC_LEN]
+    return payload, _xor(mac, ctr_keystream(aes, c0, MAC_LEN))
+
+
+def open_sealed(key: bytes, seq: int, addr: Addressing, ad: bytes, secured: bytes, mac: bytes, encrypt: bool) -> Tuple[bytes, bool]:
+    """Inverse of `seal`: `(plaintext, mac_ok)`. Garbage plaintext if not ok."""
+    plain = secured
+    if encrypt:
+        ks = ctr_keystream(Aes128(key), tp_counter_0(seq, addr.src, addr.dst), MAC_LEN + len(secured))
+        plain = _xor(secured, ks[MAC_LEN:])
+    _, expected = seal(key, seq, addr, ad, plain, encrypt)
+    return plain, hmac.compare_digest(expected, mac)
+
+
+def encode(key: bytes, scf: int, seq: int, addr: Addressing, apdu: bytes) -> bytes:
+    """Builds an S-A_Data ASDU around `apdu` (asdu.rs `encode`). Tests only."""
+    body, mac = seal(key, seq, addr, bytes([scf]), apdu, _encrypts(scf))
+    return bytes([scf]) + seq.to_bytes(6, "big") + body + mac
 
 
 def decode(key: bytes, asdu: bytes, addr: Addressing) -> Tuple[bytes, bool]:
-    """Recovers the inner APDU of an A_SecureData ASDU (asdu.rs `decode`).
+    """Recovers the inner APDU of an S-A_Data ASDU (asdu.rs `decode`).
 
     Returns `(apdu, mac_ok)`. Unlike the Rust decoder this does not reject a
     MAC mismatch: an analysis tool wants to report it. A failed MAC means the
@@ -260,21 +289,50 @@ def decode(key: bytes, asdu: bytes, addr: Addressing) -> Tuple[bytes, bool]:
         raise ValueError("A_SecureData ASDU too short")
     scf = asdu[0]
     seq = int.from_bytes(asdu[1:7], "big")
-    secured = asdu[7:-MAC_LEN]
-    received = asdu[-MAC_LEN:]
-    encrypts = ((scf >> 4) & 0x07) == 0b001
-    aes = Aes128(key)
-    b0 = tp_block_0(seq, addr.src, addr.dst, addr.group, addr.ext_ff, addr.tpci, len(secured) if encrypts else 0)
-    c0 = tp_counter_0(seq, addr.src, addr.dst)
-    ks = ctr_keystream(aes, c0, BLOCK + (len(secured) if encrypts else 0))
-    if encrypts:
-        apdu = _xor(secured, ks[BLOCK:])
-        mac = cbc_mac(aes, bytes([scf]), apdu, b0)
-    else:
-        apdu = secured
-        mac = cbc_mac(aes, bytes([scf]) + apdu, b"", b0)
-    ok = hmac.compare_digest(_xor(mac, ks)[:MAC_LEN], received)
-    return apdu, ok
+    return open_sealed(key, seq, addr, bytes([scf]), asdu[7:-MAC_LEN], asdu[-MAC_LEN:], _encrypts(scf))
+
+
+def encode_sync_req(key: bytes, seq: int, serial: bytes, challenge: bytes, addr: Addressing, scf: int = 0x92) -> bytes:
+    """`SCF || seq(6) || serial(6, clear) || enc(challenge(6)) || MAC(4)`. Tests only."""
+    body, mac = seal(key, seq, addr, bytes([scf]) + serial, challenge, _encrypts(scf))
+    return bytes([scf]) + seq.to_bytes(6, "big") + serial + body + mac
+
+
+def decode_sync_req(key: bytes, asdu: bytes, addr: Addressing) -> Optional[Tuple[int, bytes, bytes, bool]]:
+    """`(seq, serial, challenge, mac_ok)` of an S-A_Sync_Req, None if misshapen.
+
+    The nonce is the frame's own sequence and addressing; the additional data
+    is `SCF || serial` (asdu.rs `decode_sync_req`).
+    """
+    if len(asdu) != 1 + 6 + 6 + 6 + MAC_LEN:
+        return None
+    scf = asdu[0]
+    serial = asdu[7:13]
+    seq = int.from_bytes(asdu[1:7], "big")
+    challenge, ok = open_sealed(key, seq, addr, bytes([scf]) + serial, asdu[13:19], asdu[-MAC_LEN:], _encrypts(scf))
+    return seq, serial, challenge, ok
+
+
+def encode_sync_res(key: bytes, responder_seq: int, requester_seq: int, challenge: bytes, nonce: int, addr: Addressing, scf: int = 0x93) -> bytes:
+    """`SCF || (nonce ^ challenge)(6) || enc(responder_seq || requester_seq) || MAC`. Tests only."""
+    payload = responder_seq.to_bytes(6, "big") + requester_seq.to_bytes(6, "big")
+    body, mac = seal(key, nonce, addr, bytes([scf]), payload, _encrypts(scf))
+    return bytes([scf]) + _xor(nonce.to_bytes(6, "big"), challenge) + body + mac
+
+
+def decode_sync_res(key: bytes, asdu: bytes, addr: Addressing, challenge: bytes) -> Optional[Tuple[int, int, bool]]:
+    """`(responder_seq, requester_seq, mac_ok)` of an S-A_Sync_Res.
+
+    The six bytes in the sequence slot are the CCM nonce XOR the challenge of
+    the request being answered (asdu.rs `decode_sync_res`), so a response only
+    verifies against its own request's challenge. Returns None if misshapen.
+    """
+    if len(asdu) != 1 + 6 + 12 + MAC_LEN:
+        return None
+    scf = asdu[0]
+    nonce = int.from_bytes(_xor(asdu[1:7], challenge), "big")
+    plain, ok = open_sealed(key, nonce, addr, bytes([scf]), asdu[7:19], asdu[-MAC_LEN:], _encrypts(scf))
+    return int.from_bytes(plain[:6], "big"), int.from_bytes(plain[6:], "big"), ok
 
 
 # --------------------------------------------------------------------------
@@ -298,6 +356,9 @@ class Keyring:
     tool_keys: Dict[int, bytes] = field(default_factory=dict, repr=False)
     fdsks: Dict[int, bytes] = field(default_factory=dict, repr=False)
     group_keys: Dict[int, bytes] = field(default_factory=dict, repr=False)
+    # Device serial number (6 bytes) -> individual address, for the broadcast
+    # S-A_Sync_Req, which names its target only by serial.
+    serials: Dict[bytes, int] = field(default_factory=dict, repr=False)
 
     def __repr__(self) -> str:
         return "Keyring(project=%r, %d tool key(s), %d FDSK(s), %d group key(s))" % (
@@ -307,13 +368,17 @@ class Keyring:
             len(self.group_keys),
         )
 
-    def candidates(self, src: int, dst: int, group: bool, tool_access: bool) -> List[Tuple[str, bytes]]:
+    def candidates(
+        self, src: int, dst: int, group: bool, tool_access: bool, serial: Optional[bytes] = None
+    ) -> List[Tuple[str, bytes]]:
         """The keys worth trying for one frame, labelled, most likely first.
 
         Tool access (SCF bit 7) uses the device's tool key; during Secure
         activation ETS still talks under the device's FDSK, so that is tried
         next. The device is whichever end of the frame the keyring knows.
-        Group traffic uses the group address's key.
+        Group traffic uses the group address's key. A tool-access frame to a
+        group address (the broadcast Sync) belongs to the device named by
+        `serial`, or else to its source.
         """
         out: List[Tuple[str, bytes]] = []
         if group and not tool_access:
@@ -322,6 +387,8 @@ class Keyring:
                 out.append(("group", key))
             return out
         ends = [dst, src] if not group else [src]
+        if serial is not None and serial in self.serials:
+            ends.insert(0, self.serials[serial])
         for label, table in (("tool", self.tool_keys), ("fdsk", self.fdsks)):
             for ia in ends:
                 key = table.get(ia)
@@ -450,6 +517,12 @@ def parse_keyring(xml_text: str, password: str) -> Keyring:
                 fdsk = key_attr(d, "FDSK")
                 if fdsk is not None:
                     ring.fdsks[ia] = fdsk
+                serial = d.get("SerialNumber", "")
+                if len(serial) == 12:
+                    try:
+                        ring.serials[bytes.fromhex(serial)] = ia
+                    except ValueError:
+                        pass
     return ring
 
 
@@ -469,10 +542,20 @@ def unwrap_frames(frames: Iterable, ring: Keyring) -> None:
 
     For each secure APDU whose key is in the keyring, the first candidate key
     whose MAC verifies wins; its label (`tool`, `fdsk`, `group`) lands in the
-    `key` field, `mac` becomes `ok`, and the inner APDU is decoded with the
-    plain decoder into `Apdu.inner`. If keys were tried and none verified,
-    `mac` is `FAIL` and nothing is decoded. A frame with no candidate key is
-    left exactly as the plain decoder produced it.
+    `key` field and `mac` becomes `ok`. What follows depends on the service:
+
+    - S-A_Data: the inner APDU is decoded with the plain decoder into
+      `Apdu.inner`, with key material redacted (`redact_keys`).
+    - S-A_Sync_Req: `sync_detail` names the serial (all zeros on the
+      per-connection form) and the challenge's length. The challenge itself
+      is kept only to verify the matching response, never printed.
+    - S-A_Sync_Res: verified against the challenge of the request it
+      answers (the sender's latest Sync_Req to this device, else the latest
+      one seen); `sync_detail` shows the two sequence numbers it carries.
+
+    If keys were tried and none verified, `mac` is `FAIL` and nothing is
+    decoded. A frame with no candidate key is left exactly as the plain
+    decoder produced it.
 
     Tunnelling clients often send `L_Data.req` with source `0.0.0` and let the
     interface fill in its own address, which is what the MAC actually covers.
@@ -482,6 +565,8 @@ def unwrap_frames(frames: Iterable, ring: Keyring) -> None:
     from knxip import decode_apdu  # local import: knxip imports nothing of ours
 
     tunnel_ia: Dict[str, int] = {}
+    challenges: Dict[int, bytes] = {}  # requester IA -> its latest challenge
+    latest_challenge: Optional[bytes] = None
     for frame in frames:
         cemi = frame.cemi
         if cemi is None or cemi.l4 is None:
@@ -491,8 +576,11 @@ def unwrap_frames(frames: Iterable, ring: Keyring) -> None:
         apdu = cemi.l4.apdu
         if apdu is None or apdu.apci != A_SECURE_DATA or len(apdu.payload) < 1 + 6 + MAC_LEN:
             continue
-        scf = apdu.payload[0]
-        cands = ring.candidates(cemi.src_raw, cemi.dst_raw, cemi.dst_is_group, bool(scf & 0x80))
+        asdu = apdu.payload
+        scf = asdu[0]
+        service = scf & 0x07
+        serial = asdu[7:13] if service == 2 and len(asdu) >= 13 else None
+        cands = ring.candidates(cemi.src_raw, cemi.dst_raw, cemi.dst_is_group, bool(scf & 0x80), serial)
         if not cands:
             continue
         sources = [cemi.src_raw]
@@ -500,27 +588,58 @@ def unwrap_frames(frames: Iterable, ring: Keyring) -> None:
             learned = tunnel_ia.get(frame.src)
             if learned:
                 sources.append(learned)
+
         result = None
         for label, key in cands:
             for src in sources:
                 addr = Addressing(src, cemi.dst_raw, cemi.dst_is_group, cemi.ext_ff, cemi.l4.tpci)
-                plain, ok = decode(key, apdu.payload, addr)
-                if ok:
-                    result = (label, plain)
+                if service == 0:
+                    plain, ok = decode(key, asdu, addr)
+                    if ok:
+                        result = (label, plain)
+                elif service == 2:
+                    got = decode_sync_req(key, asdu, addr)
+                    if got is not None and got[3]:
+                        result = (label, got)
+                elif service == 3:
+                    tries = []
+                    if not cemi.dst_is_group and cemi.dst_raw in challenges:
+                        tries.append(challenges[cemi.dst_raw])
+                    if latest_challenge is not None and latest_challenge not in tries:
+                        tries.append(latest_challenge)
+                    for challenge in tries:
+                        got = decode_sync_res(key, asdu, addr, challenge)
+                        if got is not None and got[2]:
+                            result = (label, got)
+                            break
+                if result:
                     break
             if result:
                 break
         if result is None:
             apdu.fields["mac"] = "FAIL"
             continue
-        label, plain = result
+        label, got = result
         apdu.fields["key"] = label
         apdu.fields["mac"] = "ok"
-        service = scf & 0x07
-        if service != 0:
-            # S-A_Sync_Req/_Res carry a sequence and challenge, not an APDU.
-            apdu.fields["sync_len"] = len(plain)
+        if service == 2:
+            _, serial_b, challenge, _ = got
+            challenges[cemi.src_raw] = challenge
+            latest_challenge = challenge
+            apdu.fields["sync_detail"] = "S-A_Sync_Req serial=%s challenge_len=%d" % (
+                serial_b.hex() if any(serial_b) else "none",
+                len(challenge),
+            )
             continue
+        if service == 3:
+            responder, requester, _ = got
+            apdu.fields.pop("seq", None)  # the slot held nonce XOR challenge
+            apdu.fields["sync_detail"] = "S-A_Sync_Res responder_seq=%d requester_seq=%d" % (
+                responder,
+                requester,
+            )
+            continue
+        plain = got
         if len(plain) < 2:
             apdu.fields["inner_truncated"] = True
             continue
@@ -532,6 +651,7 @@ def unwrap_frames(frames: Iterable, ring: Keyring) -> None:
 # PID_P2P_KEY_TABLE, PID_GRP_KEY_TABLE, PID_TOOL_KEY. (56 on the device object
 # is PID_MAX_APDU_LENGTH, which is why object 0 is exempt.)
 KEY_PIDS = frozenset({52, 53, 56})
+SECURITY_OBJECT_TYPE = 17
 
 
 def redact_keys(apdu):
@@ -539,8 +659,10 @@ def redact_keys(apdu):
 
     Activation writes the new tool key, and a download may write the group key
     table, both as ordinary property values that the plain decoder would print
-    as hex. Those, and any undecoded service with a payload of a key's size or
-    more, are reduced to a length and a hash, the way `A_Authorize` keys are.
+    as hex. Those (the key PIDs, and anything key-sized addressed to the
+    security object type 17 by the extended services) and any undecoded
+    service with a key-sized payload are reduced to a hash, the way
+    `A_Authorize` keys are.
     """
     from knxip import sha8
 
@@ -551,7 +673,11 @@ def redact_keys(apdu):
     secret = False
     if apdu.name.startswith("A_PropertyValue") and f.get("pid") in KEY_PIDS and f.get("obj") != 0:
         secret = True
-    elif (apdu.name.startswith("APCI_0x") or "ExtValue" in apdu.name) and len(data) >= 32:
+    elif f.get("obj_type") == SECURITY_OBJECT_TYPE and (f.get("pid") in KEY_PIDS or len(data) >= 32):
+        # Extended services name the object by type: anything key-sized
+        # written to or read from the security object is treated as a key.
+        secret = True
+    elif apdu.name.startswith("APCI_0x") and len(data) >= 32:
         secret = True
     if secret:
         f["data"] = "redacted:%s" % sha8(bytes.fromhex(data))

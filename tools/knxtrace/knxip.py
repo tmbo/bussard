@@ -121,6 +121,16 @@ APCI_EXACT = {
     0x0C0: "A_IndividualAddress_Write",
     0x100: "A_IndividualAddress_Read",
     0x140: "A_IndividualAddress_Response",
+    0x1CC: "A_PropertyExtValue_Read",
+    0x1CD: "A_PropertyExtValue_Response",
+    0x1CE: "A_PropertyExtValue_WriteCon",
+    0x1CF: "A_PropertyExtValue_WriteConResponse",
+    0x1D0: "A_PropertyExtValue_WriteUnCon",
+    0x1D2: "A_PropertyExtDescription_Read",
+    0x1D3: "A_PropertyExtDescription_Response",
+    0x1D4: "A_FunctionPropertyExt_Command",
+    0x1D5: "A_FunctionPropertyExt_State_Read",
+    0x1D6: "A_FunctionPropertyExt_State_Response",
     0x1FB: "A_MemoryExtended_Write",
     0x1FC: "A_MemoryExtended_Write_Response",
     0x1FD: "A_MemoryExtended_Read",
@@ -292,18 +302,17 @@ class Apdu:
 
     def _secure_summary(self) -> str:
         f = self.fields
-        head = [
-            "scf=%s" % f.get("scf", "?"),
-            "seq=%s" % f.get("seq", "?"),
-        ]
+        head = ["scf=%s" % f.get("scf", "?")]
+        if "seq" in f:
+            head.append("seq=%s" % f["seq"])
         if "key" in f:
             head.append(str(f["key"]))
         head.append("MAC %s" % f["mac"])
         text = "A_SecureData{%s}" % " ".join(head)
         if self.inner is not None:
             return "%s -> %s" % (text, self.inner.summary())
-        if f.get("service") != "S-A_Data" and "sync_len" in f:
-            return "%s -> %s len=%s" % (text, f.get("service"), f["sync_len"])
+        if "sync_detail" in f:
+            return "%s -> %s" % (text, f["sync_detail"])
         return text
 
 
@@ -544,9 +553,50 @@ def _decode_exact(apci: int, name: str, payload: bytes) -> Apdu:
     if apci == A_SECURE_DATA:
         return _decode_secure(apci, name, payload)
 
+    if 0x1CC <= apci <= 0x1D6:  # extended property / function property services
+        return _decode_property_ext(apci, name, payload)
+
     if payload:
         fields["len"] = len(payload)
         fields["data"] = payload.hex()
+    return Apdu(apci, name, fields, payload)
+
+
+def _decode_property_ext(apci: int, name: str, payload: bytes) -> Apdu:
+    """The extended (interface object type addressed) property services.
+
+    Header: object type (2), object instance (12 bits) and PID (12 bits)
+    packed in 3 octets. The value services then carry element count (1) and
+    start index (2); the write-con response and function-property responses
+    carry a return code (1).
+    """
+    if len(payload) < 5:
+        return Apdu(apci, name, {"truncated": True, "len": len(payload)}, payload)
+    obj_type = struct.unpack("!H", payload[0:2])[0]
+    packed = int.from_bytes(payload[2:5], "big")
+    fields: Dict[str, object] = {
+        "obj_type": obj_type,
+        "instance": packed >> 12,
+        "pid": packed & 0x0FFF,
+    }
+    rest = payload[5:]
+    if apci in (0x1CC, 0x1CD, 0x1CE, 0x1CF, 0x1D0):
+        if len(rest) >= 3:
+            fields["count"] = rest[0]
+            fields["index"] = struct.unpack("!H", rest[1:3])[0]
+            rest = rest[3:]
+        if apci == 0x1CF and rest:
+            fields["rc"] = "0x%02x" % rest[0]
+            rest = rest[1:]
+    elif apci == 0x1D2 and len(rest) >= 2:  # description read: prop index
+        fields["prop_index"] = struct.unpack("!H", rest[0:2])[0] & 0x0FFF
+        rest = rest[2:]
+    elif apci == 0x1D6 and rest:
+        fields["rc"] = "0x%02x" % rest[0]
+        rest = rest[1:]
+    if rest:
+        fields["len"] = len(rest)
+        fields["data"] = rest.hex()
     return Apdu(apci, name, fields, payload)
 
 

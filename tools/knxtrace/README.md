@@ -135,7 +135,10 @@ sequence numbers, and numbered and unnumbered data PDUs.
 `_Response` with object index and name, PID and name, element count and start
 index, and for `PID_LOAD_STATE_CONTROL` the load event, the load state and the
 allocation records (`LdCtrlAbsSegment`, `LdCtrlRelSegment`, `LdCtrlTaskPtr`,
-`LdCtrlTaskCtrl1` / `2`, segment address, size, access and memory type);
+`LdCtrlTaskCtrl1` / `2`, segment address, size, access and memory type); the
+extended services `A_PropertyExtValue_*`, `A_PropertyExtDescription_*` and
+`A_FunctionPropertyExt_*` with object type, instance and PID (ETS uses them on
+the security object during Data Secure activation);
 `A_PropertyDescription_Read` / `_Response` with data type, element count and
 access levels; `A_Memory_Read` / `_Write` / `_Response` with address, count and
 data; `A_MemoryExtended_*` with the 3-octet address; `A_Authorize` and `A_Key`
@@ -170,13 +173,26 @@ the Rust known-answer vectors.
   its FDSK (ETS talks under the FDSK until activation installs the tool key).
   The device is whichever end of the frame the keyring knows. Group frames use
   the group address's key.
-- **Frame.** `SCF(1) || seq(6) || APDU || MAC(4)`, AES-128-CCM with the TP
+- **S-A_Data.** `SCF(1) || seq(6) || APDU || MAC(4)`, AES-128-CCM with the TP
   `block_0` / `counter_0` nonce over source, destination, frame flags and the
-  carrier's TPCI octet. A tunnelled `L_Data.req` from `0.0.0` is also tried with
-  the source the interface reported in its `L_Data.con`.
+  carrier's TPCI octet. The CBC-MAC is cut to 4 bytes before the CTR stage and
+  the keystream runs on over the payload, so the payload starts at byte 4 of
+  AES(counter_0). This was calibrated against a real ETS capture (bussard
+  PR #153). A tunnelled `L_Data.req` from `0.0.0` is also tried with the source
+  the interface reported in its `L_Data.con`.
+- **S-A_Sync_Req** (SCF `0x92`). `seq(6) || serial(6, clear) || enc(challenge(6))
+  || MAC(4)`. The nonce is the frame's own sequence; the additional data is
+  `SCF || serial`. The serial is zeros on the per-connection form and names the
+  target on the broadcast to `0/0/0`, which is how the key is found then.
+- **S-A_Sync_Res** (SCF `0x93`). `masked(6) || enc(responder_seq(6) ||
+  requester_seq(6)) || MAC(4)`, where `masked` is the CCM nonce XOR the
+  request's challenge. It verifies only against the challenge of the request it
+  answers.
 
 Per frame, `trace` prints `A_SecureData{scf=0x90 seq=N tool MAC ok} ->
-A_PropertyValue_Read ...`, or `MAC FAIL` when keys were tried and none verified.
+A_PropertyValue_Read ...`, `... -> S-A_Sync_Req serial=none challenge_len=6`,
+`... -> S-A_Sync_Res responder_seq=N requester_seq=M`, or `MAC FAIL` when keys
+were tried and none verified. The challenge itself is never printed.
 A frame with no key in the keyring prints as without `--keyring`. `devices` and
 `ops` count a verified frame as the operation it carries; both commands end
 with a summary by outcome, service and inner APDU, and the `S-A_Data` sequence
@@ -200,9 +216,10 @@ not to print anything that should not leave it:
 - `A_SecureData` payloads are reported as a length and a content hash. Without
   a keyring the protected APDU and its MAC are never printed. With `--keyring`,
   a frame whose MAC verifies shows its inner APDU, decoded like plain traffic,
-  except that key material inside it (a written tool key, the P2P or group key
-  table, or any undecoded service with a key-sized payload) is reported as
-  `redacted:<hash>`. Keyring keys are never printed: output names them only as
+  except that key material inside it is reported as `redacted:<hash>`: the
+  key PIDs (P2P and group key tables, tool key), anything key-sized (16 bytes
+  or more) addressed to the security object (type 17) by the extended
+  services, and any undecoded service with a key-sized payload. Keyring keys are never printed: output names them only as
   `tool`, `fdsk` or `group`, and the keyring password is read from
   `$BUSSARD_KEYRING_PASSWORD`, never the command line.
 - KNXnet/IP Secure frames are named, sized and hashed. Nothing is decrypted, and

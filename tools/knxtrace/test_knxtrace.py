@@ -866,6 +866,21 @@ def secure_npdu(key: bytes, seq_l4: int, src: str, dst: str, seq: int, inner: by
     return bytes([tpci, 0xF1]) + asdu
 
 
+SYN_CHALLENGE = bytes([0xC1, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6])
+
+
+def sync_req_npdu(seq_l4: int, seq: int) -> bytes:
+    tpci = 0x40 | ((seq_l4 & 0x0F) << 2) | 0x03
+    addr = ds.Addressing(ia("1.1.25"), ia("1.1.12"), False, 0, tpci)
+    return bytes([tpci, 0xF1]) + ds.encode_sync_req(SYN_TOOL_KEY, seq, bytes(6), SYN_CHALLENGE, addr)
+
+
+def sync_res_npdu(seq_l4: int) -> bytes:
+    tpci = 0x40 | ((seq_l4 & 0x0F) << 2) | 0x03
+    addr = ds.Addressing(ia("1.1.12"), ia("1.1.25"), False, 0, tpci)
+    return bytes([tpci, 0xF1]) + ds.encode_sync_res(SYN_TOOL_KEY, 501, 1001, SYN_CHALLENGE, 0x777777, addr)
+
+
 class TestDataSecure(unittest.TestCase):
     def test_aes128_fips197_vector(self):
         aes = ds.Aes128(bytes(range(16)))
@@ -889,7 +904,9 @@ class TestDataSecure(unittest.TestCase):
         addr = ds.Addressing(0x1101, 0x1102, False, 0, 0x42)
         inner = bytes([0x03, 0xD1, 0x00, 0xFF, 0xFF, 0xFF, 0xFF])
         vectors = {
-            0x90: "9000000000002a087d2af48775c398a53da2",
+            # The corrected (bussard PR #153) vector: one keystream over
+            # mac(4) || payload.
+            0x90: "9000000000002afbb8725d145fbe98a53da2",
             0x80: "8000000000002a03d100ffffffffb5a46c9f",
         }
         for scf, expected in vectors.items():
@@ -898,6 +915,39 @@ class TestDataSecure(unittest.TestCase):
             plain, ok = ds.decode(key, asdu, addr)
             self.assertTrue(ok)
             self.assertEqual(plain, inner)
+
+    def test_payload_keystream_continues_after_the_mac(self):
+        """The payload is XORed with AES(counter_0)[4:], not AES(counter_0 + 1)."""
+        key = bytes(range(16))
+        addr = ds.Addressing(0x1101, 0x1102, False, 0, 0x42)
+        apdu = bytes([0x03, 0x00])
+        asdu = ds.encode(key, 0x90, 42, addr, apdu)
+        ks = ds.Aes128(key).encrypt_block(ds.tp_counter_0(42, 0x1101, 0x1102))
+        self.assertEqual(asdu[7:9], bytes(a ^ b for a, b in zip(apdu, ks[4:6])))
+
+    def test_sync_req_round_trip(self):
+        key = bytes(range(16))
+        addr = ds.Addressing(0x1101, 0x1102, False, 0, 0x42)
+        serial = bytes([0x00, 0xFA, 0x12, 0x34, 0x56, 0x78])
+        challenge = bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF])
+        asdu = ds.encode_sync_req(key, 0x0012_3456_789A, serial, challenge, addr)
+        self.assertEqual(len(asdu), 23)
+        self.assertEqual(asdu[7:13], serial)  # in the clear
+        self.assertNotEqual(asdu[13:19], challenge)  # encrypted
+        self.assertEqual(ds.decode_sync_req(key, asdu, addr), (0x0012_3456_789A, serial, challenge, True))
+        forged = bytearray(asdu)
+        forged[8] ^= 0x01  # the serial is authenticated
+        self.assertFalse(ds.decode_sync_req(key, bytes(forged), addr)[3])
+
+    def test_sync_res_round_trip(self):
+        key = bytes(range(16))
+        addr = ds.Addressing(0x1101, 0x1102, False, 0, 0x42)
+        challenge = bytes([0x10, 0x20, 0x30, 0x40, 0x50, 0x60])
+        asdu = ds.encode_sync_res(key, 0x0012_3456_0001, 0x0012_3456_789A, challenge, 0x0102_0304_0506, addr)
+        self.assertEqual(len(asdu), 23)
+        self.assertEqual(asdu[1:7].hex(), "112233445566")  # nonce XOR challenge
+        self.assertEqual(ds.decode_sync_res(key, asdu, addr, challenge), (0x0012_3456_0001, 0x0012_3456_789A, True))
+        self.assertFalse(ds.decode_sync_res(key, asdu, addr, bytes(6))[2])
 
     def test_decode_reports_mac_failure(self):
         addr = ds.Addressing(0x1101, 0x110A, False, 0, 0x42)
@@ -940,6 +990,8 @@ class TestDataSecure(unittest.TestCase):
         frames = [
             (tunneling_request(cemi_ldata("1.1.25", "1.1.12", secure_npdu(SYN_FDSK, 0, "1.1.25", "1.1.12", 1000, read_desc))), True),
             (tunneling_request(cemi_ldata("1.1.12", "1.1.25", secure_npdu(SYN_FDSK, 0, "1.1.12", "1.1.25", 500, desc_resp), mc=0x29), seq=1), False),
+            (tunneling_request(cemi_ldata("1.1.25", "1.1.12", sync_req_npdu(1, 999)), seq=6), True),
+            (tunneling_request(cemi_ldata("1.1.12", "1.1.25", sync_res_npdu(1), mc=0x29), seq=7), False),
             (tunneling_request(cemi_ldata("1.1.25", "1.1.12", secure_npdu(SYN_TOOL_KEY, 1, "1.1.25", "1.1.12", 1001, prop_read)), seq=2), True),
             # A replayed (non-increasing) sequence from the tool.
             (tunneling_request(cemi_ldata("1.1.25", "1.1.12", secure_npdu(SYN_TOOL_KEY, 2, "1.1.25", "1.1.12", 1001, prop_read)), seq=3), True),
@@ -963,14 +1015,17 @@ class TestDataSecure(unittest.TestCase):
         ring = ds.load_keyring(self.keyring_file(), SYN_PASSWORD)
         ds.unwrap_frames(frames, ring)
         apdus = [f.cemi.l4.apdu for f in frames if f.cemi is not None]
-        self.assertEqual([a.fields.get("mac") for a in apdus], ["ok", "ok", "ok", "ok", "FAIL", None])
-        self.assertEqual([a.fields.get("key") for a in apdus[:4]], ["fdsk", "fdsk", "tool", "tool"])
+        self.assertEqual([a.fields.get("mac") for a in apdus], ["ok", "ok", "ok", "ok", "ok", "ok", "FAIL", None])
+        self.assertEqual([a.fields.get("key") for a in apdus[:6]], ["fdsk", "fdsk", "tool", "tool", "tool", "tool"])
         self.assertEqual(apdus[0].inner.name, "A_DeviceDescriptor_Read")
         self.assertEqual(apdus[1].inner.fields["mask"], "07B0")
-        self.assertEqual(apdus[2].inner.fields["pid"], 54)
-        self.assertIn("A_SecureData{scf=0x90 seq=1001 tool MAC ok} -> A_PropertyValue_Read", apdus[2].summary())
-        self.assertIsNone(apdus[4].inner)
-        self.assertNotIn("mac", apdus[5].fields)
+        self.assertIn("seq=999 tool MAC ok} -> S-A_Sync_Req serial=none challenge_len=6", apdus[2].summary())
+        self.assertIn("MAC ok} -> S-A_Sync_Res responder_seq=501 requester_seq=1001", apdus[3].summary())
+        self.assertNotIn(SYN_CHALLENGE.hex(), apdus[2].summary())
+        self.assertEqual(apdus[4].inner.fields["pid"], 54)
+        self.assertIn("A_SecureData{scf=0x90 seq=1001 tool MAC ok} -> A_PropertyValue_Read", apdus[4].summary())
+        self.assertIsNone(apdus[6].inner)
+        self.assertNotIn("mac", apdus[7].fields)
 
     def test_unwrap_frames_learns_tunnel_source(self):
         """A 0.0.0 source is retried with the address the L_Data.con showed."""
@@ -1002,6 +1057,19 @@ class TestDataSecure(unittest.TestCase):
         self.assertIn("data=redacted:", summary)
         self.assertNotIn(new_key.hex(), summary)
 
+    def test_decode_apdu_property_ext_and_redaction(self):
+        """Extended property services decode; a key written to object type 17 is hidden."""
+        key = bytes([0x5A] * 16)
+        payload = bytes([0x00, 17, 0x00, 0x10, 56, 1, 0x00, 0x01]) + key
+        apdu = knxip.decode_apdu(0x1CE, payload, 0)
+        self.assertEqual(apdu.name, "A_PropertyExtValue_WriteCon")
+        self.assertEqual((apdu.fields["obj_type"], apdu.fields["instance"], apdu.fields["pid"]), (17, 1, 56))
+        self.assertEqual((apdu.fields["count"], apdu.fields["index"]), (1, 1))
+        ds.redact_keys(apdu)
+        self.assertTrue(apdu.fields["data"].startswith("redacted:"))
+        resp = knxip.decode_apdu(0x1CF, bytes([0x00, 17, 0x00, 0x10, 56, 1, 0x00, 0x01, 0x00]), 0)
+        self.assertEqual(resp.fields["rc"], "0x00")
+
     def test_sequence_problems_flags_replay(self):
         frames = knxip.frames_from_file(self.secure_capture())
         problems = ds.sequence_problems(frames)
@@ -1015,7 +1083,7 @@ class TestDataSecure(unittest.TestCase):
         counts = norm.normalize(frames)["1.1.12"].counts()
         self.assertEqual(counts.get("prop-read"), 2)
         self.assertEqual(counts.get("descriptor"), 1)  # requests only
-        self.assertEqual(counts.get("secure-data"), 1)  # the frame whose MAC failed
+        self.assertEqual(counts.get("secure-data"), 2)  # the Sync_Req and the frame whose MAC failed
 
     def test_main_trace_and_devices_with_keyring(self):
         import contextlib
