@@ -85,6 +85,9 @@ pub fn run(
         );
     };
     let config = resolve_config(Some(&model), &overrides)?;
+    // An edit made outside bussard (an editor, an assistant writing YAML) is
+    // recorded before this command acts on it, so it is never lost.
+    crate::history_cmd::capture_external_edit(dir);
     // Safety envelope (issue #74): refuse a write to a real (non-loopback)
     // gateway unless the operator opted in.
     enforce_write_gate(&config, allow_remote_gateway)?;
@@ -187,6 +190,16 @@ pub fn run(
         eprintln!("aborted — no changes written.");
         return Ok(ExitCode::FAILURE);
     }
+
+    // Snapshot the model before the bus write, so `bussard history` records what
+    // the installation was asked to become and `bussard undo` can go back.
+    crate::history_cmd::snapshot(
+        dir,
+        bussard_model::history::SnapshotReason::new("apply")
+            .with_args([target.to_string()])
+            .with_gateway(Some(gateway.clone()))
+            .with_result("before writing the device tables"),
+    );
 
     // Back up the pre-state tables before writing anything.
     let backup_path = write_backup(dir, target, live, sys7_live.as_ref())

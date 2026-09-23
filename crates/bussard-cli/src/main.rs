@@ -10,6 +10,7 @@ mod conn_cmd;
 mod describe_cmd;
 mod flash_cmd;
 mod ha_config_cmd;
+mod history_cmd;
 mod import_cmd;
 mod import_product_cmd;
 mod init_cmd;
@@ -386,6 +387,49 @@ enum Command {
         #[arg(long)]
         allow_remote_gateway: bool,
     },
+    /// Show what has changed in the model since the last history snapshot.
+    Status {
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Emit the change set as JSON instead of sentences.
+        #[arg(long)]
+        json: bool,
+        /// Print the file-level diff instead of the plain-language rendering.
+        #[arg(long)]
+        raw: bool,
+    },
+    /// List the model's history snapshots, oldest first.
+    History {
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Emit the list as JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show what one snapshot changed (or the change between two snapshots).
+    Show {
+        /// The snapshot: its id, or its number from `bussard history`.
+        #[arg(value_name = "SNAPSHOT")]
+        snapshot: String,
+        /// A second snapshot: show the change from the first one to this one.
+        #[arg(value_name = "SNAPSHOT")]
+        to: Option<String>,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+    },
+    /// Put the model files back to a history snapshot (files only, no devices).
+    Undo {
+        /// The snapshot to restore: its id, or its number from `bussard history`
+        /// (default: the one before the latest).
+        #[arg(value_name = "SNAPSHOT")]
+        snapshot: Option<String>,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+    },
     /// Validate the YAML model and report diagnostics.
     Validate {
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
@@ -751,6 +795,12 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
             },
             conn_cmd::ConnOverrides { gateway, routing },
         ),
+        Command::Status { dir, json, raw } => history_cmd::run_status(&dir, json, raw),
+        Command::History { dir, json } => history_cmd::run_history(&dir, json),
+        Command::Show { snapshot, to, dir } => {
+            history_cmd::run_show(&dir, &snapshot, to.as_deref())
+        }
+        Command::Undo { snapshot, dir } => history_cmd::run_undo(&dir, snapshot.as_deref()),
         Command::Validate { dir, format } => validate_cmd::run(&dir, format == Format::Json),
         Command::Init {
             dir,
