@@ -274,6 +274,9 @@ struct DeviceState {
     /// an older/simpler device that does not implement authorize. The tool must
     /// tolerate this and proceed (the gate is also open in this mode).
     authorize_unsupported: bool,
+    /// Count of `PID_OBJECT_TYPE` reads, so a test can assert the flash reused a
+    /// pre-flight's object table instead of walking it again.
+    object_type_reads: usize,
     /// Count of `A_Authorize_Request` frames seen, so a test can assert the tool
     /// authorized on each connection window.
     authorizes_seen: usize,
@@ -671,6 +674,7 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
             return Reaction::Nak;
         };
         if pid == PID_OBJECT_TYPE {
+            s.object_type_reads += 1;
             return match s.object_types.get(usize::from(oi)) {
                 Some(ot) => Reaction::Answer(
                     A_PROPERTY_VALUE_RESPONSE,
@@ -1310,6 +1314,7 @@ fn fresh_device(fault: Fault) -> Shared {
         authorized: false,
         grant_level: 0,
         authorize_unsupported: false,
+        object_type_reads: 0,
         authorizes_seen: 0,
         last_authorize_payload: Vec::new(),
         prop_writes: HashMap::new(),
@@ -3221,6 +3226,80 @@ async fn authorize_is_cached_and_not_repeated_on_a_device_without_authorize() {
         std::env::remove_var("BUSSARD_FLASH_RECONNECT_EXCHANGES");
         std::env::remove_var("BUSSARD_FLASH_REBOOT_WAIT_MS");
     }
+}
+
+#[tokio::test]
+async fn test_open_with_facts_reuses_the_preflight_table_and_authorize_verdict()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The CLI's read-only pre-flight already walked PID_OBJECT_TYPE and found the
+    // device does not implement authorize. A session opened with those facts
+    // must neither walk the object table again nor re-present the key, and the
+    // flash must still verify.
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let (handle, state, gw) = setup_bus(Fault::None).await;
+    state
+        .lock()
+        .map_err(|e| e.to_string())?
+        .authorize_unsupported = true;
+    let source = bussard_bus::ops::group_source(&handle);
+
+    // Phase A, as the CLI runs it: its own connection, table walk, disconnect.
+    let mut preflight = LeaseConnector::plain(handle.clone(), target, source, None);
+    let mut l4 = bussard_download::Connector::connect(&mut preflight).await?;
+    let object_table = bussard_mgmt::probe_object_types(&mut l4).await?;
+    let _ = l4.disconnect().await;
+    let (reads_before, authorizes_before) = {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        (s.object_type_reads, s.authorizes_seen)
+    };
+    assert!(reads_before > 0, "the pre-flight walked the table");
+
+    let facts = bussard_download::DeviceFacts {
+        object_table,
+        authorize: Some(bussard_mgmt::AuthorizeOutcome::Unsupported {
+            detail: "pre-flight: no answer".to_string(),
+        }),
+        max_apdu: None,
+    };
+    let app = fabricated_app();
+    let plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    let connector = LeaseConnector::plain(handle.clone(), target, source, None);
+    let mut session = Session::open_with_facts(connector, None, facts).await?;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await?;
+    let _ = session.into_disconnect().await;
+    assert!(
+        outcome.ok(),
+        "a facts-seeded flash must verify: {outcome:?}"
+    );
+
+    {
+        let s = state.lock().map_err(|e| e.to_string())?;
+        assert_eq!(
+            s.object_type_reads, reads_before,
+            "the write phase must not walk the object table again"
+        );
+        assert_eq!(
+            s.authorizes_seen, authorizes_before,
+            "a device known not to implement authorize must not be asked again"
+        );
+    }
+    let _ = handle.close().await;
+    gw.abort();
+    Ok(())
 }
 
 /// A single-application System B app whose code segment is 256 bytes of 0xFF, so

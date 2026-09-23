@@ -59,9 +59,10 @@ pub use compute_sys7::{
     sys7_association_table, sys7_config_byte, sys7_group_object_table, sys7_group_objects,
 };
 pub use flash::{
-    AppIdentity, Connector, FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, ImageRef,
-    PlanError, Progress, Session, SingleConnector, Sys7Context, discover_application_object, flash,
-    plan_flash, plan_flash_sys7_with_hawk, select_application, sys7_profile_from_hawk, trace,
+    AppIdentity, Connector, DeviceFacts, FlashOptions, FlashOutcome, FlashPlan, FlashStep,
+    ImageKind, ImageRef, PlanError, Progress, Session, SingleConnector, Sys7Context,
+    discover_application_object, flash, plan_flash, plan_flash_sys7_with_hawk, select_application,
+    sys7_profile_from_hawk, trace,
 };
 pub use param_plan::{
     CurrentMemory, ParamChange, ParamPlan, ParamValue, SYS7_NOTE, param_plan,

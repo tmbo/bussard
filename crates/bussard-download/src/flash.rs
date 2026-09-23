@@ -1120,8 +1120,59 @@ impl<Ch: L4Channel> Session<SingleConnector<Ch>> {
             connector: None,
             bcu_key: None,
             authorize_outcomes: BTreeMap::new(),
+            facts: DeviceFacts::default(),
             max_apdu: None,
         }
+    }
+}
+
+/// What the read-only pre-flight already learned about the device, carried into
+/// the write phase so the flash does not pay for discovering it a second time.
+///
+/// `bussard flash` runs a read-only probe before it shows the plan (issue #79):
+/// it walks `PID_OBJECT_TYPE` over every interface object, presents
+/// `A_Authorize_Request`, and reads each object's load state. All three are
+/// device-stable facts, but the write phase used to rediscover them on its own
+/// connection: another full object-table walk, another authorize (a device that
+/// does not implement authorize burns a full `RESPONSE_TIMEOUT` answering
+/// nothing), and another `PID_MAX_APDU_LENGTH` read.
+///
+/// Handing the pre-flight's findings to [`Session::open_with_facts`] removes
+/// that duplication. Every field is optional/empty-tolerant: an empty
+/// [`DeviceFacts`] (or [`Session::open_with_key`], which supplies none) restores
+/// the rediscover-everything behaviour byte-for-byte, which is what the mock and
+/// oracle tests pin.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DeviceFacts {
+    /// The interface-object table (`index → PID_OBJECT_TYPE`) the pre-flight
+    /// walked, in index order. Empty when it could not be read, in which case
+    /// the flash walks it itself.
+    pub object_table: Vec<(u8, u16)>,
+    /// The authorize outcome the pre-flight observed on its own connection.
+    ///
+    /// Only an [`Unsupported`](bussard_mgmt::AuthorizeOutcome::Unsupported)
+    /// outcome changes what the write phase does — it stops re-presenting a key
+    /// to a device that answers nothing, saving a full `RESPONSE_TIMEOUT` per
+    /// connection window. A `Granted` is per-connection state that a fresh
+    /// `T_Connect` clears, so it is recorded but still re-presented.
+    pub authorize: Option<bussard_mgmt::AuthorizeOutcome>,
+    /// The device's `PID_MAX_APDU_LENGTH`, when the pre-flight negotiated it.
+    /// Device-stable, so the session seeds it instead of spending an exchange
+    /// re-reading it.
+    pub max_apdu: Option<u16>,
+}
+
+impl DeviceFacts {
+    /// The application-program object index this table names, if any.
+    ///
+    /// `None` when the pre-flight read no table, or read one that carries no
+    /// interface-object of type 3 — either way the flash falls back to its own
+    /// discovery walk rather than guessing.
+    pub fn application_object(&self) -> Option<u8> {
+        self.object_table
+            .iter()
+            .find(|(_, ot)| *ot == OT_APPLICATION_PROGRAM)
+            .map(|(index, _)| *index)
     }
 }
 
@@ -1168,6 +1219,11 @@ pub struct Session<C: Connector> {
     /// a real write gate must re-present the key on every fresh connection. A
     /// `Denied` never reaches the cache — it fails the open before insertion.
     authorize_outcomes: BTreeMap<u16, bussard_mgmt::AuthorizeOutcome>,
+    /// What the CLI's read-only pre-flight already learned about this device
+    /// ([`DeviceFacts`]), so the flash does not rediscover it. Empty for a
+    /// session opened without facts (the library default and every mock test),
+    /// which keeps the rediscover-everything wire sequence.
+    facts: DeviceFacts,
     /// The device's `PID_MAX_APDU_LENGTH`, negotiated once on the first connection
     /// and re-seeded (not re-read) onto every later window's connection.
     ///
@@ -1194,24 +1250,66 @@ impl<C: Connector> Session<C> {
 
     /// Opens the connection and authorizes it with `bcu_key` (or the free-access
     /// key when `None`).
+    ///
+    /// Equivalent to [`open_with_facts`](Session::open_with_facts) with an empty
+    /// [`DeviceFacts`]: the session discovers everything itself, which is the
+    /// standalone-library behaviour the mock and oracle wire traces pin.
     pub async fn open_with_key(
+        connector: C,
+        bcu_key: Option<u32>,
+    ) -> Result<Session<C>, WriteError> {
+        Session::open_with_facts(connector, bcu_key, DeviceFacts::default()).await
+    }
+
+    /// Opens the connection with what a read-only pre-flight already learned
+    /// about the device ([`DeviceFacts`]).
+    ///
+    /// Two of the three facts change what this open costs on the wire:
+    ///
+    /// * an [`Unsupported`](bussard_mgmt::AuthorizeOutcome::Unsupported)
+    ///   authorize outcome seeds the per-target cache, so no key is presented to
+    ///   a device that answers nothing — saving one `RESPONSE_TIMEOUT` here and
+    ///   one on every later reconnect/cycle;
+    /// * a known `PID_MAX_APDU_LENGTH` is seeded instead of re-read, saving a
+    ///   numbered exchange against the tight per-connection budget.
+    ///
+    /// The object table is not used here; it is consumed by [`flash`] in place of
+    /// its own discovery walk.
+    pub async fn open_with_facts(
         mut connector: C,
         bcu_key: Option<u32>,
+        facts: DeviceFacts,
     ) -> Result<Session<C>, WriteError> {
         let mut l4 = connector.connect().await?;
         let mut authorize_outcomes = BTreeMap::new();
+        // Seed the pre-flight's verdict BEFORE authorizing: an "this device does
+        // not implement authorize" finding is what makes `authorize` skip the
+        // request entirely. A `Granted`/`Denied` verdict is per-connection state
+        // and is deliberately not seeded — this fresh connection must earn it.
+        if let Some(outcome @ bussard_mgmt::AuthorizeOutcome::Unsupported { .. }) = &facts.authorize
+        {
+            authorize_outcomes.insert(l4.target().raw(), outcome.clone());
+        }
         Self::authorize(&mut l4, bcu_key, &mut authorize_outcomes).await?;
         // Read PID_MAX_APDU_LENGTH once so memory/property chunks scale to the
         // device (issue #58). Best-effort: a failure leaves the conservative
         // standard-frame caps and never aborts the open. Cached at the session
         // level and re-seeded (not re-read) on later windows so it costs exactly
-        // one exchange for the whole flash.
-        let max_apdu = l4.negotiate_max_apdu().await.ok().flatten();
+        // one exchange for the whole flash — or none, when the pre-flight already
+        // negotiated it.
+        let max_apdu = match facts.max_apdu {
+            Some(known) => {
+                l4.set_max_apdu(Some(known));
+                Some(known)
+            }
+            None => l4.negotiate_max_apdu().await.ok().flatten(),
+        };
         Ok(Session {
             l4: Some(l4),
             connector: Some(connector),
             bcu_key,
             authorize_outcomes,
+            facts,
             max_apdu,
         })
     }
@@ -1267,6 +1365,17 @@ impl<C: Connector> Session<C> {
     /// *before* it (a mock with no reconnect).
     pub fn can_reconnect(&self) -> bool {
         self.connector.is_some()
+    }
+
+    /// The pre-flight's interface-object table and the application-object index
+    /// it names, when both are known.
+    ///
+    /// `None` when the session was opened without [`DeviceFacts`], or with facts
+    /// whose table is empty or carries no application-program object — in which
+    /// case the caller walks the table itself.
+    fn known_object_table(&self) -> Option<(u8, Vec<(u8, u16)>)> {
+        let app_obj = self.facts.application_object()?;
+        Some((app_obj, self.facts.object_table.clone()))
     }
 
     /// Re-establishes the L4 connection after a device restart, re-authorizing it.
@@ -3060,6 +3169,28 @@ async fn discover_object_table_resumable<C: Connector>(
     }
 }
 
+/// Re-confirms the application-program object index on a fresh post-restart
+/// connection with a **single** `PID_OBJECT_TYPE` probe.
+///
+/// The interface-object table is device state that survives a reboot, so the
+/// index discovered before the terminal restart is still the right one; the only
+/// thing worth checking is that the device really is back and still reports that
+/// index as an application-program object. A probe that answers anything else —
+/// a different type, no object, or a read error — means the picture is not what
+/// was assumed, so the full resumable walk runs and decides (it also reconnects
+/// if the probe killed the connection).
+async fn confirm_app_object<C: Connector>(
+    session: &mut Session<C>,
+    app_obj: u8,
+) -> Result<u8, WriteError> {
+    match bussard_mgmt::probe_object_type(session.l4(), app_obj).await {
+        Ok(Some(OT_APPLICATION_PROGRAM)) => Ok(app_obj),
+        _ => discover_object_table_resumable(session)
+            .await
+            .map(|(index, _table)| index),
+    }
+}
+
 /// Resolves the op-carried `LsmIdx`/`ObjIdx` to the device interface-object index
 /// the step should act on, by **index**, not by object type — the divergence-#2 fix.
 ///
@@ -3464,7 +3595,16 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
     // reconnects and CONTINUES from the next index, keeping the indices already
     // probed. Whole-operation replay alone could not recover a discovery that needs
     // more exchanges than the budget; per-probe forward progress can.
-    let (app_obj, object_table) = discover_object_table_resumable(session).await?;
+    //
+    // A session opened with [`DeviceFacts`] (the CLI: its read-only pre-flight
+    // already walked `PID_OBJECT_TYPE` over every object) skips the walk entirely
+    // — the table is device-stable, so re-reading it would only repeat one
+    // `A_PropertyValue_Read` per interface object. Without facts (the library
+    // API, every mock and oracle test) the walk runs exactly as before.
+    let (app_obj, object_table) = match session.known_object_table() {
+        Some(known) => known,
+        None => discover_object_table_resumable(session).await?,
+    };
     let total = plan.steps.len();
 
     // The base address of the most-recently allocated relative segment, used by
@@ -3989,12 +4129,14 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                             // The device is unreachable while it reboots; poll for it
                             // (bounded), then re-establish the authorized connection.
                             session.reconnect_after_reboot().await?;
-                            // Re-discover the application object on the fresh connection: the
-                            // object index is stable across the reboot, but the L4 connection
-                            // is new, so probe it again rather than trusting the pre-restart
-                            // handle. Resumable so a tight-budget device survives the re-probe.
-                            let (post_app_obj, _post_table) =
-                                discover_object_table_resumable(session).await?;
+                            // Re-confirm the application object on the fresh connection. The
+                            // index is stable across the reboot, so a single `PID_OBJECT_TYPE`
+                            // probe of the known index is enough; only if the device answers
+                            // something else (or does not answer) is the full walk re-run.
+                            // Re-walking every object unconditionally — the previous behaviour
+                            // — cost one exchange per interface object on the tightest
+                            // connection of the whole flash.
+                            let post_app_obj = confirm_app_object(session, app_obj).await?;
                             verified = Some(
                                 verify_outcome(
                                     session,
