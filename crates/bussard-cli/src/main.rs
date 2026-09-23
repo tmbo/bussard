@@ -14,6 +14,7 @@ mod import_cmd;
 mod import_product_cmd;
 mod init_cmd;
 mod keyring_cmd;
+mod learn_cmd;
 mod mcp_cmd;
 mod monitor_cmd;
 mod plan_cmd;
@@ -21,6 +22,7 @@ mod read_cmd;
 mod reconstruct_cmd;
 mod scan_cmd;
 mod secure_key;
+mod test_cmd;
 mod validate_cmd;
 mod viz_cmd;
 mod write_cmd;
@@ -524,6 +526,71 @@ enum Command {
         #[arg(long, value_name = "HOST")]
         allow_host: Vec<String>,
     },
+    /// Name and type group addresses from live traffic (never transmits).
+    Learn {
+        /// Learn this group address (repeatable). Without it, `--unnamed` /
+        /// `--untyped` pick targets from the model, and a bare `learn` takes
+        /// whatever appears on the bus.
+        #[arg(long = "ga", value_name = "GA")]
+        gas: Vec<String>,
+        /// Learn every group address in the model whose name is a placeholder.
+        #[arg(long)]
+        unnamed: bool,
+        /// Learn every group address in the model that has no DPT.
+        #[arg(long)]
+        untyped: bool,
+        /// Accept the top DPT candidate and the proposed name without asking
+        /// (for scripted sessions).
+        #[arg(long)]
+        yes: bool,
+        /// How long to wait for each telegram, in seconds.
+        #[arg(long, value_name = "SECS", default_value_t = 30)]
+        timeout: u64,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Override the gateway `host[:port]` for tunneling.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Force KNXnet/IP routing (multicast) transport.
+        #[arg(long)]
+        routing: bool,
+    },
+    /// Run the scripted acceptance tests in `tests.yaml` against the bus.
+    Test {
+        /// The test file to run (default: `<dir>/tests.yaml`).
+        #[arg(long, value_name = "FILE")]
+        file: Option<PathBuf>,
+        /// Emit the report as JSON instead of text.
+        #[arg(long)]
+        json: bool,
+        /// Together with `allow_protected: true` in the file, permit tests that
+        /// write to a protected group address.
+        #[arg(long)]
+        force: bool,
+        /// Report `manual:` steps as skipped instead of carrying them out.
+        #[arg(long)]
+        skip_manual: bool,
+        /// Run only the named test (repeatable).
+        #[arg(long, value_name = "NAME")]
+        only: Vec<String>,
+        /// Skip the confirmation prompt (required for a non-TTY run).
+        #[arg(long)]
+        yes: bool,
+        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// Override the gateway `host[:port]` for tunneling.
+        #[arg(long, value_name = "HOST")]
+        gateway: Option<String>,
+        /// Force KNXnet/IP routing (multicast) transport.
+        #[arg(long)]
+        routing: bool,
+        /// Permit a run against a non-loopback (real) gateway. Required for any
+        /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
+        #[arg(long)]
+        allow_remote_gateway: bool,
+    },
     /// Run the read-only MCP server over stdio.
     Mcp {
         /// The directory containing the model (required for the MCP server).
@@ -841,6 +908,50 @@ fn run(command: Command) -> anyhow::Result<ExitCode> {
                 allow_remote_gateway,
                 allowed_hosts: allow_host,
             },
+        ),
+        Command::Learn {
+            gas,
+            unnamed,
+            untyped,
+            yes,
+            timeout,
+            dir,
+            gateway,
+            routing,
+        } => learn_cmd::run(
+            &dir,
+            learn_cmd::LearnOptions {
+                gas,
+                unnamed,
+                untyped,
+                yes,
+                timeout_seconds: timeout,
+            },
+            conn_cmd::ConnOverrides { gateway, routing },
+        ),
+        Command::Test {
+            file,
+            json,
+            force,
+            skip_manual,
+            only,
+            yes,
+            dir,
+            gateway,
+            routing,
+            allow_remote_gateway,
+        } => test_cmd::run(
+            &dir,
+            test_cmd::TestOptions {
+                file,
+                json,
+                force,
+                skip_manual,
+                only,
+                yes,
+                allow_remote_gateway,
+            },
+            conn_cmd::ConnOverrides { gateway, routing },
         ),
         Command::Mcp {
             dir,
