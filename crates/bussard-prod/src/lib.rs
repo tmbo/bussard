@@ -69,6 +69,10 @@ pub struct ProductData {
     /// master file. `None` for a self-contained archive without one — the flash
     /// then stays on the single-object path (no template to splice against).
     pub master: Option<MasterTemplate>,
+    /// Whether the archive is an ETS project export (`.knxproj`) rather than
+    /// vendor product data: it carries a top-level `P-XXXX` project folder or
+    /// `P-XXXX.zip` project archive next to the `M-XXXX/` product folders.
+    pub is_project_export: bool,
 }
 
 impl ProductData {
@@ -159,6 +163,7 @@ fn attach_companion_programs(hardware: &HardwareCatalog, applications: &mut [App
 /// Reads product data from an already-opened (and already-unwrapped) container.
 fn read_product(mut container: container::Container) -> Result<ProductData> {
     let manufacturers = container.manufacturer_ids();
+    let is_project_export = container.has_project_folder();
 
     // Join every manufacturer's Hardware.xml into one order-number catalogue.
     let mut hardware = HardwareCatalog::default();
@@ -193,6 +198,7 @@ fn read_product(mut container: container::Container) -> Result<ProductData> {
         hardware,
         applications,
         master,
+        is_project_export,
     })
 }
 

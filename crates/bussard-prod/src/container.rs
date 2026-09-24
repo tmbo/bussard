@@ -265,6 +265,16 @@ impl Container {
         ids
     }
 
+    /// Whether the archive is an ETS project export: it has a top-level
+    /// `P-XXXX/` project folder, or a `P-XXXX.zip` (encrypted) or
+    /// `P-XXXX.signature` entry. A `.knxprod` has only `M-XXXX/` folders.
+    pub fn has_project_folder(&self) -> bool {
+        self.archive
+            .file_names()
+            .take(MAX_WRAPPER_ENTRIES)
+            .any(is_project_entry)
+    }
+
     /// Lists all ApplicationProgram entries across every manufacturer folder,
     /// sorted by entry name for deterministic iteration.
     ///
@@ -336,6 +346,19 @@ impl Container {
     }
 }
 
+/// Whether a ZIP entry name belongs to an ETS project folder: `P-XXXX/…`,
+/// `P-XXXX.zip` or `P-XXXX.signature` at the archive root.
+fn is_project_entry(name: &str) -> bool {
+    let top = match name.split_once('/') {
+        Some((dir, _)) => Some(dir),
+        None => name
+            .strip_suffix(".zip")
+            .or_else(|| name.strip_suffix(".signature")),
+    };
+    top.and_then(|t| t.strip_prefix("P-"))
+        .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
 /// Is `dir` a manufacturer folder id like `M-0004`?
 fn is_manufacturer_dir(dir: &str) -> bool {
     dir.strip_prefix("M-")
@@ -372,6 +395,18 @@ fn is_knxprod_entry(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_is_project_entry_matches_project_folders_only() {
+        assert!(is_project_entry("P-048B/0.xml"));
+        assert!(is_project_entry("P-048B.zip"));
+        assert!(is_project_entry("P-048B.signature"));
+        assert!(!is_project_entry("M-0083/Hardware.xml"));
+        assert!(!is_project_entry("knx_master.xml"));
+        assert!(!is_project_entry("P-.zip"));
+        assert!(!is_project_entry("nested/P-048B/0.xml"));
+        assert!(!is_project_entry("P-048B"));
+    }
 
     #[test]
     fn recognizes_manufacturer_dirs() {
