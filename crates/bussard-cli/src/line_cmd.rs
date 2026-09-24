@@ -268,7 +268,7 @@ pub(crate) fn parse_line(line: &str) -> anyhow::Result<(u8, u8)> {
 /// The model's devices on `area.line`, in address order, each with the tables
 /// the model wants on it.
 ///
-/// A device with no links in `links.yaml` is carried as a skip rather than an
+/// A device with no links in its device file is carried as a skip rather than an
 /// error: an empty table set would wipe the device, and one unlinked device must
 /// not abort a whole-line run (the single-device `plan` still refuses it).
 fn targets_on_line(model: &Model, area: u8, line_no: u8) -> Vec<Target> {
@@ -376,7 +376,7 @@ fn run_line(
 
     let Some(model) = load_model_required(dir)? else {
         bail!(
-            "`bussard {} --line` needs the model (devices/ and links.yaml) to know which \
+            "`bussard {} --line` needs the model (devices/<address>.toml) to know which \
              devices are on the line; none was loaded from {}",
             mode.verb(),
             dir.display()

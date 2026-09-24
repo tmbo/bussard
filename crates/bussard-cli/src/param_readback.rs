@@ -7,7 +7,7 @@
 //! product's parameter types, and report:
 //!
 //! - the parameters whose value differs from the vendor default, and
-//! - the differences to the model's `parameters:` block (what
+//! - the differences to the model's parameter values (what
 //!   `bussard flash --parameters-only` would write).
 //!
 //! The read is refused (with a note, never an error) when the device does not

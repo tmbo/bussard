@@ -267,20 +267,20 @@ pub fn resolve_config(
     model: Option<&Model>,
     overrides: &ConnOverrides,
 ) -> anyhow::Result<ConnectionConfig> {
-    let yaml = model.map(|m| &m.config.connection);
+    let config_conn = model.map(|m| &m.config.connection);
 
     // Decide the transport: explicit --routing wins, else --gateway implies
-    // tunnel, else the YAML setting, else default to tunnel.
+    // tunnel, else the bussard.toml setting, else default to tunnel.
     let use_routing = if overrides.routing {
         true
     } else if overrides.gateway.is_some() {
         false
     } else {
-        matches!(yaml.map(|c| c.transport), Some(ModelTransport::Routing))
+        matches!(config_conn.map(|c| c.transport), Some(ModelTransport::Routing))
     };
 
     if use_routing {
-        let multicast = match yaml.and_then(|c| c.multicast.as_deref()) {
+        let multicast = match config_conn.and_then(|c| c.multicast.as_deref()) {
             Some(m) => parse_socket(m).context("parsing multicast address from bussard.toml")?,
             None => SocketAddrV4::new(DEFAULT_MULTICAST, DEFAULT_PORT),
         };
@@ -294,11 +294,11 @@ pub fn resolve_config(
         });
     }
 
-    // Tunnel: gateway from the override, else from YAML.
+    // Tunnel: gateway from the override, else from bussard.toml.
     let gateway_str = overrides
         .gateway
         .clone()
-        .or_else(|| yaml.and_then(|c| c.gateway.clone()))
+        .or_else(|| config_conn.and_then(|c| c.gateway.clone()))
         .ok_or_else(|| {
             anyhow!("no gateway configured; set connection.gateway in bussard.toml or pass --gateway host[:port] (or use --routing)")
         })?;
@@ -677,10 +677,10 @@ mod tests {
         // None that would fail the protected-GA gate open (issue #55).
         let dir = tmp_dir("broken");
         std::fs::create_dir_all(&dir)?;
-        // Duplicate keys make the YAML parse fail.
+        // Duplicate keys make the TOML parse fail.
         std::fs::write(
             dir.join("groups.toml"),
-            "groups:\n  \"1/0/0\":\n    name: a\n  \"1/0/0\":\n    name: b\n",
+            "project = \"a\"\nproject = \"b\"\n",
         )?;
         let err = load_model_required(&dir).expect_err("expected an error");
         let msg = err.to_string();

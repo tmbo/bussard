@@ -1,6 +1,6 @@
 //! The `bussard import` subcommand.
 //!
-//! Imports a `.knxproj` (or an `xknxproject` JSON dump) into the YAML model,
+//! Imports a `.knxproj` (or an `xknxproject` JSON dump) into the TOML model,
 //! writing it to an output directory via the model's deterministic saver.
 //!
 //! A **re-import** into a directory that already holds a model does not clobber:
@@ -153,13 +153,17 @@ pub(crate) fn write_model(
 /// model yet (fresh import) or cannot be loaded as one.
 fn load_existing_model(dir: &Path) -> Option<Model> {
     // Only treat the target as a re-import if it actually has model content: a
-    // groups file or at least one device file. An empty/absent directory is a
-    // fresh import.
-    let has_groups = dir.join("groups.toml").exists();
+    // groups file, a lock or at least one `devices/*.toml`. An empty/absent
+    // directory (or one `bussard init` just created) is a fresh import.
+    let has_groups = dir.join("groups.toml").exists() || dir.join("bussard.lock").exists();
     let has_devices = dir
         .join("devices")
         .read_dir()
-        .map(|mut rd| rd.any(|e| e.is_ok()))
+        .map(|mut rd| {
+            rd.any(|e| {
+                e.is_ok_and(|e| e.file_name().to_string_lossy().ends_with(".toml"))
+            })
+        })
         .unwrap_or(false);
     if !has_groups && !has_devices {
         return None;

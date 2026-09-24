@@ -127,7 +127,7 @@ pub fn run(
         }
     };
 
-    // Parameter overrides come from the target device's `parameters:` block in
+    // Parameter overrides come from the target device's parameter values in
     // the model (`devices/*.toml`), re-keyed to the app-relative ParameterRef id
     // the flash engine expects (the #46 contract: keys are `<slug>@<ref-id>`; the
     // part after `@` is the ETS-stable identity). The model is also the source of
@@ -622,7 +622,7 @@ fn template_ops_for(
         .map(|proc| proc.ops.clone())
 }
 
-/// The model's parameter inputs for `target`: the `parameters:` overrides
+/// The model's parameter inputs for `target`: the parameter overrides
 /// re-keyed to app-relative ParameterRef ids, and the module-instance bases.
 pub(crate) fn model_parameters(
     model: Option<&bussard_model::Model>,
@@ -829,7 +829,7 @@ fn add_security_steps(
 /// The slug before `@` is a human aid and is dropped. A key with no `@` is
 /// malformed for this contract and skipped with a warning (rather than fed to the
 /// engine as a bogus ref id). Returns an empty map when the model is absent or
-/// the device has no `parameters:` block.
+/// the device has no parameter values.
 fn collect_parameter_overrides(
     model: Option<&bussard_model::Model>,
     target: IndividualAddress,
@@ -1709,7 +1709,7 @@ fn decide_freshness(
                  NOTE: re-flashing the SAME application is allowed without --force — it is\n\
                  the documented recovery path for an interrupted flash. It is still a full\n\
                  rewrite and takes no backup: the parameters are reset to the vendor\n\
-                 defaults plus this model's `parameters:` overrides, and the address,\n\
+                 defaults plus this model's parameter overrides, and the address,\n\
                  association and group-object tables are rewritten from the model's links."
             ),
             proceed: true,

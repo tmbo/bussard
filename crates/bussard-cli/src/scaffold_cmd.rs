@@ -6,7 +6,7 @@
 //!
 //! The scheme comes from `--scheme`, else from `lint.groups.scheme` in
 //! `bussard.toml`, else defaults to `floor-trade-block`. Unless
-//! `--no-lint-config` is passed, a matching `lint:` block is appended to
+//! `--no-lint-config` is passed, a matching `[lint]` table is appended to
 //! `bussard.toml` when it has none, so `bussard validate` starts checking the
 //! convention right away.
 
@@ -121,7 +121,7 @@ pub fn run(
         }
         if lint_written {
             println!(
-                "Wrote a matching lint: block to {} — `bussard validate` now checks the convention.",
+                "Wrote a matching [lint] table to {} — `bussard validate` now checks the convention.",
                 config_path.display()
             );
         }

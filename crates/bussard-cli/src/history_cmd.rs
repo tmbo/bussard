@@ -6,7 +6,7 @@
 //!
 //! The module also holds the two hooks every model- or bus-writing command
 //! calls: [`capture_external_edit`] at the start (so an edit made in an editor
-//! or by an assistant writing YAML is never lost) and [`snapshot`] right before
+//! or by an assistant writing TOML is never lost) and [`snapshot`] right before
 //! it writes. Both are best-effort: a history that cannot be written warns on
 //! stderr and never fails the command the user actually asked for.
 
@@ -20,7 +20,7 @@ use bussard_model::history::{History, Pending, Snapshot, SnapshotId, SnapshotRea
 use bussard_model::{Model, schema};
 
 /// The model files a raw diff compares, in the order it prints them.
-const TOP_LEVEL_FILES: [&str; 3] = ["bussard.toml", "groups.toml", "links.yaml"];
+const TOP_LEVEL_FILES: [&str; 5] = bussard_model::loader::MODEL_FILES;
 
 /// Records a snapshot of `dir` before a command writes, warning (never failing)
 /// if the history cannot be written.
@@ -354,7 +354,7 @@ fn empty_model() -> Model {
 }
 
 // ---------------------------------------------------------------------------
-// `--raw`: the file-level diff, for the people who do read YAML.
+// `--raw`: the file-level diff, for the people who do read TOML.
 // ---------------------------------------------------------------------------
 
 /// Prints a file-level diff of the working model against a snapshot.
@@ -368,7 +368,7 @@ fn print_raw_diff(history: &History, latest: &Snapshot) -> anyhow::Result<()> {
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
                 if let Some(name) = entry.file_name().to_str()
-                    && (name.ends_with(".yaml") || name.ends_with(".yml"))
+                    && name.ends_with(".toml")
                 {
                     devices.insert(format!("devices/{name}"));
                 }

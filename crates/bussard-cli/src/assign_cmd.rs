@@ -261,7 +261,10 @@ async fn assign_flow(
     println!("next steps:");
     println!("  - edit the name/room in {}", path.display());
     println!("  - `bussard import-product <file.knxprod>` to attach its product data");
-    println!("  - wire its group objects in links.yaml");
+    println!(
+        "  - wire its group objects in {} ([links] or [channel.<handle>])",
+        path.display()
+    );
 
     Ok(ExitCode::SUCCESS)
 }
@@ -849,29 +852,13 @@ pub(crate) fn write_device_file(
         .save(dir)
         .with_context(|| format!("saving the {what} to {}", dir.display()))?;
 
-    Ok(dir.join("devices").join(format!("{file_stem}.yaml")))
+    Ok(dir.join("devices").join(format!("{file_stem}.toml")))
 }
 
-/// The `<address>-<slug>` file stem used for a device file, matching the
-/// importer's naming convention (`1.1.47-new-device`).
+/// The file stem of a device file: its individual address
+/// (`devices/1.1.47.toml`).
 pub(crate) fn device_file_stem(device: &Device) -> String {
-    format!("{}-{}", device.address, slugify(&device.name))
-}
-
-/// A minimal lower-kebab slug for filenames.
-fn slugify(name: &str) -> String {
-    let mut out = String::with_capacity(name.len());
-    let mut prev_dash = false;
-    for ch in name.chars() {
-        if ch.is_ascii_alphanumeric() {
-            out.push(ch.to_ascii_lowercase());
-            prev_dash = false;
-        } else if !prev_dash && !out.is_empty() {
-            out.push('-');
-            prev_dash = true;
-        }
-    }
-    out.trim_matches('-').to_string()
+    device.address.to_string()
 }
 
 /// An empty model with default config (used when assigning into a directory that
@@ -927,7 +914,7 @@ mod tests {
                         application_override: None,
                         lock: Default::default(),
                     },
-                    file_stem: format!("{addr}-d"),
+                    file_stem: addr.to_string(),
                 },
             );
         }
@@ -1022,9 +1009,10 @@ mod tests {
     }
 
     #[test]
-    fn slugify_makes_kebab() {
-        assert_eq!(slugify("New device (assign)"), "new-device-assign");
-        assert_eq!(slugify("  spaced  "), "spaced");
+    fn device_file_stem_is_the_address() -> Result<(), Box<dyn std::error::Error>> {
+        let dev = build_stub_device("1.1.7".parse()?, &Verified::default());
+        assert_eq!(device_file_stem(&dev), "1.1.7");
+        Ok(())
     }
 
     #[test]

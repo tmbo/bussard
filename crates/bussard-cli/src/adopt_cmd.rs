@@ -4,9 +4,9 @@
 //! existing pieces into one conversational wizard: get product data (import a
 //! `.knxprod` or reuse a cached model), assign an individual address via
 //! programming mode, verify the write against the product's order numbers, drop
-//! a rich `devices/<ia>-<slug>.yaml` (product block + a com-object table lifted
-//! from the product model), and hand the user a ready-to-paste `links.yaml`
-//! snippet plus the exact next commands.
+//! a rich `devices/<address>.toml` plus its `bussard.lock` entry (product
+//! identity and a com-object table lifted from the product model), and hand the
+//! user a ready-to-paste device-file snippet plus the exact next commands.
 //!
 //! ## Conversational-first, LLM-drivable
 //!
@@ -20,12 +20,12 @@
 //! ## Shared helpers
 //!
 //! The allocation, programming-mode wait, model load, read-back verification,
-//! device-file write, slug and hex helpers come from `assign_cmd`, and the
+//! device-file write and hex helpers come from `assign_cmd`, and the
 //! order-number lookup and vendor `.gitignore` from `import_product_cmd`
 //! (issue #86 removed the copies). The few `// DUP:` blocks left differ from
 //! their source in behaviour, not just wording (the confirmation has adopt's
 //! own non-interactive gate, the com-object shaping feeds a device file rather
-//! than a product model, the product import writes no model YAML), so they
+//! than a product model, the product import writes no model file), so they
 //! stay local until the two flows converge.
 
 use std::collections::BTreeMap;
@@ -530,7 +530,29 @@ fn build_product(v: &Verified, selected: Option<&SelectedProduct>) -> Option<Pro
     })
 }
 
-/// Prints a ready-to-paste `links.yaml` snippet: the device's most-useful com
+/// The device-file table header and entry key for com object `num`:
+/// `[channel.<handle>]` for a channel object, `[links]` otherwise, and the key
+/// the lock assigns (else the number).
+pub(crate) fn object_placement(device: &Device, num: u16) -> (String, String) {
+    let co = device.com_objects.get(&num);
+    let table = match co.and_then(|c| c.channel.as_deref()) {
+        Some(id) => {
+            let handle = device
+                .channels
+                .get(id)
+                .and_then(|c| c.key.clone())
+                .unwrap_or_else(|| id.to_string());
+            format!("[channel.{handle}]")
+        }
+        None => "[links]".to_string(),
+    };
+    let key = co
+        .and_then(|c| c.key.clone())
+        .unwrap_or_else(|| num.to_string());
+    (table, key)
+}
+
+/// Prints a ready-to-paste device-file snippet: the device's most-useful com
 /// objects (transmit-capable first), then an example link block. The snippet
 /// goes to stdout only — the model itself is never modified here.
 ///
@@ -570,7 +592,7 @@ fn print_links_snippet(
         println!("    #{num:<3} dpt {dpt:<8} flags {:<6} {label}", co.flags);
     }
 
-    // A paste-ready links.yaml example wiring the first useful object.
+    // A paste-ready example wiring the first useful object.
     if let Some((num, co)) = objs.first() {
         let dpt = co
             .dpt
@@ -579,15 +601,14 @@ fn print_links_snippet(
         let name = text_for(**num).unwrap_or("New link");
         println!();
         println!("  ready-to-paste snippets (edit the group address to a free one):");
-        println!("    # ---8<--- groups.toml (under `groups:`)");
-        println!("    \"0/0/1\":");
-        println!("      name: \"{name}\"");
-        println!("      dpt: \"{dpt}\"");
-        println!("    # ---8<--- links.yaml (under `links:`)");
-        println!("    \"{address}\":");
-        println!("      - object: {num}");
-        println!("        name: \"{name}\"");
-        println!("        send: \"0/0/1\"     # or `listen: [\"0/0/1\"]` for a receiving object");
+        let (table, key) = object_placement(device, **num);
+        println!("    # ---8<--- groups.toml (inside `groups = [ … ]`)");
+        println!("    {{ address = \"0/0/1\", name = \"{name}\", dpt = \"{dpt}\" }},");
+        println!("    # ---8<--- devices/{address}.toml");
+        println!("    {table}");
+        println!(
+            "    {key}.send = \"0/0/1\"     # or `{key}.listen = [\"0/0/1\"]` for a receiving object"
+        );
         println!("    # --->8---");
     }
 }
@@ -629,7 +650,10 @@ fn print_summary(
     println!();
     println!("what remains manual:");
     println!("  1. edit the name/room in {}", path.display());
-    println!("  2. wire the group objects: edit links.yaml (snippet above)");
+    println!(
+        "  2. wire the group objects: edit {} (snippet above)",
+        path.display()
+    );
     println!("  3. `bussard plan {target}`   — preview the tables");
     println!("  4. `bussard apply {target}`  — write them to the device");
 
@@ -686,7 +710,7 @@ fn confirm_assignment(
 /// generated model YAML per application program under `<dir>/models/`, then
 /// returns the parsed product data.
 // DUP: mirrors the file-writing half of `import_product_cmd::run`. The model
-// YAML shaping (Identity/ComObjectModel/etc.) is NOT duplicated — adopt only
+// Product-model shaping (Identity/ComObjectModel/etc.) is NOT duplicated — adopt only
 // needs the parsed `ProductData`, and re-serialising the full model would mean
 // copying ~400 lines. We instead reuse `import_product_cmd::run` indirectly by
 // re-reading, but keep it self-contained here per file-set discipline.

@@ -3,7 +3,7 @@
 //!
 //! Connects to a single device, reads its group-address and association tables,
 //! resolves them to com-object → GA assignments, and diffs the result against the
-//! model's `links.yaml` entry for that device. **System B** (mask `x7B0`) serves
+//! links in the model's device file for that device. **System B** (mask `x7B0`) serves
 //! those tables as interface-object properties (see [`bussard_mgmt::tables`]);
 //! **System 7** (mask `0705` / `0701`) keeps them in absolute memory at `0x4000`
 //! / `0x4201` and is read by [`bussard_download::tables_sys7`] (issue #91). The
@@ -302,15 +302,15 @@ fn print_text(report: &Report) {
 //
 //   groups.toml            — every GA seen across all tables, placeholder names,
 //                            no DPT (validation warns W011; that is honest).
-//   links.yaml             — object → GA sets. Direction is unrecoverable from
-//                            the tables, so every GA is recorded as `listen:`.
-//   devices/<ia>-reconstructed.yaml — mask + best-effort product block; a
-//                            minimal `com_objects:` stub per linked object so
-//                            the model validates (the flags/DPTs are placeholders).
+//   devices/<ia>.toml      — object → GA sets. Direction is unrecoverable from
+//                            the tables, so every GA is recorded as `listen`.
+//   bussard.lock           — mask + best-effort product facts; a minimal
+//                            com-object stub per linked object so the model
+//                            validates (the flags/DPTs are placeholders).
 //   bussard.toml           — the connection actually used for the sweep.
 //
-// Every synthesized file carries a reconstruction banner injected after
-// `Model::save` (which emits its own import-oriented headers) that says the
+// Every synthesized hand-editable file carries a reconstruction banner
+// injected after `Model::save` (the generated lock keeps its own) that says the
 // model came from table read-back and that names, DPTs and directions still
 // need human/monitor annotation.
 // ===========================================================================
@@ -329,9 +329,9 @@ const RECONSTRUCT_BANNER: &str = "\
 # not ground truth:
 #   • GA and com-object names are placeholders — annotate them (watch the bus
 #     with `bussard monitor`, then name what you observe).
-#   • DPTs are unknown (groups.toml carries no `dpt:`; validation warns W011).
+#   • DPTs are unknown (groups.toml carries no `dpt`; validation warns W011).
 #   • send/listen DIRECTION is not recoverable from these tables (the transmit
-#     flag lives in the group object table), so every GA is recorded as `listen:`.
+#     flag lives in the group object table), so every GA is recorded as `listen`.
 #   • com-object flags are placeholder `CW` stubs so the model validates.
 # Verify against reality before treating this as the source of truth.
 #
@@ -632,10 +632,10 @@ fn placeholder_flags() -> Flags {
 ///
 /// - `groups.toml`: every GA seen across all read tables, named
 ///   `GA <addr> (reconstructed)`, no DPT.
-/// - `links.yaml`: object → GA set per device, every GA as `listen:` (direction
-///   is unrecoverable).
-/// - `devices/<ia>-reconstructed.yaml`: mask + best-effort product block; a
-///   placeholder `com_objects:` stub per linked object so validation passes.
+/// - `devices/<ia>.toml`: object → GA set per device, every GA as `listen`
+///   (direction is unrecoverable).
+/// - `bussard.lock`: mask + best-effort product facts; a placeholder com-object
+///   stub per linked object so validation passes.
 /// - `bussard.toml`: the connection actually used for the sweep.
 fn synthesize_model(found: &[LineDevice], overrides: &ConnOverrides, dir: &Path) -> Model {
     let mut groups: BTreeMap<GroupAddress, Group> = BTreeMap::new();
@@ -712,7 +712,7 @@ fn synthesize_model(found: &[LineDevice], overrides: &ConnOverrides, dir: &Path)
             dev.address,
             LoadedDevice {
                 device,
-                file_stem: format!("{}-reconstructed", dev.address),
+                file_stem: dev.address.to_string(),
             },
         );
     }
@@ -820,21 +820,21 @@ fn model_config(overrides: &ConnOverrides, dir: &Path) -> BussardConfig {
     }
 }
 
-/// Prepends [`RECONSTRUCT_BANNER`] to every synthesized YAML file, after
-/// `Model::save` has written its own headers (post-serialization injection,
-/// like the loader does for the com-objects marker). Idempotent enough for the
-/// one-shot save: the banner is added exactly once here.
+/// Prepends [`RECONSTRUCT_BANNER`] to every synthesized hand-editable file
+/// (`bussard.toml`, `groups.toml`, `devices/*.toml`) after `Model::save`. A
+/// TOML comment block at the top is inert, and a later save keeps it. The
+/// generated `bussard.lock` keeps its own header. One-shot: the banner is added
+/// exactly once here.
 fn inject_reconstruct_banners(out: &Path) -> anyhow::Result<()> {
     let mut files = vec![
         out.join("bussard.toml"),
         out.join("groups.toml"),
-        out.join("links.yaml"),
     ];
     let devices_dir = out.join("devices");
     if let Ok(rd) = std::fs::read_dir(&devices_dir) {
         for entry in rd.filter_map(Result::ok) {
             let path = entry.path();
-            if path.extension().and_then(|e| e.to_str()) == Some("yaml") {
+            if path.extension().and_then(|e| e.to_str()) == Some("toml") {
                 files.push(path);
             }
         }

@@ -2,7 +2,7 @@
 //!
 //! Creates a fresh `knx/` model directory: resolves a gateway (explicit,
 //! routing, or by KNXnet/IP discovery across every local interface), writes the
-//! YAML skeleton, and prints next steps. The result validates cleanly.
+//! TOML skeleton, and prints next steps. The result validates cleanly.
 //!
 //! The `bussard.toml` content is constructed here by hand (three simple keys)
 //! rather than via `Model::save`, so this command is decoupled from the model's
@@ -344,9 +344,8 @@ fn real_discover() -> anyhow::Result<Vec<GatewayInfo>> {
 fn write_skeleton(dir: &Path, resolution: &Resolution) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
 
-    write_file(&dir.join("bussard.toml"), &bussard_yaml(resolution))?;
-    write_file(&dir.join("groups.toml"), GROUPS_YAML)?;
-    write_file(&dir.join("links.yaml"), LINKS_YAML)?;
+    write_file(&dir.join("bussard.toml"), &bussard_toml(resolution))?;
+    write_file(&dir.join("groups.toml"), GROUPS_TOML)?;
 
     let devices_dir = dir.join("devices");
     std::fs::create_dir_all(&devices_dir)
@@ -370,60 +369,46 @@ fn write_file(path: &Path, content: &str) -> anyhow::Result<()> {
 }
 
 /// Builds the `bussard.toml` body for the resolved transport.
-fn bussard_yaml(resolution: &Resolution) -> String {
+fn bussard_toml(resolution: &Resolution) -> String {
     let header = "\
 # bussard connection config. Edit `gateway` if your KNXnet/IP interface moves,
-# or switch `transport` to `routing` to use multicast instead of a tunnel.
+# or switch `transport` to \"routing\" to use multicast instead of a tunnel.
 ";
     match resolution {
         Resolution::Tunnel(endpoint) => {
-            format!("{header}connection:\n  transport: tunnel\n  gateway: \"{endpoint}\"\n")
+            format!("{header}[connection]\ntransport = \"tunnel\"\ngateway = \"{endpoint}\"\n")
         }
         Resolution::Routing => format!(
-            "{header}connection:\n  transport: routing\n  multicast: \"224.0.23.12:3671\"\n"
+            "{header}[connection]\ntransport = \"routing\"\nmulticast = \"224.0.23.12:3671\"\n"
         ),
         Resolution::Placeholder => format!(
-            "{header}connection:\n  transport: tunnel\n  \
-             # TODO: set your gateway's IP, e.g. \"192.0.2.10:3671\".\n  \
-             # Find it in your router or Home Assistant KNX config, then run\n  \
-             # `bussard validate --dir knx` to check it.\n  \
-             gateway: \"192.0.2.10:3671\"\n"
+            "{header}[connection]\ntransport = \"tunnel\"\n\
+             # TODO: set your gateway's IP, e.g. \"192.0.2.10:3671\".\n\
+             # Find it in your router or Home Assistant KNX config, then run\n\
+             # `bussard validate --dir knx` to check it.\n\
+             gateway = \"192.0.2.10:3671\"\n"
         ),
     }
 }
 
 /// `groups.toml` starter: valid and empty, with a header explaining its role.
-const GROUPS_YAML: &str = "\
+const GROUPS_TOML: &str = "\
 # Group-address plan. Each entry maps a KNX group address to a name and DPT so
 # the monitor can decode telegrams. `bussard import` fills this from an ETS
 # export; otherwise add entries by hand or as you learn them from `monitor`.
 #
-# groups:
-#   \"3/0/4\":
-#     name: \"Living Room Blind Move\"
-#     dpt: \"1.008\"
-groups: {}
-";
-
-/// `links.yaml` starter: valid and empty, with a header explaining its role.
-const LINKS_YAML: &str = "\
-# Com-object → group-address links, keyed by device individual address. These
-# mirror KNX association semantics (one `send` GA, any number of `listen` GAs).
-# `bussard import` fills this from an ETS export.
-#
-# links:
-#   \"1.1.4\":
-#     - object: 12
-#       name: \"A: Behang Auf/Ab\"
-#       listen: [\"3/0/4\"]
-links: {}
+# groups = [
+#   { address = \"3/0/4\", name = \"Living Room Blind Move\", dpt = \"1.008\" },
+# ]
+groups = []
 ";
 
 /// `devices/.gitkeep`: keeps the empty directory in git and explains its use.
 const DEVICES_GITKEEP: &str = "\
-# Device files live here as `devices/<ia>-<slug>.yaml` (one per KNX device):
-# identity, naming, and an import-generated com-object section. This file just
-# keeps the directory in git while it is empty.
+# Device files live here as `devices/<address>.toml` (one per KNX device): its
+# name, location, parameter values and links (com object to group address).
+# The vendor facts behind them live in the generated `bussard.lock`. This file
+# just keeps the directory in git while it is empty.
 ";
 
 /// `captures/.gitignore`: ignore everything, since captures are local artefacts.
@@ -452,7 +437,7 @@ const README_MD: &str = "\
 # KNX model (bussard)
 
 This directory is your KNX installation as a model. bussard reads it to decode
-the bus and to program your devices. The files are plain YAML, but you never
+the bus and to program your devices. The files are plain TOML, but you never
 have to edit them by hand: bussard and an assistant driving it write them for
 you.
 
@@ -503,8 +488,11 @@ is saved to the history first. Only you program devices, with `plan` and `apply`
 
 - `bussard.toml`: connection config, transport (tunnel or routing) and gateway.
 - `groups.toml`: the group-address plan, address to name and DPT.
-- `links.yaml`: com-object to group-address links, keyed by device address.
-- `devices/`: one YAML file per device (identity, naming, com-objects).
+- `devices/`: one file per device, `devices/<address>.toml` (name, location,
+  parameter values, and the links from its com objects to group addresses).
+- `bussard.lock`: generated by `bussard import` and `bussard adopt`; the vendor
+  facts (product, com objects, parameter refs) behind the device files. Never
+  edit it by hand.
 - `tests.toml`: optional acceptance tests for `bussard test`.
 - `captures/`: local telegram captures and device backups.
 - `.bussard/`: bussard's history (`bussard undo` reads it).
@@ -512,7 +500,7 @@ is saved to the history first. Only you program devices, with `plan` and `apply`
 ## If you use git
 
 You do not have to. If you do: commit `bussard.toml`, `groups.toml`,
-`links.yaml`, `devices/` and `tests.toml`. The generated `.gitignore` already
+`bussard.lock`, `devices/` and `tests.toml`. The generated `.gitignore` already
 excludes `.bussard/`, `models/`, `vendor/` and `captures/`, which are local to
 this machine. A git user then has two histories, one in git and one in bussard;
 `bussard undo` reads bussard's.
@@ -633,9 +621,9 @@ mod tests {
         let code = run_with(&dir, Some("192.0.2.50"), false, boom, no_probe)?;
         assert_eq!(code, ExitCode::SUCCESS);
 
-        let yaml = std::fs::read_to_string(dir.join("bussard.toml"))?;
-        assert!(yaml.contains("transport: tunnel"), "{yaml}");
-        assert!(yaml.contains("192.0.2.50:3671"), "{yaml}");
+        let text = std::fs::read_to_string(dir.join("bussard.toml"))?;
+        assert!(text.contains("transport = \"tunnel\""), "{text}");
+        assert!(text.contains("192.0.2.50:3671"), "{text}");
         assert_validates(&dir);
 
         std::fs::remove_dir_all(&dir).ok();
@@ -677,9 +665,9 @@ mod tests {
         let code = run_with(&dir, None, true, no_gateways, no_probe)?;
         assert_eq!(code, ExitCode::SUCCESS);
 
-        let yaml = std::fs::read_to_string(dir.join("bussard.toml"))?;
-        assert!(yaml.contains("transport: routing"), "{yaml}");
-        assert!(yaml.contains("224.0.23.12:3671"), "{yaml}");
+        let text = std::fs::read_to_string(dir.join("bussard.toml"))?;
+        assert!(text.contains("transport = \"routing\""), "{text}");
+        assert!(text.contains("224.0.23.12:3671"), "{text}");
         assert_validates(&dir);
 
         std::fs::remove_dir_all(&dir).ok();
@@ -692,9 +680,9 @@ mod tests {
         let code = run_with(&dir, None, false, one_gateway, no_probe)?;
         assert_eq!(code, ExitCode::SUCCESS);
 
-        let yaml = std::fs::read_to_string(dir.join("bussard.toml"))?;
-        assert!(yaml.contains("transport: tunnel"), "{yaml}");
-        assert!(yaml.contains("192.0.2.10:3671"), "{yaml}");
+        let text = std::fs::read_to_string(dir.join("bussard.toml"))?;
+        assert!(text.contains("transport = \"tunnel\""), "{text}");
+        assert!(text.contains("192.0.2.10:3671"), "{text}");
         assert_validates(&dir);
 
         std::fs::remove_dir_all(&dir).ok();
@@ -707,9 +695,9 @@ mod tests {
         let code = run_with(&dir, None, false, no_gateways, no_probe)?;
         assert_eq!(code, ExitCode::SUCCESS);
 
-        let yaml = std::fs::read_to_string(dir.join("bussard.toml"))?;
-        assert!(yaml.contains("transport: tunnel"), "{yaml}");
-        assert!(yaml.contains("TODO"), "placeholder comment present: {yaml}");
+        let text = std::fs::read_to_string(dir.join("bussard.toml"))?;
+        assert!(text.contains("transport = \"tunnel\""), "{text}");
+        assert!(text.contains("TODO"), "placeholder comment present: {text}");
         assert_validates(&dir);
 
         std::fs::remove_dir_all(&dir).ok();
@@ -724,7 +712,6 @@ mod tests {
         for f in [
             "bussard.toml",
             "groups.toml",
-            "links.yaml",
             "README.md",
             ".gitignore",
         ] {
@@ -734,6 +721,10 @@ mod tests {
         assert!(dir.join("captures").is_dir());
         assert!(dir.join("devices/.gitkeep").exists());
         assert!(dir.join("captures/.gitignore").exists());
+        assert!(
+            !dir.join("links.yaml").exists(),
+            "links live in the device files now"
+        );
         assert_validates(&dir);
 
         std::fs::remove_dir_all(&dir).ok();

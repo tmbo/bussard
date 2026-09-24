@@ -8,7 +8,7 @@
 //! and verify path `bussard apply` uses — see
 //! [`apply_cmd::apply_desired`](crate::apply_cmd::apply_desired). The only
 //! difference is where the desired tables came from: a backup file instead of
-//! `links.yaml`.
+//! device files' links.
 //!
 //! That sharing is the point. There is no second write primitive to review, no
 //! second confirmation to get wrong, and no path by which a restore can write
@@ -58,7 +58,7 @@ pub fn run(
 
     // A restore is a management write, so a present-but-broken model is a hard
     // error; an absent one is fine, since the tables come from the backup and
-    // not from links.yaml.
+    // not from the device files' links.
     let model = load_model_required(dir)?;
     let config = resolve_config(model.as_ref(), &overrides)?;
 

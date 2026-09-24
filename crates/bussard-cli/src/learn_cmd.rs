@@ -5,7 +5,7 @@
 //! MCP (`knx_wait_for_telegram` then `knx_infer_group`). It asks the operator to
 //! trigger the object they want to name, waits for the telegram, shows who sent
 //! it and what the payload could mean, proposes a name, and writes the accepted
-//! answer into `groups.toml` (and `links.yaml` when the sending com object can
+//! answer into `groups.toml` (and the device file's links when the sending com object can
 //! be identified).
 //!
 //! # It never transmits
@@ -281,7 +281,7 @@ async fn learn_loop(
 enum Decision {
     /// The group (and possibly a link) was written into the model.
     Accepted {
-        /// Whether a `links.yaml` entry was added too.
+        /// Whether a link in the device file was added too.
         made_link: bool,
     },
     /// Left alone.
@@ -376,7 +376,7 @@ fn consider(
     Ok(Decision::Accepted { made_link })
 }
 
-/// Adds a `links.yaml` entry for the sending com object when it can be pinned
+/// Adds a link (in the device file) for the sending com object when it can be pinned
 /// down, so the learned GA is attached to the device that sends it.
 ///
 /// The wire carries no com-object number, so this only acts when the model

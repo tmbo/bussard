@@ -17,7 +17,7 @@ use crate::conn_cmd::{ConnOverrides, resolve_config};
 /// Runs `bussard mcp`.
 ///
 /// The model-edit tools (`knx_set_group`, `knx_add_link`, …) are registered
-/// unless `--no-model-edits` is passed: they write YAML files behind a history
+/// unless `--no-model-edits` is passed: they write model files behind a history
 /// snapshot and never touch the bus, so they are safe in every tier.
 ///
 /// With `--allow-writes` the server registers `knx_write_group`, so an LLM can

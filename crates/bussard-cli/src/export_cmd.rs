@@ -95,7 +95,7 @@ mod tests {
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?
         ));
         std::fs::create_dir_all(dir.join("devices"))?;
-        std::fs::write(dir.join("groups.toml"), "groups: {}\n")?;
+        std::fs::write(dir.join("groups.toml"), "groups = []\n")?;
         let history = History::open(&dir);
 
         // No apply yet: nothing to say.
@@ -121,7 +121,7 @@ mod tests {
         // The model changed and was applied: hint.
         std::fs::write(
             dir.join("groups.toml"),
-            "groups:\n  \"0/0/1\":\n    name: A\n",
+            "groups = [{ address = \"0/0/1\", name = \"A\" }]\n",
         )?;
         history.snapshot(SnapshotReason::new("apply"))?;
         assert!(stale_export_hint(&dir).is_some_and(|h| h.contains("predates this apply")));

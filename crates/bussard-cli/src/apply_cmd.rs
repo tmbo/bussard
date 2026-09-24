@@ -62,11 +62,11 @@ use crate::plan_cmd;
 ///
 /// `apply` and `restore` are the same command with a different source of truth,
 /// so they share [`apply_desired`] and differ only in this: the verb they print,
-/// and whether the desired tables were computed from `links.yaml` or read out of
+/// and whether the desired tables were computed from the device files' links or read out of
 /// a backup file (issue #96).
 #[derive(Debug, Clone)]
 pub(crate) enum DesiredSource {
-    /// The model's `links.yaml`, computed by `bussard plan`.
+    /// The links in the model's device files, computed by `bussard plan`.
     Model,
     /// A device backup file written by `bussard backup` or a previous `apply`.
     Backup(std::path::PathBuf),
@@ -84,7 +84,7 @@ impl DesiredSource {
     /// A one-line description of where the desired tables came from.
     fn origin(&self) -> String {
         match self {
-            DesiredSource::Model => "the model's links.yaml".to_string(),
+            DesiredSource::Model => "the model's device files".to_string(),
             DesiredSource::Backup(path) => format!("the backup {}", path.display()),
         }
     }
@@ -105,16 +105,16 @@ pub fn run(
         .with_context(|| format!("parsing device address {address:?}"))?;
 
     // A parse error is a hard failure here (surfaced with the file detail); an
-    // absent model still bails, since `apply` needs links.yaml.
+    // absent model still bails, since `apply` needs the links in the device files.
     let Some(model) = load_model_required(dir)? else {
         bail!(
-            "`bussard apply` needs the model (links.yaml) to compute the desired tables; \
+            "`bussard apply` needs the model (the links in devices/<address>.toml) to compute the desired tables; \
              none was loaded from {}",
             dir.display()
         );
     };
     let config = resolve_config(Some(&model), &overrides)?;
-    // An edit made outside bussard (an editor, an assistant writing YAML) is
+    // An edit made outside bussard (an editor, an assistant writing TOML) is
     // recorded before this command acts on it, so it is never lost.
     crate::history_cmd::capture_external_edit(dir);
     let desired = plan_cmd::compute_desired(&model, target)?;

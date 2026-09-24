@@ -92,7 +92,7 @@ pub fn run(
     let expected = Expected::from_model(&loaded.device);
     let device_file = dir
         .join("devices")
-        .join(format!("{}.yaml", loaded.file_stem));
+        .join(format!("{}.toml", loaded.file_stem));
 
     let config = resolve_config(Some(&model), &overrides)?;
     enforce_write_gate(&config, allow_remote_gateway)?;
@@ -506,26 +506,27 @@ fn confirm(
 fn record_replacement(path: &Path, when: &str) -> anyhow::Result<PathBuf> {
     let body =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    let line = format!("replaced: {when}");
-    let mut out: Vec<String> = Vec::with_capacity(body.lines().count() + 1);
-    let update = body.lines().any(|t| t.starts_with("replaced:"));
-    let mut done = false;
-    for text in body.lines() {
-        if update && !done && text.starts_with("replaced:") {
-            out.push(line.clone());
-            done = true;
-            continue;
-        }
-        out.push(text.to_string());
-        if !update && !done && text.starts_with("address:") {
-            out.push(line.clone());
-            done = true;
-        }
-    }
-    if !done {
-        // No `address:` at the top level (an unusual file); append rather than
-        // lose the record.
-        out.push(line);
+    let line = format!("replaced = \"{when}\"");
+    // Only the top-level keys (before the first `[table]`) are the device's own.
+    let is_key = |text: &str, key: &str| {
+        text.strip_prefix(key)
+            .is_some_and(|rest| rest.trim_start().starts_with('='))
+    };
+    let top_len = body
+        .lines()
+        .position(|t| t.trim_start().starts_with('['))
+        .unwrap_or(usize::MAX);
+    let lines: Vec<&str> = body.lines().collect();
+    let top_len = top_len.min(lines.len());
+    let mut out: Vec<String> = lines.iter().map(|l| (*l).to_string()).collect();
+    if let Some(i) = lines[..top_len].iter().position(|t| is_key(t, "replaced")) {
+        out[i] = line;
+    } else if let Some(i) = lines[..top_len].iter().position(|t| is_key(t, "address")) {
+        out.insert(i + 1, line);
+    } else {
+        // No top-level `address` (an unusual file): still record it at the top
+        // level, before the first table.
+        out.insert(top_len, line);
     }
     let mut text = out.join("\n");
     text.push('\n');
@@ -577,7 +578,7 @@ fn device_file_for(model: &Model, dir: &Path, target: IndividualAddress) -> Opti
     model
         .devices
         .get(&target)
-        .map(|d| dir.join("devices").join(format!("{}.yaml", d.file_stem)))
+        .map(|d| dir.join("devices").join(format!("{}.toml", d.file_stem)))
 }
 
 #[cfg(test)]
@@ -660,18 +661,22 @@ mod tests {
     fn test_record_replacement_inserts_after_address() -> Result<(), Box<dyn std::error::Error>> {
         let dir = std::env::temp_dir().join(format!("bussard-replace-rec-{}", std::process::id()));
         std::fs::create_dir_all(&dir)?;
-        let path = dir.join("1.1.4-jal.yaml");
-        std::fs::write(&path, "address: 1.1.4\nname: Rollladen\n# a comment\n")?;
+        let path = dir.join("1.1.4.toml");
+        std::fs::write(
+            &path,
+            "address = \"1.1.4\"\nname = \"Rollladen\"\n# a comment\n\n[links]\n1.send = \"1/0/0\"\n",
+        )?;
         record_replacement(&path, "2026-09-22T10:15:00Z")?;
         let body = std::fs::read_to_string(&path)?;
         assert_eq!(
             body,
-            "address: 1.1.4\nreplaced: 2026-09-22T10:15:00Z\nname: Rollladen\n# a comment\n"
+            "address = \"1.1.4\"\nreplaced = \"2026-09-22T10:15:00Z\"\nname = \"Rollladen\"\n\
+             # a comment\n\n[links]\n1.send = \"1/0/0\"\n"
         );
         // A second replacement updates the line rather than adding another.
         record_replacement(&path, "2026-10-01T08:00:00Z")?;
         let body = std::fs::read_to_string(&path)?;
-        assert_eq!(body.matches("replaced:").count(), 1, "{body}");
+        assert_eq!(body.matches("replaced =").count(), 1, "{body}");
         assert!(body.contains("2026-10-01T08:00:00Z"), "{body}");
         assert!(
             body.contains("# a comment"),

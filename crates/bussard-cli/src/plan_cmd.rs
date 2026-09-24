@@ -1,7 +1,7 @@
 //! The `bussard plan` subcommand — diff the model against a device's live tables.
 //!
 //! Reads the device's group-address and association tables over the bus,
-//! computes the desired tables from the model's `links.yaml` for that device (via
+//! computes the desired tables from the links in the model's device file for that device (via
 //! [`bussard_download`]), and shows what `apply` would change: additions,
 //! removals, unchanged links, resulting table sizes, and the load-op sequence.
 //!
@@ -179,10 +179,10 @@ pub fn run(
         .with_context(|| format!("parsing device address {address:?}"))?;
 
     // A parse error is a hard failure here (surfaced with the file detail); an
-    // absent model still bails, since `plan` needs links.yaml.
+    // absent model still bails, since `plan` needs the links in the device files.
     let Some(model) = load_model_required(dir)? else {
         bail!(
-            "`bussard plan` needs the model (links.yaml) to compute the desired tables; \
+            "`bussard plan` needs the model (the links in devices/<address>.toml) to compute the desired tables; \
              none was loaded from {}",
             dir.display()
         );

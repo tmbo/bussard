@@ -385,7 +385,7 @@ enum Command {
         /// Emit the change set as JSON.
         #[arg(long, conflicts_with = "raw")]
         json: bool,
-        /// Print a file-level YAML diff instead of sentences.
+        /// Print a file-level TOML diff instead of sentences.
         #[arg(long)]
         raw: bool,
         /// Project password for both sides (else `BUSSARD_PROJECT_PASSWORD`).
@@ -1149,7 +1149,7 @@ enum Command {
         #[arg(long)]
         allow_remote_gateway: bool,
     },
-    /// Validate the YAML model and report diagnostics.
+    /// Validate the model and report diagnostics.
     Validate {
         /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
@@ -1175,7 +1175,7 @@ enum Command {
         /// Emit JSON instead of the table format.
         #[arg(long)]
         json: bool,
-        /// Do not add a matching `lint:` block to `bussard.toml`.
+        /// Do not add a matching `[lint]` table to `bussard.toml`.
         #[arg(long)]
         no_lint_config: bool,
     },
@@ -1514,7 +1514,7 @@ enum Command {
         /// Refuse model edits: omits the `knx_set_group`, `knx_add_link`,
         /// `knx_remove_link`, `knx_set_device`, `knx_set_parameter`, `knx_undo`
         /// and `knx_scaffold_groups` tools. The read tools stay available. Model edits only
-        /// touch YAML files (never the bus), so they are on by default.
+        /// touch the model files (never the bus), so they are on by default.
         #[arg(long)]
         no_model_edits: bool,
         /// Path to a capture SQLite database to extend `knx_recent_telegrams`
