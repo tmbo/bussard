@@ -143,7 +143,7 @@ entry supersedes it and is not a diff against it.
 - A secured `flash` or `apply` writes the security individual address table
   (PID 54) like ETS: one `[IA][sequence]` entry per device that sends on a
   secured group address the device listens to, with the sender's keyring
-  sequence number. `--secure-sender <IA>` (off by default) adds bussard's own
+  sequence number when the sender is activated (else 0). `--secure-sender <IA>` (off by default) adds bussard's own
   tunnel address, so the device accepts `write --keyring`; without it the
   device drops bussard's secured group telegrams. knx-sim enforces the table
   (#181).

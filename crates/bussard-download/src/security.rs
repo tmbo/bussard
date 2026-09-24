@@ -122,9 +122,12 @@ pub fn sender_table_bytes(entries: &[SecureSenderEntry]) -> Vec<u8> {
 ///   group key for;
 /// - the **senders**: every other device with a `send` link on one of those
 ///   addresses (the device itself is never listed);
-/// - each sender's sequence is its keyring `SequenceNumber` (`sequences`), or 0
-///   when the keyring has none (CONFIRMED: ETS wrote the keyring value for a
-///   sender downloaded earlier, 0 for one not downloaded yet);
+/// - each sender's sequence is its keyring `SequenceNumber` (`sequences`) when
+///   the model marks the sender `activated` (ETS has loaded its tool key), and
+///   0 otherwise or when the keyring has none. CONFIRMED: ETS wrote the keyring
+///   value of the activated 1.1.5, and 0 for 1.1.10, which is only configured
+///   for Secure (`secure_commissioning`, not `activated`) and whose keyring
+///   value is a stale project value;
 /// - `extra` adds more senders with sequence 0 (bussard's own tunnel address
 ///   via `--secure-sender`), unless already listed or equal to `device`.
 ///
@@ -160,7 +163,17 @@ pub fn secured_senders(
                 .filter_map(|link| link.send)
                 .any(|ga| secure_listened.contains(&ga));
             if sends_secured {
-                senders.insert(*peer, sequences.get(peer).copied().unwrap_or(0));
+                let activated = model
+                    .devices
+                    .get(peer)
+                    .and_then(|d| d.device.security.as_ref())
+                    .is_some_and(|s| s.activated);
+                let sequence = if activated {
+                    sequences.get(peer).copied().unwrap_or(0)
+                } else {
+                    0
+                };
+                senders.insert(*peer, sequence);
             }
         }
     }
@@ -729,11 +742,41 @@ mod tests {
             ia("1.1.30")?,
             vec![link(1, Some("0/0/11"), &[])?, link(2, Some("0/0/12"), &[])?],
         );
+        // 1.1.5 is activated; 1.1.16 is only configured for Secure (a tool
+        // key in the project, never downloaded), like 1.1.10 in the S3 export.
+        let mut devices = std::collections::BTreeMap::new();
+        for (addr, activated) in [("1.1.5", true), ("1.1.16", false)] {
+            let device = bussard_model::schema::Device {
+                address: ia(addr)?,
+                name: addr.to_string(),
+                description: None,
+                location: None,
+                product: None,
+                channels: Default::default(),
+                parameters: Default::default(),
+                module_bases: Default::default(),
+                com_objects: Default::default(),
+                security: Some(bussard_model::schema::DeviceSecurity {
+                    secure_capable: true,
+                    activated,
+                    secure_commissioning: true,
+                    ..Default::default()
+                }),
+                replaced: None,
+            };
+            devices.insert(
+                device.address,
+                bussard_model::LoadedDevice {
+                    device,
+                    file_stem: addr.to_string(),
+                },
+            );
+        }
         Ok(Model {
             config: bussard_model::schema::BussardConfig::default(),
             groups,
             links,
-            devices: Default::default(),
+            devices,
         })
     }
 
@@ -770,6 +813,9 @@ mod tests {
         let keys = HashMap::new();
         let mut seqs = HashMap::new();
         seqs.insert(ia("1.1.5")?, 275_149_400_526u64);
+        // A stale project value for the not-activated 1.1.16: ignored, as ETS
+        // ignored 1.1.10's.
+        seqs.insert(ia("1.1.16")?, 239_366_808_908u64);
         let s = secured_senders(Some(&model), ia("1.1.5")?, &keys, &seqs, &[]);
         assert_eq!(
             s,

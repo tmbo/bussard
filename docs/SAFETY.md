@@ -225,7 +225,8 @@ secured download does (issue #156): it unloads it right after the other
 objects, and after the tables and parameters it reloads it with the security
 individual address table (cleared, then one `[IA][sequence]` entry per device
 that sends on a secured group address this device listens to, with the
-sender's keyring `SequenceNumber` or 0; issue #181), the group key table (one
+sender's keyring `SequenceNumber` when the model marks the sender `activated`,
+else 0; issue #181), the group key table (one
 entry per keyed group address the device links, from the keyring) and the
 group-object security flags, then completes it. `apply --keyring` (and
 `restore`, and `apply --line` with a keyring) rewrites the security object next

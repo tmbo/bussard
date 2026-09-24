@@ -510,9 +510,11 @@ fn test_security_object_program_matches_ets() -> TestResult {
     if let Ok(dir) = std::env::var("BUSSARD_SECURE_MODEL") {
         let model = bussard_model::Model::load(std::path::Path::new(&dir))?;
         // A keyring exported after the capture knows sequences ETS did not
-        // know yet at capture time (a sender downloaded later): list those
-        // senders in BUSSARD_SECURE_UNKNOWN_SENDERS (comma-separated) to
-        // treat their sequence as absent, as ETS did.
+        // know yet at capture time (a sender activated later, 1.1.16 for the
+        // 1.1.5 capture): list those senders in BUSSARD_SECURE_UNKNOWN_SENDERS
+        // (comma-separated) to treat their sequence as absent, as ETS did. A
+        // sender the model does not mark activated needs no override: its
+        // sequence is 0 anyway.
         let unknown: Vec<IndividualAddress> = std::env::var("BUSSARD_SECURE_UNKNOWN_SENDERS")
             .unwrap_or_default()
             .split(',')

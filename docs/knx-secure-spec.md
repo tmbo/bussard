@@ -916,25 +916,28 @@ to:
 | device | entry | why |
 |---|---|---|
 | 1.1.5 | `1110 000000000000` (1.1.16, sequence 0) | listens to 0/0/9, sent by the push button 1.1.16 |
-| 1.1.7 | `110a 000000000000` (1.1.10, sequence 0) | listens to a secured GA 1.1.10 sends |
+| 1.1.7 | `110a 000000000000` (1.1.10, sequence 0) | listens to a secured GA 1.1.10 sends; 1.1.10 is configured for Secure but not activated |
 | 1.1.16 | `1105 0040102ea9ce` (1.1.5, 275149400526) | listens to the status 0/0/10 sent by 1.1.5 |
 | 1.1.12 | `1105 0040102ea9ce` (1.1.5, 275149400526) | listens to 0/0/6 sent by 1.1.5 |
 | 1.1.9, 1.1.47, 1.1.48 | none (clear only) | no secured sender addresses them |
 
-The sequence is the sender's sequence number as the project knows it at
-download time: the keyring's `Device@SequenceNumber` of 1.1.5 (downloaded
-first) for 1.1.16 and 1.1.12, and 0 for 1.1.16 and 1.1.10, which ETS had not
-downloaded yet when it downloaded 1.1.5 and 1.1.7. A keyring exported after
-all downloads carries a later value for them, so bussard's entry then has a
-higher sequence than the capture (the offline oracle shows those 6 octets as
-different on 1.1.5 and 1.1.7; the IA matches). INFERRED: several entries in
-ascending IA order (every observed table has one), whether a device's own send
-GA counts as listened (it made no difference in the reference installation),
-and why 1.1.10 got 0 although the exported keyring holds an older (2025)
-sequence for it. bussard derives the table in
+The sequence is the sender's keyring `Device@SequenceNumber` when the sender
+is **activated** (the project carries its `LoadedToolKey`; model
+`activated: true`), and 0 otherwise. 1.1.10 is only configured for Secure
+(`ToolKey` without `LoadedToolKey`, model `secure_commissioning: true`,
+`activated: false`) and has never been downloaded; its keyring value (a 2025
+sequence) is a stale project value, and ETS wrote 0. 1.1.5 was activated
+before 1.1.16 and 1.1.12 were downloaded, so they got its keyring value.
+1.1.16 was activated only after the 1.1.5 capture, so ETS wrote 0 for it
+there; the keyring exported after all downloads marks it activated with a later
+sequence, and bussard's entry on 1.1.5 differs from that capture in the 6
+sequence octets (the IA matches). That is the only remaining difference.
+INFERRED: several entries in ascending IA order (every observed table has
+one), and whether a device's own send GA counts as listened (it made no
+difference in the reference installation). bussard derives the table in
 `bussard_download::secured_senders`; the oracle test compares it with
-`BUSSARD_SECURE_MODEL` set (and `BUSSARD_SECURE_UNKNOWN_SENDERS` for senders
-downloaded after the capture).
+`BUSSARD_SECURE_MODEL` set (and `BUSSARD_SECURE_UNKNOWN_SENDERS=1.1.16` for the
+1.1.5 capture).
 
 ---
 
