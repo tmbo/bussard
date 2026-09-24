@@ -395,9 +395,10 @@ enum Command {
     ///
     /// Give a local `.knxprod` FILE, or `--order-number` to look the file up in
     /// the pointer index and download it from the vendor, or `--list` to show
-    /// the index.
+    /// the index. An ETS project export (`.knxproj`) FILE is read in place and
+    /// not cached under `vendor/`.
     ImportProduct {
-        /// The `.knxprod` file to import (positional mode).
+        /// The `.knxprod` or `.knxproj` file to import (positional mode).
         #[arg(value_name = "FILE")]
         file: Option<PathBuf>,
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).

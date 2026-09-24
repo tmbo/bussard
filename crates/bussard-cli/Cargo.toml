@@ -52,3 +52,5 @@ rpassword = "=7.3.1"
 [dev-dependencies]
 # The loopback mock gateway for the secured group read/write/monitor tests.
 bussard-testkit = { workspace = true }
+# Builds the synthetic `.knxprod` / `.knxproj` fixtures for the import-product tests.
+zip = { workspace = true }

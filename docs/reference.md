@@ -211,11 +211,11 @@ The keyring password comes from `BUSSARD_KEYRING_PASSWORD` and is deliberately *
 
 ### `bussard import-product [FILE]`
 
-Import vendor product data (`.knxprod`): cache it under `<dir>/vendor/` and generate one model file per application program under `<dir>/models/`. Three modes: a local file (positional), `--order-number` to look the file up in the pointer index and download it, or `--list` to show the index. Details in [product-data.md](product-data.md).
+Import vendor product data (`.knxprod`): cache it under `<dir>/vendor/` and generate one model file per application program under `<dir>/models/`. An ETS project export (`.knxproj`) works as a source too; it is read in place and not copied under `vendor/`, since it is your project, not vendor data. Three modes: a local file (positional), `--order-number` to look the file up in the pointer index and download it, or `--list` to show the index. Details in [product-data.md](product-data.md).
 
 | Flag / arg | Default | Meaning |
 |---|---|---|
-| `[FILE]` | | The `.knxprod` file to import (positional mode). |
+| `[FILE]` | | The `.knxprod` or `.knxproj` file to import (positional mode). |
 | `--dir <DIR>` | `knx` | The model directory. |
 | `--order-number <ORDER>` | | Look the `.knxprod` up in the pointer index by order number and download it from the vendor (with confirmation). |
 | `--yes-download` | off | Skip the download confirmation prompt. Only meaningful with `--order-number`; required on a non-TTY. |

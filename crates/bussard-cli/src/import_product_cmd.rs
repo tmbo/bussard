@@ -6,6 +6,11 @@
 //! model YAML per ApplicationProgram under `<dir>/models/`. Both directories are
 //! local-only: vendor XML is copyrighted and the models are derived from it, so
 //! a `vendor/.gitignore` of `*` is planted to keep them out of git.
+//!
+//! An ETS project export (`.knxproj`) also carries the product data of every
+//! device in the project, so it is accepted as a source too. It is the owner's
+//! project, not vendor product data, and large, so it is read in place and
+//! never copied under `vendor/`; only the generated models are written.
 
 use std::collections::BTreeMap;
 use std::io::{IsTerminal, Write};
@@ -194,7 +199,8 @@ fn ensure_vendor_dir(vendor_dir: &Path) -> anyhow::Result<()> {
 /// model under `<dir>/models/` for each application program it contains.
 ///
 /// For a downloaded file the source already lives under `vendor/`, so the cache
-/// step notes it in place rather than copying it onto itself.
+/// step notes it in place rather than copying it onto itself. An ETS project
+/// export (see [`is_project_export`]) is read in place and not cached at all.
 fn import_from_file(
     file: &Path,
     dir: &Path,
@@ -211,20 +217,30 @@ fn import_from_file(
         );
     }
 
-    // Cache the source file verbatim under <dir>/vendor/.
     let vendor_dir = dir.join("vendor");
-    ensure_vendor_dir(&vendor_dir)?;
+    // Only a local file is read in place; an index download is vendor data.
+    let project_export = matches!(note, DownloadNote::Local) && is_project_export(file, &product);
 
     let cached_note = match note {
+        // A project export is the owner's project, not vendor product data, and
+        // large: read it in place and only write the generated models.
+        DownloadNote::Local if project_export => format!(
+            "Read the ETS project export in place (not cached under {}): {}",
+            vendor_dir.display(),
+            file.display()
+        ),
         // A downloaded file already lives under vendor/ (verified against the
         // index checksum), so there is nothing to copy.
         DownloadNote::Downloaded(filename) => {
+            ensure_vendor_dir(&vendor_dir)?;
             format!(
                 "Cached vendor file (downloaded): {}",
                 vendor_dir.join(&filename).display()
             )
         }
         DownloadNote::Local => {
+            // Cache the source file verbatim under <dir>/vendor/.
+            ensure_vendor_dir(&vendor_dir)?;
             let original_name = file
                 .file_name()
                 .context("product file has no file name")?
@@ -262,15 +278,34 @@ fn import_from_file(
         println!("  models/{name}");
     }
     println!();
-    println!(
-        "Reminder: {} and {} are local-only — vendor product data is copyrighted",
-        vendor_dir.display(),
-        models_dir.display()
-    );
-    println!("and the models are derived from it. Keep both out of git; cloners regenerate");
-    println!("their models from their own vendor downloads.");
+    if project_export {
+        println!(
+            "Reminder: {} is local-only — the models are derived from copyrighted",
+            models_dir.display()
+        );
+        println!("vendor product data inside the project export. Keep them out of git.");
+    } else {
+        println!(
+            "Reminder: {} and {} are local-only — vendor product data is copyrighted",
+            vendor_dir.display(),
+            models_dir.display()
+        );
+        println!("and the models are derived from it. Keep both out of git; cloners regenerate");
+        println!("their models from their own vendor downloads.");
+    }
 
     Ok(ExitCode::SUCCESS)
+}
+
+/// Whether `file` is an ETS project export (`.knxproj`) rather than vendor
+/// product data: by its extension (case-insensitive) or by the `P-XXXX`
+/// project folder the reader found in the archive.
+pub(crate) fn is_project_export(file: &Path, product: &ProductData) -> bool {
+    product.is_project_export
+        || file
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("knxproj"))
 }
 
 /// Copies `src` to `dst` byte-identically, skipping the copy (with a note) if an

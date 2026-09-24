@@ -49,7 +49,7 @@ use crate::assign_cmd::{
 use crate::conn_cmd::{
     ConnOverrides, enforce_write_gate, gateway_display, open_service, resolve_config,
 };
-use crate::import_product_cmd::{VENDOR_GITIGNORE, order_numbers_for};
+use crate::import_product_cmd::{VENDOR_GITIGNORE, is_project_export, order_numbers_for};
 
 /// Documented test hook: a non-interactive `adopt` reads its target individual
 /// address from this variable. `adopt` is a wizard, so it refuses to run without
@@ -702,6 +702,19 @@ fn import_product(file: &Path, dir: &Path) -> anyhow::Result<ProductData> {
             "no application programs found in {} (is it a valid .knxprod?)",
             file.display()
         );
+    }
+
+    // An ETS project export is the owner's project, not vendor product data:
+    // read it in place and never copy it under vendor/.
+    if is_project_export(file, &product) {
+        println!(
+            "  read the ETS project export in place (not cached under vendor/): {}",
+            file.display()
+        );
+        let models_dir = dir.join("models");
+        std::fs::create_dir_all(&models_dir)
+            .with_context(|| format!("creating {}", models_dir.display()))?;
+        return Ok(product);
     }
 
     // Cache the source file verbatim under <dir>/vendor/.
