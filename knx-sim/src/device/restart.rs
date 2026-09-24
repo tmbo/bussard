@@ -106,3 +106,67 @@ impl Device {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::device::test_support::*;
+    use crate::device::*;
+
+    #[test]
+    fn test_master_reset_erase_code_7_clears_application_and_keeps_address()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut dev = system_b_device()?;
+        dev.set_restart_process_time(8);
+        // A previous image in the application object's segment (object 3).
+        let base = dev.loadables.get(&3).ok_or("object 3")?.base;
+        dev.memory.allocate(3, base, 6);
+        dev.memory.write(3, base, &[0xAA; 6])?;
+
+        connect(&mut dev)?;
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+        // The ETS request from the issue #117 capture: A_Restart master reset,
+        // erase code 7, channel 0.
+        let reaction = dev.handle_cemi(&data(&dev, 0x381, &[0x07, 0x00]))?;
+        assert!(reaction.did_master_reset);
+        let resp = reaction
+            .responses
+            .iter()
+            .find(|r| r.tpdu.len() == 5)
+            .ok_or("an A_Restart_Response")?;
+        // `.. a1 00 00 08`: APCI 0x3A1, error 0, process time 8 s.
+        let apci10 = ((resp.tpdu[0] as u16 & 0x03) << 8) | resp.tpdu[1] as u16;
+        assert_eq!(apci10, 0x3A1);
+        assert_eq!(&resp.tpdu[2..], &[0x00, 0x00, 0x08]);
+
+        // Application erased, every object Unloaded, address kept, rebooted.
+        for object in 1u8..=3 {
+            assert_eq!(dev.load_state(object), Some(LoadState::Unloaded));
+        }
+        assert_eq!(dev.memory().read(base, 6), vec![0x00; 6]);
+        assert!(dev.memory().segment_of(3).is_none());
+        assert_eq!(dev.address(), IndividualAddress::new(1, 1, 2));
+        assert!(!dev.connected);
+        Ok(())
+    }
+
+    #[test]
+    fn test_master_reset_confirmed_restart_erases_nothing() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut dev = system_b_device()?;
+        let base = dev.loadables.get(&3).ok_or("object 3")?.base;
+        dev.memory.allocate(3, base, 2);
+        dev.memory.write(3, base, &[0x12, 0x34])?;
+        connect(&mut dev)?;
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+        let reaction = dev.handle_cemi(&data(&dev, 0x381, &[0x01, 0x00]))?;
+        let resp = reaction
+            .responses
+            .iter()
+            .find(|r| r.tpdu.len() == 5)
+            .ok_or("an A_Restart_Response")?;
+        assert_eq!(&resp.tpdu[2..], &[0x00, 0x00, 0x00]);
+        assert_eq!(dev.load_state(3), Some(LoadState::Loaded));
+        assert_eq!(dev.memory().read(base, 2), vec![0x12, 0x34]);
+        Ok(())
+    }
+}
