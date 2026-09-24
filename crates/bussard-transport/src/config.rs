@@ -40,6 +40,82 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Timeout waiting for a DISCONNECT_RESPONSE during a clean close.
 pub const DISCONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Default total time a lost tunnel is re-established for before the pending
+/// send fails (issue #177). Long enough to ride out a pulled and re-plugged LAN
+/// cable or a switch reboot, short enough that a dead interface fails clearly.
+pub const TUNNEL_RECONNECT_BUDGET: Duration = Duration::from_secs(60);
+
+/// Default pause before the second re-establish attempt; it doubles per attempt.
+pub const TUNNEL_RECONNECT_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
+
+/// Default cap on the pause between two re-establish attempts, so a cable that
+/// comes back is noticed within this long.
+pub const TUNNEL_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(8);
+
+/// Default timeout for one CONNECT_RESPONSE during a re-establish attempt. A
+/// reachable gateway answers in milliseconds; a short wait keeps the attempts
+/// frequent while the link is down.
+pub const TUNNEL_RECONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// How a [`Tunnel`](crate::Tunnel) re-establishes itself after the gateway
+/// link is lost (issue #177).
+///
+/// The link counts as lost when a TUNNELING_REQUEST stays unacknowledged after
+/// its retransmit, when the CONNECTIONSTATE heartbeat fails, or when the socket
+/// reports an error. The tunnel then sends a best-effort DISCONNECT for the old
+/// channel, opens a new one with CONNECT_REQUEST (sequence counters reset to
+/// zero) and re-sends the frame that was pending. Attempts are spaced by a
+/// doubling backoff (`initial_backoff`, 2x, 4x ... capped at `max_backoff`)
+/// until `budget` has passed since the loss; then the pending send fails with
+/// [`TransportError::TunnelLost`](crate::TransportError::TunnelLost).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TunnelReconnect {
+    /// Total time to keep trying, measured from the moment the loss was
+    /// detected. [`Duration::ZERO`] disables re-establishing: the first loss
+    /// fails the send (the behaviour before issue #177).
+    pub budget: Duration,
+    /// The pause before the second attempt (the first runs immediately).
+    pub initial_backoff: Duration,
+    /// The cap the doubling pause never exceeds.
+    pub max_backoff: Duration,
+    /// How long one attempt waits for the CONNECT_RESPONSE.
+    pub attempt_timeout: Duration,
+}
+
+impl Default for TunnelReconnect {
+    fn default() -> Self {
+        TunnelReconnect {
+            budget: TUNNEL_RECONNECT_BUDGET,
+            initial_backoff: TUNNEL_RECONNECT_INITIAL_BACKOFF,
+            max_backoff: TUNNEL_RECONNECT_MAX_BACKOFF,
+            attempt_timeout: TUNNEL_RECONNECT_ATTEMPT_TIMEOUT,
+        }
+    }
+}
+
+impl TunnelReconnect {
+    /// A policy that never re-establishes: the first link loss fails the send.
+    pub fn disabled() -> Self {
+        TunnelReconnect {
+            budget: Duration::ZERO,
+            ..TunnelReconnect::default()
+        }
+    }
+
+    /// The default policy with a different total `budget`.
+    pub fn with_budget(budget: Duration) -> Self {
+        TunnelReconnect {
+            budget,
+            ..TunnelReconnect::default()
+        }
+    }
+
+    /// Whether this policy re-establishes a lost tunnel at all.
+    pub fn enabled(&self) -> bool {
+        !self.budget.is_zero()
+    }
+}
+
 /// Which transport to use.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransportKind {
@@ -64,6 +140,9 @@ pub struct ConnectionConfig {
     /// The local IPv4 interface to bind / join the group on. `0.0.0.0` lets the
     /// OS choose.
     pub local_interface: Ipv4Addr,
+    /// How a tunnel re-establishes itself after the gateway link is lost.
+    /// Ignored for routing.
+    pub reconnect: TunnelReconnect,
 }
 
 impl ConnectionConfig {
@@ -74,6 +153,7 @@ impl ConnectionConfig {
             gateway: Some(gateway),
             multicast: SocketAddrV4::new(DEFAULT_MULTICAST, DEFAULT_PORT),
             local_interface: Ipv4Addr::UNSPECIFIED,
+            reconnect: TunnelReconnect::default(),
         }
     }
 
@@ -85,6 +165,13 @@ impl ConnectionConfig {
             gateway: None,
             multicast: SocketAddrV4::new(DEFAULT_MULTICAST, DEFAULT_PORT),
             local_interface: Ipv4Addr::UNSPECIFIED,
+            reconnect: TunnelReconnect::default(),
         }
+    }
+
+    /// This configuration with a different tunnel re-establish policy.
+    pub fn with_reconnect(mut self, reconnect: TunnelReconnect) -> Self {
+        self.reconnect = reconnect;
+        self
     }
 }

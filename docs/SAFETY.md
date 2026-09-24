@@ -258,13 +258,40 @@ Activation itself (turning Data Secure on, writing the tool key and the
 sending sequence number) is ETS's job: bussard operates devices ETS has
 activated and never activates or deactivates one.
 
+**Resume on connection loss.** A flash survives two kinds of connection loss
+without starting over:
+
+- *Device connection death.* The device drops its Layer-4 connection (an idle
+  timeout, a per-connection exchange budget, a reboot). The flash reconnects,
+  re-authorizes (including the Data Secure sync, and after a restart bussard
+  triggered, the readiness probe), and resumes the current step. A chunked
+  memory write continues from the last confirmed chunk; a chunk is never split
+  across the reconnect.
+- *Gateway tunnel loss, up to 60 s.* The KNXnet/IP link to the IP interface
+  drops (a pulled LAN cable, a switch or Wi-Fi outage). When a frame stays
+  unacknowledged after its retransmit, or the heartbeat fails, bussard logs
+  `gateway connection lost`, sends a best-effort DISCONNECT for the old tunnel,
+  and opens a new one, retrying after 1, 2, 4, 8, 8 ... s. Once the tunnel is
+  back it logs `gateway connection re-established`, re-sends the pending frame,
+  and the flash resumes as after a device connection death. The read-only
+  pre-flight simply runs again. `BUSSARD_TUNNEL_RECONNECT_SECS` changes the
+  60 s budget (`0` turns the re-establish off).
+
+What is not covered: a gateway that stays unreachable longer than the budget.
+The flash then stops with the original error plus a hint naming the gateway
+(`timed out waiting for TUNNELING_ACK; the tunnel to gateway … could not be
+re-established within 60 s`), leaving the device partially written. The same
+re-establish protects every other command (`apply`, `describe`, `reconstruct`,
+`plan`, `write`), but only `flash` resumes its own steps: another command whose
+device connection dropped during the outage fails with a connection error and
+can simply be run again. A group write that was pending when the link dropped
+is sent once the tunnel is back, up to a minute late.
+
 **Recovery from a failed or interrupted flash.** The download is idempotent: it
 re-unloads and rewrites the whole application, so the fix for a partial flash is
-to re-run `bussard flash <ADDRESS>`. The bus lease resumes on drop, so an
-interrupted session reconnects promptly rather than waiting out the full ACK
-timeout. If re-flashing does not recover the device, fall back to downloading it
-with ETS. Do not assume a device is functional until a flash reports the
-application `Loaded` and verified.
+to re-run `bussard flash <ADDRESS>`. If re-flashing does not recover the device,
+fall back to downloading it with ETS. Do not assume a device is functional until
+a flash reports the application `Loaded` and verified.
 
 **`flash --parameters-only <ADDRESS>`** rewrites only the parameter memory of
 a device that already runs the application (issue #119). Unlike a full flash

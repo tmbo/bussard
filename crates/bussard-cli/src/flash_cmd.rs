@@ -189,10 +189,15 @@ pub fn run(
     // resident on the device (issue #79). Both run over one connection; neither
     // writes anything.
     let secure_probe = tool_key.is_some();
-    let probe = {
+    // The phase is read-only, so a connection loss in the middle of it (the
+    // gateway link or the device's Layer-4 connection, issue #177) simply
+    // re-runs it on a fresh connection once the bus is back.
+    let mut preflight_attempt = 1u32;
+    let probe = loop {
         let probe_key = tool_key.clone();
         let probe_seq = secure_seq.clone();
-        runtime.block_on(async {
+        let losses_before = handle.link_losses();
+        let outcome = runtime.block_on(async {
             let lease = handle.lease().await.context("leasing the bus")?;
             let channel = LeaseChannel::new(lease);
             // Track whether the T_Connect established before the first read: a
@@ -257,7 +262,19 @@ pub fn run(
                 Err(err) => (false, Err(err), None),
             };
             anyhow::Ok((connected, result, resident, facts))
-        })?
+        })?;
+        let link_lost = handle.link_losses() != losses_before;
+        if preflight_attempt >= PREFLIGHT_ATTEMPTS
+            || !preflight_interrupted(&outcome.1, outcome.2.as_ref(), link_lost)
+        {
+            break outcome;
+        }
+        preflight_attempt += 1;
+        tracing::warn!(
+            "the read-only pre-flight of {target} was interrupted by a connection loss; \
+             retrying (attempt {preflight_attempt} of {PREFLIGHT_ATTEMPTS})"
+        );
+        runtime.block_on(handle.wait_connected(handle.reconnect_budget()));
     };
 
     let (connected, device_mask, resident, facts) = probe;
@@ -1148,6 +1165,31 @@ fn descriptor_read_error(
     anyhow::Error::new(err).context("reading the device descriptor")
 }
 
+/// How often the read-only pre-flight runs before its result stands, when a
+/// connection loss interrupts it (issue #177).
+const PREFLIGHT_ATTEMPTS: u32 = 3;
+
+/// Whether a pre-flight attempt was cut short by a connection loss and should
+/// be re-run: the resident-state probe was interrupted by a connection death,
+/// or the descriptor read failed with a lost gateway link, or with any
+/// connection death while the bus reported a link loss (`link_lost`).
+fn preflight_interrupted(
+    descriptor: &Result<u16, MgmtError>,
+    resident: Option<&bussard_download::ResidentState>,
+    link_lost: bool,
+) -> bool {
+    match descriptor {
+        Err(MgmtError::Transport(e)) => e.is_link_loss(),
+        Err(
+            MgmtError::NoResponse { .. }
+            | MgmtError::Disconnected { .. }
+            | MgmtError::MidSessionSilence { .. },
+        ) => link_lost,
+        Err(_) => false,
+        Ok(_) => resident.is_some_and(|state| state.interrupted),
+    }
+}
+
 /// A short label for the product in an error message: its manufacturer id(s).
 fn product_display(product: &ProductData) -> String {
     if product.manufacturers.is_empty() {
@@ -1209,6 +1251,11 @@ impl bussard_download::Connector for LeaseConnector<'_> {
     type Channel = LeaseChannel;
 
     async fn connect(&mut self) -> Result<Layer4Connection<LeaseChannel>, WriteError> {
+        // After a gateway link loss (issue #177) wait for the re-established
+        // tunnel before the fresh T_Connect; immediate when connected.
+        self.handle
+            .wait_connected(self.handle.reconnect_budget())
+            .await;
         let lease = self.handle.lease().await.map_err(|_| {
             // Leasing fails only if the bus actor is gone or the connection went
             // stale; either way the L4 session is unusable.
@@ -2095,6 +2142,37 @@ mod tests {
             decision.message
         );
         assert!(decision.message.contains("LSM 3"), "{}", decision.message);
+    }
+
+    #[test]
+    fn test_preflight_interrupted_retries_only_on_connection_loss()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use bussard_transport::TransportError;
+        let address: IndividualAddress = "1.1.12".parse()?;
+        let ack_timeout = Err(MgmtError::Transport(TransportError::Timeout(
+            "TUNNELING_ACK",
+        )));
+        assert!(preflight_interrupted(&ack_timeout, None, false));
+        // A silent device retries only when the bus saw a link loss meanwhile.
+        let silent = Err(MgmtError::NoResponse { address });
+        assert!(!preflight_interrupted(&silent, None, false));
+        assert!(preflight_interrupted(&silent, None, true));
+        // A refusal never retries.
+        let denied = Err(MgmtError::AccessDenied { address, level: 1 });
+        assert!(!preflight_interrupted(&denied, None, true));
+        // A clean descriptor read retries when the resident probe was cut short.
+        let interrupted = bussard_download::ResidentState {
+            interrupted: true,
+            ..Default::default()
+        };
+        assert!(preflight_interrupted(
+            &Ok(0x07B0),
+            Some(&interrupted),
+            false
+        ));
+        let complete = bussard_download::ResidentState::default();
+        assert!(!preflight_interrupted(&Ok(0x07B0), Some(&complete), true));
+        Ok(())
     }
 
     #[test]

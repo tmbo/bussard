@@ -313,6 +313,22 @@ struct DeviceState {
     /// Transport must therefore time out and the actor must reconnect, rather than
     /// the single-frame retransmit sneaking through. Cleared on each CONNECT_REQUEST.
     tunnel_dead_this_connection: bool,
+    /// A gateway link outage (issue #177): after this many MEMORY
+    /// TUNNELING_REQUESTs the link goes down for the duration, swallowing every
+    /// datagram (the tripping frame included) with no answer: a pulled LAN cable
+    /// on the IP interface. Taken (`None`) once it trips.
+    tunnel_outage: Option<(u32, Duration)>,
+    /// Memory TUNNELING_REQUESTs seen, metered against `tunnel_outage`.
+    outage_memory_frames: u32,
+    /// While the link is down: when it comes back (`Some(None)` = never).
+    tunnel_down_until: Option<Option<tokio::time::Instant>>,
+    /// Datagrams the outage swallowed.
+    outage_swallowed: usize,
+    /// Whether the device drops its L4 connection while the link is down (its
+    /// ~6 s idle timeout), so it answers nothing until a fresh T_Connect.
+    outage_kills_l4: bool,
+    /// Set when an outage ended with `outage_kills_l4`; cleared by T_Connect.
+    l4_dead_after_outage: bool,
     /// Count of KNXnet/IP CONNECT_REQUESTs the gateway answered — i.e. how many
     /// times the tunnel was (re)established. A tunnel-drop test asserts this
     /// reaches ≥2 (the actor reconnected the tunnel).
@@ -1108,6 +1124,45 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
         let Ok(parsed) = knxnet::parse(&buf[..n]) else {
             continue;
         };
+        // Gateway link outage (issue #177): while the link is down nothing gets
+        // through in either direction.
+        {
+            let mut s = state.lock().unwrap();
+            match s.tunnel_down_until {
+                Some(None) => {
+                    s.outage_swallowed += 1;
+                    continue;
+                }
+                Some(Some(until)) if tokio::time::Instant::now() < until => {
+                    s.outage_swallowed += 1;
+                    continue;
+                }
+                Some(Some(_)) => {
+                    s.tunnel_down_until = None;
+                    if s.outage_kills_l4 {
+                        s.l4_dead_after_outage = true;
+                    }
+                }
+                None => {}
+            }
+            if parsed.service == ServiceType::TunnelingRequest
+                && s.tunnel_outage.is_some()
+                && let Ok(tr) = knxnet::parse_tunneling_request(parsed.body)
+                && matches!(&tr.cemi.apdu, Apdu::Other { apci, .. }
+                    if (apci & APCI_SELECTOR == A_MEMORY_WRITE_SEL)
+                        || (apci & APCI_SELECTOR == A_MEMORY_READ_SEL))
+            {
+                s.outage_memory_frames += 1;
+                if let Some((after, duration)) = s.tunnel_outage
+                    && s.outage_memory_frames > after
+                {
+                    s.tunnel_outage = None;
+                    s.tunnel_down_until = Some(tokio::time::Instant::now().checked_add(duration));
+                    s.outage_swallowed += 1;
+                    continue;
+                }
+            }
+        }
         match parsed.service {
             ServiceType::ConnectRequest => {
                 {
@@ -1220,6 +1275,7 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
                         // A fresh connection after a master-reset reboot: the device
                         // is alive again on the new link.
                         s.l4_dead_after_master_reset = false;
+                        s.l4_dead_after_outage = false;
                         // A device that discarded a content-incomplete load on
                         // reboot (Fault::UnloadedAfterBasicRestart) comes back up
                         // with the app object Unloaded — the post-restart verify
@@ -1261,7 +1317,7 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
                             // on this connection, the device is rebooting and answers
                             // nothing more until a fresh T_Connect. The tool must
                             // reconnect to continue.
-                            if s.l4_dead_after_master_reset {
+                            if s.l4_dead_after_master_reset || s.l4_dead_after_outage {
                                 continue;
                             }
                             if let Some(budget) = s.die_after_exchanges
@@ -1478,6 +1534,12 @@ fn fresh_device(fault: Fault) -> Shared {
         tunnel_frames_this_connection: 0,
         tunnel_dead_this_connection: false,
         tunnel_connects: 0,
+        tunnel_outage: None,
+        outage_memory_frames: 0,
+        tunnel_down_until: None,
+        outage_swallowed: 0,
+        outage_kills_l4: false,
+        l4_dead_after_outage: false,
         master_resets_seen: 0,
         factory_resets_seen: 0,
         control_writes_at_factory_reset: None,
@@ -3040,6 +3102,11 @@ impl bussard_download::Connector for LeaseConnector {
     async fn connect(
         &mut self,
     ) -> Result<Layer4Connection<bussard_mgmt::LeaseChannel>, bussard_mgmt::load::WriteError> {
+        // After a gateway link loss (issue #177) wait for the re-established
+        // tunnel before the fresh T_Connect; immediate when connected.
+        self.handle
+            .wait_connected(self.handle.reconnect_budget())
+            .await;
         let lease = self.handle.lease().await.map_err(|_| {
             bussard_mgmt::load::WriteError::Mgmt(bussard_mgmt::MgmtError::Transport(
                 bussard_transport::TransportError::Closed,
@@ -3071,6 +3138,28 @@ async fn setup_bus(fault: Fault) -> (bussard_bus::BusHandle, Shared, tokio::task
 
 /// [`setup_bus`] over a caller-built device, so a test can start from a
 /// security-activated mock ([`secure_device`]).
+/// [`setup_bus_with`] with a caller-chosen tunnel re-establish policy (issue
+/// #177). Also returns the gateway address, which a lost-tunnel error names.
+async fn setup_bus_reconnect(
+    state: Shared,
+    reconnect: bussard_transport::TunnelReconnect,
+) -> (
+    bussard_bus::BusHandle,
+    Shared,
+    tokio::task::JoinHandle<()>,
+    std::net::SocketAddrV4,
+) {
+    let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let port = sock.local_addr().unwrap().port();
+    let addr: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let gw = tokio::spawn(run_gateway(sock, addr, Arc::clone(&state)));
+    let gateway = std::net::SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, port);
+    let (handle, _actor) =
+        bussard_bus::Bus::connect(ConnectionConfig::tunnel(gateway).with_reconnect(reconnect));
+    handle.wait_connected(Duration::from_secs(5)).await;
+    (handle, state, gw, gateway)
+}
+
 async fn setup_bus_with(
     state: Shared,
 ) -> (bussard_bus::BusHandle, Shared, tokio::task::JoinHandle<()>) {
@@ -3665,6 +3754,165 @@ async fn flash_resumes_when_connection_drops_inside_a_write() {
         std::env::remove_var("BUSSARD_FLASH_RECONNECT_EXCHANGES");
         std::env::remove_var("BUSSARD_FLASH_REBOOT_WAIT_MS");
     }
+}
+
+/// A re-establish policy fast enough for the tunnel-loss tests (issue #177):
+/// attempts every 100-200 ms, each waiting 300 ms, within `budget`.
+fn fast_reconnect(budget: Duration) -> bussard_transport::TunnelReconnect {
+    bussard_transport::TunnelReconnect {
+        budget,
+        initial_backoff: Duration::from_millis(100),
+        max_backoff: Duration::from_millis(200),
+        attempt_timeout: Duration::from_millis(300),
+    }
+}
+
+/// Locks the shared mock state, turning a poisoned lock into a test error.
+fn lock(state: &Shared) -> Result<std::sync::MutexGuard<'_, DeviceState>, String> {
+    state
+        .lock()
+        .map_err(|_| "mock device state poisoned".to_string())
+}
+
+#[tokio::test]
+async fn test_flash_resumes_after_gateway_tunnel_loss_mid_write()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Issue #177 (S2.6 of #90): the IP interface's LAN cable is pulled for a few
+    // seconds in the middle of the segment write. The gateway swallows every
+    // datagram (the pending memory write, its retransmit, the first
+    // re-establish attempts); meanwhile the device drops its L4 connection (its
+    // idle timeout). The tunnel re-establishes itself and re-sends the pending
+    // frame; the device, now L4-dead, stays silent; the flash classifies that as
+    // a connection death, reconnects L4 and resumes the write from the last
+    // confirmed chunk, then verifies Loaded.
+    //
+    // SAFETY of env: nextest isolates process-global vars per test; these only
+    // tune a sleep and disable proactive cycling.
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
+        std::env::set_var("BUSSARD_FLASH_RECONNECT_EXCHANGES", "0");
+    }
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let state = fresh_device(Fault::None);
+    {
+        let mut s = lock(&state)?;
+        s.tunnel_outage = Some((3, Duration::from_millis(2500)));
+        s.outage_kills_l4 = true;
+    }
+    let (handle, state, gw, _gateway) =
+        setup_bus_reconnect(state, fast_reconnect(Duration::from_secs(20))).await;
+    let source = bussard_bus::ops::group_source(&handle);
+    let plan = plan_flash(
+        &fabricated_app_big(),
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    let connector = LeaseConnector::plain(handle.clone(), target, source, Some(fast_timeouts()));
+    let mut session = Session::open_with_key(connector, None).await?;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await?;
+    let _ = session.into_disconnect().await;
+
+    assert!(outcome.ok(), "the resumed flash must verify: {outcome:?}");
+    assert_eq!(outcome.load_state, LoadState::Loaded);
+    {
+        let s = lock(&state)?;
+        assert!(
+            s.outage_swallowed >= 2,
+            "the outage swallowed the pending frame and its retransmit"
+        );
+        assert!(
+            s.tunnel_connects >= 2,
+            "the tunnel was re-established (connects = {})",
+            s.tunnel_connects
+        );
+        assert!(
+            s.connects >= 2,
+            "L4 reconnected after the outage (T_Connects = {})",
+            s.connects
+        );
+        let full: Vec<u8> = (0x4000u32..0x4000 + 256)
+            .map(|a| *s.memory.get(&a).unwrap_or(&0))
+            .collect();
+        assert_eq!(
+            full,
+            vec![0xFFu8; 256],
+            "the whole segment landed across the outage"
+        );
+    }
+    let _ = handle.close().await;
+    gw.abort();
+    unsafe {
+        std::env::remove_var("BUSSARD_FLASH_RECONNECT_EXCHANGES");
+        std::env::remove_var("BUSSARD_FLASH_REBOOT_WAIT_MS");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_fails_with_gateway_hint_when_tunnel_never_returns()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Issue #177: the link goes down mid-write and never comes back. After the
+    // re-establish budget the flash fails with the original ACK timeout plus a
+    // hint that names the gateway, instead of hanging or resuming forever.
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let state = fresh_device(Fault::None);
+    lock(&state)?.tunnel_outage = Some((3, Duration::MAX));
+    let (handle, _state, gw, gateway) =
+        setup_bus_reconnect(state, fast_reconnect(Duration::from_secs(2))).await;
+    let source = bussard_bus::ops::group_source(&handle);
+    let plan = plan_flash(
+        &fabricated_app_big(),
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    let connector = LeaseConnector::plain(handle.clone(), target, source, Some(fast_timeouts()));
+    let mut session = Session::open_with_key(connector, None).await?;
+    let started = std::time::Instant::now();
+    let result = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await;
+    let elapsed = started.elapsed();
+    let Err(err) = result else {
+        return Err("a flash whose gateway never returns must fail".into());
+    };
+    let text = err.to_string();
+    assert!(
+        text.contains("timed out waiting for TUNNELING_ACK"),
+        "{text}"
+    );
+    assert!(
+        text.contains("could not be re-established within 2 s"),
+        "{text}"
+    );
+    assert!(
+        text.contains(&gateway.to_string()),
+        "the error names the gateway: {text}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(20),
+        "gave up after {elapsed:?}"
+    );
+    drop(session);
+    gw.abort();
+    Ok(())
 }
 
 #[tokio::test]

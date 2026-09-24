@@ -1,7 +1,7 @@
 //! Error and result types shared across the transport crate.
 
 use std::io;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, SocketAddrV4};
 
 /// Result alias used throughout the crate.
 pub type Result<T> = std::result::Result<T, TransportError>;
@@ -63,6 +63,24 @@ pub enum TransportError {
     #[error("connection state heartbeat failed after retries; gateway unreachable")]
     HeartbeatLost,
 
+    /// The gateway link was lost and the tunnel could not be re-established
+    /// within the [`TunnelReconnect`](crate::config::TunnelReconnect) budget
+    /// (issue #177). `cause` is the error that first signalled the loss (an
+    /// unacknowledged TUNNELING_REQUEST, a failed heartbeat, a socket error).
+    #[error(
+        "{cause}; the tunnel to gateway {gateway} could not be re-established within {} s \
+         (is the KNX IP interface powered and its LAN cable plugged in?)",
+        .budget.as_secs()
+    )]
+    TunnelLost {
+        /// The gateway the tunnel was connected to.
+        gateway: SocketAddrV4,
+        /// The re-establish budget that ran out.
+        budget: std::time::Duration,
+        /// The error that first signalled the loss.
+        cause: Box<TransportError>,
+    },
+
     /// The remote peer initiated a disconnect.
     #[error("gateway disconnected (channel {0})")]
     Disconnected(u8),
@@ -85,6 +103,27 @@ pub enum TransportError {
 /// The KNXnet/IP CONNECT_RESPONSE status meaning "no more connections"
 /// (every tunnelling slot is occupied).
 pub const E_NO_MORE_CONNECTIONS: u8 = 0x24;
+
+impl TransportError {
+    /// Whether this error means the gateway link dropped in a way the bus
+    /// recovers from on its own: a timeout, a failed heartbeat, a gateway
+    /// disconnect or a socket error.
+    ///
+    /// Management sessions treat such an error like a Layer-4 connection death
+    /// and resume once the bus is connected again (issue #177).
+    /// [`TunnelLost`](TransportError::TunnelLost) is deliberately *not* a link
+    /// loss in this sense: it is the terminal error after the tunnel's own
+    /// re-establish budget ran out.
+    pub fn is_link_loss(&self) -> bool {
+        matches!(
+            self,
+            TransportError::Timeout(_)
+                | TransportError::HeartbeatLost
+                | TransportError::Disconnected(_)
+                | TransportError::Io { .. }
+        )
+    }
+}
 
 impl From<io::Error> for TransportError {
     fn from(source: io::Error) -> Self {

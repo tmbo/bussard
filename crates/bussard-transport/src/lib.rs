@@ -58,12 +58,12 @@ mod tunnel;
 pub mod wire_trace;
 pub mod write_gate;
 
-pub use config::{ConnectionConfig, TransportKind};
+pub use config::{ConnectionConfig, TransportKind, TunnelReconnect};
 pub use conn::{BusConnection, TimestampedFrame};
 pub use discovery::{describe_gateway, discover, discover_all, local_ipv4_interfaces};
 pub use error::{E_NO_MORE_CONNECTIONS, Result, TransportError};
 pub use router::Router;
-pub use tunnel::Tunnel;
+pub use tunnel::{LinkState, Tunnel};
 
 use crate::cemi::CemiFrame;
 
@@ -97,6 +97,16 @@ impl Transport {
     pub fn assigned_individual_address(&self) -> Option<u16> {
         match self {
             Transport::Tunnel(t) => t.assigned_individual_address().filter(|&ia| ia != 0),
+            Transport::Router(_) => None,
+        }
+    }
+
+    /// The tunnel's [`LinkState`] receiver, so a caller can surface a gateway
+    /// link loss and its re-establishment (issue #177). `None` for routing,
+    /// which has no connection to lose.
+    pub fn link_state(&self) -> Option<tokio::sync::watch::Receiver<LinkState>> {
+        match self {
+            Transport::Tunnel(t) => Some(t.link_state()),
             Transport::Router(_) => None,
         }
     }

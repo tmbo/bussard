@@ -29,7 +29,10 @@
 //!   unaffected.
 //! - [`assigned_individual_address`](BusHandle::assigned_individual_address) and
 //!   [`status`](BusHandle::status) — the tunnel-assigned IA and connected /
-//!   reconnecting state.
+//!   reconnecting state. A tunnel that re-establishes itself after a lost
+//!   gateway link (issue #177) reports [`BusState::Reconnecting`] while it does,
+//!   and [`BusState::Connected`] once it is back; the send that was pending
+//!   completes then, instead of failing.
 //! - [`close`](BusHandle::close) — awaits the transport `DISCONNECT` on a single
 //!   close path (the #31 tunnel-slot guarantee), so a graceful shutdown never
 //!   opens a fresh tunnel just to close it.
@@ -43,12 +46,12 @@
 pub mod ops;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use bussard_transport::cemi::{CemiFrame, MessageCode};
 use bussard_transport::{
-    BusConnection, ConnectionConfig, TimestampedFrame, Transport, TransportError,
+    BusConnection, ConnectionConfig, LinkState, TimestampedFrame, Transport, TransportError,
 };
 use tokio::sync::{Semaphore, broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
@@ -194,6 +197,10 @@ struct Shared {
     /// polling. Carries the new [`BusState`]; the atomic above stays the source
     /// of truth for cheap synchronous reads.
     state_tx: watch::Sender<BusState>,
+    /// The tunnel's re-establish budget from the connection config.
+    reconnect_budget: Duration,
+    /// How many times the gateway link was lost since the actor started.
+    link_losses: AtomicU64,
 }
 
 impl Shared {
@@ -230,6 +237,8 @@ impl Bus {
             state: AtomicU8::new(BusState::Connecting.as_u8()),
             assigned_ia: AtomicU16::new(0),
             state_tx,
+            reconnect_budget: config.reconnect.budget,
+            link_losses: AtomicU64::new(0),
         });
 
         let actor = Actor {
@@ -331,6 +340,27 @@ impl BusHandle {
     /// The current connection status.
     pub fn status(&self) -> BusState {
         self.shared.state()
+    }
+
+    /// How long the tunnel keeps re-establishing a lost gateway link before a
+    /// pending send fails (the connection config's
+    /// [`TunnelReconnect::budget`](bussard_transport::TunnelReconnect::budget)).
+    ///
+    /// A management session that resumes after a link loss waits up to this
+    /// long for [`wait_connected`](Self::wait_connected) before reconnecting
+    /// its Layer-4 connection (issue #177).
+    pub fn reconnect_budget(&self) -> Duration {
+        self.shared.reconnect_budget
+    }
+
+    /// How many times the gateway link has been lost since the bus started:
+    /// each tunnel re-establish and each actor-level reconnect after a dropped
+    /// connection counts once.
+    ///
+    /// A caller compares two readings to learn whether a failed exchange
+    /// coincided with a link loss, and so is worth retrying (issue #177).
+    pub fn link_losses(&self) -> u64 {
+        self.shared.link_losses.load(Ordering::Relaxed)
     }
 
     /// A [`watch::Receiver`] that observes every [`BusState`] transition.
@@ -508,8 +538,18 @@ impl Actor {
                     let ia = conn.assigned_individual_address().unwrap_or(0);
                     self.shared.assigned_ia.store(ia, Ordering::Relaxed);
                     self.shared.set_state(BusState::Connected);
+                    // Mirror the tunnel's own re-establish (issue #177) into the
+                    // bus state. A separate task, because the actor awaits a
+                    // pending send inline while the tunnel re-establishes.
+                    let forwarder = conn
+                        .link_state()
+                        .map(|link| tokio::spawn(forward_link(link, self.shared.clone())));
 
-                    match self.consume(conn).await {
+                    let outcome = self.consume(conn).await;
+                    if let Some(forwarder) = forwarder {
+                        forwarder.abort();
+                    }
+                    match outcome {
                         ActorOutcome::Closed => {
                             self.shared.set_state(BusState::Closed);
                             return;
@@ -519,6 +559,7 @@ impl Actor {
                             return;
                         }
                         ActorOutcome::Dropped => {
+                            self.shared.link_losses.fetch_add(1, Ordering::Relaxed);
                             self.shared.set_state(BusState::Reconnecting);
                         }
                     }
@@ -692,6 +733,40 @@ enum BackoffOutcome {
     Close,
     /// Every handle was dropped.
     HandlesDropped,
+}
+
+/// Publishes a tunnel's [`LinkState`] changes as [`BusState`] transitions and
+/// bus-layer events, until the tunnel task ends (issue #177).
+///
+/// The tunnel itself logs the loss and the re-establish at WARN (the plain log
+/// line); these INFO events feed the CLI's live progress view, which shows the
+/// latest bus-layer event.
+async fn forward_link(mut link: watch::Receiver<LinkState>, shared: Arc<Shared>) {
+    // The actor already published the initial `Up`.
+    link.borrow_and_update();
+    while link.changed().await.is_ok() {
+        let state = *link.borrow_and_update();
+        match state {
+            LinkState::Reconnecting => {
+                shared.link_losses.fetch_add(1, Ordering::Relaxed);
+                tracing::info!("gateway connection lost, reconnecting");
+                shared.set_state(BusState::Reconnecting);
+            }
+            LinkState::Up { assigned_ia } => {
+                let ia = assigned_ia.unwrap_or(0);
+                let previous = shared.assigned_ia.swap(ia, Ordering::Relaxed);
+                if previous != 0 && ia != 0 && previous != ia {
+                    tracing::warn!(
+                        previous,
+                        ia,
+                        "the re-established tunnel has a different individual address"
+                    );
+                }
+                tracing::info!("gateway connection re-established");
+                shared.set_state(BusState::Connected);
+            }
+        }
+    }
 }
 
 /// Doubles the backoff, capped at [`BACKOFF_MAX`].

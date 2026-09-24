@@ -737,6 +737,7 @@ Serve the network-visualization website: an HTTP server that renders the model a
 | `BUSSARD_SCAN_DISCOVERY_MS` | Test knob: shrinks the per-address probe timeout of `scan` and `reconstruct --line`. Unset in normal use. |
 | `BUSSARD_ADDRESS_PROBE_MS` | Test knob: shrinks the per-attempt timeout of the source-address check (default 600 ms). Unset in normal use. |
 | `BUSSARD_WIRE_TRACE` | Set to `1` to log every KNXnet/IP datagram as hex on stderr. The diagnostic of last resort when a gateway behaves unexpectedly; very noisy. |
+| `BUSSARD_TUNNEL_RECONNECT_SECS` | How long, in seconds, a lost gateway tunnel is re-established before the pending bus operation fails (default `60`; `0` turns it off). While it runs, the log says `gateway connection lost` and later `gateway connection re-established`, and the progress display shows it as the last event. See [SAFETY.md](SAFETY.md). |
 | `BUSSARD_FLASH_L4_TIMEOUT_MS` | Flash knob: the per-exchange Layer 4 timeout. Raise it for a slow device or a lossy link. |
 | `BUSSARD_FLASH_REBOOT_WAIT_MS` | Flash knob: how long to wait for a device to come back after a restart. |
 | `BUSSARD_FLASH_RECONNECT_EXCHANGES` | Flash knob: how many exchanges to attempt while reconnecting after a restart. |

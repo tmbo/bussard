@@ -18,7 +18,7 @@ use std::time::Duration;
 use bussard_bus::{Bus, BusError, BusState};
 use bussard_testkit::{AckPolicy, MockGateway, TestResult, ga, group_dest, ia};
 use bussard_transport::cemi::CemiFrame;
-use bussard_transport::{ConnectionConfig, TransportKind};
+use bussard_transport::{ConnectionConfig, TransportKind, TunnelReconnect};
 
 /// The tunnel channel id every mock gateway in this file grants.
 const CHANNEL: u8 = 0x21;
@@ -164,9 +164,13 @@ async fn send_receipt_resolves_on_ack() -> TestResult {
 #[tokio::test]
 async fn send_errors_on_ack_exhaustion() -> TestResult {
     // Never ACK: the tunnel retransmits then errors; the actor surfaces that.
+    // Re-establishing is off, so this pins the bare exhaustion path (issue #177
+    // re-establishes by default; see the outage test below).
     let gw = start_mock(AckPolicy::Never).await?;
 
-    let (handle, _task) = Bus::connect(ConnectionConfig::tunnel(gw.addr()));
+    let (handle, _task) = Bus::connect(
+        ConnectionConfig::tunnel(gw.addr()).with_reconnect(TunnelReconnect::disabled()),
+    );
     wait_connected(&handle).await?;
 
     let result = tokio::time::timeout(
@@ -186,6 +190,67 @@ async fn send_errors_on_ack_exhaustion() -> TestResult {
 
     let _ = handle.close().await;
     let _ = gw.finish(FINISH).await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_send_rides_out_gateway_outage_and_reports_reconnecting() -> TestResult {
+    // Issue #177: the gateway link drops after the first frame for 2.5 s. The
+    // pending send does not fail; the bus reports Reconnecting while the tunnel
+    // re-establishes itself and Connected once it is back.
+    let gw = MockGateway::builder()
+        .channel(CHANNEL)
+        .outage(1, Duration::from_millis(2500))
+        .keep_serving()
+        .start()
+        .await?;
+    let reconnect = TunnelReconnect {
+        budget: Duration::from_secs(15),
+        initial_backoff: Duration::from_millis(100),
+        max_backoff: Duration::from_millis(200),
+        attempt_timeout: Duration::from_millis(300),
+    };
+    let (handle, _task) =
+        Bus::connect(ConnectionConfig::tunnel(gw.addr()).with_reconnect(reconnect));
+    wait_connected(&handle).await?;
+    assert_eq!(handle.reconnect_budget(), Duration::from_secs(15));
+
+    // Record every state transition from here on.
+    let mut states = handle.state_changes();
+    let seen = tokio::spawn(async move {
+        let mut seen = Vec::new();
+        while states.changed().await.is_ok() {
+            let state = *states.borrow_and_update();
+            seen.push(state);
+            if state == BusState::Connected {
+                break;
+            }
+        }
+        seen
+    });
+
+    let frame = |v: u8| -> TestResult<CemiFrame> {
+        Ok(CemiFrame::group_write_packed(
+            ga("3/0/4")?,
+            ia("1.1.255")?,
+            &[v],
+        ))
+    };
+    handle.send(frame(1)?).await?;
+    let receipt = tokio::time::timeout(Duration::from_secs(12), handle.send(frame(0)?))
+        .await
+        .map_err(|_| "the pending send did not complete after the outage")?;
+    assert!(
+        receipt.is_ok(),
+        "the send rides out the outage: {receipt:?}"
+    );
+
+    let seen = tokio::time::timeout(Duration::from_secs(2), seen).await??;
+    assert_eq!(seen, vec![BusState::Reconnecting, BusState::Connected]);
+    assert_eq!(handle.status(), BusState::Connected);
+    assert_eq!(gw.stats().channels, vec![CHANNEL, CHANNEL + 1]);
+
+    let _ = handle.close().await;
     Ok(())
 }
 

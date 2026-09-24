@@ -72,6 +72,7 @@ fn build_server_over(model: Model, passive: bool, allow_writes: bool) -> TestRes
         gateway: Some(SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 1), 3671)),
         multicast: SocketAddrV4::new(Ipv4Addr::new(224, 0, 23, 12), 3671),
         local_interface: Ipv4Addr::UNSPECIFIED,
+        reconnect: bussard_transport::TunnelReconnect::default(),
     };
     let cfg = McpConfig {
         dir: std::path::PathBuf::from("knx"),
