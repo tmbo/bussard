@@ -1,0 +1,16 @@
+# 1.1.200: KNX IP Interface. Hand-editable in full; vendor facts live in bussard.lock.
+
+address = "1.1.200"
+name = "KNX IP Interface"
+product = "IPS300SREG"
+
+[location]
+floor = "UG"
+room = "Technik"
+
+[security]
+secure_capable = true
+sequence_number = "55"
+
+[parameters]
+special-functions = "1"

@@ -1,0 +1,5 @@
+# bussard.toml: how bussard reaches the bus. Hand-editable.
+
+[connection]
+transport = "tunnel"
+gateway = "192.168.1.74:3671"

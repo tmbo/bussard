@@ -1,0 +1,48 @@
+# 1.1.47: Switch actuator, 2-gang / blinds actuator, 1-gang. Hand-editable in full; vendor facts live in bussard.lock.
+
+address = "1.1.47"
+name = "Switch actuator, 2-gang / blinds actuator, 1-gang"
+description = "Fenster"
+product = "230021SU"
+
+[location]
+floor = "DG"
+room = "Kind 2 Süd"
+
+[security]
+secure_capable = true
+
+[parameters]
+calc-sicherheit-freigabe-zeit-windalarme = "1"
+frostalarm = "1"
+regenalarm = "1"
+sicherheit-freigabe = "1"
+sicherheit-freigabe-ueberwachung-frost = "1"
+sicherheit-freigabe-ueberwachung-wind = "1"
+windalarm-1 = "1"
+zeit-ueberwachung-frost-min = "15"
+zeit-ueberwachung-wind-min = "5"
+
+[links]
+venetian-blind-safety-input-135.listen = ["4/1/9"]
+venetian-blind-safety-input-138.listen = ["4/1/8"]
+venetian-blind-safety-input-139.listen = ["4/1/13"]
+
+[channel.1]  # Relay outputs
+a12-betriebsart = "2"
+a12-calc-sicherheit-freigabe-alarme = "1"
+a12-calc-sicherheit-freigabe-windalarme = "1"
+a12-frostalarm = "1"
+a12-regenalarm = "1"
+a12-sicherheit-freigabe = "1"
+a12-verhalten-frost-lk = "2"
+a12-verhalten-regen-lk = "2"
+a12-verhalten-wind-lk = "2"
+a12-windalarm-1 = "1"
+a12-zuordnung-frost = "1"
+a12-zuordnung-regen = "1"
+a12-zuordnung-wind-1 = "1"
+venetian-blind-input-144.listen = ["3/1/20"]
+venetian-blind-input-145.listen = ["3/1/21"]
+venetian-blind-input-146.listen = ["3/1/22"]
+venetian-blind-output.send = "3/1/23"

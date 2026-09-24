@@ -1,0 +1,740 @@
+[[links]]
+device = "1.1.1"
+objects = [
+  { object = 0, name = "Eingang 1", send = "4/0/0" },
+]
+
+[[links]]
+device = "1.1.2"
+objects = [
+  { object = 21, name = "VO 1 - Input", listen = ["0/3/6"] },
+  { object = 36, name = "VO 2 - Input", listen = ["0/3/26"] },
+  { object = 51, name = "VO 3 - Input", listen = ["0/3/36"] },
+  { object = 66, name = "VO 4 - Input", listen = ["0/3/16"] },
+  { object = 81, name = "VO 5 - Input", listen = ["1/4/26"] },
+  { object = 96, name = "VO 6 - Input", listen = ["1/4/6"] },
+  { object = 333, name = "RTC - Input", listen = ["0/3/1"] },
+  { object = 334, name = "RTC - Input", send = "0/3/2" },
+  { object = 335, name = "RTC - Input", send = "0/3/3" },
+  { object = 338, name = "RTC - Input", listen = ["4/0/0"] },
+  { object = 339, name = "RTC - Output", send = "0/3/102" },
+  { object = 343, name = "RTC - Output", send = "0/3/4" },
+  { object = 345, name = "RTC - Output", send = "0/3/8" },
+  { object = 346, name = "RTC - Input", listen = ["0/3/5"] },
+  { object = 372, name = "RTC - Output", send = "0/3/7" },
+  { object = 380, name = "RTC - Output", send = "0/3/40" },
+  { object = 383, name = "RTC 2 - Input", listen = ["0/3/11"] },
+  { object = 384, name = "RTC 2 - Input", send = "0/3/12" },
+  { object = 385, name = "RTC 2 - Input", send = "0/3/13" },
+  { object = 388, name = "RTC 2 - Input", listen = ["4/0/0"] },
+  { object = 393, name = "RTC 2 - General", send = "0/3/14" },
+  { object = 395, name = "RTC 2 - General", send = "0/3/18" },
+  { object = 396, name = "RTC 2 - Input", listen = ["0/3/15"] },
+  { object = 422, name = "RTC 2 - General", send = "0/3/17" },
+  { object = 430, name = "RTC 2 - General", send = "0/3/41" },
+  { object = 433, name = "RTC 3 - Input", listen = ["0/3/21"] },
+  { object = 434, name = "RTC 3 - Input", send = "0/3/22" },
+  { object = 435, name = "RTC 3 - Input", send = "0/3/23" },
+  { object = 438, name = "RTC 3 - Input", listen = ["4/0/0"] },
+  { object = 443, name = "RTC 3 - General", send = "0/3/24" },
+  { object = 445, name = "RTC 3 - General", send = "0/3/28" },
+  { object = 446, name = "RTC 3 - Input", listen = ["0/3/25"] },
+  { object = 472, name = "RTC 3 - General", send = "0/3/27" },
+  { object = 480, name = "RTC 3 - General", send = "0/3/42" },
+  { object = 483, name = "RTC 4 - Input", listen = ["0/3/31"] },
+  { object = 484, name = "RTC 4 - Input", send = "0/3/32" },
+  { object = 485, name = "RTC 4 - Input", send = "0/3/33" },
+  { object = 488, name = "RTC 4 - Input", listen = ["4/0/0"] },
+  { object = 493, name = "RTC 4 - General", send = "0/3/34" },
+  { object = 495, name = "RTC 4 - General", send = "0/3/38" },
+  { object = 496, name = "RTC 4 - Input", listen = ["0/3/35"] },
+  { object = 522, name = "RTC 4 - General", send = "0/3/37" },
+  { object = 530, name = "RTC 4 - General", send = "0/3/43" },
+  { object = 533, name = "RTC 5 - Input", listen = ["1/4/1"] },
+  { object = 534, name = "RTC 5 - Input", send = "1/4/2" },
+  { object = 535, name = "RTC 5 - Input", send = "1/4/3" },
+  { object = 538, name = "RTC 5 - Input", listen = ["4/0/0"] },
+  { object = 543, name = "RTC 5 - General", send = "1/4/4" },
+  { object = 545, name = "RTC 5 - General", send = "1/4/8" },
+  { object = 546, name = "RTC 5 - Input", listen = ["1/4/5"] },
+  { object = 572, name = "RTC 5 - General", send = "1/4/7" },
+  { object = 580, name = "RTC 5 - General", send = "1/4/30" },
+  { object = 583, name = "RTC 6 - Input", listen = ["1/4/11"] },
+  { object = 584, name = "RTC 6 - Input", send = "1/4/12" },
+  { object = 585, name = "RTC 6 - Input", send = "1/4/13" },
+  { object = 588, name = "RTC 6 - Input", listen = ["4/0/0"] },
+  { object = 593, name = "RTC 6 - General", send = "1/4/14" },
+  { object = 595, name = "RTC 6 - General", send = "1/4/18" },
+  { object = 596, name = "RTC 6 - Input", listen = ["1/4/15"] },
+  { object = 622, name = "RTC 6 - General", send = "1/4/17" },
+  { object = 630, name = "RTC 6 - General", send = "1/4/31" },
+  { object = 935, name = "RTC - Output", send = "0/3/6" },
+  { object = 977, name = "RTC 2 - General", send = "0/3/16" },
+  { object = 1019, name = "RTC 3 - General", send = "0/3/26" },
+  { object = 1061, name = "RTC 4 - General", send = "0/3/36" },
+  { object = 1103, name = "RTC 5 - General", send = "1/4/6" },
+  { object = 1145, name = "RTC 6 - General", send = "1/4/16" },
+  { object = 1437, name = "RTC - Output", send = "0/3/9" },
+  { object = 1438, name = "RTC - Input", send = "0/3/0" },
+  { object = 1447, name = "RTC 2 - General", send = "0/3/19" },
+  { object = 1448, name = "RTC 2 - Input", send = "0/3/10" },
+  { object = 1457, name = "RTC 3 - General", send = "0/3/29" },
+  { object = 1458, name = "RTC 3 - Input", send = "0/3/20" },
+  { object = 1467, name = "RTC 4 - General", send = "0/3/39" },
+  { object = 1468, name = "RTC 4 - Input", send = "0/3/30" },
+  { object = 1477, name = "RTC 5 - General", send = "1/4/9" },
+  { object = 1478, name = "RTC 5 - Input", send = "1/4/0" },
+  { object = 1487, name = "RTC 6 - General", send = "1/4/19" },
+  { object = 1488, name = "RTC 6 - Input", send = "1/4/10" },
+]
+
+[[links]]
+device = "1.1.3"
+objects = [
+  { object = 21, name = "VO 1 - Input", listen = ["1/4/16"] },
+  { object = 51, name = "VO 3 - Input", listen = ["3/3/26"] },
+  { object = 66, name = "VO 4 - Input", listen = ["3/3/6"] },
+  { object = 81, name = "VO 5 - Input", listen = ["3/3/16"] },
+  { object = 333, name = "RTC - Input", listen = ["1/4/21"] },
+  { object = 334, name = "RTC - Input", send = "1/4/22" },
+  { object = 335, name = "RTC - Input", send = "1/4/23" },
+  { object = 338, name = "RTC - Input", listen = ["4/0/0"] },
+  { object = 343, name = "RTC - Output", send = "1/4/24" },
+  { object = 345, name = "RTC - Output", send = "1/4/28" },
+  { object = 346, name = "RTC - Input", listen = ["1/4/25"] },
+  { object = 372, name = "RTC - Output", send = "1/4/27" },
+  { object = 380, name = "RTC - Output", send = "1/4/32" },
+  { object = 383, name = "RTC 2 - Input", listen = ["3/3/1"] },
+  { object = 384, name = "RTC 2 - Input", send = "3/3/2" },
+  { object = 385, name = "RTC 2 - Input", send = "3/3/3" },
+  { object = 388, name = "RTC 2 - Input", listen = ["4/0/0"] },
+  { object = 389, name = "RTC 2 - General", send = "3/3/102" },
+  { object = 393, name = "RTC 2 - General", send = "3/3/4" },
+  { object = 395, name = "RTC 2 - General", send = "3/3/8" },
+  { object = 396, name = "RTC 2 - Input", listen = ["3/3/5"] },
+  { object = 422, name = "RTC 2 - General", send = "3/3/7" },
+  { object = 430, name = "RTC 2 - General", send = "3/3/30" },
+  { object = 433, name = "RTC 3 - Input", listen = ["3/3/11"] },
+  { object = 434, name = "RTC 3 - Input", send = "3/3/12" },
+  { object = 435, name = "RTC 3 - Input", send = "3/3/13" },
+  { object = 438, name = "RTC 3 - Input", listen = ["4/0/0"] },
+  { object = 443, name = "RTC 3 - General", send = "3/3/14" },
+  { object = 445, name = "RTC 3 - General", send = "3/3/18" },
+  { object = 446, name = "RTC 3 - Input", listen = ["3/3/15"] },
+  { object = 472, name = "RTC 3 - General", send = "3/3/17" },
+  { object = 480, name = "RTC 3 - General", send = "3/3/31" },
+  { object = 483, name = "RTC 4 - Input", listen = ["3/3/21"] },
+  { object = 484, name = "RTC 4 - Input", send = "3/3/22" },
+  { object = 485, name = "RTC 4 - Input", send = "3/3/23" },
+  { object = 488, name = "RTC 4 - Input", listen = ["4/0/0"] },
+  { object = 493, name = "RTC 4 - General", send = "3/3/24" },
+  { object = 495, name = "RTC 4 - General", send = "3/3/28" },
+  { object = 496, name = "RTC 4 - Input", listen = ["3/3/25"] },
+  { object = 522, name = "RTC 4 - General", send = "3/3/27" },
+  { object = 530, name = "RTC 4 - General", send = "3/3/32" },
+  { object = 935, name = "RTC - Output", send = "1/4/26" },
+  { object = 977, name = "RTC 2 - General", send = "3/3/6" },
+  { object = 1019, name = "RTC 3 - General", send = "3/3/16" },
+  { object = 1061, name = "RTC 4 - General", send = "3/3/26" },
+  { object = 1437, name = "RTC - Output", send = "1/4/29" },
+  { object = 1438, name = "RTC - Input", send = "1/4/20" },
+  { object = 1447, name = "RTC 2 - General", send = "3/3/9" },
+  { object = 1448, name = "RTC 2 - Input", send = "3/3/0" },
+  { object = 1457, name = "RTC 3 - General", send = "3/3/19" },
+  { object = 1458, name = "RTC 3 - Input", send = "3/3/10" },
+  { object = 1467, name = "RTC 4 - General", send = "3/3/29" },
+  { object = 1468, name = "RTC 4 - Input", send = "3/3/20" },
+]
+
+[[links]]
+device = "1.1.4"
+objects = [
+  { object = 11, name = "Venetian blind - Safety - Input", listen = ["4/1/9"] },
+  { object = 12, name = "Venetian blind - Safety - Input", listen = ["4/1/12"] },
+  { object = 15, name = "Venetian blind - Safety - Input", listen = ["4/1/13"] },
+  { object = 20, name = "Venetian blind 1/2 - Input", listen = ["1/2/0"] },
+  { object = 21, name = "Venetian blind 1/2 - Input", listen = ["1/2/1"] },
+  { object = 22, name = "Venetian blind 1/2 - Input", listen = ["1/2/2"] },
+  { object = 38, name = "Venetian blind 1/2 - Output", send = "1/2/3" },
+  { object = 67, name = "Venetian blind 3/4 - Input", listen = ["1/2/4"] },
+  { object = 68, name = "Venetian blind 3/4 - Input", listen = ["1/2/5"] },
+  { object = 69, name = "Venetian blind 3/4 - Input", listen = ["1/2/6"] },
+  { object = 85, name = "Venetian blind 3/4 - Output", send = "1/2/7" },
+  { object = 114, name = "Venetian blind 5/6 - Input", listen = ["1/2/8", "1/3/2"] },
+  { object = 115, name = "Venetian blind 5/6 - Input", listen = ["1/2/9", "1/3/3"] },
+  { object = 116, name = "Venetian blind 5/6 - Input", listen = ["1/2/10"] },
+  { object = 132, name = "Venetian blind 5/6 - Output", send = "1/2/11" },
+  { object = 161, name = "Venetian blind 7/8 - Input", listen = ["1/2/12", "1/3/2"] },
+  { object = 162, name = "Venetian blind 7/8 - Input", listen = ["1/2/13", "1/3/3"] },
+  { object = 163, name = "Venetian blind 7/8 - Input", listen = ["1/2/14"] },
+  { object = 179, name = "Venetian blind 7/8 - Output", send = "1/2/15" },
+  { object = 208, name = "Venetian blind 9/10 - Input", listen = ["1/2/16", "1/3/2"] },
+  { object = 209, name = "Venetian blind 9/10 - Input", listen = ["1/2/17", "1/3/3"] },
+  { object = 210, name = "Venetian blind 9/10 - Input", listen = ["1/2/18"] },
+  { object = 226, name = "Venetian blind 9/10 - Output", send = "1/2/19" },
+  { object = 255, name = "Venetian blind 11/12 - Input", listen = ["1/2/20"] },
+  { object = 256, name = "Venetian blind 11/12 - Input", listen = ["1/2/21"] },
+  { object = 257, name = "Venetian blind 11/12 - Input", listen = ["1/2/22"] },
+  { object = 273, name = "Venetian blind 11/12 - Output", send = "1/2/23" },
+  { object = 302, name = "Venetian blind 13/14 - Input", listen = ["1/2/24", "1/3/4"] },
+  { object = 303, name = "Venetian blind 13/14 - Input", listen = ["1/2/25", "1/3/5"] },
+  { object = 304, name = "Venetian blind 13/14 - Input", listen = ["1/2/26"] },
+  { object = 320, name = "Venetian blind 13/14 - Output", send = "1/2/27" },
+  { object = 349, name = "Venetian blind 15/16 - Input", listen = ["1/2/28", "1/3/4"] },
+  { object = 350, name = "Venetian blind 15/16 - Input", listen = ["1/2/29", "1/3/5"] },
+  { object = 351, name = "Venetian blind 15/16 - Input", listen = ["1/2/30"] },
+  { object = 367, name = "Venetian blind 15/16 - Output", send = "1/2/31" },
+  { object = 396, name = "Venetian blind 17/18 - Input", listen = ["1/2/32", "1/3/6"] },
+  { object = 397, name = "Venetian blind 17/18 - Input", listen = ["1/2/33", "1/3/7"] },
+  { object = 398, name = "Venetian blind 17/18 - Input", listen = ["1/2/34"] },
+  { object = 399, name = "Venetian blind 17/18 - Input", listen = ["1/2/35"] },
+  { object = 414, name = "Venetian blind 17/18 - Output", send = "1/2/36" },
+  { object = 415, name = "Venetian blind 17/18 - Output", send = "1/2/37" },
+  { object = 443, name = "Venetian blind 19/20 - Input", listen = ["1/2/38", "1/3/6"] },
+  { object = 444, name = "Venetian blind 19/20 - Input", listen = ["1/2/39", "1/3/7"] },
+  { object = 445, name = "Venetian blind 19/20 - Input", listen = ["1/2/40"] },
+  { object = 446, name = "Venetian blind 19/20 - Input", listen = ["1/2/41"] },
+  { object = 461, name = "Venetian blind 19/20 - Output", send = "1/2/42" },
+  { object = 462, name = "Venetian blind 19/20 - Output", send = "1/2/43" },
+  { object = 490, name = "Venetian blind 21/22 - Input", listen = ["1/2/44", "1/3/0"] },
+  { object = 491, name = "Venetian blind 21/22 - Input", listen = ["1/2/45", "1/3/1"] },
+  { object = 492, name = "Venetian blind 21/22 - Input", listen = ["1/2/46"] },
+  { object = 493, name = "Venetian blind 21/22 - Input", listen = ["1/2/47"] },
+  { object = 508, name = "Venetian blind 21/22 - Output", send = "1/2/48" },
+  { object = 509, name = "Venetian blind 21/22 - Output", send = "1/2/49" },
+  { object = 537, name = "Venetian blind 23/24 - Input", listen = ["3/1/0", "3/2/0"] },
+  { object = 538, name = "Venetian blind 23/24 - Input", listen = ["3/1/1", "3/2/1"] },
+  { object = 539, name = "Venetian blind 23/24 - Input", listen = ["3/1/2"] },
+  { object = 555, name = "Venetian blind 23/24 - Output", send = "3/1/3" },
+]
+
+[[links]]
+device = "1.1.5"
+objects = [
+  { object = 620, name = "Switching - Input", listen = ["1/0/0"] },
+  { object = 621, name = "Switching - Output", send = "1/0/1" },
+  { object = 642, name = "Switching - Input", listen = ["0/0/1"] },
+  { object = 643, name = "Switching - Output", send = "0/0/2" },
+  { object = 664, name = "Switching - Input", listen = ["1/0/2"] },
+  { object = 665, name = "Switching - Output", send = "1/0/3" },
+  { object = 686, name = "Switching - Input", listen = ["1/0/4"] },
+  { object = 687, name = "Switching - Output", send = "1/0/5" },
+  { object = 708, name = "Switching - Input", listen = ["1/0/6"] },
+  { object = 709, name = "Switching - Output", send = "1/0/7" },
+  { object = 730, name = "Switching - Input", listen = ["0/0/3"] },
+  { object = 731, name = "Switching - Output", send = "0/0/4" },
+  { object = 752, name = "Switching - Input", listen = ["0/0/5"] },
+  { object = 753, name = "Switching - Output", send = "0/0/6" },
+  { object = 774, name = "Switching - Input", listen = ["0/0/7"] },
+  { object = 775, name = "Switching - Output", send = "0/0/8" },
+  { object = 796, name = "Switching - Input", listen = ["1/0/8"] },
+  { object = 797, name = "Switching - Output", send = "1/0/9" },
+  { object = 818, name = "Switching - Input", listen = ["1/0/10"] },
+  { object = 819, name = "Switching - Output", send = "1/0/11" },
+  { object = 840, name = "Switching - Input", listen = ["0/0/9"] },
+  { object = 841, name = "Switching - Output", send = "0/0/10" },
+  { object = 862, name = "Switching - Input", listen = ["1/0/12"] },
+  { object = 863, name = "Switching - Output", send = "1/0/13" },
+  { object = 884, name = "Switching - Input", listen = ["1/0/14"] },
+  { object = 885, name = "Switching - Output", send = "1/0/15" },
+  { object = 906, name = "Switching - Input", listen = ["0/0/11"] },
+  { object = 907, name = "Switching - Output", send = "0/0/12" },
+  { object = 928, name = "Switching - Input", listen = ["0/0/13"] },
+  { object = 929, name = "Switching - Output", send = "0/0/14" },
+]
+
+[[links]]
+device = "1.1.6"
+objects = [
+  { object = 11, name = "Venetian blind - Safety - Input", listen = ["4/1/9"] },
+  { object = 12, name = "Venetian blind - Safety - Input", listen = ["4/1/12"] },
+  { object = 15, name = "Venetian blind - Safety - Input", listen = ["4/1/13"] },
+  { object = 20, name = "Venetian blind 1/2 - Input", listen = ["3/1/4", "3/2/0"] },
+  { object = 21, name = "Venetian blind 1/2 - Input", listen = ["3/1/5", "3/2/1"] },
+  { object = 22, name = "Venetian blind 1/2 - Input", listen = ["3/1/6"] },
+  { object = 38, name = "Venetian blind 1/2 - Output", send = "3/1/7" },
+  { object = 67, name = "Venetian blind 3/4 - Input", listen = ["3/1/8", "3/2/2"] },
+  { object = 68, name = "Venetian blind 3/4 - Input", listen = ["3/1/9", "3/2/3"] },
+  { object = 69, name = "Venetian blind 3/4 - Input", listen = ["3/1/10"] },
+  { object = 85, name = "Venetian blind 3/4 - Output", send = "3/1/11" },
+  { object = 114, name = "Venetian blind 5/6 - Input", listen = ["3/1/12", "3/2/2"] },
+  { object = 115, name = "Venetian blind 5/6 - Input", listen = ["3/1/13", "3/2/3"] },
+  { object = 116, name = "Venetian blind 5/6 - Input", listen = ["3/1/14"] },
+  { object = 132, name = "Venetian blind 5/6 - Output", send = "3/1/15" },
+  { object = 161, name = "Venetian blind 7/8 - Input", listen = ["0/1/1"] },
+  { object = 162, name = "Venetian blind 7/8 - Input", listen = ["0/1/2"] },
+  { object = 163, name = "Venetian blind 7/8 - Input", listen = ["0/1/3"] },
+  { object = 179, name = "Venetian blind 7/8 - Output", send = "0/1/4" },
+  { object = 208, name = "Venetian blind 9/10 - Input", listen = ["0/1/5"] },
+  { object = 209, name = "Venetian blind 9/10 - Input", listen = ["0/1/6"] },
+  { object = 210, name = "Venetian blind 9/10 - Input", listen = ["0/1/7"] },
+  { object = 226, name = "Venetian blind 9/10 - Output", send = "0/1/8" },
+  { object = 255, name = "Venetian blind 11/12 - Input", listen = ["0/1/9", "0/2/0"] },
+  { object = 256, name = "Venetian blind 11/12 - Input", listen = ["0/1/10", "0/2/1"] },
+  { object = 257, name = "Venetian blind 11/12 - Input", listen = ["0/1/11"] },
+  { object = 273, name = "Venetian blind 11/12 - Output", send = "0/1/12" },
+  { object = 302, name = "Venetian blind 13/14 - Input", listen = ["0/1/13", "0/2/0"] },
+  { object = 303, name = "Venetian blind 13/14 - Input", listen = ["0/1/14", "0/2/1"] },
+  { object = 304, name = "Venetian blind 13/14 - Input", listen = ["0/1/15"] },
+  { object = 320, name = "Venetian blind 13/14 - Output", send = "0/1/16" },
+  { object = 349, name = "Venetian blind 15/16 - Input", listen = ["0/1/17", "0/2/2"] },
+  { object = 350, name = "Venetian blind 15/16 - Input", listen = ["0/1/18", "0/2/3"] },
+  { object = 351, name = "Venetian blind 15/16 - Input", listen = ["0/1/19"] },
+  { object = 352, name = "Venetian blind 15/16 - Input", listen = ["0/1/20"] },
+  { object = 367, name = "Venetian blind 15/16 - Output", send = "0/1/21" },
+  { object = 368, name = "Venetian blind 15/16 - Output", send = "0/1/22" },
+  { object = 396, name = "Venetian blind 17/18 - Input", listen = ["0/1/23", "0/2/2"] },
+  { object = 397, name = "Venetian blind 17/18 - Input", listen = ["0/1/24", "0/2/3"] },
+  { object = 398, name = "Venetian blind 17/18 - Input", listen = ["0/1/25"] },
+  { object = 399, name = "Venetian blind 17/18 - Input", listen = ["0/1/26"] },
+  { object = 414, name = "Venetian blind 17/18 - Output", send = "0/1/27" },
+  { object = 415, name = "Venetian blind 17/18 - Output", send = "0/1/28" },
+  { object = 443, name = "Venetian blind 19/20 - Input", listen = ["0/1/29", "0/2/2"] },
+  { object = 444, name = "Venetian blind 19/20 - Input", listen = ["0/1/30", "0/2/3"] },
+  { object = 445, name = "Venetian blind 19/20 - Input", listen = ["0/1/31"] },
+  { object = 446, name = "Venetian blind 19/20 - Input", listen = ["0/1/32"] },
+  { object = 461, name = "Venetian blind 19/20 - Output", send = "0/1/33" },
+  { object = 462, name = "Venetian blind 19/20 - Output", send = "0/1/34" },
+  { object = 490, name = "Venetian blind 21/22 - Input", listen = ["1/2/50", "1/3/0"] },
+  { object = 491, name = "Venetian blind 21/22 - Input", listen = ["1/2/51", "1/3/1"] },
+  { object = 492, name = "Venetian blind 21/22 - Input", listen = ["1/2/52"] },
+  { object = 493, name = "Venetian blind 21/22 - Input", listen = ["1/2/53"] },
+  { object = 508, name = "Venetian blind 21/22 - Output", send = "1/2/54" },
+  { object = 509, name = "Venetian blind 21/22 - Output", send = "1/2/55" },
+  { object = 537, name = "Venetian blind 23/24 - Input", listen = ["1/2/56", "1/3/0"] },
+  { object = 538, name = "Venetian blind 23/24 - Input", listen = ["1/2/57", "1/3/1"] },
+  { object = 539, name = "Venetian blind 23/24 - Input", listen = ["1/2/58"] },
+  { object = 540, name = "Venetian blind 23/24 - Input", listen = ["1/2/59"] },
+  { object = 555, name = "Venetian blind 23/24 - Output", send = "1/2/60" },
+  { object = 556, name = "Venetian blind 23/24 - Output", send = "1/2/61" },
+]
+
+[[links]]
+device = "1.1.7"
+objects = [
+  { object = 598, name = "Switching - Input", listen = ["0/0/15"] },
+  { object = 599, name = "Switching - Output", send = "0/0/16" },
+  { object = 620, name = "Switching - Input", listen = ["0/0/17"] },
+  { object = 621, name = "Switching - Output", send = "0/0/18" },
+  { object = 642, name = "Switching - Input", listen = ["1/0/16"] },
+  { object = 643, name = "Switching - Output", send = "1/0/17" },
+  { object = 664, name = "Switching - Input", listen = ["0/0/19"] },
+  { object = 665, name = "Switching - Output", send = "0/0/20" },
+  { object = 686, name = "Switching - Input", listen = ["3/0/4"] },
+  { object = 687, name = "Switching - Output", send = "3/0/5" },
+  { object = 708, name = "Switching - Input", listen = ["3/0/6"] },
+  { object = 709, name = "Switching - Output", send = "3/0/7" },
+  { object = 730, name = "Switching - Input", listen = ["3/0/0"] },
+  { object = 731, name = "Switching - Output", send = "3/0/1" },
+  { object = 752, name = "Switching - Input", listen = ["3/0/2"] },
+  { object = 753, name = "Switching - Output", send = "3/0/3" },
+  { object = 774, name = "Switching - Input", listen = ["3/0/8"] },
+  { object = 775, name = "Switching - Output", send = "3/0/9" },
+  { object = 796, name = "Switching - Input", listen = ["3/0/10"] },
+  { object = 797, name = "Switching - Output", send = "3/0/11" },
+  { object = 840, name = "Switching - Input", listen = ["3/0/14"] },
+  { object = 841, name = "Switching - Output", send = "3/0/15" },
+  { object = 862, name = "Switching - Input", listen = ["3/0/16"] },
+  { object = 863, name = "Switching - Output", send = "3/0/17" },
+  { object = 884, name = "Switching - Input", listen = ["3/0/12"] },
+  { object = 885, name = "Switching - Output", send = "3/0/13" },
+  { object = 906, name = "Switching - Input", listen = ["0/0/21"] },
+  { object = 907, name = "Switching - Output", send = "0/0/22" },
+]
+
+[[links]]
+device = "1.1.8"
+objects = [
+  { object = 31, name = "Dimming channel 1 - Input", listen = ["1/1/0"] },
+  { object = 32, name = "Dimming channel 1 - Output", send = "1/1/1" },
+  { object = 34, name = "Dimming channel 1 - Input", listen = ["1/1/2"] },
+  { object = 35, name = "Dimming channel 1 - Input", listen = ["1/1/3"] },
+  { object = 36, name = "Dimming channel 1 - Output", send = "1/1/4" },
+  { object = 51, name = "Dimming channel 2 - Input", listen = ["1/1/5"] },
+  { object = 52, name = "Dimming channel 2 - Output", send = "1/1/6" },
+  { object = 54, name = "Dimming channel 2 - Input", listen = ["1/1/7"] },
+  { object = 55, name = "Dimming channel 2 - Input", listen = ["1/1/8"] },
+  { object = 56, name = "Dimming channel 2 - Output", send = "1/1/9" },
+  { object = 71, name = "Dimming channel 3 - Input", listen = ["1/1/10"] },
+  { object = 72, name = "Dimming channel 3 - Output", send = "1/1/11" },
+  { object = 74, name = "Dimming channel 3 - Input", listen = ["1/1/12"] },
+  { object = 75, name = "Dimming channel 3 - Input", listen = ["1/1/13"] },
+  { object = 76, name = "Dimming channel 3 - Output", send = "1/1/14" },
+  { object = 91, name = "Dimming channel 4 - Input", listen = ["1/1/15"] },
+  { object = 92, name = "Dimming channel 4 - Output", send = "1/1/16" },
+  { object = 94, name = "Dimming channel 4 - Input", listen = ["1/1/17"] },
+  { object = 95, name = "Dimming channel 4 - Input", listen = ["1/1/18"] },
+  { object = 96, name = "Dimming channel 4 - Output", send = "1/1/19" },
+]
+
+[[links]]
+device = "1.1.9"
+objects = [
+  { object = 31, name = "Dimming channel 1 - Input", listen = ["1/1/20"] },
+  { object = 32, name = "Dimming channel 1 - Output", send = "1/1/21" },
+  { object = 34, name = "Dimming channel 1 - Input", listen = ["1/1/22"] },
+  { object = 35, name = "Dimming channel 1 - Input", listen = ["1/1/23"] },
+  { object = 36, name = "Dimming channel 1 - Output", send = "1/1/24" },
+  { object = 51, name = "Dimming channel 2 - Input", listen = ["1/1/20"] },
+  { object = 52, name = "Dimming channel 2 - Output", send = "1/1/21" },
+  { object = 54, name = "Dimming channel 2 - Input", listen = ["1/1/22"] },
+  { object = 55, name = "Dimming channel 2 - Input", listen = ["1/1/23"] },
+  { object = 56, name = "Dimming channel 2 - Output", send = "1/1/24" },
+]
+
+[[links]]
+device = "1.1.10"
+objects = [
+  { object = 65, name = "TSM - Taste 1 - Output", send = "0/0/11" },
+  { object = 66, name = "TSM - Taste 1 - Input", listen = ["0/0/12"] },
+  { object = 69, name = "TSM - Taste 2 - Output", send = "0/0/19" },
+  { object = 70, name = "TSM - Taste 2 - Input", listen = ["0/0/20"] },
+  { object = 285, name = "- Output", send = "0/1/6" },
+  { object = 286, name = "- Output", send = "0/1/5" },
+  { object = 1289, name = "- Output", send = "0/3/10" },
+]
+
+[[links]]
+device = "1.1.11"
+objects = [
+  { object = 81, name = "TSM - Taste 5 - Output", send = "1/0/12" },
+  { object = 82, name = "TSM - Taste 5 - Input", listen = ["1/0/13"] },
+  { object = 85, name = "TSM - Taste 6 - Output", send = "1/0/16" },
+  { object = 86, name = "TSM - Taste 6 - Input", listen = ["1/0/17"] },
+  { object = 169, name = "- Output", send = "1/1/15" },
+  { object = 170, name = "- Output", send = "1/1/17" },
+  { object = 285, name = "- Output", send = "1/3/3" },
+  { object = 286, name = "- Output", send = "1/3/2" },
+  { object = 1289, name = "- Output", send = "1/4/40" },
+]
+
+[[links]]
+device = "1.1.12"
+objects = [
+  { object = 65, name = "TSM - Taste 1 - Output", send = "0/0/5" },
+  { object = 66, name = "TSM - Taste 1 - Input", listen = ["0/0/6"] },
+  { object = 69, name = "TSM - Taste 2 - Output", send = "0/0/5" },
+  { object = 70, name = "TSM - Taste 2 - Input", listen = ["0/0/6"] },
+  { object = 1289, name = "- Output", send = "0/3/47" },
+]
+
+[[links]]
+device = "1.1.13"
+objects = [
+  { object = 65, name = "TSM - Taste 1 - Output", send = "4/4/43" },
+  { object = 81, name = "TSM - Taste 5 - Output", send = "4/2/50" },
+  { object = 285, name = "- Output", send = "0/2/1" },
+  { object = 286, name = "- Output", send = "0/2/0" },
+  { object = 1289, name = "- Output", send = "0/3/20" },
+]
+
+[[links]]
+device = "1.1.14"
+objects = [
+  { object = 81, name = "TSM - Taste 5 - Output", send = "1/0/18" },
+  { object = 82, name = "TSM - Taste 5 - Input", listen = ["1/0/19"] },
+  { object = 85, name = "TSM - Taste 6 - Output", send = "1/0/6" },
+  { object = 86, name = "TSM - Taste 6 - Input", listen = ["1/0/7"] },
+  { object = 169, name = "- Output", send = "1/1/0" },
+  { object = 170, name = "- Output", send = "1/1/2" },
+  { object = 285, name = "- Output", send = "1/3/1" },
+  { object = 286, name = "- Output", send = "1/3/0" },
+  { object = 1289, name = "- Output", send = "1/4/0" },
+]
+
+[[links]]
+device = "1.1.15"
+objects = [
+  { object = 65, name = "TSM - Taste 1 - Output", send = "1/0/14" },
+  { object = 66, name = "TSM - Taste 1 - Input", listen = ["1/0/15"] },
+  { object = 69, name = "TSM - Taste 2 - Output", send = "1/0/0" },
+  { object = 70, name = "TSM - Taste 2 - Input", listen = ["1/0/1"] },
+  { object = 73, name = "TSM - Taste 3 - Output", send = "1/4/35" },
+  { object = 74, name = "TSM - Taste 3 - Input", listen = ["1/4/34"] },
+  { object = 293, name = "- Output", send = "1/2/21" },
+  { object = 294, name = "- Output", send = "1/2/20" },
+  { object = 1289, name = "- Output", send = "1/4/20" },
+]
+
+[[links]]
+device = "1.1.16"
+objects = [
+  { object = 65, name = "TSM - Taste 1 - Output", send = "0/0/9" },
+  { object = 66, name = "TSM - Taste 1 - Input", listen = ["0/0/10"] },
+  { object = 69, name = "TSM - Taste 2 - Output", send = "0/0/5" },
+  { object = 70, name = "TSM - Taste 2 - Input", listen = ["0/0/6"] },
+  { object = 81, name = "TSM - Taste 5 - Output", send = "4/3/2" },
+  { object = 82, name = "TSM - Taste 5 - Input", listen = ["4/3/3"] },
+  { object = 85, name = "TSM - Taste 6 - Output", send = "4/3/4" },
+  { object = 86, name = "TSM - Taste 6 - Input", listen = ["4/3/5"] },
+  { object = 285, name = "- Output", send = "0/1/2" },
+  { object = 286, name = "- Output", send = "0/1/1" },
+  { object = 1289, name = "- Output", send = "0/3/46" },
+]
+
+[[links]]
+device = "1.1.17"
+objects = [
+  { object = 65, name = "TSM - Taste 1 - Output", send = "0/0/3" },
+  { object = 66, name = "TSM - Taste 1 - Input", listen = ["0/0/4"] },
+  { object = 73, name = "TSM - Taste 3 - Output", send = "4/2/20" },
+  { object = 1289, name = "- Output", send = "0/3/30" },
+]
+
+[[links]]
+device = "1.1.18"
+objects = [
+  { object = 65, name = "TSM - Taste 1 - Output", send = "0/0/15" },
+  { object = 66, name = "TSM - Taste 1 - Input", listen = ["0/0/16"] },
+  { object = 69, name = "TSM - Taste 2 - Output", send = "0/0/17" },
+  { object = 70, name = "TSM - Taste 2 - Input", listen = ["0/0/18"] },
+  { object = 285, name = "- Output", send = "0/2/3" },
+  { object = 286, name = "- Output", send = "0/2/2" },
+  { object = 1289, name = "- Output", send = "0/3/0" },
+]
+
+[[links]]
+device = "1.1.19"
+objects = [
+  { object = 65, name = "TSM - Taste 1 - Output", send = "3/0/0" },
+  { object = 66, name = "TSM - Taste 1 - Input", listen = ["3/0/1"] },
+  { object = 69, name = "TSM - Taste 2 - Output", send = "3/0/2" },
+  { object = 70, name = "TSM - Taste 2 - Input", listen = ["3/0/3"] },
+  { object = 285, name = "- Output", send = "3/2/1" },
+  { object = 286, name = "- Output", send = "3/2/0" },
+  { object = 1289, name = "- Output", send = "3/3/0" },
+]
+
+[[links]]
+device = "1.1.20"
+objects = [
+  { object = 65, name = "TSM - Taste 1 - Output", send = "3/0/4" },
+  { object = 66, name = "TSM - Taste 1 - Input", listen = ["3/0/5"] },
+  { object = 69, name = "TSM - Taste 2 - Output", send = "3/0/6" },
+  { object = 70, name = "TSM - Taste 2 - Input", listen = ["3/0/7"] },
+  { object = 285, name = "- Output", send = "3/2/3" },
+  { object = 286, name = "- Output", send = "3/2/2" },
+  { object = 1289, name = "- Output", send = "3/3/10" },
+]
+
+[[links]]
+device = "1.1.21"
+objects = [
+  { object = 65, name = "TSM - Taste 1 - Output", send = "3/0/14" },
+  { object = 66, name = "TSM - Taste 1 - Input", listen = ["3/0/15"] },
+  { object = 69, name = "TSM - Taste 2 - Output", send = "3/0/16" },
+  { object = 70, name = "TSM - Taste 2 - Input", listen = ["3/0/17"] },
+  { object = 73, name = "TSM - Taste 3 - Output", send = "3/0/18" },
+  { object = 74, name = "TSM - Taste 3 - Input", listen = ["3/0/19"] },
+  { object = 77, name = "TSM - Taste 4 - Output", send = "3/3/35" },
+  { object = 78, name = "TSM - Taste 4 - Input", listen = ["3/3/34"] },
+  { object = 293, name = "- Output", send = "3/1/17" },
+  { object = 294, name = "- Output", send = "3/1/16" },
+  { object = 301, name = "- Output", send = "3/1/21" },
+  { object = 302, name = "- Output", send = "3/1/20" },
+  { object = 1289, name = "- Output", send = "3/3/20" },
+]
+
+[[links]]
+device = "1.1.30"
+objects = [
+  { object = 2, name = "MD1 - Movement [Main]:", send = "0/0/7" },
+  { object = 6, name = "MD1 - Input sub:", listen = ["4/2/11"] },
+]
+
+[[links]]
+device = "1.1.32"
+objects = [
+  { object = 3, name = "FB1 - Ausgang 1", send = "1/0/14" },
+  { object = 8, name = "FB1 - Eingang / Ausgang", send = "1/0/21" },
+  { object = 12, name = "FB1 - Eingang", listen = ["1/0/20"] },
+]
+
+[[links]]
+device = "1.1.34"
+objects = [
+  { object = 1, name = "Helligkeitssensorik - Ausgang", send = "4/4/10" },
+  { object = 4, name = "FB1 - Ausgang 2", send = "3/0/12" },
+  { object = 5, name = "FB1 - Eingang", listen = ["4/4/11"] },
+  { object = 7, name = "FB1 - Rückmeldung - Ausgang", send = "4/4/12" },
+]
+
+[[links]]
+device = "1.1.37"
+objects = [
+  { object = 1, name = "Helligkeitssensorik - Ausgang", send = "4/4/33" },
+]
+
+[[links]]
+device = "1.1.38"
+objects = [
+  { object = 1, name = "Helligkeitssensorik - Ausgang", send = "4/4/30" },
+  { object = 4, name = "FB1 - Ausgang 2", send = "3/0/12" },
+  { object = 5, name = "FB1 - Eingang", listen = ["4/4/31"] },
+  { object = 7, name = "FB1 - Rückmeldung - Ausgang", send = "4/4/32" },
+]
+
+[[links]]
+device = "1.1.39"
+objects = [
+  { object = 89, name = "Input a – Switch:", send = "4/2/0" },
+  { object = 98, name = "Input b – Switch:", send = "4/2/1" },
+  { object = 100, name = "Input b – Switch:", send = "4/2/11" },
+  { object = 107, name = "Input c – Switch:", send = "4/2/2" },
+  { object = 116, name = "Input d – Switch:", send = "4/2/3" },
+  { object = 125, name = "Input e – Switch:", send = "4/2/4" },
+  { object = 134, name = "Input f – Switch:", send = "4/2/5" },
+  { object = 143, name = "Input g – Switch:", send = "4/2/6" },
+  { object = 152, name = "Input h – Switch:", send = "4/2/7" },
+  { object = 161, name = "Input i – Switch:", send = "4/2/8" },
+  { object = 170, name = "Input j – Switch:", send = "4/2/9" },
+  { object = 179, name = "Input k – Switch:", send = "4/2/10" },
+  { object = 188, name = "Input l – Switch:", send = "4/2/12" },
+  { object = 197, name = "Input m – Switch:", send = "4/2/13" },
+  { object = 206, name = "Input n – Switch:", send = "4/2/14" },
+  { object = 215, name = "Input o – Switch:", send = "4/2/15" },
+]
+
+[[links]]
+device = "1.1.40"
+objects = [
+  { object = 1, name = "Helligkeitssensorik - Ausgang", send = "4/4/20" },
+  { object = 3, name = "FB1 - Ausgang 1", send = "0/0/3" },
+  { object = 4, name = "FB1 - Ausgang 2", send = "0/0/21" },
+  { object = 5, name = "FB1 - Eingang", listen = ["4/4/21"] },
+  { object = 7, name = "FB1 - Rückmeldung - Ausgang", send = "4/4/22" },
+  { object = 12, name = "FB1 - Eingang", listen = ["4/4/0"] },
+]
+
+[[links]]
+device = "1.1.41"
+objects = [
+  { object = 1, name = "Helligkeitssensorik - Ausgang", send = "4/4/7" },
+  { object = 3, name = "FB1 - Ausgang 1", send = "0/0/5" },
+]
+
+[[links]]
+device = "1.1.42"
+objects = [
+  { object = 1, name = "Helligkeitssensorik - Ausgang", send = "4/4/40" },
+  { object = 3, name = "FB1 - Ausgang 1", send = "0/0/13" },
+  { object = 5, name = "FB1 - Eingang", listen = ["4/4/41"] },
+  { object = 7, name = "FB1 - Rückmeldung - Ausgang", send = "4/4/42" },
+  { object = 16, name = "FB1 - Eingang", listen = ["4/4/43"] },
+]
+
+[[links]]
+device = "1.1.43"
+objects = [
+  { object = 169, name = "- Output", send = "1/1/20" },
+  { object = 170, name = "- Output", send = "1/1/22" },
+  { object = 285, name = "- Output", send = "1/3/5" },
+  { object = 286, name = "- Output", send = "1/3/4" },
+  { object = 293, name = "- Output", send = "1/3/7" },
+  { object = 294, name = "- Output", send = "1/3/6" },
+  { object = 1289, name = "- Output", send = "1/4/10" },
+]
+
+[[links]]
+device = "1.1.45"
+objects = [
+  { object = 1, name = "Ventilation unit - On/Off", listen = ["4/3/0"] },
+  { object = 2, name = "Ventilation unit - On/Off", send = "4/3/1" },
+  { object = 3, name = "Profile at Home - Activate", listen = ["4/3/2"] },
+  { object = 4, name = "Profile at Home - On / Off", send = "4/3/3" },
+  { object = 13, name = "Profile Away - Activate", listen = ["4/3/4"] },
+  { object = 14, name = "Profile Away - On / Off", send = "4/3/5" },
+  { object = 23, name = "Profile Boost - Activate", listen = ["4/3/6"] },
+  { object = 24, name = "Profile Boost - On / Off", send = "4/3/7" },
+  { object = 34, name = "Profile Fireplace - Activate", listen = ["4/3/8"] },
+  { object = 35, name = "Profile Fireplace - On / Off", send = "4/3/9" },
+]
+
+[[links]]
+device = "1.1.46"
+objects = [
+  { object = 1, name = "Helligkeitssensorik - Ausgang", send = "4/4/1" },
+  { object = 5, name = "FB1 - Eingang", listen = ["4/4/2"] },
+  { object = 7, name = "FB1 - Rückmeldung - Ausgang", send = "4/4/3" },
+  { object = 13, name = "FB1 - Ausgang", send = "4/4/0" },
+]
+
+[[links]]
+device = "1.1.47"
+objects = [
+  { object = 138, name = "Venetian blind - Safety - Input", listen = ["4/1/8"] },
+  { object = 144, name = "Venetian blind - Input", listen = ["3/1/20"] },
+  { object = 145, name = "Venetian blind - Input", listen = ["3/1/21"] },
+  { object = 146, name = "Venetian blind - Input", listen = ["3/1/22"] },
+  { object = 162, name = "Venetian blind - Output", send = "3/1/23" },
+]
+
+[[links]]
+device = "1.1.48"
+objects = [
+  { object = 138, name = "Venetian blind - Safety - Input", listen = ["4/1/8"] },
+  { object = 144, name = "Venetian blind - Input", listen = ["3/1/16"] },
+  { object = 145, name = "Venetian blind - Input", listen = ["3/1/17"] },
+  { object = 146, name = "Venetian blind - Input", listen = ["3/1/18"] },
+  { object = 162, name = "Venetian blind - Output", send = "3/1/19" },
+]
+
+[[links]]
+device = "1.1.49"
+objects = [
+  { object = 10, name = "Ausgang 1", listen = ["0/3/44"] },
+  { object = 18, name = "Ausgang 1", send = "0/3/45" },
+  { object = 36, name = "Ausgang 2", listen = ["1/4/33"] },
+  { object = 40, name = "Ausgang 2", listen = ["1/4/35"] },
+  { object = 44, name = "Ausgang 2", send = "1/4/34" },
+  { object = 62, name = "Ausgang 3", listen = ["3/3/33"] },
+  { object = 66, name = "Ausgang 3", listen = ["3/3/35"] },
+  { object = 70, name = "Ausgang 3", send = "3/3/34" },
+  { object = 88, name = "Ausgang 4", listen = ["4/0/1"] },
+  { object = 92, name = "Ausgang 4", listen = ["4/0/3"] },
+  { object = 96, name = "Ausgang 4", send = "4/0/2" },
+  { object = 114, name = "Ausgang 5", listen = ["4/2/50"] },
+  { object = 140, name = "Ausgang 6", listen = ["4/2/20"] },
+  { object = 166, name = "Ausgang 7", listen = ["4/2/21"] },
+]
+
+[[links]]
+device = "1.1.51"
+objects = [
+  { object = 20, name = "Measured brightness value", send = "4/4/4" },
+  { object = 55, name = "Light 1 switch output", send = "0/0/11" },
+]
+
+[[links]]
+device = "1.1.52"
+objects = [
+  { object = 8, name = "FB1 - Input", send = "1/0/21" },
+  { object = 13, name = "FB1 - Output", send = "1/0/20" },
+]
+
+[[links]]
+device = "1.1.201"
+objects = [
+  { object = 3, name = "Time – output", send = "4/1/1" },
+  { object = 4, name = "Date – output", send = "4/1/0" },
+  { object = 5, name = "Date and time – output", send = "4/1/2" },
+  { object = 8, name = "Summer / winter time - output", send = "4/1/3" },
+]
+
+[[links]]
+device = "1.1.202"
+objects = [
+  { object = 0, name = "Brightness value front", send = "4/1/5" },
+  { object = 1, name = "Brightness value left", send = "4/1/6" },
+  { object = 2, name = "Brightness value right", send = "4/1/7" },
+  { object = 3, name = "Maximum brightness value", send = "4/1/10" },
+  { object = 4, name = "Temperature value", send = "4/1/11" },
+  { object = 5, name = "Wind speed (m/s)", send = "4/1/4" },
+  { object = 6, name = "Rain sensor", send = "4/1/8" },
+  { object = 8, name = "Local time", listen = ["4/1/1"] },
+  { object = 9, name = "Date", listen = ["4/1/0"] },
+  { object = 15, name = "Temperature sensor status", send = "4/1/14" },
+  { object = 20, name = "C1.1 Universal channel", send = "4/1/9" },
+  { object = 24, name = "C2.1 Universal channel", send = "4/1/12" },
+  { object = 28, name = "C3.1 Universal channel", send = "4/1/13" },
+]

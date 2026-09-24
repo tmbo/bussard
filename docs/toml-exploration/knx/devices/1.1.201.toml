@@ -1,0 +1,19 @@
+# 1.1.201: IP interface – additional function. Hand-editable in full; vendor facts live in bussard.lock.
+
+address = "1.1.201"
+name = "IP interface – additional function"
+product = "IPS300SREG"
+
+[location]
+floor = "UG"
+room = "Technik"
+
+[security]
+secure_capable = true
+sequence_number = "28"
+
+[channel.1]  # Timer
+time-output.send = "4/1/1"
+date-output.send = "4/1/0"
+date-and-time-output.send = "4/1/2"
+status.send = "4/1/3"

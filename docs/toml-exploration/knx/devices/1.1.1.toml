@@ -1,0 +1,12 @@
+# 1.1.1: Binäreingang 6fach. Hand-editable in full; vendor facts live in bussard.lock.
+
+address = "1.1.1"
+name = "Binäreingang 6fach"
+product = "2116REG"
+
+[location]
+floor = "UG"
+room = "Technik"
+
+[channel.1]  # Eingang 1
+eingang-1.send = "4/0/0"

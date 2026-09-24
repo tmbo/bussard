@@ -1,0 +1,38 @@
+# 1.1.17: Universal push-button module, 2-gang. Hand-editable in full; vendor facts live in bussard.lock.
+
+address = "1.1.17"
+name = "Universal push-button module, 2-gang"
+product = "52921ST"
+
+[location]
+floor = "UG"
+
+[security]
+secure_capable = true
+sequence_number = "240572646134"
+
+[parameters]
+bedienkonzept-t1-t2 = "1"
+bedienkonzept-t3-t4 = "1"
+"bezeichnung-der-page-assign@MD-11_M-36_MI-1_P-150_R-243" = "Temperatursensor"
+"bezeichnung@R-1106" = "Verlassen"
+"bezeichnung@R-1110" = "Tagschaltung"
+"bezeichnung@R-1113" = "Beschattung"
+"bezeichnung@R-157" = "Zuhause"
+"bezeichnung@R-176" = "Licht Flur UG"
+freigabe-temperaturmessung = "1"
+"funktion@R-1107" = "4"
+"funktion@R-1114" = "2"
+"funktion@R-190" = "4"
+led-1-anzeigefunktion-tasten-schalten = "4"
+led-2-anzeigefunktion-tasten-schalten = "4"
+
+[channel.1]  # TSM - Button 2
+tsm-taste-2-output.send = "0/0/3"
+tsm-taste-2-input.listen = ["0/0/4"]
+
+[channel.2]  # TSM - Room temperature measurement
+output.send = "0/3/30"
+
+[channel.3]  # TSM - Button 4
+tsm-taste-4-output.send = "4/2/20"

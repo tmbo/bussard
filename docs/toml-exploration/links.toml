@@ -1,0 +1,620 @@
+[links."1.1.1"]
+0 = { name = "Eingang 1", send = "4/0/0" }
+
+[links."1.1.2"]
+21 = { name = "VO 1 - Input", listen = ["0/3/6"] }
+36 = { name = "VO 2 - Input", listen = ["0/3/26"] }
+51 = { name = "VO 3 - Input", listen = ["0/3/36"] }
+66 = { name = "VO 4 - Input", listen = ["0/3/16"] }
+81 = { name = "VO 5 - Input", listen = ["1/4/26"] }
+96 = { name = "VO 6 - Input", listen = ["1/4/6"] }
+333 = { name = "RTC - Input", listen = ["0/3/1"] }
+334 = { name = "RTC - Input", send = "0/3/2" }
+335 = { name = "RTC - Input", send = "0/3/3" }
+338 = { name = "RTC - Input", listen = ["4/0/0"] }
+339 = { name = "RTC - Output", send = "0/3/102" }
+343 = { name = "RTC - Output", send = "0/3/4" }
+345 = { name = "RTC - Output", send = "0/3/8" }
+346 = { name = "RTC - Input", listen = ["0/3/5"] }
+372 = { name = "RTC - Output", send = "0/3/7" }
+380 = { name = "RTC - Output", send = "0/3/40" }
+383 = { name = "RTC 2 - Input", listen = ["0/3/11"] }
+384 = { name = "RTC 2 - Input", send = "0/3/12" }
+385 = { name = "RTC 2 - Input", send = "0/3/13" }
+388 = { name = "RTC 2 - Input", listen = ["4/0/0"] }
+393 = { name = "RTC 2 - General", send = "0/3/14" }
+395 = { name = "RTC 2 - General", send = "0/3/18" }
+396 = { name = "RTC 2 - Input", listen = ["0/3/15"] }
+422 = { name = "RTC 2 - General", send = "0/3/17" }
+430 = { name = "RTC 2 - General", send = "0/3/41" }
+433 = { name = "RTC 3 - Input", listen = ["0/3/21"] }
+434 = { name = "RTC 3 - Input", send = "0/3/22" }
+435 = { name = "RTC 3 - Input", send = "0/3/23" }
+438 = { name = "RTC 3 - Input", listen = ["4/0/0"] }
+443 = { name = "RTC 3 - General", send = "0/3/24" }
+445 = { name = "RTC 3 - General", send = "0/3/28" }
+446 = { name = "RTC 3 - Input", listen = ["0/3/25"] }
+472 = { name = "RTC 3 - General", send = "0/3/27" }
+480 = { name = "RTC 3 - General", send = "0/3/42" }
+483 = { name = "RTC 4 - Input", listen = ["0/3/31"] }
+484 = { name = "RTC 4 - Input", send = "0/3/32" }
+485 = { name = "RTC 4 - Input", send = "0/3/33" }
+488 = { name = "RTC 4 - Input", listen = ["4/0/0"] }
+493 = { name = "RTC 4 - General", send = "0/3/34" }
+495 = { name = "RTC 4 - General", send = "0/3/38" }
+496 = { name = "RTC 4 - Input", listen = ["0/3/35"] }
+522 = { name = "RTC 4 - General", send = "0/3/37" }
+530 = { name = "RTC 4 - General", send = "0/3/43" }
+533 = { name = "RTC 5 - Input", listen = ["1/4/1"] }
+534 = { name = "RTC 5 - Input", send = "1/4/2" }
+535 = { name = "RTC 5 - Input", send = "1/4/3" }
+538 = { name = "RTC 5 - Input", listen = ["4/0/0"] }
+543 = { name = "RTC 5 - General", send = "1/4/4" }
+545 = { name = "RTC 5 - General", send = "1/4/8" }
+546 = { name = "RTC 5 - Input", listen = ["1/4/5"] }
+572 = { name = "RTC 5 - General", send = "1/4/7" }
+580 = { name = "RTC 5 - General", send = "1/4/30" }
+583 = { name = "RTC 6 - Input", listen = ["1/4/11"] }
+584 = { name = "RTC 6 - Input", send = "1/4/12" }
+585 = { name = "RTC 6 - Input", send = "1/4/13" }
+588 = { name = "RTC 6 - Input", listen = ["4/0/0"] }
+593 = { name = "RTC 6 - General", send = "1/4/14" }
+595 = { name = "RTC 6 - General", send = "1/4/18" }
+596 = { name = "RTC 6 - Input", listen = ["1/4/15"] }
+622 = { name = "RTC 6 - General", send = "1/4/17" }
+630 = { name = "RTC 6 - General", send = "1/4/31" }
+935 = { name = "RTC - Output", send = "0/3/6" }
+977 = { name = "RTC 2 - General", send = "0/3/16" }
+1019 = { name = "RTC 3 - General", send = "0/3/26" }
+1061 = { name = "RTC 4 - General", send = "0/3/36" }
+1103 = { name = "RTC 5 - General", send = "1/4/6" }
+1145 = { name = "RTC 6 - General", send = "1/4/16" }
+1437 = { name = "RTC - Output", send = "0/3/9" }
+1438 = { name = "RTC - Input", send = "0/3/0" }
+1447 = { name = "RTC 2 - General", send = "0/3/19" }
+1448 = { name = "RTC 2 - Input", send = "0/3/10" }
+1457 = { name = "RTC 3 - General", send = "0/3/29" }
+1458 = { name = "RTC 3 - Input", send = "0/3/20" }
+1467 = { name = "RTC 4 - General", send = "0/3/39" }
+1468 = { name = "RTC 4 - Input", send = "0/3/30" }
+1477 = { name = "RTC 5 - General", send = "1/4/9" }
+1478 = { name = "RTC 5 - Input", send = "1/4/0" }
+1487 = { name = "RTC 6 - General", send = "1/4/19" }
+1488 = { name = "RTC 6 - Input", send = "1/4/10" }
+
+[links."1.1.3"]
+21 = { name = "VO 1 - Input", listen = ["1/4/16"] }
+51 = { name = "VO 3 - Input", listen = ["3/3/26"] }
+66 = { name = "VO 4 - Input", listen = ["3/3/6"] }
+81 = { name = "VO 5 - Input", listen = ["3/3/16"] }
+333 = { name = "RTC - Input", listen = ["1/4/21"] }
+334 = { name = "RTC - Input", send = "1/4/22" }
+335 = { name = "RTC - Input", send = "1/4/23" }
+338 = { name = "RTC - Input", listen = ["4/0/0"] }
+343 = { name = "RTC - Output", send = "1/4/24" }
+345 = { name = "RTC - Output", send = "1/4/28" }
+346 = { name = "RTC - Input", listen = ["1/4/25"] }
+372 = { name = "RTC - Output", send = "1/4/27" }
+380 = { name = "RTC - Output", send = "1/4/32" }
+383 = { name = "RTC 2 - Input", listen = ["3/3/1"] }
+384 = { name = "RTC 2 - Input", send = "3/3/2" }
+385 = { name = "RTC 2 - Input", send = "3/3/3" }
+388 = { name = "RTC 2 - Input", listen = ["4/0/0"] }
+389 = { name = "RTC 2 - General", send = "3/3/102" }
+393 = { name = "RTC 2 - General", send = "3/3/4" }
+395 = { name = "RTC 2 - General", send = "3/3/8" }
+396 = { name = "RTC 2 - Input", listen = ["3/3/5"] }
+422 = { name = "RTC 2 - General", send = "3/3/7" }
+430 = { name = "RTC 2 - General", send = "3/3/30" }
+433 = { name = "RTC 3 - Input", listen = ["3/3/11"] }
+434 = { name = "RTC 3 - Input", send = "3/3/12" }
+435 = { name = "RTC 3 - Input", send = "3/3/13" }
+438 = { name = "RTC 3 - Input", listen = ["4/0/0"] }
+443 = { name = "RTC 3 - General", send = "3/3/14" }
+445 = { name = "RTC 3 - General", send = "3/3/18" }
+446 = { name = "RTC 3 - Input", listen = ["3/3/15"] }
+472 = { name = "RTC 3 - General", send = "3/3/17" }
+480 = { name = "RTC 3 - General", send = "3/3/31" }
+483 = { name = "RTC 4 - Input", listen = ["3/3/21"] }
+484 = { name = "RTC 4 - Input", send = "3/3/22" }
+485 = { name = "RTC 4 - Input", send = "3/3/23" }
+488 = { name = "RTC 4 - Input", listen = ["4/0/0"] }
+493 = { name = "RTC 4 - General", send = "3/3/24" }
+495 = { name = "RTC 4 - General", send = "3/3/28" }
+496 = { name = "RTC 4 - Input", listen = ["3/3/25"] }
+522 = { name = "RTC 4 - General", send = "3/3/27" }
+530 = { name = "RTC 4 - General", send = "3/3/32" }
+935 = { name = "RTC - Output", send = "1/4/26" }
+977 = { name = "RTC 2 - General", send = "3/3/6" }
+1019 = { name = "RTC 3 - General", send = "3/3/16" }
+1061 = { name = "RTC 4 - General", send = "3/3/26" }
+1437 = { name = "RTC - Output", send = "1/4/29" }
+1438 = { name = "RTC - Input", send = "1/4/20" }
+1447 = { name = "RTC 2 - General", send = "3/3/9" }
+1448 = { name = "RTC 2 - Input", send = "3/3/0" }
+1457 = { name = "RTC 3 - General", send = "3/3/19" }
+1458 = { name = "RTC 3 - Input", send = "3/3/10" }
+1467 = { name = "RTC 4 - General", send = "3/3/29" }
+1468 = { name = "RTC 4 - Input", send = "3/3/20" }
+
+[links."1.1.4"]
+11 = { name = "Venetian blind - Safety - Input", listen = ["4/1/9"] }
+12 = { name = "Venetian blind - Safety - Input", listen = ["4/1/12"] }
+15 = { name = "Venetian blind - Safety - Input", listen = ["4/1/13"] }
+20 = { name = "Venetian blind 1/2 - Input", listen = ["1/2/0"] }
+21 = { name = "Venetian blind 1/2 - Input", listen = ["1/2/1"] }
+22 = { name = "Venetian blind 1/2 - Input", listen = ["1/2/2"] }
+38 = { name = "Venetian blind 1/2 - Output", send = "1/2/3" }
+67 = { name = "Venetian blind 3/4 - Input", listen = ["1/2/4"] }
+68 = { name = "Venetian blind 3/4 - Input", listen = ["1/2/5"] }
+69 = { name = "Venetian blind 3/4 - Input", listen = ["1/2/6"] }
+85 = { name = "Venetian blind 3/4 - Output", send = "1/2/7" }
+114 = { name = "Venetian blind 5/6 - Input", listen = ["1/2/8", "1/3/2"] }
+115 = { name = "Venetian blind 5/6 - Input", listen = ["1/2/9", "1/3/3"] }
+116 = { name = "Venetian blind 5/6 - Input", listen = ["1/2/10"] }
+132 = { name = "Venetian blind 5/6 - Output", send = "1/2/11" }
+161 = { name = "Venetian blind 7/8 - Input", listen = ["1/2/12", "1/3/2"] }
+162 = { name = "Venetian blind 7/8 - Input", listen = ["1/2/13", "1/3/3"] }
+163 = { name = "Venetian blind 7/8 - Input", listen = ["1/2/14"] }
+179 = { name = "Venetian blind 7/8 - Output", send = "1/2/15" }
+208 = { name = "Venetian blind 9/10 - Input", listen = ["1/2/16", "1/3/2"] }
+209 = { name = "Venetian blind 9/10 - Input", listen = ["1/2/17", "1/3/3"] }
+210 = { name = "Venetian blind 9/10 - Input", listen = ["1/2/18"] }
+226 = { name = "Venetian blind 9/10 - Output", send = "1/2/19" }
+255 = { name = "Venetian blind 11/12 - Input", listen = ["1/2/20"] }
+256 = { name = "Venetian blind 11/12 - Input", listen = ["1/2/21"] }
+257 = { name = "Venetian blind 11/12 - Input", listen = ["1/2/22"] }
+273 = { name = "Venetian blind 11/12 - Output", send = "1/2/23" }
+302 = { name = "Venetian blind 13/14 - Input", listen = ["1/2/24", "1/3/4"] }
+303 = { name = "Venetian blind 13/14 - Input", listen = ["1/2/25", "1/3/5"] }
+304 = { name = "Venetian blind 13/14 - Input", listen = ["1/2/26"] }
+320 = { name = "Venetian blind 13/14 - Output", send = "1/2/27" }
+349 = { name = "Venetian blind 15/16 - Input", listen = ["1/2/28", "1/3/4"] }
+350 = { name = "Venetian blind 15/16 - Input", listen = ["1/2/29", "1/3/5"] }
+351 = { name = "Venetian blind 15/16 - Input", listen = ["1/2/30"] }
+367 = { name = "Venetian blind 15/16 - Output", send = "1/2/31" }
+396 = { name = "Venetian blind 17/18 - Input", listen = ["1/2/32", "1/3/6"] }
+397 = { name = "Venetian blind 17/18 - Input", listen = ["1/2/33", "1/3/7"] }
+398 = { name = "Venetian blind 17/18 - Input", listen = ["1/2/34"] }
+399 = { name = "Venetian blind 17/18 - Input", listen = ["1/2/35"] }
+414 = { name = "Venetian blind 17/18 - Output", send = "1/2/36" }
+415 = { name = "Venetian blind 17/18 - Output", send = "1/2/37" }
+443 = { name = "Venetian blind 19/20 - Input", listen = ["1/2/38", "1/3/6"] }
+444 = { name = "Venetian blind 19/20 - Input", listen = ["1/2/39", "1/3/7"] }
+445 = { name = "Venetian blind 19/20 - Input", listen = ["1/2/40"] }
+446 = { name = "Venetian blind 19/20 - Input", listen = ["1/2/41"] }
+461 = { name = "Venetian blind 19/20 - Output", send = "1/2/42" }
+462 = { name = "Venetian blind 19/20 - Output", send = "1/2/43" }
+490 = { name = "Venetian blind 21/22 - Input", listen = ["1/2/44", "1/3/0"] }
+491 = { name = "Venetian blind 21/22 - Input", listen = ["1/2/45", "1/3/1"] }
+492 = { name = "Venetian blind 21/22 - Input", listen = ["1/2/46"] }
+493 = { name = "Venetian blind 21/22 - Input", listen = ["1/2/47"] }
+508 = { name = "Venetian blind 21/22 - Output", send = "1/2/48" }
+509 = { name = "Venetian blind 21/22 - Output", send = "1/2/49" }
+537 = { name = "Venetian blind 23/24 - Input", listen = ["3/1/0", "3/2/0"] }
+538 = { name = "Venetian blind 23/24 - Input", listen = ["3/1/1", "3/2/1"] }
+539 = { name = "Venetian blind 23/24 - Input", listen = ["3/1/2"] }
+555 = { name = "Venetian blind 23/24 - Output", send = "3/1/3" }
+
+[links."1.1.5"]
+620 = { name = "Switching - Input", listen = ["1/0/0"] }
+621 = { name = "Switching - Output", send = "1/0/1" }
+642 = { name = "Switching - Input", listen = ["0/0/1"] }
+643 = { name = "Switching - Output", send = "0/0/2" }
+664 = { name = "Switching - Input", listen = ["1/0/2"] }
+665 = { name = "Switching - Output", send = "1/0/3" }
+686 = { name = "Switching - Input", listen = ["1/0/4"] }
+687 = { name = "Switching - Output", send = "1/0/5" }
+708 = { name = "Switching - Input", listen = ["1/0/6"] }
+709 = { name = "Switching - Output", send = "1/0/7" }
+730 = { name = "Switching - Input", listen = ["0/0/3"] }
+731 = { name = "Switching - Output", send = "0/0/4" }
+752 = { name = "Switching - Input", listen = ["0/0/5"] }
+753 = { name = "Switching - Output", send = "0/0/6" }
+774 = { name = "Switching - Input", listen = ["0/0/7"] }
+775 = { name = "Switching - Output", send = "0/0/8" }
+796 = { name = "Switching - Input", listen = ["1/0/8"] }
+797 = { name = "Switching - Output", send = "1/0/9" }
+818 = { name = "Switching - Input", listen = ["1/0/10"] }
+819 = { name = "Switching - Output", send = "1/0/11" }
+840 = { name = "Switching - Input", listen = ["0/0/9"] }
+841 = { name = "Switching - Output", send = "0/0/10" }
+862 = { name = "Switching - Input", listen = ["1/0/12"] }
+863 = { name = "Switching - Output", send = "1/0/13" }
+884 = { name = "Switching - Input", listen = ["1/0/14"] }
+885 = { name = "Switching - Output", send = "1/0/15" }
+906 = { name = "Switching - Input", listen = ["0/0/11"] }
+907 = { name = "Switching - Output", send = "0/0/12" }
+928 = { name = "Switching - Input", listen = ["0/0/13"] }
+929 = { name = "Switching - Output", send = "0/0/14" }
+
+[links."1.1.6"]
+11 = { name = "Venetian blind - Safety - Input", listen = ["4/1/9"] }
+12 = { name = "Venetian blind - Safety - Input", listen = ["4/1/12"] }
+15 = { name = "Venetian blind - Safety - Input", listen = ["4/1/13"] }
+20 = { name = "Venetian blind 1/2 - Input", listen = ["3/1/4", "3/2/0"] }
+21 = { name = "Venetian blind 1/2 - Input", listen = ["3/1/5", "3/2/1"] }
+22 = { name = "Venetian blind 1/2 - Input", listen = ["3/1/6"] }
+38 = { name = "Venetian blind 1/2 - Output", send = "3/1/7" }
+67 = { name = "Venetian blind 3/4 - Input", listen = ["3/1/8", "3/2/2"] }
+68 = { name = "Venetian blind 3/4 - Input", listen = ["3/1/9", "3/2/3"] }
+69 = { name = "Venetian blind 3/4 - Input", listen = ["3/1/10"] }
+85 = { name = "Venetian blind 3/4 - Output", send = "3/1/11" }
+114 = { name = "Venetian blind 5/6 - Input", listen = ["3/1/12", "3/2/2"] }
+115 = { name = "Venetian blind 5/6 - Input", listen = ["3/1/13", "3/2/3"] }
+116 = { name = "Venetian blind 5/6 - Input", listen = ["3/1/14"] }
+132 = { name = "Venetian blind 5/6 - Output", send = "3/1/15" }
+161 = { name = "Venetian blind 7/8 - Input", listen = ["0/1/1"] }
+162 = { name = "Venetian blind 7/8 - Input", listen = ["0/1/2"] }
+163 = { name = "Venetian blind 7/8 - Input", listen = ["0/1/3"] }
+179 = { name = "Venetian blind 7/8 - Output", send = "0/1/4" }
+208 = { name = "Venetian blind 9/10 - Input", listen = ["0/1/5"] }
+209 = { name = "Venetian blind 9/10 - Input", listen = ["0/1/6"] }
+210 = { name = "Venetian blind 9/10 - Input", listen = ["0/1/7"] }
+226 = { name = "Venetian blind 9/10 - Output", send = "0/1/8" }
+255 = { name = "Venetian blind 11/12 - Input", listen = ["0/1/9", "0/2/0"] }
+256 = { name = "Venetian blind 11/12 - Input", listen = ["0/1/10", "0/2/1"] }
+257 = { name = "Venetian blind 11/12 - Input", listen = ["0/1/11"] }
+273 = { name = "Venetian blind 11/12 - Output", send = "0/1/12" }
+302 = { name = "Venetian blind 13/14 - Input", listen = ["0/1/13", "0/2/0"] }
+303 = { name = "Venetian blind 13/14 - Input", listen = ["0/1/14", "0/2/1"] }
+304 = { name = "Venetian blind 13/14 - Input", listen = ["0/1/15"] }
+320 = { name = "Venetian blind 13/14 - Output", send = "0/1/16" }
+349 = { name = "Venetian blind 15/16 - Input", listen = ["0/1/17", "0/2/2"] }
+350 = { name = "Venetian blind 15/16 - Input", listen = ["0/1/18", "0/2/3"] }
+351 = { name = "Venetian blind 15/16 - Input", listen = ["0/1/19"] }
+352 = { name = "Venetian blind 15/16 - Input", listen = ["0/1/20"] }
+367 = { name = "Venetian blind 15/16 - Output", send = "0/1/21" }
+368 = { name = "Venetian blind 15/16 - Output", send = "0/1/22" }
+396 = { name = "Venetian blind 17/18 - Input", listen = ["0/1/23", "0/2/2"] }
+397 = { name = "Venetian blind 17/18 - Input", listen = ["0/1/24", "0/2/3"] }
+398 = { name = "Venetian blind 17/18 - Input", listen = ["0/1/25"] }
+399 = { name = "Venetian blind 17/18 - Input", listen = ["0/1/26"] }
+414 = { name = "Venetian blind 17/18 - Output", send = "0/1/27" }
+415 = { name = "Venetian blind 17/18 - Output", send = "0/1/28" }
+443 = { name = "Venetian blind 19/20 - Input", listen = ["0/1/29", "0/2/2"] }
+444 = { name = "Venetian blind 19/20 - Input", listen = ["0/1/30", "0/2/3"] }
+445 = { name = "Venetian blind 19/20 - Input", listen = ["0/1/31"] }
+446 = { name = "Venetian blind 19/20 - Input", listen = ["0/1/32"] }
+461 = { name = "Venetian blind 19/20 - Output", send = "0/1/33" }
+462 = { name = "Venetian blind 19/20 - Output", send = "0/1/34" }
+490 = { name = "Venetian blind 21/22 - Input", listen = ["1/2/50", "1/3/0"] }
+491 = { name = "Venetian blind 21/22 - Input", listen = ["1/2/51", "1/3/1"] }
+492 = { name = "Venetian blind 21/22 - Input", listen = ["1/2/52"] }
+493 = { name = "Venetian blind 21/22 - Input", listen = ["1/2/53"] }
+508 = { name = "Venetian blind 21/22 - Output", send = "1/2/54" }
+509 = { name = "Venetian blind 21/22 - Output", send = "1/2/55" }
+537 = { name = "Venetian blind 23/24 - Input", listen = ["1/2/56", "1/3/0"] }
+538 = { name = "Venetian blind 23/24 - Input", listen = ["1/2/57", "1/3/1"] }
+539 = { name = "Venetian blind 23/24 - Input", listen = ["1/2/58"] }
+540 = { name = "Venetian blind 23/24 - Input", listen = ["1/2/59"] }
+555 = { name = "Venetian blind 23/24 - Output", send = "1/2/60" }
+556 = { name = "Venetian blind 23/24 - Output", send = "1/2/61" }
+
+[links."1.1.7"]
+598 = { name = "Switching - Input", listen = ["0/0/15"] }
+599 = { name = "Switching - Output", send = "0/0/16" }
+620 = { name = "Switching - Input", listen = ["0/0/17"] }
+621 = { name = "Switching - Output", send = "0/0/18" }
+642 = { name = "Switching - Input", listen = ["1/0/16"] }
+643 = { name = "Switching - Output", send = "1/0/17" }
+664 = { name = "Switching - Input", listen = ["0/0/19"] }
+665 = { name = "Switching - Output", send = "0/0/20" }
+686 = { name = "Switching - Input", listen = ["3/0/4"] }
+687 = { name = "Switching - Output", send = "3/0/5" }
+708 = { name = "Switching - Input", listen = ["3/0/6"] }
+709 = { name = "Switching - Output", send = "3/0/7" }
+730 = { name = "Switching - Input", listen = ["3/0/0"] }
+731 = { name = "Switching - Output", send = "3/0/1" }
+752 = { name = "Switching - Input", listen = ["3/0/2"] }
+753 = { name = "Switching - Output", send = "3/0/3" }
+774 = { name = "Switching - Input", listen = ["3/0/8"] }
+775 = { name = "Switching - Output", send = "3/0/9" }
+796 = { name = "Switching - Input", listen = ["3/0/10"] }
+797 = { name = "Switching - Output", send = "3/0/11" }
+840 = { name = "Switching - Input", listen = ["3/0/14"] }
+841 = { name = "Switching - Output", send = "3/0/15" }
+862 = { name = "Switching - Input", listen = ["3/0/16"] }
+863 = { name = "Switching - Output", send = "3/0/17" }
+884 = { name = "Switching - Input", listen = ["3/0/12"] }
+885 = { name = "Switching - Output", send = "3/0/13" }
+906 = { name = "Switching - Input", listen = ["0/0/21"] }
+907 = { name = "Switching - Output", send = "0/0/22" }
+
+[links."1.1.8"]
+31 = { name = "Dimming channel 1 - Input", listen = ["1/1/0"] }
+32 = { name = "Dimming channel 1 - Output", send = "1/1/1" }
+34 = { name = "Dimming channel 1 - Input", listen = ["1/1/2"] }
+35 = { name = "Dimming channel 1 - Input", listen = ["1/1/3"] }
+36 = { name = "Dimming channel 1 - Output", send = "1/1/4" }
+51 = { name = "Dimming channel 2 - Input", listen = ["1/1/5"] }
+52 = { name = "Dimming channel 2 - Output", send = "1/1/6" }
+54 = { name = "Dimming channel 2 - Input", listen = ["1/1/7"] }
+55 = { name = "Dimming channel 2 - Input", listen = ["1/1/8"] }
+56 = { name = "Dimming channel 2 - Output", send = "1/1/9" }
+71 = { name = "Dimming channel 3 - Input", listen = ["1/1/10"] }
+72 = { name = "Dimming channel 3 - Output", send = "1/1/11" }
+74 = { name = "Dimming channel 3 - Input", listen = ["1/1/12"] }
+75 = { name = "Dimming channel 3 - Input", listen = ["1/1/13"] }
+76 = { name = "Dimming channel 3 - Output", send = "1/1/14" }
+91 = { name = "Dimming channel 4 - Input", listen = ["1/1/15"] }
+92 = { name = "Dimming channel 4 - Output", send = "1/1/16" }
+94 = { name = "Dimming channel 4 - Input", listen = ["1/1/17"] }
+95 = { name = "Dimming channel 4 - Input", listen = ["1/1/18"] }
+96 = { name = "Dimming channel 4 - Output", send = "1/1/19" }
+
+[links."1.1.9"]
+31 = { name = "Dimming channel 1 - Input", listen = ["1/1/20"] }
+32 = { name = "Dimming channel 1 - Output", send = "1/1/21" }
+34 = { name = "Dimming channel 1 - Input", listen = ["1/1/22"] }
+35 = { name = "Dimming channel 1 - Input", listen = ["1/1/23"] }
+36 = { name = "Dimming channel 1 - Output", send = "1/1/24" }
+51 = { name = "Dimming channel 2 - Input", listen = ["1/1/20"] }
+52 = { name = "Dimming channel 2 - Output", send = "1/1/21" }
+54 = { name = "Dimming channel 2 - Input", listen = ["1/1/22"] }
+55 = { name = "Dimming channel 2 - Input", listen = ["1/1/23"] }
+56 = { name = "Dimming channel 2 - Output", send = "1/1/24" }
+
+[links."1.1.10"]
+65 = { name = "TSM - Taste 1 - Output", send = "0/0/11" }
+66 = { name = "TSM - Taste 1 - Input", listen = ["0/0/12"] }
+69 = { name = "TSM - Taste 2 - Output", send = "0/0/19" }
+70 = { name = "TSM - Taste 2 - Input", listen = ["0/0/20"] }
+285 = { name = "- Output", send = "0/1/6" }
+286 = { name = "- Output", send = "0/1/5" }
+1289 = { name = "- Output", send = "0/3/10" }
+
+[links."1.1.11"]
+81 = { name = "TSM - Taste 5 - Output", send = "1/0/12" }
+82 = { name = "TSM - Taste 5 - Input", listen = ["1/0/13"] }
+85 = { name = "TSM - Taste 6 - Output", send = "1/0/16" }
+86 = { name = "TSM - Taste 6 - Input", listen = ["1/0/17"] }
+169 = { name = "- Output", send = "1/1/15" }
+170 = { name = "- Output", send = "1/1/17" }
+285 = { name = "- Output", send = "1/3/3" }
+286 = { name = "- Output", send = "1/3/2" }
+1289 = { name = "- Output", send = "1/4/40" }
+
+[links."1.1.12"]
+65 = { name = "TSM - Taste 1 - Output", send = "0/0/5" }
+66 = { name = "TSM - Taste 1 - Input", listen = ["0/0/6"] }
+69 = { name = "TSM - Taste 2 - Output", send = "0/0/5" }
+70 = { name = "TSM - Taste 2 - Input", listen = ["0/0/6"] }
+1289 = { name = "- Output", send = "0/3/47" }
+
+[links."1.1.13"]
+65 = { name = "TSM - Taste 1 - Output", send = "4/4/43" }
+81 = { name = "TSM - Taste 5 - Output", send = "4/2/50" }
+285 = { name = "- Output", send = "0/2/1" }
+286 = { name = "- Output", send = "0/2/0" }
+1289 = { name = "- Output", send = "0/3/20" }
+
+[links."1.1.14"]
+81 = { name = "TSM - Taste 5 - Output", send = "1/0/18" }
+82 = { name = "TSM - Taste 5 - Input", listen = ["1/0/19"] }
+85 = { name = "TSM - Taste 6 - Output", send = "1/0/6" }
+86 = { name = "TSM - Taste 6 - Input", listen = ["1/0/7"] }
+169 = { name = "- Output", send = "1/1/0" }
+170 = { name = "- Output", send = "1/1/2" }
+285 = { name = "- Output", send = "1/3/1" }
+286 = { name = "- Output", send = "1/3/0" }
+1289 = { name = "- Output", send = "1/4/0" }
+
+[links."1.1.15"]
+65 = { name = "TSM - Taste 1 - Output", send = "1/0/14" }
+66 = { name = "TSM - Taste 1 - Input", listen = ["1/0/15"] }
+69 = { name = "TSM - Taste 2 - Output", send = "1/0/0" }
+70 = { name = "TSM - Taste 2 - Input", listen = ["1/0/1"] }
+73 = { name = "TSM - Taste 3 - Output", send = "1/4/35" }
+74 = { name = "TSM - Taste 3 - Input", listen = ["1/4/34"] }
+293 = { name = "- Output", send = "1/2/21" }
+294 = { name = "- Output", send = "1/2/20" }
+1289 = { name = "- Output", send = "1/4/20" }
+
+[links."1.1.16"]
+65 = { name = "TSM - Taste 1 - Output", send = "0/0/9" }
+66 = { name = "TSM - Taste 1 - Input", listen = ["0/0/10"] }
+69 = { name = "TSM - Taste 2 - Output", send = "0/0/5" }
+70 = { name = "TSM - Taste 2 - Input", listen = ["0/0/6"] }
+81 = { name = "TSM - Taste 5 - Output", send = "4/3/2" }
+82 = { name = "TSM - Taste 5 - Input", listen = ["4/3/3"] }
+85 = { name = "TSM - Taste 6 - Output", send = "4/3/4" }
+86 = { name = "TSM - Taste 6 - Input", listen = ["4/3/5"] }
+285 = { name = "- Output", send = "0/1/2" }
+286 = { name = "- Output", send = "0/1/1" }
+1289 = { name = "- Output", send = "0/3/46" }
+
+[links."1.1.17"]
+65 = { name = "TSM - Taste 1 - Output", send = "0/0/3" }
+66 = { name = "TSM - Taste 1 - Input", listen = ["0/0/4"] }
+73 = { name = "TSM - Taste 3 - Output", send = "4/2/20" }
+1289 = { name = "- Output", send = "0/3/30" }
+
+[links."1.1.18"]
+65 = { name = "TSM - Taste 1 - Output", send = "0/0/15" }
+66 = { name = "TSM - Taste 1 - Input", listen = ["0/0/16"] }
+69 = { name = "TSM - Taste 2 - Output", send = "0/0/17" }
+70 = { name = "TSM - Taste 2 - Input", listen = ["0/0/18"] }
+285 = { name = "- Output", send = "0/2/3" }
+286 = { name = "- Output", send = "0/2/2" }
+1289 = { name = "- Output", send = "0/3/0" }
+
+[links."1.1.19"]
+65 = { name = "TSM - Taste 1 - Output", send = "3/0/0" }
+66 = { name = "TSM - Taste 1 - Input", listen = ["3/0/1"] }
+69 = { name = "TSM - Taste 2 - Output", send = "3/0/2" }
+70 = { name = "TSM - Taste 2 - Input", listen = ["3/0/3"] }
+285 = { name = "- Output", send = "3/2/1" }
+286 = { name = "- Output", send = "3/2/0" }
+1289 = { name = "- Output", send = "3/3/0" }
+
+[links."1.1.20"]
+65 = { name = "TSM - Taste 1 - Output", send = "3/0/4" }
+66 = { name = "TSM - Taste 1 - Input", listen = ["3/0/5"] }
+69 = { name = "TSM - Taste 2 - Output", send = "3/0/6" }
+70 = { name = "TSM - Taste 2 - Input", listen = ["3/0/7"] }
+285 = { name = "- Output", send = "3/2/3" }
+286 = { name = "- Output", send = "3/2/2" }
+1289 = { name = "- Output", send = "3/3/10" }
+
+[links."1.1.21"]
+65 = { name = "TSM - Taste 1 - Output", send = "3/0/14" }
+66 = { name = "TSM - Taste 1 - Input", listen = ["3/0/15"] }
+69 = { name = "TSM - Taste 2 - Output", send = "3/0/16" }
+70 = { name = "TSM - Taste 2 - Input", listen = ["3/0/17"] }
+73 = { name = "TSM - Taste 3 - Output", send = "3/0/18" }
+74 = { name = "TSM - Taste 3 - Input", listen = ["3/0/19"] }
+77 = { name = "TSM - Taste 4 - Output", send = "3/3/35" }
+78 = { name = "TSM - Taste 4 - Input", listen = ["3/3/34"] }
+293 = { name = "- Output", send = "3/1/17" }
+294 = { name = "- Output", send = "3/1/16" }
+301 = { name = "- Output", send = "3/1/21" }
+302 = { name = "- Output", send = "3/1/20" }
+1289 = { name = "- Output", send = "3/3/20" }
+
+[links."1.1.30"]
+2 = { name = "MD1 - Movement [Main]:", send = "0/0/7" }
+6 = { name = "MD1 - Input sub:", listen = ["4/2/11"] }
+
+[links."1.1.32"]
+3 = { name = "FB1 - Ausgang 1", send = "1/0/14" }
+8 = { name = "FB1 - Eingang / Ausgang", send = "1/0/21" }
+12 = { name = "FB1 - Eingang", listen = ["1/0/20"] }
+
+[links."1.1.34"]
+1 = { name = "Helligkeitssensorik - Ausgang", send = "4/4/10" }
+4 = { name = "FB1 - Ausgang 2", send = "3/0/12" }
+5 = { name = "FB1 - Eingang", listen = ["4/4/11"] }
+7 = { name = "FB1 - Rückmeldung - Ausgang", send = "4/4/12" }
+
+[links."1.1.37"]
+1 = { name = "Helligkeitssensorik - Ausgang", send = "4/4/33" }
+
+[links."1.1.38"]
+1 = { name = "Helligkeitssensorik - Ausgang", send = "4/4/30" }
+4 = { name = "FB1 - Ausgang 2", send = "3/0/12" }
+5 = { name = "FB1 - Eingang", listen = ["4/4/31"] }
+7 = { name = "FB1 - Rückmeldung - Ausgang", send = "4/4/32" }
+
+[links."1.1.39"]
+89 = { name = "Input a – Switch:", send = "4/2/0" }
+98 = { name = "Input b – Switch:", send = "4/2/1" }
+100 = { name = "Input b – Switch:", send = "4/2/11" }
+107 = { name = "Input c – Switch:", send = "4/2/2" }
+116 = { name = "Input d – Switch:", send = "4/2/3" }
+125 = { name = "Input e – Switch:", send = "4/2/4" }
+134 = { name = "Input f – Switch:", send = "4/2/5" }
+143 = { name = "Input g – Switch:", send = "4/2/6" }
+152 = { name = "Input h – Switch:", send = "4/2/7" }
+161 = { name = "Input i – Switch:", send = "4/2/8" }
+170 = { name = "Input j – Switch:", send = "4/2/9" }
+179 = { name = "Input k – Switch:", send = "4/2/10" }
+188 = { name = "Input l – Switch:", send = "4/2/12" }
+197 = { name = "Input m – Switch:", send = "4/2/13" }
+206 = { name = "Input n – Switch:", send = "4/2/14" }
+215 = { name = "Input o – Switch:", send = "4/2/15" }
+
+[links."1.1.40"]
+1 = { name = "Helligkeitssensorik - Ausgang", send = "4/4/20" }
+3 = { name = "FB1 - Ausgang 1", send = "0/0/3" }
+4 = { name = "FB1 - Ausgang 2", send = "0/0/21" }
+5 = { name = "FB1 - Eingang", listen = ["4/4/21"] }
+7 = { name = "FB1 - Rückmeldung - Ausgang", send = "4/4/22" }
+12 = { name = "FB1 - Eingang", listen = ["4/4/0"] }
+
+[links."1.1.41"]
+1 = { name = "Helligkeitssensorik - Ausgang", send = "4/4/7" }
+3 = { name = "FB1 - Ausgang 1", send = "0/0/5" }
+
+[links."1.1.42"]
+1 = { name = "Helligkeitssensorik - Ausgang", send = "4/4/40" }
+3 = { name = "FB1 - Ausgang 1", send = "0/0/13" }
+5 = { name = "FB1 - Eingang", listen = ["4/4/41"] }
+7 = { name = "FB1 - Rückmeldung - Ausgang", send = "4/4/42" }
+16 = { name = "FB1 - Eingang", listen = ["4/4/43"] }
+
+[links."1.1.43"]
+169 = { name = "- Output", send = "1/1/20" }
+170 = { name = "- Output", send = "1/1/22" }
+285 = { name = "- Output", send = "1/3/5" }
+286 = { name = "- Output", send = "1/3/4" }
+293 = { name = "- Output", send = "1/3/7" }
+294 = { name = "- Output", send = "1/3/6" }
+1289 = { name = "- Output", send = "1/4/10" }
+
+[links."1.1.45"]
+1 = { name = "Ventilation unit - On/Off", listen = ["4/3/0"] }
+2 = { name = "Ventilation unit - On/Off", send = "4/3/1" }
+3 = { name = "Profile at Home - Activate", listen = ["4/3/2"] }
+4 = { name = "Profile at Home - On / Off", send = "4/3/3" }
+13 = { name = "Profile Away - Activate", listen = ["4/3/4"] }
+14 = { name = "Profile Away - On / Off", send = "4/3/5" }
+23 = { name = "Profile Boost - Activate", listen = ["4/3/6"] }
+24 = { name = "Profile Boost - On / Off", send = "4/3/7" }
+34 = { name = "Profile Fireplace - Activate", listen = ["4/3/8"] }
+35 = { name = "Profile Fireplace - On / Off", send = "4/3/9" }
+
+[links."1.1.46"]
+1 = { name = "Helligkeitssensorik - Ausgang", send = "4/4/1" }
+5 = { name = "FB1 - Eingang", listen = ["4/4/2"] }
+7 = { name = "FB1 - Rückmeldung - Ausgang", send = "4/4/3" }
+13 = { name = "FB1 - Ausgang", send = "4/4/0" }
+
+[links."1.1.47"]
+138 = { name = "Venetian blind - Safety - Input", listen = ["4/1/8"] }
+144 = { name = "Venetian blind - Input", listen = ["3/1/20"] }
+145 = { name = "Venetian blind - Input", listen = ["3/1/21"] }
+146 = { name = "Venetian blind - Input", listen = ["3/1/22"] }
+162 = { name = "Venetian blind - Output", send = "3/1/23" }
+
+[links."1.1.48"]
+138 = { name = "Venetian blind - Safety - Input", listen = ["4/1/8"] }
+144 = { name = "Venetian blind - Input", listen = ["3/1/16"] }
+145 = { name = "Venetian blind - Input", listen = ["3/1/17"] }
+146 = { name = "Venetian blind - Input", listen = ["3/1/18"] }
+162 = { name = "Venetian blind - Output", send = "3/1/19" }
+
+[links."1.1.49"]
+10 = { name = "Ausgang 1", listen = ["0/3/44"] }
+18 = { name = "Ausgang 1", send = "0/3/45" }
+36 = { name = "Ausgang 2", listen = ["1/4/33"] }
+40 = { name = "Ausgang 2", listen = ["1/4/35"] }
+44 = { name = "Ausgang 2", send = "1/4/34" }
+62 = { name = "Ausgang 3", listen = ["3/3/33"] }
+66 = { name = "Ausgang 3", listen = ["3/3/35"] }
+70 = { name = "Ausgang 3", send = "3/3/34" }
+88 = { name = "Ausgang 4", listen = ["4/0/1"] }
+92 = { name = "Ausgang 4", listen = ["4/0/3"] }
+96 = { name = "Ausgang 4", send = "4/0/2" }
+114 = { name = "Ausgang 5", listen = ["4/2/50"] }
+140 = { name = "Ausgang 6", listen = ["4/2/20"] }
+166 = { name = "Ausgang 7", listen = ["4/2/21"] }
+
+[links."1.1.51"]
+20 = { name = "Measured brightness value", send = "4/4/4" }
+55 = { name = "Light 1 switch output", send = "0/0/11" }
+
+[links."1.1.52"]
+8 = { name = "FB1 - Input", send = "1/0/21" }
+13 = { name = "FB1 - Output", send = "1/0/20" }
+
+[links."1.1.201"]
+3 = { name = "Time – output", send = "4/1/1" }
+4 = { name = "Date – output", send = "4/1/0" }
+5 = { name = "Date and time – output", send = "4/1/2" }
+8 = { name = "Summer / winter time - output", send = "4/1/3" }
+
+[links."1.1.202"]
+0 = { name = "Brightness value front", send = "4/1/5" }
+1 = { name = "Brightness value left", send = "4/1/6" }
+2 = { name = "Brightness value right", send = "4/1/7" }
+3 = { name = "Maximum brightness value", send = "4/1/10" }
+4 = { name = "Temperature value", send = "4/1/11" }
+5 = { name = "Wind speed (m/s)", send = "4/1/4" }
+6 = { name = "Rain sensor", send = "4/1/8" }
+8 = { name = "Local time", listen = ["4/1/1"] }
+9 = { name = "Date", listen = ["4/1/0"] }
+15 = { name = "Temperature sensor status", send = "4/1/14" }
+20 = { name = "C1.1 Universal channel", send = "4/1/9" }
+24 = { name = "C2.1 Universal channel", send = "4/1/12" }
+28 = { name = "C3.1 Universal channel", send = "4/1/13" }

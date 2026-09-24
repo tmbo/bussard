@@ -1,0 +1,21 @@
+# 1.1.45: KWL-KNX Connect. Hand-editable in full; vendor facts live in bussard.lock.
+
+address = "1.1.45"
+name = "KWL-KNX Connect"
+product = "20253-001"
+
+[location]
+floor = "UG"
+room = "HWR"
+
+[links]
+ventilation-unit-on-off-1.listen = ["4/3/0"]
+ventilation-unit-on-off-2.send = "4/3/1"
+profile-at-home-activate.listen = ["4/3/2"]
+profile-at-home-on-off.send = "4/3/3"
+profile-away-activate.listen = ["4/3/4"]
+profile-away-on-off.send = "4/3/5"
+profile-boost-activate.listen = ["4/3/6"]
+profile-boost-on-off.send = "4/3/7"
+profile-fireplace-activate.listen = ["4/3/8"]
+profile-fireplace-on-off.send = "4/3/9"

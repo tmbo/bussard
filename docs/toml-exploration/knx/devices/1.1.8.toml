@@ -1,0 +1,51 @@
+# 1.1.8: LED universal dimming actuator, 4-gang. Hand-editable in full; vendor facts live in bussard.lock.
+
+address = "1.1.8"
+name = "LED universal dimming actuator, 4-gang"
+product = "390041SR"
+
+[location]
+floor = "UG"
+room = "Technik"
+
+[security]
+secure_capable = true
+sequence_number = "1215"
+
+[parameters]
+"a-bezeichnung@R-324" = "Licht Essen EG"
+"a-bezeichnung@R-330" = "Licht 2 Wohnen EG"
+"a-bezeichnung@R-4" = "LED Wohnen EG"
+"a-bezeichnung@R-4010" = "Licht 1 Wohnen EG"
+da1-kennlinien = "AAAAEAAgADAAQABQAGAAcACAAJEAoQCxAMEA0QDhAPEBAQERASEBMQFBAVEBYQFxAYEBkQGiAbIBwgHSAeIB8gICAhICIgIyAkICUgJiAnICggKSAqMCswLDAtMC4wLzAwMDEwMjAzMDQwNTA2MDcwODA5MDowO0A8QD1APkA/QEBAQUBCQENAREBFQEZAR0BIQElASkBLUExQTVBOUE9QUFBRUFJQU1BUUFVQVlBXUFhQWVBaUFtQXGBdYF5gX2BgYGFgYmBjYGRgZWBmYGdgaGBpYGpga2BsYG1wbnBvcHBwcXBycHNwdHB1cHZwd3B4cHlwenB7cHxwfXB+gH+AgICBgIKAg4CEgIWAhoCHgIiAiYCKgIuAjICNgI6Qj5CQkJGQkpCTkJSQlZCWkJeQmJCZkJqQm5CckJ2QnpCfoKCgoaCioKOgpKCloKagp6CooKmgqqCroKygraCuoK+wsLCxsLKws7C0sLWwtrC3sLiwubC6sLuwvLC9sL6wv7DAwMHAwsDDwMTAxcDGwMfAyMDJwMrAy8DMwM3AzsDPwNDA0dDS0NPQ1NDV0NbQ19DY0NnQ2tDb0NzQ3dDe0N/Q4NDh0OLg4+Dk4OXg5uDn4Ojg6eDq4Ovg7ODt4O7g7+Dw4PHg8vDz8PTw9fD28Pfw+PD58Prw+/D88P3w/vD/8="
+da2-kennlinien = "AAAAEAAgADAAQABQAGAAcACAAJEAoQCxAMEA0QDhAPEBAQERASEBMQFBAVEBYQFxAYEBkQGiAbIBwgHSAeIB8gICAhICIgIyAkICUgJiAnICggKSAqMCswLDAtMC4wLzAwMDEwMjAzMDQwNTA2MDcwODA5MDowO0A8QD1APkA/QEBAQUBCQENAREBFQEZAR0BIQElASkBLUExQTVBOUE9QUFBRUFJQU1BUUFVQVlBXUFhQWVBaUFtQXGBdYF5gX2BgYGFgYmBjYGRgZWBmYGdgaGBpYGpga2BsYG1wbnBvcHBwcXBycHNwdHB1cHZwd3B4cHlwenB7cHxwfXB+gH+AgICBgIKAg4CEgIWAhoCHgIiAiYCKgIuAjICNgI6Qj5CQkJGQkpCTkJSQlZCWkJeQmJCZkJqQm5CckJ2QnpCfoKCgoaCioKOgpKCloKagp6CooKmgqqCroKygraCuoK+wsLCxsLKws7C0sLWwtrC3sLiwubC6sLuwvLC9sL6wv7DAwMHAwsDDwMTAxcDGwMfAyMDJwMrAy8DMwM3AzsDPwNDA0dDS0NPQ1NDV0NbQ19DY0NnQ2tDb0NzQ3dDe0N/Q4NDh0OLg4+Dk4OXg5uDn4Ojg6eDq4Ovg7ODt4O7g7+Dw4PHg8vDz8PTw9fD28Pfw+PD58Prw+/D88P3w/vD/8="
+da3-kennlinien = "AAAAEAAgADAAQABQAGAAcACAAJEAoQCxAMEA0QDhAPEBAQERASEBMQFBAVEBYQFxAYEBkQGiAbIBwgHSAeIB8gICAhICIgIyAkICUgJiAnICggKSAqMCswLDAtMC4wLzAwMDEwMjAzMDQwNTA2MDcwODA5MDowO0A8QD1APkA/QEBAQUBCQENAREBFQEZAR0BIQElASkBLUExQTVBOUE9QUFBRUFJQU1BUUFVQVlBXUFhQWVBaUFtQXGBdYF5gX2BgYGFgYmBjYGRgZWBmYGdgaGBpYGpga2BsYG1wbnBvcHBwcXBycHNwdHB1cHZwd3B4cHlwenB7cHxwfXB+gH+AgICBgIKAg4CEgIWAhoCHgIiAiYCKgIuAjICNgI6Qj5CQkJGQkpCTkJSQlZCWkJeQmJCZkJqQm5CckJ2QnpCfoKCgoaCioKOgpKCloKagp6CooKmgqqCroKygraCuoK+wsLCxsLKws7C0sLWwtrC3sLiwubC6sLuwvLC9sL6wv7DAwMHAwsDDwMTAxcDGwMfAyMDJwMrAy8DMwM3AzsDPwNDA0dDS0NPQ1NDV0NbQ19DY0NnQ2tDb0NzQ3dDe0N/Q4NDh0OLg4+Dk4OXg5uDn4Ojg6eDq4Ovg7ODt4O7g7+Dw4PHg8vDz8PTw9fD28Pfw+PD58Prw+/D88P3w/vD/8="
+da4-kennlinien = "AAAAEAAgADAAQABQAGAAcACAAJEAoQCxAMEA0QDhAPEBAQERASEBMQFBAVEBYQFxAYEBkQGiAbIBwgHSAeIB8gICAhICIgIyAkICUgJiAnICggKSAqMCswLDAtMC4wLzAwMDEwMjAzMDQwNTA2MDcwODA5MDowO0A8QD1APkA/QEBAQUBCQENAREBFQEZAR0BIQElASkBLUExQTVBOUE9QUFBRUFJQU1BUUFVQVlBXUFhQWVBaUFtQXGBdYF5gX2BgYGFgYmBjYGRgZWBmYGdgaGBpYGpga2BsYG1wbnBvcHBwcXBycHNwdHB1cHZwd3B4cHlwenB7cHxwfXB+gH+AgICBgIKAg4CEgIWAhoCHgIiAiYCKgIuAjICNgI6Qj5CQkJGQkpCTkJSQlZCWkJeQmJCZkJqQm5CckJ2QnpCfoKCgoaCioKOgpKCloKagp6CooKmgqqCroKygraCuoK+wsLCxsLKws7C0sLWwtrC3sLiwubC6sLuwvLC9sL6wv7DAwMHAwsDDwMTAxcDGwMfAyMDJwMrAy8DMwM3AzsDPwNDA0dDS0NPQ1NDV0NbQ19DY0NnQ2tDb0NzQ3dDe0N/Q4NDh0OLg4+Dk4OXg5uDn4Ojg6eDq4Ovg7ODt4O7g7+Dw4PHg8vDz8PTw9fD28Pfw+PD58Prw+/D88P3w/vD/8="
+
+[channel.1]  # Dimming channel 1
+dimming-channel-1-input-31.listen = ["1/1/0"]
+dimming-channel-1-output-32.send = "1/1/1"
+dimming-channel-1-input-34.listen = ["1/1/2"]
+dimming-channel-1-input-35.listen = ["1/1/3"]
+dimming-channel-1-output-36.send = "1/1/4"
+
+[channel.2]  # Dimming channel 2
+dimming-channel-2-input-51.listen = ["1/1/5"]
+dimming-channel-2-output-52.send = "1/1/6"
+dimming-channel-2-input-54.listen = ["1/1/7"]
+dimming-channel-2-input-55.listen = ["1/1/8"]
+dimming-channel-2-output-56.send = "1/1/9"
+
+[channel.3]  # Dimming channel 3
+dimming-channel-3-input-71.listen = ["1/1/10"]
+dimming-channel-3-output-72.send = "1/1/11"
+dimming-channel-3-input-74.listen = ["1/1/12"]
+dimming-channel-3-input-75.listen = ["1/1/13"]
+dimming-channel-3-output-76.send = "1/1/14"
+
+[channel.4]  # Dimming channel 4
+dimming-channel-4-input-91.listen = ["1/1/15"]
+dimming-channel-4-output-92.send = "1/1/16"
+dimming-channel-4-input-94.listen = ["1/1/17"]
+dimming-channel-4-input-95.listen = ["1/1/18"]
+dimming-channel-4-output-96.send = "1/1/19"

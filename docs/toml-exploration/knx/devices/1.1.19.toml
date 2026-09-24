@@ -1,0 +1,42 @@
+# 1.1.19: Universal push-button module, 2-gang. Hand-editable in full; vendor facts live in bussard.lock.
+
+address = "1.1.19"
+name = "Universal push-button module, 2-gang"
+product = "52921ST"
+
+[location]
+floor = "DG"
+room = "Kind 1 Nord"
+
+[security]
+secure_capable = true
+sequence_number = "240577383188"
+
+[parameters]
+"art-des-behangs@MD-15_M-26_MI-1_P-361_R-577" = "1"
+bedienkonzept-t1-t2 = "1"
+"bezeichnung-der-page-assign@MD-11_M-36_MI-1_P-150_R-243" = "Temperatursensor"
+"bezeichnung@R-1106" = "Licht UG aussen"
+"bezeichnung@R-1110" = "Verlassen Auto"
+"bezeichnung@R-1113" = "Beschattung"
+freigabe-temperaturmessung = "1"
+"funktion@R-1111" = "4"
+"funktion@R-1114" = "2"
+led-1-anzeigefunktion-tasten-schalten = "4"
+led-2-anzeigefunktion-tasten-schalten = "4"
+"rollladen-markise-dachfenster-bedienkonz@MD-15_M-26_MI-1_UP-4_R-8" = "2"
+
+[channel.1]  # TSM - Button 1
+tsm-taste-1-output.send = "3/0/0"
+tsm-taste-1-input.listen = ["3/0/1"]
+
+[channel.2]  # TSM - Button 2
+tsm-taste-2-output.send = "3/0/2"
+tsm-taste-2-input.listen = ["3/0/3"]
+
+[channel.3]  # TSM - Rocker 2 (Buttons 3/4)
+output-285.send = "3/2/1"
+output-286.send = "3/2/0"
+
+[channel.4]  # TSM - Room temperature measurement
+output.send = "3/3/0"

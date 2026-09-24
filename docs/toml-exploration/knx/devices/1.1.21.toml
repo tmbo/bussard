@@ -1,0 +1,67 @@
+# 1.1.21: Universal push-button module, 4-gang. Hand-editable in full; vendor facts live in bussard.lock.
+
+address = "1.1.21"
+name = "Universal push-button module, 4-gang"
+product = "52941ST"
+
+[location]
+floor = "DG"
+room = "Badezimmer"
+
+[security]
+secure_capable = true
+sequence_number = "241873824156"
+
+[parameters]
+"art-des-behangs@MD-15_M-226_MI-1_P-361_R-577" = "1"
+"art-des-behangs@MD-15_M-256_MI-1_P-361_R-577" = "1"
+bedienkonzept-t1-t2 = "1"
+bedienkonzept-t3-t4 = "1"
+"bezeichnung-der-page-assign@MD-11_M-36_MI-1_P-150_R-243" = "Temperatursensor"
+"bezeichnung@R-1106" = "Wanne Bad DG"
+"bezeichnung@R-1110" = "Heizer Bad DG"
+"bezeichnung@R-1123" = "Rolladen Bad DG"
+"bezeichnung@R-1133" = "Dachfenster Bad DG"
+"bezeichnung@R-157" = "Decke Bad DG"
+"bezeichnung@R-176" = "Spiegel Bad DG"
+freigabe-temperaturmessung = "1"
+"funktion@R-1124" = "2"
+"funktion@R-1134" = "2"
+"jalousie-befehl-druecken@MD-15_M-226_MI-1_P-2_R-2" = "1"
+led-1-anzeigefunktion-tasten-schalten = "4"
+led-1-bezeichnung-der-status-led = "Decke Bad DG"
+led-2-anzeigefunktion-tasten-schalten = "4"
+led-2-bezeichnung-der-status-led = "Spiegel Bad DG"
+led-3-anzeigefunktion-tasten-schalten = "4"
+led-3-bezeichnung-der-status-led = "Wanne Bad DG"
+led-4-anzeigefunktion-tasten-schalten = "4"
+led-4-bezeichnung-der-status-led = "Heizer Bad DG"
+"rollladen-markise-dachfenster-bedienkonz@MD-15_M-226_MI-1_UP-4_R-8" = "2"
+"rollladen-markise-dachfenster-bedienkonz@MD-15_M-256_MI-1_UP-4_R-8" = "2"
+
+[channel.1]  # TSM - Button 1
+tsm-taste-1-output.send = "3/0/14"
+tsm-taste-1-input.listen = ["3/0/15"]
+
+[channel.2]  # TSM - Button 2
+tsm-taste-2-output.send = "3/0/16"
+tsm-taste-2-input.listen = ["3/0/17"]
+
+[channel.3]  # TSM - Room temperature measurement
+output.send = "3/3/20"
+
+[channel.4]  # TSM - Button 3
+tsm-taste-3-output.send = "3/0/18"
+tsm-taste-3-input.listen = ["3/0/19"]
+
+[channel.5]  # TSM - Button 4
+tsm-taste-4-output.send = "3/3/35"
+tsm-taste-4-input.listen = ["3/3/34"]
+
+[channel.6]  # TSM - Rocker 3 (Buttons 5/6)
+output-293.send = "3/1/17"
+output-294.send = "3/1/16"
+
+[channel.7]  # TSM - Rocker 4 (Buttons 7/8)
+output-301.send = "3/1/21"
+output-302.send = "3/1/20"

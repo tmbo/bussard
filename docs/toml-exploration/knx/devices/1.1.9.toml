@@ -1,0 +1,39 @@
+# 1.1.9: LED universal dimming actuator, 4-gang. Hand-editable in full; vendor facts live in bussard.lock.
+
+address = "1.1.9"
+name = "LED universal dimming actuator, 4-gang"
+product = "390041SR"
+
+[location]
+floor = "UG"
+room = "Technik"
+
+[security]
+secure_capable = true
+sequence_number = "65737"
+
+[parameters]
+"a-bezeichnung@R-4" = "Licht 1 Schlafen EG"
+"a-bezeichnung@R-4010" = "Licht 2 Schlafen EG"
+"a-einschalthelligkeit-ausw-grundhelligke@R-4037" = "128"
+"a-einschalthelligkeit-ausw-grundhelligke@R-429" = "128"
+"ea-freigabe-ein-ausschaltverhalten@R-126" = "1"
+"ea-freigabe-ein-ausschaltverhalten@R-4213" = "1"
+"ea-soft-aus-freigabe@R-132" = "1"
+"ea-soft-aus-freigabe@R-4321" = "1"
+"ea-soft-ein-freigabe@R-129" = "1"
+"ea-soft-ein-freigabe@R-4315" = "1"
+
+[channel.1]  # Dimming channel 1
+dimming-channel-1-input-31.listen = ["1/1/20"]
+dimming-channel-1-output-32.send = "1/1/21"
+dimming-channel-1-input-34.listen = ["1/1/22"]
+dimming-channel-1-input-35.listen = ["1/1/23"]
+dimming-channel-1-output-36.send = "1/1/24"
+
+[channel.2]  # Dimming channel 2
+dimming-channel-2-input-51.listen = ["1/1/20"]
+dimming-channel-2-output-52.send = "1/1/21"
+dimming-channel-2-input-54.listen = ["1/1/22"]
+dimming-channel-2-input-55.listen = ["1/1/23"]
+dimming-channel-2-output-56.send = "1/1/24"

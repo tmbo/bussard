@@ -1,0 +1,26 @@
+# 1.1.51: STEINEL Control Pro. Hand-editable in full; vendor facts live in bussard.lock.
+
+address = "1.1.51"
+name = "STEINEL Control Pro"
+product = "4007841059xxx"
+
+[location]
+floor = "UG"
+room = "WC"
+
+[parameters]
+general-flags-helligkeit = "1"
+general-number-of-light-outputs = "1"
+general-sensortype-pc-pro = "3"
+light-1-disable = "1"
+light-1-disable-behaviour-disabling = "2"
+light-1-switch-off-delay = "30"
+light-1-switch-off-delay-iq-mode = "1"
+range-boost-factor = "15"
+range-sensitivity = "80"
+
+[links]
+measured-brightness-value.send = "4/4/4"
+
+[channel.1]  # Light 1
+light-1-switch-output.send = "0/0/11"

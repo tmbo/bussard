@@ -1,0 +1,27 @@
+# 1.1.46: Automatischalter Standard 1,10 m. Hand-editable in full; vendor facts live in bussard.lock.
+
+address = "1.1.46"
+name = "Automatischalter Standard 1,10 m"
+description = "Flur EG Treppe"
+product = "3181"
+
+[location]
+floor = "EG"
+
+[parameters]
+applikationstyp = "2"
+basisempfindlichkeit-sektorenabc = "1"
+daemmerungsstufe-nach-ets-download = "0"
+daemmerungsstufe-vorgabe = "1"
+daemmerungsstufe-wert = "200"
+empfindlichkeit-sensora = "0"
+empfindlichkeit-sensorb = "2"
+poti-empfindlichkeit = "0"
+
+[channel.1]  # Allgemein
+helligkeitssensorik-ausgang.send = "4/4/1"
+
+[channel.2]  # Funktionsblock 1 (FB1)
+fb1-eingang.listen = ["4/4/2"]
+fb1-rueckmeldung-ausgang.send = "4/4/3"
+fb1-ausgang.send = "4/4/0"

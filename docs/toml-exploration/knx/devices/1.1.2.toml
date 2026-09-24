@@ -1,0 +1,152 @@
+# 1.1.2: Heating actuator 6-gang with controller. Hand-editable in full; vendor facts live in bussard.lock.
+
+address = "1.1.2"
+name = "Heating actuator 6-gang with controller"
+product = "360061SR"
+
+[location]
+floor = "UG"
+room = "Technik"
+
+[security]
+secure_capable = true
+sequence_number = "45767"
+
+[parameters]
+"bezeichnung@R-208" = "WC UG"
+"bezeichnung@R-209" = "Garage UG"
+"bezeichnung@R-210" = "Diele UG"
+"bezeichnung@R-211" = "Wohnen/Essen"
+"bezeichnung@R-212" = "Schlafen"
+calc-zwangsfreigabe-rtr1 = "1"
+"konfiguration-rtr@R-2138" = "1"
+"konfiguration-rtr@R-2139" = "1"
+"konfiguration-rtr@R-2140" = "1"
+"konfiguration-rtr@R-2141" = "1"
+"konfiguration-rtr@R-2142" = "1"
+"konfiguration-rtr@R-2149" = "1"
+"konfiguration-rtr@R-2150" = "1"
+"konfiguration-rtr@R-2151" = "1"
+"konfiguration-rtr@R-2152" = "1"
+
+[channel.1]  # Valve output 3
+vo-3-input.listen = ["0/3/36"]
+
+[channel.2]  # Valve output 4
+vo-4-input.listen = ["0/3/16"]
+
+[channel.3]  # Valve output 6
+vo-6-input.listen = ["1/4/6"]
+
+[channel.4]  # Valve output 5
+vo-5-input.listen = ["1/4/26"]
+
+[channel.5]  # Valve output 2
+vo-2-input.listen = ["0/3/26"]
+
+[channel.6]  # Valve output 1
+vo-1-input.listen = ["0/3/6"]
+
+[channel.7]  # Room temperature controller
+rtc-input-333.listen = ["0/3/1"]
+rtc-input-334.send = "0/3/2"
+rtc-input-335.send = "0/3/3"
+rtc-input-338.listen = ["4/0/0"]
+rtc-output-339.send = "0/3/102"
+rtc-output-343.send = "0/3/4"
+rtc-output-345.send = "0/3/8"
+rtc-input-346.listen = ["0/3/5"]
+rtc-output-372.send = "0/3/7"
+rtc-output-380.send = "0/3/40"
+rtc-output-935.send = "0/3/6"
+rtc-output-1437.send = "0/3/9"
+rtc-input-1438.send = "0/3/0"
+
+[channel.8]  # Room temperature controller 2
+rtc-2-input-383.listen = ["0/3/11"]
+rtc-2-input-384.send = "0/3/12"
+rtc-2-input-385.send = "0/3/13"
+rtc-2-input-388.listen = ["4/0/0"]
+rtc-2-general-393.send = "0/3/14"
+rtc-2-general-395.send = "0/3/18"
+rtc-2-input-396.listen = ["0/3/15"]
+rtc-2-general-422.send = "0/3/17"
+rtc-2-general-430.send = "0/3/41"
+rtc-2-general-977.send = "0/3/16"
+rtc-2-general-1447.send = "0/3/19"
+rtc-2-input-1448.send = "0/3/10"
+
+[channel.9]  # Room temperature controller 3
+rtc-3-input-433.listen = ["0/3/21"]
+rtc-3-input-434.send = "0/3/22"
+rtc-3-input-435.send = "0/3/23"
+rtc-3-input-438.listen = ["4/0/0"]
+rtc-3-general-443.send = "0/3/24"
+rtc-3-general-445.send = "0/3/28"
+rtc-3-input-446.listen = ["0/3/25"]
+rtc-3-general-472.send = "0/3/27"
+rtc-3-general-480.send = "0/3/42"
+rtc-3-general-1019.send = "0/3/26"
+rtc-3-general-1457.send = "0/3/29"
+rtc-3-input-1458.send = "0/3/20"
+
+[channel.10]  # Room temperature controller 4
+rtc-4-input-483.listen = ["0/3/31"]
+rtc-4-input-484.send = "0/3/32"
+rtc-4-input-485.send = "0/3/33"
+rtc-4-input-488.listen = ["4/0/0"]
+rtc-4-general-493.send = "0/3/34"
+rtc-4-general-495.send = "0/3/38"
+rtc-4-input-496.listen = ["0/3/35"]
+rtc-4-general-522.send = "0/3/37"
+rtc-4-general-530.send = "0/3/43"
+rtc-4-general-1061.send = "0/3/36"
+rtc-4-general-1467.send = "0/3/39"
+rtc-4-input-1468.send = "0/3/30"
+
+[channel.11]  # Room temperature controller 5
+rtc-5-input-533.listen = ["1/4/1"]
+rtc-5-input-534.send = "1/4/2"
+rtc-5-input-535.send = "1/4/3"
+rtc-5-input-538.listen = ["4/0/0"]
+rtc-5-general-543.send = "1/4/4"
+rtc-5-general-545.send = "1/4/8"
+rtc-5-input-546.listen = ["1/4/5"]
+rtc-5-general-572.send = "1/4/7"
+rtc-5-general-580.send = "1/4/30"
+rtc-5-general-1103.send = "1/4/6"
+rtc-5-general-1477.send = "1/4/9"
+rtc-5-input-1478.send = "1/4/0"
+
+[channel.12]  # Room temperature controller 6
+art-der-heizung-stetig-pi = "8"
+art-der-kuehlung-stetig-pi = "8"
+betriebsart-controller = "3"
+betriebsart-heizen-kuehlen-nach-reset = "2"
+betriebsart-rsm = "3"
+betriebsmodus-nach-reset = "8"
+"bezeichnung@MD-2_M-20_MI-1_P-15_R-17" = "Büro UG"
+"bezeichnung@MD-2_M-20_MI-1_P-15_R-712" = "WC UG"
+"bezeichnung@MD-2_M-20_MI-1_P-15_R-715" = "Garage UG"
+"bezeichnung@MD-2_M-20_MI-1_P-15_R-716" = "Diele UG"
+"bezeichnung@MD-2_M-20_MI-1_P-15_R-736" = "Wohnen/Essen"
+"bezeichnung@MD-2_M-20_MI-1_P-15_R-737" = "Schlafen"
+freigaben-rueckmeldungen = "1"
+gemeinsames-stellgroessenobjekt = "1"
+regler-abschalten = "1"
+sollwerte-verhalten-download-sensor = "0"
+status-freigabe-rhcc = "0"
+status-freigabe-rtc = "0"
+status-freigabe-rtsm = "0"
+rtc-6-input-583.listen = ["1/4/11"]
+rtc-6-input-584.send = "1/4/12"
+rtc-6-input-585.send = "1/4/13"
+rtc-6-input-588.listen = ["4/0/0"]
+rtc-6-general-593.send = "1/4/14"
+rtc-6-general-595.send = "1/4/18"
+rtc-6-input-596.listen = ["1/4/15"]
+rtc-6-general-622.send = "1/4/17"
+rtc-6-general-630.send = "1/4/31"
+rtc-6-general-1145.send = "1/4/16"
+rtc-6-general-1487.send = "1/4/19"
+rtc-6-input-1488.send = "1/4/10"

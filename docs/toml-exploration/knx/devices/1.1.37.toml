@@ -1,0 +1,16 @@
+# 1.1.37: Präsenzmelder Mini Universal. Hand-editable in full; vendor facts live in bussard.lock.
+
+address = "1.1.37"
+name = "Präsenzmelder Mini Universal"
+description = "Bad DG"
+product = "3361-1MWW"
+
+[location]
+floor = "DG"
+room = "Badezimmer"
+
+[parameters]
+telegramm-nachtriggerung-a1 = "1"
+
+[links]
+helligkeitssensorik-ausgang.send = "4/4/33"

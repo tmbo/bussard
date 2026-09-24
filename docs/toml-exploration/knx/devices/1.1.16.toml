@@ -1,0 +1,47 @@
+# 1.1.16: Universal push-button module, 3-gang. Hand-editable in full; vendor facts live in bussard.lock.
+
+address = "1.1.16"
+name = "Universal push-button module, 3-gang"
+product = "52931ST"
+
+[location]
+floor = "UG"
+room = "Technik"
+
+[security]
+secure_capable = true
+sequence_number = "240574647833"
+
+[parameters]
+"art-des-behangs@MD-15_M-26_MI-1_P-361_R-577" = "1"
+bedienkonzept-t1-t2 = "1"
+bedienkonzept-t5-t6 = "1"
+"bezeichnung-der-page-assign@MD-11_M-36_MI-1_P-150_R-243" = "Temperatursensor"
+freigabe-temperaturmessung = "1"
+funktion = "2"
+led-5-anzeigefunktion-tasten-schalten = "4"
+led-6-anzeigefunktion-tasten-schalten = "4"
+"rollladen-markise-dachfenster-bedienkonz@MD-15_M-26_MI-1_UP-4_R-8" = "2"
+
+[channel.1]  # TSM - Button 1
+tsm-taste-1-output.send = "0/0/9"
+tsm-taste-1-input.listen = ["0/0/10"]
+
+[channel.2]  # TSM - Button 2
+tsm-taste-2-output.send = "0/0/5"
+tsm-taste-2-input.listen = ["0/0/6"]
+
+[channel.3]  # TSM - Rocker 2 (Buttons 3/4)
+output-285.send = "0/1/2"
+output-286.send = "0/1/1"
+
+[channel.4]  # TSM - Room temperature measurement
+output.send = "0/3/46"
+
+[channel.5]  # TSM - Button 5
+tsm-taste-5-output.send = "4/3/2"
+tsm-taste-5-input.listen = ["4/3/3"]
+
+[channel.6]  # TSM - Button 6
+tsm-taste-6-output.send = "4/3/4"
+tsm-taste-6-input.listen = ["4/3/5"]

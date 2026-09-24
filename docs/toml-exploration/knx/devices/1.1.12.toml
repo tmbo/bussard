@@ -1,0 +1,32 @@
+# 1.1.12: Universal push-button module, 1-gang. Hand-editable in full; vendor facts live in bussard.lock.
+
+address = "1.1.12"
+name = "Universal push-button module, 1-gang"
+product = "52911ST"
+
+[location]
+floor = "UG"
+room = "HWR"
+
+[security]
+secure_capable = true
+sequence_number = "239373908168"
+
+[parameters]
+bedienkonzept-t1-t2 = "1"
+bezeichnung = "Licht HWR"
+"bezeichnung-der-page-assign@MD-11_M-36_MI-1_P-150_R-243" = "Temperatursensor"
+freigabe-temperaturmessung = "1"
+led-1-anzeigefunktion-tasten-schalten = "4"
+led-2-anzeigefunktion-tasten-schalten = "4"
+
+[channel.1]  # TSM - Button 1
+tsm-taste-1-output.send = "0/0/5"
+tsm-taste-1-input.listen = ["0/0/6"]
+
+[channel.2]  # TSM - Button 2
+tsm-taste-2-output.send = "0/0/5"
+tsm-taste-2-input.listen = ["0/0/6"]
+
+[channel.3]  # TSM - Room temperature measurement
+output.send = "0/3/47"

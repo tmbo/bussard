@@ -1,0 +1,51 @@
+# 1.1.30: BM/A4.11-13x Busch-Watchdog PRO 280° KNX. Hand-editable in full; vendor facts live in bussard.lock.
+
+address = "1.1.30"
+name = "BM/A4.11-13x Busch-Watchdog PRO 280° KNX"
+product = "BM/A4.11-13x"
+
+[location]
+floor = "Außenbereich"
+room = "Aussen"
+
+[security]
+secure_capable = true
+sequence_number = "244027590444"
+
+[parameters]
+brightnessthresholdintern = "200"
+brightnessthresholdintern1 = "20"
+devicename = "Busch-Wächter Pro"
+enablemovementtriggerobj = "1"
+enablesensor3 = "0"
+extendedmode-activation-1 = "1"
+extendedmodeactive = "1"
+nenstelleberuecksichtigthelligkeit = "0"
+par-tdescription = ""
+sensitivity-s12 = "1"
+sensitivity-s21 = "1"
+sensitivity-s4 = "1"
+tdescription = "Busch-Wächter Pro"
+"typconditionparam@R-150" = "1"
+"typconditionparam@R-155" = "1"
+"typconditionparam@R-158" = "1"
+"typconditionparam@R-186" = "1"
+"typconditionparam@R-189" = "1"
+"typconditionparam@R-193" = "1"
+"typconditionparam@R-195" = "1"
+"typconditionparam@R-201" = "1"
+"typconditionparam@R-209" = "1"
+"typconditionparam@R-211" = "1"
+"typconditionparam@R-213" = "1"
+"typconditionparam@R-214" = "1"
+"typconditionparam@R-225" = "1"
+"typconditionparam@R-237" = "1"
+"typconditionparam@R-238" = "1"
+"typconditionparam@R-247" = "1"
+"typconditionparam@R-250" = "1"
+"typconditionparam@R-269" = "1"
+"typconditionparam@R-270" = "1"
+
+[channel.2]  # Motion Detector 1:
+output.send = "0/0/7"
+input.listen = ["4/2/11"]

@@ -1,0 +1,21 @@
+# 1.1.52: Präsenzmelder Mini Standard. Hand-editable in full; vendor facts live in bussard.lock.
+
+address = "1.1.52"
+name = "Präsenzmelder Mini Standard"
+description = "Bad EG hinten"
+product = "3361MWW"
+
+[location]
+floor = "EG"
+room = "Bad"
+
+[parameters]
+applikationstyp = "2"
+sensorik-verriegelungszeit = "0"
+zeit-zusaetzliche-sendeverzoegerung-min = "3"
+zeit-zusaetzliche-sendeverzoegerung-sek = "0"
+zeit-zyklisches-senden-sek-a1 = "30"
+
+[links]
+fb1-input.send = "1/0/21"
+fb1-output.send = "1/0/20"

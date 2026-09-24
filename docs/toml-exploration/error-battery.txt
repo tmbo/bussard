@@ -1,0 +1,146 @@
+### missing comma between elements
+TOML parse error at line 3, column 3
+  |
+3 |   { address = "0/0/2", name = "B", dpt = "1.001" },
+  |   ^
+missing comma between array elements, expected `,`
+
+### missing closing brace
+TOML parse error at line 3, column 3
+  |
+3 |   { address = "0/0/2", name = "B" },
+  |   ^
+missing key for inline table element, expected key
+
+### missing closing bracket
+TOML parse error at line 5, column 1
+  |
+5 | device = "1.1.2"
+  | ^
+missing comma between array elements, expected `,`
+
+### colon instead of equals
+TOML parse error at line 2, column 14
+  |
+2 |   { address: "0/0/1", name = "A" },
+  |              ^
+missing assignment between key-value pairs, expected `=`
+
+### unquoted string value
+TOML parse error at line 2, column 31
+  |
+2 |   { address = "0/0/1", name = Licht Büro },
+  |                               ^^^^^^^^^^^
+string values must be quoted, expected literal string
+
+### unquoted address
+TOML parse error at line 2, column 15
+  |
+2 |   { address = 0/0/1, name = "A" },
+  |               ^^^^^
+string values must be quoted, expected literal string
+
+### unescaped quote in name
+TOML parse error at line 2, column 39
+  |
+2 |   { address = "0/0/1", name = "Licht "Süd"" },
+  |                                       ^
+missing comma between key-value pairs, expected `,`
+
+### second groups array appended
+TOML parse error at line 4, column 1
+  |
+4 | groups = [
+  | ^^^^^^
+duplicate key
+
+### [[groups]] mixed with array
+TOML parse error at line 4, column 3
+  |
+4 | [[groups]]
+  |   ^^^^^^
+duplicate key
+
+### yaml list dash
+TOML parse error at line 2, column 5
+  |
+2 |   - { address = "0/0/1", name = "A" },
+  |     ^
+missing comma between array elements, expected `,`
+
+### missing required field
+TOML parse error at line 2, column 3
+  |
+2 |   { address = "0/0/1", dpt = "1.001" },
+  |   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+missing field `name`
+
+### bool as string
+TOML parse error at line 2, column 48
+  |
+2 |   { address = "0/0/1", name = "A", protected = "true" },
+  |                                                ^^^^^^
+invalid type: string "true", expected a boolean
+
+### listen as string
+TOML parse error at line 4, column 27
+  |
+4 |   { object = 21, listen = "0/3/6" },
+  |                           ^^^^^^^
+invalid type: string "0/3/6", expected a sequence
+
+### object as string
+TOML parse error at line 4, column 14
+  |
+4 |   { object = "21", listen = ["0/3/6"] },
+  |              ^^^^
+invalid type: string "21", expected u16
+
+### bad GA (2 parts)
+TOML parse error at line 2, column 15
+  |
+2 |   { address = "0/1", name = "A" },
+  |               ^^^^^
+group address `0/1` must have the form main/middle/sub, e.g. 1/2/3
+
+### bad GA (range)
+TOML parse error at line 2, column 15
+  |
+2 |   { address = "0/9/1", name = "A" },
+  |               ^^^^^^^
+group address `0/9/1` is out of range (main 0-31, middle 0-7, sub 0-255)
+
+### singular table name
+TOML parse error at line 1, column 2
+  |
+1 | [group]
+  |  ^^^^^
+unknown field `group`, expected one of `imported_from`, `ranges`, `groups`, `links`
+
+### multi-line inline table (TOML 1.1)
+OK (accepted)
+### trailing comma + comments
+OK (accepted)
+### dpt float
+TOML parse error at line 2, column 42
+  |
+2 |   { address = "0/0/1", name = "A", dpt = 1.001 },
+  |                                          ^^^^^
+invalid type: floating point `1.001`, expected a string
+
+### empty value
+TOML parse error at line 2, column 31
+  |
+2 |   { address = "0/0/1", name = },
+  |                               ^
+invalid literal string, expected `'`
+
+### smart quotes
+TOML parse error at line 2, column 15
+  |
+2 |   { address = “0/0/1”, name = "A" },
+  |               ^^^^^^^^^^^
+string values must be quoted, expected literal string
+
+
+[exited with code 0]

@@ -1,0 +1,22 @@
+# 1.1.32: Präsenzmelder Mini Universal. Hand-editable in full; vendor facts live in bussard.lock.
+
+address = "1.1.32"
+name = "Präsenzmelder Mini Universal"
+description = "Bad EG vorn"
+product = "3361-1MWW"
+
+[location]
+floor = "EG"
+room = "Bad"
+
+[parameters]
+applikationstyp = "1"
+empfindlichkeit-sensorc = "1"
+telegramm-nachtriggerung-a1 = "1"
+zeit-zusaetzliche-sendeverzoegerung-min = "3"
+zeit-zusaetzliche-sendeverzoegerung-sek = "0"
+
+[channel.1]  # FB1 - Allgemein
+fb1-ausgang-1.send = "1/0/14"
+fb1-eingang-ausgang.send = "1/0/21"
+fb1-eingang.listen = ["1/0/20"]

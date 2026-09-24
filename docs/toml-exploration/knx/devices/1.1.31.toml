@@ -1,0 +1,13 @@
+# 1.1.31: Präsenzmelder Mini Universal. Hand-editable in full; vendor facts live in bussard.lock.
+
+address = "1.1.31"
+name = "Präsenzmelder Mini Universal"
+description = "Arbeiten UG"
+product = "3361-1MWW"
+
+[location]
+floor = "UG"
+room = "Büro"
+
+[parameters]
+telegramm-nachtriggerung-a1 = "1"

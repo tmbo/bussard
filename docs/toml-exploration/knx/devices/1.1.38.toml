@@ -1,0 +1,32 @@
+# 1.1.38: Präsenzmelder Mini Universal. Hand-editable in full; vendor facts live in bussard.lock.
+
+address = "1.1.38"
+name = "Präsenzmelder Mini Universal"
+description = "Flur DG"
+product = "3361-1MWW"
+
+[location]
+floor = "DG"
+
+[parameters]
+applikationstyp = "1"
+daemmerungsstufe-nach-ets-download = "0"
+daemmerungsstufe-vorgabe = "1"
+daemmerungsstufe-wert = "200"
+empfindlichkeit-sensora = "2"
+empfindlichkeit-sensorb = "2"
+empfindlichkeit-sensorc = "2"
+funktion-ausgang-2 = "1"
+telegramm-beginn-senden-a2 = "1"
+telegramm-ende-senden-a2 = "1"
+"telegramm-nachtriggerung-a1@R-501" = "1"
+"telegramm-nachtriggerung-a1@R-565" = "1"
+telegramm-nachtriggerung-a2 = "1"
+
+[links]
+helligkeitssensorik-ausgang.send = "4/4/30"
+
+[channel.1]  # FB1 - Allgemein
+fb1-ausgang-2.send = "3/0/12"
+fb1-eingang.listen = ["4/4/31"]
+fb1-rueckmeldung-ausgang.send = "4/4/32"

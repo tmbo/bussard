@@ -1,0 +1,228 @@
+# 1.1.6: Switch actuator, 24-gang / blinds actuator, 12-gang. Hand-editable in full; vendor facts live in bussard.lock.
+
+address = "1.1.6"
+name = "Switch actuator, 24-gang / blinds actuator, 12-gang"
+product = "230241SR"
+
+[location]
+floor = "UG"
+room = "Technik"
+
+[security]
+secure_capable = true
+sequence_number = "1219"
+
+[parameters]
+"bezeichnung@R-237" = "A1/A2"
+"bezeichnung@R-238" = "A3/A4"
+"bezeichnung@R-239" = "A5/A6"
+"bezeichnung@R-240" = "A7/A8"
+"bezeichnung@R-241" = "A9/A10"
+"bezeichnung@R-242" = "A11/A12"
+"bezeichnung@R-243" = "A13/A14"
+"bezeichnung@R-244" = "A15/A16"
+"bezeichnung@R-245" = "A17/A18"
+"bezeichnung@R-246" = "A19/A20"
+"bezeichnung@R-247" = "A21/A22"
+"bezeichnung@R-248" = "A23/A24"
+calc-sicherheit-freigabe-zeit-windalarme = "1"
+frostalarm = "1"
+sicherheit-freigabe = "1"
+sicherheit-freigabe-ueberwachung-frost = "1"
+sicherheit-freigabe-ueberwachung-wind = "1"
+windalarm-1 = "1"
+windalarm-2 = "1"
+zeit-ueberwachung-frost-min = "15"
+zeit-ueberwachung-wind-min = "5"
+
+[links]
+venetian-blind-safety-input-11.listen = ["4/1/9"]
+venetian-blind-safety-input-12.listen = ["4/1/12"]
+venetian-blind-safety-input-15.listen = ["4/1/13"]
+venetian-blind-1-2-input.listen = ["3/1/6"]
+venetian-blind-1-2-output.send = "3/1/7"
+venetian-blind-3-4-input.listen = ["3/1/10"]
+venetian-blind-3-4-output.send = "3/1/11"
+venetian-blind-5-6-input.listen = ["3/1/14"]
+venetian-blind-5-6-output.send = "3/1/15"
+venetian-blind-7-8-input.listen = ["0/1/3"]
+venetian-blind-7-8-output.send = "0/1/4"
+venetian-blind-9-10-input.listen = ["0/1/7"]
+venetian-blind-9-10-output.send = "0/1/8"
+venetian-blind-11-12-input.listen = ["0/1/11"]
+venetian-blind-11-12-output.send = "0/1/12"
+venetian-blind-13-14-input.listen = ["0/1/15"]
+venetian-blind-13-14-output.send = "0/1/16"
+
+[channel.1]  # Relaisausgänge 1/2
+a12-a-bezeichnung = "Rolladen 2 Kind 1 DG"
+a12-a-bezeichnung-2 = "Rolladen 2 Kind 1 DG"
+a12-betriebsart = "1"
+a12-frostalarm = "1"
+a12-windalarm-1 = "1"
+a12-windalarm-2 = "1"
+venetian-blind-1-2-input-20.listen = ["3/1/4", "3/2/0"]
+venetian-blind-1-2-input-21.listen = ["3/1/5", "3/2/1"]
+
+[channel.2]  # Relaisausgänge 3/4
+a12-a-bezeichnung = "Rolladen 1 Kind 2 DG"
+a12-a-bezeichnung-2 = "Rolladen 1 Kind 2 DG"
+a12-betriebsart = "1"
+a12-frostalarm = "1"
+a12-windalarm-1 = "1"
+a12-windalarm-2 = "1"
+venetian-blind-3-4-input-67.listen = ["3/1/8", "3/2/2"]
+venetian-blind-3-4-input-68.listen = ["3/1/9", "3/2/3"]
+
+[channel.3]  # Relaisausgänge 5/6
+a12-a-bezeichnung = "Rolladen 2 Kind 2 DG"
+a12-a-bezeichnung-2 = "Rolladen 2 Kind 2 DG"
+a12-betriebsart = "1"
+a12-frostalarm = "1"
+a12-windalarm-1 = "1"
+a12-windalarm-2 = "1"
+venetian-blind-5-6-input-114.listen = ["3/1/12", "3/2/2"]
+venetian-blind-5-6-input-115.listen = ["3/1/13", "3/2/3"]
+
+[channel.4]  # Relaisausgänge 7/8
+a12-a-bezeichnung = "Rolladen Technik UG"
+a12-a-bezeichnung-2 = "Rolladen Technik UG"
+a12-betriebsart = "1"
+a12-frostalarm = "1"
+a12-windalarm-1 = "1"
+a12-windalarm-2 = "1"
+venetian-blind-7-8-input-161.listen = ["0/1/1"]
+venetian-blind-7-8-input-162.listen = ["0/1/2"]
+
+[channel.5]  # Relaisausgänge 9/10
+a12-a-bezeichnung = "Rolladen WC UG"
+a12-a-bezeichnung-2 = "Rolladen WC UG"
+a12-betriebsart = "1"
+a12-frostalarm = "1"
+a12-windalarm-1 = "1"
+a12-windalarm-2 = "1"
+venetian-blind-9-10-input-208.listen = ["0/1/5"]
+venetian-blind-9-10-input-209.listen = ["0/1/6"]
+
+[channel.6]  # Relaisausgänge 11/12
+a12-a-bezeichnung = "Rolladen 1 Garage UG"
+a12-a-bezeichnung-2 = "Rolladen 1 Garage UG"
+a12-betriebsart = "1"
+a12-frostalarm = "1"
+a12-windalarm-1 = "1"
+a12-windalarm-2 = "1"
+venetian-blind-11-12-input-255.listen = ["0/1/9", "0/2/0"]
+venetian-blind-11-12-input-256.listen = ["0/1/10", "0/2/1"]
+
+[channel.7]  # Relaisausgänge 13/14
+a12-a-bezeichnung = "Rolladen 2 Garage UG"
+a12-a-bezeichnung-2 = "Rolladen 2 Garage UG"
+a12-betriebsart = "1"
+a12-frostalarm = "1"
+a12-windalarm-1 = "1"
+a12-windalarm-2 = "1"
+venetian-blind-13-14-input-302.listen = ["0/1/13", "0/2/0"]
+venetian-blind-13-14-input-303.listen = ["0/1/14", "0/2/1"]
+
+[channel.8]  # Relaisausgänge 15/16
+a12-a-bezeichnung = "Jalousie 1 Büro UG"
+a12-a-bezeichnung-2 = "Jalousie 1 Büro UG"
+a12-calc-sicherheit-freigabe-alarme = "1"
+a12-calc-sicherheit-freigabe-windalarme = "1"
+a12-fahrtrichtungsumkehr = "1"
+a12-frostalarm = "1"
+a12-sicherheit-freigabe = "1"
+a12-verhalten-frost = "1"
+a12-verhalten-wind = "1"
+a12-windalarm-1 = "1"
+a12-windalarm-2 = "1"
+a12-zuordnung-frost = "1"
+a12-zuordnung-wind-2 = "1"
+venetian-blind-15-16-input-349.listen = ["0/1/17", "0/2/2"]
+venetian-blind-15-16-input-350.listen = ["0/1/18", "0/2/3"]
+venetian-blind-15-16-input-351.listen = ["0/1/19"]
+venetian-blind-15-16-input-352.listen = ["0/1/20"]
+venetian-blind-15-16-output-367.send = "0/1/21"
+venetian-blind-15-16-output-368.send = "0/1/22"
+
+[channel.9]  # Relaisausgänge 17/18
+a12-a-bezeichnung = "Jalousie 2 Büro UG"
+a12-a-bezeichnung-2 = "Jalousie 2 Büro UG"
+a12-calc-sicherheit-freigabe-alarme = "1"
+a12-calc-sicherheit-freigabe-windalarme = "1"
+a12-fahrtrichtungsumkehr = "1"
+a12-frostalarm = "1"
+a12-sicherheit-freigabe = "1"
+a12-verhalten-frost = "1"
+a12-verhalten-wind = "1"
+a12-windalarm-1 = "1"
+a12-windalarm-2 = "1"
+a12-zuordnung-frost = "1"
+a12-zuordnung-wind-2 = "1"
+venetian-blind-17-18-input-396.listen = ["0/1/23", "0/2/2"]
+venetian-blind-17-18-input-397.listen = ["0/1/24", "0/2/3"]
+venetian-blind-17-18-input-398.listen = ["0/1/25"]
+venetian-blind-17-18-input-399.listen = ["0/1/26"]
+venetian-blind-17-18-output-414.send = "0/1/27"
+venetian-blind-17-18-output-415.send = "0/1/28"
+
+[channel.10]  # Relaisausgänge 19/20
+a12-a-bezeichnung = "Jalousie 3 Büro EG"
+a12-a-bezeichnung-2 = "Jalousie 3 Büro EG"
+a12-calc-sicherheit-freigabe-alarme = "1"
+a12-calc-sicherheit-freigabe-windalarme = "1"
+a12-fahrtrichtungsumkehr = "1"
+a12-frostalarm = "1"
+a12-sicherheit-freigabe = "1"
+a12-verhalten-frost = "1"
+a12-verhalten-wind = "1"
+a12-windalarm-1 = "1"
+a12-windalarm-2 = "1"
+a12-zuordnung-frost = "1"
+a12-zuordnung-wind-2 = "1"
+venetian-blind-19-20-input-443.listen = ["0/1/29", "0/2/2"]
+venetian-blind-19-20-input-444.listen = ["0/1/30", "0/2/3"]
+venetian-blind-19-20-input-445.listen = ["0/1/31"]
+venetian-blind-19-20-input-446.listen = ["0/1/32"]
+venetian-blind-19-20-output-461.send = "0/1/33"
+venetian-blind-19-20-output-462.send = "0/1/34"
+
+[channel.11]  # Relaisausgänge 21/22
+a12-a-bezeichnung = "Jalousie 3 Wohnen EG"
+a12-a-bezeichnung-2 = "Jalousie 3 Wohnen EG"
+a12-calc-sicherheit-freigabe-alarme = "1"
+a12-calc-sicherheit-freigabe-windalarme = "1"
+a12-frostalarm = "1"
+a12-sicherheit-freigabe = "1"
+a12-verhalten-frost = "1"
+a12-verhalten-wind = "1"
+a12-windalarm-1 = "1"
+a12-windalarm-2 = "1"
+a12-zuordnung-frost = "1"
+a12-zuordnung-wind-1 = "1"
+venetian-blind-21-22-input-490.listen = ["1/2/50", "1/3/0"]
+venetian-blind-21-22-input-491.listen = ["1/2/51", "1/3/1"]
+venetian-blind-21-22-input-492.listen = ["1/2/52"]
+venetian-blind-21-22-input-493.listen = ["1/2/53"]
+venetian-blind-21-22-output-508.send = "1/2/54"
+venetian-blind-21-22-output-509.send = "1/2/55"
+
+[channel.12]  # Relaisausgänge 23/24
+a12-a-bezeichnung = "Jalousie 4 Wohnen EG"
+a12-a-bezeichnung-2 = "Jalousie 4 Wohnen EG"
+a12-calc-sicherheit-freigabe-alarme = "1"
+a12-calc-sicherheit-freigabe-windalarme = "1"
+a12-frostalarm = "1"
+a12-sicherheit-freigabe = "1"
+a12-verhalten-frost = "1"
+a12-verhalten-wind = "1"
+a12-windalarm-1 = "1"
+a12-windalarm-2 = "1"
+a12-zuordnung-frost = "1"
+a12-zuordnung-wind-1 = "1"
+venetian-blind-23-24-input-537.listen = ["1/2/56", "1/3/0"]
+venetian-blind-23-24-input-538.listen = ["1/2/57", "1/3/1"]
+venetian-blind-23-24-input-539.listen = ["1/2/58"]
+venetian-blind-23-24-input-540.listen = ["1/2/59"]
+venetian-blind-23-24-output-555.send = "1/2/60"
+venetian-blind-23-24-output-556.send = "1/2/61"

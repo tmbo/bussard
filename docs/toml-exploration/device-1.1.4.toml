@@ -1,0 +1,191 @@
+address = "1.1.4"
+name = "Switch actuator, 24-gang / blinds actuator, 12-gang"
+
+[location]
+floor = "UG"
+room = "Technik"
+
+[product]
+manufacturer = "Albrecht Jung"
+manufacturer_ref = "M-0004"
+order_number = "230241SR"
+application_ref = "M-0004_A-20D7-26-053C-O000A"
+mask = "07B0"
+
+[channels]
+MD-1_M-10_MI-1_CH-13 = { name = "Relaisausgänge 19/20" }
+MD-1_M-11_MI-1_CH-13 = { name = "Relaisausgänge 21/22" }
+MD-1_M-12_MI-1_CH-13 = { name = "Relaisausgänge 23/24" }
+MD-1_M-1_MI-1_CH-13 = { name = "Relaisausgänge 1/2" }
+MD-1_M-2_MI-1_CH-13 = { name = "Relaisausgänge 3/4" }
+MD-1_M-3_MI-1_CH-13 = { name = "Relaisausgänge 5/6" }
+MD-1_M-4_MI-1_CH-13 = { name = "Relaisausgänge 7/8" }
+MD-1_M-5_MI-1_CH-13 = { name = "Relaisausgänge 9/10" }
+MD-1_M-6_MI-1_CH-13 = { name = "Relaisausgänge 11/12" }
+MD-1_M-7_MI-1_CH-13 = { name = "Relaisausgänge 13/14" }
+MD-1_M-8_MI-1_CH-13 = { name = "Relaisausgänge 15/16" }
+MD-1_M-9_MI-1_CH-13 = { name = "Relaisausgänge 17/18" }
+
+[parameters.a12-betriebsart]
+MD-1_M-12_MI-1_P-14_R-14 = "1"
+MD-1_M-1_MI-1_P-14_R-14 = "1"
+MD-1_M-2_MI-1_P-14_R-14 = "1"
+MD-1_M-3_MI-1_P-14_R-14 = "1"
+MD-1_M-4_MI-1_P-14_R-14 = "1"
+MD-1_M-5_MI-1_P-14_R-14 = "1"
+MD-1_M-6_MI-1_P-14_R-14 = "1"
+MD-1_M-7_MI-1_P-14_R-14 = "1"
+MD-1_M-8_MI-1_P-14_R-14 = "1"
+
+[parameters.a12-frostalarm]
+MD-1_M-10_MI-1_P-7_R-7 = "1"
+MD-1_M-11_MI-1_P-7_R-7 = "1"
+MD-1_M-12_MI-1_P-7_R-7 = "1"
+MD-1_M-1_MI-1_P-7_R-7 = "1"
+MD-1_M-2_MI-1_P-7_R-7 = "1"
+MD-1_M-3_MI-1_P-7_R-7 = "1"
+MD-1_M-4_MI-1_P-7_R-7 = "1"
+MD-1_M-5_MI-1_P-7_R-7 = "1"
+MD-1_M-6_MI-1_P-7_R-7 = "1"
+MD-1_M-7_MI-1_P-7_R-7 = "1"
+MD-1_M-8_MI-1_P-7_R-7 = "1"
+MD-1_M-9_MI-1_P-7_R-7 = "1"
+
+[parameters.a12-tk-freigabe]
+MD-1_M-1_MI-1_P-517_R-1113 = "1"
+MD-1_M-2_MI-1_P-517_R-1113 = "1"
+MD-1_M-3_MI-1_P-517_R-1113 = "1"
+MD-1_M-4_MI-1_P-517_R-1113 = "1"
+
+[parameters.a12-tk-verhalten-beginn-jalroll]
+MD-1_M-1_MI-1_P-520_R-1117 = "1"
+MD-1_M-2_MI-1_P-520_R-1117 = "1"
+MD-1_M-3_MI-1_P-520_R-1117 = "1"
+MD-1_M-4_MI-1_P-520_R-1117 = "1"
+
+[parameters.a12-windalarm-1]
+MD-1_M-10_MI-1_P-3_R-3 = "1"
+MD-1_M-11_MI-1_P-3_R-3 = "1"
+MD-1_M-12_MI-1_P-3_R-3 = "1"
+MD-1_M-1_MI-1_P-3_R-3 = "1"
+MD-1_M-2_MI-1_P-3_R-3 = "1"
+MD-1_M-3_MI-1_P-3_R-3 = "1"
+MD-1_M-4_MI-1_P-3_R-3 = "1"
+MD-1_M-5_MI-1_P-3_R-3 = "1"
+MD-1_M-6_MI-1_P-3_R-3 = "1"
+MD-1_M-7_MI-1_P-3_R-3 = "1"
+MD-1_M-8_MI-1_P-3_R-3 = "1"
+MD-1_M-9_MI-1_P-3_R-3 = "1"
+
+[parameters.a12-windalarm-2]
+MD-1_M-10_MI-1_P-4_R-4 = "1"
+MD-1_M-11_MI-1_P-4_R-4 = "1"
+MD-1_M-12_MI-1_P-4_R-4 = "1"
+MD-1_M-1_MI-1_P-4_R-4 = "1"
+MD-1_M-2_MI-1_P-4_R-4 = "1"
+MD-1_M-3_MI-1_P-4_R-4 = "1"
+MD-1_M-4_MI-1_P-4_R-4 = "1"
+MD-1_M-5_MI-1_P-4_R-4 = "1"
+MD-1_M-6_MI-1_P-4_R-4 = "1"
+MD-1_M-7_MI-1_P-4_R-4 = "1"
+MD-1_M-8_MI-1_P-4_R-4 = "1"
+MD-1_M-9_MI-1_P-4_R-4 = "1"
+
+[parameters.a12-zuordnung-frost]
+MD-1_M-10_MI-1_P-100_R-157 = "1"
+MD-1_M-11_MI-1_P-100_R-157 = "1"
+MD-1_M-9_MI-1_P-100_R-157 = "1"
+
+[parameters.a12-zuordnung-wind-1]
+MD-1_M-11_MI-1_P-91_R-148 = "1"
+
+[parameters.a12-zuordnung-wind-2]
+MD-1_M-10_MI-1_P-92_R-149 = "1"
+MD-1_M-9_MI-1_P-92_R-149 = "1"
+
+[parameters.frostalarm]
+P-799_R-1089 = "1"
+
+[parameters.windalarm-1]
+P-795_R-1085 = "1"
+
+[parameters.windalarm-2]
+P-796_R-1086 = "1"
+
+# --- GENERATED: regenerated on re-import; hand edits here are lost. ---
+[com_objects]
+11 = { dpt = "1.005", flags = "CWU", ref = "O-11_R-100035" }
+12 = { dpt = "1.005", flags = "CWU", ref = "O-12_R-100036" }
+15 = { dpt = "1.005", flags = "CWU", ref = "O-15_R-100039" }
+20 = { dpt = "1.008", flags = "CWU", ref = "MD-1_M-1_MI-1_O-2-0_R-38", channel = "MD-1_M-1_MI-1_CH-13" }
+21 = { dpt = "1.007", flags = "CWU", ref = "MD-1_M-1_MI-1_O-2-1_R-37", channel = "MD-1_M-1_MI-1_CH-13" }
+22 = { dpt = "5.001", flags = "CWU", ref = "MD-1_M-1_MI-1_O-2-2_R-2" }
+23 = { dpt = "5.001", flags = "CWU", ref = "MD-1_M-1_MI-1_O-2-3_R-1" }
+38 = { dpt = "5.001", flags = "CRTU", ref = "MD-1_M-1_MI-1_O-2-18_R-5" }
+39 = { dpt = "5.001", flags = "CRTU", ref = "MD-1_M-1_MI-1_O-2-19_R-7" }
+67 = { dpt = "1.008", flags = "CWU", ref = "MD-1_M-2_MI-1_O-2-0_R-38", channel = "MD-1_M-2_MI-1_CH-13" }
+68 = { dpt = "1.007", flags = "CWU", ref = "MD-1_M-2_MI-1_O-2-1_R-37", channel = "MD-1_M-2_MI-1_CH-13" }
+69 = { dpt = "5.001", flags = "CWU", ref = "MD-1_M-2_MI-1_O-2-2_R-2" }
+70 = { dpt = "5.001", flags = "CWU", ref = "MD-1_M-2_MI-1_O-2-3_R-1" }
+85 = { dpt = "5.001", flags = "CRTU", ref = "MD-1_M-2_MI-1_O-2-18_R-5" }
+86 = { dpt = "5.001", flags = "CRTU", ref = "MD-1_M-2_MI-1_O-2-19_R-7" }
+114 = { dpt = "1.008", flags = "CWU", ref = "MD-1_M-3_MI-1_O-2-0_R-38", channel = "MD-1_M-3_MI-1_CH-13" }
+115 = { dpt = "1.007", flags = "CWU", ref = "MD-1_M-3_MI-1_O-2-1_R-37", channel = "MD-1_M-3_MI-1_CH-13" }
+116 = { dpt = "5.001", flags = "CWU", ref = "MD-1_M-3_MI-1_O-2-2_R-2" }
+117 = { dpt = "5.001", flags = "CWU", ref = "MD-1_M-3_MI-1_O-2-3_R-1" }
+132 = { dpt = "5.001", flags = "CRTU", ref = "MD-1_M-3_MI-1_O-2-18_R-5" }
+133 = { dpt = "5.001", flags = "CRTU", ref = "MD-1_M-3_MI-1_O-2-19_R-7" }
+161 = { dpt = "1.008", flags = "CWU", ref = "MD-1_M-4_MI-1_O-2-0_R-38", channel = "MD-1_M-4_MI-1_CH-13" }
+162 = { dpt = "1.007", flags = "CWU", ref = "MD-1_M-4_MI-1_O-2-1_R-37", channel = "MD-1_M-4_MI-1_CH-13" }
+163 = { dpt = "5.001", flags = "CWU", ref = "MD-1_M-4_MI-1_O-2-2_R-2" }
+164 = { dpt = "5.001", flags = "CWU", ref = "MD-1_M-4_MI-1_O-2-3_R-1" }
+179 = { dpt = "5.001", flags = "CRTU", ref = "MD-1_M-4_MI-1_O-2-18_R-5" }
+180 = { dpt = "5.001", flags = "CRTU", ref = "MD-1_M-4_MI-1_O-2-19_R-7" }
+208 = { dpt = "1.008", flags = "CWU", ref = "MD-1_M-5_MI-1_O-2-0_R-38", channel = "MD-1_M-5_MI-1_CH-13" }
+209 = { dpt = "1.007", flags = "CWU", ref = "MD-1_M-5_MI-1_O-2-1_R-37", channel = "MD-1_M-5_MI-1_CH-13" }
+210 = { dpt = "5.001", flags = "CWU", ref = "MD-1_M-5_MI-1_O-2-2_R-2" }
+211 = { dpt = "5.001", flags = "CWU", ref = "MD-1_M-5_MI-1_O-2-3_R-1" }
+226 = { dpt = "5.001", flags = "CRTU", ref = "MD-1_M-5_MI-1_O-2-18_R-5" }
+227 = { dpt = "5.001", flags = "CRTU", ref = "MD-1_M-5_MI-1_O-2-19_R-7" }
+255 = { dpt = "1.008", flags = "CWU", ref = "MD-1_M-6_MI-1_O-2-0_R-38", channel = "MD-1_M-6_MI-1_CH-13" }
+256 = { dpt = "1.007", flags = "CWU", ref = "MD-1_M-6_MI-1_O-2-1_R-37", channel = "MD-1_M-6_MI-1_CH-13" }
+257 = { dpt = "5.001", flags = "CWU", ref = "MD-1_M-6_MI-1_O-2-2_R-2" }
+258 = { dpt = "5.001", flags = "CWU", ref = "MD-1_M-6_MI-1_O-2-3_R-1" }
+273 = { dpt = "5.001", flags = "CRTU", ref = "MD-1_M-6_MI-1_O-2-18_R-5" }
+274 = { dpt = "5.001", flags = "CRTU", ref = "MD-1_M-6_MI-1_O-2-19_R-7" }
+302 = { dpt = "1.008", flags = "CWU", ref = "MD-1_M-7_MI-1_O-2-0_R-38", channel = "MD-1_M-7_MI-1_CH-13" }
+303 = { dpt = "1.007", flags = "CWU", ref = "MD-1_M-7_MI-1_O-2-1_R-37", channel = "MD-1_M-7_MI-1_CH-13" }
+304 = { dpt = "5.001", flags = "CWU", ref = "MD-1_M-7_MI-1_O-2-2_R-2" }
+305 = { dpt = "5.001", flags = "CWU", ref = "MD-1_M-7_MI-1_O-2-3_R-1" }
+320 = { dpt = "5.001", flags = "CRTU", ref = "MD-1_M-7_MI-1_O-2-18_R-5" }
+321 = { dpt = "5.001", flags = "CRTU", ref = "MD-1_M-7_MI-1_O-2-19_R-7" }
+349 = { dpt = "1.008", flags = "CWU", ref = "MD-1_M-8_MI-1_O-2-0_R-38", channel = "MD-1_M-8_MI-1_CH-13" }
+350 = { dpt = "1.007", flags = "CWU", ref = "MD-1_M-8_MI-1_O-2-1_R-37", channel = "MD-1_M-8_MI-1_CH-13" }
+351 = { dpt = "5.001", flags = "CWU", ref = "MD-1_M-8_MI-1_O-2-2_R-2" }
+352 = { dpt = "5.001", flags = "CWU", ref = "MD-1_M-8_MI-1_O-2-3_R-1" }
+367 = { dpt = "5.001", flags = "CRTU", ref = "MD-1_M-8_MI-1_O-2-18_R-5" }
+368 = { dpt = "5.001", flags = "CRTU", ref = "MD-1_M-8_MI-1_O-2-19_R-7" }
+396 = { dpt = "1.008", flags = "CWU", ref = "MD-1_M-9_MI-1_O-2-0_R-38", channel = "MD-1_M-9_MI-1_CH-13" }
+397 = { dpt = "1.007", flags = "CWU", ref = "MD-1_M-9_MI-1_O-2-1_R-37", channel = "MD-1_M-9_MI-1_CH-13" }
+398 = { dpt = "5.001", flags = "CWU", ref = "MD-1_M-9_MI-1_O-2-2_R-2", channel = "MD-1_M-9_MI-1_CH-13" }
+399 = { dpt = "5.001", flags = "CWU", ref = "MD-1_M-9_MI-1_O-2-3_R-1", channel = "MD-1_M-9_MI-1_CH-13" }
+414 = { dpt = "5.001", flags = "CRTU", ref = "MD-1_M-9_MI-1_O-2-18_R-5", channel = "MD-1_M-9_MI-1_CH-13" }
+415 = { dpt = "5.001", flags = "CRTU", ref = "MD-1_M-9_MI-1_O-2-19_R-7", channel = "MD-1_M-9_MI-1_CH-13" }
+443 = { dpt = "1.008", flags = "CWU", ref = "MD-1_M-10_MI-1_O-2-0_R-38", channel = "MD-1_M-10_MI-1_CH-13" }
+444 = { dpt = "1.007", flags = "CWU", ref = "MD-1_M-10_MI-1_O-2-1_R-37", channel = "MD-1_M-10_MI-1_CH-13" }
+445 = { dpt = "5.001", flags = "CWU", ref = "MD-1_M-10_MI-1_O-2-2_R-2", channel = "MD-1_M-10_MI-1_CH-13" }
+446 = { dpt = "5.001", flags = "CWU", ref = "MD-1_M-10_MI-1_O-2-3_R-1", channel = "MD-1_M-10_MI-1_CH-13" }
+461 = { dpt = "5.001", flags = "CRTU", ref = "MD-1_M-10_MI-1_O-2-18_R-5", channel = "MD-1_M-10_MI-1_CH-13" }
+462 = { dpt = "5.001", flags = "CRTU", ref = "MD-1_M-10_MI-1_O-2-19_R-7", channel = "MD-1_M-10_MI-1_CH-13" }
+490 = { dpt = "1.008", flags = "CWU", ref = "MD-1_M-11_MI-1_O-2-0_R-38", channel = "MD-1_M-11_MI-1_CH-13" }
+491 = { dpt = "1.007", flags = "CWU", ref = "MD-1_M-11_MI-1_O-2-1_R-37", channel = "MD-1_M-11_MI-1_CH-13" }
+492 = { dpt = "5.001", flags = "CWU", ref = "MD-1_M-11_MI-1_O-2-2_R-2", channel = "MD-1_M-11_MI-1_CH-13" }
+493 = { dpt = "5.001", flags = "CWU", ref = "MD-1_M-11_MI-1_O-2-3_R-1", channel = "MD-1_M-11_MI-1_CH-13" }
+508 = { dpt = "5.001", flags = "CRTU", ref = "MD-1_M-11_MI-1_O-2-18_R-5", channel = "MD-1_M-11_MI-1_CH-13" }
+509 = { dpt = "5.001", flags = "CRTU", ref = "MD-1_M-11_MI-1_O-2-19_R-7", channel = "MD-1_M-11_MI-1_CH-13" }
+537 = { dpt = "1.008", flags = "CWU", ref = "MD-1_M-12_MI-1_O-2-0_R-38", channel = "MD-1_M-12_MI-1_CH-13" }
+538 = { dpt = "1.007", flags = "CWU", ref = "MD-1_M-12_MI-1_O-2-1_R-37", channel = "MD-1_M-12_MI-1_CH-13" }
+539 = { dpt = "5.001", flags = "CWU", ref = "MD-1_M-12_MI-1_O-2-2_R-2" }
+540 = { dpt = "5.001", flags = "CWU", ref = "MD-1_M-12_MI-1_O-2-3_R-1" }
+555 = { dpt = "5.001", flags = "CRTU", ref = "MD-1_M-12_MI-1_O-2-18_R-5" }
+556 = { dpt = "5.001", flags = "CRTU", ref = "MD-1_M-12_MI-1_O-2-19_R-7" }

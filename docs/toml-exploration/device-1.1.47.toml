@@ -1,0 +1,37 @@
+address = "1.1.47"
+name = "Switch actuator, 2-gang / blinds actuator, 1-gang"
+description = "Fenster"
+
+[location]
+floor = "DG"
+room = "Kind 2 Süd"
+
+[product]
+manufacturer = "Albrecht Jung"
+manufacturer_ref = "M-0004"
+order_number = "230021SU"
+application_ref = "M-0004_A-20DE-22-C7D8-O000A"
+mask = "07B0"
+
+[channels]
+MD-3_M-18_MI-1_CH-25 = { name = "Relay outputs" }
+
+[parameters.a12-betriebsart]
+MD-3_M-18_MI-1_P-14_R-14 = "2"
+
+[parameters.a12-regenalarm]
+MD-3_M-18_MI-1_P-6_R-6 = "1"
+
+[parameters.a12-zuordnung-regen]
+MD-3_M-18_MI-1_P-97_R-154 = "1"
+
+[parameters.regenalarm]
+P-19_R-38 = "1"
+
+# --- GENERATED: regenerated on re-import; hand edits here are lost. ---
+[com_objects]
+138 = { dpt = "1.005", flags = "CWU", ref = "O-138_R-13" }
+144 = { dpt = "1.008", flags = "CWU", ref = "MD-3_M-18_MI-1_O-2-0_R-38", channel = "MD-3_M-18_MI-1_CH-25" }
+145 = { dpt = "1.007", flags = "CWU", ref = "MD-3_M-18_MI-1_O-2-1_R-37", channel = "MD-3_M-18_MI-1_CH-25" }
+146 = { dpt = "5.001", flags = "CWU", ref = "MD-3_M-18_MI-1_O-2-2_R-4", channel = "MD-3_M-18_MI-1_CH-25" }
+162 = { dpt = "5.001", flags = "CRTU", ref = "MD-3_M-18_MI-1_O-2-18_R-11", channel = "MD-3_M-18_MI-1_CH-25" }

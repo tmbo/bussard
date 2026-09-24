@@ -1,0 +1,54 @@
+# 1.1.202: Meteodata 140 S. Hand-editable in full; vendor facts live in bussard.lock.
+
+address = "1.1.202"
+name = "Meteodata 140 S"
+product = "1409207"
+
+[location]
+floor = "Außenbereich"
+room = "Dach"
+
+[parameters]
+breitengrad-des-standorts = "51"
+empfindlickkeit-des-regensensors = "2"
+"erfuellt-bei-schalten@R-503" = "2"
+"erfuellt-bei-schalten@R-7105" = "2"
+erfuellt-bei-wert = "2"
+"funktion-des-kanals@R-2246" = "3"
+"funktion-des-kanals@R-7060" = "3"
+"funktion-des-kanals@R-7152" = "2"
+"funktion-des-kanals@R-7296" = "2"
+"hysterese-temperatur@R-7154" = "4"
+"hysterese-temperatur@R-7298" = "4"
+kanal-1-aktivieren = "1"
+kanal-2-aktivieren = "1"
+kanal-3-aktivieren = "1"
+laengengrad-des-standorts = "12"
+nicht-erfuellt-bei-prio = "2"
+nicht-erfuellt-bei-schalten = "2"
+nicht-erfuellt-bei-wert = "2"
+"temperatur@R-7155" = "35"
+"temperatur@R-7299" = "35"
+"verzoegerung-wind@R-2264" = "11"
+"verzoegerung-wind@R-7063" = "11"
+"wind@R-2263" = "136"
+"wind@R-7062" = "140"
+"zykluszeit@R-509" = "2"
+"zykluszeit@R-7108" = "2"
+"zykluszeit@R-7193" = "4"
+"zykluszeit@R-7246" = "4"
+
+[links]
+brightness-value-front-physical-value.send = "4/1/5"
+brightness-value-left-physical-value.send = "4/1/6"
+brightness-value-right-physical-value.send = "4/1/7"
+maximum-brightness-value-physical-value.send = "4/1/10"
+temperature-value-physical-value.send = "4/1/11"
+wind-speed-m-s-physical-value.send = "4/1/4"
+rain-no-rain.send = "4/1/8"
+local-time-receive.listen = ["4/1/1"]
+date-receive.listen = ["4/1/0"]
+0-ok-1-faulty.send = "4/1/14"
+c1-1-universal-channel-switching.send = "4/1/9"
+c2-1-universal-channel-switching.send = "4/1/12"
+c3-1-universal-channel-switching.send = "4/1/13"

@@ -1,0 +1,28 @@
+# 1.1.42: Präsenzmelder Mini Universal. Hand-editable in full; vendor facts live in bussard.lock.
+
+address = "1.1.42"
+name = "Präsenzmelder Mini Universal"
+description = "Garage UG"
+product = "3361-1MWW"
+
+[location]
+floor = "UG"
+room = "Garage"
+
+[parameters]
+daemmerungsstufe-vorgabe = "1"
+daemmerungsstufe-wert = "200"
+sperren-telegramm-beginn-s-a1 = "1"
+sperren-verhalten-beginn-a1 = "1"
+telegramm-nachtriggerung-a1 = "1"
+zeit-zusaetzliche-sendeverzoegerung-min = "5"
+zeit-zusaetzliche-sendeverzoegerung-sek = "0"
+
+[links]
+helligkeitssensorik-ausgang.send = "4/4/40"
+
+[channel.1]  # FB1 - Allgemein
+fb1-ausgang-1.send = "0/0/13"
+fb1-eingang-5.listen = ["4/4/41"]
+fb1-rueckmeldung-ausgang.send = "4/4/42"
+fb1-eingang-16.listen = ["4/4/43"]

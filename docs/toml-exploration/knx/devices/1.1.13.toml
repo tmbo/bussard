@@ -1,0 +1,47 @@
+# 1.1.13: Universal push-button module, 3-gang. Hand-editable in full; vendor facts live in bussard.lock.
+
+address = "1.1.13"
+name = "Universal push-button module, 3-gang"
+product = "52931ST"
+
+[location]
+floor = "UG"
+room = "Garage"
+
+[security]
+secure_capable = true
+sequence_number = "240571574381"
+
+[parameters]
+"art-des-behangs@MD-15_M-26_MI-1_P-361_R-577" = "1"
+bedienkonzept-t1-t2 = "1"
+bedienkonzept-t5-t6 = "1"
+"bezeichnung-der-page-assign@MD-11_M-36_MI-1_P-150_R-243" = "Temperatursensor"
+"bezeichnung@R-1113" = "Jalousie Garage"
+"bezeichnung@R-1116" = "Tor auf"
+"bezeichnung@R-1120" = "Tor zu"
+"bezeichnung@R-157" = "Licht Garage"
+"bezeichnung@R-176" = "Verlassen"
+freigabe-temperaturmessung = "1"
+funktion = "2"
+led-1-anzeigefunktion-t1-2-kanal-t2-rn = "6"
+led-1-anzeigefunktion-tasten-schalten = "4"
+led-1-bezeichnung-der-status-led = "PM gesperrt"
+"rollladen-markise-dachfenster-bedienkonz@MD-15_M-26_MI-1_UP-4_R-8" = "2"
+"schalten-befehl-druecken@MD-3_M-234_MI-1_P-3_R-6" = "1"
+"schalten-befehl-druecken@MD-3_M-244_MI-1_P-3_R-6" = "1"
+"schalten-befehl-loslassen@MD-3_M-234_MI-1_P-4_R-7" = "2"
+"schalten-befehl-loslassen@MD-3_M-244_MI-1_P-4_R-7" = "2"
+
+[channel.1]  # TSM - Button 1
+tsm-taste-1-output.send = "4/4/43"
+
+[channel.2]  # TSM - Rocker 2 (Buttons 3/4)
+output-285.send = "0/2/1"
+output-286.send = "0/2/0"
+
+[channel.3]  # TSM - Room temperature measurement
+output.send = "0/3/20"
+
+[channel.4]  # TSM - Button 5
+tsm-taste-5-output.send = "4/2/50"

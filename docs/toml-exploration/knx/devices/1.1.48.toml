@@ -1,0 +1,23 @@
+# 1.1.48: Switch actuator, 2-gang / blinds actuator, 1-gang. Hand-editable in full; vendor facts live in bussard.lock.
+
+address = "1.1.48"
+name = "Switch actuator, 2-gang / blinds actuator, 1-gang"
+description = "Rollo"
+product = "230021SU"
+
+[location]
+floor = "DG"
+room = "Kind 2 Süd"
+
+[security]
+secure_capable = true
+
+[parameters]
+sicherheit-freigabe = "1"
+
+[channel.1]  # Relay outputs
+a12-betriebsart = "1"
+venetian-blind-input-144.listen = ["3/1/16"]
+venetian-blind-input-145.listen = ["3/1/17"]
+venetian-blind-input-146.listen = ["3/1/18"]
+venetian-blind-output.send = "3/1/19"

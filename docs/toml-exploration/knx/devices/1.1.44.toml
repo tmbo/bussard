@@ -1,0 +1,13 @@
+# 1.1.44: 6119/20 2f-Universalschnittstelle, UP. Hand-editable in full; vendor facts live in bussard.lock.
+
+address = "1.1.44"
+name = "6119/20 2f-Universalschnittstelle, UP"
+description = "Tor"
+product = "6119/20"
+
+[location]
+floor = "Außenbereich"
+room = "Aussen"
+
+[parameters]
+funktion = "1"

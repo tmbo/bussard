@@ -1,0 +1,123 @@
+# 1.1.5: Switch actuator, 16-gang / blinds actuator, 8-gang. Hand-editable in full; vendor facts live in bussard.lock.
+
+address = "1.1.5"
+name = "Switch actuator, 16-gang / blinds actuator, 8-gang"
+product = "230161SR"
+
+[location]
+floor = "UG"
+room = "Technik"
+
+[security]
+secure_capable = true
+sequence_number = "1803"
+
+[parameters]
+a-kanalkonfiguration-a11a12 = "1"
+a-kanalkonfiguration-a13a14 = "1"
+a-kanalkonfiguration-a15a16 = "1"
+a-kanalkonfiguration-a1a2 = "1"
+a-kanalkonfiguration-a3a4 = "1"
+a-kanalkonfiguration-a5a6 = "1"
+a-kanalkonfiguration-a7a8 = "1"
+a-kanalkonfiguration-a9a10 = "1"
+"bezeichnung@R-237" = "A1"
+"bezeichnung@R-238" = "A3"
+"bezeichnung@R-239" = "A5"
+"bezeichnung@R-240" = "A7"
+"bezeichnung@R-241" = "A9"
+"bezeichnung@R-242" = "A11"
+"bezeichnung@R-243" = "A13"
+"bezeichnung@R-244" = "A15"
+calc-kanalkonfiguration-j = "0"
+calc-kanalkonfiguration-s = "1"
+
+[channel.1]  # Relaisausgang
+a1-a-bezeichnung = "Spiegel Bad EG"
+a1-bezeichnung-2 = "Spiegel Bad EG"
+switching-input.listen = ["1/0/0"]
+switching-output.send = "1/0/1"
+
+[channel.2]  # Relaisausgang
+a1-a-bezeichnung = "Licht Büro aussen UG"
+a1-bezeichnung-2 = "Licht Büro aussen UG"
+switching-input.listen = ["0/0/1"]
+switching-output.send = "0/0/2"
+
+[channel.3]  # Relaisausgang
+a1-a-bezeichnung = "Licht Wohnen aussen EG"
+a1-bezeichnung-2 = "Licht Wohnen aussen EG"
+switching-input.listen = ["1/0/2"]
+switching-output.send = "1/0/3"
+
+[channel.4]  # Relaisausgang
+a1-a-bezeichnung = "Licht Küche aussen EG"
+a1-bezeichnung-2 = "Licht Küche aussen EG"
+switching-input.listen = ["1/0/4"]
+switching-output.send = "1/0/5"
+
+[channel.5]  # Relaisausgang
+a1-a-bezeichnung = "Licht Flur EG"
+a1-bezeichnung-2 = "Licht Flur EG"
+switching-input.listen = ["1/0/6"]
+switching-output.send = "1/0/7"
+
+[channel.6]  # Relaisausgang
+a1-a-bezeichnung = "Licht Flur UG"
+a1-bezeichnung-2 = "Licht Flur UG"
+switching-input.listen = ["0/0/3"]
+switching-output.send = "0/0/4"
+
+[channel.7]  # Relaisausgang
+a1-a-bezeichnung = "Licht HWR UG"
+a1-bezeichnung-2 = "Licht HWR UG"
+switching-input.listen = ["0/0/5"]
+switching-output.send = "0/0/6"
+
+[channel.8]  # Relaisausgang
+a1-a-bezeichnung = "Licht Garage aussen UG"
+a1-bezeichnung-2 = "Licht Garage aussen UG"
+switching-input.listen = ["0/0/7"]
+switching-output.send = "0/0/8"
+
+[channel.9]  # Relaisausgang
+a1-a-bezeichnung = "Licht Treppe EG-UG"
+a1-bezeichnung-2 = "Licht Treppe EG-UG"
+switching-input.listen = ["1/0/8"]
+switching-output.send = "1/0/9"
+
+[channel.10]  # Relaisausgang
+a1-a-bezeichnung = "Licht Treppe EG-DG"
+a1-bezeichnung-2 = "Licht Treppe EG-DG"
+switching-input.listen = ["1/0/10"]
+switching-output.send = "1/0/11"
+
+[channel.11]  # Relaisausgang
+a1-a-bezeichnung = "Licht Technik UG"
+a1-bezeichnung-2 = "Licht Technik UG"
+switching-input.listen = ["0/0/9"]
+switching-output.send = "0/0/10"
+
+[channel.12]  # Relaisausgang
+a1-a-bezeichnung = "Licht Küche EG"
+a1-bezeichnung-2 = "Licht Küche EG"
+switching-input.listen = ["1/0/12"]
+switching-output.send = "1/0/13"
+
+[channel.13]  # Relaisausgang
+a1-a-bezeichnung = "Licht Bad EG"
+a1-bezeichnung-2 = "Licht Bad EG"
+switching-input.listen = ["1/0/14"]
+switching-output.send = "1/0/15"
+
+[channel.14]  # Relaisausgang
+a1-a-bezeichnung = "Licht WC UG"
+a1-bezeichnung-2 = "Licht WC UG"
+switching-input.listen = ["0/0/11"]
+switching-output.send = "0/0/12"
+
+[channel.15]  # Relaisausgang
+a1-a-bezeichnung = "Licht Garage UG"
+a1-bezeichnung-2 = "Licht Garage UG"
+switching-input.listen = ["0/0/13"]
+switching-output.send = "0/0/14"
