@@ -27,7 +27,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow};
-use bussard_bus::{Bus, BusHandle};
+use bussard_bus::BusHandle;
 use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO, PID_SERIAL_NUMBER};
 use bussard_mgmt::tables::{DeviceTables, TablesError, read_tables};
 use bussard_mgmt::{
@@ -39,6 +39,7 @@ use bussard_model::schema::{
     Product, Transport as ModelTransport,
 };
 use bussard_model::{Dpt, Flags, GroupAddress, IndividualAddress, LoadedDevice, Model};
+use bussard_service::{BusService, WritePolicy};
 use bussard_transport::TransportKind;
 
 use crate::conn_cmd::{
@@ -129,7 +130,8 @@ pub fn run(
 
     let runtime = tokio::runtime::Runtime::new()?;
     let result = runtime.block_on(async move {
-        let (handle, _task) = Bus::connect(config);
+        let service = BusService::open(config, WritePolicy::ReadOnly)?;
+        let handle = service.handle().clone();
         if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
             eprintln!("warning: bus not connected yet; management traffic may use the 0.0.255 fallback source");
         }
@@ -470,7 +472,8 @@ pub fn run_line(
     let conn = overrides.clone();
     let runtime = tokio::runtime::Runtime::new()?;
     let found = runtime.block_on(async move {
-        let (handle, _task) = Bus::connect(config);
+        let service = BusService::open(config, WritePolicy::ReadOnly)?;
+        let handle = service.handle().clone();
         if !handle
             .wait_connected(std::time::Duration::from_secs(10))
             .await

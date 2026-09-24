@@ -39,7 +39,7 @@ use std::process::ExitCode;
 use std::time::SystemTime;
 
 use anyhow::{Context, anyhow, bail};
-use bussard_bus::{Bus, BusHandle};
+use bussard_bus::BusHandle;
 use bussard_download::backup::{
     BackupManifest, BackupStatus, DeviceBackup, ManifestEntry, ParameterMemory, ParameterStatus,
     backups_root, encode_hex, rfc3339_utc, timestamp_dir_name, write_device_backup, write_manifest,
@@ -50,6 +50,7 @@ use bussard_mgmt::{
     read_mcb_table, read_memory_range, read_table_reference, system_type,
 };
 use bussard_model::{IndividualAddress, Model};
+use bussard_service::{BusService, WritePolicy};
 
 use crate::conn_cmd::{
     ConnOverrides, checked_source_or_close, gateway_display, load_model_required, resolve_config,
@@ -107,7 +108,8 @@ pub fn run(
 
     let runtime = tokio::runtime::Runtime::new()?;
     let captured = runtime.block_on(async move {
-        let (handle, _task) = Bus::connect(config);
+        let service = BusService::open(config, WritePolicy::ReadOnly)?;
+        let handle = service.handle().clone();
         if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
             eprintln!(
                 "warning: bus not connected yet; management traffic may use the 0.0.255 fallback source"

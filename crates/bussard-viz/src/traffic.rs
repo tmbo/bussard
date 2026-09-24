@@ -774,13 +774,14 @@ mod tests {
         // A dead gateway on loopback: the actor tries once, fails, and moves
         // Connecting -> Reconnecting. ALWAYS 127.0.0.1 in tests.
         let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 1);
-        let (handle, _task) = Bus::connect(ConnectionConfig::tunnel(addr));
-        let status = BusStatus::connected(
-            bussard_transport::TransportKind::Tunnel,
-            "127.0.0.1:3671".to_string(),
-            true,
+        let config = ConnectionConfig::tunnel(addr);
+        let (handle, _task) = Bus::connect(config.clone());
+        let service = bussard_service::BusService::from_handle(
+            config,
             handle.clone(),
-        );
+            bussard_service::WritePolicy::ReadOnly,
+        )?;
+        let status = BusStatus::connected(service);
 
         let hub = TrafficHub::new();
         // Subscribe before spawning the feeder so no `bus` event is missed.

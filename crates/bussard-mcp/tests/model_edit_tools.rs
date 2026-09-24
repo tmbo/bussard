@@ -64,6 +64,7 @@ fn server_over(dir: &Path) -> Result<BussardMcp, Box<dyn std::error::Error>> {
         capture_db: None,
         source_ia: "0.0.255".parse()?,
         programming: None,
+        keyring: None,
     });
     Ok(BussardMcp::new(state))
 }

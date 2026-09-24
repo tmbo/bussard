@@ -1,31 +1,29 @@
 //! Wiring the server to a live bus and the stdio transport.
 //!
-//! [`serve_stdio`] spawns the [`Bus`](bussard_bus::Bus) actor, wires its handle
-//! into the shared state (so tools can read status and call
+//! [`serve_stdio`] wires an opened [`BusService`] into the shared state (so tools can read status and call
 //! [`ops`](bussard_bus::ops)), feeds the shared ring from a frame subscription,
 //! and serves the MCP protocol over stdin/stdout until the client disconnects.
 
 use std::sync::Arc;
 
-use bussard_bus::Bus;
 use bussard_monitor::DecodedTelegram;
-use bussard_transport::ConnectionConfig;
+use bussard_service::BusService;
 use rmcp::ServiceExt;
 use rmcp::transport::io::stdio;
 
 use crate::server::BussardMcp;
 use crate::state::SharedState;
 
-/// Spawns the bus actor, feeds the shared ring from a subscription, and serves
-/// the MCP protocol over stdio until the client disconnects, then closes the bus
-/// cleanly.
+/// Wires the bus service into the state, feeds the shared ring from a
+/// subscription, and serves the MCP protocol over stdio until the client
+/// disconnects, then closes the bus cleanly.
 ///
-/// The actor reconnects on its own, so a bus that is down at startup does not
-/// prevent the server from serving model-only tools.
-pub async fn serve_stdio(state: Arc<SharedState>, config: ConnectionConfig) -> anyhow::Result<()> {
-    // Spawn the bus actor and wire its handle into the status.
-    let (handle, _task) = Bus::connect(config);
-    state.bus.wire(handle.clone());
+/// The service is opened by the caller ([`crate::run`]) under the server's
+/// write policy. Its actor reconnects on its own, so a bus that is down at
+/// startup does not prevent the server from serving model-only tools.
+pub async fn serve_stdio(state: Arc<SharedState>, service: BusService) -> anyhow::Result<()> {
+    let handle = service.handle().clone();
+    state.bus.wire(service);
 
     // Feed the shared ring from a frame subscription. Every inbound frame is
     // decoded against the model and pushed with its message code, so

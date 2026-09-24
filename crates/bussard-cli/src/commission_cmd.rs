@@ -34,11 +34,12 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
-use bussard_bus::{Bus, BusHandle};
+use bussard_bus::BusHandle;
 use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO};
 use bussard_mgmt::{DeviceConnection, LeaseChannel, manufacturers, write_individual_address};
 use bussard_model::{IndividualAddress, Model};
 use bussard_prod::normalize_order_number;
+use bussard_service::{BusService, WritePolicy};
 
 use crate::assign_cmd;
 use crate::conn_cmd::{
@@ -219,7 +220,9 @@ pub fn run(
         let addresses: Vec<IndividualAddress> = targets.iter().map(|t| t.address).collect();
         let conn = overrides.clone();
         runtime.block_on(async move {
-            let (handle, _task) = Bus::connect(config);
+            let service =
+                BusService::open(config, WritePolicy::transmit(options.allow_remote_gateway))?;
+            let handle = service.handle().clone();
             let _ = handle
                 .wait_connected(std::time::Duration::from_secs(10))
                 .await;
@@ -358,7 +361,9 @@ fn commission_one(
     let assigned = {
         let config = config.clone();
         runtime.block_on(async move {
-            let (handle, _task) = Bus::connect(config);
+            let service =
+                BusService::open(config, WritePolicy::transmit(options.allow_remote_gateway))?;
+            let handle = service.handle().clone();
             let _ = handle
                 .wait_connected(std::time::Duration::from_secs(10))
                 .await;
@@ -734,22 +739,16 @@ fn csv_field(value: &str) -> String {
 
 /// Asks the one confirmation for the whole run, naming the resolved gateway.
 fn confirm(line: &str, devices: usize, gateway: &str, yes: bool) -> anyhow::Result<bool> {
-    if yes {
-        return Ok(true);
-    }
-    if !std::io::stdin().is_terminal() {
-        bail!(
-            "refusing to commission {devices} device(s) on line {line} via {gateway} without a \
-             terminal to confirm on; pass --yes to run non-interactively"
-        );
-    }
-    eprint!("commission {devices} device(s) on line {line} via {gateway}? [y/N] ");
-    let _ = std::io::stderr().flush();
-    let mut answer = String::new();
-    std::io::stdin()
-        .read_line(&mut answer)
-        .context("reading confirmation")?;
-    Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "Yes"))
+    crate::confirm::confirm(
+        yes,
+        &format!("commission {devices} device(s) on line {line} via {gateway}?"),
+        || {
+            format!(
+                "refusing to commission {devices} device(s) on line {line} via {gateway} without \
+                 a terminal to confirm on; pass --yes to run non-interactively"
+            )
+        },
+    )
 }
 
 /// Whether a subcommand's returned [`ExitCode`] is the success code.

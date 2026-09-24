@@ -115,6 +115,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use bussard_model::Model;
+use bussard_service::{BusService, WritePolicy};
 use bussard_transport::{ConnectionConfig, TransportKind};
 
 pub use server::BussardMcp;
@@ -153,6 +154,23 @@ pub struct McpConfig {
     pub allow_remote_gateway: bool,
     /// How long a `knx_plan_device` digest stays valid for `knx_apply_device`.
     pub plan_ttl: std::time::Duration,
+    /// An ETS `.knxkeys` keyring for KNX Data Secure management (issue #71);
+    /// the password comes from `BUSSARD_KEYRING_PASSWORD`.
+    pub keyring: Option<PathBuf>,
+}
+
+impl McpConfig {
+    /// The write policy the server's bus is opened under: transmitting when
+    /// `--allow-writes` or `--allow-programming` is set (and the server is not
+    /// passive), read-only otherwise. A transmitting policy applies the
+    /// non-loopback write gate when the bus is opened (issue #74).
+    pub fn write_policy(&self) -> WritePolicy {
+        if !self.passive && (self.allow_writes || self.allow_programming) {
+            WritePolicy::transmit(self.allow_remote_gateway)
+        } else {
+            WritePolicy::ReadOnly
+        }
+    }
 }
 
 /// Builds the shared state and the outbound receiver from a config.
@@ -212,6 +230,7 @@ pub fn build_state_from_model(
                 config.plan_ttl,
             )
         }),
+        keyring: config.keyring.clone(),
     });
 
     Ok(state)
@@ -227,9 +246,20 @@ pub fn transport_tag(kind: &TransportKind) -> &'static str {
 
 /// Loads and serves the MCP server over stdio from a [`McpConfig`], blocking
 /// until the client disconnects.
+///
+/// The bus is opened as a [`BusService`] under [`McpConfig::write_policy`], so a
+/// write-enabled server against a non-loopback gateway refuses to start without
+/// the operator's opt-in, before any bus contact.
 pub async fn run(config: &McpConfig) -> anyhow::Result<()> {
     let state = build_state(config)?;
-    run::serve_stdio(state, config.connection.clone()).await
+    let service = BusService::open(config.connection.clone(), config.write_policy())?;
+    if service.gate() == Some(bussard_transport::write_gate::WriteGate::OptedIn) {
+        tracing::warn!(
+            "writing to non-loopback gateway {} (opt-in acknowledged)",
+            service.gateway_display()
+        );
+    }
+    run::serve_stdio(state, service).await
 }
 
 /// The set of tool names exposed, in registration order. Used by tests and docs.

@@ -20,13 +20,14 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow, bail};
-use bussard_bus::{Bus, BusHandle};
+use bussard_bus::BusHandle;
 use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO, PID_SERIAL_NUMBER};
 use bussard_mgmt::{
     DeviceConnection, LeaseChannel, broadcast, manufacturers, system_type, write_individual_address,
 };
 use bussard_model::schema::{Device, Product};
 use bussard_model::{IndividualAddress, LoadedDevice, Model};
+use bussard_service::{BusService, WritePolicy};
 
 use crate::conn_cmd::{
     ConnOverrides, checked_source_or_close, enforce_write_gate, gateway_display, resolve_config,
@@ -78,7 +79,8 @@ pub fn run(
 
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
-        let (handle, _task) = Bus::connect(config);
+        let service = BusService::open(config, WritePolicy::transmit(allow_remote_gateway))?;
+        let handle = service.handle().clone();
         // Wait for the actor to connect so the tunnel-assigned source address is
         // available (falling back to 0.0.255 on routing) — issue #30.
         handle
@@ -110,6 +112,24 @@ pub fn run(
 /// hard error either way — assign is a management command and must never proceed
 /// against a broken model, even with an explicit address.
 fn load_model_for_assign(dir: &Path, have_explicit_address: bool) -> anyhow::Result<Option<Model>> {
+    load_model_optional(
+        dir,
+        have_explicit_address,
+        "assign",
+        "pass an explicit address (e.g. `bussard assign 1.1.47`) to proceed without one",
+    )
+}
+
+/// The model load shared by `assign` and `adopt`: an absent directory is a
+/// fresh project (allowed, with a warning, under an explicit address); a
+/// present directory that fails to parse is always a hard error (issue #55).
+/// `missing_hint` tells the operator how to proceed without a model.
+pub(crate) fn load_model_optional(
+    dir: &Path,
+    have_explicit_address: bool,
+    command: &str,
+    missing_hint: &str,
+) -> anyhow::Result<Option<Model>> {
     if !dir.exists() {
         if have_explicit_address {
             eprintln!(
@@ -120,8 +140,7 @@ fn load_model_for_assign(dir: &Path, have_explicit_address: bool) -> anyhow::Res
         }
         return Err(anyhow!(
             "model directory {} not found\n\
-             assign needs the model to allocate a free address; pass an explicit address \
-             (e.g. `bussard assign 1.1.47`) to proceed without one",
+             {command} needs the model to allocate a free address; {missing_hint}",
             dir.display()
         ));
     }
@@ -132,7 +151,7 @@ fn load_model_for_assign(dir: &Path, have_explicit_address: bool) -> anyhow::Res
         // parse.
         Err(err) => Err(anyhow!(
             "could not load model from {}: {err}\n\
-             refusing to run assign against a model that failed to parse; fix the model files first",
+             refusing to run {command} against a model that failed to parse; fix the model files first",
             dir.display()
         )),
     }
@@ -228,6 +247,16 @@ pub(crate) async fn wait_for_single_device(
     handle: &BusHandle,
     source: IndividualAddress,
 ) -> anyhow::Result<Option<IndividualAddress>> {
+    wait_for_single_device_as(handle, source, "assign").await
+}
+
+/// [`wait_for_single_device`], naming `verb` (the command, e.g. `adopt`) in the
+/// guidance it prints.
+pub(crate) async fn wait_for_single_device_as(
+    handle: &BusHandle,
+    source: IndividualAddress,
+    verb: &str,
+) -> anyhow::Result<Option<IndividualAddress>> {
     let (initial, total) = wait_budgets();
     let start = tokio::time::Instant::now();
     let mut nagged = false;
@@ -245,7 +274,7 @@ pub(crate) async fn wait_for_single_device(
                     eprintln!("  {addr}");
                 }
                 eprintln!(
-                    "assign works on one device at a time — leave programming mode on all but \
+                    "{verb} works on one device at a time — leave programming mode on all but \
                      the one you want, then re-run."
                 );
                 return Ok(None);
@@ -262,7 +291,7 @@ pub(crate) async fn wait_for_single_device(
             );
             eprintln!(
                 "press the programming button on the new device (its LED usually lights up), \
-                 then re-run `bussard assign`."
+                 then re-run `bussard {verb}`."
             );
             return Ok(None);
         }
@@ -314,7 +343,10 @@ fn collection_window() -> Duration {
 /// device; and — when a model is present — it sits on a line the model already
 /// uses (a soft consistency check surfaced as a hard error, since assigning onto
 /// an unmodeled line is almost always a typo).
-fn validate_explicit_address(s: &str, model: Option<&Model>) -> anyhow::Result<IndividualAddress> {
+pub(crate) fn validate_explicit_address(
+    s: &str,
+    model: Option<&Model>,
+) -> anyhow::Result<IndividualAddress> {
     let addr: IndividualAddress = s.parse().with_context(|| {
         format!("invalid address {s:?}; expected area.line.device like \"1.1.47\"")
     })?;
@@ -347,7 +379,7 @@ fn validate_explicit_address(s: &str, model: Option<&Model>) -> anyhow::Result<I
 ///
 /// Returns `None` only when there is no model at all (the caller then requires
 /// an explicit address). See [`allocate_on_line`] for the number-picking rule.
-fn allocate_address(model: Option<&Model>) -> Option<IndividualAddress> {
+pub(crate) fn allocate_address(model: Option<&Model>) -> Option<IndividualAddress> {
     let model = model?;
     let (area, line) = dominant_line(model).unwrap_or(FALLBACK_LINE);
     let used = used_devices_on_line(model, area, line);
@@ -408,26 +440,18 @@ fn confirm_assignment(
     yes: bool,
     gateway: &str,
 ) -> anyhow::Result<bool> {
-    if yes {
-        return Ok(true);
-    }
-    let stdin = std::io::stdin();
-    if !stdin.is_terminal() {
-        // Defensive: `run` already refused this shape. Fail loudly rather than
-        // proceed if the invariant is ever broken.
-        bail!(
-            "refusing to assign {current} → {target} via {gateway} without a terminal to confirm \
-             on; pass --yes to assign non-interactively"
-        );
-    }
-
-    eprint!("assign {current} → {target} via {gateway}? [y/N] ");
-    let _ = std::io::stderr().flush();
-    let mut line = String::new();
-    std::io::stdin()
-        .read_line(&mut line)
-        .context("reading confirmation")?;
-    Ok(matches!(line.trim(), "y" | "Y" | "yes" | "Yes"))
+    // `run` already refused the non-interactive shape without --yes; the
+    // refusal here is defensive, failing loudly if that invariant ever breaks.
+    crate::confirm::confirm(
+        yes,
+        &format!("assign {current} → {target} via {gateway}?"),
+        || {
+            format!(
+                "refusing to assign {current} → {target} via {gateway} without a terminal to \
+                 confirm on; pass --yes to assign non-interactively"
+            )
+        },
+    )
 }
 
 /// What the post-write verification read back from the device.
@@ -458,6 +482,18 @@ pub(crate) async fn verify_assignment(
     handle: &BusHandle,
     source: IndividualAddress,
     target: IndividualAddress,
+) -> anyhow::Result<Verified> {
+    verify_assignment_with(handle, source, target, true).await
+}
+
+/// [`verify_assignment`], with the explicit programming-mode clear optional:
+/// `adopt` reads back without clearing it (its wizard re-checks the broadcast
+/// itself), so it passes `false` and gets `programming_mode_cleared: false`.
+pub(crate) async fn verify_assignment_with(
+    handle: &BusHandle,
+    source: IndividualAddress,
+    target: IndividualAddress,
+    clear_programming_mode: bool,
 ) -> anyhow::Result<Verified> {
     let channel = LeaseChannel::new(handle.lease().await.context("leasing the bus")?);
     let mut dev = DeviceConnection::connect(channel, target, source)
@@ -516,11 +552,15 @@ pub(crate) async fn verify_assignment(
     // ETS does not rely on that, and neither do we. Best-effort: an unconfirmed or
     // refused write is not fatal — the broadcast persistence check below remains
     // the fallback that warns if the device is still in programming mode.
-    let programming_mode_cleared = match dev.clear_programming_mode().await {
-        Ok(cleared) => cleared,
-        Err(err) => {
-            tracing::debug!("{target} clear programming mode (PID_PROGMODE=0) failed: {err}");
-            false
+    let programming_mode_cleared = if !clear_programming_mode {
+        false
+    } else {
+        match dev.clear_programming_mode().await {
+            Ok(cleared) => cleared,
+            Err(err) => {
+                tracing::debug!("{target} clear programming mode (PID_PROGMODE=0) failed: {err}");
+                false
+            }
         }
     };
 
@@ -625,6 +665,18 @@ fn write_stub_device_file(
     dir: &Path,
     device: Device,
 ) -> anyhow::Result<std::path::PathBuf> {
+    write_device_file(model, dir, device, "stub device file")
+}
+
+/// Inserts `device` into the model (or a fresh one) and saves it without
+/// pruning; shared by `assign` and `adopt`. `what` names the file in the error
+/// context. Returns the path of the device file that was written.
+pub(crate) fn write_device_file(
+    model: Option<&Model>,
+    dir: &Path,
+    device: Device,
+    what: &str,
+) -> anyhow::Result<std::path::PathBuf> {
     let address = device.address;
     let file_stem = device_file_stem(&device);
 
@@ -638,14 +690,14 @@ fn write_stub_device_file(
     );
     model
         .save(dir)
-        .with_context(|| format!("saving the stub device file to {}", dir.display()))?;
+        .with_context(|| format!("saving the {what} to {}", dir.display()))?;
 
     Ok(dir.join("devices").join(format!("{file_stem}.yaml")))
 }
 
 /// The `<address>-<slug>` file stem used for a device file, matching the
 /// importer's naming convention (`1.1.47-new-device`).
-fn device_file_stem(device: &Device) -> String {
+pub(crate) fn device_file_stem(device: &Device) -> String {
     format!("{}-{}", device.address, slugify(&device.name))
 }
 
@@ -667,7 +719,7 @@ fn slugify(name: &str) -> String {
 
 /// An empty model with default config (used when assigning into a directory that
 /// has no model yet, given an explicit address).
-fn empty_model() -> Model {
+pub(crate) fn empty_model() -> Model {
     Model {
         config: Default::default(),
         groups: Default::default(),

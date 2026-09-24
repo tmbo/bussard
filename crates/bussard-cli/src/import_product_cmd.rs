@@ -440,7 +440,7 @@ fn build_model(app: &ApplicationProgram, product: &ProductData) -> Model {
 }
 
 /// The order numbers that map to this application program, sorted.
-fn order_numbers_for(app: &ApplicationProgram, product: &ProductData) -> Vec<String> {
+pub(crate) fn order_numbers_for(app: &ApplicationProgram, product: &ProductData) -> Vec<String> {
     let mut orders: Vec<String> = product
         .hardware
         .order_to_apps
@@ -799,7 +799,7 @@ const MODEL_BANNER: &str = "\
 
 /// `vendor/.gitignore`: ignore everything, since vendor product data is
 /// copyrighted and must never be committed.
-const VENDOR_GITIGNORE: &str = "\
+pub(crate) const VENDOR_GITIGNORE: &str = "\
 # Vendor `.knxprod` product data is copyrighted — never commit it. Each user
 # supplies their own downloads; models under ../models/ are regenerated from them.
 *

@@ -113,6 +113,7 @@ gate, backups, flash recovery, protected GAs, supported masks). The essentials:
 - A GA marked `protected: true` (wind alarm or central functions) is refused: the CLI needs `--force`. An LLM connecting to bussard over MCP has no override at all and cannot modify protected GAs.
 - Every device write is plan-before-apply: bussard reads the live state, shows the diff, asks for confirmation, backs up (except `flash`), writes, and verifies.
 - The MCP server has three tiers: passive (never transmits), read (default, rate-limited), write (opt-in via `--allow-writes`).
+- The gateway gate and the protected-GA check are implemented once, in the `bussard-service` crate, which the CLI, the MCP server and the `viz` web server all call. A new surface gets both rules by construction.
 
 ## Documentation
 

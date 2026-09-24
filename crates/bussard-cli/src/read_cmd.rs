@@ -1,7 +1,7 @@
 //! The `bussard read <ga>` subcommand: send a GroupValueRead and print the
 //! typed response.
 //!
-//! Runs over the [`bussard_bus`] actor: it opens a [`Bus`], calls the shared
+//! Runs over a read-only [`bussard_service::BusService`], calls the shared
 //! [`ops::read_group`] (which subscribes, sends the read completion-tracked,
 //! skips the gateway's `L_Data.con` echo and decodes the answer), prints the
 //! typed value, and closes the bus cleanly. Exits non-zero on timeout so scripts
@@ -12,10 +12,11 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use bussard_bus::{Bus, ops};
+use bussard_bus::ops;
 use bussard_model::GroupAddress;
+use bussard_service::WritePolicy;
 
-use crate::conn_cmd::{ConnOverrides, load_model_optional, resolve_config};
+use crate::conn_cmd::{ConnOverrides, load_model_optional, open_service, resolve_config};
 
 /// How long to wait for a GroupValueResponse before giving up.
 const READ_TIMEOUT: Duration = Duration::from_secs(3);
@@ -40,15 +41,13 @@ pub fn run(ga_str: &str, dir: &Path, overrides: ConnOverrides) -> anyhow::Result
 
     let runtime = tokio::runtime::Runtime::new()?;
     let outcome = runtime.block_on(async move {
-        let (handle, _task) = Bus::connect(config);
-        if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
-            eprintln!("warning: bus not connected yet; management traffic may use the 0.0.255 fallback source");
-        }
-        let result = ops::read_group(&handle, ga, dpt, READ_TIMEOUT).await;
+        // A read never writes, so the service is read-only and ungated.
+        let service = open_service(config, WritePolicy::ReadOnly).await?;
+        let result = ops::read_group(service.handle(), ga, dpt, READ_TIMEOUT).await;
         // Close the bus cleanly (release the gateway tunnel slot) — issue #31.
-        let _ = handle.close().await;
-        result
-    });
+        service.close().await;
+        anyhow::Ok(result)
+    })?;
 
     match outcome {
         Ok(Some(outcome)) => {

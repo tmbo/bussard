@@ -1,27 +1,31 @@
 //! The `bussard write <ga> <value>` subcommand: encode a human value and send a
 //! `GroupValueWrite` on the bus.
 //!
-//! Runs over the [`bussard_bus`] actor: it opens a [`Bus`], calls the shared
-//! [`ops::write_group`] (which sends completion-tracked against the gateway ACK
-//! and watches for a confirmation), then reports what it wrote. The write's exit
-//! code is now honest — a send receipt failure (ACK exhaustion, staleness) exits
-//! non-zero (review A3).
+//! The write policy (protected-GA check, DPT resolution, encoding, the single
+//! send) lives in [`bussard_service::write`], shared with the MCP server and
+//! the viz server (issue #86). This module only parses the flags, asks for
+//! confirmation and renders the outcome or the [`WriteRefusal`] in CLI words.
+//! The exit code is honest: a send receipt failure (ACK exhaustion, staleness)
+//! exits non-zero (review A3).
 //!
 //! Safety: a GA marked `protected: true` in `groups.yaml` is refused unless
-//! `--force` is given (see the design document §8). That policy stays at this
-//! edge; `ops` transmits whatever it is handed.
+//! `--force` is given (see the design document §8), and the service is opened
+//! under the non-loopback write gate (issue #74).
 
-use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
-use anyhow::{Context, anyhow, bail};
-use bussard_bus::ops::{self, WriteOptions};
-use bussard_bus::{Bus, BusError};
-use bussard_model::{Dpt, GroupAddress, Model, encode, parse_value};
+use anyhow::anyhow;
+use bussard_bus::BusError;
+use bussard_model::{GroupAddress, Model};
+use bussard_service::{
+    DptOverridePolicy, PreparedWrite, WriteCheck, WritePolicy, WriteRefusal, WriteValue,
+    prepare_group_write,
+};
 
 use crate::conn_cmd::{
-    ConnOverrides, enforce_write_gate, gateway_display, load_model_required, resolve_config,
+    ConnOverrides, enforce_write_gate, gateway_display, load_model_required, open_service,
+    resolve_config,
 };
 
 /// Sends a `GroupValueWrite` to the bus.
@@ -52,25 +56,15 @@ pub fn run(
     // model directory is a fresh project — proceed unmodeled with `--dpt`.
     let model = load_model_required(dir)?;
 
-    // Resolve the DPT: --dpt wins, else the GA's dpt from groups.yaml.
-    let dpt = resolve_dpt(dpt_override, model.as_ref(), ga)?;
-
-    // Refuse a protected GA unless --force.
-    if let Some(reason) = protected_refusal(model.as_ref(), ga, force) {
-        bail!("{reason}");
-    }
-
-    // Parse the human value and encode it against the DPT.
-    let typed =
-        parse_value(&dpt, value).with_context(|| format!("parsing value {value:?} for GA {ga}"))?;
-    let payload = encode(&dpt, &typed)
-        .with_context(|| format!("encoding {typed} as DPT {dpt} for GA {ga}"))?;
-
-    // A friendly name for the confirmation line, if the model knows it.
-    let ga_name = model
-        .as_ref()
-        .and_then(|m| m.groups.groups.get(&ga))
-        .map(|g| g.name.clone());
+    // Every check short of sending: protected (unless --force), the DPT
+    // (--dpt wins, else groups.yaml), parse and encode.
+    let check = WriteCheck {
+        dpt: dpt_override,
+        dpt_policy: DptOverridePolicy::Trust,
+        force,
+    };
+    let write = prepare_group_write(model.as_ref(), ga, WriteValue::Human(value), &check)
+        .map_err(render_refusal)?;
 
     let config = resolve_config(model.as_ref(), &overrides)?;
     let gateway = gateway_display(&config);
@@ -78,99 +72,109 @@ pub fn run(
     // Safety envelope (issue #74): refuse a write to a real (non-loopback)
     // gateway unless the operator opted in, and always name the resolved gateway
     // on stderr before acting so a scripted write cannot hit the real house
-    // silently.
+    // silently. The service applies the same gate again when it opens.
     enforce_write_gate(&config, allow_remote_gateway)?;
     eprintln!("gateway: {gateway}");
 
     // Confirmation naming the GA, value, and gateway. `--yes` skips the prompt.
-    let value_preview = typed.to_string();
-    if !confirm_write(ga, &ga_name, &value_preview, &dpt, &gateway, yes)? {
+    let label = write_label(&write);
+    let confirmed = crate::confirm::confirm(yes, &format!("write {label} via {gateway}?"), || {
+        format!(
+            "refusing to write {label} via {gateway} without a terminal to confirm on; pass \
+             --yes to write non-interactively"
+        )
+    })?;
+    if !confirmed {
         eprintln!("aborted; nothing was written.");
         return Ok(ExitCode::FAILURE);
     }
 
     let runtime = tokio::runtime::Runtime::new()?;
     let outcome = runtime.block_on(async move {
-        let (handle, _task) = Bus::connect(config);
-        if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
-            eprintln!("warning: bus not connected yet; management traffic may use the 0.0.255 fallback source");
-        }
-        let result =
-            ops::write_group(&handle, ga, &payload, dpt.is_packable(), WriteOptions::default())
-                .await;
+        let service = open_service(config, WritePolicy::transmit(allow_remote_gateway)).await?;
+        let result = service.send_prepared(write).await;
         // Close the bus cleanly (release the gateway tunnel slot) — issue #31.
-        let _ = handle.close().await;
-        result
-    });
+        service.close().await;
+        anyhow::Ok(result)
+    })?;
 
-    let value_display = &value_preview;
     match outcome {
-        Ok(write) => {
+        Ok(sent) => {
             // Confirmation line, e.g.
             // `3/0/4 Living Room Blind Move ← Down (1.008)`.
-            match &ga_name {
-                Some(name) => println!("{ga} {name} ← {value_display} ({dpt})"),
-                None => println!("{ga} ← {value_display} ({dpt})"),
-            }
-            if !write.confirmed {
+            println!("{}", write_label(&sent.write));
+            if !sent.confirmed {
                 // Not an error: KNX group writes are fire-and-forget. Note the
                 // missing confirmation on stderr so scripts still see success.
                 eprintln!("note: sent (no bus confirmation observed)");
             }
             Ok(ExitCode::SUCCESS)
         }
-        Err(BusError::Stale) => {
+        Err(WriteRefusal::Bus(BusError::Stale)) => {
             eprintln!(
                 "error: could not write {ga}: bus not connected (dropped after staleness cutoff)"
             );
             Ok(ExitCode::FAILURE)
         }
-        Err(err) => {
+        Err(WriteRefusal::Bus(err)) => {
             eprintln!("error: could not write {ga}: {err}");
             Ok(ExitCode::FAILURE)
         }
+        Err(refusal) => Err(render_refusal(refusal)),
     }
 }
 
-/// Confirms a group write on a TTY, naming the GA, value, and resolved gateway
-/// (issue #74). `--yes` (`yes = true`) skips the prompt. A non-TTY without
-/// `--yes` is refused: a scripted write must opt in explicitly rather than fire
-/// blind at whatever gateway `bussard.yaml` names.
-fn confirm_write(
-    ga: GroupAddress,
-    ga_name: &Option<String>,
-    value_display: &str,
-    dpt: &Dpt,
-    gateway: &str,
-    yes: bool,
-) -> anyhow::Result<bool> {
-    if yes {
-        return Ok(true);
-    }
-    let ga_label = match ga_name {
-        Some(name) => format!("{ga} {name}"),
-        None => ga.to_string(),
+/// `3/0/4 Living Room Blind Move ← Down (1.008)`: the GA (with its model name
+/// when known), the value and the DPT, as the prompt and the result line show
+/// them.
+fn write_label(write: &PreparedWrite) -> String {
+    let ga = match &write.name {
+        Some(name) => format!("{} {name}", write.ga),
+        None => write.ga.to_string(),
     };
-    if !std::io::stdin().is_terminal() {
-        bail!(
-            "refusing to write {ga_label} ← {value_display} ({dpt}) via {gateway} without a \
-             terminal to confirm on; pass --yes to write non-interactively"
-        );
+    let value = write.value.as_deref().unwrap_or("?");
+    match write.dpt {
+        Some(dpt) => format!("{ga} ← {value} ({dpt})"),
+        None => format!("{ga} ← {value}"),
     }
-    eprint!("write {ga_label} ← {value_display} ({dpt}) via {gateway}? [y/N] ");
-    let _ = std::io::stderr().flush();
-    let mut line = String::new();
-    std::io::stdin()
-        .read_line(&mut line)
-        .context("reading confirmation")?;
-    Ok(matches!(line.trim(), "y" | "Y" | "yes" | "Yes"))
+}
+
+/// Renders a [`WriteRefusal`] in the CLI's words (naming `--force` and
+/// `--dpt`).
+fn render_refusal(refusal: WriteRefusal) -> anyhow::Error {
+    match refusal {
+        WriteRefusal::Protected { ga, name } => {
+            anyhow!("refusing to write to protected GA {ga} ({name:?}); pass --force to override")
+        }
+        WriteRefusal::InvalidDpt { input, reason } => anyhow!("invalid --dpt {input:?}: {reason}"),
+        WriteRefusal::NoDpt {
+            ga,
+            model_loaded: false,
+        } => anyhow!(
+            "no model loaded and no --dpt given for {ga}; pass --dpt <dpt> (e.g. --dpt 1.001)"
+        ),
+        WriteRefusal::NoDpt {
+            ga,
+            model_loaded: true,
+        } => anyhow!("GA {ga} has no DPT in groups.yaml; pass --dpt <dpt> (e.g. --dpt 1.001)"),
+        WriteRefusal::InvalidValue {
+            ga, value, reason, ..
+        } => anyhow!(reason).context(format!("parsing value {value:?} for GA {ga}")),
+        WriteRefusal::Encode {
+            ga,
+            value,
+            dpt,
+            reason,
+        } => anyhow!(reason).context(format!("encoding {value} as DPT {dpt} for GA {ga}")),
+        other => anyhow!(other),
+    }
 }
 
 /// Returns a refusal message if `ga` is protected in the model and `force` is
 /// not set; otherwise `None` (the write may proceed).
 ///
-/// Shared with `bussard test`, whose acceptance runs go on the bus through the
-/// same rails and must refuse a protected GA with the same words.
+/// `bussard test` warns with the same words as `bussard write` before its
+/// acceptance runs; the decision itself is [`bussard_service::protected_group`].
 pub(crate) fn protected_refusal(
     model: Option<&Model>,
     ga: GroupAddress,
@@ -179,39 +183,10 @@ pub(crate) fn protected_refusal(
     if force {
         return None;
     }
-    let group = model?.groups.groups.get(&ga)?;
-    if group.protected {
-        Some(format!(
-            "refusing to write to protected GA {ga} ({:?}); pass --force to override",
-            group.name
-        ))
-    } else {
-        None
-    }
-}
-
-/// Resolves the DPT to encode against: `--dpt` wins, else the GA's DPT from the
-/// model. Errors (suggesting `--dpt`) when neither is available.
-fn resolve_dpt(
-    dpt_override: Option<&str>,
-    model: Option<&Model>,
-    ga: GroupAddress,
-) -> anyhow::Result<Dpt> {
-    if let Some(s) = dpt_override {
-        return s.parse().map_err(|e| anyhow!("invalid --dpt {s:?}: {e}"));
-    }
-    let group = model.and_then(|m| m.groups.groups.get(&ga));
-    match group.and_then(|g| g.dpt) {
-        Some(dpt) => Ok(dpt),
-        None => {
-            if model.is_none() {
-                bail!(
-                    "no model loaded and no --dpt given for {ga}; pass --dpt <dpt> (e.g. --dpt 1.001)"
-                );
-            }
-            bail!("GA {ga} has no DPT in groups.yaml; pass --dpt <dpt> (e.g. --dpt 1.001)")
-        }
-    }
+    let name = bussard_service::protected_group(model?, ga)?;
+    Some(format!(
+        "refusing to write to protected GA {ga} ({name:?}); pass --force to override"
+    ))
 }
 
 #[cfg(test)]
@@ -273,27 +248,57 @@ mod tests {
         assert!(protected_refusal(Some(&m), ga("3/0/4"), false).is_none());
     }
 
-    #[test]
-    fn dpt_override_wins() {
-        let m = model_with(false, Some("1.008"));
-        let d = resolve_dpt(Some("5.001"), Some(&m), ga("3/0/4")).unwrap();
-        assert_eq!(d.to_string(), "5.001");
+    /// The rendered refusal of a write that must be refused.
+    fn refusal(model: Option<&Model>, value: &str) -> anyhow::Result<String> {
+        match prepare_group_write(
+            model,
+            ga("3/0/4"),
+            WriteValue::Human(value),
+            &WriteCheck::default(),
+        ) {
+            Ok(write) => Err(anyhow!("expected a refusal, got {write:?}")),
+            Err(refusal) => Ok(render_refusal(refusal).to_string()),
+        }
     }
 
     #[test]
-    fn dpt_from_model_when_no_override() {
-        let m = model_with(false, Some("1.008"));
-        let d = resolve_dpt(None, Some(&m), ga("3/0/4")).unwrap();
-        assert_eq!(d.to_string(), "1.008");
-    }
-
-    #[test]
-    fn dpt_missing_errors_with_suggestion() {
+    fn dpt_missing_errors_with_suggestion() -> anyhow::Result<()> {
         let m = model_with(false, None);
-        let err = resolve_dpt(None, Some(&m), ga("3/0/4")).unwrap_err();
-        assert!(err.to_string().contains("--dpt"), "got {err}");
+        let err = refusal(Some(&m), "on")?;
+        assert!(err.contains("--dpt"), "got {err}");
         // No model at all also errors and suggests --dpt.
-        let err = resolve_dpt(None, None, ga("3/0/4")).unwrap_err();
-        assert!(err.to_string().contains("--dpt"), "got {err}");
+        let err = refusal(None, "on")?;
+        assert!(
+            err.contains("no model loaded") && err.contains("--dpt"),
+            "got {err}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn protected_refusal_is_rendered_with_the_force_hint() -> anyhow::Result<()> {
+        let m = model_with(true, Some("1.008"));
+        let err = refusal(Some(&m), "down")?;
+        assert!(
+            err.contains("protected") && err.contains("--force"),
+            "{err}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn write_label_names_ga_value_and_dpt() -> anyhow::Result<()> {
+        let m = model_with(false, Some("1.008"));
+        let write = prepare_group_write(
+            Some(&m),
+            ga("3/0/4"),
+            WriteValue::Human("down"),
+            &WriteCheck::default(),
+        )?;
+        assert_eq!(
+            write_label(&write),
+            "3/0/4 Living Room Blind Move ← Down (1.008)"
+        );
+        Ok(())
     }
 }

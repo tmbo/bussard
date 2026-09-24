@@ -23,11 +23,10 @@
 //!    reading the parameter memory back.
 
 use std::collections::BTreeMap;
-use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
-use anyhow::{Context as _, bail};
+use anyhow::Context as _;
 use bussard_bus::{BusHandle, ops};
 use bussard_download::backup::{
     ParameterBackup, ParameterMemory, encode_hex, parameter_backups_dir, rfc3339_utc, unix_seconds,
@@ -626,22 +625,16 @@ fn confirm(
     yes: bool,
     octets: usize,
 ) -> anyhow::Result<bool> {
-    if yes {
-        return Ok(true);
-    }
-    if !std::io::stdin().is_terminal() {
-        bail!(
-            "refusing to write to {target} without a terminal to confirm on; \
-             pass --yes to download the parameters non-interactively"
-        );
-    }
-    eprint!("download the parameters ({octets} octet(s)) to {target} via {gateway}? [y/N] ");
-    let _ = std::io::stderr().flush();
-    let mut line = String::new();
-    std::io::stdin()
-        .read_line(&mut line)
-        .context("reading confirmation")?;
-    Ok(matches!(line.trim(), "y" | "Y" | "yes" | "Yes"))
+    crate::confirm::confirm(
+        yes,
+        &format!("download the parameters ({octets} octet(s)) to {target} via {gateway}?"),
+        || {
+            format!(
+                "refusing to write to {target} without a terminal to confirm on; \
+                 pass --yes to download the parameters non-interactively"
+            )
+        },
+    )
 }
 
 /// Writes the pre-download parameter memory to

@@ -10,6 +10,9 @@ description = "Web visualization server for a bussard KNX installation: topology
 
 [dependencies]
 bussard-model = { workspace = true }
+# The service layer (issue #86): gated bus access, management sessions, the
+# checked group write and the live model handle.
+bussard-service = { workspace = true }
 bussard-transport = { workspace = true }
 bussard-monitor = { workspace = true }
 bussard-bus = { workspace = true }

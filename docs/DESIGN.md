@@ -122,8 +122,10 @@ crates/
   bussard-download/   # LoadProcedure interpreter, table/memory image builder, plan/apply/flash
   bussard-ha/         # Home Assistant config generation (ha-config)
   bussard-secure/     # KNX Secure primitives: .knxkeys keyring, Data Secure session
+  bussard-service/    # the layer the surfaces call: gated BusService, L4 sessions, checked write
   bussard-mcp/        # MCP stdio server
   bussard-viz/        # the `bussard viz` web server and its embedded frontend
+  bussard-testkit/    # test-only mock KNXnet/IP gateways and devices
   bussard-cli/        # clap binary
 ```
 
@@ -133,6 +135,37 @@ data → byte image), unit-testable without a bus. `bussard-bus` owns the single
 connection and hands out exclusive layer-4 leases so a management session and live group
 traffic share one gateway tunnel slot. `bussard-ets` factors the streaming-XML primitives
 shared by the `.knxproj` and `.knxprod` importers.
+
+#### Surfaces and the service layer
+
+bussard has three surfaces: the CLI (`bussard-cli`), the MCP server (`bussard-mcp`) and
+the viz server (`bussard-viz`). None of them orchestrates the domain crates for a bus
+operation on its own; they go through `bussard-service` (issue #86), which holds the one
+copy of each safety rule:
+
+```
+  bussard-cli    bussard-mcp    bussard-viz        parse input, render output
+        \             |             /
+         +------ bussard-service ---+               policy: gate, protected GAs, sessions
+        /        |          |        \
+  bussard-bus  bussard-mgmt  bussard-model  bussard-secure    domain
+```
+
+- `BusService::open(config, WritePolicy)` applies the non-loopback write gate (§8,
+  issue #74) before the bus actor is spawned. A transmitting surface cannot obtain a bus
+  without it, so a new surface inherits the gate by construction.
+- `with_l4` / `connect_l4` run the management-session skeleton (source-address check,
+  lease, `T_Connect`, the KNX Data Secure layer from a keyring or tool key, authorize,
+  disconnect) that device commands used to copy.
+- `prepare_group_write` and `write_group_checked` implement the group-write policy once:
+  protected-GA check, DPT resolution, encode (or raw-payload size check), one send. The
+  result is a typed `WriteRefusal`; the CLI renders it with a `--force` hint, MCP as a
+  hard refusal with no override, viz as an HTTP status.
+- `ModelHandle` is the live model the long-running servers share: it reloads when the
+  files under `knx/` change and keeps the previous model when a reload fails. The CLI
+  loads the model once per invocation.
+
+The crate never prints; prompts, JSON shapes and status codes stay with the surfaces.
 
 ### 5.2 The YAML model
 

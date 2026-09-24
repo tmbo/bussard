@@ -25,12 +25,12 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
-use anyhow::{Context, bail};
-use bussard_bus::Bus;
+use anyhow::bail;
 use bussard_model::Model;
 use bussard_model::tests_schema::{self, TestSuite};
 use bussard_monitor::acceptance::{ManualDecision, ManualStep, RunOptions};
 use bussard_monitor::{DecodedTelegram, TelegramRing, acceptance};
+use bussard_service::{BusService, WritePolicy};
 
 use crate::conn_cmd::{
     ConnOverrides, enforce_write_gate, gateway_display, load_model_required, resolve_config,
@@ -134,8 +134,14 @@ fn execute(
     let mut manual = TerminalManual::new(options.skip_manual);
 
     let runtime = tokio::runtime::Runtime::new()?;
+    // Acceptance runs write group values, so the service is transmitting and
+    // applies the write gate as it opens (already checked in `run`).
+    let service = {
+        let _context = runtime.enter();
+        BusService::open(config, WritePolicy::transmit(options.allow_remote_gateway))?
+    };
     Ok(runtime.block_on(async move {
-        let (handle, _task) = Bus::connect(config);
+        let handle = service.handle().clone();
         let ring = TelegramRing::new();
 
         let feeder_ring = ring.clone();
@@ -224,23 +230,16 @@ fn report_protected(
 /// non-TTY without `--yes` is refused, so a scripted run cannot fire blind at
 /// whatever gateway `bussard.yaml` names.
 fn confirm(count: usize, gateway: &str, yes: bool) -> anyhow::Result<bool> {
-    if yes {
-        return Ok(true);
-    }
-    if !std::io::stdin().is_terminal() {
-        bail!(
-            "refusing to run {count} acceptance test(s) against {gateway} without a terminal to \
-             confirm on; pass --yes to run non-interactively"
-        );
-    }
-    eprint!("run {count} acceptance test(s) against {gateway}? actuators will move. [y/N] ");
-    let _ = std::io::stderr().flush();
-    let mut line = String::new();
-    std::io::stdin()
-        .lock()
-        .read_line(&mut line)
-        .context("reading confirmation")?;
-    Ok(matches!(line.trim(), "y" | "Y" | "yes" | "Yes"))
+    crate::confirm::confirm(
+        yes,
+        &format!("run {count} acceptance test(s) against {gateway}? actuators will move."),
+        || {
+            format!(
+                "refusing to run {count} acceptance test(s) against {gateway} without a terminal \
+                 to confirm on; pass --yes to run non-interactively"
+            )
+        },
+    )
 }
 
 /// The terminal implementation of a `manual:` step: print the instruction and

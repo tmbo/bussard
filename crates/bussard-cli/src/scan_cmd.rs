@@ -19,16 +19,15 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::anyhow;
-use bussard_bus::{Bus, BusHandle};
+use bussard_bus::BusHandle;
 use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO, PID_SERIAL_NUMBER};
 use bussard_mgmt::{
     DeviceConnection, L4Channel, LeaseChannel, Timeouts, manufacturers, system_type,
 };
 use bussard_model::IndividualAddress;
+use bussard_service::WritePolicy;
 
-use crate::conn_cmd::{
-    ConnOverrides, checked_source_or_close, load_model_required, resolve_config,
-};
+use crate::conn_cmd::{ConnOverrides, load_model_required, open_service, resolve_config};
 
 /// Environment variable that overrides the per-attempt discovery timeout in
 /// milliseconds. Set only by the integration test to keep a full-line mock sweep
@@ -112,28 +111,30 @@ pub fn run(
 
     let runtime = tokio::runtime::Runtime::new()?;
     let found = runtime.block_on(async move {
-        let (handle, _task) = Bus::connect(config);
-        // Present the tunnel-assigned individual address as the source; devices
-        // ignore connection-oriented frames from any other source, and the
-        // gateway only routes replies back to the assigned address (issue #30).
-        // Fall back to 0.0.255 on a routing transport that assigns none. The
-        // actor may still be connecting; group_source reads the assigned IA once
-        // it is up (the first probe waits on the lease anyway).
-        handle
-            .wait_connected(std::time::Duration::from_secs(10))
-            .await;
-        let source = checked_source_or_close(&handle, &overrides).await?;
+        // Read-only on the bus. Present the tunnel-assigned individual address
+        // as the source; devices ignore connection-oriented frames from any
+        // other source, and the gateway only routes replies back to the
+        // assigned address (issue #30). Fall back to 0.0.255 on a routing
+        // transport that assigns none.
+        let service = open_service(config, WritePolicy::ReadOnly).await?;
+        let source = match service.checked_source(overrides.skip_address_check).await {
+            Ok(source) => source,
+            Err(err) => {
+                service.close().await;
+                return Err(err.into());
+            }
+        };
         // Guard the sweep with Ctrl-C: on interrupt, stop sweeping and fall
-        // through to a clean `handle.close()` so the gateway tunnel slot is
-        // released rather than leaked (~2 min hold) — see issue #31.
+        // through to a clean close so the gateway tunnel slot is released
+        // rather than leaked (~2 min hold) — see issue #31.
         let found = tokio::select! {
-            found = sweep(&handle, area, line_no, from, to, source, json) => found,
+            found = sweep(service.handle(), area, line_no, from, to, source, json) => found,
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\ninterrupted; closing the bus connection");
                 Vec::new()
             }
         };
-        let _ = handle.close().await;
+        service.close().await;
         anyhow::Ok(found)
     })?;
 

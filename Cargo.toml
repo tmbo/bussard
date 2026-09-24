@@ -17,6 +17,7 @@ members = [
     "crates/bussard-bus",
     "crates/bussard-download",
     "crates/bussard-secure",
+    "crates/bussard-service",
     "crates/bussard-viz",
     "crates/bussard-cli",
     "crates/bussard-testkit",
@@ -44,6 +45,7 @@ bussard-ets = { path = "crates/bussard-ets", version = "0.1.0" }
 bussard-ha = { path = "crates/bussard-ha", version = "0.1.0" }
 bussard-download = { path = "crates/bussard-download", version = "0.1.0" }
 bussard-secure = { path = "crates/bussard-secure", version = "0.1.0" }
+bussard-service = { path = "crates/bussard-service", version = "0.1.0" }
 bussard-viz = { path = "crates/bussard-viz", version = "0.1.0" }
 # Test-only mock gateway and devices (publish = false): dev-dependency only.
 bussard-testkit = { path = "crates/bussard-testkit" }
