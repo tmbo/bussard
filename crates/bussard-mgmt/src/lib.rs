@@ -101,8 +101,9 @@ pub use profile::{
 };
 pub use secure::SecureLayer;
 pub use sys7::{
-    LsmAccess, alloc_attr_octets, encode_alloc_segment, encode_task_ctrl1, encode_task_segment,
-    lsm_access_from_profile, task_segment_marker,
+    DEVICE_CONTROL_VERIFY_MODE, LsmAccess, PID_DEVICE_CONTROL, VerifyModeOutcome,
+    alloc_attr_octets, enable_verify_mode, encode_alloc_segment, encode_task_ctrl1,
+    encode_task_segment, lsm_access_from_profile, task_segment_marker,
 };
 pub use tables::{
     DeviceTables, ResolvedLink, TableSource, TablesError, discover_interface_objects, read_tables,

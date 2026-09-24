@@ -95,7 +95,20 @@ pub async fn read_memory<Ch: L4Channel>(
     }
     let addr16 = addr as u16;
     let (req_apci, payload) = apci::encode_memory_read(addr16, len);
-    let (resp_apci, data) = l4.request(req_apci, &payload).await?;
+    let (mut resp_apci, mut data) = l4.request(req_apci, &payload).await?;
+    // A verify-mode device (PID_DEVICE_CONTROL bit 2, which a System 7 download
+    // switches on like ETS, issue #116) echoes every A_Memory_Write with an
+    // A_Memory_Response. An echo of the last write that arrives only after this
+    // read went out looks like its answer; it names the written address, not
+    // ours, so skip it and take the next response.
+    for _ in 0..STALE_ECHO_SKIPS {
+        match apci::decode_memory_response(resp_apci, &data) {
+            Some(echo) if echo.addr != addr16 => {
+                (resp_apci, data) = l4.recv_response().await?;
+            }
+            _ => break,
+        }
+    }
     let resp = apci::decode_memory_response(resp_apci, &data).ok_or_else(|| {
         WriteError::Mgmt(MgmtError::MalformedResponse {
             address: l4.target(),
@@ -107,6 +120,11 @@ pub async fn read_memory<Ch: L4Channel>(
     })?;
     Ok(resp.data)
 }
+
+/// How many late verify-mode write echoes [`read_memory`] skips before it takes
+/// a response as its answer. One write leaves at most one echo; two covers an
+/// echo retransmitted by the device.
+const STALE_ECHO_SKIPS: usize = 2;
 
 /// Reads `len` octets at the 24-bit `addr` via `A_MemoryExtended_Read` (APCI
 /// `0x1FD`), validating the response's return code and echoed address.

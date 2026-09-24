@@ -101,44 +101,62 @@ fn sync_retry_after_restart() -> bussard_mgmt::SyncRetry {
     bussard_mgmt::SyncRetry::after_restart().with_backoff_cap(secure_reboot_wait_bound())
 }
 
-/// The numbered-exchange count at which the flash proactively cycles the L4
-/// connection (a graceful `T_Disconnect`/`T_Connect` + re-authorize) *between*
-/// steps, to stay under the device's per-connection budget.
+/// The numbered-exchange count at which a flash of a **KNX Virtual** device
+/// proactively cycles the L4 connection (a graceful `T_Disconnect`/`T_Connect` +
+/// re-authorize) *between* steps, to stay under the device's per-connection
+/// budget.
 ///
-/// A real connection-oriented device drops a long-held L4 connection after a
-/// bounded number of numbered exchanges — the KNX Virtual DA.tp device was
-/// observed to drop at ~35, and a whole post-master-reset flow on one connection
-/// sits right at that edge, failing ~50% of the time. ETS reconnects the L4
-/// connection periodically within a download (its capture shows repeated
-/// T_Disconnect/T_Connect cycles at 2–65-exchange intervals) to stay well clear.
+/// The KNX Virtual DA.tp device drops a long-held L4 connection after a bounded
+/// number of numbered exchanges: observed at ~35, at 16–35 in later runs and
+/// historically as low as ~7 (issue #80). A whole post-master-reset flow on one
+/// connection sits right at that edge, failing ~50% of the time without cycling.
 ///
-/// 10 is deliberately well under the observed drop point (16–35, historically as
-/// low as ~7 on the live KV DA.tp) so a proactive cycle usually lands before the
-/// device drops: the check runs *before* each step, and a single step (a chunked
-/// memory write) can add several exchanges, so the effective peak before a cycle
-/// is `THRESHOLD` + one step's exchanges. The threshold is intentionally
-/// conservative rather than tuned to the mean because the drop is
-/// non-deterministic; whatever it misses is caught by resume-on-drop (see
-/// [`flash`](super::flash)), which reconnects and re-runs the step when the connection dies
-/// unexpectedly mid-flow. Only sessions that
+/// Real devices do not drop a connection this way, and ETS holds one connection
+/// for the whole download (every System 7 capture: `schaltaktor-8fach-1-1-49`,
+/// `pm-mini-1-1-52`, `meteodata-1-1-202-new`). On a Data Secure device each cycle
+/// also costs an S-A_Sync_Req/Res pair (issue #168). So the cycling is **off by
+/// default** and switched on only for a plan that targets KNX Virtual
+/// ([`FlashPlan::targets_knx_virtual`](super::FlashPlan::targets_knx_virtual)),
+/// issue #116. [`RECONNECT_THRESHOLD_ENV`] overrides the choice either way.
+///
+/// 10 is deliberately well under the observed drop point so a proactive cycle
+/// usually lands before the device drops: the check runs *before* each step,
+/// and a single step (a chunked memory write) can add several exchanges, so the
+/// effective peak before a cycle is `THRESHOLD` + one step's exchanges. The
+/// check is between steps, never mid memory write, so a chunked write is never
+/// split across a reconnect. Whatever it misses is caught by resume-on-drop (see
+/// [`flash`](super::flash)), which reconnects and re-runs the step when the
+/// connection dies unexpectedly mid-flow. Only sessions that
 /// [`can_reconnect`](Session::can_reconnect) cycle; a single-connection session
 /// ([`Session::from_connection`], mocks) keeps the one-connection path.
 pub(super) const RECONNECT_EXCHANGE_THRESHOLD: u32 = 10;
 
-/// Environment variable that overrides [`RECONNECT_EXCHANGE_THRESHOLD`] with a
-/// numeric value. Set by the flash-mock periodic-reconnect test so it can drive
-/// the cycle at a low, deterministic exchange count against a small procedure;
-/// unset in normal use, so the default 20 applies. Behaviour is otherwise
-/// unchanged (a value of 0 disables proactive cycling entirely).
+/// Environment variable that overrides the proactive-reconnect threshold with a
+/// numeric value, for every device: `0` disables cycling (also for KNX
+/// Virtual), any other value cycles at that exchange count (also for a real
+/// device). The flash-mock periodic-reconnect tests set it to drive the cycle at
+/// a low, deterministic exchange count against a small procedure; a campaign
+/// run can set it to bring the cycling back for a device that needs it.
 pub(super) const RECONNECT_THRESHOLD_ENV: &str = "BUSSARD_FLASH_RECONNECT_EXCHANGES";
 
-/// The proactive-reconnect exchange threshold, honouring [`RECONNECT_THRESHOLD_ENV`]
-/// for tests. A value of 0 disables proactive cycling.
-pub(super) fn reconnect_exchange_threshold() -> u32 {
-    std::env::var(RECONNECT_THRESHOLD_ENV)
-        .ok()
-        .and_then(|s| s.trim().parse::<u32>().ok())
-        .unwrap_or(RECONNECT_EXCHANGE_THRESHOLD)
+/// The proactive-reconnect exchange threshold for `plan`: the
+/// [`RECONNECT_THRESHOLD_ENV`] value when set, else
+/// [`RECONNECT_EXCHANGE_THRESHOLD`] for a KNX Virtual target and 0 (no
+/// proactive cycling, one connection like ETS) for every other device.
+pub(super) fn reconnect_exchange_threshold(plan: &super::FlashPlan) -> u32 {
+    let env = std::env::var(RECONNECT_THRESHOLD_ENV).ok();
+    threshold_for(env.as_deref(), plan.targets_knx_virtual())
+}
+
+/// [`reconnect_exchange_threshold`] with the environment value passed in, so
+/// the choice is testable without touching the process environment.
+fn threshold_for(env: Option<&str>, knx_virtual: bool) -> u32 {
+    env.and_then(|s| s.trim().parse::<u32>().ok())
+        .unwrap_or(if knx_virtual {
+            RECONNECT_EXCHANGE_THRESHOLD
+        } else {
+            0
+        })
 }
 
 /// How many times a single flash step is retried after an *unexpected* mid-flow
@@ -985,5 +1003,30 @@ pub(super) async fn read_memory_resumable<C: Connector>(
             }
             Err(e) => return Err(e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_threshold_for_cycles_only_knx_virtual_by_default() {
+        // Issue #116: a real device holds one connection like ETS; only KNX
+        // Virtual (issue #80) cycles proactively.
+        assert_eq!(threshold_for(None, false), 0);
+        assert_eq!(threshold_for(None, true), RECONNECT_EXCHANGE_THRESHOLD);
+    }
+
+    #[test]
+    fn test_threshold_for_env_overrides_either_way() {
+        assert_eq!(threshold_for(Some("0"), true), 0);
+        assert_eq!(threshold_for(Some(" 7 "), false), 7);
+        // An unparsable value falls back to the device-class default.
+        assert_eq!(threshold_for(Some("often"), false), 0);
+        assert_eq!(
+            threshold_for(Some("often"), true),
+            RECONNECT_EXCHANGE_THRESHOLD
+        );
     }
 }

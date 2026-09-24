@@ -106,6 +106,64 @@ pub(super) fn sys7_procedure_end(ops: &[LoadOp]) -> usize {
         .map_or(ops.len(), |i| i + 1)
 }
 
+/// The load-state machines ETS unloads before a full System 7 download: LSMs 1
+/// to 4, on both mask families (`schaltaktor-8fach-1-1-49`, `jung-1131`,
+/// `binaereingang-6fach`, `automitschalter-standard-110` on 0705;
+/// `meteodata-1-1-202-new`, `meteodata-140-s` on 0701).
+pub(super) const SYS7_PRELUDE_UNLOAD_LSMS: [u32; 4] = [1, 2, 3, 4];
+
+/// Adds ETS's System 7 prelude to a lowered procedure (issue #116):
+///
+/// - [`FlashStep::Sys7PreDownloadRestart`] (unload LSMs 1 to 4, basic restart,
+///   reconnect) before the procedure's first step that changes device state.
+///   ETS runs it before anything else; the vendor's read-only preconditions
+///   (`CompareProp`, `CompareMem`) stay ahead of it here, so a device that
+///   fails them is refused before its application is unloaded.
+/// - [`FlashStep::Sys7EnableVerifyMode`] right after the first `StartLoading`,
+///   when the mask declares the Hawk `VerifyMode` feature and streams blind.
+///   ETS writes `obj0/PID_DEVICE_CONTROL` after the first allocation record;
+///   the allocation and its stream are one step here, so the write goes out
+///   just before that record. Nothing depends on the order: the bit only makes
+///   the device echo memory writes.
+///
+/// ETS's read-only prelude traffic (`PID_SERIAL_NUMBER`, `PID_MANUFACTURER_ID`,
+/// `PID_HARDWARE_TYPE`, the `0xB6EC` and `0x0060` memory reads) is not
+/// reproduced; `docs/system7-spec.md` §3 lists why.
+fn add_ets_prelude(steps: &mut Vec<FlashStep>, profile: &bussard_mgmt::Sys7Profile) {
+    if !profile.read_compare_write()
+        && let Some(first_load) = steps
+            .iter()
+            .position(|s| matches!(s, FlashStep::Sys7StartLoading { .. }))
+    {
+        steps.insert(first_load + 1, FlashStep::Sys7EnableVerifyMode);
+    }
+    // A procedure that loads nothing (a bare restart) gets no prelude.
+    let loads = steps.iter().any(|s| {
+        matches!(
+            s,
+            FlashStep::Sys7Unload { .. } | FlashStep::Sys7StartLoading { .. }
+        )
+    });
+    if !loads {
+        return;
+    }
+    let first_change = steps
+        .iter()
+        .position(|s| {
+            !matches!(
+                s,
+                FlashStep::CompareProp { .. } | FlashStep::Sys7CompareMem { .. }
+            )
+        })
+        .unwrap_or(steps.len());
+    steps.insert(
+        first_change,
+        FlashStep::Sys7PreDownloadRestart {
+            unload: SYS7_PRELUDE_UNLOAD_LSMS.to_vec(),
+        },
+    );
+}
+
 /// Lowers a System 7 (mask 0705 / 0701) application into an executable
 /// [`FlashPlan`] (`[system7-spec §3/§4]`).
 ///
@@ -126,6 +184,9 @@ pub(super) fn sys7_procedure_end(ops: &[LoadOp]) -> usize {
 /// | `CompareMem{a,d,sz}` (Raw)| [`FlashStep::Sys7CompareMem`]                 |
 /// | `LoadImageProp{oi,pid}` | [`FlashStep::LoadImageProp`] (Jung A-A011 MCB)  |
 /// | `Restart`               | [`FlashStep::Restart`]                          |
+///
+/// [`add_ets_prelude`] then adds ETS's pre-download restart pass and, on a
+/// `VerifyMode` mask, the verify-mode switch.
 ///
 /// The mask profile ([`bussard_mgmt::Sys7Profile`]) supplies the LSM realisation,
 /// authorize level and mem-types; absent `HawkConfigurationData`, the
@@ -425,6 +486,8 @@ pub(super) fn plan_flash_sys7(
             }
         }
     }
+
+    add_ets_prelude(&mut steps, &s7_profile);
 
     // The group-object descriptors live inside the application's own EEPROM
     // segment on these devices (`GroupObjectTable AddressSpace="None"` in the
@@ -1526,6 +1589,60 @@ mod tests {
             }
         )));
         assert!(matches!(plan.steps.last(), Some(FlashStep::Restart)));
+    }
+
+    #[test]
+    fn test_add_ets_prelude_orders_restart_and_verify_mode() {
+        let procedure = || {
+            vec![
+                FlashStep::CompareProp {
+                    obj_idx: 0,
+                    prop_id: 78,
+                    expected: Some(vec![0]),
+                    mask: None,
+                },
+                FlashStep::Sys7Unload { lsm: 1 },
+                FlashStep::Sys7StartLoading { lsm: 1 },
+                FlashStep::Sys7LoadCompleted { lsm: 1 },
+                FlashStep::Restart,
+            ]
+        };
+        // 0705 declares VerifyMode: the restart pass goes after the read-only
+        // precondition, verify mode right after the first StartLoading.
+        let mut steps = procedure();
+        add_ets_prelude(
+            &mut steps,
+            &bussard_mgmt::Sys7Profile::corpus_default_for_mask(0x0705),
+        );
+        let mut expected = procedure();
+        expected.insert(3, FlashStep::Sys7EnableVerifyMode);
+        expected.insert(
+            1,
+            FlashStep::Sys7PreDownloadRestart {
+                unload: vec![1, 2, 3, 4],
+            },
+        );
+        assert_eq!(steps, expected);
+
+        // 0701 has no VerifyMode (read-compare-write): the restart pass only.
+        let mut steps = procedure();
+        add_ets_prelude(
+            &mut steps,
+            &bussard_mgmt::Sys7Profile::corpus_default_for_mask(0x0701),
+        );
+        assert!(!steps.contains(&FlashStep::Sys7EnableVerifyMode));
+        assert!(matches!(
+            steps.get(1),
+            Some(FlashStep::Sys7PreDownloadRestart { .. })
+        ));
+
+        // A procedure that loads nothing gets no prelude.
+        let mut steps = vec![FlashStep::Restart];
+        add_ets_prelude(
+            &mut steps,
+            &bussard_mgmt::Sys7Profile::corpus_default_for_mask(0x0705),
+        );
+        assert_eq!(steps, vec![FlashStep::Restart]);
     }
 
     /// The System 7 parameter segment streams its `<Data>` with the

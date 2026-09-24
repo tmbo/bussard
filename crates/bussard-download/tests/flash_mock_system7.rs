@@ -63,6 +63,9 @@ const APCI_SELECTOR: u16 = 0x3C0;
 const PID_OBJECT_TYPE: u8 = 1;
 const PID_LOAD_STATE_CONTROL: u8 = 5;
 const PID_HARDWARE_TYPE: u8 = 78;
+const PID_DEVICE_CONTROL: u8 = 14;
+/// `PID_DEVICE_CONTROL` bit 2: the device echoes every `A_Memory_Write`.
+const DEVICE_CONTROL_VERIFY_MODE: u8 = 0x04;
 const PID_MCB_TABLE: u8 = 27;
 
 // System 7 mask + memory-mapped LSM anchors (spec §5 defaults).
@@ -156,6 +159,22 @@ struct DeviceState {
     /// `PID_LOAD_STATE_CONTROL` read or write of one answers count 0, as the
     /// Jung 2308.16REGHM does for object 5 (issue #178).
     absent_objects: Vec<u8>,
+    /// `obj0/PID_DEVICE_CONTROL` (RAM: a restart clears it). With the
+    /// verify-mode bit set the device answers every `A_Memory_Write` with an
+    /// `A_Memory_Response` echo of the stored octets, as a real 0705 does.
+    device_control: u8,
+    /// Every value written to `obj0/PID_DEVICE_CONTROL`, in order.
+    device_control_writes: Vec<u8>,
+    /// The segment-write count at each restart, so a test can place the
+    /// restarts relative to the download (issue #116).
+    restart_at_writes: Vec<usize>,
+    /// How many `A_Memory_Response` verify echoes the device sent.
+    verify_echoes_sent: usize,
+    /// How many load-state reads the tool made (property `PID_LOAD_STATE_CONTROL`
+    /// reads, or memory-mapped status reads at `0xB6EA+`).
+    lsm_state_reads: usize,
+    /// Every numbered request the device answered or acknowledged.
+    requests_seen: usize,
 }
 
 impl DeviceState {
@@ -165,6 +184,14 @@ impl DeviceState {
 }
 
 type Shared = Arc<Mutex<DeviceState>>;
+
+/// Locks the device state; a test that panicked while holding it has already
+/// failed, so a poisoned lock is taken over as is.
+fn lock(state: &Shared) -> std::sync::MutexGuard<'_, DeviceState> {
+    state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 fn fresh_device(mode: LsmMode, fault: Fault) -> Shared {
     Arc::new(Mutex::new(DeviceState {
@@ -190,6 +217,12 @@ fn fresh_device(mode: LsmMode, fault: Fault) -> Shared {
         lsm_events: Vec::new(),
         segment_writes: Vec::new(),
         absent_objects: Vec::new(),
+        device_control: 0,
+        device_control_writes: Vec::new(),
+        restart_at_writes: Vec::new(),
+        verify_echoes_sent: 0,
+        lsm_state_reads: 0,
+        requests_seen: 0,
     }))
 }
 
@@ -367,6 +400,7 @@ enum Reaction {
 
 fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
     let sel = req_apci & APCI_SELECTOR;
+    lock(state).requests_seen += 1;
 
     // Device descriptor: always answer the 0705 mask.
     if sel == A_DEVICE_DESCRIPTOR_READ_SEL {
@@ -380,6 +414,10 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
     if sel == A_RESTART_SEL {
         let mut s = state.lock().unwrap();
         s.restarts_seen += 1;
+        let writes = s.memory_writes_seen;
+        s.restart_at_writes.push(writes);
+        // PID_DEVICE_CONTROL lives in RAM: the restart clears verify mode.
+        s.device_control = 0;
         if s.reboot_on_restart {
             // The device reboots: it stops answering on this connection (the tool
             // must reconnect) and — when modelling a non-persisting load — reverts
@@ -409,7 +447,12 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
             return Reaction::Nak;
         }
         let addr = u16::from_be_bytes([payload[0], payload[1]]);
-        let s = state.lock().unwrap();
+        let mut s = state.lock().unwrap();
+        if s.lsm_mode == LsmMode::MemoryMapped
+            && (LSM_STATUS_ADDR..LSM_STATUS_ADDR + 8).contains(&addr)
+        {
+            s.lsm_state_reads += 1;
+        }
         // Memory-mapped LSM status: read at 0xB6EA + (lsm-1).
         let mut data = Vec::with_capacity(count as usize);
         for i in 0..count {
@@ -464,6 +507,17 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
             };
             s.memory.insert(a, stored);
         }
+        // Verify mode: echo the stored octets back, as the Jung 0705 captures
+        // show (`A_Memory_Write 0x47ca` answered by `A_Memory_Response 0x47ca`).
+        if s.device_control & DEVICE_CONTROL_VERIFY_MODE != 0 {
+            s.verify_echoes_sent += 1;
+            let mut echo = addr.to_be_bytes().to_vec();
+            for i in 0..data.len() {
+                let a = addr.wrapping_add(i as u16);
+                echo.push(s.memory.get(&a).copied().unwrap_or(0));
+            }
+            return Reaction::Answer(A_MEMORY_RESPONSE | count as u16, echo);
+        }
         return Reaction::Ack;
     }
 
@@ -500,6 +554,14 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
                 ),
             };
         }
+        // Device control (verify mode and friends).
+        if obj == 0 && pid == PID_DEVICE_CONTROL {
+            let val = s.device_control;
+            return Reaction::Answer(
+                A_PROPERTY_VALUE_RESPONSE,
+                prop_response(obj, pid, 1, start, &[val]),
+            );
+        }
         // Object-0 PID 78 preflight value.
         if obj == 0 && pid == PID_HARDWARE_TYPE {
             let val = s.pid78.clone();
@@ -516,6 +578,7 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
                     prop_response(obj, pid, 0, start, &[]),
                 );
             }
+            s.lsm_state_reads += 1;
             let st = s.lsm_state(obj);
             return Reaction::Answer(
                 A_PROPERTY_VALUE_RESPONSE,
@@ -590,6 +653,13 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
                 A_PROPERTY_VALUE_RESPONSE,
                 prop_response(obj, pid, 1, start, &[st]),
             );
+        }
+        if obj == 0
+            && pid == PID_DEVICE_CONTROL
+            && let Some(&v) = value.first()
+        {
+            s.device_control = v;
+            s.device_control_writes.push(v);
         }
         // Echo any other property write.
         return Reaction::Answer(
@@ -1092,7 +1162,14 @@ async fn flash_system7_verifies_after_restart_reaches_loaded()
         "a persisting load must verify Loaded after the reboot: {outcome:?}"
     );
     let s = state.lock().unwrap();
-    assert_eq!(s.restarts_seen, 1, "one terminal restart");
+    // ETS's pre-download restart before the first segment write, then the
+    // terminal one after the last (issue #116).
+    assert_eq!(
+        s.restarts_seen, 2,
+        "pre-download restart + terminal restart"
+    );
+    assert_eq!(s.restart_at_writes.first(), Some(&0));
+    assert_eq!(s.restart_at_writes.get(1), Some(&s.memory_writes_seen));
     for lsm in [1u8, 2, 3] {
         assert_eq!(
             s.lsm_state(lsm),
@@ -1117,7 +1194,10 @@ async fn flash_system7_after_restart_verify_catches_reverted_load()
         "a load that reverted to Unloaded after the reboot must not report success: {result:?}"
     );
     let s = state.lock().unwrap();
-    assert_eq!(s.restarts_seen, 1, "the restart still fired");
+    assert_eq!(
+        s.restarts_seen, 2,
+        "the pre-download and the terminal restart still fired"
+    );
     Ok(())
 }
 
@@ -2221,6 +2301,15 @@ async fn run_parameters_only_sys7(mode: LsmMode) -> Result<(), Box<dyn std::erro
         partial.steps
     );
     assert!(matches!(partial.steps.last(), Some(FlashStep::Restart)));
+    // ETS restarts the device before a parameter download too, but unloads
+    // nothing (meteodata-1-1-202.pcapng, issue #116).
+    assert!(
+        partial
+            .steps
+            .contains(&FlashStep::Sys7PreDownloadRestart { unload: Vec::new() }),
+        "{:?}",
+        partial.steps
+    );
     {
         let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
         s.lsm_events.clear();
@@ -2280,4 +2369,172 @@ async fn test_parameters_only_sys7_memory_mapped_writes_one_octet()
 async fn test_parameters_only_sys7_property_writes_one_octet()
 -> Result<(), Box<dyn std::error::Error>> {
     run_parameters_only_sys7(LsmMode::Property).await
+}
+
+// --- ETS parity: state read-backs, one connection, prelude (issue #116) -----
+
+/// Runs a full MDT-canonical flash of a `mode` device over a reconnecting
+/// session (the CLI's shape), with a device that reboots on every restart and
+/// starts with `device_control` in `PID_DEVICE_CONTROL`.
+async fn run_parity_flash(
+    mode: LsmMode,
+    device_control: u8,
+) -> Result<(bussard_download::FlashOutcome, Shared), Box<dyn std::error::Error>> {
+    let sock = UdpSocket::bind("127.0.0.1:0").await?;
+    let port = sock.local_addr()?.port();
+    let addr: bussard_model::IndividualAddress = "1.1.99".parse()?;
+    let state = fresh_device(mode, Fault::None);
+    {
+        let mut s = lock(&state);
+        s.reboot_on_restart = true;
+        s.device_control = device_control;
+    }
+    let gw = tokio::spawn(run_gateway(sock, addr, Arc::clone(&state)));
+    let (handle, _actor) = bussard_bus::Bus::connect(
+        ConnectionConfig::tunnel(format!("127.0.0.1:{port}").parse()?)
+            .with_reconnect(bussard_transport::TunnelReconnect::disabled()),
+    );
+    handle.wait_connected(Duration::from_secs(5)).await;
+    let connector = LeaseConnector {
+        handle: handle.clone(),
+        target: addr,
+        source: "0.0.255".parse()?,
+        timeouts: None,
+    };
+    set_sys7_lsm_env(mode);
+    // SAFETY: nextest runs each test in its own process, so these
+    // process-global env writes race with no other thread. The reconnect
+    // threshold is left to the device-class default (unset).
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
+        std::env::remove_var("BUSSARD_FLASH_RECONNECT_EXCHANGES");
+    }
+    let mut session = Session::open_with_key(connector, None).await?;
+    let plan = plan_flash(
+        &mdt_canonical_app(),
+        "1.1.99",
+        MASK_0705,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    let options = bussard_download::FlashOptions {
+        verify_after_restart: true,
+        ..Default::default()
+    };
+    let result = flash(&mut session, &plan, options, |_p| {}).await;
+    gw.abort();
+    let _ = session.into_disconnect().await;
+    Ok((result?, state))
+}
+
+#[tokio::test]
+async fn test_flash_sys7_property_reads_state_only_as_the_verdict()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The Jung 0705 captures never read PID_LOAD_STATE_CONTROL back: the answer
+    // to each PID 5 write carries the state. bussard reads it once per LSM after
+    // LoadCompleted (the verdict) and once per LSM after the terminal restart
+    // (the persisted-load verify): 3 + 3, where every event used to add one.
+    let (outcome, state) = run_parity_flash(LsmMode::Property, 0x00).await?;
+    assert!(outcome.ok(), "flash should reach Loaded: {outcome:?}");
+    let s = lock(&state);
+    assert_eq!(
+        s.lsm_state_reads, 6,
+        "LoadCompleted verdicts + post-restart verify"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_sys7_memory_mapped_reads_state_after_every_event()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The Theben 0701 capture reads the status octet after every event (the
+    // memory write has no answer), so the memory-mapped realisation keeps one
+    // read per event: 4 prelude unloads + 16 procedure events + 3 verify.
+    let (outcome, state) = run_parity_flash(LsmMode::MemoryMapped, 0x00).await?;
+    assert!(outcome.ok(), "flash should reach Loaded: {outcome:?}");
+    let s = lock(&state);
+    assert_eq!(s.lsm_events.len(), 4 + 16);
+    assert_eq!(s.lsm_state_reads, 4 + 16 + 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_sys7_holds_one_connection_between_restarts()
+-> Result<(), Box<dyn std::error::Error>> {
+    // ETS holds one connection for the whole procedure; with no proactive L4
+    // cycling a real device is authorized exactly three times: the opening
+    // connection, the one after the pre-download restart and the one after
+    // the terminal restart.
+    let (outcome, state) = run_parity_flash(LsmMode::Property, 0x00).await?;
+    assert!(outcome.ok(), "flash should reach Loaded: {outcome:?}");
+    let s = lock(&state);
+    assert_eq!(s.authorizes_seen, 3, "no proactive reconnect");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_sys7_runs_the_ets_prelude() -> Result<(), Box<dyn std::error::Error>> {
+    // ETS unloads LSMs 1 to 4 and restarts the device before the download, then
+    // switches on verify mode (PID_DEVICE_CONTROL 00 -> 04) before the first
+    // segment write (schaltaktor-8fach-1-1-49.pcapng).
+    let (outcome, state) = run_parity_flash(LsmMode::Property, 0x00).await?;
+    assert!(outcome.ok(), "flash should reach Loaded: {outcome:?}");
+    let s = lock(&state);
+    let prelude: Vec<(u8, u8)> = s.lsm_events.iter().copied().take(4).collect();
+    assert_eq!(
+        prelude,
+        vec![
+            (1, LE_UNLOAD),
+            (2, LE_UNLOAD),
+            (3, LE_UNLOAD),
+            (4, LE_UNLOAD)
+        ]
+    );
+    assert_eq!(s.restart_at_writes, vec![0, s.memory_writes_seen]);
+    assert_eq!(s.device_control_writes, vec![DEVICE_CONTROL_VERIFY_MODE]);
+    // Every segment write was echoed, and the echoes did not derail the flash.
+    assert!(s.memory_writes_seen > 0);
+    assert_eq!(s.verify_echoes_sent, s.memory_writes_seen);
+    // The terminal restart cleared the RAM bit again.
+    assert_eq!(s.device_control, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_sys7_leaves_verify_mode_alone_when_already_on()
+-> Result<(), Box<dyn std::error::Error>> {
+    // A single-connection session skips the pre-download restart, so the
+    // device keeps the verify-mode bit it already holds: nothing is written.
+    set_sys7_lsm_env(LsmMode::Property);
+    let (mut bus, state, handle) = setup(LsmMode::Property, Fault::None).await;
+    lock(&state).device_control = DEVICE_CONTROL_VERIFY_MODE | 0x01;
+    let plan = plan_flash(
+        &mdt_canonical_app(),
+        "1.1.99",
+        MASK_0705,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    let l4 = Layer4Connection::connect(&mut bus, "1.1.99".parse()?, "0.0.255".parse()?).await?;
+    let mut session = authed_session(l4).await;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_p| {},
+    )
+    .await?;
+    assert!(outcome.ok(), "flash should reach Loaded: {outcome:?}");
+    {
+        let s = lock(&state);
+        assert!(s.device_control_writes.is_empty(), "bit already set");
+        assert_eq!(s.restarts_seen, 1, "only the terminal restart");
+    }
+    handle.abort();
+    let _ = session.into_disconnect().await;
+    Ok(())
 }

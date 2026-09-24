@@ -207,6 +207,22 @@ pub(super) fn step_label(step: &FlashStep) -> String {
             "[S7] verify memory at {address:#06X} == {} byte(s)",
             expected.len()
         ),
+        FlashStep::Sys7PreDownloadRestart { unload } if unload.is_empty() => {
+            "[S7] pre-download restart (basic A_Restart), wait for the reboot and reconnect"
+                .to_string()
+        }
+        FlashStep::Sys7PreDownloadRestart { unload } => format!(
+            "[S7] pre-download: unload LSM {}, basic A_Restart, wait for the reboot and reconnect",
+            unload
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        FlashStep::Sys7EnableVerifyMode => {
+            "[S7] enable verify mode (object 0 PID_DEVICE_CONTROL bit 2, written only when clear)"
+                .to_string()
+        }
     }
 }
 
