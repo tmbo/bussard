@@ -699,10 +699,10 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
         // already been acknowledged and sequenced; hand it back first — unless it
         // is a stray verify-mode memory echo, which is dropped so the real
         // response is awaited below.
-        if let Some(pending) = self.pending_response.take() {
-            if !self.is_stale_memory_echo(pending.0) {
-                return Ok(pending);
-            }
+        if let Some(pending) = self.pending_response.take()
+            && !self.is_stale_memory_echo(pending.0)
+        {
+            return Ok(pending);
         }
         if self.closed {
             return Err(self.silence_error(SilenceKind::Disconnected));
@@ -1066,10 +1066,10 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
     /// per-connection exchange budget is tight (issue #58). A `None`/zero value is
     /// ignored so the conservative defaults stay in effect.
     pub fn set_max_apdu(&mut self, max_apdu: Option<u16>) {
-        if let Some(v) = max_apdu {
-            if v != 0 {
-                self.max_apdu = Some(v);
-            }
+        if let Some(v) = max_apdu
+            && v != 0
+        {
+            self.max_apdu = Some(v);
         }
     }
 
@@ -2170,41 +2170,40 @@ mod tests {
 
     impl BusConnection for SyncingBus {
         async fn send(&mut self, frame: CemiFrame) -> bussard_transport::Result<()> {
-            if let (Tpci::Other(t), Apdu::Other { apci, data }) = (&frame.tpci, &frame.apdu) {
-                if *apci == A_SECURE_DATA && data.first() == Some(&0x92) {
-                    let req_addr = TpAddressing {
-                        source: frame.source.raw(),
-                        destination: dev().raw(),
-                        address_type_group: false,
-                        extended_frame_format: 0,
-                        tpci: *t,
-                    };
-                    let key = Key16::new(self.key);
-                    if let Ok((_, req)) = asdu::decode_sync_req(&key, data, &req_addr) {
-                        let mut front = vec![control_from_dev(tpci::t_ack((t >> 2) & 0x0F))];
-                        self.sync_reqs += 1;
-                        if self.unanswered_syncs > 0 {
-                            self.unanswered_syncs -= 1;
-                        } else {
-                            let res = asdu::encode_sync_res(
-                                &key,
-                                bussard_secure::Scf::tool_sync(
-                                    bussard_secure::SecureService::SyncRes,
-                                ),
-                                &asdu::SyncResponse {
-                                    responder_sequence: Sequence::new(self.device_sequence),
-                                    requester_sequence: req.sequence,
-                                },
-                                &req.challenge,
-                                Sequence::new(0x0000_1234_5678),
-                                &dev_to_tool_addr(tpci::ndt(0)),
-                            )
-                            .map_err(|_| bussard_transport::TransportError::Closed)?;
-                            front.push(ndt_from_dev(0, A_SECURE_DATA, &res));
-                        }
-                        for f in front.into_iter().rev() {
-                            self.inner.inbox.push_front(f);
-                        }
+            if let (Tpci::Other(t), Apdu::Other { apci, data }) = (&frame.tpci, &frame.apdu)
+                && *apci == A_SECURE_DATA
+                && data.first() == Some(&0x92)
+            {
+                let req_addr = TpAddressing {
+                    source: frame.source.raw(),
+                    destination: dev().raw(),
+                    address_type_group: false,
+                    extended_frame_format: 0,
+                    tpci: *t,
+                };
+                let key = Key16::new(self.key);
+                if let Ok((_, req)) = asdu::decode_sync_req(&key, data, &req_addr) {
+                    let mut front = vec![control_from_dev(tpci::t_ack((t >> 2) & 0x0F))];
+                    self.sync_reqs += 1;
+                    if self.unanswered_syncs > 0 {
+                        self.unanswered_syncs -= 1;
+                    } else {
+                        let res = asdu::encode_sync_res(
+                            &key,
+                            bussard_secure::Scf::tool_sync(bussard_secure::SecureService::SyncRes),
+                            &asdu::SyncResponse {
+                                responder_sequence: Sequence::new(self.device_sequence),
+                                requester_sequence: req.sequence,
+                            },
+                            &req.challenge,
+                            Sequence::new(0x0000_1234_5678),
+                            &dev_to_tool_addr(tpci::ndt(0)),
+                        )
+                        .map_err(|_| bussard_transport::TransportError::Closed)?;
+                        front.push(ndt_from_dev(0, A_SECURE_DATA, &res));
+                    }
+                    for f in front.into_iter().rev() {
+                        self.inner.inbox.push_front(f);
                     }
                 }
             }
