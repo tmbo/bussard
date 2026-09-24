@@ -43,7 +43,7 @@
 //! | `knx_apply_device` | Write the planned tables to one device, backup first and verify after, only with a fresh matching `plan_digest` (registered only with `--allow-programming`). |
 //!
 //! The eight from `knx_describe_change` to `knx_undo` are model tools: they
-//! read and write YAML files under the model directory and never touch the bus,
+//! read and write the model files (TOML) under the model directory and never touch the bus,
 //! so they are available in every tier including `--passive`. The six that
 //! edit, and `knx_scaffold_groups`, which writes `groups.toml`, are withheld by
 //! `--no-model-edits`. Every edit snapshots first, validates after, and returns
@@ -140,7 +140,7 @@ pub struct McpConfig {
     /// Allow bus writes: registers `knx_write_group`. Mutually exclusive with
     /// `passive` (enforced by the CLI).
     pub allow_writes: bool,
-    /// Withhold the model-edit tools (`--no-model-edits`). They only write YAML
+    /// Withhold the model-edit tools (`--no-model-edits`). They only write model
     /// files, behind a history snapshot, so they are registered by default in
     /// every tier including `--passive`.
     pub no_model_edits: bool,

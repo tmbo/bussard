@@ -26,7 +26,7 @@ fn model_dir() -> Result<PathBuf, Box<dyn Error>> {
     std::fs::create_dir_all(&dir)?;
     std::fs::write(
         dir.join("bussard.toml"),
-        "connection:\n  transport: tunnel\n  gateway: \"127.0.0.1:3671\"\n",
+        "[connection]\ntransport = \"tunnel\"\ngateway = \"127.0.0.1:3671\"\n",
     )?;
     Ok(dir)
 }

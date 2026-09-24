@@ -208,7 +208,7 @@ pub struct SharedState {
     /// exclusive with `passive`.
     pub allow_writes: bool,
     /// Whether the model-edit tools are withheld (`--no-model-edits`). They
-    /// write YAML files behind a history snapshot and never touch the bus, so
+    /// write model files behind a history snapshot and never touch the bus, so
     /// they are registered by default.
     pub no_model_edits: bool,
     /// The read rate limiter (shared by reads and writes).

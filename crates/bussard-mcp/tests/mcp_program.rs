@@ -78,16 +78,15 @@ fn system_b_device(nak_assoc_writes: bool) -> anyhow::Result<MockDevice> {
 fn write_model(dir: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir.join("devices"))?;
     std::fs::write(
-        dir.join("devices").join("1.1.4.yaml"),
-        "address: 1.1.4\nname: Jalousie Wohnen\n",
+        dir.join("devices").join("1.1.4.toml"),
+        "address = \"1.1.4\"\nname = \"Jalousie Wohnen\"\n\n[links]\n\
+         20.send = \"1/2/0\"\n21.listen = [\"1/2/1\"]\n22.listen = [\"1/2/2\"]\n",
     )?;
     std::fs::write(
         dir.join("groups.toml"),
-        "groups:\n  1/2/0:\n    name: Blind move\n  1/2/1:\n    name: Blind stop\n  1/2/2:\n    name: Blind position\n",
-    )?;
-    std::fs::write(
-        dir.join("links.yaml"),
-        "links:\n  1.1.4:\n  - object: 20\n    send: 1/2/0\n  - object: 21\n    listen:\n    - 1/2/1\n  - object: 22\n    listen:\n    - 1/2/2\n",
+        "groups = [\n  { address = \"1/2/0\", name = \"Blind move\" },\n  \
+         { address = \"1/2/1\", name = \"Blind stop\" },\n  \
+         { address = \"1/2/2\", name = \"Blind position\" },\n]\n",
     )?;
     Ok(())
 }

@@ -1,7 +1,7 @@
 //! Model-edit and history tools (issues #110, #112).
 //!
 //! bussard's primary operator is an assistant driving this server for a
-//! homeowner who does not read YAML. So the model is edited through structured
+//! homeowner who does not read TOML. So the model is edited through structured
 //! tools here, never by the assistant hand-writing files, and every edit:
 //!
 //! 1. takes a history snapshot of the current files first,
@@ -9,7 +9,7 @@
 //! 3. saves and validates, and
 //! 4. returns the change as plain-language sentences plus the snapshot id.
 //!
-//! Nothing here touches the bus. A model edit changes YAML files only; a human
+//! Nothing here touches the bus. A model edit changes model files only; a human
 //! still runs `bussard plan` and `bussard apply` to push it to a device. Every
 //! tool description says so, because the caller has to say so to the human.
 //!
@@ -334,7 +334,7 @@ impl BussardMcp {
 
     /// `knx_add_link`.
     #[tool(
-        description = "Bind a device's com object to a group address in links.yaml: role \"send\" \
+        description = "Bind a device's com object to a group address in its device file (devices/<address>.toml): role \"send\" \
         makes the com object transmit on that GA (a com object has at most one, so an existing one \
         is replaced), role \"listen\" makes it react to the GA. This edits FILES ONLY — the device \
         keeps its current wiring until a human runs `bussard plan <ia>` and `bussard apply <ia>`. \
@@ -415,7 +415,7 @@ impl BussardMcp {
 
     /// `knx_remove_link`.
     #[tool(
-        description = "Unbind a device's com object from a group address in links.yaml (role \
+        description = "Unbind a device's com object from a group address in its device file (devices/<address>.toml) (role \
         \"send\" or \"listen\"). This edits FILES ONLY — the device keeps its current wiring until \
         a human runs `bussard plan <ia>` and `bussard apply <ia>`. Protected group addresses are \
         refused outright. Returns the change as sentences: quote them to the human."
@@ -764,7 +764,7 @@ fn refuse_protected_ga(protected: bool, ga: GroupAddress) -> Result<(), String> 
     if protected {
         Err(format!(
             "{ga} is protected (safety-critical). Links touching it are refused over MCP; a human \
-             can edit links.yaml directly."
+             can edit the device file (devices/<address>.toml) directly."
         ))
     } else {
         Ok(())

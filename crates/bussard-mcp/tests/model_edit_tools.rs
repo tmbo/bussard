@@ -32,16 +32,21 @@ fn model_dir(tag: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     std::fs::create_dir_all(dir.join("devices"))?;
     std::fs::write(
         dir.join("groups.toml"),
-        "groups:\n  \"3/0/1\":\n    name: Central down\n    dpt: \"1.008\"\n\
-         \x20 \"3/2/0\":\n    name: Wind alarm\n    dpt: \"1.005\"\n    protected: true\n",
+        "groups = [\n  { address = \"3/0/1\", name = \"Central down\", dpt = \"1.008\" },\n  \
+         { address = \"3/2/0\", name = \"Wind alarm\",   dpt = \"1.005\", protected = true },\n]\n",
     )?;
-    std::fs::write(dir.join("links.yaml"), "links: {}\n")?;
     std::fs::write(
-        dir.join("devices").join("1.1.4-blind.yaml"),
-        "address: \"1.1.4\"\n\
-         name: Living room blind actuator\n\
-         channels:\n  CH-2:\n    name: B\n\
-         com_objects:\n  12:\n    flags: \"CRT\"\n    channel: CH-2\n",
+        dir.join("devices").join("1.1.4.toml"),
+        "address = \"1.1.4\"\n\
+         name = \"Living room blind actuator\"\n\n\
+         [channel.CH-2]\n\
+         name = \"B\"\n",
+    )?;
+    std::fs::write(
+        dir.join("bussard.lock"),
+        "version = 1\n\n[[device]]\naddress = \"1.1.4\"\n\
+         channels = [\n  { id = \"CH-2\" },\n]\n\
+         objects = [\n  { number = 12, channel = \"CH-2\", flags = \"CRT\" },\n]\n",
     )?;
     Ok(dir)
 }
@@ -285,10 +290,10 @@ async fn test_undo_puts_the_model_back_without_touching_devices() -> TestResult 
 async fn test_set_parameter_refuses_without_a_product_model() -> TestResult {
     let dir = model_dir("parameter")?;
     std::fs::write(
-        dir.join("devices").join("1.1.7-thermostat.yaml"),
-        "address: \"1.1.7\"\n\
-         name: Bathroom thermostat\n\
-         parameters:\n  \"nachtabsenkung@P-1312_R-2140\": \"18\"\n",
+        dir.join("devices").join("1.1.7.toml"),
+        "address = \"1.1.7\"\n\
+         name = \"Bathroom thermostat\"\n\n\
+         [parameters]\n\"nachtabsenkung@P-1312_R-2140\" = \"18\"\n",
     )?;
     let (client, task) = connect(server_over(&dir)?).await?;
 
@@ -306,7 +311,7 @@ async fn test_set_parameter_refuses_without_a_product_model() -> TestResult {
         "the refusal says why the value could not be checked: {res}"
     );
 
-    // A device with no `parameters:` block at all is refused too.
+    // A device with no `[parameters]` table at all is refused too.
     let res = call(
         &client,
         "knx_set_parameter",

@@ -31,9 +31,10 @@ fn model_dir(tag: &str, name: &str) -> Result<PathBuf, Box<dyn std::error::Error
     std::fs::create_dir_all(dir.join("devices"))?;
     std::fs::write(
         dir.join("groups.toml"),
-        format!("groups:\n  \"1/0/1\":\n    name: {name}\n    dpt: \"1.001\"\n"),
+        format!(
+            "groups = [\n  {{ address = \"1/0/1\", name = \"{name}\", dpt = \"1.001\" }},\n]\n"
+        ),
     )?;
-    std::fs::write(dir.join("links.yaml"), "links: {}\n")?;
     Ok(dir)
 }
 

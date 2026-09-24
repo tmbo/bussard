@@ -206,19 +206,23 @@ async fn test_knx_audit_live_probes_secure_devices() -> TestResult {
     std::fs::create_dir_all(dir.join("devices"))?;
     std::fs::write(
         dir.join("bussard.toml"),
-        "connection:\n  transport: tunnel\n",
+        "[connection]\ntransport = \"tunnel\"\ngateway = \"127.0.0.1:3671\"\n",
     )?;
-    std::fs::write(dir.join("groups.toml"), "groups: {}\n")?;
-    std::fs::write(dir.join("links.yaml"), "links: {}\n")?;
+    std::fs::write(dir.join("groups.toml"), "groups = []\n")?;
+    let mut lock = String::from("version = 1\n");
     for (addr, activated) in [("1.1.12", true), ("1.1.13", false)] {
         std::fs::write(
-            dir.join("devices").join(format!("{addr}.yaml")),
+            dir.join("devices").join(format!("{addr}.toml")),
             format!(
-                "address: {addr}\nname: Dev {addr}\nsecurity:\n  secure_capable: true\n  \
-                 activated: {activated}\n"
+                "address = \"{addr}\"\nname = \"Dev {addr}\"\n\n[security]\n\
+                 activated = {activated}\nsecure_commissioning = false\n"
             ),
         )?;
+        lock.push_str(&format!(
+            "\n[[device]]\naddress = \"{addr}\"\nsecure_capable = true\n"
+        ));
     }
+    std::fs::write(dir.join("bussard.lock"), lock)?;
     let model = Model::load(&dir)?;
     let _ = std::fs::remove_dir_all(&dir);
 

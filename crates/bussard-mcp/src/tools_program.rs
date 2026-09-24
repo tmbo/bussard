@@ -150,7 +150,7 @@ impl BussardMcp {
     #[tool(
         description = "Plan writing the model's links to ONE device (issue #118): reads the \
         device's live group-address and association tables over the bus (read-only), diffs them \
-        against links.yaml, and returns the plan the CLI `bussard plan` prints (additions, \
+        against the device files (devices/<address>.toml), and returns the plan the CLI `bussard plan` prints (additions, \
         removals, unchanged count, table sizes, load operations), the pending model changes as \
         sentences, where the backup will be written, and a plan_digest. ALWAYS show the plan \
         text to the human in full and ask whether to write it. Call knx_apply_device only after \

@@ -140,7 +140,7 @@ pub fn model_lookup(model: &Model, query: &str, limit: usize) -> Value {
     }
 
     // Com-objects (by name), with the GAs each is linked to. The name lives in
-    // links.yaml only (issue #19).
+    // the device file's links only (issue #19).
     let mut objects = Vec::new();
     'outer: for (ia, links) in &model.links.links {
         for link in links {
@@ -178,7 +178,7 @@ pub fn get_group(model: &Model, ring: &TelegramRing, ga: GroupAddress) -> Value 
     let group = model.groups.groups.get(&ga);
 
     // Every link that sends or listens on this GA. The com-object name lives in
-    // links.yaml only (issue #19).
+    // the device file's links only (issue #19).
     let mut links = Vec::new();
     for (ia, dev_links) in &model.links.links {
         let dev = model.devices.get(ia);

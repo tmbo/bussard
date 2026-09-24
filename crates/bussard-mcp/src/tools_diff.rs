@@ -58,7 +58,7 @@ pub struct DiffProjectArgs {
 impl BussardMcp {
     /// `knx_export_bundle`.
     #[tool(
-        description = "Write the whole model (bussard.toml, groups.toml, links.yaml, devices/) \
+        description = "Write the whole model (bussard.toml, groups.toml, bussard.lock, devices/) \
         and its history snapshots as ONE .bussard file: the handover file for an integrator, or \
         the owner's backup. It never contains vendor product data (models/, vendor/), captures, \
         keyrings, .knxproj/.knxprod files or .env. Returns the path and the manifest (counts, \

@@ -234,11 +234,11 @@ async fn test_knx_run_tests_names_protected_tests_it_refuses() -> R {
     std::fs::write(
         dir.path().join("tests.toml"),
         // The file opts in, but MCP never honours the opt-in.
-        "allow_protected: true\n\
-         tests:\n\
-         \x20 - name: Wind alarm\n\
-         \x20   write: { ga: \"3/1/0\", value: alarm }\n\
-         \x20   expect: { ga: \"3/1/1\" }\n",
+        "allow_protected = true\n\n\
+         [[tests]]\n\
+         name = \"Wind alarm\"\n\
+         write = { ga = \"3/1/0\", value = \"alarm\" }\n\
+         expect = { ga = \"3/1/1\" }\n",
     )?;
     let (client, task) = connect(server(dir.path(), false, true)?).await?;
 

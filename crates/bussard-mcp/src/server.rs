@@ -359,7 +359,7 @@ impl BussardMcp {
 
     /// `knx_validate`.
     #[tool(
-        description = "Run the bussard model validator and return every diagnostic as JSON (code, severity, message, location) plus counts of errors/warnings/infos. Use this to check whether the YAML model is internally consistent."
+        description = "Run the bussard model validator and return every diagnostic as JSON (code, severity, message, location) plus counts of errors/warnings/infos. Use this to check whether the model (bussard.toml, groups.toml, devices/*.toml, bussard.lock) is internally consistent."
     )]
     async fn knx_validate(&self) -> Result<CallToolResult, ErrorData> {
         ok(tools::validate_result(&self.state.model.current()))
