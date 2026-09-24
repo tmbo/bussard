@@ -236,6 +236,63 @@ impl Timeouts {
     }
 }
 
+/// How often an S-A_Sync_Req that the device T_ACKs but does not answer is
+/// repeated on the same connection before the sync is declared unanswered
+/// (issue #166).
+///
+/// A Data Secure device that has just rebooted can acknowledge frames at the
+/// transport layer before its security layer is ready, so it drops the first
+/// Sync_Req without an S-A_Sync_Res (live 1.1.12, 2026-09-24). Each attempt
+/// waits the connection's `response_timeout` for the Sync_Res; between
+/// attempts the connection sleeps a backoff that starts at `initial_backoff`
+/// and doubles up to `max_backoff`. A plain connection never syncs, so this
+/// policy has no effect on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyncRetry {
+    /// Total Sync_Req attempts, including the first (at least 1).
+    pub attempts: u32,
+    /// The sleep before the second attempt.
+    pub initial_backoff: Duration,
+    /// The cap the doubling backoff never exceeds.
+    pub max_backoff: Duration,
+}
+
+impl Default for SyncRetry {
+    /// Three attempts, backing off 1 s then 2 s: the policy of every secured
+    /// connection.
+    fn default() -> Self {
+        SyncRetry {
+            attempts: 3,
+            initial_backoff: Duration::from_secs(1),
+            max_backoff: Duration::from_secs(4),
+        }
+    }
+}
+
+impl SyncRetry {
+    /// The longer policy for the first connection after a restart bussard
+    /// itself triggered: five attempts, backing off 1, 2, 4 and 8 s. With the
+    /// standard 3 s response timeout the whole sync gives the device about 30 s
+    /// to bring its security layer up.
+    pub fn after_restart() -> Self {
+        SyncRetry {
+            attempts: 5,
+            initial_backoff: Duration::from_secs(1),
+            max_backoff: Duration::from_secs(8),
+        }
+    }
+
+    /// The same policy with both backoff bounds capped at `cap`, so a test that
+    /// shrinks the reboot wait does not sleep whole seconds between attempts.
+    pub fn with_backoff_cap(self, cap: Duration) -> Self {
+        SyncRetry {
+            attempts: self.attempts,
+            initial_backoff: self.initial_backoff.min(cap),
+            max_backoff: self.max_backoff.min(cap),
+        }
+    }
+}
+
 /// The octets KNX Data Secure adds to a management APDU: the wrapped frame is
 /// the `A_SecureData` APCI (2), the security control field (1), the sequence
 /// number (6), the whole plain APDU and the truncated MAC (4), so it is 13
@@ -293,6 +350,9 @@ pub struct Layer4Connection<Ch: L4Channel> {
     /// security-activated this holds a `DataSecureSession` and every management
     /// APDU is transparently wrapped/unwrapped.
     secure: crate::secure::SecureLayer,
+    /// How often an unanswered S-A_Sync_Req is repeated (issue #166). Unused on
+    /// a plain layer.
+    sync_retry: SyncRetry,
 }
 
 impl<Ch: L4Channel> Layer4Connection<Ch> {
@@ -359,6 +419,7 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
             max_apdu: None,
             closed: false,
             secure,
+            sync_retry: SyncRetry::default(),
         })
     }
 
@@ -456,32 +517,98 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
         if !self.secure.needs_sync() {
             return Ok(());
         }
-        let tpci_octet = tpci::ndt(self.send_seq);
-        let (wire_apci, wire_data) =
-            self.secure
-                .sync_request(self.target, self.source, tpci_octet)?;
-        self.last_send_apci = wire_apci;
-        self.send_numbered(tpci_octet, wire_apci, &wire_data)
-            .await?;
         let unanswered = |address| MgmtError::Secure {
             address,
             source: bussard_secure::AsduError::SyncUnanswered,
         };
-        match self.recv_response().await {
-            Ok(_) if self.secure.is_synced() => Ok(()),
-            Ok((apci, _)) => {
-                tracing::debug!(
-                    target = %self.target,
-                    apci = format_args!("{apci:#05x}"),
-                    "device answered the Data Secure sync request with something else"
-                );
-                Err(unanswered(self.target))
+        let attempts = self.sync_retry.attempts.max(1);
+        let mut backoff = self.sync_retry.initial_backoff;
+        for attempt in 1..=attempts {
+            // Each attempt carries a fresh challenge; the request does not
+            // consume the Data Secure send sequence, so repeating it is safe.
+            let tpci_octet = tpci::ndt(self.send_seq);
+            let (wire_apci, wire_data) =
+                self.secure
+                    .sync_request(self.target, self.source, tpci_octet)?;
+            self.last_send_apci = wire_apci;
+            // No T_ACK at all still means an absent device: not retried here.
+            self.send_numbered(tpci_octet, wire_apci, &wire_data)
+                .await?;
+            match self.recv_response().await {
+                Ok(_) if self.secure.is_synced() => return Ok(()),
+                Ok((apci, _)) => {
+                    tracing::debug!(
+                        target = %self.target,
+                        apci = format_args!("{apci:#05x}"),
+                        "device answered the Data Secure sync request with something else"
+                    );
+                    return Err(unanswered(self.target));
+                }
+                // T_ACKed but no Sync_Res: the device may still be bringing its
+                // security layer up after a reboot (issue #166).
+                Err(MgmtError::MidSessionSilence {
+                    kind: SilenceKind::NoResponse,
+                    ..
+                })
+                | Err(MgmtError::NoResponse { .. }) => {}
+                // A late Sync_Res that answers an earlier attempt's challenge
+                // does not verify against this one; the next attempt can.
+                Err(MgmtError::Secure { .. }) if attempt > 1 => {}
+                Err(MgmtError::MidSessionSilence { .. }) => {
+                    return Err(unanswered(self.target));
+                }
+                Err(other) => return Err(other),
             }
-            Err(MgmtError::MidSessionSilence { .. } | MgmtError::NoResponse { .. }) => {
-                Err(unanswered(self.target))
+            if attempt == attempts {
+                break;
             }
-            Err(other) => Err(other),
+            // The device acknowledged the request, so the link and both
+            // sequence counters are consistent: reopen the connection the
+            // response timeout closed and ask again after a backoff.
+            self.closed = false;
+            tracing::debug!(
+                target = %self.target,
+                attempt,
+                backoff_ms = u64::try_from(backoff.as_millis()).unwrap_or(u64::MAX),
+                "Data Secure sync request unanswered; retrying"
+            );
+            tokio::time::sleep(backoff).await;
+            backoff = backoff.saturating_mul(2).min(self.sync_retry.max_backoff);
         }
+        self.closed = true;
+        Err(unanswered(self.target))
+    }
+
+    /// Sends a request **in the clear** on a security-activated connection and
+    /// returns the response, without running the S-A_Sync handshake first.
+    ///
+    /// ETS opens every secured session with a plain `A_DeviceDescriptor_Read`
+    /// before the S-A_Sync_Req (secure-1-1-12 capture): a device answers it in
+    /// the clear, so it tells whether the device is up without depending on its
+    /// security layer. bussard uses this as the readiness probe after a restart
+    /// it triggered (issue #166). On a plain connection this is exactly
+    /// [`request`](Self::request).
+    pub async fn request_unsecured(&mut self, apci: u16, data: &[u8]) -> Result<(u16, Vec<u8>)> {
+        if self.closed {
+            return Err(MgmtError::Disconnected {
+                address: self.target,
+            });
+        }
+        self.last_send_apci = apci;
+        let tpci_octet = tpci::ndt(self.send_seq);
+        self.send_numbered(tpci_octet, apci, data).await?;
+        self.recv_response().await
+    }
+
+    /// Sets how often an unanswered S-A_Sync_Req is repeated (issue #166). Has
+    /// no effect on a plain connection or once the handshake is done.
+    pub fn set_sync_retry(&mut self, retry: SyncRetry) {
+        self.sync_retry = retry;
+    }
+
+    /// The timeout budget this connection currently runs on.
+    pub fn timeouts(&self) -> Timeouts {
+        self.timeouts
     }
 
     /// Discards any stashed folded response.
@@ -572,10 +699,10 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
         // already been acknowledged and sequenced; hand it back first — unless it
         // is a stray verify-mode memory echo, which is dropped so the real
         // response is awaited below.
-        if let Some(pending) = self.pending_response.take()
-            && !self.is_stale_memory_echo(pending.0)
-        {
-            return Ok(pending);
+        if let Some(pending) = self.pending_response.take() {
+            if !self.is_stale_memory_echo(pending.0) {
+                return Ok(pending);
+            }
         }
         if self.closed {
             return Err(self.silence_error(SilenceKind::Disconnected));
@@ -939,10 +1066,10 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
     /// per-connection exchange budget is tight (issue #58). A `None`/zero value is
     /// ignored so the conservative defaults stay in effect.
     pub fn set_max_apdu(&mut self, max_apdu: Option<u16>) {
-        if let Some(v) = max_apdu
-            && v != 0
-        {
-            self.max_apdu = Some(v);
+        if let Some(v) = max_apdu {
+            if v != 0 {
+                self.max_apdu = Some(v);
+            }
         }
     }
 
@@ -1326,12 +1453,36 @@ pub async fn probe_object_types<Ch: L4Channel>(
 pub async fn read_device_descriptor<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Result<u16> {
     let (req_apci, payload) = crate::apci::encode_device_descriptor_read(0);
     let (resp_apci, data) = l4.request(req_apci, &payload).await?;
+    decode_device_descriptor(l4.target(), resp_apci, &data)
+}
+
+/// Reads the device descriptor type 0 **in the clear**, even on a
+/// security-activated connection, without the S-A_Sync handshake.
+///
+/// This is the readiness probe ETS sends first on every secured session and
+/// bussard sends after a restart it triggered (issue #166): a device that
+/// answers it is up, whether or not its security layer is ready yet. On a plain
+/// connection it is identical to [`read_device_descriptor`].
+pub async fn read_device_descriptor_unsecured<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+) -> Result<u16> {
+    let (req_apci, payload) = crate::apci::encode_device_descriptor_read(0);
+    let (resp_apci, data) = l4.request_unsecured(req_apci, &payload).await?;
+    decode_device_descriptor(l4.target(), resp_apci, &data)
+}
+
+/// Decodes an `A_DeviceDescriptor_Response` for descriptor type 0.
+fn decode_device_descriptor(
+    address: IndividualAddress,
+    resp_apci: u16,
+    data: &[u8],
+) -> Result<u16> {
     if resp_apci & crate::apci::APCI_SELECTOR_MASK != crate::apci::A_DEVICE_DESCRIPTOR_RESPONSE
         || data.len() < 2
     {
         return Err(MgmtError::MalformedResponse {
-            address: l4.target(),
-            reason: crate::error::descriptor_response_reason(resp_apci, &data),
+            address,
+            reason: crate::error::descriptor_response_reason(resp_apci, data),
         });
     }
     Ok(u16::from_be_bytes([data[0], data[1]]))
@@ -1993,8 +2144,12 @@ mod tests {
         key: [u8; 16],
         /// The device's next Data Secure send sequence, reported in the Sync_Res.
         device_sequence: u64,
-        /// When false the device T_ACKs the Sync_Req but never answers it.
-        answer: bool,
+        /// How many Sync_Reqs the device T_ACKs without answering before it
+        /// answers one (`u32::MAX`: it never answers), modelling a security
+        /// layer that is not ready yet after a reboot (issue #166).
+        unanswered_syncs: u32,
+        /// How many Sync_Reqs the device has received.
+        sync_reqs: u32,
     }
 
     impl SyncingBus {
@@ -2003,7 +2158,8 @@ mod tests {
                 inner: ScriptedBus::new(inbox),
                 key,
                 device_sequence: 1,
-                answer: true,
+                unanswered_syncs: 0,
+                sync_reqs: 0,
             }
         }
 
@@ -2014,37 +2170,41 @@ mod tests {
 
     impl BusConnection for SyncingBus {
         async fn send(&mut self, frame: CemiFrame) -> bussard_transport::Result<()> {
-            if let (Tpci::Other(t), Apdu::Other { apci, data }) = (&frame.tpci, &frame.apdu)
-                && *apci == A_SECURE_DATA
-                && data.first() == Some(&0x92)
-            {
-                let req_addr = TpAddressing {
-                    source: frame.source.raw(),
-                    destination: dev().raw(),
-                    address_type_group: false,
-                    extended_frame_format: 0,
-                    tpci: *t,
-                };
-                let key = Key16::new(self.key);
-                if let Ok((_, req)) = asdu::decode_sync_req(&key, data, &req_addr) {
-                    let mut front = vec![control_from_dev(tpci::t_ack((t >> 2) & 0x0F))];
-                    if self.answer {
-                        let res = asdu::encode_sync_res(
-                            &key,
-                            bussard_secure::Scf::tool_sync(bussard_secure::SecureService::SyncRes),
-                            &asdu::SyncResponse {
-                                responder_sequence: Sequence::new(self.device_sequence),
-                                requester_sequence: req.sequence,
-                            },
-                            &req.challenge,
-                            Sequence::new(0x0000_1234_5678),
-                            &dev_to_tool_addr(tpci::ndt(0)),
-                        )
-                        .map_err(|_| bussard_transport::TransportError::Closed)?;
-                        front.push(ndt_from_dev(0, A_SECURE_DATA, &res));
-                    }
-                    for f in front.into_iter().rev() {
-                        self.inner.inbox.push_front(f);
+            if let (Tpci::Other(t), Apdu::Other { apci, data }) = (&frame.tpci, &frame.apdu) {
+                if *apci == A_SECURE_DATA && data.first() == Some(&0x92) {
+                    let req_addr = TpAddressing {
+                        source: frame.source.raw(),
+                        destination: dev().raw(),
+                        address_type_group: false,
+                        extended_frame_format: 0,
+                        tpci: *t,
+                    };
+                    let key = Key16::new(self.key);
+                    if let Ok((_, req)) = asdu::decode_sync_req(&key, data, &req_addr) {
+                        let mut front = vec![control_from_dev(tpci::t_ack((t >> 2) & 0x0F))];
+                        self.sync_reqs += 1;
+                        if self.unanswered_syncs > 0 {
+                            self.unanswered_syncs -= 1;
+                        } else {
+                            let res = asdu::encode_sync_res(
+                                &key,
+                                bussard_secure::Scf::tool_sync(
+                                    bussard_secure::SecureService::SyncRes,
+                                ),
+                                &asdu::SyncResponse {
+                                    responder_sequence: Sequence::new(self.device_sequence),
+                                    requester_sequence: req.sequence,
+                                },
+                                &req.challenge,
+                                Sequence::new(0x0000_1234_5678),
+                                &dev_to_tool_addr(tpci::ndt(0)),
+                            )
+                            .map_err(|_| bussard_transport::TransportError::Closed)?;
+                            front.push(ndt_from_dev(0, A_SECURE_DATA, &res));
+                        }
+                        for f in front.into_iter().rev() {
+                            self.inner.inbox.push_front(f);
+                        }
                     }
                 }
             }
@@ -2186,9 +2346,10 @@ mod tests {
             DataSecureSession::new(Key16::new(key)).with_send_sequence(Sequence::new(1000)),
         );
         let mut bus = SyncingBus::new(key, Vec::new());
-        bus.answer = false;
+        bus.unanswered_syncs = u32::MAX;
         let mut l4 =
             Layer4Connection::connect_with_secure(&mut bus, dev(), tool(), fast(), secure).await?;
+        l4.set_sync_retry(SyncRetry::default().with_backoff_cap(Duration::from_millis(1)));
         let err = l4.request(0x300, &[0x00]).await.err();
         assert!(
             matches!(
@@ -2200,6 +2361,79 @@ mod tests {
             ),
             "got {err:?}"
         );
+        drop(l4);
+        assert_eq!(
+            bus.sync_reqs,
+            SyncRetry::default().attempts,
+            "an unanswered Sync_Req is repeated before the error (issue #166)"
+        );
+        Ok(())
+    }
+
+    /// Issue #166: a device whose security layer is not ready yet T_ACKs the
+    /// first S-A_Sync_Reqs without answering; the connection repeats the request
+    /// on the same link, with a fresh challenge and the next transport sequence,
+    /// and syncs once the device answers.
+    #[tokio::test]
+    async fn test_ensure_secure_sync_retries_an_unanswered_sync_req() -> Result<()> {
+        let key = [0x24u8; 16];
+        let secure = crate::secure::SecureLayer::activated(
+            DataSecureSession::new(Key16::new(key)).with_send_sequence(Sequence::new(1000)),
+        );
+        let mut bus = SyncingBus::new(key, Vec::new());
+        bus.unanswered_syncs = 2;
+        let mut l4 =
+            Layer4Connection::connect_with_secure(&mut bus, dev(), tool(), fast(), secure).await?;
+        l4.set_sync_retry(SyncRetry::default().with_backoff_cap(Duration::from_millis(1)));
+        l4.ensure_secure_sync().await?;
+        assert!(l4.secure.is_synced(), "the third Sync_Req is answered");
+        assert!(!l4.closed, "the retried connection stays open");
+        drop(l4);
+        assert_eq!(bus.sync_reqs, 3);
+        let sync_tpcis: Vec<u8> = bus
+            .sent()
+            .iter()
+            .filter(|f| matches!(tpci::classify(f.tpci_octet()), TpciKind::NumberedData(_)))
+            .map(CemiFrame::tpci_octet)
+            .collect();
+        assert_eq!(
+            sync_tpcis,
+            vec![tpci::ndt(0), tpci::ndt(1), tpci::ndt(2)],
+            "each acknowledged attempt advances the transport sequence"
+        );
+        Ok(())
+    }
+
+    /// Issue #166: the plain readiness probe goes out in the clear on a
+    /// security-activated connection and does not start the S-A_Sync handshake.
+    #[tokio::test]
+    async fn test_read_device_descriptor_unsecured_skips_the_sync() -> Result<()> {
+        let key = [0x24u8; 16];
+        let secure = crate::secure::SecureLayer::activated(
+            DataSecureSession::new(Key16::new(key)).with_send_sequence(Sequence::new(1000)),
+        );
+        let inbox = vec![
+            control_from_dev(tpci::t_ack(0)),
+            ndt_from_dev(0, 0x340, &[0x07, 0xB0]),
+        ];
+        let mut bus = SyncingBus::new(key, inbox);
+        let mut l4 =
+            Layer4Connection::connect_with_secure(&mut bus, dev(), tool(), fast(), secure).await?;
+        assert!(l4.is_secure());
+        let descriptor = read_device_descriptor_unsecured(&mut l4).await?;
+        assert_eq!(descriptor, 0x07B0);
+        assert!(l4.secure.needs_sync(), "the probe does not sync");
+        drop(l4);
+        assert_eq!(bus.sync_reqs, 0);
+        let numbered: Vec<u16> = bus
+            .sent()
+            .iter()
+            .filter_map(|f| match (&f.tpci, &f.apdu) {
+                (Tpci::Other(_), Apdu::Other { apci, .. }) => Some(*apci),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(numbered, vec![0x300], "one plain A_DeviceDescriptor_Read");
         Ok(())
     }
 
