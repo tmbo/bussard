@@ -60,7 +60,6 @@ serde_json = "1"
 # Home Assistant output (`bussard-ha`) and the local `models/*.yaml` product
 # cache (`bussard-model::param_model`, `bussard-cli import-product`).
 serde_norway = "0.9"
-serde_path_to_error = "0.1"
 # TOML: the model files (`bussard.toml`, `groups.toml`, `devices/*.toml`,
 # `bussard.lock`, `tests.toml`, `ha.toml`). `toml` parses into the typed
 # schema with spans for error carets; `toml_edit` writes, keeping comments and
