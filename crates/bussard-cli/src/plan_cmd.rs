@@ -13,21 +13,24 @@
 //! [`DeviceTables`] shape, so the diff and the report below are family-agnostic.
 //!
 //! This command is **read-only on the bus** — it never writes a load control or
-//! a property, so it is safe to run against a live installation.
+//! a property, so it is safe to run against a live installation. A KNX Data
+//! Secure device is read with `--keyring` / `--tool-key` (issue #170), see
+//! [`read_device`].
 
 use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
 use bussard_download::{DesiredTables, PlanReport, plan};
-use bussard_mgmt::tables::{DeviceTables, TablesError};
-use bussard_mgmt::{L4Channel, Layer4Connection, LeaseChannel, MaskProfile, system_type};
+use bussard_mgmt::tables::DeviceTables;
+use bussard_mgmt::{L4Channel, Layer4Connection, MaskProfile, system_type};
 use bussard_model::{IndividualAddress, Model};
-use bussard_service::{BusService, WritePolicy};
+use bussard_service::{Authorize, L4Options, SourcePolicy, WritePolicy};
+use bussard_transport::ConnectionConfig;
 
-use crate::conn_cmd::{
-    ConnOverrides, checked_source_or_close, load_model_required, resolve_config,
-};
+use crate::conn_cmd::{ConnOverrides, load_model_required, open_service, resolve_config};
+use crate::param_readback::ProductSource;
+use crate::secure_key::ToolKeySource;
 
 /// A serialisable `(object, GA)` pair for the JSON output.
 #[derive(Debug, serde::Serialize)]
@@ -82,6 +85,83 @@ pub(crate) fn report_unsupported_mask(command: &str, address: IndividualAddress,
         system_type(mask),
         caps.summary()
     );
+    if mask == SECURE_PLAIN_MASK {
+        eprintln!(
+            "mask {SECURE_PLAIN_MASK:04X} is what a KNX Data Secure-activated device answers to an \
+             unsecured descriptor read: {}",
+            crate::secure_key::no_key_guidance()
+        );
+    }
+}
+
+/// The mask a KNX Data Secure-activated device reports to a plain (unsecured)
+/// `A_DeviceDescriptor_Read` (observed on 1.1.12, issue #170); the secured read
+/// returns the real one.
+const SECURE_PLAIN_MASK: u16 = 0xFFFF;
+
+/// What one read-only management session returned: the live tables (or the
+/// unsupported-mask refusal) and, when a product file was given, the parameter
+/// read-back.
+pub(crate) type DeviceRead = (LiveRead, Option<crate::param_readback::Readback>);
+
+/// Opens a read-only bus service, reads `target`'s live tables in one management
+/// session and, when `product` is given and the tables read, the parameter
+/// memory too. Shared by `plan` and `reconstruct` (issue #170).
+///
+/// With a tool key from `tool_key_source` every APDU, the device descriptor
+/// read included, rides `A_SecureData`, so a KNX Data Secure device reports its
+/// real mask instead of the `FFFF` it answers in the clear. Without one the
+/// frames are exactly those of the plain path before KNX Secure existed.
+pub(crate) fn read_device(
+    config: ConnectionConfig,
+    target: IndividualAddress,
+    overrides: &ConnOverrides,
+    tool_key_source: ToolKeySource<'_>,
+    product: Option<&ProductSource>,
+    model: Option<&Model>,
+) -> anyhow::Result<DeviceRead> {
+    let tool_key = crate::secure_key::resolve(target, tool_key_source)?;
+    let presented_tool_key = tool_key.is_some();
+    let options = L4Options {
+        source: SourcePolicy::Check {
+            skip: overrides.skip_address_check,
+        },
+        tool_key,
+        high_water: bussard_secure::SequenceHighWater::new(),
+        // Authorize (free access) before reading, as ETS does (issue #52
+        // finding #1) and as System 7 requires before any memory access.
+        // Best-effort on a read.
+        authorize: Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
+        ..L4Options::default()
+    };
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime
+        .block_on(async move {
+            let service = open_service(config, WritePolicy::ReadOnly).await?;
+            let outcome = service
+                .with_l4(target, &options, async |l4| {
+                    let read = read_live_tables(l4).await?;
+                    let params = match (&read, product) {
+                        (LiveRead::Tables(live), Some(product)) => Some(
+                            crate::param_readback::read(
+                                l4,
+                                product,
+                                model,
+                                target,
+                                live.tables().mask,
+                            )
+                            .await,
+                        ),
+                        _ => None,
+                    };
+                    anyhow::Ok((read, params))
+                })
+                .await;
+            // Close the bus cleanly (release the gateway tunnel slot), issue #31.
+            service.close().await;
+            outcome
+        })
+        .map_err(|err| crate::secure_key::secure_hint(target, presented_tool_key, err))
 }
 
 /// Reads a device's live tables and shows what `apply` would change.
@@ -91,6 +171,7 @@ pub fn run(
     json: bool,
     overrides: ConnOverrides,
     selection: crate::param_readback::Selection<'_>,
+    tool_key_source: ToolKeySource<'_>,
 ) -> anyhow::Result<ExitCode> {
     let target: IndividualAddress = address
         .parse()
@@ -128,49 +209,14 @@ pub fn run(
     let model_ref = &model;
     let product_ref = product.as_ref();
 
-    let runtime = tokio::runtime::Runtime::new()?;
-    let read = runtime.block_on(async move {
-        let service = BusService::open(config, WritePolicy::ReadOnly)?;
-        let handle = service.handle().clone();
-        if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
-            eprintln!("warning: bus not connected yet; management traffic may use the 0.0.255 fallback source");
-        }
-        let source = checked_source_or_close(&handle, &overrides).await?;
-        let lease = handle.lease().await.context("leasing the bus")?;
-        let channel = LeaseChannel::new(lease);
-        let result = match Layer4Connection::connect(channel, target, source).await {
-            Ok(mut l4) => {
-                // Authorize (free access) before reading, as ETS does (issue #52
-                // finding #1) and as System 7 requires before any memory access.
-                // Best-effort on this read-only plan pre-pass.
-                if let Err(err) = l4.authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY).await {
-                    tracing::debug!("{target} authorize (free access) did not grant: {err}");
-                }
-                let r = read_live_tables(&mut l4).await;
-                let params = match (&r, product_ref) {
-                    (Ok(LiveRead::Tables(live)), Some(product)) => Some(
-                        crate::param_readback::read(
-                            &mut l4,
-                            product,
-                            Some(model_ref),
-                            target,
-                            live.tables().mask,
-                        )
-                        .await,
-                    ),
-                    _ => None,
-                };
-                let _ = l4.disconnect().await;
-                r.map(|r| (r, params))
-            }
-            Err(err) => Err(anyhow::Error::new(TablesError::Mgmt(err))
-                .context("connecting to the device")),
-        };
-        let _ = handle.close().await;
-        anyhow::Ok(result)
-    })?;
-
-    let (read, params) = read?;
+    let (read, params) = read_device(
+        config,
+        target,
+        &overrides,
+        tool_key_source,
+        product_ref,
+        Some(model_ref),
+    )?;
     let live = match read {
         LiveRead::Tables(live) => live,
         LiveRead::UnsupportedMask { address, mask } => {

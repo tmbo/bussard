@@ -123,9 +123,10 @@ entry supersedes it and is not a diff against it.
 - `bussard keyring` inspects an ETS `.knxkeys` export: it verifies the
   signature and decrypts the tool and group keys (#84, #148). The password
   comes from `BUSSARD_KEYRING_PASSWORD`, never a flag.
-- `flash`, `apply`, `describe` and `restore` take `--keyring` (or `--tool-key`
-  for a bench device) and run over KNX Data Secure. Every secured connection
-  starts with the S-A_Sync handshake ETS uses (#71, #90, #153).
+- `flash`, `apply`, `describe`, `restore`, `plan` and `reconstruct` take
+  `--keyring` (or `--tool-key` for a bench device) and run over KNX Data
+  Secure. Every secured connection starts with the S-A_Sync handshake ETS uses
+  (#71, #90, #153, #170).
 - A secured `flash` or `apply` also programs the security object: the group
   key table and the group-object security flags, as the ETS secured download
   does (#156).
@@ -227,8 +228,6 @@ entry supersedes it and is not a diff against it.
 
 - KNXnet/IP Secure (encrypted tunnel sessions) is not implemented; a
   Secure-only interface refuses bussard (#71 Phase B).
-- `reconstruct` and `plan` cannot read a Data Secure device back without a
-  keyring yet (#170, in progress).
 - `monitor`, `capture`, `read` and `write` do not decrypt or send secured group
   communication yet (#172, in progress).
 - ETS3-era products shipped only as encrypted `.vd4` files cannot be flashed

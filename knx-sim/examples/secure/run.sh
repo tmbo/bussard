@@ -18,6 +18,9 @@
 #   NEGATIVE  flash 1.1.2 with a WRONG tool key  -> fails, sim refuses the MAC, nothing written
 #   NEGATIVE  flash 1.1.2 with NO tool key       -> fails, sim refuses plain access, nothing written
 #   NEGATIVE  flash 1.1.3 (plain device) WITH a tool key -> fails, sim refuses (not activated)
+#   POSITIVE  reconstruct 1.1.2 with the tool key -> secured read: mask 07B0, tables and
+#             the parameter read-back (issue #170)
+#   NEGATIVE  reconstruct 1.1.2 with NO tool key  -> fails with the --keyring hint
 #
 # The negatives are checked on both sides: bussard must exit non-zero with an
 # actionable message, and the simulator's event log must show the refusal reason.
@@ -364,6 +367,42 @@ if [[ $rc -ne 0 ]] && grep -q -- "--keyring" <<<"$out"; then
   ok "describe 1.1.2 without a key: exit $rc with the --keyring hint"
 else
   bad "describe 1.1.2 without a key did not fail with the --keyring hint (exit $rc)"
+  tail -4 <<<"$out" | sed 's/^/      /'
+fi
+
+# 5. reconstruct (issue #170): with the tool key every read, the descriptor
+#    included, rides A_SecureData, so the device reports its real mask and the
+#    table reads and the parameter read-back run on the secured session.
+mark=$(log_mark)
+out="$("$BUSSARD" reconstruct 1.1.2 --json --dir "$MODEL" --gateway "$GATEWAY" \
+  --product "$PRODUCT" --application "$APP" --tool-key "$TOOL_KEY" 2>/dev/null)"
+rc=$?
+if [[ $rc -eq 0 ]] && grep -q '"mask": "07B0"' <<<"$out" && grep -q '"addresses"' <<<"$out" \
+   && grep -q '"parameters"' <<<"$out"; then
+  ok "reconstruct 1.1.2 with the tool key: secured read returned mask 07B0, tables and parameters"
+else
+  bad "reconstruct 1.1.2 with the tool key did not read the device back (exit $rc)"
+  tail -4 <<<"$out" | sed 's/^/      /'
+fi
+if log_has "$mark" "SECURE recv scf=0x90"; then
+  ok "reconstruct: the reads rode A_SecureData"
+else
+  bad "reconstruct: the simulator saw no secured frames"
+fi
+if log_has "$mark" "REJECTED"; then
+  bad "reconstruct: the simulator refused a frame on the secured read"
+  log_since "$mark" | grep "REJECTED" | head -3 | sed 's/^/      /'
+else
+  ok "reconstruct: no frame was refused on the secured read"
+fi
+# Without the key the sim drops every plain frame, so this waits out the
+# default L4 budget (about 12 s) before it fails.
+out="$("$BUSSARD" reconstruct 1.1.2 --dir "$MODEL" --gateway "$GATEWAY" 2>&1)"
+rc=$?
+if [[ $rc -ne 0 ]] && grep -q -- "--keyring" <<<"$out"; then
+  ok "reconstruct 1.1.2 without a key: exit $rc with the --keyring hint"
+else
+  bad "reconstruct 1.1.2 without a key did not fail with the --keyring hint (exit $rc)"
   tail -4 <<<"$out" | sed 's/^/      /'
 fi
 
