@@ -14,9 +14,10 @@ use toml_edit::{Array, DocumentMut, InlineTable, Item, Table, TableLike, Value};
 
 use crate::files::{
     DeviceEntries, EntryValue, LOCK_HEADER, LOCK_VERSION, LockDevice, Placement, Resolver,
-    TableRef, device_entries, existing_placements, handle_of, scope_entries,
+    TableRef, channel_label, device_entries, existing_placements, handle_of, scope_entries,
 };
 use crate::loader::SaveError;
+use crate::param_model::ProductModels;
 use crate::schema::{BussardConfig, Device, Group, Groups, Link};
 use crate::toml_io;
 
@@ -735,8 +736,13 @@ fn desired_device(device: &Device, entries: &[(Placement, EntryValue)]) -> Docum
     let mut names: BTreeMap<String, String> = BTreeMap::new();
     for (id, ch) in &device.channels {
         let handle = handle_of(device, id);
-        let label =
-            (!ch.name.is_empty() && Some(&ch.name) != ch.text.as_ref()).then(|| ch.name.clone());
+        // A renamed channel writes its name; a labelled one otherwise writes
+        // its label parameter's value (the two agree after a load).
+        let renamed = !ch.name.is_empty() && Some(&ch.name) != ch.text.as_ref();
+        let label = match channel_label(device, id) {
+            Some(value) if !renamed || ch.name == value => Some(value.to_string()),
+            _ => renamed.then(|| ch.name.clone()),
+        };
         if let Some(label) = label {
             names.insert(handle.clone(), label);
         }
@@ -782,6 +788,7 @@ pub(crate) fn render_device(
     links: &[Link],
     lock: Option<&LockDevice>,
     existing: Option<&str>,
+    models: Option<&ProductModels>,
 ) -> String {
     let resolver = Resolver::new(lock);
     let parsed = existing.and_then(|text| {
@@ -792,7 +799,7 @@ pub(crate) fn render_device(
     });
     let empty = DeviceEntries::default();
     let placements = existing_placements(parsed.as_ref().map_or(&empty, |(e, _)| e), &resolver);
-    let entries = device_entries(device, links, &placements);
+    let entries = device_entries(device, links, &placements, models);
     let desired = desired_device(device, &entries);
     match parsed {
         None => desired.to_string(),

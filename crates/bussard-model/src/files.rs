@@ -18,10 +18,10 @@ use crate::address::{GroupAddress, IndividualAddress};
 use crate::dpt::Dpt;
 use crate::flags::Flags;
 use crate::loader::LoadError;
-use crate::param_model::key_to_param_id;
+use crate::param_model::{ParamDef, ProductModels, enum_code, enum_label, key_to_param_id};
 use crate::schema::{
     Channel, ComObject, Device, DeviceLock, DeviceSecurity, Link, Location, LockedParameter,
-    Product,
+    Product, Spelling,
 };
 use crate::toml_io::{self, ParseError};
 
@@ -586,11 +586,7 @@ impl Resolver {
     /// or an unknown key that validation reports).
     pub fn param_mem_key(&self, scope: Option<&str>, key: &str) -> String {
         match self.param_ref(scope, key) {
-            Some(reference) => match key.split_once('@') {
-                Some((_, r)) if r == reference => key.to_string(),
-                Some((head, _)) => format!("{}@{reference}", slug(head)),
-                None => format!("{}@{reference}", slug(key)),
-            },
+            Some(reference) => param_mem_key(key, reference),
             None => key.to_string(),
         }
     }
@@ -607,6 +603,28 @@ impl Resolver {
             .map(|k| k.iter().cloned().collect())
             .unwrap_or_default()
     }
+}
+
+/// The in-memory key (`<slug>@<ref>`, see [`Device::parameters`]) of the
+/// parameter a device file names `file_key` and the lock resolves to
+/// `reference`: the escape-hatch key itself when it already names that ref,
+/// else the slug of the key (a page-qualified `sollwerte.komfort` becomes
+/// `sollwerte-komfort`) joined to the ref.
+///
+/// The loader and the importer both key parameters this way, so a model built
+/// by `import` equals the one a later load reads back.
+pub fn param_mem_key(file_key: &str, reference: &str) -> String {
+    match file_key.split_once('@') {
+        Some((_, r)) if r == reference => file_key.to_string(),
+        Some((head, _)) => format!("{}@{reference}", slug(head)),
+        None => format!("{}@{reference}", slug(file_key)),
+    }
+}
+
+/// The in-memory key of a channel's label parameter (the lock's
+/// `label_ref`), whose value is the channel `name` in the device file.
+pub fn label_mem_key(reference: &str) -> String {
+    format!("label@{reference}")
 }
 
 /// The contract's slug: lowercase, `ä ö ü ß` to `ae oe ue ss`, every run of
@@ -665,6 +683,7 @@ pub(crate) fn join_device(
     path: &Path,
     text: &str,
     locks: &BTreeMap<IndividualAddress, &LockDevice>,
+    models: Option<&ProductModels>,
 ) -> Result<(Device, Vec<Link>), LoadError> {
     let top: DeviceFileTop = toml_io::parse(path, text)?;
     let lock = locks.get(&top.address).copied();
@@ -676,9 +695,13 @@ pub(crate) fn join_device(
     let mut handle_to_id: BTreeMap<String, String> = BTreeMap::new();
     let mut channels: BTreeMap<String, Channel> = BTreeMap::new();
     let mut module_bases: BTreeMap<String, u32> = BTreeMap::new();
+    let mut channel_labels: BTreeMap<String, String> = BTreeMap::new();
     if let Some(lock) = lock {
         for ch in &lock.channels {
             handle_to_id.insert(ch.handle().to_string(), ch.id.clone());
+            if let Some(label_ref) = &ch.label_ref {
+                channel_labels.insert(ch.id.clone(), label_ref.clone());
+            }
             channels.insert(
                 ch.id.clone(),
                 Channel {
@@ -700,22 +723,65 @@ pub(crate) fn join_device(
             .cloned()
             .unwrap_or_else(|| handle.to_string())
     };
+    // The application whose product model normalizes enum labels.
+    let app_ref = top
+        .application
+        .as_deref()
+        .or_else(|| lock.and_then(|l| l.application.as_deref()));
+    let param_def =
+        |key: &str| -> Option<&ParamDef> { models.and_then(|m| m.param_def(app_ref?, key)) };
+    let mut spellings: BTreeMap<String, Spelling> = BTreeMap::new();
+    // Stores a file value under its in-memory key: an enum label becomes its
+    // code when the product model knows it, and the spelling is kept for the
+    // save.
+    let mut store = |parameters: &mut BTreeMap<String, String>, key: String, value: &str| {
+        let code = match param_def(&key).filter(|d| !d.labels.is_empty()) {
+            Some(def) => {
+                let code = enum_code(&def.labels, value)
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| value.to_string());
+                spellings.insert(
+                    key.clone(),
+                    Spelling {
+                        code: code.clone(),
+                        text: value.to_string(),
+                    },
+                );
+                code
+            }
+            None => value.to_string(),
+        };
+        parameters.insert(key, code);
+    };
+
+    let mut parameters: BTreeMap<String, String> = BTreeMap::new();
     for (handle, name, _) in &entries.channels {
-        let channel = channels.entry(id_of(handle)).or_default();
+        let id = id_of(handle);
+        let channel = channels.entry(id.clone()).or_default();
         if let Some(name) = name {
             channel.name = name.clone();
+            // A labelled channel's name is its label parameter's value.
+            if let Some(label_ref) = channel_labels.get(&id) {
+                parameters.insert(label_mem_key(label_ref), name.clone());
+            }
         }
     }
 
     // Parameters and links.
-    let mut parameters: BTreeMap<String, String> = BTreeMap::new();
     let mut links: Vec<Link> = Vec::new();
     for entry in &entries.entries {
         let scope = entry.table.scope();
         match &entry.value {
             EntryValue::Param(value) => {
                 let key = resolver.param_mem_key(scope, &entry.full_key());
-                parameters.insert(key, value.clone());
+                if ref_of(&key).is_some_and(|r| channel_labels.values().any(|l| l == r)) {
+                    // The label is the channel name; an escape-hatch spelling
+                    // of it only counts when the channel sets no name.
+                    let label_key = ref_of(&key).map(label_mem_key).unwrap_or(key);
+                    parameters.entry(label_key).or_insert_with(|| value.clone());
+                    continue;
+                }
+                store(&mut parameters, key, value);
             }
             EntryValue::Object { send, listen, name } => {
                 if entry.page.is_some() {
@@ -782,7 +848,11 @@ pub(crate) fn join_device(
         (top.security.is_some() || security != DeviceSecurity::default()).then_some(security);
 
     // Lock-side bookkeeping, kept only where a save would not rederive it.
-    let mut extras = DeviceLock::default();
+    let mut extras = DeviceLock {
+        channel_labels,
+        spellings,
+        ..DeviceLock::default()
+    };
     if let Some(lock) = lock {
         if lock.product != top.product {
             extras.product = lock.product.clone();
@@ -883,7 +953,7 @@ pub(crate) fn lock_entry(device: &Device) -> Option<LockDevice> {
                 id: id.clone(),
                 number: ch.number,
                 text: ch.text.clone(),
-                label_ref: None,
+                label_ref: device.lock.channel_labels.get(id).cloned(),
                 base,
             }
         })
@@ -928,6 +998,9 @@ pub(crate) fn lock_entry(device: &Device) -> Option<LockDevice> {
         let Some(reference) = ref_of(key) else {
             continue;
         };
+        if is_label_ref(device, reference) {
+            continue;
+        }
         by_ref
             .entry(reference.to_string())
             .or_insert_with(|| LockParameter {
@@ -1044,14 +1117,22 @@ pub(crate) fn device_entries(
     device: &Device,
     links: &[Link],
     existing: &BTreeMap<EntryId, Placement>,
+    models: Option<&ProductModels>,
 ) -> Vec<(Placement, EntryValue)> {
     let mut out: Vec<(Placement, EntryValue)> = Vec::new();
     for (key, value) in &device.parameters {
+        // A channel's label parameter is written as the channel `name`.
+        if ref_of(key).is_some_and(|r| is_label_ref(device, r)) {
+            continue;
+        }
         let placement = existing
             .get(&EntryId::Param(key.clone()))
             .cloned()
             .unwrap_or_else(|| default_param_placement(device, key));
-        out.push((placement, EntryValue::Param(value.clone())));
+        out.push((
+            placement,
+            EntryValue::Param(file_value(device, key, value, models)),
+        ));
     }
     let mut seen: BTreeMap<u16, usize> = BTreeMap::new();
     let mut used: BTreeSet<(TableRef, String)> = BTreeSet::new();
@@ -1085,6 +1166,46 @@ pub(crate) fn device_entries(
         ));
     }
     out
+}
+
+/// Whether `reference` is the label parameter of one of the device's channels.
+fn is_label_ref(device: &Device, reference: &str) -> bool {
+    device
+        .lock
+        .channel_labels
+        .iter()
+        .any(|(id, r)| r == reference && device.channels.contains_key(id))
+}
+
+/// The value of channel `id`'s label parameter, when it has one.
+pub(crate) fn channel_label<'a>(device: &'a Device, id: &str) -> Option<&'a str> {
+    let reference = device.lock.channel_labels.get(id)?;
+    device
+        .parameters
+        .iter()
+        .find(|(k, _)| ref_of(k) == Some(reference.as_str()))
+        .map(|(_, v)| v.as_str())
+        .filter(|v| !v.is_empty())
+}
+
+/// How the device file spells a parameter value: the recorded spelling while
+/// the code is unchanged, else the enum label the product model gives the
+/// code, else the value itself.
+fn file_value(device: &Device, key: &str, value: &str, models: Option<&ProductModels>) -> String {
+    if let Some(s) = device.lock.spellings.get(key)
+        && s.code == value
+    {
+        return s.text.clone();
+    }
+    let app_ref = device
+        .product
+        .as_ref()
+        .and_then(|p| p.application_ref.as_deref());
+    models
+        .zip(app_ref)
+        .and_then(|(m, app)| m.param_def(app, key))
+        .and_then(|def| enum_label(&def.labels, value))
+        .map_or_else(|| value.to_string(), str::to_string)
 }
 
 /// Where a parameter goes when the file does not place it yet.

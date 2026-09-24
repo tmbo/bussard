@@ -425,6 +425,28 @@ pub struct DeviceLock {
     /// (`MD-1_M-3_MI-1_P-3_R-45`): only the entries whose file key or channel
     /// differ from the defaults, or that name no stored value.
     pub parameters: BTreeMap<String, LockedParameter>,
+    /// The channels whose label is a parameter, keyed by channel id (a key of
+    /// [`Device::channels`]) and mapping to that parameter's ref (the lock's
+    /// `label_ref`). The label parameter has no file key: its value is the
+    /// channel `name`, and it sits in [`Device::parameters`] under
+    /// [`crate::label_mem_key`].
+    pub channel_labels: BTreeMap<String, String>,
+    /// How the device file spells an enum parameter value, keyed by the
+    /// in-memory parameter key: the file's label (`"Jalousie"`) for the code
+    /// [`Device::parameters`] holds (`"2"`). A save writes the spelling back
+    /// while the code is unchanged, so a load/save cycle keeps the user's
+    /// words; a changed value is written as its label when the product model
+    /// has one, else as the code.
+    pub spellings: BTreeMap<String, Spelling>,
+}
+
+/// The file spelling of one enum parameter value (see [`DeviceLock::spellings`]).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Spelling {
+    /// The vendor code the spelling stands for.
+    pub code: String,
+    /// The text the device file holds.
+    pub text: String,
 }
 
 /// One `parameters[]` entry of a device's lock entry.

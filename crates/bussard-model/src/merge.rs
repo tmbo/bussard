@@ -33,6 +33,7 @@
 //! hand-authored fields from `ours`.
 
 use crate::address::{GroupAddress, IndividualAddress};
+use crate::files::{channel_label, label_mem_key};
 use crate::schema::{Device, Group, Link};
 use crate::{LoadedDevice, Model};
 
@@ -317,31 +318,57 @@ fn overlay_device(
     // theirs (see `overlay_product`).
     overlay_product(&path, ours, theirs, report);
 
-    // Channel names: keyed by channel key; report differing names, keep ours.
-    // The channel *set* is generated, so a channel ETS no longer has is dropped
-    // (noted) and a new one is taken as-is.
-    for (key, our_ch) in &ours.channels {
-        match theirs.channels.get_mut(key) {
-            Some(their_ch) => {
-                if our_ch.name != their_ch.name {
-                    report.conflicts.push(Conflict {
-                        path: path.clone(),
-                        field: format!("channels.{key}.name"),
-                        ours: our_ch.name.clone(),
-                        theirs: their_ch.name.clone(),
-                    });
-                }
-                // Hand-authored name wins, in the channel set theirs defines.
-                their_ch.name = our_ch.name.clone();
-                // A handle the lock assigned survives until the import derives one.
-                if their_ch.key.is_none() {
-                    their_ch.key = our_ch.key.clone();
-                }
-            }
-            None => report.notes.push(format!(
-                "{path}: channel `{key}` ({}) is gone from the project and was dropped",
+    // Channel names: matched by channel key (the handle), else by channel id.
+    // A hand-set name (a label parameter value, or a name that differs from
+    // the vendor text) is kept, with a differing fresh value reported; an
+    // untouched one follows the fresh import. The channel *set* is generated,
+    // so a channel ETS no longer has is dropped (noted) and a new one is taken
+    // as-is.
+    for (our_id, our_ch) in &ours.channels {
+        let handle = our_ch.key.as_deref().unwrap_or(our_id);
+        let their_id = theirs
+            .channels
+            .iter()
+            .find(|(id, c)| c.key.as_deref().unwrap_or(id) == handle)
+            .map(|(id, _)| id.clone())
+            .or_else(|| theirs.channels.contains_key(our_id).then(|| our_id.clone()));
+        let Some(their_id) = their_id else {
+            report.notes.push(format!(
+                "{path}: channel `{handle}` ({}) is gone from the project and was dropped",
                 our_ch.name
-            )),
+            ));
+            continue;
+        };
+        let label_ref = theirs.lock.channel_labels.get(&their_id).cloned();
+        let Some(their_ch) = theirs.channels.get_mut(&their_id) else {
+            continue;
+        };
+        // A handle the lock assigned survives until the import derives one.
+        if their_ch.key.is_none() {
+            their_ch.key = our_ch.key.clone();
+        }
+        let hand_set = channel_label(ours, our_id).is_some()
+            || (!our_ch.name.is_empty() && Some(&our_ch.name) != our_ch.text.as_ref());
+        if !hand_set {
+            continue;
+        }
+        if our_ch.name != their_ch.name {
+            report.conflicts.push(Conflict {
+                path: path.clone(),
+                field: format!("channels.{handle}.name"),
+                ours: our_ch.name.clone(),
+                theirs: their_ch.name.clone(),
+            });
+        }
+        their_ch.name = our_ch.name.clone();
+        // The kept name is the fresh channel's label parameter value.
+        if let Some(label_ref) = label_ref {
+            theirs
+                .parameters
+                .retain(|k, _| k.split_once('@').map(|(_, r)| r) != Some(label_ref.as_str()));
+            theirs
+                .parameters
+                .insert(label_mem_key(&label_ref), our_ch.name.clone());
         }
     }
 

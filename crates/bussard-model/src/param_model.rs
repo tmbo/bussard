@@ -44,6 +44,10 @@ pub struct ParamDef {
     /// The parameter's human-readable text as ETS shows it (e.g. "Night
     /// setback"), when the product model carries one.
     pub text: Option<String>,
+    /// For an enumeration, its `(code, text)` pairs in document order: the
+    /// labels a device file may write instead of the code (see
+    /// [`enum_label`] and [`enum_code`]). Empty for other kinds.
+    pub labels: Vec<(i64, String)>,
 }
 
 /// A parameter's type, mirroring the `type:` tag in the model YAML.
@@ -144,7 +148,6 @@ enum RawType {
 struct RawEnumValue {
     value: i64,
     #[serde(default)]
-    #[allow(dead_code)]
     text: Option<String>,
 }
 
@@ -158,9 +161,17 @@ impl ProductModel {
         let prefix = format!("{app_ref}_");
         for p in raw.parameters {
             let rel = p.id.strip_prefix(&prefix).unwrap_or(&p.id).to_string();
+            let labels = match &p.param_type {
+                RawType::Enum { values } => values
+                    .iter()
+                    .filter_map(|v| v.text.clone().map(|t| (v.value, t)))
+                    .collect(),
+                _ => Vec::new(),
+            };
             parameters.insert(
                 rel,
                 ParamDef {
+                    labels,
                     kind: p.param_type.into_kind(),
                     default: p.default,
                     text: p.text.filter(|t| !t.trim().is_empty()),
@@ -237,10 +248,65 @@ impl ProductModels {
         Self { by_app_ref }
     }
 
+    /// Loads only `models/<app_ref>.yaml` for each of `app_refs` (best-effort,
+    /// like [`ProductModels::load`]): what a model load or save needs to
+    /// translate enum labels, without parsing every cached model.
+    pub fn load_apps<'a>(dir: &Path, app_refs: impl IntoIterator<Item = &'a str>) -> Self {
+        let models_dir = dir.join("models");
+        let mut by_app_ref = BTreeMap::new();
+        for app_ref in app_refs {
+            if by_app_ref.contains_key(app_ref) || app_ref.contains(['/', '\\']) {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(models_dir.join(format!("{app_ref}.yaml")))
+            else {
+                continue;
+            };
+            if let Ok(model) = ProductModel::from_yaml(&text, app_ref) {
+                by_app_ref.insert(app_ref.to_string(), model);
+            }
+        }
+        Self { by_app_ref }
+    }
+
     /// Looks up the model for an application ref, if loaded.
     pub fn get(&self, app_ref: &str) -> Option<&ProductModel> {
         self.by_app_ref.get(app_ref)
     }
+
+    /// The definition of the parameter an in-memory key (`<slug>@<ref>`) names
+    /// in application `app_ref`, if that model is loaded.
+    pub fn param_def(&self, app_ref: &str, key: &str) -> Option<&ParamDef> {
+        let id = key_to_param_id(key)?;
+        self.get(app_ref)?.parameters.get(&id)
+    }
+}
+
+/// The label a device file writes for enum `code`: the enumeration text of
+/// that code, when it has one that reads back as this code and nothing else.
+///
+/// `None` when `code` is not an integer, has no text, the text is blank, is
+/// shared with another code, or itself parses as an integer (a text `"1"` for
+/// code 0 would read back as code 1). The file then keeps the code.
+pub fn enum_label<'a>(labels: &'a [(i64, String)], code: &str) -> Option<&'a str> {
+    let code: i64 = code.trim().parse().ok()?;
+    let text = labels.iter().find(|(c, _)| *c == code)?.1.as_str();
+    let usable = !text.trim().is_empty()
+        && text.trim().parse::<i64>().is_err()
+        && labels.iter().filter(|(_, t)| t == text).count() == 1;
+    usable.then_some(text)
+}
+
+/// The enum code a device-file label stands for: the code of the one
+/// enumeration entry whose text is exactly `text`. `None` for an integer
+/// (already a code), an unknown text, or a text two codes share.
+pub fn enum_code(labels: &[(i64, String)], text: &str) -> Option<i64> {
+    if text.trim().parse::<i64>().is_ok() {
+        return None;
+    }
+    let mut hits = labels.iter().filter(|(_, t)| t == text);
+    let (code, _) = hits.next()?;
+    hits.next().is_none().then_some(*code)
 }
 
 /// Reduces a device parameter **key** to the application-relative parameter id
@@ -345,5 +411,33 @@ parameters:
             ParamKind::Enum { values } => assert_eq!(values, &[0, 7]),
             other => panic!("expected enum, got {other:?}"),
         }
+        assert_eq!(
+            m.parameters["P-9"].labels,
+            vec![(0, "Off".to_string()), (7, "On".to_string())]
+        );
+    }
+
+    fn labels(pairs: &[(i64, &str)]) -> Vec<(i64, String)> {
+        pairs.iter().map(|(c, t)| (*c, t.to_string())).collect()
+    }
+
+    #[test]
+    fn test_enum_label_needs_a_unique_non_numeric_text() {
+        let l = labels(&[(0, "Aus"), (1, "Ein"), (2, "Ein"), (3, "5"), (4, " ")]);
+        assert_eq!(enum_label(&l, "0"), Some("Aus"));
+        assert_eq!(enum_label(&l, "1"), None, "shared text");
+        assert_eq!(enum_label(&l, "3"), None, "numeric text");
+        assert_eq!(enum_label(&l, "4"), None, "blank text");
+        assert_eq!(enum_label(&l, "9"), None, "no text");
+        assert_eq!(enum_label(&l, "Aus"), None, "not a code");
+    }
+
+    #[test]
+    fn test_enum_code_translates_exact_unique_texts() {
+        let l = labels(&[(0, "Aus"), (1, "Ein"), (2, "Ein")]);
+        assert_eq!(enum_code(&l, "Aus"), Some(0));
+        assert_eq!(enum_code(&l, "Ein"), None, "ambiguous");
+        assert_eq!(enum_code(&l, "aus"), None, "exact match only");
+        assert_eq!(enum_code(&l, "0"), None, "already a code");
     }
 }

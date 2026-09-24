@@ -46,7 +46,7 @@ pub use codec::{
 pub use doc::{DocError, DocFile, DocFormat, InstallationDoc};
 pub use dpt::{ApduSize, Dpt, DptParseError};
 pub use ets_export::{to_ets_csv, to_ets_xml};
-pub use files::slug;
+pub use files::{label_mem_key, param_mem_key, slug};
 pub use flags::{Flags, FlagsParseError};
 pub use history::{History, HistoryError, Snapshot, SnapshotId, SnapshotReason};
 pub use lint::{GroupsLint, LintConfig, TopologyLint, lint};

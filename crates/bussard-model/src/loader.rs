@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use crate::address::IndividualAddress;
 use crate::emit;
 use crate::files::{self, GroupsFile, LOCK_VERSION, LockDevice, LockFile};
+use crate::param_model::ProductModels;
 use crate::schema::{BussardConfig, Group, Groups, Link, Links, Range};
 use crate::toml_io::{self, ParseError};
 
@@ -274,8 +275,10 @@ pub(crate) fn parse_groups(path: &Path, text: &str) -> Result<Groups, LoadError>
     Ok(groups)
 }
 
-/// Builds the model from its sources.
-fn assemble(sources: &Sources) -> Result<Model, LoadError> {
+/// Builds the model from its sources. With `models_dir`, the product models
+/// of the applications the lock pins are read from its `models/` to translate
+/// enum labels to codes.
+fn assemble(sources: &Sources, models_dir: Option<&Path>) -> Result<Model, LoadError> {
     let config: BussardConfig = match sources.files.get(CONFIG_FILE) {
         Some(text) => toml_io::parse(&sources.path(CONFIG_FILE), text)?,
         None => BussardConfig::default(),
@@ -291,6 +294,12 @@ fn assemble(sources: &Sources) -> Result<Model, LoadError> {
     groups.imported_from = lock.source.clone();
     let lock_by_address: BTreeMap<IndividualAddress, &LockDevice> =
         lock.devices.iter().map(|d| (d.address, d)).collect();
+    let models = models_dir.map(|dir| {
+        ProductModels::load_apps(
+            dir,
+            lock.devices.iter().filter_map(|d| d.application.as_deref()),
+        )
+    });
 
     let mut devices = BTreeMap::new();
     let mut links: BTreeMap<IndividualAddress, Vec<Link>> = BTreeMap::new();
@@ -301,7 +310,8 @@ fn assemble(sources: &Sources) -> Result<Model, LoadError> {
         };
         let path = sources.path(rel);
         // The lock entry is found by the address the file declares.
-        let (device, device_links) = files::join_device(&path, text, &lock_by_address)?;
+        let (device, device_links) =
+            files::join_device(&path, text, &lock_by_address, models.as_ref())?;
         if let Some(first) = source_file.get(&device.address) {
             return Err(LoadError::DuplicateDeviceAddress {
                 address: device.address,
@@ -362,10 +372,13 @@ impl Model {
                 dir: dir.to_path_buf(),
             });
         }
-        assemble(&Sources {
-            base: dir.to_path_buf(),
-            files,
-        })
+        assemble(
+            &Sources {
+                base: dir.to_path_buf(),
+                files,
+            },
+            Some(dir),
+        )
     }
 
     /// Parses a model from in-memory file contents, keyed by model-relative path
@@ -381,10 +394,13 @@ impl Model {
             })
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
-        assemble(&Sources {
-            base: PathBuf::new(),
-            files,
-        })
+        assemble(
+            &Sources {
+                base: PathBuf::new(),
+                files,
+            },
+            None,
+        )
     }
 
     /// The lock entries this model writes, sorted by address.
@@ -409,6 +425,7 @@ impl Model {
     fn render(
         &self,
         existing: &BTreeMap<String, String>,
+        models: Option<&ProductModels>,
     ) -> Result<BTreeMap<String, String>, SaveError> {
         self.check_orphan_links()?;
         let mut out = BTreeMap::new();
@@ -444,6 +461,7 @@ impl Model {
                 links,
                 by_address.get(address).copied(),
                 existing.get(&rel).map(String::as_str),
+                models,
             );
             out.insert(rel, text);
         }
@@ -454,7 +472,7 @@ impl Model {
     /// directory would write, keyed by model-relative path, without touching
     /// the disk. Used by `bussard diff --raw` and the bundle writer.
     pub fn to_texts(&self) -> Result<BTreeMap<String, String>, SaveError> {
-        self.render(&BTreeMap::new())
+        self.render(&BTreeMap::new(), None)
     }
 
     /// Saves the model to a directory.
@@ -492,7 +510,16 @@ impl Model {
                 existing.insert(rel.clone(), text);
             }
         }
-        let rendered = self.render(&existing)?;
+        let models = ProductModels::load_apps(
+            dir,
+            self.devices.values().filter_map(|l| {
+                l.device
+                    .product
+                    .as_ref()
+                    .and_then(|p| p.application_ref.as_deref())
+            }),
+        );
+        let rendered = self.render(&existing, Some(&models))?;
         let has_lock_data = self.groups.imported_from.is_some() || !self.lock_entries().is_empty();
         for (rel, text) in &rendered {
             if rel == LOCK_FILE && !has_lock_data && !existing.contains_key(LOCK_FILE) {
