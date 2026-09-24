@@ -258,7 +258,7 @@ mod tests {
         std::fs::create_dir_all(&dir)?;
         std::fs::write(
             dir.join("groups.toml"),
-            "groups:\n  \"3/0/4\":\n    name: Blind\n    dpt: \"1.008\"\n",
+            "groups = [{ address = \"3/0/4\", name = \"Blind\", dpt = \"1.008\" }]\n",
         )?;
         Ok(dir)
     }
@@ -277,7 +277,7 @@ mod tests {
 
         std::fs::write(
             dir.join("groups.toml"),
-            "groups:\n  \"3/0/4\":\n    name: Blind\n    dpt: \"1.008\"\n    protected: true\n",
+            "groups = [{ address = \"3/0/4\", name = \"Blind\", dpt = \"1.008\", protected = true }]\n",
         )?;
         // Force the debounce to have elapsed by refreshing directly.
         let model = handle.refresh();
@@ -308,10 +308,10 @@ mod tests {
         let handle = handle_for(&dir)?;
         let ga: bussard_model::GroupAddress = "3/0/4".parse()?;
 
-        // Duplicate keys: the YAML no longer parses.
+        // Duplicate keys: the TOML no longer parses.
         std::fs::write(
             dir.join("groups.toml"),
-            "groups:\n  \"3/0/4\":\n    name: a\n  \"3/0/4\":\n    name: b\n",
+            "project = \"a\"\nproject = \"b\"\ngroups = [{ address = \"3/0/4\", name = \"a\" }]\n",
         )?;
         let model = handle.refresh();
         assert!(
@@ -330,7 +330,7 @@ mod tests {
         let handle = handle_for(&dir)?;
         std::fs::write(
             dir.join("groups.toml"),
-            "groups:\n  \"3/0/5\":\n    name: Other\n",
+            "groups = [{ address = \"3/0/5\", name = \"Other\" }]\n",
         )?;
         let version = handle.install(Model::load(&dir)?);
         assert_eq!(version, 2);
@@ -348,7 +348,7 @@ mod tests {
     fn test_fixed_handle_never_reloads() -> TestResult {
         let dir = model_dir("fixed")?;
         let handle = ModelHandle::fixed(Model::load(&dir)?);
-        std::fs::write(dir.join("groups.toml"), "groups: {}\n")?;
+        std::fs::write(dir.join("groups.toml"), "groups = []\n")?;
         let model = handle.refresh();
         assert_eq!(model.groups.groups.len(), 1);
         assert_eq!(handle.version(), 1);
