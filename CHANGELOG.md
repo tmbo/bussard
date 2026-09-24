@@ -280,10 +280,11 @@ entry supersedes it and is not a diff against it.
 
 ### Known limitations
 
-- KNXnet/IP Secure (encrypted tunnel sessions) is not implemented; a
-  Secure-only interface refuses bussard (#71 Phase B).
-- ETS3-era products shipped only as encrypted `.vd4` files cannot be flashed
-  (#135).
+- KNXnet/IP Secure runs over TCP only, as ETS does with the tested interface;
+  UDP secure sessions are not implemented, and the 30 s keepalive interval is
+  inferred rather than confirmed (#71).
+- ETS3-era products shipped only as encrypted `.vd4` files need the ETS
+  project export as product source (#135).
 - Some Data Secure memory layouts are still inferred rather than confirmed by
   a capture (#71).
 - System 1 and System 2 masks are classified but not programmable; program
