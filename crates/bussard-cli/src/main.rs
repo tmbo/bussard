@@ -133,7 +133,7 @@ fn command_keyring_slot(command: &mut Command) -> Option<&mut Option<PathBuf>> {
 }
 
 /// The model directory of a subcommand that talks to the bus, whose
-/// `bussard.yaml` may name a default keyring (`connection.keyring`, issue
+/// `bussard.toml` may name a default keyring (`connection.keyring`, issue
 /// #189). `init` is left out: it writes that file.
 fn bus_command_dir(command: &Command) -> Option<&std::path::Path> {
     match command {
@@ -182,13 +182,13 @@ fn command_has_tool_key(command: &Command) -> bool {
 }
 
 /// The keyring this invocation uses, if any: the subcommand's `--keyring`,
-/// else `connection.keyring` from its model's `bussard.yaml` (issue #189). The
+/// else `connection.keyring` from its model's `bussard.toml` (issue #189). The
 /// flag is `true` when the keyring came from the config.
 ///
 /// A default from the config is written into the subcommand's `--keyring`
 /// slot, so every consumer (tool keys, group keys, the tunnel) sees one
 /// keyring. A subcommand without a slot (`adopt`, `learn`, `test`), or one
-/// given `--tool-key`, uses it for the tunnel only. A `bussard.yaml` that does
+/// given `--tool-key`, uses it for the tunnel only. A `bussard.toml` that does
 /// not parse is left for the subcommand's own model load to report.
 fn effective_keyring(command: &mut Command) -> Option<(PathBuf, bool)> {
     let configured = bus_command_dir(command).and_then(|dir| {
@@ -233,7 +233,7 @@ fn setup_secure_tunnel(cli: &mut Cli) -> anyhow::Result<()> {
         })
         .with_context(|| match &keyring {
             Some((path, true)) => format!(
-                "the keyring {} comes from connection.keyring in bussard.yaml (pass --keyring \
+                "the keyring {} comes from connection.keyring in bussard.toml (pass --keyring \
                  to use another one)",
                 path.display()
             ),
@@ -241,7 +241,7 @@ fn setup_secure_tunnel(cli: &mut Cli) -> anyhow::Result<()> {
         })?;
     if let Some((path, true)) = &keyring {
         tracing::info!(
-            "using the keyring {} from connection.keyring in bussard.yaml",
+            "using the keyring {} from connection.keyring in bussard.toml",
             path.display()
         );
     }
@@ -363,7 +363,7 @@ enum Command {
         /// after it and today's date).
         #[arg(value_name = "FILE")]
         file: Option<PathBuf>,
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// Leave the `.bussard/history` snapshots out.
@@ -406,7 +406,7 @@ enum Command {
         /// The last device number to probe (0–255).
         #[arg(long, value_name = "N", default_value_t = 255)]
         to: u8,
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// Emit JSON instead of the table format.
@@ -419,7 +419,7 @@ enum Command {
         /// the tunnel to a secure interface (issue #189), and a device it lists
         /// is identified over KNX Data Secure with its tool key, showing the real
         /// mask (issue #203). Unlisted devices are read in the clear. Default:
-        /// `connection.keyring` in `bussard.yaml`. The password comes from
+        /// `connection.keyring` in `bussard.toml`. The password comes from
         /// `BUSSARD_KEYRING_PASSWORD`.
         #[arg(long, value_name = "FILE")]
         keyring: Option<PathBuf>,
@@ -441,7 +441,7 @@ enum Command {
         /// The address to assign, e.g. `1.1.47` (default: next free on the line).
         #[arg(value_name = "ADDRESS")]
         address: Option<String>,
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// Skip the interactive confirmation (dangerous; for scripts).
@@ -454,7 +454,7 @@ enum Command {
         /// the tunnel to a secure interface (issue #189), and the tool key it
         /// lists for the new (else the old) address verifies a Data
         /// Secure-activated device after the write (issue #203). Default:
-        /// `connection.keyring` in `bussard.yaml`. The password comes from
+        /// `connection.keyring` in `bussard.toml`. The password comes from
         /// `BUSSARD_KEYRING_PASSWORD`.
         #[arg(long, value_name = "FILE")]
         keyring: Option<PathBuf>,
@@ -503,7 +503,7 @@ enum Command {
         /// absent or empty — reconstruction never merges into an existing model.
         #[arg(long, value_name = "DIR", requires = "line")]
         out: Option<PathBuf>,
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         /// In line mode this only supplies connection defaults.
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
@@ -554,7 +554,7 @@ enum Command {
         /// The device to introspect, e.g. `1.1.4`.
         #[arg(value_name = "ADDRESS")]
         address: String,
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// Emit JSON instead of the table format.
@@ -611,7 +611,7 @@ enum Command {
         /// The `.knxprod` or `.knxproj` file to import (positional mode).
         #[arg(value_name = "FILE")]
         file: Option<PathBuf>,
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// Look the `.knxprod` up in the pointer index by order number and
@@ -637,7 +637,7 @@ enum Command {
         /// The vendor `.knxprod` for the new device (else the cached model is used).
         #[arg(long, value_name = "FILE")]
         product: Option<PathBuf>,
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// Skip the interactive confirmation (dangerous; for scripts).
@@ -679,7 +679,7 @@ enum Command {
         /// product's hardware catalogue; exactly one match is required.
         #[arg(long, value_name = "ORDER")]
         order_number: Option<String>,
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// Skip the interactive confirmation (dangerous; for scripts).
@@ -786,7 +786,7 @@ enum Command {
         /// order, and print one summary table (issue #100).
         #[arg(long, value_name = "LINE", conflicts_with = "address")]
         line: Option<String>,
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// The device's vendor `.knxprod`, to read back and decode its parameter
@@ -851,7 +851,7 @@ enum Command {
         /// already finished.
         #[arg(long, requires = "line")]
         resume: bool,
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// Skip the interactive confirmation (dangerous; for scripts).
@@ -917,7 +917,7 @@ enum Command {
         /// `<dir>/vendor/` for an archive carrying the device's order number.
         #[arg(long, value_name = "FILE", requires = "flash")]
         product: Option<PathBuf>,
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// Skip the interactive confirmation (dangerous; for scripts).
@@ -956,7 +956,7 @@ enum Command {
     },
     /// Show what has changed in the model since the last history snapshot.
     Status {
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// Emit the change set as JSON instead of sentences.
@@ -968,7 +968,7 @@ enum Command {
     },
     /// List the model's history snapshots, oldest first.
     History {
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// Emit the list as JSON.
@@ -983,7 +983,7 @@ enum Command {
         /// A second snapshot: show the change from the first one to this one.
         #[arg(value_name = "SNAPSHOT")]
         to: Option<String>,
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
     },
@@ -994,7 +994,7 @@ enum Command {
         /// reverts the last change).
         #[arg(value_name = "SNAPSHOT")]
         snapshot: Option<String>,
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
     },
@@ -1016,7 +1016,7 @@ enum Command {
         /// `<dir>/captures/backups/<UTC timestamp>/`).
         #[arg(long, value_name = "DIR")]
         out: Option<PathBuf>,
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// Emit the manifest as JSON instead of the text summary.
@@ -1059,7 +1059,7 @@ enum Command {
         /// The device to restore, e.g. `1.1.4`.
         #[arg(value_name = "ADDRESS")]
         address: String,
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// Skip the interactive confirmation (dangerous; for scripts).
@@ -1102,7 +1102,7 @@ enum Command {
         /// The vendor `.knxprod` for the replacement device.
         #[arg(long, value_name = "FILE")]
         product: PathBuf,
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// Skip the interactive confirmation (dangerous; for scripts).
@@ -1151,7 +1151,7 @@ enum Command {
     },
     /// Validate the YAML model and report diagnostics.
     Validate {
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// Output format.
@@ -1163,25 +1163,25 @@ enum Command {
         /// The plan file: `rooms: [{floor, room, functions: [...]}]`.
         #[arg(value_name = "PLAN")]
         plan: PathBuf,
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// The addressing scheme (default: `lint.groups.scheme`, else floor-trade-block).
         #[arg(long, value_enum)]
         scheme: Option<SchemeArg>,
-        /// Write to this file instead of `<dir>/groups.yaml`.
+        /// Write to this file instead of `<dir>/groups.toml`.
         #[arg(long, value_name = "FILE")]
         out: Option<PathBuf>,
         /// Emit JSON instead of the table format.
         #[arg(long)]
         json: bool,
-        /// Do not add a matching `lint:` block to `bussard.yaml`.
+        /// Do not add a matching `lint:` block to `bussard.toml`.
         #[arg(long)]
         no_lint_config: bool,
     },
     /// Export the group-address plan in a format ETS can import.
     ExportGroups {
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// The export format.
@@ -1193,7 +1193,7 @@ enum Command {
     },
     /// Render the handover documentation folder from the model.
     Doc {
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// The directory to write the rendered documentation into.
@@ -1208,7 +1208,7 @@ enum Command {
     },
     /// Live-monitor the bus, decoding telegrams against the model.
     Monitor {
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// Emit JSON Lines (for tooling) instead of the pretty text format.
@@ -1236,7 +1236,7 @@ enum Command {
         /// The database file to write (created if absent).
         #[arg(long, value_name = "DB")]
         to: PathBuf,
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// Only capture telegrams matching this filter (see `monitor --filter`).
@@ -1261,7 +1261,7 @@ enum Command {
         /// The group address to read, e.g. `3/2/0`.
         #[arg(value_name = "GA")]
         ga: String,
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// An ETS `.knxkeys` keyring whose group keys secure the read of a secured GA
@@ -1284,7 +1284,7 @@ enum Command {
         /// The value: `on`/`off`, `up`/`down`, a number, a percentage like `75%`, …
         #[arg(value_name = "VALUE")]
         value: String,
-        /// The DPT to encode as (default: the GA's DPT from `groups.yaml`).
+        /// The DPT to encode as (default: the GA's DPT from `groups.toml`).
         #[arg(long, value_name = "DPT")]
         dpt: Option<String>,
         /// Write even if the GA is marked `protected: true` in the model.
@@ -1293,7 +1293,7 @@ enum Command {
         /// Skip the interactive confirmation (dangerous; for scripts).
         #[arg(long)]
         yes: bool,
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// An ETS `.knxkeys` keyring whose group keys secure the write of a secured GA
@@ -1314,7 +1314,7 @@ enum Command {
     },
     /// Generate the Home Assistant KNX integration YAML from the model.
     HaConfig {
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// Output file (default: stdout).
@@ -1326,7 +1326,7 @@ enum Command {
         /// The address to bind the HTTP server to.
         #[arg(long, default_value = "127.0.0.1:8080")]
         listen: SocketAddr,
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// An ETS `.knxkeys` keyring whose group keys secure `POST /api/group-write` to
@@ -1383,7 +1383,7 @@ enum Command {
         /// How long to wait for each telegram, in seconds.
         #[arg(long, value_name = "SECS", default_value_t = 30)]
         timeout: u64,
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// Override the gateway `host[:port]` for tunneling.
@@ -1393,9 +1393,9 @@ enum Command {
         #[arg(long)]
         routing: bool,
     },
-    /// Run the scripted acceptance tests in `tests.yaml` against the bus.
+    /// Run the scripted acceptance tests in `tests.toml` against the bus.
     Test {
-        /// The test file to run (default: `<dir>/tests.yaml`).
+        /// The test file to run (default: `<dir>/tests.toml`).
         #[arg(long, value_name = "FILE")]
         file: Option<PathBuf>,
         /// Emit the report as JSON instead of text.
@@ -1414,7 +1414,7 @@ enum Command {
         /// Skip the confirmation prompt (required for a non-TTY run).
         #[arg(long)]
         yes: bool,
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// Override the gateway `host[:port]` for tunneling.
@@ -1427,7 +1427,7 @@ enum Command {
         /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
         #[arg(long)]
         allow_remote_gateway: bool,
-        /// Instead of running `tests.yaml`: open a KNXnet/IP Secure session,
+        /// Instead of running `tests.toml`: open a KNXnet/IP Secure session,
         /// stay idle (no keepalive, no tunnel) for SECS seconds, and report
         /// whether the interface dropped it (issue #197). Read-only: nothing
         /// is written to the bus and no tunnel slot is taken.
@@ -1438,7 +1438,7 @@ enum Command {
     /// per device mask, KNX Secure coverage; with `--live`, the gateway's tunnel
     /// slots, a traffic sample and a scan of the modelled devices. Read-only.
     Audit {
-        /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
         /// Emit one JSON object instead of the sectioned text report.

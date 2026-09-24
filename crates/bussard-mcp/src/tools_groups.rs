@@ -57,7 +57,7 @@ impl BussardMcp {
     /// `knx_scaffold_groups`.
     #[tool(
         description = "Draft or extend the project's group-address plan from a list of rooms and \
-                       the functions each room needs, writing groups.yaml. Reserves the \
+                       the functions each room needs, writing groups.toml. Reserves the \
                        conventional block per function (five addresses for a light, ten for a \
                        blind or heating zone), names every address `<Floor> <Room> <Function> \
                        <Role>`, fills the DPTs, and leaves the remaining slots free for growth. \
@@ -108,11 +108,11 @@ impl BussardMcp {
             None
         };
 
-        let groups_path = state.dir.join("groups.yaml");
+        let groups_path = state.dir.join("groups.toml");
         let report = scaffold::scaffold_file(&groups_path, &plan, scheme)
             .map_err(|e| ErrorData::internal_error(format!("scaffolding failed: {e}"), None))?;
 
-        let config_path = state.dir.join("bussard.yaml");
+        let config_path = state.dir.join("bussard.toml");
         let lint_written = scaffold::ensure_lint_config(&config_path, scheme, &report.trades_used)
             .map_err(|e| {
                 ErrorData::internal_error(format!("writing the lint config failed: {e}"), None)

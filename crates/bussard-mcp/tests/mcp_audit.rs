@@ -205,10 +205,10 @@ async fn test_knx_audit_live_probes_secure_devices() -> TestResult {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("devices"))?;
     std::fs::write(
-        dir.join("bussard.yaml"),
+        dir.join("bussard.toml"),
         "connection:\n  transport: tunnel\n",
     )?;
-    std::fs::write(dir.join("groups.yaml"), "groups: {}\n")?;
+    std::fs::write(dir.join("groups.toml"), "groups: {}\n")?;
     std::fs::write(dir.join("links.yaml"), "links: {}\n")?;
     for (addr, activated) in [("1.1.12", true), ("1.1.13", false)] {
         std::fs::write(

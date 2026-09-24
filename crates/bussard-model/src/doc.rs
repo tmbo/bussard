@@ -70,7 +70,7 @@ pub struct DocFile {
     pub content: String,
 }
 
-/// The connection details, taken from `bussard.yaml`.
+/// The connection details, taken from `bussard.toml`.
 ///
 /// Carries the gateway endpoint only. bussard never stores credentials in the
 /// model, and this projection would be the one place they could leak into a
@@ -91,7 +91,7 @@ pub struct ConnectionDoc {
 pub struct GroupRef {
     /// The group address, e.g. `1/0/10`.
     pub address: String,
-    /// The group's display name, when `groups.yaml` names it.
+    /// The group's display name, when `groups.toml` names it.
     pub name: Option<String>,
 }
 
@@ -253,7 +253,7 @@ pub struct ChangeEntry {
 /// it without re-deriving anything.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct InstallationDoc {
-    /// The project name from `groups.yaml`, when it carries one.
+    /// The project name from `groups.toml`, when it carries one.
     pub project: Option<String>,
     /// The connection details, credentials excluded.
     pub connection: ConnectionDoc,
@@ -454,7 +454,7 @@ impl InstallationDoc {
         let _ = writeln!(out, "# Connection\n");
         let _ = writeln!(
             out,
-            "How bussard reaches the bus, from `bussard.yaml`. No credentials are \
+            "How bussard reaches the bus, from `bussard.toml`. No credentials are \
              recorded here or anywhere else in the model: keyring passwords, tool \
              keys and BCU keys live outside it.\n"
         );

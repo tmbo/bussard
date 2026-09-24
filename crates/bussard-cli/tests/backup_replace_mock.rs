@@ -498,7 +498,7 @@ fn text(out: &Output) -> (String, String) {
 fn write_model(dir: &Path, extra: &[(&str, &str)]) -> TestResult {
     std::fs::create_dir_all(dir.join("devices"))?;
     std::fs::write(
-        dir.join("bussard.yaml"),
+        dir.join("bussard.toml"),
         "connection:\n  transport: tunnel\n",
     )?;
     std::fs::write(

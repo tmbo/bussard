@@ -83,7 +83,7 @@ fn written(gw: &MockGateway) -> TestResult<Vec<String>> {
 fn write_fixture(dir: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     std::fs::write(
-        dir.join("groups.yaml"),
+        dir.join("groups.toml"),
         "groups:\n\
          \x20 \"1/0/10\":\n    name: Kitchen ceiling light\n    dpt: \"1.001\"\n\
          \x20 \"1/0/11\":\n    name: Hall light\n    dpt: \"1.001\"\n\
@@ -93,7 +93,7 @@ fn write_fixture(dir: &std::path::Path) -> std::io::Result<()> {
     )?;
     std::fs::write(dir.join("links.yaml"), "links: {}\n")?;
     std::fs::write(
-        dir.join("tests.yaml"),
+        dir.join("tests.toml"),
         "tests:\n\
          \x20 - name: Kitchen light switches and reports\n\
          \x20   write: { ga: \"1/0/10\", value: on }\n\

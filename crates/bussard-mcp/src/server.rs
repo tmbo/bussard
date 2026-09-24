@@ -127,7 +127,7 @@ pub struct WriteArgs {
     /// Interpreted according to the resolved DPT.
     pub value: String,
     /// Override the DPT to encode as (e.g. `"1.001"`). Defaults to the GA's DPT
-    /// from `groups.yaml`.
+    /// from `groups.toml`.
     #[serde(default)]
     pub dpt: Option<String>,
 }
@@ -620,7 +620,7 @@ impl BussardMcp {
             .parse()
             .map_err(|_| invalid(format!("invalid group address {:?}", args.ga)))?;
 
-        // Read the model through the handle, so an edit made to `groups.yaml`
+        // Read the model through the handle, so an edit made to `groups.toml`
         // during the session (a `protected:` added, a `dpt:` corrected) is in
         // force on the very next write rather than after a restart.
         let model = self.state.model.current();
@@ -716,7 +716,7 @@ fn write_refusal_json(ga: GroupAddress, refusal: &WriteRefusal) -> Value {
             true,
             format!(
                 "GA {ga} is declared as DPT {declared} in the model; refusing to write it \
-                 as {requested}. Correct groups.yaml if the model is wrong — the model \
+                 as {requested}. Correct groups.toml if the model is wrong — the model \
                  is the source of truth, not the caller"
             ),
         ),

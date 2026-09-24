@@ -1,6 +1,6 @@
-//! The optional `ha.yaml` overrides file.
+//! The optional `ha.toml` overrides file.
 //!
-//! `ha.yaml` lives alongside the model (in the same directory passed to
+//! `ha.toml` lives alongside the model (in the same directory passed to
 //! `bussard ha-config`). It is entirely optional: when absent, an empty set of
 //! overrides is used and derivation runs on heuristics alone. When present it is
 //! parsed *strictly* — unknown fields and duplicate keys are rejected — so a
@@ -9,7 +9,7 @@
 //! # Format
 //!
 //! ```yaml
-//! # ha.yaml — overrides for `bussard ha-config`.
+//! # ha.toml — overrides for `bussard ha-config`.
 //! global:
 //!   # Whether a plain switchable actuator becomes a `switch` (default) or a
 //!   # `light` entity.
@@ -49,7 +49,7 @@ use std::path::Path;
 use bussard_model::GroupAddress;
 use serde::Deserialize;
 
-/// A parse error for `ha.yaml`.
+/// A parse error for `ha.toml`.
 #[derive(Debug, thiserror::Error)]
 pub enum OverridesError {
     /// An I/O error reading the file.
@@ -91,7 +91,7 @@ pub enum SwitchPlatform {
     Light,
 }
 
-/// The full contents of a parsed `ha.yaml`.
+/// The full contents of a parsed `ha.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Overrides {
@@ -168,11 +168,11 @@ pub enum PlatformOverride {
 }
 
 impl Overrides {
-    /// Loads `ha.yaml` from `dir`, returning defaults when the file is absent.
+    /// Loads `ha.toml` from `dir`, returning defaults when the file is absent.
     ///
     /// Parsing is strict: duplicate keys and unknown fields are rejected.
     pub fn load(dir: &Path) -> Result<Self, OverridesError> {
-        let path = dir.join("ha.yaml");
+        let path = dir.join("ha.toml");
         if !path.exists() {
             return Ok(Self::default());
         }
@@ -183,7 +183,7 @@ impl Overrides {
         Self::parse(&path.display().to_string(), &text)
     }
 
-    /// Parses `ha.yaml` text, rejecting duplicate keys and unknown fields.
+    /// Parses `ha.toml` text, rejecting duplicate keys and unknown fields.
     pub fn parse(path: &str, text: &str) -> Result<Self, OverridesError> {
         // Stage 1: parse into an untyped value (rejects duplicate keys).
         let value: serde_norway::Value =
@@ -261,7 +261,7 @@ entities:
   "3/1/5":
     merge: ["3/1/6"]
 "#;
-        let ov = Overrides::parse("ha.yaml", text).unwrap();
+        let ov = Overrides::parse("ha.toml", text).unwrap();
         assert_eq!(
             ov.global.default_platform_for_switches,
             SwitchPlatform::Light
@@ -281,7 +281,7 @@ entities:
     fn rejects_unknown_field() {
         let text = "global:\n  bogus: 1\n";
         assert!(matches!(
-            Overrides::parse("ha.yaml", text),
+            Overrides::parse("ha.toml", text),
             Err(OverridesError::Schema { .. })
         ));
     }
@@ -290,7 +290,7 @@ entities:
     fn rejects_duplicate_key() {
         let text = "entities:\n  \"1/0/1\": {}\n  \"1/0/1\": {}\n";
         assert!(matches!(
-            Overrides::parse("ha.yaml", text),
+            Overrides::parse("ha.toml", text),
             Err(OverridesError::Yaml { .. })
         ));
     }
@@ -298,7 +298,7 @@ entities:
     #[test]
     fn prefix_exclusion_respects_boundaries() {
         let text = "global:\n  exclude:\n    - \"1/\"\n";
-        let ov = Overrides::parse("ha.yaml", text).unwrap();
+        let ov = Overrides::parse("ha.toml", text).unwrap();
         assert!(ov.is_excluded(ga("1/0/0")));
         assert!(ov.is_excluded(ga("1/7/255")));
         // main group 10 must not be caught by the "1/" prefix.

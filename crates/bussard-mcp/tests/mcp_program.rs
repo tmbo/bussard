@@ -82,7 +82,7 @@ fn write_model(dir: &Path) -> anyhow::Result<()> {
         "address: 1.1.4\nname: Jalousie Wohnen\n",
     )?;
     std::fs::write(
-        dir.join("groups.yaml"),
+        dir.join("groups.toml"),
         "groups:\n  1/2/0:\n    name: Blind move\n  1/2/1:\n    name: Blind stop\n  1/2/2:\n    name: Blind position\n",
     )?;
     std::fs::write(

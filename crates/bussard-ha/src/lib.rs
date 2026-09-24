@@ -13,7 +13,7 @@
 //! is reported in a commented summary at the end of the output rather than
 //! being silently dropped.
 //!
-//! An optional `ha.yaml` file in the model directory ([`overrides`]) tunes the
+//! An optional `ha.toml` file in the model directory ([`overrides`]) tunes the
 //! result: exclusions, switch↔light promotion, name and device_class overrides,
 //! and merging extra GAs onto an entity.
 //!

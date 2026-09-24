@@ -13,10 +13,10 @@ use bussard_model::history::{History, SnapshotReason};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-/// The `groups.yaml` the baseline snapshot holds.
+/// The `groups.toml` the baseline snapshot holds.
 const BASE_GROUPS: &str = "groups:\n  \"0/0/4\":\n    name: Porch light\n    dpt: \"1.001\"\n";
 
-/// The `groups.yaml` after the edit under test.
+/// The `groups.toml` after the edit under test.
 const EDITED_GROUPS: &str = "groups:\n  \"0/0/4\":\n    name: Front light\n    dpt: \"1.001\"\n";
 
 /// A fresh temporary model directory.
@@ -28,7 +28,7 @@ fn model_dir(tag: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("devices"))?;
-    std::fs::write(dir.join("groups.yaml"), BASE_GROUPS)?;
+    std::fs::write(dir.join("groups.toml"), BASE_GROUPS)?;
     std::fs::write(dir.join("links.yaml"), "links: {}\n")?;
     Ok(dir)
 }
@@ -70,7 +70,7 @@ fn test_status_history_show_and_undo_round_trip() -> TestResult {
     history.snapshot(SnapshotReason::new("import").with_args(["home.knxproj"]))?;
 
     // An edit nobody has pushed anywhere yet.
-    std::fs::write(dir.join("groups.yaml"), EDITED_GROUPS)?;
+    std::fs::write(dir.join("groups.toml"), EDITED_GROUPS)?;
 
     let out = run(&dir, &["status"])?;
     assert!(
@@ -88,7 +88,7 @@ fn test_status_history_show_and_undo_round_trip() -> TestResult {
 
     // `--raw` is the file-level view for the people who do read YAML.
     let out = run(&dir, &["status", "--raw"])?;
-    assert!(out.contains("--- snapshot/groups.yaml"), "{out}");
+    assert!(out.contains("--- snapshot/groups.toml"), "{out}");
     assert!(out.contains("+    name: Front light"), "{out}");
 
     // A second snapshot, so there is something to undo back to.
@@ -119,7 +119,7 @@ fn test_status_history_show_and_undo_round_trip() -> TestResult {
         "undo must point at plan/apply: {out}"
     );
     assert_eq!(
-        std::fs::read_to_string(dir.join("groups.yaml"))?,
+        std::fs::read_to_string(dir.join("groups.toml"))?,
         BASE_GROUPS
     );
 
@@ -128,7 +128,7 @@ fn test_status_history_show_and_undo_round_trip() -> TestResult {
     let out = run(&dir, &["undo"])?;
     assert!(out.contains("now called \"Front light\""), "{out}");
     assert_eq!(
-        std::fs::read_to_string(dir.join("groups.yaml"))?,
+        std::fs::read_to_string(dir.join("groups.toml"))?,
         EDITED_GROUPS
     );
 
@@ -158,7 +158,7 @@ fn test_history_snapshots_never_hold_product_data_or_captures() -> TestResult {
         names,
         vec![
             "devices".to_string(),
-            "groups.yaml".to_string(),
+            "groups.toml".to_string(),
             "links.yaml".to_string(),
             "manifest.json".to_string(),
         ],

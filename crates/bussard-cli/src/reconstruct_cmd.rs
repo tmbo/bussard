@@ -300,14 +300,14 @@ fn print_text(report: &Report) {
 // connection at a time, progress on stderr), reads every System B device's
 // tables, and synthesizes a fresh, ETS-less model into `--out`:
 //
-//   groups.yaml            — every GA seen across all tables, placeholder names,
+//   groups.toml            — every GA seen across all tables, placeholder names,
 //                            no DPT (validation warns W011; that is honest).
 //   links.yaml             — object → GA sets. Direction is unrecoverable from
 //                            the tables, so every GA is recorded as `listen:`.
 //   devices/<ia>-reconstructed.yaml — mask + best-effort product block; a
 //                            minimal `com_objects:` stub per linked object so
 //                            the model validates (the flags/DPTs are placeholders).
-//   bussard.yaml           — the connection actually used for the sweep.
+//   bussard.toml           — the connection actually used for the sweep.
 //
 // Every synthesized file carries a reconstruction banner injected after
 // `Model::save` (which emits its own import-oriented headers) that says the
@@ -329,7 +329,7 @@ const RECONSTRUCT_BANNER: &str = "\
 # not ground truth:
 #   • GA and com-object names are placeholders — annotate them (watch the bus
 #     with `bussard monitor`, then name what you observe).
-#   • DPTs are unknown (groups.yaml carries no `dpt:`; validation warns W011).
+#   • DPTs are unknown (groups.toml carries no `dpt:`; validation warns W011).
 #   • send/listen DIRECTION is not recoverable from these tables (the transmit
 #     flag lives in the group object table), so every GA is recorded as `listen:`.
 #   • com-object flags are placeholder `CW` stubs so the model validates.
@@ -630,13 +630,13 @@ fn placeholder_flags() -> Flags {
 
 /// Synthesizes a fresh [`Model`] from the swept devices.
 ///
-/// - `groups.yaml`: every GA seen across all read tables, named
+/// - `groups.toml`: every GA seen across all read tables, named
 ///   `GA <addr> (reconstructed)`, no DPT.
 /// - `links.yaml`: object → GA set per device, every GA as `listen:` (direction
 ///   is unrecoverable).
 /// - `devices/<ia>-reconstructed.yaml`: mask + best-effort product block; a
 ///   placeholder `com_objects:` stub per linked object so validation passes.
-/// - `bussard.yaml`: the connection actually used for the sweep.
+/// - `bussard.toml`: the connection actually used for the sweep.
 fn synthesize_model(found: &[LineDevice], overrides: &ConnOverrides, dir: &Path) -> Model {
     let mut groups: BTreeMap<GroupAddress, Group> = BTreeMap::new();
     let mut links: BTreeMap<IndividualAddress, Vec<Link>> = BTreeMap::new();
@@ -657,7 +657,7 @@ fn synthesize_model(found: &[LineDevice], overrides: &ConnOverrides, dir: &Path)
                     .or_insert_with(|| reconstructed_group(link.ga));
             }
             // Also register any address-table GA that carried no association, so
-            // groups.yaml is the honest union of everything seen.
+            // groups.toml is the honest union of everything seen.
             for ga in &tables.addresses {
                 groups
                     .entry(*ga)
@@ -786,7 +786,7 @@ fn build_product(dev: &LineDevice) -> Option<Product> {
     })
 }
 
-/// Builds the `bussard.yaml` config recording the connection actually used.
+/// Builds the `bussard.toml` config recording the connection actually used.
 fn model_config(overrides: &ConnOverrides, dir: &Path) -> BussardConfig {
     // Reuse the resolved transport shape. Fall back to the input model's config
     // for the gateway/multicast text when no override was given.
@@ -826,8 +826,8 @@ fn model_config(overrides: &ConnOverrides, dir: &Path) -> BussardConfig {
 /// one-shot save: the banner is added exactly once here.
 fn inject_reconstruct_banners(out: &Path) -> anyhow::Result<()> {
     let mut files = vec![
-        out.join("bussard.yaml"),
-        out.join("groups.yaml"),
+        out.join("bussard.toml"),
+        out.join("groups.toml"),
         out.join("links.yaml"),
     ];
     let devices_dir = out.join("devices");
@@ -933,7 +933,7 @@ fn print_line_summary(s: &LineSummary) {
         "  • names & DPTs are placeholders — run `bussard monitor --dir {}` to observe live",
         s.out
     );
-    println!("    traffic and name what each GA does; add `dpt:` in groups.yaml as you learn it.");
+    println!("    traffic and name what each GA does; add `dpt:` in groups.toml as you learn it.");
     println!(
         "  • send/listen direction is unknown (all GAs recorded as listen) — correct it as you"
     );

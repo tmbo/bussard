@@ -267,7 +267,7 @@ fn empty_directory_loads_empty_model() {
 #[test]
 fn a_yaml_only_directory_is_refused() {
     let dir = tmp("yaml");
-    write(&dir, "groups.yaml", b"groups: {}\n");
+    write(&dir, "groups.toml", b"groups: {}\n");
     let err = Model::load(&dir).expect_err("the YAML model is not read any more");
     assert!(err.to_string().contains("YAML model"), "{err}");
     let _ = fs::remove_dir_all(&dir);

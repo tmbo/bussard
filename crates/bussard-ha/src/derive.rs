@@ -596,7 +596,7 @@ fn derive_climate(
         // target-temperature are deliberately NOT wired (no HA key invites a
         // temperature change); the room temperature and the valve position stay
         // as read-only telemetry. See docs/ha-config.md for the rationale and how
-        // an ha.yaml override could re-enable setpoint wiring for a different
+        // an ha.toml override could re-enable setpoint wiring for a different
         // installation.
         let operation_mode_address = slot(ClimateRole::ModeCommand);
 
@@ -963,7 +963,7 @@ fn binary_sensor_device_class(dpt: Dpt, name: &str) -> Option<String> {
 
 /// Builds an entity name for the entity whose primary GA is `ga`.
 ///
-/// Prefers the group address's own name from `groups.yaml` (the human label the
+/// Prefers the group address's own name from `groups.toml` (the human label the
 /// user gave the GA — the most descriptive source); falls back to the device
 /// name when the GA is unnamed.
 fn entity_name(device: &Device, model: &Model, ga: GroupAddress) -> String {

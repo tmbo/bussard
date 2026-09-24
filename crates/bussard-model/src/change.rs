@@ -39,9 +39,9 @@ use crate::schema::{Device, Group, Location, Product};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChangeKind {
-    /// A group address was added to `groups.yaml`.
+    /// A group address was added to `groups.toml`.
     GroupAdded,
-    /// A group address was removed from `groups.yaml`.
+    /// A group address was removed from `groups.toml`.
     GroupRemoved,
     /// A group address kept its address but changed name.
     GroupRenamed,
@@ -69,7 +69,7 @@ pub enum ChangeKind {
     ParameterChanged,
     /// A device channel's display name changed.
     ChannelRenamed,
-    /// The connection block of `bussard.yaml` changed.
+    /// The connection block of `bussard.toml` changed.
     ConnectionChanged,
 }
 
@@ -443,7 +443,7 @@ fn value_or_nothing(value: Option<&str>) -> String {
 // The connection block.
 // ---------------------------------------------------------------------------
 
-/// Renders changes to `bussard.yaml`'s `connection:` block.
+/// Renders changes to `bussard.toml`'s `connection:` block.
 fn describe_connection(old: &Model, new: &Model, out: &mut Vec<Change>) {
     let (a, b) = (&old.config.connection, &new.config.connection);
     if a.transport != b.transport {
@@ -497,7 +497,7 @@ fn transport_label(transport: crate::schema::Transport) -> &'static str {
 // Group addresses.
 // ---------------------------------------------------------------------------
 
-/// Renders every difference in `groups.yaml`, by address.
+/// Renders every difference in `groups.toml`, by address.
 fn describe_groups(old: &Model, new: &Model, out: &mut Vec<Change>) {
     let models = [new, old];
     let addresses: BTreeSet<GroupAddress> = old
@@ -637,7 +637,7 @@ fn group_field_changes(
 // Devices.
 // ---------------------------------------------------------------------------
 
-/// Renders every difference in `devices/*.yaml`, by individual address.
+/// Renders every difference in `devices/*.toml`, by individual address.
 fn describe_devices(old: &Model, new: &Model, out: &mut Vec<Change>) {
     let models = [new, old];
     let addresses: BTreeSet<IndividualAddress> = old

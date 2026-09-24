@@ -5,7 +5,7 @@
 //! carry, how much bus current a power supply can deliver, or which group
 //! address a given function is supposed to live at. Those rules are project
 //! policy, not KNX law, so they are **opt-in**: nothing here fires until a
-//! `lint:` block appears in `bussard.yaml`.
+//! `lint:` block appears in `bussard.toml`.
 //!
 //! ```yaml
 //! lint:
@@ -34,7 +34,7 @@ use crate::param_model::ProductModels;
 use crate::scaffold::{Scheme, TradeSpec, trade_by_index};
 use crate::validate::{Diagnostic, Severity};
 
-/// The `lint:` block of `bussard.yaml`. Absent means no lints run.
+/// The `lint:` block of `bussard.toml`. Absent means no lints run.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct LintConfig {
@@ -85,7 +85,7 @@ pub struct GroupsLint {
 
 /// Runs the opt-in lints over a model.
 ///
-/// Returns an empty list when `bussard.yaml` has no `lint:` block. `models` is
+/// Returns an empty list when `bussard.toml` has no `lint:` block. `models` is
 /// the product cache; without it the bus-current lint (`L002`) is skipped, since
 /// the per-device current lives only in the generated `models/*.yaml`.
 pub fn lint(model: &Model, models: Option<&ProductModels>) -> Vec<Diagnostic> {

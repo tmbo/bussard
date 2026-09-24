@@ -4,7 +4,7 @@
 //! gateways will not multiplex connection-oriented sessions), reading each
 //! responding device's mask version, manufacturer, serial and order info. When a
 //! model directory is present it cross-references the discovered devices against
-//! `devices/*.yaml`: which are known, which are unexpected, and which model
+//! `devices/*.toml`: which are known, which are unexpected, and which model
 //! devices did not answer. That delta is the command's real value.
 //!
 //! The address range can be narrowed with `--from`/`--to` (defaults `0`/`255`),
@@ -158,7 +158,7 @@ struct Report {
     /// Whether a model was loaded at all (drives cross-reference columns).
     have_model: bool,
     /// The number of devices in the loaded model's inventory. Zero with
-    /// `have_model` true means a model loaded but has no `devices/*.yaml` — the
+    /// `have_model` true means a model loaded but has no `devices/*.toml` — the
     /// missing/known cross-reference is then vacuous and must not be reported as
     /// "all model devices responded" (issue #30).
     model_device_count: usize,
@@ -475,7 +475,7 @@ fn print_table(report: &Report) {
             // A model loaded but has no device inventory: the cross-reference is
             // vacuous. Say so rather than the misleading "all responded" (#30).
             println!(
-                "model has no device inventory (no devices/*.yaml); cannot cross-reference — run `bussard import` or add device files"
+                "model has no device inventory (no devices/*.toml); cannot cross-reference — run `bussard import` or add device files"
             );
         } else {
             println!("{} not in model", report.not_in_model.len());

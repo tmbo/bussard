@@ -5,7 +5,7 @@
 //! MCP (`knx_wait_for_telegram` then `knx_infer_group`). It asks the operator to
 //! trigger the object they want to name, waits for the telegram, shows who sent
 //! it and what the payload could mean, proposes a name, and writes the accepted
-//! answer into `groups.yaml` (and `links.yaml` when the sending com object can
+//! answer into `groups.toml` (and `links.yaml` when the sending com object can
 //! be identified).
 //!
 //! # It never transmits

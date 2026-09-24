@@ -140,7 +140,7 @@ pub struct BinarySensor {
 /// control and temperature/valve are read-only telemetry; the setpoint-shift and
 /// target-temperature fields are part of the schema but left unwired by the
 /// derivation (see `derive::derive_climate` and docs/ha-config.md). They remain
-/// on the struct so an `ha.yaml` override can populate them for installations
+/// on the struct so an `ha.toml` override can populate them for installations
 /// that do per-room setpoint control.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Climate {

@@ -3,7 +3,7 @@
 //! Before issue #86 each command carried its own copy of the same twenty
 //! lines. The rule they all implement: `--yes` skips the prompt; a non-TTY
 //! without `--yes` is refused, because a scripted write must opt in explicitly
-//! rather than fire blind at whatever gateway `bussard.yaml` names (issue #74);
+//! rather than fire blind at whatever gateway `bussard.toml` names (issue #74);
 //! on a TTY the question goes to stderr and only `y`/`yes` proceeds.
 
 use std::io::{IsTerminal, Write};

@@ -1,6 +1,6 @@
 //! The `bussard ha-config` subcommand — Home Assistant KNX config generation.
 //!
-//! Loads the model (and optional `ha.yaml` overrides) from `dir`, derives the
+//! Loads the model (and optional `ha.toml` overrides) from `dir`, derives the
 //! Home Assistant `knx:` entities heuristically, and writes the YAML to `out`
 //! (or stdout when `out` is `None`).
 

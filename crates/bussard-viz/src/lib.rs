@@ -65,7 +65,7 @@ use crate::traffic::TrafficHub;
 
 /// Configuration for the viz server.
 pub struct VizConfig {
-    /// The model directory to load (`bussard.yaml`, `groups.yaml`, …).
+    /// The model directory to load (`bussard.toml`, `groups.toml`, …).
     pub dir: PathBuf,
     /// The address to bind the HTTP listener to.
     pub listen: SocketAddr,
@@ -950,15 +950,15 @@ mod tests {
         }
     }
 
-    /// Writes a valid one-group `groups.yaml` into `dir`.
+    /// Writes a valid one-group `groups.toml` into `dir`.
     fn write_valid_groups(dir: &Path) {
-        let mut f = std::fs::File::create(dir.join("groups.yaml")).expect("create groups.yaml");
+        let mut f = std::fs::File::create(dir.join("groups.toml")).expect("create groups.toml");
         // A single declared group with a DPT and a name.
         writeln!(
             f,
             "groups:\n  3/0/4:\n    name: Living Room Blind\n    dpt: \"1.008\""
         )
-        .expect("write groups.yaml");
+        .expect("write groups.toml");
     }
 
     /// A POST request with no body to `uri`.
@@ -998,7 +998,7 @@ mod tests {
     #[tokio::test]
     async fn test_reload_broken_yaml_422_keeps_old_model() -> Result<(), Box<dyn std::error::Error>>
     {
-        // Load a good one-group model, then corrupt groups.yaml on disk and
+        // Load a good one-group model, then corrupt groups.toml on disk and
         // reload: the response is 422 model_invalid and the old model survives.
         let tmp = tempfile::tempdir()?;
         write_valid_groups(tmp.path());
@@ -1007,7 +1007,7 @@ mod tests {
         assert_eq!(state.model.current().json["stats"]["groups"], 1);
 
         // Corrupt the file: not valid YAML for the Groups schema.
-        std::fs::write(tmp.path().join("groups.yaml"), b": : not yaml : :\n")?;
+        std::fs::write(tmp.path().join("groups.toml"), b": : not yaml : :\n")?;
 
         let handle = state.model.clone();
         let (status, body) = call(state, empty_post("/api/reload")).await;
@@ -1017,7 +1017,7 @@ mod tests {
             json(&body)["error"]["message"]
                 .as_str()
                 .unwrap_or_default()
-                .contains("groups.yaml"),
+                .contains("groups.toml"),
             "the rich LoadError names the offending file: {}",
             String::from_utf8_lossy(&body)
         );

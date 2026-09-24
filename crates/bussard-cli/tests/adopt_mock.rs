@@ -210,7 +210,7 @@ fn write_model(dir: &std::path::Path) -> std::io::Result<()> {
         "address: 1.1.4\nname: Rollladen Wohnzimmer\n",
     )?;
     std::fs::write(
-        dir.join("bussard.yaml"),
+        dir.join("bussard.toml"),
         "connection:\n  transport: tunnel\n",
     )
 }

@@ -249,11 +249,11 @@ fn line_mode_synthesizes_a_valid_model() -> TestResult {
     // The synthesized model loads.
     let model = Model::load(&out).map_err(|e| format!("synthesized model must load: {e}"))?;
 
-    // groups.yaml has every GA read from both System B devices (5 total).
+    // groups.toml has every GA read from both System B devices (5 total).
     for g in ["1/2/0", "1/2/1", "1/2/2", "3/1/0", "3/1/1"] {
         assert!(
             model.groups.groups.contains_key(&ga(g)?),
-            "GA {g} must be in groups.yaml; have {:?}",
+            "GA {g} must be in groups.toml; have {:?}",
             model.groups.groups.keys().collect::<Vec<_>>()
         );
     }
@@ -305,10 +305,10 @@ fn line_mode_synthesizes_a_valid_model() -> TestResult {
     );
 
     // The synthesized files carry the reconstruction banner.
-    let groups_txt = std::fs::read_to_string(out.join("groups.yaml"))?;
+    let groups_txt = std::fs::read_to_string(out.join("groups.toml"))?;
     assert!(
         groups_txt.contains("RECONSTRUCTED from on-device table read-back"),
-        "groups.yaml must carry the reconstruction banner:\n{groups_txt}"
+        "groups.toml must carry the reconstruction banner:\n{groups_txt}"
     );
     let links_txt = std::fs::read_to_string(out.join("links.yaml"))?;
     assert!(
@@ -343,7 +343,7 @@ fn line_mode_refuses_a_non_empty_out() -> TestResult {
     ));
     let out = tmp.join("existing");
     std::fs::create_dir_all(&out)?;
-    std::fs::write(out.join("groups.yaml"), "groups: {}\n")?;
+    std::fs::write(out.join("groups.toml"), "groups: {}\n")?;
 
     let output = run_reconstruct_line(port, &out, &[])?;
     drop(gw);
@@ -359,7 +359,7 @@ fn line_mode_refuses_a_non_empty_out() -> TestResult {
     );
     // The existing file is untouched.
     assert_eq!(
-        std::fs::read_to_string(out.join("groups.yaml"))?,
+        std::fs::read_to_string(out.join("groups.toml"))?,
         "groups: {}\n"
     );
 

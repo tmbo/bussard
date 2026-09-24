@@ -191,7 +191,7 @@ async fn tools_list_in_passive_mode() -> TestResult {
     assert!(names.contains(&"knx_project_summary".to_string()));
     assert!(
         !names.contains(&"knx_scaffold_groups".to_string()),
-        "scaffold writes groups.yaml, so --no-model-edits withholds it"
+        "scaffold writes groups.toml, so --no-model-edits withholds it"
     );
     assert!(names.contains(&"knx_diff_project".to_string()));
     assert!(

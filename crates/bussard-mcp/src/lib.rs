@@ -24,12 +24,12 @@
 //! | `knx_wait_for_telegram` | Block for the next matching telegram ("press the button now"). |
 //! | `knx_validate` | Model validation diagnostics as JSON. |
 //! | `knx_audit` | Installation audit: model gaps, one-sided links, mask capabilities, Secure devices; with `live`, tunnel slots and a traffic sample (live refused in `--passive`). |
-//! | `knx_scaffold_groups` | Draft or extend `groups.yaml` from a room and function list. |
+//! | `knx_scaffold_groups` | Draft or extend `groups.toml` from a room and function list. |
 //! | `knx_read_group` | Send a GroupValueRead and return the value (omitted in `--passive`). |
 //! | `knx_describe_device` | Introspect a device: enumerate its interface objects and each property's description (omitted in `--passive`). |
 //! | `knx_infer_group` | Infer a GA's DPT and a proposed name from the traffic seen on it (issue #95). |
 //! | `knx_write_group` | Send a GroupValueWrite (registered only with `--allow-writes`). |
-//! | `knx_run_tests` | Run the model directory's `tests.yaml` against the bus (registered only with `--allow-writes`). |
+//! | `knx_run_tests` | Run the model directory's `tests.toml` against the bus (registered only with `--allow-writes`). |
 //! | `knx_describe_change` | Pending or between-snapshot model changes, as plain sentences. |
 //! | `knx_history` | The model's history snapshots with a one-line summary each. |
 //! | `knx_set_group` | Create or update a group address (refuses to rename or retype a protected one). |
@@ -45,7 +45,7 @@
 //! The eight from `knx_describe_change` to `knx_undo` are model tools: they
 //! read and write YAML files under the model directory and never touch the bus,
 //! so they are available in every tier including `--passive`. The six that
-//! edit, and `knx_scaffold_groups`, which writes `groups.yaml`, are withheld by
+//! edit, and `knx_scaffold_groups`, which writes `groups.toml`, are withheld by
 //! `--no-model-edits`. Every edit snapshots first, validates after, and returns
 //! the change as sentences for the caller to quote to the human. The last two
 //! only read the model (the export writes one file outside it) and are

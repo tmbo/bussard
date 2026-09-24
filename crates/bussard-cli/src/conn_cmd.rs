@@ -1,7 +1,7 @@
 //! Shared connection setup for every bus-facing command.
 //!
 //! Resolves a [`ConnectionConfig`] from an optional model directory's
-//! `bussard.yaml` plus command-line overrides, and loads the model (warning and
+//! `bussard.toml` plus command-line overrides, and loads the model (warning and
 //! continuing when the directory is absent). It also holds the two pre-flight
 //! gates every device command runs: the non-loopback write gate
 //! ([`enforce_write_gate`]) and the source-address check ([`checked_source`]).
@@ -214,13 +214,13 @@ pub fn load_model_optional(dir: &Path) -> Option<Model> {
 ///
 /// * The model directory is **absent** — a fresh project. Returns `Ok(None)`;
 ///   the caller proceeds unmodeled (a `write --dpt` still works, and there are
-///   no protected GAs to enforce because there is no `groups.yaml` yet).
-/// * The directory is **present but fails to parse** (malformed `groups.yaml`,
+///   no protected GAs to enforce because there is no `groups.toml` yet).
+/// * The directory is **present but fails to parse** (malformed `groups.toml`,
 ///   schema violation, duplicate device address, I/O error). Returns `Err`, so
 ///   the command aborts loudly rather than proceeding with `None` — which would
 ///   fail the protected-GA gate *open* exactly when the config is broken.
 ///
-/// An existing-but-empty project directory (no `groups.yaml` yet) loads to the
+/// An existing-but-empty project directory (no `groups.toml` yet) loads to the
 /// default empty model via [`Model::load`], so it is `Ok(Some(empty))` — still
 /// a fresh project with nothing to protect.
 pub fn load_model_required(dir: &Path) -> anyhow::Result<Option<Model>> {
@@ -260,7 +260,7 @@ fn secure_tunnel() -> Option<SecureTunnelConfig> {
 
 /// Resolves a [`ConnectionConfig`] from the model config plus overrides.
 ///
-/// Precedence: `--routing` and `--gateway` override `bussard.yaml`, which
+/// Precedence: `--routing` and `--gateway` override `bussard.toml`, which
 /// overrides the built-in defaults. A tunnel with no gateway anywhere is an
 /// error (there is nothing to connect to).
 pub fn resolve_config(
@@ -281,7 +281,7 @@ pub fn resolve_config(
 
     if use_routing {
         let multicast = match yaml.and_then(|c| c.multicast.as_deref()) {
-            Some(m) => parse_socket(m).context("parsing multicast address from bussard.yaml")?,
+            Some(m) => parse_socket(m).context("parsing multicast address from bussard.toml")?,
             None => SocketAddrV4::new(DEFAULT_MULTICAST, DEFAULT_PORT),
         };
         return Ok(ConnectionConfig {
@@ -300,7 +300,7 @@ pub fn resolve_config(
         .clone()
         .or_else(|| yaml.and_then(|c| c.gateway.clone()))
         .ok_or_else(|| {
-            anyhow!("no gateway configured; set connection.gateway in bussard.yaml or pass --gateway host[:port] (or use --routing)")
+            anyhow!("no gateway configured; set connection.gateway in bussard.toml or pass --gateway host[:port] (or use --routing)")
         })?;
     let gateway = parse_socket(&gateway_str).context("parsing gateway address")?;
 
@@ -673,13 +673,13 @@ mod tests {
 
     #[test]
     fn load_model_required_broken_model_is_hard_error() -> Result<(), Box<dyn std::error::Error>> {
-        // A present-but-malformed groups.yaml must be a hard error, NOT a silent
+        // A present-but-malformed groups.toml must be a hard error, NOT a silent
         // None that would fail the protected-GA gate open (issue #55).
         let dir = tmp_dir("broken");
         std::fs::create_dir_all(&dir)?;
         // Duplicate keys make the YAML parse fail.
         std::fs::write(
-            dir.join("groups.yaml"),
+            dir.join("groups.toml"),
             "groups:\n  \"1/0/0\":\n    name: a\n  \"1/0/0\":\n    name: b\n",
         )?;
         let err = load_model_required(&dir).expect_err("expected an error");
@@ -695,7 +695,7 @@ mod tests {
 
     #[test]
     fn load_model_required_empty_dir_is_fresh_project() -> Result<(), Box<dyn std::error::Error>> {
-        // An existing but empty project dir (no groups.yaml) loads to the default
+        // An existing but empty project dir (no groups.toml) loads to the default
         // empty model — a fresh project with nothing to protect.
         let dir = tmp_dir("empty");
         std::fs::create_dir_all(&dir)?;

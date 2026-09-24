@@ -128,7 +128,7 @@ pub fn run(
     };
 
     // Parameter overrides come from the target device's `parameters:` block in
-    // the model (`devices/*.yaml`), re-keyed to the app-relative ParameterRef id
+    // the model (`devices/*.toml`), re-keyed to the app-relative ParameterRef id
     // the flash engine expects (the #46 contract: keys are `<slug>@<ref-id>`; the
     // part after `@` is the ETS-stable identity). The model is also the source of
     // the connection config.

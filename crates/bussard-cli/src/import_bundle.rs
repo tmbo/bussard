@@ -79,10 +79,10 @@ pub fn run_bundle(path: &Path, dir: &Path, choice: ConflictChoice) -> anyhow::Re
     crate::import_cmd::write_model(model, dir, choice, "bundle")
 }
 
-/// Whether `dir` already holds a model to merge into (a `groups.yaml` or a
-/// device file; a lone `bussard.yaml` from `bussard init` does not count).
+/// Whether `dir` already holds a model to merge into (a `groups.toml` or a
+/// device file; a lone `bussard.toml` from `bussard init` does not count).
 fn has_model(dir: &Path) -> bool {
-    dir.join("groups.yaml").exists()
+    dir.join("groups.toml").exists()
         || std::fs::read_dir(dir.join("devices"))
             .map(|rd| {
                 rd.flatten().any(|e| {

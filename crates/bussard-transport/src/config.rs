@@ -1,7 +1,7 @@
 //! Connection configuration and the timing/retry constants.
 //!
 //! [`ConnectionConfig`] deliberately mirrors the *shape* of the model's
-//! `bussard.yaml` connection section but does **not** import
+//! `bussard.toml` connection section but does **not** import
 //! `bussard-model`'s schema type. Keeping transport's config independent lets
 //! the crate be used and tested standalone; the CLI maps between the model's
 //! deserialized config and this struct.
@@ -309,7 +309,7 @@ pub enum TransportKind {
 
 /// Configuration for opening a bus connection.
 ///
-/// This mirrors the `connection:` block of `bussard.yaml` but is defined here
+/// This mirrors the `connection:` block of `bussard.toml` but is defined here
 /// so the transport crate stays decoupled from the model's YAML schema.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionConfig {

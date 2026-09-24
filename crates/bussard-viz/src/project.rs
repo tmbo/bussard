@@ -12,7 +12,7 @@
 //!   `links.yaml` entries. A link-only object (present in links but not in the
 //!   device's com-object table) is emitted with `null` `dpt`/`flags`.
 //! * A group address that appears **only** in links (never declared in
-//!   `groups.yaml`) is synthesized into `groups` with `name: null`, so the
+//!   `groups.toml`) is synthesized into `groups` with `name: null`, so the
 //!   frontend's problems panel can surface it.
 //! * `senders`/`listeners` on a group are derived from the links: a device is a
 //!   sender of `ga` if one of its objects has `send == ga`, and a listener if
@@ -56,7 +56,7 @@ pub fn project_model(model: &Model) -> Value {
     })
 }
 
-/// Projects the named ranges (`groups.yaml` `ranges:`) into a stable array.
+/// Projects the named ranges (`groups.toml` `ranges:`) into a stable array.
 ///
 /// Each entry carries the raw `key` (`"3"` or `"3/2"`), the parsed `main` and
 /// optional `middle` numbers, and the `name`. Keys that are neither a bare main
@@ -234,7 +234,7 @@ impl Endpoint {
 
 /// Projects every group address, including synthesized link-only GAs.
 ///
-/// The output is ordered by group address. Declared groups (from `groups.yaml`)
+/// The output is ordered by group address. Declared groups (from `groups.toml`)
 /// keep their `name`/`dpt`/`description`/`protected`; GAs that appear only in
 /// links are synthesized with `name: null` and `protected: false`.
 fn project_groups(model: &Model) -> Vec<Value> {
@@ -355,7 +355,7 @@ mod tests {
     /// * a device `1.1.30` with a com-object table entry (obj 3) and a link
     ///   (obj 3 sends `3/2/0`),
     /// * a link-only object (obj 9) whose `send` GA `4/0/0` is never declared in
-    ///   groups.yaml (must synthesize with name null),
+    ///   groups.toml (must synthesize with name null),
     /// * a listener device `1.1.4` on `3/2/0`.
     fn fixture_model() -> Model {
         // Groups.

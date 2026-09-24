@@ -128,7 +128,7 @@ pub struct UndoArgs {
 /// server is started with `--no-model-edits`.
 ///
 /// `knx_scaffold_groups` lives on the group-planning router but writes
-/// `groups.yaml`, so it is withheld with the others.
+/// `groups.toml`, so it is withheld with the others.
 pub const MODEL_EDIT_TOOLS: [&str; 7] = [
     "knx_scaffold_groups",
     "knx_set_group",
@@ -253,7 +253,7 @@ impl BussardMcp {
 
     /// `knx_set_group`.
     #[tool(
-        description = "Create or update a group address in groups.yaml: its name, datapoint type \
+        description = "Create or update a group address in groups.toml: its name, datapoint type \
         and free-text note. Creating one needs a name. This edits FILES ONLY — no telegram is sent \
         and no device is touched until a human runs `bussard plan` and `bussard apply`. A group \
         address marked protected (safety-critical, e.g. a wind alarm) cannot be renamed or retyped \
@@ -295,7 +295,7 @@ impl BussardMcp {
                         if renaming || retyping {
                             return Err(format!(
                                 "{ga} ({:?}) is protected: renaming or retyping it is refused over \
-                                 MCP. A human can edit groups.yaml directly.",
+                                 MCP. A human can edit groups.toml directly.",
                                 group.name
                             ));
                         }
@@ -470,7 +470,7 @@ impl BussardMcp {
     /// `knx_set_device`.
     #[tool(
         description = "Rename a device or change where it lives (floor and room) in its \
-        devices/*.yaml file. Names and locations are what every other sentence is built from, so \
+        devices/*.toml file. Names and locations are what every other sentence is built from, so \
         good ones make the whole model readable. This edits FILES ONLY and never touches the bus. \
         Returns the change as sentences: quote them to the human."
     )]
@@ -520,7 +520,7 @@ impl BussardMcp {
 
     /// `knx_set_parameter`.
     #[tool(
-        description = "Change one device parameter value in its devices/*.yaml `parameters:` \
+        description = "Change one device parameter value in its devices/*.toml `parameters:` \
         block (e.g. a night setback temperature). Only parameters the device file already carries \
         can be set, and the value is checked against the vendor's product model first; without a \
         product model the edit is refused rather than guessed. This edits FILES ONLY — the device \

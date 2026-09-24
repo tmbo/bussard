@@ -4,7 +4,7 @@
 //! routing, or by KNXnet/IP discovery across every local interface), writes the
 //! YAML skeleton, and prints next steps. The result validates cleanly.
 //!
-//! The `bussard.yaml` content is constructed here by hand (three simple keys)
+//! The `bussard.toml` content is constructed here by hand (three simple keys)
 //! rather than via `Model::save`, so this command is decoupled from the model's
 //! emission format.
 
@@ -344,8 +344,8 @@ fn real_discover() -> anyhow::Result<Vec<GatewayInfo>> {
 fn write_skeleton(dir: &Path, resolution: &Resolution) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
 
-    write_file(&dir.join("bussard.yaml"), &bussard_yaml(resolution))?;
-    write_file(&dir.join("groups.yaml"), GROUPS_YAML)?;
+    write_file(&dir.join("bussard.toml"), &bussard_yaml(resolution))?;
+    write_file(&dir.join("groups.toml"), GROUPS_YAML)?;
     write_file(&dir.join("links.yaml"), LINKS_YAML)?;
 
     let devices_dir = dir.join("devices");
@@ -369,7 +369,7 @@ fn write_file(path: &Path, content: &str) -> anyhow::Result<()> {
     std::fs::write(path, content).with_context(|| format!("writing {}", path.display()))
 }
 
-/// Builds the `bussard.yaml` body for the resolved transport.
+/// Builds the `bussard.toml` body for the resolved transport.
 fn bussard_yaml(resolution: &Resolution) -> String {
     let header = "\
 # bussard connection config. Edit `gateway` if your KNXnet/IP interface moves,
@@ -392,7 +392,7 @@ fn bussard_yaml(resolution: &Resolution) -> String {
     }
 }
 
-/// `groups.yaml` starter: valid and empty, with a header explaining its role.
+/// `groups.toml` starter: valid and empty, with a header explaining its role.
 const GROUPS_YAML: &str = "\
 # Group-address plan. Each entry maps a KNX group address to a name and DPT so
 # the monitor can decode telegrams. `bussard import` fills this from an ETS
@@ -501,18 +501,18 @@ is saved to the history first. Only you program devices, with `plan` and `apply`
 
 ## Files
 
-- `bussard.yaml`: connection config, transport (tunnel or routing) and gateway.
-- `groups.yaml`: the group-address plan, address to name and DPT.
+- `bussard.toml`: connection config, transport (tunnel or routing) and gateway.
+- `groups.toml`: the group-address plan, address to name and DPT.
 - `links.yaml`: com-object to group-address links, keyed by device address.
 - `devices/`: one YAML file per device (identity, naming, com-objects).
-- `tests.yaml`: optional acceptance tests for `bussard test`.
+- `tests.toml`: optional acceptance tests for `bussard test`.
 - `captures/`: local telegram captures and device backups.
 - `.bussard/`: bussard's history (`bussard undo` reads it).
 
 ## If you use git
 
-You do not have to. If you do: commit `bussard.yaml`, `groups.yaml`,
-`links.yaml`, `devices/` and `tests.yaml`. The generated `.gitignore` already
+You do not have to. If you do: commit `bussard.toml`, `groups.toml`,
+`links.yaml`, `devices/` and `tests.toml`. The generated `.gitignore` already
 excludes `.bussard/`, `models/`, `vendor/` and `captures/`, which are local to
 this machine. A git user then has two histories, one in git and one in bussard;
 `bussard undo` reads bussard's.
@@ -602,7 +602,7 @@ mod tests {
         let code = run_with(&dir, None, false, no_gateways, no_probe)?;
         assert_eq!(code, ExitCode::FAILURE);
         // Original content untouched: we didn't write a skeleton.
-        assert!(!dir.join("bussard.yaml").exists());
+        assert!(!dir.join("bussard.toml").exists());
 
         std::fs::remove_dir_all(&dir).ok();
         Ok(())
@@ -615,7 +615,7 @@ mod tests {
 
         let code = run_with(&dir, None, true, no_gateways, no_probe)?;
         assert_eq!(code, ExitCode::SUCCESS);
-        assert!(dir.join("bussard.yaml").exists());
+        assert!(dir.join("bussard.toml").exists());
 
         std::fs::remove_dir_all(&dir).ok();
         Ok(())
@@ -633,7 +633,7 @@ mod tests {
         let code = run_with(&dir, Some("192.0.2.50"), false, boom, no_probe)?;
         assert_eq!(code, ExitCode::SUCCESS);
 
-        let yaml = std::fs::read_to_string(dir.join("bussard.yaml"))?;
+        let yaml = std::fs::read_to_string(dir.join("bussard.toml"))?;
         assert!(yaml.contains("transport: tunnel"), "{yaml}");
         assert!(yaml.contains("192.0.2.50:3671"), "{yaml}");
         assert_validates(&dir);
@@ -677,7 +677,7 @@ mod tests {
         let code = run_with(&dir, None, true, no_gateways, no_probe)?;
         assert_eq!(code, ExitCode::SUCCESS);
 
-        let yaml = std::fs::read_to_string(dir.join("bussard.yaml"))?;
+        let yaml = std::fs::read_to_string(dir.join("bussard.toml"))?;
         assert!(yaml.contains("transport: routing"), "{yaml}");
         assert!(yaml.contains("224.0.23.12:3671"), "{yaml}");
         assert_validates(&dir);
@@ -692,7 +692,7 @@ mod tests {
         let code = run_with(&dir, None, false, one_gateway, no_probe)?;
         assert_eq!(code, ExitCode::SUCCESS);
 
-        let yaml = std::fs::read_to_string(dir.join("bussard.yaml"))?;
+        let yaml = std::fs::read_to_string(dir.join("bussard.toml"))?;
         assert!(yaml.contains("transport: tunnel"), "{yaml}");
         assert!(yaml.contains("192.0.2.10:3671"), "{yaml}");
         assert_validates(&dir);
@@ -707,7 +707,7 @@ mod tests {
         let code = run_with(&dir, None, false, no_gateways, no_probe)?;
         assert_eq!(code, ExitCode::SUCCESS);
 
-        let yaml = std::fs::read_to_string(dir.join("bussard.yaml"))?;
+        let yaml = std::fs::read_to_string(dir.join("bussard.toml"))?;
         assert!(yaml.contains("transport: tunnel"), "{yaml}");
         assert!(yaml.contains("TODO"), "placeholder comment present: {yaml}");
         assert_validates(&dir);
@@ -722,8 +722,8 @@ mod tests {
         run_with(&dir, None, true, no_gateways, no_probe)?;
 
         for f in [
-            "bussard.yaml",
-            "groups.yaml",
+            "bussard.toml",
+            "groups.toml",
             "links.yaml",
             "README.md",
             ".gitignore",
@@ -747,7 +747,7 @@ mod tests {
         assert!(!dir.exists());
         let code = run_with(&dir, None, true, no_gateways, no_probe)?;
         assert_eq!(code, ExitCode::SUCCESS);
-        assert!(dir.join("bussard.yaml").exists());
+        assert!(dir.join("bussard.toml").exists());
 
         std::fs::remove_dir_all(&dir).ok();
         Ok(())

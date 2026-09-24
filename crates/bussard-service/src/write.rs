@@ -12,7 +12,7 @@
 //!
 //! The order of the checks is:
 //!
-//! 1. **protected**: a GA marked `protected: true` in `groups.yaml` is refused
+//! 1. **protected**: a GA marked `protected: true` in `groups.toml` is refused
 //!    unless [`WriteCheck::force`] is set. This runs first, so a protected GA is
 //!    refused whatever DPT or value arrives with it.
 //! 2. **secure**: a GA with a group key in [`WriteCheck::group_keys`], or

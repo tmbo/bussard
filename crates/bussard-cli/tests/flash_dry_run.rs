@@ -118,7 +118,7 @@ fn test_flash_dry_run_dump_images_writes_plan_and_images_without_a_gateway() -> 
         eprintln!("skipping: the `zip` CLI is unavailable to build the synthetic .knxprod");
         return Ok(());
     };
-    // An empty model directory: no bussard.yaml, so no gateway anywhere.
+    // An empty model directory: no bussard.toml, so no gateway anywhere.
     let model = tmp.path().join("knx");
     std::fs::create_dir_all(&model).map_err(|e| e.to_string())?;
     let dump = tmp.path().join("dump");

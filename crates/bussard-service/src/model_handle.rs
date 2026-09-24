@@ -2,7 +2,7 @@
 //!
 //! The MCP and viz servers are long-lived: a session can run for hours while
 //! the human edits `knx/` in another window. A model loaded once at startup
-//! means a `protected: true` added to `groups.yaml` mid-session does not protect
+//! means a `protected: true` added to `groups.toml` mid-session does not protect
 //! anything until a restart, and a corrected `dpt:` is not used either. That is
 //! a safety gate that silently lags the source of truth.
 //!
@@ -202,8 +202,8 @@ impl ModelHandle {
 /// Fingerprints a model directory: the number of model files, the newest
 /// modification time among them, and their total size in bytes.
 ///
-/// Covers `bussard.yaml`, `groups.yaml`, `links.yaml`, `ha.yaml` and every file
-/// under `devices/`. An unreadable directory fingerprints as `(0, UNIX_EPOCH, 0)`,
+/// Covers `bussard.toml`, `groups.toml`, `bussard.lock`, `tests.toml`,
+/// `ha.toml` and every file under `devices/`. An unreadable directory fingerprints as `(0, UNIX_EPOCH, 0)`,
 /// which simply means "nothing changed" until it becomes readable again.
 fn fingerprint(dir: &Path) -> Fingerprint {
     let mut count = 0usize;
@@ -226,7 +226,7 @@ fn fingerprint(dir: &Path) -> Fingerprint {
         }
     };
 
-    for name in ["bussard.yaml", "groups.yaml", "links.yaml", "ha.yaml"] {
+    for name in bussard_model::loader::MODEL_FILES {
         visit(&dir.join(name));
     }
     if let Ok(entries) = std::fs::read_dir(dir.join("devices")) {
@@ -257,7 +257,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir)?;
         std::fs::write(
-            dir.join("groups.yaml"),
+            dir.join("groups.toml"),
             "groups:\n  \"3/0/4\":\n    name: Blind\n    dpt: \"1.008\"\n",
         )?;
         Ok(dir)
@@ -276,7 +276,7 @@ mod tests {
         assert!(!handle.current().groups.groups[&ga].protected);
 
         std::fs::write(
-            dir.join("groups.yaml"),
+            dir.join("groups.toml"),
             "groups:\n  \"3/0/4\":\n    name: Blind\n    dpt: \"1.008\"\n    protected: true\n",
         )?;
         // Force the debounce to have elapsed by refreshing directly.
@@ -310,7 +310,7 @@ mod tests {
 
         // Duplicate keys: the YAML no longer parses.
         std::fs::write(
-            dir.join("groups.yaml"),
+            dir.join("groups.toml"),
             "groups:\n  \"3/0/4\":\n    name: a\n  \"3/0/4\":\n    name: b\n",
         )?;
         let model = handle.refresh();
@@ -329,7 +329,7 @@ mod tests {
         let dir = model_dir("install")?;
         let handle = handle_for(&dir)?;
         std::fs::write(
-            dir.join("groups.yaml"),
+            dir.join("groups.toml"),
             "groups:\n  \"3/0/5\":\n    name: Other\n",
         )?;
         let version = handle.install(Model::load(&dir)?);
@@ -348,7 +348,7 @@ mod tests {
     fn test_fixed_handle_never_reloads() -> TestResult {
         let dir = model_dir("fixed")?;
         let handle = ModelHandle::fixed(Model::load(&dir)?);
-        std::fs::write(dir.join("groups.yaml"), "groups: {}\n")?;
+        std::fs::write(dir.join("groups.toml"), "groups: {}\n")?;
         let model = handle.refresh();
         assert_eq!(model.groups.groups.len(), 1);
         assert_eq!(handle.version(), 1);

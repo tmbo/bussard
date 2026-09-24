@@ -1,6 +1,6 @@
 //! The scripted acceptance-test runner behind `bussard test` (issue #101).
 //!
-//! A [`TestSuite`] loaded from the model directory's `tests.yaml` is run
+//! A [`TestSuite`] loaded from the model directory's `tests.toml` is run
 //! against the live bus: each test puts a stimulus on the bus (a group write, or
 //! an instruction a human carries out) and then waits for the telegram that
 //! proves the installation reacted. The result is a [`Report`] that is
@@ -75,7 +75,7 @@ impl Status {
 /// The result of one test.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TestOutcome {
-    /// The test's name, as written in `tests.yaml`.
+    /// The test's name, as written in `tests.toml`.
     pub name: String,
     /// How it ended.
     pub status: Status,
@@ -200,7 +200,7 @@ pub struct RunOptions {
     /// `None` runs the whole file.
     pub only: Option<Vec<String>>,
     /// Permit tests that write to a protected group address. `bussard test`
-    /// sets this only when `tests.yaml` says `allow_protected: true` **and**
+    /// sets this only when `tests.toml` says `allow_protected: true` **and**
     /// `--force` was given; the MCP tool never sets it.
     pub allow_protected: bool,
 }
@@ -303,7 +303,7 @@ async fn run_one(
                 return outcome(
                     Status::Fail,
                     format!(
-                        "GA {} has no DPT in groups.yaml and the test gives no `dpt:`, so the \
+                        "GA {} has no DPT in groups.toml and the test gives no `dpt:`, so the \
                          value cannot be encoded",
                         write.ga
                     ),
@@ -417,7 +417,7 @@ fn expected_payload(model: &Model, expect: &Expectation) -> Result<Option<Vec<u8
         }
         None => parse_hex(text).map(Some).ok_or_else(|| {
             format!(
-                "GA {} has no DPT in groups.yaml, so `expect.value: {text:?}` cannot be \
+                "GA {} has no DPT in groups.toml, so `expect.value: {text:?}` cannot be \
                  interpreted; give the GA a DPT or write the expected payload as hex",
                 expect.ga
             )
@@ -468,7 +468,7 @@ fn hex(payload: &[u8]) -> String {
     payload.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Renders a duration the way `tests.yaml` writes it.
+/// Renders a duration the way `tests.toml` writes it.
 fn format_duration(value: Duration) -> String {
     let millis = value.as_millis();
     if millis.is_multiple_of(1000) {

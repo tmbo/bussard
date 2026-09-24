@@ -579,7 +579,7 @@ fn print_links_snippet(
         let name = text_for(**num).unwrap_or("New link");
         println!();
         println!("  ready-to-paste snippets (edit the group address to a free one):");
-        println!("    # ---8<--- groups.yaml (under `groups:`)");
+        println!("    # ---8<--- groups.toml (under `groups:`)");
         println!("    \"0/0/1\":");
         println!("      name: \"{name}\"");
         println!("      dpt: \"{dpt}\"");

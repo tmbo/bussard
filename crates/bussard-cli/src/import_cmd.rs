@@ -155,7 +155,7 @@ fn load_existing_model(dir: &Path) -> Option<Model> {
     // Only treat the target as a re-import if it actually has model content: a
     // groups file or at least one device file. An empty/absent directory is a
     // fresh import.
-    let has_groups = dir.join("groups.yaml").exists();
+    let has_groups = dir.join("groups.toml").exists();
     let has_devices = dir
         .join("devices")
         .read_dir()

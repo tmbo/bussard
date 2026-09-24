@@ -7,7 +7,7 @@
 //! - a device the keyring lists: management still rides `A_SecureData`;
 //! - a device the model marks `security.activated: true` but the keyring
 //!   lacks: refused with the "no tool key" hint, nothing sent to it;
-//! - `connection.keyring` in `bussard.yaml` is the default, `--keyring`
+//! - `connection.keyring` in `bussard.toml` is the default, `--keyring`
 //!   overrides it.
 //!
 //! The keyring is the SYNTHETIC fixture of `keyring_cli.rs` (made-up
@@ -74,7 +74,7 @@ struct Scratch(PathBuf);
 
 impl Scratch {
     /// `<tmp>/bussard-kr-tunnel-<tag>-<pid>/` with `knx/` (links, optional
-    /// `bussard.yaml` extra lines, optional device file) and `keys.knxkeys`.
+    /// `bussard.toml` extra lines, optional device file) and `keys.knxkeys`.
     fn new(tag: &str, config_extra: &str, device_file: Option<&str>) -> TestResult<Self> {
         let root =
             std::env::temp_dir().join(format!("bussard-kr-tunnel-{tag}-{}", std::process::id()));
@@ -83,7 +83,7 @@ impl Scratch {
         std::fs::create_dir_all(dir.join("devices"))?;
         std::fs::write(dir.join("links.yaml"), "links: {}\n")?;
         std::fs::write(
-            dir.join("bussard.yaml"),
+            dir.join("bussard.toml"),
             format!("connection:\n  transport: tunnel\n{config_extra}"),
         )?;
         if let Some(body) = device_file {

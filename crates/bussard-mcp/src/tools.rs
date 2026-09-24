@@ -50,7 +50,7 @@ pub fn project_summary(model: &Model, bus: &BusStatus) -> Value {
         )
         .collect();
 
-    // GA main-range names from groups.yaml `ranges` (keyed "3" or "3/2").
+    // GA main-range names from groups.toml `ranges` (keyed "3" or "3/2").
     let mut main_ranges: Vec<Value> = model
         .groups
         .ranges

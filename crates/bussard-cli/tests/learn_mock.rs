@@ -59,7 +59,7 @@ async fn push_telegrams(gw: Arc<MockGateway>, frames: Vec<CemiFrame>) {
 /// transmit-capable com objects, and a link for the first group address.
 fn write_model(dir: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir.join("devices"))?;
-    std::fs::write(dir.join("groups.yaml"), "groups: {}\n")?;
+    std::fs::write(dir.join("groups.toml"), "groups: {}\n")?;
     std::fs::write(
         dir.join("links.yaml"),
         "links:\n  1.1.30:\n    - object: 3\n      name: Kanal A - Schalten\n      send: 1/0/1\n",
@@ -159,17 +159,17 @@ fn learn_names_and_types_group_addresses_without_transmitting() -> TestResult {
         "learn transmitted on the bus.\nstderr:\n{stderr}"
     );
 
-    // Every target was named and typed in groups.yaml.
-    let groups = std::fs::read_to_string(model_dir.join("groups.yaml"))?;
+    // Every target was named and typed in groups.toml.
+    let groups = std::fs::read_to_string(model_dir.join("groups.toml"))?;
     for ga in ["1/0/1", "1/0/2", "1/0/3"] {
         assert!(
             groups.contains(ga),
-            "{ga} missing from groups.yaml:\n{groups}"
+            "{ga} missing from groups.toml:\n{groups}"
         );
     }
     assert!(
         groups.contains("1.001") && groups.contains("5.001") && groups.contains("9.001"),
-        "expected the inferred DPTs in groups.yaml:\n{groups}"
+        "expected the inferred DPTs in groups.toml:\n{groups}"
     );
     // The name came from the device's room, channel and com-object function.
     assert!(

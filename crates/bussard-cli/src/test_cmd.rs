@@ -1,5 +1,5 @@
 //! The `bussard test` subcommand: run the scripted functional acceptance tests
-//! in the model directory's `tests.yaml` against the live bus (issue #101).
+//! in the model directory's `tests.toml` against the live bus (issue #101).
 //!
 //! This is the handover protocol: the integrator writes the file once, and
 //! anyone can rerun it at the three-month visit or after a change request. Each
@@ -40,7 +40,7 @@ use crate::write_cmd::protected_refusal;
 /// The flags of the `test` subcommand.
 #[derive(Debug, Clone, Default)]
 pub struct TestOptions {
-    /// The test file to run (default: `<dir>/tests.yaml`).
+    /// The test file to run (default: `<dir>/tests.toml`).
     pub file: Option<PathBuf>,
     /// Emit the report as JSON instead of text.
     pub json: bool,
@@ -130,7 +130,7 @@ pub fn run_secure_idle(
     if config.secure.is_none() {
         bail!(
             "--secure-idle needs KNXnet/IP Secure tunnelling credentials: pass --secure-user <id> \
-             --secure-password-env <VAR>, or set connection.keyring in bussard.yaml (password in \
+             --secure-password-env <VAR>, or set connection.keyring in bussard.toml (password in \
              BUSSARD_KEYRING_PASSWORD)"
         );
     }
@@ -314,7 +314,7 @@ fn report_protected(
 
 /// Confirms the run on a terminal, naming the gateway. `--yes` skips it; a
 /// non-TTY without `--yes` is refused, so a scripted run cannot fire blind at
-/// whatever gateway `bussard.yaml` names.
+/// whatever gateway `bussard.toml` names.
 fn confirm(count: usize, gateway: &str, yes: bool) -> anyhow::Result<bool> {
     crate::confirm::confirm(
         yes,

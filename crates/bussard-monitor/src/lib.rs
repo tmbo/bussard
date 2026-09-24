@@ -5,7 +5,7 @@
 //!
 //! - [`decode`] — the pure decode pipeline: a cEMI frame plus an optional
 //!   [`Model`](bussard_model::Model) becomes a [`DecodedTelegram`].
-//! - [`acceptance`] — the scripted `tests.yaml` runner behind `bussard test`.
+//! - [`acceptance`] — the scripted `tests.toml` runner behind `bussard test`.
 //! - [`infer`] — pure DPT inference and name proposal from observed payloads,
 //!   the engine behind `bussard learn` and the `knx_infer_group` MCP tool.
 //! - [`filter`] — a comma-separated address filter ([`Filter`]) shared by the

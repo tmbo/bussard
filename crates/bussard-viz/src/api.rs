@@ -230,7 +230,7 @@ pub async fn post_group_write(
     };
 
     // Every check short of sending: protected (unless force), the DPT (the
-    // `dpt` override wins, else groups.yaml), then encode or validate the raw
+    // `dpt` override wins, else groups.toml), then encode or validate the raw
     // payload's size.
     let check = WriteCheck {
         dpt: req.dpt.as_deref(),
@@ -302,7 +302,7 @@ fn api_refusal(ga: GroupAddress, refusal: WriteRefusal) -> ApiError {
             "refusing to write to protected GA {ga} ({name:?}); pass force to override"
         )),
         WriteRefusal::NoDpt { .. } => ApiError::NoDpt(format!(
-            "GA {ga} has no DPT in groups.yaml; supply a dpt (e.g. 1.001)"
+            "GA {ga} has no DPT in groups.toml; supply a dpt (e.g. 1.001)"
         )),
         WriteRefusal::WritesDisabled => ApiError::WritesDisabled(
             "this viz server's bus is read-only; restart it with `bussard viz --allow-writes` \

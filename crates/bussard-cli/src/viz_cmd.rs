@@ -2,7 +2,7 @@
 //!
 //! The model is required (the site is useless without one, and the protected-GA
 //! write gate must never fail open). The bus connection is resolved from the
-//! model's `bussard.yaml` plus overrides; if resolution fails the server
+//! model's `bussard.toml` plus overrides; if resolution fails the server
 //! degrades to model-only mode (a warning, `connection: None`) so the plan and
 //! debug views still work — group writes then return `503`. Shutdown is graceful
 //! on Ctrl-C, closing the bus to free the gateway tunnel slot.

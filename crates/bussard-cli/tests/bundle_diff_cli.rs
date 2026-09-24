@@ -79,7 +79,7 @@ type ModelFile = (String, Vec<u8>);
 /// The model files of a directory as (relative path, bytes), sorted.
 fn model_bytes(dir: &Path) -> Result<Vec<ModelFile>, Box<dyn std::error::Error>> {
     let mut out = Vec::new();
-    for name in ["bussard.yaml", "groups.yaml", "links.yaml"] {
+    for name in ["bussard.toml", "groups.toml", "links.yaml"] {
         if dir.join(name).is_file() {
             out.push((name.to_string(), std::fs::read(dir.join(name))?));
         }
@@ -128,9 +128,9 @@ fn test_import_bundle_conflicts_mine_and_theirs() -> TestResult {
     let root = temp_dir("conflicts")?;
     let integrator = root.join("integrator");
     copy_model(&fixture(), &integrator)?;
-    let groups = std::fs::read_to_string(integrator.join("groups.yaml"))?;
+    let groups = std::fs::read_to_string(integrator.join("groups.toml"))?;
     std::fs::write(
-        integrator.join("groups.yaml"),
+        integrator.join("groups.toml"),
         groups.replace("name: Light Kitchen\n", "name: Kitchen ceiling\n"),
     )?;
     let bundle = root.join("new.bussard");
@@ -151,7 +151,7 @@ fn test_import_bundle_conflicts_mine_and_theirs() -> TestResult {
     );
     // --mine settles the same conflict and exits 0.
     run(&[&args[..], &["--mine"]].concat(), 0)?;
-    assert!(std::fs::read_to_string(owner.join("groups.yaml"))?.contains("Light Kitchen"));
+    assert!(std::fs::read_to_string(owner.join("groups.toml"))?.contains("Light Kitchen"));
 
     // --theirs takes the bundle's name.
     let out = run(&[&args[..], &["--theirs"]].concat(), 0)?;
@@ -160,7 +160,7 @@ fn test_import_bundle_conflicts_mine_and_theirs() -> TestResult {
         out.contains("Group address 1/0/1 is now called \"Kitchen ceiling\""),
         "{out}"
     );
-    assert!(std::fs::read_to_string(owner.join("groups.yaml"))?.contains("Kitchen ceiling"));
+    assert!(std::fs::read_to_string(owner.join("groups.toml"))?.contains("Kitchen ceiling"));
 
     // The import snapshotted first, so it can be undone.
     let out = run(&["history", "--dir", s(&owner)?], 0)?;
@@ -176,9 +176,9 @@ fn test_diff_rename_is_one_change_and_same_project_is_empty() -> TestResult {
     let b = root.join("b");
     copy_model(&fixture(), &a)?;
     copy_model(&fixture(), &b)?;
-    let groups = std::fs::read_to_string(b.join("groups.yaml"))?;
+    let groups = std::fs::read_to_string(b.join("groups.toml"))?;
     std::fs::write(
-        b.join("groups.yaml"),
+        b.join("groups.toml"),
         groups.replace("name: Light Kitchen\n", "name: Kitchen ceiling\n"),
     )?;
     let bundle_b = root.join("b.bussard");

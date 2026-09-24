@@ -288,7 +288,7 @@ fn exclusions_skip_gas() {
         .build();
 
     let text = "global:\n  exclude:\n    - \"8/\"\n";
-    let ov = Overrides::parse("ha.yaml", text).unwrap();
+    let ov = Overrides::parse("ha.toml", text).unwrap();
     let d = derive(&model, &ov);
     assert_eq!(d.entities.len(), 1, "the 8/ GA is excluded");
     // Excluded GAs are not counted as unmapped either.
@@ -311,7 +311,7 @@ entities:
     name: "Kitchen ceiling"
     device_class: outlet
 "#;
-    let ov = Overrides::parse("ha.yaml", text).unwrap();
+    let ov = Overrides::parse("ha.toml", text).unwrap();
     let yaml = generate(&model, &ov).unwrap();
     assert!(yaml.contains("light:"), "{yaml}");
     assert!(yaml.contains("name: Kitchen ceiling"));
@@ -326,7 +326,7 @@ fn global_default_light_platform() {
         .build();
 
     let ov = Overrides::parse(
-        "ha.yaml",
+        "ha.toml",
         "global:\n  default_platform_for_switches: light\n",
     )
     .unwrap();
@@ -472,7 +472,7 @@ entities:
   "0/0/1":
     merge: ["0/0/9"]
 "#;
-    let ov = Overrides::parse("ha.yaml", text).unwrap();
+    let ov = Overrides::parse("ha.toml", text).unwrap();
     let d = derive(&model, &ov);
     // The merged GA is now consumed, so nothing 1.x remains unmapped.
     assert!(
@@ -506,7 +506,7 @@ entities:
   "0/0/1":
     merge: ["0/0/9"]
 "#;
-    let ov = Overrides::parse("ha.yaml", text).unwrap();
+    let ov = Overrides::parse("ha.toml", text).unwrap();
     let yaml = generate(&model, &ov).unwrap();
     // Exclusion wins: the excluded GA is never wired.
     assert!(
@@ -858,14 +858,14 @@ entities:
   "0/3/2":
     name: "Office climate"
 "#;
-    let ov = Overrides::parse("ha.yaml", text).unwrap();
+    let ov = Overrides::parse("ha.toml", text).unwrap();
     let cs = only_climate(&model, &ov);
     assert_eq!(cs.len(), 1);
     assert_eq!(cs[0].name, "Office climate");
 
     // Excluding the anchor (operation-mode) GA removes the whole climate entity:
     // the operation mode is the only anchor, so nothing is left to control.
-    let ov2 = Overrides::parse("ha.yaml", "global:\n  exclude:\n    - \"0/3/2\"\n").unwrap();
+    let ov2 = Overrides::parse("ha.toml", "global:\n  exclude:\n    - \"0/3/2\"\n").unwrap();
     assert!(only_climate(&model, &ov2).is_empty());
 }
 
@@ -882,7 +882,7 @@ entities:
   "0/3/2":
     merge: ["0/3/99"]
 "#;
-    let ov = Overrides::parse("ha.yaml", text).unwrap();
+    let ov = Overrides::parse("ha.toml", text).unwrap();
     let cs = only_climate(&model, &ov);
     assert_eq!(cs.len(), 1);
     assert_eq!(cs[0].temperature_address, Some(ga("0/3/99")));

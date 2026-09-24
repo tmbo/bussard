@@ -1,7 +1,7 @@
 //! `knx_scaffold_groups` over an in-process MCP client (issue #103).
 //!
-//! The server runs over a temp model directory; the tool writes `groups.yaml`
-//! and `bussard.yaml` there and reports what it added. No bus is involved.
+//! The server runs over a temp model directory; the tool writes `groups.toml`
+//! and `bussard.toml` there and reports what it added. No bus is involved.
 
 use std::error::Error;
 use std::path::{Path, PathBuf};
@@ -15,7 +15,7 @@ use bussard_transport::TransportKind;
 use rmcp::ServiceExt;
 use rmcp::model::CallToolRequestParams;
 
-/// A fresh model directory holding only a loopback `bussard.yaml`.
+/// A fresh model directory holding only a loopback `bussard.toml`.
 fn model_dir() -> Result<PathBuf, Box<dyn Error>> {
     let dir = std::env::temp_dir().join(format!(
         "bussard-mcp-scaffold-{}-{:?}",
@@ -25,7 +25,7 @@ fn model_dir() -> Result<PathBuf, Box<dyn Error>> {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
     std::fs::write(
-        dir.join("bussard.yaml"),
+        dir.join("bussard.toml"),
         "connection:\n  transport: tunnel\n  gateway: \"127.0.0.1:3671\"\n",
     )?;
     Ok(dir)

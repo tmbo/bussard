@@ -62,7 +62,7 @@ pub struct Finding {
     pub kind: FindingKind,
     /// The group address, as `"3/2/0"`.
     pub ga: String,
-    /// The GA's name from `groups.yaml`, or `None` for a GA that exists only in
+    /// The GA's name from `groups.toml`, or `None` for a GA that exists only in
     /// `links.yaml`.
     pub ga_name: Option<String>,
     /// A ready-to-print sentence explaining the finding.
@@ -115,7 +115,7 @@ pub struct NeutralInfo {
 /// The complete static analysis of a model.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ModelAnalysis {
-    /// The project name from `groups.yaml`, if recorded.
+    /// The project name from `groups.toml`, if recorded.
     pub project: Option<String>,
     /// The source the model was last imported from, if recorded.
     pub imported_from: Option<String>,
@@ -137,7 +137,7 @@ pub struct ModelAnalysis {
     pub links: usize,
     /// Links naming a com-object the device's table does not declare.
     pub links_to_unknown_objects: Vec<UnknownObjectLink>,
-    /// Individual addresses that have links but no `devices/*.yaml` file.
+    /// Individual addresses that have links but no `devices/*.toml` file.
     pub links_to_unknown_devices: Vec<String>,
     /// GAs marked `protected: true`, ascending.
     pub protected_group_addresses: Vec<String>,

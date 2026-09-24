@@ -1,7 +1,7 @@
 //! The `bussard mcp` subcommand: run the read-only MCP server over stdio.
 //!
 //! The model is required (the server is useless without one). The bus
-//! connection is resolved from the model's `bussard.yaml` plus overrides, but is
+//! connection is resolved from the model's `bussard.toml` plus overrides, but is
 //! opened lazily by the server's stream task, which reconnects — so a bus that
 //! is down at startup does not stop the server. All logging is on stderr
 //! (configured in `main`); stdout carries only the MCP wire.

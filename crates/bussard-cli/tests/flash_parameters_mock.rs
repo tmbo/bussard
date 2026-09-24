@@ -576,7 +576,7 @@ fn build_knxprod(dir: &Path, app_xml: &str) -> Result<Option<PathBuf>, Box<dyn E
 fn write_model(dir: &Path, params: &str) -> TestResult {
     std::fs::create_dir_all(dir.join("devices"))?;
     std::fs::write(
-        dir.join("bussard.yaml"),
+        dir.join("bussard.toml"),
         "connection:\n  transport: tunnel\n",
     )?;
     std::fs::write(

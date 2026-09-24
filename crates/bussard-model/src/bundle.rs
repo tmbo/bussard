@@ -772,7 +772,7 @@ mod tests {
             "devices/../../evil.toml",
             "devices/.hidden.toml",
             "devices/1.1.4.yaml",
-            "groups.yaml",
+            "groups.toml",
             "models/M-1.yaml",
             ".env",
             "home.knxproj",

@@ -87,18 +87,18 @@ fn find_chrome() -> Option<PathBuf> {
 
 /// Writes a minimal but valid model directory into `dir`:
 ///
-/// * `groups.yaml` — a small GA tree (two mains, a few subs) so the GA tree
+/// * `groups.toml` — a small GA tree (two mains, a few subs) so the GA tree
 ///   renders multiple rows;
 /// * `links.yaml` — empty;
-/// * `devices/*.yaml` — [`FIXTURE_DEVICE_COUNT`] devices so `/` renders that
+/// * `devices/*.toml` — [`FIXTURE_DEVICE_COUNT`] devices so `/` renders that
 ///   many cards.
 ///
-/// No `bussard.yaml` is written: it is optional, and this test runs the server
+/// No `bussard.toml` is written: it is optional, and this test runs the server
 /// in model-only mode (no bus), so no connection config is needed.
 fn write_model(dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     std::fs::write(
-        dir.join("groups.yaml"),
+        dir.join("groups.toml"),
         concat!(
             "groups:\n",
             "  \"1/0/1\":\n    name: Hallway Light\n    dpt: \"1.001\"\n",

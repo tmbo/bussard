@@ -5,9 +5,9 @@
 //! extended plan adds addresses without renumbering the ones already there.
 //!
 //! The scheme comes from `--scheme`, else from `lint.groups.scheme` in
-//! `bussard.yaml`, else defaults to `floor-trade-block`. Unless
+//! `bussard.toml`, else defaults to `floor-trade-block`. Unless
 //! `--no-lint-config` is passed, a matching `lint:` block is appended to
-//! `bussard.yaml` when it has none, so `bussard validate` starts checking the
+//! `bussard.toml` when it has none, so `bussard validate` starts checking the
 //! convention right away.
 
 use std::path::{Path, PathBuf};
@@ -31,7 +31,7 @@ pub fn run(
     let plan =
         Plan::parse(&text).with_context(|| format!("parsing the plan {}", plan_path.display()))?;
 
-    let config_path = dir.join("bussard.yaml");
+    let config_path = dir.join("bussard.toml");
     let scheme = match scheme {
         Some(s) => s,
         None => scheme_from_config(&config_path).unwrap_or(Scheme::FloorTradeBlock),
@@ -39,7 +39,7 @@ pub fn run(
 
     let groups_path: PathBuf = match out {
         Some(p) => p.to_path_buf(),
-        None => dir.join("groups.yaml"),
+        None => dir.join("groups.toml"),
     };
 
     // History (issue #110): keep the pre-scaffold files so `bussard undo` can
@@ -135,7 +135,7 @@ pub fn run(
     })
 }
 
-/// The scheme already declared in `bussard.yaml`, if any.
+/// The scheme already declared in `bussard.toml`, if any.
 fn scheme_from_config(config_path: &Path) -> Option<Scheme> {
     let dir = config_path.parent()?;
     let model = Model::load(dir).ok()?;

@@ -20,7 +20,7 @@ use bussard_model::history::{History, Pending, Snapshot, SnapshotId, SnapshotRea
 use bussard_model::{Model, schema};
 
 /// The model files a raw diff compares, in the order it prints them.
-const TOP_LEVEL_FILES: [&str; 3] = ["bussard.yaml", "groups.yaml", "links.yaml"];
+const TOP_LEVEL_FILES: [&str; 3] = ["bussard.toml", "groups.toml", "links.yaml"];
 
 /// Records a snapshot of `dir` before a command writes, warning (never failing)
 /// if the history cannot be written.

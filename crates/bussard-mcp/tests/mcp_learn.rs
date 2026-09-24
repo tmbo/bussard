@@ -232,7 +232,7 @@ async fn test_knx_infer_group_explicit_payload_never_claims_high() -> R {
 async fn test_knx_run_tests_names_protected_tests_it_refuses() -> R {
     let dir = tempfile::tempdir()?;
     std::fs::write(
-        dir.path().join("tests.yaml"),
+        dir.path().join("tests.toml"),
         // The file opts in, but MCP never honours the opt-in.
         "allow_protected: true\n\
          tests:\n\

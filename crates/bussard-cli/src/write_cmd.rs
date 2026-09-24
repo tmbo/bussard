@@ -8,7 +8,7 @@
 //! The exit code is honest: a send receipt failure (ACK exhaustion, staleness)
 //! exits non-zero (review A3).
 //!
-//! Safety: a GA marked `protected: true` in `groups.yaml` is refused unless
+//! Safety: a GA marked `protected: true` in `groups.toml` is refused unless
 //! `--force` is given (see the design document §8), and the service is opened
 //! under the non-loopback write gate (issue #74).
 
@@ -61,7 +61,7 @@ pub fn run(
     let group_keys = crate::secure_key::group_keys(keyring)?;
 
     // Every check short of sending: protected (unless --force), the DPT
-    // (--dpt wins, else groups.yaml), parse and encode.
+    // (--dpt wins, else groups.toml), parse and encode.
     let check = WriteCheck {
         dpt: dpt_override,
         dpt_policy: DptOverridePolicy::Trust,
@@ -221,7 +221,7 @@ fn render_refusal(refusal: WriteRefusal) -> anyhow::Error {
         WriteRefusal::NoDpt {
             ga,
             model_loaded: true,
-        } => anyhow!("GA {ga} has no DPT in groups.yaml; pass --dpt <dpt> (e.g. --dpt 1.001)"),
+        } => anyhow!("GA {ga} has no DPT in groups.toml; pass --dpt <dpt> (e.g. --dpt 1.001)"),
         WriteRefusal::InvalidValue {
             ga, value, reason, ..
         } => anyhow!(reason).context(format!("parsing value {value:?} for GA {ga}")),

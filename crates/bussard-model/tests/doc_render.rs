@@ -82,7 +82,7 @@ fn test_render_html_is_self_contained() -> TestResult {
 }
 
 /// The shape `bussard reconstruct` produces: placeholder device names, no link
-/// names, GAs that `groups.yaml` never names, no product data.
+/// names, GAs that `groups.toml` never names, no product data.
 fn reconstructed_model() -> Result<Model, Box<dyn std::error::Error>> {
     let mut model = Model {
         config: Default::default(),

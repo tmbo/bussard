@@ -13,7 +13,7 @@
 //!   chat and the assistant writes the result into the model.
 //! - `knx_run_tests` is a **write-tier** tool, registered only with
 //!   `--allow-writes`, and it refuses any test that writes to a protected group
-//!   address whatever `tests.yaml` says. There is no MCP override for a
+//!   address whatever `tests.toml` says. There is no MCP override for a
 //!   protected GA, ever.
 
 use bussard_model::tests_schema;
@@ -47,7 +47,7 @@ pub struct InferArgs {
 /// Arguments for `knx_run_tests`.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct RunTestsArgs {
-    /// Run only the tests with these names (as written in `tests.yaml`,
+    /// Run only the tests with these names (as written in `tests.toml`,
     /// case-insensitive). Omit to run the whole file.
     #[serde(default)]
     pub only: Option<Vec<String>>,
@@ -196,7 +196,7 @@ impl BussardMcp {
 
     /// `knx_run_tests` (registered only with `--allow-writes`).
     #[tool(
-        description = "Run the acceptance tests in the model directory's tests.yaml against the \
+        description = "Run the acceptance tests in the model directory's tests.toml against the \
         PHYSICAL bus and return a pass/fail report. Each test writes a group value and waits for \
         the telegram that proves the installation reacted, so actuators MOVE. Only available when \
         the server was started with --allow-writes. A test that writes to a protected group \

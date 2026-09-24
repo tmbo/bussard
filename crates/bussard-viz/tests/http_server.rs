@@ -17,11 +17,11 @@ use bussard_viz::VizConfig;
 fn write_model(dir: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
     std::fs::write(
-        dir.join("bussard.yaml"),
+        dir.join("bussard.toml"),
         "connection:\n  transport: tunnel\n  gateway: 127.0.0.1:1\n",
     )?;
     std::fs::write(
-        dir.join("groups.yaml"),
+        dir.join("groups.toml"),
         "groups:\n  \"3/2/0\":\n    name: Wind Alarm\n    dpt: \"1.005\"\n",
     )?;
     std::fs::write(dir.join("links.yaml"), "links: {}\n")?;

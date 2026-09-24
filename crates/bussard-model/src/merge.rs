@@ -122,7 +122,7 @@ pub fn merge(ours: &Model, theirs: &Model) -> (Model, MergeReport) {
         .sort_by(|a, b| a.path.cmp(&b.path).then_with(|| a.field.cmp(&b.field)));
 
     let merged = Model {
-        // `bussard.yaml` is user-owned and never derived from the project.
+        // `bussard.toml` is user-owned and never derived from the project.
         config: ours.config.clone(),
         groups,
         links,
@@ -149,7 +149,7 @@ fn report_opt(
     }
 }
 
-/// Merges `groups.yaml`: generated project/range metadata refreshed from theirs;
+/// Merges `groups.toml`: generated project/range metadata refreshed from theirs;
 /// per-GA hand-authored fields kept from ours with differences reported.
 fn merge_groups(ours: &Model, theirs: &Model, report: &mut MergeReport) -> crate::schema::Groups {
     let mut groups = theirs.groups.clone();
@@ -259,7 +259,7 @@ fn overlay_link(ia: IndividualAddress, ours: &Link, theirs: &mut Link, report: &
     }
 }
 
-/// Merges `devices/*.yaml`: the device set comes from theirs; each device's
+/// Merges `devices/*.toml`: the device set comes from theirs; each device's
 /// generated tables refreshed from theirs; hand-authored fields kept from ours.
 fn merge_devices(
     ours: &Model,

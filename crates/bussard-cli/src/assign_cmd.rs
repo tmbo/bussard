@@ -813,7 +813,7 @@ pub(crate) fn build_stub_device(address: IndividualAddress, v: &Verified) -> Dev
 /// Writes the stub device file.
 ///
 /// When a model is loaded we insert the device and `Model::save` (plain, not
-/// pruning — `save` preserves an existing `bussard.yaml` byte-for-byte and does
+/// pruning — `save` preserves an existing `bussard.toml` byte-for-byte and does
 /// not delete other files). When there is no model, we save a minimal one
 /// containing just this device so the file lands in `devices/`. Returns the path
 /// of the device file that was written.

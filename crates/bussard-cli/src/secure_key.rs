@@ -70,7 +70,7 @@ pub fn no_group_key_hint(ga: bussard_model::GroupAddress, keyring_given: bool) -
         )
     } else {
         format!(
-            "GA {ga} is secured (KNX Data Secure, `secure: true` in groups.yaml); pass \
+            "GA {ga} is secured (KNX Data Secure, `secure: true` in groups.toml); pass \
              --keyring <file.knxkeys> with {KEYRING_PASSWORD_ENV} set to send it secured"
         )
     }

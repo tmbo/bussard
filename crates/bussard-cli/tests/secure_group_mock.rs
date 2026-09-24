@@ -44,11 +44,11 @@ fn model_dir(tag: &str, port: u16) -> TestResult<PathBuf> {
         std::env::temp_dir().join(format!("bussard-secure-group-{tag}-{}", std::process::id()));
     std::fs::create_dir_all(dir.join("devices"))?;
     std::fs::write(
-        dir.join("bussard.yaml"),
+        dir.join("bussard.toml"),
         format!("connection:\n  transport: tunnel\n  gateway: 127.0.0.1:{port}\n"),
     )?;
     std::fs::write(
-        dir.join("groups.yaml"),
+        dir.join("groups.toml"),
         "project: secure\ngroups:\n  1/2/3:\n    name: Secured dimming\n    dpt: '5.001'\n    \
          secure: true\n  1/2/4:\n    name: Plain value\n    dpt: '5.001'\n  1/2/9:\n    \
          name: Secured without key\n    dpt: '5.001'\n    secure: true\n",
