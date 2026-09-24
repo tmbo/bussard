@@ -81,7 +81,7 @@ Phase A delivers:
    preserve `IsSecureEnabled` and `MaxSecurity*` sizing attrs (currently
    dropped, zero references in any crate `[corpus §1]`); surface FDSK-certificate
    presence and `<Security>` seqnum state from the knxproj import. **Flags and
-   structure only in committed YAML** - key values must NEVER touch `knx/` (a
+   structure only in the committed model files** - key values must NEVER touch `knx/` (a
    reviewable, committed tree). See §2 and §11.
 2. **`.knxkeys` keyring parsing** (`bussard-project`, next to `password.rs`):
    fully decoded in research §keyring (§2, §3). Produces a typed `Keyring`.
@@ -155,7 +155,7 @@ whichever key the project provides.
 - The keyring/knxproj **password** arrives the same way the project password
   already does: an env var (`BUSSARD_KEYRING_PASSWORD`, mirroring
   `BUSSARD_PROJECT_PASSWORD` `[corpus §4]`), never a CLI arg, never a config file.
-- The committed YAML model (`knx/`) records **only flags**: `secure: true` on a
+- The committed model (`knx/`) records **only flags**: `secure = true` on a
   device/app (from `IsSecureEnabled`), the `MaxSecurity*` sizing, and a boolean
   "has FDSK certificate" + the `<Security>` seqnum state. NEVER the FDSK, tool
   key, group key, or any password. See §11.
@@ -165,8 +165,8 @@ whichever key the project provides.
 - **Never print, log, or `Debug`-format a key.** Every key-bearing type MUST have
   a hand-written `Debug`/`Display` that redacts (e.g. `ToolKey(<redacted>)`).
   Derive `Debug` is FORBIDDEN on any struct holding raw key bytes.
-- **Never serialize a key.** No `Serialize`/`Deserialize` on key types; the YAML
-  model carries flags, not bytes (§2.2).
+- **Never serialize a key.** No `Serialize`/`Deserialize` on key types; the model
+  files carry flags, not bytes (§2.2).
 - **Zeroize where practical.** Wrap raw 16-byte keys in a type whose `Drop`
   zeroes the buffer (the `zeroize` crate, MIT/Apache - a candidate direct dep, or
   a hand-written `Drop` that overwrites with `0` under a `// SAFETY:`-free safe
@@ -959,7 +959,7 @@ Cheap, independent of the crypto, do first `[corpus §5]`:
 - knxproj import: surface `<DeviceCertificate>` **presence** (a boolean "has
   FDSK") and the `<Security SequenceNumber SequenceNumberTimestamp>` state per
   device.
-- **Committed YAML (`knx/`) carries flags + seqnum state ONLY** - never the FDSK,
+- **The committed model (`knx/`) carries flags + seqnum state ONLY** - never the FDSK,
   tool key, group key, or any password (§2.2, §2.3). `knx/` is reviewed and
   committed; key bytes must never enter it.
 
@@ -1164,7 +1164,7 @@ greppable.
 ## 14. Milestones
 
 - **A0** - importer preserves `IsSecureEnabled`/`MaxSecurity*` + FDSK-presence +
-  seqnum state; flags-only in YAML. No crypto. (§11)
+  seqnum state; flags-only in the model files. No crypto. (§11)
 - **A1** - crypto primitives (`aes`+`cbc`+`ctr`), PBKDF2 salts, unit vectors
   (§3, §12.1). `.knxkeys` parser (§4).
 - **A2** - A_SecureData ASDU + `DataSecureSession`/`SecureLayer` seam;

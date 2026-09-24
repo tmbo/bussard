@@ -41,7 +41,7 @@ room structure, the parameters and, for KNX Secure, the keys. Devices hold the
 tables but none of the meaning. KNX's own guidelines oblige the outgoing
 integrator to hand over the latest project, yet withholding it is common, and
 without it the owner faces a two-to-three day reconstruction job or a rebuild
-from scratch. bussard's YAML model in git is the answer to this problem, so
+from scratch. bussard's model in git is the answer to this problem, so
 everything that gets the model populated, backed up and legible is on the
 critical path.
 
@@ -52,7 +52,7 @@ direct saving for the owner and a smaller licence dependency for the
 integrator's customers.
 
 Neither persona is git-native, and exchange happens by file. Owners will not
-learn git or read YAML diffs, and integrators deliver a file on a USB stick,
+learn git or read file diffs, and integrators deliver a file on a USB stick,
 as they do with the `.knxproj` today. bussard therefore needs its own history
 and undo (D18), a single-file bundle for exchange and backup (D19), and
 plain-language rendering of pending changes (D20). Git remains the right layer
@@ -78,12 +78,12 @@ the proposing and the model editing. The split:
 | Runs the learn loop: "press the button", `knx_wait_for_telegram`, `knx_infer_group`, then `knx_set_group` and `knx_add_link` once the human confirms. | Presses the buttons. |
 | Edits the model with `knx_set_group`, `knx_add_link`, `knx_remove_link`, `knx_set_device`, `knx_set_parameter`, and quotes the sentence each edit returns. | Reads the sentence and says yes or no. |
 | Explains the past with `knx_history` and `knx_describe_change`, and reverts with `knx_undo`. | Programs devices: `plan`, `apply`, `flash`, behind a confirmation and the real-gateway gate. |
-| Drafts `tests.yaml` and, on a write-enabled server, runs it with `knx_run_tests`. | Runs the physical ceremonies: `commission`, `replace`, `adopt`. |
+| Drafts `tests.toml` and, on a write-enabled server, runs it with `knx_run_tests`. | Runs the physical ceremonies: `commission`, `replace`, `adopt`. |
 | Explains what a received `.knxproj` or bundle would change with `knx_diff_project`, and exports with `knx_export_bundle`. | Imports the file with `bussard import` and exports a bundle to a USB stick. |
 
 Three properties make this safe. Every model edit is snapshotted before it is
 written and rendered in plain sentences, so the human judges a sentence, not a
-YAML diff, and any edit is one undo away. Protected group addresses are
+file diff, and any edit is one undo away. Protected group addresses are
 refused over MCP with no override. Programming a device is not an MCP tool at
 all, so nothing an assistant does changes a device's tables or parameters until
 a human runs `apply` or `flash`. Group writes over MCP exist only on a server

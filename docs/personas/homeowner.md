@@ -6,7 +6,7 @@ behave the way her family lives, connect it to the smart-home platform she
 already uses, and never be locked out of her own walls. She can install
 software and follow a terminal tutorial, and she talks to an LLM assistant
 daily. She has never used git, does not want to learn it, and will not read a
-YAML diff to decide whether a change is safe. She is not an electrician and has
+file diff to decide whether a change is safe. She is not an electrician and has
 no ETS licence.
 
 ## Profile
@@ -59,7 +59,7 @@ password.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| Find the gateway | `bussard init` discovers gateways by multicast, writes `bussard.yaml`, and prints the tunnel budget (`4 tunnels, 1 in use`); a full interface is reported as such and exits 4 instead of timing out (pending merge). | A Secure-only interface is still refused. | D13, existing #71 |
+| Find the gateway | `bussard init` discovers gateways by multicast, writes `bussard.toml`, and prints the tunnel budget (`4 tunnels, 1 in use`); a full interface is reported as such and exits 4 instead of timing out (pending merge). | A Secure-only interface is still refused. | D13, existing #71 |
 | Know what devices exist | `bussard scan 1.1` lists every responding device with mask, manufacturer and order number. `bussard audit --live` probes every modelled device and reports which answered (pending merge). | A scan of an unknown house takes minutes per line; `reconstruct --line` is the only way to keep what it found. | D1 |
 | Know what bussard can manage | `bussard audit` and the `knx_audit` MCP tool group devices by mask with what bussard can do for each, from the same table the refusals use (pending merge). The assistant answers "which of my devices can you program?" directly. | None. | D1 |
 
@@ -135,7 +135,7 @@ every auto-import tool struggles.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| HA configuration | `bussard ha-config --out ha.yaml` derives covers, lights, switches, sensors and climate entities from com-object flags, with `ha.yaml` overrides. `init` and `audit --live` print the tunnel budget, so HA and bussard do not fight for one slot unnoticed (pending merge). | None. | D13 |
+| HA configuration | `bussard ha-config --out ha.yaml` derives covers, lights, switches, sensors and climate entities from com-object flags, with `ha.toml` overrides. `init` and `audit --live` print the tunnel budget, so HA and bussard do not fight for one slot unnoticed (pending merge). | None. | D13 |
 | Get her curated names back into ETS | `bussard export-groups --format ets-csv` or `ets-xml` writes a file ETS imports, names, DPTs and descriptions included. | None. | D12 |
 
 ### Stage 8. Extend and repair
@@ -189,7 +189,7 @@ request and neither will they.
   guided command, so that a hardware failure does not need a professional.
 - As a new owner, I want my assistant's proposed change shown to me in plain
   words, and the device plan before I confirm, so that I stay in control
-  without reading YAML.
+  without reading the model files.
 - As a new owner, I want to undo last Tuesday's change with one command, so
   that a regret costs a minute and not an evening.
 - As a new owner, I want my whole configuration as one file I can copy to a
@@ -210,7 +210,7 @@ request and neither will they.
 
 Nadia's operator is her assistant. It connects to `bussard mcp`, reads the
 audit, runs the learn loop with her, proposes each change as model edits, and
-quotes the sentences those edits return. She never reads YAML or a diff. She
+quotes the sentences those edits return. She never reads the model files or a diff. She
 types the commands that program devices (`plan`, `apply`, `flash`) and does
 the physical steps (programming buttons, `replace`), because those stay on the
 command line behind a confirmation and the real-gateway gate. History and undo

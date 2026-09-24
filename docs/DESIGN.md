@@ -193,7 +193,7 @@ error; this section keeps only the decisions behind it.
   the user in full, so there is no hand-editable zone behind a marker.
 - **The lock follows `Cargo.lock`.** An `@generated` first line (which GitHub also uses
   to fold the diff), a flat `[[device]]` list sorted by address, one file per model,
-  and regenerate rather than hand-merge on a conflict. It holds the vendor facts:
+  and the rule that the tool owns every line. It holds the vendor facts:
   program, mask, channel ids, the com-object table, parameter refs, module base offsets.
   It is committed because `models/` is not: a checkout without product data must still
   validate, plan, decode telegrams and derive Home Assistant entities.

@@ -102,7 +102,7 @@ For customers who already work with git, one repository per installation replace
 1. The repository holds the model directory (`knx/`) and the ignore entries from `bussard init`. Nothing from the table above.
 2. The owner's assistant makes the change on a branch with the model-edit tools and opens a pull request. The pull request description quotes the sentences from `knx_describe_change`.
 3. CI checks the change without a bus.
-4. The integrator reviews and approves. The sentences are the review; the YAML diff is there for whoever wants it.
+4. The integrator reviews and approves. The sentences are the review; the TOML diff is there for whoever wants it.
 5. After merge, whoever is on site pulls, runs `plan` and `apply`, then `bussard test` to rerun the acceptance tests.
 
 A CI job for step 3:

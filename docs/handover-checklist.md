@@ -37,7 +37,7 @@ Installation: ______________________  Integrator: ______________________  Date: 
 - [ ] Model checksum (`model_sha256` from the bundle manifest):
       ________________________________________________________________
 - [ ] House manual from `bussard doc`
-- [ ] Acceptance test report from `bussard test`, with the `tests.yaml` it ran
+- [ ] Acceptance test report from `bussard test`, with the `tests.toml` it ran
 - [ ] Backup from `bussard backup`, taken after the last `apply`
 
 The bundle and its checksum are the delivered state. `bussard diff` against this bundle shows, in sentences, anything changed since.

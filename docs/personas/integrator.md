@@ -34,7 +34,7 @@ forum users share home-grown sheets with GA generators because "nothing exists".
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| Capture rooms and functions in a form the rest of the pipeline reads | `bussard scaffold plan.yaml` turns a device-free room and function list into `groups.yaml`; over MCP, `knx_scaffold_groups` does the same after the assistant confirms the room list with him. | No import of an existing Excel room book. | D11 |
+| Capture rooms and functions in a form the rest of the pipeline reads | `bussard scaffold` turns a device-free room and function list into GA blocks in `groups.toml`; over MCP, `knx_scaffold_groups` does the same after the assistant confirms the room list with him. | No import of an existing Excel room book. | D11 |
 
 ### Stage 2. Planning: topology, power, devices
 
@@ -47,7 +47,7 @@ priorities set, and cable lengths documented.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| Catch topology mistakes before the download | `bussard validate` checks structure, and with a `lint:` block in `bussard.yaml` adds devices per line, bus current per line against the supply, undeclared lines and Secure devices behind non-Secure couplers (L001 to L004). | None. | D10 |
+| Catch topology mistakes before the download | `bussard validate` checks structure, and with a `[lint]` table in `bussard.toml` adds devices per line, bus current per line against the supply, undeclared lines and Secure devices behind non-Secure couplers (L001 to L004). | None. | D10 |
 
 ### Stage 3. ETS project setup: naming and group addresses
 
@@ -107,7 +107,7 @@ installation behaves.
 
 | Need | bussard today | Gap | Issue |
 |---|---|---|---|
-| Scripted acceptance test | `bussard test` runs `tests.yaml` (write this GA, expect that one within two seconds; or a manual step) and prints a timestamp-free pass/fail report. The assistant drafts `tests.yaml` from the model and runs it with `knx_run_tests` on a write-enabled server. | None. | D9 |
+| Scripted acceptance test | `bussard test` runs `tests.toml` (write this GA, expect that one within two seconds; or a manual step) and prints a timestamp-free pass/fail report. The assistant drafts `tests.toml` from the model and runs it with `knx_run_tests` on a write-enabled server. | None. | D9 |
 | Protected functions during test | A test that writes a protected GA needs `allow_protected: true` in the file and `--force`; `knx_run_tests` refuses it whatever the file says. | None. | D9 |
 
 ### Stage 7. Documentation and handover
@@ -203,7 +203,7 @@ Manager was enabled.
 For Jonas, bussard is a companion to ETS before it is a replacement, and his
 assistant is the one who talks to it. Over `bussard mcp` the assistant
 scaffolds the GA plan from his room list, reads the audit, drafts and runs
-`tests.yaml`, and explains what a customer's bundle changed. Jonas does the
+`tests.toml`, and explains what a customer's bundle changed. Jonas does the
 physical work at the cabinet (`commission`, `replace`) and the bus
 programming (`plan --line`, `apply --line`, `flash`), which stay on the
 command line. With `BUSSARD_ALLOW_REAL_GATEWAY=1` in his service laptop's

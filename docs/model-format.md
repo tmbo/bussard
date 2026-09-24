@@ -24,8 +24,7 @@ knx/
 
 A file is either fully user-owned or fully generated. `bussard.lock` is the
 only generated file: `import` and `adopt` write it and nothing else does.
-Commit it like `Cargo.lock`; on a merge conflict, regenerate it instead of
-merging by hand. A snapshot, a bundle and the model-change fingerprint cover
+Commit it, as you would `Cargo.lock`. A snapshot, a bundle and the model-change fingerprint cover
 `bussard.toml`, `groups.toml`, `devices/*.toml`, `bussard.lock`, `tests.toml`
 and `ha.toml`.
 

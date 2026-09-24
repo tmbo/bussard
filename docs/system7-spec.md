@@ -719,7 +719,7 @@ descriptors like `07 5C DF 03`.
   codes: `0x00` Idle/OK, `0x01` Idle/Error, `0x02` Transmitting, `0x03`
   Transmit-request. Remaining bits not fully sourced.
 
-Both implementers compute these from the same YAML model (GAs, links, com-object
+Both implementers compute these from the same model (GAs, links, com-object
 flags/DPT) so a golden-byte test (section 9) can lock them without a device.
 
 ---
@@ -778,7 +778,7 @@ signal that one diverged.
 
 **Golden-byte table tests:** for `M-0083_A-000E`, lock the 0x4000 address table,
 0x4201 association table, and group-object descriptors as byte-exact fixtures
-computed from the YAML model (section 7). These need no device and catch
+computed from the model (section 7). These need no device and catch
 CONFIG/TYPE-synthesis and endianness regressions.
 
 **M2 live-capture milestone.** Capture an ETS re-download of a real Jung 0705

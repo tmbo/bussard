@@ -39,7 +39,7 @@ Found gateway: IP Interface (192.0.2.10:3671, IA 1.1.250, 4 tunnels, 1 in use)
 Created a fresh KNX model in knx.
 ```
 
-`init` finds the interface, writes its address into `knx/bussard.yaml` and creates an empty model in the `knx` directory. If discovery finds nothing, pass the address: `bussard init --gateway 192.0.2.10`.
+`init` finds the interface, writes its address into `knx/bussard.toml` and creates an empty model in the `knx` directory. If discovery finds nothing, pass the address: `bussard init --gateway 192.0.2.10`.
 
 The tunnel count matters. An interface has a fixed number of connection slots, often one to five. Home Assistant holds one permanently, ETS holds one while a project is online, and every running bussard command holds one, including the assistant's server. "4 tunnels, 1 in use" leaves room for the assistant and a command at the same time. With a one-tunnel interface and Home Assistant running, bussard gets no slot; it says so and exits with code 4 instead of hanging. [The tunnel budget](SAFETY.md#the-tunnel-budget) has the details.
 
@@ -68,7 +68,7 @@ Other MCP clients take a JSON entry. Use the absolute path to the model director
 
 The default server reads the model, watches the bus, sends rate-limited read requests, and edits the model files. It cannot program a device and cannot write a value to the bus.
 
-Safety rails: every model edit the assistant makes is saved to the history first and comes back as a plain sentence for the assistant to quote. Group addresses marked `protected: true` cannot be changed or linked over MCP at all. Device programming (`plan`, `apply`, `flash`) exists only on the command line.
+Safety rails: every model edit the assistant makes is saved to the history first and comes back as a plain sentence for the assistant to quote. Group addresses marked `protected = true` cannot be changed or linked over MCP at all. Device programming (`plan`, `apply`, `flash`) exists only on the command line.
 
 ## Saturday morning: how good is my project file?
 
@@ -106,13 +106,10 @@ Assistant:  (calls knx_audit)
 
 `knx_audit` is the MCP form of `bussard audit`. With `live: true` it also asks the interface for its tunnel slots and summarises the traffic the server has seen. Run `bussard audit` in a terminal to see the same report.
 
-Protect the safety functions before anything else. Ask the assistant which addresses look like the wind alarm, rain alarm or central off. It cannot set the flag itself, by design, so add it by hand in `knx/groups.yaml` under each such address:
+Protect the safety functions before anything else. Ask the assistant which addresses look like the wind alarm, rain alarm or central off. It cannot set the flag itself, by design, so add it by hand in `knx/groups.toml`, on the line of each such address:
 
-```yaml
-  2/1/0:
-    name: Wind alarm
-    dpt: '1.005'
-    protected: true
+```toml
+  { address = "2/1/0", name = "Wind alarm", dpt = "1.005", protected = true },
 ```
 
 Safety rails: the audit only reads. A protected address is refused by every MCP tool and needs `--force` on the command line.
@@ -252,10 +249,10 @@ The `.bussard` file holds the model, the history and a checksum of the model. It
 | Real-gateway gate | Any write to a non-local gateway without `--allow-remote-gateway` or `BUSSARD_ALLOW_REAL_GATEWAY=1`. |
 | Confirmation | Every device write names the gateway and waits for `y`. |
 | Plan before apply | `apply` shows the table changes before writing, backs up, then verifies. |
-| Protected addresses | `protected: true` is refused over MCP and needs `--force` on the command line. |
+| Protected addresses | `protected = true` is refused over MCP and needs `--force` on the command line. |
 | History and undo | Every model edit and every device write is saved first. |
 | CLI-only programming | The assistant edits the model; only a human programs devices. |
 
 ## A note for git users
 
-bussard does not need git. For those who use it anyway, the model directory is git-friendly: commit `bussard.yaml`, `groups.yaml`, `links.yaml`, `devices/` and `tests.yaml`, and let the generated ignore file keep the rest local. The repository track in [the collaboration guide](collaboration.md#the-repository-track) shows how an owner and an integrator share one repository with pull requests and CI.
+bussard does not need git. For those who use it anyway, the model directory is git-friendly: commit `bussard.toml`, `groups.toml`, `devices/`, `bussard.lock` and `tests.toml`, and let the generated ignore file keep the rest local. The repository track in [the collaboration guide](collaboration.md#the-repository-track) shows how an owner and an integrator share one repository with pull requests and CI.
