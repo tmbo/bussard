@@ -10,7 +10,7 @@
 use std::time::Duration;
 
 use bussard_bus::{Bus, BusHandle};
-use bussard_mgmt::{Layer4Connection, LeaseChannel, Timeouts};
+use bussard_mgmt::{Layer4Connection, LeaseChannel, MgmtError, Timeouts};
 use bussard_model::IndividualAddress;
 use bussard_secure::{Key16, SequenceHighWater};
 use bussard_transport::ConnectionConfig;
@@ -236,6 +236,11 @@ impl BusService {
             SourcePolicy::Check { skip } => self.checked_source(skip).await?,
             SourcePolicy::Known(source) => source,
         };
+        // A tunnel that is re-establishing itself (issue #177) is waited for
+        // rather than raced: a T_Connect sent now would go stale.
+        self.handle
+            .wait_connected(self.handle.reconnect_budget())
+            .await;
         let lease = self.handle.lease().await.map_err(ServiceError::Lease)?;
         let channel = LeaseChannel::new(lease);
         let secure = crate::secure::layer(&options.tool_key, &options.high_water);
@@ -266,6 +271,41 @@ impl BusService {
         Ok(l4)
     }
 
+    /// [`connect_l4`](Self::connect_l4), re-run when a gateway link loss cut
+    /// the connect short (issue #177).
+    ///
+    /// The connect is idempotent (a `T_Connect` and, when asked, an authorize),
+    /// so it is retried up to [`CONNECT_ATTEMPTS`] times: on a lost-link
+    /// transport error, or on a connection death while the bus reported a link
+    /// loss. Each retry first waits for the bus to be connected again.
+    async fn connect_l4_retrying(
+        &self,
+        target: IndividualAddress,
+        options: &L4Options,
+    ) -> Result<Management, ServiceError> {
+        let mut attempt = 1u32;
+        loop {
+            let losses_before = self.handle.link_losses();
+            match self.connect_l4(target, options).await {
+                Ok(l4) => return Ok(l4),
+                Err(ServiceError::Mgmt(err))
+                    if attempt < CONNECT_ATTEMPTS
+                        && lost_link(&err, self.handle.link_losses() != losses_before) =>
+                {
+                    attempt += 1;
+                    tracing::warn!(
+                        "connecting to {target} was interrupted by a gateway connection loss \
+                         ({err}); retrying (attempt {attempt} of {CONNECT_ATTEMPTS})"
+                    );
+                    self.handle
+                        .wait_connected(self.handle.reconnect_budget())
+                        .await;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
     /// Runs `body` inside a management session to `target` and disconnects on
     /// every path, returning the body's result.
     ///
@@ -288,9 +328,53 @@ impl BusService {
         F: AsyncFnOnce(&mut Management) -> Result<T, E>,
         E: From<ServiceError>,
     {
-        let mut l4 = self.connect_l4(target, options).await?;
+        let mut l4 = self.connect_l4_retrying(target, options).await?;
         let result = body(&mut l4).await;
         let _ = l4.disconnect().await;
         result
+    }
+}
+
+/// How often [`BusService::with_l4`] opens its management session when a
+/// gateway link loss interrupts the connect (issue #177).
+pub const CONNECT_ATTEMPTS: u32 = 3;
+
+/// Whether `err` from a management connect means the gateway link dropped: a
+/// lost-link transport error, or a connection death while the bus reported a
+/// link loss (`link_lost`).
+fn lost_link(err: &MgmtError, link_lost: bool) -> bool {
+    match err {
+        MgmtError::Transport(e) => e.is_link_loss(),
+        MgmtError::NoResponse { .. }
+        | MgmtError::Disconnected { .. }
+        | MgmtError::MidSessionSilence { .. } => link_lost,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bussard_transport::TransportError;
+
+    #[test]
+    fn test_lost_link_classifies_connect_errors() -> Result<(), Box<dyn std::error::Error>> {
+        let address: IndividualAddress = "1.1.4".parse()?;
+        let timeout = MgmtError::Transport(TransportError::Timeout("TUNNELING_ACK"));
+        assert!(lost_link(&timeout, false));
+        // A silent device is only a link loss when the bus saw one.
+        let silent = MgmtError::NoResponse { address };
+        assert!(!lost_link(&silent, false));
+        assert!(lost_link(&silent, true));
+        // Refusals and closed connections are never retried.
+        assert!(!lost_link(
+            &MgmtError::AccessDenied { address, level: 2 },
+            true
+        ));
+        assert!(!lost_link(
+            &MgmtError::Transport(TransportError::Closed),
+            true
+        ));
+        Ok(())
     }
 }

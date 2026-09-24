@@ -135,13 +135,16 @@ impl LeaseChannel {
 }
 
 /// Folds a [`BusError`] into the management error type: a transport failure
-/// passes through, and a stale drop or a gone actor both mean the connection is
-/// unusable.
+/// passes through, a gone actor means the connection is unusable, and a stale
+/// drop (the bus was reconnecting) is a timeout, which callers treat as a
+/// recoverable link loss (issue #177).
 pub(crate) fn map_bus_error(err: BusError) -> MgmtError {
     match err {
         BusError::Transport(e) => MgmtError::Transport(e),
-        // A stale drop or a gone actor both mean the connection is unusable.
-        BusError::Stale | BusError::ActorGone => MgmtError::Transport(TransportError::Closed),
+        BusError::Stale => MgmtError::Transport(TransportError::Timeout(
+            "a connected gateway (the bus is reconnecting)",
+        )),
+        BusError::ActorGone => MgmtError::Transport(TransportError::Closed),
     }
 }
 

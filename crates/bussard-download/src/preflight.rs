@@ -125,6 +125,13 @@ pub struct ResidentState {
     pub app_id: Option<Vec<u8>>,
     /// Why nothing could be read, when the probe came back empty-handed.
     pub unreadable: Option<String>,
+    /// Whether a connection death (a Layer-4 drop or a lost gateway link) cut
+    /// the probe short, so `objects` may be incomplete.
+    ///
+    /// An interrupted probe is never evidence of a fresh device: it also sets
+    /// [`unreadable`](ResidentState::unreadable), and the CLI re-runs the
+    /// read-only pre-flight on a fresh connection (issue #177).
+    pub interrupted: bool,
 }
 
 impl ResidentState {
@@ -250,6 +257,7 @@ async fn probe_system_b<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Residen
     let objects = match crate::flash::probe_object_types(l4).await {
         Ok(objects) => objects,
         Err(err) => {
+            state.interrupted = is_connection_death(&err);
             state.unreadable = Some(format!("interface objects are not discoverable: {err}"));
             return state;
         }
@@ -284,6 +292,7 @@ async fn probe_system_b<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Residen
                 let dead = is_connection_death(&err);
                 failures.push(format!("object {index}: {err}"));
                 if dead {
+                    state.interrupted = true;
                     break;
                 }
             }
@@ -302,6 +311,12 @@ async fn probe_system_b<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Residen
     if state.objects.is_empty() {
         state.unreadable = Some(format!(
             "no object reported a load state ({})",
+            failures.join("; ")
+        ));
+    } else if state.interrupted {
+        // A partial walk may have missed the loaded application object.
+        state.unreadable = Some(format!(
+            "the connection dropped during the probe ({})",
             failures.join("; ")
         ));
     }
@@ -329,6 +344,7 @@ async fn probe_sys7<Ch: L4Channel>(
                 let dead = is_connection_death(&err);
                 failures.push(format!("LSM {lsm}: {err}"));
                 if dead {
+                    state.interrupted = true;
                     break;
                 }
             }
@@ -337,6 +353,11 @@ async fn probe_sys7<Ch: L4Channel>(
     if state.objects.is_empty() {
         state.unreadable = Some(format!(
             "no load-state machine answered ({})",
+            failures.join("; ")
+        ));
+    } else if state.interrupted {
+        state.unreadable = Some(format!(
+            "the connection dropped during the probe ({})",
             failures.join("; ")
         ));
     }

@@ -17,7 +17,7 @@ use bussard_model::schema::Transport as ModelTransport;
 use bussard_service::{BusService, WritePolicy};
 use bussard_transport::config::{DEFAULT_MULTICAST, DEFAULT_PORT};
 use bussard_transport::write_gate::WriteGate;
-use bussard_transport::{ConnectionConfig, TransportKind};
+use bussard_transport::{ConnectionConfig, TransportKind, TunnelReconnect};
 
 /// Command-line connection overrides shared by `monitor` and `capture`.
 #[derive(Debug, Clone, Default)]
@@ -252,6 +252,7 @@ pub fn resolve_config(
             gateway: None,
             multicast,
             local_interface: Ipv4Addr::UNSPECIFIED,
+            reconnect: tunnel_reconnect(),
         });
     }
 
@@ -270,7 +271,27 @@ pub fn resolve_config(
         gateway: Some(gateway),
         multicast: SocketAddrV4::new(DEFAULT_MULTICAST, DEFAULT_PORT),
         local_interface: Ipv4Addr::UNSPECIFIED,
+        reconnect: tunnel_reconnect(),
     })
+}
+
+/// Environment variable that sets how many seconds a lost gateway tunnel is
+/// re-established for before the pending bus operation fails (issue #177).
+/// `0` turns re-establishing off. Unset means the default (60 s).
+pub(crate) const TUNNEL_RECONNECT_SECS_ENV: &str = "BUSSARD_TUNNEL_RECONNECT_SECS";
+
+/// The tunnel re-establish policy, honouring [`TUNNEL_RECONNECT_SECS_ENV`].
+fn tunnel_reconnect() -> TunnelReconnect {
+    parse_reconnect_secs(std::env::var(TUNNEL_RECONNECT_SECS_ENV).ok().as_deref())
+}
+
+/// Maps a [`TUNNEL_RECONNECT_SECS_ENV`] value to a policy; an absent or
+/// unparsable value keeps the default.
+fn parse_reconnect_secs(value: Option<&str>) -> TunnelReconnect {
+    match value.and_then(|v| v.trim().parse::<u64>().ok()) {
+        Some(secs) => TunnelReconnect::with_budget(std::time::Duration::from_secs(secs)),
+        None => TunnelReconnect::default(),
+    }
 }
 
 // The write-gate policy (issue #74) lives in `bussard_transport::write_gate` so
@@ -346,6 +367,20 @@ fn parse_socket(s: &str) -> anyhow::Result<SocketAddrV4> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_reconnect_secs_maps_env_values() {
+        assert_eq!(parse_reconnect_secs(None), TunnelReconnect::default());
+        assert_eq!(
+            parse_reconnect_secs(Some("junk")),
+            TunnelReconnect::default()
+        );
+        assert_eq!(
+            parse_reconnect_secs(Some(" 120 ")).budget,
+            std::time::Duration::from_secs(120)
+        );
+        assert!(!parse_reconnect_secs(Some("0")).enabled());
+    }
     use bussard_transport::write_gate::{ALLOW_REAL_GATEWAY_ENV, is_loopback_gateway};
 
     /// Builds a tunnel [`ConnectionConfig`] pointed at `host` for gate tests.

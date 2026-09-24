@@ -792,9 +792,12 @@ async fn setup(mode: LsmMode, fault: Fault) -> (Transport, Shared, tokio::task::
     let addr: bussard_model::IndividualAddress = "1.1.99".parse().unwrap();
     let state = fresh_device(mode, fault);
     let handle = tokio::spawn(run_gateway(sock, addr, Arc::clone(&state)));
-    let bus = Transport::connect(&ConnectionConfig::tunnel(
-        format!("127.0.0.1:{port}").parse().unwrap(),
-    ))
+    let bus = Transport::connect(
+        &ConnectionConfig::tunnel(format!("127.0.0.1:{port}").parse().unwrap())
+            // These tests abort the mock gateway before the final T_Disconnect; with
+            // the issue #177 re-establish on, that send would ride out the full budget.
+            .with_reconnect(bussard_transport::TunnelReconnect::disabled()),
+    )
     .await
     .unwrap();
     (bus, state, handle)
@@ -956,9 +959,12 @@ async fn flash_system7_resumes_across_a_connection_drop() -> Result<(), Box<dyn 
         s.deaths_remaining = 1;
     }
     let gw = tokio::spawn(run_gateway(sock, addr, Arc::clone(&state)));
-    let (handle, _actor) = bussard_bus::Bus::connect(ConnectionConfig::tunnel(
-        format!("127.0.0.1:{port}").parse().unwrap(),
-    ));
+    let (handle, _actor) = bussard_bus::Bus::connect(
+        ConnectionConfig::tunnel(format!("127.0.0.1:{port}").parse().unwrap())
+            // These tests abort the mock gateway before the final T_Disconnect; with
+            // the issue #177 re-establish on, that send would ride out the full budget.
+            .with_reconnect(bussard_transport::TunnelReconnect::disabled()),
+    );
     handle.wait_connected(Duration::from_secs(5)).await;
 
     let connector = LeaseConnector {
@@ -1026,9 +1032,12 @@ async fn run_flash_with_reboot(
         s.revert_on_reboot = revert;
     }
     let gw = tokio::spawn(run_gateway(sock, addr, Arc::clone(&state)));
-    let (handle, _actor) = bussard_bus::Bus::connect(ConnectionConfig::tunnel(
-        format!("127.0.0.1:{port}").parse().unwrap(),
-    ));
+    let (handle, _actor) = bussard_bus::Bus::connect(
+        ConnectionConfig::tunnel(format!("127.0.0.1:{port}").parse().unwrap())
+            // These tests abort the mock gateway before the final T_Disconnect; with
+            // the issue #177 re-establish on, that send would ride out the full budget.
+            .with_reconnect(bussard_transport::TunnelReconnect::disabled()),
+    );
     handle.wait_connected(Duration::from_secs(5)).await;
 
     let connector = LeaseConnector {

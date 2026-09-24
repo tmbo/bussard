@@ -1465,13 +1465,24 @@ pub use crate::memory::{
 /// the same connection can only fail again (issue #80). That is why
 /// [`crate::memory::write_memory_chunked`] no longer retries in place and the
 /// reconnecting call site owns the recovery.
+///
+/// A lost **gateway link** counts too (issue #177): a transport error for which
+/// [`TransportError::is_link_loss`](bussard_transport::TransportError::is_link_loss)
+/// holds (an ACK or heartbeat timeout, a gateway disconnect, a socket error, or
+/// a frame dropped while the bus was reconnecting). The tunnel re-establishes
+/// itself, and the frames the gateway could not deliver meanwhile are lost, so
+/// the caller resumes exactly as after a Layer-4 death. The terminal
+/// [`TunnelLost`](bussard_transport::TransportError::TunnelLost), raised once
+/// the tunnel's re-establish budget ran out, is not a connection death: there is
+/// no bus to resume on.
 pub fn is_connection_death(err: &WriteError) -> bool {
-    matches!(
-        err,
+    match err {
         WriteError::Mgmt(MgmtError::MidSessionSilence { .. })
-            | WriteError::Mgmt(MgmtError::Disconnected { .. })
-            | WriteError::Mgmt(MgmtError::NoResponse { .. })
-    )
+        | WriteError::Mgmt(MgmtError::Disconnected { .. })
+        | WriteError::Mgmt(MgmtError::NoResponse { .. }) => true,
+        WriteError::Mgmt(MgmtError::Transport(e)) => e.is_link_loss(),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -1611,6 +1622,40 @@ mod tests {
             address: ia,
             object_index: 3,
         }));
+    }
+
+    #[test]
+    fn test_is_connection_death_covers_gateway_link_loss() {
+        use bussard_transport::TransportError;
+        // Issue #177: a lost gateway link resumes like a Layer-4 death ...
+        for e in [
+            TransportError::Timeout("TUNNELING_ACK"),
+            TransportError::HeartbeatLost,
+            TransportError::Disconnected(7),
+        ] {
+            assert!(is_connection_death(&WriteError::Mgmt(
+                MgmtError::Transport(e)
+            )));
+        }
+        // ... but the terminal "could not re-establish" error does not, and
+        // neither does a closed connection or a gateway refusal.
+        let lost = TransportError::TunnelLost {
+            gateway: std::net::SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, 3671),
+            budget: std::time::Duration::from_secs(60),
+            cause: Box::new(TransportError::Timeout("TUNNELING_ACK")),
+        };
+        assert!(!is_connection_death(&WriteError::Mgmt(
+            MgmtError::Transport(lost)
+        )));
+        assert!(!is_connection_death(&WriteError::Mgmt(
+            MgmtError::Transport(TransportError::Closed)
+        )));
+        assert!(!is_connection_death(&WriteError::Mgmt(
+            MgmtError::Transport(TransportError::GatewayStatus {
+                status: 0x29,
+                context: "TUNNELING_ACK"
+            })
+        )));
     }
 
     #[test]

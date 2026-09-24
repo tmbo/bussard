@@ -206,6 +206,13 @@ entry supersedes it and is not a diff against it.
   of reporting zero objects (#155).
 - DPT codec fixes: 5.003 scaling, NaN handling, a UTF-8 boundary panic, and
   the DPT 20 scope (#34).
+- A lost KNXnet/IP tunnel (a pulled LAN cable on the IP interface) no longer
+  aborts `flash` with "timed out waiting for TUNNELING_ACK". The tunnel
+  re-establishes itself for up to 60 s (`BUSSARD_TUNNEL_RECONNECT_SECS`),
+  re-sends the pending frame and reports the loss on the bus status; `flash`
+  resumes like after a device connection drop, and its read-only pre-flight
+  runs again. When the gateway stays away the error names it (#177, S2.6 of
+  #90).
 
 ### Security
 

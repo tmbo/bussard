@@ -45,6 +45,24 @@ pub enum AckPolicy {
     Status(u8),
 }
 
+/// A gateway link outage (issue #177): models a pulled LAN cable on the IP
+/// interface. Configure it with [`GatewayBuilder::outage`].
+///
+/// The `after_frame`-th TUNNELLING_REQUEST (1-based) is served normally. From
+/// then on the gateway swallows **every** datagram (no ACK, no heartbeat
+/// answer, no CONNECT_RESPONSE) until `duration` has passed since that frame.
+/// When the outage ends the gateway has dropped the old channel: requests on it
+/// stay unanswered, a DISCONNECT for it is answered (and does not stop the
+/// gateway), and the next CONNECT is granted a new channel id (the old one plus
+/// one). With [`Duration::MAX`] the link never comes back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Outage {
+    /// The last TUNNELLING_REQUEST served before the link goes down (1-based).
+    pub after_frame: usize,
+    /// How long the link stays down, measured from that frame.
+    pub duration: Duration,
+}
+
 /// A scripted reaction to a client frame: returns the frames to push back.
 type Responder = Box<dyn FnMut(&CemiFrame) -> Vec<CemiFrame> + Send>;
 
@@ -61,8 +79,13 @@ pub struct GatewayStats {
     pub requests: usize,
     /// TUNNELLING_ACKs received from the client.
     pub client_acks: usize,
-    /// Every KNXnet/IP service received, in order.
+    /// Every KNXnet/IP service received, in order (including the datagrams an
+    /// [`Outage`] swallowed).
     pub services: Vec<ServiceType>,
+    /// Datagrams swallowed during an [`Outage`].
+    pub outage_dropped: usize,
+    /// The channel ids granted by successful CONNECTs, in order.
+    pub channels: Vec<u8>,
     /// Whether the gateway task has ended.
     pub finished: bool,
 }
@@ -79,6 +102,7 @@ pub struct GatewayBuilder {
     after_connect: Vec<(Duration, CemiFrame)>,
     responders: Vec<Responder>,
     devices: Vec<MockDevice>,
+    outage: Option<Outage>,
 }
 
 impl Default for GatewayBuilder {
@@ -94,6 +118,7 @@ impl Default for GatewayBuilder {
             after_connect: Vec::new(),
             responders: Vec::new(),
             devices: Vec::new(),
+            outage: None,
         }
     }
 }
@@ -161,6 +186,17 @@ impl GatewayBuilder {
         self
     }
 
+    /// Take the link down after the `after_frame`-th TUNNELLING_REQUEST for
+    /// `duration` (see [`Outage`]). Without this call the gateway behaves
+    /// exactly as before.
+    pub fn outage(mut self, after_frame: usize, duration: Duration) -> Self {
+        self.outage = Some(Outage {
+            after_frame,
+            duration,
+        });
+        self
+    }
+
     /// Put a device on the line.
     pub fn device(mut self, device: MockDevice) -> Self {
         self.devices.push(device);
@@ -202,6 +238,10 @@ impl GatewayBuilder {
             peer: None,
             gw_seq: 0,
             pending: VecDeque::new(),
+            outage: self.outage,
+            served: 0,
+            down_until: None,
+            stale_channel: None,
         };
         let task = tokio::spawn(server.run(cmd_rx));
         Ok(MockGateway {
@@ -375,6 +415,14 @@ struct Server {
     peer: Option<SocketAddr>,
     gw_seq: u8,
     pending: VecDeque<CemiFrame>,
+    /// The configured outage, taken (`None`) once it has started.
+    outage: Option<Outage>,
+    /// TUNNELLING_REQUESTs served so far, metered against the outage.
+    served: usize,
+    /// While the link is down: when it comes back (`None` = never).
+    down_until: Option<Option<tokio::time::Instant>>,
+    /// The channel the outage dropped, until the client disconnects it.
+    stale_channel: Option<u8>,
 }
 
 /// Whether the gateway loop should keep going.
@@ -438,6 +486,24 @@ impl Server {
         Flow::Continue
     }
 
+    /// Whether the link is down right now; ends an outage whose time is up
+    /// (dropping the old channel and moving to a new channel id).
+    fn link_down(&mut self) -> bool {
+        match self.down_until {
+            None => false,
+            Some(None) => true,
+            Some(Some(until)) if tokio::time::Instant::now() < until => true,
+            Some(Some(_)) => {
+                self.down_until = None;
+                self.stale_channel = Some(self.channel);
+                self.channel = self.channel.wrapping_add(1);
+                self.peer = None;
+                self.gw_seq = 0;
+                false
+            }
+        }
+    }
+
     async fn on_datagram(&mut self, bytes: &[u8], from: SocketAddr) -> Flow {
         let Ok(parsed) = knxnet::parse(bytes) else {
             return Flow::Continue;
@@ -445,6 +511,31 @@ impl Server {
         let service = parsed.service;
         let body = parsed.body.to_vec();
         self.stats.send_modify(|s| s.services.push(service));
+        if self.link_down() {
+            self.stats.send_modify(|s| s.outage_dropped += 1);
+            return Flow::Continue;
+        }
+        if let Some(stale) = self.stale_channel {
+            // After an outage: the old channel is gone. Answer its DISCONNECT
+            // without stopping, and leave its requests and heartbeats unanswered.
+            let channel = body.first().copied();
+            match service {
+                ServiceType::DisconnectRequest if channel == Some(stale) => {
+                    self.stale_channel = None;
+                    self.stats.send_modify(|s| s.disconnects += 1);
+                    let resp = knxnet::disconnect_response(stale, 0);
+                    return self.send(&resp, from).await;
+                }
+                ServiceType::ConnectionstateRequest
+                | ServiceType::TunnelingRequest
+                | ServiceType::TunnelingAck
+                    if channel == Some(stale) =>
+                {
+                    return Flow::Continue;
+                }
+                _ => {}
+            }
+        }
         match service {
             ServiceType::ConnectRequest => self.on_connect(from).await,
             ServiceType::ConnectionstateRequest => {
@@ -491,6 +582,8 @@ impl Server {
         if matches!(self.send(&reply, from).await, Flow::Stop) {
             return Flow::Stop;
         }
+        let channel = self.channel;
+        self.stats.send_modify(|s| s.channels.push(channel));
         self.peer = Some(from);
         if !self.after_connect.is_empty() {
             // One task for all scheduled pushes, sorted by delay, so frames with
@@ -518,6 +611,14 @@ impl Server {
         };
         self.peer = Some(from);
         self.stats.send_modify(|s| s.requests += 1);
+        self.served += 1;
+        if let Some(outage) = self.outage
+            && self.served >= outage.after_frame
+        {
+            // This frame is served; the link goes down right after it.
+            self.outage = None;
+            self.down_until = Some(tokio::time::Instant::now().checked_add(outage.duration));
+        }
         if let Ok(mut sent) = self.sent.lock() {
             sent.push(tr.cemi.clone());
         }

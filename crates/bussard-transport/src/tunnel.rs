@@ -5,15 +5,44 @@
 //!
 //! - drives the CONNECT / CONNECT_RESPONSE handshake,
 //! - sends CONNECTIONSTATE_REQUEST heartbeats every
-//!   [`HEARTBEAT_INTERVAL`](crate::config::HEARTBEAT_INTERVAL) and reconnects the
-//!   caller's error path if they fail,
+//!   [`HEARTBEAT_INTERVAL`](crate::config::HEARTBEAT_INTERVAL),
 //! - transmits our TUNNELING_REQUESTs with an incrementing sequence counter and
 //!   awaits the matching TUNNELING_ACK (retransmitting once on timeout),
+//! - re-establishes the tunnel when the gateway link is lost (see below),
 //! - ACKs inbound TUNNELING_REQUESTs, delivering their cEMI to the caller, and
 //!   drops duplicate sequence numbers (ACKing them but not re-delivering),
 //! - handles a server-initiated DISCONNECT_REQUEST.
 //!
 //! The public [`Tunnel`] handle talks to the task over channels.
+//!
+//! # Re-establishing a lost tunnel (issue #177)
+//!
+//! A pulled LAN cable on the IP interface, a switch reboot or a Wi-Fi hiccup
+//! leaves the gateway unreachable for a few seconds. The tunnel treats three
+//! signals as a lost link: a TUNNELING_REQUEST still unacknowledged after its
+//! retransmit, a failed CONNECTIONSTATE heartbeat, and a socket error. On any
+//! of them it runs the [`TunnelReconnect`] policy from the
+//! [`ConnectionConfig`]:
+//!
+//! 1. publish [`LinkState::Reconnecting`] and log `gateway connection lost`,
+//! 2. send a best-effort DISCONNECT_REQUEST for the old channel (repeated per
+//!    attempt until the gateway answers it, so a gateway that still holds the
+//!    old channel frees the slot before the new CONNECT),
+//! 3. send CONNECT_REQUEST and wait for the CONNECT_RESPONSE; on success adopt
+//!    the new channel id and reset both sequence counters,
+//! 4. otherwise back off (1, 2, 4, 8, 8 ... s by default) and try again until
+//!    the budget (60 s by default) has passed since the loss.
+//!
+//! On success the task publishes [`LinkState::Up`], logs `gateway connection
+//! re-established` and re-sends the frame whose ACK it was waiting for, so the
+//! caller's `send` simply takes longer. When the budget runs out the pending
+//! send (or, for a heartbeat loss, the inbound stream) fails with
+//! [`TransportError::TunnelLost`], which names the gateway.
+//!
+//! Frames the gateway sent while the link was down are gone; the layers above
+//! (the Layer-4 session of a flash) detect that as a connection death and
+//! resume. With [`TunnelReconnect::disabled`] the first loss fails the send, as
+//! before issue #177.
 //!
 //! # Inbound buffering policy (issue #82)
 //!
@@ -55,14 +84,14 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::SystemTime;
 
 use tokio::net::UdpSocket;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 use tokio::time::{self, Instant};
 
 use crate::cemi::CemiFrame;
 use crate::config::{
     CONNECT_TIMEOUT, ConnectionConfig, DISCONNECT_TIMEOUT, HEARTBEAT_INTERVAL, HEARTBEAT_RETRIES,
-    HEARTBEAT_TIMEOUT, TUNNELING_ACK_TIMEOUT, TUNNELING_RETRANSMITS,
+    HEARTBEAT_TIMEOUT, TUNNELING_ACK_TIMEOUT, TUNNELING_RETRANSMITS, TunnelReconnect,
 };
 use crate::conn::{BusConnection, TimestampedFrame};
 use crate::error::{Result, TransportError};
@@ -87,6 +116,21 @@ const DUP_ACK_WINDOW: u8 = 8;
 /// every further `INBOUND_WARN_DEPTH` frames rather than once per frame.
 const INBOUND_WARN_DEPTH: usize = 512;
 
+/// The state of a tunnel's link to its gateway, as published by
+/// [`Tunnel::link_state`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkState {
+    /// The tunnel is connected. `assigned_ia` is the individual address the
+    /// gateway assigned on the latest CONNECT (it can change after a
+    /// re-establish when the gateway hands out a different slot).
+    Up {
+        /// The raw assigned individual address, if the gateway reported one.
+        assigned_ia: Option<u16>,
+    },
+    /// The link was lost and the tunnel is re-establishing itself.
+    Reconnecting,
+}
+
 /// Command sent from a [`Tunnel`] handle to its background task.
 enum Command {
     /// Send a cEMI frame; reply once ACKed (or on error).
@@ -108,6 +152,8 @@ pub struct Tunnel {
     task: Option<JoinHandle<()>>,
     /// The individual address the gateway assigned to this tunnel, if reported.
     assigned_ia: Option<u16>,
+    /// The link state the task publishes (up / re-establishing).
+    link: watch::Receiver<LinkState>,
 }
 
 impl Tunnel {
@@ -147,6 +193,7 @@ impl Tunnel {
         let control_hpai = Hpai::new(local);
         let data_hpai = Hpai::new(local);
         let (channel_id, assigned_ia) = Self::handshake(&socket, control_hpai, data_hpai).await?;
+        let (link_tx, link_rx) = watch::channel(LinkState::Up { assigned_ia });
 
         let (cmd_tx, cmd_rx) = mpsc::channel(16);
         // Unbounded and never awaited: the task must not be able to block on
@@ -165,6 +212,9 @@ impl Tunnel {
             frames: frame_tx,
             queued: queued.clone(),
             warned_depth: 0,
+            gateway,
+            reconnect: config.reconnect,
+            link: link_tx,
         };
         let task = tokio::spawn(task_state.run());
 
@@ -174,7 +224,15 @@ impl Tunnel {
             queued,
             task: Some(task),
             assigned_ia,
+            link: link_rx,
         })
+    }
+
+    /// A receiver that observes the tunnel's [`LinkState`]: `Up` after the
+    /// handshake, `Reconnecting` while a lost link is being re-established,
+    /// `Up` again once it is back. The sender is dropped when the task ends.
+    pub fn link_state(&self) -> watch::Receiver<LinkState> {
+        self.link.clone()
     }
 
     /// The individual address assigned to this tunnel by the gateway, if any.
@@ -199,21 +257,27 @@ impl Tunnel {
                 value: 0,
             });
         }
-        let resp = knxnet::parse_connect_response(parsed.body)?;
-        // A full interface is a capacity refusal, not a transport fault: give it
-        // its own variant so the CLI can name the likely other clients and exit
-        // with a distinct code (issue #105).
-        if resp.status == crate::error::E_NO_MORE_CONNECTIONS {
-            return Err(TransportError::NoMoreConnections);
-        }
-        if resp.status != 0 {
-            return Err(TransportError::GatewayStatus {
-                status: resp.status,
-                context: "CONNECT_RESPONSE",
-            });
-        }
-        Ok((resp.channel_id, resp.assigned_ia))
+        accept_connect_response(parsed.body)
     }
+}
+
+/// Decodes a CONNECT_RESPONSE body into the granted channel id and assigned
+/// individual address, turning a refusal into its error.
+fn accept_connect_response(body: &[u8]) -> Result<(u8, Option<u16>)> {
+    let resp = knxnet::parse_connect_response(body)?;
+    // A full interface is a capacity refusal, not a transport fault: give it
+    // its own variant so the CLI can name the likely other clients and exit
+    // with a distinct code (issue #105).
+    if resp.status == crate::error::E_NO_MORE_CONNECTIONS {
+        return Err(TransportError::NoMoreConnections);
+    }
+    if resp.status != 0 {
+        return Err(TransportError::GatewayStatus {
+            status: resp.status,
+            context: "CONNECT_RESPONSE",
+        });
+    }
+    Ok((resp.channel_id, resp.assigned_ia))
 }
 
 impl BusConnection for Tunnel {
@@ -292,6 +356,12 @@ struct TaskState {
     /// The queue depth the last "consumer falling behind" warning reported, so
     /// the warning repeats per `INBOUND_WARN_DEPTH` frames instead of per frame.
     warned_depth: usize,
+    /// The gateway's control endpoint, for re-establishing and error hints.
+    gateway: SocketAddrV4,
+    /// How a lost link is re-established (issue #177).
+    reconnect: TunnelReconnect,
+    /// Publishes the link state to the handle (and through it the bus actor).
+    link: watch::Sender<LinkState>,
 }
 
 impl TaskState {
@@ -356,16 +426,21 @@ impl TaskState {
                             }
                         }
                         Err(e) => {
-                            self.deliver(Err(TransportError::from(e)));
-                            return;
+                            let err = TransportError::from(e);
+                            if let Err(err) = self.recover(err, &mut buf).await {
+                                self.deliver(Err(err));
+                                return;
+                            }
                         }
                     }
                 }
 
                 // Heartbeat tick.
                 _ = heartbeat.tick() => {
-                    if let Err(e) = self.do_heartbeat(&mut buf).await {
-                        self.deliver(Err(e));
+                    if let Err(e) = self.do_heartbeat(&mut buf).await
+                        && let Err(err) = self.recover(e, &mut buf).await
+                    {
+                        self.deliver(Err(err));
                         return;
                     }
                 }
@@ -373,9 +448,55 @@ impl TaskState {
         }
     }
 
-    /// Sends a TUNNELING_REQUEST and awaits its ACK, retransmitting once.
+    /// Whether `err` signals a lost gateway link that the task should
+    /// re-establish (issue #177) rather than surface.
+    fn should_reestablish(&self, err: &TransportError) -> bool {
+        self.reconnect.enabled()
+            && matches!(
+                err,
+                TransportError::Timeout(_)
+                    | TransportError::HeartbeatLost
+                    | TransportError::Io { .. }
+            )
+    }
+
+    /// Recovers from an idle-time error (heartbeat or socket): re-establishes
+    /// the tunnel when the error is a lost link, otherwise returns it.
+    async fn recover(&mut self, err: TransportError, buf: &mut [u8]) -> Result<()> {
+        if self.should_reestablish(&err) {
+            self.reestablish(err, Instant::now(), buf).await
+        } else {
+            Err(err)
+        }
+    }
+
+    /// Sends a TUNNELING_REQUEST and awaits its ACK, retransmitting once. When
+    /// the link is lost it re-establishes the tunnel and re-sends the frame on
+    /// the new channel (issue #177), within the reconnect budget.
     async fn do_send(&mut self, frame: &CemiFrame, buf: &mut [u8]) -> Result<()> {
         crate::wire_trace::trace_frame(crate::wire_trace::Direction::Outbound, frame);
+        // When the loss was first detected, so repeated losses of one pending
+        // frame share a single budget.
+        let mut lost_at: Option<Instant> = None;
+        loop {
+            match self.send_once(frame, buf).await {
+                Ok(()) => return Ok(()),
+                Err(err) if self.should_reestablish(&err) => {
+                    let started = *lost_at.get_or_insert_with(Instant::now);
+                    self.reestablish(err, started, buf).await?;
+                    tracing::debug!(
+                        channel = self.channel_id,
+                        "re-sending the pending frame on the re-established tunnel"
+                    );
+                }
+                Err(err) => return Err(err),
+            }
+        }
+    }
+
+    /// One TUNNELING_REQUEST on the current channel: send, await the ACK, and
+    /// retransmit once on timeout.
+    async fn send_once(&mut self, frame: &CemiFrame, buf: &mut [u8]) -> Result<()> {
         let seq = self.outgoing_seq;
         let header = ConnectionHeader {
             channel_id: self.channel_id,
@@ -604,6 +725,132 @@ impl TaskState {
             tracing::warn!(attempt = attempt + 1, "heartbeat attempt failed");
         }
         Err(TransportError::HeartbeatLost)
+    }
+
+    /// Re-establishes the tunnel after a lost link (issue #177).
+    ///
+    /// `cause` is the error that signalled the loss and `started` the moment it
+    /// was first detected; the [`TunnelReconnect`] budget runs from there. Each
+    /// attempt sends a best-effort DISCONNECT_REQUEST for the old channel (until
+    /// the gateway answers one), then a CONNECT_REQUEST. On success the new
+    /// channel id is adopted and both sequence counters reset. When the budget
+    /// runs out the result is [`TransportError::TunnelLost`] wrapping `cause`.
+    async fn reestablish(
+        &mut self,
+        cause: TransportError,
+        started: Instant,
+        buf: &mut [u8],
+    ) -> Result<()> {
+        let deadline = started + self.reconnect.budget;
+        let gateway = self.gateway;
+        tracing::warn!(
+            "gateway connection lost ({cause}); reconnecting to {gateway} for up to {} s",
+            self.reconnect.budget.as_secs()
+        );
+        self.link.send_replace(LinkState::Reconnecting);
+        let old_channel = self.channel_id;
+        let mut old_open = true;
+        let mut backoff = self.reconnect.initial_backoff;
+        let mut attempt = 0u32;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            attempt += 1;
+            if old_open {
+                // Best effort: a gateway that still holds the old channel frees
+                // its slot; an unreachable one simply never sees this.
+                let req = knxnet::disconnect_request(old_channel, self.local_hpai);
+                let _ = self.socket.send(&req).await;
+            }
+            let wait = self.reconnect.attempt_timeout.min(remaining);
+            match self
+                .connect_attempt(wait, old_channel, &mut old_open, buf)
+                .await
+            {
+                Ok((channel, assigned_ia)) => {
+                    self.channel_id = channel;
+                    self.outgoing_seq = 0;
+                    self.incoming_seq = 0;
+                    self.first_incoming = true;
+                    tracing::warn!(
+                        "gateway connection re-established ({gateway}, channel {channel}, \
+                         attempt {attempt})"
+                    );
+                    self.link.send_replace(LinkState::Up { assigned_ia });
+                    return Ok(());
+                }
+                Err(err) => {
+                    tracing::debug!(attempt, %err, "tunnel re-establish attempt failed");
+                }
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            time::sleep(backoff.min(remaining)).await;
+            backoff = backoff.saturating_mul(2).min(self.reconnect.max_backoff);
+        }
+        Err(TransportError::TunnelLost {
+            gateway,
+            budget: self.reconnect.budget,
+            cause: Box::new(cause),
+        })
+    }
+
+    /// One re-establish attempt: sends CONNECT_REQUEST and waits up to `wait`
+    /// for the CONNECT_RESPONSE, returning the granted channel and assigned
+    /// individual address.
+    ///
+    /// Stale traffic for the old channel is dropped unanswered meanwhile, except
+    /// a DISCONNECT_RESPONSE for `old_channel` (which clears `old_open`, so the
+    /// next attempt does not repeat the DISCONNECT) and a server
+    /// DISCONNECT_REQUEST (answered).
+    async fn connect_attempt(
+        &mut self,
+        wait: std::time::Duration,
+        old_channel: u8,
+        old_open: &mut bool,
+        buf: &mut [u8],
+    ) -> Result<(u8, Option<u16>)> {
+        let req = knxnet::connect_request(self.local_hpai, self.local_hpai);
+        self.socket.send(&req).await?;
+        let deadline = Instant::now() + wait;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(TransportError::Timeout("CONNECT_RESPONSE"));
+            }
+            let n = match time::timeout(remaining, self.socket.recv(buf)).await {
+                Ok(Ok(n)) => n,
+                Ok(Err(e)) => return Err(TransportError::from(e)),
+                Err(_) => return Err(TransportError::Timeout("CONNECT_RESPONSE")),
+            };
+            let Ok(parsed) = knxnet::parse(&buf[..n]) else {
+                continue;
+            };
+            match parsed.service {
+                ServiceType::ConnectResponse => return accept_connect_response(parsed.body),
+                ServiceType::DisconnectResponse => {
+                    if parsed.body.first() == Some(&old_channel) {
+                        *old_open = false;
+                    }
+                }
+                ServiceType::DisconnectRequest => {
+                    if let Ok(channel) = knxnet::parse_disconnect_request(parsed.body) {
+                        let resp = knxnet::disconnect_response(channel, 0);
+                        let _ = self.socket.send(&resp).await;
+                        if channel == old_channel {
+                            *old_open = false;
+                        }
+                    }
+                }
+                // Late ACKs, indications and heartbeat answers of the old
+                // channel: nothing to do with them now.
+                _ => {}
+            }
+        }
     }
 
     /// Sends a DISCONNECT_REQUEST and waits briefly for the response.

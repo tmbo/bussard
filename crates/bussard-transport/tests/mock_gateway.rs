@@ -23,7 +23,9 @@ use bussard_testkit::wire::{
 use bussard_testkit::{MockGateway, RawGateway, TestResult, ga, group_dest, ia};
 use bussard_transport::cemi::{Apdu, CemiFrame, GroupData};
 use bussard_transport::knxnet::{self, ServiceType};
-use bussard_transport::{BusConnection, ConnectionConfig, Transport, TransportError};
+use bussard_transport::{
+    BusConnection, ConnectionConfig, LinkState, Transport, TransportError, TunnelReconnect,
+};
 
 #[tokio::test]
 async fn connect_send_ack_disconnect() -> TestResult {
@@ -731,7 +733,9 @@ async fn heartbeat_lost_after_retries_is_surfaced_to_the_consumer() -> TestResul
         TestResult::Ok(attempts)
     });
 
-    let config = ConnectionConfig::tunnel(addr);
+    // Re-establishing is off here: this pins the bare heartbeat verdict. The
+    // re-establish path after a heartbeat loss has its own test below.
+    let config = ConnectionConfig::tunnel(addr).with_reconnect(TunnelReconnect::disabled());
     let mut conn = Transport::connect(&config).await?;
 
     // From here on nothing real is in flight: the mock never replies, so the
@@ -877,5 +881,244 @@ async fn other_connect_status_stays_a_gateway_status() -> TestResult {
         matches!(err, TransportError::GatewayStatus { status: 0x22, .. }),
         "{err:?}"
     );
+    Ok(())
+}
+
+// --- tunnel re-establish after a lost link (issue #177) ---------------------
+
+/// A re-establish policy fast enough for tests: attempts every 100-200 ms,
+/// each waiting 300 ms for the CONNECT_RESPONSE, within `budget`.
+fn fast_reconnect(budget: Duration) -> TunnelReconnect {
+    TunnelReconnect {
+        budget,
+        initial_backoff: Duration::from_millis(100),
+        max_backoff: Duration::from_millis(200),
+        attempt_timeout: Duration::from_millis(300),
+    }
+}
+
+#[tokio::test]
+async fn test_tunnel_reestablish_disconnects_reconnects_and_resends_pending_frame() -> TestResult {
+    // The exact wire sequence of a re-establish: the pending frame goes
+    // unacknowledged (sent + one retransmit), then DISCONNECT for the old
+    // channel, CONNECT, and the pending frame again on the NEW channel with the
+    // sequence counter reset to 0. The inbound counter resets too: the gateway's
+    // first indication on the new channel may start at any sequence.
+    let gw = RawGateway::bind().await?;
+    let addr = gw.addr();
+
+    let gw_task = tokio::spawn(async move {
+        gw.accept_connect(0x07).await?;
+
+        // Frame 1 (seq 0) is ACKed normally.
+        let first = gw.expect(ServiceType::TunnelingRequest).await?;
+        let tr = first.tunneling_request()?;
+        assert_eq!((tr.header.channel_id, tr.header.seq), (0x07, 0));
+        gw.ack(first.peer, 0x07, 0, 0).await?;
+
+        // Frame 2 (seq 1): the link "dies". Swallow it and its retransmit.
+        let lost = gw
+            .expect(ServiceType::TunnelingRequest)
+            .await?
+            .tunneling_request()?;
+        assert_eq!((lost.header.channel_id, lost.header.seq), (0x07, 1));
+        let retry = gw
+            .expect(ServiceType::TunnelingRequest)
+            .await?
+            .tunneling_request()?;
+        assert_eq!(retry.header.seq, 1, "the retransmit keeps its sequence");
+
+        // The link is back: the client first releases the old channel ...
+        let disc = gw.expect(ServiceType::DisconnectRequest).await?;
+        assert_eq!(knxnet::parse_disconnect_request(&disc.body)?, 0x07);
+        gw.send(&knxnet::disconnect_response(0x07, 0), disc.peer)
+            .await?;
+        // ... then opens a new one, which gets a different channel id.
+        let peer = gw.accept_connect(0x08).await?;
+
+        // The pending frame is re-sent on the new channel, sequence reset.
+        let resent = gw.expect(ServiceType::TunnelingRequest).await?;
+        let rtr = resent.tunneling_request()?;
+        assert_eq!((rtr.header.channel_id, rtr.header.seq), (0x08, 0));
+        assert_eq!(
+            rtr.cemi, lost.cemi,
+            "the pending frame is re-sent unchanged"
+        );
+        gw.ack(resent.peer, 0x08, 0, 0).await?;
+
+        // The next frame continues the new channel's counter.
+        let next = gw
+            .expect(ServiceType::TunnelingRequest)
+            .await?
+            .tunneling_request()?;
+        assert_eq!((next.header.channel_id, next.header.seq), (0x08, 1));
+        gw.ack(peer, 0x08, 1, 0).await?;
+
+        // An indication on the new channel starting at seq 5 is accepted.
+        let ind = CemiFrame::group_write_packed(ga("1/2/3")?, ia("1.1.10")?, &[1]);
+        gw.push(peer, 0x08, 5, &ind).await?;
+        let acked = gw.await_client_ack(5, Duration::from_secs(2)).await?;
+        TestResult::Ok(acked)
+    });
+
+    let config =
+        ConnectionConfig::tunnel(addr).with_reconnect(fast_reconnect(Duration::from_secs(10)));
+    let mut conn = Transport::connect(&config).await?;
+    let mut link = conn
+        .link_state()
+        .ok_or("a tunnel publishes its link state")?;
+    assert!(matches!(*link.borrow_and_update(), LinkState::Up { .. }));
+
+    let write = |v: u8| -> TestResult<CemiFrame> {
+        Ok(CemiFrame::group_write_packed(
+            ga("3/0/4")?,
+            ia("1.1.255")?,
+            &[v],
+        ))
+    };
+    conn.send(write(0)?).await?;
+    // This send rides out the loss: it returns once the re-sent frame is ACKed.
+    conn.send(write(1)?).await?;
+    // The link went through Reconnecting and is Up again.
+    assert!(matches!(*link.borrow_and_update(), LinkState::Up { .. }));
+    conn.send(write(0)?).await?;
+
+    let stamped = tokio::time::timeout(Duration::from_secs(2), conn.recv()).await??;
+    assert_eq!(group_dest(&stamped.frame)?, "1/2/3");
+
+    let status = gw_task.await??;
+    assert_eq!(
+        status, 0,
+        "the client ACKs the new channel's first indication"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_tunnel_reestablish_rides_out_mock_gateway_outage() -> TestResult {
+    // The testkit's outage fault: after frame 2 the gateway swallows everything
+    // for 2.5 s, then grants a new channel. The pending send completes on it.
+    let gw = MockGateway::builder()
+        .outage(2, Duration::from_millis(2500))
+        .idle_timeout(Duration::from_secs(20))
+        .start()
+        .await?;
+    let config =
+        ConnectionConfig::tunnel(gw.addr()).with_reconnect(fast_reconnect(Duration::from_secs(15)));
+    let mut conn = Transport::connect(&config).await?;
+    for v in [1u8, 0, 1, 0] {
+        conn.send(CemiFrame::group_write_packed(
+            ga("3/0/4")?,
+            ia("1.1.255")?,
+            &[v],
+        ))
+        .await?;
+    }
+    let stats = gw.stats();
+    assert_eq!(
+        stats.channels,
+        vec![0x21, 0x22],
+        "one re-established channel"
+    );
+    assert!(
+        stats.outage_dropped >= 2,
+        "the outage swallowed the retransmits"
+    );
+    let sent = gw.sent()?;
+    assert_eq!(sent.len(), 4, "every frame served exactly once: {sent:?}");
+    let _ = conn.close().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_tunnel_reestablish_after_heartbeat_loss() -> TestResult {
+    // A heartbeat failure takes the same path: the gateway stops answering
+    // CONNECTIONSTATE_REQUESTs, the tunnel reconnects instead of ending the
+    // stream, and an indication on the new channel still arrives.
+    //
+    // As in the bare heartbeat test, the clock is paused after the handshake and
+    // auto-advances through the 60 s + 3 x 10 s schedule.
+    let gw = RawGateway::bind().await?;
+    let addr = gw.addr();
+
+    let gw_task = tokio::spawn(async move {
+        gw.accept_connect(0x1D).await?;
+        let mut attempts = 0u32;
+        while attempts < bussard_transport::config::HEARTBEAT_RETRIES {
+            if gw.recv().await?.service == ServiceType::ConnectionstateRequest {
+                attempts += 1;
+            }
+        }
+        // Old channel released, new one granted.
+        let disc = gw.expect(ServiceType::DisconnectRequest).await?;
+        gw.send(&knxnet::disconnect_response(0x1D, 0), disc.peer)
+            .await?;
+        let peer = gw.accept_connect(0x1E).await?;
+        let ind = CemiFrame::group_write_packed(ga("1/2/3")?, ia("1.1.10")?, &[1]);
+        gw.push(peer, 0x1E, 0, &ind).await?;
+        TestResult::Ok(())
+    });
+
+    let config =
+        ConnectionConfig::tunnel(addr).with_reconnect(fast_reconnect(Duration::from_secs(10)));
+    let mut conn = Transport::connect(&config).await?;
+    tokio::time::pause();
+    let stamped = conn.recv().await?;
+    assert_eq!(group_dest(&stamped.frame)?, "1/2/3");
+    gw_task.await??;
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_tunnel_lost_after_budget_names_the_gateway() -> TestResult {
+    // The link never comes back: after the budget the pending send fails with
+    // TunnelLost, carrying the original ACK timeout and the gateway address.
+    let gw = MockGateway::builder()
+        .outage(1, Duration::MAX)
+        .idle_timeout(Duration::from_secs(20))
+        .start()
+        .await?;
+    let config = ConnectionConfig::tunnel(gw.addr())
+        .with_reconnect(fast_reconnect(Duration::from_millis(1500)));
+    let mut conn = Transport::connect(&config).await?;
+    let frame = || -> TestResult<CemiFrame> {
+        Ok(CemiFrame::group_write_packed(
+            ga("3/0/4")?,
+            ia("1.1.255")?,
+            &[1],
+        ))
+    };
+    conn.send(frame()?).await?;
+    let started = std::time::Instant::now();
+    let err = conn
+        .send(frame()?)
+        .await
+        .expect_err("a link that never returns must fail the send");
+    let elapsed = started.elapsed();
+    match &err {
+        TransportError::TunnelLost { gateway, cause, .. } => {
+            assert_eq!(*gateway, gw.addr());
+            assert!(matches!(**cause, TransportError::Timeout("TUNNELING_ACK")));
+        }
+        other => return Err(format!("expected TunnelLost, got {other:?}").into()),
+    }
+    let text = err.to_string();
+    assert!(
+        text.contains("timed out waiting for TUNNELING_ACK"),
+        "{text}"
+    );
+    assert!(text.contains(&gw.addr().to_string()), "{text}");
+    // ~2 s ACK budget + 1.5 s re-establish budget, bounded.
+    assert!(
+        elapsed < Duration::from_secs(6),
+        "gave up after {elapsed:?}"
+    );
+    let connect_requests = gw
+        .stats()
+        .services
+        .iter()
+        .filter(|s| **s == ServiceType::ConnectRequest)
+        .count();
+    assert!(connect_requests >= 2, "re-establish attempts were made");
     Ok(())
 }

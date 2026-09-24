@@ -46,8 +46,10 @@
 //!   listing slots, some in use *(native)*.
 //! - TUNNELLING_ACK sent with status 0, sent with a non-zero status, or never
 //!   sent (ACK exhaustion) *(native)*.
-//! - TUNNELLING_ACK withheld after N frames so the client reconnects the tunnel
-//!   *(hook)*.
+//! - A link outage after frame N for a set time: every datagram is swallowed,
+//!   then the old channel is dropped and the next CONNECT gets a new channel id,
+//!   so the client re-establishes the tunnel ([`GatewayBuilder::outage`],
+//!   issue #177) *(native)*.
 //! - Protocol probes: duplicate, out-of-window and two-behind sequence numbers;
 //!   unknown message codes; bursts during an ACK wait; a server-initiated
 //!   DISCONNECT; control HPAI checks. All use [`wire::RawGateway`].
@@ -105,7 +107,7 @@ pub mod gateway;
 pub mod wire;
 
 pub use device::{MemoryWritePolicy, MockDevice, Reaction};
-pub use gateway::{AckPolicy, GatewayBuilder, GatewayStats, MockGateway};
+pub use gateway::{AckPolicy, GatewayBuilder, GatewayStats, MockGateway, Outage};
 pub use wire::RawGateway;
 
 use bussard_transport::cemi::CemiFrame;
