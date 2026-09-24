@@ -87,9 +87,9 @@ session goes to linking and to waiting on the bus, so:
 ## Rust Edition and Toolchain
 
 - Edition: **2024**, set once in `[workspace.package]` (do not set it per crate).
-- MSRV: **1.85**, declared as `rust-version` in `[workspace.package]` and gated
-  by the dedicated `msrv` CI job (`cargo check` on the 1.85 toolchain). Do not
-  use std/lang features newer than 1.85.
+- MSRV: **1.88**, declared as `rust-version` in `[workspace.package]` and gated
+  by the dedicated `msrv` CI job (`cargo check` on the 1.88 toolchain). Do not
+  use std/lang features newer than 1.88.
 - `rust-toolchain.toml` pins the local dev channel to `stable` (with `rustfmt`
   and `clippy`). It does NOT pin the MSRV; that floor lives in `Cargo.toml`.
 - Do NOT use nightly features.
@@ -136,6 +136,8 @@ session goes to linking and to waiting on the bus, so:
 - Unit tests: `#[cfg(test)]` module at the bottom of each file.
 - Integration tests: the crate's `tests/` directory.
 - Test naming: `test_<function_name>_<scenario>` pattern.
+- The no-`.unwrap()` rule is enforced by `[workspace.lints.clippy] unwrap_used = "deny"` in the root `Cargo.toml`; a crate opts in with `[lints] workspace = true` once its tests are clean (issue #87 lists the crates still to migrate).
+- Mock KNXnet/IP gateways and devices come from the `bussard-testkit` dev-dependency (`MockGateway`, `MockDevice`, `wire::RawGateway`); do not hand-roll a new one.
 - nextest runs each test in its own process; mock-gateway/device tests each bind
   their own `127.0.0.1:0` UDP socket and rely on that isolation.
 - Real-import oracle tests decrypt and stream ~15 MB of XML; the crypto and

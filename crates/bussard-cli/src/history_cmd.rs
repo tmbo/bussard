@@ -367,10 +367,10 @@ fn print_raw_diff(history: &History, latest: &Snapshot) -> anyhow::Result<()> {
     for dir in [snapshot_dir.join("devices"), working.join("devices")] {
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
-                if let Some(name) = entry.file_name().to_str() {
-                    if name.ends_with(".yaml") || name.ends_with(".yml") {
-                        devices.insert(format!("devices/{name}"));
-                    }
+                if let Some(name) = entry.file_name().to_str()
+                    && (name.ends_with(".yaml") || name.ends_with(".yml"))
+                {
+                    devices.insert(format!("devices/{name}"));
                 }
             }
         }

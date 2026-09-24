@@ -346,14 +346,14 @@ pub(crate) fn apply_desired(
     })?;
     println!("backup written to {}", backup_path.display());
 
-    if let Some((_, images)) = &sys7 {
-        if let Some((from, to)) = images.group_object_moved {
-            println!(
-                "the group-object descriptor table moves {from:#06X} → {to:#06X} with the \
+    if let Some((_, images)) = &sys7
+        && let Some((from, to)) = images.group_object_moved
+    {
+        println!(
+            "the group-object descriptor table moves {from:#06X} → {to:#06X} with the \
                  address table; its {} octets are rewritten verbatim",
-                images.address_region.len() - images.address_table_len
-            );
-        }
+            images.address_region.len() - images.address_table_len
+        );
     }
 
     // Phase B (write): execute the load sequence and verify.

@@ -19,6 +19,7 @@ members = [
     "crates/bussard-secure",
     "crates/bussard-viz",
     "crates/bussard-cli",
+    "crates/bussard-testkit",
 ]
 
 [workspace.package]
@@ -26,7 +27,7 @@ version = "0.1.0"
 edition = "2024"
 repository = "https://github.com/tmbo/bussard"
 authors = ["Tom Bocklisch"]
-rust-version = "1.85"
+rust-version = "1.88"
 license = "MIT"
 
 [workspace.dependencies]
@@ -44,6 +45,8 @@ bussard-ha = { path = "crates/bussard-ha", version = "0.1.0" }
 bussard-download = { path = "crates/bussard-download", version = "0.1.0" }
 bussard-secure = { path = "crates/bussard-secure", version = "0.1.0" }
 bussard-viz = { path = "crates/bussard-viz", version = "0.1.0" }
+# Test-only mock gateway and devices (publish = false): dev-dependency only.
+bussard-testkit = { path = "crates/bussard-testkit" }
 
 # Third-party (all MIT and/or Apache-2.0)
 tokio = { version = "1", features = ["full"] }
@@ -121,6 +124,17 @@ zeroize = { version = "1", features = ["derive"] }
 # I/O bound (a 583 s all-targets build for 125 s of CPU) and grew target/ to
 # ~80 GB. Line tables keep panic locations and readable backtraces. CI sets
 # CARGO_PROFILE_DEV_DEBUG=0 in the environment, which overrides this.
+# Workspace lints. A crate opts in with `[lints] workspace = true`.
+# `unwrap_used` enforces the CLAUDE.md rule "never `.unwrap()` in tests" (and in
+# library code, which is already clean). Cargo cannot scope a lint to test
+# targets, but library code has no unwraps, so in practice it bites on tests.
+# `expect_used` is NOT listed: CLAUDE.md allows `.expect()` in tests and in a
+# binary's `main()`. Crates whose tests still unwrap have not opted in yet
+# (issue #87 tracks them); opting in with the lint at `warn` would fail
+# `cargo clippy -- -D warnings`.
+[workspace.lints.clippy]
+unwrap_used = "deny"
+
 [profile.dev]
 debug = "line-tables-only"
 

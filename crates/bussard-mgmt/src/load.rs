@@ -1310,8 +1310,10 @@ pub async fn read_mcb_table<Ch: L4Channel>(
         }
         entries.extend(
             resp.data
-                .chunks_exact(MCB_ENTRY_LEN)
-                .filter_map(McbEntry::decode),
+                .as_chunks::<MCB_ENTRY_LEN>()
+                .0
+                .iter()
+                .filter_map(|c| McbEntry::decode(c)),
         );
     }
     let first = entries.first().ok_or_else(|| {
@@ -1386,7 +1388,7 @@ pub async fn write_table<Ch: L4Channel>(
     elem_size: usize,
     elements: &[u8],
 ) -> Result<()> {
-    debug_assert!(elem_size > 0 && elements.len() % elem_size == 0);
+    debug_assert!(elem_size > 0 && elements.len().is_multiple_of(elem_size));
     let count = elements.len() / elem_size;
 
     // Element 0: the big-endian u16 element count. Writing element 0 sets the

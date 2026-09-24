@@ -61,12 +61,12 @@ pub fn import(path: &Path, password: Option<&str>) -> Result<Model, ImportError>
     // refuse projects whose address style bussard cannot represent.
     if let Some(info_xml) = container.project_info_xml() {
         let info = project::parse_project_info(info_xml)?;
-        if let Some(style) = info.group_address_style {
-            if style != project::GroupAddressStyle::ThreeLevel {
-                return Err(ImportError::UnsupportedGroupAddressStyle {
-                    style: style.to_string(),
-                });
-            }
+        if let Some(style) = info.group_address_style
+            && style != project::GroupAddressStyle::ThreeLevel
+        {
+            return Err(ImportError::UnsupportedGroupAddressStyle {
+                style: style.to_string(),
+            });
         }
         if raw.project_name.is_none() {
             raw.project_name = info.name;

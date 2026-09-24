@@ -702,11 +702,11 @@ fn append_labels(path: &Path, outcomes: &[Outcome], targets: &[Target]) -> anyho
     if rows.is_empty() {
         return Ok(());
     }
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
     }
     let fresh = !path.exists();
     let mut file = std::fs::OpenOptions::new()

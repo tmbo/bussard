@@ -594,11 +594,11 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
             s.last_segment_size = 0;
             // Multi-object flash: the reset erases the app object (obj4) load
             // state and drops its segment; the other table objects are untouched.
-            if s.multi_object {
-                if let Some(app) = app_object_index(&s) {
-                    s.object_load_states.insert(app, LS_UNLOADED);
-                    s.object_segment_bases.remove(&app);
-                }
+            if s.multi_object
+                && let Some(app) = app_object_index(&s)
+            {
+                s.object_load_states.insert(app, LS_UNLOADED);
+                s.object_segment_bases.remove(&app);
             }
         } else if s.fault == Fault::SilentAfterBasicRestart {
             s.l4_dead_after_master_reset = true;
@@ -1153,18 +1153,17 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
                             || (apci & APCI_SELECTOR == A_MEMORY_READ_SEL));
                     if is_memory_frame {
                         s.tunnel_frames_this_connection += 1;
-                        if let Some(budget) = s.drop_tunnel_after_frames {
-                            if s.tunnel_drops_remaining > 0
-                                && s.tunnel_frames_this_connection > budget
-                            {
-                                s.tunnel_drops_remaining -= 1;
-                                s.tunnel_dead_this_connection = true;
-                                // Drop: swallow this and all further frames on this
-                                // connection with no ACK. The next CONNECT_REQUEST
-                                // resets the counters so the fresh tunnel's preamble
-                                // serves normally before the next drop.
-                                continue;
-                            }
+                        if let Some(budget) = s.drop_tunnel_after_frames
+                            && s.tunnel_drops_remaining > 0
+                            && s.tunnel_frames_this_connection > budget
+                        {
+                            s.tunnel_drops_remaining -= 1;
+                            s.tunnel_dead_this_connection = true;
+                            // Drop: swallow this and all further frames on this
+                            // connection with no ACK. The next CONNECT_REQUEST
+                            // resets the counters so the fresh tunnel's preamble
+                            // serves normally before the next drop.
+                            continue;
                         }
                     }
                 }
@@ -1208,10 +1207,10 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
                         if s.revert_app_on_next_connect {
                             s.revert_app_on_next_connect = false;
                             s.app_load_state = LS_UNLOADED;
-                            if s.multi_object {
-                                if let Some(app) = app_object_index(&s) {
-                                    s.object_load_states.insert(app, LS_UNLOADED);
-                                }
+                            if s.multi_object
+                                && let Some(app) = app_object_index(&s)
+                            {
+                                s.object_load_states.insert(app, LS_UNLOADED);
                             }
                         }
                         if s.drop_loading_on_reconnect
@@ -1242,12 +1241,12 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
                             if s.l4_dead_after_master_reset {
                                 continue;
                             }
-                            if let Some(budget) = s.die_after_exchanges {
-                                if s.exchanges_this_connection > budget {
-                                    // No ACK, no response: the connection is dead
-                                    // until a fresh T_Connect resets the budget.
-                                    continue;
-                                }
+                            if let Some(budget) = s.die_after_exchanges
+                                && s.exchanges_this_connection > budget
+                            {
+                                // No ACK, no response: the connection is dead
+                                // until a fresh T_Connect resets the budget.
+                                continue;
                             }
                             // Write-phase death: once the write is under way (the
                             // first memory write of the connection armed the
@@ -1263,13 +1262,12 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
                                     || (apci & APCI_SELECTOR == A_MEMORY_READ_SEL));
                             if let (Some(budget), Some(seen)) =
                                 (s.die_after_write_exchanges, s.write_phase_exchanges)
+                                && is_memory_frame
                             {
-                                if is_memory_frame {
-                                    if seen >= budget {
-                                        continue;
-                                    }
-                                    s.write_phase_exchanges = Some(seen + 1);
+                                if seen >= budget {
+                                    continue;
                                 }
+                                s.write_phase_exchanges = Some(seen + 1);
                             }
                         }
                         let (wire_apci, wire_payload) = match (&cemi.tpci, &cemi.apdu) {

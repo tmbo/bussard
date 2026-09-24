@@ -13,25 +13,19 @@ use bussard_mcp::state::{BusStatus, ReadLimiter};
 use bussard_mcp::tools::{decode_for_dpt, get_group, model_lookup, recent_telegrams};
 use bussard_model::schema::Device;
 use bussard_model::schema::{BussardConfig, Group, Groups, Link, Links};
-use bussard_model::{GroupAddress, IndividualAddress, LoadedDevice, Model};
+use bussard_model::{LoadedDevice, Model};
 use bussard_monitor::{Filter, TelegramRing};
+use bussard_testkit::{TestResult, ga, ia};
 use bussard_transport::TransportKind;
 
-fn ga(s: &str) -> GroupAddress {
-    s.parse().unwrap()
-}
-fn ia(s: &str) -> IndividualAddress {
-    s.parse().unwrap()
-}
-
-fn small_model() -> Model {
+fn small_model() -> TestResult<Model> {
     let mut groups = BTreeMap::new();
     for i in 0..10u32 {
         groups.insert(
-            ga(&format!("3/0/{i}")),
+            ga(&format!("3/0/{i}"))?,
             Group {
                 name: format!("Group {i}"),
-                dpt: Some("1.001".parse().unwrap()),
+                dpt: Some("1.001".parse()?),
                 description: None,
                 protected: false,
                 secure: false,
@@ -40,20 +34,20 @@ fn small_model() -> Model {
     }
     let mut links = BTreeMap::new();
     links.insert(
-        ia("1.1.4"),
+        ia("1.1.4")?,
         vec![Link {
             object: 1,
             name: Some("Obj".to_string()),
             send: None,
-            listen: vec![ga("3/0/0")],
+            listen: vec![ga("3/0/0")?],
         }],
     );
     let mut devices = BTreeMap::new();
     devices.insert(
-        ia("1.1.4"),
+        ia("1.1.4")?,
         LoadedDevice {
             device: Device {
-                address: ia("1.1.4"),
+                address: ia("1.1.4")?,
                 name: "Dev".to_string(),
                 description: None,
                 location: None,
@@ -68,7 +62,7 @@ fn small_model() -> Model {
             file_stem: "1.1.4-dev".to_string(),
         },
     );
-    Model {
+    Ok(Model {
         config: BussardConfig::default(),
         groups: Groups {
             project: Some("T".to_string()),
@@ -78,7 +72,7 @@ fn small_model() -> Model {
         },
         links: Links { links },
         devices,
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -90,43 +84,47 @@ fn small_model() -> Model {
 /// AFTER the push. It is now checked before the push, so `limit: 0` yields an
 /// empty result and `limit: n` yields at most `n`.
 #[test]
-fn model_lookup_limit_zero_returns_zero() {
-    let m = small_model();
+fn model_lookup_limit_zero_returns_zero() -> TestResult {
+    let m = small_model()?;
     let v = model_lookup(&m, "group", 0);
     assert_eq!(
-        v["groups"].as_array().unwrap().len(),
+        v["groups"].as_array().ok_or("not an array")?.len(),
         0,
         "limit==0 must yield zero results"
     );
     // And a non-zero limit still yields exactly that many.
     let v1 = model_lookup(&m, "group", 1);
-    assert_eq!(v1["groups"].as_array().unwrap().len(), 1);
+    assert_eq!(v1["groups"].as_array().ok_or("not an array")?.len(), 1);
+    Ok(())
 }
 
 #[test]
-fn model_lookup_limit_usize_max_is_bounded_by_data() {
-    let m = small_model();
+fn model_lookup_limit_usize_max_is_bounded_by_data() -> TestResult {
+    let m = small_model()?;
     let v = model_lookup(&m, "group", usize::MAX);
     // All 10 groups match "group" but there are only 10.
-    assert_eq!(v["groups"].as_array().unwrap().len(), 10);
+    assert_eq!(v["groups"].as_array().ok_or("not an array")?.len(), 10);
+    Ok(())
 }
 
 #[test]
-fn model_lookup_empty_query_matches_broadly_without_panic() {
-    let m = small_model();
+fn model_lookup_empty_query_matches_broadly_without_panic() -> TestResult {
+    let m = small_model()?;
     // Empty query: `contains("")` is always true, so everything matches (bounded
     // by the limit). Must not panic.
     let v = model_lookup(&m, "", 3);
-    assert_eq!(v["groups"].as_array().unwrap().len(), 3);
+    assert_eq!(v["groups"].as_array().ok_or("not an array")?.len(), 3);
+    Ok(())
 }
 
 #[test]
-fn model_lookup_unicode_query_is_safe() {
-    let m = small_model();
+fn model_lookup_unicode_query_is_safe() -> TestResult {
+    let m = small_model()?;
     for q in ["🚀", "Ω≈ç", "\0", "  ", "GROUP"] {
         let r = std::panic::catch_unwind(|| model_lookup(&m, q, 50));
         assert!(r.is_ok(), "model_lookup panicked on {q:?}");
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -147,13 +145,14 @@ fn recent_telegrams_limit_zero_and_max() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn get_group_undefined_ga_reports_not_found() {
-    let m = small_model();
+fn get_group_undefined_ga_reports_not_found() -> TestResult {
+    let m = small_model()?;
     let ring = TelegramRing::new();
-    let v = get_group(&m, &ring, ga("9/7/255"));
+    let v = get_group(&m, &ring, ga("9/7/255")?);
     assert_eq!(v["found"], false);
-    assert!(v["links"].as_array().unwrap().is_empty());
+    assert!(v["links"].as_array().ok_or("not an array")?.is_empty());
     assert!(v["last_telegram"].is_null());
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -161,12 +160,8 @@ fn get_group_undefined_ga_reports_not_found() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn decode_for_dpt_handles_hostile_payloads() {
-    for dpt in [
-        Some("9.001".parse().unwrap()),
-        Some("232.600".parse().unwrap()),
-        None,
-    ] {
+fn decode_for_dpt_handles_hostile_payloads() -> TestResult {
+    for dpt in [Some("9.001".parse()?), Some("232.600".parse()?), None] {
         for len in 0..=20usize {
             let payload: Vec<u8> = vec![0xAB; len];
             let r = std::panic::catch_unwind(|| decode_for_dpt(dpt, &payload));
@@ -177,6 +172,7 @@ fn decode_for_dpt_handles_hostile_payloads() {
     let (disp, json) = decode_for_dpt(None, &[1, 2, 3]);
     assert!(disp.is_none());
     assert!(json.is_null());
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -197,7 +193,7 @@ fn bus_status_json_is_stable() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn read_limiter_caps_at_three_concurrent() {
+async fn read_limiter_caps_at_three_concurrent() -> TestResult {
     let limiter = Arc::new(ReadLimiter::new(Duration::from_millis(0), 3));
     let in_flight = Arc::new(AtomicUsize::new(0));
     let max_seen = Arc::new(AtomicUsize::new(0));
@@ -216,7 +212,7 @@ async fn read_limiter_caps_at_three_concurrent() {
         }));
     }
     for h in handles {
-        h.await.unwrap();
+        h.await?;
     }
     assert!(
         max_seen.load(Ordering::SeqCst) <= 3,
@@ -228,6 +224,7 @@ async fn read_limiter_caps_at_three_concurrent() {
         max_seen.load(Ordering::SeqCst) >= 2,
         "concurrency should be exercised"
     );
+    Ok(())
 }
 
 #[tokio::test]

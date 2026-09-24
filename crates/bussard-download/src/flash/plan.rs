@@ -73,10 +73,11 @@ pub(super) fn maybe_substitute_app_id(
     inline_data: Option<&[u8]>,
     app_id_value: Option<&[u8; 5]>,
 ) -> Option<Vec<u8>> {
-    if prop_id == PID_PROGRAM_VERSION && inline_data == Some(&APP_ID_PLACEHOLDER[..]) {
-        if let Some(app_id) = app_id_value {
-            return Some(app_id.to_vec());
-        }
+    if prop_id == PID_PROGRAM_VERSION
+        && inline_data == Some(&APP_ID_PLACEHOLDER[..])
+        && let Some(app_id) = app_id_value
+    {
+        return Some(app_id.to_vec());
     }
     inline_data.map(<[u8]>::to_vec)
 }
@@ -1094,34 +1095,32 @@ pub(super) fn assemble_ops(
     // Splice against the master template: only when a template is available AND
     // the app is merged-style (every block is MergeId-tagged). This is the
     // DA.tp / MV-07B0 case; anything else stays on the self-contained path.
-    if all_merged {
-        if let Some(template) = template_ops {
-            // App blocks keyed by parsed MergeId. A block whose id is not numeric
-            // cannot match a numeric `<LdCtrlMerge MergeId=N>` and is ignored.
-            let mut blocks: BTreeMap<u32, Vec<LoadOp>> = BTreeMap::new();
-            for p in non_empty.iter().chain(companion_blocks.iter()) {
-                if let Some(id) = p.merge_id.as_deref().and_then(|m| m.parse::<u32>().ok()) {
-                    blocks.entry(id).or_default().extend(p.ops.clone());
-                }
+    if all_merged && let Some(template) = template_ops {
+        // App blocks keyed by parsed MergeId. A block whose id is not numeric
+        // cannot match a numeric `<LdCtrlMerge MergeId=N>` and is ignored.
+        let mut blocks: BTreeMap<u32, Vec<LoadOp>> = BTreeMap::new();
+        for p in non_empty.iter().chain(companion_blocks.iter()) {
+            if let Some(id) = p.merge_id.as_deref().and_then(|m| m.parse::<u32>().ok()) {
+                blocks.entry(id).or_default().extend(p.ops.clone());
             }
-            let mut out = Vec::new();
-            for op in template {
-                match op {
-                    LoadOp::Merge { merge_id } => {
-                        if let Some(ops) = merge_id
-                            .as_deref()
-                            .and_then(|m| m.parse::<u32>().ok())
-                            .and_then(|id| blocks.get(&id))
-                        {
-                            out.extend(ops.iter().cloned());
-                        }
-                        // Unmatched or id-less marker: drop it.
-                    }
-                    other => out.push(other.clone()),
-                }
-            }
-            return (out, true);
         }
+        let mut out = Vec::new();
+        for op in template {
+            match op {
+                LoadOp::Merge { merge_id } => {
+                    if let Some(ops) = merge_id
+                        .as_deref()
+                        .and_then(|m| m.parse::<u32>().ok())
+                        .and_then(|id| blocks.get(&id))
+                    {
+                        out.extend(ops.iter().cloned());
+                    }
+                    // Unmatched or id-less marker: drop it.
+                }
+                other => out.push(other.clone()),
+            }
+        }
+        return (out, true);
     }
 
     // Self-contained: no template splice. Merged-style (all MergeId) → concat in

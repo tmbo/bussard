@@ -633,10 +633,10 @@ mod tests {
             .collect();
         // Drain the broadcast, skipping seq <= max (already in the snapshot).
         while let Ok(ev) = rx.try_recv() {
-            if let HubEvent::Telegram { seq, .. } = ev {
-                if seq > max {
-                    seen.push(seq);
-                }
+            if let HubEvent::Telegram { seq, .. } = ev
+                && seq > max
+            {
+                seen.push(seq);
             }
         }
         assert_eq!(seen, vec![1, 2, 3, 4]);

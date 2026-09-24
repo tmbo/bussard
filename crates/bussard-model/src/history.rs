@@ -382,10 +382,11 @@ impl History {
         if let Some(found) = snapshots.iter().find(|s| s.id.as_str() == spec) {
             return Ok(found.clone());
         }
-        if let Ok(index) = spec.parse::<usize>() {
-            if index >= 1 && index <= snapshots.len() {
-                return Ok(snapshots[index - 1].clone());
-            }
+        if let Ok(index) = spec.parse::<usize>()
+            && index >= 1
+            && index <= snapshots.len()
+        {
+            return Ok(snapshots[index - 1].clone());
         }
         Err(HistoryError::NoSuchSnapshot {
             spec: spec.to_string(),

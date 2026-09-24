@@ -1147,43 +1147,44 @@ fn inline(text: &str) -> String {
     let mut i = 0;
     while i < chars.len() {
         let ch = chars[i];
-        if ch == '`' {
-            if let Some(end) = find_char(&chars, i + 1, '`') {
-                let code: String = chars[i + 1..end].iter().collect();
-                let _ = write!(out, "<code>{}</code>", escape_html(&code));
-                i = end + 1;
-                continue;
-            }
+        if ch == '`'
+            && let Some(end) = find_char(&chars, i + 1, '`')
+        {
+            let code: String = chars[i + 1..end].iter().collect();
+            let _ = write!(out, "<code>{}</code>", escape_html(&code));
+            i = end + 1;
+            continue;
         }
-        if ch == '*' && i + 1 < chars.len() && chars[i + 1] == '*' {
-            if let Some(end) = find_pair(&chars, i + 2) {
-                let bold: String = chars[i + 2..end].iter().collect();
-                let _ = write!(out, "<strong>{}</strong>", escape_html(&bold));
-                i = end + 2;
-                continue;
-            }
+        if ch == '*'
+            && i + 1 < chars.len()
+            && chars[i + 1] == '*'
+            && let Some(end) = find_pair(&chars, i + 2)
+        {
+            let bold: String = chars[i + 2..end].iter().collect();
+            let _ = write!(out, "<strong>{}</strong>", escape_html(&bold));
+            i = end + 2;
+            continue;
         }
-        if ch == '[' {
-            if let Some(close) = find_char(&chars, i + 1, ']') {
-                if close + 1 < chars.len() && chars[close + 1] == '(' {
-                    if let Some(paren) = find_char(&chars, close + 2, ')') {
-                        let label: String = chars[i + 1..close].iter().collect();
-                        let target: String = chars[close + 2..paren].iter().collect();
-                        let target = match target.strip_suffix(".md") {
-                            Some(stem) => format!("{stem}.html"),
-                            None => target,
-                        };
-                        let _ = write!(
-                            out,
-                            "<a href=\"{}\">{}</a>",
-                            escape_html(&target),
-                            escape_html(&label)
-                        );
-                        i = paren + 1;
-                        continue;
-                    }
-                }
-            }
+        if ch == '['
+            && let Some(close) = find_char(&chars, i + 1, ']')
+            && close + 1 < chars.len()
+            && chars[close + 1] == '('
+            && let Some(paren) = find_char(&chars, close + 2, ')')
+        {
+            let label: String = chars[i + 1..close].iter().collect();
+            let target: String = chars[close + 2..paren].iter().collect();
+            let target = match target.strip_suffix(".md") {
+                Some(stem) => format!("{stem}.html"),
+                None => target,
+            };
+            let _ = write!(
+                out,
+                "<a href=\"{}\">{}</a>",
+                escape_html(&target),
+                escape_html(&label)
+            );
+            i = paren + 1;
+            continue;
         }
         out.push_str(&escape_char(ch));
         i += 1;

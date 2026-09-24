@@ -820,14 +820,15 @@ mod tests {
     use super::*;
 
     fn ga(s: &str) -> GroupAddress {
-        s.parse().unwrap()
+        s.parse().expect("valid fixture address")
     }
     fn ia(s: &str) -> IndividualAddress {
-        s.parse().unwrap()
+        s.parse().expect("valid fixture address")
     }
 
     #[test]
-    fn roundtrip_group_write_1bit_small_apdu() {
+    fn roundtrip_group_write_1bit_small_apdu() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
         // L_Data.ind, no AI, ctl1=0xBC (std, not-repeated, broadcast, low prio,
         // ack req), ctl2=0xE0 (group, hops=6), src 1.1.1, dst 3/0/4,
         // NPDU len 1, TPDU 00 81 (GroupValueWrite, value 1 packed).
@@ -842,27 +843,29 @@ mod tests {
             0x01, // NPDU length 1
             0x00, 0x81, // TPCI/APCI = GroupValueWrite, small value 1
         ];
-        let frame = CemiFrame::decode(hex).unwrap();
+        let frame = CemiFrame::decode(hex)?;
         assert_eq!(frame.message_code, MessageCode::LDataInd);
         assert_eq!(frame.source, ia("1.1.1"));
         assert_eq!(frame.group_destination(), Some(ga("3/0/4")));
         assert_eq!(frame.apdu, Apdu::GroupValueWrite(GroupData::Small(1)));
         // Round-trips byte-for-byte.
         assert_eq!(frame.encode(), hex);
+        Ok(())
     }
 
     #[test]
-    fn build_group_write_small() {
+    fn build_group_write_small() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let frame = CemiFrame::group_write_packed(ga("3/0/4"), ia("1.1.1"), &[1]);
         let bytes = frame.encode();
         // Last three bytes: NPDU len 1, APCI 0x00, 0x81.
         assert_eq!(&bytes[bytes.len() - 3..], &[0x01, 0x00, 0x81]);
-        let back = CemiFrame::decode(&bytes).unwrap();
+        let back = CemiFrame::decode(&bytes)?;
         assert_eq!(back.apdu, Apdu::GroupValueWrite(GroupData::Small(1)));
+        Ok(())
     }
 
     #[test]
-    fn roundtrip_group_write_large_2byte() {
+    fn roundtrip_group_write_large_2byte() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // GroupValueWrite of a 2-byte payload (e.g. DPT 9 temperature). NPDU
         // length 3 (one APCI octet + two data octets). TPDU: 00 80 0C 1A.
         let hex: &[u8] = &[
@@ -870,62 +873,67 @@ mod tests {
             0x00, 0x80, // GroupValueWrite, no packed value
             0x0C, 0x1A, // two data octets
         ];
-        let frame = CemiFrame::decode(hex).unwrap();
+        let frame = CemiFrame::decode(hex)?;
         assert_eq!(
             frame.apdu,
             Apdu::GroupValueWrite(GroupData::Large(vec![0x0C, 0x1A]))
         );
         assert_eq!(frame.encode(), hex);
+        Ok(())
     }
 
     #[test]
-    fn roundtrip_group_read_no_payload() {
+    fn roundtrip_group_read_no_payload() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // GroupValueRead: APCI 0x000, NPDU len 1, TPDU 00 00.
         let hex: &[u8] = &[
             0x29, 0x00, 0xBC, 0xE0, 0x11, 0x01, 0x18, 0x04, 0x01, 0x00, 0x00,
         ];
-        let frame = CemiFrame::decode(hex).unwrap();
+        let frame = CemiFrame::decode(hex)?;
         assert_eq!(frame.apdu, Apdu::GroupValueRead);
         assert_eq!(frame.encode(), hex);
+        Ok(())
     }
 
     #[test]
-    fn roundtrip_group_response_small() {
+    fn roundtrip_group_response_small() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // GroupValueResponse (0x040) small value 1: TPDU 00 41.
         let hex: &[u8] = &[
             0x29, 0x00, 0xBC, 0xE0, 0x11, 0x01, 0x18, 0x04, 0x01, 0x00, 0x41,
         ];
-        let frame = CemiFrame::decode(hex).unwrap();
+        let frame = CemiFrame::decode(hex)?;
         assert_eq!(frame.apdu, Apdu::GroupValueResponse(GroupData::Small(1)));
         assert_eq!(frame.encode(), hex);
+        Ok(())
     }
 
     #[test]
-    fn additional_info_present_roundtrips() {
+    fn additional_info_present_roundtrips() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // L_Data.ind with a 4-byte AI block (e.g. extended relative timestamp).
         let hex: &[u8] = &[
             0x29, 0x04, // AI len 4
             0x03, 0x02, 0xAA, 0xBB, // AI bytes
             0xBC, 0xE0, 0x11, 0x01, 0x18, 0x04, 0x01, 0x00, 0x81,
         ];
-        let frame = CemiFrame::decode(hex).unwrap();
+        let frame = CemiFrame::decode(hex)?;
         assert_eq!(frame.additional_info, vec![0x03, 0x02, 0xAA, 0xBB]);
         assert_eq!(frame.apdu, Apdu::GroupValueWrite(GroupData::Small(1)));
         assert_eq!(frame.encode(), hex);
+        Ok(())
     }
 
     #[test]
-    fn individual_destination_decoded() {
+    fn individual_destination_decoded() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // ctl2 with group bit clear (0x60): destination is an individual address.
         let hex: &[u8] = &[
             0x29, 0x00, 0xBC, 0x60, 0x11, 0x01, 0x11, 0x02, 0x01, 0x00, 0x00,
         ];
-        let frame = CemiFrame::decode(hex).unwrap();
+        let frame = CemiFrame::decode(hex)?;
         match frame.destination {
             Destination::Individual(i) => assert_eq!(i, ia("1.1.2")),
             other => panic!("expected individual, got {other:?}"),
         }
         assert_eq!(frame.encode(), hex);
+        Ok(())
     }
 
     #[test]
@@ -949,7 +957,7 @@ mod tests {
     }
 
     #[test]
-    fn management_apci_preserved() {
+    fn management_apci_preserved() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // A connection-oriented management TPDU (TPCI high bits != 00), here a
         // DeviceDescriptorRead-like APCI. We only require it round-trips and does
         // not panic.
@@ -957,13 +965,14 @@ mod tests {
             0x29, 0x00, 0xBC, 0x60, 0x11, 0x01, 0x11, 0x02, 0x02, // NPDU len 2
             0x43, 0x00, 0x00, // TPCI 0x43 (numbered/connected) + APCI + data
         ];
-        let frame = CemiFrame::decode(hex).unwrap();
+        let frame = CemiFrame::decode(hex)?;
         match frame.tpci {
             Tpci::Other(0x43) => {}
             other => panic!("expected Tpci::Other(0x43), got {other:?}"),
         }
         assert!(matches!(frame.apdu, Apdu::Other { .. }));
         assert_eq!(frame.encode(), hex);
+        Ok(())
     }
 
     #[test]
@@ -993,39 +1002,41 @@ mod tests {
     }
 
     #[test]
-    fn t_connect_control_frame_roundtrips() {
+    fn t_connect_control_frame_roundtrips() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // T_Connect (0x80) to an individual address, NPDU length 0, one TPDU
         // octet. This exercises the new single-octet control path.
         let frame = CemiFrame::t_control(ia("1.1.4"), ia("0.0.255"), 0x80);
         let bytes = frame.encode();
         // Last two bytes: NPDU length 0, TPCI 0x80.
         assert_eq!(&bytes[bytes.len() - 2..], &[0x00, 0x80]);
-        let back = CemiFrame::decode(&bytes).unwrap();
+        let back = CemiFrame::decode(&bytes)?;
         assert_eq!(back.tpci, Tpci::Control(0x80));
         assert_eq!(back.apdu, Apdu::Empty);
         assert_eq!(back.individual_destination(), Some(ia("1.1.4")));
         assert_eq!(back.tpci_octet(), 0x80);
         assert_eq!(back.encode(), bytes);
+        Ok(())
     }
 
     #[test]
-    fn t_ack_control_frame_roundtrips() {
+    fn t_ack_control_frame_roundtrips() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // T_ACK for seq 3 = 0xC2 | (3<<2) = 0xCE.
         let frame = CemiFrame::t_control(ia("1.1.4"), ia("0.0.255"), 0xCE);
-        let back = CemiFrame::decode(&frame.encode()).unwrap();
+        let back = CemiFrame::decode(&frame.encode())?;
         assert_eq!(back.tpci, Tpci::Control(0xCE));
         assert_eq!(back.tpci_octet(), 0xCE);
+        Ok(())
     }
 
     #[test]
-    fn ndt_data_connected_roundtrips() {
+    fn ndt_data_connected_roundtrips() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // NDT seq 0 (0x40) carrying A_DeviceDescriptor_Read (APCI 0x300). The
         // APCI's top two bits (0x03) share octet0 with the TPCI, so the encoded
         // first octet is 0x40 | 0x03 = 0x43 — this is the real KNX packing, and
         // the APCI reconstructs to 0x300 on decode.
         let frame = CemiFrame::t_data_connected(ia("1.1.4"), ia("0.0.255"), 0x40, 0x300, &[]);
         let bytes = frame.encode();
-        let back = CemiFrame::decode(&bytes).unwrap();
+        let back = CemiFrame::decode(&bytes)?;
         assert_eq!(back.tpci, Tpci::Other(0x43));
         match back.apdu {
             Apdu::Other { apci, ref data } => {
@@ -1038,10 +1049,11 @@ mod tests {
         // seq 0.
         assert_eq!(back.tpci_octet() & 0xfc, 0x40);
         assert_eq!(back.encode(), bytes);
+        Ok(())
     }
 
     #[test]
-    fn ndt_with_data_roundtrips() {
+    fn ndt_with_data_roundtrips() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // NDT seq 1 (0x44) carrying A_Memory_Read (0x200) with 3 trailing octets.
         let frame = CemiFrame::t_data_connected(
             ia("1.1.4"),
@@ -1050,7 +1062,7 @@ mod tests {
             0x200,
             &[0x03, 0x01, 0x00],
         );
-        let back = CemiFrame::decode(&frame.encode()).unwrap();
+        let back = CemiFrame::decode(&frame.encode())?;
         match back.apdu {
             Apdu::Other { apci, ref data } => {
                 assert_eq!(apci, 0x200);
@@ -1058,19 +1070,21 @@ mod tests {
             }
             other => panic!("expected Apdu::Other, got {other:?}"),
         }
+        Ok(())
     }
 
     #[test]
-    fn broadcast_frame_targets_zero_group() {
+    fn broadcast_frame_targets_zero_group() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // A_IndividualAddress_Read (0x100) as a system broadcast.
         let frame = CemiFrame::t_broadcast(ia("0.0.255"), 0x100, &[]);
         assert_eq!(frame.group_destination(), Some(GroupAddress::from_raw(0)));
         assert!(frame.control1.system_broadcast);
-        let back = CemiFrame::decode(&frame.encode()).unwrap();
+        let back = CemiFrame::decode(&frame.encode())?;
         match back.apdu {
             Apdu::Other { apci, .. } => assert_eq!(apci, 0x100),
             other => panic!("expected Apdu::Other, got {other:?}"),
         }
+        Ok(())
     }
 
     #[test]
@@ -1088,7 +1102,8 @@ mod tests {
     // ---------------------------------------------------------------------
 
     #[test]
-    fn unpacked_intent_forces_large_even_for_small_byte() {
+    fn unpacked_intent_forces_large_even_for_small_byte()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // A byte-sized DPT (e.g. 5.001 value 50 -> 0x32, or 20.102 value 2) whose
         // byte is <= 0x3F must NOT be packed: with packed=false it is a separate
         // data octet, and it round-trips as such.
@@ -1100,21 +1115,23 @@ mod tests {
                 "byte {byte:#04X} with packed=false must be a separate data octet"
             );
             // Round-trips: still large, still the same byte.
-            let back = CemiFrame::decode(&frame.encode()).unwrap();
+            let back = CemiFrame::decode(&frame.encode())?;
             assert_eq!(
                 back.apdu,
                 Apdu::GroupValueWrite(GroupData::Large(vec![byte]))
             );
         }
+        Ok(())
     }
 
     #[test]
-    fn packed_intent_packs_sub_byte_value() {
+    fn packed_intent_packs_sub_byte_value() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // A sub-byte DPT (1.x On, 3.x step) with packed=true uses the small form.
         let frame = CemiFrame::group_write(ga("3/0/4"), ia("1.1.1"), &[1], true);
         assert_eq!(frame.apdu, Apdu::GroupValueWrite(GroupData::Small(1)));
-        let back = CemiFrame::decode(&frame.encode()).unwrap();
+        let back = CemiFrame::decode(&frame.encode())?;
         assert_eq!(back.apdu, Apdu::GroupValueWrite(GroupData::Small(1)));
+        Ok(())
     }
 
     // ---------------------------------------------------------------------
@@ -1123,7 +1140,8 @@ mod tests {
     // ---------------------------------------------------------------------
 
     #[test]
-    fn long_apdu_encodes_as_extended_frame() {
+    fn long_apdu_encodes_as_extended_frame() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
         // A 63-octet A_Memory_Write (APCI 0x280 | 63) to 0x6000: the TPDU is
         // 2 APCI octets + 2 address octets + 63 data octets = 67, so NPDU len = 66
         // — far beyond the 15-octet standard-frame ceiling. It must encode with the
@@ -1143,7 +1161,7 @@ mod tests {
             "long APDU must clear the frame-type bit (extended)"
         );
         // The NPDU length octet is 66.
-        let back = CemiFrame::decode(&bytes).unwrap();
+        let back = CemiFrame::decode(&bytes)?;
         assert!(
             !back.control1.standard_frame,
             "decoded frame must report extended"
@@ -1160,6 +1178,7 @@ mod tests {
             }
             other => panic!("expected Apdu::Other, got {other:?}"),
         }
+        Ok(())
     }
 
     #[test]

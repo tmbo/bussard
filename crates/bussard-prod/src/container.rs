@@ -133,12 +133,12 @@ impl Container {
         let mut container = Self { path, archive };
         // An explicit inner selection only applies to a wrapper (no
         // manufacturer folders of its own).
-        if let Some(sel) = inner {
-            if container.manufacturer_ids().is_empty() {
-                let target = container.resolve_inner_selection(sel)?;
-                container.replace_with_inner(&target)?;
-                return Ok(container);
-            }
+        if let Some(sel) = inner
+            && container.manufacturer_ids().is_empty()
+        {
+            let target = container.resolve_inner_selection(sel)?;
+            container.replace_with_inner(&target)?;
+            return Ok(container);
         }
         if let Some(target) = container.unwrap_target()? {
             container.replace_with_inner(&target)?;

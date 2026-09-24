@@ -180,8 +180,10 @@ mod tests {
             additional_info: Vec::new(),
             control1: Control1::default(),
             control2: Control2::default(),
-            source: "1.0.255".parse::<IndividualAddress>().unwrap(),
-            destination: Destination::Individual("1.0.30".parse().unwrap()),
+            source: "1.0.255"
+                .parse::<IndividualAddress>()
+                .expect("valid fixture address"),
+            destination: Destination::Individual("1.0.30".parse().expect("valid fixture address")),
             tpci: Tpci::Other(0x4b),
             apdu: Apdu::Other { apci, data },
         }

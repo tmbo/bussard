@@ -506,12 +506,13 @@ fn classify_climate_ga(name: &str, dpt: Option<Dpt>) -> Option<(String, ClimateR
         ("Isttemperatur", ClimateRole::Temperature, 9, 1),
     ];
     for &(suffix, role, m, s) in TABLE {
-        if main == m && sub == Some(s) {
-            if let Some(room) = name.strip_suffix(suffix) {
-                let room = room.trim();
-                if !room.is_empty() {
-                    return Some((room.to_string(), role));
-                }
+        if main == m
+            && sub == Some(s)
+            && let Some(room) = name.strip_suffix(suffix)
+        {
+            let room = room.trim();
+            if !room.is_empty() {
+                return Some((room.to_string(), role));
             }
         }
     }

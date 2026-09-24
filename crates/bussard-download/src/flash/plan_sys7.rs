@@ -554,7 +554,9 @@ pub(super) fn sys7_linked_asaps(assoc_image: &[u8]) -> BTreeSet<u16> {
         return BTreeSet::new();
     };
     pairs
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .take(usize::from(count))
         .map(|p| u16::from(p[1]))
         .collect()
@@ -648,13 +650,20 @@ pub(super) fn apply_sys7_group_object_links(
         let descriptors = &rest[2..2 + 4 * count];
         let shaped = in_ram(ram_flags)
             && descriptors
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .all(|d| in_ram(u16::from_be_bytes([d[0], d[1]])));
         if !shaped {
             continue;
         }
         use bussard_model::Flags;
-        for (asap, d) in bytes[3..3 + 4 * count].chunks_exact_mut(4).enumerate() {
+        for (asap, d) in bytes[3..3 + 4 * count]
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
             let asap = asap as u16;
             if last_object.is_some_and(|last| asap > last) {
                 break;
@@ -763,7 +772,7 @@ pub fn linked_flags_from_system_b(
     let Some(img) = table_images.get(&3).filter(|img| img.len() >= 2) else {
         return out;
     };
-    for (i, w) in img[2..].chunks_exact(2).enumerate() {
+    for (i, w) in img[2..].as_chunks::<2>().0.iter().enumerate() {
         let word = u16::from_be_bytes([w[0], w[1]]);
         if word == 0 {
             continue;
@@ -843,12 +852,16 @@ pub fn sys7_tables_from_system_b(
     if let Some(assoc) = table_images.get(&2).filter(|img| img.len() >= 2) {
         let elements = &assoc[2..];
         let n = elements.len() / 4;
-        let fits =
-            n <= usize::from(u8::MAX) && elements.chunks_exact(4).all(|e| e[0] == 0 && e[2] == 0);
+        let fits = n <= usize::from(u8::MAX)
+            && elements
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|e| e[0] == 0 && e[2] == 0);
         if fits {
             let mut image = Vec::with_capacity(1 + n * 2);
             image.push(n as u8);
-            for e in elements.chunks_exact(4) {
+            for e in elements.as_chunks::<4>().0 {
                 image.push(e[1]);
                 image.push(e[3]);
             }
@@ -955,7 +968,7 @@ pub(super) fn parse_compare_mem(attrs: &[(String, String)]) -> Option<(u32, Vec<
 /// `None` on odd length or a non-hex digit.
 pub(super) fn decode_hex(s: &str) -> Option<Vec<u8>> {
     let s = s.trim();
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     (0..s.len())

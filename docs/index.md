@@ -22,7 +22,7 @@ $ mv bussard-macos-arm64 /usr/local/bin/bussard
 $ xattr -d com.apple.quarantine /usr/local/bin/bussard   # macOS only, the binary is not notarized
 ```
 
-Or build from source with Rust 1.85 or newer:
+Or build from source with Rust 1.88 or newer:
 
 ```console
 $ git clone https://github.com/tmbo/bussard

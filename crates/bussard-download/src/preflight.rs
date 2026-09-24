@@ -290,12 +290,12 @@ async fn probe_system_b<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Residen
         }
         // The application id lives on the application objects. Read it
         // best-effort: an object that does not carry one answers zero elements.
-        if object_type == OT_APPLICATION_PROGRAM || object_type == OT_INTERFACE_PROGRAM {
-            if let Ok(Some(value)) = read_program_version(l4, index).await {
-                if state.app_id.is_none() && value.iter().any(|b| *b != 0) {
-                    state.app_id = Some(value);
-                }
-            }
+        if (object_type == OT_APPLICATION_PROGRAM || object_type == OT_INTERFACE_PROGRAM)
+            && let Ok(Some(value)) = read_program_version(l4, index).await
+            && state.app_id.is_none()
+            && value.iter().any(|b| *b != 0)
+        {
+            state.app_id = Some(value);
         }
     }
 

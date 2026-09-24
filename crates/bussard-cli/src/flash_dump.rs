@@ -201,10 +201,10 @@ pub fn write_dump(
                     *target,
                     Some(*offset),
                 )?;
-                if image.kind == bussard_download::ImageKind::Table {
-                    if let Some(t) = target {
-                        table_steps.insert(*t, (n, None));
-                    }
+                if image.kind == bussard_download::ImageKind::Table
+                    && let Some(t) = target
+                {
+                    table_steps.insert(*t, (n, None));
                 }
                 record["image"] = rec;
             }

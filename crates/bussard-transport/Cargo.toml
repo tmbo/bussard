@@ -26,7 +26,13 @@ thiserror = { workspace = true }
 if-addrs = "0.15"
 
 [dev-dependencies]
+# The shared mock gateway (a dev-dependency cycle cargo allows: the testkit
+# depends on this crate, and only the integration tests use it).
+bussard-testkit = { workspace = true }
 # `#[tokio::test]` for the async integration tests. `test-util` adds the pausable
 # clock the heartbeat test needs to drive the real 60 s + 3 x 10 s schedule
 # without sleeping for 90 s.
 tokio = { workspace = true, features = ["test-util"] }
+
+[lints]
+workspace = true

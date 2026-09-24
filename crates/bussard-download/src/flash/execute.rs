@@ -343,23 +343,23 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
         // (matching ETS's group-B captures). Its `LoadImageProp` MCB re-verify is
         // kept (a read-only confirm that passes by construction). The object is
         // still recorded as completed so the post-flash verify covers it.
-        if let Some(skip_obj) = mcb_skip_target(step, &object_table, app_obj, plan) {
-            if skip_objects.contains(&skip_obj) {
-                if let FlashStep::LoadCompleted { .. } = step {
-                    if !completed_objects.contains(&skip_obj) {
-                        completed_objects.push(skip_obj);
-                    }
-                }
-                progress(Progress::Step {
-                    index: i + 1,
-                    total,
-                    label: format!(
-                        "skip {} (unchanged: resident MCB size+CRC match the image, object Loaded)",
-                        step_label(step)
-                    ),
-                });
-                continue;
+        if let Some(skip_obj) = mcb_skip_target(step, &object_table, app_obj, plan)
+            && skip_objects.contains(&skip_obj)
+        {
+            if let FlashStep::LoadCompleted { .. } = step
+                && !completed_objects.contains(&skip_obj)
+            {
+                completed_objects.push(skip_obj);
             }
+            progress(Progress::Step {
+                index: i + 1,
+                total,
+                label: format!(
+                    "skip {} (unchanged: resident MCB size+CRC match the image, object Loaded)",
+                    step_label(step)
+                ),
+            });
+            continue;
         }
         // Proactive periodic L4 reconnection (the ETS pattern): before starting a
         // step, if this connection's numbered-exchange count has reached the

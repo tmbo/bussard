@@ -225,6 +225,7 @@ name = "bussard-bus"
 version = "0.1.0"
 dependencies = [
  "bussard-model",
+ "bussard-testkit",
  "bussard-transport",
  "thiserror",
  "tokio",
@@ -314,6 +315,7 @@ dependencies = [
  "bussard-model",
  "bussard-monitor",
  "bussard-project",
+ "bussard-testkit",
  "bussard-transport",
  "rmcp",
  "serde",
@@ -359,6 +361,7 @@ version = "0.1.0"
 dependencies = [
  "bussard-bus",
  "bussard-model",
+ "bussard-testkit",
  "bussard-transport",
  "owo-colors",
  "rusqlite",
@@ -424,10 +427,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "bussard-testkit"
+version = "0.1.0"
+dependencies = [
+ "bussard-model",
+ "bussard-transport",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "bussard-transport"
 version = "0.1.0"
 dependencies = [
  "bussard-model",
+ "bussard-testkit",
  "if-addrs",
  "socket2 0.5.10",
  "thiserror",

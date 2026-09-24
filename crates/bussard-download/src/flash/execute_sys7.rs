@@ -158,10 +158,9 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                             if blind
                                 && !ctx.segment_masks.contains_key(&img.segment_id)
                                 && checksum_ctrl != 0
+                                && let Some(bytes) = plan.images.get(&img.segment_id)
                             {
-                                if let Some(bytes) = plan.images.get(&img.segment_id) {
-                                    written_samples.push((seg_addr, take_sample(bytes)));
-                                }
+                                written_samples.push((seg_addr, take_sample(bytes)));
                             }
                         }
                     }

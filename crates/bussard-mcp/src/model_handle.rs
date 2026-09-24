@@ -157,15 +157,15 @@ fn fingerprint(dir: &Path) -> Fingerprint {
     let mut total_len = 0u64;
 
     let mut visit = |path: &Path| {
-        if let Ok(meta) = std::fs::metadata(path) {
-            if meta.is_file() {
-                count += 1;
-                total_len += meta.len();
-                if let Ok(modified) = meta.modified() {
-                    if modified > newest {
-                        newest = modified;
-                    }
-                }
+        if let Ok(meta) = std::fs::metadata(path)
+            && meta.is_file()
+        {
+            count += 1;
+            total_len += meta.len();
+            if let Ok(modified) = meta.modified()
+                && modified > newest
+            {
+                newest = modified;
             }
         }
     };
@@ -187,7 +187,7 @@ mod tests {
     use super::*;
 
     /// A fresh temp directory holding a one-group model.
-    fn model_dir(tag: &str) -> PathBuf {
+    fn model_dir(tag: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
         let dir = std::env::temp_dir().join(format!(
             "bussard-mcp-model-{tag}-{}-{:?}",
             std::process::id(),
@@ -197,25 +197,24 @@ mod tests {
                 .as_nanos()
         ));
         let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("create dir");
+        std::fs::create_dir_all(&dir)?;
         std::fs::write(
             dir.join("groups.yaml"),
             "groups:\n  \"3/0/4\":\n    name: Blind\n    dpt: \"1.008\"\n",
-        )
-        .expect("write groups.yaml");
-        dir
+        )?;
+        Ok(dir)
     }
 
-    fn handle_for(dir: &Path) -> ModelHandle {
-        let model = Model::load(dir).expect("model loads");
-        ModelHandle::new(dir.to_path_buf(), model)
+    fn handle_for(dir: &Path) -> Result<ModelHandle, Box<dyn std::error::Error>> {
+        let model = Model::load(dir)?;
+        Ok(ModelHandle::new(dir.to_path_buf(), model))
     }
 
     #[test]
     fn test_current_picks_up_a_protected_flag_added_on_disk()
     -> Result<(), Box<dyn std::error::Error>> {
-        let dir = model_dir("protected");
-        let handle = handle_for(&dir);
+        let dir = model_dir("protected")?;
+        let handle = handle_for(&dir)?;
         let ga: bussard_model::GroupAddress = "3/0/4".parse()?;
         assert!(!handle.current().groups.groups[&ga].protected);
 
@@ -238,8 +237,8 @@ mod tests {
     #[test]
     fn test_unchanged_directory_does_not_bump_the_version() -> Result<(), Box<dyn std::error::Error>>
     {
-        let dir = model_dir("unchanged");
-        let handle = handle_for(&dir);
+        let dir = model_dir("unchanged")?;
+        let handle = handle_for(&dir)?;
         handle.refresh();
         handle.refresh();
         assert_eq!(handle.version(), 1);
@@ -249,8 +248,8 @@ mod tests {
 
     #[test]
     fn test_broken_model_keeps_the_previous_one() -> Result<(), Box<dyn std::error::Error>> {
-        let dir = model_dir("broken");
-        let handle = handle_for(&dir);
+        let dir = model_dir("broken")?;
+        let handle = handle_for(&dir)?;
         let ga: bussard_model::GroupAddress = "3/0/4".parse()?;
 
         // Duplicate keys: the YAML no longer parses.

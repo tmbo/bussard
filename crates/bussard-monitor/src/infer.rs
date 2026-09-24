@@ -130,14 +130,14 @@ pub fn infer_dpt(payload: &[u8], declared: Option<Dpt>) -> Vec<DptCandidate> {
     let declared_fits = declared
         .map(|d| size_fits(d, payload.len()))
         .unwrap_or(false);
-    if let Some(dpt) = declared {
-        if declared_fits {
-            out.extend(DptCandidate::new(
-                &dpt.to_string(),
-                Confidence::High,
-                format!("the sending com object declares DPT {dpt} in the model"),
-            ));
-        }
+    if let Some(dpt) = declared
+        && declared_fits
+    {
+        out.extend(DptCandidate::new(
+            &dpt.to_string(),
+            Confidence::High,
+            format!("the sending com object declares DPT {dpt} in the model"),
+        ));
     }
 
     out.extend(by_shape(payload));
@@ -155,22 +155,23 @@ pub fn infer_dpt(payload: &[u8], declared: Option<Dpt>) -> Vec<DptCandidate> {
 
     // A declared DPT that contradicts the wire is reported last: the model may
     // be wrong, or the device may be sending something else on this GA.
-    if let Some(dpt) = declared {
-        if !declared_fits && !payload.is_empty() {
-            let expected = dpt
-                .expected_size()
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "an unmodelled width".to_string());
-            out.extend(DptCandidate::new(
-                &dpt.to_string(),
-                Confidence::Low,
-                format!(
-                    "the sending com object declares DPT {dpt} ({expected}), but the payload is \
+    if let Some(dpt) = declared
+        && !declared_fits
+        && !payload.is_empty()
+    {
+        let expected = dpt
+            .expected_size()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "an unmodelled width".to_string());
+        out.extend(DptCandidate::new(
+            &dpt.to_string(),
+            Confidence::Low,
+            format!(
+                "the sending com object declares DPT {dpt} ({expected}), but the payload is \
                      {} byte(s); the model and the wire disagree",
-                    payload.len()
-                ),
-            ));
-        }
+                payload.len()
+            ),
+        ));
     }
 
     out

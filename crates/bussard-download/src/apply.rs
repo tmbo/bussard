@@ -254,7 +254,7 @@ pub async fn negotiate_session_apdu<Ch: L4Channel>(
 /// followed by the elements — the layout `PID_TABLE_REFERENCE` points at and
 /// [`read_tables`]'s memory path reads back.
 fn table_image(elem_size: usize, elements: &[u8]) -> Vec<u8> {
-    debug_assert!(elem_size > 0 && elements.len() % elem_size == 0);
+    debug_assert!(elem_size > 0 && elements.len().is_multiple_of(elem_size));
     let count = (elements.len() / elem_size) as u16;
     let mut image = Vec::with_capacity(2 + elements.len());
     image.extend_from_slice(&count.to_be_bytes());

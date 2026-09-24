@@ -422,16 +422,16 @@ impl TaskState {
             };
             match parsed.service {
                 ServiceType::TunnelingAck => {
-                    if let Ok((hdr, status)) = knxnet::parse_tunneling_ack(parsed.body) {
-                        if hdr.seq == seq {
-                            if status != 0 {
-                                return Err(TransportError::GatewayStatus {
-                                    status,
-                                    context: "TUNNELING_ACK",
-                                });
-                            }
-                            return Ok(());
+                    if let Ok((hdr, status)) = knxnet::parse_tunneling_ack(parsed.body)
+                        && hdr.seq == seq
+                    {
+                        if status != 0 {
+                            return Err(TransportError::GatewayStatus {
+                                status,
+                                context: "TUNNELING_ACK",
+                            });
                         }
+                        return Ok(());
                     }
                 }
                 // Server can interleave requests / disconnects while we await.
@@ -580,14 +580,14 @@ impl TaskState {
                         let datagram = buf[..n].to_vec();
                         if let Ok(parsed) = knxnet::parse(&datagram) {
                             if parsed.service == ServiceType::ConnectionstateResponse {
-                                if let Ok(cs) = knxnet::parse_channel_status(parsed.body) {
-                                    if cs.channel_id == self.channel_id {
-                                        if cs.status == 0 {
-                                            return Ok(());
-                                        }
-                                        // Non-zero status: retry.
-                                        break;
+                                if let Ok(cs) = knxnet::parse_channel_status(parsed.body)
+                                    && cs.channel_id == self.channel_id
+                                {
+                                    if cs.status == 0 {
+                                        return Ok(());
                                     }
+                                    // Non-zero status: retry.
+                                    break;
                                 }
                             } else {
                                 // Interleaved traffic during heartbeat wait.
@@ -623,10 +623,10 @@ impl TaskState {
             }
             match time::timeout(remaining, self.socket.recv(buf)).await {
                 Ok(Ok(n)) => {
-                    if let Ok(parsed) = knxnet::parse(&buf[..n]) {
-                        if parsed.service == ServiceType::DisconnectResponse {
-                            return Ok(());
-                        }
+                    if let Ok(parsed) = knxnet::parse(&buf[..n])
+                        && parsed.service == ServiceType::DisconnectResponse
+                    {
+                        return Ok(());
                     }
                 }
                 Ok(Err(_)) | Err(_) => return Ok(()),

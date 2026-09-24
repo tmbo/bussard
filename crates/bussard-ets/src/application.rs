@@ -1206,17 +1206,17 @@ pub fn parse_application_program(id: &str, xml: &[u8]) -> Result<ApplicationProg
                 b"when" => {
                     // Close the innermost `<when>`: attach its collected
                     // com-object-ref ids to its own `<choose>` frame.
-                    if let Some(frame) = state.dynamic.choose_stack.last_mut() {
-                        if let Some(branch) = frame.when.take() {
-                            // Keep the flattened exact-value view in step: one
-                            // entry per listed value (`test="0 2"` yields two).
-                            if let WhenTest::Values(values) = &branch.test {
-                                for v in values {
-                                    frame.group.branches.push((*v, branch.members.clone()));
-                                }
+                    if let Some(frame) = state.dynamic.choose_stack.last_mut()
+                        && let Some(branch) = frame.when.take()
+                    {
+                        // Keep the flattened exact-value view in step: one
+                        // entry per listed value (`test="0 2"` yields two).
+                        if let WhenTest::Values(values) = &branch.test {
+                            for v in values {
+                                frame.group.branches.push((*v, branch.members.clone()));
                             }
-                            frame.group.branches_all.push(branch);
                         }
+                        frame.group.branches_all.push(branch);
                     }
                 }
                 b"choose" => {
@@ -1224,20 +1224,20 @@ pub fn parse_application_program(id: &str, xml: &[u8]) -> Result<ApplicationProg
                     // membership. A nested group is attached in its own right:
                     // the flat membership cannot express "inner branch AND outer
                     // branch", but each group keeps its own members.
-                    if let Some(frame) = state.dynamic.choose_stack.pop() {
-                        if let Some(mem) = state.dynamic.cur_membership.as_mut() {
-                            mem.conditional.push(frame.group);
-                        }
+                    if let Some(frame) = state.dynamic.choose_stack.pop()
+                        && let Some(mem) = state.dynamic.cur_membership.as_mut()
+                    {
+                        mem.conditional.push(frame.group);
                     }
                 }
                 b"ParameterBlock" => {
                     // Close the channel parameter block: capture its membership
                     // once (a module template has a single channel/block).
-                    if let Some(mem) = state.dynamic.cur_membership.take() {
-                        if !state.dynamic.membership_captured {
-                            app.channel_membership = Some(mem);
-                            state.dynamic.membership_captured = true;
-                        }
+                    if let Some(mem) = state.dynamic.cur_membership.take()
+                        && !state.dynamic.membership_captured
+                    {
+                        app.channel_membership = Some(mem);
+                        state.dynamic.membership_captured = true;
                     }
                     // A `<choose>` left open by malformed XML must not leak into
                     // the next block's frames.
@@ -1439,13 +1439,13 @@ fn handle_empty(
         }
         b"NumericArg" => {
             // A `<NumericArg RefId=arg-id Value=n>` of the current `<Module>`.
-            if let Some(module) = state.dynamic.cur_module.as_mut() {
-                if let (Some(arg_id), Some(value)) = (
+            if let Some(module) = state.dynamic.cur_module.as_mut()
+                && let (Some(arg_id), Some(value)) = (
                     get(m, b"RefId").and_then(|id| app_relative_id(id, &app.id)),
                     get(m, b"Value").and_then(|s| s.parse::<i64>().ok()),
-                ) {
-                    module.arg_values.insert(arg_id.to_string(), value);
-                }
+                )
+            {
+                module.arg_values.insert(arg_id.to_string(), value);
             }
         }
         b"ComObjectRefRef" => {
@@ -1466,10 +1466,10 @@ fn handle_empty(
         b"ParameterRefRef" => {
             // A channel's referenced parameter (drives which module params ETS
             // writes for the channel).
-            if let Some(mem) = state.dynamic.cur_membership.as_mut() {
-                if let Some(ref_id) = get(m, b"RefId").and_then(|id| app_relative_id(id, &app.id)) {
-                    mem.parameter_refs.push(ref_id.to_string());
-                }
+            if let Some(mem) = state.dynamic.cur_membership.as_mut()
+                && let Some(ref_id) = get(m, b"RefId").and_then(|id| app_relative_id(id, &app.id))
+            {
+                mem.parameter_refs.push(ref_id.to_string());
             }
         }
         b"Parameter" => {
@@ -1522,23 +1522,23 @@ fn handle_empty(
         }
         b"TypeNone" => state.pt_kind = Some(ParameterType::None),
         b"Enumeration" => {
-            if let Some(ParameterType::Enum { values, .. }) = state.pt_kind.as_mut() {
-                if let (Some(value), Some(text)) = (
+            if let Some(ParameterType::Enum { values, .. }) = state.pt_kind.as_mut()
+                && let (Some(value), Some(text)) = (
                     get(m, b"Value").and_then(|s| s.parse::<i64>().ok()),
                     get(m, b"Text"),
-                ) {
-                    let binary_value = get(m, b"BinaryValue").and_then(|b| {
-                        use base64::Engine as _;
-                        base64::engine::general_purpose::STANDARD
-                            .decode(b.trim())
-                            .ok()
-                    });
-                    values.push(EnumValue {
-                        value,
-                        text: text.to_string(),
-                        binary_value,
-                    });
-                }
+                )
+            {
+                let binary_value = get(m, b"BinaryValue").and_then(|b| {
+                    use base64::Engine as _;
+                    base64::engine::general_purpose::STANDARD
+                        .decode(b.trim())
+                        .ok()
+                });
+                values.push(EnumValue {
+                    value,
+                    text: text.to_string(),
+                    binary_value,
+                });
             }
         }
         b"RelativeSegment" => insert_segment(app, m, SegmentKind::Relative),
@@ -1887,13 +1887,13 @@ impl DynTreeBuilder {
         }
         match name {
             b"NumericArg" => {
-                if let Some(DynFrame::Module { args, .. }) = self.frames.last_mut() {
-                    if let (Some(arg), Some(value)) = (
+                if let Some(DynFrame::Module { args, .. }) = self.frames.last_mut()
+                    && let (Some(arg), Some(value)) = (
                         get(m, b"RefId").map(|id| app_relative_id(id, app_id).unwrap_or(id)),
                         get(m, b"Value").and_then(|v| v.trim().parse::<i64>().ok()),
-                    ) {
-                        args.insert(arg.to_string(), value);
-                    }
+                    )
+                {
+                    args.insert(arg.to_string(), value);
                 }
             }
             b"when" | b"choose" | b"Module" => {
@@ -1913,42 +1913,39 @@ impl DynTreeBuilder {
         match name {
             b"ModuleDef" if self.frames.is_empty() => self.module_def = None,
             b"when" => {
-                if let Some(DynFrame::When(_)) = self.frames.last() {
-                    if let Some(DynFrame::When(branch)) = self.frames.pop() {
-                        if let Some(DynFrame::Choose { whens, .. }) = self.frames.last_mut() {
-                            whens.push(branch);
-                        }
-                    }
+                if let Some(DynFrame::When(_)) = self.frames.last()
+                    && let Some(DynFrame::When(branch)) = self.frames.pop()
+                    && let Some(DynFrame::Choose { whens, .. }) = self.frames.last_mut()
+                {
+                    whens.push(branch);
                 }
             }
             b"choose" => {
-                if let Some(DynFrame::Choose { .. }) = self.frames.last() {
-                    if let Some(DynFrame::Choose {
+                if let Some(DynFrame::Choose { .. }) = self.frames.last()
+                    && let Some(DynFrame::Choose {
                         param_ref_id,
                         whens,
                     }) = self.frames.pop()
-                    {
-                        self.push_node(DynamicNode::Choose {
-                            param_ref_id,
-                            whens,
-                        });
-                    }
+                {
+                    self.push_node(DynamicNode::Choose {
+                        param_ref_id,
+                        whens,
+                    });
                 }
             }
             b"Module" => {
-                if let Some(DynFrame::Module { .. }) = self.frames.last() {
-                    if let Some(DynFrame::Module {
+                if let Some(DynFrame::Module { .. }) = self.frames.last()
+                    && let Some(DynFrame::Module {
                         id,
                         module_def,
                         args,
                     }) = self.frames.pop()
-                    {
-                        self.push_node(DynamicNode::Module {
-                            id,
-                            module_def,
-                            args,
-                        });
-                    }
+                {
+                    self.push_node(DynamicNode::Module {
+                        id,
+                        module_def,
+                        args,
+                    });
                 }
             }
             b"Dynamic" => {
@@ -2062,12 +2059,12 @@ fn decode_segment_base64(
 /// leaving the field unset rather than mis-decoding.
 fn decode_hex_bytes(s: &str) -> Option<Vec<u8>> {
     let s = s.trim();
-    if s.is_empty() || s.len() % 2 != 0 {
+    if s.is_empty() || !s.len().is_multiple_of(2) {
         return None;
     }
     let mut out = Vec::with_capacity(s.len() / 2);
     let bytes = s.as_bytes();
-    for pair in bytes.chunks_exact(2) {
+    for pair in bytes.as_chunks::<2>().0 {
         let hi = (pair[0] as char).to_digit(16)?;
         let lo = (pair[1] as char).to_digit(16)?;
         out.push((hi * 16 + lo) as u8);
