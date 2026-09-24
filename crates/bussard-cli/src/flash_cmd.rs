@@ -37,7 +37,7 @@ use bussard_download::{
     read_current_parameter_memory_with_objects, select_application, trace,
 };
 use bussard_mgmt::load::WriteError;
-use bussard_mgmt::{Layer4Connection, LeaseChannel, MgmtError, Timeouts};
+use bussard_mgmt::{Layer4Connection, LeaseChannel, MaskProfile, MgmtError, Timeouts};
 use bussard_model::IndividualAddress;
 use bussard_prod::{ApplicationProgram, ProductData, normalize_order_number};
 use bussard_service::{Authorize, BusService, L4Options, ServiceError, SourcePolicy};
@@ -232,6 +232,10 @@ pub fn run(
     // memory (issue #109). All of it runs over one connection; none of it
     // writes anything.
     let preflight_started = std::time::Instant::now();
+    // The device facts (issue #209): a valid set spares the pre-flight its
+    // object walk and max-APDU read. The authorize is still presented here
+    // (its verdict decides the write phase's), so the facts never skip it.
+    let device_facts = crate::device_facts::cache(dir, model.is_some(), overrides.refresh_facts);
     let secure_probe = tool_key.is_some();
     // The phase is read-only, so a connection loss in the middle of it (the
     // gateway link or the device's Layer-4 connection, issue #177) simply
@@ -275,6 +279,19 @@ pub fn run(
                         }
                         Err(err) => Err(err),
                     };
+                    // Check (or read) the stored device facts on System B, the
+                    // family whose freshness probe walks the objects: a valid
+                    // set seeds this connection, so the walk and the max-APDU
+                    // read below answer from it. A connection death surfaces
+                    // on the reads that follow, as before.
+                    if let Ok(mask) = &r
+                        && MaskProfile::from_mask(*mask).tables_supported()
+                        && let Err(err) = device_facts
+                            .establish(dev.l4_mut(), *mask, bussard_service::FactsWant::Table)
+                            .await
+                    {
+                        tracing::debug!("{target} device facts: {err}");
+                    }
                     // PID_MAX_APDU_LENGTH is device-stable: negotiate it here, on
                     // the read-only connection, so the write phase seeds it
                     // instead of spending an exchange from its tight

@@ -53,6 +53,7 @@ pub mod broadcast;
 pub mod connection;
 pub mod device;
 pub mod error;
+pub mod io_list;
 pub mod load;
 pub mod manufacturers;
 pub mod memory;
@@ -69,13 +70,14 @@ pub use broadcast::{
     write_individual_address, write_individual_address_by_serial,
 };
 pub use connection::{
-    AuthorizeOutcome, L4Channel, Layer4Connection, LeaseChannel, MAX_OBJECT_INDEX, PID_OBJECT_TYPE,
-    PROBE_TIMEOUT, PropertyDesc, SECURE_APDU_OVERHEAD, STANDARD_FRAME_APDU, SyncRetry, Timeouts,
-    describe_object_properties, probe_object_type, probe_object_types, read_device_descriptor,
-    read_device_descriptor_unsecured,
+    AuthorizeOutcome, ConnectionSeed, L4Channel, Layer4Connection, LeaseChannel, MAX_OBJECT_INDEX,
+    PID_OBJECT_TYPE, PROBE_TIMEOUT, PropertyDesc, SECURE_APDU_OVERHEAD, STANDARD_FRAME_APDU,
+    SyncRetry, Timeouts, describe_object_properties, probe_object_type, probe_object_types,
+    read_device_descriptor, read_device_descriptor_unsecured,
 };
 pub use device::DeviceConnection;
 pub use error::{MgmtError, Result, SilenceKind};
+pub use io_list::{ObjectTableSource, PID_IO_LIST, discover_object_table, read_io_list};
 pub use load::{
     LD_CTRL_REL_SEGMENT, LoadControl, LoadState, LoadStateContext, MAX_RESTART_PROCESS_WAIT,
     MCB_ENTRY_LEN, McbEntry, PID_LOAD_STATE_CONTROL, PID_MCB_TABLE, PID_PROGRAM_VERSION,

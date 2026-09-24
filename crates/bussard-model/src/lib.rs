@@ -19,6 +19,7 @@ pub mod doc;
 pub mod dpt;
 mod emit;
 pub mod ets_export;
+pub mod facts;
 mod file_checks;
 mod files;
 pub mod flags;

@@ -954,7 +954,12 @@ pub(crate) fn line_output(line: &mut [MockDevice], cemi: &CemiFrame) -> Vec<Out>
                         Reaction::Silent => Vec::new(),
                         Reaction::Nak => vec![Step::Nak],
                         Reaction::Ack => vec![Step::Ack],
-                        Reaction::Answer(rapci, rdata) => vec![Step::Ack, Step::Data(rapci, rdata)],
+                        Reaction::Answer(rapci, rdata) => match dev.response_delay {
+                            Some(delay) => {
+                                vec![Step::Ack, Step::Pause(delay), Step::Data(rapci, rdata)]
+                            }
+                            None => vec![Step::Ack, Step::Data(rapci, rdata)],
+                        },
                         Reaction::Script(steps) => steps,
                     };
                     emit(dev, tool, Some(client_seq), steps, &mut out);

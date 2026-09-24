@@ -7,6 +7,12 @@
 //! printing each property's PID (with a name when known), data type, element
 //! count and read/write access levels as a table.
 //!
+//! The objects and property descriptions are device facts (issue #209): the
+//! first describe stores them under `<dir>/.bussard/facts/<ia>.toml`, and a
+//! later one prints them from there once the device's mask and application id
+//! still match, instead of sending one description read per property. `--full`
+//! walks the descriptions again; `--refresh-facts` re-reads everything.
+//!
 //! The command is **read-only on the bus**: it only ever sends
 //! `A_DeviceDescriptor_Read`, `A_PropertyValue_Read` (for object discovery) and
 //! `A_PropertyDescription_Read`. It never writes.
@@ -18,8 +24,9 @@ use anyhow::{Context, anyhow};
 use bussard_mgmt::profile::{MaskFamily, MaskProfile};
 use bussard_mgmt::{Layer4Connection, PropertyDesc, system_type};
 use bussard_model::IndividualAddress;
-use bussard_service::describe::{object_type_name, pid_name, walk_objects};
-use bussard_service::{Authorize, L4Options, SourcePolicy, WritePolicy};
+use bussard_service::describe::{object_type_name, pid_name};
+use bussard_service::facts::property_desc;
+use bussard_service::{FactsCache, FactsSource, FactsWant, L4Options, SourcePolicy, WritePolicy};
 
 use crate::conn_cmd::{ConnOverrides, load_model_required, open_service, resolve_config};
 
@@ -151,6 +158,7 @@ pub fn run(
     address: &str,
     dir: &Path,
     json: bool,
+    facts_options: FactsOptions,
     tool_key_source: crate::secure_key::ToolKeySource<'_>,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
@@ -170,6 +178,14 @@ pub fn run(
     let secure_seq = bussard_secure::SequenceHighWater::new();
     let presented_tool_key = tool_key.is_some();
     let config = resolve_config(model.as_ref(), &overrides)?;
+    // Device facts live next to the model; without one they are read each time.
+    let mut facts = crate::device_facts::cache(dir, model.is_some(), facts_options.refresh);
+    // Authorize (free access) as ETS does before configuration access (issue
+    // #52 finding #1), best-effort for a read; skipped for a device the facts
+    // say never answers it (the unanswered request costs the full response
+    // timeout), a stale verdict being corrected on the same connection.
+    let authorize = crate::device_facts::read_only_authorize(&mut facts, target);
+    let full = facts_options.full;
 
     let runtime = tokio::runtime::Runtime::new()?;
     let result = runtime
@@ -182,13 +198,13 @@ pub fn run(
                 },
                 tool_key,
                 high_water: secure_seq,
-                // Authorize (free access) as ETS does before configuration
-                // access (issue #52 finding #1). Best-effort for a read.
-                authorize: Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
+                authorize,
                 ..L4Options::default()
             };
             let outcome = service
-                .with_l4(target, &options, async |l4| introspect(l4).await)
+                .with_l4(target, &options, async |l4| {
+                    introspect(l4, &facts, full).await
+                })
                 .await;
             service.close().await;
             outcome
@@ -207,6 +223,11 @@ pub fn run(
         (true, false) => (PlainManagement::NotAttempted, SecuredManagement::Used),
         (true, true) => (PlainManagement::NotAttempted, SecuredManagement::Unanswered),
     };
+    if let Some(note) = &result.facts_note
+        && !json
+    {
+        eprintln!("{note}");
+    }
     let mut report = result.report;
     let model_secure = model
         .as_ref()
@@ -273,10 +294,10 @@ fn refused_walk_message(target: IndividualAddress, presented_tool_key: bool) -> 
 /// object's properties.
 async fn introspect<Ch: bussard_mgmt::L4Channel>(
     l4: &mut Layer4Connection<Ch>,
+    facts: &FactsCache,
+    full: bool,
 ) -> anyhow::Result<Introspection> {
     let address = l4.target();
-    // Scale property reads to the device's max APDU when available (best-effort).
-    let _ = l4.negotiate_max_apdu().await;
 
     // The device descriptor (mask version) — mirrors `reconstruct`'s approach
     // but here it is informational, not a gate: `describe` introspects any
@@ -294,18 +315,41 @@ async fn introspect<Ch: bussard_mgmt::L4Channel>(
         ));
     };
 
-    let object_reports = walk_objects(l4)
-        .await?
+    // The objects and their property descriptions: from the device facts when
+    // the mask and application id still match, read (and stored) otherwise.
+    // The property descriptions are walked only when the facts lack them or
+    // `--full` asks (issue #209).
+    let established = facts
+        .establish(l4, mask, FactsWant::Properties { force: full })
+        .await
+        .with_context(|| format!("describing the interface objects of {address}"))?;
+    let facts_note = match (&established.source, &established.record) {
+        (FactsSource::Cached, Some(record)) if !full => Some(format!(
+            "(device facts of {} reused; pass --full to walk the property descriptions again)",
+            record.read_at
+        )),
+        _ => None,
+    };
+    let object_reports = established
+        .record
+        .map(|record| record.objects)
+        .unwrap_or_default()
         .into_iter()
         .map(|object| ObjectReport {
             index: object.index,
             object_type: object.object_type,
             object_type_name: object_type_name(object.object_type),
-            properties: object.properties.iter().map(property_report).collect(),
+            properties: object
+                .properties
+                .unwrap_or_default()
+                .iter()
+                .map(|p| property_report(&property_desc(object.index, p)))
+                .collect(),
         })
         .collect();
 
     Ok(Introspection {
+        facts_note,
         mask_family: MaskProfile::from_mask(mask).family(),
         report: Report {
             address: address.to_string(),
@@ -321,8 +365,19 @@ async fn introspect<Ch: bussard_mgmt::L4Channel>(
     })
 }
 
+/// The device-facts flags of `describe` (issue #209).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FactsOptions {
+    /// `--full`: walk the property descriptions even when the facts hold them.
+    pub full: bool,
+    /// `--refresh-facts`: ignore the stored facts and read them again.
+    pub refresh: bool,
+}
+
 /// What [`introspect`] read off the bus, before `run` adds the model's view.
 struct Introspection {
+    /// A stderr note when the report came from stored facts.
+    facts_note: Option<String>,
     /// The mask family, which decides whether an empty walk is legitimate.
     mask_family: MaskFamily,
     /// The report, with `secure` still unset.

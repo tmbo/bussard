@@ -20,6 +20,7 @@ knx/
   vendor/               cached .knxprod files, local only
   captures/             local only
   .bussard/history/     snapshots of the model files
+  .bussard/facts/       @generated device facts per device, local only (reference.md)
 ```
 
 A file is either fully user-owned or fully generated. `bussard.lock` is the

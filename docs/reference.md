@@ -190,6 +190,7 @@ Read a device's tables back over the bus and diff them against the model, or (wi
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
 | `--skip-address-check` | off | Skip the pre-flight check that no bus device answers at bussard's own source address. See [SAFETY.md](SAFETY.md#source-address-check). |
+| `--refresh-facts` | off | Ignore the stored [device facts](#bussardfacts) and read them from the device again. |
 
 A KNX Data Secure-activated device answers the plain descriptor read with mask `FFFF`, so without its tool key `reconstruct` stops with "mask FFFF (System ?) ... can: describe only" plus the `--keyring` hint. With `--keyring` (or `--tool-key`) every read, the descriptor included, runs over KNX Data Secure: the device reports its real mask and the table reads and the parameter read-back run unchanged on the secured session. `plan` takes the same two flags.
 
@@ -202,11 +203,15 @@ Introspect a device over the bus: discover its interface objects and, for each, 
 | `<ADDRESS>` | | The device to introspect, e.g. `1.1.4`. |
 | `--dir <DIR>` | `knx` | The model directory (connection defaults). |
 | `--json` | off | Emit JSON instead of the table format. |
+| `--full` | off | Walk every object's property descriptions again, even when the [device facts](#bussardfacts) hold them. |
+| `--refresh-facts` | off | Ignore the stored device facts and read everything from the device again. |
 | `--keyring <FILE>` | `connection.keyring` | The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool key. Required for a security-activated device. A keyring that does not list the target only opens the [secure tunnel](#knxnetip-secure-tunnelling) and the device is read in the clear. The keyring password comes from `BUSSARD_KEYRING_PASSWORD`, never a flag. |
 | `--tool-key <HEX>` | | The raw 32-hex-character tool key, for a simulator or bench device with a synthetic key. Conflicts with `--keyring`. A process argument is visible to other users on the machine, so do not use it for a real installation. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
 | `--skip-address-check` | off | Skip the pre-flight check that no bus device answers at bussard's own source address. See [SAFETY.md](SAFETY.md#source-address-check). |
+
+The first `describe` of a device stores its interface objects and property descriptions as [device facts](#bussardfacts). A later `describe` checks the device's mask and application id (the descriptor read plus one property read) and, when both still match, prints the stored objects and descriptions instead of sending one `A_PropertyDescription_Read` per property: on a KNX Data Secure device about 4 requests instead of about 110. The report is the same either way; in text mode a note on stderr says the facts were reused. `--full` walks the descriptions again, `--refresh-facts` re-reads everything, and a changed mask or application id re-reads on its own.
 
 A security-activated device refuses plain management access; pass its tool key with `--keyring` (or `--tool-key` for a test device) and `describe` runs over KNX Data Secure. The same two flags work on `flash`, `apply`, `plan` and `reconstruct`. See [SAFETY.md](SAFETY.md#known-limitations) for what is verified.
 
@@ -300,6 +305,7 @@ The same pre-flight also checks the device is factory-fresh (issue #79), read-on
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
 | `--skip-address-check` | off | Skip the pre-flight check that no bus device answers at bussard's own source address. See [SAFETY.md](SAFETY.md#source-address-check). |
+| `--refresh-facts` | off | Ignore the stored [device facts](#bussardfacts) and read them from the device again. |
 | `--json` | off | Print the pre-flight plan as JSON instead of the report. It carries a `parameters` array (`key`, `name`, `old`, `new`, `unit`; `old` is `null` when unreadable), the application identity, the write summary and the step trace. The confirmation and the flash itself are unchanged. |
 | `--dry-run` | off | Build and print the pre-flight plan against the application's own mask, then stop. No gateway is resolved and no connection is opened, so it works with no gateway configured. |
 | `--dump-images <DIR>` | | With `--dry-run`: write `plan.json` and the exact memory images the flash would stream (one `.bin` each, plus the table images) into `DIR`. See [the offline oracle](testing-campaign.md#before-a-flash-the-offline-oracle). |
@@ -355,6 +361,7 @@ Read a device's live tables and show what `apply` would change. With `--line`, p
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
 | `--skip-address-check` | off | Skip the pre-flight check that no bus device answers at bussard's own source address. See [SAFETY.md](SAFETY.md#source-address-check). |
+| `--refresh-facts` | off | Ignore the stored [device facts](#bussardfacts) and read them from the device again. |
 
 ### `bussard apply <ADDRESS>`
 
@@ -375,6 +382,7 @@ Apply the model's link tables to a device: plan, confirm, back up, write, verify
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
 | `--skip-address-check` | off | Skip the pre-flight check that no bus device answers at bussard's own source address. See [SAFETY.md](SAFETY.md#source-address-check). |
+| `--refresh-facts` | off | Ignore the stored [device facts](#bussardfacts) and read them from the device again. |
 
 #### Whole-line runs
 
@@ -802,7 +810,7 @@ knx/
   models/           # generated from .knxprod; git-ignored
   vendor/           # cached .knxprod originals; git-ignored
   captures/         # local captures, apply backups and apply-line-<line>.json resume state; git-ignored
-  .bussard/         # bussard's own history and last_export.json; git-ignored
+  .bussard/         # bussard's own history, device facts and last_export.json; git-ignored
 ```
 
 #### `.bussard/history`
@@ -821,6 +829,46 @@ knx/.bussard/history/20260922T101112Z-001/
 One directory per snapshot, named by a UTC timestamp plus a sequence number, so a listing is already a timeline. A snapshot is a full copy of the four model inputs, since a house model is well under a megabyte. Nothing else is ever copied: `models/`, `vendor/`, `captures/`, keyrings, `.knxproj` and `.knxprod` files stay out (see [product-data.md](product-data.md)).
 
 `import`, `apply`, `flash`, `adopt`, `reconstruct` and every MCP model edit snapshot before they write. `plan` and those commands also record an `external edit` snapshot first when the working files differ from the last one, so an edit made in an editor or by an assistant writing YAML is never lost. `bussard status`, `history`, `show` and `undo` read this directory; `bussard init` git-ignores it.
+
+#### `.bussard/facts`
+
+What bussard reads off a device that does not change while the device keeps its application: the mask, `PID_MAX_APDU_LENGTH`, the interface-object table, the property descriptions (once `describe` has walked them) and how the device answered `A_Authorize`. One generated file per device, written by the first `describe`, `reconstruct`, `plan`, `apply` or `flash` that reads it:
+
+```toml
+# This file is @generated by bussard from reads of the device (issue #209). Do not edit it by hand.
+[device_facts]
+address = "1.1.12"
+read_at = "2026-09-25T10:11:12Z"
+mask = "07B0"
+application_object = 3
+application_id = "0004D14221"
+max_apdu = 233
+authorize = "granted"
+object_table_source = "io_list"
+
+[[device_facts.objects]]
+index = 0
+object_type = 0
+
+[[device_facts.objects.properties]]
+index = 1
+pid = 1
+pdt = 4
+writable = false
+max_elements = 1
+read_level = 3
+write_level = 0
+
+[[device_facts.objects]]
+index = 1
+object_type = 1
+```
+
+Every bus command that uses the facts first reads the device descriptor and the application id (`PID_PROGRAM_VERSION` of `application_object`). When both equal the stored `mask` and `application_id`, the command skips the `PID_OBJECT_TYPE` walk (one read per object) and the `PID_MAX_APDU_LENGTH` read; otherwise it reads the facts again and replaces the file. `--refresh-facts` forces the re-read, and deleting the file has the same effect. A file that does not parse is ignored with a warning and rewritten. The object table is read from `PID_IO_LIST` (device object, PID 71) in one or a few multi-element reads when a System B device offers it and the list agrees with `PID_OBJECT_TYPE` at the last object, the first application object and the index after the last; any refusal, short answer, timeout or disagreement falls back to the walk (`object_table_source = "walk"`).
+
+`authorize = "unsupported"` lets the read-only commands (`describe`, `plan`, `reconstruct`) skip `A_Authorize_Request`, which such a device leaves unanswered for the full response timeout. `apply` and `flash` always present it. The written frames of `apply` and `flash` do not change; only reads are skipped.
+
+The facts live here, not in `devices/*.toml` or `bussard.lock`, because an ETS re-import rewrites those and never touches `.bussard/`, because the device files hold intent to review while the facts are observations, and because the lock is written by `import` and `adopt` only and is covered by snapshots and the model fingerprint, which a read-only bus command must not change. They are not part of a [bundle](#the-bundle-format). Without a model directory no facts are stored and every command reads the device as before.
 
 `bussard.yaml`, `groups.yaml`, `links.yaml`, `devices/` and `tests.yaml` belong in git; the first four are the source of truth. `models/`, `vendor/` and `captures/` are local-only; `init` and `import-product` plant the `.gitignore` entries. All YAML is parsed strictly: unknown fields and duplicate keys are errors. Emission is deterministic and sorted, so re-imports and hand edits produce minimal diffs. Every generated file carries a banner naming what generated it and what is hand-editable.
 

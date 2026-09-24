@@ -43,7 +43,7 @@ use anyhow::{Context, bail};
 use bussard_download::backup::{backups_root, has_installation_backup};
 use bussard_download::{
     DesiredTables, PlanReport, Sys7LiveTables, Sys7TableImages, VerifyOutcome, plan,
-    sys7_table_images, write_tables_secured,
+    sys7_table_images, write_tables_seeded,
 };
 use bussard_mgmt::tables::DeviceTables;
 use bussard_mgmt::{LeaseChannel, MaskProfile, system_type};
@@ -231,15 +231,23 @@ pub(crate) fn apply_desired(
         authorize: Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
         ..L4Options::default()
     };
+    // The device facts (issue #209): checked (or read) on the read connection,
+    // they spare the table reader its object walk, and the write phase below
+    // gets them as a seed so its discovery and read-back do not walk again.
+    let facts = crate::device_facts::cache(dir, model.is_some(), overrides.refresh_facts);
     let read = runtime.block_on(async {
         service
             .with_l4(target, &read_options, async |l4| {
-                plan_cmd::read_live_tables(l4).await
+                let established = crate::device_facts::establish_table_facts(l4, &facts).await?;
+                let live = plan_cmd::read_live_tables(l4).await?;
+                anyhow::Ok((live, established))
             })
             .await
     });
+    let (read, established) = read?;
+    let write_seed = crate::device_facts::seed_of(established.as_ref());
 
-    let live = match read? {
+    let live = match read {
         plan_cmd::LiveRead::Tables(live) => live,
         plan_cmd::LiveRead::UnsupportedMask { address, mask } => {
             plan_cmd::report_unsupported_mask(origin.verb(), address, mask);
@@ -379,7 +387,7 @@ pub(crate) fn apply_desired(
         let secure = crate::secure_key::layer(&tool_key, &secure_seq);
         let images = sys7.as_ref().map(|(_, images)| images);
         anyhow::Ok(
-            write_tables_secured(
+            write_tables_seeded(
                 channel,
                 target,
                 source,
@@ -388,6 +396,7 @@ pub(crate) fn apply_desired(
                 images,
                 secure,
                 security.as_ref(),
+                write_seed,
             )
             .await,
         )

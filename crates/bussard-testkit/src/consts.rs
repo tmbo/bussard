@@ -74,6 +74,8 @@ pub const PID_TABLE: u8 = 23;
 pub const PID_PROGMODE: u8 = 54;
 /// `PID_MAX_APDU_LENGTH`.
 pub const PID_MAX_APDU_LENGTH: u8 = 56;
+/// `PID_IO_LIST`: the device object's list of interface-object types.
+pub const PID_IO_LIST: u8 = 71;
 
 /// Interface object type: device object.
 pub const OT_DEVICE: u16 = 0;

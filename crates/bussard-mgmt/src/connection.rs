@@ -380,6 +380,32 @@ pub struct Layer4Connection<Ch: L4Channel> {
     /// How often an unanswered S-A_Sync_Req is repeated (issue #166). Unused on
     /// a plain layer.
     sync_retry: SyncRetry,
+    /// Device facts a caller verified for this connection (issue #209): the
+    /// object table [`probe_object_types`] returns instead of walking, and the
+    /// mask the table reader uses instead of a second descriptor read. `None`
+    /// on a fresh connection, so every read path is unchanged until a caller
+    /// seeds it.
+    seed: Option<ConnectionSeed>,
+    /// The outcome of the last [`authorize`](Self::authorize) on this
+    /// connection, kept so the device facts can record the verdict.
+    last_authorize: Option<AuthorizeOutcome>,
+}
+
+/// Device facts verified for one connection (issue #209), set with
+/// [`Layer4Connection::seed`].
+///
+/// A caller seeds a connection only after checking the cached facts against
+/// the device (the descriptor read and the application id), or on the write
+/// connection of a command whose read phase checked them seconds earlier.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConnectionSeed {
+    /// The mask the descriptor read returned on this device.
+    pub mask: Option<u16>,
+    /// The interface-object table, `(index, PID_OBJECT_TYPE)` in index order.
+    /// Empty means "not known": the walk runs.
+    pub object_table: Vec<(u8, u16)>,
+    /// `PID_MAX_APDU_LENGTH`, seeded like [`Layer4Connection::set_max_apdu`].
+    pub max_apdu: Option<u16>,
 }
 
 impl<Ch: L4Channel> Layer4Connection<Ch> {
@@ -447,7 +473,47 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
             closed: false,
             secure,
             sync_retry: SyncRetry::default(),
+            seed: None,
+            last_authorize: None,
         })
+    }
+
+    /// Seeds verified device facts into this connection (issue #209): a
+    /// non-empty object table replaces the `PID_OBJECT_TYPE` walk of
+    /// [`probe_object_types`], a known max APDU is set as by
+    /// [`set_max_apdu`](Self::set_max_apdu), and the mask replaces the table
+    /// reader's descriptor read. Nothing is sent.
+    pub fn seed(&mut self, seed: ConnectionSeed) {
+        if let Some(max_apdu) = seed.max_apdu {
+            self.max_apdu = Some(max_apdu);
+        }
+        self.seed = Some(seed);
+    }
+
+    /// The seeded object table, when a caller seeded a non-empty one.
+    pub fn seeded_object_table(&self) -> Option<&[(u8, u16)]> {
+        self.seed
+            .as_ref()
+            .map(|s| s.object_table.as_slice())
+            .filter(|t| !t.is_empty())
+    }
+
+    /// The seeded mask, when a caller seeded one.
+    pub fn seeded_mask(&self) -> Option<u16> {
+        self.seed.as_ref().and_then(|s| s.mask)
+    }
+
+    /// Re-opens the connection after a request the device `T_ACK`ed but never
+    /// answered, the way [`authorize`](Self::authorize) does: the peer is alive
+    /// and the sequence numbers agree, so a fallback read may follow.
+    pub(crate) fn reopen_after_unanswered(&mut self) {
+        self.closed = false;
+    }
+
+    /// The outcome of the last [`authorize`](Self::authorize) on this
+    /// connection, `None` when none was presented.
+    pub fn last_authorize(&self) -> Option<&AuthorizeOutcome> {
+        self.last_authorize.as_ref()
     }
 
     /// Sends a management request (APCI + payload) as a numbered data telegram
@@ -831,6 +897,13 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
     /// device declining to answer) still surfaces as an `Err`, since that is not
     /// an authorize outcome but a dead session.
     pub async fn authorize(&mut self, key: u32) -> Result<AuthorizeOutcome> {
+        let outcome = self.authorize_exchange(key).await?;
+        self.last_authorize = Some(outcome.clone());
+        Ok(outcome)
+    }
+
+    /// The exchange behind [`authorize`](Self::authorize).
+    async fn authorize_exchange(&mut self, key: u32) -> Result<AuthorizeOutcome> {
         let payload = crate::apci::encode_authorize_request(key);
         let exchanges_before = self.numbered_exchanges;
         let (resp_apci, data) = match self
@@ -1484,6 +1557,11 @@ pub async fn probe_object_type<Ch: L4Channel>(
 pub async fn probe_object_types<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
 ) -> Result<Vec<(u8, u16)>> {
+    // A table the caller verified for this device (issue #209) replaces the
+    // walk; nothing is sent.
+    if let Some(table) = l4.seeded_object_table() {
+        return Ok(table.to_vec());
+    }
     let mut objects = Vec::new();
     for index in 0..MAX_OBJECT_INDEX {
         match probe_object_type(l4, index).await? {

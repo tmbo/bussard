@@ -25,7 +25,7 @@ use bussard_download::{DesiredTables, PlanReport, plan};
 use bussard_mgmt::tables::DeviceTables;
 use bussard_mgmt::{L4Channel, Layer4Connection, MaskProfile, system_type};
 use bussard_model::{IndividualAddress, Model};
-use bussard_service::{Authorize, L4Options, SourcePolicy, WritePolicy};
+use bussard_service::{L4Options, SourcePolicy, WritePolicy};
 use bussard_transport::ConnectionConfig;
 
 use crate::conn_cmd::{ConnOverrides, load_model_required, open_service, resolve_config};
@@ -119,6 +119,7 @@ pub(crate) fn read_device(
     tool_key_source: ToolKeySource<'_>,
     product: Option<&ProductSource>,
     model: Option<&Model>,
+    mut facts: bussard_service::FactsCache,
 ) -> anyhow::Result<DeviceRead> {
     let activated = crate::secure_key::model_activated(model, target);
     let tool_key = crate::secure_key::resolve(target, tool_key_source, activated)?;
@@ -131,8 +132,9 @@ pub(crate) fn read_device(
         high_water: bussard_secure::SequenceHighWater::new(),
         // Authorize (free access) before reading, as ETS does (issue #52
         // finding #1) and as System 7 requires before any memory access.
-        // Best-effort on a read.
-        authorize: Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
+        // Best-effort on a read; skipped for a device whose facts say it never
+        // answers (issue #209).
+        authorize: crate::device_facts::read_only_authorize(&mut facts, target),
         ..L4Options::default()
     };
     let runtime = tokio::runtime::Runtime::new()?;
@@ -141,6 +143,10 @@ pub(crate) fn read_device(
             let service = open_service(config, WritePolicy::ReadOnly).await?;
             let outcome = service
                 .with_l4(target, &options, async |l4| {
+                    // The device facts (issue #209): a valid set seeds the
+                    // connection so neither the table reader nor the parameter
+                    // read-back walks the interface objects again.
+                    crate::device_facts::establish_table_facts(l4, &facts).await?;
                     let read = read_live_tables(l4).await?;
                     let params = match (&read, product) {
                         (LiveRead::Tables(live), Some(product)) => Some(
@@ -217,6 +223,7 @@ pub fn run(
         tool_key_source,
         product_ref,
         Some(model_ref),
+        crate::device_facts::cache(dir, true, overrides.refresh_facts),
     )?;
     let live = match read {
         LiveRead::Tables(live) => live,
