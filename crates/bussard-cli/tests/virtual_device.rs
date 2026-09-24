@@ -405,7 +405,7 @@ fn ladder_against_thelsing_knx_linux_ip() {
     // The verify read-back reports the device's mask. thelsing knx-linux-ip is a
     // 57B0 (KNXnet/IP System B) device — this is the key interop fact.
     assert!(
-        out.contains("57B0") || out.contains("0x57B0") || err.contains("57B0"),
+        out.to_uppercase().contains("57B0") || err.to_uppercase().contains("57B0"),
         "rung (b): expected the verified mask to be 57B0 (knx-linux-ip); \
          stdout:\n{out}\nstderr:\n{err}"
     );
@@ -435,34 +435,29 @@ fn ladder_against_thelsing_knx_linux_ip() {
         dev["mask"], "57B0",
         "rung (c): the foreign device reports mask 57B0"
     );
-    // bussard classifies 57B0 as an unknown system (it only tables the TP masks).
-    // Asserting this pins the classification behaviour against a real 57B0 device.
+    // bussard classifies 57B0 as System B on the IP medium (the mask family
+    // profile). Asserting this pins the classification against a real 57B0 device.
     assert_eq!(
-        dev["system_type"], "System ?",
-        "rung (c): 57B0 is classified 'System ?' by bussard (interop signal)"
+        dev["system_type"], "System B (IP)",
+        "rung (c): 57B0 is classified 'System B (IP)' by bussard"
     );
 
-    // --- Rung (d): reconstruct STOPS at the 07B0 gate ---
-    // This is the documented divergence: reconstruct/apply support System B
-    // (07B0) only, and the routing-reachable demo is 57B0. We assert the clean
-    // refusal (non-zero exit, explanatory message) rather than a crash.
+    // --- Rung (d): reconstruct reads the 57B0 device's tables ---
+    // The mask profile made reconstruct medium-agnostic: 57B0 (System B, IP)
+    // is read like 07B0. The fresh device has no application loaded, so the
+    // tables are empty, but the read must succeed against the foreign stack.
     let (ok, out, err) = bussard(&["reconstruct", assigned, "--dir", dir.to_str().unwrap()]);
     eprintln!("--- reconstruct stdout ---\n{out}\n--- reconstruct stderr ---\n{err}");
+    if !ok {
+        device.dump_log();
+    }
     assert!(
-        !ok,
-        "rung (d): reconstruct must refuse a 57B0 device (07B0-only gate); \
-         it unexpectedly succeeded:\n{out}"
-    );
-    assert!(
-        err.contains("57B0") && err.to_lowercase().contains("system b"),
-        "rung (d): the refusal should name the 57B0 mask and the System B (07B0) \
-         limitation; stderr:\n{err}"
+        ok,
+        "rung (d): reconstruct should read the 57B0 (System B, IP) device; stderr:\n{err}"
     );
 
     eprintln!(
         "ladder complete: (a) prog-mode discovery, (b) assign+verify (mask 57B0), \
-         (c) scan classified 57B0 as 'System ?', (d) reconstruct correctly refused \
-         the 57B0 device at the 07B0 gate. Rung (e) apply is not reachable over \
-         routing for the same reason."
+         (c) scan classified 57B0 as 'System B (IP)', (d) reconstruct read it."
     );
 }
