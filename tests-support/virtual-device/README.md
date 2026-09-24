@@ -129,9 +129,7 @@ bussard flash 15.15.255 --product <built.knxprod> --dir <empty> --yes \
 - `MaskVersion="MV-57B0"` — bussard's flash pre-flight gates on `is_system_b`
   (true for the whole `x7B0` family, so 57B0 passes) **and** an exact
   app-mask == device-mask compare, so the app must declare 57B0 to be accepted
-  against this device. (This is why the ladder's `reconstruct` rung (d) refused
-  57B0 but flash accepts it: flash matches the app's own declared mask, it does
-  not gate on the TP-only `07B0`.)
+  against this device.
 - a 6-byte relative code segment and a single `ProductDefault` load procedure
   that lowers to exactly: Unload / StartLoading / **relative** segment allocation
   (`LdCtrlRelSegment`) / WriteRelMem / LoadCompleted / Restart.
@@ -175,7 +173,7 @@ address/association/group-object tables, load-state machine, the full
 application-layer service set), so the difference bussard sees is purely the mask
 and the medium.
 
-## The test ladder and where it stops
+## The test ladder
 
 Enable and run (Linux):
 
@@ -193,9 +191,9 @@ and `BUSSARD_TEST_MULTICAST=1`, so it never runs in the normal suite.
 | ---- | --------------------------------- | ------ | ----------------------------------------------------------- |
 | a    | programming-mode discovery        | works  | after the harness writes `PID_PROG_MODE = 1` (the "button") |
 | b    | `assign` writes + verifies address | works  | `A_IndividualAddress_Write` lands; descriptor read returns `57B0` |
-| c    | `scan` finds it with its mask      | works  | reports `57B0`, classified `System ?` by bussard            |
-| d    | `reconstruct` reads its tables     | stops  | `reconstruct` gates on `07B0`; refuses `57B0` cleanly       |
-| e    | `apply` writes a tiny links set    | n/a    | same `07B0` gate as (d), not reachable over routing         |
+| c    | `scan` finds it with its mask      | works  | reports `57B0`, classified `System B (IP)` by bussard       |
+| d    | `reconstruct` reads its tables     | works  | 57B0 is System B in the mask profile; tables read (empty)  |
+| e    | `apply` writes a tiny links set    | n/a    | not attempted: the fresh device has no application program  |
 
 ## Interop findings
 
@@ -203,23 +201,17 @@ and `BUSSARD_TEST_MULTICAST=1`, so it never runs in the normal suite.
   broadcast discovery, individual-address assignment, the post-write descriptor
   read, and a line scan all work against thelsing's stack over multicast. This is
   the first validation of bussard's management layer against a non-bussard peer.
-- **The mask gate is the wall.** `reconstruct`/`apply` accept `07B0` only, and the
-  routing-reachable demo is `57B0`. There is no stock thelsing binary that both
-  speaks IP multicast and reports `07B0`, so the table-level rungs cannot be
-  reached over routing without either (1) relaxing bussard's mask gate to also
-  accept `57B0` (they share the `BauSystemBDevice` table stack, so it is
-  plausibly safe), or (2) building a modified thelsing variant that pairs
-  `IpDataLinkLayer` with a `07B0` `maskVersion`, or (3) driving `knx-linux-tp`
-  over a real/virtual TP-UART. Option (1) is the cleanest next step to reach the
-  full apply cycle against a foreign device.
+- **57B0 is read like 07B0.** The mask profile treats every System B mask
+  (07B0 TP, 27B0 RF, 57B0 IP) the same, so `reconstruct` reads the
+  routing-reachable demo's tables. Before that change this rung stopped at a
+  07B0-only gate.
 - **bussard's table-layout assumptions match thelsing's.** bussard's
   `bussard-mgmt::tables` read side was written with thelsing's table objects as a
   behavioural reference (address table word 0 = entry count, 1-based TSAPs,
   association entries TSAP-then-ASAP, table content served through memory with
   `PID_TABLE_REFERENCE` giving the address). The memory-fallback read path is the
   one that would exercise here, because thelsing's group-object table registers no
-  `PID_TABLE` property. This alignment is why rung (d) is a mask-gate refusal
-  rather than a decode failure.
+  `PID_TABLE` property. Rung (d) exercises that path against the foreign stack.
 
 ## Pinned upstream
 

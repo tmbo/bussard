@@ -28,7 +28,7 @@
 //! gate the transport crate's `routing_loopback` test uses, because multicast on
 //! a loopback-only host is unreliable.
 //!
-//! # The ladder (and where it is expected to stop)
+//! # The ladder
 //!
 //! The demo binary that speaks KNXnet/IP routing is `knx-linux-ip`, which is a
 //! System B **device** stack (`BauSystemBDevice`) reachable over multicast — but
@@ -47,14 +47,12 @@
 //!   (b) assign — WORKS. `A_IndividualAddress_Write` lands, and the post-write
 //!       descriptor read verifies (the device answers `57B0`).
 //!   (c) scan — WORKS. It reports the device with mask `57B0`, classified
-//!       "System ?" by bussard (an honest interop signal, not a bug).
-//!   (d) reconstruct — STOPS. `bussard reconstruct` gates on `07B0` and refuses a
-//!       `57B0` mask. This is the documented boundary, asserted here so the
-//!       divergence is pinned by a test rather than described in prose.
-//!   (e) apply — not attempted over routing for the same reason (07B0 gate).
+//!       "System B (IP)" by bussard's mask profile.
+//!   (d) reconstruct — WORKS. The mask profile treats 57B0 as System B, so the
+//!       tables are read (empty on a fresh device, which has no application).
+//!   (e) apply — not attempted: the fresh device carries no application program.
 //!
-//! The value of this test is proving (a)-(c) against a foreign stack and pinning
-//! (d) as a concrete, reproducible interop finding.
+//! The value of this test is proving (a)-(d) against a foreign stack.
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
