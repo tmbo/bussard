@@ -499,22 +499,26 @@ fn write_model(dir: &Path, extra: &[(&str, &str)]) -> TestResult {
     std::fs::create_dir_all(dir.join("devices"))?;
     std::fs::write(
         dir.join("bussard.toml"),
-        "connection:\n  transport: tunnel\n",
+        "[connection]\ntransport = \"tunnel\"\n",
     )?;
     std::fs::write(
-        dir.join("links.yaml"),
-        "links:\n  1.1.4:\n  - object: 20\n    send: 1/2/0\n  - object: 21\n    listen:\n    - 1/2/1\n",
+        dir.join("devices").join("1.1.4.toml"),
+        "address = \"1.1.4\"\nname = \"Rollladen Wohnzimmer\"\nproduct = \"MDT-JAL0410\"\n\n\
+         [links]\n20.send = \"1/2/0\"\n21.listen = [\"1/2/1\"]\n",
     )?;
-    std::fs::write(
-        dir.join("devices").join("1.1.4-jal.yaml"),
-        "address: 1.1.4\nname: Rollladen Wohnzimmer\nproduct:\n  order_number: MDT-JAL0410\n  mask: 07B0\n",
-    )?;
+    let mut lock = String::from(
+        "version = 1\n\n[[device]]\naddress = \"1.1.4\"\nproduct = \"MDT-JAL0410\"\nmask = \"07B0\"\n",
+    );
     for (addr, order) in extra {
         std::fs::write(
-            dir.join("devices").join(format!("{addr}-dev.yaml")),
-            format!("address: {addr}\nname: Device {addr}\nproduct:\n  order_number: {order}\n"),
+            dir.join("devices").join(format!("{addr}.toml")),
+            format!("address = \"{addr}\"\nname = \"Device {addr}\"\nproduct = \"{order}\"\n"),
         )?;
+        lock.push_str(&format!(
+            "\n[[device]]\naddress = \"{addr}\"\nproduct = \"{order}\"\n"
+        ));
     }
+    std::fs::write(dir.join("bussard.lock"), lock)?;
     Ok(())
 }
 
@@ -809,13 +813,13 @@ fn test_replace_no_flash_restores_the_pre_failure_tables() -> TestResult {
     );
 
     // The record.
-    let body = std::fs::read_to_string(bench.model().join("devices").join("1.1.4-jal.yaml"))?;
+    let body = std::fs::read_to_string(bench.model().join("devices").join("1.1.4.toml"))?;
     assert!(
-        body.lines().any(|l| l.starts_with("replaced: 20")),
+        body.lines().any(|l| l.starts_with("replaced = \"20")),
         "device file:\n{body}"
     );
     assert!(
-        body.contains("order_number: MDT-JAL0410"),
+        body.contains("product = \"MDT-JAL0410\"") && body.contains("21.listen = [\"1/2/1\"]"),
         "rest of the file kept:\n{body}"
     );
     Ok(())
