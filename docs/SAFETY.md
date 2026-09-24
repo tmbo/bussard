@@ -285,7 +285,28 @@ without starting over:
   pre-flight simply runs again. `BUSSARD_TUNNEL_RECONNECT_SECS` changes the
   60 s budget (`0` turns the re-establish off).
 
+A KNXnet/IP Secure tunnel runs over TCP, which has no ACK to time out: a pulled
+cable used to go unnoticed until the kernel gave up on the connection, about
+37 s later. The tunnel now probes the link with a CONNECTIONSTATE_REQUEST once
+it has received nothing for 5 s and treats an answer missing for 2 more seconds
+as a lost link, so a loss is noticed after about 7 s.
+`BUSSARD_TCP_READ_DEADLINE_MS` changes the 5 s (`0` turns the probe off).
+
+Both kinds of loss are also covered while bussard waits for a device it
+restarted: the factory reset that opens a System B download, an
+`LdCtrlMasterReset`, the final restart and its verify, and the System 7
+pre-download and final restarts. The reconnect after the restart (readiness
+probe, Data Secure sync, authorize) starts again once the tunnel is back, and
+the flash continues with the same step. The restart itself is not sent again
+unless the link dropped before the device could have received it. An
+authorize that went unanswered because the link was down is not taken to mean
+"this device has no authorize", so later connections still present the key.
+The retries stop 90 s after the first failure (the 60 s tunnel budget plus the
+30 s readiness poll); the error then is the same as without the retry.
+
 What is not covered: a gateway that stays unreachable longer than the budget.
+If that happens during the wait after the factory reset, the device is left
+reset and unloaded; a plain re-run of the same `flash` recovers it.
 The flash then stops with the original error plus a hint naming the gateway
 (`timed out waiting for TUNNELING_ACK; the tunnel to gateway … could not be
 re-established within 60 s`), leaving the device partially written. The same

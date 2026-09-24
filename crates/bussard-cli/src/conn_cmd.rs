@@ -299,9 +299,29 @@ pub fn resolve_config(
 /// `0` turns re-establishing off. Unset means the default (60 s).
 pub(crate) const TUNNEL_RECONNECT_SECS_ENV: &str = "BUSSARD_TUNNEL_RECONNECT_SECS";
 
-/// The tunnel re-establish policy, honouring [`TUNNEL_RECONNECT_SECS_ENV`].
+/// Environment variable that sets the read deadline of a KNXnet/IP Secure
+/// (TCP) tunnel in milliseconds (issue #192): after this long without inbound
+/// traffic the tunnel probes the link and re-establishes it when the probe goes
+/// unanswered. `0` turns the check off. Unset means the default (5000 ms).
+pub(crate) const TCP_READ_DEADLINE_MS_ENV: &str = "BUSSARD_TCP_READ_DEADLINE_MS";
+
+/// The tunnel re-establish policy, honouring [`TUNNEL_RECONNECT_SECS_ENV`] and
+/// [`TCP_READ_DEADLINE_MS_ENV`].
 fn tunnel_reconnect() -> TunnelReconnect {
-    parse_reconnect_secs(std::env::var(TUNNEL_RECONNECT_SECS_ENV).ok().as_deref())
+    let policy = parse_reconnect_secs(std::env::var(TUNNEL_RECONNECT_SECS_ENV).ok().as_deref());
+    apply_tcp_read_deadline(
+        policy,
+        std::env::var(TCP_READ_DEADLINE_MS_ENV).ok().as_deref(),
+    )
+}
+
+/// Applies a [`TCP_READ_DEADLINE_MS_ENV`] value to `policy`; an absent or
+/// unparsable value keeps the policy's deadline.
+fn apply_tcp_read_deadline(policy: TunnelReconnect, value: Option<&str>) -> TunnelReconnect {
+    match value.and_then(|v| v.trim().parse::<u64>().ok()) {
+        Some(ms) => policy.with_tcp_read_deadline(std::time::Duration::from_millis(ms)),
+        None => policy,
+    }
 }
 
 /// Maps a [`TUNNEL_RECONNECT_SECS_ENV`] value to a policy; an absent or
@@ -404,6 +424,26 @@ mod tests {
             std::time::Duration::from_secs(120)
         );
         assert!(!parse_reconnect_secs(Some("0")).enabled());
+    }
+
+    #[test]
+    fn test_apply_tcp_read_deadline_maps_env_values() {
+        let base = TunnelReconnect::default();
+        assert_eq!(
+            base.tcp_read_deadline,
+            bussard_transport::config::TCP_READ_DEADLINE
+        );
+        assert_eq!(apply_tcp_read_deadline(base, None), base);
+        assert_eq!(apply_tcp_read_deadline(base, Some("junk")), base);
+        assert_eq!(
+            apply_tcp_read_deadline(base, Some(" 1500 ")).tcp_read_deadline,
+            std::time::Duration::from_millis(1500)
+        );
+        assert!(
+            apply_tcp_read_deadline(base, Some("0"))
+                .tcp_read_deadline
+                .is_zero()
+        );
     }
     use bussard_transport::write_gate::{ALLOW_REAL_GATEWAY_ENV, is_loopback_gateway};
 

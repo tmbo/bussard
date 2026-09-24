@@ -179,6 +179,41 @@ fn threshold_for(env: Option<&str>, knx_virtual: bool) -> u32 {
 /// attempts rather than looping forever.
 pub(super) const MAX_RESUME_RECONNECTS: u32 = 5;
 
+/// How long a reconnect (after a device restart, or after a mid-flow
+/// connection death) keeps retrying across gateway link losses, measured from
+/// the first failed attempt (issue #192).
+///
+/// The sum of the two budgets a retry can spend: the tunnel re-establish
+/// budget ([`TUNNEL_RECONNECT_BUDGET`](bussard_transport::config::TUNNEL_RECONNECT_BUDGET),
+/// 60 s, which the connector waits out before its `T_Connect`) and the Data
+/// Secure readiness poll ([`SECURE_REBOOT_WAIT`], 30 s). A link that stays down
+/// longer surfaces the transport's own error, which names the gateway.
+const RECONNECT_RESUME_BUDGET: std::time::Duration = std::time::Duration::from_secs(
+    bussard_transport::config::TUNNEL_RECONNECT_BUDGET.as_secs() + SECURE_REBOOT_WAIT.as_secs(),
+);
+
+/// Whether a failed reconnect attempt is worth repeating (issue #192): a
+/// connection death (see [`is_connection_death`]), or any silence-like failure
+/// while the gateway link was lost during the attempt (`link_lost`). A Data
+/// Secure S-A_Sync that went unanswered because the tunnel was down, or an
+/// authorize that timed out for the same reason, says nothing about the
+/// device. A tunnel that could not be re-established at all
+/// ([`TransportError::TunnelLost`](bussard_transport::TransportError::TunnelLost))
+/// is final: its budget is already spent and its message names the gateway.
+fn reconnect_retryable(err: &WriteError, link_lost: bool) -> bool {
+    if is_connection_death(err) {
+        return true;
+    }
+    link_lost
+        && matches!(
+            err,
+            WriteError::Mgmt(MgmtError::Secure { .. })
+                | WriteError::Mgmt(MgmtError::Transport(
+                    bussard_transport::TransportError::Timeout(_)
+                ))
+        )
+}
+
 /// Opens the [`Layer4Connection`] to the flash target.
 ///
 /// A [`Session`] uses this to establish the single L4 connection the whole
@@ -194,6 +229,18 @@ pub trait Connector {
 
     /// Opens the connection to the flash target.
     async fn connect(&mut self) -> Result<Layer4Connection<Self::Channel>, WriteError>;
+
+    /// How many times the gateway link under this connector has been lost so
+    /// far (a monotonic count; the CLI reports the bus actor's
+    /// [`link_losses`](bussard_bus::BusHandle::link_losses)).
+    ///
+    /// The session compares it before and after a reconnect attempt: a
+    /// failure while the count moved was caused by the gateway, not the
+    /// device, and is retried once the tunnel is back (issue #192). The
+    /// default, `0`, means "never lost" and keeps the pre-#192 behaviour.
+    fn link_losses(&self) -> u64 {
+        0
+    }
 }
 
 /// The [`Connector`] type of a [`Session`] built from an already-open connection
@@ -225,6 +272,7 @@ impl<Ch: L4Channel> Session<SingleConnector<Ch>> {
         let secure = l4.is_secure();
         Session {
             secure,
+            target: l4.target(),
             l4: Some(l4),
             connector: None,
             bcu_key: None,
@@ -347,6 +395,8 @@ pub struct Session<C: Connector> {
     /// readiness probe and the longer S-A_Sync retry (issue #166); a plain
     /// session keeps its wire sequence unchanged.
     secure: bool,
+    /// The flash target, for log lines written while no connection is open.
+    target: bussard_model::IndividualAddress,
 }
 
 impl<C: Connector> Session<C> {
@@ -404,7 +454,11 @@ impl<C: Connector> Session<C> {
         {
             authorize_outcomes.insert(l4.target().raw(), outcome.clone());
         }
-        Self::authorize(&mut l4, bcu_key, &mut authorize_outcomes).await?;
+        let losses = connector.link_losses();
+        Self::authorize(&mut l4, bcu_key, &mut authorize_outcomes, || {
+            connector.link_losses() != losses
+        })
+        .await?;
         // Read PID_MAX_APDU_LENGTH once so memory/property chunks scale to the
         // device (issue #58). Best-effort: a failure leaves the conservative
         // standard-frame caps and never aborts the open. Cached at the session
@@ -420,6 +474,7 @@ impl<C: Connector> Session<C> {
         };
         Ok(Session {
             secure: l4.is_secure(),
+            target: l4.target(),
             l4: Some(l4),
             connector: Some(connector),
             bcu_key,
@@ -441,10 +496,18 @@ impl<C: Connector> Session<C> {
     /// #58). Otherwise the real authorize is presented (a `Granted` gate is
     /// per-connection and must be re-opened on every fresh connection), and the
     /// outcome recorded for the next window's decision.
+    ///
+    /// `link_lost` reports whether the gateway link was lost while the request
+    /// ran. An unanswered authorize then says nothing about the device, so it is
+    /// neither cached as "does not implement authorize" (which would skip the
+    /// key on every later connection and leave the write gate closed) nor
+    /// accepted: it fails as [`MgmtError::NoResponse`], a connection death the
+    /// caller reconnects from (issue #192).
     async fn authorize(
         l4: &mut Layer4Connection<C::Channel>,
         bcu_key: Option<u32>,
         cache: &mut BTreeMap<u16, bussard_mgmt::AuthorizeOutcome>,
+        link_lost: impl FnOnce() -> bool,
     ) -> Result<(), WriteError> {
         let target = l4.target().raw();
         if let Some(bussard_mgmt::AuthorizeOutcome::Unsupported { .. }) = cache.get(&target) {
@@ -459,6 +522,15 @@ impl<C: Connector> Session<C> {
         }
         let key = bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY);
         let outcome = l4.authorize_or_fail(key).await.map_err(WriteError::Mgmt)?;
+        if matches!(outcome, bussard_mgmt::AuthorizeOutcome::Unsupported { .. }) && link_lost() {
+            tracing::debug!(
+                target = %l4.target(),
+                "authorize unanswered while the gateway link was lost; not caching it"
+            );
+            return Err(WriteError::Mgmt(MgmtError::NoResponse {
+                address: l4.target(),
+            }));
+        }
         cache.insert(target, outcome);
         Ok(())
     }
@@ -503,7 +575,38 @@ impl<C: Connector> Session<C> {
     /// steps continue transparently. A session built from an already-open
     /// connection ([`Session::from_connection`]) has no connector to reconnect
     /// with and fails with [`MgmtError::Transport`]`(Closed)`.
+    ///
+    /// The reconnect itself survives a gateway link loss (issue #192): an
+    /// attempt that dies (a connection death, or a silence while the link was
+    /// lost) is repeated once the tunnel is back, up to
+    /// [`MAX_RESUME_RECONNECTS`] times within [`RECONNECT_RESUME_BUDGET`].
     pub(super) async fn reconnect(&mut self) -> Result<(), WriteError> {
+        let mut retries = 0u32;
+        let mut first_failure: Option<tokio::time::Instant> = None;
+        loop {
+            let losses = self.link_losses();
+            let err = match self.reconnect_once().await {
+                Ok(()) => return Ok(()),
+                Err(err) => err,
+            };
+            let link_lost = self.link_losses() != losses;
+            let since = *first_failure.get_or_insert_with(tokio::time::Instant::now);
+            if !self.may_retry_reconnect(&err, link_lost, retries, since) {
+                return Err(err);
+            }
+            retries += 1;
+            tracing::warn!(
+                "reconnecting to {} failed ({err}); retrying (attempt {} of {})",
+                self.target,
+                retries + 1,
+                MAX_RESUME_RECONNECTS + 1
+            );
+        }
+    }
+
+    /// One reconnect attempt: drops the dead connection, opens a fresh one via
+    /// the retained [`Connector`] and adopts it.
+    async fn reconnect_once(&mut self) -> Result<(), WriteError> {
         // Drop the dead connection outright (do NOT try to T_Disconnect — the
         // device is mid-reboot and will not answer).
         self.l4 = None;
@@ -513,14 +616,48 @@ impl<C: Connector> Session<C> {
                 .ok_or(WriteError::Mgmt(bussard_mgmt::MgmtError::Transport(
                     bussard_transport::TransportError::Closed,
                 )))?;
+        let losses = connector.link_losses();
         let l4 = connector.connect().await?;
-        self.adopt(l4).await
+        self.adopt(l4, losses).await
+    }
+
+    /// How many times the gateway link has been lost, as the connector reports
+    /// it (`0` for a session without a connector).
+    pub(super) fn link_losses(&self) -> u64 {
+        self.connector.as_ref().map_or(0, Connector::link_losses)
+    }
+
+    /// Whether a failed reconnect attempt is repeated: the session can
+    /// reconnect, the failure is [`reconnect_retryable`], and neither the retry
+    /// count nor the [`RECONNECT_RESUME_BUDGET`] (counted from `since`, the
+    /// first failure) is spent.
+    fn may_retry_reconnect(
+        &self,
+        err: &WriteError,
+        link_lost: bool,
+        retries: u32,
+        since: tokio::time::Instant,
+    ) -> bool {
+        self.can_reconnect()
+            && reconnect_retryable(err, link_lost)
+            && retries < MAX_RESUME_RECONNECTS
+            && since.elapsed() < RECONNECT_RESUME_BUDGET
     }
 
     /// Authorizes `l4`, re-seeds the cached max APDU onto it and makes it the
-    /// session connection.
-    async fn adopt(&mut self, mut l4: Layer4Connection<C::Channel>) -> Result<(), WriteError> {
-        Self::authorize(&mut l4, self.bcu_key, &mut self.authorize_outcomes).await?;
+    /// session connection. `losses` is the connector's link-loss count from
+    /// before `l4` was opened, so an authorize the gateway swallowed is not
+    /// mistaken for a device without authorize.
+    async fn adopt(
+        &mut self,
+        mut l4: Layer4Connection<C::Channel>,
+        losses: u64,
+    ) -> Result<(), WriteError> {
+        let connector = &self.connector;
+        Self::authorize(&mut l4, self.bcu_key, &mut self.authorize_outcomes, || {
+            connector.as_ref().map_or(0, Connector::link_losses) != losses
+        })
+        .await?;
         // Re-seed the device-stable max APDU onto the fresh connection without a
         // round-trip, so scaling persists across the cycle without spending an
         // exchange against the tight per-connection budget (issue #58).
@@ -553,14 +690,57 @@ impl<C: Connector> Session<C> {
     /// device answers nothing, which an authorize would record as "does not
     /// implement authorize" and never retry) and it must not shift the session
     /// connection's numbered-exchange sequence.
+    ///
+    /// # Resuming across a gateway link loss (issue #192)
+    ///
+    /// A pulled LAN cable on the IP interface during this phase used to fail
+    /// the flash with `connection to <ia> was disconnected`, leaving a
+    /// factory-reset device behind. Now a failed attempt that is a connection
+    /// death, or any silence while the gateway link was lost, starts the phase
+    /// again once the tunnel is back: the readiness probe runs anew (the
+    /// device may still be booting), then the session connection is opened and
+    /// authorized (Data Secure S-A_Sync included). Bounded by
+    /// [`MAX_RESUME_RECONNECTS`] attempts within [`RECONNECT_RESUME_BUDGET`]
+    /// from the first failure; past that the last error surfaces unchanged.
     pub(super) async fn reconnect_after_reboot(&mut self) -> Result<(), WriteError> {
-        // Drop the dead connection up front: on the real path it holds the bus
-        // lease, and the probes below need it. Dropping (rather than
-        // disconnecting) is right — the peer is mid-reboot and will not answer.
-        self.l4 = None;
-        if self.secure {
-            return self.reconnect_after_secure_reboot().await;
+        let mut retries = 0u32;
+        let mut first_failure: Option<tokio::time::Instant> = None;
+        loop {
+            // Drop the dead connection up front: on the real path it holds the
+            // bus lease, and the probes need it. Dropping (rather than
+            // disconnecting) is right — the peer is mid-reboot and will not
+            // answer.
+            self.l4 = None;
+            let losses = self.link_losses();
+            let result = if self.secure {
+                self.reconnect_after_secure_reboot().await
+            } else {
+                self.reconnect_after_plain_reboot().await
+            };
+            let err = match result {
+                Ok(()) => return Ok(()),
+                Err(err) => err,
+            };
+            let link_lost = self.link_losses() != losses;
+            let since = *first_failure.get_or_insert_with(tokio::time::Instant::now);
+            if !self.may_retry_reconnect(&err, link_lost, retries, since) {
+                return Err(err);
+            }
+            retries += 1;
+            tracing::warn!(
+                "the connection was lost while reconnecting to {} after its restart ({err}); \
+                 waiting for the device again (attempt {} of {})",
+                self.target,
+                retries + 1,
+                MAX_RESUME_RECONNECTS + 1
+            );
         }
+    }
+
+    /// One plain post-restart wait: the bounded liveness poll of
+    /// [`reconnect_after_reboot`](Session::reconnect_after_reboot), then one
+    /// reconnect attempt.
+    async fn reconnect_after_plain_reboot(&mut self) -> Result<(), WriteError> {
         let bound = reboot_wait_bound();
         let started = tokio::time::Instant::now();
         tokio::time::sleep(REBOOT_PROBE_MIN_WAIT.min(bound)).await;
@@ -583,7 +763,7 @@ impl<C: Connector> Session<C> {
                 tokio::time::sleep(REBOOT_PROBE_INTERVAL.min(deadline - now)).await;
             }
         }
-        self.reconnect().await
+        self.reconnect_once().await
     }
 
     /// One post-reboot liveness probe: is the device answering management again?
@@ -660,32 +840,35 @@ impl<C: Connector> Session<C> {
                 backoff = backoff.saturating_mul(2).min(SECURE_PROBE_MAX_BACKOFF);
             }
         }
-        let mut l4 = match ready {
-            Some(l4) => l4,
+        let (mut l4, losses) = match ready {
+            Some(ready) => ready,
             None => {
                 let connector = self.connector.as_mut().ok_or(WriteError::Mgmt(
                     bussard_mgmt::MgmtError::Transport(bussard_transport::TransportError::Closed),
                 ))?;
-                connector.connect().await?
+                let losses = connector.link_losses();
+                (connector.connect().await?, losses)
             }
         };
         l4.set_sync_retry(sync_retry_after_restart());
-        self.adopt(l4).await
+        self.adopt(l4, losses).await
     }
 
     /// One Secure readiness probe: opens a connection, reads the device
     /// descriptor in the clear on the tight [`REBOOT_PROBE_TIMEOUTS`] budget and
     /// returns the connection, with its normal timeouts restored, when the device
-    /// answered. A silent device yields `None` and its connection is released.
-    async fn probe_secure_device(&mut self) -> Option<Layer4Connection<C::Channel>> {
+    /// answered, with the connector's link-loss count from before it was
+    /// opened. A silent device yields `None` and its connection is released.
+    async fn probe_secure_device(&mut self) -> Option<(Layer4Connection<C::Channel>, u64)> {
         let connector = self.connector.as_mut()?;
+        let losses = connector.link_losses();
         let mut l4 = connector.connect().await.ok()?;
         let normal = l4.timeouts();
         l4.set_timeouts(REBOOT_PROBE_TIMEOUTS);
         match bussard_mgmt::read_device_descriptor_unsecured(&mut l4).await {
             Ok(_) => {
                 l4.set_timeouts(normal);
-                Some(l4)
+                Some((l4, losses))
             }
             Err(err) => {
                 tracing::debug!(%err, "Secure readiness probe unanswered");
@@ -750,20 +933,11 @@ impl<C: Connector> Session<C> {
         if let Some(l4) = self.l4.take() {
             let _ = l4.disconnect().await;
         }
-        let connector =
-            self.connector
-                .as_mut()
-                .ok_or(WriteError::Mgmt(bussard_mgmt::MgmtError::Transport(
-                    bussard_transport::TransportError::Closed,
-                )))?;
-        let mut l4 = connector.connect().await?;
-        Self::authorize(&mut l4, self.bcu_key, &mut self.authorize_outcomes).await?;
-        // Re-seed the device-stable max APDU onto the fresh connection without a
-        // round-trip, so scaling persists across the cycle without spending an
-        // exchange against the tight per-connection budget (issue #58).
-        l4.set_max_apdu(self.max_apdu);
-        self.l4 = Some(l4);
-        Ok(())
+        // Open, authorize and re-seed the max APDU exactly as a reconnect does,
+        // including its retry across a gateway link loss (issue #192): a cycle
+        // that lands in a tunnel outage waits for the tunnel and tries again
+        // instead of failing the flash between two steps.
+        self.reconnect().await
     }
 
     /// The current L4 connection's numbered-exchange count, or 0 when the session

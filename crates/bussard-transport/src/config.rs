@@ -57,6 +57,22 @@ pub const TUNNEL_RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(8);
 /// frequent while the link is down.
 pub const TUNNEL_RECONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// Default read deadline of a KNXnet/IP Secure tunnel over TCP (issue #192).
+///
+/// TCP carries no TUNNELING_ACK, so a pulled LAN cable is otherwise noticed
+/// only when the kernel gives up retransmitting (about 37 s on macOS, longer on
+/// Linux). When nothing has arrived for this long the tunnel sends a
+/// CONNECTIONSTATE_REQUEST as a liveness probe; an answer (or any other frame)
+/// keeps the link, silence for another [`TCP_LINK_PROBE_TIMEOUT`] declares it
+/// lost and re-establishes it. A busy tunnel never probes: every tunnelled
+/// frame is confirmed by an `L_Data.con`, which counts as traffic.
+pub const TCP_READ_DEADLINE: Duration = Duration::from_secs(5);
+
+/// The longest a TCP liveness probe (see [`TCP_READ_DEADLINE`]) waits for its
+/// answer. A reachable interface answers in milliseconds; the probe waits the
+/// shorter of this and the configured read deadline.
+pub const TCP_LINK_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// How a [`Tunnel`](crate::Tunnel) re-establishes itself after the gateway
 /// link is lost (issue #177).
 ///
@@ -68,6 +84,10 @@ pub const TUNNEL_RECONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(3);
 /// doubling backoff (`initial_backoff`, 2x, 4x ... capped at `max_backoff`)
 /// until `budget` has passed since the loss; then the pending send fails with
 /// [`TransportError::TunnelLost`](crate::TransportError::TunnelLost).
+///
+/// Over TCP (KNXnet/IP Secure) there is no ACK to time out, so
+/// `tcp_read_deadline` bounds how long the link may stay silent before a
+/// liveness probe decides whether it is lost (issue #192).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TunnelReconnect {
     /// Total time to keep trying, measured from the moment the loss was
@@ -80,6 +100,13 @@ pub struct TunnelReconnect {
     pub max_backoff: Duration,
     /// How long one attempt waits for the CONNECT_RESPONSE.
     pub attempt_timeout: Duration,
+    /// How long a TCP tunnel may receive nothing before it probes the link
+    /// with a CONNECTIONSTATE_REQUEST (see [`TCP_READ_DEADLINE`]). An
+    /// unanswered probe counts as a lost link. [`Duration::ZERO`] turns the
+    /// check off, leaving detection to the 60 s heartbeat and the kernel's
+    /// TCP timeout. Ignored on a plain UDP tunnel, whose ACK timeout already
+    /// detects a loss within about 2 s.
+    pub tcp_read_deadline: Duration,
 }
 
 impl Default for TunnelReconnect {
@@ -89,6 +116,7 @@ impl Default for TunnelReconnect {
             initial_backoff: TUNNEL_RECONNECT_INITIAL_BACKOFF,
             max_backoff: TUNNEL_RECONNECT_MAX_BACKOFF,
             attempt_timeout: TUNNEL_RECONNECT_ATTEMPT_TIMEOUT,
+            tcp_read_deadline: TCP_READ_DEADLINE,
         }
     }
 }
@@ -108,6 +136,19 @@ impl TunnelReconnect {
             budget,
             ..TunnelReconnect::default()
         }
+    }
+
+    /// This policy with a different TCP read deadline (`Duration::ZERO` turns
+    /// the check off).
+    pub fn with_tcp_read_deadline(mut self, deadline: Duration) -> Self {
+        self.tcp_read_deadline = deadline;
+        self
+    }
+
+    /// How long a TCP liveness probe waits for its answer: the shorter of the
+    /// read deadline and [`TCP_LINK_PROBE_TIMEOUT`].
+    pub fn tcp_probe_timeout(&self) -> Duration {
+        self.tcp_read_deadline.min(TCP_LINK_PROBE_TIMEOUT)
     }
 
     /// Whether this policy re-establishes a lost tunnel at all.
