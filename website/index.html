@@ -6,10 +6,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>bussard</title>
   <meta name="description"
-    content="bussard is an open-source command line tool for KNX. Configuration lives in YAML files, bussard programs the devices over KNXnet/IP and decodes the bus.">
+    content="bussard is an open-source command line tool for KNX. Configuration lives in TOML files, bussard programs the devices over KNXnet/IP and decodes the bus.">
   <meta property="og:title" content="bussard">
   <meta property="og:description"
-    content="Open-source CLI for KNX. Configuration in YAML, programming over KNXnet/IP, live decoding of the bus.">
+    content="Open-source CLI for KNX. Configuration in TOML, programming over KNXnet/IP, live decoding of the bus.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://bussard.tmbo.dev/">
   <link rel="icon"
@@ -991,6 +991,25 @@
       color: var(--muted);
     }
 
+    .files {
+      margin-top: 1.5rem;
+    }
+
+    .files pre.sh {
+      margin: 0;
+    }
+
+    .files > div {
+      min-width: 0;
+    }
+
+    .fname {
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: .78rem;
+      color: var(--muted);
+      margin-bottom: .35rem;
+    }
+
     /* docs */
     .docs {
       list-style: none;
@@ -1130,11 +1149,11 @@
         <h1><span data-lang="en">Your KNX installation, <em>in plain text</em>.</span><span data-lang="de">Deine
             KNX-Installation, <em>in Textform</em>.</span></h1>
         <p class="lede"><span data-lang="en">Start from scratch or import your ETS project. bussard keeps your KNX
-            configuration in YAML files
+            configuration in TOML files
             that you edit by hand or with your favorite LLM. It flashes your devices, monitors the bus and rolls back
             any change.</span><span data-lang="de">Starte von Null oder importiere dein ETS-Projekt. bussard hält deine
             KNX-Konfiguration in
-            YAML-Dateien, die du von Hand oder mit deinem bevorzugten LLM bearbeitest. Es flasht deine Geräte,
+            TOML-Dateien, die du von Hand oder mit deinem bevorzugten LLM bearbeitest. Es flasht deine Geräte,
             überwacht den Bus und nimmt jede Änderung zurück.</span></p>
         <div class="cta">
           <a class="btn primary" href="#download">Download</a>
@@ -1205,9 +1224,9 @@
             </svg></div>
           <h3><span data-lang="en">Import your ETS project</span><span data-lang="de">ETS-Projekt importieren</span>
           </h3>
-          <p><span data-lang="en">One command turns a <code>.knxproj</code> into YAML with named devices, group
-              addresses and links. Every later change can be undone.</span><span data-lang="de">Ein Befehl macht aus
-              einer <code>.knxproj</code> YAML-Dateien mit benannten Geräten, Gruppenadressen und Verknüpfungen. Jede
+          <p><span data-lang="en">One command turns a <code>.knxproj</code> into TOML files with named devices,
+              group addresses and links. Every later change can be undone.</span><span data-lang="de">Ein Befehl macht aus
+              einer <code>.knxproj</code> TOML-Dateien mit benannten Geräten, Gruppenadressen und Verknüpfungen. Jede
               spätere Änderung lässt sich zurücknehmen.</span></p>
         </div>
         <div class="card">
@@ -1258,20 +1277,20 @@
       <div class="sec-head">
         <div class="kicker"><span data-lang="en">How it works</span><span data-lang="de">So funktioniert
             es</span></div>
-        <h2><span data-lang="en">A KNX project, configured in YAML.</span><span data-lang="de">Ein KNX-Projekt,
-            konfiguriert in YAML.</span></h2>
-        <p><span data-lang="en">Everything bussard knows about your installation is a folder of YAML files. Edit them in
+        <h2><span data-lang="en">A KNX project, configured in TOML.</span><span data-lang="de">Ein KNX-Projekt,
+            konfiguriert in TOML.</span></h2>
+        <p><span data-lang="en">Everything bussard knows about your installation is a folder of TOML files. Edit them in
             any editor, or let Claude or ChatGPT do it. Commands either write that config to devices or read the bus
             and explain it with the same config. Every edit can be undone.</span><span data-lang="de">Alles, was
-            bussard über deine Anlage weiß, ist ein Ordner mit YAML-Dateien. Bearbeite sie in einem beliebigen Editor
+            bussard über deine Anlage weiß, ist ein Ordner mit TOML-Dateien. Bearbeite sie in einem beliebigen Editor
             oder lass Claude oder ChatGPT das machen. Befehle schreiben diese Konfiguration auf die Geräte oder lesen
             den Bus und erklären ihn mit derselben Konfiguration. Jede Änderung lässt sich zurücknehmen.</span></p>
       </div>
       <figure>
         <div class="diagram">
           <svg viewBox="0 0 900 560" role="img"
-            data-aria-de="ETS-Exporte und Herstellerdaten werden in einen Ordner mit YAML-Dateien importiert, den Menschen und Assistenten bearbeiten. bussard schreibt die Konfiguration über validate, plan, apply und flash auf die Geräte und beobachtet den Bus über monitor, capture, read und viz. Ein LLM bearbeitet die Konfiguration und spricht über MCP mit bussard. bussard erreicht den KNX-Bus über ein KNXnet/IP-Gateway."
-            aria-label="ETS exports and vendor product data are imported into a folder of YAML files that people and assistants edit. bussard writes the config to devices through validate, plan, apply and flash, and observes the bus through monitor, capture, read and viz. An LLM edits the config and talks to bussard over MCP. bussard reaches the KNX bus through a KNXnet/IP gateway.">
+            data-aria-de="ETS-Exporte und Herstellerdaten werden in einen Ordner mit TOML-Dateien importiert, den Menschen und Assistenten bearbeiten. bussard schreibt die Konfiguration über validate, plan, apply und flash auf die Geräte und beobachtet den Bus über monitor, capture, read und viz. Ein LLM bearbeitet die Konfiguration und spricht über MCP mit bussard. bussard erreicht den KNX-Bus über ein KNXnet/IP-Gateway."
+            aria-label="ETS exports and vendor product data are imported into a folder of TOML files that people and assistants edit. bussard writes the config to devices through validate, plan, apply and flash, and observes the bus through monitor, capture, read and viz. An LLM edits the config and talks to bussard over MCP. bussard reaches the KNX bus through a KNXnet/IP gateway.">
             <defs>
               <marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7"
                 orient="auto-start-reverse">
@@ -1303,12 +1322,12 @@
 
             <!-- model -->
             <rect class="box hi" x="40" y="140" width="600" height="64" rx="10" />
-            <text class="t" x="60" y="166" data-lang="en">Your KNX config as YAML files</text>
-            <text class="t" x="60" y="166" data-lang="de">Deine KNX-Konfiguration als YAML-Dateien</text>
-            <text class="s" x="60" y="186" data-lang="en">groups.yaml · links.yaml · devices/ · edited by hand or by
-              an assistant · history and undo built in</text>
-            <text class="s" x="60" y="186" data-lang="de">groups.yaml · links.yaml · devices/ · von Hand oder per
-              Assistent bearbeitet · Historie und Undo eingebaut</text>
+            <text class="t" x="60" y="166" data-lang="en">Your KNX config as TOML files</text>
+            <text class="t" x="60" y="166" data-lang="de">Deine KNX-Konfiguration als TOML-Dateien</text>
+            <text class="s" x="60" y="186" data-lang="en">groups.toml · devices/*.toml · bussard.lock · edited by hand
+              or by an assistant · history and undo built in</text>
+            <text class="s" x="60" y="186" data-lang="de">groups.toml · devices/*.toml · bussard.lock · von Hand oder
+              per Assistent bearbeitet · Historie und Undo eingebaut</text>
 
             <!-- llm -->
             <rect class="box" x="700" y="220" width="180" height="64" rx="10" />
@@ -1376,6 +1395,43 @@
             Konfiguration Gerätetabellen und lädt sie auf die Geräte. Gelb ist der Beobachtungsweg: Telegramme bekommen
             Gerätenamen, Gruppenadressnamen und typisierte Werte aus derselben Konfiguration.</span></figcaption>
       </figure>
+      <div class="two files">
+        <div>
+          <div class="fname">knx/groups.toml</div>
+          <pre class="sh">project = "Demo House"
+
+groups = [
+  { address = "1/1/1", name = "Hallway Light Switch", dpt = "1.001" },
+  { address = "1/1/7", name = "Porch Light Switch",   dpt = "1.001" },
+  { address = "1/1/8", name = "Porch Light Status",   dpt = "1.001" },
+  { address = "3/0/0", name = "Wind Alarm",           dpt = "1.005", protected = true },
+]</pre>
+        </div>
+        <div>
+          <div class="fname">knx/devices/1.1.7.toml</div>
+          <pre class="sh">address = "1.1.7"
+name = "Outdoor Actuator"
+product = "SA-0416"
+
+[location]
+floor = "Outdoor"
+room = "Porch"
+
+[channel.c-3]
+name = "Porch Light"
+operating-mode = "Switching"
+switch-on-delay = "0 s"
+switch.listen = ["1/1/7", "1/1/1"]
+status.send = "1/1/8"</pre>
+        </div>
+      </div>
+      <p class="note"><span data-lang="en">One line per group address, one file per device, one table per channel.
+          Keys and values come from the vendor's product data, so a channel reads like its page in ETS. Vendor ids
+          and memory offsets live in the generated <code>bussard.lock</code>, which nobody edits.</span><span
+          data-lang="de">Eine Zeile pro Gruppenadresse, eine Datei pro Gerät, eine Tabelle pro Kanal. Schlüssel und
+          Werte stammen aus den Produktdaten des Herstellers, daher liest sich ein Kanal wie seine Seite in der ETS.
+          Hersteller-IDs und Speicheradressen stehen in der generierten <code>bussard.lock</code>, die niemand von
+          Hand bearbeitet.</span></p>
     </section>
 
     <section>
@@ -1395,7 +1451,7 @@
               data-lang="en">Fetch the live tables from the device.</span><span data-lang="de">Die aktuellen Tabellen
               vom Gerät holen.</span></span></li>
         <li><strong><span data-lang="en">Diff</span><span data-lang="de">Vergleichen</span></strong><span><span
-              data-lang="en">Compare them to your YAML config.</span><span data-lang="de">Mit deiner YAML-Konfiguration
+              data-lang="en">Compare them to your config files.</span><span data-lang="de">Mit deinen Konfigurationsdateien
               abgleichen.</span></span></li>
         <li><strong><span data-lang="en">Confirm</span><span data-lang="de">Bestätigen</span></strong><span><span
               data-lang="en">The plan names the gateway and asks for a yes.</span><span data-lang="de">Der Plan nennt
@@ -1443,20 +1499,20 @@
             <div class="seg"><span class="tok g">0/0/0</span><span class="lab g"><span data-lang="en">group
                   address</span><span data-lang="de">Gruppenadresse</span></span></div>
             <div class="seg"><span class="tok">Hallway Light Switch</span><span class="lab"><span data-lang="en">GA name
-                  from groups.yaml</span><span data-lang="de">GA-Name aus groups.yaml</span></span></div>
+                  from groups.toml</span><span data-lang="de">GA-Name aus groups.toml</span></span></div>
             <div class="seg"><span class="tok a">= On</span><span class="lab a"><span data-lang="en">decoded
                   value</span><span data-lang="de">decodierter Wert</span></span></div>
             <div class="seg"><span class="tok d">(1.001,</span><span class="lab"><span data-lang="en">datapoint type,
                   sets the decoder</span><span data-lang="de">Datenpunkttyp, bestimmt den Decoder</span></span></div>
             <div class="seg"><span class="tok d">obj "Rocker 1")</span><span class="lab"><span data-lang="en">com object
-                  that sent it, from links.yaml</span><span data-lang="de">sendendes Kommunikationsobjekt, aus
-                  links.yaml</span></span></div>
+                  that sent it, from its device file</span><span data-lang="de">sendendes Kommunikationsobjekt, aus
+                  seiner Gerätedatei</span></span></div>
           </div>
         </div>
         <figcaption><span data-lang="en">Addresses come from the telegram. Names, datapoint types and com objects come
-            from the YAML files. A group address missing from the config shows as raw hex until you add
+            from the TOML files. A group address missing from the config shows as raw hex until you add
             it.</span><span data-lang="de">Adressen kommen aus dem Telegramm. Namen, Datenpunkttypen und
-            Kommunikationsobjekte kommen aus den YAML-Dateien. Eine Gruppenadresse, die in der Konfiguration fehlt,
+            Kommunikationsobjekte kommen aus den TOML-Dateien. Eine Gruppenadresse, die in der Konfiguration fehlt,
             erscheint
             als rohes Hex, bis du sie ergänzt.</span></figcaption>
       </figure>
@@ -1476,9 +1532,9 @@
           </div>
           <pre class="sh"><span class="p">$</span> claude mcp add knx -- bussard mcp --dir knx</pre>
           <p class="note"><span data-lang="en">Home Assistant users: <code>bussard ha-config</code> writes the KNX
-              integration config from the same YAML files.</span><span data-lang="de">Für Home Assistant erzeugt
+              integration config from the same TOML files.</span><span data-lang="de">Für Home Assistant erzeugt
               <code>bussard ha-config</code> die Konfiguration der KNX-Integration aus denselben
-              YAML-Dateien.</span></p>
+              TOML-Dateien.</span></p>
         </div>
         <div class="tiers" role="img"
           aria-label="Three MCP tiers: passive never transmits, read is the default with rate-limited group reads and config edits, write is opt-in and still refuses protected group addresses. Device programming is never an MCP tool."
@@ -1652,12 +1708,16 @@ cargo install --path crates/bussard-cli</pre>
         <li><a href="docs/howto/"><strong>How do I ...</strong><span><span data-lang="en">Recipes for everyday
                 tasks</span><span data-lang="de">Rezepte für den Alltag</span></span></a></li>
         <li><a href="docs/reference/"><strong><span data-lang="en">Reference</span><span
-                data-lang="de">Referenz</span></strong><span><span data-lang="en">Every command, flag, YAML field and
-                MCP tool</span><span data-lang="de">Jeder Befehl, jedes Flag, YAML-Feld und MCP-Tool</span></span></a>
+                data-lang="de">Referenz</span></strong><span><span data-lang="en">Every command, flag and
+                MCP tool</span><span data-lang="de">Jeder Befehl, jedes Flag und MCP-Tool</span></span></a>
         </li>
+        <li><a href="docs/model-format/"><strong><span data-lang="en">Model format</span><span
+                data-lang="de">Modellformat</span></strong><span><span data-lang="en">Every file in knx/, its keys
+                and its errors</span><span data-lang="de">Jede Datei in knx/, ihre Schlüssel und
+                Fehler</span></span></a></li>
         <li><a href="docs/ha-config/"><strong>Home Assistant</strong><span><span data-lang="en">Generate the integration
                 config
-                from your YAML</span><span data-lang="de">Integrations-Konfiguration aus deinem YAML
+                from your model</span><span data-lang="de">Integrations-Konfiguration aus deinem Modell
                 erzeugen</span></span></a>
         </li>
         <li><a href="docs/product-data/"><strong><span data-lang="en">Product data</span><span
@@ -1683,8 +1743,8 @@ cargo install --path crates/bussard-cli</pre>
     // Language toggle. Remembers the choice in this browser.
     (function () {
       var DESC = {
-        en: "bussard is an open-source command line tool for KNX. Configuration lives in YAML files, bussard programs the devices over KNXnet/IP and decodes the bus.",
-        de: "bussard ist ein Open-Source-Kommandozeilentool für KNX. Die Konfiguration liegt in YAML-Dateien, bussard programmiert die Geräte über KNXnet/IP und decodiert den Bus."
+        en: "bussard is an open-source command line tool for KNX. Configuration lives in TOML files, bussard programs the devices over KNXnet/IP and decodes the bus.",
+        de: "bussard ist ein Open-Source-Kommandozeilentool für KNX. Die Konfiguration liegt in TOML-Dateien, bussard programmiert die Geräte über KNXnet/IP und decodiert den Bus."
       };
       var buttons = document.querySelectorAll("[data-set-lang]");
       var ariaEls = document.querySelectorAll("[data-aria-de]");
