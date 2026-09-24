@@ -1,7 +1,7 @@
 # bussard
 
 Open-source Rust CLI that programs, monitors, and decodes a KNX building bus.
-The KNX configuration lives as YAML files in `knx/` (reviewable diffs, edited by
+The KNX configuration lives as TOML files in `knx/` (reviewable diffs, edited by
 humans and LLMs); `bussard` pushes changes to devices over a KNXnet/IP gateway.
 It exposes an MCP server so an LLM can drive it. See `README.md` for the
 architecture overview.
@@ -30,7 +30,7 @@ centralized in the root `Cargo.toml` under `[workspace.package]` and
 `[workspace.dependencies]`; individual crates inherit them with
 `x.workspace = true`.
 
-Crates: `bussard-model` (KNX types, DPT codecs, YAML model), `bussard-project`,
+Crates: `bussard-model` (KNX types, DPT codecs, the TOML model files and lock), `bussard-project`,
 `bussard-transport`, `bussard-monitor`, `bussard-bus`, `bussard-mcp` (MCP
 server), `bussard-viz` (the `viz` web server), `bussard-mgmt`, `bussard-prod`,
 `bussard-ets` (`.knxproj`/`.knxprod` import), `bussard-secure` (KNX Secure),
