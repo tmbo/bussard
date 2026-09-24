@@ -75,7 +75,8 @@ pub use param_plan::{
     CurrentMemory, GroupObjectChange, ParamChange, ParamPlan, ParamReading, ParamRegion,
     ParamRegions, ParamValue, SYS7_NOTE, current_parameter_values, group_object_change,
     non_default_parameters, param_plan, planned_parameter_regions, read_current_parameter_memory,
-    read_parameter_regions, regions_memory,
+    read_current_parameter_memory_with_objects, read_parameter_regions,
+    read_parameter_regions_with_objects, regions_memory,
 };
 pub use plan::{LoadStep, ObjectGa, PlanReport, plan};
 pub use preflight::{

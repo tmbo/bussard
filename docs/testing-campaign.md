@@ -73,7 +73,7 @@ and a two-second gap, for a dry run.
 ### `20-per-device.sh`: one step, wrapped in evidence
 
 ```
-scripts/campaign/20-per-device.sh <IA> <PHASE> --go [--allow-remote-gateway] [-- <bussard args>]
+scripts/campaign/20-per-device.sh <IA> <PHASE> --go [--allow-remote-gateway] [--probes full] [-- <bussard args>]
 ```
 
 `PHASE` is `plan`, `apply`, `assign`, `describe`, or `flash` / `flash-force` /
@@ -84,10 +84,12 @@ scripts/campaign/20-per-device.sh 1.1.5 flash --go --allow-remote-gateway \
     -- flash 1.1.5 --product products/foo.knxprod --yes
 ```
 
-Around the step it records `describe --json` and `reconstruct` before and after,
-runs the step with `-vv` and `BUSSARD_WIRE_TRACE=1`, takes a per-step pcap (or
-writes the window to slice one), splits the wire trace into `wire.log`, and
-appends a row to the baseline `findings.md`. It exits with the step's own exit
+Around the step it records `describe --json` before and after (`--probes full`
+adds `reconstruct`, which costs minutes on a Data Secure device), runs the step
+with `-vv` and `BUSSARD_WIRE_TRACE=1`, takes a per-step pcap (or writes the
+window to slice one), splits the wire trace into `wire.log`, and appends a row
+to the baseline `findings.md` with the step's wall-clock time, which the summary
+also prints. It exits with the step's own exit
 code, so a phase loop stops where the device did.
 
 ### `90-reconcile.sh`: Phase 6

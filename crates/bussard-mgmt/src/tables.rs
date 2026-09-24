@@ -219,6 +219,11 @@ pub async fn read_tables<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Result
         return Err(TablesError::UnsupportedMask { address, mask });
     }
 
+    // Size the `PID_TABLE` reads from the device's max APDU (issue #194): a
+    // no-op when the caller already negotiated or seeded it, one property read
+    // otherwise. A device without the property keeps the standard-frame floor;
+    // a dead connection surfaces on the next read.
+    let _ = l4.negotiate_max_apdu().await;
     let objects = discover_objects(l4).await?;
     let mut notes = Vec::new();
     let mut sources = Vec::new();
@@ -498,7 +503,8 @@ async fn read_table_via_property<Ch: L4Channel>(
     // for a large table. Falls back to the conservative octet budget when
     // `PID_MAX_APDU_LENGTH` was never negotiated or was unreadable.
     let read_octets = usize::from(l4.max_property_read_octets());
-    let chunk_elems = (read_octets / elem_size).max(1);
+    // The count field of `A_PropertyValue_Read` is 4 bits wide.
+    let mut chunk_elems = (read_octets / elem_size).clamp(1, MAX_PROPERTY_READ_ELEMENTS);
 
     let mut bytes = Vec::with_capacity(count * elem_size);
     let mut next: usize = 1; // property array elements are 1-based
@@ -508,6 +514,19 @@ async fn read_table_via_property<Ch: L4Channel>(
         // The device may return fewer elements than asked; advance by what
         // actually arrived. An empty or short answer mid-table is a refusal.
         let got = data.len() / elem_size;
+        if (got == 0 || data.len() % elem_size != 0) && want > 1 {
+            // A device that refuses a multi-element read (a zero-count or
+            // ragged answer) may still serve the elements one at a time, as
+            // the MCB table reads found on a real device (issue #89): fall
+            // back to `count = 1` for the rest of this table.
+            tracing::debug!(
+                target = %l4.target(),
+                "{what}: PID_TABLE refused a {want}-element read at element {next}; \
+                 reading one element per request"
+            );
+            chunk_elems = 1;
+            continue;
+        }
         if got == 0 || data.len() % elem_size != 0 {
             return Err(TablesError::TableUnreadable {
                 address: l4.target(),
@@ -522,6 +541,10 @@ async fn read_table_via_property<Ch: L4Channel>(
     }
     Ok(Some(bytes))
 }
+
+/// The most elements one `A_PropertyValue_Read` can ask for: its count field is
+/// 4 bits wide.
+const MAX_PROPERTY_READ_ELEMENTS: usize = 15;
 
 /// The memory fallback: `PID_TABLE_REFERENCE` names the table's address; the
 /// table starts with a big-endian `u16` entry count followed by the entries.

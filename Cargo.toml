@@ -184,6 +184,18 @@ opt-level = 3
 opt-level = 3
 [profile.test.package.crc32fast]
 opt-level = 3
+# KNX Secure (Data Secure CCM from aes + cbc + ctr, the KNXnet/IP Secure
+# X25519 handshake): every secured frame and tunnel start runs through these.
+[profile.test.package.cipher]
+opt-level = 3
+[profile.test.package.cbc]
+opt-level = 3
+[profile.test.package.ctr]
+opt-level = 3
+[profile.test.package.x25519-dalek]
+opt-level = 3
+[profile.test.package.curve25519-dalek]
+opt-level = 3
 
 # `cargo test --doc` and any `cargo run` in tests use the `dev` profile, and the
 # CLI integration tests spawn the built `bussard` binary — which itself imports
@@ -199,4 +211,34 @@ opt-level = 3
 [profile.dev.package.aes]
 opt-level = 3
 [profile.dev.package.zip]
+opt-level = 3
+# The rest of the crypto and archive stack the `bussard` binary runs on every
+# secured command, `keyring` read and import (issue #194): the Data Secure CCM
+# (aes + cbc + ctr), the KNXnet/IP Secure X25519 handshake, and the
+# `.knxproj`/`.knxprod` inflate and XML parse. Third-party and rarely rebuilt.
+[profile.dev.package.cipher]
+opt-level = 3
+[profile.dev.package.cbc]
+opt-level = 3
+[profile.dev.package.ctr]
+opt-level = 3
+[profile.dev.package.crypto-common]
+opt-level = 3
+[profile.dev.package.block-buffer]
+opt-level = 3
+[profile.dev.package.subtle]
+opt-level = 3
+[profile.dev.package.sha1]
+opt-level = 3
+[profile.dev.package.x25519-dalek]
+opt-level = 3
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+[profile.dev.package.quick-xml]
+opt-level = 3
+[profile.dev.package.flate2]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+[profile.dev.package.crc32fast]
 opt-level = 3
