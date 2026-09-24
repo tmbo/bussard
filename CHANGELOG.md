@@ -289,6 +289,12 @@ entry supersedes it and is not a diff against it.
   authorize". A KNXnet/IP Secure (TCP) tunnel now notices a pulled cable
   after about 7 s instead of about 37 s: after 5 s without traffic it probes
   the link (`BUSSARD_TCP_READ_DEADLINE_MS`) (#192, S2.6 of #90).
+- A tunnel that connected before anything waited for it no longer makes
+  the next wait sit out its whole timeout: 10 s in `learn`, `audit`,
+  `assign`, `test` and `commission`, 60 s for each MCP device tool call.
+  The bus now records every connection-state change even while no one is
+  listening, and a wait returns at once when the bus is already connected
+  (#207).
 
 ### Security
 
