@@ -162,19 +162,20 @@ impl Container {
 fn find_project_id<R: Read + Seek>(archive: &ZipArchive<R>, path: &Path) -> Result<String> {
     for name in archive.file_names() {
         // Inner encrypted archive form: `P-XXXX.zip`.
-        if let Some(stem) = name.strip_suffix(".zip") {
-            if stem.starts_with("P-") && !stem.contains('/') {
-                return Ok(stem.to_string());
-            }
+        if let Some(stem) = name.strip_suffix(".zip")
+            && stem.starts_with("P-")
+            && !stem.contains('/')
+        {
+            return Ok(stem.to_string());
         }
     }
     // Unencrypted form: `P-XXXX/0.xml` (or `project.xml`/`Project.xml` for ETS 4).
     for name in archive.file_names() {
         for suffix in ["/0.xml", "/project.xml", "/Project.xml"] {
-            if let Some(prefix) = name.strip_suffix(suffix) {
-                if prefix.starts_with("P-") {
-                    return Ok(prefix.to_string());
-                }
+            if let Some(prefix) = name.strip_suffix(suffix)
+                && prefix.starts_with("P-")
+            {
+                return Ok(prefix.to_string());
             }
         }
     }

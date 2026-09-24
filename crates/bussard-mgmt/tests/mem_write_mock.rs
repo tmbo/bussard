@@ -263,10 +263,10 @@ fn should_nak(dev: &Shared, cemi: &CemiFrame) -> bool {
         // is NAKed, so the client exhausts its retries and fails, as a real
         // device that rejects a chunk would. write_count only advances for
         // writes that are actually applied.
-        if let Some(nak_at) = d.nak_write_index {
-            if d.write_count >= nak_at {
-                return true;
-            }
+        if let Some(nak_at) = d.nak_write_index
+            && d.write_count >= nak_at
+        {
+            return true;
         }
         d.write_count += 1;
         // Apply the write to sparse memory (de-mirrored: decode the wire here).

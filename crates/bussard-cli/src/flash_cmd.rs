@@ -865,10 +865,10 @@ fn build_table_images(
         .unwrap_or_default();
     let with_model_flags = |mut descriptors: Vec<GroupObjectDescriptor>| {
         for d in &mut descriptors {
-            if linked.contains(&d.asap) {
-                if let Some(flags) = model_flags.get(&d.asap) {
-                    d.flags = *flags;
-                }
+            if linked.contains(&d.asap)
+                && let Some(flags) = model_flags.get(&d.asap)
+            {
+                d.flags = *flags;
             }
         }
         descriptors
@@ -1006,10 +1006,10 @@ pub(crate) fn resolve_by_order_number<'a>(
     // them distinct by id (a ref may repeat across hardware rows).
     let mut apps: Vec<&ApplicationProgram> = Vec::new();
     for r in &app_refs {
-        if let Some(app) = product.application_by_id(r) {
-            if !apps.iter().any(|a| a.id == app.id) {
-                apps.push(app);
-            }
+        if let Some(app) = product.application_by_id(r)
+            && !apps.iter().any(|a| a.id == app.id)
+        {
+            apps.push(app);
         }
     }
 

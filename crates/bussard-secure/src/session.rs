@@ -285,13 +285,13 @@ impl DataSecureSession {
 
         // Freshness: strictly-greater than the last accepted from this source.
         let source = addr.source;
-        if let Some(&last) = self.last_seen.get(&source) {
-            if decoded.sequence <= last {
-                return Err(AsduError::StaleSequence {
-                    got: decoded.sequence.value(),
-                    last: last.value(),
-                });
-            }
+        if let Some(&last) = self.last_seen.get(&source)
+            && decoded.sequence <= last
+        {
+            return Err(AsduError::StaleSequence {
+                got: decoded.sequence.value(),
+                last: last.value(),
+            });
         }
         self.last_seen.insert(source, decoded.sequence);
 

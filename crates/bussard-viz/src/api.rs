@@ -409,7 +409,7 @@ fn validate_payload_size(dpt: Dpt, payload: &[u8], ga: GroupAddress) -> Result<(
 ///
 /// Returns a human-readable error message for an odd length or a non-hex digit.
 fn decode_hex(s: &str) -> Result<Vec<u8>, String> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err(format!(
             "odd length ({} chars); hex must be byte-aligned",
             s.len()

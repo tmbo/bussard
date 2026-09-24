@@ -64,13 +64,13 @@ pub async fn guard(State(state): State<AppState>, request: Request, next: Next) 
         .map(str::to_string)
         .or_else(|| request.uri().host().map(str::to_string));
 
-    if let Some(host) = &host {
-        if !host_allowed(host, allowed) {
-            return refuse(format!(
-                "refusing a request for Host {host:?}: bussard viz answers only to loopback names \
+    if let Some(host) = &host
+        && !host_allowed(host, allowed)
+    {
+        return refuse(format!(
+            "refusing a request for Host {host:?}: bussard viz answers only to loopback names \
                  and IP literals. A different name here usually means DNS rebinding"
-            ));
-        }
+        ));
     }
 
     // --- Origin (state-changing methods only) ----------------------------
@@ -84,13 +84,13 @@ pub async fn guard(State(state): State<AppState>, request: Request, next: Next) 
             .get(header::ORIGIN)
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
-        if let Some(origin) = origin {
-            if !origin_allowed(&origin, allowed) {
-                return refuse(format!(
-                    "refusing a cross-origin {} from Origin {origin:?}",
-                    request.method()
-                ));
-            }
+        if let Some(origin) = origin
+            && !origin_allowed(&origin, allowed)
+        {
+            return refuse(format!(
+                "refusing a cross-origin {} from Origin {origin:?}",
+                request.method()
+            ));
         }
     }
 

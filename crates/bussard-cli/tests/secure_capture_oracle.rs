@@ -68,12 +68,12 @@ fn pcapng_packets(data: &[u8]) -> Vec<&[u8]> {
         if len < 12 || i + len > data.len() {
             break;
         }
-        if kind == 6 {
-            if let Some(cap) = u32le(data, i + 20) {
-                let start = i + 28;
-                if let Some(pkt) = data.get(start..start + cap as usize) {
-                    out.push(pkt);
-                }
+        if kind == 6
+            && let Some(cap) = u32le(data, i + 20)
+        {
+            let start = i + 28;
+            if let Some(pkt) = data.get(start..start + cap as usize) {
+                out.push(pkt);
             }
         }
         i += len;

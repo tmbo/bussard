@@ -506,10 +506,10 @@ fn parse_body(xml: &str, keyring_key: &Key16, iv: &[u8; KEY_LEN]) -> Result<Keyr
                         if in_group_addresses {
                             let (ga, key) = parse_group_key(&e, keyring_key, iv)?;
                             group_keys.insert(ga, key);
-                        } else if let Some(iface) = current_interface.as_mut() {
-                            if let Some(addr) = attr(&e, b"Address")? {
-                                iface.gas.push(parse_ga("Interface/Group/Address", &addr)?);
-                            }
+                        } else if let Some(iface) = current_interface.as_mut()
+                            && let Some(addr) = attr(&e, b"Address")?
+                        {
+                            iface.gas.push(parse_ga("Interface/Group/Address", &addr)?);
                         }
                     }
                     b"Device" => {

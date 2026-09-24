@@ -418,10 +418,10 @@ impl MockDevice {
         if self.memory_write_policy == MemoryWritePolicy::WithinSegments && segment.is_none() {
             return false;
         }
-        if let (Some(oi), Some(faulty)) = (segment, self.nak_writes_into) {
-            if self.object_types.get(usize::from(oi)) == Some(&faulty) {
-                return false;
-            }
+        if let (Some(oi), Some(faulty)) = (segment, self.nak_writes_into)
+            && self.object_types.get(usize::from(oi)) == Some(&faulty)
+        {
+            return false;
         }
         for (i, b) in value.iter().enumerate() {
             self.memory.insert(addr.wrapping_add(i as u32), *b);
@@ -472,10 +472,10 @@ impl MockDevice {
         }
         self.telegrams += 1;
         self.requests.push((apci, data.to_vec()));
-        if let Some(hook) = self.hook.clone() {
-            if let Some(reaction) = hook(self, apci, data) {
-                return reaction;
-            }
+        if let Some(hook) = self.hook.clone()
+            && let Some(reaction) = hook(self, apci, data)
+        {
+            return reaction;
         }
 
         if apci == A_AUTHORIZE_REQUEST {
@@ -673,16 +673,17 @@ impl MockDevice {
             }
             return answer(1, &[u8::from(self.programming)]);
         }
-        if let Some(prop) = self.properties.get_mut(&(oi, pid)) {
-            if prop.writable && start >= 1 {
-                let from = (usize::from(start) - 1) * prop.elem_size;
-                let end = from + value.len();
-                if prop.data.len() < end {
-                    prop.data.resize(end, 0);
-                }
-                prop.data[from..end].copy_from_slice(&value);
-                return answer(count, &value);
+        if let Some(prop) = self.properties.get_mut(&(oi, pid))
+            && prop.writable
+            && start >= 1
+        {
+            let from = (usize::from(start) - 1) * prop.elem_size;
+            let end = from + value.len();
+            if prop.data.len() < end {
+                prop.data.resize(end, 0);
             }
+            prop.data[from..end].copy_from_slice(&value);
+            return answer(count, &value);
         }
         // Anything else (including a PID_TABLE write) is refused with a
         // zero-count response, as a real System B device does.

@@ -486,10 +486,10 @@ impl FlashDisplay {
 
 impl Drop for FlashDisplay {
     fn drop(&mut self) {
-        if let Self::Live { bar, .. } = self {
-            if !bar.is_finished() {
-                stop_bar(bar, true);
-            }
+        if let Self::Live { bar, .. } = self
+            && !bar.is_finished()
+        {
+            stop_bar(bar, true);
         }
     }
 }
@@ -616,10 +616,10 @@ impl SweepDisplay {
 
 impl Drop for SweepDisplay {
     fn drop(&mut self) {
-        if let Self::Live { bar, .. } = self {
-            if !bar.is_finished() {
-                stop_bar(bar, false);
-            }
+        if let Self::Live { bar, .. } = self
+            && !bar.is_finished()
+        {
+            stop_bar(bar, false);
         }
     }
 }

@@ -713,13 +713,14 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
                         {
                             let mut s = state.lock().unwrap();
                             s.exchanges_this_connection += 1;
-                            if let Some(budget) = s.die_after_exchanges {
-                                if s.deaths_remaining > 0 && s.exchanges_this_connection > budget {
-                                    // This connection dies; the next fresh T_Connect
-                                    // decrements the death budget so a later window
-                                    // serves fully and the resume completes.
-                                    continue;
-                                }
+                            if let Some(budget) = s.die_after_exchanges
+                                && s.deaths_remaining > 0
+                                && s.exchanges_this_connection > budget
+                            {
+                                // This connection dies; the next fresh T_Connect
+                                // decrements the death budget so a later window
+                                // serves fully and the resume completes.
+                                continue;
                             }
                             // A rebooting device is unreachable: it went silent when
                             // it saw the restart and stays silent until the tool

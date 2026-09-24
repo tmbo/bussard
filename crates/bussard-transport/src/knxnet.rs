@@ -673,14 +673,18 @@ fn parse_dibs(cur: &mut Cursor<'_>) -> GatewayDescription {
                 // The first address is the gateway's own; the rest are the
                 // additional addresses handed to tunnelling clients.
                 out.additional_individual_addresses = dib_body[2..]
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|c| u16::from_be_bytes([c[0], c[1]]))
                     .collect();
             }
             DIB_TUNNELING_INFO if dib_body.len() >= 2 => {
                 out.max_apdu_length = Some(u16::from_be_bytes([dib_body[0], dib_body[1]]));
                 let slots: Vec<TunnelSlot> = dib_body[2..]
-                    .chunks_exact(4)
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
                     .map(|c| {
                         let status = u16::from_be_bytes([c[2], c[3]]);
                         TunnelSlot {

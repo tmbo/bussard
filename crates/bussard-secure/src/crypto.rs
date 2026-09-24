@@ -178,7 +178,7 @@ pub fn aes_cbc_decrypt(key: &Key16, iv: &[u8], ciphertext: &[u8]) -> Result<Vec<
     if iv.len() != BLOCK {
         return Err(CryptoError::BadBlockLen(iv.len()));
     }
-    if ciphertext.is_empty() || ciphertext.len() % BLOCK != 0 {
+    if ciphertext.is_empty() || !ciphertext.len().is_multiple_of(BLOCK) {
         return Err(CryptoError::BadBlockLen(ciphertext.len()));
     }
     let mut dec = Aes128CbcDec::new(key.bytes().into(), iv.into());
@@ -209,7 +209,7 @@ pub fn aes_cbc_encrypt(key: &Key16, iv: &[u8], plaintext: &[u8]) -> Result<Vec<u
     if iv.len() != BLOCK {
         return Err(CryptoError::BadBlockLen(iv.len()));
     }
-    if plaintext.is_empty() || plaintext.len() % BLOCK != 0 {
+    if plaintext.is_empty() || !plaintext.len().is_multiple_of(BLOCK) {
         return Err(CryptoError::BadBlockLen(plaintext.len()));
     }
     let mut enc = Aes128CbcEnc::new(key.bytes().into(), iv.into());

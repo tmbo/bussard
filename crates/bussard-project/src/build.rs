@@ -158,19 +158,19 @@ fn non_empty_label(s: &str) -> Option<String> {
 /// * `"MD-1_M-1_MI-1_CH-13"` → (`"MD-1_CH-13"`, `Some("MD-1_M-1_MI-1")`).
 /// * `"CH-2"` (a non-module channel) → (`"CH-2"`, `None`).
 fn normalize_channel_ref(channel_ref: &str) -> (String, Option<String>) {
-    if channel_ref.starts_with("MD-") {
-        if let Some(md_end) = channel_ref.find("_M-") {
-            let after = &channel_ref[md_end + 1..]; // "M-1_MI-1_CH-13"
-            if let Some(mi_pos) = after.find("_MI-") {
-                let rest = &after[mi_pos + "_MI-".len()..]; // "1_CH-13"
-                if let Some(obj_pos) = rest.find('_') {
-                    let module_selector = &after[..mi_pos + "_MI-".len() + obj_pos]; // "M-1_MI-1"
-                    let channel_part = &rest[obj_pos + 1..]; // "CH-13"
-                    let module_def = &channel_ref[..md_end]; // "MD-1"
-                    let mi_id = format!("{module_def}_{module_selector}");
-                    let app_channel = format!("{module_def}_{channel_part}");
-                    return (app_channel, Some(mi_id));
-                }
+    if channel_ref.starts_with("MD-")
+        && let Some(md_end) = channel_ref.find("_M-")
+    {
+        let after = &channel_ref[md_end + 1..]; // "M-1_MI-1_CH-13"
+        if let Some(mi_pos) = after.find("_MI-") {
+            let rest = &after[mi_pos + "_MI-".len()..]; // "1_CH-13"
+            if let Some(obj_pos) = rest.find('_') {
+                let module_selector = &after[..mi_pos + "_MI-".len() + obj_pos]; // "M-1_MI-1"
+                let channel_part = &rest[obj_pos + 1..]; // "CH-13"
+                let module_def = &channel_ref[..md_end]; // "MD-1"
+                let mi_id = format!("{module_def}_{module_selector}");
+                let app_channel = format!("{module_def}_{channel_part}");
+                return (app_channel, Some(mi_id));
             }
         }
     }
@@ -195,12 +195,11 @@ fn resolve_channel_label(
 
     for app in apps {
         if let Some(ch) = app.channel(&app_channel_id) {
-            if let Some(text) = &ch.text {
-                if let Some(label) =
+            if let Some(text) = &ch.text
+                && let Some(label) =
                     resolve_placeholders(text, app, mi_id.as_deref(), module_instances)
-                {
-                    return Some(label);
-                }
+            {
+                return Some(label);
             }
             if let Some(name) = ch.name.as_deref().and_then(non_empty_label) {
                 return Some(name);
@@ -557,12 +556,11 @@ fn app_ids_for(
         None => return Ok(Vec::new()),
     };
     let mfr = h2p_ref.split('_').next().unwrap_or(h2p_ref);
-    if let Some(hw) = ensure_hardware(mfr, container, hw_cache) {
-        if let Some(ids) = hw.hardware2program.get(h2p_ref) {
-            if !ids.is_empty() {
-                return Ok(ids.clone());
-            }
-        }
+    if let Some(hw) = ensure_hardware(mfr, container, hw_cache)
+        && let Some(ids) = hw.hardware2program.get(h2p_ref)
+        && !ids.is_empty()
+    {
+        return Ok(ids.clone());
     }
     // Fallback: `<mfr>_H-…_HP-<rest>` → `<mfr>_A-<rest>`.
     Ok(fallback_app_id(h2p_ref).into_iter().collect())
@@ -878,21 +876,21 @@ fn param_name_slug(name: &str) -> String {
 ///   instance selector is removed from the app-relative ref.
 fn normalize_ref(ref_id: &str) -> (String, Option<String>) {
     // Locate the `_M-<m>_MI-<mi>_` module-instance selector, if present.
-    if let Some(md_end) = ref_id.find("_M-") {
-        if ref_id.starts_with("MD-") {
-            // The selector runs from `_M-` up to the segment after `_MI-<n>`.
-            let after = &ref_id[md_end + 1..]; // e.g. "M-6_MI-1_O-2-1_R-37"
-            // Split off the object part after `MI-<n>_`.
-            if let Some(mi_pos) = after.find("_MI-") {
-                let rest = &after[mi_pos + "_MI-".len()..]; // "1_O-2-1_R-37"
-                if let Some(obj_pos) = rest.find('_') {
-                    let module_selector = &after[..mi_pos + "_MI-".len() + obj_pos]; // "M-6_MI-1"
-                    let object_part = &rest[obj_pos + 1..]; // "O-2-1_R-37"
-                    let module_def = &ref_id[..md_end]; // "MD-1"
-                    let mi_id = format!("{module_def}_{module_selector}");
-                    let app_ref = format!("{module_def}_{object_part}");
-                    return (app_ref, Some(mi_id));
-                }
+    if let Some(md_end) = ref_id.find("_M-")
+        && ref_id.starts_with("MD-")
+    {
+        // The selector runs from `_M-` up to the segment after `_MI-<n>`.
+        let after = &ref_id[md_end + 1..]; // e.g. "M-6_MI-1_O-2-1_R-37"
+        // Split off the object part after `MI-<n>_`.
+        if let Some(mi_pos) = after.find("_MI-") {
+            let rest = &after[mi_pos + "_MI-".len()..]; // "1_O-2-1_R-37"
+            if let Some(obj_pos) = rest.find('_') {
+                let module_selector = &after[..mi_pos + "_MI-".len() + obj_pos]; // "M-6_MI-1"
+                let object_part = &rest[obj_pos + 1..]; // "O-2-1_R-37"
+                let module_def = &ref_id[..md_end]; // "MD-1"
+                let mi_id = format!("{module_def}_{module_selector}");
+                let app_ref = format!("{module_def}_{object_part}");
+                return (app_ref, Some(mi_id));
             }
         }
     }
@@ -935,13 +933,11 @@ fn build_product(
     if let (Some(product_ref), Some(mfr)) = (
         raw_dev.product_ref_id.as_deref(),
         manufacturer_ref.as_deref(),
-    ) {
-        if let Some(hw) = hw_cache.get(mfr) {
-            if let Some(info) = hw.products.get(product_ref) {
-                order_number = info.order_number.clone();
-                hardware_name = info.hardware_name.clone();
-            }
-        }
+    ) && let Some(hw) = hw_cache.get(mfr)
+        && let Some(info) = hw.products.get(product_ref)
+    {
+        order_number = info.order_number.clone();
+        hardware_name = info.hardware_name.clone();
     }
 
     let product = Product {

@@ -157,15 +157,15 @@ fn fingerprint(dir: &Path) -> Fingerprint {
     let mut total_len = 0u64;
 
     let mut visit = |path: &Path| {
-        if let Ok(meta) = std::fs::metadata(path) {
-            if meta.is_file() {
-                count += 1;
-                total_len += meta.len();
-                if let Ok(modified) = meta.modified() {
-                    if modified > newest {
-                        newest = modified;
-                    }
-                }
+        if let Ok(meta) = std::fs::metadata(path)
+            && meta.is_file()
+        {
+            count += 1;
+            total_len += meta.len();
+            if let Ok(modified) = meta.modified()
+                && modified > newest
+            {
+                newest = modified;
             }
         }
     };

@@ -250,15 +250,15 @@ fn value_error(kind: &ParamKind, value: &str) -> Option<String> {
             if !*signed && n < 0 {
                 return Some(format!("value {n} is negative for an unsigned parameter"));
             }
-            if let Some(lo) = min {
-                if n < *lo {
-                    return Some(format!("value {n} is below the minimum {lo}"));
-                }
+            if let Some(lo) = min
+                && n < *lo
+            {
+                return Some(format!("value {n} is below the minimum {lo}"));
             }
-            if let Some(hi) = max {
-                if n > *hi {
-                    return Some(format!("value {n} is above the maximum {hi}"));
-                }
+            if let Some(hi) = max
+                && n > *hi
+            {
+                return Some(format!("value {n} is above the maximum {hi}"));
             }
             None
         }
@@ -503,15 +503,15 @@ fn check_ga_consistency(model: &Model, diags: &mut Vec<Diagnostic>) {
                 if is_send {
                     info.senders.push(format!("{ia}#{}", link.object));
                 }
-                if let Some(co) = co {
-                    if let Some(dpt) = &co.dpt {
-                        if let Some(size) = dpt.expected_size() {
-                            let si = SizeInfo::from_apdu(size);
-                            info.sizes.insert((si, format!("{ia}#{} dpt", link.object)));
-                            info.sizes_only.insert(si);
-                        }
-                        info.subtypes.insert(dpt.to_string());
+                if let Some(co) = co
+                    && let Some(dpt) = &co.dpt
+                {
+                    if let Some(size) = dpt.expected_size() {
+                        let si = SizeInfo::from_apdu(size);
+                        info.sizes.insert((si, format!("{ia}#{} dpt", link.object)));
+                        info.sizes_only.insert(si);
                     }
+                    info.subtypes.insert(dpt.to_string());
                 }
             }
         }

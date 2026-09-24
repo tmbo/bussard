@@ -325,22 +325,22 @@ fn check_conventions(model: &Model, config: &GroupsLint, diags: &mut Vec<Diagnos
         let Some(role) = block.spec.role(block.offset) else {
             continue;
         };
-        if let Some(dpt) = group.dpt {
-            if dpt.main != role.dpt_main {
-                diags.push(Diagnostic::new(
-                    "L008",
-                    Severity::Warning,
-                    format!("groups.\"{ga}\""),
-                    format!(
-                        "offset {} of a {} block is the \"{}\" role (DPT {}), but this address is \
+        if let Some(dpt) = group.dpt
+            && dpt.main != role.dpt_main
+        {
+            diags.push(Diagnostic::new(
+                "L008",
+                Severity::Warning,
+                format!("groups.\"{ga}\""),
+                format!(
+                    "offset {} of a {} block is the \"{}\" role (DPT {}), but this address is \
                          DPT {dpt}",
-                        block.offset,
-                        block.spec.key,
-                        role.label,
-                        role.dpt()
-                    ),
-                ));
-            }
+                    block.offset,
+                    block.spec.key,
+                    role.label,
+                    role.dpt()
+                ),
+            ));
         }
     }
 

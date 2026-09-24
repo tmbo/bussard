@@ -442,38 +442,38 @@ fn validate_segments(app: &ApplicationProgram) -> Result<()> {
         // A declared `Size` is bounded by the same cap as an absent one: it is
         // what every `image.resize` below is allowed to grow to, so a hostile
         // `Size="4294967295"` must not become a 4 GiB allocation.
-        if let Some(sz) = seg.size {
-            if u64::from(sz) > MAX_SEGMENT_IMAGE {
-                return Err(param_err(
-                    app,
-                    seg_id,
-                    &format!(
-                        "segment declares Size {sz}, above the {MAX_SEGMENT_IMAGE}-byte image cap \
+        if let Some(sz) = seg.size
+            && u64::from(sz) > MAX_SEGMENT_IMAGE
+        {
+            return Err(param_err(
+                app,
+                seg_id,
+                &format!(
+                    "segment declares Size {sz}, above the {MAX_SEGMENT_IMAGE}-byte image cap \
                          (refusing an over-sized segment image)"
-                    ),
-                ));
-            }
+                ),
+            ));
         }
         let limit = match seg.size {
             Some(sz) => u64::from(sz),
             None => MAX_SEGMENT_IMAGE,
         };
         for (what, payload) in [("<Data>", &seg.data), ("<Mask>", &seg.mask)] {
-            if let Some(bytes) = payload {
-                if bytes.len() as u64 > limit {
-                    return Err(param_err(
-                        app,
-                        seg_id,
-                        &format!(
-                            "segment {what} is {} bytes but the segment declares Size {} \
+            if let Some(bytes) = payload
+                && bytes.len() as u64 > limit
+            {
+                return Err(param_err(
+                    app,
+                    seg_id,
+                    &format!(
+                        "segment {what} is {} bytes but the segment declares Size {} \
                              (refusing an over-sized segment image)",
-                            bytes.len(),
-                            seg.size.map(|s| s.to_string()).unwrap_or_else(|| format!(
-                                "absent, capped at {MAX_SEGMENT_IMAGE}"
-                            )),
-                        ),
-                    ));
-                }
+                        bytes.len(),
+                        seg.size
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| format!("absent, capped at {MAX_SEGMENT_IMAGE}")),
+                    ),
+                ));
             }
         }
     }
@@ -565,10 +565,10 @@ pub fn compute_dynamic_parameter_image(
 
     // A segment's image spans its declared size (the template may be shorter).
     for (seg_id, image) in images.iter_mut() {
-        if let Some(size) = app.code_segments.get(seg_id).and_then(|s| s.size) {
-            if image.len() < size as usize {
-                image.resize(size as usize, 0);
-            }
+        if let Some(size) = app.code_segments.get(seg_id).and_then(|s| s.size)
+            && image.len() < size as usize
+        {
+            image.resize(size as usize, 0);
         }
     }
     Ok(images)
@@ -825,10 +825,10 @@ fn invisible_parameter_slots<'a>(
         .collect();
     params.sort_by(|a, b| a.id.cmp(&b.id));
     for param in params {
-        if let Some(&(ui, mi)) = union_of.get(param.id.as_str()) {
-            if occupied_unions.contains(&ui) || !app.unions[ui].members[mi].is_default {
-                continue;
-            }
+        if let Some(&(ui, mi)) = union_of.get(param.id.as_str())
+            && (occupied_unions.contains(&ui) || !app.unions[ui].members[mi].is_default)
+        {
+            continue;
         }
         let Some(at) = location(app, union_of, param) else {
             continue;
@@ -1039,7 +1039,7 @@ enum Placement {
 /// whole octets as they are (cut or zero-padded on the right to the field), a
 /// narrower field as the big-endian number the octets spell.
 fn binary_value_placement(bits: u32, bytes: &[u8]) -> Placement {
-    if bits % 8 == 0 {
+    if bits.is_multiple_of(8) {
         let mut buf = bytes.to_vec();
         buf.resize((bits / 8) as usize, 0);
         return Placement::Bytes(buf);
@@ -1363,23 +1363,23 @@ fn encode_int(
             &format!("integer value `{raw}` is not an integer"),
         )
     })?;
-    if let Some(lo) = min {
-        if n < lo {
-            return Err(param_err(
-                app,
-                pname,
-                &format!("value {n} is below the declared minimum {lo}"),
-            ));
-        }
+    if let Some(lo) = min
+        && n < lo
+    {
+        return Err(param_err(
+            app,
+            pname,
+            &format!("value {n} is below the declared minimum {lo}"),
+        ));
     }
-    if let Some(hi) = max {
-        if n > hi {
-            return Err(param_err(
-                app,
-                pname,
-                &format!("value {n} is above the declared maximum {hi}"),
-            ));
-        }
+    if let Some(hi) = max
+        && n > hi
+    {
+        return Err(param_err(
+            app,
+            pname,
+            &format!("value {n} is above the declared maximum {hi}"),
+        ));
     }
     encode_int_bits(app, pname, size_bits.unwrap_or(8), signed, n)
 }
@@ -1409,7 +1409,7 @@ fn encode_int_bits(
         // big-endian, sign-extended to the full width, matching the byte-multiple
         // `Other` convention. A non-byte-aligned field this wide does not occur;
         // refuse it rather than guess a bit placement.
-        if bits % 8 != 0 {
+        if !bits.is_multiple_of(8) {
             return Err(param_err(
                 app,
                 pname,
@@ -1760,7 +1760,7 @@ fn decode_dpt9_parameter(b: [u8; 2]) -> f64 {
 /// by the encoder: the value its last eight octets hold, when the octets
 /// before them are the matching extension.
 fn decode_wide_int(bytes: &[u8], bits: u32, signed: bool) -> Option<i64> {
-    if bits % 8 != 0 || bytes.len() < 8 {
+    if !bits.is_multiple_of(8) || bytes.len() < 8 {
         return None;
     }
     let (head, tail) = bytes.split_at(bytes.len() - 8);

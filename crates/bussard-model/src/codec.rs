@@ -1074,10 +1074,10 @@ fn strip_unit<'a>(input: &'a str, unit: Option<&str>) -> &'a str {
         }
         // `°C` also matches a bare `C`, `m/s` a bare unit, etc.: try the unit
         // without a leading degree sign.
-        if let Some(bare) = u.strip_prefix('°') {
-            if let Some(stripped) = strip_suffix_ci(input, bare) {
-                return stripped;
-            }
+        if let Some(bare) = u.strip_prefix('°')
+            && let Some(stripped) = strip_suffix_ci(input, bare)
+        {
+            return stripped;
         }
     }
     // A lone trailing degree sign (e.g. an angle `45°`) is always tolerated.
