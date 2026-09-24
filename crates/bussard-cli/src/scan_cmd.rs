@@ -9,20 +9,22 @@
 //!
 //! The address range can be narrowed with `--from`/`--to` (defaults `0`/`255`),
 //! which cuts the sweep time when you already know the device numbers of
-//! interest — a full line is 256 serial probes, each costing up to a couple of
-//! seconds on an absent address.
+//! interest — a full line is 256 serial probes. An absent address costs tens of
+//! milliseconds on an interface that reports a negative `L_Data.con`, and up to
+//! a couple of seconds (the ACK timeout and its repetition) on one that does not
+//! (issue #45). The summary and `--json`'s `timing` say which applied.
 //!
 //! It always exits 0 — it is a report, not a check.
 
 use std::path::Path;
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow};
 use bussard_mgmt::{DeviceConnection, L4Channel, Timeouts, manufacturers, system_type};
 use bussard_model::IndividualAddress;
 use bussard_secure::Key16;
-use bussard_service::identity::{self, Identity, SecureStatus};
+use bussard_service::identity::{self, Identity, ProbeMiss, SecureStatus};
 use bussard_service::secure::ToolKeys;
 use bussard_service::{Authorize, BusService, L4Options, SourcePolicy, WritePolicy};
 
@@ -47,6 +49,8 @@ pub(crate) fn discovery_timeouts() -> Timeouts {
             ack_timeout: Duration::from_millis(ms),
             max_repetitions: 0,
             response_timeout: Duration::from_millis(ms),
+            // Discovery: a negative con classifies absent (issue #45).
+            absent_on_negative_confirmation: true,
         },
         None => Timeouts::discovery(),
     }
@@ -54,8 +58,53 @@ pub(crate) fn discovery_timeouts() -> Timeouts {
 
 /// Per-address time budget used to estimate the sweep duration up front. A
 /// present device answers in well under this; an absent one costs about
-/// `2 × discovery ack_timeout`.
+/// `2 × discovery ack_timeout` on an interface that reports no negative
+/// `L_Data.con` (with one, tens of milliseconds, issue #45). The estimate stays
+/// the worst case.
 const PER_ADDRESS_ESTIMATE: Duration = Duration::from_millis(3200);
+
+/// How one swept address turned out, and how long its probe took (issue #45).
+#[derive(Debug, Clone, Copy)]
+struct AddressTiming {
+    address: IndividualAddress,
+    elapsed: Duration,
+    /// `None` for a found device, the reason otherwise.
+    miss: Option<ProbeMiss>,
+}
+
+impl AddressTiming {
+    /// The stable `--json` spelling of the outcome.
+    fn outcome(&self) -> &'static str {
+        self.miss.map(ProbeMiss::as_str).unwrap_or("present")
+    }
+}
+
+/// What a sweep produced: the responders plus the per-address timing.
+#[derive(Debug, Default)]
+struct Sweep {
+    found: Vec<Found>,
+    timings: Vec<AddressTiming>,
+    elapsed: Duration,
+}
+
+impl Sweep {
+    /// How many addresses a given miss classified.
+    fn count(&self, miss: ProbeMiss) -> usize {
+        self.timings.iter().filter(|t| t.miss == Some(miss)).count()
+    }
+
+    /// The one-line summary: "N addresses in T s (absent by negative
+    /// confirmation: M, by timeout: K)".
+    fn summary(&self) -> String {
+        format!(
+            "{} addresses in {:.1} s (absent by negative confirmation: {}, by timeout: {})",
+            self.timings.len(),
+            self.elapsed.as_secs_f64(),
+            self.count(ProbeMiss::NegativeConfirmation),
+            self.count(ProbeMiss::Timeout)
+        )
+    }
+}
 
 /// A single discovered device and everything read from it.
 #[derive(Debug, Clone)]
@@ -157,7 +206,7 @@ pub fn run(
     );
 
     let runtime = tokio::runtime::Runtime::new()?;
-    let found = runtime.block_on(async move {
+    let swept = runtime.block_on(async move {
         // Read-only on the bus. Present the tunnel-assigned individual address
         // as the source; devices ignore connection-oriented frames from any
         // other source, and the gateway only routes replies back to the
@@ -168,21 +217,22 @@ pub fn run(
         // Guard the sweep with Ctrl-C: on interrupt, stop sweeping and fall
         // through to a clean close so the gateway tunnel slot is released
         // rather than leaked (~2 min hold) — see issue #31.
-        let found = tokio::select! {
-            found = sweep(&service, area, line_no, from, to, source, json, &key_for) => found,
+        let swept = tokio::select! {
+            swept = sweep(&service, area, line_no, from, to, source, json, &key_for) => swept,
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\ninterrupted; closing the bus connection");
-                Vec::new()
+                Sweep::default()
             }
         };
         service.close().await;
-        anyhow::Ok(found)
+        anyhow::Ok(swept)
     })?;
 
-    let report = cross_reference(found, model.as_ref());
+    let timing = timing_json(&swept);
+    let report = cross_reference(swept.found, model.as_ref());
 
     if json {
-        print_json(&report)?;
+        print_json(&report, timing)?;
     } else {
         print_table(&report);
     }
@@ -205,8 +255,10 @@ async fn sweep(
     source: IndividualAddress,
     json: bool,
     key_for: &dyn Fn(IndividualAddress) -> Option<Key16>,
-) -> Vec<Found> {
+) -> Sweep {
+    let started = Instant::now();
     let mut found = Vec::new();
+    let mut timings = Vec::new();
     // Progress to stderr (issue #147): a line rewritten in place, or the live
     // view on an interactive terminal.
     let display = crate::progress::SweepDisplay::new(
@@ -221,17 +273,57 @@ async fn sweep(
         };
         display.probing(addr, found.len());
 
-        if let Some(dev) = probe_with_key(service, addr, source, key_for(addr)).await {
-            found.push(dev);
-        }
+        let probe_started = Instant::now();
+        let outcome =
+            identity::probe_classified(service, addr, &probe_options(source), key_for(addr)).await;
+        let miss = match outcome {
+            Ok((identity, status)) => {
+                found.push(Found::from_identity(identity, status));
+                None
+            }
+            Err(miss) => Some(miss),
+        };
+        timings.push(AddressTiming {
+            address: addr,
+            elapsed: probe_started.elapsed(),
+            miss,
+        });
         display.advance();
     }
     display.finish();
+    let swept = Sweep {
+        found,
+        timings,
+        elapsed: started.elapsed(),
+    };
     eprintln!(
-        "\rscan complete: {} device(s) found            ",
-        found.len()
+        "\rscan complete: {} device(s) found; {}",
+        swept.found.len(),
+        swept.summary()
     );
-    found
+    swept
+}
+
+/// The `timing` object of `--json` (issue #45): the summary counts plus one row
+/// per swept address with its probe time and outcome.
+fn timing_json(swept: &Sweep) -> serde_json::Value {
+    use serde_json::json;
+    json!({
+        "addresses": swept.timings.len(),
+        "total_ms": swept.elapsed.as_millis(),
+        "absent_negative_confirmation": swept.count(ProbeMiss::NegativeConfirmation),
+        "absent_timeout": swept.count(ProbeMiss::Timeout),
+        "refused": swept.count(ProbeMiss::Refused),
+        "per_address": swept
+            .timings
+            .iter()
+            .map(|t| json!({
+                "address": t.address.to_string(),
+                "ms": t.elapsed.as_millis(),
+                "outcome": t.outcome(),
+            }))
+            .collect::<Vec<_>>(),
+    })
 }
 
 /// The session options of a probe: the sweep's checked source, the discovery
@@ -399,8 +491,9 @@ fn print_table(report: &Report) {
     }
 }
 
-/// Prints a stable JSON array of the discovered devices plus the model delta.
-fn print_json(report: &Report) -> anyhow::Result<()> {
+/// Prints a stable JSON array of the discovered devices plus the model delta
+/// and the sweep's `timing` (issue #45).
+fn print_json(report: &Report, timing: serde_json::Value) -> anyhow::Result<()> {
     use serde_json::json;
     let devices: Vec<_> = report
         .found
@@ -441,6 +534,7 @@ fn print_json(report: &Report) -> anyhow::Result<()> {
             .iter()
             .map(|(a, name)| json!({ "address": a.to_string(), "name": name }))
             .collect::<Vec<_>>(),
+        "timing": timing,
     });
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())

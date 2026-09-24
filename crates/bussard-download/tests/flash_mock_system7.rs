@@ -1192,6 +1192,7 @@ fn fast_timeouts() -> bussard_mgmt::Timeouts {
         ack_timeout: Duration::from_millis(50),
         max_repetitions: 1,
         response_timeout: Duration::from_millis(50),
+        absent_on_negative_confirmation: false,
     }
 }
 
@@ -2565,6 +2566,7 @@ async fn run_flash_across_restart_outage(
             ack_timeout: Duration::from_millis(300),
             max_repetitions: 1,
             response_timeout: Duration::from_millis(300),
+            absent_on_negative_confirmation: false,
         }),
     };
     let mut session = Session::open_with_key(connector, None).await?;

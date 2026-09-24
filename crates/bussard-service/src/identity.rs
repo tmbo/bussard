@@ -21,6 +21,7 @@ use bussard_secure::Key16;
 
 use crate::bus::{BusService, Device, L4Options};
 use crate::error::ServiceError;
+use bussard_mgmt::MgmtError;
 
 /// The mask a Data Secure-activated device reports to a plain descriptor read.
 pub const HIDDEN_MASK: u16 = 0xFFFF;
@@ -100,7 +101,7 @@ pub async fn identify_plain(
         tool_key: None,
         ..options.clone()
     };
-    session(service, address, &options, true).await
+    session(service, address, &options, true).await.ok()
 }
 
 /// The secured probe: the reads of [`identify_plain`] over `A_SecureData` with
@@ -116,7 +117,45 @@ pub async fn identify_secured(
         tool_key: Some(tool_key),
         ..options.clone()
     };
-    session(service, address, &options, false).await
+    session(service, address, &options, false).await.ok()
+}
+
+/// Why [`probe_classified`] found no identity at an address (issue #45).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeMiss {
+    /// The interface reported a negative `L_Data.con` for the connect or the
+    /// descriptor read: nothing acknowledged the frame on the medium, so the
+    /// address is absent. Established in tens of milliseconds, only under a
+    /// budget that opts in
+    /// ([`Timeouts::absent_on_negative_confirmation`](bussard_mgmt::Timeouts::absent_on_negative_confirmation)).
+    NegativeConfirmation,
+    /// Nothing answered within the ACK timeout and its repetitions: absent,
+    /// established the slow way (the fallback on an interface that reports no
+    /// negative confirmations).
+    Timeout,
+    /// A device reacted but did not identify itself (a refused descriptor
+    /// read, a disconnect), or the session could not be opened.
+    Refused,
+}
+
+impl ProbeMiss {
+    /// The stable `--json` spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProbeMiss::NegativeConfirmation => "absent_negative_confirmation",
+            ProbeMiss::Timeout => "absent_timeout",
+            ProbeMiss::Refused => "refused",
+        }
+    }
+
+    /// The miss a failed probe session's error stands for.
+    fn from_error(err: &MgmtError) -> ProbeMiss {
+        match err {
+            MgmtError::NotConfirmed { .. } => ProbeMiss::NegativeConfirmation,
+            MgmtError::NoResponse { .. } => ProbeMiss::Timeout,
+            _ => ProbeMiss::Refused,
+        }
+    }
 }
 
 /// Identifies `address` the way `scan` does (issue #203).
@@ -131,20 +170,45 @@ pub async fn probe(
     options: &L4Options,
     tool_key: Option<Key16>,
 ) -> Option<(Identity, SecureStatus)> {
+    probe_classified(service, address, options, tool_key)
+        .await
+        .ok()
+}
+
+/// [`probe`], saying why an address yielded no identity (issue #45): absent by
+/// a negative `L_Data.con`, absent by timeout, or refused. The frames are those
+/// of [`probe`]; with a tool key, a negative confirmation of the secured probe
+/// ends the probe there, since it proves nothing sits at the address.
+pub async fn probe_classified(
+    service: &BusService,
+    address: IndividualAddress,
+    options: &L4Options,
+    tool_key: Option<Key16>,
+) -> Result<(Identity, SecureStatus), ProbeMiss> {
     let had_key = tool_key.is_some();
     if let Some(key) = tool_key {
-        if let Some(identity) = identify_secured(service, address, options, key).await {
-            return Some((identity, SecureStatus::Activated));
+        let secured = L4Options {
+            tool_key: Some(key),
+            ..options.clone()
+        };
+        match session(service, address, &secured, false).await {
+            Ok(identity) => return Ok((identity, SecureStatus::Activated)),
+            Err(ProbeMiss::NegativeConfirmation) => return Err(ProbeMiss::NegativeConfirmation),
+            Err(_) => {}
         }
         tracing::debug!("{address} did not answer the secured probe; trying the plain probe");
     }
-    let identity = identify_plain(service, address, options).await?;
+    let plain = L4Options {
+        tool_key: None,
+        ..options.clone()
+    };
+    let identity = session(service, address, &plain, true).await?;
     let status = match (identity.mask_hidden(), had_key) {
         (false, _) => SecureStatus::Plain,
         (true, false) => SecureStatus::ActivatedNoKey,
         (true, true) => SecureStatus::KeyRefused,
     };
-    Some((identity, status))
+    Ok((identity, status))
 }
 
 /// One probe session; `plain` selects the hidden-mask short cut.
@@ -153,30 +217,37 @@ async fn session(
     address: IndividualAddress,
     options: &L4Options,
     plain: bool,
-) -> Option<Identity> {
-    service
+) -> Result<Identity, ProbeMiss> {
+    let outcome = service
         .with_device(address, options, async |dev| {
             Ok::<_, ServiceError>(identify(dev, address, plain).await)
         })
-        .await
-        .ok()
-        .flatten()
+        .await;
+    match outcome {
+        Ok(result) => result,
+        Err(ServiceError::Mgmt(err)) => Err(ProbeMiss::from_error(&err)),
+        Err(_) => Err(ProbeMiss::Refused),
+    }
 }
 
 /// The reads of one probe on its open session.
-async fn identify(dev: &mut Device, address: IndividualAddress, plain: bool) -> Option<Identity> {
+async fn identify(
+    dev: &mut Device,
+    address: IndividualAddress,
+    plain: bool,
+) -> Result<Identity, ProbeMiss> {
     let mask = match dev.device_descriptor().await {
         Ok(mask) => mask,
         Err(err) => {
             if err.device_present() {
                 tracing::debug!("{address} is present but refused the descriptor read: {err}");
             }
-            return None;
+            return Err(ProbeMiss::from_error(&err));
         }
     };
     if plain && mask == HIDDEN_MASK {
         // Data Secure-activated: every further plain read is dropped.
-        return Some(Identity {
+        return Ok(Identity {
             address,
             mask,
             manufacturer_id: None,
@@ -204,7 +275,7 @@ async fn identify(dev: &mut Device, address: IndividualAddress, plain: bool) -> 
         .ok()
         .map(|v| clean_ascii(&v))
         .filter(|s| !s.is_empty());
-    Some(Identity {
+    Ok(Identity {
         address,
         mask,
         manufacturer_id,

@@ -487,3 +487,215 @@ fn test_scan_secure_devices_are_read_secured_or_labelled() -> TestResult {
     assert_eq!(labelled, 2, "both activated devices are labelled:\n{text}");
     Ok(())
 }
+
+// --- negative L_Data.con classification (issue #45) ---
+
+/// The line of the issue #45 tests: five present devices among absent
+/// addresses.
+fn five_devices() -> TestResult<Vec<MockDevice>> {
+    Ok(vec![
+        device("1.1.1", 0x07B0, 0x0083, b"MDT-JAL0410")?,
+        device("1.1.4", 0x07B0, 0x0083, b"MDT-JAL0410")?,
+        device("1.1.7", 0x0705, 0x0004, b"2118REGHE")?,
+        device("1.1.8", 0x0012, 0x0002, b"6197/15")?,
+        device("1.1.12", 0x07B0, 0x0083, b"MDT-AKK0816")?,
+    ])
+}
+
+/// Starts a gateway over `devices`, reporting `L_Data.con`s when `confirm`.
+fn start_line(
+    rt: &tokio::runtime::Runtime,
+    devices: Vec<MockDevice>,
+    confirm: bool,
+) -> TestResult<MockGateway> {
+    let builder = MockGateway::builder()
+        .channel(CHANNEL)
+        .idle_timeout(Duration::from_secs(900))
+        .devices(devices);
+    let builder = if confirm {
+        builder.confirmations()
+    } else {
+        builder
+    };
+    Ok(rt.block_on(builder.start())?)
+}
+
+/// Runs `scan 1.1 --from FROM --to TO --json` against `port` without a model;
+/// `discovery_ms` overrides the discovery budget (`None`: the real one).
+fn scan_json(
+    port: u16,
+    from: u8,
+    to: u8,
+    discovery_ms: Option<&str>,
+    tag: &str,
+) -> TestResult<(serde_json::Value, String, Duration)> {
+    let tmp = std::env::temp_dir().join(format!("bussard-scan-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&tmp)?;
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_bussard"));
+    cmd.args([
+        "scan",
+        "1.1",
+        "--from",
+        &from.to_string(),
+        "--to",
+        &to.to_string(),
+        "--dir",
+        tmp.to_str().ok_or("temp path is not UTF-8")?,
+        "--gateway",
+        &format!("127.0.0.1:{port}"),
+        "--json",
+    ])
+    .env_remove("BUSSARD_SCAN_DISCOVERY_MS")
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
+    if let Some(ms) = discovery_ms {
+        cmd.env("BUSSARD_SCAN_DISCOVERY_MS", ms);
+    }
+    let started = std::time::Instant::now();
+    let output = cmd.output()?;
+    let elapsed = started.elapsed();
+    let _ = std::fs::remove_dir_all(&tmp);
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    assert!(
+        output.status.success(),
+        "scan must exit 0; stderr:\n{stderr}"
+    );
+    let stdout = String::from_utf8(output.stdout)?;
+    let json: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("scan --json must emit valid JSON: {e}\n{stdout}"))?;
+    Ok((json, stderr, elapsed))
+}
+
+/// The per-address rows of `timing`, as (address, ms, outcome).
+fn per_address(json: &serde_json::Value) -> TestResult<Vec<(String, u64, String)>> {
+    json["timing"]["per_address"]
+        .as_array()
+        .ok_or("timing.per_address array")?
+        .iter()
+        .map(|row| {
+            Ok((
+                row["address"].as_str().ok_or("address")?.to_string(),
+                row["ms"].as_u64().ok_or("ms")?,
+                row["outcome"].as_str().ok_or("outcome")?.to_string(),
+            ))
+        })
+        .collect()
+}
+
+/// The found devices' identifying fields, for comparing two runs.
+fn found_rows(json: &serde_json::Value) -> TestResult<Vec<String>> {
+    Ok(json["found"]
+        .as_array()
+        .ok_or("found array")?
+        .iter()
+        .map(|d| d.to_string())
+        .collect())
+}
+
+/// The frames the client sent to the present devices, in order.
+fn frames_to_present(gw: &MockGateway) -> TestResult<Vec<Vec<u8>>> {
+    let present: Vec<_> = gw.devices()?.iter().map(|d| d.address).collect();
+    Ok(gw
+        .sent()?
+        .iter()
+        .filter(|f| {
+            f.individual_destination()
+                .is_some_and(|dest| present.contains(&dest))
+        })
+        .map(|f| f.encode())
+        .collect())
+}
+
+/// An interface that reports negative confirmations: every absent address is
+/// classified by the con, each in under 200 ms, on the real discovery budget
+/// (a timeout would cost 2 x 1.5 s). The present devices are read with exactly
+/// the frames of a gateway that reports none, and give the same results.
+#[test]
+fn test_scan_negative_confirmation_classifies_absent_fast() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let gw = start_line(&rt, five_devices()?, true)?;
+    let (json, stderr, _) = scan_json(gw.port(), 1, 12, None, "negcon")?;
+    let rows = per_address(&json)?;
+    assert_eq!(rows.len(), 12);
+    for (address, ms, outcome) in &rows {
+        let present = ["1.1.1", "1.1.4", "1.1.7", "1.1.8", "1.1.12"].contains(&address.as_str());
+        if present {
+            assert_eq!(outcome, "present", "{address}");
+        } else {
+            assert_eq!(outcome, "absent_negative_confirmation", "{address}");
+            assert!(*ms < 200, "{address} took {ms} ms to classify");
+        }
+    }
+    assert_eq!(json["timing"]["absent_negative_confirmation"], 7);
+    assert_eq!(json["timing"]["absent_timeout"], 0);
+    assert!(
+        stderr.contains("12 addresses in")
+            && stderr.contains("(absent by negative confirmation: 7, by timeout: 0)"),
+        "the summary line: {stderr}"
+    );
+    let with_con = (found_rows(&json)?, frames_to_present(&gw)?);
+    drop(gw);
+
+    // The same line behind an interface without confirmations (short budget,
+    // so the fallback's timeouts stay fast): same devices, same frames.
+    let gw = start_line(&rt, five_devices()?, false)?;
+    let (json, _, _) = scan_json(gw.port(), 1, 12, Some("40"), "negcon-ref")?;
+    assert_eq!(with_con.0, found_rows(&json)?, "same devices and fields");
+    assert_eq!(
+        with_con.1,
+        frames_to_present(&gw)?,
+        "the present devices see byte-identical frames"
+    );
+    Ok(())
+}
+
+/// An interface that reports no confirmations: the ACK timeout and its
+/// repetition classify every absent address, as before issue #45.
+#[test]
+fn test_scan_without_confirmations_falls_back_to_timeout() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let gw = start_line(&rt, five_devices()?, false)?;
+    let (json, stderr, _) = scan_json(gw.port(), 1, 12, Some("40"), "nocon")?;
+    for (address, ms, outcome) in per_address(&json)? {
+        if outcome != "present" {
+            assert_eq!(outcome, "absent_timeout", "{address}");
+            assert!(ms >= 40, "{address} waited out the ACK timeout ({ms} ms)");
+        }
+    }
+    assert_eq!(json["found"].as_array().ok_or("found")?.len(), 5);
+    assert_eq!(json["timing"]["absent_negative_confirmation"], 0);
+    assert_eq!(json["timing"]["absent_timeout"], 7);
+    assert!(
+        stderr.contains("(absent by negative confirmation: 0, by timeout: 7)"),
+        "the summary line: {stderr}"
+    );
+    Ok(())
+}
+
+/// The issue #45 measurement: a full line of 256 addresses with five present
+/// devices, on the real discovery budget, behind an interface with
+/// (`BUSSARD_SCAN_MEASURE=con`) or without (`=plain`) negative confirmations.
+/// Prints wall-clock and request counts. Ignored: the `plain` run takes about
+/// 12.5 minutes. Run with
+/// `BUSSARD_SCAN_MEASURE=con cargo nextest run -p bussard-cli --test scan_mock
+/// --run-ignored only measure_full_line --no-capture`.
+#[test]
+#[ignore = "measurement, minutes of wall-clock"]
+fn measure_full_line_sweep() -> TestResult {
+    let kind = std::env::var("BUSSARD_SCAN_MEASURE").unwrap_or_else(|_| "con".to_string());
+    let rt = tokio::runtime::Runtime::new()?;
+    let gw = start_line(&rt, five_devices()?, kind == "con")?;
+    let (json, _, elapsed) = scan_json(gw.port(), 0, 255, None, "measure")?;
+    let stats = gw.stats();
+    println!(
+        "MEASURE kind={kind} wall={:.1}s total_ms={} found={} negcon={} timeout={} \
+         tunnelling_requests={}",
+        elapsed.as_secs_f64(),
+        json["timing"]["total_ms"],
+        json["found"].as_array().map_or(0, Vec::len),
+        json["timing"]["absent_negative_confirmation"],
+        json["timing"]["absent_timeout"],
+        stats.requests
+    );
+    Ok(())
+}

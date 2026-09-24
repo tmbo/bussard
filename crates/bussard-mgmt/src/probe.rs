@@ -86,6 +86,7 @@ pub fn probe_timeouts_from_env() -> Timeouts {
             ack_timeout: std::time::Duration::from_millis(ms),
             max_repetitions: 0,
             response_timeout: std::time::Duration::from_millis(ms),
+            absent_on_negative_confirmation: false,
         },
         None => Timeouts::probe(),
     }
@@ -242,6 +243,7 @@ fn is_device_silence(err: &MgmtError) -> bool {
     matches!(
         err,
         MgmtError::NoResponse { .. }
+            | MgmtError::NotConfirmed { .. }
             | MgmtError::Disconnected { .. }
             | MgmtError::MidSessionSilence { .. }
             | MgmtError::Nak { .. }
@@ -303,6 +305,7 @@ mod tests {
             ack_timeout: Duration::from_millis(40),
             max_repetitions: 0,
             response_timeout: Duration::from_millis(40),
+            absent_on_negative_confirmation: false,
         }
     }
 

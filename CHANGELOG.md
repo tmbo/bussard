@@ -253,6 +253,13 @@ entry supersedes it and is not a diff against it.
 - `flash` and `apply` use one tunnel per command, negotiate the maximum APDU
   length, and poll for a device after a restart instead of sleeping (#122,
   #136).
+- `scan` rules out an absent address from the interface's negative
+  `L_Data.con` (22 to 45 ms) instead of waiting out 2 × 1.5 s of ACK timeout. A
+  gateway that sends no negative confirmation keeps the timeout path. A mock
+  line of 256 addresses with 5 devices drops from about 12.5 minutes to 8 s.
+  Present devices see the same frames. `scan --json` gains a `timing` object
+  with per-address probe times and outcomes, and stderr ends with a summary
+  of how each absent address was classified (#45).
 
 ### Fixed
 

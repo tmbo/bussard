@@ -1332,6 +1332,7 @@ fn flash_l4_timeouts() -> Option<Timeouts> {
             ack_timeout: std::time::Duration::from_millis(ms),
             max_repetitions: 1,
             response_timeout: std::time::Duration::from_millis(ms),
+            absent_on_negative_confirmation: false,
         })
 }
 

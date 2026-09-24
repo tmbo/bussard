@@ -129,7 +129,10 @@ pub mod secure_gateway;
 pub mod wire;
 
 pub use device::{ControlHook, Hook, MemoryWritePolicy, MockDevice, Reaction, Step};
-pub use gateway::{AckPolicy, GatewayBuilder, GatewayStats, Inbound, MockGateway, Outage, Verdict};
+pub use gateway::{
+    AckPolicy, CONFIRMATION_DELAY, GatewayBuilder, GatewayStats, Inbound, MockGateway, Outage,
+    Verdict,
+};
 pub use secure_gateway::{MockSecureGateway, SecureGatewayBuilder, SecureGatewayStats};
 pub use wire::RawGateway;
 

@@ -24,6 +24,19 @@ pub enum MgmtError {
         address: IndividualAddress,
     },
 
+    /// The interface reported a negative `L_Data.con` for the `T_Connect` or
+    /// the first numbered telegram: the medium did not acknowledge the frame,
+    /// so no device is at the address (issue #45). Like
+    /// [`MgmtError::NoResponse`] this means **absent**, only established from
+    /// the interface's confirmation in tens of milliseconds instead of by
+    /// waiting out the ACK timeout. Raised only under a budget that opts in
+    /// ([`Timeouts::absent_on_negative_confirmation`](crate::Timeouts::absent_on_negative_confirmation)).
+    #[error("no device at {address} (the interface reported a negative L_Data.con)")]
+    NotConfirmed {
+        /// The address the frame went to.
+        address: IndividualAddress,
+    },
+
     /// The device sent a `T_NAK` for a numbered data telegram after all
     /// retransmissions. The device is **present** but rejected the telegram.
     #[error("{address} negatively acknowledged (T_NAK) after retries")]
@@ -184,6 +197,7 @@ impl MgmtError {
         !matches!(
             self,
             MgmtError::NoResponse { .. }
+                | MgmtError::NotConfirmed { .. }
                 | MgmtError::MidSessionSilence {
                     kind: SilenceKind::NoResponse,
                     ..
