@@ -221,7 +221,7 @@ fn overlay_group(ga: GroupAddress, ours: &Group, theirs: &mut Group, report: &mu
     theirs.protected = ours.protected;
 }
 
-/// Merges `links.yaml`: wiring (send/listen) refreshed from theirs; the
+/// Merges the links: wiring (send/listen) refreshed from theirs; the
 /// hand-authored `name` on each link kept from ours with differences reported.
 fn merge_links(ours: &Model, theirs: &Model, report: &mut MergeReport) -> crate::schema::Links {
     let mut links = theirs.links.clone();

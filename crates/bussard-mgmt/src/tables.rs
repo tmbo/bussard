@@ -38,7 +38,7 @@
 //!   indexes the group object table, also 1-based.
 //! - **ASAP → com-object number**: the ASAP **is** the ETS com-object number
 //!   (`object = asap`, no offset). Verified live against a Jung 23024 actuator
-//!   (mask 07B0) whose `links.yaml` is an ETS-import ground truth: the read
+//!   (mask 07B0) whose links are an ETS-import ground truth: the read
 //!   ASAPs 20, 21, 22, 38, … align GA-for-GA with the model's object numbers,
 //!   while an `asap - 1` mapping shifts every single pair off by one. (A device
 //!   stack's internal 1-based array storage is a private implementation detail,

@@ -525,14 +525,14 @@ pub fn refine(candidates: Vec<DptCandidate>, payloads: &[Vec<u8>]) -> Vec<DptCan
 /// The com object behind a `(sender, group address)` pair, as the model knows
 /// it.
 ///
-/// Resolved from `links.yaml` (which owns the informational object name) plus
+/// Resolved from the device files' links (which own the informational object name) plus
 /// the sending device's generated com-object table (which owns the declared DPT,
 /// the flags and the owning channel).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SendingObject {
-    /// The ETS com-object number, the stable handle used by `links.yaml`.
+    /// The ETS com-object number, the stable handle used by the device files' links.
     pub index: u16,
-    /// The informational com-object name from `links.yaml`, if any.
+    /// The informational com-object name from the device files' links, if any.
     pub name: Option<String>,
     /// The DPT the device file declares for this object, if any.
     pub declared_dpt: Option<Dpt>,
@@ -581,7 +581,7 @@ pub fn sending_object(
 /// `"Kitchen ceiling light, switch"`: the room from the device's `location`, the
 /// thing from the owning channel's name (or the device's own name when the
 /// object has no channel), and the function from the com-object name in
-/// `links.yaml`. Parts the model does not know are left out; a room already
+/// the device files' links. Parts the model does not know are left out; a room already
 /// named in the channel or device name is not repeated.
 ///
 /// Returns `None` when the model does not know the sending device at all, so a

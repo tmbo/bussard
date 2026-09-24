@@ -213,7 +213,7 @@ fn device_name(model: &Model, addr: IndividualAddress) -> Option<String> {
 
 /// Finds the name of the com object on `source` whose `send` GA is `ga`.
 ///
-/// The informational com-object name lives only in `links.yaml` (issue #19), so
+/// The informational com-object name lives only in links (issue #19), so
 /// it is read straight from the matching link.
 fn sending_object_name(
     model: &Model,

@@ -8,7 +8,7 @@
 //! # How it works
 //!
 //! Entities are *derived heuristically* from the model's group addresses, the
-//! `links.yaml` associations, and each device's com-object table (DPTs +
+//! links, and each device's com-object table (DPTs +
 //! flags). See [`derive`] for the mapping rules. Anything that cannot be mapped
 //! is reported in a commented summary at the end of the output rather than
 //! being silently dropped.

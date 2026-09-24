@@ -241,7 +241,7 @@ impl DeviceBackup {
     ///
     /// This is what makes `bussard restore` the same command as `bussard apply`
     /// with a different source of truth: the tables recorded here replace the
-    /// ones computed from `links.yaml`, and everything downstream — the plan, the
+    /// ones computed from the model's links, and everything downstream — the plan, the
     /// confirmation, the write, the read-back verify — is unchanged.
     pub fn desired_tables(&self, path: &Path) -> Result<DesiredTables, BackupError> {
         let mut addresses = Vec::with_capacity(self.addresses.len());

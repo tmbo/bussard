@@ -23,7 +23,6 @@ mod file_checks;
 mod files;
 pub mod flags;
 pub mod history;
-pub mod legacy_yaml;
 pub mod lint;
 pub mod loader;
 pub mod merge;
@@ -57,5 +56,5 @@ pub use scaffold::{Plan, PlanRoom, Scheme, scaffold, scaffold_file};
 pub use tests_schema::{
     Expectation, TestCase, TestFileError, TestSuite, WriteStep, load_tests, load_tests_in_dir,
 };
-pub use toml_io::ParseError;
+pub use toml_io::{ParseError, ParseErrorDetail};
 pub use validate::{Diagnostic, Severity, has_errors, validate, validate_in_dir};

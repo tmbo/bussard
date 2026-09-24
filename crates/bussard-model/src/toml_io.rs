@@ -27,8 +27,22 @@ use std::path::{Path, PathBuf};
 use serde::de::DeserializeOwned;
 
 /// A TOML file that could not be parsed or did not match its schema.
+///
+/// Boxed so a `Result` carrying it stays small; the fields are reachable
+/// through [`ParseErrorDetail`] by deref (`err.rendered`, `err.help`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParseError {
+pub struct ParseError(Box<ParseErrorDetail>);
+
+impl std::ops::Deref for ParseError {
+    type Target = ParseErrorDetail;
+    fn deref(&self) -> &ParseErrorDetail {
+        &self.0
+    }
+}
+
+/// The details of a [`ParseError`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseErrorDetail {
     /// The file, as given to the parser (model-relative where possible).
     pub path: PathBuf,
     /// The raw message from the parser (or from bussard's own shape checks).
@@ -104,14 +118,14 @@ pub fn error_at(path: &Path, text: &str, span: Option<Range<usize>>, message: &s
         rendered.push_str(help);
         rendered.push('\n');
     }
-    ParseError {
+    ParseError(Box::new(ParseErrorDetail {
         path: path.to_path_buf(),
         message: message.trim_end().to_string(),
         line,
         column,
         help: hint.help,
         rendered,
-    }
+    }))
 }
 
 /// Keeps a span inside `text` and on character boundaries.

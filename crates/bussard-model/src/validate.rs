@@ -691,7 +691,7 @@ mod tests {
     }
 
     // `_name` is kept for call-site readability; the name now lives in
-    // links.yaml, not on the com-object (issue #19).
+    // the device files' links, not on the com-object (issue #19).
     fn com_object(_name: &str, dpt_str: Option<&str>, flags: &str) -> ComObject {
         ComObject {
             dpt: dpt_str.map(dpt),

@@ -441,7 +441,8 @@ impl Plan {
         if text.trim_start().starts_with('{') {
             return serde_json::from_str(text).map_err(|e| ScaffoldError::Plan(e.to_string()));
         }
-        crate::toml_io::parse(Path::new("plan"), text).map_err(|e| ScaffoldError::Plan(e.rendered))
+        crate::toml_io::parse(Path::new("plan"), text)
+            .map_err(|e| ScaffoldError::Plan(e.rendered.clone()))
     }
 }
 

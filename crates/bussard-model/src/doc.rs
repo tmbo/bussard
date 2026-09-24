@@ -595,7 +595,7 @@ fn device_doc(
         .unwrap_or_default();
 
     // Every object the device knows about: the generated com-object table plus
-    // any object that only `links.yaml` mentions (a hand-written link on a device
+    // any object that only a link mentions (a hand-written link on a device
     // whose table was never imported).
     let mut numbers: Vec<u16> = device.com_objects.keys().copied().collect();
     numbers.extend(link_by_object.keys().copied());

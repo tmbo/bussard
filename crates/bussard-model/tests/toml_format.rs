@@ -412,7 +412,10 @@ fn test_parameter_keys_resolve_through_the_lock() -> TestResult {
     Ok(())
 }
 
-fn codes_in(dir: &Path) -> Result<Vec<(String, String, Severity)>, Box<dyn std::error::Error>> {
+/// `(code, location, severity)` of one diagnostic.
+type Found = (String, String, Severity);
+
+fn codes_in(dir: &Path) -> Result<Vec<Found>, Box<dyn std::error::Error>> {
     let model = Model::load(dir)?;
     Ok(validate_in_dir(&model, dir)
         .into_iter()

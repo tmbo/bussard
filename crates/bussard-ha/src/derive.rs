@@ -11,7 +11,7 @@
 //! A cover needs several GAs (up/down, step/stop, position, position status)
 //! that belong together only because they sit on the same actuator channel.
 //! That grouping is invisible at the GA level but clear at the device level:
-//! the com-objects carry a `channel`, a DPT and flags, and `links.yaml` tells
+//! the com-objects carry a `channel`, a DPT and flags, and the device files' links tell
 //! us which GA each object sends or listens to. So derivation walks each
 //! device's objects, clusters them (by channel where present, else by
 //! object-number adjacency), and emits one entity per cluster.
@@ -75,16 +75,16 @@ enum Phase {
     Sensors,
 }
 
-/// A com-object paired with the GAs it links to, resolved from `links.yaml`.
+/// A com-object paired with the GAs it links to, resolved from the device file's links.
 #[derive(Debug, Clone)]
 struct ObjectLink<'a> {
     /// The com-object number.
     number: u16,
     /// The com-object definition (DPT, flags, channel).
     obj: &'a ComObject,
-    /// The GA this object sends (from `links.yaml`), if any.
+    /// The GA this object sends (from the device file's links), if any.
     send: Option<GroupAddress>,
-    /// The GAs this object listens to (from `links.yaml`).
+    /// The GAs this object listens to (from the device file's links).
     listen: Vec<GroupAddress>,
 }
 
@@ -862,7 +862,7 @@ fn try_binary_sensor(
     }
 
     // The GA's own name drives device-class hinting. The com-object no longer
-    // carries a name (issue #19); the informational name in links.yaml isn't
+    // carries a name (issue #19); the informational name on the link isn't
     // threaded here, so fall back to the device name for the hint.
     let hint_name = model
         .groups

@@ -1,6 +1,6 @@
 //! Pure computation of a System B device's loadable tables from the model.
 //!
-//! Given one device's `links.yaml` entries, this produces the two tables ETS
+//! Given one device's links (the object entries of its device file), this produces the two tables ETS
 //! would download: the **group-address table** (sorted unique GAs) and the
 //! **association table** (`(TSAP, ASAP)` pairs). Everything here is a pure
 //! function of the model — no bus, no I/O — so it is exhaustively unit-tested,
@@ -9,7 +9,7 @@
 //! # The ordering convention (evidence)
 //!
 //! The convention was reverse-engineered from the reference actuator's live
-//! tables (a Jung 23024, mask 07B0, whose `links.yaml` is an ETS-import ground
+//! tables (a Jung 23024, mask 07B0, whose links are an ETS-import ground
 //! truth) and reproduces them **byte-for-byte** once the four known ghost links
 //! are removed (see the golden test in `tests/`):
 //!
@@ -101,14 +101,14 @@ fn object_gas(link: &Link) -> Vec<GroupAddress> {
     gas
 }
 
-/// Computes the desired tables for one device from its `links.yaml` entries.
+/// Computes the desired tables for one device from its links.
 ///
 /// `links` is the slice of [`Link`] for a single device (as stored in
 /// `Model::links.links`). The ordering convention is documented on the module.
 ///
 /// Multiple links for the same object number are merged (their GAs concatenated
 /// in link order, then send-first / dedup applied per the merged view) so a
-/// hand-split `links.yaml` produces the same tables as a consolidated one.
+/// hand-split set of links produces the same tables as a consolidated one.
 pub fn compute_tables(links: &[Link]) -> DesiredTables {
     // Merge links per object, preserving first-seen GA order, send-first.
     // BTreeMap keeps objects in ascending order — the ASAP iteration order.
@@ -369,7 +369,7 @@ pub fn size_code_from_object_size(object_size: Option<&str>) -> u8 {
 ///
 /// ETS only registers a group-object-table entry for a com-object that is bound
 /// to at least one GA; an unlinked object contributes nothing. `linked_objects`
-/// is the set of com-object numbers that appear in the device's `links.yaml`
+/// is the set of com-object numbers that appear in the device's links
 /// (i.e. the ASAPs the association table references).
 pub fn descriptors_for_linked_objects(
     com_objects: &[ResolvedComObject<'_>],

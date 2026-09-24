@@ -23,7 +23,7 @@ use crate::project::{RawComObjectInstance, RawDevice, RawProject};
 /// A fully-resolved com object on a device.
 struct ResolvedComObject {
     number: u16,
-    /// Informational name; lives only in `links.yaml` (issue #19).
+    /// Informational name; lives only in links (issue #19).
     name: String,
     dpt: Option<Dpt>,
     size: Option<String>,
@@ -447,7 +447,7 @@ pub fn build_model(project: RawProject, container: &mut Container) -> Result<Mod
             lock: Default::default(),
         };
 
-        let file_stem = format!("{}-{}", raw_dev.address, slugify(&device.name));
+        let file_stem = raw_dev.address.to_string();
         devices.insert(raw_dev.address, LoadedDevice { device, file_stem });
     }
 

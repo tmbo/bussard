@@ -57,7 +57,7 @@ fn from_json_tiny_fixture() {
         Some("Test Manufacturer")
     );
     // Two generated com objects. The DPT is present, so the redundant `size`
-    // is not stored (issue #17); the informational name lives in links.yaml
+    // is not stored (issue #17); the informational name lives in the device files' links
     // only, not on the com-object (issue #19).
     assert_eq!(dev.com_objects.len(), 2);
     let co0 = dev.com_objects.get(&0).unwrap();

@@ -255,7 +255,7 @@ fn group_rows(groups: &Groups) -> Vec<(String, String)> {
 fn range_rows(groups: &Groups) -> Vec<(String, String)> {
     let w = range_widths(groups);
     let mut keys: Vec<&String> = groups.ranges.keys().collect();
-    keys.sort_by(|a, b| range_order(a).cmp(&range_order(b)));
+    keys.sort_by_key(|k| range_order(k));
     keys.into_iter()
         .filter_map(|k| {
             let r = groups.ranges.get(k)?;

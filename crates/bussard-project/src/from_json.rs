@@ -218,7 +218,7 @@ pub fn model_from_json(json: &str) -> Result<Model> {
             application_override: None,
             lock: Default::default(),
         };
-        let file_stem = format!("{address}-{}", crate::build::slugify(&device.name));
+        let file_stem = address.to_string();
         devices.insert(address, LoadedDevice { device, file_stem });
         links.insert(address, Vec::new());
     }
@@ -254,7 +254,7 @@ pub fn model_from_json(json: &str) -> Result<Model> {
         if let Some(dev) = devices.get_mut(&address) {
             // Size is derived from the DPT on demand; only stored when there is
             // no DPT at all, normalized to lowercase (issue #17). The name lives
-            // in links.yaml only (issue #19), not on the com-object.
+            // in the device files' links only (issue #19), not on the com-object.
             let size = match dpt {
                 Some(_) => None,
                 None => co

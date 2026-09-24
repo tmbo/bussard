@@ -63,7 +63,7 @@ pub struct Finding {
     /// The group address, as `"3/2/0"`.
     pub ga: String,
     /// The GA's name from `groups.toml`, or `None` for a GA that exists only in
-    /// `links.yaml`.
+    /// the device files' links.
     pub ga_name: Option<String>,
     /// A ready-to-print sentence explaining the finding.
     pub message: String,
@@ -78,7 +78,7 @@ pub struct LineCount {
     pub devices: usize,
 }
 
-/// A `links.yaml` entry whose com-object number is absent from the device's
+/// A link whose com-object number is absent from the device's
 /// generated `com_objects:` table.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct UnknownObjectLink {
@@ -127,13 +127,13 @@ pub struct ModelAnalysis {
     pub devices_without_name: Vec<String>,
     /// Devices with no `location:` floor or room, ascending.
     pub devices_without_location: Vec<String>,
-    /// Total group addresses, counting GAs that appear only in `links.yaml`.
+    /// Total group addresses, counting GAs that appear only in links.
     pub group_addresses: usize,
     /// GAs with no DPT (undecodable on the bus), ascending.
     pub group_addresses_without_dpt: Vec<String>,
     /// GAs with no name, including the link-only ones, ascending.
     pub group_addresses_without_name: Vec<String>,
-    /// Total `links.yaml` entries.
+    /// Total links.
     pub links: usize,
     /// Links naming a com-object the device's table does not declare.
     pub links_to_unknown_objects: Vec<UnknownObjectLink>,
