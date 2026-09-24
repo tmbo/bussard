@@ -133,6 +133,7 @@ pub fn run(
     let model_ref = model.as_ref();
     let product_ref = product.as_ref();
 
+    let facts = crate::device_facts::cache(dir, model.is_some(), overrides.refresh_facts);
     let (read_result, params) = crate::plan_cmd::read_device(
         config,
         target,
@@ -140,6 +141,7 @@ pub fn run(
         tool_key_source,
         product_ref,
         model_ref,
+        facts,
     )?;
     let live = match read_result {
         crate::plan_cmd::LiveRead::Tables(live) => live,

@@ -230,6 +230,14 @@ error; this section keeps only the decisions behind it.
   add a `help:` line where the raw message misleads.
 - `protected = true` on a GA is the safety gate: the CLI requires `--force`, MCP
   refuses outright.
+- **Device facts are observations, not model.** The mask, max APDU, interface-object
+  table, property descriptions and authorize verdict a device reports live in a
+  generated sidecar per device, `.bussard/facts/<ia>.toml`, not in the device file or
+  the lock (which only `import` and `adopt` write, and which snapshots and the model
+  fingerprint cover). A re-import leaves them alone; each use checks them against the
+  device's mask and application id (two reads) and re-reads them on a mismatch. This
+  takes `describe` of a Data Secure device from about 110 requests to 4 and spares
+  `reconstruct`, `plan`, `apply` and the flash pre-flight the object walk (issue #209).
 
 **The plan is the consent surface.** The loop stays Terraform-shaped:
 `import → validate → plan → apply`. The plan is the read-only half of `apply`: bussard

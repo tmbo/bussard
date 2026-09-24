@@ -107,6 +107,17 @@ entry supersedes it and is not a diff against it.
   group addresses from live traffic, and `test` runs scripted acceptance tests
   from `tests.toml` (#93, #95, #101).
 
+- Device facts (#209): the mask, max APDU, interface-object table, property
+  descriptions and authorize verdict of each device are stored in
+  `knx/.bussard/facts/<ia>.toml` and reused while the device's mask and
+  application id match. `describe` of a Data Secure device drops from about
+  110 requests (24 s at 200 ms per request) to 4 (0.9 s) on the second run;
+  `reconstruct`, `plan`, `apply` and the flash pre-flight skip the
+  `PID_OBJECT_TYPE` walk and the max-APDU read. The object table is read from
+  `PID_IO_LIST` where a System B device offers it, with a fallback to the
+  walk. `describe --full` walks the property descriptions again;
+  `--refresh-facts` re-reads everything.
+
 **Product data**
 
 - `import-product` reads a vendor `.knxprod` with an MIT-licensed reader,

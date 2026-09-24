@@ -33,7 +33,7 @@ use crate::consts::{
     A_PROPERTY_DESCRIPTION_RESPONSE, A_PROPERTY_VALUE_READ, A_PROPERTY_VALUE_RESPONSE,
     A_PROPERTY_VALUE_WRITE, A_RESTART, APCI_SELECTOR, LE_ADDITIONAL, LE_LOAD_COMPLETED,
     LE_START_LOADING, LE_UNLOAD, LS_LOADED, LS_LOADING, LS_UNLOADED, OT_ADDRESS_TABLE,
-    OT_ASSOCIATION_TABLE, OT_DEVICE, OT_GROUP_OBJECT_TABLE, PID_LOAD_STATE_CONTROL,
+    OT_ASSOCIATION_TABLE, OT_DEVICE, OT_GROUP_OBJECT_TABLE, PID_IO_LIST, PID_LOAD_STATE_CONTROL,
     PID_MANUFACTURER_ID, PID_OBJECT_TYPE, PID_ORDER_INFO, PID_PROGMODE, PID_SERIAL_NUMBER,
     PID_TABLE, PID_TABLE_REFERENCE, SUB_REL_SEGMENT,
 };
@@ -179,6 +179,20 @@ pub struct MockDevice {
     /// request except the descriptor read, answered with mask `FFFF`, and
     /// `A_Authorize`).
     pub plain_refused: usize,
+    /// Serve `PID_IO_LIST` (device object, PID 71) from
+    /// [`object_types`](Self::object_types). Off answers it with zero elements,
+    /// as a device without the property does.
+    pub io_list: bool,
+    /// Answer every `A_PropertyValue_Read` that asks for more than one element
+    /// with zero elements, as a device without multi-element reads does.
+    pub single_element_reads: bool,
+    /// Hold every application-layer answer back this long after the `T_ACK`,
+    /// as a real device on a busy line does (about 200 ms per request on the
+    /// Data Secure devices of the speed deep dive, 2026-09-24).
+    pub response_delay: Option<Duration>,
+    /// The property descriptions served to `A_PropertyDescription_Read`, per
+    /// object index, in property-index order.
+    pub descriptions: HashMap<u8, Vec<MockPropertyDescription>>,
     properties: HashMap<(u8, u8), Property>,
     hook: Option<Hook>,
     control_hook: Option<ControlHook>,
@@ -232,6 +246,23 @@ pub fn decode_prop_header(payload: &[u8]) -> Option<(u8, u8, u8, u16)> {
     ))
 }
 
+/// One property description served to `A_PropertyDescription_Read`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MockPropertyDescription {
+    /// The property id.
+    pub pid: u8,
+    /// The property data type code.
+    pub pdt: u8,
+    /// Whether the property is writable.
+    pub writable: bool,
+    /// The maximum element count.
+    pub max_elements: u16,
+    /// The read access level.
+    pub read_level: u8,
+    /// The write access level.
+    pub write_level: u8,
+}
+
 impl MockDevice {
     /// A device at `address` with mask `0x07B0` (System B), a device object
     /// only, not in programming mode, authorize level 0, and memory writes
@@ -264,6 +295,10 @@ impl MockDevice {
             send_seq: None,
             secured_requests: 0,
             plain_refused: 0,
+            io_list: true,
+            single_element_reads: false,
+            response_delay: None,
+            descriptions: HashMap::new(),
             properties: HashMap::new(),
             hook: None,
             control_hook: None,
@@ -431,6 +466,36 @@ impl MockDevice {
     /// Never answers anything.
     pub fn with_silence(mut self) -> Self {
         self.silent = true;
+        self
+    }
+
+    /// Answers `PID_IO_LIST` with zero elements (a device without it).
+    pub fn without_io_list(mut self) -> Self {
+        self.io_list = false;
+        self
+    }
+
+    /// Answers every multi-element property read with zero elements.
+    pub fn with_single_element_reads(mut self) -> Self {
+        self.single_element_reads = true;
+        self
+    }
+
+    /// Holds every application-layer answer back by `delay` after the `T_ACK`.
+    pub fn with_response_delay(mut self, delay: Duration) -> Self {
+        self.response_delay = Some(delay);
+        self
+    }
+
+    /// Serves `descriptions` to `A_PropertyDescription_Read` on `object_index`,
+    /// by property index (1-based, in order) and by property id.
+    pub fn with_property_descriptions(
+        mut self,
+        object_index: u8,
+        descriptions: &[MockPropertyDescription],
+    ) -> Self {
+        self.descriptions
+            .insert(object_index, descriptions.to_vec());
         self
     }
 
@@ -685,6 +750,9 @@ impl MockDevice {
             A_PROPERTY_VALUE_READ => self.property_read(data),
             A_PROPERTY_VALUE_WRITE => self.property_write(data),
             A_PROPERTY_DESCRIPTION_READ => {
+                if let Some(payload) = self.description(data) {
+                    return Reaction::Answer(A_PROPERTY_DESCRIPTION_RESPONSE, payload);
+                }
                 // "No such property": type 0, zero elements, access 0.
                 let mut payload = data.iter().copied().take(3).collect::<Vec<u8>>();
                 payload.resize(3, 0);
@@ -693,6 +761,30 @@ impl MockDevice {
             }
             _ => Reaction::Silent,
         }
+    }
+
+    /// The `A_PropertyDescription_Response` payload for a description read,
+    /// when the object has a description at that index (or for that PID).
+    fn description(&self, data: &[u8]) -> Option<Vec<u8>> {
+        let (&oi, &pid, &index) = (data.first()?, data.get(1)?, data.get(2)?);
+        let list = self.descriptions.get(&oi)?;
+        let (position, desc) = if pid == 0 {
+            let i = usize::from(index).checked_sub(1)?;
+            (i, list.get(i)?)
+        } else {
+            list.iter().enumerate().find(|(_, d)| d.pid == pid)?
+        };
+        let type_octet = if desc.writable { 0x80 } else { 0 } | (desc.pdt & 0x3F);
+        let max = desc.max_elements & 0x0FFF;
+        Some(vec![
+            oi,
+            desc.pid,
+            u8::try_from(position + 1).ok()?,
+            type_octet,
+            (max >> 8) as u8,
+            (max & 0xFF) as u8,
+            ((desc.read_level & 0x0F) << 4) | (desc.write_level & 0x0F),
+        ])
     }
 
     fn memory_read(&self, apci: u16, data: &[u8]) -> Reaction {
@@ -761,6 +853,28 @@ impl MockDevice {
                 prop_response(oi, pid, n, start, bytes),
             )
         };
+        if self.single_element_reads && count > 1 {
+            return answer(0, &[]);
+        }
+        if oi == 0 && pid == PID_IO_LIST {
+            if !self.io_list {
+                return answer(0, &[]);
+            }
+            let total = self.object_types.len();
+            if start == 0 {
+                return answer(1, &(total as u16).to_be_bytes());
+            }
+            let idx = usize::from(start);
+            if idx > total {
+                return answer(0, &[]);
+            }
+            let want = usize::from(count).clamp(1, total - idx + 1);
+            let bytes: Vec<u8> = self.object_types[idx - 1..idx - 1 + want]
+                .iter()
+                .flat_map(|ot| ot.to_be_bytes())
+                .collect();
+            return answer(want as u8, &bytes);
+        }
         if pid == PID_OBJECT_TYPE {
             return match self.object_types.get(usize::from(oi)) {
                 Some(ot) => answer(1, &ot.to_be_bytes()),

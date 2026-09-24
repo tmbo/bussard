@@ -238,6 +238,24 @@ pub async fn write_system_b_secured<Ch: L4Channel>(
     secure: SecureLayer,
     security: Option<&crate::security::SecurityInputs>,
 ) -> Result<VerifyOutcome, WriteError> {
+    write_system_b_seeded(channel, target, source, desired, secure, security, None).await
+}
+
+/// [`write_system_b_secured`] on a connection seeded with the device facts the
+/// command's read phase verified (issue #209): the object table replaces the
+/// `PID_OBJECT_TYPE` walks of the table discovery and of the read-back, the
+/// max APDU replaces the `PID_MAX_APDU_LENGTH` read, and the mask replaces the
+/// read-back's descriptor read. The written frames are the same with or
+/// without a seed; `None` is [`write_system_b_secured`].
+pub async fn write_system_b_seeded<Ch: L4Channel>(
+    channel: Ch,
+    target: IndividualAddress,
+    source: IndividualAddress,
+    desired: &DesiredTables,
+    secure: SecureLayer,
+    security: Option<&crate::security::SecurityInputs>,
+    seed: Option<bussard_mgmt::ConnectionSeed>,
+) -> Result<VerifyOutcome, WriteError> {
     let mut l4 = Layer4Connection::connect_with_secure(
         channel,
         target,
@@ -255,6 +273,9 @@ pub async fn write_system_b_secured<Ch: L4Channel>(
     l4.authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY)
         .await
         .map_err(WriteError::Mgmt)?;
+    if let Some(seed) = seed {
+        l4.seed(seed);
+    }
     // Negotiate PID_MAX_APDU_LENGTH once, right after authorize, like ETS's
     // opening property read (#116); the table writes then use its chunk size.
     negotiate_session_apdu(&mut l4).await?;
@@ -364,6 +385,35 @@ pub async fn write_tables_secured<Ch: L4Channel>(
     secure: SecureLayer,
     security: Option<&crate::security::SecurityInputs>,
 ) -> Result<TableWriteSummary, String> {
+    write_tables_seeded(
+        channel,
+        target,
+        source,
+        mask,
+        desired,
+        sys7_images,
+        secure,
+        security,
+        None,
+    )
+    .await
+}
+
+/// [`write_tables_secured`] with the verified device facts of the read phase
+/// seeded into the System B write connection (see [`write_system_b_seeded`]).
+/// The System 7 path takes no seed.
+#[allow(clippy::too_many_arguments)] // `write_tables_secured`' inputs plus the seed
+pub async fn write_tables_seeded<Ch: L4Channel>(
+    channel: Ch,
+    target: IndividualAddress,
+    source: IndividualAddress,
+    mask: u16,
+    desired: &DesiredTables,
+    sys7_images: Option<&Sys7TableImages>,
+    secure: SecureLayer,
+    security: Option<&crate::security::SecurityInputs>,
+    seed: Option<bussard_mgmt::ConnectionSeed>,
+) -> Result<TableWriteSummary, String> {
     match sys7_images {
         Some(images) => write_sys7(channel, target, source, mask, images, secure)
             .await
@@ -374,7 +424,7 @@ pub async fn write_tables_secured<Ch: L4Channel>(
                 detail: format!("{v:?}"),
             })
             .map_err(|e| e.to_string()),
-        None => write_system_b_secured(channel, target, source, desired, secure, security)
+        None => write_system_b_seeded(channel, target, source, desired, secure, security, seed)
             .await
             .map(|v| TableWriteSummary {
                 ok: v.ok(),

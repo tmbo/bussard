@@ -28,6 +28,9 @@ pub struct ConnOverrides {
     /// `--skip-address-check` to skip the pre-flight probe that no bus device
     /// answers at bussard's own source individual address.
     pub skip_address_check: bool,
+    /// `--refresh-facts`: ignore the stored device facts
+    /// (`<dir>/.bussard/facts/<ia>.toml`, issue #209) and read them again.
+    pub refresh_facts: bool,
 }
 
 /// The source individual address for a **connection-oriented** device command,

@@ -36,6 +36,7 @@
 pub mod bus;
 pub mod describe;
 pub mod error;
+pub mod facts;
 pub mod group;
 pub mod identity;
 pub mod model_handle;
@@ -45,6 +46,7 @@ pub mod write;
 
 pub use bus::{Authorize, BusService, Device, L4Options, Management, SourcePolicy};
 pub use error::ServiceError;
+pub use facts::{Established, FactsCache, FactsSource, FactsWant};
 pub use group::{
     GroupKeys, GroupRead, GroupSendError, SecureGroupError, SecuredSend, group_key_for,
 };

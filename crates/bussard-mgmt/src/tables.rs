@@ -321,7 +321,13 @@ pub async fn read_tables<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Result
 
 /// Reads the device descriptor type 0 (mask version) through the crate's single
 /// descriptor reader, [`crate::connection::read_device_descriptor`].
+///
+/// A connection seeded with a mask the caller read and verified on this same
+/// device (issue #209, [`Layer4Connection::seed`]) answers from the seed.
 async fn device_descriptor<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Result<u16> {
+    if let Some(mask) = l4.seeded_mask() {
+        return Ok(mask);
+    }
     Ok(crate::connection::read_device_descriptor(l4).await?)
 }
 

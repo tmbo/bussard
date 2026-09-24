@@ -12,6 +12,7 @@ mod commission_cmd;
 mod confirm;
 mod conn_cmd;
 mod describe_cmd;
+mod device_facts;
 mod diff_cmd;
 mod doc_cmd;
 mod export_cmd;
@@ -547,6 +548,10 @@ enum Command {
         /// Only pass this for a gateway that misbehaves on the probe itself.
         #[arg(long)]
         skip_address_check: bool,
+        /// Ignore the stored device facts (`<dir>/.bussard/facts/<ia>.toml`)
+        /// and read them from the device again (issue #209).
+        #[arg(long)]
+        refresh_facts: bool,
     },
     /// Introspect a device: enumerate its interface objects and each property's
     /// description (PID, type, element count, access levels) over the bus.
@@ -560,6 +565,13 @@ enum Command {
         /// Emit JSON instead of the table format.
         #[arg(long)]
         json: bool,
+        /// Walk every object's property descriptions again, even when the
+        /// device facts (`<dir>/.bussard/facts/<ia>.toml`) already hold them.
+        #[arg(long)]
+        full: bool,
+        /// Ignore the stored device facts and read them from the device again.
+        #[arg(long)]
+        refresh_facts: bool,
         /// The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool
         /// key (issue #71). Required for a security-activated device; the keyring
         /// password comes from `BUSSARD_KEYRING_PASSWORD`, never a CLI argument.
@@ -774,6 +786,10 @@ enum Command {
         /// flash would stream (one `.bin` each, plus the table images) into DIR.
         #[arg(long, value_name = "DIR", requires = "dry_run")]
         dump_images: Option<PathBuf>,
+        /// Ignore the stored device facts (`<dir>/.bussard/facts/<ia>.toml`)
+        /// and read them from the device again (issue #209).
+        #[arg(long)]
+        refresh_facts: bool,
     },
     /// Read a device's live tables and show what `apply` would change, or (with
     /// `--line`) plan every model device on a whole line.
@@ -830,6 +846,10 @@ enum Command {
         /// Only pass this for a gateway that misbehaves on the probe itself.
         #[arg(long)]
         skip_address_check: bool,
+        /// Ignore the stored device facts (`<dir>/.bussard/facts/<ia>.toml`)
+        /// and read them from the device again (issue #209).
+        #[arg(long)]
+        refresh_facts: bool,
     },
     /// Apply the model's link tables to a device (plan, confirm, write, verify),
     /// or (with `--line`) to every model device on a whole line.
@@ -895,6 +915,10 @@ enum Command {
         /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
         #[arg(long)]
         allow_remote_gateway: bool,
+        /// Ignore the stored device facts (`<dir>/.bussard/facts/<ia>.toml`)
+        /// and read them from the device again (issue #209).
+        #[arg(long)]
+        refresh_facts: bool,
     },
     /// Bench mode: walk the model's devices on a line, prompt for each device's
     /// programming button, verify its order number, assign its address, and
@@ -1671,6 +1695,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 gateway,
                 routing,
                 skip_address_check,
+                ..Default::default()
             },
         ),
         Command::Assign {
@@ -1698,6 +1723,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 gateway,
                 routing,
                 skip_address_check,
+                ..Default::default()
             },
         ),
         Command::Reconstruct {
@@ -1715,11 +1741,13 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             gateway,
             routing,
             skip_address_check,
+            refresh_facts,
         } => {
             let overrides = conn_cmd::ConnOverrides {
                 gateway,
                 routing,
                 skip_address_check,
+                refresh_facts,
             };
             match line {
                 Some(line) => reconstruct_cmd::run_line(
@@ -1755,6 +1783,8 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             address,
             dir,
             json,
+            full,
+            refresh_facts,
             keyring,
             tool_key,
             gateway,
@@ -1764,6 +1794,10 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             &address,
             &dir,
             json,
+            describe_cmd::FactsOptions {
+                full,
+                refresh: refresh_facts,
+            },
             secure_key::ToolKeySource {
                 keyring: keyring.as_deref(),
                 tool_key: tool_key.as_deref(),
@@ -1772,6 +1806,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 gateway,
                 routing,
                 skip_address_check,
+                ..Default::default()
             },
         ),
         Command::Keyring { file, json } => keyring_cmd::run(&file, json),
@@ -1807,6 +1842,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 gateway,
                 routing,
                 skip_address_check,
+                ..Default::default()
             },
         ),
         Command::Flash {
@@ -1828,6 +1864,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             gateway,
             routing,
             skip_address_check,
+            refresh_facts,
             json,
             dry_run,
             dump_images,
@@ -1853,6 +1890,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 gateway,
                 routing,
                 skip_address_check,
+                refresh_facts,
             },
             flash_cmd::FlashOutput {
                 json,
@@ -1872,11 +1910,13 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             gateway,
             routing,
             skip_address_check,
+            refresh_facts,
         } => {
             let overrides = conn_cmd::ConnOverrides {
                 gateway,
                 routing,
                 skip_address_check,
+                refresh_facts,
             };
             let tool_key_source = secure_key::ToolKeySource {
                 keyring: keyring.as_deref(),
@@ -1914,12 +1954,14 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             gateway,
             routing,
             skip_address_check,
+            refresh_facts,
             allow_remote_gateway,
         } => {
             let overrides = conn_cmd::ConnOverrides {
                 gateway,
                 routing,
                 skip_address_check,
+                refresh_facts,
             };
             let tool_key_source = secure_key::ToolKeySource {
                 keyring: keyring.as_deref(),
@@ -1986,6 +2028,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 gateway,
                 routing,
                 skip_address_check,
+                ..Default::default()
             },
         ),
         Command::Status { dir, json, raw } => history_cmd::run_status(&dir, json, raw),
@@ -2019,6 +2062,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 gateway,
                 routing,
                 skip_address_check,
+                ..Default::default()
             },
         ),
         Command::Restore {
@@ -2046,6 +2090,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 gateway,
                 routing,
                 skip_address_check,
+                ..Default::default()
             },
         ),
         Command::Replace {
@@ -2079,6 +2124,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 gateway,
                 routing,
                 skip_address_check,
+                ..Default::default()
             },
         ),
         Command::Validate { dir, format } => validate_cmd::run(&dir, format == Format::Json),
@@ -2161,6 +2207,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 gateway,
                 routing,
                 skip_address_check: false,
+                ..Default::default()
             },
         ),
         Command::Capture {
@@ -2179,6 +2226,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 gateway,
                 routing,
                 skip_address_check: false,
+                ..Default::default()
             },
         ),
         Command::Read {
@@ -2195,6 +2243,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 gateway,
                 routing,
                 skip_address_check: false,
+                ..Default::default()
             },
         ),
         Command::Write {
@@ -2221,6 +2270,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 gateway,
                 routing,
                 skip_address_check: false,
+                ..Default::default()
             },
         ),
         Command::HaConfig { dir, out } => ha_config_cmd::run(&dir, out.as_deref()),
@@ -2241,6 +2291,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 gateway,
                 routing,
                 skip_address_check: false,
+                ..Default::default()
             },
             viz_cmd::VizOptions {
                 allow_writes,
@@ -2272,6 +2323,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 gateway,
                 routing,
                 skip_address_check: false,
+                ..Default::default()
             },
         ),
         Command::Test {
@@ -2289,6 +2341,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 gateway,
                 routing,
                 skip_address_check: false,
+                ..Default::default()
             },
         ),
         Command::Test {
@@ -2318,6 +2371,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 gateway,
                 routing,
                 skip_address_check: false,
+                ..Default::default()
             },
         ),
         Command::Audit {
@@ -2341,6 +2395,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 gateway,
                 routing,
                 skip_address_check,
+                ..Default::default()
             },
         ),
         Command::Mcp {
@@ -2361,6 +2416,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 gateway,
                 routing,
                 skip_address_check: false,
+                ..Default::default()
             },
             mcp_cmd::McpModes {
                 passive,
