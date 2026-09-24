@@ -567,6 +567,7 @@ Live-monitor the bus, decoding telegrams against the model. Unknown GAs and DPTs
 | `--dir <DIR>` | `knx` | The model directory. |
 | `--json` | off | Emit JSON Lines (see [the telegram JSON contract](#telegram-json-contract)) instead of the pretty text format. |
 | `--filter <EXPR>` | all | Only show matching telegrams (GAs, GA prefixes, IAs). |
+| `--keyring <FILE>` | | An ETS `.knxkeys` export (password in `BUSSARD_KEYRING_PASSWORD`). Secured group telegrams (KNX Data Secure, `A_SecureData` with the tool-access bit clear) are verified and decrypted with the group key of their destination GA and decoded like plain ones, marked `[secured]`. A MAC failure shows `[secured (MAC failed) seq=… raw=…]`, a GA without a key `[secured (no group key) …]`. A sequence number that does not increase per sender adds a warning; nothing is dropped. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
 
@@ -579,6 +580,7 @@ Capture telegrams to a SQLite database (see [the capture database](#the-capture-
 | `--to <DB>` | required | The database file to write (created if absent). |
 | `--dir <DIR>` | `knx` | The model directory. |
 | `--filter <EXPR>` | all | Only capture matching telegrams. |
+| `--keyring <FILE>` | | As for `monitor`: secured group telegrams are decrypted into the decoded snapshot, which carries the `secured` fields. The raw cEMI keeps the secured bytes. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
 
@@ -590,6 +592,7 @@ Read a group value from the bus: send a GroupValueRead, print the typed response
 |---|---|---|
 | `<GA>` | | The group address to read, e.g. `3/2/0`. |
 | `--dir <DIR>` | `knx` | The model directory. |
+| `--keyring <FILE>` | | Group keys for secured GAs (password in `BUSSARD_KEYRING_PASSWORD`). A GA with a key, or `secure: true` in `groups.yaml`, is read with a secured GroupValueRead, and only a response whose MAC verifies under the group key is accepted; stderr says `secured: …`. A secured GA without a key is refused before anything is sent. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
 
@@ -605,6 +608,7 @@ Write a group value to the bus. The value is human-typed (`on`/`off`, `up`/`down
 | `--force` | off | Write even if the GA is marked `protected: true` in the model. |
 | `--yes` | off | Skip the confirmation prompt (required for a non-TTY write). |
 | `--dir <DIR>` | `knx` | The model directory. |
+| `--keyring <FILE>` | | Group keys for secured GAs. A GA with a key, or `secure: true` in `groups.yaml`, is written as a secured group telegram (SCF `0x10`, the group key, a sequence above the last one sent); a secured GA without a key is refused. A plain GA is sent byte for byte as without a keyring. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
 | `--allow-remote-gateway` | off | Permit a write to a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
@@ -702,7 +706,7 @@ Run the MCP server over stdio (see [the MCP server](#the-mcp-server)).
 | `--allow-remote-gateway` | off | Permit `--allow-writes` or `--allow-programming` against a non-loopback (real) gateway. The same gate as `bussard write`; without it (or `BUSSARD_ALLOW_REAL_GATEWAY=1`) such a server pointed at a real gateway refuses to start. |
 | `--no-model-edits` | off | Withhold the model-edit tools (`knx_set_group`, `knx_add_link`, `knx_remove_link`, `knx_set_device`, `knx_set_parameter`, `knx_undo`, `knx_scaffold_groups`). They write YAML files behind a history snapshot and never touch the bus, so they are registered by default. |
 | `--capture-db <PATH>` | | A `bussard capture` database to extend `knx_recent_telegrams` history beyond the in-memory ring. |
-| `--keyring <FILE>` | | ETS keyring export (`.knxkeys`) for KNX Data Secure management: `knx_describe_device` and `knx_plan_device` wrap their session with the target's tool key, as `bussard describe --keyring` and `bussard plan --keyring` do. `knx_plan_device` reads a device the keyring does not list in the clear; `knx_apply_device` refuses a device the keyring lists, since that write also reprograms the security object (use `bussard apply --keyring`). The password comes from `BUSSARD_KEYRING_PASSWORD`. |
+| `--keyring <FILE>` | | ETS keyring export (`.knxkeys`) for KNX Data Secure management: `knx_describe_device` and `knx_plan_device` wrap their session with the target's tool key, as `bussard describe --keyring` and `bussard plan --keyring` do. `knx_plan_device` reads a device the keyring does not list in the clear; `knx_apply_device` refuses a device the keyring lists, since that write also reprograms the security object (use `bussard apply --keyring`). Its group keys also secure `knx_read_group` and `knx_write_group` on a secured GA (issue #172; the results carry `secured`), and decrypt secured telegrams re-decoded from `--capture`; a secured GA without a key is refused. The password comes from `BUSSARD_KEYRING_PASSWORD`. |
 
 ### `bussard viz`
 
@@ -717,6 +721,7 @@ Serve the network-visualization website: an HTTP server that renders the model a
 | `--watch-prog` | off | Watch for devices in KNX programming mode and highlight them in the UI. Periodically broadcasts `A_IndividualAddress_Read` on the bus and surfaces the responders in `/api/state`'s `prog` field and the `prog` SSE event. This is active bus traffic, so it is off by default and must be enabled explicitly; never point it at a real installation unattended. Takes effect only when a bus is connected. |
 | `--allow-writes` | off | Arm `POST /api/group-write`. Off by default: a bare `bussard viz` is a viewer and the endpoint answers `403 writes_disabled`. |
 | `--allow-remote-gateway` | off | Permit `--allow-writes` or `--watch-prog` against a non-loopback (real) gateway. The same gate as `bussard write`; without it such a server refuses to start. |
+| `--keyring <FILE>` | | Group keys (password in `BUSSARD_KEYRING_PASSWORD`): `POST /api/group-write` to a secured GA is sent as a secured group telegram (a secured GA without a key answers 400), and secured telegrams in the live traffic are decrypted and carry the `secured` fields. |
 | `--allow-host <HOST>` | | Also answer requests whose `Host` header is this name (repeatable). Loopback names and bare IP literals are always accepted; any other name is refused, because that is how DNS rebinding reaches this port. |
 
 ## Environment variables
@@ -1044,6 +1049,16 @@ These rules are opt-in and run only when `bussard.yaml` carries a [`lint:` block
 | `dpt` | The DPT used to decode. |
 | `object_name` | The sending com-object's informational name from `links.yaml`. |
 | `note` | Decode diagnostics, e.g. a size mismatch. |
+
+With `--keyring`, a KNX Data Secure group telegram adds five fields (plain telegrams carry none of them, so their records are unchanged):
+
+| Field | Meaning |
+|---|---|
+| `secured` | `true` when the MAC verified under the GA's group key (the other fields then describe the decrypted inner telegram), `false` otherwise. |
+| `secure_status` | `ok`, `mac_failed` or `no_key` (the keyring has no key for the GA). |
+| `secure_seq` | The sender's sequence number. |
+| `secure_raw` | The raw `A_SecureData` ASDU, hex, when it did not verify; else `null`. |
+| `secure_warning` | An advisory freshness warning (the sequence did not increase over the last one from this sender), else `null`. |
 
 ## The capture database
 

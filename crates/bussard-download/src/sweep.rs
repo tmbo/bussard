@@ -528,6 +528,7 @@ pub fn normalize_plan_error(e: &PlanError) -> String {
         PlanError::Sys7LsmOutOfRange { .. } => "Sys7LsmOutOfRange".to_string(),
         // NotSystemB is bucketed as NotSupportedFamily before reaching here.
         PlanError::NotSystemB { .. } => "NotSupportedFamily".to_string(),
+        PlanError::SecurityActivated { .. } => "SecurityActivated".to_string(),
     }
 }
 

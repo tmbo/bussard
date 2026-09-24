@@ -45,6 +45,7 @@ pub fn run(
     yes: bool,
     allow_remote_gateway: bool,
     dir: &Path,
+    keyring: Option<&Path>,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
     let ga: GroupAddress = ga_str
@@ -55,6 +56,9 @@ pub fn run(
     // parse is a hard error (never fail the protected-GA gate open). An absent
     // model directory is a fresh project — proceed unmodeled with `--dpt`.
     let model = load_model_required(dir)?;
+    // KNX Data Secure group keys (issue #172): a secured GA is sealed under its
+    // group key; a secured GA without one is refused below.
+    let group_keys = crate::secure_key::group_keys(keyring)?;
 
     // Every check short of sending: protected (unless --force), the DPT
     // (--dpt wins, else groups.yaml), parse and encode.
@@ -62,6 +66,7 @@ pub fn run(
         dpt: dpt_override,
         dpt_policy: DptOverridePolicy::Trust,
         force,
+        group_keys: group_keys.as_ref(),
     };
     let write = prepare_group_write(model.as_ref(), ga, WriteValue::Human(value), &check)
         .map_err(render_refusal)?;
@@ -78,6 +83,9 @@ pub fn run(
 
     // Confirmation naming the GA, value, and gateway. `--yes` skips the prompt.
     let label = write_label(&write);
+    if write.is_secured() {
+        eprintln!("secured: KNX Data Secure group write with the group key of {ga}");
+    }
     let confirmed = crate::confirm::confirm(yes, &format!("write {label} via {gateway}?"), || {
         format!(
             "refusing to write {label} via {gateway} without a terminal to confirm on; pass \
@@ -166,6 +174,9 @@ fn render_refusal(refusal: WriteRefusal) -> anyhow::Error {
             dpt,
             reason,
         } => anyhow!(reason).context(format!("encoding {value} as DPT {dpt} for GA {ga}")),
+        WriteRefusal::SecureNoKey { ga, keyring_given } => {
+            anyhow!(crate::secure_key::no_group_key_hint(ga, keyring_given))
+        }
         other => anyhow!(other),
     }
 }

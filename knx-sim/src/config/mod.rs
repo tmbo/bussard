@@ -260,9 +260,14 @@ pub struct StimulusConfig {
     /// The transmit period in milliseconds.
     pub period_ms: u64,
     /// The datapoint type used to encode the values (e.g. `1.001`, `9.001`).
+    /// Unused (and may be omitted) when `values` is empty.
+    #[serde(default)]
     pub dpt: String,
     /// The values to cycle through, each parsed per `dpt` (e.g. `"1"`/`"0"` for
-    /// DPT 1.001, `"21.5"` for DPT 9.001).
+    /// DPT 1.001, `"21.5"` for DPT 9.001). Empty or omitted: the device
+    /// re-transmits the object's current value on every fire, whatever wrote it
+    /// (any DPT; a never-written object sends 0).
+    #[serde(default)]
     pub values: Vec<String>,
 }
 
@@ -450,9 +455,6 @@ impl SimConfig {
                 })?;
                 values.push(bytes);
             }
-            if values.is_empty() {
-                continue;
-            }
             let period_ms = s.period_ms as u128;
             // Stagger the first fire so concurrent stimuli interleave on the bus.
             let next_due_ms = (period_ms / 2) + (i as u128 * 250);
@@ -569,6 +571,29 @@ devices:
         assert_eq!(cfg.devices[1].mask, None);
         assert_eq!(cfg.devices[1].lsm_access, LsmAccessConfig::Property);
         assert_eq!(cfg.devices[1].bcu_key, None);
+        Ok(())
+    }
+
+    #[test]
+    fn test_build_stimulus_without_values_repeats_current() -> Result<(), ConfigError> {
+        // A stimulus with no `values` (and no `dpt`) is kept: the device
+        // re-transmits the object's current value (the secured-group example).
+        let yaml = r#"
+gateway:
+  host: "127.0.0.1"
+  port: 3671
+devices: []
+stimulus:
+  - device: "1.1.10"
+    object: 1
+    period_ms: 5000
+"#;
+        let cfg = SimConfig::from_yaml(yaml)?;
+        let jobs = cfg.build_stimulus()?;
+        assert_eq!(jobs.len(), 1);
+        assert!(jobs[0].values.is_empty());
+        assert_eq!(jobs[0].period_ms, 5000);
+        assert_eq!(jobs[0].next_due_ms, 2500);
         Ok(())
     }
 

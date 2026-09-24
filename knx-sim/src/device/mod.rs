@@ -20,6 +20,7 @@ mod memory_access;
 pub mod profile;
 mod properties;
 mod restart;
+mod secure_group;
 pub mod security_object;
 mod sys7_group_comm;
 pub mod sys7_lsm;

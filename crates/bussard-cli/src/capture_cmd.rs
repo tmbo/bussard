@@ -8,7 +8,8 @@ use std::time::Duration;
 
 use bussard_monitor::stream::{Flow, TelegramSink};
 use bussard_monitor::{
-    CancelToken, CaptureRecord, CaptureWriter, DecodedTelegram, Filter, run_stream_cancellable,
+    CancelToken, CaptureRecord, CaptureWriter, DecodedTelegram, Filter, GroupKeyring,
+    run_stream_secured_cancellable,
 };
 use bussard_transport::{TimestampedFrame, TransportError};
 
@@ -22,6 +23,7 @@ pub fn run(
     to: &Path,
     dir: &Path,
     filter_expr: Option<&str>,
+    keyring: Option<&Path>,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
     let filter = match filter_expr {
@@ -30,6 +32,16 @@ pub fn run(
     };
     let model = load_model_optional(dir);
     let config = resolve_config(model.as_ref(), &overrides)?;
+    // KNX Data Secure group telegrams (issue #172): the raw cEMI keeps the
+    // secured bytes; the decoded snapshot carries the decrypted value and the
+    // `secured` flag.
+    let group_keys = crate::secure_key::group_keys(keyring)?.map(|keys| {
+        eprintln!(
+            "keyring: {} group key(s) for secured group telegrams",
+            keys.len()
+        );
+        GroupKeyring::new(keys)
+    });
 
     let writer = CaptureWriter::open(to)?;
     eprintln!("capturing to {} (Ctrl-C to stop)", to.display());
@@ -69,7 +81,14 @@ pub fn run(
                 ctrl_c_cancel.cancel();
             }
         });
-        let res = run_stream_cancellable(&config, model.as_ref(), &mut sink, cancel_watch).await;
+        let res = run_stream_secured_cancellable(
+            &config,
+            model.as_ref(),
+            &mut sink,
+            group_keys,
+            cancel_watch,
+        )
+        .await;
         signal.abort();
         ticker.abort();
         res.map_err(anyhow::Error::from)?;

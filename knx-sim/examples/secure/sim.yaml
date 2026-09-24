@@ -41,6 +41,13 @@ devices:
   # and applies it with `--keyring`, so the download also programs its security
   # interface object (group key table from the keyring's key for 1/2/3,
   # group-object security flags).
+  #
+  # Secured group traffic (issue #172): once flashed, the device takes its group
+  # keys from that security object (PID 53 row -> address-table index -> GA) and
+  # its secured objects from the PID 61 flags. A secured GA then accepts only
+  # A_SecureData (plain telegrams to it are ignored), a secured GroupValueRead is
+  # answered with a secured GroupValueResponse, and the stimulus below sends
+  # secured writes. Nothing here configures a group key.
   - address: "1.1.10"
     knxprod: "../../tests/fixtures/KNX_Virtual_M-00FA.knxprod"
     application: "M-00FA_A-2500-10-51CB"
@@ -58,3 +65,16 @@ devices:
     knxprod: "../../tests/fixtures/KNX_Virtual_M-00FA.knxprod"
     application: "M-00FA_A-2500-10-51CB"
     initial_state: unloaded
+
+# Secured group stimulus (issue #172): every 5 s, 1.1.10 re-transmits the
+# CURRENT value of object 1 on its send GA (the first GA linked to it, 1/2/3 in
+# run.sh) as a secured A_GroupValue_Write (SCF 0x10, group key of 1/2/3). No
+# `values`, so the stimulus never changes the value: a secured write followed by
+# a read stays deterministic, and the next stimulus carries the value last
+# written. It only fires once object 1 has the Transmit flag (model flags CRWT)
+# and a tunnel client is connected; the first fire is 2.5 s after start. Grep
+# the sim log for `SECURE group send 1.1.10 -> 1/2/3` ... `inner=GroupValueWrite`.
+stimulus:
+  - device: "1.1.10"
+    object: 1
+    period_ms: 5000

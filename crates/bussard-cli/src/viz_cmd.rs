@@ -28,6 +28,9 @@ pub struct VizOptions {
     pub allow_remote_gateway: bool,
     /// Extra `Host` header values the server answers to.
     pub allowed_hosts: Vec<String>,
+    /// An ETS `.knxkeys` keyring whose group keys secure writes to secured GAs
+    /// and decrypt secured live traffic (issue #172).
+    pub keyring: Option<std::path::PathBuf>,
 }
 
 /// Runs `bussard viz`.
@@ -102,6 +105,14 @@ pub fn run(
         );
     }
 
+    let group_keys = crate::secure_key::group_keys(options.keyring.as_deref())?;
+    if let Some(keys) = &group_keys {
+        eprintln!(
+            "keyring: {} group key(s) for secured group telegrams",
+            keys.len()
+        );
+    }
+
     let config = VizConfig {
         dir: dir.to_path_buf(),
         listen,
@@ -110,6 +121,7 @@ pub fn run(
         allow_writes: options.allow_writes,
         allow_remote_gateway: options.allow_remote_gateway,
         allowed_hosts: options.allowed_hosts,
+        group_keys,
     };
 
     let runtime = tokio::runtime::Runtime::new()?;

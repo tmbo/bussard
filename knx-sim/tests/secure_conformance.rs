@@ -338,8 +338,9 @@ fn test_secure_replay_refused() {
 fn test_secure_plain_access_refused() {
     let mut t = SecureTool::new(SecAlgorithm::AuthEnc);
     t.control(0x80);
-    // A PLAIN A_Authorize_Request (not wrapped) — a protected function.
-    let responses = t.plain_ndt(0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]);
+    // A PLAIN A_PropertyValue_Read of the serial number (device object, PID
+    // 11) — a protected function outside the plain allow-list.
+    let responses = t.plain_ndt(0x3D5, &[0x00, 0x0b, 0x10, 0x01]);
     assert!(
         responses.is_empty(),
         "a plain protected access draws no response on an activated device"
@@ -350,6 +351,58 @@ fn test_secure_plain_access_refused() {
             .any(|r| r.contains("PLAIN") || r.contains("Secure")),
         "plain access to a protected function is refused: {rej:#?}"
     );
+}
+
+/// The three services the real activated device (Jung F50, secure-1-1-12
+/// capture) answers PLAIN: A_DeviceDescriptor_Read type 0 (mask hidden as
+/// FFFF), A_Authorize_Request and A_PropertyValue_Read of PID 56 on the device
+/// object. Everything else plain is still refused.
+#[test]
+fn test_secure_plain_allow_list_answered() -> Result<(), Box<dyn std::error::Error>> {
+    let mut t = SecureTool::new(SecAlgorithm::AuthEnc);
+    t.control(0x80);
+    let apdus = |responses: Vec<CemiLData>| -> Vec<Vec<u8>> {
+        responses
+            .iter()
+            .filter_map(|r| Apdu::parse(&r.tpdu).map(|_| r.tpdu.clone()))
+            .map(|mut tpdu| {
+                tpdu[0] &= 0x03;
+                tpdu
+            })
+            .collect()
+    };
+
+    let got = apdus(t.plain_ndt(0x300, &[]));
+    assert_eq!(
+        got,
+        vec![vec![0x03, 0x40, 0xff, 0xff]],
+        "descriptor 0 = FFFF"
+    );
+
+    let got = apdus(t.plain_ndt(0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]));
+    assert_eq!(got.len(), 1, "one A_Authorize_Response");
+    assert_eq!(&got[0][..2], &[0x03, 0xd2]);
+
+    let got = apdus(t.plain_ndt(0x3D5, &[0x00, 0x38, 0x10, 0x01]));
+    assert_eq!(got, vec![hex("03d6 00 38 10 01 0042")?], "PID 56 value");
+
+    // Descriptor type 2 is outside the allow-list: refused.
+    assert!(apdus(t.plain_ndt(0x302, &[])).is_empty());
+    assert!(
+        t.rejections()
+            .iter()
+            .any(|r| r.contains("plain access refused")),
+        "{:#?}",
+        t.rejections()
+    );
+    assert_eq!(
+        t.secure_events()
+            .iter()
+            .filter(|e| e.contains("allowed unsecured on an activated device"))
+            .count(),
+        3
+    );
+    Ok(())
 }
 
 /// The secure event log names direction, SCF, sequence and the inner APCI, and

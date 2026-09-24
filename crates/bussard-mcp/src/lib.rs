@@ -101,6 +101,7 @@
 
 pub mod model_handle;
 pub mod run;
+mod secure_group;
 pub mod server;
 pub mod state;
 pub mod tools;

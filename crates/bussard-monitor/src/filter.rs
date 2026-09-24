@@ -180,6 +180,7 @@ mod tests {
             dpt: None,
             object_name: None,
             decode_note: None,
+            secure: None,
         })
     }
 

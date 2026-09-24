@@ -576,3 +576,149 @@ fn test_security_object_program_matches_ets() -> TestResult {
     );
     Ok(())
 }
+
+/// Every `A_SecureData` frame to a **group** address in the capture, verified
+/// through bussard's group-addressing path (issue #172).
+///
+/// Run with `BUSSARD_SECURE_PCAP`, `BUSSARD_SECURE_KEYRING` and
+/// `BUSSARD_KEYRING_PASSWORD` (no device needed):
+///
+/// ```text
+/// cargo test -p bussard-cli --test secure_capture_oracle \
+///   test_group_addressed_capture_frames_verify -- --ignored --nocapture
+/// ```
+///
+/// Group data (SCF tool-access bit clear) is verified with the keyring's group
+/// key of the destination GA through [`bussard_secure::decode_group`]. The
+/// broadcast `S-A_Sync` to `0/0/0` is tool-access traffic on a group address:
+/// it is verified with [`TpAddressing::group`] (address-type bit set, group
+/// destination in B0/Ctr0) under each keyring tool key. Prints only counts,
+/// SCF bytes, sequences and service names.
+#[test]
+#[ignore = "needs BUSSARD_SECURE_PCAP, BUSSARD_SECURE_KEYRING and BUSSARD_KEYRING_PASSWORD"]
+fn test_group_addressed_capture_frames_verify() -> TestResult {
+    let pcap = std::env::var("BUSSARD_SECURE_PCAP")?;
+    let keyring = std::env::var("BUSSARD_SECURE_KEYRING")?;
+    let password = std::env::var("BUSSARD_KEYRING_PASSWORD")?;
+    let keys = bussard_project::parse_keyring(&std::fs::read_to_string(keyring)?, &password)?;
+
+    let mut group_ok = 0usize;
+    let mut group_fail = 0usize;
+    let mut group_no_key = 0usize;
+    let mut sync_ok = 0usize;
+    let mut sync_fail = 0usize;
+    let mut challenge: Option<(Key16, Challenge)> = None;
+
+    for f in cemi_frames(&std::fs::read(pcap)?) {
+        // The L_Data.con echo repeats the tool's request.
+        if f.mc == 0x2E || f.ctrl2 & 0x80 == 0 {
+            continue;
+        }
+        if apci_of(&f.npdu) != Some(asdu::A_SECURE_DATA) {
+            continue;
+        }
+        let body = &f.npdu[2..];
+        let scf = Scf::from_byte(body[0])?;
+        let ga = bussard_model::GroupAddress::from_raw(f.dst);
+        if !scf.tool_access && !scf.system_broadcast {
+            let Some(key) = keys.group_key(ga) else {
+                group_no_key += 1;
+                println!(
+                    "#{:>4} {} -> {ga} scf={:#04x} no group key",
+                    f.idx,
+                    ia_str(f.src),
+                    body[0]
+                );
+                continue;
+            };
+            match bussard_secure::decode_group(key, body, f.src, f.dst) {
+                Ok(plain) => {
+                    group_ok += 1;
+                    let inner = bussard_transport::cemi::Apdu::from_group_tpdu(&plain.apdu)
+                        .map(|a| match a {
+                            bussard_transport::cemi::Apdu::GroupValueRead => "GroupValueRead",
+                            bussard_transport::cemi::Apdu::GroupValueWrite(_) => "GroupValueWrite",
+                            bussard_transport::cemi::Apdu::GroupValueResponse(_) => {
+                                "GroupValueResponse"
+                            }
+                            _ => "other",
+                        })
+                        .unwrap_or("undecodable");
+                    println!(
+                        "#{:>4} {} -> {ga} scf={:#04x} seq={} MAC ok {inner}",
+                        f.idx,
+                        ia_str(f.src),
+                        body[0],
+                        plain.sequence.value()
+                    );
+                }
+                Err(err) => {
+                    group_fail += 1;
+                    println!(
+                        "#{:>4} {} -> {ga} scf={:#04x} MAC FAIL: {err}",
+                        f.idx,
+                        ia_str(f.src),
+                        body[0]
+                    );
+                }
+            }
+            continue;
+        }
+        // Tool access on a group address: the broadcast S-A_Sync.
+        let addr = TpAddressing::group(f.src, f.dst);
+        let verdict = match scf.service {
+            SecureService::SyncReq => keys.devices.iter().find_map(|d| {
+                asdu::decode_sync_req(&d.tool_key, body, &addr)
+                    .ok()
+                    .map(|(_, req)| {
+                        challenge = Some((d.tool_key.clone(), req.challenge));
+                        format!("S-A_Sync_Req (tool key of {})", d.ia)
+                    })
+            }),
+            SecureService::SyncRes => challenge.as_ref().and_then(|(key, ch)| {
+                asdu::decode_sync_res(key, body, &addr, ch)
+                    .ok()
+                    .map(|_| "S-A_Sync_Res".to_string())
+            }),
+            SecureService::Data => keys.devices.iter().find_map(|d| {
+                asdu::decode(&d.tool_key, body, &addr)
+                    .ok()
+                    .map(|_| format!("S-A_Data (tool key of {})", d.ia))
+            }),
+        };
+        match verdict {
+            Some(what) => {
+                sync_ok += 1;
+                println!(
+                    "#{:>4} {} -> {ga} scf={:#04x} MAC ok {what}",
+                    f.idx,
+                    ia_str(f.src),
+                    body[0]
+                );
+            }
+            None => {
+                sync_fail += 1;
+                println!(
+                    "#{:>4} {} -> {ga} scf={:#04x} MAC FAIL",
+                    f.idx,
+                    ia_str(f.src),
+                    body[0]
+                );
+            }
+        }
+    }
+    println!(
+        "\ngroup data: {group_ok} verified, {group_fail} failed, {group_no_key} without a key; \
+         tool access on a group address: {sync_ok} verified, {sync_fail} failed"
+    );
+    assert!(
+        group_ok + sync_ok > 0,
+        "the capture holds no verifiable group-addressed A_SecureData frame"
+    );
+    assert_eq!(
+        group_fail + sync_fail,
+        0,
+        "a group-addressed frame did not verify"
+    );
+    Ok(())
+}

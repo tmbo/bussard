@@ -140,6 +140,20 @@ impl Scf {
         }
     }
 
+    /// The SCF of a secured **group** telegram (S-A_Data on a group address,
+    /// spec §5.2): tool-access and system-broadcast bits clear, so the frame is
+    /// keyed by the destination GA's group key. `0x10` for authentication +
+    /// encryption (the ETS default for a secured group object), `0x00` for
+    /// authentication only.
+    pub fn group_data(algorithm: SecurityAlgorithm) -> Self {
+        Scf {
+            tool_access: false,
+            algorithm,
+            system_broadcast: false,
+            service: SecureService::Data,
+        }
+    }
+
     /// Serializes the SCF to its wire byte (spec §5.2).
     pub fn to_byte(self) -> u8 {
         ((self.tool_access as u8) << 7)
@@ -197,6 +211,19 @@ pub struct TpAddressing {
 }
 
 impl TpAddressing {
+    /// The addressing of a secured group telegram from `source` to the group
+    /// address `group` (both raw 16-bit): a standard frame, address-type bit
+    /// set, carried in an unnumbered `T_Data_Group` (TPCI octet `0x00`).
+    pub fn group(source: u16, group: u16) -> Self {
+        TpAddressing {
+            source,
+            destination: group,
+            address_type_group: true,
+            extended_frame_format: 0,
+            tpci: 0x00,
+        }
+    }
+
     /// The 4 raw address bytes: `source(2 BE) || destination(2 BE)` (spec §5.4).
     fn address_fields(&self) -> [u8; 4] {
         let s = self.source.to_be_bytes();
@@ -711,6 +738,14 @@ pub enum AsduError {
     /// §6.3). ETS always opens secured tool access with this exchange.
     #[error("the device did not answer the Data Secure sync request (S-A_Sync_Req)")]
     SyncUnanswered,
+    /// A tool-access (or system-broadcast) SCF where a group telegram was
+    /// expected: such a frame is keyed by a tool key, not a group key.
+    #[error("SCF byte {0:#04x} is not group traffic (tool-access or system-broadcast bit set)")]
+    NotGroupTraffic(u8),
+    /// The plain group APDU handed to the group encoder was shorter than the two
+    /// APCI octets.
+    #[error("plain group APDU too short: {0} bytes")]
+    GroupApduTooShort(usize),
     /// A crypto primitive rejected its input.
     #[error(transparent)]
     Crypto(#[from] CryptoError),

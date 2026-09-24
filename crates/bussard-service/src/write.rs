@@ -15,11 +15,14 @@
 //! 1. **protected**: a GA marked `protected: true` in `groups.yaml` is refused
 //!    unless [`WriteCheck::force`] is set. This runs first, so a protected GA is
 //!    refused whatever DPT or value arrives with it.
-//! 2. **DPT**: the override is parsed, then reconciled with the model's DPT
+//! 2. **secure**: a GA with a group key in [`WriteCheck::group_keys`], or
+//!    marked `secure: true`, is sealed as a KNX Data Secure group telegram; a
+//!    secured GA without a key is refused (issue #172).
+//! 3. **DPT**: the override is parsed, then reconciled with the model's DPT
 //!    under the [`DptOverridePolicy`].
-//! 3. **encode**: the human value is parsed and encoded against the DPT, or a
+//! 4. **encode**: the human value is parsed and encoded against the DPT, or a
 //!    raw hex payload is decoded and its length checked against a known DPT.
-//! 4. **send**: once, completion-tracked against the gateway ACK
+//! 5. **send**: once, completion-tracked against the gateway ACK
 //!    ([`bussard_bus::ops::write_group`]), and only on a service opened with a
 //!    transmitting [`WritePolicy`](crate::WritePolicy).
 
@@ -27,7 +30,11 @@ use bussard_bus::BusError;
 use bussard_bus::ops::{self, WriteOptions};
 use bussard_model::{ApduSize, Dpt, GroupAddress, Model, encode, parse_value};
 
+use bussard_secure::{AsduError, Key16};
+use bussard_transport::cemi::{CemiFrame, Destination};
+
 use crate::bus::BusService;
+use crate::group::{GroupKeys, GroupSendError, SecureGroupError, group_key_for};
 
 /// The value to write.
 #[derive(Debug, Clone, Copy)]
@@ -66,6 +73,11 @@ pub struct WriteCheck<'a> {
     /// Write a protected GA anyway (the CLI's `--force`, viz's `force`). The MCP
     /// server never sets it.
     pub force: bool,
+    /// The keyring's group keys (issue #172). A GA with a key here, or marked
+    /// `secure: true` in the model, is written as a KNX Data Secure group
+    /// telegram; a secured GA without a key is refused
+    /// ([`WriteRefusal::SecureNoKey`]). `None`: no keyring was given.
+    pub group_keys: Option<&'a GroupKeys>,
 }
 
 /// A write that passed every check and is ready to send.
@@ -84,6 +96,16 @@ pub struct PreparedWrite {
     pub payload: Vec<u8>,
     /// Whether the payload is packed into the 6-bit APDU (sub-byte DPTs only).
     pub packed: bool,
+    /// The group key the write is sealed under (KNX Data Secure, issue #172),
+    /// or `None` for a plain write. `Debug` redacts it.
+    pub group_key: Option<Key16>,
+}
+
+impl PreparedWrite {
+    /// Whether the write goes out as a KNX Data Secure group telegram.
+    pub fn is_secured(&self) -> bool {
+        self.group_key.is_some()
+    }
 }
 
 /// A write that was sent.
@@ -180,9 +202,31 @@ pub enum WriteRefusal {
     /// The raw payload's length does not fit the known DPT.
     #[error("{0}")]
     PayloadSize(String),
+    /// The GA is secured (KNX Data Secure) but no group key is available.
+    #[error("GA {ga} is secured (KNX Data Secure) but no group key is available for it")]
+    SecureNoKey {
+        /// The GA.
+        ga: GroupAddress,
+        /// Whether a keyring was given (`false`: pass one; `true`: it has no
+        /// key for this GA).
+        keyring_given: bool,
+    },
+    /// The secured telegram could not be sealed.
+    #[error("sealing the secured group write: {0}")]
+    SecureSeal(AsduError),
     /// The send itself failed (ACK exhaustion, staleness, a gone actor).
     #[error(transparent)]
     Bus(BusError),
+}
+
+impl From<SecureGroupError> for WriteRefusal {
+    fn from(err: SecureGroupError) -> Self {
+        match err {
+            SecureGroupError::NoKey { ga, keyring_given } => {
+                WriteRefusal::SecureNoKey { ga, keyring_given }
+            }
+        }
+    }
 }
 
 /// The name of `ga` if the model marks it `protected: true`, else `None`.
@@ -225,6 +269,8 @@ pub fn prepare_group_write(
         });
     }
     let name = group.map(|g| g.name.clone());
+    // 1b. KNX Data Secure: a secured GA needs its group key (issue #172).
+    let group_key = group_key_for(model, ga, check.group_keys)?;
 
     // 2. The DPT.
     let requested = match check.dpt {
@@ -278,6 +324,7 @@ pub fn prepare_group_write(
                 // Pack only sub-byte DPTs into the 6-bit APDU; a byte-sized DPT
                 // with a small value must be sent whole (issue #59).
                 packed: dpt.is_packable(),
+                group_key,
             })
         }
         WriteValue::Hex(input) => {
@@ -305,6 +352,7 @@ pub fn prepare_group_write(
                 value: None,
                 payload,
                 packed,
+                group_key,
             })
         }
     }
@@ -321,6 +369,10 @@ impl BusService {
         if !self.policy().transmits() {
             return Err(WriteRefusal::WritesDisabled);
         }
+        if let Some(key) = &write.group_key {
+            let confirmed = self.send_secured_write(&write, key).await?;
+            return Ok(WriteOutcome { write, confirmed });
+        }
         let sent = ops::write_group(
             self.handle(),
             write.ga,
@@ -334,6 +386,33 @@ impl BusService {
             write,
             confirmed: sent.confirmed,
         })
+    }
+
+    /// Sends `write` as a KNX Data Secure group telegram sealed under `key`
+    /// and watches for a bus confirmation, as [`ops::write_group`] does for the
+    /// plain path.
+    async fn send_secured_write(
+        &self,
+        write: &PreparedWrite,
+        key: &Key16,
+    ) -> Result<bool, WriteRefusal> {
+        let source = ops::group_source(self.handle());
+        let apdu = CemiFrame::group_write(write.ga, source, &write.payload, write.packed).apdu;
+        let mut sub = self.handle().subscribe();
+        self.send_group_secured(write.ga, &apdu, key)
+            .await
+            .map_err(|e| match e {
+                GroupSendError::Bus(e) => WriteRefusal::Bus(e),
+                GroupSendError::Seal(e) => WriteRefusal::SecureSeal(e),
+            })?;
+        let timeout = WriteOptions::default().confirm_timeout;
+        let ga = write.ga;
+        Ok(sub
+            .wait_for_matching(timeout, |stamped, _code| {
+                stamped.frame.destination == Destination::Group(ga)
+            })
+            .await
+            .is_some())
     }
 
     /// The whole checked write: [`prepare_group_write`], then
@@ -467,6 +546,7 @@ mod tests {
             dpt,
             dpt_policy: DptOverridePolicy::Trust,
             force,
+            group_keys: None,
         }
     }
 
@@ -537,6 +617,7 @@ mod tests {
             dpt: Some("5.010"),
             dpt_policy: DptOverridePolicy::MustMatchModel,
             force: false,
+            group_keys: None,
         };
         let r = prepare_group_write(Some(&m), ga("3/0/4")?, WriteValue::Human("255"), &check);
         assert!(matches!(r, Err(WriteRefusal::DptMismatch { .. })), "{r:?}");

@@ -20,6 +20,7 @@ use bussard_transport::{ConnectionConfig, TransportError};
 use tokio::sync::{mpsc, watch};
 
 use crate::decode::DecodedTelegram;
+use crate::secure::GroupKeyring;
 
 /// A cooperative cancellation signal for a running stream loop.
 ///
@@ -147,7 +148,7 @@ pub async fn run_stream(
     model: Option<&Model>,
     sink: &mut dyn TelegramSink,
 ) -> Result<(), StreamError> {
-    run_stream_inner(config, model, sink, None, None).await
+    run_stream_inner(config, model, sink, None, None, None).await
 }
 
 /// Like [`run_stream`], but cancellable through a [`CancelWatch`].
@@ -160,7 +161,7 @@ pub async fn run_stream_cancellable(
     sink: &mut dyn TelegramSink,
     cancel: CancelWatch,
 ) -> Result<(), StreamError> {
-    run_stream_inner(config, model, sink, None, Some(cancel)).await
+    run_stream_inner(config, model, sink, None, Some(cancel), None).await
 }
 
 /// Like [`run_stream`], but also drains an optional outbound channel, sending
@@ -175,7 +176,7 @@ pub async fn run_stream_with_outbound(
     sink: &mut dyn TelegramSink,
     outbound: Option<mpsc::UnboundedReceiver<CemiFrame>>,
 ) -> Result<(), StreamError> {
-    run_stream_inner(config, model, sink, outbound, None).await
+    run_stream_inner(config, model, sink, outbound, None, None).await
 }
 
 /// Like [`run_stream_with_outbound`], but cancellable through a [`CancelWatch`].
@@ -186,7 +187,21 @@ pub async fn run_stream_with_outbound_cancellable(
     outbound: Option<mpsc::UnboundedReceiver<CemiFrame>>,
     cancel: CancelWatch,
 ) -> Result<(), StreamError> {
-    run_stream_inner(config, model, sink, outbound, Some(cancel)).await
+    run_stream_inner(config, model, sink, outbound, Some(cancel), None).await
+}
+
+/// Like [`run_stream_cancellable`], but unwraps KNX Data Secure group
+/// telegrams with the keyring's group keys before decoding (issue #172; see
+/// [`DecodedTelegram::from_frame_secured`]). `None` is exactly
+/// [`run_stream_cancellable`].
+pub async fn run_stream_secured_cancellable(
+    config: &ConnectionConfig,
+    model: Option<&Model>,
+    sink: &mut dyn TelegramSink,
+    keyring: Option<GroupKeyring>,
+    cancel: CancelWatch,
+) -> Result<(), StreamError> {
+    run_stream_inner(config, model, sink, None, Some(cancel), keyring).await
 }
 
 /// The shared implementation behind every `run_stream*` entry point.
@@ -196,6 +211,7 @@ async fn run_stream_inner(
     sink: &mut dyn TelegramSink,
     mut outbound: Option<mpsc::UnboundedReceiver<CemiFrame>>,
     mut cancel: Option<CancelWatch>,
+    mut keyring: Option<GroupKeyring>,
 ) -> Result<(), StreamError> {
     // If cancellation was requested before we start, do nothing (never open a
     // tunnel just to close it — issue #31).
@@ -252,7 +268,8 @@ async fn run_stream_inner(
             inbound = sub.recv() => match inbound {
                 Some(frame) => {
                     let stamped = frame.frame;
-                    let decoded = DecodedTelegram::from_frame(&stamped, model);
+                    let decoded =
+                        DecodedTelegram::from_frame_secured(&stamped, model, keyring.as_mut());
                     if sink.on_telegram(&decoded, &stamped).is_stop() {
                         let _ = handle.close().await;
                         return Ok(());

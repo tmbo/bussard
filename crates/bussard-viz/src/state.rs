@@ -269,6 +269,11 @@ pub struct Security {
     pub allow_writes: bool,
     /// Extra `Host` values to accept, lowercased and without a port.
     pub allowed_hosts: Arc<Vec<String>>,
+    /// The keyring's group keys (`bussard viz --keyring`, issue #172): a write
+    /// to a secured GA is sealed under its group key, and secured telegrams in
+    /// the live traffic are decrypted. `None` without a keyring. `Debug`
+    /// redacts the keys.
+    pub group_keys: Option<Arc<bussard_service::GroupKeys>>,
 }
 
 /// The shared application state, cloned into every handler by axum.

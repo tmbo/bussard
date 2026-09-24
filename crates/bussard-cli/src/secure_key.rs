@@ -7,7 +7,11 @@
 //! commands already use, plus the operator-facing hints for a device that may
 //! be Data Secure-activated.
 
+use std::path::Path;
+
+use anyhow::Context;
 use bussard_model::IndividualAddress;
+use bussard_service::GroupKeys;
 
 pub use bussard_service::secure::{
     KEYRING_PASSWORD_ENV, SecureMaterial, ToolKeySource, layer, resolve, resolve_material,
@@ -40,5 +44,32 @@ pub(crate) fn secure_hint(
         ))
     } else {
         err.context(format!("{target} did not answer: {}", no_key_guidance()))
+    }
+}
+
+/// Loads the group keys of `--keyring` for secured group communication
+/// (issue #172), or `None` without a keyring. The password comes from
+/// [`KEYRING_PASSWORD_ENV`]; the error names the file, never a key.
+pub fn group_keys(keyring: Option<&Path>) -> anyhow::Result<Option<GroupKeys>> {
+    let Some(path) = keyring else {
+        return Ok(None);
+    };
+    let keys = bussard_service::secure::load_group_keys(path)
+        .with_context(|| format!("loading group keys from {}", path.display()))?;
+    Ok(Some(keys))
+}
+
+/// The CLI's words for a secured GA without a group key.
+pub fn no_group_key_hint(ga: bussard_model::GroupAddress, keyring_given: bool) -> String {
+    if keyring_given {
+        format!(
+            "GA {ga} is secured (KNX Data Secure) but the keyring has no group key for it; \
+             export a current keyring from ETS"
+        )
+    } else {
+        format!(
+            "GA {ga} is secured (KNX Data Secure, `secure: true` in groups.yaml); pass \
+             --keyring <file.knxkeys> with {KEYRING_PASSWORD_ENV} set to send it secured"
+        )
     }
 }

@@ -2,19 +2,24 @@
 //! typed response.
 //!
 //! Runs over a read-only [`bussard_service::BusService`], calls the shared
-//! [`ops::read_group`] (which subscribes, sends the read completion-tracked,
+//! [`bussard_service::BusService::read_group`] (the plain path is
+//! [`bussard_bus::ops::read_group`], which subscribes, sends the read completion-tracked,
 //! skips the gateway's `L_Data.con` echo and decodes the answer), prints the
 //! typed value, and closes the bus cleanly. Exits non-zero on timeout so scripts
 //! can detect a non-responding object, and on a send failure (honest exit codes,
 //! review A3).
+//!
+//! A secured GA (`secure: true` in the model, or a group key in `--keyring`) is
+//! read with a KNX Data Secure `GroupValueRead` and only a response whose MAC
+//! verifies under the group key is accepted (issue #172). A secured GA without
+//! a key is refused before anything is sent.
 
 use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use bussard_bus::ops;
 use bussard_model::GroupAddress;
-use bussard_service::WritePolicy;
+use bussard_service::{SecureGroupError, WritePolicy, group_key_for};
 
 use crate::conn_cmd::{ConnOverrides, load_model_optional, open_service, resolve_config};
 
@@ -22,7 +27,12 @@ use crate::conn_cmd::{ConnOverrides, load_model_optional, open_service, resolve_
 const READ_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Runs `bussard read <ga>`.
-pub fn run(ga_str: &str, dir: &Path, overrides: ConnOverrides) -> anyhow::Result<ExitCode> {
+pub fn run(
+    ga_str: &str,
+    dir: &Path,
+    keyring: Option<&Path>,
+    overrides: ConnOverrides,
+) -> anyhow::Result<ExitCode> {
     let ga: GroupAddress = ga_str
         .parse()
         .map_err(|_| anyhow::anyhow!("invalid group address {ga_str:?}"))?;
@@ -38,22 +48,40 @@ pub fn run(ga_str: &str, dir: &Path, overrides: ConnOverrides) -> anyhow::Result
         .as_ref()
         .and_then(|m| m.groups.groups.get(&ga))
         .map(|g| g.name.clone());
+    // KNX Data Secure (issue #172): decide plain vs secured before connecting.
+    let group_keys = crate::secure_key::group_keys(keyring)?;
+    let key = group_key_for(model.as_ref(), ga, group_keys.as_ref()).map_err(
+        |SecureGroupError::NoKey { ga, keyring_given }| {
+            anyhow::anyhow!(crate::secure_key::no_group_key_hint(ga, keyring_given))
+        },
+    )?;
+    let secured = key.is_some();
 
     let runtime = tokio::runtime::Runtime::new()?;
     let outcome = runtime.block_on(async move {
         // A read never writes, so the service is read-only and ungated.
         let service = open_service(config, WritePolicy::ReadOnly).await?;
-        let result = ops::read_group(service.handle(), ga, dpt, READ_TIMEOUT).await;
+        let result = service
+            .read_group(ga, dpt, key.as_ref(), READ_TIMEOUT)
+            .await;
         // Close the bus cleanly (release the gateway tunnel slot) — issue #31.
         service.close().await;
         anyhow::Ok(result)
     })?;
 
     match outcome {
-        Ok(Some(outcome)) => {
+        Ok(Some(read)) => {
             if let Some(name) = &ga_name {
                 eprintln!("{ga} {name}");
             }
+            if read.secured {
+                eprintln!(
+                    "secured: KNX Data Secure response from {} verified with the group key of \
+                     {ga}",
+                    read.outcome.source
+                );
+            }
+            let outcome = read.outcome;
             match (&outcome.value, &outcome.dpt) {
                 (Some(v), Some(dpt)) => println!("{v} ({dpt})"),
                 (Some(v), None) => println!("{v}"),
@@ -66,10 +94,19 @@ pub fn run(ga_str: &str, dir: &Path, overrides: ConnOverrides) -> anyhow::Result
             Ok(ExitCode::SUCCESS)
         }
         Ok(None) => {
-            eprintln!(
-                "error: no response for {ga} within {}s",
-                READ_TIMEOUT.as_secs()
-            );
+            if secured {
+                eprintln!(
+                    "error: no verified secured response for {ga} within {}s (a device \
+                     answers a secured read only when bussard's source address is in its \
+                     security individual address table)",
+                    READ_TIMEOUT.as_secs()
+                );
+            } else {
+                eprintln!(
+                    "error: no response for {ga} within {}s",
+                    READ_TIMEOUT.as_secs()
+                );
+            }
             Ok(ExitCode::FAILURE)
         }
         Err(err) => {

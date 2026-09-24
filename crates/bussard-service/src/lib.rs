@@ -22,6 +22,9 @@
 //! - [`write`]: the checked group write (GA, protected-GA check, DPT, encode,
 //!   send) with a typed [`WriteRefusal`] that each surface renders in its own
 //!   words.
+//! - [`group`]: KNX Data Secure group communication: which GAs are secured
+//!   ([`group_key_for`]), the secured `GroupValueRead`
+//!   ([`BusService::read_group`]) and the sealing behind the secured write.
 //! - [`ModelHandle`]: a shared model that reloads itself when the files on disk
 //!   change, used by the long-lived MCP and viz servers.
 //! - [`describe`]: the interface-object walk and the PID / object-type name
@@ -33,6 +36,7 @@
 pub mod bus;
 pub mod describe;
 pub mod error;
+pub mod group;
 pub mod model_handle;
 pub mod policy;
 pub mod secure;
@@ -40,6 +44,9 @@ pub mod write;
 
 pub use bus::{Authorize, BusService, L4Options, Management, SourcePolicy};
 pub use error::ServiceError;
+pub use group::{
+    GroupKeys, GroupRead, GroupSendError, SecureGroupError, SecuredSend, group_key_for,
+};
 pub use model_handle::ModelHandle;
 pub use policy::WritePolicy;
 pub use write::{

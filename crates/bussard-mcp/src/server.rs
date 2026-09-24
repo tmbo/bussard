@@ -23,7 +23,7 @@ use bussard_service::describe::walk_objects;
 use bussard_service::secure::ToolKeySource;
 use bussard_service::{
     DptOverridePolicy, L4Options, ServiceError, SourcePolicy, WriteCheck, WriteRefusal, WriteValue,
-    prepare_group_write,
+    group_key_for, prepare_group_write,
 };
 use rmcp::ErrorData;
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -387,7 +387,29 @@ impl BussardMcp {
             .parse()
             .map_err(|_| invalid(format!("invalid group address {:?}", args.ga)))?;
 
-        let Some(handle) = self.state.bus.handle() else {
+        // KNX Data Secure (issue #172): a secured GA (a group key in the
+        // server's `--keyring`, or `secure: true` in the model) is read with a
+        // secured GroupValueRead; a secured GA without a key is refused.
+        let model = self.state.model.current();
+        let keys = match crate::secure_group::group_keys(self.state.keyring.as_deref()) {
+            Ok(keys) => keys,
+            Err(reason) => {
+                return ok(json!({ "ga": ga.to_string(), "ok": false, "reason": reason }));
+            }
+        };
+        let key = match group_key_for(Some(&model), ga, keys.as_deref()) {
+            Ok(key) => key,
+            Err(err) => {
+                return ok(json!({
+                    "ga": ga.to_string(),
+                    "ok": false,
+                    "refused": true,
+                    "reason": crate::secure_group::no_key_reason(&err),
+                }));
+            }
+        };
+
+        let Some(service) = self.state.bus.service() else {
             return ok(json!({
                 "ga": ga.to_string(),
                 "ok": false,
@@ -410,16 +432,13 @@ impl BussardMcp {
 
         // The shared read implementation: subscribe, send (completion-tracked),
         // skip the L_Data.con echo, decode against the GA's DPT (#32, #30).
-        let dpt = self
-            .state
-            .model
-            .current()
-            .groups
-            .groups
-            .get(&ga)
-            .and_then(|g| g.dpt);
-        match ops::read_group(handle, ga, dpt, READ_RESPONSE_TIMEOUT).await {
-            Ok(Some(outcome)) => {
+        let dpt = model.groups.groups.get(&ga).and_then(|g| g.dpt);
+        match service
+            .read_group(ga, dpt, key.as_ref(), READ_RESPONSE_TIMEOUT)
+            .await
+        {
+            Ok(Some(read)) => {
+                let outcome = read.outcome;
                 let (display, typed) = match &outcome.value {
                     Some(v) => (Some(v.to_string()), tools::typed_value_json(v)),
                     None => (None, Value::Null),
@@ -431,13 +450,19 @@ impl BussardMcp {
                     "typed": typed,
                     "dpt": outcome.dpt.map(|d| d.to_string()),
                     "source": outcome.source.to_string(),
+                    "secured": read.secured,
                 }))
             }
             Ok(None) => ok(json!({
                 "ga": ga.to_string(),
                 "ok": false,
                 "timed_out": true,
-                "reason": "no response within timeout",
+                "secured": key.is_some(),
+                "reason": if key.is_some() {
+                    "no verified secured response within timeout"
+                } else {
+                    "no response within timeout"
+                },
             })),
             Err(err) => ok(json!({
                 "ga": ga.to_string(),
@@ -592,6 +617,13 @@ impl BussardMcp {
         // during the session (a `protected:` added, a `dpt:` corrected) is in
         // force on the very next write rather than after a restart.
         let model = self.state.model.current();
+        // KNX Data Secure group keys from the server's `--keyring` (issue #172).
+        let keys = match crate::secure_group::group_keys(self.state.keyring.as_deref()) {
+            Ok(keys) => keys,
+            Err(reason) => {
+                return ok(json!({ "ga": ga.to_string(), "ok": false, "reason": reason }));
+            }
+        };
 
         // The shared write policy (bussard_service::write). Protected GAs are
         // hard-refused: `force` is never set, so there is no override via MCP.
@@ -607,6 +639,7 @@ impl BussardMcp {
             dpt: args.dpt.as_deref(),
             dpt_policy: DptOverridePolicy::MustMatchModel,
             force: false,
+            group_keys: keys.as_deref(),
         };
         let write =
             match prepare_group_write(Some(&model), ga, WriteValue::Human(&args.value), &check) {
@@ -644,6 +677,7 @@ impl BussardMcp {
                 "ga": ga.to_string(),
                 "ok": true,
                 "confirmed": sent.confirmed,
+                "secured": sent.write.is_secured(),
                 "written": {
                     "address": ga.to_string(),
                     "name": sent.write.name,
@@ -688,6 +722,13 @@ fn write_refusal_json(ga: GroupAddress, refusal: &WriteRefusal) -> Value {
         }
         WriteRefusal::WritesDisabled => (false, "bus writes are disabled on this server".into()),
         WriteRefusal::Bus(err) => (false, format!("bus send failed: {err}")),
+        WriteRefusal::SecureNoKey { ga, keyring_given } => (
+            true,
+            crate::secure_group::no_key_reason(&bussard_service::SecureGroupError::NoKey {
+                ga: *ga,
+                keyring_given: *keyring_given,
+            }),
+        ),
         other => (false, other.to_string()),
     };
     let mut body = json!({
@@ -786,11 +827,17 @@ fn query_capture(
         limit: Some(MAX_CAPTURE_SCAN),
     };
     let rows = store.query(&qf).ok()?;
+    // Secured group telegrams decrypt with the server's `--keyring` (issue
+    // #172); without one (or on a load failure) they stay as stored.
+    let mut keyring = crate::secure_group::group_keys(state.keyring.as_deref())
+        .ok()
+        .flatten()
+        .map(|keys| bussard_monitor::GroupKeyring::new(keys.as_ref().clone()));
     // Re-decode against the current model, drop undecodable rows, and re-apply
     // the requested filter (this is what makes a GA prefix like "3/" correct).
     let mut out: Vec<bussard_monitor::DecodedTelegram> = rows
         .iter()
-        .filter_map(|r| r.redecode(Some(&model)).ok())
+        .filter_map(|r| r.redecode_secured(Some(&model), keyring.as_mut()).ok())
         .filter(|t| filter.matches(t))
         .collect();
     // Rows are newest-first; keep the newest `limit`, then make chronological.

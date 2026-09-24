@@ -48,6 +48,9 @@ impl Device {
                 }
                 return self.handle_secure_data(cemi, apdu);
             }
+            if let Some(reaction) = self.plain_allowed_on_activated(cemi, apdu)? {
+                return Ok(reaction);
+            }
             if Self::is_protected_function(apdu.apci) {
                 self.emit(Event::SecureFrame {
                     device: self.address,
@@ -132,6 +135,52 @@ impl Device {
     /// (authorize, property/memory read/write, restart, device-descriptor) are
     /// protected; group-value and the broadcast individual-address services are
     /// not (they are the plain-coexistence surface, spec §6.4).
+    /// The few management services an activated device still answers PLAIN,
+    /// as the real Jung F50 (secure-1-1-12 capture) does and ETS relies on for
+    /// its readiness probe:
+    ///
+    /// - `A_DeviceDescriptor_Read` type 0, answered with mask `FFFF` (the real
+    ///   device hides its mask until the tool talks secured);
+    /// - `A_Authorize_Request`, answered as usual;
+    /// - `A_PropertyValue_Read` of PID 56 (max APDU length) on the device
+    ///   object, answered with its value.
+    ///
+    /// Returns `Ok(None)` for every other APDU, which then meets the ordinary
+    /// "plain access refused" rule.
+    fn plain_allowed_on_activated(
+        &mut self,
+        cemi: &CemiLData,
+        apdu: &Apdu,
+    ) -> Result<Option<DeviceReaction>, DeviceError> {
+        const PID_MAX_APDU_LENGTH: u8 = 56;
+        let tool = cemi.source;
+        let reaction = match apdu.apci {
+            Apci::DeviceDescriptorRead(0) => {
+                let resp = self.respond(tool, 0x340, &[0xFF, 0xFF]);
+                DeviceReaction {
+                    responses: vec![resp],
+                    did_master_reset: false,
+                }
+            }
+            Apci::AuthorizeRequest => self.dispatch_apdu(cemi, apdu)?,
+            Apci::PropertyValueRead
+                if apdu.data.first() == Some(&0)
+                    && apdu.data.get(1) == Some(&PID_MAX_APDU_LENGTH) =>
+            {
+                self.dispatch_apdu(cemi, apdu)?
+            }
+            _ => return Ok(None),
+        };
+        self.emit(Event::SecureFrame {
+            device: self.address,
+            summary: format!(
+                "PLAIN {:?} answered (allowed unsecured on an activated device)",
+                apdu.apci
+            ),
+        });
+        Ok(Some(reaction))
+    }
+
     fn is_protected_function(apci: Apci) -> bool {
         matches!(
             apci,

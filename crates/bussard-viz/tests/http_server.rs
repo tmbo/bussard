@@ -72,6 +72,7 @@ async fn model_only_degradation_over_real_http() -> Result<(), Box<dyn std::erro
         allow_writes: false,
         allow_remote_gateway: false,
         allowed_hosts: Vec::new(),
+        group_keys: None,
     };
 
     // Build the state and router, bind an ephemeral port, and serve on a task.
@@ -130,6 +131,7 @@ async fn model_only_mode_with_no_connection() -> Result<(), Box<dyn std::error::
         allow_writes: false,
         allow_remote_gateway: false,
         allowed_hosts: Vec::new(),
+        group_keys: None,
     };
     let (state, handle, watch) = bussard_viz::build_state(&config)?;
     assert!(handle.is_none(), "no bus handle in model-only mode");

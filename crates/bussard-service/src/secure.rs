@@ -170,6 +170,17 @@ pub fn resolve_material(
     }
 }
 
+/// Loads the keyring's **group keys** for secured group communication
+/// (issue #172: `monitor`, `capture`, `read` and `write --keyring`). The
+/// password comes from [`KEYRING_PASSWORD_ENV`].
+///
+/// # Errors
+///
+/// A missing password, an unreadable file, or a keyring that does not decrypt.
+pub fn load_group_keys(path: &Path) -> Result<crate::group::GroupKeys, SecureKeyError> {
+    Ok(load_keyring(path)?.group_keys)
+}
+
 /// Loads and decrypts `path` with the env password.
 fn load_keyring(path: &Path) -> Result<bussard_project::Keyring, SecureKeyError> {
     let password =

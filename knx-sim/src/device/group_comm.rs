@@ -123,6 +123,16 @@ fn read_counted_table(mem: &Memory, base: u16, elem_size: usize) -> Option<Vec<u
     entries
 }
 
+/// The group addresses of the address table (obj1) at `addr_base`, in table
+/// order: index `i` holds TSAP `i + 1`. Empty when the table is refused.
+pub(super) fn address_table(memory: &Memory, addr_base: u16) -> Vec<GroupAddress> {
+    read_counted_table(memory, addr_base, 2)
+        .unwrap_or_default()
+        .chunks_exact(2)
+        .map(|c| GroupAddress(u16::from_be_bytes([c[0], c[1]])))
+        .collect()
+}
+
 impl GroupComm {
     /// Reconstruct the routing from the device's flashed tables in `memory`.
     ///

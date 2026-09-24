@@ -522,6 +522,7 @@ pub(crate) mod test_fixtures {
             dpt: Some("1.005".parse()?),
             object_name: Some("Windalarm 1".to_string()),
             decode_note: None,
+            secure: None,
         })
     }
 

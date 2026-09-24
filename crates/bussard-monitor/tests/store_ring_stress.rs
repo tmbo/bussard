@@ -155,6 +155,7 @@ fn mk_tel(dest: &str) -> TestResult<DecodedTelegram> {
         dpt: None,
         object_name: None,
         decode_note: None,
+        secure: None,
     })
 }
 

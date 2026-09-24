@@ -118,7 +118,7 @@ entry supersedes it and is not a diff against it.
   with a problems panel, model reload and programming-mode highlighting
   (`--watch-prog`) (#65, #67).
 
-**KNX Data Secure (tool access)**
+**KNX Data Secure**
 
 - `bussard keyring` inspects an ETS `.knxkeys` export: it verifies the
   signature and decrypts the tool and group keys (#84, #148). The password
@@ -135,6 +135,11 @@ entry supersedes it and is not a diff against it.
 - The crypto, the handshake and the security-object bytes match an ETS 6.4.1
   capture frame for frame, and a secured download was verified against a real
   installation on 2026-09-23 and 2026-09-24.
+- Secured group communication: `monitor` and `capture --keyring` verify and
+  decrypt secured group telegrams with the GA's group key and mark them
+  `secured`; `read` and `write --keyring` (and MCP, viz) send a secured GA as
+  `A_SecureData` and refuse one without a key; a keyless `flash` of an
+  activated device names the missing key (#172).
 
 **Live progress display**
 
@@ -228,8 +233,6 @@ entry supersedes it and is not a diff against it.
 
 - KNXnet/IP Secure (encrypted tunnel sessions) is not implemented; a
   Secure-only interface refuses bussard (#71 Phase B).
-- `monitor`, `capture`, `read` and `write` do not decrypt or send secured group
-  communication yet (#172, in progress).
 - ETS3-era products shipped only as encrypted `.vd4` files cannot be flashed
   (#135).
 - Some Data Secure memory layouts are still inferred rather than confirmed by

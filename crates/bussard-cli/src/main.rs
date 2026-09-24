@@ -991,6 +991,12 @@ enum Command {
         /// GAs (`3/2/0`), GA prefixes (`3/` or `3/2/`) or IAs (`1.1.30`).
         #[arg(long, value_name = "EXPR")]
         filter: Option<String>,
+        /// An ETS `.knxkeys` keyring whose group keys verify and decrypt secured group
+        /// telegrams; they are marked `secured` in the output (KNX Data Secure group
+        /// communication, issue #172). The password is read from
+        /// `BUSSARD_KEYRING_PASSWORD`.
+        #[arg(long, value_name = "FILE")]
+        keyring: Option<PathBuf>,
         /// Override the gateway `host[:port]` for tunneling.
         #[arg(long, value_name = "HOST")]
         gateway: Option<String>,
@@ -1009,6 +1015,12 @@ enum Command {
         /// Only capture telegrams matching this filter (see `monitor --filter`).
         #[arg(long, value_name = "EXPR")]
         filter: Option<String>,
+        /// An ETS `.knxkeys` keyring whose group keys verify and decrypt secured group
+        /// telegrams; the decoded snapshot carries the `secured` flag (KNX Data Secure
+        /// group communication, issue #172). The password is read from
+        /// `BUSSARD_KEYRING_PASSWORD`.
+        #[arg(long, value_name = "FILE")]
+        keyring: Option<PathBuf>,
         /// Override the gateway `host[:port]` for tunneling.
         #[arg(long, value_name = "HOST")]
         gateway: Option<String>,
@@ -1025,6 +1037,11 @@ enum Command {
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
+        /// An ETS `.knxkeys` keyring whose group keys secure the read of a secured GA
+        /// and verify its response (KNX Data Secure group communication, issue #172).
+        /// The password is read from `BUSSARD_KEYRING_PASSWORD`.
+        #[arg(long, value_name = "FILE")]
+        keyring: Option<PathBuf>,
         /// Override the gateway `host[:port]` for tunneling.
         #[arg(long, value_name = "HOST")]
         gateway: Option<String>,
@@ -1052,6 +1069,11 @@ enum Command {
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
+        /// An ETS `.knxkeys` keyring whose group keys secure the write of a secured GA
+        /// (KNX Data Secure group communication, issue #172). The password is read from
+        /// `BUSSARD_KEYRING_PASSWORD`.
+        #[arg(long, value_name = "FILE")]
+        keyring: Option<PathBuf>,
         /// Override the gateway `host[:port]` for tunneling.
         #[arg(long, value_name = "HOST")]
         gateway: Option<String>,
@@ -1080,6 +1102,12 @@ enum Command {
         /// The directory containing the model (`bussard.yaml`, `groups.yaml`, …).
         #[arg(long, default_value = "knx")]
         dir: PathBuf,
+        /// An ETS `.knxkeys` keyring whose group keys secure `POST /api/group-write` to
+        /// a secured GA and decrypt secured telegrams in the live traffic (KNX Data
+        /// Secure group communication, issue #172). The password is read from
+        /// `BUSSARD_KEYRING_PASSWORD`.
+        #[arg(long, value_name = "FILE")]
+        keyring: Option<PathBuf>,
         /// Override the gateway `host[:port]` for tunneling.
         #[arg(long, value_name = "HOST")]
         gateway: Option<String>,
@@ -1859,12 +1887,14 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             dir,
             json,
             filter,
+            keyring,
             gateway,
             routing,
         } => monitor_cmd::run(
             &dir,
             json,
             filter.as_deref(),
+            keyring.as_deref(),
             conn_cmd::ConnOverrides {
                 gateway,
                 routing,
@@ -1875,12 +1905,14 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             to,
             dir,
             filter,
+            keyring,
             gateway,
             routing,
         } => capture_cmd::run(
             &to,
             &dir,
             filter.as_deref(),
+            keyring.as_deref(),
             conn_cmd::ConnOverrides {
                 gateway,
                 routing,
@@ -1890,11 +1922,13 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
         Command::Read {
             ga,
             dir,
+            keyring,
             gateway,
             routing,
         } => read_cmd::run(
             &ga,
             &dir,
+            keyring.as_deref(),
             conn_cmd::ConnOverrides {
                 gateway,
                 routing,
@@ -1908,6 +1942,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             force,
             yes,
             dir,
+            keyring,
             gateway,
             routing,
             allow_remote_gateway,
@@ -1919,6 +1954,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             yes,
             allow_remote_gateway,
             &dir,
+            keyring.as_deref(),
             conn_cmd::ConnOverrides {
                 gateway,
                 routing,
@@ -1929,6 +1965,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
         Command::Viz {
             listen,
             dir,
+            keyring,
             gateway,
             routing,
             watch_prog,
@@ -1948,6 +1985,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 watch_prog,
                 allow_remote_gateway,
                 allowed_hosts: allow_host,
+                keyring,
             },
         ),
         Command::Learn {
