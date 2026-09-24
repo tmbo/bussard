@@ -469,9 +469,9 @@ and `write --keyring` (and MCP, viz), and modelled by the knx-sim Secure device.
 |---|---|---|
 | Carrier | `T_Data_Group` (TPCI octet `0x00`) to the GA, APCI `0x03F1` | CONFIRMED for a group-addressed A_SecureData frame (the broadcast S-A_Sync to `0/0/0`, secure-1-1-12 capture) |
 | B0 / Ctr0 addressing | `source(2) ‖ GA(2)`, Ctrl2 octet `0x80` (address-type bit set, standard frame), B0[12] = `0x03` | CONFIRMED: the capture's two group-addressed secured frames (S-A_Sync_Req and S-A_Sync_Res to `0/0/0`) verify through this exact path (`TpAddressing::group`, oracle test `test_group_addressed_capture_frames_verify`, 2026-09-24) |
-| SCF | tool_access 0, system_broadcast 0, S-A_Data: `0x10` auth+encryption (bussard sends this), `0x00` auth only (accepted) | INFERRED from the SCF bit layout of §5.2 and XKNX `data_secure.py`; the capture holds no group-key frame |
-| Key | the group key of the destination GA (keyring `GroupAddresses/Group@Key`) | INFERRED (XKNX); no real group-key frame verified yet |
-| Inner APDU | the plain group APDU with TPCI bits zero: `00 00` GroupValueRead, `00 8v` small write, `00 40 …` large response | INFERRED (XKNX `APCI.to_knx()`) |
+| SCF | tool_access 0, system_broadcast 0, S-A_Data: `0x10` auth+encryption (bussard sends this), `0x00` auth only (accepted) | CONFIRMED (live, 2026-09-24): a real device (Jung F50 module, 1.1.12) sent a secured GroupValueWrite with SCF `0x10` on its secured GA; `bussard monitor --keyring` verified the MAC and decrypted it |
+| Key | the group key of the destination GA (keyring `GroupAddresses/Group@Key`) | CONFIRMED (live, 2026-09-24): the frame verified under the keyring's key of the destination GA (`0/3/47`) |
+| Inner APDU | the plain group APDU with TPCI bits zero: `00 00` GroupValueRead, `00 8v` small write, `00 40 …` large response | CONFIRMED (live, 2026-09-24) for the small/large GroupValueWrite form: the decrypted APDU decoded as a DPT 9.001 write of 22.12 °C |
 | Sender sequence | ms since 2018-01-05, strictly above the last sent by the process (`SequenceHighWater`) | CONFIRMED rule (§5.8) |
 | Receiver freshness | per sender IA; bussard's monitor only *warns* on a non-increasing sequence, it never drops | design choice |
 | Sender admission | a device accepts a secured group telegram only from an IA in its security individual address table (PID 54) | INFERRED (ETS behaviour); the sim does not enforce it |
@@ -485,8 +485,10 @@ SCF 0x10: 10 000000 00002a df59 49899fd3
 SCF 0x00: 00 000000 00002a 0081 2e51ca4a
 ```
 
-To promote the INFERRED rows, capture ETS or a device sending a secured group
-telegram and run the oracle test with that capture.
+The SCF, key and inner-APDU rows were promoted on 2026-09-24 from a live
+`monitor --keyring` of the reference installation (one secured GroupValueWrite
+from 1.1.12 on 0/3/47, MAC ok). Still to observe: a secured GroupValueRead and
+its response on the wire, and the sender-admission behaviour (PID 54).
 
 ### 5.8 Sequence number = time since epoch `[XKNX, CONFIRMED]`
 
