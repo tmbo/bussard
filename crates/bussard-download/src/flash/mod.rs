@@ -512,6 +512,19 @@ pub enum PlanError {
         app_mask: String,
     },
 
+    /// The device answered the plain descriptor read with mask `FFFF`: a
+    /// security-activated (KNX Data Secure) device does that and refuses every
+    /// other plain management service, so it needs its tool key.
+    #[error(
+        "device {device:?} reports mask FFFF to a plain descriptor read: it is \
+         security-activated (KNX Data Secure) and refuses plain management. Pass --keyring \
+         <file.knxkeys> (password in BUSSARD_KEYRING_PASSWORD), or --tool-key for a test device"
+    )]
+    SecurityActivated {
+        /// The device's individual address.
+        device: String,
+    },
+
     /// The device is not System B; only the 07B0 family is supported for now.
     #[error(
         "device {device:?} reports mask {device_mask:04X} ({system}) — `bussard flash` \

@@ -15,6 +15,11 @@
 #   POSITIVE  flash + apply 1.1.10 with --keyring (synthetic.knxkeys) -> the
 #             security object is unloaded, reloaded with the IA-table clear,
 #             the group key table and the GO security flags, and completed
+#   POSITIVE  secured group communication on 1/2/3 (issue #172): `write` and
+#             `read --keyring` ride A_SecureData under the group key, the sim
+#             answers the read secured, and `monitor --keyring` decrypts the
+#             sim's secured stimulus write (secured: true)
+#   NEGATIVE  `read 1/2/3` without --keyring -> refused with the --keyring hint, nothing sent
 #   NEGATIVE  flash 1.1.2 with a WRONG tool key  -> fails, sim refuses the MAC, nothing written
 #   NEGATIVE  flash 1.1.2 with NO tool key       -> fails, sim refuses plain access, nothing written
 #   NEGATIVE  flash 1.1.3 (plain device) WITH a tool key -> fails, sim refuses (not activated)
@@ -118,7 +123,9 @@ product:
 com_objects:
   1:
     dpt: '3.007'
-    flags: CW
+    # R and T so the secured group object answers a read and transmits the
+    # sim's stimulus (issue #172).
+    flags: CRWT
     secure: true
   2:
     dpt: '5.001'
@@ -289,6 +296,77 @@ for want in \
     bad "apply: sim did not see '$want'"
   fi
 done
+
+# --- POSITIVE: secured group communication on 1/2/3 (issue #172) -----------
+# 1.1.10 is now loaded with the group key of 1/2/3 (PID 53) and object 1
+# flagged secured (PID 61). A plain telegram on 1/2/3 would be ignored.
+say "positive: secured group read / write / monitor (issue #172)"
+group_args=(--dir "$MODEL" --gateway "$GATEWAY" --keyring "$KEYRING")
+
+mark=$(log_mark)
+out="$("$BUSSARD" write 1/2/3 on --dpt 1.001 --yes "${group_args[@]}" 2>&1)"
+rc=$?
+if [[ $rc -eq 0 ]] && grep -q "secured: KNX Data Secure group write" <<<"$out"; then
+  ok "write 1/2/3 --keyring: sent as a secured group write"
+else
+  bad "write 1/2/3 --keyring failed (exit $rc)"; tail -4 <<<"$out" | sed 's/^/      /'
+fi
+if log_has "$mark" "-> 1/2/3 scf=0x10\[auth+enc\] seq=[0-9]* inner=GroupValueWrite ok"; then
+  ok "the sim verified and accepted the secured GroupValueWrite (SCF 0x10)"
+else
+  bad "the sim did not accept a secured GroupValueWrite on 1/2/3"
+  log_since "$mark" | grep -i "secure group\|REJECTED" | head -3 | sed 's/^/      /'
+fi
+
+mark=$(log_mark)
+out="$("$BUSSARD" read 1/2/3 "${group_args[@]}" 2>&1)"
+rc=$?
+if [[ $rc -eq 0 ]] && grep -q "secured: KNX Data Secure response from 1.1.10 verified" <<<"$out"; then
+  ok "read 1/2/3 --keyring: secured response from 1.1.10 verified ($(tail -1 <<<"$out"))"
+else
+  bad "read 1/2/3 --keyring failed (exit $rc)"; tail -4 <<<"$out" | sed 's/^/      /'
+fi
+if log_has "$mark" "inner=GroupValueRead ok" \
+   && log_has "$mark" "SECURE group send 1.1.10 -> 1/2/3 scf=0x10\[auth+enc\] seq=[0-9]* inner=GroupValueResponse"; then
+  ok "the sim verified the secured read and answered with a secured GroupValueResponse"
+else
+  bad "the sim did not answer the secured read secured"
+  log_since "$mark" | grep -i "secure group\|REJECTED\|IGNORED" | head -3 | sed 's/^/      /'
+fi
+
+mark=$(log_mark)
+out="$(BUSSARD_KEYRING_PASSWORD= "$BUSSARD" read 1/2/3 --dir "$MODEL" --gateway "$GATEWAY" 2>&1)"
+rc=$?
+if [[ $rc -ne 0 ]] && grep -q -- "--keyring" <<<"$out"; then
+  ok "read 1/2/3 without --keyring: refused with the --keyring hint (exit $rc)"
+else
+  bad "read of a secured GA without a key was not refused (exit $rc)"; tail -3 <<<"$out" | sed 's/^/      /'
+fi
+if log_has "$mark" "SECURE group recv\|IGNORED PLAIN"; then
+  bad "a keyless read of a secured GA still put a telegram on the bus"
+else
+  ok "read 1/2/3 without --keyring: nothing reached the bus"
+fi
+
+# The sim's stimulus re-sends object 1 as a secured GroupValueWrite every 5 s.
+MON_OUT="$(mktemp -t knxsimmon.XXXXXX)"
+"$BUSSARD" monitor --json "${group_args[@]}" >"$MON_OUT" 2>/dev/null &
+MON_PID=$!
+sleep 7
+kill "$MON_PID" 2>/dev/null; wait "$MON_PID" 2>/dev/null
+if grep '"destination":"1/2/3"' "$MON_OUT" | grep '"source":"1.1.10"' | grep -q '"secured":true'; then
+  ok "monitor --keyring decrypted the sim's secured stimulus write (secured: true)"
+else
+  bad "monitor --keyring showed no verified secured telegram from 1.1.10 on 1/2/3"
+  head -3 "$MON_OUT" | sed 's/^/      /'
+fi
+if grep -q '"secure_status":"mac_failed"' "$MON_OUT"; then
+  bad "monitor --keyring reported a MAC failure"
+else
+  ok "monitor --keyring: no MAC failures"
+fi
+rm -f "$MON_OUT"
+
 unset BUSSARD_KEYRING_PASSWORD
 write_links 1/2/4
 
@@ -418,4 +496,5 @@ if [[ $fail -ne 0 ]]; then
 fi
 rm -f "$SIM_LOG"
 echo "  KNX Data Secure conformance loop OK: tool-access flash to verified Loaded,"
-echo "  both CCM modes, negatives refused on both sides, plain path unchanged"
+echo "  both CCM modes, negatives refused on both sides, plain path unchanged,"
+echo "  secured group read/write/monitor on 1/2/3"

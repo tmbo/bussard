@@ -7,7 +7,8 @@ use std::time::Duration;
 
 use bussard_monitor::stream::{Flow, TelegramSink};
 use bussard_monitor::{
-    CancelToken, DecodedTelegram, Filter, json_line, pretty_line, run_stream_cancellable,
+    CancelToken, DecodedTelegram, Filter, GroupKeyring, json_line, pretty_line,
+    run_stream_secured_cancellable,
 };
 use bussard_transport::{TimestampedFrame, TransportError};
 
@@ -18,6 +19,7 @@ pub fn run(
     dir: &Path,
     json: bool,
     filter_expr: Option<&str>,
+    keyring: Option<&Path>,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
     let filter = match filter_expr {
@@ -26,6 +28,15 @@ pub fn run(
     };
     let model = load_model_optional(dir);
     let config = resolve_config(model.as_ref(), &overrides)?;
+    // KNX Data Secure group telegrams (issue #172): decrypt with the keyring's
+    // group keys. Loaded before connecting so a wrong password fails fast.
+    let group_keys = crate::secure_key::group_keys(keyring)?.map(|keys| {
+        eprintln!(
+            "keyring: {} group key(s) for secured group telegrams",
+            keys.len()
+        );
+        GroupKeyring::new(keys)
+    });
 
     // A dedicated multi-thread runtime; the transport and (later) store need it.
     let runtime = tokio::runtime::Runtime::new()?;
@@ -44,7 +55,14 @@ pub fn run(
                 ctrl_c_cancel.cancel();
             }
         });
-        let res = run_stream_cancellable(&config, model.as_ref(), &mut sink, cancel_watch).await;
+        let res = run_stream_secured_cancellable(
+            &config,
+            model.as_ref(),
+            &mut sink,
+            group_keys,
+            cancel_watch,
+        )
+        .await;
         // Stop the signal task (its own future is cheap to drop; the stream has
         // already closed the connection cleanly on cancel).
         signal.abort();

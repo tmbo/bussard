@@ -92,6 +92,9 @@ pub struct VizConfig {
     /// Extra `Host` header values to accept beyond loopback names and IP
     /// literals. Empty in the normal case; see [`guard`] for why this matters.
     pub allowed_hosts: Vec<String>,
+    /// The keyring's group keys for KNX Data Secure group communication
+    /// (`--keyring`, issue #172): secured writes and decrypted live traffic.
+    pub group_keys: Option<bussard_service::GroupKeys>,
 }
 
 /// Errors surfaced while starting the viz server.
@@ -201,6 +204,7 @@ pub fn build_state(config: &VizConfig) -> Result<BuiltState, VizError> {
     })?;
     let model = ModelHandle::watching(config.dir.clone(), model);
     let hub = TrafficHub::new();
+    let group_keys = config.group_keys.clone().map(std::sync::Arc::new);
 
     let (bus, handle, watch) = match &config.connection {
         Some(conn) => {
@@ -221,11 +225,14 @@ pub fn build_state(config: &VizConfig) -> Result<BuiltState, VizError> {
             // Spawn the feeder: it fills the hub from the live bus and emits
             // `bus` events on state changes. It resolves names through the
             // `ModelHandle`, so a reload swap is reflected on the next telegram.
-            tokio::spawn(traffic::feed(
+            tokio::spawn(traffic::feed_secured(
                 hub.clone(),
                 handle.clone(),
                 model.clone(),
                 bus.clone(),
+                group_keys
+                    .as_deref()
+                    .map(|keys| bussard_monitor::GroupKeyring::new(keys.clone())),
             ));
             // Spawn the programming-mode watch only when explicitly enabled: it
             // puts active broadcast reads on the bus, so it is opt-in via
@@ -259,6 +266,7 @@ pub fn build_state(config: &VizConfig) -> Result<BuiltState, VizError> {
                     .filter(|h| !h.is_empty())
                     .collect(),
             ),
+            group_keys,
         },
     };
     Ok((state, handle, watch))
@@ -326,6 +334,7 @@ mod tests {
             security: Security {
                 allow_writes: true,
                 allowed_hosts: std::sync::Arc::new(Vec::new()),
+                group_keys: None,
             },
         }
     }
@@ -503,6 +512,7 @@ mod tests {
             security: Security {
                 allow_writes: true,
                 allowed_hosts: std::sync::Arc::new(Vec::new()),
+                group_keys: None,
             },
         }
     }
@@ -515,6 +525,7 @@ mod tests {
         state.security = Security {
             allow_writes: false,
             allowed_hosts: std::sync::Arc::new(Vec::new()),
+            group_keys: None,
         };
         state
     }
@@ -827,6 +838,7 @@ mod tests {
             dpt: Some("1.001".parse().expect("dpt")),
             object_name: None,
             decode_note: None,
+            secure: None,
         };
         state.hub.publish(&telegram);
         state.hub.publish(&telegram);
@@ -933,6 +945,7 @@ mod tests {
             security: Security {
                 allow_writes: true,
                 allowed_hosts: std::sync::Arc::new(Vec::new()),
+                group_keys: None,
             },
         }
     }

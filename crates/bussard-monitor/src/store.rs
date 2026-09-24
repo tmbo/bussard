@@ -45,6 +45,7 @@ use rusqlite::Connection;
 
 use crate::decode::{DecodedTelegram, DestinationRef};
 use crate::format::json_line;
+use crate::secure::GroupKeyring;
 use crate::timefmt;
 
 /// An error from the capture store.
@@ -329,13 +330,28 @@ impl StoredTelegram {
     /// Returns the freshly-decoded telegram on success, or `Err(snapshot)` with
     /// the stored JSON when the raw bytes cannot be decoded.
     pub fn redecode(&self, model: Option<&Model>) -> Result<DecodedTelegram, Option<String>> {
+        self.redecode_secured(model, None)
+    }
+
+    /// Like [`redecode`](Self::redecode), but unwraps a KNX Data Secure group
+    /// telegram with the keyring's group keys first (issue #172). The raw
+    /// cEMI keeps the secured bytes, so a capture taken without a keyring can
+    /// be decrypted later. Re-decode rows oldest first when the freshness
+    /// warnings matter.
+    pub fn redecode_secured(
+        &self,
+        model: Option<&Model>,
+        keyring: Option<&mut GroupKeyring>,
+    ) -> Result<DecodedTelegram, Option<String>> {
         match CemiFrame::decode(&self.raw_cemi) {
             Ok(frame) => {
                 let stamped = TimestampedFrame {
                     received_at: parse_rfc3339(&self.ts_utc),
                     frame,
                 };
-                Ok(DecodedTelegram::from_frame(&stamped, model))
+                Ok(DecodedTelegram::from_frame_secured(
+                    &stamped, model, keyring,
+                ))
             }
             Err(_) => Err(self.decoded_snapshot.clone()),
         }

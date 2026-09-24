@@ -92,6 +92,21 @@ number, a percentage). It is a runtime command, not device programming: nothing
 is stored on a device, but actuators move. The confirmation names the GA, the
 decoded value, and the gateway.
 
+**Secured group addresses (KNX Data Secure, issue #172).** A device with a
+secured group object ignores a plain telegram on its GA. `write`, `read` (and
+MCP `knx_write_group` / `knx_read_group`, and viz) send such a GA as an
+`A_SecureData` group telegram when it has a group key in `--keyring` or is
+marked `secure: true` in `groups.yaml`; a secured GA without a key is refused
+before anything is sent, and a plain GA goes out byte for byte as before. A
+secured `read` accepts only a response whose MAC verifies under the group key.
+The sequence number is milliseconds since 2018-01-05, and never below the last
+one the same process sent. A receiver accepts a secured group telegram only
+from a sender it knows: ETS lists the senders of each secured GA in the
+device's security individual address table, so the tunnel address bussard
+sends from must be in it, or the device drops the telegram without a word
+(`write` then reports success, `read` times out). `monitor --keyring` is
+read-only on the bus.
+
 **`apply <ADDRESS>`** writes the model's link tables (group address and
 association tables) to a device. It backs up first: the device's pre-apply
 tables are written to `<dir>/captures/backups/<ia>-<timestamp>.json` before any
@@ -551,8 +566,11 @@ sent to a device.
   request before giving up, because the security layer comes up later than the
   transport layer. Still inferred (one device, one group key): the packing of
   several group-key entries and the meaning of the security-flag bits beyond
-  `0x03`. `monitor`, `read` and `write` do not handle secured group
-  communication yet ([#172](https://github.com/tmbo/bussard/issues/172)). KNXnet/IP Secure
+  `0x03`. Secured group communication (`monitor`, `capture`, `read`, `write`
+  with `--keyring`, [#172](https://github.com/tmbo/bussard/issues/172)) runs
+  against the knx-sim secured group object; the group-address CCM nonce is
+  confirmed by the capture's broadcast S-A_Sync frames, but no secured group
+  telegram of a real device has been verified yet. KNXnet/IP Secure
   (encrypted tunnel sessions to a Secure-only interface) is not implemented; a
   Secure-only interface refuses `bussard`. Phase B of
   [issue #71](https://github.com/tmbo/bussard/issues/71) tracks it.

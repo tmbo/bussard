@@ -264,6 +264,37 @@ pub enum GroupData {
     Large(Vec<u8>),
 }
 
+impl Apdu {
+    /// This APDU serialized as the TPDU of an unnumbered `T_Data_Group`
+    /// telegram (TPCI bits zero): `[apci_hi, apci_lo | small, data…]`.
+    ///
+    /// This is exactly the "plain APDU" a KNX Data Secure group telegram
+    /// authenticates and encrypts (issue #172), e.g. `[0x00, 0x00]` for a
+    /// `GroupValueRead`.
+    pub fn group_tpdu_bytes(&self) -> Vec<u8> {
+        encode_tpdu(&Tpci::DataGroup, self).0
+    }
+
+    /// Decodes the TPDU of an unnumbered `T_Data_Group` telegram (the inverse
+    /// of [`Apdu::group_tpdu_bytes`]), e.g. the inner APDU recovered from a
+    /// secured group telegram.
+    ///
+    /// # Errors
+    ///
+    /// [`TransportError::Truncated`] for fewer than the two APCI octets.
+    pub fn from_group_tpdu(tpdu: &[u8]) -> Result<Apdu> {
+        if tpdu.len() < 2 {
+            return Err(TransportError::Truncated {
+                needed: 2,
+                had: tpdu.len(),
+                context: "group APDU",
+            });
+        }
+        let (_, apdu) = decode_tpdu(tpdu, tpdu.len() - 1)?;
+        Ok(apdu)
+    }
+}
+
 impl GroupData {
     /// The raw payload bytes, regardless of packing.
     pub fn bytes(&self) -> Vec<u8> {
@@ -273,6 +304,9 @@ impl GroupData {
         }
     }
 }
+
+/// The APCI of `A_SecureData` (KNX Data Secure, `0x03F1`).
+pub const APCI_SECURE_DATA: u16 = 0x3F1;
 
 // APCI service constants (10-bit values).
 const APCI_GROUP_READ: u16 = 0x000;
@@ -359,6 +393,39 @@ impl CemiFrame {
             destination: Destination::Group(destination),
             tpci: Tpci::DataGroup,
             apdu: Apdu::GroupValueRead,
+        }
+    }
+
+    /// Builds an `L_Data.req` carrying a KNX Data Secure group telegram: an
+    /// unnumbered `T_Data_Group` to `destination` whose APDU is `A_SecureData`
+    /// ([`APCI_SECURE_DATA`]) with the already sealed `asdu` (SCF, sequence,
+    /// secured APDU, MAC) as its data octets (issue #172).
+    pub fn group_secure(
+        destination: GroupAddress,
+        source: IndividualAddress,
+        asdu: Vec<u8>,
+    ) -> Self {
+        CemiFrame {
+            message_code: MessageCode::LDataReq,
+            additional_info: Vec::new(),
+            control1: Control1::default(),
+            control2: Control2::default(),
+            source,
+            destination: Destination::Group(destination),
+            tpci: Tpci::DataGroup,
+            apdu: Apdu::Other {
+                apci: APCI_SECURE_DATA,
+                data: asdu,
+            },
+        }
+    }
+
+    /// Whether this frame carries a KNX Data Secure `A_SecureData` APDU, and if
+    /// so its ASDU octets (SCF, sequence, secured APDU, MAC).
+    pub fn secure_asdu(&self) -> Option<&[u8]> {
+        match &self.apdu {
+            Apdu::Other { apci, data } if *apci == APCI_SECURE_DATA => Some(data),
+            _ => None,
         }
     }
 
@@ -1230,5 +1297,43 @@ mod tests {
             frame.apdu,
             Apdu::GroupValueWrite(GroupData::Large(vec![0x0C, 0x1A]))
         );
+    }
+
+    #[test]
+    fn test_group_tpdu_bytes_round_trip() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        for (apdu, bytes) in [
+            (Apdu::GroupValueRead, vec![0x00, 0x00]),
+            (Apdu::GroupValueWrite(GroupData::Small(1)), vec![0x00, 0x81]),
+            (
+                Apdu::GroupValueResponse(GroupData::Large(vec![0x0C, 0x1A])),
+                vec![0x00, 0x40, 0x0C, 0x1A],
+            ),
+        ] {
+            assert_eq!(apdu.group_tpdu_bytes(), bytes);
+            assert_eq!(Apdu::from_group_tpdu(&bytes)?, apdu);
+        }
+        assert!(Apdu::from_group_tpdu(&[0x00]).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_group_secure_frame_encodes_and_decodes()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let asdu = vec![
+            0x10, 0, 0, 0, 0, 0, 0x2A, 0xDF, 0x59, 0x49, 0x89, 0x9F, 0xD3,
+        ];
+        let frame = CemiFrame::group_secure(ga("1/2/3"), ia("1.1.1"), asdu.clone());
+        let bytes = frame.encode();
+        // TPDU: 0x03 0xF1 then the ASDU; NPDU length = 1 + ASDU.
+        let decoded = CemiFrame::decode(&bytes)?;
+        assert_eq!(decoded.secure_asdu(), Some(asdu.as_slice()));
+        assert_eq!(decoded.tpci, Tpci::DataGroup);
+        assert_eq!(decoded.group_destination(), Some(ga("1/2/3")));
+        assert!(
+            CemiFrame::group_read(ga("1/2/3"), ia("1.1.1"))
+                .secure_asdu()
+                .is_none()
+        );
+        Ok(())
     }
 }

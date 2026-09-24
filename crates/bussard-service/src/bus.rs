@@ -89,6 +89,10 @@ pub struct BusService {
     handle: BusHandle,
     policy: WritePolicy,
     gate: Option<WriteGate>,
+    /// The send-sequence high-water mark of secured group telegrams (issue
+    /// #172), shared by every clone so a long-lived server never repeats a
+    /// sequence number.
+    group_high_water: SequenceHighWater,
 }
 
 impl BusService {
@@ -128,6 +132,7 @@ impl BusService {
             handle,
             policy,
             gate,
+            group_high_water: SequenceHighWater::new(),
         })
     }
 
@@ -151,6 +156,7 @@ impl BusService {
             handle,
             policy,
             gate,
+            group_high_water: SequenceHighWater::new(),
         })
     }
 
@@ -174,6 +180,12 @@ impl BusService {
     /// `multicast 224.0.23.12:3671` for routing.
     pub fn gateway_display(&self) -> String {
         gateway_display(&self.config)
+    }
+
+    /// The send-sequence high-water mark of this service's secured group
+    /// telegrams (issue #172).
+    pub fn group_high_water(&self) -> &SequenceHighWater {
+        &self.group_high_water
     }
 
     /// The policy this service was opened under.

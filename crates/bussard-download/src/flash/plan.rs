@@ -230,6 +230,13 @@ pub fn plan_flash_with_object_flags(
     // 1. Family gate. System B and System 7 (mask 0705/0701, issue #49) are the
     //    two supported families; every other mask refuses cleanly. System 7 is
     //    dispatched to its own lowering below (after the shared mask-match check).
+    // A security-activated device answers a plain descriptor read with FFFF
+    // (Jung F50, 1.1.12) and refuses the rest unsecured: name the cause.
+    if device_mask == 0xFFFF {
+        return Err(PlanError::SecurityActivated {
+            device: device.to_string(),
+        });
+    }
     let profile = bussard_mgmt::MaskProfile::from_mask(device_mask);
     if !profile.capabilities().flash {
         return Err(PlanError::NotSystemB {
@@ -1681,6 +1688,28 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, PlanError::NotSystemB { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn test_plan_flash_mask_ffff_names_security_activation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A security-activated device answers a plain descriptor read with FFFF.
+        let app = fabricated_app();
+        match plan_flash(
+            &app,
+            "1.1.2",
+            0xFFFF,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        ) {
+            Err(err @ PlanError::SecurityActivated { .. }) => {
+                assert!(err.to_string().contains("--keyring"), "{err}");
+                Ok(())
+            }
+            other => Err(format!("expected SecurityActivated, got {other:?}").into()),
+        }
     }
 
     #[test]

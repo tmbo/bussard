@@ -13,6 +13,8 @@
 //! - [`format`] — a coloured pretty line and stable JSON Lines.
 //! - [`store`] — a SQLite capture store keeping raw cEMI plus a decoded
 //!   snapshot, with a background writer and a re-decoding reader.
+//! - [`secure`] — KNX Data Secure group telegrams: verify and decrypt with
+//!   the keyring's group keys ([`GroupKeyring`]) before decoding.
 //! - [`ring`] — a bounded in-memory [`TelegramRing`] with a `wait_for`
 //!   primitive that the MCP tools sit on.
 //! - [`stream`] — the reconnecting connect-and-consume loop used by the CLI's
@@ -26,6 +28,7 @@ pub mod filter;
 pub mod format;
 pub mod infer;
 pub mod ring;
+pub mod secure;
 pub mod store;
 pub mod stream;
 pub mod timefmt;
@@ -40,10 +43,11 @@ pub use infer::{
     Confidence, DptCandidate, SendingObject, infer_dpt, propose_name, refine, sending_object,
 };
 pub use ring::{RingEvent, RingSubscription, TelegramRing};
+pub use secure::{GroupKeyring, SecureInfo, SecureStatus};
 pub use store::{
     CaptureRecord, CaptureStore, CaptureWriter, QueryFilter, StoreError, StoredTelegram,
 };
 pub use stream::{
     CancelToken, CancelWatch, StreamError, TelegramSink, run_stream, run_stream_cancellable,
-    run_stream_with_outbound, run_stream_with_outbound_cancellable,
+    run_stream_secured_cancellable, run_stream_with_outbound, run_stream_with_outbound_cancellable,
 };

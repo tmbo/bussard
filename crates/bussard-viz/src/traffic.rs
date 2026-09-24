@@ -20,7 +20,7 @@ use bussard_mgmt::LeaseChannel;
 use bussard_mgmt::broadcast::devices_in_programming_mode_within;
 use bussard_model::{GroupAddress, IndividualAddress};
 use bussard_monitor::decode::{ApciKind, DestinationRef};
-use bussard_monitor::{DecodedTelegram, json_value};
+use bussard_monitor::{DecodedTelegram, GroupKeyring, json_value};
 use bussard_transport::cemi::MessageCode;
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
@@ -381,6 +381,19 @@ impl TrafficHub {
 /// a `POST /api/reload` swap is reflected in the very next decoded telegram
 /// without restarting the feeder.
 pub async fn feed(hub: TrafficHub, handle: BusHandle, model: ModelHandle, status: BusStatus) {
+    feed_secured(hub, handle, model, status, None).await;
+}
+
+/// Like [`feed`], but unwraps KNX Data Secure group telegrams with the
+/// keyring's group keys before decoding (issue #172), so a secured value shows
+/// decrypted and carries the `secured` fields.
+pub async fn feed_secured(
+    hub: TrafficHub,
+    handle: BusHandle,
+    model: ModelHandle,
+    status: BusStatus,
+    mut keyring: Option<GroupKeyring>,
+) {
     let mut sub = handle.subscribe();
     let mut states = handle.state_changes();
     // Mark the state present at startup as already seen: the SSE handler emits
@@ -396,9 +409,10 @@ pub async fn feed(hub: TrafficHub, handle: BusHandle, model: ModelHandle, status
                         // Read the current model per frame so a reload swap is
                         // picked up immediately for name resolution.
                         let snapshot = model.current();
-                        let decoded = DecodedTelegram::from_frame(
+                        let decoded = DecodedTelegram::from_frame_secured(
                             &frame.frame,
                             Some(snapshot.model.as_ref()),
+                            keyring.as_mut(),
                         );
                         // Carry the cEMI message code: the gateway's con-echo of
                         // our own write must not be published as a bus
@@ -506,6 +520,7 @@ mod tests {
             dpt: Some("1.005".parse().expect("dpt")),
             object_name: Some("obj".to_string()),
             decode_note: None,
+            secure: None,
         }
     }
 

@@ -236,6 +236,7 @@ pub async fn post_group_write(
         dpt: req.dpt.as_deref(),
         dpt_policy: DptOverridePolicy::Trust,
         force: req.force,
+        group_keys: state.security.group_keys.as_deref(),
     };
     let write =
         prepare_group_write(Some(model), ga, value, &check).map_err(|r| api_refusal(ga, r))?;
@@ -309,6 +310,14 @@ fn api_refusal(ga: GroupAddress, refusal: WriteRefusal) -> ApiError {
                 .to_string(),
         ),
         WriteRefusal::Bus(err) => ApiError::BusUnavailable(format!("could not write {ga}: {err}")),
+        WriteRefusal::SecureNoKey { keyring_given, .. } => ApiError::BadRequest(if keyring_given {
+            format!("GA {ga} is secured (KNX Data Secure) but the keyring has no group key for it")
+        } else {
+            format!(
+                "GA {ga} is secured (KNX Data Secure); restart the server with `bussard viz \
+                 --keyring <file.knxkeys>` to write it"
+            )
+        }),
         // Invalid dpt / value / encode / hex / empty / size: the request is bad.
         other => ApiError::BadRequest(other.to_string()),
     }
@@ -370,6 +379,7 @@ mod tests {
             dpt,
             dpt_policy: DptOverridePolicy::Trust,
             force: false,
+            group_keys: None,
         };
         match prepare_group_write(Some(model), ga, value, &check) {
             Ok(write) => Err(format!("expected a refusal, got {write:?}").into()),

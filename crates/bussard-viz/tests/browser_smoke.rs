@@ -248,6 +248,7 @@ async fn browser_smoke_dom_renders() -> Result<(), Box<dyn Error + Send + Sync>>
         allow_writes: false,
         allow_remote_gateway: false,
         allowed_hosts: Vec::new(),
+        group_keys: None,
     };
     let (state, handle, _watch) = bussard_viz::build_state(&config)?;
     assert!(handle.is_none(), "model-only mode must not open a bus");

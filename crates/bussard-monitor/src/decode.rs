@@ -18,6 +18,8 @@ use bussard_model::{ApduSize, Dpt, GroupAddress, IndividualAddress, Model};
 use bussard_transport::TimestampedFrame;
 use bussard_transport::cemi::{Apdu, Destination, GroupData};
 
+use crate::secure::{GroupKeyring, SecureInfo};
+
 /// The application-layer service kind of a telegram, classified for display and
 /// filtering. [`ApciKind::Other`] preserves the raw 10-bit APCI so management
 /// traffic is never lost.
@@ -114,6 +116,10 @@ pub struct DecodedTelegram {
     /// A human note about any decode issue (e.g. a payload/DPT size mismatch),
     /// shown inline as a debugging signal. Never a hard failure.
     pub decode_note: Option<String>,
+    /// KNX Data Secure: set only for a secured group telegram decoded with a
+    /// keyring ([`DecodedTelegram::from_frame_secured`]); `None` for plain
+    /// traffic and whenever no keyring was given.
+    pub secure: Option<SecureInfo>,
 }
 
 impl DecodedTelegram {
@@ -167,6 +173,28 @@ impl DecodedTelegram {
             dpt,
             object_name,
             decode_note,
+            secure: None,
+        }
+    }
+
+    /// Like [`from_frame`](Self::from_frame), but first unwraps a KNX Data
+    /// Secure group telegram with `keyring` (issue #172): a verified telegram
+    /// decodes its inner APDU as an ordinary one and carries
+    /// [`SecureInfo`] with [`SecureStatus::Verified`](crate::secure::SecureStatus::Verified);
+    /// a MAC failure or a missing key keeps the raw `A_SecureData` APDU and
+    /// says why. Plain telegrams decode exactly as with `from_frame`.
+    pub fn from_frame_secured(
+        frame: &TimestampedFrame,
+        model: Option<&Model>,
+        keyring: Option<&mut GroupKeyring>,
+    ) -> DecodedTelegram {
+        match keyring.and_then(|k| k.unwrap(frame)) {
+            None => DecodedTelegram::from_frame(frame, model),
+            Some((inner, info)) => {
+                let mut t = DecodedTelegram::from_frame(inner.as_ref().unwrap_or(frame), model);
+                t.secure = Some(info);
+                t
+            }
         }
     }
 

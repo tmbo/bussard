@@ -12,6 +12,9 @@
 //!   sequence number (spec §5.8).
 //! - [`asdu`]: the A_SecureData (`0x03F1`) wire codec — SCF, nonce assembly,
 //!   MAC-only and MAC+encrypt modes (spec §5).
+//! - [`group`]: secured **group** communication (S-A_Data on a group
+//!   address, keyed by the GA's group key) and the advisory per-sender
+//!   freshness table a bus monitor keeps.
 //! - [`session`]: the stateful per-device [`DataSecureSession`] that owns the
 //!   tool key, the send sequence, and the replay-protection table (spec §6.1).
 //!
@@ -29,6 +32,7 @@
 
 pub mod asdu;
 pub mod crypto;
+pub mod group;
 pub mod key;
 pub mod sequence;
 pub mod session;
@@ -37,6 +41,7 @@ pub use asdu::{
     A_SECURE_DATA, AsduError, DecodedInner, Scf, SecureService, SecurityAlgorithm, TpAddressing,
 };
 pub use crypto::{CryptoError, aes_cbc_decrypt, aes_cbc_encrypt, pbkdf2_key, pbkdf2_sha256, salt};
+pub use group::{Freshness, GroupPlain, decode_group, encode_group, is_group_data, peek_header};
 pub use key::Key16;
 pub use sequence::{Sequence, SequenceHighWater};
 pub use session::{DataSecureSession, UnwrapOutcome};
