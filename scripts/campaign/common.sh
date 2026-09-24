@@ -66,14 +66,14 @@ parse_common_args() {
 # --- The gateway, and the one rule ------------------------------------------
 
 # Resolves the gateway the same way bussard does: --gateway wins, otherwise
-# connection.gateway from the model's bussard.yaml. Sets GATEWAY_RESOLVED and
+# connection.gateway from the model's bussard.toml. Sets GATEWAY_RESOLVED and
 # GATEWAY_HOST.
 resolve_gateway() {
-  if [ -z "$GATEWAY" ] && [ -f "$MODEL_DIR/bussard.yaml" ]; then
-    GATEWAY="$(sed -n 's/^[[:space:]]*gateway:[[:space:]]*//p' "$MODEL_DIR/bussard.yaml" \
+  if [ -z "$GATEWAY" ] && [ -f "$MODEL_DIR/bussard.toml" ]; then
+    GATEWAY="$(sed -n 's/^[[:space:]]*gateway[[:space:]]*=[[:space:]]*//p' "$MODEL_DIR/bussard.toml" | sed 's/[[:space:]]*#.*//' \
                 | head -1 | tr -d '"'"'"' \r')"
   fi
-  [ -n "$GATEWAY" ] || die "no gateway: pass --gateway host[:port] or set connection.gateway in $MODEL_DIR/bussard.yaml"
+  [ -n "$GATEWAY" ] || die "no gateway: pass --gateway host[:port] or set connection.gateway in $MODEL_DIR/bussard.toml"
   case "$GATEWAY" in
     *:*) GATEWAY_HOST="${GATEWAY%:*}" ;;
     *)   GATEWAY_HOST="$GATEWAY" ;;
@@ -131,9 +131,9 @@ ensure_dir() { mkdir -p "$1" || die "cannot create $1"; }
 # Prints one individual address per line, in model order.
 model_devices() {
   local d
-  for d in "$MODEL_DIR"/devices/*.yaml; do
+  for d in "$MODEL_DIR"/devices/*.toml; do
     [ -f "$d" ] || continue
-    sed -n 's/^address:[[:space:]]*//p' "$d" | head -1 | tr -d '"'"'"' \r'
+    sed -n 's/^address[[:space:]]*=[[:space:]]*//p' "$d" | head -1 | tr -d '"'"'"' \r'
   done
 }
 

@@ -98,13 +98,12 @@ ok "products present"
 # conformance loop asserts. It is regenerated here (git-ignored).
 say "model"
 mkdir -p "$MODEL"
-cat > "$MODEL/bussard.yaml" <<EOF
-connection:
-  transport: tunnel
-  gateway: $GATEWAY
+cat > "$MODEL/bussard.toml" <<EOF
+[connection]
+transport = "tunnel"
+gateway = "$GATEWAY"
 EOF
-printf 'project: system7\ngroups: {}\n'   > "$MODEL/groups.yaml"
-printf 'links: {}\n'                       > "$MODEL/links.yaml"
+printf 'project = "system7"\n' > "$MODEL/groups.toml"
 ok "bare model at $MODEL"
 
 # --- Start the simulator ----------------------------------------------------
@@ -161,35 +160,37 @@ flash_dev 1.1.8 T4940275_KNX_FIX2_Dimmaktor_V1.0_ETS4 M-0048_A-4947-10-4918
 say "incremental link change"
 LINKED="$HERE/model-linked"
 mkdir -p "$LINKED"
-cat > "$LINKED/bussard.yaml" <<EOF
-connection:
-  transport: tunnel
-  gateway: $GATEWAY
+cat > "$LINKED/bussard.toml" <<EOF
+[connection]
+transport = "tunnel"
+gateway = "$GATEWAY"
 EOF
-cat > "$LINKED/groups.yaml" <<'EOF'
-project: system7-links
-groups:
-  1/0/1:
-    name: S7 Property Device
-    dpt: '1.001'
-  1/0/2:
-    name: S7 Memory Mapped Device
-    dpt: '1.001'
+cat > "$LINKED/groups.toml" <<'EOF'
+project = "system7-links"
+
+groups = [
+  { address = "1/0/1", name = "S7 Property Device",      dpt = "1.001" },
+  { address = "1/0/2", name = "S7 Memory Mapped Device", dpt = "1.001" },
+]
 EOF
-cat > "$LINKED/links.yaml" <<'EOF'
-links:
-  # 1.1.6 — MDT 0705, property (PID-5) LSM.
-  1.1.6:
-    - object: 1
-      name: Switch
-      listen:
-        - 1/0/1
-  # 1.1.8 — Theben 0701, memory-mapped 11-octet LSM records.
-  1.1.8:
-    - object: 1
-      name: Switch
-      listen:
-        - 1/0/2
+mkdir -p "$LINKED/devices"
+# 1.1.6: MDT 0705, property (PID-5) LSM.
+cat > "$LINKED/devices/1.1.6.toml" <<'EOF'
+address = "1.1.6"
+name = "S7 Property Device"
+
+[links]
+1.listen = ["1/0/1"]
+1.name = "Switch"
+EOF
+# 1.1.8: Theben 0701, memory-mapped 11-octet LSM records.
+cat > "$LINKED/devices/1.1.8.toml" <<'EOF'
+address = "1.1.8"
+name = "S7 Memory Mapped Device"
+
+[links]
+1.listen = ["1/0/2"]
+1.name = "Switch"
 EOF
 ok "link model at $LINKED"
 

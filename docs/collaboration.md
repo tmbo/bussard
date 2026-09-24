@@ -121,7 +121,7 @@ jobs:
           bussard diff ../base/knx knx
 ```
 
-`validate` runs the structural checks and, when `bussard.yaml` has a `lint:` block, the topology and convention lints (`L001` to `L008`). It exits non-zero on an error. `diff` prints the change in sentences into the job log.
+`validate` runs the structural checks and, when `bussard.toml` has a `[lint]` table, the topology and convention lints (`L001` to `L008`). It exits non-zero on an error. `diff` prints the change in sentences into the job log.
 
 `plan` reads the live device, so it cannot run in CI. The person on site runs `bussard plan --line 1.0 --json` before merge and attaches the output to the pull request, so the reviewer sees the device-level changes too.
 
@@ -134,7 +134,7 @@ Owner:      Make the kitchen switch also switch the hallway light and
             open a pull request for Jonas.
 Assistant:  (calls knx_add_link, then knx_describe_change)
             Switch On/Off on Switch Hallway now listens to Light Kitchen (1/0/1).
-            (with its own git tools: commits knx/links.yaml on branch
+            (with its own git tools: commits knx/devices/*.toml on branch
             kitchen-hallway, opens the pull request with that sentence
             as its description)
 ```
@@ -166,4 +166,4 @@ apply verified: address table Loaded (3 entries), association table Loaded (3 en
 $ bussard test
 ```
 
-`bussard test` runs the acceptance tests in `knx/tests.yaml`; the fixture has none, so a real installation adds its own. bussard's own history records the `apply` alongside the git history, so `bussard history` still answers which gateway the write went to.
+`bussard test` runs the acceptance tests in `knx/tests.toml`; the fixture has none, so a real installation adds its own. bussard's own history records the `apply` alongside the git history, so `bussard history` still answers which gateway the write went to.
