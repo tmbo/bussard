@@ -15,13 +15,34 @@ entry supersedes it and is not a diff against it.
 **The model and the ETS import**
 
 - `bussard import` reads an ETS 4, 5 or 6 `.knxproj`, including
-  password-protected exports, into a YAML model in `knx/`: `groups.yaml`,
-  `links.yaml`, one file per device with its channels, com objects and a
-  `parameters:` block. Re-imports are idempotent across renames, keep
-  hand-authored edits, and report conflicts (`--mine`, `--theirs`,
-  `--interactive`, exit code 3) (#4, #9, #18, #46).
-- `bussard validate` checks the model with rule passes E001 to E012 plus
-  topology and convention lints (#3, #102).
+  password-protected exports, into a TOML model in `knx/`: `groups.toml` for
+  the group-address plan, one `devices/<address>.toml` per device with its
+  parameters and links, and the generated `bussard.lock`. Re-imports are
+  idempotent across renames, keep hand-authored edits, and report conflicts
+  (`--mine`, `--theirs`, `--interactive`, exit code 3) (#4, #9, #18, #46).
+- The model files are TOML, written with `toml_edit` so comments and untouched
+  lines survive a save. Strings are always quoted and numbers never are, so a
+  DPT or an address cannot turn into a number by accident. Parse errors keep
+  the caret and add a `help:` line with the fix where the raw message
+  misleads. `docs/model-format.md` specifies every file.
+- `bussard.lock` holds the vendor facts for every device (program, mask,
+  channel ids, the com-object table, parameter refs, module offsets), the way
+  `Cargo.lock` holds resolved dependencies. `import` and `adopt` write it and
+  nobody edits it. Every other file is user-owned in full. Because the lock is
+  committed, a checkout without product data still validates, plans and
+  decodes telegrams.
+- Device files read like the ETS dialog: one table per channel with its
+  parameters and links, keyed by the vendor's texts (`[channel.a-1]`,
+  `betriebsart = "Jalousie"`, `langzeitbetrieb.listen = ["0/1/3"]`). A
+  parameter is stored once, however many refs point at its memory cell. A
+  device without product data shows vendor channel ids and object numbers
+  instead.
+- `bussard validate` checks the model with rule passes E001 to E026 plus
+  topology and convention lints (#3, #102). E020 to E026 cover the files and
+  the lock: duplicate addresses, a missing or stale lock entry, unknown keys,
+  a DPT mismatch between an object and its GA, `send` or `listen` against the
+  object's flags, and parameters that cannot be checked without product
+  data.
 - `bussard init` starts an empty model from a discovered gateway and reports
   the interface's tunnel slots (#21, #105). `scaffold` writes a group-address
   plan from a room and function list (#103).
@@ -84,7 +105,7 @@ entry supersedes it and is not a diff against it.
   swap (#96, #98).
 - `audit` reports installation readiness and health, `learn` names and types
   group addresses from live traffic, and `test` runs scripted acceptance tests
-  from `tests.yaml` (#93, #95, #101).
+  from `tests.toml` (#93, #95, #101).
 
 **Product data**
 
@@ -109,7 +130,7 @@ entry supersedes it and is not a diff against it.
 - `bussard mcp` serves the model and the bus to an LLM over stdio, in three
   tiers: passive, read (default, rate-limited) and write (`--allow-writes`)
   (#7, #14). Model-edit tools (`knx_set_group`, `knx_add_link`,
-  `knx_set_parameter`, `knx_undo` and more) change the YAML with a history
+  `knx_set_parameter`, `knx_undo` and more) change the model files with a history
   snapshot, and the server follows the model on disk.
 - `--allow-programming` adds `knx_plan_device` and `knx_apply_device`: the
   assistant writes one device's link tables only with the digest of a plan the
@@ -185,7 +206,7 @@ entry supersedes it and is not a diff against it.
   mask 0xffff". `audit --live` and MCP `knx_audit` probe each Secure device
   with its tool key and report `activated`, `reachable_secured`,
   `plain_reads_refused` and `in_keyring` (`live.secure`).
-- `connection.keyring` in `bussard.yaml` is the default for `--keyring` on
+- `connection.keyring` in `bussard.toml` is the default for `--keyring` on
   every bus command (the flag overrides it; the password stays in
   `BUSSARD_KEYRING_PASSWORD`). The campaign wrapper passes
   `--keyring "$BUSSARD_KEYRING"` to its probes and the step when that variable
@@ -238,6 +259,19 @@ entry supersedes it and is not a diff against it.
 
 ### Changed
 
+- The model moved from YAML (`bussard.yaml`, `groups.yaml`, `links.yaml`,
+  `devices/*.yaml`) to TOML plus the generated `bussard.lock`. Links now live
+  in the device files. The YAML files are not read any more: bussard refuses a
+  directory that holds only them and asks for a re-import. Product models
+  under `models/` keep their YAML format.
+- In progress on top of the new format, each landing as its own change: `apply`
+  writes whatever differs (tables, parameters or both) after one plan and one
+  confirmation; `import` and `apply` run validation first; `adopt` and
+  `import` fetch missing product data through the pointer index;
+  `groups reserve` allocates group addresses for a room and function without
+  a plan file; `show` prints a device's channels with the options it can set;
+  and `init` accepts a project file. `docs/reference.md` describes each once it
+  has landed.
 - The workspace is 16 crates on Rust edition 2024 with an MSRV of 1.88, checked
   in CI across all targets (#85, #87, #136).
 - The gateway gate, the protected-GA check and the checked group write live
