@@ -533,3 +533,46 @@ fn test_undeclared_ga_is_a_warning() -> TestResult {
     fs::remove_dir_all(&dir)?;
     Ok(())
 }
+
+/// The device file holds only security intent (`activated`,
+/// `secure_commissioning`); what the device or the project generated
+/// (`secure_capable`, `has_fdsk_certificate`, `sequence_number`) lives in the
+/// lock and never reaches the user's file, not even after a save.
+#[test]
+fn test_device_generated_security_facts_stay_in_the_lock() -> TestResult {
+    let dir = keyed_model("security-lock-only")?;
+    let mut model = Model::load(&dir)?;
+    let addr = ia("1.1.47")?;
+    {
+        let d = &mut model.devices.get_mut(&addr).ok_or("device")?.device;
+        let sec = d.security.as_mut().ok_or("security")?;
+        sec.has_fdsk_certificate = true;
+        sec.sequence_number = Some(42);
+        // Force a rewrite of the device file.
+        d.name = "Jalousieaktor Kind 2 Nord".to_string();
+    }
+    model.save(&dir)?;
+    let device = fs::read_to_string(dir.join("devices/1.1.47.toml"))?;
+    for generated in ["secure_capable", "has_fdsk_certificate", "sequence_number"] {
+        assert!(
+            !device.contains(generated),
+            "{generated} in the device file:\n{device}"
+        );
+    }
+    assert!(device.contains("activated = true"), "{device}");
+    let lock = fs::read_to_string(dir.join("bussard.lock"))?;
+    assert!(lock.contains("secure_capable = true"), "{lock}");
+    assert!(lock.contains("has_fdsk_certificate = true"), "{lock}");
+    assert!(lock.contains("sequence_number = 42"), "{lock}");
+
+    // A device file that states a generated fact is refused: it is not the
+    // user's to set.
+    let edited = DEVICE.replace(
+        "secure_commissioning = false",
+        "secure_commissioning = false\nsecure_capable = true",
+    );
+    write(&dir, "devices/1.1.47.toml", &edited)?;
+    assert!(Model::load(&dir).is_err());
+    fs::remove_dir_all(&dir)?;
+    Ok(())
+}
