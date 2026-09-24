@@ -328,7 +328,10 @@ fn adopt_happy_path_writes_rich_device_file() -> TestResult {
     let body = body.ok_or("device file should exist")?;
     assert!(body.contains("address = \"1.1.7\""), "device body:\n{body}");
     assert!(body.contains("Taster BE 04001"), "device body:\n{body}");
-    assert!(body.contains("product = \"MDT-BE-04001.02\""), "device body:\n{body}");
+    assert!(
+        body.contains("product = \"MDT-BE-04001.02\""),
+        "device body:\n{body}"
+    );
     assert!(!body.contains("[links]"), "no links wired yet:\n{body}");
     let lock = lock.ok_or("bussard.lock should exist")?;
     assert!(
@@ -435,10 +438,7 @@ fn adopt_times_out_with_no_device() -> TestResult {
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let success = output.status.success();
-    let device_written = model_dir
-        .join("devices")
-        .join("1.1.7.toml")
-        .exists();
+    let device_written = model_dir.join("devices").join("1.1.7.toml").exists();
     let _ = std::fs::remove_dir_all(&tmp);
 
     assert!(

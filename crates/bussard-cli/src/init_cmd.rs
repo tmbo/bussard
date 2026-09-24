@@ -709,12 +709,7 @@ mod tests {
         let dir = temp_dir("skeleton");
         run_with(&dir, None, true, no_gateways, no_probe)?;
 
-        for f in [
-            "bussard.toml",
-            "groups.toml",
-            "README.md",
-            ".gitignore",
-        ] {
+        for f in ["bussard.toml", "groups.toml", "README.md", ".gitignore"] {
             assert!(dir.join(f).exists(), "missing {f}");
         }
         assert!(dir.join("devices").is_dir());

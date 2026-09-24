@@ -309,23 +309,28 @@ fn secure_model(tag: &str) -> TestResult<PathBuf> {
     std::fs::create_dir_all(dir.join("devices"))?;
     std::fs::write(
         dir.join("bussard.toml"),
-        "connection:\n  transport: tunnel\n",
+        "[connection]\ntransport = \"tunnel\"\n",
     )?;
-    std::fs::write(dir.join("groups.toml"), "groups: {}\n")?;
-    std::fs::write(dir.join("links.yaml"), "links: {}\n")?;
+    std::fs::write(dir.join("groups.toml"), "groups = []\n")?;
     std::fs::write(
-        dir.join("devices").join("1.1.4-plain.yaml"),
-        "address: 1.1.4\nname: Plain actuator\nproduct:\n  mask: 07B0\n",
+        dir.join("devices").join("1.1.4.toml"),
+        "address = \"1.1.4\"\nname = \"Plain actuator\"\n",
     )?;
+    let mut lock =
+        String::from("version = 1\n\n[[device]]\naddress = \"1.1.4\"\nmask = \"07B0\"\n");
     for (addr, name) in [("1.1.10", "Secure dimmer"), ("1.1.12", "Secure sensor")] {
         std::fs::write(
-            dir.join("devices").join(format!("{addr}-secure.yaml")),
+            dir.join("devices").join(format!("{addr}.toml")),
             format!(
-                "address: {addr}\nname: {name}\nproduct:\n  mask: 07B0\nsecurity:\n  \
-                 secure_capable: true\n  activated: true\n"
+                "address = \"{addr}\"\nname = \"{name}\"\n\n[security]\nactivated = true\n\
+                 secure_commissioning = false\n"
             ),
         )?;
+        lock.push_str(&format!(
+            "\n[[device]]\naddress = \"{addr}\"\nmask = \"07B0\"\nsecure_capable = true\n"
+        ));
     }
+    std::fs::write(dir.join("bussard.lock"), lock)?;
     Ok(dir)
 }
 

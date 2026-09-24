@@ -31,7 +31,10 @@ fn model_dir(tag: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("devices"))?;
     std::fs::write(dir.join("groups.toml"), BASE_GROUPS)?;
-    std::fs::write(dir.join("bussard.lock"), "version = 1\nsource = \"home.knxproj\"\n")?;
+    std::fs::write(
+        dir.join("bussard.lock"),
+        "version = 1\nsource = \"home.knxproj\"\n",
+    )?;
     Ok(dir)
 }
 
@@ -91,7 +94,10 @@ fn test_status_history_show_and_undo_round_trip() -> TestResult {
     // `--raw` is the file-level view for the people who do read TOML.
     let out = run(&dir, &["status", "--raw"])?;
     assert!(out.contains("--- snapshot/groups.toml"), "{out}");
-    assert!(out.contains("+  { address = \"0/0/4\", name = \"Front light\""), "{out}");
+    assert!(
+        out.contains("+  { address = \"0/0/4\", name = \"Front light\""),
+        "{out}"
+    );
 
     // A second snapshot, so there is something to undo back to.
     history.snapshot(SnapshotReason::new("apply").with_args(["1.1.5"]))?;

@@ -79,7 +79,7 @@ type ModelFile = (String, Vec<u8>);
 /// The model files of a directory as (relative path, bytes), sorted.
 fn model_bytes(dir: &Path) -> Result<Vec<ModelFile>, Box<dyn std::error::Error>> {
     let mut out = Vec::new();
-    for name in ["bussard.toml", "groups.toml", "links.yaml"] {
+    for name in bussard_model::loader::MODEL_FILES {
         if dir.join(name).is_file() {
             out.push((name.to_string(), std::fs::read(dir.join(name))?));
         }
@@ -131,7 +131,7 @@ fn test_import_bundle_conflicts_mine_and_theirs() -> TestResult {
     let groups = std::fs::read_to_string(integrator.join("groups.toml"))?;
     std::fs::write(
         integrator.join("groups.toml"),
-        groups.replace("name: Light Kitchen\n", "name: Kitchen ceiling\n"),
+        groups.replace("name = \"Light Kitchen\",", "name = \"Kitchen ceiling\","),
     )?;
     let bundle = root.join("new.bussard");
     run(&["export", s(&bundle)?, "--dir", s(&integrator)?], 0)?;
@@ -179,7 +179,7 @@ fn test_diff_rename_is_one_change_and_same_project_is_empty() -> TestResult {
     let groups = std::fs::read_to_string(b.join("groups.toml"))?;
     std::fs::write(
         b.join("groups.toml"),
-        groups.replace("name: Light Kitchen\n", "name: Kitchen ceiling\n"),
+        groups.replace("name = \"Light Kitchen\",", "name = \"Kitchen ceiling\","),
     )?;
     let bundle_b = root.join("b.bussard");
     run(&["export", s(&bundle_b)?, "--dir", s(&b)?], 0)?;
@@ -193,7 +193,7 @@ fn test_diff_rename_is_one_change_and_same_project_is_empty() -> TestResult {
 
     let out = run(&["diff", s(&a)?, s(&bundle_b)?, "--raw"], 0)?;
     assert!(
-        out.contains("+  1/0/1:") || out.contains("+    name: Kitchen ceiling"),
+        out.contains("+  { address = \"1/0/1\", name = \"Kitchen ceiling\","),
         "{out}"
     );
 

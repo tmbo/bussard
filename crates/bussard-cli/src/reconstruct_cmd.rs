@@ -826,10 +826,7 @@ fn model_config(overrides: &ConnOverrides, dir: &Path) -> BussardConfig {
 /// generated `bussard.lock` keeps its own header. One-shot: the banner is added
 /// exactly once here.
 fn inject_reconstruct_banners(out: &Path) -> anyhow::Result<()> {
-    let mut files = vec![
-        out.join("bussard.toml"),
-        out.join("groups.toml"),
-    ];
+    let mut files = vec![out.join("bussard.toml"), out.join("groups.toml")];
     let devices_dir = out.join("devices");
     if let Ok(rd) = std::fs::read_dir(&devices_dir) {
         for entry in rd.filter_map(Result::ok) {

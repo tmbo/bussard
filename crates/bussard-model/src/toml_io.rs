@@ -48,9 +48,9 @@ pub struct ParseErrorDetail {
     /// The raw message from the parser (or from bussard's own shape checks).
     pub message: String,
     /// 1-based line of the caret, when the error has a position.
-    pub line: Option<usize>,
+    pub line: Option<u32>,
     /// 1-based column (in characters) of the caret.
-    pub column: Option<usize>,
+    pub column: Option<u32>,
     /// The fix-it hint, when one of the rules matched.
     pub help: Option<String>,
     /// The full rendered text (snippet, message, secondary label, help).
@@ -101,7 +101,7 @@ pub fn error_at(path: &Path, text: &str, span: Option<Range<usize>>, message: &s
                 path.display()
             ));
             rendered.push_str(&snippet(text, s.clone(), '^', None));
-            (Some(line), Some(column))
+            (u32::try_from(line).ok(), u32::try_from(column).ok())
         }
         None => {
             rendered.push_str(&format!("TOML parse error in {}\n", path.display()));

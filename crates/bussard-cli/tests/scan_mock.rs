@@ -90,12 +90,12 @@ fn write_model(dir: &std::path::Path) -> std::io::Result<()> {
     // and 1.1.7 responds but is NOT in the model. Kept in a tight device-number
     // cluster so the test can restrict the sweep to `--from 1 --to 8`.
     std::fs::write(
-        dir.join("devices").join("1.1.4-jal.yaml"),
-        "address: 1.1.4\nname: Rollladen Wohnzimmer\n",
+        dir.join("devices").join("1.1.4.toml"),
+        "address = \"1.1.4\"\nname = \"Rollladen Wohnzimmer\"\n",
     )?;
     std::fs::write(
-        dir.join("devices").join("1.1.6-dimmer.yaml"),
-        "address: 1.1.6\nname: Dimmer Flur\n",
+        dir.join("devices").join("1.1.6.toml"),
+        "address = \"1.1.6\"\nname = \"Dimmer Flur\"\n",
     )
 }
 

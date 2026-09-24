@@ -160,9 +160,7 @@ fn load_existing_model(dir: &Path) -> Option<Model> {
         .join("devices")
         .read_dir()
         .map(|mut rd| {
-            rd.any(|e| {
-                e.is_ok_and(|e| e.file_name().to_string_lossy().ends_with(".toml"))
-            })
+            rd.any(|e| e.is_ok_and(|e| e.file_name().to_string_lossy().ends_with(".toml")))
         })
         .unwrap_or(false);
     if !has_groups && !has_devices {

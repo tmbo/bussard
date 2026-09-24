@@ -276,7 +276,10 @@ pub fn resolve_config(
     } else if overrides.gateway.is_some() {
         false
     } else {
-        matches!(config_conn.map(|c| c.transport), Some(ModelTransport::Routing))
+        matches!(
+            config_conn.map(|c| c.transport),
+            Some(ModelTransport::Routing)
+        )
     };
 
     if use_routing {

@@ -59,23 +59,32 @@ async fn push_telegrams(gw: Arc<MockGateway>, frames: Vec<CemiFrame>) {
 /// transmit-capable com objects, and a link for the first group address.
 fn write_model(dir: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir.join("devices"))?;
-    std::fs::write(dir.join("groups.toml"), "groups: {}\n")?;
+    std::fs::write(dir.join("groups.toml"), "groups = []\n")?;
     std::fs::write(
-        dir.join("links.yaml"),
-        "links:\n  1.1.30:\n    - object: 3\n      name: Kanal A - Schalten\n      send: 1/0/1\n",
+        dir.join("devices").join("1.1.30.toml"),
+        "address = \"1.1.30\"\n\
+         name = \"Schaltaktor\"\n\
+         \n\
+         [location]\n\
+         floor = \"EG\"\n\
+         room = \"Kitchen\"\n\
+         \n\
+         [channel.A]\n\
+         name = \"Ceiling light\"\n\
+         3.send = \"1/0/1\"\n\
+         3.name = \"Kanal A - Schalten\"\n",
     )?;
     std::fs::write(
-        dir.join("devices").join("1.1.30-schaltaktor.yaml"),
-        "address: 1.1.30\n\
-         name: Schaltaktor\n\
-         location:\n  \
-           floor: EG\n  \
-           room: Kitchen\n\
-         channels:\n  \
-           A:\n    name: Ceiling light\n\
-         com_objects:\n  \
-           3:\n    dpt: \"1.001\"\n    flags: CT\n    channel: A\n  \
-           4:\n    flags: CT\n    channel: A\n",
+        dir.join("bussard.lock"),
+        "version = 1\n\
+         \n\
+         [[device]]\n\
+         address = \"1.1.30\"\n\
+         channels = [\n  { id = \"A\" },\n]\n\
+         objects = [\n  \
+           { number = 3, channel = \"A\", dpt = \"1.001\", flags = \"CT\" },\n  \
+           { number = 4, channel = \"A\", flags = \"CT\" },\n\
+         ]\n",
     )?;
     Ok(())
 }
@@ -178,8 +187,8 @@ fn learn_names_and_types_group_addresses_without_transmitting() -> TestResult {
     );
 
     // The unlinked GA whose sender had exactly one free transmit-capable com
-    // object got a links.yaml entry.
-    let links = std::fs::read_to_string(model_dir.join("links.yaml"))?;
+    // object got a link in its device file.
+    let links = std::fs::read_to_string(model_dir.join("devices").join("1.1.30.toml"))?;
     assert!(
         links.contains("1/0/2"),
         "expected a learned link for 1/0/2:\n{links}"

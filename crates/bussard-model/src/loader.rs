@@ -62,7 +62,7 @@ pub enum LoadError {
     /// error carries the caret, the message and, where a rule matched, a
     /// `help:` line.
     #[error("{0}")]
-    Parse(#[from] ParseError),
+    Parse(Box<ParseError>),
     /// Two device files declare the same individual `address`.
     #[error(
         "duplicate device address {address}: declared in both {first} and {second} \
@@ -97,6 +97,12 @@ pub enum LoadError {
         /// The model directory.
         dir: PathBuf,
     },
+}
+
+impl From<ParseError> for LoadError {
+    fn from(e: ParseError) -> Self {
+        LoadError::Parse(Box::new(e))
+    }
 }
 
 /// An error saving the model to disk.
