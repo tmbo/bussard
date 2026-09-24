@@ -34,13 +34,12 @@ fn model_dir(tag: &str, port: u16) -> TestResult<PathBuf> {
     std::fs::create_dir_all(dir.join("devices"))?;
     std::fs::write(
         dir.join("bussard.toml"),
-        format!("connection:\n  transport: tunnel\n  gateway: 127.0.0.1:{port}\n"),
+        format!("[connection]\ntransport = \"tunnel\"\ngateway = \"127.0.0.1:{port}\"\n"),
     )?;
     std::fs::write(
         dir.join("groups.toml"),
-        "project: ipsecure\ngroups:\n  1/2/3:\n    name: Light\n    dpt: '1.001'\n",
+        "project = \"ipsecure\"\ngroups = [{ address = \"1/2/3\", name = \"Light\", dpt = \"1.001\" }]\n",
     )?;
-    std::fs::write(dir.join("links.yaml"), "links: {}\n")?;
     Ok(dir)
 }
 

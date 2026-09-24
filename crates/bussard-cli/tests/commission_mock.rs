@@ -131,14 +131,30 @@ fn bench_device(order: &str) -> anyhow::Result<DeviceState> {
     })
 }
 
-/// Writes a model device file with a product block and a location.
+/// Writes a model device file with a product and a location, plus its
+/// `bussard.lock` entry (appended, so several devices share one lock).
 fn write_device(dir: &Path, address: &str, name: &str, order: &str) -> anyhow::Result<()> {
+    use std::io::Write;
     std::fs::create_dir_all(dir.join("devices"))?;
     std::fs::write(
-        dir.join("devices").join(format!("{address}.yaml")),
+        dir.join("devices").join(format!("{address}.toml")),
         format!(
-            "address: {address}\nname: {name}\nlocation:\n  floor: Ground floor\n  room: Living room\nproduct:\n  manufacturer: MDT\n  order_number: {order}\n"
+            "address = \"{address}\"\nname = \"{name}\"\nproduct = \"{order}\"\n\n\
+             [location]\nfloor = \"Ground floor\"\nroom = \"Living room\"\n"
         ),
+    )?;
+    let lock = dir.join("bussard.lock");
+    let fresh = !lock.exists();
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&lock)?;
+    if fresh {
+        writeln!(file, "version = 1")?;
+    }
+    write!(
+        file,
+        "\n[[device]]\naddress = \"{address}\"\nproduct = \"{order}\"\nmanufacturer = \"MDT\"\n"
     )?;
     Ok(())
 }

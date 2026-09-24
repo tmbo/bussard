@@ -760,7 +760,8 @@ fn test_flash_parameters_only_with_nothing_to_change_touches_nothing() -> TestRe
 fn test_flash_parameters_only_refuses_another_application() -> TestResult {
     let mut device = MockDevice::running([7, 0]);
     device.program_version = [0x00, 0x83, 0x00, 0x42, 0x10];
-    let Some(bench) = Bench::start("params-other-app", device, "\"thr@P-0_R-1\" = \"12\"\n")? else {
+    let Some(bench) = Bench::start("params-other-app", device, "\"thr@P-0_R-1\" = \"12\"\n")?
+    else {
         return Ok(());
     };
     let out = bench.bussard(&[

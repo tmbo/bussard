@@ -21,13 +21,12 @@ fn write_model(dir: &std::path::Path) -> TestResult {
     std::fs::create_dir_all(dir.join("devices"))?;
     std::fs::write(
         dir.join("bussard.toml"),
-        "connection:\n  transport: tunnel\n  gateway: \"192.0.2.1:3671\"\n",
+        "[connection]\ntransport = \"tunnel\"\ngateway = \"192.0.2.1:3671\"\n",
     )?;
     std::fs::write(
         dir.join("groups.toml"),
-        "project: Demo\ngroups:\n  \"3/2/0\":\n    name: Windalarm\n    dpt: \"1.005\"\n",
+        "project = \"Demo\"\ngroups = [{ address = \"3/2/0\", name = \"Windalarm\", dpt = \"1.005\" }]\n",
     )?;
-    std::fs::write(dir.join("links.yaml"), "links: {}\n")?;
     Ok(())
 }
 

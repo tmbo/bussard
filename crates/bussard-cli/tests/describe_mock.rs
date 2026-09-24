@@ -112,9 +112,7 @@ impl TempModel {
             let (intent, facts): (Vec<&str>, Vec<&str>) = security
                 .lines()
                 .filter(|l| !l.trim().is_empty())
-                .partition(|l| {
-                    l.starts_with("activated") || l.starts_with("secure_commissioning")
-                });
+                .partition(|l| l.starts_with("activated") || l.starts_with("secure_commissioning"));
             let mut file = "address = \"1.1.12\"\nname = \"Secure module\"\n".to_string();
             if !intent.is_empty() {
                 file.push_str(&format!("\n[security]\n{}\n", intent.join("\n")));
