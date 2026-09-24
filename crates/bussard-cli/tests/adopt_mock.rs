@@ -206,12 +206,12 @@ fn write_model(dir: &std::path::Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir.join("devices"))?;
     // One existing device on line 1.1 so the explicit 1.1.7 sits on a known line.
     std::fs::write(
-        dir.join("devices").join("1.1.4-jal.yaml"),
-        "address: 1.1.4\nname: Rollladen Wohnzimmer\n",
+        dir.join("devices").join("1.1.4.toml"),
+        "address = \"1.1.4\"\nname = \"Rollladen Wohnzimmer\"\n",
     )?;
     std::fs::write(
         dir.join("bussard.toml"),
-        "connection:\n  transport: tunnel\n",
+        "[connection]\ntransport = \"tunnel\"\n",
     )
 }
 
@@ -287,8 +287,9 @@ fn adopt_happy_path_writes_rich_device_file() -> TestResult {
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let success = output.status.success();
 
-    let device_file = model_dir.join("devices").join("1.1.7-taster-be-04001.yaml");
+    let device_file = model_dir.join("devices").join("1.1.7.toml");
     let body = std::fs::read_to_string(&device_file).ok();
+    let lock = std::fs::read_to_string(model_dir.join("bussard.lock")).ok();
     let vendor_cached = knxprod_cached(&model_dir);
     let _ = std::fs::remove_dir_all(&tmp);
 
@@ -305,14 +306,16 @@ fn adopt_happy_path_writes_rich_device_file() -> TestResult {
         !stderr.contains("WARNING:"),
         "no mismatch warning expected; stderr:\n{stderr}"
     );
-    // A ready-to-paste links snippet is printed (model itself untouched).
+    // Ready-to-paste snippets are printed: a groups.toml row and a device-file
+    // object line (the model itself gains no links).
     assert!(
-        stdout.contains("links.yaml (under `links:`)"),
-        "expected a links.yaml snippet; stdout:\n{stdout}"
+        stdout.contains("# ---8<--- groups.toml (inside `groups = [ … ]`)")
+            && stdout.contains("{ address = \"0/0/1\", name = "),
+        "expected a groups.toml snippet; stdout:\n{stdout}"
     );
     assert!(
-        !model_dir.join("links.yaml").exists(),
-        "adopt must not create links.yaml — it prints a snippet only"
+        stdout.contains("# ---8<--- devices/1.1.7.toml") && stdout.contains(".send = \"0/0/1\""),
+        "expected a device-file snippet; stdout:\n{stdout}"
     );
     // Flash pointer surfaces for a product-backed adoption.
     assert!(
@@ -320,20 +323,23 @@ fn adopt_happy_path_writes_rich_device_file() -> TestResult {
         "expected a flash pointer; stdout:\n{stdout}"
     );
 
-    // The rich device file: address, product identity, and a com-object table.
+    // The device file: address, name and order number; the lock entry: the
+    // product identity and the com-object table.
     let body = body.ok_or("device file should exist")?;
-    assert!(body.contains("address: 1.1.7"), "device body:\n{body}");
+    assert!(body.contains("address = \"1.1.7\""), "device body:\n{body}");
     assert!(body.contains("Taster BE 04001"), "device body:\n{body}");
-    assert!(body.contains("MDT-BE-04001.02"), "device body:\n{body}");
+    assert!(body.contains("product = \"MDT-BE-04001.02\""), "device body:\n{body}");
+    assert!(!body.contains("[links]"), "no links wired yet:\n{body}");
+    let lock = lock.ok_or("bussard.lock should exist")?;
     assert!(
-        body.contains("M-0083_A-1234-11-ABCD-O000A"),
-        "expected application_ref; device body:\n{body}"
+        lock.contains("application = \"M-0083_A-1234-11-ABCD-O000A\""),
+        "expected the pinned application; lock:\n{lock}"
     );
-    assert!(body.contains("com_objects:"), "device body:\n{body}");
+    assert!(lock.contains("objects = ["), "lock:\n{lock}");
     // The two com-objects with their DPTs.
     assert!(
-        body.contains("1.001"),
-        "expected a DPT; device body:\n{body}"
+        lock.contains("dpt = \"1.001\""),
+        "expected a DPT; lock:\n{lock}"
     );
     // The vendor .knxprod is cached under vendor/.
     assert!(
@@ -431,7 +437,7 @@ fn adopt_times_out_with_no_device() -> TestResult {
     let success = output.status.success();
     let device_written = model_dir
         .join("devices")
-        .join("1.1.7-taster-be-04001.yaml")
+        .join("1.1.7.toml")
         .exists();
     let _ = std::fs::remove_dir_all(&tmp);
 

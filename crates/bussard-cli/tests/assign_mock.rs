@@ -147,12 +147,12 @@ fn write_model(dir: &std::path::Path) -> std::io::Result<()> {
     // One existing device on line 1.1 so the model has a dominant line and the
     // explicit 1.1.7 sits on a known line.
     std::fs::write(
-        dir.join("devices").join("1.1.4-jal.yaml"),
-        "address: 1.1.4\nname: Rollladen Wohnzimmer\n",
+        dir.join("devices").join("1.1.4.toml"),
+        "address = \"1.1.4\"\nname = \"Rollladen Wohnzimmer\"\n",
     )?;
     std::fs::write(
         dir.join("bussard.toml"),
-        "connection:\n  transport: tunnel\n",
+        "[connection]\ntransport = \"tunnel\"\n",
     )
 }
 
@@ -194,10 +194,10 @@ fn assign_writes_address_and_stub_file() -> TestResult {
     let success = output.status.success();
 
     // Read the stub file before cleanup.
-    let stub = model_dir
-        .join("devices")
-        .join("1.1.7-new-device-assign.yaml");
+    // The stub is the device file plus its lock entry (the product facts).
+    let stub = model_dir.join("devices").join("1.1.7.toml");
     let stub_body = std::fs::read_to_string(&stub).ok();
+    let lock_body = std::fs::read_to_string(model_dir.join("bussard.lock")).ok();
     let _ = std::fs::remove_dir_all(&tmp);
 
     assert!(
@@ -215,11 +215,17 @@ fn assign_writes_address_and_stub_file() -> TestResult {
     );
 
     let body = stub_body.ok_or("stub device file should exist")?;
-    assert!(body.contains("address: 1.1.7"), "stub body:\n{body}");
+    assert!(body.contains("address = \"1.1.7\""), "stub body:\n{body}");
     assert!(body.contains("New device (assign)"), "stub body:\n{body}");
-    // The product block reflects the verified read-back (MDT / order / mask).
-    assert!(body.contains("MDT"), "stub body:\n{body}");
-    assert!(body.contains("MDT-JAL0410"), "stub body:\n{body}");
+    // The product reflects the verified read-back: the order number in the
+    // device file, the manufacturer and mask in the lock entry.
+    assert!(
+        body.contains("product = \"MDT-JAL0410\""),
+        "stub body:\n{body}"
+    );
+    let lock = lock_body.ok_or("bussard.lock should exist")?;
+    assert!(lock.contains("MDT"), "lock:\n{lock}");
+    assert!(lock.contains("mask = "), "lock:\n{lock}");
     Ok(())
 }
 
@@ -473,12 +479,13 @@ fn secure_assign(
         .map(|d| d.secured_requests)
         .unwrap_or(0);
     drop(gw);
-    let stub = std::fs::read_to_string(
-        model_dir
-            .join("devices")
-            .join(format!("{target}-new-device-assign.yaml")),
-    )
-    .ok();
+    // The stub: the device file followed by the lock (product facts, mask).
+    let stub = std::fs::read_to_string(model_dir.join("devices").join(format!("{target}.toml")))
+        .ok()
+        .map(|body| {
+            let lock = std::fs::read_to_string(model_dir.join("bussard.lock")).unwrap_or_default();
+            format!("{body}{lock}")
+        });
     let _ = std::fs::remove_dir_all(&tmp);
     Ok(SecureRun {
         success: output.status.success(),
