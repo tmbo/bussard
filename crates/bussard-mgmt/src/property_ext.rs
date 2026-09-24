@@ -570,7 +570,7 @@ pub async fn write_property_ext_chunked<Ch: L4Channel>(
     mut on_chunk: impl FnMut(usize),
 ) -> Result<()> {
     let element_size = element_size.max(1);
-    if data.len() % element_size != 0 {
+    if !data.len().is_multiple_of(element_size) {
         return Err(malformed(
             l4.target(),
             format!(

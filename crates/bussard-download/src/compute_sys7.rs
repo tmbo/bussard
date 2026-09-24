@@ -233,7 +233,9 @@ pub fn decode_sys7_address_table(
         return Ok((0, Vec::new()));
     }
     let entries: Vec<u16> = image[SYS7_COUNT_LEN..need]
-        .chunks_exact(SYS7_ADDRESS_ENTRY_LEN)
+        .as_chunks::<SYS7_ADDRESS_ENTRY_LEN>()
+        .0
+        .iter()
         .map(|c| u16::from_be_bytes([c[0], c[1]]))
         .collect();
     let own_ia = entries[0];
@@ -266,7 +268,9 @@ pub fn decode_sys7_association_table(
     )?;
     require_len("association", count, need, image)?;
     Ok(image[SYS7_COUNT_LEN..need]
-        .chunks_exact(SYS7_ASSOCIATION_ENTRY_LEN)
+        .as_chunks::<SYS7_ASSOCIATION_ENTRY_LEN>()
+        .0
+        .iter()
         .map(|c| (u16::from(c[0]), u16::from(c[1])))
         .collect())
 }
@@ -293,7 +297,9 @@ pub fn decode_sys7_group_object_table(
     require_len("group object", count, need, image)?;
     let ram_flags_ptr = u16::from_be_bytes([image[1], image[2]]);
     let objects = image[SYS7_GROUP_OBJECT_HEADER_LEN..need]
-        .chunks_exact(SYS7_GROUP_OBJECT_DESCRIPTOR_LEN)
+        .as_chunks::<SYS7_GROUP_OBJECT_DESCRIPTOR_LEN>()
+        .0
+        .iter()
         .enumerate()
         .map(|(i, d)| Sys7GroupObject {
             asap: (i + 1) as u16,

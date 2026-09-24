@@ -658,14 +658,12 @@ pub(crate) fn relative_id(app: &ApplicationProgram, id: &str) -> String {
 /// Renders a raw value for a human: an enumeration shows the vendor's own text
 /// for the member, everything else shows the value as written.
 pub(crate) fn render(raw: &str, ptype: Option<&ParameterType>) -> String {
-    if let Some(ParameterType::Enum { values, .. }) = ptype {
-        if let Ok(n) = raw.trim().parse::<i64>() {
-            if let Some(member) = values.iter().find(|v| v.value == n) {
-                if !member.text.trim().is_empty() {
-                    return member.text.clone();
-                }
-            }
-        }
+    if let Some(ParameterType::Enum { values, .. }) = ptype
+        && let Ok(n) = raw.trim().parse::<i64>()
+        && let Some(member) = values.iter().find(|v| v.value == n)
+        && !member.text.trim().is_empty()
+    {
+        return member.text.clone();
     }
     raw.to_string()
 }

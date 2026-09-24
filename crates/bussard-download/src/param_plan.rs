@@ -388,14 +388,12 @@ pub fn planned_parameter_regions(plan: &FlashPlan) -> ParamRegions {
                 image: Some(image),
                 ..
             } = step
-            {
-                if plan
+                && plan
                     .param_images
                     .get(&image.segment_id)
                     .is_some_and(|b| !b.is_empty())
-                {
-                    add(&image.segment_id, *address, image.len);
-                }
+            {
+                add(&image.segment_id, *address, image.len);
             }
         }
         return out;
