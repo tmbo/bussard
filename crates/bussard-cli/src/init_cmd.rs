@@ -179,6 +179,11 @@ fn describe_gateway(gw: &GatewayInfo) -> String {
     if let Some(tunnels) = tunnel_clause(&gw.description) {
         parts.push(tunnels);
     }
+    if gw.description.tunnelling_secure_only() {
+        parts.push("KNXnet/IP Secure only".to_string());
+    } else if gw.description.secure_capable() {
+        parts.push("KNXnet/IP Secure capable".to_string());
+    }
     format!("{name} ({})", parts.join(", "))
 }
 
@@ -261,11 +266,25 @@ fn probe_reachability(endpoint: SocketAddrV4) {
     // Ask the interface to describe itself first: it is a single unicast
     // exchange, costs no tunnel slot, and carries the tunnelling budget the
     // owner needs to see (issue #105).
-    if let Ok(description) = runtime.block_on(bussard_transport::describe_gateway(
-        endpoint,
-        DESCRIBE_TIMEOUT,
-    )) {
-        print_description(endpoint, &description);
+    // The extended search (issue #182) also says whether the interface
+    // requires KNXnet/IP Secure; it falls back to the plain description.
+    let description = runtime
+        .block_on(bussard_transport::describe_gateway_extended(
+            endpoint,
+            DESCRIBE_TIMEOUT,
+        ))
+        .ok();
+    if let Some(description) = &description {
+        print_description(endpoint, description);
+        if description.tunnelling_secure_only() {
+            println!(
+                "Reachability check skipped: a plain tunnel is refused by this interface. \
+                 Commands need its tunnelling credentials: --keyring <file.knxkeys> \
+                 (password in BUSSARD_KEYRING_PASSWORD) or --secure-user <id> \
+                 --secure-password-env <VAR>."
+            );
+            return;
+        }
     }
 
     let config = ConnectionConfig::tunnel(endpoint);
@@ -307,6 +326,9 @@ fn print_description(endpoint: SocketAddrV4, description: &GatewayDescription) {
             "Tunnelling: the interface does not report its slot count \
              (older KNXnet/IP interfaces do not)."
         ),
+    }
+    if let Some(summary) = description.security_summary() {
+        println!("{summary}.");
     }
 }
 

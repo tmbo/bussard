@@ -353,3 +353,22 @@ fn _routing_config() -> ConnectionConfig {
     c.transport = TransportKind::Routing;
     c
 }
+
+/// A secure-only interface without credentials stops the actor at once with
+/// the #182 refusal instead of retrying the refused CONNECT forever.
+#[tokio::test]
+async fn test_secure_only_interface_stops_the_actor_with_a_fatal_error() -> TestResult {
+    let gw = bussard_testkit::MockSecureGateway::builder()
+        .start()
+        .await?;
+    let config = ConnectionConfig::tunnel(gw.addr());
+    let (handle, task) = Bus::connect(config);
+    assert!(!handle.wait_connected(Duration::from_secs(5)).await);
+    assert_eq!(handle.status(), BusState::Closed);
+    let fatal = handle.fatal_error().ok_or("a fatal error is recorded")?;
+    assert!(fatal.contains("requires KNXnet/IP Secure"), "{fatal}");
+    assert_eq!(bussard_bus::fatal_connect_error(), Some(fatal));
+    tokio::time::timeout(FINISH, task).await??;
+    assert_eq!(gw.stats()?.plain_refusals, 1, "no retry");
+    Ok(())
+}

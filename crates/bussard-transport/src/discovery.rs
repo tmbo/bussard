@@ -46,6 +46,11 @@ pub async fn discover(timeout: Duration, interface: Ipv4Addr) -> Result<Vec<Gate
     let req = knxnet::search_request(hpai);
     let group = SocketAddr::from(SocketAddrV4::new(DEFAULT_MULTICAST, DEFAULT_PORT));
     socket.send_to(&req, group).await?;
+    // The extended search as well: only its answer carries the KNXnet/IP
+    // Secure DIBs (issue #182). Interfaces without Core v2 ignore it.
+    socket
+        .send_to(&knxnet::search_request_extended(hpai), group)
+        .await?;
 
     let deadline = Instant::now() + timeout;
     let mut found: Vec<GatewayInfo> = Vec::new();
@@ -58,12 +63,19 @@ pub async fn discover(timeout: Duration, interface: Ipv4Addr) -> Result<Vec<Gate
         }
         match tokio::time::timeout(remaining, socket.recv_from(&mut buf)).await {
             Ok(Ok((n, _from))) => {
-                if let Ok(parsed) = knxnet::parse(&buf[..n])
-                    && parsed.service == ServiceType::SearchResponse
+                let Ok(parsed) = knxnet::parse(&buf[..n]) else {
+                    continue;
+                };
+                let extended = parsed.service == ServiceType::SearchResponseExtended;
+                if (parsed.service == ServiceType::SearchResponse || extended)
                     && let Ok(info) = knxnet::parse_search_response(parsed.body)
-                    && !found.iter().any(|g| g.endpoint == info.endpoint)
                 {
-                    found.push(info);
+                    match found.iter_mut().find(|g| g.endpoint == info.endpoint) {
+                        // The extended answer knows more (security, slots).
+                        Some(existing) if extended => *existing = info,
+                        Some(_) => {}
+                        None => found.push(info),
+                    }
                 }
             }
             Ok(Err(e)) => return Err(e.into()),
@@ -125,6 +137,120 @@ pub async fn describe_gateway(
             }
             Ok(Err(e)) => return Err(e.into()),
             Err(_) => return Err(TransportError::Timeout("DESCRIPTION_RESPONSE")),
+        }
+    }
+}
+
+/// Asks one gateway for its extended description (SEARCH_REQUEST_EXTENDED /
+/// SEARCH_RESPONSE_EXTENDED), which, unlike a DESCRIPTION_RESPONSE, carries
+/// the KNXnet/IP Secure DIBs: the security service family and the secured
+/// service families (issue #182).
+///
+/// Tries, in order, and returns the first answer:
+///
+/// 1. TCP to the control endpoint, exactly as ETS does (issue #90 S4 capture:
+///    TCP route-back HPAI + SRP `08 04 01 08 02 06 07 00`); an interface
+///    without TCP refuses the connection at once;
+/// 2. unicast UDP: the extended search and a plain DESCRIPTION_REQUEST side by
+///    side; the plain description (no security information) is the answer
+///    only when no extended one follows it shortly.
+///
+/// Each step waits up to `timeout`. Read-only: nothing reaches the KNX bus.
+pub async fn describe_gateway_extended(
+    endpoint: SocketAddrV4,
+    timeout: Duration,
+) -> Result<GatewayDescription> {
+    match search_extended_tcp(endpoint, timeout).await {
+        Ok(d) => return Ok(d),
+        Err(err) => tracing::debug!(%err, "extended search over TCP to {endpoint} failed"),
+    }
+    search_extended_udp(endpoint, timeout).await
+}
+
+/// SEARCH_REQUEST_EXTENDED over a short-lived TCP connection.
+async fn search_extended_tcp(
+    endpoint: SocketAddrV4,
+    timeout: Duration,
+) -> Result<GatewayDescription> {
+    use tokio::io::AsyncWriteExt;
+    let mut stream = crate::secure::tcp_connect(endpoint, Ipv4Addr::UNSPECIFIED, timeout).await?;
+    stream
+        .write_all(&knxnet::search_request_extended(Hpai::tcp_route_back()))
+        .await?;
+    let mut reader = crate::secure::FrameReader::new();
+    let deadline = Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let frame = match tokio::time::timeout(remaining, reader.read_frame(&mut stream)).await {
+            Ok(frame) => frame?,
+            Err(_) => return Err(TransportError::Timeout("SEARCH_RESPONSE_EXTENDED")),
+        };
+        if let Ok(parsed) = knxnet::parse(&frame)
+            && parsed.service == ServiceType::SearchResponseExtended
+        {
+            let _ = stream.shutdown().await;
+            return Ok(knxnet::parse_search_response(parsed.body)?.description);
+        }
+    }
+}
+
+/// How long a UDP probe keeps waiting for the extended answer after a plain
+/// DESCRIPTION_RESPONSE already arrived (an older interface never sends one).
+const EXTENDED_GRACE: Duration = Duration::from_millis(250);
+
+/// SEARCH_REQUEST_EXTENDED and DESCRIPTION_REQUEST as unicast UDP datagrams
+/// on one socket. Returns the extended answer when it comes, else the plain
+/// description once [`EXTENDED_GRACE`] has passed after it.
+async fn search_extended_udp(
+    endpoint: SocketAddrV4,
+    timeout: Duration,
+) -> Result<GatewayDescription> {
+    let socket = UdpSocket::bind(SocketAddr::from(SocketAddrV4::new(
+        Ipv4Addr::UNSPECIFIED,
+        0,
+    )))
+    .await?;
+    socket.connect(endpoint).await?;
+    let local = match socket.local_addr()? {
+        SocketAddr::V4(v4) => v4,
+        SocketAddr::V6(_) => {
+            return Err(TransportError::InvalidField {
+                field: "local socket is IPv6, KNXnet/IP requires IPv4",
+                value: 0,
+            });
+        }
+    };
+    socket
+        .send(&knxnet::search_request_extended(Hpai::new(local)))
+        .await?;
+    socket
+        .send(&knxnet::description_request(Hpai::new(local)))
+        .await?;
+    let mut deadline = Instant::now() + timeout;
+    let mut plain: Option<GatewayDescription> = None;
+    let mut buf = [0u8; 1024];
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return plain.ok_or(TransportError::Timeout("SEARCH_RESPONSE_EXTENDED"));
+        }
+        match tokio::time::timeout(remaining, socket.recv(&mut buf)).await {
+            Ok(Ok(n)) => match knxnet::parse(&buf[..n]) {
+                Ok(parsed) if parsed.service == ServiceType::SearchResponseExtended => {
+                    return Ok(knxnet::parse_search_response(parsed.body)?.description);
+                }
+                Ok(parsed)
+                    if parsed.service == ServiceType::DescriptionResponse && plain.is_none() =>
+                {
+                    plain = Some(knxnet::parse_description_response(parsed.body)?);
+                    deadline = deadline.min(Instant::now() + EXTENDED_GRACE);
+                }
+                _ => {}
+            },
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => {
+                return plain.ok_or(TransportError::Timeout("SEARCH_RESPONSE_EXTENDED"));
+            }
         }
     }
 }

@@ -37,7 +37,7 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use bussard_secure::crypto::latin1_bytes;
-use bussard_secure::{Key16, aes_cbc_decrypt, pbkdf2_key, salt};
+use bussard_secure::{Key16, Password, aes_cbc_decrypt, pbkdf2_key, salt};
 
 use bussard_ets::attrs::{attr_value, attrs_map};
 use bussard_model::{GroupAddress, IndividualAddress};
@@ -136,34 +136,68 @@ impl std::fmt::Debug for Backbone {
 }
 
 /// A tunnel/USB/backbone interface and its credentials (spec §4.5).
+///
+/// For a KNXnet/IP Secure tunnelling interface (`Type="Tunneling"`) `ia` is the
+/// tunnel address the interface assigns to this user, `host` the individual
+/// address of the IP interface itself, `password` the tunnelling user's
+/// password and `authentication` the interface's device authentication code
+/// (issue #71 Phase B). The passwords are decrypted but not derived: PBKDF2 is
+/// slow, so the transport derives only the user it presents
+/// ([`Interface::user_key`], [`Interface::device_auth_key`]).
 pub struct Interface {
+    /// The `Type` attribute (`Tunneling`, `USB`, `Backbone`), empty if absent.
+    pub interface_type: String,
     /// The interface's individual address.
     pub ia: IndividualAddress,
     /// The host device's individual address, if the `Host` attribute is present.
     pub host: Option<IndividualAddress>,
     /// The tunnel/management user id.
     pub user_id: u8,
-    /// The derived user-password key (from the decrypted `Password`, PBKDF2 with
-    /// the user-password salt). `None` when the interface carries no `Password`
-    /// (a USB interface, for example).
-    pub user_key: Option<Key16>,
-    /// The derived device-authentication key (from the decrypted `Authentication`,
-    /// PBKDF2 with the device-authentication-code salt). `None` when absent.
-    pub device_auth: Option<Key16>,
+    /// The decrypted user password (`Password`). `None` when the interface
+    /// carries no `Password` (a USB interface, for example).
+    pub password: Option<Password>,
+    /// The decrypted device authentication code (`Authentication`). `None`
+    /// when absent.
+    pub authentication: Option<Password>,
     /// The group addresses this interface may send to.
     pub gas: Vec<GroupAddress>,
+}
+
+impl Interface {
+    /// Whether this is a tunnelling interface with a user password, i.e.
+    /// usable for a KNXnet/IP Secure tunnel.
+    pub fn is_secure_tunnel(&self) -> bool {
+        self.interface_type.eq_ignore_ascii_case("Tunneling") && self.password.is_some()
+    }
+
+    /// The user-password key (PBKDF2 with the user-password salt), derived on
+    /// demand.
+    pub fn user_key(&self) -> Option<Key16> {
+        self.password
+            .as_ref()
+            .map(|p| p.derive(salt::USER_PASSWORD))
+    }
+
+    /// The device-authentication key (PBKDF2 with the
+    /// device-authentication-code salt), derived on demand.
+    pub fn device_auth_key(&self) -> Option<Key16> {
+        self.authentication
+            .as_ref()
+            .map(|p| p.derive(salt::DEVICE_AUTHENTICATION_CODE))
+    }
 }
 
 impl std::fmt::Debug for Interface {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Interface")
+            .field("interface_type", &self.interface_type)
             .field("ia", &self.ia)
             .field("host", &self.host)
             .field("user_id", &self.user_id)
-            .field("user_key", &self.user_key.as_ref().map(|_| "<redacted>"))
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
             .field(
-                "device_auth",
-                &self.device_auth.as_ref().map(|_| "<redacted>"),
+                "authentication",
+                &self.authentication.as_ref().map(|_| "<redacted>"),
             )
             .field("gas", &self.gas)
             .finish()
@@ -178,6 +212,22 @@ pub struct Device {
     pub tool_key: Key16,
     /// The device's last-known Data Secure sequence number (defaults to 0).
     pub seq: u64,
+    /// The decrypted `ManagementPassword` (a KNXnet/IP Secure device's
+    /// management user, user id 1), if present.
+    pub management_password: Option<Password>,
+    /// The decrypted `Authentication` (a KNXnet/IP Secure device's device
+    /// authentication code), if present.
+    pub authentication: Option<Password>,
+}
+
+impl Device {
+    /// The device-authentication key (PBKDF2 with the
+    /// device-authentication-code salt), derived on demand.
+    pub fn device_auth_key(&self) -> Option<Key16> {
+        self.authentication
+            .as_ref()
+            .map(|p| p.derive(salt::DEVICE_AUTHENTICATION_CODE))
+    }
 }
 
 impl std::fmt::Debug for Device {
@@ -186,6 +236,14 @@ impl std::fmt::Debug for Device {
             .field("ia", &self.ia)
             .field("tool_key", &"<redacted>")
             .field("seq", &self.seq)
+            .field(
+                "management_password",
+                &self.management_password.as_ref().map(|_| "<redacted>"),
+            )
+            .field(
+                "authentication",
+                &self.authentication.as_ref().map(|_| "<redacted>"),
+            )
             .finish()
     }
 }
@@ -598,42 +656,26 @@ fn parse_interface(
         None => 0,
     };
 
-    // The Password/Authentication attributes are encrypted; decrypt, extract the
-    // password string, then derive the key with the appropriate salt (§4.5, §3.4).
-    // Both are optional: a USB interface has neither.
-    let user_key = match attr(e, b"Password")? {
-        Some(_) => {
-            let password = decrypt_password(e, b"Password", "Interface/Password", keyring_key, iv)?;
-            Some(pbkdf2_key(
-                &Zeroizing::new(latin1_bytes(&password)),
-                salt::USER_PASSWORD,
-            ))
-        }
-        None => None,
-    };
-    let device_auth = match attr(e, b"Authentication")? {
-        Some(_) => {
-            let auth = decrypt_password(
-                e,
-                b"Authentication",
-                "Interface/Authentication",
-                keyring_key,
-                iv,
-            )?;
-            Some(pbkdf2_key(
-                &Zeroizing::new(latin1_bytes(&auth)),
-                salt::DEVICE_AUTHENTICATION_CODE,
-            ))
-        }
-        None => None,
-    };
+    // The Password/Authentication attributes are encrypted; decrypt and extract
+    // the password strings (§4.5). The keys are derived on demand (PBKDF2 is
+    // slow and a keyring lists every tunnelling user). Both are optional: a USB
+    // interface has neither.
+    let password = optional_password(e, b"Password", "Interface/Password", keyring_key, iv)?;
+    let authentication = optional_password(
+        e,
+        b"Authentication",
+        "Interface/Authentication",
+        keyring_key,
+        iv,
+    )?;
 
     Ok(Interface {
+        interface_type: attr(e, b"Type")?.unwrap_or_default(),
         ia,
         host,
         user_id,
-        user_key,
-        device_auth,
+        password,
+        authentication,
         gas: Vec::new(),
     })
 }
@@ -656,7 +698,44 @@ fn parse_device(
         })?,
         None => 0,
     };
-    Ok(Device { ia, tool_key, seq })
+    let management_password = optional_password(
+        e,
+        b"ManagementPassword",
+        "Device/ManagementPassword",
+        keyring_key,
+        iv,
+    )?;
+    let authentication = optional_password(
+        e,
+        b"Authentication",
+        "Device/Authentication",
+        keyring_key,
+        iv,
+    )?;
+    Ok(Device {
+        ia,
+        tool_key,
+        seq,
+        management_password,
+        authentication,
+    })
+}
+
+/// Decrypts an optional encrypted password attribute into a [`Password`].
+fn optional_password(
+    e: &BytesStart,
+    key: &[u8],
+    attribute: &str,
+    keyring_key: &Key16,
+    iv: &[u8; KEY_LEN],
+) -> Result<Option<Password>, KeyringError> {
+    match attr(e, key)? {
+        Some(_) => {
+            let plain = decrypt_password(e, key, attribute, keyring_key, iv)?;
+            Ok(Some(Password::new(plain.as_str())))
+        }
+        None => Ok(None),
+    }
 }
 
 /// Parses a `<GroupAddresses>/<Group>` element into `(address, key)` (§4.5).
@@ -954,17 +1033,35 @@ mod tests {
         assert_eq!(iface.ia, "1.1.200".parse()?);
         assert_eq!(iface.host, Some("1.1.0".parse()?));
         assert_eq!(iface.user_id, 2);
+        assert_eq!(iface.interface_type, "Tunneling");
+        assert!(iface.is_secure_tunnel());
         let expected_user = pbkdf2_key(&latin1_bytes("tunnel-user-pw"), salt::USER_PASSWORD);
-        let user_key = iface.user_key.as_ref().ok_or("user key missing")?;
+        let user_key = iface.user_key().ok_or("user key missing")?;
         assert_eq!(user_key.bytes(), expected_user.bytes());
         let expected_auth = pbkdf2_key(
             &latin1_bytes("device-auth-pw"),
             salt::DEVICE_AUTHENTICATION_CODE,
         );
-        let device_auth = iface.device_auth.as_ref().ok_or("device auth missing")?;
+        let device_auth = iface.device_auth_key().ok_or("device auth missing")?;
         assert_eq!(device_auth.bytes(), expected_auth.bytes());
         // The interface's <Group> child is a sending GA, not a group key.
         assert_eq!(iface.gas, vec!["1/2/3".parse::<GroupAddress>()?]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_keyring_full_decrypts_device_ip_secure_passwords() -> TestResult {
+        let keyring = parse_keyring(FULL, PASSWORD)?;
+        let device = &keyring.devices[0];
+        assert!(device.management_password.is_some());
+        let auth = device
+            .authentication
+            .as_ref()
+            .ok_or("authentication missing")?;
+        assert!(!auth.is_empty());
+        assert!(device.device_auth_key().is_some());
+        let rendered = format!("{device:?}");
+        assert!(!rendered.contains("device-auth-pw"), "{rendered}");
         Ok(())
     }
 
@@ -1016,8 +1113,9 @@ mod tests {
         )?;
         let keyring = parse_keyring(&xml, PASSWORD)?;
         assert_eq!(keyring.interfaces.len(), 1);
-        assert!(keyring.interfaces[0].user_key.is_none());
-        assert!(keyring.interfaces[0].device_auth.is_none());
+        assert!(keyring.interfaces[0].password.is_none());
+        assert!(keyring.interfaces[0].authentication.is_none());
+        assert!(!keyring.interfaces[0].is_secure_tunnel());
         Ok(())
     }
 

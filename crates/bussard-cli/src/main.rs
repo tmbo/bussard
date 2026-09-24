@@ -66,8 +66,59 @@ struct Cli {
     /// progress lines a piped run prints.
     #[arg(long, global = true)]
     no_progress: bool,
+    /// KNXnet/IP Secure: the tunnelling user id to authenticate as, with
+    /// `--secure-password-env`. Without these flags a `--keyring` that lists the
+    /// interface's tunnelling users picks one automatically (issue #71).
+    #[arg(long, global = true, value_name = "ID")]
+    secure_user: Option<u8>,
+    /// KNXnet/IP Secure: the name of the environment variable that holds the
+    /// `--secure-user` password (never the password itself).
+    #[arg(long, global = true, value_name = "VAR")]
+    secure_password_env: Option<String>,
     #[command(subcommand)]
     command: Command,
+}
+
+/// The `--keyring` of the subcommand, if it takes one: its tunnelling users
+/// open a KNXnet/IP Secure tunnel to a secure interface (issue #71 Phase B).
+fn command_keyring(command: &Command) -> Option<&std::path::Path> {
+    match command {
+        Command::Reconstruct { keyring, .. }
+        | Command::Describe { keyring, .. }
+        | Command::Flash { keyring, .. }
+        | Command::Plan { keyring, .. }
+        | Command::Apply { keyring, .. }
+        | Command::Commission { keyring, .. }
+        | Command::Backup { keyring, .. }
+        | Command::Restore { keyring, .. }
+        | Command::Replace { keyring, .. }
+        | Command::Monitor { keyring, .. }
+        | Command::Capture { keyring, .. }
+        | Command::Read { keyring, .. }
+        | Command::Write { keyring, .. }
+        | Command::Viz { keyring, .. }
+        | Command::Audit { keyring, .. }
+        | Command::Mcp { keyring, .. } => keyring.as_deref(),
+        _ => None,
+    }
+}
+
+/// Resolves the KNXnet/IP Secure tunnelling credentials once, before the
+/// subcommand runs, so every connection it opens uses them.
+fn setup_secure_tunnel(cli: &Cli) -> anyhow::Result<()> {
+    let keyring = command_keyring(&cli.command);
+    // Without explicit flags, only a keyring can carry tunnelling users.
+    if keyring.is_none() && cli.secure_user.is_none() && cli.secure_password_env.is_none() {
+        return Ok(());
+    }
+    let config =
+        bussard_service::secure::tunnel_config(bussard_service::secure::TunnelCredentialSource {
+            keyring,
+            user: cli.secure_user,
+            password_env: cli.secure_password_env.as_deref(),
+        })?;
+    conn_cmd::set_secure_tunnel(config);
+    Ok(())
 }
 
 /// Maps a `-v` repeat count to a tracing `EnvFilter` directive string, unless an
@@ -1371,7 +1422,22 @@ fn cli_main() -> ExitCode {
     // invocation's elapsed time on stderr. Speed is a project goal, so this stays
     // available for regression spotting, but a plain 0.1.0 run is quiet.
     let started = std::time::Instant::now();
-    let code = match run(cli.command, cli.verbose) {
+    if let Err(err) = setup_secure_tunnel(&cli) {
+        eprintln!("error: {err:#}");
+        return ExitCode::FAILURE;
+    }
+    let result = run(cli.command, cli.verbose);
+    // A connect error that retrying cannot fix (a secure-only interface
+    // without credentials, a refused KNXnet/IP Secure password; issue #182) is
+    // the real cause of whatever the command reported next; name it alone.
+    if let Some(fatal) = bussard_bus::fatal_connect_error() {
+        eprintln!("error: {fatal}");
+        if cli.timing {
+            eprintln!("took {:.2?}", started.elapsed());
+        }
+        return ExitCode::FAILURE;
+    }
+    let code = match result {
         Ok(code) if code == ExitCode::SUCCESS => code,
         Ok(code) => no_free_tunnel_or(code),
         // A gateway with no free tunnel slot gets its own message and exit code

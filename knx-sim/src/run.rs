@@ -62,6 +62,17 @@ pub fn serve_config(config_path: &Path) -> Result<()> {
         .parse()
         .context("parsing gateway host:port")?;
     let mut server = KnxnetIpServer::bind(addr, bus).context("binding KNXnet/IP server")?;
+    if let Some(secure) = &cfg.gateway.secure {
+        server
+            .enable_secure(secure)
+            .context("enabling KNXnet/IP Secure")?;
+        tracing::info!(
+            %addr,
+            users = secure.users.len(),
+            secure_only = secure.secure_only,
+            "KNXnet/IP Secure tunnelling on TCP"
+        );
+    }
     tracing::info!(%addr, "KNXnet/IP tunnelling gateway listening");
     server.serve().context("serving")?;
     Ok(())

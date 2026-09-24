@@ -400,6 +400,55 @@ class TestApciDecoding(unittest.TestCase):
                 knxip.decode_knxip(0.0, "a", "b", "udp", frame).service_name, name
             )
 
+    def test_decode_knxip_secure_dibs_and_srp(self):
+        # The Jung interface's extended answer with Secure enabled (issue #90
+        # S4): families incl. security, the secured-families DIB, two slots.
+        dev = bytearray(54)
+        dev[0], dev[1], dev[2] = 54, 0x01, 0x02
+        dev[4:6] = struct.pack("!H", 0x11C8)
+        dev[24:30] = b"IP-IF1"
+        dibs = (
+            bytes(dev)
+            + bytes([0x0A, 0x02, 0x02, 0x02, 0x03, 0x02, 0x04, 0x02, 0x09, 0x01])
+            + bytes([0x06, 0x06, 0x03, 0x01, 0x04, 0x01])
+            + bytes([0x0C, 0x07, 0x00, 0xF8, 0x11, 0x16, 0x00, 0x05, 0x11, 0x17, 0x00, 0x04])
+        )
+        body = bytes([0x08, 0x02, 0, 0, 0, 0, 0, 0]) + dibs
+        frame = b"\x06\x10\x02\x0c" + struct.pack("!H", 6 + len(body)) + body
+        decoded = knxip.decode_knxip(0.0, "a", "b", "tcp", frame)
+        self.assertEqual(decoded.service_name, "SEARCH_RESPONSE_EXTENDED")
+        self.assertEqual(decoded.fields["hpai"], "tcp route-back")
+        self.assertEqual(decoded.fields["ia"], "1.1.200")
+        self.assertIn("security v1", decoded.fields["families"])
+        self.assertEqual(
+            decoded.fields["secured_families"], ["device_management v1", "tunnelling v1"]
+        )
+        self.assertEqual(decoded.fields["secure"], "tunnelling secure-only")
+        self.assertEqual(decoded.fields["tunnel_slots"], ["1.1.22[u-f]", "1.1.23[u--]"])
+
+        srp = bytes([0x08, 0x04, 0x01, 0x08, 0x02, 0x06, 0x07, 0x00])
+        body = bytes([0x08, 0x02, 0, 0, 0, 0, 0, 0]) + srp
+        frame = b"\x06\x10\x02\x0b" + struct.pack("!H", 6 + len(body)) + body
+        decoded = knxip.decode_knxip(0.0, "a", "b", "tcp", frame)
+        self.assertEqual(
+            decoded.fields["srp"],
+            ["request_dibs:DEVICE_INFO,EXTENDED_DEVICE_INFO,SUPP_SVC_FAMILIES,"
+             "SECURED_SERVICE_FAMILIES,TUNNELING_INFO"],
+        )
+
+        req = bytes([0x08, 0x02, 0, 0, 0, 0, 0, 0]) + b"\x5a" * 32
+        frame = b"\x06\x10\x09\x51" + struct.pack("!H", 6 + len(req)) + req
+        decoded = knxip.decode_knxip(0.0, "a", "b", "tcp", frame)
+        self.assertEqual(decoded.fields["hpai"], "tcp route-back")
+        self.assertEqual(decoded.fields["public_key_len"], 32)
+
+    def test_decode_knxip_tunnelling_feature_codes(self):
+        frame = b"\x06\x10\x04\x22\x00\x0c" + b"\x04\x92\x00\x00\x03\x00"
+        self.assertEqual(
+            knxip.decode_knxip(0.0, "a", "b", "tcp", frame).service_name,
+            "TUNNELING_FEATURE_GET",
+        )
+
     def test_decode_knxip_connection_lifecycle(self):
         for svc, name in (
             (0x0205, "CONNECT_REQUEST"),

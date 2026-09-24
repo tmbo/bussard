@@ -22,6 +22,9 @@
 //!   DESCRIPTION and TUNNELLING_REQUEST/ACK. It captures every cEMI frame the
 //!   client sends, runs scripted responders, pushes indications on demand or
 //!   after connect, and hosts a line of [`MockDevice`]s.
+//! - [`secure_gateway`]: [`MockSecureGateway`], a secure-only KNXnet/IP
+//!   interface (plain CONNECT refused with `0x22`, KNXnet/IP Secure session
+//!   and tunnelling over TCP), for the Phase B client (issue #71).
 //! - [`device`]: [`MockDevice`], a builder-configured KNX device that speaks
 //!   transport-layer connected mode, broadcast management, and the System B
 //!   load-state machine.
@@ -104,10 +107,12 @@
 pub mod consts;
 pub mod device;
 pub mod gateway;
+pub mod secure_gateway;
 pub mod wire;
 
 pub use device::{MemoryWritePolicy, MockDevice, Reaction};
 pub use gateway::{AckPolicy, GatewayBuilder, GatewayStats, MockGateway, Outage};
+pub use secure_gateway::{MockSecureGateway, SecureGatewayBuilder, SecureGatewayStats};
 pub use wire::RawGateway;
 
 use bussard_transport::cemi::CemiFrame;

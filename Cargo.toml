@@ -119,6 +119,15 @@ hmac = "0.12"
 # linger in freed memory (spec §2.3). The `derive` feature provides the
 # `Zeroize`/`ZeroizeOnDrop` derive macros. MIT OR Apache-2.0.
 zeroize = { version = "1", features = ["derive"] }
+# --- KNXnet/IP Secure (issue #71, Phase B) ---
+# x25519-dalek: X25519 ECDH for the SESSION_REQUEST/RESPONSE key agreement
+# (spec §7.2). BSD-3-Clause (on the deny.toml allow-list). `static_secrets`
+# lets the ephemeral secret be built from OS random bytes (no rand_core RNG
+# plumbing); the secret zeroizes on drop.
+x25519-dalek = { version = "2", default-features = false, features = ["static_secrets", "zeroize", "precomputed-tables"] }
+# getrandom: OS randomness for the ephemeral X25519 key and the client serial.
+# Already in the tree transitively. MIT OR Apache-2.0.
+getrandom = "0.2"
 
 # ---------------------------------------------------------------------------
 # Local builds: line tables instead of full DWARF. The workspace links ~67

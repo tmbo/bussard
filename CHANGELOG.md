@@ -148,6 +148,27 @@ entry supersedes it and is not a diff against it.
   device drops bussard's secured group telegrams. knx-sim enforces the table
   (#181).
 
+**KNXnet/IP Secure**
+
+- Secure tunnelling to a KNXnet/IP Secure interface over TCP: X25519 session
+  handshake, the interface's device authentication verified, the user password
+  authenticated, every frame in a SECURE_WRAPPER, session keepalive, and the
+  #180 reconnect opening a new secure session (#71 Phase B). The credentials
+  come from `--keyring` (the keyring's tunnelling users, picked automatically
+  for the gateway reached) or from `--secure-user <id> --secure-password-env
+  <VAR>`.
+- A secure-only interface without credentials fails at once with a message
+  that names KNXnet/IP Secure, instead of retrying a refused CONNECT (#182).
+  `init` and discovery report an interface as KNXnet/IP Secure capable or
+  secure-only from the extended search.
+- `bussard keyring` lists the tunnelling users per interface and which devices
+  carry KNXnet/IP Secure credentials, never the passwords; the keyring parser
+  decrypts `Device@ManagementPassword` and `@Authentication` too.
+- The frame shapes, the Secure DIBs and the interface's SESSION_RESPONSE MAC
+  are checked against an ETS capture of a Jung interface by an ignored oracle
+  test; knx-sim gained a secure-only interface mode; knxtrace decodes the
+  Secure DIBs, the search parameters and the wrapper headers.
+
 **Live progress display**
 
 - `flash`, `apply`, `reconstruct --line` and `scan` draw a live view on

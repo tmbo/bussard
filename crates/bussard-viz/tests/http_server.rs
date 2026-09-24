@@ -61,6 +61,7 @@ async fn model_only_degradation_over_real_http() -> Result<(), Box<dyn std::erro
         multicast: SocketAddrV4::new(Ipv4Addr::new(224, 0, 23, 12), 3671),
         local_interface: Ipv4Addr::UNSPECIFIED,
         reconnect: bussard_transport::TunnelReconnect::default(),
+        secure: None,
     };
 
     let config = VizConfig {

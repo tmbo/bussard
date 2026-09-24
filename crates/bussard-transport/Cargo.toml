@@ -18,6 +18,8 @@ tracing = { workspace = true }
 # Fine-grained socket control for multicast routing (join group, SO_REUSEADDR /
 # SO_REUSEPORT, interface selection). MIT OR Apache-2.0. Pinned for rustc 1.82.
 socket2 = { version = "0.5", features = ["all"] }
+# KNXnet/IP Secure handshake and SECURE_WRAPPER codec (issue #71 Phase B).
+bussard-secure = { workspace = true }
 # Error enums. From the workspace pin (MIT).
 thiserror = { workspace = true }
 # Enumerate local network interfaces so discovery can search on each (multicast
@@ -26,6 +28,8 @@ thiserror = { workspace = true }
 if-addrs = "0.15"
 
 [dev-dependencies]
+# Key16 for the secure-tunnel tests' credentials.
+bussard-secure = { workspace = true }
 # The shared mock gateway (a dev-dependency cycle cargo allows: the testkit
 # depends on this crate, and only the integration tests use it).
 bussard-testkit = { workspace = true }

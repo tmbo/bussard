@@ -13,6 +13,7 @@ publish = false
 [dependencies]
 bussard-model = { workspace = true }
 bussard-transport = { workspace = true }
+bussard-secure = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 

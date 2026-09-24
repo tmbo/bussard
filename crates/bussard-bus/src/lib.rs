@@ -98,6 +98,28 @@ pub fn no_free_tunnel_seen() -> bool {
     NO_FREE_TUNNEL_SEEN.load(Ordering::Relaxed)
 }
 
+/// The first connect error in this process that retrying cannot fix (issue
+/// #182): a secure-only interface without credentials, a refused KNXnet/IP
+/// Secure password, or an interface that failed its own authentication. The
+/// actor stops on it; the CLI reports this message instead of whatever the
+/// command saw next (a timeout, a missing device answer).
+static FATAL_CONNECT_ERROR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// The fatal connect error a bus actor in this process stopped on, if any
+/// (see [`TransportError::is_fatal`]).
+pub fn fatal_connect_error() -> Option<String> {
+    FATAL_CONNECT_ERROR.lock().ok().and_then(|g| g.clone())
+}
+
+/// Records a fatal connect error (first one wins).
+fn record_fatal(err: &TransportError) {
+    if let Ok(mut slot) = FATAL_CONNECT_ERROR.lock()
+        && slot.is_none()
+    {
+        *slot = Some(err.to_string());
+    }
+}
+
 /// The live connection status, as observed on a [`BusHandle`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BusState {
@@ -201,6 +223,8 @@ struct Shared {
     reconnect_budget: Duration,
     /// How many times the gateway link was lost since the actor started.
     link_losses: AtomicU64,
+    /// The fatal connect error the actor stopped on, if any.
+    fatal: std::sync::Mutex<Option<String>>,
 }
 
 impl Shared {
@@ -239,6 +263,7 @@ impl Bus {
             state_tx,
             reconnect_budget: config.reconnect.budget,
             link_losses: AtomicU64::new(0),
+            fatal: std::sync::Mutex::new(None),
         });
 
         let actor = Actor {
@@ -335,6 +360,14 @@ impl BusHandle {
             0 => None,
             raw => Some(raw),
         }
+    }
+
+    /// The connect error this bus stopped on because retrying cannot fix it
+    /// (a secure-only interface without credentials, a refused KNXnet/IP
+    /// Secure password; issue #182). The state is then
+    /// [`BusState::Closed`].
+    pub fn fatal_error(&self) -> Option<String> {
+        self.shared.fatal.lock().ok().and_then(|g| g.clone())
     }
 
     /// The current connection status.
@@ -563,6 +596,17 @@ impl Actor {
                             self.shared.set_state(BusState::Reconnecting);
                         }
                     }
+                }
+                Err(err) if err.is_fatal() => {
+                    // Retrying cannot help (issue #182): stop, and let the
+                    // command report this error instead of a later timeout.
+                    tracing::debug!("bus connect failed for good: {err}");
+                    record_fatal(&err);
+                    if let Ok(mut slot) = self.shared.fatal.lock() {
+                        *slot = Some(err.to_string());
+                    }
+                    self.shared.set_state(BusState::Closed);
+                    return;
                 }
                 Err(err) => {
                     if matches!(err, TransportError::NoMoreConnections) {

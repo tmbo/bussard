@@ -580,10 +580,15 @@ print `N tunnels, M in use` when the interface reports its slots. A bussard writ
 never retries into a full interface, so the refusal happens before anything is
 sent to a device.
 
+On a KNXnet/IP Secure interface each slot is bound to a tunnelling user. With
+`--keyring` bussard picks a user whose slot is free; with `--secure-user` the
+slot is fixed by the user you name, so pick one Home Assistant does not hold.
+
 ## Known limitations
 
 - **KNX Secure: Data Secure tool access, verified on a physical device;
-  KNXnet/IP Secure not implemented.** `bussard` can program a KNX Data Secure
+  KNXnet/IP Secure tunnelling implemented, not yet run against real
+  hardware.** `bussard` can program a KNX Data Secure
   device through its tool key (`--keyring <file.knxkeys>` with
   `BUSSARD_KEYRING_PASSWORD`, or `--tool-key` for tests) on `flash` and
   `apply`, and read one back with `describe`, `plan` and `reconstruct`;
@@ -605,10 +610,24 @@ sent to a device.
   with `--keyring`, [#172](https://github.com/tmbo/bussard/issues/172)) runs
   against the knx-sim secured group object; the group-address CCM nonce is
   confirmed by the capture's broadcast S-A_Sync frames, but no secured group
-  telegram of a real device has been verified yet. KNXnet/IP Secure
-  (encrypted tunnel sessions to a Secure-only interface) is not implemented; a
-  Secure-only interface refuses `bussard`. Phase B of
-  [issue #71](https://github.com/tmbo/bussard/issues/71) tracks it.
+  telegram of a real device has been verified yet.
+- **KNXnet/IP Secure tunnelling** ([#71](https://github.com/tmbo/bussard/issues/71)
+  Phase B). A secure-only interface needs a tunnelling user: `--keyring`
+  (automatic, see the [reference](reference.md#knxnetip-secure-tunnelling)) or
+  `--secure-user <id> --secure-password-env <VAR>`. Without either, bussard
+  refuses at once and names the cause instead of retrying
+  ([#182](https://github.com/tmbo/bussard/issues/182)). The frame layouts, the
+  DIBs and the interface's authentication MAC are checked against an ETS
+  capture of the Jung interface, and the whole path (flash of a Data Secure
+  device inside a secure tunnel, wrong password, reconnect) runs against the
+  knx-sim secure interface; the first session against real hardware is still
+  to come. Start with a read-only `monitor --keyring` against the interface
+  before any write. What the wire cannot yet confirm: the MAC input of the
+  wrapped frames (a mismatch shows as a refused authentication, never as a
+  wrong write) and the interface's idle timeout (bussard sends a keepalive
+  every 30 s). Secure routing (multicast) is not implemented. The tunnel
+  slots on a secure interface belong to users: each ETS tunnelling user has
+  its own tunnel address, and bussard picks a free one from the keyring.
 
 ## See also
 

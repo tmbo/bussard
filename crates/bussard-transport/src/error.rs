@@ -89,6 +89,59 @@ pub enum TransportError {
     #[error("connection is closed")]
     Closed,
 
+    /// The interface only accepts KNXnet/IP Secure tunnelling and bussard has no
+    /// credentials for it (issue #182). Fatal: retrying cannot help.
+    #[error(
+        "interface {gateway} requires KNXnet/IP Secure (secure tunnelling only) and {reason}. \
+         Pass --keyring <file.knxkeys> (password in BUSSARD_KEYRING_PASSWORD) exported from the \
+         ETS project that holds the interface's tunnelling users, or --secure-user <id> \
+         --secure-password-env <VAR>"
+    )]
+    SecureRequired {
+        /// The gateway that refused the plain tunnel.
+        gateway: SocketAddrV4,
+        /// Why no secure session was attempted.
+        reason: String,
+    },
+
+    /// The interface refused the tunnelling user's password (SESSION_STATUS
+    /// `STATUS_AUTHENTICATION_FAILED`). Fatal: retrying cannot help.
+    #[error(
+        "KNXnet/IP Secure: interface {gateway} refused tunnelling user {user_id} ({status}); \
+         the user id or password does not match the interface's configuration (export a \
+         current keyring from ETS, or check --secure-user / --secure-password-env)"
+    )]
+    SecureAuthFailed {
+        /// The gateway.
+        gateway: SocketAddrV4,
+        /// The user id presented.
+        user_id: u8,
+        /// The status the interface answered.
+        status: bussard_secure::ipsecure::SessionStatus,
+    },
+
+    /// The interface did not prove it knows the device authentication code
+    /// from the keyring (SESSION_RESPONSE MAC mismatch). Fatal: either the
+    /// keyring is stale or this is not the expected interface.
+    #[error(
+        "KNXnet/IP Secure: interface {gateway} did not prove the device authentication code \
+         from the keyring (SESSION_RESPONSE MAC mismatch); the keyring is stale or {gateway} \
+         is not the interface it describes. Refusing to authenticate to it"
+    )]
+    SecureServerUnverified {
+        /// The gateway.
+        gateway: SocketAddrV4,
+    },
+
+    /// The interface ended the secure session (SESSION_STATUS close, timeout
+    /// or unauthenticated). Treated as a lost link and re-established.
+    #[error("KNXnet/IP Secure session ended by the gateway ({0})")]
+    SecureSessionEnded(bussard_secure::ipsecure::SessionStatus),
+
+    /// A KNXnet/IP Secure frame could not be built or checked.
+    #[error("KNXnet/IP Secure: {0}")]
+    Secure(#[from] bussard_secure::ipsecure::IpSecureError),
+
     /// An underlying socket I/O error.
     #[error("socket error{}: {source}", .peer.map(|p| format!(" ({p})")).unwrap_or_default())]
     Io {
@@ -105,6 +158,19 @@ pub enum TransportError {
 pub const E_NO_MORE_CONNECTIONS: u8 = 0x24;
 
 impl TransportError {
+    /// Whether retrying the connect cannot succeed without the operator
+    /// changing something: a secure-only interface without credentials, a
+    /// refused password, or an interface that failed its own authentication.
+    /// The bus actor stops reconnecting on these (issue #182).
+    pub fn is_fatal(&self) -> bool {
+        matches!(
+            self,
+            TransportError::SecureRequired { .. }
+                | TransportError::SecureAuthFailed { .. }
+                | TransportError::SecureServerUnverified { .. }
+        )
+    }
+
     /// Whether this error means the gateway link dropped in a way the bus
     /// recovers from on its own: a timeout, a failed heartbeat, a gateway
     /// disconnect or a socket error.
@@ -121,6 +187,7 @@ impl TransportError {
                 | TransportError::HeartbeatLost
                 | TransportError::Disconnected(_)
                 | TransportError::Io { .. }
+                | TransportError::SecureSessionEnded(_)
         )
     }
 }

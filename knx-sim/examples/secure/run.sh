@@ -32,6 +32,14 @@
 #             the parameter read-back (issue #170)
 #   NEGATIVE  reconstruct 1.1.2 with NO tool key  -> fails with the --keyring hint
 #
+# KNXnet/IP Secure (Phase B, issue #71; sim-ipsecure.yaml, a secure-only
+# interface on port 13694):
+#   NEGATIVE  scan without credentials -> refused at once, names KNXnet/IP Secure (#182)
+#   POSITIVE  flash 1.1.10 --keyring   -> secure tunnel picked from the keyring, Data
+#             Secure inside it, verified Loaded
+#   POSITIVE  describe 1.1.3 --secure-user 2 --secure-password-env -> explicit user
+#   NEGATIVE  a wrong tunnelling password -> refused, the sim reports the failed auth
+#
 # The negatives are checked on both sides: bussard must exit non-zero with an
 # actionable message, and the simulator's event log must show the refusal reason.
 #
@@ -522,6 +530,81 @@ else
 fi
 
 unset BUSSARD_FLASH_L4_TIMEOUT_MS
+kill "$SIM_PID" 2>/dev/null
+
+# --- KNXnet/IP Secure (Phase B, issue #71) ------------------------------------
+say "KNXnet/IP Secure: a secure-only interface"
+GATEWAY2="127.0.0.1:13694"
+SIM_LOG="$(mktemp -t knxsimipsec.XXXXXX)"
+RUST_LOG=${RUST_LOG:-info,knx_sim=debug} "$SERVE" "$HERE/sim-ipsecure.yaml" >"$SIM_LOG" 2>&1 &
+SIM_PID=$!
+trap 'kill "$SIM_PID" 2>/dev/null; exit 130' INT TERM
+sleep 2
+if ! kill -0 "$SIM_PID" 2>/dev/null; then
+  echo "secure simulator did not start:"; cat "$SIM_LOG"; exit 1
+fi
+ok "secure-only simulator listening on $GATEWAY2 (UDP + TCP, pid $SIM_PID)"
+export BUSSARD_KEYRING_PASSWORD="synthetic-keyring-pw"   # SYNTHETIC
+export SIM_TUNNEL_PW="tunnel-user-pw"                    # SYNTHETIC
+export SIM_WRONG_PW="not-the-tunnel-password"
+
+mark=$(log_mark)
+started=$SECONDS
+out="$("$BUSSARD" scan 1.1 --from 3 --to 3 --dir "$MODEL" --gateway "$GATEWAY2" 2>&1)"
+rc=$?
+if [[ $rc -ne 0 ]] && grep -q "requires KNXnet/IP Secure" <<<"$out" \
+   && ! grep -q "retrying" <<<"$out" && (( SECONDS - started < 10 )); then
+  ok "scan without credentials: refused at once, names KNXnet/IP Secure (exit $rc)"
+else
+  bad "scan against the secure-only interface did not fail fast and clearly (exit $rc)"
+  tail -4 <<<"$out" | sed 's/^/      /'
+fi
+if log_has "$mark" "plain CONNECT refused"; then
+  ok "the sim refused the plain CONNECT (0x22)"
+else
+  bad "the sim did not see a refused plain CONNECT"
+fi
+
+mark=$(log_mark)
+out="$("$BUSSARD" flash 1.1.10 --product "$PRODUCT" --application "$APP" --bcu-key FFFFFFFF \
+  --dir "$MODEL" --yes --gateway "$GATEWAY2" --keyring "$KEYRING" 2>&1)"
+if grep -q "is Loaded on 1.1.10" <<<"$out"; then
+  ok "flash 1.1.10 --keyring over the secure tunnel: verified Loaded"
+else
+  bad "flash 1.1.10 over the secure tunnel failed"; tail -8 <<<"$out" | sed 's/^/      /'
+fi
+if log_has "$mark" "SECURE session authenticated" && log_has "$mark" "SECURE recv scf=0x90"; then
+  ok "the sim authenticated the keyring's user 2 and saw Data Secure inside the session"
+else
+  bad "the sim saw no authenticated secure session or no Data Secure frames"
+  log_since "$mark" | grep -i "secure" | head -5 | sed 's/^/      /'
+fi
+
+mark=$(log_mark)
+out="$("$BUSSARD" describe 1.1.3 --json --dir "$MODEL" --gateway "$GATEWAY2" \
+  --secure-user 2 --secure-password-env SIM_TUNNEL_PW 2>/dev/null)"
+rc=$?
+if [[ $rc -eq 0 ]] && grep -q '"object_type"' <<<"$out"; then
+  ok "describe 1.1.3 with --secure-user 2: read the plain device through the secure tunnel"
+else
+  bad "describe 1.1.3 with an explicit secure user failed (exit $rc)"; tail -4 <<<"$out" | sed 's/^/      /'
+fi
+
+mark=$(log_mark)
+out="$("$BUSSARD" describe 1.1.3 --dir "$MODEL" --gateway "$GATEWAY2" \
+  --secure-user 2 --secure-password-env SIM_WRONG_PW 2>&1)"
+rc=$?
+if [[ $rc -ne 0 ]] && grep -q "refused tunnelling user 2" <<<"$out"; then
+  ok "a wrong tunnelling password: refused with the user named (exit $rc)"
+else
+  bad "a wrong tunnelling password did not fail cleanly (exit $rc)"; tail -4 <<<"$out" | sed 's/^/      /'
+fi
+if log_has "$mark" "SECURE authentication refused"; then
+  ok "the sim refused the authentication"
+else
+  bad "the sim did not report the refused authentication"
+fi
+unset BUSSARD_KEYRING_PASSWORD SIM_TUNNEL_PW SIM_WRONG_PW
 
 # --- Verdict ----------------------------------------------------------------
 kill "$SIM_PID" 2>/dev/null
@@ -534,4 +617,6 @@ fi
 rm -f "$SIM_LOG"
 echo "  KNX Data Secure conformance loop OK: tool-access flash to verified Loaded,"
 echo "  both CCM modes, negatives refused on both sides, plain path unchanged,"
-echo "  secured group read/write/monitor on 1/2/3, PID 54 secured senders"
+echo "  secured group read/write/monitor on 1/2/3, PID 54 secured senders,"
+echo "  KNXnet/IP Secure tunnelling (keyring and explicit user, secure-only"
+echo "  refusal, wrong password)"

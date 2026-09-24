@@ -116,6 +116,87 @@ impl TunnelReconnect {
     }
 }
 
+/// Interval of the KNXnet/IP Secure session keepalive (a wrapped
+/// SESSION_STATUS `STATUS_KEEPALIVE`). The server drops an idle session after
+/// its session timeout (60 s in the KNX specification); every 30 s keeps well
+/// inside that with one lost keepalive to spare.
+pub const SECURE_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Timeout for the KNXnet/IP Secure probe (SEARCH_REQUEST_EXTENDED) that
+/// decides between a plain and a secure tunnel.
+pub const SECURE_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The credentials of one KNXnet/IP Secure tunnelling user (issue #71 Phase
+/// B): the user id and password, plus what the keyring says about the
+/// interface.
+///
+/// The passwords stay passwords until the transport has picked the user it
+/// will present: each PBKDF2 derivation costs tens of milliseconds and a
+/// keyring lists every tunnelling user of the interface.
+///
+/// `Debug` redacts the secrets; the type is not serializable.
+#[derive(Clone, PartialEq, Eq)]
+pub struct SecureUser {
+    /// The user id presented in SESSION_AUTHENTICATE (1 = management, 2..
+    /// tunnelling users).
+    pub user_id: u8,
+    /// The user password (key = PBKDF2 with `user-password.1.secure.ip.knx.org`).
+    pub password: bussard_secure::Password,
+    /// The interface's device authentication code (key = PBKDF2 with
+    /// `device-authentication-code.1.secure.ip.knx.org`). With it the client
+    /// verifies the SESSION_RESPONSE MAC (the interface proves its identity);
+    /// without it the check is skipped with a warning.
+    pub device_authentication_code: Option<bussard_secure::Password>,
+    /// The tunnel individual address the keyring binds this user to (the
+    /// interface assigns it on CONNECT), if known.
+    pub tunnel_ia: Option<u16>,
+    /// The individual address of the interface (the keyring's `Host`), if
+    /// known. Used to pick the user for the gateway actually reached.
+    pub host_ia: Option<u16>,
+}
+
+impl std::fmt::Debug for SecureUser {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecureUser")
+            .field("user_id", &self.user_id)
+            .field("password", &"<redacted>")
+            .field(
+                "device_authentication_code",
+                &self
+                    .device_authentication_code
+                    .as_ref()
+                    .map(|_| "<redacted>"),
+            )
+            .field("tunnel_ia", &self.tunnel_ia)
+            .field("host_ia", &self.host_ia)
+            .finish()
+    }
+}
+
+/// Where the KNXnet/IP Secure credentials came from, which decides when the
+/// tunnel goes secure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecureSource {
+    /// From a keyring: go secure only when the gateway's own individual
+    /// address matches a keyring interface (`Host`) and the gateway advertises
+    /// KNXnet/IP Secure; otherwise stay plain.
+    Keyring,
+    /// From explicit flags (`--secure-user`/`--secure-password-env`): always
+    /// open a secure session with the single given user.
+    Explicit,
+}
+
+/// KNXnet/IP Secure tunnelling configuration: the candidate users and how
+/// they were supplied.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SecureTunnelConfig {
+    /// The candidate users. With [`SecureSource::Keyring`] the transport picks
+    /// one whose `host_ia` is the gateway and whose tunnel slot is free.
+    pub users: Vec<SecureUser>,
+    /// Where the users came from.
+    pub source: SecureSource,
+}
+
 /// Which transport to use.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransportKind {
@@ -143,6 +224,10 @@ pub struct ConnectionConfig {
     /// How a tunnel re-establishes itself after the gateway link is lost.
     /// Ignored for routing.
     pub reconnect: TunnelReconnect,
+    /// KNXnet/IP Secure tunnelling credentials, if any (issue #71 Phase B).
+    /// `None` keeps the plain UDP tunnel; a secure-only interface then fails
+    /// fast with [`TransportError::SecureRequired`](crate::TransportError::SecureRequired).
+    pub secure: Option<SecureTunnelConfig>,
 }
 
 impl ConnectionConfig {
@@ -154,6 +239,7 @@ impl ConnectionConfig {
             multicast: SocketAddrV4::new(DEFAULT_MULTICAST, DEFAULT_PORT),
             local_interface: Ipv4Addr::UNSPECIFIED,
             reconnect: TunnelReconnect::default(),
+            secure: None,
         }
     }
 
@@ -166,7 +252,14 @@ impl ConnectionConfig {
             multicast: SocketAddrV4::new(DEFAULT_MULTICAST, DEFAULT_PORT),
             local_interface: Ipv4Addr::UNSPECIFIED,
             reconnect: TunnelReconnect::default(),
+            secure: None,
         }
+    }
+
+    /// This configuration with KNXnet/IP Secure tunnelling credentials.
+    pub fn with_secure(mut self, secure: Option<SecureTunnelConfig>) -> Self {
+        self.secure = secure;
+        self
     }
 
     /// This configuration with a different tunnel re-establish policy.
