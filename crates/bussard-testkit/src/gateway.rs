@@ -92,6 +92,19 @@ pub enum Verdict {
 /// A fault-injection hook; see [`GatewayBuilder::intercept`].
 type Interceptor = Box<dyn FnMut(&Inbound<'_>) -> Verdict + Send>;
 
+/// Decides the `L_Data.con` for one client frame; see
+/// [`GatewayBuilder::confirm_with`]. `on_line` says whether a device of the
+/// line sits at the frame's individual destination (always `false` for a group
+/// frame). `Some(true)` is a positive con, `Some(false)` a negative one, `None`
+/// sends none.
+type ConfirmHook = Box<dyn FnMut(&CemiFrame, bool) -> Option<bool> + Send>;
+
+/// The delay between a client request and its `L_Data.con` that
+/// [`GatewayBuilder::confirmations`] uses. The live interface confirmed within
+/// 20-45 ms (negative con 22-45 ms after the request, positive 20-30 ms; wire
+/// log 1.1.5, 2026-09-24, issue #45); 30 ms sits inside both ranges.
+pub const CONFIRMATION_DELAY: Duration = Duration::from_millis(30);
+
 /// A snapshot of what the gateway has seen.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GatewayStats {
@@ -133,6 +146,7 @@ pub struct GatewayBuilder {
     devices: Vec<MockDevice>,
     outage: Option<Outage>,
     interceptors: Vec<Interceptor>,
+    confirm: Option<(Duration, ConfirmHook)>,
 }
 
 impl Default for GatewayBuilder {
@@ -151,6 +165,7 @@ impl Default for GatewayBuilder {
             devices: Vec::new(),
             outage: None,
             interceptors: Vec::new(),
+            confirm: None,
         }
     }
 }
@@ -255,6 +270,39 @@ impl GatewayBuilder {
         self
     }
 
+    /// Report `L_Data.con`s the way a real interface does (issue #45): after
+    /// [`CONFIRMATION_DELAY`], a **negative** con (error bit set) for a frame to
+    /// an individual address no device of the line sits at, and a positive con
+    /// for every other frame. Without this call (or [`confirm_with`]) the
+    /// gateway sends no confirmations at all, which models an interface that
+    /// does not report them.
+    ///
+    /// [`confirm_with`]: GatewayBuilder::confirm_with
+    pub fn confirmations(self) -> Self {
+        self.confirm_with(CONFIRMATION_DELAY, |frame, on_line| {
+            match frame.individual_destination() {
+                Some(_) => Some(on_line),
+                None => Some(true),
+            }
+        })
+    }
+
+    /// Send an `L_Data.con` `delay` after each client frame, as `hook` decides.
+    /// `hook` gets the frame and whether a device of the line sits at its
+    /// individual destination (`false` for a group frame) and returns
+    /// `Some(true)` for a positive con, `Some(false)` for a negative one and
+    /// `None` for none. The con echoes the request with the message code
+    /// `L_Data.con` and, for a negative one, the control field's error bit set.
+    /// It is pushed asynchronously, so the device line's answers are not held
+    /// back by the delay.
+    pub fn confirm_with<F>(mut self, delay: Duration, hook: F) -> Self
+    where
+        F: FnMut(&CemiFrame, bool) -> Option<bool> + Send + 'static,
+    {
+        self.confirm = Some((delay, Box::new(hook)));
+        self
+    }
+
     /// Put a device on the line.
     pub fn device(mut self, device: MockDevice) -> Self {
         self.devices.push(device);
@@ -293,6 +341,7 @@ impl GatewayBuilder {
             once_done: Arc::new(AtomicBool::new(false)),
             responders: Mutex::new(self.responders),
             interceptors: Mutex::new(self.interceptors),
+            confirm: Mutex::new(self.confirm),
             line: Arc::clone(&line),
             sent: Arc::clone(&sent),
             stats: stats_tx,
@@ -488,6 +537,8 @@ struct Server {
     responders: Mutex<Vec<Responder>>,
     // Likewise.
     interceptors: Mutex<Vec<Interceptor>>,
+    // Likewise.
+    confirm: Mutex<Option<(Duration, ConfirmHook)>>,
     line: Arc<Mutex<Vec<MockDevice>>>,
     sent: Arc<Mutex<Vec<CemiFrame>>>,
     stats: watch::Sender<GatewayStats>,
@@ -782,6 +833,8 @@ impl Server {
             }
         }
 
+        self.schedule_confirmation(&tr.cemi);
+
         let mut replies = Vec::new();
         if let Ok(mut responders) = self.responders.lock() {
             for responder in responders.iter_mut() {
@@ -793,6 +846,38 @@ impl Server {
         }
         let replies = self.line_output(&tr.cemi);
         self.push_out(from, replies).await
+    }
+
+    /// Schedules the `L_Data.con` of one client frame, if confirmations are
+    /// configured: a task sleeps the delay and pushes it through the command
+    /// channel, so the gateway keeps serving meanwhile.
+    fn schedule_confirmation(&self, cemi: &CemiFrame) {
+        let on_line = match cemi.individual_destination() {
+            Some(dest) => self
+                .line
+                .lock()
+                .map(|line| line.iter().any(|d| d.address == dest))
+                .unwrap_or(false),
+            None => false,
+        };
+        let Ok(mut confirm) = self.confirm.lock() else {
+            return;
+        };
+        let Some((delay, hook)) = confirm.as_mut() else {
+            return;
+        };
+        let Some(positive) = hook(cemi, on_line) else {
+            return;
+        };
+        let mut con = cemi.clone();
+        con.message_code = MessageCode::LDataCon;
+        con.control1.error = !positive;
+        let delay = *delay;
+        let tx = self.cmd_tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            let _ = tx.send(Command::Push(con));
+        });
     }
 
     /// The device line's answers to one client frame.

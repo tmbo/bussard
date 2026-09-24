@@ -697,6 +697,7 @@ async fn silent_device_is_absent() -> TestResult {
         ack_timeout: Duration::from_millis(50),
         max_repetitions: 1,
         response_timeout: Duration::from_millis(50),
+        absent_on_negative_confirmation: false,
     };
     let mut dev = DeviceConnection::connect_with(&mut bus, target, source, fast).await?;
 

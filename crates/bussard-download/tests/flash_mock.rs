@@ -386,6 +386,15 @@ struct DeviceState {
     /// `T_Connect` clears it and the device serves normally again — this is the
     /// spec-required single reconnect the tool must perform.
     l4_dead_after_master_reset: bool,
+    /// How long the device stays silent after a master reset, measured from the
+    /// first frame the tool sends it afterwards; meanwhile the gateway reports
+    /// a negative `L_Data.con` for every frame to it, as a real interface does
+    /// for a rebooting device (issue #45). Only with [`start_gateway_booting`].
+    boot_silence: Option<Duration>,
+    /// While the device is booting: until when.
+    booting_until: Option<std::time::Instant>,
+    /// Negative `L_Data.con`s the gateway reported for the booting device.
+    negative_cons: usize,
     /// Count of factory resets (master-reset `A_Restart`, erase code 7) seen.
     factory_resets_seen: usize,
     /// `control_writes` at the moment the first factory reset arrived, so a test
@@ -1318,6 +1327,12 @@ fn on_numbered(
             return Tk::Silent;
         };
         s.exchanges_this_connection += 1;
+        // Still booting (issue #45): nothing answers yet.
+        if s.booting_until
+            .is_some_and(|until| std::time::Instant::now() < until)
+        {
+            return Tk::Silent;
+        }
         // Master-reset reboot: once a master reset was accepted
         // on this connection, the device is rebooting and answers
         // nothing more until a fresh T_Connect. The tool must
@@ -1442,6 +1457,41 @@ fn on_numbered(
 /// tears down the old Transport — which sends a DISCONNECT_REQUEST — before
 /// opening a fresh one, and the follow-up CONNECT_REQUEST must be answered.
 async fn start_gateway(state: &Shared) -> TestResult<MockGateway> {
+    start_gateway_with(state, false).await
+}
+
+/// [`start_gateway`] behind an interface that reports a negative `L_Data.con`
+/// for every frame to the device while it boots after a master reset (see
+/// [`DeviceState::boot_silence`]) and no confirmation otherwise.
+async fn start_gateway_booting(state: &Shared) -> TestResult<MockGateway> {
+    start_gateway_with(state, true).await
+}
+
+/// The negative-con decision of [`start_gateway_booting`] for one client frame.
+fn boot_confirmation(
+    state: &Shared,
+    address: bussard_model::IndividualAddress,
+    frame: &CemiFrame,
+) -> Option<bool> {
+    if frame.individual_destination() != Some(address) {
+        return None;
+    }
+    let mut s = state.lock().ok()?;
+    let now = std::time::Instant::now();
+    if s.booting_until.is_none()
+        && s.l4_dead_after_master_reset
+        && let Some(boot) = s.boot_silence
+    {
+        s.booting_until = Some(now + boot);
+    }
+    if s.booting_until.is_some_and(|until| now < until) {
+        s.negative_cons += 1;
+        return Some(false);
+    }
+    None
+}
+
+async fn start_gateway_with(state: &Shared, booting: bool) -> TestResult<MockGateway> {
     let address = ia("1.1.4")?;
     let hook_state = Arc::clone(state);
     let control_state = Arc::clone(state);
@@ -1449,14 +1499,21 @@ async fn start_gateway(state: &Shared) -> TestResult<MockGateway> {
     let device = MockDevice::new(address)
         .with_hook(move |dev, apci, data| Some(on_numbered(&hook_state, dev, apci, data)))
         .with_control_hook(move |_, kind| on_control(&control_state, kind));
-    Ok(MockGateway::builder()
+    let builder = MockGateway::builder()
         .channel(CHANNEL)
         .keep_serving()
         .idle_timeout(Duration::from_secs(30))
         .intercept(move |inbound| intercept(&intercept_state, address, inbound))
-        .device(device)
-        .start()
-        .await?)
+        .device(device);
+    let builder = if booting {
+        let con_state = Arc::clone(state);
+        builder.confirm_with(bussard_testkit::CONFIRMATION_DELAY, move |frame, _| {
+            boot_confirmation(&con_state, address, frame)
+        })
+    } else {
+        builder
+    };
+    Ok(builder.start().await?)
 }
 
 /// A factory-fresh System B device: objects 0..3, application object Unloaded.
@@ -1520,6 +1577,9 @@ fn fresh_device(fault: Fault) -> Shared {
         confirmed_restarts_seen: 0,
         last_master_reset_payload: Vec::new(),
         l4_dead_after_master_reset: false,
+        boot_silence: None,
+        booting_until: None,
+        negative_cons: 0,
         saw_basic_restart: false,
         revert_app_on_next_connect: false,
         wipe_app_on_master_reset: false,
@@ -1736,6 +1796,7 @@ fn fast_timeouts() -> bussard_mgmt::Timeouts {
         ack_timeout: Duration::from_millis(50),
         max_repetitions: 1,
         response_timeout: Duration::from_millis(50),
+        absent_on_negative_confirmation: false,
     }
 }
 
@@ -3216,6 +3277,73 @@ async fn flash_master_reset_reconnects_and_reaches_loaded() -> TestResult {
     unsafe {
         std::env::remove_var("BUSSARD_FLASH_REBOOT_WAIT_MS");
     }
+    Ok(())
+}
+
+/// The #168 readiness probe after a master reset, behind an interface that
+/// reports negative `L_Data.con`s (issue #45): while the device boots, every
+/// probe frame comes back negatively confirmed. The probe must read that as
+/// "not up yet" and poll again, never as "absent", and the flash completes once
+/// the device answers.
+#[tokio::test]
+async fn test_flash_reboot_probe_treats_negative_con_as_not_up_yet() -> TestResult {
+    // SAFETY of env: nextest runs this test in its own process; the var only
+    // bounds the post-reboot poll (first probe after 1.5 s, then every 0.5 s).
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "4000");
+    }
+    let state = fresh_device(Fault::None);
+    // Booting 0.7 s from the first post-reset probe: the first probe is
+    // negatively confirmed and times out, a later one finds the device up.
+    {
+        let mut s = lock(&state)?;
+        s.boot_silence = Some(Duration::from_millis(700));
+        // The KNX Virtual master reset of `app_with_master_reset`: a bare
+        // A_Restart that reboots the device.
+        s.wipe_app_on_master_reset = true;
+    }
+    let gw = start_gateway_booting(&state).await?;
+    let (handle, _actor) = bussard_bus::Bus::connect(ConnectionConfig::tunnel(gw.addr()));
+    handle.wait_connected(Duration::from_secs(5)).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source = bussard_bus::ops::group_source(&handle);
+    let plan = plan_flash(
+        &app_with_master_reset()?,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    let connector = LeaseConnector::plain(handle.clone(), target, source, None);
+    let mut session = Session::open_with_key(connector, None).await?;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await?;
+    let _ = session.into_disconnect().await;
+    let _ = handle.close().await;
+    drop(gw);
+
+    assert!(outcome.ok(), "the flash must complete: {outcome:?}");
+    assert_eq!(outcome.load_state, LoadState::Loaded);
+    let s = lock(&state)?;
+    assert!(
+        s.negative_cons >= 1,
+        "the booting device was negatively confirmed at least once"
+    );
+    assert!(s.booting_until.is_some(), "the boot window was entered");
+    // The original connection, at least one unanswered probe, the probe that
+    // found the device up and the session reconnect.
+    assert!(
+        s.connects >= 3,
+        "the probe polled past the negative con (connects = {})",
+        s.connects
+    );
     Ok(())
 }
 
@@ -5106,6 +5234,7 @@ async fn flash_secure_master_reset_reconnect_keeps_the_sequence_monotonic() -> T
         ack_timeout: Duration::from_millis(300),
         max_repetitions: 1,
         response_timeout: Duration::from_millis(300),
+        absent_on_negative_confirmation: false,
     };
     let connector =
         LeaseConnector::secure(handle.clone(), target, source, Some(budget), MOCK_TOOL_KEY);
@@ -5981,6 +6110,7 @@ async fn secure_flash_across_slow_security_layer(
         ack_timeout: Duration::from_millis(300),
         max_repetitions: 1,
         response_timeout: Duration::from_millis(300),
+        absent_on_negative_confirmation: false,
     };
     let connector =
         LeaseConnector::secure(handle.clone(), target, source, Some(budget), MOCK_TOOL_KEY);
@@ -6140,6 +6270,7 @@ async fn flash_across_restart_outage(
         ack_timeout: Duration::from_millis(300),
         max_repetitions: 1,
         response_timeout: Duration::from_millis(300),
+        absent_on_negative_confirmation: false,
     };
     let (connector, key) = if secure {
         (

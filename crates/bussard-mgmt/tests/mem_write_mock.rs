@@ -315,6 +315,7 @@ fn fast() -> Timeouts {
         ack_timeout: Duration::from_millis(60),
         max_repetitions: 1,
         response_timeout: Duration::from_millis(200),
+        absent_on_negative_confirmation: false,
     }
 }
 

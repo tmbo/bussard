@@ -572,6 +572,28 @@ impl CemiFrame {
         }
     }
 
+    /// Whether this is a **negative** `L_Data.con`: the interface's local
+    /// confirmation of one of our requests with the confirm/error flag set
+    /// (control field 1, bit 0), meaning the frame was not acknowledged on the
+    /// medium after the interface's own link-layer repetitions.
+    ///
+    /// An individually addressed frame to an address no device answers at gets
+    /// no TP1 `IACK`, so an interface that reports confirmations answers it with
+    /// a negative con 22-45 ms after the request (live wire log 1.1.5,
+    /// 2026-09-24 18:39:58.045, `2e 00 95 ...`; issue #45). A positive con, an
+    /// indication and a request are all `false`.
+    pub fn is_negative_confirmation(&self) -> bool {
+        self.message_code == MessageCode::LDataCon && self.control1.error
+    }
+
+    /// Whether this frame is the `L_Data.con` of a request sent from `source`
+    /// to the individual address `target` (positive or negative).
+    pub fn confirms(&self, source: IndividualAddress, target: IndividualAddress) -> bool {
+        self.message_code == MessageCode::LDataCon
+            && self.source == source
+            && self.individual_destination() == Some(target)
+    }
+
     /// Builds an `L_Data.req` carrying a raw transport-control frame (no APDU)
     /// to an **individual** address.
     ///
@@ -891,6 +913,33 @@ mod tests {
     }
     fn ia(s: &str) -> IndividualAddress {
         s.parse().expect("valid fixture address")
+    }
+
+    #[test]
+    fn test_is_negative_confirmation_reads_the_con_error_bit()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // The shape of the live negative con (ctrl1 0x95: error bit set) for a
+        // T_Connect from 1.1.250 to the absent 1.1.5 (issue #45).
+        let negative = [0x2e, 0x00, 0x95, 0x60, 0x11, 0xfa, 0x11, 0x05, 0x00, 0x80];
+        let frame = CemiFrame::decode(&negative)?;
+        assert!(frame.is_negative_confirmation());
+        assert!(frame.confirms(ia("1.1.250"), ia("1.1.5")));
+        assert!(!frame.confirms(ia("1.1.250"), ia("1.1.6")));
+        assert!(!frame.confirms(ia("1.1.5"), ia("1.1.250")));
+
+        let mut positive = negative;
+        positive[2] = 0x94;
+        let frame = CemiFrame::decode(&positive)?;
+        assert!(!frame.is_negative_confirmation());
+        assert!(frame.confirms(ia("1.1.250"), ia("1.1.5")));
+
+        // An indication with the bit set is not a confirmation at all.
+        let mut indication = negative;
+        indication[0] = 0x29;
+        let frame = CemiFrame::decode(&indication)?;
+        assert!(!frame.is_negative_confirmation());
+        assert!(!frame.confirms(ia("1.1.250"), ia("1.1.5")));
+        Ok(())
     }
 
     #[test]

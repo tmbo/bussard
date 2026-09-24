@@ -48,6 +48,10 @@ const REBOOT_PROBE_TIMEOUTS: bussard_mgmt::Timeouts = bussard_mgmt::Timeouts {
     ack_timeout: std::time::Duration::from_millis(400),
     max_repetitions: 0,
     response_timeout: std::time::Duration::from_millis(400),
+    // A negative L_Data.con during a reboot means "not up yet", not
+    // absent: the probe keeps its window and the poll retries (issue
+    // #212 owns using the con to shorten this).
+    absent_on_negative_confirmation: false,
 };
 
 /// Environment variable that overrides [`MASTER_RESET_REBOOT_WAIT`] with a

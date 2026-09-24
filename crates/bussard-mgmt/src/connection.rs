@@ -199,6 +199,19 @@ pub struct Timeouts {
     pub max_repetitions: u32,
     /// How long to wait for the device's response NDT.
     pub response_timeout: Duration,
+    /// Whether a negative `L_Data.con` for our `T_Connect` or first numbered
+    /// telegram classifies the target as absent at once
+    /// ([`MgmtError::NotConfirmed`]) instead of waiting out `ack_timeout` and
+    /// the repetitions (issue #45).
+    ///
+    /// Only a presence probe wants this: [`Timeouts::discovery`] sets it,
+    /// every other budget leaves it `false`, so a programming session or a
+    /// post-restart readiness probe keeps its timeout-and-retry behaviour
+    /// (there a negative con means "not up yet", issue #212). It only acts
+    /// before the first acknowledged exchange, and only when the interface
+    /// reports confirmations at all: a gateway that never sends a negative con
+    /// falls back to the ACK timeout automatically.
+    pub absent_on_negative_confirmation: bool,
 }
 
 impl Default for Timeouts {
@@ -207,6 +220,7 @@ impl Default for Timeouts {
             ack_timeout: ACK_TIMEOUT,
             max_repetitions: MAX_REPETITIONS,
             response_timeout: RESPONSE_TIMEOUT,
+            absent_on_negative_confirmation: false,
         }
     }
 }
@@ -215,11 +229,18 @@ impl Timeouts {
     /// A tight budget for discovery: a short per-attempt timeout with a single
     /// retry, so an absent address is ruled out in roughly `2 × ack_timeout`.
     /// Used by `bussard scan`.
+    ///
+    /// On an interface that reports negative `L_Data.con`s an absent address is
+    /// ruled out by the first one instead, in tens of milliseconds
+    /// ([`Timeouts::absent_on_negative_confirmation`], issue #45). The timeouts
+    /// themselves are unchanged: they stay the fallback for gateways that send
+    /// no negative confirmations and the window a present device answers in.
     pub fn discovery() -> Self {
         Timeouts {
             ack_timeout: Duration::from_millis(1500),
             max_repetitions: 1,
             response_timeout: Duration::from_millis(1500),
+            absent_on_negative_confirmation: true,
         }
     }
 
@@ -235,6 +256,9 @@ impl Timeouts {
             ack_timeout: PROBE_TIMEOUT,
             max_repetitions: 0,
             response_timeout: PROBE_TIMEOUT,
+            // The own-address probe must see a loop-back gateway's echoes, not
+            // classify on confirmations; it keeps its single short window.
+            absent_on_negative_confirmation: false,
         }
     }
 }
@@ -486,6 +510,15 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
                 AckOutcome::Disconnected => {
                     self.closed = true;
                     return Err(self.silence_error(SilenceKind::Disconnected));
+                }
+                AckOutcome::NotConfirmed => {
+                    // The interface reported that the medium did not
+                    // acknowledge our frame: nobody is at this address. As on
+                    // a timeout, nothing is left to tear down.
+                    self.closed = true;
+                    return Err(MgmtError::NotConfirmed {
+                        address: self.target,
+                    });
                 }
                 AckOutcome::Timeout => {
                     if attempt >= self.timeouts.max_repetitions {
@@ -1123,6 +1156,9 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
                 Err(_elapsed) => return AckOutcome::Timeout,
             };
             let frame = stamped.frame;
+            if self.is_absence_confirmation(&frame) {
+                return AckOutcome::NotConfirmed;
+            }
             if frame.source != self.target || frame.individual_destination() != Some(self.source) {
                 continue;
             }
@@ -1185,6 +1221,22 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
         }
     }
 
+    /// Whether `frame` is a negative `L_Data.con` for one of our frames to the
+    /// target that, under this session's budget, proves the target absent.
+    ///
+    /// Opt-in ([`Timeouts::absent_on_negative_confirmation`]) and only before
+    /// the first acknowledged exchange: the con of our `T_Connect` or of the
+    /// first numbered telegram. Later in a session a negative con is ignored
+    /// and the ACK timeout and repetitions run as before. The con echoes our
+    /// own addressing (source = us, destination = target), which is why it is
+    /// checked before the peer filter.
+    fn is_absence_confirmation(&self, frame: &CemiFrame) -> bool {
+        self.timeouts.absent_on_negative_confirmation
+            && self.numbered_exchanges == 0
+            && frame.is_negative_confirmation()
+            && frame.confirms(self.source, self.target)
+    }
+
     fn map_recv_error(&mut self, err: MgmtError) -> MgmtError {
         self.closed = true;
         match err {
@@ -1235,6 +1287,9 @@ enum AckOutcome {
     Disconnected,
     /// No `T_ACK` arrived within the timeout.
     Timeout,
+    /// The interface reported a negative `L_Data.con` for our frame and the
+    /// budget classifies that as absent (issue #45).
+    NotConfirmed,
 }
 
 /// Extracts the (apci, data) from a management frame, tolerating any APDU shape.
@@ -1644,6 +1699,7 @@ mod tests {
             ack_timeout: Duration::from_millis(50),
             max_repetitions: 1,
             response_timeout: Duration::from_millis(50),
+            absent_on_negative_confirmation: false,
         }
     }
 
@@ -2551,6 +2607,157 @@ mod tests {
         assert!(
             matches!(err, MgmtError::Secure { .. }),
             "a wrong-MAC secured response must be rejected, got {err:?}"
+        );
+        Ok(())
+    }
+
+    // --- negative L_Data.con (issue #45) ---
+
+    /// The interface's `L_Data.con` of our tool→device frame with `octet`,
+    /// negative (error bit set) or positive.
+    fn con_for_dev(octet: u8, negative: bool) -> CemiFrame {
+        let mut frame = CemiFrame::t_control(dev(), tool(), octet);
+        frame.message_code = bussard_transport::cemi::MessageCode::LDataCon;
+        frame.control1.error = negative;
+        frame
+    }
+
+    /// [`fast`] with the discovery opt-in set.
+    fn fast_discovery() -> Timeouts {
+        Timeouts {
+            absent_on_negative_confirmation: true,
+            ..fast()
+        }
+    }
+
+    fn ndt_sends(bus: &ScriptedBus) -> usize {
+        bus.sent
+            .iter()
+            .filter(|f| matches!(tpci::classify(f.tpci_octet()), TpciKind::NumberedData(_)))
+            .count()
+    }
+
+    #[tokio::test]
+    async fn test_request_negative_con_classifies_absent_under_discovery()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // The live shape: the T_Connect to an absent address comes back as a
+        // negative con. Under the discovery budget that is "absent" at once:
+        // no ACK wait, no repetition.
+        let mut bus = ScriptedBus::new(vec![con_for_dev(tpci::T_CONNECT, true)]);
+        let mut l4 =
+            Layer4Connection::connect_with(&mut bus, dev(), tool(), fast_discovery()).await?;
+        let started = std::time::Instant::now();
+        let err = l4
+            .request(0x300, &[])
+            .await
+            .err()
+            .ok_or("a negative con must fail the request")?;
+        assert!(
+            matches!(err, MgmtError::NotConfirmed { address } if address == dev()),
+            "got {err:?}"
+        );
+        assert!(!err.device_present(), "a negative con means absent");
+        assert!(
+            started.elapsed() < fast().ack_timeout,
+            "classified before the ACK timeout"
+        );
+        drop(l4);
+        assert_eq!(ndt_sends(&bus), 1, "no repetition after a negative con");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_request_negative_con_ignored_without_opt_in()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // Every budget but discovery (a programming session, the #168
+        // post-restart readiness probe): the negative con changes nothing, the
+        // ACK timeout and repetitions run as before and the error is the old
+        // NoResponse.
+        let mut bus = ScriptedBus::new(vec![con_for_dev(tpci::T_CONNECT, true)]);
+        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast()).await?;
+        let err = l4
+            .request(0x300, &[])
+            .await
+            .err()
+            .ok_or("a silent device must fail the request")?;
+        assert!(matches!(err, MgmtError::NoResponse { .. }), "got {err:?}");
+        drop(l4);
+        assert_eq!(ndt_sends(&bus), 2, "one initial send plus one retransmit");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_request_negative_con_then_answer_is_not_absent_for_readiness_probe()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // A rebooting device: the interface reports a negative con, then the
+        // device comes up and answers. A budget without the opt-in (the #168
+        // readiness probe) must treat the con as "not up yet" and take the
+        // answer, never report the device absent.
+        let inbox = vec![
+            con_for_dev(tpci::T_CONNECT, true),
+            control_from_dev(tpci::t_ack(0)),
+            ndt_from_dev(0, 0x340, &[0x07, 0xB0]),
+        ];
+        let mut bus = ScriptedBus::new(inbox);
+        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast()).await?;
+        let (apci, data) = l4.request(0x300, &[]).await?;
+        assert_eq!((apci, data), (0x340, vec![0x07, 0xB0]));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_request_positive_con_keeps_the_present_path()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // A present device under discovery: positive cons for both our frames,
+        // then the ACK and the answer. Result and sent frames are those of the
+        // no-con happy path.
+        let inbox = vec![
+            con_for_dev(tpci::T_CONNECT, false),
+            con_for_dev(tpci::ndt(0), false),
+            control_from_dev(tpci::t_ack(0)),
+            ndt_from_dev(0, 0x340, &[0x07, 0xB0]),
+        ];
+        let mut bus = ScriptedBus::new(inbox);
+        let mut l4 =
+            Layer4Connection::connect_with(&mut bus, dev(), tool(), fast_discovery()).await?;
+        let (apci, data) = l4.request(0x300, &[]).await?;
+        assert_eq!((apci, data), (0x340, vec![0x07, 0xB0]));
+        drop(l4);
+
+        let mut plain = ScriptedBus::new(vec![
+            control_from_dev(tpci::t_ack(0)),
+            ndt_from_dev(0, 0x340, &[0x07, 0xB0]),
+        ]);
+        let mut l4 = Layer4Connection::connect_with(&mut plain, dev(), tool(), fast()).await?;
+        l4.request(0x300, &[]).await?;
+        drop(l4);
+        assert_eq!(bus.sent, plain.sent, "byte-identical frames");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_request_negative_con_after_first_exchange_is_ignored()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // Only the connect and the first numbered telegram classify: once the
+        // device has acknowledged something it is present, and a later
+        // negative con (a lost frame mid-session) falls back to the ACK wait.
+        let inbox = vec![
+            control_from_dev(tpci::t_ack(0)),
+            ndt_from_dev(0, 0x340, &[0x07, 0xB0]),
+            con_for_dev(tpci::ndt(1), true),
+        ];
+        let mut bus = ScriptedBus::new(inbox);
+        let mut l4 =
+            Layer4Connection::connect_with(&mut bus, dev(), tool(), fast_discovery()).await?;
+        l4.request(0x300, &[]).await?;
+        let err = l4
+            .request(0x300, &[])
+            .await
+            .err()
+            .ok_or("the second request goes unanswered")?;
+        assert!(
+            !matches!(err, MgmtError::NotConfirmed { .. }),
+            "a mid-session negative con must not classify absent: {err:?}"
         );
         Ok(())
     }

@@ -188,6 +188,7 @@ async fn verify_fails_when_address_not_applied() -> TestResult {
         ack_timeout: Duration::from_millis(50),
         max_repetitions: 1,
         response_timeout: Duration::from_millis(50),
+        absent_on_negative_confirmation: false,
     };
     let mut dev = DeviceConnection::connect_with(&mut bus, target, source, fast).await?;
     let err = must_fail(dev.device_descriptor().await)?;
