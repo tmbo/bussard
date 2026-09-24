@@ -491,7 +491,13 @@ async fn assign_on_bus(
     write_individual_address(channel, source, target.address)
         .await
         .context("broadcasting the new individual address")?;
-    let verified = assign_cmd::verify_assignment(service, source, target.address).await?;
+    let verified = assign_cmd::verify_assignment(
+        service,
+        source,
+        target.address,
+        &assign_cmd::VerifyKey::default(),
+    )
+    .await?;
     if verified.programming_mode_cleared {
         eprintln!(
             "  cleared programming mode on {} (PID_PROGMODE = 0)",

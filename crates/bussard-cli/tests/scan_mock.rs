@@ -314,3 +314,176 @@ fn scan_with_skip_address_check_runs_despite_a_shared_source_address() -> TestRe
     );
     Ok(())
 }
+
+// --- KNX Data Secure identity reads (issue #203) ---
+
+/// The synthetic keyring's made-up password.
+const KEYRING_PASSWORD: &str = "synthetic-keyring-pw";
+
+/// The committed SYNTHETIC keyring; it lists one device, 1.1.10.
+fn keyring_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../knx-sim/examples/secure/synthetic.knxkeys")
+}
+
+/// The tool key the synthetic keyring holds for 1.1.10 (never printed).
+fn keyring_tool_key() -> TestResult<[u8; 16]> {
+    let xml = std::fs::read_to_string(keyring_path())?;
+    let keyring = bussard_project::parse_keyring(&xml, KEYRING_PASSWORD)?;
+    let key = keyring
+        .tool_key(ia("1.1.10")?)
+        .ok_or("the synthetic keyring lists no tool key for 1.1.10")?;
+    Ok(*key.bytes())
+}
+
+/// A Data Secure-activated device: plain descriptor reads get mask FFFF.
+fn secure_device(addr: &str, key: [u8; 16]) -> TestResult<MockDevice> {
+    Ok(MockDevice::new(ia(addr)?)
+        .with_mask(0x07B0)
+        .with_manufacturer(0x0083)
+        .with_order_info(b"MDT-SECURE")
+        .with_data_secure(key))
+}
+
+/// Runs a scan of 1.1.1–12 against `port`, with `extra` arguments.
+fn run_scan(
+    port: u16,
+    model_dir: &std::path::Path,
+    extra: &[&str],
+) -> TestResult<std::process::Output> {
+    let mut args = vec![
+        "scan".to_string(),
+        "1.1".to_string(),
+        "--from".to_string(),
+        "1".to_string(),
+        "--to".to_string(),
+        "12".to_string(),
+        "--dir".to_string(),
+        model_dir
+            .to_str()
+            .ok_or("temp path is not UTF-8")?
+            .to_string(),
+        "--gateway".to_string(),
+        format!("127.0.0.1:{port}"),
+    ];
+    args.extend(extra.iter().map(|s| s.to_string()));
+    Ok(Command::new(env!("CARGO_BIN_EXE_bussard"))
+        .args(&args)
+        .env("BUSSARD_SCAN_DISCOVERY_MS", "60")
+        .env("BUSSARD_KEYRING_PASSWORD", KEYRING_PASSWORD)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()?)
+}
+
+/// The requests the plain device 1.1.4 saw.
+fn plain_requests(gw: &MockGateway) -> TestResult<Vec<(u16, Vec<u8>)>> {
+    Ok(gw
+        .devices()?
+        .into_iter()
+        .find(|d| d.address.to_string() == "1.1.4")
+        .map(|d| d.requests)
+        .ok_or("1.1.4 is on the line")?)
+}
+
+/// A keyring-listed activated device is read over A_SecureData and shows its
+/// real mask; an activated device the keyring does not list is labelled; a
+/// plain device sees exactly the frames it saw before (issue #203).
+#[test]
+fn test_scan_secure_devices_are_read_secured_or_labelled() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let key = keyring_tool_key()?;
+    // 1.1.12's key is not in the keyring (a synthetic stand-in).
+    let other_key = [0x24u8; 16];
+    let lines = || -> TestResult<Vec<MockDevice>> {
+        Ok(vec![
+            device("1.1.4", 0x07B0, 0x0083, b"MDT-JAL0410")?,
+            secure_device("1.1.10", key)?,
+            secure_device("1.1.12", other_key)?,
+        ])
+    };
+    let tmp = std::env::temp_dir().join(format!("bussard-scan-secure-{}", std::process::id()));
+    let model_dir = tmp.join("knx");
+    write_model(&model_dir)?;
+    let keyring = keyring_path();
+    let keyring = keyring.to_str().ok_or("keyring path is not UTF-8")?;
+
+    // With the keyring, JSON.
+    let gw = start_gateway(&rt, lines()?)?;
+    let output = run_scan(gw.port(), &model_dir, &["--keyring", keyring, "--json"])?;
+    let with_keyring = plain_requests(&gw)?;
+    let secure_devices = gw.devices()?;
+    drop(gw);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "scan should exit 0; stderr:\n{stderr}"
+    );
+    let stdout = String::from_utf8(output.stdout)?;
+    let json: serde_json::Value = serde_json::from_str(&stdout)
+        .map_err(|e| format!("scan --json must emit valid JSON: {e}\n{stdout}"))?;
+    let found = json["found"].as_array().ok_or("found array")?;
+    let row = |addr: &str| {
+        found
+            .iter()
+            .find(|d| d["address"] == addr)
+            .ok_or(format!("{addr} present: {stdout}"))
+    };
+    let d10 = row("1.1.10")?;
+    assert_eq!(
+        d10["mask"], "07B0",
+        "the secured read shows the real mask: {stdout}"
+    );
+    assert_eq!(d10["secure"], "activated");
+    assert_eq!(d10["manufacturer"], "MDT");
+    assert_eq!(d10["order"], "MDT-SECURE");
+    let d12 = row("1.1.12")?;
+    assert_eq!(d12["mask"], "FFFF");
+    assert_eq!(d12["secure"], "activated_no_key");
+    let d4 = row("1.1.4")?;
+    assert!(
+        d4.get("secure").is_none(),
+        "a plain row is unchanged: {stdout}"
+    );
+    assert_eq!(d4["mask"], "07B0");
+    let dev10 = secure_devices
+        .iter()
+        .find(|d| d.address.to_string() == "1.1.10")
+        .ok_or("1.1.10 on the line")?;
+    assert!(
+        dev10.secured_requests > 0,
+        "1.1.10 was read over A_SecureData"
+    );
+    assert_eq!(
+        dev10.plain_refused, 0,
+        "no plain read reached the listed device"
+    );
+    let dev12 = secure_devices
+        .iter()
+        .find(|d| d.address.to_string() == "1.1.12")
+        .ok_or("1.1.12 on the line")?;
+    assert_eq!(
+        dev12.plain_refused, 0,
+        "after the FFFF descriptor the probe sends no refused plain reads"
+    );
+
+    // Without the keyring, text: the plain device's frames are identical and
+    // both activated devices are labelled.
+    let gw = start_gateway(&rt, lines()?)?;
+    let output = run_scan(gw.port(), &model_dir, &[])?;
+    let without_keyring = plain_requests(&gw)?;
+    drop(gw);
+    let _ = std::fs::remove_dir_all(&tmp);
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout)?;
+    assert_eq!(
+        with_keyring, without_keyring,
+        "the plain device sees byte-identical requests with and without a keyring"
+    );
+    let labelled = text
+        .lines()
+        .filter(|l| l.contains("Data Secure activated (mask hidden), no tool key in the keyring"))
+        .count();
+    assert_eq!(labelled, 2, "both activated devices are labelled:\n{text}");
+    Ok(())
+}

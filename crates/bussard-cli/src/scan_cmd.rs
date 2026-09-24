@@ -18,15 +18,15 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use anyhow::anyhow;
-use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO, PID_SERIAL_NUMBER};
+use anyhow::{Context, anyhow};
 use bussard_mgmt::{DeviceConnection, L4Channel, Timeouts, manufacturers, system_type};
 use bussard_model::IndividualAddress;
-use bussard_service::{
-    Authorize, BusService, Device, L4Options, ServiceError, SourcePolicy, WritePolicy,
-};
+use bussard_secure::Key16;
+use bussard_service::identity::{self, Identity, SecureStatus};
+use bussard_service::secure::ToolKeys;
+use bussard_service::{Authorize, BusService, L4Options, SourcePolicy, WritePolicy};
 
-use crate::assign_cmd::{clean_ascii, hex};
+use crate::assign_cmd::hex;
 use crate::conn_cmd::{
     ConnOverrides, checked_source_or_close, load_model_required, open_service, resolve_config,
 };
@@ -65,6 +65,38 @@ pub(crate) struct Found {
     pub(crate) manufacturer_id: Option<u16>,
     pub(crate) serial: Option<Vec<u8>>,
     pub(crate) order: Option<String>,
+    /// How the device was identified with respect to KNX Data Secure
+    /// (issue #203).
+    pub(crate) secure: SecureStatus,
+}
+
+impl Found {
+    /// A found device from a probe's identity and status.
+    fn from_identity(identity: Identity, secure: SecureStatus) -> Found {
+        Found {
+            address: identity.address,
+            mask: identity.mask,
+            manufacturer_id: identity.manufacturer_id,
+            serial: identity.serial,
+            order: identity.order,
+            secure,
+        }
+    }
+}
+
+/// The row label of a Data Secure-activated device (issue #203); `None` for a
+/// plain device.
+pub(crate) fn secure_label(status: SecureStatus) -> Option<&'static str> {
+    match status {
+        SecureStatus::Plain => None,
+        SecureStatus::Activated => Some("Data Secure activated"),
+        SecureStatus::ActivatedNoKey => {
+            Some("Data Secure activated (mask hidden), no tool key in the keyring")
+        }
+        SecureStatus::KeyRefused => {
+            Some("Data Secure activated (mask hidden), the keyring's tool key was not accepted")
+        }
+    }
 }
 
 /// The final cross-referenced report.
@@ -90,6 +122,7 @@ pub fn run(
     to: u8,
     dir: &Path,
     json: bool,
+    keyring: Option<&Path>,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
     let (area, line_no) = parse_line(line)?;
@@ -101,6 +134,18 @@ pub fn run(
     // A management command: a present-but-broken model is a hard error.
     let model = load_model_required(dir)?;
     let config = resolve_config(model.as_ref(), &overrides)?;
+    // The keyring's tool keys (issue #203): a listed device is identified over
+    // A_SecureData. Decrypted once for the whole sweep.
+    let keys = ToolKeys::load(crate::secure_key::ToolKeySource {
+        keyring,
+        tool_key: None,
+    })
+    .context("loading the keyring for scan")?;
+    // Only a listed address gets a key; any other device is read in the clear
+    // (an activated one then shows the hidden mask and its label).
+    let key_for = |addr: IndividualAddress| -> Option<Key16> {
+        keys.lists(addr).then(|| keys.tool_key(addr)).flatten()
+    };
 
     // Up-front estimate (address count × per-address budget).
     let count = to as u32 - from as u32 + 1;
@@ -124,7 +169,7 @@ pub fn run(
         // through to a clean close so the gateway tunnel slot is released
         // rather than leaked (~2 min hold) — see issue #31.
         let found = tokio::select! {
-            found = sweep(&service, area, line_no, from, to, source, json) => found,
+            found = sweep(&service, area, line_no, from, to, source, json, &key_for) => found,
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\ninterrupted; closing the bus connection");
                 Vec::new()
@@ -148,7 +193,9 @@ pub fn run(
 ///
 /// One [`Bus`] is shared for the whole sweep; each probe leases it for its
 /// connection-oriented session (TP1 etiquette — one open connection at a time),
-/// releasing the lease before the next address.
+/// releasing the lease before the next address. `key_for` gives the tool key
+/// of a keyring-listed address.
+#[allow(clippy::too_many_arguments)] // one call site; the sweep's inputs, spelled out
 async fn sweep(
     service: &BusService,
     area: u8,
@@ -157,6 +204,7 @@ async fn sweep(
     to: u8,
     source: IndividualAddress,
     json: bool,
+    key_for: &dyn Fn(IndividualAddress) -> Option<Key16>,
 ) -> Vec<Found> {
     let mut found = Vec::new();
     // Progress to stderr (issue #147): a line rewritten in place, or the live
@@ -173,7 +221,7 @@ async fn sweep(
         };
         display.probing(addr, found.len());
 
-        if let Some(dev) = probe(service, addr, source).await {
+        if let Some(dev) = probe_with_key(service, addr, source, key_for(addr)).await {
             found.push(dev);
         }
         display.advance();
@@ -186,77 +234,41 @@ async fn sweep(
     found
 }
 
-/// Probes one address: lease the bus, connect, read the descriptor, and — if
-/// present — best-effort read manufacturer/serial/order. Returns `None` for an
-/// absent or refusing device. The lease is released when the [`LeaseChannel`] is
-/// dropped at the end of this function.
+/// The session options of a probe: the sweep's checked source, the discovery
+/// timeouts, and no authorize at connect (the probe authorizes after the
+/// descriptor read, as ETS does).
+pub(crate) fn probe_options(source: IndividualAddress) -> L4Options {
+    L4Options {
+        source: SourcePolicy::Known(source),
+        timeouts: discovery_timeouts(),
+        authorize: Authorize::Skip,
+        ..L4Options::default()
+    }
+}
+
+/// Probes one address in the clear: connect, read the descriptor, and, if
+/// present, best-effort read manufacturer/serial/order. Returns `None` for an
+/// absent or refusing device. A Data Secure-activated device answers mask
+/// `FFFF`; the row is then [`SecureStatus::ActivatedNoKey`].
 pub(crate) async fn probe(
     service: &BusService,
     addr: IndividualAddress,
     source: IndividualAddress,
 ) -> Option<Found> {
-    // The authorize comes after the descriptor read (below), so the session
-    // opens without it.
-    let options = L4Options {
-        source: SourcePolicy::Known(source),
-        timeouts: discovery_timeouts(),
-        authorize: Authorize::Skip,
-        ..L4Options::default()
-    };
-    service
-        .with_device(addr, &options, async |dev| {
-            Ok::<_, ServiceError>(identify(dev, addr).await)
-        })
-        .await
-        .ok()
-        .flatten()
+    probe_with_key(service, addr, source, None).await
 }
 
-/// The reads of [`probe`] on its open session.
-async fn identify(dev: &mut Device, addr: IndividualAddress) -> Option<Found> {
-    let mask = match dev.device_descriptor().await {
-        Ok(mask) => mask,
-        Err(err) => {
-            // Present-but-refusing devices are logged but not listed as found
-            // (we could not read a descriptor). Absent devices are silent.
-            if err.device_present() {
-                tracing::debug!("{addr} is present but refused the descriptor read: {err}");
-            }
-            return None;
-        }
-    };
-
-    // Authorize the session with the free-access key, exactly as ETS does right
-    // after the descriptor read (issue #52 finding #1). Done only for a present
-    // device (after the descriptor read succeeds), so an absent address is not
-    // charged an extra authorize timeout. Best-effort: a device that does not
-    // implement authorize is tolerated; a genuine access-denied is logged and the
-    // probe continues (scan reads are best-effort regardless).
-    if let Err(err) = dev.authorize(bussard_mgmt::apci::FREE_ACCESS_KEY).await {
-        tracing::debug!("{addr} authorize (free access) did not grant: {err}");
-    }
-
-    // Best-effort property reads: any failure just leaves the field empty.
-    let manufacturer_id = read_u16(dev, PID_MANUFACTURER_ID).await;
-    let serial = dev
-        .read_device_property(PID_SERIAL_NUMBER)
-        .await
-        .ok()
-        .filter(|v| !v.is_empty());
-    let order = dev
-        .read_device_property(PID_ORDER_INFO)
-        .await
-        .ok()
-        .map(|v| clean_ascii(&v))
-        .filter(|s| !s.is_empty());
-
-    Some(Found {
-        address: addr,
-        mask,
-        manufacturer_id,
-        serial,
-        order,
-    })
+/// [`probe`] with the address's tool key, if the keyring lists it: the
+/// descriptor and the property reads then ride A_SecureData (issue #203).
+pub(crate) async fn probe_with_key(
+    service: &BusService,
+    addr: IndividualAddress,
+    source: IndividualAddress,
+    tool_key: Option<Key16>,
+) -> Option<Found> {
+    let (identity, status) =
+        identity::probe(service, addr, &probe_options(source), tool_key).await?;
+    Some(Found::from_identity(identity, status))
 }
 
 /// Reads a 2-byte property as a `u16`, returning `None` on any failure.
@@ -344,11 +356,19 @@ fn print_table(report: &Report) {
             } else {
                 "known".to_string()
             };
+            let system = if f.secure.activated() && f.mask == identity::HIDDEN_MASK {
+                "-"
+            } else {
+                system_type(f.mask)
+            };
+            let label = secure_label(f.secure)
+                .map(|l| format!("  {l}"))
+                .unwrap_or_default();
             println!(
-                "{:<9}  {:04X}    {:<9}  {:<14}  {:<16}  {}",
+                "{:<9}  {:04X}    {:<9}  {:<14}  {:<16}  {}{label}",
                 f.address.to_string(),
                 f.mask,
-                system_type(f.mask),
+                system,
                 manufacturer,
                 order,
                 status
@@ -393,7 +413,7 @@ fn print_json(report: &Report) -> anyhow::Result<()> {
             } else {
                 json!("known")
             };
-            json!({
+            let mut row = json!({
                 "address": f.address.to_string(),
                 "mask": format!("{:04X}", f.mask),
                 "system_type": system_type(f.mask),
@@ -402,7 +422,13 @@ fn print_json(report: &Report) -> anyhow::Result<()> {
                 "serial": f.serial.as_deref().map(hex),
                 "order": f.order,
                 "model_status": status,
-            })
+            });
+            // A plain device's row is unchanged; an activated one says how it
+            // was read (issue #203).
+            if f.secure.activated() {
+                row["secure"] = json!(f.secure.as_str());
+            }
+            row
         })
         .collect();
 
@@ -438,12 +464,6 @@ mod tests {
         assert!(parse_line("1").is_err());
         assert!(parse_line("16.1").is_err());
         assert!(parse_line("x.y").is_err());
-    }
-
-    #[test]
-    fn clean_ascii_strips_control_and_nul() {
-        assert_eq!(clean_ascii(b"ABB/S 1.1\0\0"), "ABB/S 1.1");
-        assert_eq!(clean_ascii(&[0x01, 0x02]), "");
     }
 
     #[test]
@@ -509,6 +529,7 @@ mod tests {
             manufacturer_id: None,
             serial: None,
             order: None,
+            secure: SecureStatus::Plain,
         }
     }
 

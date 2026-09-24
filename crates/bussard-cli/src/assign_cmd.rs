@@ -24,6 +24,9 @@ use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO, PID_SERIAL_NUMBER}
 use bussard_mgmt::{broadcast, manufacturers, system_type, write_individual_address};
 use bussard_model::schema::{Device, Product};
 use bussard_model::{IndividualAddress, LoadedDevice, Model};
+use bussard_secure::{Key16, SequenceHighWater};
+use bussard_service::identity::{HIDDEN_MASK, SecureStatus};
+use bussard_service::secure::ToolKeys;
 use bussard_service::{
     Authorize, BusService, Device as ServiceDevice, L4Options, ServiceError, SourcePolicy,
     WritePolicy,
@@ -56,6 +59,7 @@ pub fn run(
     dir: &Path,
     yes: bool,
     allow_remote_gateway: bool,
+    tool_key_source: crate::secure_key::ToolKeySource<'_>,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
     // Safety envelope (issue #74): a non-TTY assign must opt in with --yes; an
@@ -76,6 +80,9 @@ pub fn run(
     // gateway unless the operator opted in.
     enforce_write_gate(&config, allow_remote_gateway)?;
     let gateway = gateway_display(&config);
+    // The tool keys for the post-write verification (issue #203), loaded
+    // before the bus is touched so a wrong keyring password fails fast.
+    let keys = ToolKeys::load(tool_key_source).context("loading the tool key for assign")?;
 
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
@@ -90,7 +97,7 @@ pub fn run(
         // clean `service.close()` so the gateway tunnel slot is released rather
         // than leaked — see issue #31.
         let result = tokio::select! {
-            result = assign_flow(&service, source, address, yes, &gateway, model.as_ref(), dir) => result,
+            result = assign_flow(&service, source, address, yes, &gateway, model.as_ref(), dir, &keys) => result,
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\ninterrupted; closing the bus connection");
                 Err(anyhow!("assign interrupted by Ctrl-C"))
@@ -159,6 +166,7 @@ pub(crate) fn load_model_optional(
 /// The end-to-end assign flow over the bus actor. Each connectionless broadcast
 /// and each connection-oriented verify leases the bus for the duration of that
 /// step (releasing it in between), so other bus consumers keep observing.
+#[allow(clippy::too_many_arguments)] // one call site; the flow's inputs, spelled out
 async fn assign_flow(
     service: &BusService,
     source: IndividualAddress,
@@ -167,6 +175,7 @@ async fn assign_flow(
     gateway: &str,
     model: Option<&Model>,
     dir: &Path,
+    keys: &ToolKeys,
 ) -> anyhow::Result<ExitCode> {
     // 2. Find exactly one device in programming mode.
     let current = match wait_for_single_device(service, source).await? {
@@ -187,6 +196,11 @@ async fn assign_flow(
         },
     };
 
+    // The tool key the verification needs, if the device is Data Secure
+    // activated (issue #203): the keyring lists devices by IA, so look for the
+    // new address first and fall back to the old one.
+    let verify_key = VerifyKey::resolve(keys, current, target);
+
     // 4. Confirm.
     if !confirm_assignment(current, target, yes, gateway)? {
         eprintln!("aborted; no address was written.");
@@ -200,9 +214,16 @@ async fn assign_flow(
         .context("broadcasting the new individual address")?;
     eprintln!("wrote {target}; verifying…");
 
-    let verified = verify_assignment(service, source, target).await?;
+    let verified = verify_assignment(service, source, target, &verify_key).await?;
     if verified.programming_mode_cleared {
         eprintln!("cleared programming mode on {target} (PID_PROGMODE = 0), as ETS does.");
+    }
+    if verify_key.from_old_address {
+        eprintln!(
+            "note: the keyring lists this device under its old address {current}; the tool key \
+             was taken from that entry. Re-export the keyring from ETS after the address \
+             change so it lists {target} (bussard looks tool keys up by individual address)."
+        );
     }
 
     // 5a. Programming-mode persistence check (fallback). We already cleared
@@ -220,8 +241,17 @@ async fn assign_flow(
 
     // 7. Next steps.
     println!("assigned {current} → {target}");
-    if let Some(mask) = verified.mask {
-        println!("  verified: mask {mask:#06x} ({})", system_type(mask));
+    match (verified.secure, verified.mask) {
+        (SecureStatus::ActivatedNoKey, _) => println!(
+            "  verified: the device answers at {target}; Data Secure activated (mask hidden), \
+             no tool key in the keyring (pass --keyring with a current export, or --tool-key)"
+        ),
+        (SecureStatus::Activated, Some(mask)) => println!(
+            "  verified (secured): mask {mask:#06x} ({}); Data Secure activated",
+            system_type(mask)
+        ),
+        (_, Some(mask)) => println!("  verified: mask {mask:#06x} ({})", system_type(mask)),
+        (_, None) => {}
     }
     if let Some(serial) = &verified.serial {
         println!("  serial: {}", hex(serial));
@@ -469,6 +499,46 @@ pub(crate) struct Verified {
     /// write was not confirmed or the device refused it — the broadcast-based
     /// persistence check then remains the fallback.
     pub(crate) programming_mode_cleared: bool,
+    /// How the device was verified with respect to KNX Data Secure
+    /// (issue #203). With [`SecureStatus::ActivatedNoKey`] the mask is `None`:
+    /// the plain read only returned the hidden `FFFF`.
+    pub(crate) secure: SecureStatus,
+}
+
+/// The tool key for the post-write verification of a Data Secure-activated
+/// device (issue #203).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct VerifyKey {
+    /// The tool key, or `None` to verify in the clear.
+    pub(crate) tool_key: Option<Key16>,
+    /// The key came from the keyring entry of the OLD address: the keyring must
+    /// be re-exported after the address change.
+    pub(crate) from_old_address: bool,
+}
+
+impl VerifyKey {
+    /// Picks the key for a device moving from `current` to `target`: a raw
+    /// `--tool-key` wins; else the keyring entry of `target`; else the entry of
+    /// `current` (flagged, since the keyring is then stale); else none.
+    pub(crate) fn resolve(
+        keys: &ToolKeys,
+        current: IndividualAddress,
+        target: IndividualAddress,
+    ) -> VerifyKey {
+        if keys.raw_given() || keys.lists(target) {
+            return VerifyKey {
+                tool_key: keys.tool_key(target),
+                from_old_address: false,
+            };
+        }
+        if keys.lists(current) {
+            return VerifyKey {
+                tool_key: keys.tool_key(current),
+                from_old_address: true,
+            };
+        }
+        VerifyKey::default()
+    }
 }
 
 /// Verifies the write by connecting to `target` and reading its descriptor plus
@@ -476,13 +546,17 @@ pub(crate) struct Verified {
 ///
 /// A device descriptor read is the proof the address took: if it fails, the
 /// write did not land (or the device dropped programming mode without applying
-/// it), which is a clear error naming both the old and new addresses.
+/// it), which is a clear error naming both the old and new addresses. With a
+/// tool key every read rides A_SecureData; without one, a Data
+/// Secure-activated device answers mask `FFFF`, which verifies the address
+/// but not the mask (issue #203).
 pub(crate) async fn verify_assignment(
     service: &BusService,
     source: IndividualAddress,
     target: IndividualAddress,
+    key: &VerifyKey,
 ) -> anyhow::Result<Verified> {
-    verify_assignment_with(service, source, target, true).await
+    verify_assignment_with(service, source, target, true, key).await
 }
 
 /// [`verify_assignment`], with the explicit programming-mode clear optional:
@@ -493,17 +567,60 @@ pub(crate) async fn verify_assignment_with(
     source: IndividualAddress,
     target: IndividualAddress,
     clear_programming_mode: bool,
+    key: &VerifyKey,
+) -> anyhow::Result<Verified> {
+    let result = verify_session(service, source, target, clear_programming_mode, key).await;
+    let Err(secured_err) = result else {
+        return result;
+    };
+    if key.tool_key.is_none() || secured_err.downcast_ref::<ServiceError>().is_some() {
+        return Err(secured_err);
+    }
+    // The keyring listed the device but the secured read failed: a keyring
+    // entry for a device that is not activated (any more) answers in the
+    // clear. Accept a plain read with a real mask, and say so; otherwise the
+    // secured failure stands.
+    match verify_session(
+        service,
+        source,
+        target,
+        clear_programming_mode,
+        &VerifyKey::default(),
+    )
+    .await
+    {
+        Ok(verified) if verified.secure == SecureStatus::Plain => {
+            eprintln!(
+                "warning: {target} did not answer the secured read with its keyring tool key but \
+                 answers in the clear: it is not Data Secure-activated, or the keyring is stale"
+            );
+            Ok(verified)
+        }
+        _ => Err(secured_err),
+    }
+}
+
+/// One verification session, secured when `key` carries a tool key.
+async fn verify_session(
+    service: &BusService,
+    source: IndividualAddress,
+    target: IndividualAddress,
+    clear_programming_mode: bool,
+    key: &VerifyKey,
 ) -> anyhow::Result<Verified> {
     // Authorize comes after the descriptor read here (see below), so the
     // session opens without it.
+    let secured = key.tool_key.is_some();
     let options = L4Options {
         source: SourcePolicy::Known(source),
         authorize: Authorize::Skip,
+        tool_key: key.tool_key.clone(),
+        high_water: SequenceHighWater::new(),
         ..L4Options::default()
     };
     let session = service
         .with_device(target, &options, async |dev| {
-            Ok::<_, ServiceError>(read_back(dev, target, clear_programming_mode).await)
+            Ok::<_, ServiceError>(read_back(dev, target, clear_programming_mode, secured).await)
         })
         .await;
     match session {
@@ -517,13 +634,22 @@ pub(crate) async fn verify_assignment_with(
 }
 
 /// The read-back half of [`verify_assignment_with`], on the open session.
+/// `secured` says the session rides A_SecureData.
 async fn read_back(
     dev: &mut ServiceDevice,
     target: IndividualAddress,
     clear_programming_mode: bool,
+    secured: bool,
 ) -> anyhow::Result<Verified> {
     let mask = dev.device_descriptor().await.map_err(|err| {
-        if matches!(err, bussard_mgmt::MgmtError::Disconnected { .. }) {
+        if secured {
+            anyhow!(
+                "wrote {target} and connected, but the device did not answer the SECURED \
+                 descriptor read ({err}): either the tool key is not this device's, or the \
+                 device is not Data Secure-activated (retry without --keyring/--tool-key); the \
+                 assignment is unverified"
+            )
+        } else if matches!(err, bussard_mgmt::MgmtError::Disconnected { .. }) {
             anyhow!(
                 "wrote {target} and connected, but the device disconnected on the first read: \
                  typical for devices whose management is gated on a loaded application or a \
@@ -539,6 +665,15 @@ async fn read_back(
         }
     })?;
 
+    // A Data Secure-activated device read in the clear (issue #203): it
+    // answered at the new address, which verifies the write, but it hides its
+    // mask and drops every further plain read.
+    if !secured && mask == HIDDEN_MASK {
+        return Ok(Verified {
+            secure: SecureStatus::ActivatedNoKey,
+            ..Verified::default()
+        });
+    }
     // Authorize the session (free access), as ETS does after the descriptor read
     // (issue #52 finding #1). Best-effort here — the assignment was already
     // verified by the descriptor read; the property reads below are informational.
@@ -587,6 +722,11 @@ async fn read_back(
         serial,
         order,
         programming_mode_cleared,
+        secure: if secured {
+            SecureStatus::Activated
+        } else {
+            SecureStatus::Plain
+        },
     })
 }
 

@@ -16,10 +16,12 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use anyhow::{Context, anyhow, bail};
+use anyhow::{Context, bail};
 use bussard_bus::BusHandle;
-use bussard_mcp::tools_audit::{self, SampledTelegram};
+use bussard_mcp::tools_audit::{self, SampledTelegram, SecureProbe};
 use bussard_model::{IndividualAddress, Model};
+use bussard_service::identity::{self, HIDDEN_MASK};
+use bussard_service::secure::ToolKeys;
 use bussard_service::{BusService, WritePolicy};
 use bussard_transport::cemi::{Apdu, Destination, MessageCode};
 use bussard_transport::{BusConnection, ConnectionConfig, Transport, TransportKind};
@@ -28,7 +30,6 @@ use serde_json::{Value, json};
 use crate::conn_cmd::{
     ConnOverrides, checked_source_or_close, load_model_required, resolve_config,
 };
-use crate::secure_key::KEYRING_PASSWORD_ENV;
 
 /// Options for one `bussard audit` run.
 pub struct AuditOptions<'a> {
@@ -38,7 +39,8 @@ pub struct AuditOptions<'a> {
     pub live: bool,
     /// The traffic-sample window for `--live`.
     pub window: Duration,
-    /// A `.knxkeys` keyring to check Secure devices against.
+    /// A `.knxkeys` keyring to check Secure devices against; with `--live`
+    /// its tool keys probe them over KNX Data Secure (issue #203).
     pub keyring: Option<&'a Path>,
 }
 
@@ -56,17 +58,24 @@ pub fn run(
         );
     };
 
-    let keyring_devices = match options.keyring {
-        Some(path) => Some(keyring_devices(path)?),
-        None => None,
-    };
+    let keys = ToolKeys::load(crate::secure_key::ToolKeySource {
+        keyring: options.keyring,
+        tool_key: None,
+    })
+    .context("loading the keyring for audit")?;
+    let keyring_devices = keys.keyring_given().then(|| keys.listed());
     let mut report = tools_audit::static_report(&model, keyring_devices.as_deref());
 
     if options.live {
         let config = resolve_config(Some(&model), &overrides)?;
         let runtime = tokio::runtime::Runtime::new().context("starting the tokio runtime")?;
-        report["live"] =
-            runtime.block_on(live_report(&model, config, options.window, &overrides))?;
+        report["live"] = runtime.block_on(live_report(
+            &model,
+            config,
+            options.window,
+            &overrides,
+            &keys,
+        ))?;
     }
 
     if options.json {
@@ -77,27 +86,13 @@ pub fn run(
     Ok(ExitCode::SUCCESS)
 }
 
-/// Decrypts the keyring and lists the devices it holds a tool key for.
-fn keyring_devices(path: &Path) -> anyhow::Result<Vec<IndividualAddress>> {
-    let password = std::env::var(KEYRING_PASSWORD_ENV).map_err(|_| {
-        anyhow!(
-            "the keyring password must be set in the {KEYRING_PASSWORD_ENV} environment \
-             variable (never passed as a CLI argument)"
-        )
-    })?;
-    let xml = std::fs::read_to_string(path)
-        .with_context(|| format!("reading keyring {}", path.display()))?;
-    let keyring = bussard_project::parse_keyring(&xml, &password)
-        .with_context(|| format!("loading keyring {}", path.display()))?;
-    Ok(keyring.devices.iter().map(|d| d.ia).collect())
-}
-
 /// Gathers the live section: gateway description, traffic sample, scan delta.
 async fn live_report(
     model: &Model,
     config: ConnectionConfig,
     window: Duration,
     overrides: &ConnOverrides,
+    keys: &ToolKeys,
 ) -> anyhow::Result<Value> {
     // 1. The interface's own description: one UDP exchange, no tunnel slot.
     let is_tunnel = config.transport == TransportKind::Tunnel;
@@ -149,13 +144,14 @@ async fn live_report(
     //    runs after the sample, not before it, so listening starts as soon as
     //    the tunnel is up instead of after the probe's ~600 ms wait.
     let source = checked_source_or_close(&service, overrides).await?;
-    let scan = scan_model_devices(&service, model, source).await;
+    let (scan, secure) = scan_model_devices(&service, model, source, keys).await;
     let _ = handle.close().await;
 
     Ok(json!({
         "bus": { "state": "connected" },
         "gateway": gateway,
         "scan": scan,
+        "secure": tools_audit::secure_live_report(&secure),
         "traffic": traffic,
     }))
 }
@@ -196,18 +192,26 @@ async fn sample_traffic(handle: &BusHandle, window: Duration) -> Vec<SampledTele
     out
 }
 
-/// Probes every modelled device and reports the delta per line.
+/// Probes every modelled device and reports the delta per line, plus the
+/// KNX Data Secure probe of every Secure device (issue #203).
 ///
 /// Probes are sequential (one connection-oriented session at a time, TP1
-/// etiquette) and spaced by the MCP read limiter's minimum interval.
+/// etiquette) and spaced by the MCP read limiter's minimum interval. Each
+/// device gets the plain `scan` probe; a Data Secure device (one that answers
+/// mask `FFFF`, carries a `security:` block in the model, or is in the keyring)
+/// whose tool key the keyring holds is then probed secured, as `describe
+/// --keyring` reads it.
 async fn scan_model_devices(
     service: &bussard_service::BusService,
     model: &Model,
     source: IndividualAddress,
-) -> Value {
+    keys: &ToolKeys,
+) -> (Value, Vec<SecureProbe>) {
     let mut lines: BTreeMap<(u8, u8), Vec<Value>> = BTreeMap::new();
     let mut not_answering: BTreeMap<(u8, u8), Vec<Value>> = BTreeMap::new();
     let mut answered_count = 0usize;
+    let mut secure_probes = Vec::new();
+    let secured_options = crate::scan_cmd::probe_options(source);
 
     for (addr, loaded) in &model.devices {
         eprint!("\rprobing {addr}…   ");
@@ -215,32 +219,71 @@ async fn scan_model_devices(
         let found = crate::scan_cmd::probe(service, *addr, source).await;
         let key = (addr.area(), addr.line());
         let model_mask = loaded.device.product.as_ref().and_then(|p| p.mask.clone());
-        match found {
-            Some(f) => {
-                answered_count += 1;
-                let bus_mask = format!("{:04X}", f.mask);
-                let mismatch = model_mask
-                    .as_deref()
-                    .map(|m| {
-                        !m.trim()
-                            .trim_start_matches("0x")
-                            .eq_ignore_ascii_case(&bus_mask)
-                    })
-                    .unwrap_or(false);
-                lines.entry(key).or_default().push(json!({
-                    "address": addr.to_string(),
-                    "name": loaded.device.name,
-                    "mask": bus_mask,
-                    "model_mask": model_mask,
-                    "mask_mismatch": mismatch,
-                    "bussard_can": bussard_mgmt::MaskProfile::from_mask(f.mask).capabilities().summary(),
-                }));
-            }
-            None => not_answering.entry(key).or_default().push(json!({
+
+        let listed = keys.lists(*addr);
+        let plain_mask = found.as_ref().map(|f| f.mask);
+        let secure_candidate =
+            plain_mask == Some(HIDDEN_MASK) || listed || loaded.device.security.is_some();
+        let probe = if secure_candidate {
+            // A device that answered in the clear with a real mask is not
+            // activated; a secured probe would only time out.
+            let secured_mask = match keys.tool_key(*addr) {
+                Some(tool_key) if listed && plain_mask.is_none_or(|m| m == HIDDEN_MASK) => Some(
+                    identity::identify_secured(service, *addr, &secured_options, tool_key)
+                        .await
+                        .map(|id| id.mask),
+                ),
+                _ => None,
+            };
+            Some(SecureProbe {
+                address: *addr,
+                name: loaded.device.name.clone(),
+                in_keyring: keys.keyring_given().then_some(listed),
+                plain_mask,
+                secured_mask,
+            })
+        } else {
+            None
+        };
+
+        // The mask to report: the secured read's when there is one.
+        let bus_mask = probe
+            .as_ref()
+            .and_then(SecureProbe::mask)
+            .or(plain_mask.filter(|_| probe.is_none()));
+        let answered = plain_mask.is_some() || bus_mask.is_some();
+        if answered {
+            answered_count += 1;
+            let bus_mask_text = bus_mask.map(|m| format!("{m:04X}"));
+            let mismatch = match (model_mask.as_deref(), bus_mask_text.as_deref()) {
+                (Some(m), Some(bus)) => {
+                    !m.trim().trim_start_matches("0x").eq_ignore_ascii_case(bus)
+                }
+                _ => false,
+            };
+            let mut row = json!({
                 "address": addr.to_string(),
                 "name": loaded.device.name,
-            })),
+                "mask": bus_mask_text.unwrap_or_else(|| format!("{HIDDEN_MASK:04X}")),
+                "model_mask": model_mask,
+                "mask_mismatch": mismatch,
+                "bussard_can": match bus_mask {
+                    Some(m) => bussard_mgmt::MaskProfile::from_mask(m).capabilities().summary(),
+                    None => "unknown: Data Secure hides the mask (pass --keyring with its tool key)"
+                        .to_string(),
+                },
+            });
+            if let Some(p) = &probe {
+                row["secure"] = json!(p.status());
+            }
+            lines.entry(key).or_default().push(row);
+        } else {
+            not_answering.entry(key).or_default().push(json!({
+                "address": addr.to_string(),
+                "name": loaded.device.name,
+            }));
         }
+        secure_probes.extend(probe);
         // Pace like the MCP read limiter: never faster than one probe per
         // READ_MIN_INTERVAL.
         let elapsed = started.elapsed();
@@ -267,13 +310,14 @@ async fn scan_model_devices(
         })
         .collect();
 
-    json!({
+    let scan = json!({
         "probed": model.devices.len(),
         "answered": answered_count,
         "lines": per_line,
         "note": "only modelled addresses are probed; devices on the bus but not in the model \
                  show up as unknown sources in the traffic sample, or with `bussard scan`",
-    })
+    });
+    (scan, secure_probes)
 }
 
 /// Renders the text report from the audit JSON.
@@ -444,11 +488,16 @@ pub fn render_text(report: &Value) -> String {
                 } else {
                     String::new()
                 };
+                let secure = d["secure"]
+                    .as_str()
+                    .map(|status| format!(", Data Secure: {}", secure_phrase(status)))
+                    .unwrap_or_default();
                 line(format!(
-                    "    {} answered, mask {}{}",
+                    "    {} answered, mask {}{}{}",
                     text_or(&d["address"], "?"),
                     text_or(&d["mask"], "?"),
-                    mismatch
+                    mismatch,
+                    secure
                 ));
             }
             for d in array(&l["not_answering"]) {
@@ -456,6 +505,20 @@ pub fn render_text(report: &Value) -> String {
                     "    {} {} did NOT answer",
                     text_or(&d["address"], "?"),
                     text_or(&d["name"], "")
+                ));
+            }
+        }
+
+        let secure_live = array(&live["secure"]["devices"]);
+        if !secure_live.is_empty() {
+            line(String::new());
+            line("== KNX Secure (live) ==".to_string());
+            for d in secure_live {
+                line(format!(
+                    "  {} {}: {}",
+                    text_or(&d["address"], "?"),
+                    text_or(&d["name"], ""),
+                    secure_phrase(d["status"].as_str().unwrap_or("?"))
                 ));
             }
         }
@@ -493,6 +556,21 @@ pub fn render_text(report: &Value) -> String {
         );
     }
     out
+}
+
+/// The operator's words for a [`SecureProbe::status`] (issue #203).
+fn secure_phrase(status: &str) -> &'static str {
+    match status {
+        "reachable_secured" => "activated, reachable secured with the keyring's tool key",
+        "key_refused" => "activated, plain reads refused, the keyring's tool key was NOT accepted",
+        "not_in_keyring" => "activated, plain reads refused, not in keyring",
+        "plain_reads_refused" => {
+            "activated, plain reads refused (pass --keyring to probe it secured)"
+        }
+        "plain" => "not activated (answers in the clear)",
+        "not_answering" => "did not answer",
+        _ => "unknown",
+    }
 }
 
 /// A JSON string field, or `default` when null/absent.

@@ -41,7 +41,7 @@ use bussard_prod::{ApplicationProgram, ProductData, ResolvedComObject};
 use bussard_service::{BusService, WritePolicy};
 
 use crate::assign_cmd::{
-    Verified, allocate_address, hex, load_model_optional, validate_explicit_address,
+    Verified, VerifyKey, allocate_address, hex, load_model_optional, validate_explicit_address,
     verify_assignment_with, wait_for_single_device_as, warn_if_still_in_programming_mode,
     write_device_file,
 };
@@ -382,7 +382,8 @@ async fn adopt_flow(
     eprintln!("wrote {target}; verifying…");
     // adopt does not clear programming mode in the read-back; the broadcast
     // re-check below warns if the device is still in it.
-    let verified = verify_assignment_with(service, source, target, false).await?;
+    let verified =
+        verify_assignment_with(service, source, target, false, &VerifyKey::default()).await?;
 
     // Programming-mode persistence check: warn if the just-assigned device still
     // answers the programming-mode broadcast (KNX Virtual does not clear it; a

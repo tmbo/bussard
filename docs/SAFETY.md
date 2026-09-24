@@ -358,6 +358,21 @@ target address is not itself consent, so a scripted `assign` still needs
 `--yes`; `adopt` additionally needs a product file and an explicit target
 address to run without a TTY.
 
+**Changing the address of a Data Secure device.** After the address write,
+`assign` verifies by reading the device at its new address. A Data
+Secure-activated device answers a plain descriptor read with mask `FFFF`, so
+`assign` verifies it over `A_SecureData` with its tool key (issue #203). The
+keyring lists tool keys by individual address, so it finds the key under the
+new address only after ETS re-exports it. Until then `assign` takes the key
+from the old address's entry and prints a note to re-export the keyring;
+`--tool-key` overrides the keyring for this one verification. Re-export the
+keyring from ETS after every address change of a Secure device: every later
+command (`describe`, `flash`, `apply`, `scan`, `audit --live`) looks the key up
+under the new address and treats the device as having none until the keyring
+lists it there. Without any key, `assign` still verifies that the device
+answers at the new address, reports "Data Secure activated (mask hidden), no
+tool key in the keyring", and records no mask in the stub device file.
+
 **Whole-line runs** (`apply --line`, `commission --line`) ask one confirmation
 for the run instead of one per device. The prompt names the resolved gateway
 and the number of devices it will touch, and the same `--yes` and non-loopback

@@ -301,7 +301,9 @@ async fn swap_flow(
         .await
         .context("broadcasting the new individual address")?;
     eprintln!("wrote {target}; verifying…");
-    let verified = assign_cmd::verify_assignment(service, source, target).await?;
+    let verified =
+        assign_cmd::verify_assignment(service, source, target, &assign_cmd::VerifyKey::default())
+            .await?;
     if verified.programming_mode_cleared {
         eprintln!("cleared programming mode on {target} (PID_PROGMODE = 0), as ETS does.");
     }

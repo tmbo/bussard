@@ -292,30 +292,140 @@ pub fn resolve_material(
     source: ToolKeySource<'_>,
     activated: bool,
 ) -> Result<SecureMaterial, SecureKeyError> {
-    match (source.keyring, source.tool_key) {
-        (Some(_), Some(_)) => Err(SecureKeyError::BothSources),
-        (Some(path), None) => {
-            let keyring = load_keyring(path)?;
-            if keyring.tool_key(target).is_none() && !activated {
-                tracing::info!(
-                    "the keyring {} has no tool key for {target}; managing it in the clear",
-                    path.display()
-                );
-                return Ok(SecureMaterial::default());
-            }
-            let tool_key = tool_key_from(&keyring, target, path)?;
-            Ok(SecureMaterial {
-                tool_key: Some(tool_key),
-                group_keys: Some(keyring.group_keys.clone()),
-                device_sequences: keyring.devices.iter().map(|d| (d.ia, d.seq)).collect(),
-            })
+    ToolKeys::load(source)?.material(target, activated)
+}
+
+/// The tool-key sources of one command, loaded once (issue #203).
+///
+/// A command that touches many devices (`scan`, `audit --live`) must not
+/// decrypt the keyring once per address; it loads a `ToolKeys` up front and asks
+/// it per target. [`ToolKeys::material`] applies exactly the rule of
+/// [`resolve_material`]. `Debug` prints only which sources are present.
+#[derive(Default)]
+pub struct ToolKeys {
+    /// The decrypted keyring and the path it came from.
+    keyring: Option<(PathBuf, bussard_project::Keyring)>,
+    /// A raw `--tool-key`.
+    raw: Option<Key16>,
+}
+
+impl std::fmt::Debug for ToolKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolKeys")
+            .field("keyring", &self.keyring.as_ref().map(|(path, _)| path))
+            .field("raw_tool_key", &self.raw.is_some())
+            .finish()
+    }
+}
+
+impl ToolKeys {
+    /// Loads the sources: decrypts the keyring (password from
+    /// [`KEYRING_PASSWORD_ENV`]) or parses the raw key. Both `None` is the plain
+    /// path.
+    ///
+    /// # Errors
+    ///
+    /// Both sources given, a keyring without its password, an unreadable or
+    /// undecryptable keyring, or a malformed raw key. No error carries key
+    /// bytes.
+    pub fn load(source: ToolKeySource<'_>) -> Result<ToolKeys, SecureKeyError> {
+        match (source.keyring, source.tool_key) {
+            (Some(_), Some(_)) => Err(SecureKeyError::BothSources),
+            (Some(path), None) => Ok(ToolKeys {
+                keyring: Some((path.to_path_buf(), load_keyring(path)?)),
+                raw: None,
+            }),
+            (None, Some(hex)) => Ok(ToolKeys {
+                keyring: None,
+                raw: Some(parse_hex_key(hex)?),
+            }),
+            (None, None) => Ok(ToolKeys::default()),
         }
-        (None, Some(hex)) => Ok(SecureMaterial {
-            tool_key: Some(parse_hex_key(hex)?),
-            group_keys: None,
-            device_sequences: HashMap::new(),
-        }),
-        (None, None) => Ok(SecureMaterial::default()),
+    }
+
+    /// Whether a keyring was given.
+    pub fn keyring_given(&self) -> bool {
+        self.keyring.is_some()
+    }
+
+    /// Whether a raw tool key was given.
+    pub fn raw_given(&self) -> bool {
+        self.raw.is_some()
+    }
+
+    /// Whether the keyring lists `target` (has a tool key for it). `false`
+    /// without a keyring.
+    pub fn lists(&self, target: IndividualAddress) -> bool {
+        self.keyring
+            .as_ref()
+            .is_some_and(|(_, k)| k.tool_key(target).is_some())
+    }
+
+    /// The devices the keyring holds a tool key for, in keyring order; empty
+    /// without a keyring.
+    pub fn listed(&self) -> Vec<IndividualAddress> {
+        self.keyring
+            .as_ref()
+            .map(|(_, k)| {
+                k.devices
+                    .iter()
+                    .filter(|d| k.tool_key(d.ia).is_some())
+                    .map(|d| d.ia)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The tool key for `target`: the raw key if one was given, else the
+    /// keyring's entry for `target`, else `None`. Unlike
+    /// [`material`](Self::material) this never fails: the caller decides what
+    /// a missing key means.
+    pub fn tool_key(&self, target: IndividualAddress) -> Option<Key16> {
+        if let Some(raw) = &self.raw {
+            return Some(raw.clone());
+        }
+        self.keyring
+            .as_ref()
+            .and_then(|(_, k)| k.tool_key(target).cloned())
+    }
+
+    /// The material for `target` under the rule of [`resolve_material`]:
+    /// keyring-listed means secured, unlisted and not `activated` means plain,
+    /// unlisted but `activated` is [`SecureKeyError::NoEntry`]. A raw key is
+    /// always used.
+    ///
+    /// # Errors
+    ///
+    /// [`SecureKeyError::NoEntry`] for an activated target the keyring does not
+    /// list.
+    pub fn material(
+        &self,
+        target: IndividualAddress,
+        activated: bool,
+    ) -> Result<SecureMaterial, SecureKeyError> {
+        if let Some(raw) = &self.raw {
+            return Ok(SecureMaterial {
+                tool_key: Some(raw.clone()),
+                group_keys: None,
+                device_sequences: HashMap::new(),
+            });
+        }
+        let Some((path, keyring)) = &self.keyring else {
+            return Ok(SecureMaterial::default());
+        };
+        if keyring.tool_key(target).is_none() && !activated {
+            tracing::info!(
+                "the keyring {} has no tool key for {target}; managing it in the clear",
+                path.display()
+            );
+            return Ok(SecureMaterial::default());
+        }
+        let tool_key = tool_key_from(keyring, target, path)?;
+        Ok(SecureMaterial {
+            tool_key: Some(tool_key),
+            group_keys: Some(keyring.group_keys.clone()),
+            device_sequences: keyring.devices.iter().map(|d| (d.ia, d.seq)).collect(),
+        })
     }
 }
 

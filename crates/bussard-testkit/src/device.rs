@@ -15,10 +15,11 @@
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bussard_model::IndividualAddress;
+use bussard_secure::{DataSecureSession, Key16, TpAddressing, UnwrapOutcome};
 use bussard_transport::cemi::CemiFrame;
 use bussard_transport::tpci::TpciKind;
 
@@ -36,6 +37,9 @@ use crate::consts::{
     PID_MANUFACTURER_ID, PID_OBJECT_TYPE, PID_ORDER_INFO, PID_PROGMODE, PID_SERIAL_NUMBER,
     PID_TABLE, PID_TABLE_REFERENCE, SUB_REL_SEGMENT,
 };
+
+/// The Data Secure SCF octet of an `S-A_Sync_Req` (tool access).
+const SCF_SYNC_REQ: u8 = 0x92;
 
 /// A device's reaction to one connected-mode request.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,9 +172,17 @@ pub struct MockDevice {
     pub tool: IndividualAddress,
     /// The device's next outgoing sequence number while connected.
     pub(crate) send_seq: Option<u8>,
+    /// Requests that arrived inside a verified `A_SecureData` (a device built
+    /// with [`MockDevice::with_data_secure`]).
+    pub secured_requests: usize,
+    /// Plain requests a Data Secure-activated device dropped (every plain
+    /// request except the descriptor read, answered with mask `FFFF`, and
+    /// `A_Authorize`).
+    pub plain_refused: usize,
     properties: HashMap<(u8, u8), Property>,
     hook: Option<Hook>,
     control_hook: Option<ControlHook>,
+    data_secure: Option<Arc<Mutex<DataSecureSession>>>,
 }
 
 impl fmt::Debug for MockDevice {
@@ -250,9 +262,12 @@ impl MockDevice {
             request_tpci: 0,
             tool: IndividualAddress::from_raw(0),
             send_seq: None,
+            secured_requests: 0,
+            plain_refused: 0,
             properties: HashMap::new(),
             hook: None,
             control_hook: None,
+            data_secure: None,
         }
     }
 
@@ -397,6 +412,19 @@ impl MockDevice {
     /// `T_NAK`s every memory write into a segment of object type `object_type`.
     pub fn with_nak_writes_into(mut self, object_type: u16) -> Self {
         self.nak_writes_into = Some(object_type);
+        self
+    }
+
+    /// Makes the device KNX Data Secure-activated with `tool_key` (synthetic
+    /// test keys only). Like a real activated device it answers a plain
+    /// `A_DeviceDescriptor_Read` with mask `FFFF` and a plain `A_Authorize`,
+    /// drops every other plain request, answers `S-A_Sync_Req`, and serves
+    /// requests that arrive inside a verified `A_SecureData` (the hook and the
+    /// built-ins see the inner request; the answer goes back wrapped).
+    pub fn with_data_secure(mut self, tool_key: [u8; 16]) -> Self {
+        self.data_secure = Some(Arc::new(Mutex::new(DataSecureSession::new(Key16::new(
+            tool_key,
+        )))));
         self
     }
 
@@ -554,6 +582,78 @@ impl MockDevice {
         }
         self.telegrams += 1;
         self.requests.push((apci, data.to_vec()));
+        if let Some(session) = self.data_secure.clone() {
+            return self.secure_request(&session, apci, data);
+        }
+        self.plain_request(apci, data)
+    }
+
+    /// The Data Secure layer of an activated device; see
+    /// [`MockDevice::with_data_secure`].
+    fn secure_request(
+        &mut self,
+        session: &Mutex<DataSecureSession>,
+        apci: u16,
+        data: &[u8],
+    ) -> Reaction {
+        if apci != bussard_secure::A_SECURE_DATA {
+            if apci == A_DEVICE_DESCRIPTOR_READ && data.is_empty() {
+                return Reaction::Answer(A_DEVICE_DESCRIPTOR_RESPONSE, vec![0xFF, 0xFF]);
+            }
+            if apci == A_AUTHORIZE_REQUEST {
+                return self.plain_request(apci, data);
+            }
+            self.plain_refused += 1;
+            return Reaction::Silent;
+        }
+        let addressing =
+            |source: IndividualAddress, destination: IndividualAddress, tpci: u8| TpAddressing {
+                source: source.raw(),
+                destination: destination.raw(),
+                address_type_group: false,
+                extended_frame_format: 0,
+                tpci,
+            };
+        let req_addr = addressing(
+            self.tool,
+            self.address,
+            bussard_transport::tpci::ndt(self.client_seq),
+        );
+        let resp_addr = addressing(
+            self.address,
+            self.tool,
+            bussard_transport::tpci::ndt(self.send_seq.unwrap_or(0)),
+        );
+        let mut session = match session.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if data.first() == Some(&SCF_SYNC_REQ) {
+            return match session.answer_sync_request(&req_addr, data, &resp_addr) {
+                Ok((rapci, rdata)) => Reaction::Answer(rapci, rdata),
+                Err(_) => Reaction::Silent,
+            };
+        }
+        let Ok(UnwrapOutcome::Secured {
+            apci: inner_apci,
+            data: inner_data,
+        }) = session.unwrap(&req_addr, apci, data)
+        else {
+            return Reaction::Silent;
+        };
+        self.secured_requests += 1;
+        match self.plain_request(inner_apci, &inner_data) {
+            Reaction::Answer(rapci, rdata) => match session.wrap(&resp_addr, rapci, &rdata) {
+                Ok((wapci, wdata)) => Reaction::Answer(wapci, wdata),
+                Err(_) => Reaction::Silent,
+            },
+            other => other,
+        }
+    }
+
+    /// The hook, then the built-in services, for one (plain or unwrapped)
+    /// request.
+    fn plain_request(&mut self, apci: u16, data: &[u8]) -> Reaction {
         if let Some(hook) = self.hook.clone()
             && let Some(reaction) = hook(self, apci, data)
         {
