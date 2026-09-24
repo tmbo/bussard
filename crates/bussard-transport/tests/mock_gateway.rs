@@ -1038,7 +1038,15 @@ async fn test_tunnel_reestablish_after_heartbeat_loss() -> TestResult {
     // stream, and an indication on the new channel still arrives.
     //
     // As in the bare heartbeat test, the clock is paused after the handshake and
-    // auto-advances through the 60 s + 3 x 10 s schedule.
+    // auto-advances through the 60 s + 3 x 10 s schedule. It resumes as soon as
+    // the re-establish starts (the DISCONNECT for the old channel): a paused
+    // clock auto-advances whenever the runtime is idle, even while a loopback
+    // datagram is still in flight, so it could expire reconnect attempts before
+    // the mock had a chance to answer them.
+    //
+    // The mock keeps its socket open until the client ACKs the indication. On
+    // Linux a datagram to a closed port makes the client's next send or recv
+    // fail with ECONNREFUSED; the test must not depend on that timing.
     let gw = RawGateway::bind().await?;
     let addr = gw.addr();
 
@@ -1052,21 +1060,33 @@ async fn test_tunnel_reestablish_after_heartbeat_loss() -> TestResult {
         }
         // Old channel released, new one granted.
         let disc = gw.expect(ServiceType::DisconnectRequest).await?;
+        tokio::time::resume();
         gw.send(&knxnet::disconnect_response(0x1D, 0), disc.peer)
             .await?;
         let peer = gw.accept_connect(0x1E).await?;
         let ind = CemiFrame::group_write_packed(ga("1/2/3")?, ia("1.1.10")?, &[1]);
         gw.push(peer, 0x1E, 0, &ind).await?;
-        TestResult::Ok(())
+        let acked = gw.await_client_ack(0, Duration::from_secs(5)).await?;
+        TestResult::Ok(acked)
     });
 
     let config =
         ConnectionConfig::tunnel(addr).with_reconnect(fast_reconnect(Duration::from_secs(10)));
     let mut conn = Transport::connect(&config).await?;
     tokio::time::pause();
-    let stamped = conn.recv().await?;
-    assert_eq!(group_dest(&stamped.frame)?, "1/2/3");
-    gw_task.await??;
+    let received = conn.recv().await;
+    // A failure on either side names both: the mock's error explains a client
+    // error (it stopped answering), not the other way round.
+    let status = match (received, gw_task.await?) {
+        (Ok(stamped), Ok(status)) => {
+            assert_eq!(group_dest(&stamped.frame)?, "1/2/3");
+            status
+        }
+        (client, mock) => {
+            return Err(format!("client: {:?}; mock gateway: {mock:?}", client.map(|_| ())).into());
+        }
+    };
+    assert_eq!(status, 0, "the client ACKs the new channel's indication");
     Ok(())
 }
 

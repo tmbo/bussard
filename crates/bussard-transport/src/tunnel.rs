@@ -182,6 +182,29 @@ impl Link {
         }
     }
 
+    /// Whether `err` is a deferred ICMP refusal on the UDP link rather than a
+    /// failure of the call that returned it.
+    ///
+    /// A connected UDP socket whose peer port is closed gets an ICMP port
+    /// unreachable for a datagram it sent earlier; Linux reports it as
+    /// `ECONNREFUSED` on the NEXT `send` or `recv` (Windows as `WSAECONNRESET`
+    /// on `recv`), macOS mostly not at all. The error is consumed by the call
+    /// that returns it and the socket stays usable, so while re-establishing a
+    /// tunnel it is one more sign the gateway is away, not a reason to abandon
+    /// the attempt (issue #177). Never true on a secure (TCP) link, where a
+    /// reset is final.
+    fn is_deferred_refusal(&self, err: &TransportError) -> bool {
+        matches!(self, Link::Udp(_))
+            && matches!(
+                err,
+                TransportError::Io { source, .. }
+                    if matches!(
+                        source.kind(),
+                        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::ConnectionReset
+                    )
+            )
+    }
+
     /// Whether the tunnelling layer uses TUNNELING_ACK. Over TCP it does not
     /// (CONFIRMED against the ETS capture: no ACKs on a TCP tunnel).
     fn acks(&self) -> bool {
@@ -1190,7 +1213,13 @@ impl TaskState {
             *old_open = false;
         }
         let req = knxnet::connect_request(self.local_hpai, self.local_hpai);
-        self.link.send(&req).await?;
+        match self.link.send(&req).await {
+            // The refusal belongs to an earlier datagram (the best-effort
+            // DISCONNECT, say) and consumed the socket error: this CONNECT was
+            // not sent, so send it again. A second refusal is a real failure.
+            Err(e) if self.link.is_deferred_refusal(&e) => self.link.send(&req).await?,
+            other => other?,
+        }
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -1198,6 +1227,12 @@ impl TaskState {
             }
             let n = match time::timeout(remaining, self.link.recv(buf)).await {
                 Ok(Ok(n)) => n,
+                // A refusal for a datagram sent earlier: keep waiting out this
+                // attempt, a CONNECT_RESPONSE may already be queued behind it.
+                Ok(Err(e)) if self.link.is_deferred_refusal(&e) => {
+                    tracing::debug!(%e, "gateway port refused a datagram while reconnecting");
+                    continue;
+                }
                 Ok(Err(e)) => return Err(e),
                 Err(_) => return Err(TransportError::Timeout("CONNECT_RESPONSE")),
             };
@@ -1261,5 +1296,24 @@ impl TaskState {
                 Ok(Err(_)) | Err(_) => return Ok(()),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn io(kind: std::io::ErrorKind) -> TransportError {
+        TransportError::from(std::io::Error::from(kind))
+    }
+
+    #[tokio::test]
+    async fn test_is_deferred_refusal_only_icmp_kinds_on_udp() -> Result<()> {
+        let link = Link::Udp(UdpSocket::bind("127.0.0.1:0").await?);
+        assert!(link.is_deferred_refusal(&io(std::io::ErrorKind::ConnectionRefused)));
+        assert!(link.is_deferred_refusal(&io(std::io::ErrorKind::ConnectionReset)));
+        assert!(!link.is_deferred_refusal(&io(std::io::ErrorKind::PermissionDenied)));
+        assert!(!link.is_deferred_refusal(&TransportError::HeartbeatLost));
+        Ok(())
     }
 }
