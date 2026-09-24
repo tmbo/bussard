@@ -5,7 +5,9 @@
 //!
 //! - [`Tunnel`] — a unicast **tunneling** client to a KNXnet/IP gateway, with
 //!   the full CONNECT / heartbeat / TUNNELING_REQUEST+ACK / DISCONNECT state
-//!   machine and sequence counters.
+//!   machine and sequence counters. With KNXnet/IP Secure credentials
+//!   ([`SecureTunnelConfig`]) the same state machine runs inside an
+//!   authenticated secure session over TCP (issue #71 Phase B).
 //! - [`Router`] — a **routing** (multicast) participant on `224.0.23.12:3671`.
 //!
 //! Underneath sits a pure, heavily-tested [`cemi`] codec for the KNX link-layer
@@ -53,14 +55,19 @@ pub mod discovery;
 mod error;
 pub mod knxnet;
 mod router;
+mod secure;
 pub mod tpci;
 mod tunnel;
 pub mod wire_trace;
 pub mod write_gate;
 
-pub use config::{ConnectionConfig, TransportKind, TunnelReconnect};
+pub use config::{
+    ConnectionConfig, SecureSource, SecureTunnelConfig, SecureUser, TransportKind, TunnelReconnect,
+};
 pub use conn::{BusConnection, TimestampedFrame};
-pub use discovery::{describe_gateway, discover, discover_all, local_ipv4_interfaces};
+pub use discovery::{
+    describe_gateway, describe_gateway_extended, discover, discover_all, local_ipv4_interfaces,
+};
 pub use error::{E_NO_MORE_CONNECTIONS, Result, TransportError};
 pub use router::Router;
 pub use tunnel::{LinkState, Tunnel};

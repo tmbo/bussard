@@ -38,6 +38,28 @@ struct KeyringSummary {
     interfaces: Vec<String>,
     /// The number of per-group-address group keys (values not shown).
     group_key_count: usize,
+    /// The KNXnet/IP Secure tunnelling users per interface: user id, tunnel
+    /// address, host, and whether the credentials are present (never the
+    /// credentials themselves; issue #71 Phase B).
+    tunnelling_users: Vec<TunnellingUser>,
+    /// The devices that carry KNXnet/IP Secure device credentials (management
+    /// password and/or device authentication code, not shown).
+    ip_secure_devices: Vec<String>,
+}
+
+/// One tunnelling user of a KNXnet/IP Secure interface, redaction-safe.
+#[derive(Debug, serde::Serialize)]
+struct TunnellingUser {
+    /// The tunnel individual address the interface assigns to this user.
+    tunnel_address: String,
+    /// The individual address of the interface itself (`Host`), if listed.
+    host: Option<String>,
+    /// The user id presented in SESSION_AUTHENTICATE.
+    user_id: u8,
+    /// Whether the user password is present.
+    has_password: bool,
+    /// Whether the interface's device authentication code is present.
+    has_device_authentication: bool,
 }
 
 /// Runs `bussard keyring`.
@@ -66,6 +88,24 @@ pub fn run(file: &Path, json: bool) -> anyhow::Result<ExitCode> {
             .map(|i| i.ia.to_string())
             .collect(),
         group_key_count: keyring.group_keys.len(),
+        tunnelling_users: keyring
+            .interfaces
+            .iter()
+            .filter(|i| i.interface_type.eq_ignore_ascii_case("Tunneling"))
+            .map(|i| TunnellingUser {
+                tunnel_address: i.ia.to_string(),
+                host: i.host.map(|h| h.to_string()),
+                user_id: i.user_id,
+                has_password: i.password.is_some(),
+                has_device_authentication: i.authentication.is_some(),
+            })
+            .collect(),
+        ip_secure_devices: keyring
+            .devices
+            .iter()
+            .filter(|d| d.management_password.is_some() || d.authentication.is_some())
+            .map(|d| d.ia.to_string())
+            .collect(),
     };
 
     if json {
@@ -94,5 +134,26 @@ fn print_text(s: &KeyringSummary) {
         s.interfaces.join(", ")
     );
     println!("  group keys: {}", s.group_key_count);
+    if !s.tunnelling_users.is_empty() {
+        println!("  KNXnet/IP Secure tunnelling users:");
+        for u in &s.tunnelling_users {
+            let host = u.host.as_deref().unwrap_or("?");
+            let creds = match (u.has_password, u.has_device_authentication) {
+                (true, true) => "password + device authentication code",
+                (true, false) => "password only (interface identity not verifiable)",
+                (false, _) => "no password",
+            };
+            println!(
+                "    user {} -> tunnel {} on interface {host}: {creds}",
+                u.user_id, u.tunnel_address
+            );
+        }
+    }
+    if !s.ip_secure_devices.is_empty() {
+        println!(
+            "  KNXnet/IP Secure device credentials: {}",
+            s.ip_secure_devices.join(", ")
+        );
+    }
     println!("  (key material is never printed)");
 }

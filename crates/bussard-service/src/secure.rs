@@ -112,6 +112,107 @@ pub enum SecureKeyError {
     /// A raw tool key with a non-hexadecimal character at this position.
     #[error("--tool-key is not valid hexadecimal at character {0} (the value is not echoed)")]
     KeyNotHex(usize),
+    /// Only one of `--secure-user` / `--secure-password-env` was given.
+    #[error(
+        "--secure-user and --secure-password-env go together: the user id selects the \
+         KNXnet/IP Secure tunnelling user, the environment variable holds its password"
+    )]
+    SecureFlagsIncomplete,
+    /// The environment variable named by `--secure-password-env` is not set.
+    #[error("--secure-password-env names {0}, but that environment variable is not set")]
+    MissingTunnelPassword(String),
+}
+
+/// The sources of KNXnet/IP Secure tunnelling credentials a surface passes
+/// (issue #71 Phase B).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TunnelCredentialSource<'a> {
+    /// An ETS `.knxkeys` export listing the interface's tunnelling users.
+    pub keyring: Option<&'a Path>,
+    /// `--secure-user`: an explicit user id.
+    pub user: Option<u8>,
+    /// `--secure-password-env`: the environment variable with that user's
+    /// password.
+    pub password_env: Option<&'a str>,
+}
+
+/// Builds the KNXnet/IP Secure tunnelling configuration, or `None` for the
+/// plain tunnel.
+///
+/// Explicit flags win and always open a secure session; the device
+/// authentication code then comes from a keyring interface with the same user
+/// id, if a keyring is also given. A keyring alone offers every tunnelling
+/// user it lists (`Interface Type="Tunneling"` with a password) and the
+/// transport picks the one for the gateway it reaches. Passwords stay
+/// passwords here: the transport derives only the user it presents.
+///
+/// # Errors
+///
+/// Half of the explicit flags, an unset password variable, or a keyring that
+/// cannot be read.
+pub fn tunnel_config(
+    source: TunnelCredentialSource<'_>,
+) -> Result<Option<bussard_transport::SecureTunnelConfig>, SecureKeyError> {
+    use bussard_transport::{SecureSource, SecureTunnelConfig, SecureUser};
+    let keyring = match source.keyring {
+        Some(path) => Some(load_keyring(path)?),
+        None => None,
+    };
+    let secure_users = |k: &bussard_project::Keyring| -> Vec<SecureUser> {
+        k.interfaces
+            .iter()
+            .filter(|i| i.is_secure_tunnel())
+            .filter_map(|i| {
+                let password = i.password.clone()?;
+                let host_code = i.host.and_then(|host| {
+                    k.devices
+                        .iter()
+                        .find(|d| d.ia == host)
+                        .and_then(|d| d.authentication.clone())
+                });
+                Some(SecureUser {
+                    user_id: i.user_id,
+                    password,
+                    device_authentication_code: i.authentication.clone().or(host_code),
+                    tunnel_ia: Some(i.ia.raw()),
+                    host_ia: i.host.map(IndividualAddress::raw),
+                })
+            })
+            .collect()
+    };
+    match (source.user, source.password_env) {
+        (Some(user_id), Some(var)) => {
+            let password = std::env::var(var)
+                .map(bussard_secure::Password::new)
+                .map_err(|_| SecureKeyError::MissingTunnelPassword(var.to_string()))?;
+            let from_keyring = keyring
+                .as_ref()
+                .map(secure_users)
+                .unwrap_or_default()
+                .into_iter()
+                .find(|u| u.user_id == user_id);
+            Ok(Some(SecureTunnelConfig {
+                users: vec![SecureUser {
+                    user_id,
+                    password,
+                    device_authentication_code: from_keyring
+                        .as_ref()
+                        .and_then(|u| u.device_authentication_code.clone()),
+                    tunnel_ia: from_keyring.as_ref().and_then(|u| u.tunnel_ia),
+                    host_ia: from_keyring.as_ref().and_then(|u| u.host_ia),
+                }],
+                source: SecureSource::Explicit,
+            }))
+        }
+        (None, None) => {
+            let users = keyring.as_ref().map(secure_users).unwrap_or_default();
+            Ok((!users.is_empty()).then_some(SecureTunnelConfig {
+                users,
+                source: SecureSource::Keyring,
+            }))
+        }
+        _ => Err(SecureKeyError::SecureFlagsIncomplete),
+    }
 }
 
 /// Resolves the tool key for `target`, or `None` for the plain path.

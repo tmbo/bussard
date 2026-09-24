@@ -17,7 +17,7 @@ use bussard_model::schema::Transport as ModelTransport;
 use bussard_service::{BusService, WritePolicy};
 use bussard_transport::config::{DEFAULT_MULTICAST, DEFAULT_PORT};
 use bussard_transport::write_gate::WriteGate;
-use bussard_transport::{ConnectionConfig, TransportKind, TunnelReconnect};
+use bussard_transport::{ConnectionConfig, SecureTunnelConfig, TransportKind, TunnelReconnect};
 
 /// Command-line connection overrides shared by `monitor` and `capture`.
 #[derive(Debug, Clone, Default)]
@@ -221,6 +221,23 @@ pub fn load_model_required(dir: &Path) -> anyhow::Result<Option<Model>> {
     })
 }
 
+/// The KNXnet/IP Secure tunnelling credentials of this invocation (issue #71
+/// Phase B), set once by `main` from `--keyring` / `--secure-user` before the
+/// subcommand runs, and attached to every tunnel [`resolve_config`] builds.
+static SECURE_TUNNEL: std::sync::Mutex<Option<SecureTunnelConfig>> = std::sync::Mutex::new(None);
+
+/// Sets the KNXnet/IP Secure tunnelling credentials for this invocation.
+pub fn set_secure_tunnel(config: Option<SecureTunnelConfig>) {
+    if let Ok(mut slot) = SECURE_TUNNEL.lock() {
+        *slot = config;
+    }
+}
+
+/// The KNXnet/IP Secure tunnelling credentials of this invocation, if any.
+fn secure_tunnel() -> Option<SecureTunnelConfig> {
+    SECURE_TUNNEL.lock().ok().and_then(|g| g.clone())
+}
+
 /// Resolves a [`ConnectionConfig`] from the model config plus overrides.
 ///
 /// Precedence: `--routing` and `--gateway` override `bussard.yaml`, which
@@ -253,6 +270,7 @@ pub fn resolve_config(
             multicast,
             local_interface: Ipv4Addr::UNSPECIFIED,
             reconnect: tunnel_reconnect(),
+            secure: None,
         });
     }
 
@@ -272,6 +290,7 @@ pub fn resolve_config(
         multicast: SocketAddrV4::new(DEFAULT_MULTICAST, DEFAULT_PORT),
         local_interface: Ipv4Addr::UNSPECIFIED,
         reconnect: tunnel_reconnect(),
+        secure: secure_tunnel(),
     })
 }
 
@@ -336,6 +355,11 @@ pub async fn open_service(
         .wait_connected(std::time::Duration::from_secs(10))
         .await
     {
+        // A refusal retrying cannot fix (issue #182): stop here with that
+        // cause, before any fallback-source warning or device hint.
+        if let Some(fatal) = service.handle().fatal_error() {
+            anyhow::bail!("{fatal}");
+        }
         eprintln!(
             "warning: bus not connected yet; management traffic may use the 0.0.255 fallback source"
         );

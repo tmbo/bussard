@@ -49,10 +49,12 @@ SERVICE_NAMES = {
     0x0311: "DEVICE_CONFIGURATION_ACK",
     0x0420: "TUNNELING_REQUEST",
     0x0421: "TUNNELING_ACK",
-    0x0430: "TUNNELING_FEATURE_GET",
-    0x0431: "TUNNELING_FEATURE_RESPONSE",
-    0x0432: "TUNNELING_FEATURE_SET",
-    0x0433: "TUNNELING_FEATURE_INFO",
+    # Tunnelling v2 features (0x0422-0x0425; ETS sends GET/SET right after a
+    # TCP CONNECT, issue #90 S4 capture).
+    0x0422: "TUNNELING_FEATURE_GET",
+    0x0423: "TUNNELING_FEATURE_RESPONSE",
+    0x0424: "TUNNELING_FEATURE_SET",
+    0x0425: "TUNNELING_FEATURE_INFO",
     0x0530: "ROUTING_INDICATION",
     0x0531: "ROUTING_LOST_MESSAGE",
     0x0532: "ROUTING_BUSY",
@@ -73,6 +75,39 @@ SESSION_STATUS_NAMES = {
     0x03: "TIMEOUT",
     0x04: "KEEPALIVE",
     0x05: "CLOSE",
+}
+
+# DIB type codes (KNXnet/IP Core; 0x06 is the KNXnet/IP Secure DIB).
+DIB_NAMES = {
+    0x01: "DEVICE_INFO",
+    0x02: "SUPP_SVC_FAMILIES",
+    0x03: "IP_CONFIG",
+    0x04: "IP_CUR_CONFIG",
+    0x05: "KNX_ADDRESSES",
+    0x06: "SECURED_SERVICE_FAMILIES",
+    0x07: "TUNNELING_INFO",
+    0x08: "EXTENDED_DEVICE_INFO",
+    0xFE: "MFR_DATA",
+}
+
+# Service family ids in the families DIBs.
+FAMILY_NAMES = {
+    0x02: "core",
+    0x03: "device_management",
+    0x04: "tunnelling",
+    0x05: "routing",
+    0x06: "remote_logging",
+    0x07: "remote_configuration",
+    0x08: "object_server",
+    0x09: "security",
+}
+
+# SRP (search request parameter) types of a SEARCH_REQUEST_EXTENDED.
+SRP_NAMES = {
+    0x01: "select_by_programming_mode",
+    0x02: "select_by_mac",
+    0x03: "select_by_service",
+    0x04: "request_dibs",
 }
 
 CONNECT_STATUS = {
@@ -793,18 +828,120 @@ def decode_knxip(ts: float, src: str, dst: str, transport: str, frame: bytes) ->
                     out.fields["status"] = CONNECT_STATUS.get(body[1], "0x%02x" % body[1])
         elif service in SECURE_SERVICES:
             out.fields.update(_decode_secure_service(service, body))
+        elif service == 0x0204:  # DESCRIPTION_RESPONSE: bare DIBs
+            out.fields.update(decode_dibs(body))
+        elif service in (0x0202, 0x020C):  # SEARCH_RESPONSE(_EXTENDED): HPAI + DIBs
+            if len(body) >= 8:
+                out.fields["hpai"] = decode_hpai(body[:8])
+                out.fields.update(decode_dibs(body[8:]))
+        elif service in (0x0201, 0x020B, 0x0203):  # searches, DESCRIPTION_REQUEST
+            if len(body) >= 8:
+                out.fields["hpai"] = decode_hpai(body[:8])
+            if service == 0x020B:
+                out.fields["srp"] = decode_srps(body[8:])
     except (struct.error, IndexError, ValueError):
         out.note = "body decode failed"
     return out
 
 
+def decode_hpai(hpai: bytes) -> str:
+    """Renders an 8-octet HPAI as `udp 1.2.3.4:3671` or `tcp route-back`."""
+    if len(hpai) < 8:
+        return "?"
+    proto = {0x01: "udp", 0x02: "tcp"}.get(hpai[1], "proto 0x%02x" % hpai[1])
+    ip = ".".join(str(b) for b in hpai[2:6])
+    port = struct.unpack("!H", hpai[6:8])[0]
+    if ip == "0.0.0.0" and port == 0:
+        return "%s route-back" % proto
+    return "%s %s:%d" % (proto, ip, port)
+
+
+def _families(body: bytes) -> List[str]:
+    return [
+        "%s v%d" % (FAMILY_NAMES.get(body[i], "0x%02x" % body[i]), body[i + 1])
+        for i in range(0, len(body) - 1, 2)
+    ]
+
+
+def decode_dibs(data: bytes) -> Dict[str, object]:
+    """Decodes the description DIBs, including the KNXnet/IP Secure ones.
+
+    Reports the interface address and name, the service families, the
+    secured service families (which make a family secure-only) and the
+    tunnelling slots with their status bits. Nothing here is secret.
+    """
+    out: Dict[str, object] = {}
+    dibs: List[str] = []
+    off = 0
+    while off + 2 <= len(data):
+        length, dtype = data[off], data[off + 1]
+        if length < 2 or off + length > len(data):
+            break
+        body = data[off + 2 : off + length]
+        dibs.append(DIB_NAMES.get(dtype, "0x%02x" % dtype))
+        if dtype == 0x01 and len(body) >= 52:
+            out["ia"] = ia_str(struct.unpack("!H", body[2:4])[0])
+            out["serial"] = body[6:12].hex()
+            out["name"] = body[22:52].split(b"\x00", 1)[0].decode("latin-1").strip()
+        elif dtype == 0x02:
+            out["families"] = _families(body)
+        elif dtype == 0x06:
+            out["secured_families"] = _families(body)
+        elif dtype == 0x07 and len(body) >= 2:
+            out["max_apdu"] = struct.unpack("!H", body[0:2])[0]
+            slots = []
+            for i in range(2, len(body) - 3, 4):
+                ia = struct.unpack("!H", body[i : i + 2])[0]
+                status = struct.unpack("!H", body[i + 2 : i + 4])[0]
+                flags = "".join(
+                    flag if status & bit else "-"
+                    for flag, bit in (("u", 0x04), ("a", 0x02), ("f", 0x01))
+                )
+                slots.append("%s[%s]" % (ia_str(ia), flags))
+            out["tunnel_slots"] = slots
+        elif dtype == 0x08 and len(body) >= 6:
+            out["max_local_apdu"] = struct.unpack("!H", body[2:4])[0]
+            out["device_descriptor"] = "0x%04x" % struct.unpack("!H", body[4:6])[0]
+        off += length
+    out["dibs"] = dibs
+    secured = out.get("secured_families") or []
+    if any(f.startswith("tunnelling") for f in secured):
+        out["secure"] = "tunnelling secure-only"
+    elif secured or any(f.startswith("security") for f in out.get("families") or []):
+        out["secure"] = "capable"
+    return out
+
+
+def decode_srps(data: bytes) -> List[str]:
+    """Decodes the SRPs of a SEARCH_REQUEST_EXTENDED (e.g. the DIBs asked for)."""
+    srps: List[str] = []
+    off = 0
+    while off + 2 <= len(data):
+        length, stype = data[off], data[off + 1]
+        if length < 2 or off + length > len(data):
+            break
+        body = data[off + 2 : off + length]
+        name = SRP_NAMES.get(stype & 0x7F, "0x%02x" % (stype & 0x7F))
+        if stype & 0x80:
+            name += "(mandatory)"
+        if stype & 0x7F == 0x04:
+            name += ":" + ",".join(DIB_NAMES.get(b, "0x%02x" % b) for b in body if b)
+        srps.append(name)
+        off += length
+    return srps
+
+
 def _decode_secure_service(service: int, body: bytes) -> Dict[str, object]:
     """Names and sizes a KNXnet/IP Secure frame. Nothing here is decrypted.
 
-    Phase B is not implemented in bussard, so the point of this branch is to
-    make a secure capture legible for calibration (issue #90 S4): which frames
-    appeared, in what order, carrying how many bytes. Public keys, MACs and
-    ciphertext are reported as lengths and hashes only.
+    Without the session key (it comes from an ECDH whose private halves are
+    never captured) a wrapper cannot be opened, so this branch makes a secure
+    capture legible for calibration (issue #90 S4): which frames appeared, in
+    what order, carrying how many bytes, and the clear-text security
+    information (session id, sequence, serial, message tag). The first
+    wrapper of a session carries SESSION_AUTHENTICATE (24 octets inside) and
+    its answer SESSION_STATUS (8 octets). Public keys, MACs and ciphertext are
+    reported as lengths and hashes only.
     """
     out: Dict[str, object] = {"len": len(body)}
     if service == 0x0950 and len(body) >= 16:  # SECURE_WRAPPER
@@ -815,6 +952,7 @@ def _decode_secure_service(service: int, body: bytes) -> Dict[str, object]:
         out["encrypted_len"] = max(0, len(body) - 16 - 16)
         out["encrypted_sha"] = sha8(body[16:])
     elif service == 0x0951:  # SESSION_REQUEST
+        out["hpai"] = decode_hpai(body[:8])
         out["public_key_len"] = max(0, len(body) - 8)
     elif service == 0x0952 and len(body) >= 2:  # SESSION_RESPONSE
         out["session"] = "0x%04x" % struct.unpack("!H", body[0:2])[0]

@@ -18,9 +18,12 @@
 //! - [`session`]: the stateful per-device [`DataSecureSession`] that owns the
 //!   tool key, the send sequence, and the replay-protection table (spec §6.1).
 //!
-//! The IP Secure session layer (Phase B, spec §7-§9) is out of scope here; only
-//! the Data Secure (tool-access management) path is implemented. Both bussard and
-//! the knx-sim converge on these bytes from the spec alone — no code is shared.
+//! - [`ipsecure`]: the KNXnet/IP Secure session handshake (X25519, device and
+//!   user authentication MACs) and the SECURE_WRAPPER codec (Phase B, spec
+//!   §7-§9). The transport drives it over TCP.
+//!
+//! Both bussard and the knx-sim converge on these bytes from the spec alone —
+//! no code is shared.
 //!
 //! # Key hygiene
 //!
@@ -33,6 +36,7 @@
 pub mod asdu;
 pub mod crypto;
 pub mod group;
+pub mod ipsecure;
 pub mod key;
 pub mod sequence;
 pub mod session;
@@ -42,6 +46,6 @@ pub use asdu::{
 };
 pub use crypto::{CryptoError, aes_cbc_decrypt, aes_cbc_encrypt, pbkdf2_key, pbkdf2_sha256, salt};
 pub use group::{Freshness, GroupPlain, decode_group, encode_group, is_group_data, peek_header};
-pub use key::Key16;
+pub use key::{Key16, Password};
 pub use sequence::{Sequence, SequenceHighWater};
 pub use session::{DataSecureSession, UnwrapOutcome};

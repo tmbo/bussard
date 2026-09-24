@@ -25,8 +25,10 @@ string `SEC-CAL:`". Do not hardcode an UNKNOWN as if it were CONFIRMED. There ar
 five load-bearing UNKNOWNs (all `SEC-CAL:`-tagged) that only a live ETS capture
 settles - see §12 (test plan) and §13 (open questions). Until then, ship the
 seam with the best-evidence default. The two Data Secure ones (Sync layout, MAC
-length) are now settled by the secure-1-1-12 capture (2026-09-23), see §12.4;
-the three IP Secure ones remain open.
+length) are now settled by the secure-1-1-12 capture (2026-09-23), see §12.4.
+Of the three IP Secure ones, the secure-only DIB and the message tag are settled
+by the ipsecure-1-1-200 capture (2026-09-24, §7.0); the SecureWrapper
+additional data is implemented as XKNX has it and awaits the first live session.
 
 The two research inputs disagree on exactly one point of substance: whether
 Data Secure tool-access is *required* to flash the user's devices today. The
@@ -95,10 +97,11 @@ Phase A delivers:
 
 ### 1.3 Phase B: KNXnet/IP Secure session layer
 
-Fully specified here (§7-§9) because the research is byte-precise, but gated
-separately: it is only needed to talk to a **secure-only** IP interface. The
-user's gateway runs plain today, so Phase B is deferred behind its own gate
-("talk to a secure-only interface"). Ship Phase A first.
+Fully specified here (§7-§9). It is needed to talk to a **secure-only** IP
+interface, and since 2026-09-24 the user's Jung interface (1.1.200) is one:
+KNXnet/IP Secure enabled, no plain tunnel left (#90 S4.1). Phase B is
+implemented (§7.0); the live confirmation of a full secure session against the
+interface is the remaining step.
 
 Phase B delivers the session layer: `SESSION_REQUEST`/`_RESPONSE`/`_AUTHENTICATE`/
 `_STATUS` (`0x0951`-`0x0954`), X25519 ECDH → session key, `SecureWrapper`
@@ -662,6 +665,67 @@ Sync preamble of §6.3 lands.
 Source: `[XKNX ip_secure.py, secure_wrapper.py, knxip_enum.py, CONFIRMED]`.
 Priority scope = **Secure Tunnelling (unicast)**.
 
+### 7.0 As implemented, and what the capture confirmed (#71 Phase B)
+
+The capture `ipsecure-1-1-200.pcapng` (#90 S4.1) holds ETS 6 talking to the
+Jung IP interface 1.1.200: a plain TCP tunnel before Secure was switched on,
+then three secure sessions (49 SECURE_WRAPPERs). Wrapped payloads cannot be
+decrypted (ETS's X25519 private key is not in the capture), so the table says
+what the structure and the keyring settle. The oracle test
+`crates/bussard-service/tests/ipsecure_capture_oracle.rs` (ignored by default,
+pcap and keyring from the environment) re-checks every CONFIRMED row.
+
+| Item | Status | Evidence |
+|---|---|---|
+| ETS uses **TCP** to port 3671 for DESCRIPTION, SEARCH_REQUEST_EXTENDED, the session and all tunnelling | CONFIRMED | every frame to the interface in the capture is TCP |
+| Over TCP there is no TUNNELING_ACK; HPAIs are the route-back form `08 02 00000000 0000` | CONFIRMED | 177 TUNNELING_REQUESTs, 0 ACKs; ETS's TCP CONNECT_REQUEST is byte-identical to bussard's `connect_request_tcp()` |
+| The gateway fills the tunnel IA into `L_Data.con` (ETS sends source `0.0.0`) | CONFIRMED | plain TCP tunnel, assigned 1.1.23 |
+| SEARCH_REQUEST_EXTENDED SRP `08 04 01 08 02 06 07 00` (request DIBs) | CONFIRMED | byte-identical to bussard's `SEARCH_EXTENDED_SRP` |
+| Security family `09 01` in the SUPP_SVC_FAMILIES DIB of the extended answer only (not in DESCRIPTION_RESPONSE) | CONFIRMED | before and after Secure |
+| Secured families DIB type `0x06`: `06 06 03 01 04 01` (device management v1, tunnelling v1) marks tunnelling secure-only | CONFIRMED | after Secure; plain CONNECT then refused with `0x22` (#182) |
+| Tunnelling-info slots of a secure interface: status `0x0005` (usable, free, not pre-authorized) | CONFIRMED | slots 1.1.22..1.1.29 |
+| SESSION_REQUEST = 46 octets: TCP route-back HPAI + 32-octet public key | CONFIRMED | 3 of 3 |
+| SESSION_RESPONSE = 56 octets: session id (2) + public key (32) + MAC (16) | CONFIRMED | 3 of 3 |
+| SESSION_RESPONSE MAC input and key (§7.4) | CONFIRMED | all 3 MACs verify under the keyring's `Interface@Authentication` and `Device@Authentication` of 1.1.200 |
+| SESSION_AUTHENTICATE travels inside the first SECURE_WRAPPER (24 plain octets); SESSION_STATUS comes back wrapped (8 octets) | CONFIRMED | wrapper payload lengths of every session |
+| Sequence information starts at 0 per direction, +1 per wrapper; message tag `0000` | CONFIRMED | 49 wrappers |
+| Client serial = `00 FA` + 4 random octets, new per session; server serial = its KNX serial | CONFIRMED | 3 sessions |
+| No TIMER_NOTIFY on unicast | CONFIRMED | none in the capture |
+| ETS sends DISCONNECT and closes TCP without a SESSION_STATUS close | CONFIRMED (bussard also sends `STATUS_CLOSE`, as XKNX does) | last frames of session 3 |
+| SESSION_AUTHENTICATE MAC (§7.5) and SecureWrapper `additional_data` (§8.2) | INFERRED (XKNX, which works against real interfaces; three independent implementations agree on vectors: bussard, knx-sim, a Python script) | not checkable without the session key |
+| Session keepalive every 30 s (wrapped `STATUS_KEEPALIVE`) | INFERRED (XKNX rate, inside the 60 s session timeout of the KNX spec) | the capture's sessions last seconds |
+
+What ETS did in session 3 was a **device management** connection to the
+interface (CRI `02 03`: 24-octet CONNECT_REQUEST, 18-octet response), not a
+tunnel; tunnelling uses the same session with the tunnel CRI.
+
+The client (`crates/bussard-transport/src/secure.rs`, `tunnel.rs`):
+
+1. With a keyring, probe the gateway (SEARCH_REQUEST_EXTENDED over TCP, then
+   UDP with a DESCRIPTION_REQUEST beside it). A keyring interface whose `Host`
+   is the gateway's individual address, on a gateway that advertises Secure,
+   selects the secure tunnel; the user whose tunnel address is a free slot is
+   preferred. With `--secure-user`/`--secure-password-env`, go secure directly.
+2. TCP connect; SESSION_REQUEST with a fresh X25519 key.
+3. SESSION_RESPONSE: verify its MAC under the device authentication code when
+   the keyring has one (the client authenticates the interface before it sends
+   anything derived from the user password); warn and skip otherwise.
+4. Session key `SHA-256(shared)[..16]`; wrapped SESSION_AUTHENTICATE; wrapped
+   SESSION_STATUS must be success, else a fatal `SecureAuthFailed`.
+5. Wrapped CONNECT_REQUEST (TCP route-back HPAIs, tunnel CRI); the tunnel IA
+   comes from the CONNECT_RESPONSE CRD (the user's slot).
+6. Tunnelling, heartbeats (CONNECTIONSTATE every 60 s), keepalive every 30 s,
+   all wrapped; inbound wrappers are MAC-checked and must not go backwards in
+   sequence; a SESSION_STATUS close/timeout from the server counts as a lost
+   link.
+7. A lost link (#180 reconnect) opens a new TCP connection and a new session,
+   then CONNECTs again. Close: DISCONNECT, then wrapped `STATUS_CLOSE`.
+
+Without credentials, a plain CONNECT refused by an interface whose extended
+answer lists tunnelling as secured is the fatal `SecureRequired` error (#182):
+no retry loop, no fallback-source warning, the message names the missing
+credentials.
+
 ### 7.1 Service type codes
 
 Extend `ServiceType` in `crates/bussard-transport/src/knxnet.rs:32`:
@@ -692,15 +756,19 @@ session_key = sha256(ecdh_shared)[:16]                # AES-128 session key (MSB
 ### 7.3 Handshake sequence
 
 1. **SESSION_REQUEST (0x0951)** client→server: client control-endpoint HPAI +
-   client ECDH public key (32). `[CONFIRMED key is sent; HPAI-then-key ordering
-   INFERRED from standard layout]`.
+   client ECDH public key (32). `[CONFIRMED: ETS capture, HPAI then key; over
+   TCP the HPAI is the route-back form 08 02 00000000 0000]`.
 2. **SESSION_RESPONSE (0x0952)** server→client:
    `secure_session_id(2 BE) + server ECDH public key(32) + MAC(16)`.
-3. **SESSION_AUTHENTICATE (0x0953)** client→server: user id + auth MAC (§7.5).
-4. **SESSION_STATUS (0x0954)** server→client: `0x00` on success.
-5. **TIMER_NOTIFY (0x0955)**: secure ROUTING only (§9.3).
+3. **SESSION_AUTHENTICATE (0x0953)** client→server: user id + auth MAC (§7.5),
+   sent inside a SECURE_WRAPPER keyed with the new session key `[CONFIRMED:
+   capture, the first wrapper of each session carries 24 plain octets]`.
+4. **SESSION_STATUS (0x0954)** server→client, wrapped: `0x00` on success
+   (status + one reserved octet, 8 octets in all) `[CONFIRMED sizes]`.
+5. **TIMER_NOTIFY (0x0955)**: secure ROUTING only (§9.3) `[CONFIRMED: absent
+   from the unicast capture]`.
 
-### 7.4 SESSION_RESPONSE MAC (device authentication) `[XKNX, CONFIRMED]`
+### 7.4 SESSION_RESPONSE MAC (device authentication) `[XKNX; CONFIRMED against the Jung interface: 3 of 3 captured MACs verify, ipsecure-1-1-200]`
 
 The server proves it knows the **device authentication code**:
 
@@ -714,7 +782,7 @@ mac_cbc = calculate_message_authentication_code_cbc(device_authentication_code, 
 # verify: CTR-decrypt received MAC with counter_0, compare to mac_cbc[:16]
 ```
 
-### 7.5 SESSION_AUTHENTICATE MAC (user authentication) `[XKNX, CONFIRMED]`
+### 7.5 SESSION_AUTHENTICATE MAC (user authentication) `[XKNX; framing CONFIRMED by the capture, MAC input INFERRED: it travels wrapped, so the capture cannot check it]`
 
 ```
 authenticate_header = 06 10 09 53 00 18                   # 0x18 = 24 total len
@@ -729,11 +797,12 @@ _, authenticate_mac = encrypt_data_ctr(user_password, counter_0=COUNTER_0_HANDSH
 
 Body = 1 reserved byte + 1 user-id byte + the 16-byte `authenticate_mac`.
 `user_id` selects the tunnel/management user (id 1 = management, higher = tunnel
-users). `[CONFIRMED code; user-id semantics INFERRED from keyring UserID]`.
+users). `[user ids 2..9 = the keyring's tunnelling users, CONFIRMED by the real
+keyring; the ETS sessions in the capture are not attributable to a user id]`.
 
 ---
 
-## 8. Phase B - SecureWrapper (0x0950) byte-exact `[XKNX secure_wrapper.py, CONFIRMED]`
+## 8. Phase B - SecureWrapper (0x0950) byte-exact `[XKNX secure_wrapper.py; framing CONFIRMED by the capture, crypto input see §8.2]`
 
 ### 8.1 Framing
 
@@ -762,36 +831,44 @@ encrypted_data, encrypted_mac = encrypt_data_ctr(session_key, counter_0, mac_cbc
 ```
 
 `[block_0/counter_0 + FF 00 CONFIRMED; additional_data = header + session_id
-INFERRED from the ABB "Security Information authenticated" diagram + handshake
-symmetry]`. `SEC-CAL: SecureWrapper additional_data exact bytes (header +
-session_id, or + more) - one captured secure frame + the known session key
-confirms the MAC input`.
+INFERRED from XKNX, the ABB "Security Information authenticated" diagram and
+handshake symmetry]`. The capture cannot settle it (no session key); the first
+live bussard session does: a wrong `additional_data` makes the interface drop
+the wrapped SESSION_AUTHENTICATE, so the session never authenticates.
+`SEC-CAL: SecureWrapper additional_data - confirmed by the first live session`.
 
 ### 8.3 Secure Tunnelling sequence model `[XKNX, CONFIRMED]`
 
-- **Unicast (TCP or UDP)**: `sequence_information` is a **monotonic 6-byte
-  counter** per session (increment-then-use). `secure_session_id` = the id from
-  SESSION_RESPONSE. `message_tag` = 0 for tunnelling. Replay protection =
-  strictly-increasing sequence.
+- **Unicast (TCP)**: `sequence_information` is a **monotonic 6-byte counter**
+  per session and direction, starting at **0** and incremented after each
+  wrapper `[CONFIRMED: capture]`. `secure_session_id` = the id from
+  SESSION_RESPONSE. `message_tag` = 0 for tunnelling `[CONFIRMED]`. Replay
+  protection = never accept a sequence below the next expected one. bussard
+  runs unicast over TCP only, as ETS does with this interface; UDP secure
+  sessions exist in the KNX spec but are not implemented.
 - The wrapper sits at the `frame()`/`do_send` seam in
   `crates/bussard-transport/src/tunnel.rs:279` - the plain tunnelling frame is
   built as today, then wrapped in a SecureWrapper before the socket write, and
   every inbound SecureWrapper is unwrapped before `CemiFrame::decode`.
-- `SEC-CAL: message_tag value for tunnelling (XKNX uses 0) and the keepalive /
-  idle-timeout timers a real gateway enforces on a secure session`.
+- Keepalive: a wrapped SESSION_STATUS `STATUS_KEEPALIVE` every 30 s
+  (`SECURE_KEEPALIVE_INTERVAL`), plus the tunnel's own CONNECTIONSTATE
+  heartbeat every 60 s. `SEC-CAL: the idle timeout the Jung interface enforces
+  (a long monitor run confirms the keepalive keeps the session alive)`.
 
 ### 8.4 The wrapper seam and detection
 
-- **Detection:** `parse_search_response` (`knxnet.rs:513`) today reads only the
-  DEVICE_INFO DIB (0x01) and skips the rest `[corpus/research §5]`. Add a
-  SEARCH_RESPONSE_EXTENDED (0x020C) path that parses the SUPP_SVC_FAMILIES DIB
-  for a "Security" service family and the secured tunnel-slot DIB. `SEC-CAL:
-  SEARCH_RESPONSE_EXTENDED Secure DIB type byte + layout (which DIB code
-  advertises the Security family and secured tunnel slots)`.
-- **Gate:** attempt a plain CONNECT_REQUEST; if the gateway rejects it (or
-  advertises secure-only), fall to the Phase B handshake. `SEC-CAL: does the
-  user's gateway require IP Secure (secure-only), and which user ids map to which
-  tunnel slots - plain CONNECT + SEARCH_RESPONSE_EXTENDED capture`.
+- **Detection** `[CONFIRMED, capture]`: the SUPP_SVC_FAMILIES DIB (`0x02`)
+  lists the security family `0x09`, and the SECURED_SERVICE_FAMILIES DIB
+  (`0x06`) lists the families that need a session: `06 06 03 01 04 01` on the
+  Jung interface (device management and tunnelling). Both appear only in a
+  SEARCH_RESPONSE_EXTENDED, never in a DESCRIPTION_RESPONSE. `GatewayDescription`
+  exposes `secure_capable()` and `tunnelling_secure_only()`.
+- **Gate** `[CONFIRMED]`: the user's interface is secure-only; a plain
+  CONNECT_REQUEST gets status `0x22`. User ids map to tunnel slots through the
+  keyring: `Interface Type="Tunneling" IndividualAddress=<tunnel IA>
+  Host=<interface IA> UserID=<2..9>` (8 users, tunnels 1.1.22..1.1.29 on
+  1.1.200). The interface assigns the authenticated user's tunnel IA on
+  CONNECT.
 
 ---
 
@@ -799,8 +876,9 @@ confirms the MAC input`.
 
 ### 9.1 Session state machine
 
-`Idle → SessionRequested → Authenticating → Established → Closing`. On
-`Established`, the monotonic send sequence starts at 0 (or 1; increment-then-use).
+`Idle → SessionRequested → Authenticating → Established → Closing`. The
+monotonic send sequence starts at 0 with the wrapped SESSION_AUTHENTICATE
+`[CONFIRMED]`.
 A `SESSION_STATUS` with a non-SUCCESS code, an auth-MAC mismatch, or an idle
 timeout tears the session down and (for tunnelling) the transport reconnects.
 
@@ -808,9 +886,9 @@ timeout tears the session down and (for tunnelling) the transport reconnects.
 
 - Unicast: reject any inbound SecureWrapper whose `sequence_information` is not
   strictly greater than the last accepted (per session). Constant-time MAC
-  compare before accepting.
-- `KEEPALIVE` (SESSION_STATUS 0x04) keeps an idle session alive; honour the
-  gateway's timeout (`SEC-CAL:` §8.3).
+  compare before accepting. A rejected wrapper is dropped and logged; it does
+  not end the session.
+- `KEEPALIVE` (SESSION_STATUS 0x04) keeps an idle session alive (30 s, §8.3).
 
 ### 9.3 Secure ROUTING (deferred, B2)
 
@@ -953,6 +1031,37 @@ diverged" signal. PBKDF2 vectors follow the `password.rs` pattern (a known
 password → a known 16-byte key per salt in §3.4), computed independently in
 Python and asserted.
 
+The IP Secure vectors (`bussard-secure` `ipsecure` tests and knx-sim
+`secure::ipsecure` tests assert the same three values) come from this script,
+a third implementation using Python's `cryptography` package:
+
+```python
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+def cbc_mac(key, ad, payload=b"", block0=bytes(16)):
+    buf = block0 + len(ad).to_bytes(2, "big") + ad + payload
+    buf += bytes((-len(buf)) % 16)
+    e = Cipher(algorithms.AES(key), modes.CBC(bytes(16))).encryptor()
+    return (e.update(buf) + e.finalize())[-16:]
+def ctr(key, c0, data):
+    e = Cipher(algorithms.AES(key), modes.CTR(c0)).encryptor()
+    return e.update(data) + e.finalize()
+C0 = bytes(14) + b"\xff\x00"
+x = bytes(a ^ b for a, b in zip(bytes([0x11] * 32), bytes([0x22] * 32)))
+ad = bytes.fromhex("061009520038") + (1).to_bytes(2, "big") + x
+print(ctr(bytes([1] * 16), C0, cbc_mac(bytes([1] * 16), ad)).hex())  # SESSION_RESPONSE MAC
+ad = bytes.fromhex("061009530018") + b"\x00\x02" + x
+print(ctr(bytes([2] * 16), C0, cbc_mac(bytes([2] * 16), ad)).hex())  # SESSION_AUTHENTICATE MAC
+key, inner = bytes([3] * 16), bytes.fromhex("0610095400080000")
+seq, serial, tag = bytes(6), bytes([0, 0xFA, 1, 2, 3, 4]), b"\x00\x00"
+hdr = bytes.fromhex("06100950") + (38 + len(inner)).to_bytes(2, "big")
+mac = cbc_mac(key, hdr + b"\x00\x01", inner, seq + serial + tag + len(inner).to_bytes(2, "big"))
+enc = ctr(key, seq + serial + tag + b"\xff\x00", mac + inner)
+print((hdr + b"\x00\x01" + seq + serial + tag + enc[16:] + enc[:16]).hex())  # SECURE_WRAPPER
+```
+
+Expected: `3651034f87ba7fdad9675c2db8a9e52c`, `a2a7bc462ef36fb1d8a6df0df38f20a1`,
+`06100950002e000100000000000000fa010203040000ebb209450bfa0d24f46fc31ebbe5f744fe21ea882aea3d19`.
+
 ### 12.2 Sim conformance loop
 
 The knx-sim Secure device model is the executable spec (mirroring System 7).
@@ -990,10 +1099,12 @@ CONNECT_REQUEST against the gateway + a SEARCH_RESPONSE_EXTENDED):
 2. Data-Secure MAC length (4 vs 16) and secured-vs-plain scope on the
    management path (§6.2). **Settled** by the same capture: 4 bytes; the device
    answers two plain reads before the Sync, everything after it is secured.
-3. `SEC-CAL:` SecureWrapper `additional_data` exact bytes (§8.2).
-4. `SEC-CAL:` SEARCH_RESPONSE_EXTENDED Secure DIB type/layout + gateway
-   secure-only mode (§8.4).
-5. `SEC-CAL:` `message_tag` for tunnelling + keepalive/idle timers (§8.3).
+3. `SEC-CAL:` SecureWrapper `additional_data` exact bytes (§8.2). Open: the
+   capture holds no session key; the first live session settles it.
+4. SEARCH_RESPONSE_EXTENDED Secure DIB type/layout + gateway secure-only mode
+   (§8.4). **Settled** by the ipsecure-1-1-200 capture (2026-09-24).
+5. `message_tag` for tunnelling (**settled**: 0) + keepalive/idle timers
+   (`SEC-CAL:` open, §8.3).
 
 The `.knxkeys` signature canonicalization (§4.4) is settled (#84), confirmed
 against a real ETS 6 export.
@@ -1005,15 +1116,16 @@ greppable.
 
 ## 13. Ranked open questions a live capture would settle
 
-1. **Does the gateway require IP Secure (secure-only), and which user ids map to
-   which tunnel slots?** Decides whether Phase B is mandatory to talk to the house
-   at all. (Capture a plain CONNECT_REQUEST; inspect SEARCH_RESPONSE_EXTENDED.)
+1. ~~Does the gateway require IP Secure (secure-only), and which user ids map
+   to which tunnel slots?~~ **Settled** 2026-09-24: secure-only; users 2..9 map
+   to tunnels 1.1.22..1.1.29 through the keyring (§8.4).
 2. **Do target devices require Data Secure for management once activated, or is
    plain management still allowed inside a secure tunnel?** Decides the Phase A
    default (§6.2).
 3. **Sync_Req/Sync_Res byte layout and whether Sync is mandatory** to learn the
    device seqnum (§5.9, §6.3).
-4. **SecureWrapper `additional_data` MAC input** (§8.2).
+4. **SecureWrapper `additional_data` MAC input** (§8.2): the first live
+   bussard session against the interface settles it (the capture cannot).
 5. **FDSK QR/label string encoding** - only if commissioning from a scanned label
    (a non-goal, §1.4). `[research §2.6, UNKNOWN]`.
 
@@ -1030,7 +1142,9 @@ greppable.
   ACTIVATED sim device (§5, §6, §12.2). Phase A done.
 - **B1** - IP Secure session layer: SESSION_* handshake, X25519, SecureWrapper,
   monotonic sequence, SEARCH_RESPONSE_EXTENDED detection; sim IP-Secure tunnel
-  server (§7-§9). Gated on a secure-only interface.
+  server (§7-§9). Implemented (§7.0): TCP secure tunnelling client with keyring
+  or explicit credentials, #180 reconnect, the #182 refusal, and the knx-sim
+  secure-only interface; live confirmation against 1.1.200 pending.
 - **B2** - Secure ROUTING (multicast + TIMER_NOTIFY), deferred (§9.3).
 - **M2** - live ETS activation capture resolves the five `SEC-CAL:` markers; fix
   any default that was wrong. The Data Secure half is done (secure-1-1-12

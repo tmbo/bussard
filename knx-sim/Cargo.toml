@@ -45,6 +45,14 @@ base64 = "0.22"
 aes = "0.8"
 cbc = "0.1"
 ctr = "0.9"
+# KNXnet/IP Secure server (issue #71 Phase B, spec §7-§9): X25519 ECDH
+# (BSD-3-Clause; `static_secrets` builds the ephemeral secret from OS random
+# bytes), SHA-256 for the session key and PBKDF2-HMAC-SHA256 for the password
+# keys (both MIT OR Apache-2.0), OS randomness (MIT OR Apache-2.0).
+x25519-dalek = { version = "2", default-features = false, features = ["static_secrets", "zeroize", "precomputed-tables"] }
+sha2 = "0.10"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+getrandom = "0.2"
 # Config-file (de)serialization. MIT/Apache-2.0.
 serde = { version = "1", features = ["derive"] }
 serde_norway = "0.9"

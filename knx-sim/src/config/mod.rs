@@ -33,6 +33,43 @@ pub struct GatewayConfig {
     pub host: String,
     /// Bind UDP port (e.g. `3671`).
     pub port: u16,
+    /// KNXnet/IP Secure on the gateway (issue #71 Phase B). Absent: a plain
+    /// UDP tunnelling gateway, as before.
+    #[serde(default)]
+    pub secure: Option<IpSecureConfig>,
+}
+
+/// A KNXnet/IP Secure tunnelling interface: TCP on the gateway port, the
+/// session handshake, SECURE_WRAPPER traffic. SYNTHETIC credentials only.
+#[derive(Debug, Clone, Deserialize)]
+pub struct IpSecureConfig {
+    /// The interface's own individual address (the keyring's `Host`), e.g.
+    /// `1.1.200`. Reported in the device-info DIB.
+    pub individual_address: String,
+    /// The device authentication code (a password; the SESSION_RESPONSE MAC
+    /// key is its PBKDF2).
+    pub device_authentication_code: String,
+    /// Refuse plain UDP tunnelling (CONNECT_RESPONSE `0x22`) and advertise
+    /// tunnelling as a secured service family. Default `true`.
+    #[serde(default = "default_true")]
+    pub secure_only: bool,
+    /// The tunnelling users.
+    pub users: Vec<IpSecureUserConfig>,
+}
+
+/// One KNXnet/IP Secure tunnelling user.
+#[derive(Debug, Clone, Deserialize)]
+pub struct IpSecureUserConfig {
+    /// The user id (2.. for tunnelling users).
+    pub id: u8,
+    /// The user password (SYNTHETIC).
+    pub password: String,
+    /// The tunnel individual address handed out on CONNECT.
+    pub tunnel_address: String,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// The initial load state of a device's objects, as declared in config.

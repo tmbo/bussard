@@ -34,6 +34,14 @@ pub mod service {
     pub const TUNNELLING_REQUEST: u16 = 0x0420;
     /// TUNNELLING_ACK.
     pub const TUNNELLING_ACK: u16 = 0x0421;
+    /// DESCRIPTION_REQUEST.
+    pub const DESCRIPTION_REQUEST: u16 = 0x0203;
+    /// DESCRIPTION_RESPONSE.
+    pub const DESCRIPTION_RESPONSE: u16 = 0x0204;
+    /// SEARCH_REQUEST_EXTENDED.
+    pub const SEARCH_REQUEST_EXTENDED: u16 = 0x020B;
+    /// SEARCH_RESPONSE_EXTENDED.
+    pub const SEARCH_RESPONSE_EXTENDED: u16 = 0x020C;
 }
 
 /// The tunnelling connection type identifier used in CONNECT_REQUEST.
@@ -45,6 +53,10 @@ pub const PROTOCOL_V10: u8 = 0x10;
 /// KNXnet/IP error status `E_CONNECTION_ID`: the frame named a communication
 /// channel that is not open on this gateway.
 pub const E_CONNECTION_ID: u8 = 0x21;
+/// KNXnet/IP CONNECT_RESPONSE status `E_CONNECTION_TYPE`. A KNXnet/IP Secure
+/// interface without a plain tunnel answers a plain CONNECT_REQUEST with it
+/// (the Jung IP interface in bussard issue #182).
+pub const E_CONNECTION_TYPE: u8 = 0x22;
 
 /// A minimally-parsed KNXnet/IP frame: service type + body bytes.
 #[derive(Debug, Clone, PartialEq, Eq)]

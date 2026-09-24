@@ -19,6 +19,7 @@
 //! [`DataSecureSession::describe_frame`]).
 
 pub mod crypto;
+pub mod ipsecure;
 
 use crate::wire::CemiLData;
 

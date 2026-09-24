@@ -96,6 +96,11 @@ pub enum StreamError {
     /// The stream was asked to stop by the sink or an external signal.
     #[error("stream stopped")]
     Stopped,
+    /// The gateway refused the connection in a way retrying cannot fix (a
+    /// KNXnet/IP Secure interface without credentials, a refused password;
+    /// issue #182). The bus actor has stopped.
+    #[error("{0}")]
+    ConnectRefused(String),
 }
 
 /// A consumer of decoded telegrams.
@@ -238,6 +243,13 @@ async fn run_stream_inner(
                 if sink.on_connect(reconnect).is_stop() {
                     let _ = handle.close().await;
                     return Ok(());
+                }
+            }
+            // The actor stopped on a refusal retrying cannot fix (#182): end
+            // the stream with it instead of waiting forever.
+            BusState::Closed => {
+                if let Some(fatal) = handle.fatal_error() {
+                    return Err(StreamError::ConnectRefused(fatal));
                 }
             }
             BusState::Reconnecting if was_connected => {

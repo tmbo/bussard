@@ -60,6 +60,31 @@ pub enum ServiceType {
     RoutingLostMessage = 0x0531,
     /// ROUTING_BUSY — the router is congested; back off.
     RoutingBusy = 0x0532,
+    /// SEARCH_REQUEST_EXTENDED — a search that asks for specific DIBs (Core v2).
+    SearchRequestExtended = 0x020B,
+    /// SEARCH_RESPONSE_EXTENDED — the answer, carrying the requested DIBs
+    /// (including the KNXnet/IP Secure ones).
+    SearchResponseExtended = 0x020C,
+    /// TUNNELLING_FEATURE_GET (Tunnelling v2; ETS sends it, bussard ignores it).
+    TunnelingFeatureGet = 0x0422,
+    /// TUNNELLING_FEATURE_RESPONSE.
+    TunnelingFeatureResponse = 0x0423,
+    /// TUNNELLING_FEATURE_SET.
+    TunnelingFeatureSet = 0x0424,
+    /// TUNNELLING_FEATURE_INFO.
+    TunnelingFeatureInfo = 0x0425,
+    /// SECURE_WRAPPER — an encrypted KNXnet/IP frame (KNXnet/IP Secure).
+    SecureWrapper = 0x0950,
+    /// SESSION_REQUEST — open a secure session (client X25519 public key).
+    SessionRequest = 0x0951,
+    /// SESSION_RESPONSE — session id, server public key, device-auth MAC.
+    SessionResponse = 0x0952,
+    /// SESSION_AUTHENTICATE — user id and user-password MAC (sent wrapped).
+    SessionAuthenticate = 0x0953,
+    /// SESSION_STATUS — authentication result, keepalive, close.
+    SessionStatus = 0x0954,
+    /// TIMER_NOTIFY — secure routing timer sync (unused by unicast tunnelling).
+    TimerNotify = 0x0955,
 }
 
 impl ServiceType {
@@ -81,6 +106,18 @@ impl ServiceType {
             0x0530 => RoutingIndication,
             0x0531 => RoutingLostMessage,
             0x0532 => RoutingBusy,
+            0x020B => SearchRequestExtended,
+            0x020C => SearchResponseExtended,
+            0x0422 => TunnelingFeatureGet,
+            0x0423 => TunnelingFeatureResponse,
+            0x0424 => TunnelingFeatureSet,
+            0x0425 => TunnelingFeatureInfo,
+            0x0950 => SecureWrapper,
+            0x0951 => SessionRequest,
+            0x0952 => SessionResponse,
+            0x0953 => SessionAuthenticate,
+            0x0954 => SessionStatus,
+            0x0955 => TimerNotify,
             other => {
                 return Err(TransportError::InvalidField {
                     field: "KNXnet/IP service type",
@@ -152,30 +189,55 @@ pub fn parse(buf: &[u8]) -> Result<ParsedFrame<'_>> {
 pub struct Hpai {
     /// The IPv4 socket address (host + UDP port).
     pub addr: SocketAddrV4,
+    /// The host protocol code: [`HPAI_UDP_IPV4`] or [`HPAI_TCP_IPV4`].
+    pub protocol: u8,
 }
 
 /// HPAI host-protocol code for UDP over IPv4.
 pub const HPAI_UDP_IPV4: u8 = 0x01;
+/// HPAI host-protocol code for TCP over IPv4.
+pub const HPAI_TCP_IPV4: u8 = 0x02;
 /// HPAI structure length.
 pub const HPAI_LEN: u8 = 0x08;
 
 impl Hpai {
     /// Builds an HPAI for a UDP/IPv4 endpoint.
     pub fn new(addr: SocketAddrV4) -> Self {
-        Hpai { addr }
+        Hpai {
+            addr,
+            protocol: HPAI_UDP_IPV4,
+        }
     }
 
     /// A wildcard HPAI (`0.0.0.0:0`), asking the gateway to reply on the same
     /// socket it received the request from (route-back / NAT-friendly).
     pub fn wildcard() -> Self {
+        Hpai::new(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))
+    }
+
+    /// The TCP route-back HPAI `08 02 00 00 00 00 00 00`: over a TCP
+    /// connection every KNXnet/IP endpoint is the connection itself. ETS sends
+    /// exactly this in CONNECT_REQUEST, SEARCH_REQUEST_EXTENDED and
+    /// SESSION_REQUEST (issue #90 S4 capture).
+    pub fn tcp_route_back() -> Self {
         Hpai {
             addr: SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0),
+            protocol: HPAI_TCP_IPV4,
         }
+    }
+
+    /// The 8 encoded octets.
+    pub fn to_bytes(&self) -> [u8; 8] {
+        let mut out = Vec::with_capacity(8);
+        self.encode(&mut out);
+        let mut arr = [0u8; 8];
+        arr.copy_from_slice(&out);
+        arr
     }
 
     fn encode(&self, out: &mut Vec<u8>) {
         out.push(HPAI_LEN);
-        out.push(HPAI_UDP_IPV4);
+        out.push(self.protocol);
         out.extend_from_slice(&self.addr.ip().octets());
         out.extend_from_slice(&self.addr.port().to_be_bytes());
     }
@@ -188,12 +250,13 @@ impl Hpai {
                 value: len as u16,
             });
         }
-        let _proto = cur.u8("HPAI host protocol")?;
+        let protocol = cur.u8("HPAI host protocol")?;
         let ip = cur.take(4, "HPAI IPv4")?;
         let ip = Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]);
         let port = cur.u16("HPAI port")?;
         Ok(Hpai {
             addr: SocketAddrV4::new(ip, port),
+            protocol,
         })
     }
 }
@@ -514,6 +577,25 @@ pub struct GatewayInfo {
 
 /// DIB type: device information.
 pub const DIB_DEVICE_INFO: u8 = 0x01;
+/// DIB type: supported service families (family id, version pairs).
+pub const DIB_SUPP_SVC_FAMILIES: u8 = 0x02;
+/// DIB type: secured service families (KNXnet/IP Secure) — the families that
+/// require a secure session. CONFIRMED on a Jung IP interface with Secure
+/// enabled: `06 06 03 01 04 01` (device management v1, tunnelling v1).
+pub const DIB_SECURED_SERVICE_FAMILIES: u8 = 0x06;
+/// DIB type: extended device information (medium status, max APDU, mask).
+pub const DIB_EXTENDED_DEVICE_INFO: u8 = 0x08;
+/// Service family id: KNXnet/IP core.
+pub const FAMILY_CORE: u8 = 0x02;
+/// Service family id: device management.
+pub const FAMILY_DEVICE_MANAGEMENT: u8 = 0x03;
+/// Service family id: tunnelling.
+pub const FAMILY_TUNNELLING: u8 = 0x04;
+/// Service family id: routing.
+pub const FAMILY_ROUTING: u8 = 0x05;
+/// Service family id: KNXnet/IP Secure. CONFIRMED: the Jung interface lists
+/// `09 01` in its SEARCH_RESPONSE_EXTENDED, but not in its DESCRIPTION_RESPONSE.
+pub const FAMILY_SECURITY: u8 = 0x09;
 /// DIB type: KNX addresses — the gateway's own individual address followed by
 /// the *additional* individual addresses it hands out to tunnelling clients.
 pub const DIB_KNX_ADDRESSES: u8 = 0x05;
@@ -583,9 +665,47 @@ pub struct GatewayDescription {
     /// interface without a tunnelling-info DIB this is the best available
     /// estimate of the slot count.
     pub additional_individual_addresses: Vec<u16>,
+    /// The supported service families (family id, version), when reported.
+    pub service_families: Vec<(u8, u8)>,
+    /// The secured service families (family id, version) from the
+    /// KNXnet/IP Secure DIB, when reported. `None` means the DIB was absent
+    /// (a plain interface, or a DESCRIPTION_RESPONSE, which does not carry it).
+    pub secured_service_families: Option<Vec<(u8, u8)>>,
 }
 
 impl GatewayDescription {
+    /// Whether the interface supports KNXnet/IP Secure at all: it lists the
+    /// security service family or sends the secured-families DIB.
+    pub fn secure_capable(&self) -> bool {
+        self.service_families
+            .iter()
+            .any(|&(family, _)| family == FAMILY_SECURITY)
+            || self.secured_service_families.is_some()
+    }
+
+    /// Whether tunnelling requires a secure session (the secured-families DIB
+    /// lists tunnelling). Such an interface refuses a plain CONNECT_REQUEST
+    /// (status `0x22`, issue #182).
+    pub fn tunnelling_secure_only(&self) -> bool {
+        self.secured_service_families
+            .as_ref()
+            .is_some_and(|f| f.iter().any(|&(family, _)| family == FAMILY_TUNNELLING))
+    }
+
+    /// A one-line summary of the KNXnet/IP Secure status for `init`/`scan`
+    /// output, or `None` when the interface reported nothing about security.
+    pub fn security_summary(&self) -> Option<&'static str> {
+        if self.tunnelling_secure_only() {
+            Some("KNXnet/IP Secure: tunnelling is secure-only (needs tunnelling credentials)")
+        } else if self.secure_capable() {
+            Some("KNXnet/IP Secure: supported, plain tunnelling allowed")
+        } else if self.service_families.is_empty() {
+            None
+        } else {
+            Some("KNXnet/IP Secure: not advertised")
+        }
+    }
+
     /// How many tunnelling slots the interface has, and how many are in use.
     ///
     /// Prefers the tunnelling-info DIB (which carries live slot status). Falls
@@ -669,6 +789,12 @@ fn parse_dibs(cur: &mut Cursor<'_>) -> GatewayDescription {
                     out.name = Some(n);
                 }
             }
+            DIB_SUPP_SVC_FAMILIES => {
+                out.service_families = family_pairs(dib_body);
+            }
+            DIB_SECURED_SERVICE_FAMILIES => {
+                out.secured_service_families = Some(family_pairs(dib_body));
+            }
             DIB_KNX_ADDRESSES if dib_body.len() >= 2 => {
                 // The first address is the gateway's own; the rest are the
                 // additional addresses handed to tunnelling clients.
@@ -703,7 +829,50 @@ fn parse_dibs(cur: &mut Cursor<'_>) -> GatewayDescription {
     out
 }
 
-/// Decodes a SEARCH_RESPONSE body into a [`GatewayInfo`].
+/// Splits a service-families DIB body into (family, version) pairs.
+fn family_pairs(body: &[u8]) -> Vec<(u8, u8)> {
+    body.as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| (c[0], c[1]))
+        .collect()
+}
+
+/// SRP type: request DIBs (the DIB types the answer must carry).
+pub const SRP_REQUEST_DIBS: u8 = 0x04;
+
+/// The DIBs bussard asks for in a SEARCH_REQUEST_EXTENDED, in the order and
+/// padding ETS uses (`08 04 01 08 02 06 07 00`, issue #90 S4 capture): device
+/// info, extended device info, service families, secured service families,
+/// tunnelling info.
+pub const SEARCH_EXTENDED_SRP: [u8; 8] = [
+    0x08,
+    SRP_REQUEST_DIBS,
+    DIB_DEVICE_INFO,
+    DIB_EXTENDED_DEVICE_INFO,
+    DIB_SUPP_SVC_FAMILIES,
+    DIB_SECURED_SERVICE_FAMILIES,
+    DIB_TUNNELING_INFO,
+    0x00,
+];
+
+/// Builds a SEARCH_REQUEST_EXTENDED: the discovery HPAI plus the
+/// request-DIBs SRP ([`SEARCH_EXTENDED_SRP`]).
+pub fn search_request_extended(discovery: Hpai) -> Vec<u8> {
+    let mut body = Vec::with_capacity(16);
+    discovery.encode(&mut body);
+    body.extend_from_slice(&SEARCH_EXTENDED_SRP);
+    frame(ServiceType::SearchRequestExtended, &body)
+}
+
+/// Builds a CONNECT_REQUEST for a tunnel over TCP (both HPAIs are the TCP
+/// route-back HPAI, as ETS sends them).
+pub fn connect_request_tcp() -> Vec<u8> {
+    connect_request(Hpai::tcp_route_back(), Hpai::tcp_route_back())
+}
+
+/// Decodes a SEARCH_RESPONSE (or SEARCH_RESPONSE_EXTENDED) body into a
+/// [`GatewayInfo`].
 ///
 /// Layout: an HPAI (the control endpoint) followed by one or more DIBs. The DIBs
 /// are decoded by the same walker the DESCRIPTION_RESPONSE uses, so a gateway

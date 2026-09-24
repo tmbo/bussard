@@ -69,7 +69,7 @@ $ claude mcp add knx -- bussard mcp --dir knx    # let Claude debug your bus
 
 ## Install
 
-You will need a KNXnet/IP gateway (tunneling or routing). Optional but nice: your ETS project export (`.knxproj`) for an instantly named model, and also optionally vendor product data (`.knxprod`, free downloads from manufacturer sites) for commissioning new devices.
+You will need a KNXnet/IP gateway (tunneling or routing). A KNXnet/IP Secure interface works too: bussard opens the encrypted tunnel with the tunnelling users of your ETS keyring (`--keyring`), and KNX Data Secure devices are programmed with their tool keys from the same file. Optional but nice: your ETS project export (`.knxproj`) for an instantly named model, and also optionally vendor product data (`.knxprod`, free downloads from manufacturer sites) for commissioning new devices.
 
 macOS and Linux:
 

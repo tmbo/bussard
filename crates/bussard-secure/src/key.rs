@@ -58,9 +58,66 @@ impl PartialEq for Key16 {
 
 impl Eq for Key16 {}
 
+/// A KNX Secure password held in memory (a KNXnet/IP Secure user password,
+/// a device authentication code, a management password).
+///
+/// Same hygiene as [`Key16`]: redacting `Debug`, no `Serialize`, zeroized on
+/// drop, constant-time equality. Derive the key it stands for at the crypto
+/// boundary with [`Password::derive`] (PBKDF2 is slow, so callers derive only
+/// the passwords they actually use).
+#[derive(Clone)]
+pub struct Password(zeroize::Zeroizing<String>);
+
+impl Password {
+    /// Wraps a password.
+    pub fn new(password: impl Into<String>) -> Self {
+        Password(zeroize::Zeroizing::new(password.into()))
+    }
+
+    /// PBKDF2-HMAC-SHA256 of the Latin-1 password with `salt` (spec §3.4),
+    /// e.g. [`crate::salt::USER_PASSWORD`].
+    pub fn derive(&self, salt: &[u8]) -> Key16 {
+        let latin1 = zeroize::Zeroizing::new(crate::crypto::latin1_bytes(&self.0));
+        crate::crypto::pbkdf2_key(&latin1, salt)
+    }
+
+    /// Whether the password is empty.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl std::fmt::Debug for Password {
+    /// Redacts the password.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Password(<redacted>)")
+    }
+}
+
+impl PartialEq for Password {
+    /// Constant-time for equal lengths.
+    fn eq(&self, other: &Self) -> bool {
+        crate::crypto::constant_time_eq(self.0.as_bytes(), other.0.as_bytes())
+    }
+}
+
+impl Eq for Password {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_password_debug_redacts_and_derives() {
+        let pw = Password::new("secret-pw");
+        assert_eq!(format!("{pw:?}"), "Password(<redacted>)");
+        assert_eq!(
+            pw.derive(crate::salt::USER_PASSWORD),
+            crate::crypto::pbkdf2_key(b"secret-pw", crate::salt::USER_PASSWORD)
+        );
+        assert_eq!(pw, Password::new("secret-pw"));
+        assert_ne!(pw, Password::new("other"));
+    }
 
     #[test]
     fn test_debug_redacts_key_bytes() {

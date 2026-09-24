@@ -20,6 +20,17 @@ These apply to every subcommand:
 - `-v` / `--verbose` (repeatable): raise log verbosity. `-v` = `info`, `-vv` = `debug`, `-vvv` = `trace`. The default (no flag) is `warn`. An explicit `RUST_LOG` overrides this entirely, so `RUST_LOG=bussard_transport=trace` still works for targeted tracing.
 - `--timing`: print the invocation's wall-clock time to stderr on exit (e.g. `took 1.23s`). Off by default.
 - `--no-progress`: never draw the live progress display; print the plain progress lines instead, as a piped run does.
+- `--secure-user <ID>` with `--secure-password-env <VAR>`: open a [KNXnet/IP Secure](#knxnetip-secure-tunnelling) tunnel as tunnelling user `ID`, with its password read from the environment variable `VAR` (never from the command line). Both flags go together.
+
+#### KNXnet/IP Secure tunnelling
+
+An interface with KNXnet/IP Secure enabled and no plain tunnel refuses an ordinary connection. bussard then needs a tunnelling user's credentials and opens an authenticated, encrypted session over TCP (issue #71 Phase B): X25519 key agreement, the interface proves its device authentication code, bussard proves the user password, and every frame after that travels in a SECURE_WRAPPER.
+
+- **From a keyring (automatic).** A command that takes `--keyring <file.knxkeys>` also uses the keyring's tunnelling users (`Interface Type="Tunneling"` entries, see [`bussard keyring`](#bussard-keyring-file)). bussard asks the gateway for its extended description; when a keyring interface names the gateway's individual address as its host and the gateway advertises KNXnet/IP Secure, the tunnel goes secure as the user whose tunnel address is free. The keyring also carries the interface's device authentication code, so bussard checks the interface's identity before it authenticates. A plain gateway stays on the plain tunnel.
+- **Explicit.** `--secure-user <ID> --secure-password-env <VAR>` on any command always opens a secure session as that user. Without a keyring the interface's identity is not verified (a warning says so).
+- **Neither.** Against a secure-only interface the command fails at once, with no retries: `interface <gateway> requires KNXnet/IP Secure (secure tunnelling only) and no tunnelling credentials were given ...`. `bussard init --gateway <ip>` prints `KNXnet/IP Secure: tunnelling is secure-only` for such an interface.
+
+The tunnel address is assigned by the interface to the authenticated user (in an ETS keyring, each user has its own, e.g. 1.1.22 to 1.1.29), and management traffic uses it as its source. A refused password (`refused tunnelling user N`) and an interface that fails its own authentication are fatal. A lost link re-establishes a new secure session within the [`BUSSARD_TUNNEL_RECONNECT_SECS`](#environment-variables) budget. Secure routing (multicast) is not implemented.
 
 #### Progress display
 
@@ -67,6 +78,8 @@ Tunnelling: 4 tunnels, 1 in use.
 ```
 
 The count comes from the tunnelling-info DIB (KNXnet/IP Core v2). An interface that sends only its additional individual addresses prints `N tunnels (usage not reported)`; an older interface that reports neither says so. If the reachability check finds every slot taken, `init` prints the no-free-tunnel message (see [exit codes](#exit-codes)) and still writes the skeleton.
+
+`init` asks with an extended search (SEARCH_REQUEST_EXTENDED), which also reports KNXnet/IP Secure: `KNXnet/IP Secure: tunnelling is secure-only (needs tunnelling credentials)`, `supported, plain tunnelling allowed` or `not advertised`. A secure-only interface skips the plain reachability check and names the credentials a command needs ([KNXnet/IP Secure tunnelling](#knxnetip-secure-tunnelling)). Discovery lists such interfaces as `KNXnet/IP Secure only`.
 
 ### `bussard import [PROJECT]`
 
@@ -200,7 +213,12 @@ The text output prints the same split as `KNX Secure (model):` and `KNX Secure (
 
 ### `bussard keyring <FILE>`
 
-Inspect an ETS KNX Secure keyring export (`.knxkeys`): print what it carries — the device individual addresses, the tunnel/management interface addresses, whether a backbone key is present, and how many group keys there are. **No key material is ever printed**, in text or JSON.
+Inspect an ETS KNX Secure keyring export (`.knxkeys`): print what it carries — the device individual addresses, the tunnel/management interface addresses, whether a backbone key is present, how many group keys there are, the KNXnet/IP Secure tunnelling users (user id, tunnel address, interface, and whether the password and the device authentication code are present) and the devices with KNXnet/IP Secure device credentials. **No key material or password is ever printed**, in text or JSON (`tunnelling_users`, `ip_secure_devices`).
+
+```
+  KNXnet/IP Secure tunnelling users:
+    user 2 -> tunnel 1.1.22 on interface 1.1.200: password + device authentication code
+```
 
 | Flag / arg | Default | Meaning |
 |---|---|---|
@@ -732,6 +750,7 @@ Serve the network-visualization website: an HTTP server that renders the model a
 |---|---|
 | `BUSSARD_PROJECT_PASSWORD` | Password for a protected `.knxproj` when `--password` is not given. Keep it in an untracked `.env`, never in the repo. |
 | `BUSSARD_KEYRING_PASSWORD` | Password for a `.knxkeys` keyring read by `bussard keyring`, or passed with `--keyring` to `flash`, `apply`, `describe` and `audit`. There is deliberately no flag for it, so it never lands in shell history or a process listing. |
+| *(the `--secure-password-env` variable)* | The KNXnet/IP Secure tunnelling user's password for `--secure-user`. You choose the variable's name; bussard reads only that variable. |
 | `BUSSARD_ALLOW_REAL_GATEWAY` | Set to `1` to permit a write command against a non-loopback (real) gateway, equivalent to `--allow-remote-gateway`. Loopback gateways never need it. |
 | `RUST_LOG` | Log filter (e.g. `debug`, `bussard_transport=trace`). Overrides `-v`/`--verbose` when set. |
 | `BUSSARD_ADOPT_ADDRESS` | The target address for `adopt`, for driving the wizard from a script or test (together with `--product`). |
