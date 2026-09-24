@@ -208,17 +208,37 @@ fn handshake(
     addr: SocketAddr,
     password: &str,
 ) -> Result<(TcpStream, Client, Vec<u8>), Box<dyn std::error::Error>> {
+    // Derive the keys (PBKDF2, slow in a debug build) before connecting:
+    // the server's idle timeout runs from the accept.
+    let keys = Keys::derive(password);
     let mut stream = TcpStream::connect(addr)?;
     stream.set_read_timeout(Some(Duration::from_secs(3)))?;
-    let (client, status) = handshake_on(&mut stream, password)?;
+    let (client, status) = handshake_on(&mut stream, &keys)?;
     Ok((stream, client, status))
+}
+
+/// The password keys of one handshake, derived before the session starts
+/// so a server-side idle timeout never runs out inside the handshake.
+struct Keys {
+    device: [u8; 16],
+    user: [u8; 16],
+}
+
+impl Keys {
+    fn derive(password: &str) -> Self {
+        Keys {
+            device: device_authentication_key(DEVICE_CODE),
+            user: user_password_key(password),
+        }
+    }
 }
 
 /// The handshake on any [`Wire`].
 fn handshake_on(
     wire: &mut impl Wire,
-    password: &str,
+    keys: &Keys,
 ) -> Result<(Client, Vec<u8>), Box<dyn std::error::Error>> {
+    let (device, user) = (keys.device, keys.user);
     let secret = x25519_dalek::StaticSecret::from([0x21u8; 32]);
     let public = x25519_dalek::PublicKey::from(&secret).to_bytes();
     let mut body = wire.hpai()?;
@@ -236,7 +256,6 @@ fn handshake_on(
         .map(|(a, b)| a ^ b)
         .collect();
     // The server proves the device authentication code.
-    let device = device_authentication_key(DEVICE_CODE);
     let mut ad = response[..6].to_vec();
     ad.extend_from_slice(&session_id.to_be_bytes());
     ad.extend_from_slice(&xor);
@@ -255,7 +274,6 @@ fn handshake_on(
         session_id,
         tx: 0,
     };
-    let user = user_password_key(password);
     let mut auth = vec![0x06, 0x10, 0x09, 0x53, 0x00, 0x18, 0x00, 0x02];
     let mut auth_ad = auth.clone();
     auth_ad.extend_from_slice(&xor);
@@ -397,8 +415,9 @@ fn test_secure_session_over_udp_tunnels_with_acks() -> TestResult {
         TcpStream::connect_timeout(&addr, Duration::from_secs(1)).is_err(),
         "TCP is refused"
     );
+    let keys = Keys::derive(USER_PASSWORD);
     let mut udp = udp_to(addr)?;
-    let (mut client, status) = handshake_on(&mut udp, USER_PASSWORD)?;
+    let (mut client, status) = handshake_on(&mut udp, &keys)?;
     assert_eq!(status, vec![0x06, 0x10, 0x09, 0x54, 0x00, 0x08, 0x00, 0x00]);
 
     // CONNECT with the client's UDP HPAI as control and data endpoint.
@@ -466,8 +485,8 @@ fn test_secure_session_over_udp_tunnels_with_acks() -> TestResult {
 
 #[test]
 fn test_idle_secure_session_times_out_with_status_timeout() -> TestResult {
-    // Long enough for the client's PBKDF2 (unoptimized in a debug test
-    // build) to finish inside the handshake, short for the test.
+    // The keys are derived before each session starts, so the timeout only
+    // has to cover the handshake itself.
     let addr = start_with(true, true, Some(1500))?;
     // TCP: a wrapped STATUS_TIMEOUT, then the connection closes.
     let (mut stream, client, _) = handshake(addr, USER_PASSWORD)?;
@@ -475,8 +494,9 @@ fn test_idle_secure_session_times_out_with_status_timeout() -> TestResult {
     assert_eq!(&notice[2..4], &[0x09, 0x54], "SESSION_STATUS");
     assert_eq!(notice[6], 0x03, "STATUS_TIMEOUT");
     // UDP: the same notice.
+    let keys = Keys::derive(USER_PASSWORD);
     let mut udp = udp_to(addr)?;
-    let (client, _) = handshake_on(&mut udp, USER_PASSWORD)?;
+    let (client, _) = handshake_on(&mut udp, &keys)?;
     let notice = client.open(&udp.recv_frame()?)?;
     assert_eq!(notice[6], 0x03, "STATUS_TIMEOUT over UDP");
     Ok(())
