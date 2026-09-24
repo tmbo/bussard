@@ -71,6 +71,18 @@ else
     *)           die "unknown phase '$PHASE' (plan, apply, flash, flash-force, assign, describe, custom)" ;;
   esac
 fi
+# A step against a Data Secure device carries `--keyring <file>`; the
+# before/after probes need the same keyring or they cannot sync with the device
+# (issue #166). BUSSARD_KEYRING_PASSWORD is already in the environment.
+SNAP_KEYRING=()
+prev=""
+for a in ${CMD+"${CMD[@]}"}; do
+  case "$a" in
+    --keyring=*) SNAP_KEYRING=(--keyring "${a#--keyring=}") ;;
+    *) [ "$prev" = "--keyring" ] && SNAP_KEYRING=(--keyring "$a") ;;
+  esac
+  prev="$a"
+done
 CMD=(${CMD+"${CMD[@]}"} --dir "$MODEL_DIR" --gateway "$GATEWAY_RESOLVED" -vv)
 if ! is_loopback; then CMD=(${CMD+"${CMD[@]}"} --allow-remote-gateway); fi
 
@@ -108,18 +120,27 @@ ensure_dir "$OUT"
 
 # The before/after reads deliberately run WITHOUT the wire trace: they are
 # context, and the trace belongs to the step itself.
+# The keyring goes to `reconstruct` only when this binary's reconstruct accepts
+# the flag; an unknown flag would fail the probe outright.
+RECON_KEYRING=()
+if [ "${#SNAP_KEYRING[@]}" -gt 0 ] && [ -x "$BUSSARD_BIN" ] \
+    && "$BUSSARD_BIN" reconstruct --help 2>/dev/null | grep -q -- '--keyring'; then
+  RECON_KEYRING=(${SNAP_KEYRING+"${SNAP_KEYRING[@]}"})
+fi
 snapshot() {
   local when="$1"
   printf '  %-6s describe ... ' "$when"
   if WIRE_TRACE=0 run_bussard_json "$OUT/$when-describe.json" "$OUT/$when-describe.log" \
-      describe "$IA" --json --dir "$MODEL_DIR" --gateway "$GATEWAY_RESOLVED"; then
+      describe "$IA" --json --dir "$MODEL_DIR" --gateway "$GATEWAY_RESOLVED" \
+      ${SNAP_KEYRING+"${SNAP_KEYRING[@]}"}; then
     printf 'ok  '
   else
     printf 'failed  '
   fi
   printf 'reconstruct ... '
   if WIRE_TRACE=0 run_bussard "$OUT/$when-reconstruct.log" reconstruct "$IA" \
-      --dir "$MODEL_DIR" --gateway "$GATEWAY_RESOLVED"; then
+      --dir "$MODEL_DIR" --gateway "$GATEWAY_RESOLVED" \
+      ${RECON_KEYRING+"${RECON_KEYRING[@]}"}; then
     printf 'ok\n'
   else
     printf 'failed or refused\n'

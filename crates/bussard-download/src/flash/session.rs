@@ -65,6 +65,42 @@ fn reboot_wait_bound() -> std::time::Duration {
         .unwrap_or(MASTER_RESET_REBOOT_WAIT)
 }
 
+/// The upper bound on the post-restart readiness poll for a **Data Secure**
+/// device (issue #166).
+///
+/// ETS's erase-7 restart of 1.1.12 took about 14 s before the device answered
+/// again (secure-1-1-12 capture), and a Secure device can answer at the
+/// transport layer before its security layer is ready. The poll therefore
+/// keeps probing for up to 30 s, comfortably above the 14 s the capture shows;
+/// a device whose plain descriptor probe answers earlier ends the wait then.
+/// Honours [`REBOOT_WAIT_MS_ENV`] like the plain bound, so tests stay fast.
+const SECURE_REBOOT_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The first pause between two Secure readiness probes; it doubles after each
+/// unanswered probe up to [`SECURE_PROBE_MAX_BACKOFF`] (1, 2, 4, 8, 8 … s).
+const SECURE_PROBE_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// The cap on the pause between two Secure readiness probes.
+const SECURE_PROBE_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// The upper bound on the post-restart poll of a Data Secure device, honouring
+/// [`REBOOT_WAIT_MS_ENV`].
+fn secure_reboot_wait_bound() -> std::time::Duration {
+    std::env::var(REBOOT_WAIT_MS_ENV)
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .map(std::time::Duration::from_millis)
+        .unwrap_or(SECURE_REBOOT_WAIT)
+}
+
+/// The S-A_Sync retry policy for the first connection after a restart bussard
+/// triggered: [`SyncRetry::after_restart`](bussard_mgmt::SyncRetry::after_restart),
+/// with its backoff capped by the reboot bound so a test that shrinks the bound
+/// does not sleep whole seconds.
+fn sync_retry_after_restart() -> bussard_mgmt::SyncRetry {
+    bussard_mgmt::SyncRetry::after_restart().with_backoff_cap(secure_reboot_wait_bound())
+}
+
 /// The numbered-exchange count at which the flash proactively cycles the L4
 /// connection (a graceful `T_Disconnect`/`T_Connect` + re-authorize) *between*
 /// steps, to stay under the device's per-connection budget.
@@ -168,7 +204,9 @@ impl<Ch: L4Channel> Session<SingleConnector<Ch>> {
     /// The returned session flashes over exactly this connection. This is the
     /// drop-in for callers and tests that open the connection themselves.
     pub fn from_connection(l4: Layer4Connection<Ch>) -> Session<SingleConnector<Ch>> {
+        let secure = l4.is_secure();
         Session {
+            secure,
             l4: Some(l4),
             connector: None,
             bcu_key: None,
@@ -286,6 +324,11 @@ pub struct Session<C: Connector> {
     /// window's exchange sequence identical to an un-negotiated flash after the
     /// first, while still scaling chunks to the device.
     max_apdu: Option<u16>,
+    /// Whether the session's connections wrap management APDUs with a Data
+    /// Secure tool key. A restart the flash triggers then ends with the Secure
+    /// readiness probe and the longer S-A_Sync retry (issue #166); a plain
+    /// session keeps its wire sequence unchanged.
+    secure: bool,
 }
 
 impl<C: Connector> Session<C> {
@@ -358,6 +401,7 @@ impl<C: Connector> Session<C> {
             None => l4.negotiate_max_apdu().await.ok().flatten(),
         };
         Ok(Session {
+            secure: l4.is_secure(),
             l4: Some(l4),
             connector: Some(connector),
             bcu_key,
@@ -451,7 +495,13 @@ impl<C: Connector> Session<C> {
                 .ok_or(WriteError::Mgmt(bussard_mgmt::MgmtError::Transport(
                     bussard_transport::TransportError::Closed,
                 )))?;
-        let mut l4 = connector.connect().await?;
+        let l4 = connector.connect().await?;
+        self.adopt(l4).await
+    }
+
+    /// Authorizes `l4`, re-seeds the cached max APDU onto it and makes it the
+    /// session connection.
+    async fn adopt(&mut self, mut l4: Layer4Connection<C::Channel>) -> Result<(), WriteError> {
         Self::authorize(&mut l4, self.bcu_key, &mut self.authorize_outcomes).await?;
         // Re-seed the device-stable max APDU onto the fresh connection without a
         // round-trip, so scaling persists across the cycle without spending an
@@ -490,6 +540,9 @@ impl<C: Connector> Session<C> {
         // lease, and the probes below need it. Dropping (rather than
         // disconnecting) is right — the peer is mid-reboot and will not answer.
         self.l4 = None;
+        if self.secure {
+            return self.reconnect_after_secure_reboot().await;
+        }
         let bound = reboot_wait_bound();
         let started = tokio::time::Instant::now();
         tokio::time::sleep(REBOOT_PROBE_MIN_WAIT.min(bound)).await;
@@ -539,6 +592,89 @@ impl<C: Connector> Session<C> {
         // probe already tore it down.
         let _ = l4.disconnect().await;
         alive
+    }
+
+    /// The Data Secure variant of [`reconnect_after_reboot`](Session::reconnect_after_reboot)
+    /// (issue #166).
+    ///
+    /// A Secure device can T_ACK frames before its security layer is ready, so
+    /// the first S-A_Sync_Req after a reboot may go unanswered. This follows
+    /// ETS, which opens every secured session with a plain
+    /// `A_DeviceDescriptor_Read`:
+    ///
+    /// 1. stay quiet for [`REBOOT_PROBE_MIN_WAIT`] (capped by the bound);
+    /// 2. probe with `T_Connect` + a plain `A_DeviceDescriptor_Read` on the
+    ///    tight [`REBOOT_PROBE_TIMEOUTS`] budget, backing off 1, 2, 4, 8, 8 … s
+    ///    between probes until one answers or [`secure_reboot_wait_bound`]
+    ///    (30 s) has passed since the reboot wait began;
+    /// 3. keep the connection whose probe answered (no `T_Disconnect` /
+    ///    `T_Connect` in between, as in the ETS capture), restore its normal
+    ///    timeouts and authorize it. The authorize runs the S-A_Sync handshake
+    ///    under [`SyncRetry::after_restart`](bussard_mgmt::SyncRetry::after_restart),
+    ///    so a Sync_Req the device acknowledges but does not answer is repeated
+    ///    on that connection.
+    ///
+    /// When no probe answers within the bound, a fresh connection is opened
+    /// anyway with the same Sync retry, so a device that never came back
+    /// surfaces its error unchanged.
+    async fn reconnect_after_secure_reboot(&mut self) -> Result<(), WriteError> {
+        let bound = secure_reboot_wait_bound();
+        let started = tokio::time::Instant::now();
+        let deadline = started + bound;
+        tokio::time::sleep(REBOOT_PROBE_MIN_WAIT.min(bound)).await;
+        let mut backoff = SECURE_PROBE_INITIAL_BACKOFF;
+        let mut ready = None;
+        if self.connector.is_some() {
+            loop {
+                if let Some(l4) = self.probe_secure_device().await {
+                    ready = Some(l4);
+                    break;
+                }
+                let now = tokio::time::Instant::now();
+                if now >= deadline {
+                    tracing::debug!(
+                        "Secure device did not answer the plain descriptor probe within \
+                         the reboot bound; reconnecting anyway"
+                    );
+                    break;
+                }
+                tokio::time::sleep(backoff.min(deadline - now)).await;
+                backoff = backoff.saturating_mul(2).min(SECURE_PROBE_MAX_BACKOFF);
+            }
+        }
+        let mut l4 = match ready {
+            Some(l4) => l4,
+            None => {
+                let connector = self.connector.as_mut().ok_or(WriteError::Mgmt(
+                    bussard_mgmt::MgmtError::Transport(bussard_transport::TransportError::Closed),
+                ))?;
+                connector.connect().await?
+            }
+        };
+        l4.set_sync_retry(sync_retry_after_restart());
+        self.adopt(l4).await
+    }
+
+    /// One Secure readiness probe: opens a connection, reads the device
+    /// descriptor in the clear on the tight [`REBOOT_PROBE_TIMEOUTS`] budget and
+    /// returns the connection, with its normal timeouts restored, when the device
+    /// answered. A silent device yields `None` and its connection is released.
+    async fn probe_secure_device(&mut self) -> Option<Layer4Connection<C::Channel>> {
+        let connector = self.connector.as_mut()?;
+        let mut l4 = connector.connect().await.ok()?;
+        let normal = l4.timeouts();
+        l4.set_timeouts(REBOOT_PROBE_TIMEOUTS);
+        match bussard_mgmt::read_device_descriptor_unsecured(&mut l4).await {
+            Ok(_) => {
+                l4.set_timeouts(normal);
+                Some(l4)
+            }
+            Err(err) => {
+                tracing::debug!(%err, "Secure readiness probe unanswered");
+                let _ = l4.disconnect().await;
+                None
+            }
+        }
     }
 
     /// Waits out a confirmed master reset (factory reset or confirmed restart)
