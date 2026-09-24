@@ -2,8 +2,9 @@
 
 > Living design document: what bussard is, why it is feasible, the architecture, and the
 > roadmap. Updated as decisions are taken. For a hands-on introduction read the
-> [README](../README.md) and [howto.md](howto.md); the complete command and schema
-> reference is [reference.md](reference.md).
+> [README](../README.md) and [howto.md](howto.md); the complete command
+> reference is [reference.md](reference.md), and the file format is specified in
+> [model-format.md](model-format.md).
 
 ## 1. What we're building
 
@@ -11,11 +12,11 @@
 
 The goal is to use a configuration-first approach for managing KNX:
 
-- Configuration lives in YAML files in a git repo (group addresses, links, device
+- Configuration lives in TOML files in a git repo (group addresses, links, device
   parameters), so changes, including LLM-proposed ones, are reviewable diffs.
-- `bussard` compiles that YAML and pushes it to the devices over the bus.
+- `bussard` compiles those files and pushes them to the devices over the bus.
 - `bussard` also observes the bus: live monitor, telegram capture, decode against the
-  same YAML model, device introspection.
+  same model, device introspection.
 - An MCP server exposes those read/write operations as tools.
 
 Non-goals: replacing ETS for certification, planning, or documentation. Supporting every
@@ -48,12 +49,12 @@ A KNX device's configuration is three separable things with very different diffi
 | (c) Parameters | channel mode, runtime, wind-alarm behaviour, ... | Device-specific memory layout described only in the `.knxprod`. Hard. |
 
 Most day-to-day changes are (b), but all three layers are in scope: the goal is the
-entire installation lifecycle in YAML, from `init` to a running house. `assign` does (a);
+entire installation lifecycle in files, from `init` to a running house. `assign` does (a);
 `plan`/`apply` do (b) for System B devices. For (c), the loop is closed on System B:
-device files carry a `parameters:` section (imported from the ETS project, validated
-against the product model, #46), and `flash` computes the parameter memory image from
+device files carry parameter values per channel (imported from the ETS project,
+validated against the product model, #46), and `flash` computes the parameter memory image from
 vendor defaults plus those overrides and streams it, using per-module-instance base
-offsets (`module_bases:`, #48) to place per-channel parameters. Which path links take
+offsets (recorded in `bussard.lock`, #48) to place per-channel parameters. Which path links take
 (properties on System B vs. memory writes on older System 1/2) depends on the mask
 version each device reports; `bussard scan` reports this.
 
@@ -111,7 +112,7 @@ vendor files.
 
 ```
 crates/
-  bussard-model/      # GA/IA/DPT/flags types, DPT codecs, YAML schema, loader, validation
+  bussard-model/      # GA/IA/DPT/flags types, DPT codecs, TOML files, loader, validation
   bussard-ets/        # shared ETS-XML primitives: streaming parsers, DPT/flag helpers, zip guard
   bussard-project/    # .knxproj import: AES zip + PBKDF2, streaming XML → model
   bussard-prod/       # .knxprod reading (import-product)
@@ -130,7 +131,7 @@ crates/
 ```
 
 The separation that matters most: `bussard-mgmt` is fiddly and protocol-correct, heavily
-tested against real devices; `bussard-download` is pure-ish computation (YAML + product
+tested against real devices; `bussard-download` is pure-ish computation (model + product
 data → byte image), unit-testable without a bus. `bussard-bus` owns the single transport
 connection and hands out exclusive layer-4 leases so a management session and live group
 traffic share one gateway tunnel slot. `bussard-ets` factors the streaming-XML primitives
@@ -173,46 +174,84 @@ copy of each safety rule:
 
 The crate never prints; prompts, JSON shapes and status codes stay with the surfaces.
 
-### 5.2 The YAML model
+### 5.2 The model files
 
-The user's KNX-as-code repo: `bussard.yaml` (connection), `groups.yaml` (the GA plan),
-`links.yaml` (com-object → GA assignments), `devices/*.yaml`. The full layout and every
-field are specified in [reference.md](reference.md#the-model-directory); this section
-keeps only the design decisions behind the schema.
+The user's KNX-as-code repository is a directory of TOML files: `bussard.toml`
+(connection and lint settings), `groups.toml` (the GA plan), one
+`devices/<address>.toml` per device, and the generated `bussard.lock`.
+[model-format.md](model-format.md) is the normative contract for every file, key and
+error; this section keeps only the decisions behind it.
 
-- Deterministic, sorted emission, so re-imports and hand edits produce minimal diffs.
-- Strict parsing everywhere: unknown fields and duplicate keys are rejected, so a typo is
-  an error, not a silent no-op.
-- Every generated file carries a banner naming what generated it and what is
-  hand-editable; regenerated sections carry an explicit marker.
-- `address:` is a device's identity; the filename slug is cosmetic. Re-import is
-  idempotent: pruned devices leave, renamed devices replace their old file.
-- The informational com-object `name` lives only in `links.yaml`; device files carry no
-  duplicate. Payload `size` is derived from the DPT and serialized only when no DPT
-  exists.
-- `protected: true` on a GA is the safety gate: the CLI requires `--force`, MCP refuses
-  outright.
-- Device `parameters:` store only values that differ from the vendor default (diff-
-  friendly), keyed `<name-slug>@<ref-id>` because a name alone is ambiguous across
-  module instances. They sit in the hand-editable zone but are replaced with ETS truth
-  on re-import; the generated zone below the marker (`module_bases:`, `com_objects:`)
-  is never hand-edited.
+- **TOML, because the writer is often an LLM.** YAML types a scalar by its spelling:
+  `0` is an integer, `1.010` becomes the float `1.01`, `07B0` is a string and `0705` is
+  not. Every edit had to get the quoting right. In TOML a string is always quoted and a
+  number never is, duplicate keys are a parse error by the spec, and `toml_edit` keeps
+  comments and untouched lines byte-identical across a save. A float in a string field
+  is rejected, not coerced, because the trailing zero is already gone after parsing.
+- **A file is user-owned or generated, never both.** `bussard.lock` is the only
+  generated file, and only `import` and `adopt` write it. Every other file belongs to
+  the user in full, so there is no hand-editable zone behind a marker.
+- **The lock follows `Cargo.lock`.** An `@generated` first line (which GitHub also uses
+  to fold the diff), a flat `[[device]]` list sorted by address, one file per model,
+  and regenerate rather than hand-merge on a conflict. It holds the vendor facts:
+  program, mask, channel ids, the com-object table, parameter refs, module base offsets.
+  It is committed because `models/` is not: a checkout without product data must still
+  validate, plan, decode telegrams and derive Home Assistant entities.
+- **Identity is a value, never a key.** An address in key position needs quotes in
+  TOML. `groups.toml` is therefore a list of inline tables, one line per entry, each
+  with `address = "0/0/1"`, and a device's identity is its `address` field, which must
+  match the file name. Uniqueness moves from the parser to validation (E020), next to
+  the other cross-file rules.
+- **Device files are channel-centric.** A channel in ETS is one screen with its
+  parameters and its objects, and `[channel.<handle>]` is the same. Links live in the
+  device file. An entry's shape says what it is: a scalar is a parameter, a table of
+  `send`, `listen` and `name` is an object, any other table is a parameter page.
+- **Keys come from vendor texts.** ETS never shows a ref id or an object number as the
+  primary label, and neither does the file. Import derives the channel handle from the
+  channel name and number (`a-1`), object keys from the object function
+  (`langzeitbetrieb`) and parameter keys from the parameter text (`betriebsart`), and
+  records each mapping in the lock. Values are what the user means: `"Jalousie"`,
+  `"21 °C"`. The reader also accepts the vendor forms (object number, enum code). The
+  channel's label parameter (ETS `Bezeichnung`) becomes the channel `name`.
+- **One parameter per memory cell.** Vendors often point several parameter refs at one
+  memory location and show whichever is visible. The file stores one value per
+  parameter, the lock records the visible ref, and nine `konfiguration-rtr@R-…` lines
+  on a heating actuator become one. Only values that differ from the vendor default are
+  stored.
+- **Product data is a prerequisite for a readable device.** Parameter texts, enum
+  labels and the memory map come from the `.knxprod`, not from the ETS project. Without
+  it a device file holds identity, location and links, with vendor channel ids and
+  object numbers as keys (`[channel.CH-1]`, `0.send = "0/0/0"`), and its parameters can
+  be neither checked nor flashed.
+- **Deterministic, minimal diffs.** Sorted, column-aligned emission; bussard re-formats
+  only the entries it changes, so re-imports and hand edits produce small diffs.
+- **Strict parsing with fix-it hints.** Unknown fields and duplicate keys are errors, so
+  a typo never becomes a silent no-op. Parse errors keep the `toml` crate's caret and
+  add a `help:` line where the raw message misleads.
+- `protected = true` on a GA is the safety gate: the CLI requires `--force`, MCP
+  refuses outright.
 
-The loop is deliberately Terraform-shaped: `import → validate → plan → apply`, with
-`plan` producing a reviewable diff. That's what makes the LLM workflow safe: the model
-edits YAML, a human approves a diff, the tool executes.
+**The plan is the consent surface.** The loop stays Terraform-shaped:
+`import → validate → plan → apply`. The plan is the read-only half of `apply`: bussard
+reads the device's live state, diffs it against the files and shows the result before
+writing anything. It serves three purposes. It detects drift,
+so an empty plan proves the model matches the house. It gives the minimum write, so a
+re-run is a no-op. And it is what a human says yes to: a device write cannot be undone
+with `git revert`. An agent may compute plans as often as it likes; the agent proposes,
+the human reads the final plan, the tool executes.
 
 ### 5.3 Validation
 
 Strict parsing, then rule passes with rustc-style diagnostics and `--format json`. The
-diagnostic table (E001-E012) lives in
-[reference.md](reference.md#validation-diagnostics).
+diagnostic table lives in [reference.md](reference.md#validation-diagnostics); the
+rules tied to the file format (E020 to E026) are in
+[model-format.md](model-format.md#errors).
 
 ### 5.4 Monitor and capture
 
 cEMI → `{timestamp, source, destination GA, APCI, payload}` → resolve GA to name + DPT →
 typed value; source resolves to device name, and (source, GA) to the sending com object's
-name (from `links.yaml`). Unknown GAs/DPTs degrade gracefully to raw hex, never a
+name (from the device file). Unknown GAs/DPTs degrade gracefully to raw hex, never a
 failure; decode-size mismatches are shown inline as a debugging signal. `capture` stores
 raw cEMI bytes plus a decoded snapshot in SQLite so telegrams can be re-decoded after
 model fixes. The JSON Lines contract shared by `monitor --json` and the MCP telegram
@@ -232,15 +271,15 @@ buffer. The tool list, parameters and tiers are in
 - Programming and download (`plan`, `apply`, `flash`) stay CLI-only and out of the MCP
   surface: they run through a plan/confirm/backup/verify ladder a human drives.
 - **Model edits over MCP are first-class.** The primary operator is an assistant working
-  for an owner who does not read YAML, so the model is edited through structured tools
+  for an owner who does not read the model files, so the model is edited through structured tools
   (`knx_set_group`, `knx_add_link`, `knx_remove_link`, `knx_set_device`,
   `knx_set_parameter`, `knx_undo`), never by the assistant hand-writing files. Every edit
   snapshots the model first (§ history, issue #110), applies one well-defined change,
   saves, validates, and returns the change as plain-language sentences (issue #112) the
   assistant quotes to the human. The edit tools write files only, so they are available in
-  every tier including `--passive`; `--no-model-edits` withholds them (and `knx_scaffold_groups`, which writes `groups.yaml`). Protected GAs are
+  every tier including `--passive`; `--no-model-edits` withholds them (and `knx_scaffold_groups`, which writes `groups.toml`). Protected GAs are
   refused exactly as `knx_write_group` refuses them, and no tool parameter can set or clear
-  `protected:`.
+  `protected`.
 - The line is therefore not read versus write, it is **files versus bus**. Files are
   reversible without git (`bussard undo`) and reach nothing physical; the bus is where a
   human confirms.
@@ -248,11 +287,11 @@ buffer. The tool list, parameters and tiers are in
 ## 6. Roadmap
 
 **Phase 0, read-only and zero risk. Shipped.** Import an existing `.knxproj` (ETS 6,
-including password-protected exports) into the YAML model. `monitor` + `capture` +
+including password-protected exports) into the model files. `monitor` + `capture` +
 decode. Read-only MCP. This alone delivers LLM-assisted debugging.
 
 **Phase 1, runtime writes. Shipped.** Group value read/write from the CLI, the opt-in
-MCP write tool, and Home Assistant KNX config generation from the same YAML: one source
+MCP write tool, and Home Assistant KNX config generation from the same model: one source
 of truth.
 
 **Phase 2, links. Shipped.** `scan` (device discovery with mask/manufacturer/order
@@ -325,7 +364,7 @@ target and is not what `flash` is tuned for:
 1. Program a device with ETS.
 2. Dump its memory over the bus.
 3. Store the byte image as a golden fixture.
-4. bussard's job is to reproduce it byte-for-byte from the YAML.
+4. bussard's job is to reproduce it byte-for-byte from the model files.
 
 This turns "did I understand the allocator?" into a failing test. Additionally, run an
 independent implementation (Calimero) against the same device and diff the frames.

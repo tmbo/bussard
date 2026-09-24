@@ -1,8 +1,10 @@
 # The model format
 
 This is the contract for the files bussard reads and writes in the model
-directory (`knx/` by default). It replaces the YAML model. There is no
-backwards compatibility: the YAML files are not read any more.
+directory (`knx/` by default): which files exist, their shapes, how keys are
+derived, and the errors bussard reports. The reasons behind the format are in
+[DESIGN.md](DESIGN.md#52-the-model-files); the commands that read and write
+these files are in [reference.md](reference.md).
 
 ## Files
 
@@ -21,9 +23,11 @@ knx/
 ```
 
 A file is either fully user-owned or fully generated. `bussard.lock` is the
-only generated file. `import` and `adopt` write it; nothing else does. A
-snapshot, a bundle and the model-change fingerprint cover `bussard.toml`,
-`groups.toml`, `devices/*.toml`, `bussard.lock`, `tests.toml` and `ha.toml`.
+only generated file: `import` and `adopt` write it and nothing else does.
+Commit it like `Cargo.lock`; on a merge conflict, regenerate it instead of
+merging by hand. A snapshot, a bundle and the model-change fingerprint cover
+`bussard.toml`, `groups.toml`, `devices/*.toml`, `bussard.lock`, `tests.toml`
+and `ha.toml`.
 
 All files are TOML 1.0 as written by bussard. The parser (the `toml` crate)
 accepts TOML 1.1 input; the emitter never relies on it. Every string is a
@@ -31,9 +35,9 @@ basic string. Keys are bare wherever TOML allows it and quoted otherwise.
 No key in a file bussard writes needs quotes except the parameter escape
 hatch described below.
 
-Files are written with `toml_edit` so that comments and the formatting of
+Files are written with `toml_edit`, so comments and the formatting of
 untouched lines survive a save. Entries bussard adds or changes are
-re-formatted; everything else is byte-identical.
+re-formatted; everything else stays byte-identical.
 
 ## `bussard.toml`
 
@@ -58,8 +62,9 @@ light = 5
 blind = 10
 ```
 
-Written by `init`, never rewritten by bussard except to append a `[lint]`
-table when one is missing.
+Written by `init`. bussard never rewrites it, except to append a `[lint]`
+table when one is missing. `[lint]` configures the topology limits and the
+group-address convention that `validate` checks.
 
 ## `groups.toml`
 
@@ -88,9 +93,8 @@ groups = [
 - A duplicate `address` is validation error E020, reported on both lines.
 - `dpt` must be a quoted string. A bare `1.001` is a float and is rejected
   with a fix-it hint (see Errors).
-- In memory this stays `Groups { project, ranges: BTreeMap<String, Range>,
-  groups: BTreeMap<GroupAddress, Group> }`. The `imported_from` field moves
-  to the lock as `source`.
+- The project file a model was imported from is recorded in the lock as
+  `source`, not here.
 
 ## `devices/<address>.toml`
 
@@ -119,13 +123,13 @@ regenalarm = "Ja"
 [links]                                 # device-level objects (no channel)
 in-betrieb.send = "4/1/2"
 
-[channel.a-1]                           # handle from the lock; see Channels
+[channel.a-1]                           # handle from the lock; see Key derivation
 name = "Fenster Süd"                    # optional user label
 betriebsart = "Jalousie"                # parameter: scalar value
 zuordnung-regen = "Ja"
-langzeitbetrieb.send = "0/1/3"          # object: table with send / listen / name
-kurzzeitbetrieb.send = "0/1/5"
-status-position.listen = ["0/1/4", "0/2/1"]
+langzeitbetrieb.listen = ["0/1/3", "0/2/1"]   # object: table with send / listen / name
+kurzzeitbetrieb.listen = ["0/1/5"]
+status-position.send = "0/1/4"
 
 [channel.a-1.sollwerte]                 # a parameter page, only when the lock says so
 komfort = "21 °C"
@@ -149,13 +153,14 @@ komfort = "21 °C"
 
 ### Inside a channel table
 
-Every entry other than `name` is classified by its value's shape, then
+Every entry other than `name` is classified by the shape of its value, then
 checked against the lock:
 
 - a string, integer or bool is a **parameter**;
 - a table whose keys are a subset of `send`, `listen`, `name` is an
-  **object**; `send` is one GA string, `listen` an array of GA strings, and
-  `name` a user override of the object's display name;
+  **object**. `send` is the one GA the object transmits on (the object needs
+  the T flag), `listen` the array of GAs it accepts writes from (the W
+  flag), and `name` a user override of the object's display name;
 - any other table is a **parameter page**, holding parameters one level
   down. Pages exist only where the lock defines them for that channel.
 
@@ -164,9 +169,43 @@ bare object number (`144`). Both resolve to the same object; the emitter
 writes the key from the lock when there is one.
 
 A parameter key is the key the lock assigns. When the same text would
-repeat within a scope the lock assigns a longer key (page-qualified or
-`<key>@R-<ref>`); the emitter writes whatever the lock says and the reader
+repeat within a scope, the lock assigns a longer key (page-qualified or
+`<key>@R-<ref>`). The emitter writes whatever the lock says, and the reader
 resolves through the lock.
+
+### Without product data
+
+The readable keys come from the vendor's product data (`.knxprod`), not
+from the ETS project. A device whose product data was never imported still
+gets a device file, but its channel handles are the vendor's channel ids and
+its objects are keyed by number. Parameters cannot be checked or flashed.
+From the demo fixture:
+
+```toml
+address = "1.1.1"
+name = "Push Button Hallway"
+description = "4-fold push button with status LEDs"
+product = "PB-4F"
+
+[location]
+floor = "Ground Floor"
+room = "Hallway"
+
+[links]
+40.send = "3/1/0"
+40.name = "Spare Output"
+
+[channel.CH-1]
+name = "Rocker 1 - Hallway Light"
+0.send = "0/0/0"
+0.name = "Hallway Light - Switch"
+1.listen = ["0/0/1"]
+1.name = "Hallway Light - Status LED"
+```
+
+Once the product data is available, `import` or `adopt` rewrites the lock
+with keys, and the next save writes the readable form. The object numbers
+stay valid as keys either way.
 
 `[parameters]` and `[links]` at the top level follow the same rules for
 objects and parameters that belong to no channel.
@@ -187,9 +226,7 @@ available (`models/`): an enum label becomes its code, a number with unit is
 checked against the range. Without the product model the string is kept as
 written and validation reports that the value could not be checked.
 
-The in-memory representation stays `BTreeMap<String, String>` keyed
-`<slug>@<app-relative-ref>` as before, so the flasher and the validator are
-unchanged. The loader translates between the file key and the ref through
+The loader translates between the file key and the parameter ref through
 the lock. A device whose lock entry is missing cannot resolve its parameters
 or object keys; validation reports E021 with the command that creates the
 entry (`adopt`, `import`, or `import-product` plus `import`).
@@ -231,28 +268,24 @@ parameters = [
 One `[[device]]` per device, sorted by address. The lock is the join between
 the user's words and the vendor's ids:
 
-- `channels[].key` is the handle used in `[channel.<key>]`; `id` is the
-  application's channel id (or module-instance channel id); `number` and
-  `text` are the vendor's; `label_ref` is the parameter ref that carries the
-  channel label (`TextParameterRefId`), when the vendor defines one; `base`
-  is the module-instance base offset when the channel is a module instance.
+- `channels[].key` is the handle used in `[channel.<key>]`. Without a
+  `key`, the handle is `id`, the application's channel id (or module-instance
+  channel id). `number` and `text` are the vendor's; `label_ref` is the
+  parameter ref that carries the channel label (`TextParameterRefId`), when
+  the vendor defines one; `base` is the module-instance base offset when the
+  channel is a module instance.
+- `module_bases` holds the base offsets of module instances that own no
+  channel.
 - `objects[]` lists every com-object the device has, whether linked or not.
   `key` is present when a key could be derived; `channel` names the channel
   handle; `text`, `function`, `dpt`, `size`, `flags`, `ref` and `secure` are
-  what `com_objects` held before.
+  the vendor's object definition.
 - `parameters[]` lists every parameter that is stored or storable for this
   device with its file key, channel, ref (the visible ref) and parameter id
   (the memory cell). Only one ref per parameter id appears.
-- Product facts that used to be in `product:` and the device-state part of
-  `security:` live here.
-
-`Model::load` joins each device file with its lock entry and produces the
-same in-memory `Device` (with `com_objects`, `module_bases`, `product`,
-`security`, `parameters` keyed by ref) and the same `Links` map as before.
-`Model::save` splits them again. Everything outside `bussard-model` keeps
-reading the fields it reads today; the only additive fields are
-`Channel { key, number, text }`, `ComObject { key, text, function }` and
-`Device { application_override }`.
+- The product facts (program, manufacturer, hardware, mask) and the device
+  state of KNX Secure (`secure_capable`, `has_fdsk_certificate`,
+  `sequence_number`) live here; the device file keeps only the intent.
 
 ### Key derivation (done by import and adopt, recorded in the lock)
 
@@ -280,11 +313,58 @@ reports E022 when they differ or when the entry is missing, naming the
 command to run. A lock entry for a device that has no file is dropped on
 the next save.
 
-## `tests.toml` and `ha.toml`
+## `tests.toml`
 
-The same structures as `tests.yaml` and `ha.yaml`, in TOML. Entities in
-`ha.toml` are keyed by GA in a `[[entity]]` array with an `address` field, in
-line with `groups.toml`.
+Optional acceptance tests for `bussard test`, run in file order. A test has
+a stimulus (a bus `write` or a `manual` instruction for a human) and usually
+an `expect`.
+
+```toml
+allow_protected = false
+
+[[tests]]
+name = "Kitchen ceiling light switches and reports"
+write = { ga = "1/0/10", value = "on" }
+expect = { ga = "1/0/12", value = "on", within = "2s" }
+
+[[tests]]
+name = "Wind alarm raises the blinds"
+manual = "Trigger the wind alarm on the weather station"
+expect = { ga = "3/1/0", value = "up", within = "5s" }
+```
+
+`within` defaults to 3 seconds. `allow_protected` is only half the gate for
+tests that write a protected GA: `bussard test` also needs `--force`, and the
+MCP tool refuses such a test outright.
+
+## `ha.toml`
+
+Optional overrides for `bussard ha-config`. Entities are an `[[entity]]`
+array with an `address` field, in line with `groups.toml`; the address is the
+entity's primary GA (the one Home Assistant sends to, or the state GA for a
+sensor). Two entries for the same address are an error.
+
+```toml
+[global]
+default_platform_for_switches = "switch"   # or "light"
+exclude = [
+  "0/0/1",   # a single GA
+  "8/",      # every GA under main group 8
+]
+
+[[entity]]
+address = "1/0/1"
+platform = "light"
+name = "Kitchen ceiling"
+device_class = "outlet"
+
+[[entity]]
+address = "3/1/5"
+merge = ["3/1/6"]    # extra listening GAs
+```
+
+[ha-config.md](ha-config.md) explains how the overrides combine with the
+derivation.
 
 ## Errors
 
@@ -316,16 +396,19 @@ with file, line and column from `toml_edit` spans:
 | E021 | device has channels, parameters or keyed objects but no lock entry |
 | E022 | device `product` differs from the lock entry |
 | E023 | unknown parameter or object key in a channel; lists the channel's keys |
-| E024 | object linked to a GA whose DPT differs from the object's |
+| E024 | object linked to a GA whose main DPT number differs from the object's |
 | E025 | `send` on an object without the T flag; `listen` on an object without the W flag |
-| E026 | parameter value could not be normalized (no product model) — warning |
+| E026 | parameter values could not be checked because the product model is missing (warning) |
 
 A GA mentioned in a device file that `groups.toml` does not define is a
 warning during `validate` and is added to `groups.toml` by `import`,
 `apply` and the MCP edit tools, named `<channel name> <object function>`
 with the object's DPT, and reported as added.
 
-## Migration
+## Earlier YAML models
 
-None. Fixtures, examples and the real model are converted once with a
-throwaway tool during the switch; the YAML loader is deleted.
+Versions before the switch stored the model as YAML (`bussard.yaml`,
+`groups.yaml`, `links.yaml`, `devices/*.yaml`). bussard does not read those
+files. A directory that holds only them is refused with a message; re-import
+the ETS project into an empty directory to get the TOML files. Product
+models under `models/` keep their YAML format and are unaffected.

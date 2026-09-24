@@ -4,7 +4,7 @@
 #   uvx --from mkdocs-material mkdocs serve -f website/mkdocs.yml
 site_name: bussard docs
 site_url: https://bussard.tmbo.dev/docs/
-site_description: Open-source CLI for KNX. Configuration in YAML, programming over KNXnet/IP, live decoding of the bus.
+site_description: Open-source CLI for KNX. Configuration in TOML, programming over KNXnet/IP, live decoding of the bus.
 repo_url: https://github.com/tmbo/bussard
 repo_name: tmbo/bussard
 edit_uri: edit/main/docs/
@@ -76,6 +76,7 @@ nav:
   - Safety: SAFETY.md
   - How do I ...: howto.md
   - Reference: reference.md
+  - Model format: model-format.md
   - Home Assistant: ha-config.md
   - Product data: product-data.md
   - Project:
