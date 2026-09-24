@@ -474,7 +474,7 @@ and `write --keyring` (and MCP, viz), and modelled by the knx-sim Secure device.
 | Inner APDU | the plain group APDU with TPCI bits zero: `00 00` GroupValueRead, `00 8v` small write, `00 40 …` large response | CONFIRMED (live, 2026-09-24) for the small/large GroupValueWrite form: the decrypted APDU decoded as a DPT 9.001 write of 22.12 °C |
 | Sender sequence | ms since 2018-01-05, strictly above the last sent by the process (`SequenceHighWater`) | CONFIRMED rule (§5.8) |
 | Receiver freshness | per sender IA; bussard's monitor only *warns* on a non-increasing sequence, it never drops | design choice |
-| Sender admission | a device accepts a secured group telegram only from an IA in its security individual address table (PID 54) | INFERRED (ETS behaviour); the sim does not enforce it |
+| Sender admission | a device accepts a secured group telegram only from an IA in its security individual address table (PID 54), with a sequence above that entry's | INFERRED (ETS lists every secured sender there, §11.1); the sim enforces it (issue #181) |
 
 Known-answer vector (synthetic; bussard `group::tests` and knx-sim
 `GROUP_KAT_ASDU` agree, and so does `tools/knxtrace/datasecure.py`): key
@@ -488,7 +488,8 @@ SCF 0x00: 00 000000 00002a 0081 2e51ca4a
 The SCF, key and inner-APDU rows were promoted on 2026-09-24 from a live
 `monitor --keyring` of the reference installation (one secured GroupValueWrite
 from 1.1.12 on 0/3/47, MAC ok). Still to observe: a secured GroupValueRead and
-its response on the wire, and the sender-admission behaviour (PID 54).
+its response on the wire, and a real device dropping an unlisted sender
+(PID 54).
 
 ### 5.8 Sequence number = time since epoch `[XKNX, CONFIRMED]`
 
@@ -888,6 +889,7 @@ Every full download of an activated device reprograms the security object
 | after the other objects' Unload | `A_FunctionPropertyExt_Command` PID 5 | `04` + 9 × `00` (Unload); answer `rc=00 state=00` |
 | after the tables and parameters | `A_FunctionPropertyExt_Command` PID 5 | `01` + 9 × `00` (StartLoading); answer `state=02` |
 | | `A_PropertyExtValue_WriteCon` PID 54 | count 1, start 0, `00 00` (empty IA table) |
+| | `A_PropertyExtValue_WriteCon` PID 54 | from start 1, 8-octet elements `[sender IA:16][sender sequence:48]`, only on a device with secured senders (see below) |
 | | `A_PropertyExtValue_WriteCon` PID 53 | from start 1, 18-octet elements `[address-table index:16][group key:16]` |
 | | `A_PropertyExtValue_WriteCon` PID 61 | from start 1, one flag octet per group object (element n = object n), all objects of the GO table, `0x03` for a secured object |
 | before PID 13 and LoadCompleted | `A_FunctionPropertyExt_Command` PID 5 | `02` + 9 × `00` (LoadCompleted); answer `state=01` |
@@ -902,6 +904,40 @@ the keyring and the tables equal ETS's bytes (`secure_capture_oracle.rs`,
 `test_security_object_program_matches_ets`). INFERRED: the order and packing
 of several PID 53 entries (the capture has one), the meaning of the flag bits
 (bit 0/1 = authentication/confidentiality).
+
+**The security individual address table (PID 54)** `[CONFIRMED: S3 captures
+secure-1-1-{5,7,9,16,47,48} and secure-1-1-12-group, 2026-09-24, issue #181]`.
+Right after the count-0 clear and before PID 53, ETS writes one 8-octet
+element per secured sender, from element 1: the sender's individual address
+(2 octets) and a sequence number (6 octets, big-endian). The senders of a
+device are the other devices that send on a secured group address it listens
+to:
+
+| device | entry | why |
+|---|---|---|
+| 1.1.5 | `1110 000000000000` (1.1.16, sequence 0) | listens to 0/0/9, sent by the push button 1.1.16 |
+| 1.1.7 | `110a 000000000000` (1.1.10, sequence 0) | listens to a secured GA 1.1.10 sends; 1.1.10 is configured for Secure but not activated |
+| 1.1.16 | `1105 0040102ea9ce` (1.1.5, 275149400526) | listens to the status 0/0/10 sent by 1.1.5 |
+| 1.1.12 | `1105 0040102ea9ce` (1.1.5, 275149400526) | listens to 0/0/6 sent by 1.1.5 |
+| 1.1.9, 1.1.47, 1.1.48 | none (clear only) | no secured sender addresses them |
+
+The sequence is the sender's keyring `Device@SequenceNumber` when the sender
+is **activated** (the project carries its `LoadedToolKey`; model
+`activated: true`), and 0 otherwise. 1.1.10 is only configured for Secure
+(`ToolKey` without `LoadedToolKey`, model `secure_commissioning: true`,
+`activated: false`) and has never been downloaded; its keyring value (a 2025
+sequence) is a stale project value, and ETS wrote 0. 1.1.5 was activated
+before 1.1.16 and 1.1.12 were downloaded, so they got its keyring value.
+1.1.16 was activated only after the 1.1.5 capture, so ETS wrote 0 for it
+there; the keyring exported after all downloads marks it activated with a later
+sequence, and bussard's entry on 1.1.5 differs from that capture in the 6
+sequence octets (the IA matches). That is the only remaining difference.
+INFERRED: several entries in ascending IA order (every observed table has
+one), and whether a device's own send GA counts as listened (it made no
+difference in the reference installation). bussard derives the table in
+`bussard_download::secured_senders`; the oracle test compares it with
+`BUSSARD_SECURE_MODEL` set (and `BUSSARD_SECURE_UNKNOWN_SENDERS=1.1.16` for the
+1.1.5 capture).
 
 ---
 

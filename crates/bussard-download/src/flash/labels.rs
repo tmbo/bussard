@@ -28,6 +28,18 @@ pub(super) fn step_label(step: &FlashStep) -> String {
         FlashStep::SecurityClearAddressTable => {
             "Data Secure: clear security individual address table (PID 54 := 0 entries)".to_string()
         }
+        FlashStep::SecuritySenders { entries } => {
+            let senders: Vec<String> = entries
+                .iter()
+                .map(|e| format!("{} seq {}", e.address, e.sequence))
+                .collect();
+            format!(
+                "Data Secure: write security individual address table (PID 54, {} secured \
+                 sender(s): {})",
+                entries.len(),
+                senders.join(", ")
+            )
+        }
         FlashStep::SecurityGroupKeys { entries } => {
             let gas: Vec<String> = entries
                 .iter()

@@ -16,7 +16,11 @@
 //!   group key and the device's own send sequence;
 //! - a plain telegram to a group address that one of its secured com-objects
 //!   is linked to is ignored (a secured object never trusts plain traffic);
-//! - a wrong MAC or a stale sequence drops the telegram.
+//! - a wrong MAC or a stale sequence drops the telegram;
+//! - a secured telegram from a sender the security individual address table
+//!   (PID 54) does not list is dropped, and one whose sequence does not exceed
+//!   the sender's table entry too (issue #181: ETS lists every secured sender
+//!   of a device there).
 //!
 //! Every outcome lands on the event log as a key-free, plaintext-free line
 //! (`SECURE group recv ...`, `SECURE group send ...`, `REJECTED SECURE group
@@ -141,6 +145,20 @@ impl Device {
             return Vec::new();
         };
         let source = cemi.source;
+        let Some(listed_seq) = self
+            .security_object
+            .as_ref()
+            .and_then(|o| o.ia_table_sequence(source.raw()))
+        else {
+            self.emit(Event::SecureFrame {
+                device: self.address,
+                summary: format!(
+                    "REJECTED SECURE group recv {source} -> {ga}: sender not in the security \
+                     individual address table (PID 54)"
+                ),
+            });
+            return Vec::new();
+        };
         let asdu = &cemi.tpdu[2..];
         let opened = match self.secure.as_mut() {
             Some(session) => session.unwrap_group_incoming(&key, cemi, asdu),
@@ -156,6 +174,17 @@ impl Device {
                 return Vec::new();
             }
         };
+        if seq_value(&unwrapped.seq) <= listed_seq {
+            self.emit(Event::SecureFrame {
+                device: self.address,
+                summary: format!(
+                    "REJECTED SECURE group recv {source} -> {ga}: sequence {} not above the PID 54 \
+                     entry {listed_seq}",
+                    seq_value(&unwrapped.seq)
+                ),
+            });
+            return Vec::new();
+        }
         let inner_carrier = CemiLData {
             tpdu: unwrapped.inner_tpdu.clone(),
             ..cemi.clone()

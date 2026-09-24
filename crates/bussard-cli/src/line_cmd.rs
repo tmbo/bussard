@@ -470,6 +470,7 @@ fn run_line(
                 () = visit_all(
                     &handle,
                     source,
+                    &model,
                     &targets,
                     mode,
                     dir,
@@ -547,6 +548,7 @@ fn is_done(state: Option<&LineState>, address: IndividualAddress) -> bool {
 async fn visit_all(
     handle: &BusHandle,
     source: IndividualAddress,
+    model: &Model,
     targets: &[Target],
     mode: Mode,
     dir: &Path,
@@ -573,7 +575,7 @@ async fn visit_all(
                 status: DeviceStatus::Skipped("done in an earlier run".to_string()),
             }
         } else {
-            visit_one(handle, source, target, mode, dir, tool_key_source).await
+            visit_one(handle, source, model, target, mode, dir, tool_key_source).await
         };
         eprintln!("  {}", outcome.status.label());
 
@@ -603,6 +605,7 @@ async fn visit_all(
 async fn visit_one(
     handle: &BusHandle,
     source: IndividualAddress,
+    model: &Model,
     target: &Target,
     mode: Mode,
     dir: &Path,
@@ -628,11 +631,20 @@ async fn visit_one(
     };
     let tool_key = material.tool_key.clone();
     // A secured System B write reprograms the security object too (issue
-    // #156); on a line walk the keyring is the source of the secured GAs.
+    // #156); on a line walk the keyring is the source of the secured GAs. The
+    // model's links name the secured senders of the IA table (issue #181).
     let security = tool_key.as_ref().map(|_| {
         let empty = std::collections::HashMap::new();
         let keys = material.group_keys.as_ref().unwrap_or(&empty);
-        bussard_download::security_inputs_for(None, target.address, desired, keys)
+        let mut inputs = bussard_download::security_inputs_for(None, target.address, desired, keys);
+        inputs.senders = bussard_download::secured_senders(
+            Some(model),
+            target.address,
+            keys,
+            &material.device_sequences,
+            &[],
+        );
+        inputs
     });
     let secure_seq = bussard_secure::SequenceHighWater::new();
 

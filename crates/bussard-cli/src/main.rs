@@ -528,6 +528,14 @@ enum Command {
         /// other users on the machine.
         #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
         tool_key: Option<String>,
+        /// Also list this individual address (bussard's own tunnel address) as a
+        /// secured sender, sequence 0, in the security individual address table
+        /// (PID 54) the security object is reprogrammed with, so the device
+        /// accepts `bussard write --keyring` to its secured group addresses.
+        /// Off by default: without it the device drops bussard's secured group
+        /// telegrams silently. See docs/SAFETY.md.
+        #[arg(long, value_name = "IA")]
+        secure_sender: Option<bussard_model::IndividualAddress>,
         /// Override the gateway `host[:port]` for tunneling.
         #[arg(long, value_name = "HOST")]
         gateway: Option<String>,
@@ -649,6 +657,14 @@ enum Command {
         /// other users on the machine.
         #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
         tool_key: Option<String>,
+        /// Also list this individual address (bussard's own tunnel address) as a
+        /// secured sender, sequence 0, in the security individual address table
+        /// (PID 54) the security object is reprogrammed with, so the device
+        /// accepts `bussard write --keyring` to its secured group addresses.
+        /// Off by default: without it the device drops bussard's secured group
+        /// telegrams silently. See docs/SAFETY.md.
+        #[arg(long, value_name = "IA", conflicts_with = "line")]
+        secure_sender: Option<bussard_model::IndividualAddress>,
         /// Override the gateway `host[:port]` for tunneling.
         #[arg(long, value_name = "HOST")]
         gateway: Option<String>,
@@ -1566,6 +1582,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             bcu_key,
             keyring,
             tool_key,
+            secure_sender,
             gateway,
             routing,
             skip_address_check,
@@ -1589,6 +1606,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 keyring: keyring.as_deref(),
                 tool_key: tool_key.as_deref(),
             },
+            secure_sender,
             conn_cmd::ConnOverrides {
                 gateway,
                 routing,
@@ -1650,6 +1668,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             yes,
             keyring,
             tool_key,
+            secure_sender,
             gateway,
             routing,
             skip_address_check,
@@ -1684,6 +1703,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                         yes,
                         allow_remote_gateway,
                         tool_key_source,
+                        secure_sender,
                         overrides,
                     )
                 }

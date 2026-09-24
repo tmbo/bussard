@@ -66,6 +66,7 @@ pub fn run(
     allow_remote_gateway: bool,
     bcu_key: Option<&str>,
     tool_key_source: crate::secure_key::ToolKeySource<'_>,
+    secure_sender: Option<IndividualAddress>,
     overrides: ConnOverrides,
     output: FlashOutput,
 ) -> anyhow::Result<ExitCode> {
@@ -155,6 +156,7 @@ pub fn run(
             no_factory_reset,
             parameters_only,
             &secure_material,
+            secure_sender,
             &output,
         );
     }
@@ -370,6 +372,7 @@ pub fn run(
         target,
         &table_images,
         &secure_material,
+        secure_sender,
     ) {
         eprintln!("cannot flash: {err}");
         return Ok(ExitCode::FAILURE);
@@ -609,6 +612,7 @@ fn dry_run(
     no_factory_reset: bool,
     parameters_only: bool,
     secure_material: &crate::secure_key::SecureMaterial,
+    secure_sender: Option<IndividualAddress>,
     output: &FlashOutput,
 ) -> anyhow::Result<ExitCode> {
     // No device to read the descriptor from: the plan is checked against the
@@ -653,7 +657,14 @@ fn dry_run(
     if parameters_only {
         return crate::flash_params::dry_run(target, &plan, output.json);
     }
-    if let Err(err) = add_security_steps(&mut plan, model, target, &table_images, secure_material) {
+    if let Err(err) = add_security_steps(
+        &mut plan,
+        model,
+        target,
+        &table_images,
+        secure_material,
+        secure_sender,
+    ) {
         eprintln!("cannot flash: {err}");
         return Ok(ExitCode::FAILURE);
     }
@@ -689,7 +700,9 @@ fn dry_run(
 /// Adds the KNX Data Secure security-object steps to a full flash over a
 /// secured connection (issue #156): the group key table from the keyring's keys
 /// for the GAs in the address table this flash writes, and the group-object
-/// security flags sized to the group-object table it writes. A plain flash (no
+/// security flags sized to the group-object table it writes, and the security
+/// individual address table entries of the secured senders it receives from
+/// (issue #181; `secure_sender` adds bussard's own address). A plain flash (no
 /// tool key) is left untouched.
 fn add_security_steps(
     plan: &mut bussard_download::FlashPlan,
@@ -697,6 +710,7 @@ fn add_security_steps(
     target: IndividualAddress,
     table_images: &BTreeMap<u32, Vec<u8>>,
     material: &crate::secure_key::SecureMaterial,
+    secure_sender: Option<IndividualAddress>,
 ) -> Result<(), bussard_download::SecurityPlanError> {
     if material.tool_key.is_none() || plan.is_sys7() {
         return Ok(());
@@ -722,7 +736,7 @@ fn add_security_steps(
         })
         .unwrap_or(0);
     let view = bussard_download::device_security_view(model, target, group_keys);
-    let program = bussard_download::build_security_program(
+    let mut program = bussard_download::build_security_program(
         target,
         &addresses,
         go_count,
@@ -730,6 +744,13 @@ fn add_security_steps(
         &view.secure_gas,
         group_keys,
     )?;
+    program.senders = bussard_download::secured_senders(
+        model,
+        target,
+        group_keys,
+        &material.device_sequences,
+        secure_sender.as_slice(),
+    );
     plan.add_security_program(program);
     Ok(())
 }
@@ -1520,21 +1541,24 @@ fn print_plan(
     if plan.has_security_program() {
         // Data Secure (issue #156): the security object is part of the
         // download; name what it receives, never a key.
-        let (keys, secured) = plan
-            .steps
-            .iter()
-            .fold((0usize, 0usize), |(k, o), step| match step {
-                bussard_download::FlashStep::SecurityGroupKeys { entries } => {
-                    (k + entries.len(), o)
-                }
-                bussard_download::FlashStep::SecurityGoFlags { flags } => {
-                    (k, o + flags.iter().filter(|f| **f != 0).count())
-                }
-                _ => (k, o),
-            });
+        let (senders, keys, secured) =
+            plan.steps
+                .iter()
+                .fold((0usize, 0usize, 0usize), |(s, k, o), step| match step {
+                    bussard_download::FlashStep::SecuritySenders { entries } => {
+                        (s + entries.len(), k, o)
+                    }
+                    bussard_download::FlashStep::SecurityGroupKeys { entries } => {
+                        (s, k + entries.len(), o)
+                    }
+                    bussard_download::FlashStep::SecurityGoFlags { flags } => {
+                        (s, k, o + flags.iter().filter(|f| **f != 0).count())
+                    }
+                    _ => (s, k, o),
+                });
         println!(
-            "  data secure : security object reprogrammed: {keys} group key(s), {secured} secured \
-             group object(s)"
+            "  data secure : security object reprogrammed: {senders} secured sender(s), {keys} \
+             group key(s), {secured} secured group object(s)"
         );
     }
     if verbose > 0 {

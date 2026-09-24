@@ -87,9 +87,10 @@ pub use program::{
     write_system_b_secured, write_tables, write_tables_secured,
 };
 pub use security::{
-    DeviceSecurityView, GO_FLAGS_SECURE, GroupKeyEntry, SecurityInputs, SecurityPlanError,
-    SecurityProgram, build_security_program, device_security_view, program_security_object,
-    security_inputs_for,
+    DeviceSecurityView, GO_FLAGS_SECURE, GroupKeyEntry, MAX_SEQUENCE, SecureSenderEntry,
+    SecurityInputs, SecurityPlanError, SecurityProgram, build_security_program,
+    device_security_view, program_security_object, secured_senders, security_inputs_for,
+    sender_table_bytes,
 };
 pub use sweep::{
     AppSweep, FamilyCoverage, ImageClass, ParseClass, PlanClass, ProductSweep, RankedReason,

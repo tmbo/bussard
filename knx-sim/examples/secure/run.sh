@@ -15,6 +15,11 @@
 #   POSITIVE  flash + apply 1.1.10 with --keyring (synthetic.knxkeys) -> the
 #             security object is unloaded, reloaded with the IA-table clear,
 #             the group key table and the GO security flags, and completed
+#   POSITIVE  the security individual address table (PID 54, issue #181): the
+#             flash lists the secured sender 1.1.20 (a model-only device that
+#             sends on 1/2/3); a secured `write` from bussard's tunnel address
+#             1.0.0 is dropped by the sim until `apply --secure-sender 1.0.0`
+#             adds it
 #   POSITIVE  secured group communication on 1/2/3 (issue #172): `write` and
 #             `read --keyring` ride A_SecureData under the group key, the sim
 #             answers the read secured, and `monitor --keyring` decrypts the
@@ -134,12 +139,15 @@ security:
   secure_capable: true
   activated: true
 EOF
-# write_links <GA...>: 1.1.10 object 1 listens on 1/2/3, object 2 on the GAs given.
+# write_links <GA...>: 1.1.10 object 1 listens on 1/2/3, object 2 on the GAs
+# given. 1.1.20 (in the model only, not on the sim bus) sends on the secured
+# 1/2/3, so it is a secured sender of 1.1.10 (PID 54, issue #181).
 write_links() {
   {
     printf 'links:\n  1.1.10:\n    - object: 1\n      listen:\n        - 1/2/3\n'
     printf '    - object: 2\n      listen:\n'
     for ga in "$@"; do printf '        - %s\n' "$ga"; done
+    printf '  1.1.20:\n    - object: 1\n      send: 1/2/3\n'
   } > "$MODEL/links.yaml"
 }
 write_links 1/2/4
@@ -247,6 +255,12 @@ else
   bad "the dry run did not list the expected security-object steps"
   grep -i "data secure" <<<"$out" | sed 's/^/      /'
 fi
+if grep -qF "Data Secure: write security individual address table (PID 54, 1 secured sender(s): 1.1.20 seq 0)" <<<"$out"; then
+  ok "dry run lists the secured sender 1.1.20 (PID 54, sequence 0: not in the keyring)"
+else
+  bad "the dry run did not list the PID 54 entry for 1.1.20"
+  grep -i "PID 54" <<<"$out" | sed 's/^/      /'
+fi
 
 mark=$(log_mark)
 out="$(flash 1.1.10 --keyring "$KEYRING")"
@@ -259,6 +273,7 @@ for want in \
   "SECOBJ FunctionCommand iot=17/1 pid=5 event=Unload rc=0x00 state=Unloaded" \
   "SECOBJ FunctionCommand iot=17/1 pid=5 event=StartLoading rc=0x00 state=Loading" \
   "SECOBJ WriteCon iot=17/1 pid=54 start=0 count=1 rc=0x00" \
+  "SECOBJ WriteCon iot=17/1 pid=54 start=1 count=1 rc=0x00" \
   "SECOBJ WriteCon iot=17/1 pid=53 start=1 count=1 rc=0x00" \
   "SECOBJ WriteCon iot=17/1 pid=61 start=1 count=" \
   "SECOBJ FunctionCommand iot=17/1 pid=5 event=LoadCompleted rc=0x00 state=Loaded"; do
@@ -275,19 +290,41 @@ else
   ok "flash: every security-object operation answered rc=0x00"
 fi
 
+# --- NEGATIVE: bussard's own address is not a secured sender (issue #181) ---
+# The flash listed only 1.1.20 in PID 54, so the device drops a secured write
+# from bussard's tunnel address (1.0.0, the sim's CRD) although the MAC is good.
+mark=$(log_mark)
+"$BUSSARD" write 1/2/3 on --dpt 1.001 --yes --dir "$MODEL" --gateway "$GATEWAY" \
+  --keyring "$KEYRING" >/dev/null 2>&1
+if log_has "$mark" "REJECTED SECURE group recv 1.0.0 -> 1/2/3: sender not in the security individual address table (PID 54)"; then
+  ok "a secured write from an unlisted sender (1.0.0) is dropped by the device (PID 54)"
+else
+  bad "the sim did not drop the secured write from the unlisted 1.0.0"
+  log_since "$mark" | grep -i "secure group\|REJECTED" | head -3 | sed 's/^/      /'
+fi
+
 # A link change moves the keyed GA to address-table index 2 (1/2/1 sorts
 # first): apply must reprogram the key table next to the tables.
+# `--secure-sender 1.0.0` adds bussard's tunnel address to PID 54 (issue #181),
+# so the secured group writes below are accepted.
 write_links 1/2/1 1/2/4
 mark=$(log_mark)
-out="$("$BUSSARD" apply 1.1.10 --dir "$MODEL" --yes --gateway "$GATEWAY" --keyring "$KEYRING" 2>&1)"
+out="$("$BUSSARD" apply 1.1.10 --dir "$MODEL" --yes --gateway "$GATEWAY" --keyring "$KEYRING" \
+  --secure-sender 1.0.0 2>&1)"
 if grep -q "verified" <<<"$out" && grep -qF "Data Secure: the security object is reprogrammed" <<<"$out"; then
   ok "apply --keyring verified and announced the security-object reprogramming"
 else
   bad "apply --keyring failed"; tail -8 <<<"$out" | sed 's/^/      /'
 fi
+if grep -qF "2 secured sender(s) 1.0.0 seq 0, 1.1.20 seq 0" <<<"$out"; then
+  ok "apply --secure-sender 1.0.0 announces PID 54 entries 1.0.0 and 1.1.20 (ascending)"
+else
+  bad "apply did not announce the PID 54 entries"; grep -i "data secure" <<<"$out" | sed 's/^/      /'
+fi
 for want in \
   "SECOBJ ValueRead iot=17/1 pid=61 start=0" \
   "SECOBJ FunctionCommand iot=17/1 pid=5 event=Unload rc=0x00" \
+  "SECOBJ WriteCon iot=17/1 pid=54 start=1 count=2 rc=0x00" \
   "SECOBJ WriteCon iot=17/1 pid=53 start=1 count=1 rc=0x00" \
   "SECOBJ FunctionCommand iot=17/1 pid=5 event=LoadCompleted rc=0x00 state=Loaded"; do
   if log_has "$mark" "$want"; then
@@ -497,4 +534,4 @@ fi
 rm -f "$SIM_LOG"
 echo "  KNX Data Secure conformance loop OK: tool-access flash to verified Loaded,"
 echo "  both CCM modes, negatives refused on both sides, plain path unchanged,"
-echo "  secured group read/write/monitor on 1/2/3"
+echo "  secured group read/write/monitor on 1/2/3, PID 54 secured senders"

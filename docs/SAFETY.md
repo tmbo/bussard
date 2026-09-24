@@ -102,10 +102,15 @@ secured `read` accepts only a response whose MAC verifies under the group key.
 The sequence number is milliseconds since 2018-01-05, and never below the last
 one the same process sent. A receiver accepts a secured group telegram only
 from a sender it knows: ETS lists the senders of each secured GA in the
-device's security individual address table, so the tunnel address bussard
-sends from must be in it, or the device drops the telegram without a word
-(`write` then reports success, `read` times out). `monitor --keyring` is
-read-only on the bus.
+device's security individual address table (PID 54), so the tunnel address
+bussard sends from must be in it, or the device drops the telegram without a
+word (`write` then reports success, `read` times out). `flash --keyring` and
+`apply --keyring` write that table like ETS (the devices that send on a secured
+GA the device listens to) and leave bussard out of it unless you pass
+`--secure-sender <tunnel IA>`: that adds bussard's own address with sequence 0,
+so the device accepts `write --keyring` from it. It is off by default because
+it widens who the device trusts; the next ETS download of the device removes
+it again. `monitor --keyring` is read-only on the bus.
 
 **`apply <ADDRESS>`** writes the model's link tables (group address and
 association tables) to a device. It backs up first: the device's pre-apply
@@ -217,12 +222,15 @@ security-activated device keeps its group keys and the per-group-object
 security flags in its security interface object, not in the link tables. With
 `--keyring` (or `--tool-key`), `flash` programs that object the way the ETS
 secured download does (issue #156): it unloads it right after the other
-objects, and after the tables and parameters it reloads it with an empty
-security individual address table, the group key table (one entry per keyed
-group address the device links, from the keyring) and the group-object
-security flags, then completes it. `apply --keyring` (and `restore`, and
-`apply --line` with a keyring) rewrites the security object next to the tables,
-because the key table indexes the address table. The dry run lists each of
+objects, and after the tables and parameters it reloads it with the security
+individual address table (cleared, then one `[IA][sequence]` entry per device
+that sends on a secured group address this device listens to, with the
+sender's keyring `SequenceNumber` when the model marks the sender `activated`,
+else 0; issue #181), the group key table (one
+entry per keyed group address the device links, from the keyring) and the
+group-object security flags, then completes it. `apply --keyring` (and
+`restore`, and `apply --line` with a keyring) rewrites the security object next
+to the tables, because the key table indexes the address table. The dry run lists each of
 these steps; key bytes are never printed. Use the project's current keyring: a
 group address the model marks `secure` without a key in the keyring refuses
 the plan before anything is written. `--tool-key` carries no group keys, so it

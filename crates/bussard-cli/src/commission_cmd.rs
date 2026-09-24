@@ -410,6 +410,7 @@ fn commission_one(
             options.allow_remote_gateway,
             None,
             tool_key_source,
+            None,
             overrides.clone(),
             crate::flash_cmd::FlashOutput::default(),
         );
@@ -428,6 +429,7 @@ fn commission_one(
             true,
             options.allow_remote_gateway,
             tool_key_source,
+            None,
             overrides.clone(),
         );
         match applied {

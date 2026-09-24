@@ -259,6 +259,7 @@ The same pre-flight also checks the device is factory-fresh (issue #79), read-on
 | `--bcu-key <HEX>` | free access | The device's BCU access key, in hex (`FFFFFFFF` or `0x11223344`), presented with A_Authorize on every management connect. Unset presents the free-access key (`FFFFFFFF`), correct for an unkeyed device; a keyed device needs its project key here or it denies access. |
 | `--keyring <FILE>` | | The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool key. Required for a security-activated device; the password comes from `BUSSARD_KEYRING_PASSWORD`. |
 | `--tool-key <HEX>` | | The raw 32-hex-character tool key, for a simulator or bench device. Conflicts with `--keyring`; unsuitable for a real key (process arguments are visible). |
+| `--secure-sender <IA>` | off | Data Secure: also list this address (bussard's tunnel address) with sequence 0 in the security individual address table (PID 54) the flash writes, so the device accepts `write --keyring` from bussard. Without it the table holds only the devices that send on a secured GA the device listens to (with their keyring sequence), as ETS writes it, and the device drops bussard's secured group telegrams. See [SAFETY.md](SAFETY.md). |
 | `--allow-remote-gateway` | off | Permit a flash to a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
@@ -333,6 +334,7 @@ Apply the model's link tables to a device: plan, confirm, back up, write, verify
 | `--yes` | off | Skip the interactive confirmation (dangerous; for scripts). |
 | `--keyring <FILE>` | | The ETS `.knxkeys` keyring holding the target's KNX Data Secure tool key. Required for a security-activated device; the password comes from `BUSSARD_KEYRING_PASSWORD`. |
 | `--tool-key <HEX>` | | The raw 32-hex-character tool key, for a simulator or bench device. Conflicts with `--keyring`. |
+| `--secure-sender <IA>` | off | Single-device mode, Data Secure: add this address (bussard's tunnel address) with sequence 0 to the security individual address table (PID 54) the security object is reprogrammed with, as for `flash`. Conflicts with `--line`. |
 | `--allow-remote-gateway` | off | Permit a write to a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
@@ -608,7 +610,7 @@ Write a group value to the bus. The value is human-typed (`on`/`off`, `up`/`down
 | `--force` | off | Write even if the GA is marked `protected: true` in the model. |
 | `--yes` | off | Skip the confirmation prompt (required for a non-TTY write). |
 | `--dir <DIR>` | `knx` | The model directory. |
-| `--keyring <FILE>` | | Group keys for secured GAs. A GA with a key, or `secure: true` in `groups.yaml`, is written as a secured group telegram (SCF `0x10`, the group key, a sequence above the last one sent); a secured GA without a key is refused. A plain GA is sent byte for byte as without a keyring. |
+| `--keyring <FILE>` | | Group keys for secured GAs. A GA with a key, or `secure: true` in `groups.yaml`, is written as a secured group telegram (SCF `0x10`, the group key, a sequence above the last one sent); a secured GA without a key is refused. A plain GA is sent byte for byte as without a keyring. A receiver accepts it only if bussard's tunnel address is in its security individual address table (PID 54): program the device with `flash`/`apply --keyring --secure-sender <tunnel IA>`, otherwise it drops the telegram silently. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
 | `--allow-remote-gateway` | off | Permit a write to a non-loopback gateway (or set `BUSSARD_ALLOW_REAL_GATEWAY=1`). |
