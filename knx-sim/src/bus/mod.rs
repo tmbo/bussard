@@ -117,8 +117,17 @@ impl Bus {
     /// it a monitor/viz sharing that tunnel would never see the writes it sends
     /// (issue #64), because a tool does not otherwise observe its own traffic.
     fn deliver_group(&mut self, cemi: &CemiLData) -> Vec<CemiLData> {
-        let Some((apci, ga, payload)) = decode_group(cemi) else {
-            return Vec::new();
+        // A secured group telegram (A_SecureData, issue #172) is opaque to the
+        // bus: only a device holding the group key can see its inner service.
+        // It is confirmed like a write (a real gateway confirms every request).
+        let secure = is_secure_group(cemi);
+        let apci = if secure {
+            Apci::GroupValueWrite
+        } else {
+            match decode_group(cemi) {
+                Some((apci, _, _)) => apci,
+                None => return Vec::new(),
+            }
         };
         // Echo the tool's own transmission back as a local confirmation
         // (L_Data.con) toward the sender — a real gateway confirms every request
@@ -146,7 +155,7 @@ impl Bus {
             if *addr == origin {
                 continue;
             }
-            replies.extend(dev.handle_group(apci, ga, &payload));
+            replies.extend(dev.handle_group_frame(cemi, false));
         }
         // Fan replies back onto the bus (devices see each other's responses) and
         // out to the tool. A response updates listeners but should not itself
@@ -160,16 +169,14 @@ impl Bus {
                 cemi: reply.encode(),
                 summary: summarize(&reply),
             });
-            if let Some((r_apci, r_ga, r_payload)) = decode_group(&reply) {
-                let r_origin = reply.source;
-                for (addr, dev) in self.devices.iter_mut() {
-                    if *addr == r_origin {
-                        continue;
-                    }
-                    // Only writes/responses update listeners; ignore any further
-                    // responses to avoid a reply storm.
-                    let _ = dev.handle_group(response_as_write(r_apci), r_ga, &r_payload);
+            let r_origin = reply.source;
+            for (addr, dev) in self.devices.iter_mut() {
+                if *addr == r_origin {
+                    continue;
                 }
+                // Only writes/responses update listeners; ignore any further
+                // responses to avoid a reply storm.
+                let _ = dev.handle_group_frame(&reply, true);
             }
             out.push(reply);
         }
@@ -252,13 +259,13 @@ impl Bus {
             cemi: cemi.encode(),
             summary: summarize(cemi),
         });
-        if let Some((apci, ga, payload)) = decode_group(cemi) {
+        if cemi.is_group() {
             let origin = cemi.source;
             for (addr, dev) in self.devices.iter_mut() {
                 if *addr == origin {
                     continue;
                 }
-                let _ = dev.handle_group(response_as_write(apci), ga, &payload);
+                let _ = dev.handle_group_frame(cemi, true);
             }
         }
         vec![cemi.clone()]
@@ -277,10 +284,18 @@ impl Bus {
                 continue;
             }
             s.next_due_ms = now_ms + s.period_ms;
-            let payload = s.values[s.cursor % s.values.len()].clone();
+            // No scripted values: re-transmit the object's current value.
+            let payload = match s.values.len() {
+                0 => None,
+                n => Some(s.values[s.cursor % n].clone()),
+            };
             s.cursor = s.cursor.wrapping_add(1);
             if let Some(dev) = self.devices.get_mut(&s.device) {
-                if let Some(cemi) = dev.emit_stimulus(s.object, &payload) {
+                let emitted = match &payload {
+                    Some(p) => dev.emit_stimulus(s.object, p),
+                    None => dev.emit_stimulus_current(s.object),
+                };
+                if let Some(cemi) = emitted {
                     out.extend(self.inject_from_device(&cemi));
                 }
             }
@@ -311,7 +326,9 @@ pub struct StimulusJob {
     pub object: u16,
     /// The period between transmits, in milliseconds.
     pub period_ms: u128,
-    /// The pre-encoded payloads to cycle through.
+    /// The pre-encoded payloads to cycle through. Empty: re-transmit the
+    /// object's current value on every fire (see
+    /// [`Device::emit_stimulus_current`]).
     pub values: Vec<Vec<u8>>,
     /// The next due time (ms). Seed to the first fire time.
     pub next_due_ms: u128,
@@ -332,7 +349,7 @@ fn confirm_echo(cemi: &CemiLData) -> CemiLData {
 
 /// Map a group service to the "listener-updating" service: a `_Response` updates
 /// listeners just like a `_Write` does, while a `_Read` never updates a value.
-fn response_as_write(apci: Apci) -> Apci {
+pub(crate) fn response_as_write(apci: Apci) -> Apci {
     match apci {
         Apci::GroupValueResponse => Apci::GroupValueWrite,
         other => other,
@@ -344,7 +361,7 @@ fn response_as_write(apci: Apci) -> Apci {
 /// Handles both the "small" packed APDU form (a sub-byte value in the APCI low
 /// bits, NPDU length 1) and the "large" form (value in trailing octets).
 /// Returns `None` for non-group services or malformed frames.
-fn decode_group(cemi: &CemiLData) -> Option<(Apci, GroupAddress, Vec<u8>)> {
+pub(crate) fn decode_group(cemi: &CemiLData) -> Option<(Apci, GroupAddress, Vec<u8>)> {
     if !cemi.is_group() || cemi.tpdu.len() < 2 {
         return None;
     }
@@ -364,6 +381,15 @@ fn decode_group(cemi: &CemiLData) -> Option<(Apci, GroupAddress, Vec<u8>)> {
         _ => return None,
     };
     Some((apci, cemi.dest_group(), payload))
+}
+
+/// Whether a telegram is a secured group telegram: a group frame carrying the
+/// `A_SecureData` APCI (`0x3F1`).
+fn is_secure_group(cemi: &CemiLData) -> bool {
+    cemi.is_group()
+        && cemi.tpdu.len() >= 2
+        && (((cemi.tpdu[0] as u16 & 0x03) << 8) | cemi.tpdu[1] as u16)
+            == crate::secure::A_SECURE_DATA_APCI
 }
 
 /// Whether a telegram is a broadcast `A_IndividualAddress_Read`: a group frame

@@ -137,11 +137,30 @@ impl Device {
     /// Seed a transmitting com-object's value and build the group telegram that
     /// pushes it onto the bus, or `None` if the object cannot transmit (not
     /// loaded, not linked, or lacks the Transmit flag). Used by stimulus.
+    ///
+    /// A com-object with a Data Secure flag (PID 61) on an activated device
+    /// sends a secured `A_SecureData` telegram instead (issue #172).
     pub fn emit_stimulus(&mut self, object: u16, payload: &[u8]) -> Option<CemiLData> {
         let ga = self.stimulus_send_ga(object)?;
         if let Some(gc) = self.group_comm.as_mut() {
             gc.set_value(object, payload);
         }
-        Some(self.group_telegram(Apci::GroupValueWrite, ga, payload))
+        let plain = self.group_telegram(Apci::GroupValueWrite, ga, payload);
+        self.secure_if_flagged(object, plain)
+    }
+
+    /// Re-transmit a com-object's CURRENT value as an `A_GroupValue_Write`
+    /// (secured when the object is), without changing it: the stimulus mode of
+    /// a job with no scripted values. An object that was never set sends 0.
+    pub fn emit_stimulus_current(&mut self, object: u16) -> Option<CemiLData> {
+        let ga = self.stimulus_send_ga(object)?;
+        let value = self
+            .group_comm
+            .as_ref()
+            .and_then(|gc| gc.object(object))
+            .map(|o| o.value.clone())
+            .unwrap_or_default();
+        let plain = self.group_telegram(Apci::GroupValueWrite, ga, &value);
+        self.secure_if_flagged(object, plain)
     }
 }

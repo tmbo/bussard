@@ -239,6 +239,29 @@ impl FrameContext {
         }
     }
 
+    /// The protected context of a GROUP-addressed secured telegram: `source`
+    /// to group address `ga`, a standard frame (address-type bit 7 set, extended
+    /// frame format 0) and the unnumbered T_Data_Group TPCI (`tpci_int` 0, so
+    /// block_0 octet 12 is `0x03`).
+    fn group(source: u16, ga: u16) -> Self {
+        let mut address_fields = [0u8; 4];
+        address_fields[..2].copy_from_slice(&source.to_be_bytes());
+        address_fields[2..].copy_from_slice(&ga.to_be_bytes());
+        FrameContext {
+            address_fields,
+            addr_type_frame_format: 0x80,
+            tpci_int: 0,
+        }
+    }
+
+    /// The group context taken from a carrier frame: like [`Self::from_cemi`]
+    /// with TPCI 0, the address-type bit forced on (a group destination).
+    fn group_from_cemi(cemi: &CemiLData) -> Self {
+        let mut ctx = Self::from_cemi(cemi, 0);
+        ctx.addr_type_frame_format |= 0x80;
+        ctx
+    }
+
     /// The 16-byte CCM `block_0` for a TP frame (spec §5.4).
     fn block_0(&self, seq: &[u8; 6], payload_len: u8) -> [u8; 16] {
         let mut b = [0u8; 16];
@@ -346,6 +369,11 @@ pub struct DataSecureSession {
     /// The last accepted receive sequence, per source IA (raw u16 → last seq).
     /// A received frame must be strictly greater than this to be accepted.
     rx_last: std::collections::HashMap<u16, u64>,
+    /// The last accepted GROUP receive sequence, per source IA. Kept apart from
+    /// the tool-access table (a real device tracks group senders in its security
+    /// IA table, PID 54); a first group frame from a source must exceed
+    /// `rx_floor`, like tool access.
+    group_rx_last: std::collections::HashMap<u16, u64>,
     /// The initial receive-freshness floor applied to a source not yet seen: a
     /// first frame from a new source must strictly exceed this (spec §5.9, so a
     /// device that persisted a starting sequence rejects a from-clock seed that
@@ -372,6 +400,7 @@ impl DataSecureSession {
             tool_key,
             tx_seq: initial_tx_seq,
             rx_last: std::collections::HashMap::new(),
+            group_rx_last: std::collections::HashMap::new(),
             rx_floor: initial_rx_seq,
             require_secure: true,
         }
@@ -416,13 +445,13 @@ impl DataSecureSession {
     /// that CCM protects: for auth-only that is 0 (the APDU is additional data),
     /// for auth+enc it is the inner APDU length.
     fn wrap_with_context(
-        &self,
+        key: &Key16,
         scf: Scf,
         seq: &[u8; 6],
         inner_tpdu: &[u8],
         context: &FrameContext,
     ) -> Vec<u8> {
-        let key = self.tool_key.bytes();
+        let key = key.bytes();
         let scf_byte = scf.to_byte();
 
         let (secured_apdu, mac4): (Vec<u8>, [u8; TP_MAC_LEN]) = match scf.algorithm {
@@ -472,6 +501,20 @@ impl DataSecureSession {
         carrier: &FrameContext,
         source: u16,
     ) -> Result<Unwrapped, SecureError> {
+        let last = self.rx_last.get(&source).copied().unwrap_or(self.rx_floor);
+        Self::open_fresh(&self.tool_key, asdu, carrier, Some(last))
+    }
+
+    /// Verify and open an S-A_Data ASDU with `key`, refusing a sequence that is
+    /// not strictly above `last` (spec §5.9; `None` skips the freshness check).
+    /// Shared by the tool-access path (tool key, per-source table) and the group
+    /// path (group key, per-source group table). Does not commit anything.
+    fn open_fresh(
+        key: &Key16,
+        asdu: &[u8],
+        carrier: &FrameContext,
+        last: Option<u64>,
+    ) -> Result<Unwrapped, SecureError> {
         // Minimum: SCF(1) + seq(6) + MAC(4).
         if asdu.len() < 1 + SEQ_LEN + TP_MAC_LEN {
             return Err(SecureError::TooShort { len: asdu.len() });
@@ -491,14 +534,16 @@ impl DataSecureSession {
         // commit; a stale sequence is refused regardless of MAC.
         let got = Self::seq_from_bytes(&seq);
         // A source not yet seen is checked against the configured floor (spec
-        // §5.9): a first frame must strictly exceed the device's persisted
-        // starting sequence, so a from-clock seed lower than the floor is stale.
-        let last = self.rx_last.get(&source).copied().unwrap_or(self.rx_floor);
-        if got <= last {
-            return Err(SecureError::StaleSequence { got, last });
+        // §5.9, resolved by the caller into `last`): a first frame must strictly
+        // exceed the device's persisted starting sequence, so a from-clock seed
+        // lower than the floor is stale.
+        if let Some(last) = last {
+            if got <= last {
+                return Err(SecureError::StaleSequence { got, last });
+            }
         }
 
-        let key = self.tool_key.bytes();
+        let key = key.bytes();
         let (inner_tpdu, ok) = match scf.algorithm {
             SecAlgorithm::AuthOnly => {
                 // APDU is in the clear; MAC over SCF || apdu.
@@ -586,7 +631,58 @@ impl DataSecureSession {
             system_broadcast: false,
             service: SecService::Data,
         };
-        let asdu = self.wrap_with_context(scf, &seq, inner_tpdu, &ctx);
+        let asdu = Self::wrap_with_context(&self.tool_key, scf, &seq, inner_tpdu, &ctx);
+        (asdu, seq)
+    }
+
+    /// The last accepted group receive sequence for a source IA (for tests).
+    pub fn group_rx_last(&self, source: u16) -> Option<u64> {
+        self.group_rx_last.get(&source).copied()
+    }
+
+    /// Open an inbound secured GROUP telegram (`carrier` is the T_Data_Group
+    /// frame to the group address, `asdu` the bytes after its two APCI octets)
+    /// with the destination's `group_key`. Verifies the SCF (S-A_Data, not tool
+    /// access), the MAC and the per-source group freshness, and on success
+    /// commits the sequence.
+    pub fn unwrap_group_incoming(
+        &mut self,
+        group_key: &Key16,
+        carrier: &CemiLData,
+        asdu: &[u8],
+    ) -> Result<Unwrapped, SecureError> {
+        check_group_scf(asdu)?;
+        let source = carrier.source.raw();
+        let last = self
+            .group_rx_last
+            .get(&source)
+            .copied()
+            .unwrap_or(self.rx_floor);
+        let ctx = FrameContext::group_from_cemi(carrier);
+        let unwrapped = Self::open_fresh(group_key, asdu, &ctx, Some(last))?;
+        let got = Self::seq_from_bytes(&unwrapped.seq);
+        let entry = self.group_rx_last.entry(source).or_insert(self.rx_floor);
+        if got > *entry {
+            *entry = got;
+        }
+        Ok(unwrapped)
+    }
+
+    /// Seal an outgoing GROUP APDU (`inner_apdu`, TPCI bits zero) with
+    /// `group_key` and the device's own next send sequence, for the group
+    /// telegram `carrier` (source = this device, destination = the group
+    /// address). Advances the send sequence. Returns `(asdu_bytes, seq_used)`.
+    pub fn wrap_group_outgoing(
+        &mut self,
+        group_key: &Key16,
+        carrier: &CemiLData,
+        algorithm: SecAlgorithm,
+        inner_apdu: &[u8],
+    ) -> (Vec<u8>, [u8; 6]) {
+        let ctx = FrameContext::group_from_cemi(carrier);
+        let seq = Self::seq_to_bytes(self.tx_seq);
+        self.tx_seq = self.tx_seq.wrapping_add(1) & 0xFFFF_FFFF_FFFF;
+        let asdu = Self::wrap_with_context(group_key, group_scf(algorithm), &seq, inner_apdu, &ctx);
         (asdu, seq)
     }
 
@@ -704,6 +800,63 @@ impl DataSecureSession {
             scf.tool_access
         )
     }
+}
+
+/// The SCF of a secured GROUP telegram: no tool access, no system broadcast,
+/// S-A_Data. `0x10` for auth+encryption, `0x00` for auth-only.
+pub fn group_scf(algorithm: SecAlgorithm) -> Scf {
+    Scf {
+        tool_access: false,
+        algorithm,
+        system_broadcast: false,
+        service: SecService::Data,
+    }
+}
+
+/// Refuse an ASDU whose SCF is not group S-A_Data: too short, an unmodelled
+/// SCF, the tool-access bit set (a group key never authenticates tool access)
+/// or a Sync service.
+fn check_group_scf(asdu: &[u8]) -> Result<Scf, SecureError> {
+    let &scf_byte = asdu.first().ok_or(SecureError::TooShort { len: 0 })?;
+    let scf = Scf::from_byte(scf_byte).ok_or(SecureError::BadScf { scf: scf_byte })?;
+    if scf.tool_access {
+        return Err(SecureError::BadScf { scf: scf_byte });
+    }
+    if scf.service != SecService::Data {
+        return Err(SecureError::UnexpectedService { scf: scf_byte });
+    }
+    Ok(scf)
+}
+
+/// Seal a GROUP APDU into an `A_SecureData` ASDU, as a pure function: `key` is
+/// the group key of `ga`, `seq` the sender's 48-bit sequence, `source` the
+/// sender's raw individual address, `ga` the raw group address, `inner_apdu`
+/// the plain group APDU with TPCI bits zero (e.g. `[0x00, 0x81]` for a small
+/// GroupValueWrite of 1). Returns `SCF || seq(6) || secured APDU || MAC(4)`.
+pub fn seal_group(
+    key: &Key16,
+    algorithm: SecAlgorithm,
+    seq: u64,
+    source: u16,
+    ga: u16,
+    inner_apdu: &[u8],
+) -> Vec<u8> {
+    let seq = DataSecureSession::seq_to_bytes(seq);
+    let ctx = FrameContext::group(source, ga);
+    DataSecureSession::wrap_with_context(key, group_scf(algorithm), &seq, inner_apdu, &ctx)
+}
+
+/// Open a GROUP `A_SecureData` ASDU as a pure function (no freshness check):
+/// the inverse of [`seal_group`]. Refuses a tool-access or non-Data SCF and a
+/// wrong MAC.
+pub fn open_group(
+    key: &Key16,
+    source: u16,
+    ga: u16,
+    asdu: &[u8],
+) -> Result<Unwrapped, SecureError> {
+    check_group_scf(asdu)?;
+    DataSecureSession::open_fresh(key, asdu, &FrameContext::group(source, ga), None)
 }
 
 impl std::fmt::Debug for DataSecureSession {
@@ -856,5 +1009,158 @@ mod tests {
         // The plaintext value bytes must NOT appear.
         assert!(!d.contains("deadbeef"));
         assert!(!d.contains("de ad be ef"));
+    }
+
+    /// The group known-answer vector shared with bussard (issue #172): key
+    /// 00 01 .. 0F, seq 42, source 1.1.1 (0x1101) to GA 1/2/3 (0x0A03), SCF
+    /// 0x10 (auth+enc), inner small GroupValueWrite of 1 (`[0x00, 0x81]`).
+    const GROUP_KAT_ASDU: &str = "1000000000002adf5949899fd3";
+
+    fn kat_key() -> Key16 {
+        let mut k = [0u8; 16];
+        for (i, b) in k.iter_mut().enumerate() {
+            *b = i as u8;
+        }
+        Key16::new(k)
+    }
+
+    fn hex_of(b: &[u8]) -> String {
+        b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    fn group_carrier(src: u16, ga: u16) -> CemiLData {
+        CemiLData {
+            message_code: MessageCode::LDataReq,
+            ctrl1: 0xbc,
+            ctrl2: 0xe0,
+            source: IndividualAddress(src),
+            dest: ga,
+            tpdu: vec![0x03, 0xf1],
+        }
+    }
+
+    #[test]
+    fn test_seal_group_known_answer_vector() -> Result<(), SecureError> {
+        let asdu = seal_group(
+            &kat_key(),
+            SecAlgorithm::AuthEnc,
+            42,
+            0x1101,
+            0x0A03,
+            &[0x00, 0x81],
+        );
+        assert_eq!(hex_of(&asdu), GROUP_KAT_ASDU);
+        assert_eq!(asdu[0], 0x10, "group SCF auth+enc");
+        assert_eq!(&asdu[1..7], &[0, 0, 0, 0, 0, 42]);
+        assert_eq!(asdu.len(), 1 + 6 + 2 + 4);
+        let un = open_group(&kat_key(), 0x1101, 0x0A03, &asdu)?;
+        assert_eq!(un.inner_tpdu, vec![0x00, 0x81]);
+        assert_eq!(un.scf, group_scf(SecAlgorithm::AuthEnc));
+        Ok(())
+    }
+
+    #[test]
+    fn test_group_block_0_layout() {
+        let ctx = FrameContext::group(0x1101, 0x0A03);
+        let b0 = ctx.block_0(&[0, 0, 0, 0, 0, 42], 2);
+        assert_eq!(
+            b0,
+            [
+                0, 0, 0, 0, 0, 42, 0x11, 0x01, 0x0A, 0x03, 0x00, 0x80, 0x03, 0xF1, 0x00, 0x02
+            ]
+        );
+        // The carrier-derived context is identical for a standard group frame.
+        let from = FrameContext::group_from_cemi(&group_carrier(0x1101, 0x0A03));
+        assert_eq!(from.block_0(&[0; 6], 2), ctx.block_0(&[0; 6], 2));
+    }
+
+    #[test]
+    fn test_seal_open_group_roundtrip_both_modes() -> Result<(), SecureError> {
+        for alg in [SecAlgorithm::AuthEnc, SecAlgorithm::AuthOnly] {
+            let inner = [0x00, 0x40, 0x12, 0x34]; // large GroupValueResponse
+            let asdu = seal_group(&kat_key(), alg, 7, 0x110A, 0x0A03, &inner);
+            assert_eq!(asdu[0], group_scf(alg).to_byte());
+            let un = open_group(&kat_key(), 0x110A, 0x0A03, &asdu)?;
+            assert_eq!(un.inner_tpdu, inner.to_vec());
+        }
+        assert_eq!(group_scf(SecAlgorithm::AuthOnly).to_byte(), 0x00);
+        Ok(())
+    }
+
+    #[test]
+    fn test_open_group_refuses_wrong_key_address_and_tool_scf() {
+        let asdu = seal_group(
+            &kat_key(),
+            SecAlgorithm::AuthEnc,
+            42,
+            0x1101,
+            0x0A03,
+            &[0x00, 0x81],
+        );
+        let wrong = Key16::new([0xAA; 16]);
+        assert_eq!(
+            open_group(&wrong, 0x1101, 0x0A03, &asdu),
+            Err(SecureError::BadMac)
+        );
+        // The group address is protected: the same ASDU to another GA fails.
+        assert_eq!(
+            open_group(&kat_key(), 0x1101, 0x0A04, &asdu),
+            Err(SecureError::BadMac)
+        );
+        let mut tool = asdu.clone();
+        tool[0] |= 0x80;
+        assert_eq!(
+            open_group(&kat_key(), 0x1101, 0x0A03, &tool),
+            Err(SecureError::BadScf { scf: 0x90 })
+        );
+    }
+
+    #[test]
+    fn test_group_session_freshness_and_send_sequence() -> Result<(), SecureError> {
+        let mut dev = DataSecureSession::new(Key16::new([0x42; 16]), 300, 1000);
+        let c = group_carrier(0x1101, 0x0A03);
+        let asdu = seal_group(
+            &kat_key(),
+            SecAlgorithm::AuthEnc,
+            1001,
+            0x1101,
+            0x0A03,
+            &[0, 0],
+        );
+        let un = dev.unwrap_group_incoming(&kat_key(), &c, &asdu)?;
+        assert_eq!(un.inner_tpdu, vec![0, 0]);
+        assert_eq!(dev.group_rx_last(0x1101), Some(1001));
+        // The tool-access table is untouched by group traffic.
+        assert_eq!(dev.rx_last(0x1101), None);
+        // Replay refused; below the floor refused.
+        assert_eq!(
+            dev.unwrap_group_incoming(&kat_key(), &c, &asdu),
+            Err(SecureError::StaleSequence {
+                got: 1001,
+                last: 1001
+            })
+        );
+        let low = seal_group(
+            &kat_key(),
+            SecAlgorithm::AuthEnc,
+            42,
+            0x1102,
+            0x0A03,
+            &[0, 0],
+        );
+        let c2 = group_carrier(0x1102, 0x0A03);
+        assert!(matches!(
+            dev.unwrap_group_incoming(&kat_key(), &c2, &low),
+            Err(SecureError::StaleSequence { .. })
+        ));
+        // Outgoing: the device's own sequence, opened by a peer with the key.
+        let out = group_carrier(0x110A, 0x0A03);
+        let (sealed, seq) =
+            dev.wrap_group_outgoing(&kat_key(), &out, SecAlgorithm::AuthEnc, &[0, 0x41]);
+        assert_eq!(DataSecureSession::seq_from_bytes(&seq), 300);
+        assert_eq!(dev.tx_seq(), 301);
+        let opened = open_group(&kat_key(), 0x110A, 0x0A03, &sealed)?;
+        assert_eq!(opened.inner_tpdu, vec![0, 0x41]);
+        Ok(())
     }
 }
