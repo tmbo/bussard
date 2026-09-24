@@ -139,6 +139,22 @@ pub fn strip_bom(bytes: Vec<u8>) -> String {
     s.strip_prefix('\u{feff}').map(str::to_string).unwrap_or(s)
 }
 
+/// Drops a leading UTF-8 BOM from raw bytes, if present, without reallocating.
+///
+/// The byte parsers (`parse_application_program`, `parse_master_template`)
+/// strip a BOM themselves, so this is for callers that hand the bytes on or
+/// store them; the shift is in place, so a 28 MB entry is not copied into a
+/// fresh buffer.
+pub fn strip_bom_bytes(mut bytes: Vec<u8>) -> Vec<u8> {
+    if bytes.starts_with(UTF8_BOM) {
+        bytes.drain(..UTF8_BOM.len());
+    }
+    bytes
+}
+
+/// The UTF-8 byte-order mark.
+const UTF8_BOM: &[u8] = b"\xEF\xBB\xBF";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,6 +165,17 @@ mod tests {
         bytes.extend_from_slice(b"<KNX/>");
         assert_eq!(strip_bom(bytes), "<KNX/>");
         assert_eq!(strip_bom(b"plain".to_vec()), "plain");
+    }
+
+    #[test]
+    fn test_strip_bom_bytes_drops_only_a_leading_bom() {
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(b"<KNX/>");
+        assert_eq!(strip_bom_bytes(bytes), b"<KNX/>");
+        assert_eq!(strip_bom_bytes(b"plain".to_vec()), b"plain");
+        // A BOM that is not at the start is data, not a marker.
+        let mid = b"a\xEF\xBB\xBFb".to_vec();
+        assert_eq!(strip_bom_bytes(mid.clone()), mid);
     }
 
     /// Parses the attributes of the single tag in `xml` into `attrs`.

@@ -396,7 +396,6 @@ dependencies = [
  "bussard-ets",
  "bussard-model",
  "bussard-secure",
- "pbkdf2",
  "quick-xml",
  "rayon",
  "serde",

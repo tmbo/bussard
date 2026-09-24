@@ -172,10 +172,10 @@ fn read_product(mut container: container::Container) -> Result<ProductData> {
     let entries = container.application_entries();
     let mut applications = Vec::with_capacity(entries.len());
     for entry in &entries {
-        let xml = container.read_to_string(&entry.entry)?;
-        // parse_application_program now takes &[u8] (skips an eager whole-file
-        // UTF-8 validation); behavior here is identical.
-        let app = parse_application_program(&entry.application_id, xml.as_bytes())?;
+        // Raw bytes straight from the inflater: no `String` copy of the (up to
+        // ~28 MB) entry; the parser decodes UTF-8 event by event.
+        let xml = container.read_raw(&entry.entry)?;
+        let app = parse_application_program(&entry.application_id, &xml)?;
         applications.push(app);
     }
     applications.sort_by(|a, b| a.id.cmp(&b.id));

@@ -1,10 +1,8 @@
 //! Minimal parser for `knx_master.xml` — only the manufacturer id → name map.
 
-// quick-xml 0.41 deprecates unescape_value in favor of normalized_value,
-// which adds attribute-value whitespace normalization. Import output is held
-// to byte-equal stability, so the plain-unescape semantics are deliberate.
-#![allow(deprecated)]
 use std::collections::HashMap;
+
+use bussard_ets::attrs::attrs_map;
 
 use quick_xml::Reader;
 use quick_xml::events::Event;
@@ -25,26 +23,11 @@ pub fn parse_manufacturers(xml: &str) -> Result<HashMap<String, String>> {
         })? {
             Event::Eof => break,
             Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"Manufacturer" => {
-                let mut id = None;
-                let mut name = None;
-                for a in e.attributes() {
-                    let a = a.map_err(|source| ImportError::XmlAttr {
-                        context: context.to_string(),
-                        source,
-                    })?;
-                    let value = a
-                        .unescape_value()
-                        .map_err(|source| ImportError::Xml {
-                            context: context.to_string(),
-                            source,
-                        })?
-                        .into_owned();
-                    match a.key.as_ref() {
-                        b"Id" => id = Some(value),
-                        b"Name" => name = Some(value),
-                        _ => {}
-                    }
-                }
+                // Plain (non-normalizing) unescape via the shared helper keeps
+                // import output byte-stable.
+                let attrs = attrs_map(&e, context)?;
+                let id = attrs.get(b"Id").map(str::to_string);
+                let name = attrs.get(b"Name").map(str::to_string);
                 if let (Some(id), Some(name)) = (id, name) {
                     map.insert(id, name);
                 }
@@ -60,7 +43,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_names() {
+    fn parses_names() -> Result<()> {
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
           <MasterData>
             <Manufacturers>
@@ -69,8 +52,9 @@ mod tests {
             </Manufacturers>
           </MasterData>
         </KNX>"#;
-        let m = parse_manufacturers(xml).unwrap();
+        let m = parse_manufacturers(xml)?;
         assert_eq!(m.get("M-0004").map(String::as_str), Some("Albrecht Jung"));
         assert_eq!(m.get("M-0001").map(String::as_str), Some("Siemens"));
+        Ok(())
     }
 }

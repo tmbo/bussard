@@ -8,10 +8,6 @@
 //! The heavy resolution against manufacturer XML happens later in
 //! [`crate::build`]; this module only reads the project file itself.
 
-// quick-xml 0.41 deprecates unescape_value in favor of normalized_value,
-// which adds attribute-value whitespace normalization. Import output is held
-// to byte-equal stability, so the plain-unescape semantics are deliberate.
-#![allow(deprecated)]
 use std::collections::HashMap;
 
 use quick_xml::Reader;
@@ -19,8 +15,9 @@ use quick_xml::events::{BytesStart, Event};
 
 use crate::dpt_map::parse_ets_dpt;
 use crate::error::{ImportError, Result};
-use crate::flag_map::{FlagSet, parse_flag_value};
+use crate::flag_map::FlagSet;
 use crate::version::SchemaVersion;
+use bussard_ets::attrs::{attr_value, attrs_map, flagset_from, get};
 use bussard_model::{Dpt, GroupAddress, IndividualAddress};
 
 /// A group address as read from the project file.
@@ -206,8 +203,8 @@ pub fn parse_project_info(xml: &str) -> Result<ProjectInfo> {
             Event::Start(e) | Event::Empty(e)
                 if e.local_name().as_ref() == b"ProjectInformation" =>
             {
-                info.name = non_empty(attr(&e, b"Name", context)?.as_deref());
-                info.group_address_style = attr(&e, b"GroupAddressStyle", context)?
+                info.name = non_empty(attr_value(&e, b"Name", context)?.as_deref());
+                info.group_address_style = attr_value(&e, b"GroupAddressStyle", context)?
                     .as_deref()
                     .and_then(GroupAddressStyle::from_attr);
                 // The first ProjectInformation is authoritative; stop early.
@@ -234,48 +231,6 @@ pub struct RawProject {
     pub devices: Vec<RawDevice>,
     /// Locations keyed by device `Id`.
     pub locations: HashMap<String, RawLocation>,
-}
-
-/// Reads an attribute as an owned string.
-fn attr(e: &BytesStart, key: &[u8], context: &str) -> Result<Option<String>> {
-    for a in e.attributes() {
-        let a = a.map_err(|source| ImportError::XmlAttr {
-            context: context.to_string(),
-            source,
-        })?;
-        if a.key.as_ref() == key {
-            let v = a.unescape_value().map_err(|source| ImportError::Xml {
-                context: context.to_string(),
-                source,
-            })?;
-            return Ok(Some(v.into_owned()));
-        }
-    }
-    Ok(None)
-}
-
-/// Reads all attributes into a map.
-fn attrs(e: &BytesStart, context: &str) -> Result<HashMap<Vec<u8>, String>> {
-    let mut map = HashMap::new();
-    for a in e.attributes() {
-        let a = a.map_err(|source| ImportError::XmlAttr {
-            context: context.to_string(),
-            source,
-        })?;
-        let v = a
-            .unescape_value()
-            .map_err(|source| ImportError::Xml {
-                context: context.to_string(),
-                source,
-            })?
-            .into_owned();
-        map.insert(a.key.as_ref().to_vec(), v);
-    }
-    Ok(map)
-}
-
-fn get<'a>(m: &'a HashMap<Vec<u8>, String>, k: &[u8]) -> Option<&'a str> {
-    m.get(k).map(String::as_str)
 }
 
 fn non_empty(s: Option<&str>) -> Option<String> {
@@ -335,15 +290,15 @@ pub fn parse_project(xml: &str, schema: SchemaVersion) -> Result<RawProject> {
             Event::Start(e) => {
                 match e.local_name().as_ref() {
                     b"Project" => {
-                        project.project_id = attr(&e, b"Id", context)?;
+                        project.project_id = attr_value(&e, b"Id", context)?;
                     }
                     b"Area" => {
                         area_addr =
-                            attr(&e, b"Address", context)?.and_then(|v| v.parse::<u8>().ok());
+                            attr_value(&e, b"Address", context)?.and_then(|v| v.parse::<u8>().ok());
                     }
                     b"Line" => {
                         line_addr =
-                            attr(&e, b"Address", context)?.and_then(|v| v.parse::<u8>().ok());
+                            attr_value(&e, b"Address", context)?.and_then(|v| v.parse::<u8>().ok());
                     }
                     b"GroupRange" => {
                         // The range key mirrors ETS numbering, derived from
@@ -351,8 +306,8 @@ pub fn parse_project(xml: &str, schema: SchemaVersion) -> Result<RawProject> {
                         // (`RangeStart >> 11`); a nested range is `main/middle`
                         // (`(RangeStart >> 8) & 7`).
                         range_depth += 1;
-                        let name = attr(&e, b"Name", context)?.unwrap_or_default();
-                        let range_start = attr(&e, b"RangeStart", context)?
+                        let name = attr_value(&e, b"Name", context)?.unwrap_or_default();
+                        let range_start = attr_value(&e, b"RangeStart", context)?
                             .and_then(|v| v.parse::<u16>().ok())
                             .unwrap_or(0);
                         let main = range_start >> 11;
@@ -382,15 +337,15 @@ pub fn parse_project(xml: &str, schema: SchemaVersion) -> Result<RawProject> {
                     }
                     b"ModuleInstance" => {
                         if let (Some(dev), Some(id)) =
-                            (current_device.as_mut(), attr(&e, b"Id", context)?)
+                            (current_device.as_mut(), attr_value(&e, b"Id", context)?)
                         {
                             dev.module_instances.entry(id.clone()).or_default();
                             current_module_instance = Some(id);
                         }
                     }
                     b"Space" => {
-                        let ty = attr(&e, b"Type", context)?.unwrap_or_default();
-                        let name = attr(&e, b"Name", context)?;
+                        let ty = attr_value(&e, b"Type", context)?.unwrap_or_default();
+                        let name = attr_value(&e, b"Name", context)?;
                         space_stack.push((ty, name));
                     }
                     // KNX Secure state (issue #71, spec §11): a `<Security>` start
@@ -438,9 +393,10 @@ pub fn parse_project(xml: &str, schema: SchemaVersion) -> Result<RawProject> {
                     b"ParameterInstanceRef" => {
                         if in_parameter_refs {
                             if let Some(dev) = current_device.as_mut() {
-                                if let (Some(ref_id), Some(value)) =
-                                    (attr(&e, b"RefId", context)?, attr(&e, b"Value", context)?)
-                                {
+                                if let (Some(ref_id), Some(value)) = (
+                                    attr_value(&e, b"RefId", context)?,
+                                    attr_value(&e, b"Value", context)?,
+                                ) {
                                     dev.parameters.push((ref_id, value));
                                 }
                             }
@@ -450,9 +406,10 @@ pub fn parse_project(xml: &str, schema: SchemaVersion) -> Result<RawProject> {
                         if let (Some(dev), Some(mi_id)) =
                             (current_device.as_mut(), current_module_instance.as_ref())
                         {
-                            if let (Some(ref_id), Some(value)) =
-                                (attr(&e, b"RefId", context)?, attr(&e, b"Value", context)?)
-                            {
+                            if let (Some(ref_id), Some(value)) = (
+                                attr_value(&e, b"RefId", context)?,
+                                attr_value(&e, b"Value", context)?,
+                            ) {
                                 if let Some(args) = dev.module_instances.get_mut(mi_id) {
                                     args.insert(ref_id, value);
                                 }
@@ -461,7 +418,7 @@ pub fn parse_project(xml: &str, schema: SchemaVersion) -> Result<RawProject> {
                     }
                     b"DeviceInstanceRef" => {
                         // Attach the current location to this device id.
-                        if let Some(ref_id) = attr(&e, b"RefId", context)? {
+                        if let Some(ref_id) = attr_value(&e, b"RefId", context)? {
                             let loc = current_location(&space_stack);
                             project.locations.insert(ref_id, loc);
                         }
@@ -538,7 +495,7 @@ fn parse_device_start(
     line: Option<u8>,
     context: &str,
 ) -> Result<Option<RawDevice>> {
-    let m = attrs(e, context)?;
+    let m = attrs_map(e, context)?;
     let addr_raw = match get(&m, b"Address").and_then(|v| v.parse::<u8>().ok()) {
         Some(a) => a,
         None => return Ok(None),
@@ -591,7 +548,7 @@ fn parse_device_start(
 /// into the model: only their presence is recorded (keys come from the
 /// `.knxkeys` keyring).
 fn apply_device_security(dev: &mut RawDevice, e: &BytesStart, context: &str) -> Result<()> {
-    let m = attrs(e, context)?;
+    let m = attrs_map(e, context)?;
     if let Some(seq) = get(&m, b"SequenceNumber").and_then(|s| s.parse::<u64>().ok()) {
         dev.secure_sequence_number = Some(seq);
     }
@@ -626,7 +583,7 @@ impl SecuritySetting {
 
 /// Parses a `GroupAddress` element.
 fn parse_group_address(e: &BytesStart, context: &str) -> Result<Option<RawGroupAddress>> {
-    let m = attrs(e, context)?;
+    let m = attrs_map(e, context)?;
     let id = match get(&m, b"Id") {
         Some(v) => v,
         None => return Ok(None),
@@ -654,7 +611,7 @@ fn parse_com_object_instance(
     e: &BytesStart,
     context: &str,
 ) -> Result<Option<RawComObjectInstance>> {
-    let m = attrs(e, context)?;
+    let m = attrs_map(e, context)?;
     let ref_id = match get(&m, b"RefId") {
         Some(v) => v.to_string(),
         None => return Ok(None),
@@ -666,14 +623,7 @@ fn parse_com_object_instance(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let flags = FlagSet {
-        communication: get(&m, b"CommunicationFlag").and_then(parse_flag_value),
-        read: get(&m, b"ReadFlag").and_then(parse_flag_value),
-        write: get(&m, b"WriteFlag").and_then(parse_flag_value),
-        transmit: get(&m, b"TransmitFlag").and_then(parse_flag_value),
-        update: get(&m, b"UpdateFlag").and_then(parse_flag_value),
-        read_on_init: get(&m, b"ReadOnInitFlag").and_then(parse_flag_value),
-    };
+    let flags = flagset_from(&m);
     Ok(Some(RawComObjectInstance {
         ref_id,
         links,
@@ -690,7 +640,7 @@ fn parse_com_object_instance(
 ///
 /// Returns `None` if the attribute is absent (a connector with no linked GA).
 fn connector_ga_suffix(e: &BytesStart, context: &str) -> Result<Option<String>> {
-    Ok(attr(e, b"GroupAddressRefId", context)?
+    Ok(attr_value(e, b"GroupAddressRefId", context)?
         .map(|id| id.rsplit('_').next().unwrap_or(&id).to_string()))
 }
 

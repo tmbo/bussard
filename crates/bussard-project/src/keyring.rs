@@ -25,11 +25,6 @@
 //! No GPL source was consulted; the format is reimplemented from the public XKNX
 //! reference and the KNX Secure specification.
 
-// quick-xml 0.41 deprecates `unescape_value` in favor of `normalized_value`;
-// the rest of this crate deliberately uses the plain-unescape semantics (see
-// `project.rs`), so we match that here.
-#![allow(deprecated)]
-
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
 
@@ -44,6 +39,7 @@ use zeroize::Zeroizing;
 use bussard_secure::crypto::latin1_bytes;
 use bussard_secure::{Key16, aes_cbc_decrypt, pbkdf2_key, salt};
 
+use bussard_ets::attrs::{attr_value, attrs_map};
 use bussard_model::{GroupAddress, IndividualAddress};
 
 /// The number of bytes of raw key material in a KNX Secure key.
@@ -426,19 +422,14 @@ fn serialize_start(e: &BytesStart, out: &mut Vec<u8>) -> Result<(), KeyringError
     out.push(ELEMENT_START);
     push_framed(out, e.name().as_ref(), "element name")?;
 
-    let mut attrs: Vec<(Vec<u8>, String)> = Vec::new();
-    for a in e.attributes() {
-        let a = a.map_err(|source| KeyringError::Xml(source.to_string()))?;
-        let key = a.key.as_ref();
-        if key == b"xmlns" || key == b"Signature" || key.starts_with(b"xmlns:") {
-            continue;
-        }
-        let value = a
-            .unescape_value()
-            .map_err(|source| KeyringError::Xml(source.to_string()))?;
-        attrs.push((key.to_vec(), value.into_owned()));
-    }
-    attrs.sort_by(|a, b| a.0.cmp(&b.0));
+    let all = attrs_map(e, KEYRING_CONTEXT).map_err(xml_error)?;
+    let mut attrs: Vec<(&[u8], &str)> = all
+        .iter()
+        .filter(|(key, _)| {
+            !(*key == b"xmlns" || *key == b"Signature" || key.starts_with(b"xmlns:"))
+        })
+        .collect();
+    attrs.sort_by(|a, b| a.0.cmp(b.0));
 
     for (key, value) in &attrs {
         let name = String::from_utf8_lossy(key);
@@ -795,16 +786,22 @@ fn extract_password(data: &[u8], attribute: &str) -> Result<Zeroizing<String>, K
 
 /// Reads a single named attribute off an element as an owned `String`.
 fn attr(e: &BytesStart, key: &[u8]) -> Result<Option<String>, KeyringError> {
-    for a in e.attributes() {
-        let a = a.map_err(|source| KeyringError::Xml(source.to_string()))?;
-        if a.key.as_ref() == key {
-            let v = a
-                .unescape_value()
-                .map_err(|source| KeyringError::Xml(source.to_string()))?;
-            return Ok(Some(v.into_owned()));
-        }
+    attr_value(e, key, KEYRING_CONTEXT).map_err(xml_error)
+}
+
+/// The context string handed to the shared attribute helpers; it only shows up
+/// inside [`bussard_ets::EtsError`], which [`xml_error`] unwraps again.
+const KEYRING_CONTEXT: &str = ".knxkeys";
+
+/// Maps an attribute-helper error onto [`KeyringError::Xml`], carrying only the
+/// underlying quick-xml message so the text matches what the keyring reported
+/// before the helpers were shared.
+fn xml_error(e: bussard_ets::EtsError) -> KeyringError {
+    match e {
+        bussard_ets::EtsError::XmlAttr { source, .. } => KeyringError::Xml(source.to_string()),
+        bussard_ets::EtsError::Xml { source, .. } => KeyringError::Xml(source.to_string()),
+        other => KeyringError::Xml(other.to_string()),
     }
-    Ok(None)
 }
 
 /// Parses an individual address attribute value.
