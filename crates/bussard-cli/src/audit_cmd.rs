@@ -148,8 +148,8 @@ async fn live_report(
     //    connection-oriented, so check our own source address first. The check
     //    runs after the sample, not before it, so listening starts as soon as
     //    the tunnel is up instead of after the probe's ~600 ms wait.
-    let source = checked_source_or_close(&handle, overrides).await?;
-    let scan = scan_model_devices(&handle, model, source).await;
+    let source = checked_source_or_close(&service, overrides).await?;
+    let scan = scan_model_devices(&service, model, source).await;
     let _ = handle.close().await;
 
     Ok(json!({
@@ -200,7 +200,11 @@ async fn sample_traffic(handle: &BusHandle, window: Duration) -> Vec<SampledTele
 ///
 /// Probes are sequential (one connection-oriented session at a time, TP1
 /// etiquette) and spaced by the MCP read limiter's minimum interval.
-async fn scan_model_devices(handle: &BusHandle, model: &Model, source: IndividualAddress) -> Value {
+async fn scan_model_devices(
+    service: &bussard_service::BusService,
+    model: &Model,
+    source: IndividualAddress,
+) -> Value {
     let mut lines: BTreeMap<(u8, u8), Vec<Value>> = BTreeMap::new();
     let mut not_answering: BTreeMap<(u8, u8), Vec<Value>> = BTreeMap::new();
     let mut answered_count = 0usize;
@@ -208,7 +212,7 @@ async fn scan_model_devices(handle: &BusHandle, model: &Model, source: Individua
     for (addr, loaded) in &model.devices {
         eprint!("\rprobing {addr}…   ");
         let started = tokio::time::Instant::now();
-        let found = crate::scan_cmd::probe(handle, *addr, source).await;
+        let found = crate::scan_cmd::probe(service, *addr, source).await;
         let key = (addr.area(), addr.line());
         let model_mask = loaded.device.product.as_ref().and_then(|p| p.mask.clone());
         match found {

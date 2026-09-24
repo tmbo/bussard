@@ -19,15 +19,17 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::anyhow;
-use bussard_bus::BusHandle;
 use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO, PID_SERIAL_NUMBER};
-use bussard_mgmt::{
-    DeviceConnection, L4Channel, LeaseChannel, Timeouts, manufacturers, system_type,
-};
+use bussard_mgmt::{DeviceConnection, L4Channel, Timeouts, manufacturers, system_type};
 use bussard_model::IndividualAddress;
-use bussard_service::WritePolicy;
+use bussard_service::{
+    Authorize, BusService, Device, L4Options, ServiceError, SourcePolicy, WritePolicy,
+};
 
-use crate::conn_cmd::{ConnOverrides, load_model_required, open_service, resolve_config};
+use crate::assign_cmd::{clean_ascii, hex};
+use crate::conn_cmd::{
+    ConnOverrides, checked_source_or_close, load_model_required, open_service, resolve_config,
+};
 
 /// Environment variable that overrides the per-attempt discovery timeout in
 /// milliseconds. Set only by the integration test to keep a full-line mock sweep
@@ -117,18 +119,12 @@ pub fn run(
         // assigned address (issue #30). Fall back to 0.0.255 on a routing
         // transport that assigns none.
         let service = open_service(config, WritePolicy::ReadOnly).await?;
-        let source = match service.checked_source(overrides.skip_address_check).await {
-            Ok(source) => source,
-            Err(err) => {
-                service.close().await;
-                return Err(err.into());
-            }
-        };
+        let source = checked_source_or_close(&service, &overrides).await?;
         // Guard the sweep with Ctrl-C: on interrupt, stop sweeping and fall
         // through to a clean close so the gateway tunnel slot is released
         // rather than leaked (~2 min hold) — see issue #31.
         let found = tokio::select! {
-            found = sweep(service.handle(), area, line_no, from, to, source, json) => found,
+            found = sweep(&service, area, line_no, from, to, source, json) => found,
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\ninterrupted; closing the bus connection");
                 Vec::new()
@@ -154,7 +150,7 @@ pub fn run(
 /// connection-oriented session (TP1 etiquette — one open connection at a time),
 /// releasing the lease before the next address.
 async fn sweep(
-    handle: &BusHandle,
+    service: &BusService,
     area: u8,
     line_no: u8,
     from: u8,
@@ -177,7 +173,7 @@ async fn sweep(
         };
         display.probing(addr, found.len());
 
-        if let Some(dev) = probe(handle, addr, source).await {
+        if let Some(dev) = probe(service, addr, source).await {
             found.push(dev);
         }
         display.advance();
@@ -195,16 +191,29 @@ async fn sweep(
 /// absent or refusing device. The lease is released when the [`LeaseChannel`] is
 /// dropped at the end of this function.
 pub(crate) async fn probe(
-    handle: &BusHandle,
+    service: &BusService,
     addr: IndividualAddress,
     source: IndividualAddress,
 ) -> Option<Found> {
-    let lease = handle.lease().await.ok()?;
-    let channel = LeaseChannel::new(lease);
-    let mut dev = DeviceConnection::connect_with(channel, addr, source, discovery_timeouts())
+    // The authorize comes after the descriptor read (below), so the session
+    // opens without it.
+    let options = L4Options {
+        source: SourcePolicy::Known(source),
+        timeouts: discovery_timeouts(),
+        authorize: Authorize::Skip,
+        ..L4Options::default()
+    };
+    service
+        .with_device(addr, &options, async |dev| {
+            Ok::<_, ServiceError>(identify(dev, addr).await)
+        })
         .await
-        .ok()?;
+        .ok()
+        .flatten()
+}
 
+/// The reads of [`probe`] on its open session.
+async fn identify(dev: &mut Device, addr: IndividualAddress) -> Option<Found> {
     let mask = match dev.device_descriptor().await {
         Ok(mask) => mask,
         Err(err) => {
@@ -213,7 +222,6 @@ pub(crate) async fn probe(
             if err.device_present() {
                 tracing::debug!("{addr} is present but refused the descriptor read: {err}");
             }
-            let _ = dev.disconnect().await;
             return None;
         }
     };
@@ -229,7 +237,7 @@ pub(crate) async fn probe(
     }
 
     // Best-effort property reads: any failure just leaves the field empty.
-    let manufacturer_id = read_u16(&mut dev, PID_MANUFACTURER_ID).await;
+    let manufacturer_id = read_u16(dev, PID_MANUFACTURER_ID).await;
     let serial = dev
         .read_device_property(PID_SERIAL_NUMBER)
         .await
@@ -242,7 +250,6 @@ pub(crate) async fn probe(
         .map(|v| clean_ascii(&v))
         .filter(|s| !s.is_empty());
 
-    let _ = dev.disconnect().await;
     Some(Found {
         address: addr,
         mask,
@@ -253,7 +260,10 @@ pub(crate) async fn probe(
 }
 
 /// Reads a 2-byte property as a `u16`, returning `None` on any failure.
-async fn read_u16<Ch: L4Channel>(dev: &mut DeviceConnection<Ch>, pid: u8) -> Option<u16> {
+pub(crate) async fn read_u16<Ch: L4Channel>(
+    dev: &mut DeviceConnection<Ch>,
+    pid: u8,
+) -> Option<u16> {
     match dev.read_device_property(pid).await {
         Ok(bytes) if bytes.len() >= 2 => Some(u16::from_be_bytes([bytes[0], bytes[1]])),
         _ => None,
@@ -292,7 +302,7 @@ fn cross_reference(found: Vec<Found>, model: Option<&bussard_model::Model>) -> R
 
 /// Parses a `area.line` (e.g. `1.1`) or a full `area.line.device` (ignoring the
 /// device part) into `(area, line)`.
-fn parse_line(line: &str) -> anyhow::Result<(u8, u8)> {
+pub(crate) fn parse_line(line: &str) -> anyhow::Result<(u8, u8)> {
     let parts: Vec<&str> = line.split('.').collect();
     if parts.len() < 2 {
         return Err(anyhow!(
@@ -309,22 +319,6 @@ fn parse_line(line: &str) -> anyhow::Result<(u8, u8)> {
         return Err(anyhow!("area and line must each be 0–15 (got {line:?})"));
     }
     Ok((area, line_no))
-}
-
-/// Cleans a raw property value to printable ASCII, trimming trailing NULs/space.
-fn clean_ascii(bytes: &[u8]) -> String {
-    let s: String = bytes
-        .iter()
-        .take_while(|b| **b != 0)
-        .filter(|b| b.is_ascii_graphic() || **b == b' ')
-        .map(|b| *b as char)
-        .collect();
-    s.trim().to_string()
-}
-
-/// Formats a byte slice as lowercase hex.
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Prints the aligned table plus a summary.

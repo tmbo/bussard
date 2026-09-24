@@ -34,17 +34,16 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
-use bussard_bus::BusHandle;
 use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO};
-use bussard_mgmt::{DeviceConnection, LeaseChannel, manufacturers, write_individual_address};
+use bussard_mgmt::{manufacturers, write_individual_address};
 use bussard_model::{IndividualAddress, Model};
 use bussard_prod::normalize_order_number;
-use bussard_service::{BusService, WritePolicy};
+use bussard_service::{Authorize, BusService, L4Options, ServiceError, SourcePolicy, WritePolicy};
 
 use crate::assign_cmd;
 use crate::conn_cmd::{
     ConnOverrides, checked_source_or_close, enforce_write_gate, gateway_display,
-    load_model_required, resolve_config,
+    load_model_required, resolve_config, session_open_error,
 };
 use crate::secure_key::ToolKeySource;
 
@@ -222,21 +221,20 @@ pub fn run(
         runtime.block_on(async move {
             let service =
                 BusService::open(config, WritePolicy::transmit(options.allow_remote_gateway))?;
-            let handle = service.handle().clone();
-            let _ = handle
+            let _ = service
                 .wait_connected(std::time::Duration::from_secs(10))
                 .await;
-            let source = checked_source_or_close(&handle, &conn).await?;
+            let source = checked_source_or_close(&service, &conn).await?;
             let mut present = Vec::new();
             for addr in addresses {
                 eprint!("\rchecking {addr}…   ");
                 let _ = std::io::stderr().flush();
-                if answers(&handle, source, addr).await {
+                if answers(&service, source, addr).await {
                     present.push(addr);
                 }
             }
             eprintln!("\r                       ");
-            let _ = handle.close().await;
+            service.close().await;
             anyhow::Ok(present)
         })?
     };
@@ -363,13 +361,12 @@ fn commission_one(
         runtime.block_on(async move {
             let service =
                 BusService::open(config, WritePolicy::transmit(options.allow_remote_gateway))?;
-            let handle = service.handle().clone();
-            let _ = handle
+            let _ = service
                 .wait_connected(std::time::Duration::from_secs(10))
                 .await;
-            let source = checked_source_or_close(&handle, overrides).await?;
-            let result = assign_on_bus(&handle, source, target).await;
-            let _ = handle.close().await;
+            let source = checked_source_or_close(&service, overrides).await?;
+            let result = assign_on_bus(&service, source, target).await;
+            service.close().await;
             result
         })
     };
@@ -462,7 +459,7 @@ struct Identity {
 /// The bus half of one device: wait for the programming button, check the
 /// product, write and verify the address.
 async fn assign_on_bus(
-    handle: &BusHandle,
+    service: &BusService,
     source: IndividualAddress,
     target: &Target,
 ) -> anyhow::Result<Identity> {
@@ -477,7 +474,7 @@ async fn assign_on_bus(
         ),
     }
 
-    let current = assign_cmd::wait_for_single_device(handle, source)
+    let current = assign_cmd::wait_for_single_device(service, source)
         .await?
         .ok_or_else(|| {
             anyhow::anyhow!(
@@ -487,21 +484,21 @@ async fn assign_on_bus(
         })?;
     eprintln!("  device in programming mode: {current} (its current address)");
 
-    let identity = read_identity(handle, source, current).await?;
+    let identity = read_identity(service, source, current).await?;
     check_order_number(target, &identity)?;
 
-    let channel = LeaseChannel::new(handle.lease().await.context("leasing the bus")?);
+    let channel = service.lease_channel().await?;
     write_individual_address(channel, source, target.address)
         .await
         .context("broadcasting the new individual address")?;
-    let verified = assign_cmd::verify_assignment(handle, source, target.address).await?;
+    let verified = assign_cmd::verify_assignment(service, source, target.address).await?;
     if verified.programming_mode_cleared {
         eprintln!(
             "  cleared programming mode on {} (PID_PROGMODE = 0)",
             target.address
         );
     }
-    assign_cmd::warn_if_still_in_programming_mode(handle, source, target.address).await;
+    assign_cmd::warn_if_still_in_programming_mode(service, source, target.address).await;
     eprintln!("  assigned {current} → {}", target.address);
 
     Ok(Identity {
@@ -514,35 +511,47 @@ async fn assign_on_bus(
 /// Reads the identity of the device answering at `addr`: descriptor, then
 /// best-effort manufacturer and order info.
 async fn read_identity(
-    handle: &BusHandle,
+    service: &BusService,
     source: IndividualAddress,
     addr: IndividualAddress,
 ) -> anyhow::Result<Identity> {
-    let channel = LeaseChannel::new(handle.lease().await.context("leasing the bus")?);
-    let mut dev = DeviceConnection::connect(channel, addr, source)
-        .await
-        .with_context(|| format!("connecting to the device in programming mode at {addr}"))?;
-    let mask = dev.device_descriptor().await.ok();
-    // Authorize with the free-access key before the property reads, as ETS does.
-    if let Err(err) = dev.authorize(bussard_mgmt::apci::FREE_ACCESS_KEY).await {
-        tracing::debug!("{addr} authorize (free access) did not grant: {err}");
-    }
-    let manufacturer_id = match dev.read_device_property(PID_MANUFACTURER_ID).await {
-        Ok(bytes) if bytes.len() >= 2 => Some(u16::from_be_bytes([bytes[0], bytes[1]])),
-        _ => None,
+    // Authorize comes after the descriptor read (below), so the session opens
+    // without it.
+    let options = L4Options {
+        source: SourcePolicy::Known(source),
+        authorize: Authorize::Skip,
+        ..L4Options::default()
     };
-    let order = dev
-        .read_device_property(PID_ORDER_INFO)
+    service
+        .with_device(addr, &options, async |dev| {
+            let mask = dev.device_descriptor().await.ok();
+            // Authorize with the free-access key before the property reads, as
+            // ETS does.
+            if let Err(err) = dev.authorize(bussard_mgmt::apci::FREE_ACCESS_KEY).await {
+                tracing::debug!("{addr} authorize (free access) did not grant: {err}");
+            }
+            let manufacturer_id = match dev.read_device_property(PID_MANUFACTURER_ID).await {
+                Ok(bytes) if bytes.len() >= 2 => Some(u16::from_be_bytes([bytes[0], bytes[1]])),
+                _ => None,
+            };
+            let order = dev
+                .read_device_property(PID_ORDER_INFO)
+                .await
+                .ok()
+                .map(|v| assign_cmd::clean_ascii(&v))
+                .filter(|s| !s.is_empty());
+            Ok::<_, ServiceError>(Identity {
+                mask,
+                manufacturer_id,
+                order,
+            })
+        })
         .await
-        .ok()
-        .map(|v| assign_cmd::clean_ascii(&v))
-        .filter(|s| !s.is_empty());
-    let _ = dev.disconnect().await;
-    Ok(Identity {
-        mask,
-        manufacturer_id,
-        order,
-    })
+        .map_err(|err| {
+            session_open_error(err, || {
+                format!("connecting to the device in programming mode at {addr}")
+            })
+        })
 }
 
 /// The hard stop: the pressed device must be the product the model expects.
@@ -583,24 +592,19 @@ fn check_order_number(target: &Target, identity: &Identity) -> anyhow::Result<()
 }
 
 /// Whether the device at `addr` answers a descriptor read.
-async fn answers(handle: &BusHandle, source: IndividualAddress, addr: IndividualAddress) -> bool {
-    let Ok(lease) = handle.lease().await else {
-        return false;
+async fn answers(service: &BusService, source: IndividualAddress, addr: IndividualAddress) -> bool {
+    let options = L4Options {
+        source: SourcePolicy::Known(source),
+        timeouts: crate::scan_cmd::discovery_timeouts(),
+        authorize: Authorize::Skip,
+        ..L4Options::default()
     };
-    let channel = LeaseChannel::new(lease);
-    let Ok(mut dev) = DeviceConnection::connect_with(
-        channel,
-        addr,
-        source,
-        crate::scan_cmd::discovery_timeouts(),
-    )
-    .await
-    else {
-        return false;
-    };
-    let answered = dev.device_descriptor().await.is_ok();
-    let _ = dev.disconnect().await;
-    answered
+    service
+        .with_device(addr, &options, async |dev| {
+            Ok::<_, ServiceError>(dev.device_descriptor().await.is_ok())
+        })
+        .await
+        .unwrap_or(false)
 }
 
 /// Finds the `.knxprod` to flash: the explicit `--product`, else the first

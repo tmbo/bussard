@@ -33,25 +33,23 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow};
-use bussard_bus::BusHandle;
 use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO, PID_SERIAL_NUMBER};
 use bussard_mgmt::tables::{DeviceTables, read_tables};
-use bussard_mgmt::{
-    DeviceConnection, L4Channel, Layer4Connection, LeaseChannel, MaskProfile, Timeouts,
-    manufacturers, system_type,
-};
+use bussard_mgmt::{MaskProfile, manufacturers, system_type};
 use bussard_model::schema::{
     BussardConfig, ComObject, Connection as ModelConnection, Device, Group, Groups, Link, Links,
     Product, Transport as ModelTransport,
 };
 use bussard_model::{Dpt, Flags, GroupAddress, IndividualAddress, LoadedDevice, Model};
-use bussard_service::{BusService, WritePolicy};
+use bussard_service::{Authorize, BusService, L4Options, ServiceError, SourcePolicy, WritePolicy};
 use bussard_transport::TransportKind;
 
+use crate::assign_cmd::{clean_ascii, hex};
 use crate::conn_cmd::{
-    ConnOverrides, checked_source_or_close, load_model_optional, load_model_required,
+    ConnOverrides, checked_source_or_close, load_model_optional, load_model_required, open_service,
     resolve_config,
 };
+use crate::scan_cmd::{discovery_timeouts, parse_line, read_u16};
 
 /// One (object, GA) pair in the diff.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
@@ -317,11 +315,6 @@ fn print_text(report: &Report) {
 // need human/monitor annotation.
 // ===========================================================================
 
-/// The `DISCOVERY_MS` override env var (duplicated from `scan_cmd`, per the
-/// file-set discipline: the integration test sets it to keep the mock sweep
-/// fast). Unset in normal use so [`Timeouts::discovery`] applies.
-const DISCOVERY_MS_ENV: &str = "BUSSARD_SCAN_DISCOVERY_MS";
-
 /// Per-address budget for the up-front estimate (duplicated from `scan_cmd`).
 const PER_ADDRESS_ESTIMATE: Duration = Duration::from_millis(3200);
 
@@ -437,25 +430,16 @@ pub fn run_line(
     let conn = overrides.clone();
     let runtime = tokio::runtime::Runtime::new()?;
     let found = runtime.block_on(async move {
-        let service = BusService::open(config, WritePolicy::ReadOnly)?;
-        let handle = service.handle().clone();
-        if !handle
-            .wait_connected(std::time::Duration::from_secs(10))
-            .await
-        {
-            eprintln!(
-                "warning: bus not connected yet; management traffic may use the 0.0.255 fallback source"
-            );
-        }
-        let source = checked_source_or_close(&handle, &conn).await?;
+        let service = open_service(config, WritePolicy::ReadOnly).await?;
+        let source = checked_source_or_close(&service, &conn).await?;
         let found = tokio::select! {
-            found = sweep_line(&handle, area, line_no, from, to, source, json) => found,
+            found = sweep_line(&service, area, line_no, from, to, source, json) => found,
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\ninterrupted; closing the bus connection");
                 Vec::new()
             }
         };
-        let _ = handle.close().await;
+        service.close().await;
         anyhow::Ok(found)
     })?;
 
@@ -508,26 +492,10 @@ fn ensure_empty_out(out: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The discovery timeout budget, honouring [`DISCOVERY_MS_ENV`] when set
-/// (duplicated from `scan_cmd`).
-fn discovery_timeouts() -> Timeouts {
-    match std::env::var(DISCOVERY_MS_ENV)
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-    {
-        Some(ms) => Timeouts {
-            ack_timeout: Duration::from_millis(ms),
-            max_repetitions: 0,
-            response_timeout: Duration::from_millis(ms),
-        },
-        None => Timeouts::discovery(),
-    }
-}
-
 /// Sweeps the line, returning every responder with its tables (System B) or a
 /// stub (everything else). One [`Bus`] is shared; each probe leases it.
 async fn sweep_line(
-    handle: &BusHandle,
+    service: &BusService,
     area: u8,
     line_no: u8,
     from: u8,
@@ -548,7 +516,7 @@ async fn sweep_line(
             continue;
         };
         display.probing(addr, found.len());
-        if let Some(dev) = probe_line(handle, addr, source).await {
+        if let Some(dev) = probe_line(service, addr, source).await {
             found.push(dev);
         }
         display.advance();
@@ -565,47 +533,51 @@ async fn sweep_line(
 /// → best-effort product identity, recorded as a stub. Returns `None` for an
 /// absent or refusing device.
 async fn probe_line(
-    handle: &BusHandle,
+    service: &BusService,
     addr: IndividualAddress,
     source: IndividualAddress,
 ) -> Option<LineDevice> {
-    let lease = handle.lease().await.ok()?;
-    let channel = LeaseChannel::new(lease);
-    let mut dev = DeviceConnection::connect_with(channel, addr, source, discovery_timeouts())
-        .await
-        .ok()?;
-
-    let mask = match dev.device_descriptor().await {
-        Ok(mask) => mask,
-        Err(err) => {
-            if err.device_present() {
-                tracing::debug!("{addr} present but refused the descriptor read: {err}");
-            }
-            let _ = dev.disconnect().await;
-            return None;
-        }
+    let options = L4Options {
+        source: SourcePolicy::Known(source),
+        timeouts: discovery_timeouts(),
+        authorize: Authorize::Skip,
+        ..L4Options::default()
     };
-
-    // Best-effort product identity for every responder (System B or not).
-    let manufacturer_id = read_u16(&mut dev, PID_MANUFACTURER_ID).await;
-    let serial = dev
-        .read_device_property(PID_SERIAL_NUMBER)
+    let (mask, manufacturer_id, serial, order) = service
+        .with_device(addr, &options, async |dev| {
+            let mask = match dev.device_descriptor().await {
+                Ok(mask) => mask,
+                Err(err) => {
+                    if err.device_present() {
+                        tracing::debug!("{addr} present but refused the descriptor read: {err}");
+                    }
+                    return Ok(None);
+                }
+            };
+            // Best-effort product identity for every responder (System B or not).
+            let manufacturer_id = read_u16(dev, PID_MANUFACTURER_ID).await;
+            let serial = dev
+                .read_device_property(PID_SERIAL_NUMBER)
+                .await
+                .ok()
+                .filter(|v| !v.is_empty());
+            let order = dev
+                .read_device_property(PID_ORDER_INFO)
+                .await
+                .ok()
+                .map(|v| clean_ascii(&v))
+                .filter(|s| !s.is_empty());
+            Ok::<_, ServiceError>(Some((mask, manufacturer_id, serial, order)))
+        })
         .await
         .ok()
-        .filter(|v| !v.is_empty());
-    let order = dev
-        .read_device_property(PID_ORDER_INFO)
-        .await
-        .ok()
-        .map(|v| clean_ascii(&v))
-        .filter(|s| !s.is_empty());
-    let _ = dev.disconnect().await;
+        .flatten()?;
 
     // System B → read tables over a fresh Layer 4 session; others → stub. The
     // profile makes this medium-agnostic: 07B0 (TP1), 57B0 (KNX-IP) and 27B0
     // (RF) are all read, not just TP1.
     let (tables, skipped) = if MaskProfile::from_mask(mask).is_system_b() {
-        match read_line_tables(handle, addr, source).await {
+        match read_line_tables(service, addr, source).await {
             Ok(t) => (Some(t), None),
             Err(err) => (None, Some(format!("System B table read failed: {err}"))),
         }
@@ -629,69 +601,24 @@ async fn probe_line(
 
 /// Opens a fresh connection-oriented session and reads the device's tables.
 async fn read_line_tables(
-    handle: &BusHandle,
+    service: &BusService,
     addr: IndividualAddress,
     source: IndividualAddress,
 ) -> anyhow::Result<DeviceTables> {
-    let lease = handle.lease().await.context("leasing the bus")?;
-    let channel = LeaseChannel::new(lease);
-    let mut l4 = Layer4Connection::connect(channel, addr, source)
+    let options = L4Options {
+        source: SourcePolicy::Known(source),
+        // Authorize (free access) before reading, as ETS does (issue #52
+        // finding #1).
+        authorize: Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
+        ..L4Options::default()
+    };
+    let result = service
+        .with_l4(addr, &options, async |l4| {
+            Ok::<_, ServiceError>(read_tables(l4).await)
+        })
         .await
         .map_err(|e| anyhow!("{e}"))?;
-    // Authorize (free access) before reading, as ETS does (issue #52 finding #1).
-    if let Err(err) = l4
-        .authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY)
-        .await
-    {
-        tracing::debug!("{addr} authorize (free access) did not grant: {err}");
-    }
-    let result = read_tables(&mut l4).await;
-    let _ = l4.disconnect().await;
     result.map_err(|e| anyhow!("{e}"))
-}
-
-/// Reads a 2-byte property as a `u16` (duplicated from `scan_cmd`).
-async fn read_u16<Ch: L4Channel>(dev: &mut DeviceConnection<Ch>, pid: u8) -> Option<u16> {
-    match dev.read_device_property(pid).await {
-        Ok(bytes) if bytes.len() >= 2 => Some(u16::from_be_bytes([bytes[0], bytes[1]])),
-        _ => None,
-    }
-}
-
-/// Parses `area.line[.device]` into `(area, line)` (duplicated from `scan_cmd`).
-fn parse_line(line: &str) -> anyhow::Result<(u8, u8)> {
-    let parts: Vec<&str> = line.split('.').collect();
-    if parts.len() < 2 {
-        return Err(anyhow!(
-            "invalid line {line:?}; expected area.line like \"1.1\""
-        ));
-    }
-    let area: u8 = parts[0]
-        .parse()
-        .map_err(|_| anyhow!("invalid area in {line:?}"))?;
-    let line_no: u8 = parts[1]
-        .parse()
-        .map_err(|_| anyhow!("invalid line in {line:?}"))?;
-    if area > 15 || line_no > 15 {
-        return Err(anyhow!("area and line must each be 0–15 (got {line:?})"));
-    }
-    Ok((area, line_no))
-}
-
-/// Cleans a raw property value to printable ASCII (duplicated from `scan_cmd`).
-fn clean_ascii(bytes: &[u8]) -> String {
-    let s: String = bytes
-        .iter()
-        .take_while(|b| **b != 0)
-        .filter(|b| b.is_ascii_graphic() || **b == b' ')
-        .map(|b| *b as char)
-        .collect();
-    s.trim().to_string()
-}
-
-/// Formats a byte slice as lowercase hex (duplicated from `scan_cmd`).
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Placeholder flags for a reconstructed com-object: `CW` keeps the model

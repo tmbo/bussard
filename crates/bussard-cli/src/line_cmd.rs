@@ -37,16 +37,15 @@ use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, bail};
-use bussard_bus::BusHandle;
 use bussard_download::{DesiredTables, compute_tables, plan, sys7_table_images};
-use bussard_mgmt::{Layer4Connection, LeaseChannel, MaskProfile, system_type};
+use bussard_mgmt::{MaskProfile, system_type};
 use bussard_model::{IndividualAddress, Model};
-use bussard_service::{BusService, WritePolicy};
+use bussard_service::{Authorize, BusService, L4Options, ServiceError, SourcePolicy, WritePolicy};
 
 use crate::apply_cmd;
 use crate::conn_cmd::{
     ConnOverrides, checked_source_or_close, enforce_write_gate, gateway_display,
-    load_model_required, resolve_config,
+    load_model_required, open_service, resolve_config, session_error_detail, session_open_error,
 };
 use crate::plan_cmd;
 use crate::secure_key::ToolKeySource;
@@ -453,22 +452,13 @@ fn run_line(
         let state_path = state_path.clone();
         let conn = overrides.clone();
         runtime.block_on(async move {
-            let service = BusService::open(config, line_policy)?;
-            let handle = service.handle().clone();
-            if !handle
-                .wait_connected(std::time::Duration::from_secs(10))
-                .await
-            {
-                eprintln!(
-                    "warning: bus not connected yet; management traffic may use the 0.0.255 fallback source"
-                );
-            }
-            let source = checked_source_or_close(&handle, &conn).await?;
+            let service = open_service(config, line_policy).await?;
+            let source = checked_source_or_close(&service, &conn).await?;
             // Guard the run with Ctrl-C (issue #31): the state file is already
             // current, so the interrupt only needs to release the tunnel slot.
             let interrupted = tokio::select! {
                 () = visit_all(
-                    &handle,
+                    &service,
                     source,
                     &model,
                     &targets,
@@ -484,7 +474,7 @@ fn run_line(
                     true
                 }
             };
-            let _ = handle.close().await;
+            service.close().await;
             anyhow::Ok((interrupted, state))
         })?
     };
@@ -546,7 +536,7 @@ fn is_done(state: Option<&LineState>, address: IndividualAddress) -> bool {
 /// continues, which is the whole point of a batch command.
 #[allow(clippy::too_many_arguments)] // one run's worth of context; bundling it would only hide the wiring
 async fn visit_all(
-    handle: &BusHandle,
+    service: &BusService,
     source: IndividualAddress,
     model: &Model,
     targets: &[Target],
@@ -575,7 +565,7 @@ async fn visit_all(
                 status: DeviceStatus::Skipped("done in an earlier run".to_string()),
             }
         } else {
-            visit_one(handle, source, model, target, mode, dir, tool_key_source).await
+            visit_one(service, source, model, target, mode, dir, tool_key_source).await
         };
         eprintln!("  {}", outcome.status.label());
 
@@ -603,7 +593,7 @@ async fn visit_all(
 
 /// Plans (and, in [`Mode::Apply`], writes) one device.
 async fn visit_one(
-    handle: &BusHandle,
+    service: &BusService,
     source: IndividualAddress,
     model: &Model,
     target: &Target,
@@ -650,7 +640,7 @@ async fn visit_one(
     });
     let secure_seq = bussard_secure::SequenceHighWater::new();
 
-    let live = match read_device(handle, source, target.address, &tool_key, &secure_seq).await {
+    let live = match read_device(service, source, target.address, &tool_key, &secure_seq).await {
         Ok(plan_cmd::LiveRead::Tables(live)) => live,
         Ok(plan_cmd::LiveRead::UnsupportedMask { mask, .. }) => {
             return make(
@@ -717,16 +707,12 @@ async fn visit_one(
     };
     eprintln!("  backup written to {}", backup_path.display());
 
-    let lease = match handle.lease().await {
-        Ok(lease) => lease,
+    let channel = match service.lease_channel().await {
+        Ok(channel) => channel,
         Err(err) => {
-            return make(
-                Some(mask),
-                DeviceStatus::Failed(format!("leasing the bus: {err}")),
-            );
+            return make(Some(mask), DeviceStatus::Failed(session_error_detail(&err)));
         }
     };
-    let channel = LeaseChannel::new(lease);
     let verified = match &images {
         Some(images) => apply_cmd::execute_sys7(
             channel,
@@ -779,35 +765,28 @@ async fn visit_one(
 /// `apply` read phase (connect, best-effort free-access authorize, read,
 /// disconnect).
 async fn read_device(
-    handle: &BusHandle,
+    service: &BusService,
     source: IndividualAddress,
     target: IndividualAddress,
     tool_key: &Option<bussard_secure::Key16>,
     secure_seq: &bussard_secure::SequenceHighWater,
 ) -> anyhow::Result<plan_cmd::LiveRead> {
-    let lease = handle.lease().await.context("leasing the bus")?;
-    let channel = LeaseChannel::new(lease);
-    let secure = crate::secure_key::layer(tool_key, secure_seq);
-    let mut l4 = Layer4Connection::connect_with_secure(
-        channel,
-        target,
-        source,
-        bussard_mgmt::Timeouts::default(),
-        secure,
-    )
-    .await
-    .context("connecting to the device")?;
-    // Authorize (free access) before reading, as ETS does (issue #52 finding #1)
-    // and as System 7 requires before any memory access. Best-effort.
-    if let Err(err) = l4
-        .authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY)
+    let options = L4Options {
+        source: SourcePolicy::Known(source),
+        tool_key: tool_key.clone(),
+        high_water: secure_seq.clone(),
+        // Authorize (free access) before reading, as ETS does (issue #52
+        // finding #1) and as System 7 requires before any memory access.
+        // Best-effort.
+        authorize: Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
+        ..L4Options::default()
+    };
+    service
+        .with_l4(target, &options, async |l4| {
+            Ok::<_, ServiceError>(plan_cmd::read_live_tables(l4).await)
+        })
         .await
-    {
-        tracing::debug!("{target} authorize (free access) did not grant: {err}");
-    }
-    let read = plan_cmd::read_live_tables(&mut l4).await;
-    let _ = l4.disconnect().await;
-    read
+        .map_err(|err| session_open_error(err, || "connecting to the device".to_string()))?
 }
 
 /// Flattens a multi-line error into one summary-table cell.

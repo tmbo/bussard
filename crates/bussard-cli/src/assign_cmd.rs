@@ -20,14 +20,14 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow, bail};
-use bussard_bus::BusHandle;
 use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO, PID_SERIAL_NUMBER};
-use bussard_mgmt::{
-    DeviceConnection, LeaseChannel, broadcast, manufacturers, system_type, write_individual_address,
-};
+use bussard_mgmt::{broadcast, manufacturers, system_type, write_individual_address};
 use bussard_model::schema::{Device, Product};
 use bussard_model::{IndividualAddress, LoadedDevice, Model};
-use bussard_service::{BusService, WritePolicy};
+use bussard_service::{
+    Authorize, BusService, Device as ServiceDevice, L4Options, ServiceError, SourcePolicy,
+    WritePolicy,
+};
 
 use crate::conn_cmd::{
     ConnOverrides, checked_source_or_close, enforce_write_gate, gateway_display, resolve_config,
@@ -80,24 +80,23 @@ pub fn run(
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async move {
         let service = BusService::open(config, WritePolicy::transmit(allow_remote_gateway))?;
-        let handle = service.handle().clone();
         // Wait for the actor to connect so the tunnel-assigned source address is
         // available (falling back to 0.0.255 on routing) — issue #30.
-        handle
+        service
             .wait_connected(std::time::Duration::from_secs(10))
             .await;
-        let source = checked_source_or_close(&handle, &overrides).await?;
+        let source = checked_source_or_close(&service, &overrides).await?;
         // Guard the assign flow with Ctrl-C: on interrupt, fall through to a
-        // clean `handle.close()` so the gateway tunnel slot is released rather
+        // clean `service.close()` so the gateway tunnel slot is released rather
         // than leaked — see issue #31.
         let result = tokio::select! {
-            result = assign_flow(&handle, source, address, yes, &gateway, model.as_ref(), dir) => result,
+            result = assign_flow(&service, source, address, yes, &gateway, model.as_ref(), dir) => result,
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\ninterrupted; closing the bus connection");
                 Err(anyhow!("assign interrupted by Ctrl-C"))
             }
         };
-        let _ = handle.close().await;
+        service.close().await;
         result
     })
 }
@@ -161,7 +160,7 @@ pub(crate) fn load_model_optional(
 /// and each connection-oriented verify leases the bus for the duration of that
 /// step (releasing it in between), so other bus consumers keep observing.
 async fn assign_flow(
-    handle: &BusHandle,
+    service: &BusService,
     source: IndividualAddress,
     address: Option<&str>,
     yes: bool,
@@ -170,7 +169,7 @@ async fn assign_flow(
     dir: &Path,
 ) -> anyhow::Result<ExitCode> {
     // 2. Find exactly one device in programming mode.
-    let current = match wait_for_single_device(handle, source).await? {
+    let current = match wait_for_single_device(service, source).await? {
         Some(addr) => addr,
         None => return Ok(ExitCode::FAILURE),
     };
@@ -195,13 +194,13 @@ async fn assign_flow(
     }
 
     // 5. Write, then verify.
-    let write_channel = LeaseChannel::new(handle.lease().await.context("leasing the bus")?);
+    let write_channel = service.lease_channel().await?;
     write_individual_address(write_channel, source, target)
         .await
         .context("broadcasting the new individual address")?;
     eprintln!("wrote {target}; verifying…");
 
-    let verified = verify_assignment(handle, source, target).await?;
+    let verified = verify_assignment(service, source, target).await?;
     if verified.programming_mode_cleared {
         eprintln!("cleared programming mode on {target} (PID_PROGMODE = 0), as ETS does.");
     }
@@ -213,7 +212,7 @@ async fn assign_flow(
     //     clear nor the device's own auto-clear took, so the next assign/adopt
     //     would re-capture and re-address it. On a conformant device this is now a
     //     no-op; the warning remains the backstop for a device that ignored both.
-    warn_if_still_in_programming_mode(handle, source, target).await;
+    warn_if_still_in_programming_mode(service, source, target).await;
 
     // 6. Create the stub device file.
     let device = build_stub_device(target, &verified);
@@ -244,16 +243,16 @@ async fn assign_flow(
 /// printing friendly guidance for the zero-found (timeout) and multiple-found
 /// cases — both of which are a clean command failure, not an error.
 pub(crate) async fn wait_for_single_device(
-    handle: &BusHandle,
+    service: &BusService,
     source: IndividualAddress,
 ) -> anyhow::Result<Option<IndividualAddress>> {
-    wait_for_single_device_as(handle, source, "assign").await
+    wait_for_single_device_as(service, source, "assign").await
 }
 
 /// [`wait_for_single_device`], naming `verb` (the command, e.g. `adopt`) in the
 /// guidance it prints.
 pub(crate) async fn wait_for_single_device_as(
-    handle: &BusHandle,
+    service: &BusService,
     source: IndividualAddress,
     verb: &str,
 ) -> anyhow::Result<Option<IndividualAddress>> {
@@ -264,7 +263,7 @@ pub(crate) async fn wait_for_single_device_as(
     let window = collection_window();
     loop {
         // Lease a fresh channel for this broadcast read (released each poll).
-        let channel = LeaseChannel::new(handle.lease().await.context("leasing the bus")?);
+        let channel = service.lease_channel().await?;
         let found = broadcast::devices_in_programming_mode_within(channel, source, window).await?;
         match found.len() {
             1 => return Ok(Some(found[0])),
@@ -479,32 +478,50 @@ pub(crate) struct Verified {
 /// write did not land (or the device dropped programming mode without applying
 /// it), which is a clear error naming both the old and new addresses.
 pub(crate) async fn verify_assignment(
-    handle: &BusHandle,
+    service: &BusService,
     source: IndividualAddress,
     target: IndividualAddress,
 ) -> anyhow::Result<Verified> {
-    verify_assignment_with(handle, source, target, true).await
+    verify_assignment_with(service, source, target, true).await
 }
 
 /// [`verify_assignment`], with the explicit programming-mode clear optional:
 /// `adopt` reads back without clearing it (its wizard re-checks the broadcast
 /// itself), so it passes `false` and gets `programming_mode_cleared: false`.
 pub(crate) async fn verify_assignment_with(
-    handle: &BusHandle,
+    service: &BusService,
     source: IndividualAddress,
     target: IndividualAddress,
     clear_programming_mode: bool,
 ) -> anyhow::Result<Verified> {
-    let channel = LeaseChannel::new(handle.lease().await.context("leasing the bus")?);
-    let mut dev = DeviceConnection::connect(channel, target, source)
-        .await
-        .map_err(|err| {
-            anyhow!(
-                "wrote {target} but could not connect to it afterwards ({err}); the address may \
-                 not have been applied — check the device and re-run"
-            )
-        })?;
+    // Authorize comes after the descriptor read here (see below), so the
+    // session opens without it.
+    let options = L4Options {
+        source: SourcePolicy::Known(source),
+        authorize: Authorize::Skip,
+        ..L4Options::default()
+    };
+    let session = service
+        .with_device(target, &options, async |dev| {
+            Ok::<_, ServiceError>(read_back(dev, target, clear_programming_mode).await)
+        })
+        .await;
+    match session {
+        Ok(verified) => verified,
+        Err(err @ ServiceError::Lease(_)) => Err(err.into()),
+        Err(err) => Err(anyhow!(
+            "wrote {target} but could not connect to it afterwards ({err}); the address may \
+             not have been applied — check the device and re-run"
+        )),
+    }
+}
 
+/// The read-back half of [`verify_assignment_with`], on the open session.
+async fn read_back(
+    dev: &mut ServiceDevice,
+    target: IndividualAddress,
+    clear_programming_mode: bool,
+) -> anyhow::Result<Verified> {
     let mask = dev.device_descriptor().await.map_err(|err| {
         if matches!(err, bussard_mgmt::MgmtError::Disconnected { .. }) {
             anyhow!(
@@ -564,7 +581,6 @@ pub(crate) async fn verify_assignment_with(
         }
     };
 
-    let _ = dev.disconnect().await;
     Ok(Verified {
         mask: Some(mask),
         manufacturer_id,
@@ -587,17 +603,16 @@ pub(crate) async fn verify_assignment_with(
 /// assignment already succeeded), so this never turns a good write into a
 /// failure.
 pub(crate) async fn warn_if_still_in_programming_mode(
-    handle: &BusHandle,
+    service: &BusService,
     source: IndividualAddress,
     target: IndividualAddress,
 ) {
     // A short window: the device answers instantly if at all, and we do not want
     // to stall the command tail. Honour the same test override the wait loop uses.
     let window = collection_window();
-    let Ok(lease) = handle.lease().await else {
+    let Ok(channel) = service.lease_channel().await else {
         return;
     };
-    let channel = LeaseChannel::new(lease);
     let found = match broadcast::devices_in_programming_mode_within(channel, source, window).await {
         Ok(found) => found,
         Err(_) => return,

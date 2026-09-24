@@ -10,7 +10,7 @@
 use std::time::Duration;
 
 use bussard_bus::{Bus, BusHandle};
-use bussard_mgmt::{Layer4Connection, LeaseChannel, MgmtError, Timeouts};
+use bussard_mgmt::{DeviceConnection, Layer4Connection, LeaseChannel, MgmtError, Timeouts};
 use bussard_model::IndividualAddress;
 use bussard_secure::{Key16, SequenceHighWater};
 use bussard_transport::ConnectionConfig;
@@ -21,6 +21,10 @@ use crate::policy::WritePolicy;
 
 /// A management (layer-4, connection-oriented) session over a leased bus.
 pub type Management = Layer4Connection<LeaseChannel>;
+
+/// A management session over a leased bus, wrapped in the typed
+/// [`DeviceConnection`] client (property, memory and descriptor procedures).
+pub type Device = DeviceConnection<LeaseChannel>;
 
 /// Where a management session's source individual address comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -332,6 +336,49 @@ impl BusService {
         let result = body(&mut l4).await;
         let _ = l4.disconnect().await;
         result
+    }
+
+    /// [`with_l4`](Self::with_l4) with the session wrapped in the typed
+    /// [`DeviceConnection`] client, for a body that uses its procedures
+    /// (`read_device_property`, `read_memory`, ...). Same connect, retry,
+    /// authorize and disconnect on every path.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`connect_l4`](Self::connect_l4) or `body` returns.
+    pub async fn with_device<T, E, F>(
+        &self,
+        target: IndividualAddress,
+        options: &L4Options,
+        body: F,
+    ) -> Result<T, E>
+    where
+        F: AsyncFnOnce(&mut Device) -> Result<T, E>,
+        E: From<ServiceError>,
+    {
+        let l4 = self.connect_l4_retrying(target, options).await?;
+        let mut dev = DeviceConnection::from_l4(l4);
+        let result = body(&mut dev).await;
+        let _ = dev.disconnect().await;
+        result
+    }
+
+    /// Takes the exclusive layer-4 lease as a frame channel, for a procedure
+    /// that opens its own management connection on it (the download engine's
+    /// `write_*` entry points, the flash executor's connector).
+    ///
+    /// Waits for a tunnel that is re-establishing itself first (issue #177), as
+    /// [`connect_l4`](Self::connect_l4) does.
+    ///
+    /// # Errors
+    ///
+    /// [`ServiceError::Lease`] when the lease cannot be taken.
+    pub async fn lease_channel(&self) -> Result<LeaseChannel, ServiceError> {
+        self.handle
+            .wait_connected(self.handle.reconnect_budget())
+            .await;
+        let lease = self.handle.lease().await.map_err(ServiceError::Lease)?;
+        Ok(LeaseChannel::new(lease))
     }
 }
 

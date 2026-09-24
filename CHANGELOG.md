@@ -224,6 +224,11 @@ entry supersedes it and is not a diff against it.
 - The gateway gate, the protected-GA check and the checked group write live
   once in `bussard-service`, which the CLI, the MCP server and viz all call
   (#86).
+- Every device command (`apply`, `assign`, `adopt`, `backup`, `commission`,
+  `flash`, `line`, `plan`, `reconstruct`, `replace`, `scan`, `audit`) opens
+  its management sessions through `BusService::with_l4` / `with_device`, so the
+  tunnel-reconnect wait, the connect retry on a gateway link loss and the Data
+  Secure layer apply to all of them. The frames on the bus are unchanged (#86).
 - One ETS-XML, ZIP and PBKDF2 primitive layer serves the project, product and
   ETS importers (#36, #83).
 - `flash` and `apply` use one tunnel per command, negotiate the maximum APDU

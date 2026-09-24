@@ -10,11 +10,10 @@ use std::net::{Ipv4Addr, SocketAddrV4, ToSocketAddrs};
 use std::path::Path;
 
 use anyhow::{Context, anyhow};
-use bussard_bus::BusHandle;
 use bussard_model::IndividualAddress;
 use bussard_model::Model;
 use bussard_model::schema::Transport as ModelTransport;
-use bussard_service::{BusService, WritePolicy};
+use bussard_service::{BusService, ServiceError, WritePolicy};
 use bussard_transport::config::{DEFAULT_MULTICAST, DEFAULT_PORT};
 use bussard_transport::write_gate::WriteGate;
 use bussard_transport::{ConnectionConfig, SecureTunnelConfig, TransportKind, TunnelReconnect};
@@ -51,31 +50,51 @@ pub struct ConnOverrides {
 /// Group-only commands (`read`, `write`, `monitor`, `capture`, `learn`, `test`) are
 /// connectionless and do not need this.
 pub async fn checked_source(
-    handle: &BusHandle,
+    service: &BusService,
     overrides: &ConnOverrides,
 ) -> anyhow::Result<IndividualAddress> {
-    // The probe and its refusal live in `bussard_mgmt` so the MCP programming
-    // tier refuses on the same evidence.
-    Ok(bussard_mgmt::checked_source(handle, overrides.skip_address_check).await?)
+    // The probe and its refusal live in `bussard_mgmt` (behind the service) so
+    // the MCP programming tier refuses on the same evidence.
+    Ok(service.checked_source(overrides.skip_address_check).await?)
 }
 
-/// [`checked_source`], closing `handle` before returning an error.
+/// [`checked_source`], closing `service` before returning an error.
 ///
-/// Every device command owns the [`BusHandle`] for the length of one runtime
+/// Every device command owns its [`BusService`] for the length of one runtime
 /// block and closes it when it is done. A refusal from the source-address check
 /// happens before any of that, so without this the gateway would hold the tunnel
 /// slot open for its full idle timeout (about two minutes) after a command that
 /// did nothing — see issue #31 for the same hazard on Ctrl-C.
 pub async fn checked_source_or_close(
-    handle: &BusHandle,
+    service: &BusService,
     overrides: &ConnOverrides,
 ) -> anyhow::Result<IndividualAddress> {
-    match checked_source(handle, overrides).await {
+    match checked_source(service, overrides).await {
         Ok(source) => Ok(source),
         Err(err) => {
-            let _ = handle.close().await;
+            service.close().await;
             Err(err)
         }
+    }
+}
+
+/// A management session that could not be opened, as an error for the
+/// command: a lease failure as it is, a connect failure under `context` (the
+/// `.with_context` the command put on its own connect before issue #86).
+pub fn session_open_error(err: ServiceError, context: impl FnOnce() -> String) -> anyhow::Error {
+    match err {
+        ServiceError::Lease(_) => err.into(),
+        other => anyhow::Error::new(other).context(context()),
+    }
+}
+
+/// Renders a management session that could not be opened the way the device
+/// commands report it in a per-device row: `leasing the bus: <cause>` or
+/// `connecting: <cause>`.
+pub fn session_error_detail(err: &ServiceError) -> String {
+    match err {
+        ServiceError::Lease(cause) => format!("leasing the bus: {cause}"),
+        other => format!("connecting: {other}"),
     }
 }
 
@@ -147,9 +166,10 @@ impl BusSession {
         })
     }
 
-    /// The bus handle every phase of the command runs over.
-    pub fn handle(&self) -> &BusHandle {
-        self.service.handle()
+    /// The bus service every phase of the command runs over, for its
+    /// management sessions ([`BusService::with_l4`]).
+    pub fn service(&self) -> &BusService {
+        &self.service
     }
 }
 

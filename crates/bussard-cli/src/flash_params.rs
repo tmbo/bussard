@@ -27,7 +27,7 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::Context as _;
-use bussard_bus::{BusHandle, ops};
+use bussard_bus::ops;
 use bussard_download::backup::{
     ParameterBackup, ParameterMemory, encode_hex, parameter_backups_dir, rfc3339_utc, unix_seconds,
     write_parameter_backup,
@@ -37,16 +37,16 @@ use bussard_download::{
     decode_parameters, group_object_change, read_parameter_regions, regions_memory,
 };
 use bussard_mgmt::memory::read_memory_range;
-use bussard_mgmt::{DeviceConnection, LeaseChannel, Timeouts};
 use bussard_model::IndividualAddress;
 use bussard_prod::ApplicationProgram;
+use bussard_service::{Authorize, BusService, L4Options, ServiceError, SourcePolicy};
 
 /// Everything the parameter-only download needs from the `flash` pipeline.
 pub(crate) struct Context<'a> {
     /// The command's runtime (one tunnel for the whole command).
     pub runtime: &'a tokio::runtime::Runtime,
-    /// The bus the pre-flight ran on.
-    pub handle: &'a BusHandle,
+    /// The bus service the pre-flight ran on.
+    pub service: &'a BusService,
     /// The device.
     pub target: IndividualAddress,
     /// The tunnel's checked source address.
@@ -174,7 +174,7 @@ pub(crate) fn run(ctx: Context<'_>) -> anyhow::Result<ExitCode> {
         skip_matching_mcb: false,
     };
     let outcome = ctx.runtime.block_on(crate::flash_cmd::execute(
-        ctx.handle,
+        ctx.service,
         target,
         ctx.source,
         &partial,
@@ -303,39 +303,39 @@ struct DeviceRead {
 /// Opens a read-only session and reads the parameter regions (plus, on System
 /// 7, the code-segment samples).
 async fn read_device(ctx: &Context<'_>) -> anyhow::Result<DeviceRead> {
-    let source = ops::group_source(ctx.handle);
-    let lease = ctx.handle.lease().await.context("leasing the bus")?;
-    let channel = LeaseChannel::new(lease);
-    let secure = crate::secure_key::layer(&ctx.tool_key, &ctx.secure_seq);
-    let mut dev = DeviceConnection::connect_with_secure(
-        channel,
-        ctx.target,
-        source,
-        Timeouts::default(),
-        secure,
-    )
-    .await
-    .with_context(|| format!("connecting to {} to read its parameters", ctx.target))?;
-    let key = ctx.bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY);
-    let _ = dev.authorize(key).await;
-    // The pre-flight negotiated PID_MAX_APDU_LENGTH; seed it so the read-back
-    // goes out in APDU-sized chunks without re-reading it (issue #194).
-    dev.l4_mut().set_max_apdu(ctx.facts.max_apdu);
-    let regions = read_parameter_regions(dev.l4_mut(), ctx.plan).await;
-    let (code_mismatch, table_change) = if ctx.plan.is_sys7() {
-        (
-            sys7_code_mismatch(dev.l4_mut(), ctx.plan).await,
-            sys7_table_change(dev.l4_mut(), ctx.plan).await,
-        )
-    } else {
-        (None, None)
+    let options = L4Options {
+        source: SourcePolicy::Known(ops::group_source(ctx.service.handle())),
+        tool_key: ctx.tool_key.clone(),
+        high_water: ctx.secure_seq.clone(),
+        // Best-effort: a denial or a device without authorize still reads.
+        authorize: Authorize::BestEffort(
+            ctx.bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY),
+        ),
+        ..L4Options::default()
     };
-    let _ = dev.disconnect().await;
-    Ok(DeviceRead {
-        regions,
-        code_mismatch,
-        table_change,
-    })
+    ctx.service
+        .with_device(ctx.target, &options, async |dev| {
+            // The pre-flight negotiated PID_MAX_APDU_LENGTH; seed it so the
+            // read-back goes out in APDU-sized chunks without re-reading it
+            // (issue #194).
+            dev.l4_mut().set_max_apdu(ctx.facts.max_apdu);
+            let regions = read_parameter_regions(dev.l4_mut(), ctx.plan).await;
+            let (code_mismatch, table_change) = if ctx.plan.is_sys7() {
+                (
+                    sys7_code_mismatch(dev.l4_mut(), ctx.plan).await,
+                    sys7_table_change(dev.l4_mut(), ctx.plan).await,
+                )
+            } else {
+                (None, None)
+            };
+            Ok::<_, ServiceError>(DeviceRead {
+                regions,
+                code_mismatch,
+                table_change,
+            })
+        })
+        .await
+        .with_context(|| format!("connecting to {} to read its parameters", ctx.target))
 }
 
 /// How many leading octets of each System 7 code segment are compared.

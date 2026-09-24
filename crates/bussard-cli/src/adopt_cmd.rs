@@ -34,12 +34,11 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, anyhow, bail};
-use bussard_bus::BusHandle;
-use bussard_mgmt::{LeaseChannel, manufacturers, system_type, write_individual_address};
+use bussard_mgmt::{manufacturers, system_type, write_individual_address};
 use bussard_model::schema::{ComObject, Device, Product};
 use bussard_model::{Dpt, Flags, IndividualAddress, Model};
 use bussard_prod::{ApplicationProgram, ProductData, ResolvedComObject};
-use bussard_service::WritePolicy;
+use bussard_service::{BusService, WritePolicy};
 
 use crate::assign_cmd::{
     Verified, allocate_address, hex, load_model_optional, validate_explicit_address,
@@ -47,7 +46,8 @@ use crate::assign_cmd::{
     write_device_file,
 };
 use crate::conn_cmd::{
-    ConnOverrides, enforce_write_gate, gateway_display, open_service, resolve_config,
+    ConnOverrides, checked_source_or_close, enforce_write_gate, gateway_display, open_service,
+    resolve_config,
 };
 use crate::import_product_cmd::{VENDOR_GITIGNORE, is_project_export, order_numbers_for};
 
@@ -129,18 +129,11 @@ pub fn run(
         // for the connect makes the tunnel-assigned source address available
         // (falling back to 0.0.255 on routing) — issue #30.
         let service = open_service(config, WritePolicy::transmit(allow_remote_gateway)).await?;
-        let handle = service.handle();
-        let source = match service.checked_source(overrides.skip_address_check).await {
-            Ok(source) => source,
-            Err(err) => {
-                service.close().await;
-                return Err(err.into());
-            }
-        };
+        let source = checked_source_or_close(&service, &overrides).await?;
         // Guard with Ctrl-C so an interrupt still closes the tunnel cleanly.
         let result = tokio::select! {
             result = adopt_flow(
-                handle,
+                &service,
                 source,
                 dir,
                 model.as_ref(),
@@ -344,7 +337,7 @@ fn shape_one(rc: &ResolvedComObject<'_>) -> ComObjectShape {
 /// connected verify leases the bus for the duration of that step.
 #[allow(clippy::too_many_arguments)]
 async fn adopt_flow(
-    handle: &BusHandle,
+    service: &BusService,
     source: IndividualAddress,
     dir: &Path,
     model: Option<&Model>,
@@ -356,7 +349,7 @@ async fn adopt_flow(
     println!("  step 2/5  assign an address");
 
     // Find exactly one device in programming mode.
-    let current = match wait_for_single_device_as(handle, source, "adopt").await? {
+    let current = match wait_for_single_device_as(service, source, "adopt").await? {
         Some(addr) => addr,
         None => return Ok(ExitCode::FAILURE),
     };
@@ -382,19 +375,19 @@ async fn adopt_flow(
     }
 
     // Write, then verify.
-    let write_channel = LeaseChannel::new(handle.lease().await.context("leasing the bus")?);
+    let write_channel = service.lease_channel().await?;
     write_individual_address(write_channel, source, target)
         .await
         .context("broadcasting the new individual address")?;
     eprintln!("wrote {target}; verifying…");
     // adopt does not clear programming mode in the read-back; the broadcast
     // re-check below warns if the device is still in it.
-    let verified = verify_assignment_with(handle, source, target, false).await?;
+    let verified = verify_assignment_with(service, source, target, false).await?;
 
     // Programming-mode persistence check: warn if the just-assigned device still
     // answers the programming-mode broadcast (KNX Virtual does not clear it; a
     // real device with a stuck button would not either). See the helper docs.
-    warn_if_still_in_programming_mode(handle, source, target).await;
+    warn_if_still_in_programming_mode(service, source, target).await;
 
     // Cross-check the read-back order number against the product's order numbers.
     let mut mismatch = false;

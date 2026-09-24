@@ -31,20 +31,20 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
-use bussard_bus::BusHandle;
 use bussard_download::{
     CurrentMemory, FlashPlan, FlashStep, Freshness, ParamPlan, ParamValue, assess_freshness, flash,
     param_plan, plan_flash_with_object_flags, probe_resident_state,
     read_current_parameter_memory_with_objects, select_application, trace,
 };
 use bussard_mgmt::load::WriteError;
-use bussard_mgmt::{DeviceConnection, Layer4Connection, LeaseChannel, MgmtError, Timeouts};
+use bussard_mgmt::{Layer4Connection, LeaseChannel, MgmtError, Timeouts};
 use bussard_model::IndividualAddress;
 use bussard_prod::{ApplicationProgram, ProductData, normalize_order_number};
+use bussard_service::{Authorize, BusService, L4Options, ServiceError, SourcePolicy};
 
 use crate::conn_cmd::{
-    BusSession, ConnOverrides, checked_source, enforce_write_gate, gateway_display,
-    load_model_required, resolve_config,
+    BusSession, ConnOverrides, enforce_write_gate, gateway_display, load_model_required,
+    resolve_config,
 };
 
 /// Flashes an application program from vendor product data into a device.
@@ -184,11 +184,12 @@ pub fn run(
         config,
         bussard_service::WritePolicy::transmit(allow_remote_gateway),
     )?;
-    let handle = bus.handle();
+    let service = bus.service();
+    let handle = service.handle();
     // The tunnel-assigned source address, resolved and checked against the bus
     // once for both phases (they share this tunnel, so one probe covers both).
     // `BusSession` closes the tunnel if the check refuses.
-    let source = runtime.block_on(checked_source(handle, &overrides))?;
+    let source = runtime.block_on(service.checked_source(overrides.skip_address_check))?;
 
     // The plan inputs that do not depend on the device: the master-template
     // `Load` procedure for this app's mask, if the archive shipped a
@@ -237,106 +238,102 @@ pub fn run(
     // re-runs it on a fresh connection once the bus is back.
     let mut preflight_attempt = 1u32;
     let probe = loop {
-        let probe_key = tool_key.clone();
-        let probe_seq = secure_seq.clone();
         let losses_before = handle.link_losses();
+        // Authorize the read-only descriptor probe too (best-effort), in the
+        // body below rather than by the service: ETS authorizes every
+        // management session, so a keyed device that would otherwise drop the
+        // descriptor read is unlocked first, and the verdict is kept for the
+        // write phase.
+        // The descriptor read is a protected function on a security-activated
+        // device (spec §6.4): probe it through the same secure layer the flash
+        // will use, or plain when no tool key was given.
+        let probe_options = L4Options {
+            source: SourcePolicy::Known(source),
+            tool_key: tool_key.clone(),
+            high_water: secure_seq.clone(),
+            authorize: Authorize::Skip,
+            ..L4Options::default()
+        };
         let outcome = runtime.block_on(async {
-            let lease = handle.lease().await.context("leasing the bus")?;
-            let channel = LeaseChannel::new(lease);
-            // Track whether the T_Connect established before the first read: a
-            // connect-then-disconnect on the descriptor read is the diagnostic
-            // pattern (see `descriptor_read_error`).
-            // The descriptor read is a protected function on a security-
-            // activated device (spec §6.4): probe it through the same secure
-            // layer the flash will use, or plain when no tool key was given.
-            let secure = crate::secure_key::layer(&probe_key, &probe_seq);
             // What this read-only pass learns about the device, handed to the
             // write phase so it does not rediscover any of it (the authorize
             // outcome, the max APDU, and — filled in from the freshness probe
             // below — the interface-object table).
             let mut facts = bussard_download::DeviceFacts::default();
-            let (connected, result, resident, current) =
-                match DeviceConnection::connect_with_secure(
-                    channel,
-                    target,
-                    source,
-                    Timeouts::default(),
-                    secure,
-                )
-                .await
-                {
-                    Ok(mut dev) => {
-                        // Authorize the read-only descriptor probe too (best-effort):
-                        // ETS authorizes every management session, so a keyed device
-                        // that would otherwise drop the descriptor read is unlocked
-                        // first. Tolerate a device that does not implement authorize.
-                        let key = bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY);
-                        let r = match dev.authorize(key).await {
-                            Ok(outcome) => {
-                                // Remember the verdict: a device that does not
-                                // implement authorize must not be asked again in the
-                                // write phase, where the unanswered request costs a
-                                // full RESPONSE_TIMEOUT per connection window.
-                                facts.authorize = Some(outcome);
-                                dev.device_descriptor().await
-                            }
-                            Err(err) => Err(err),
-                        };
-                        // PID_MAX_APDU_LENGTH is device-stable: negotiate it here, on
-                        // the read-only connection, so the write phase seeds it
-                        // instead of spending an exchange from its tight
-                        // per-connection budget on it.
-                        facts.max_apdu = dev.l4_mut().negotiate_max_apdu().await.ok().flatten();
-                        // The factory-freshness probe (issue #79): read the load
-                        // state (and, on System B, the resident application id) of
-                        // the objects this flash would unload and rewrite. Purely
-                        // read-only, and only once the mask is known — it is the
-                        // mask that decides System B objects vs System 7 LSMs. It
-                        // rides the same (possibly secured) connection.
-                        let resident = match &r {
-                            Ok(mask) => Some(probe_resident_state(dev.l4_mut(), *mask, None).await),
-                            Err(_) => None,
-                        };
-                        if let Some(state) = &resident {
-                            facts.object_table = state.object_table.clone();
+            let session = service
+                .with_device(target, &probe_options, async |dev| {
+                    // Tolerate a device that does not implement authorize.
+                    let key = bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY);
+                    let r = match dev.authorize(key).await {
+                        Ok(outcome) => {
+                            // Remember the verdict: a device that does not
+                            // implement authorize must not be asked again in the
+                            // write phase, where the unanswered request costs a
+                            // full RESPONSE_TIMEOUT per connection window.
+                            facts.authorize = Some(outcome);
+                            dev.device_descriptor().await
                         }
-                        // The plan needs only the mask, so it is built here, and the
-                        // parameter read-back (issue #109) rides this same
-                        // connection: no second T_Connect, no second Data Secure
-                        // sync, and the reads are sized from the APDU negotiated
-                        // above (issue #194), not the 12-octet floor.
-                        let replanned;
-                        let planned = match (&r, &precomputed) {
-                            (Ok(mask), Some((declared, Ok(plan)))) if mask == declared => {
-                                Some(plan)
-                            }
-                            (Ok(mask), _) => {
-                                replanned = plan_for_mask(*mask);
-                                replanned.as_ref().ok()
-                            }
-                            (Err(_), _) => None,
-                        };
-                        let current = match (planned, &resident) {
-                            (Some(plan), Some(state))
-                                if wants_current_parameters(force, parameters_only, state)
-                                    && !plan.is_sys7() =>
-                            {
-                                Some(
-                                    read_current_parameter_memory_with_objects(
-                                        dev.l4_mut(),
-                                        plan,
-                                        &facts.object_table,
-                                    )
-                                    .await,
-                                )
-                            }
-                            _ => None,
-                        };
-                        let _ = dev.disconnect().await;
-                        (true, r, resident, current)
+                        Err(err) => Err(err),
+                    };
+                    // PID_MAX_APDU_LENGTH is device-stable: negotiate it here, on
+                    // the read-only connection, so the write phase seeds it
+                    // instead of spending an exchange from its tight
+                    // per-connection budget on it.
+                    facts.max_apdu = dev.l4_mut().negotiate_max_apdu().await.ok().flatten();
+                    // The factory-freshness probe (issue #79): read the load
+                    // state (and, on System B, the resident application id) of
+                    // the objects this flash would unload and rewrite. Purely
+                    // read-only, and only once the mask is known — it is the
+                    // mask that decides System B objects vs System 7 LSMs. It
+                    // rides the same (possibly secured) connection.
+                    let resident = match &r {
+                        Ok(mask) => Some(probe_resident_state(dev.l4_mut(), *mask, None).await),
+                        Err(_) => None,
+                    };
+                    if let Some(state) = &resident {
+                        facts.object_table = state.object_table.clone();
                     }
-                    Err(err) => (false, Err(err), None, None),
-                };
+                    // The plan needs only the mask, so it is built here, and the
+                    // parameter read-back (issue #109) rides this same
+                    // connection: no second T_Connect, no second Data Secure
+                    // sync, and the reads are sized from the APDU negotiated
+                    // above (issue #194), not the 12-octet floor.
+                    let replanned;
+                    let planned = match (&r, &precomputed) {
+                        (Ok(mask), Some((declared, Ok(plan)))) if mask == declared => Some(plan),
+                        (Ok(mask), _) => {
+                            replanned = plan_for_mask(*mask);
+                            replanned.as_ref().ok()
+                        }
+                        (Err(_), _) => None,
+                    };
+                    let current = match (planned, &resident) {
+                        (Some(plan), Some(state))
+                            if wants_current_parameters(force, parameters_only, state)
+                                && !plan.is_sys7() =>
+                        {
+                            Some(
+                                read_current_parameter_memory_with_objects(
+                                    dev.l4_mut(),
+                                    plan,
+                                    &facts.object_table,
+                                )
+                                .await,
+                            )
+                        }
+                        _ => None,
+                    };
+                    Ok::<_, ServiceError>((r, resident, current))
+                })
+                .await;
+            // Whether the T_Connect established before the first read: a
+            // connect-then-disconnect on the descriptor read is the diagnostic
+            // pattern (see `descriptor_read_error`).
+            let (connected, result, resident, current) = match session {
+                Ok((r, resident, current)) => (true, r, resident, current),
+                Err(ServiceError::Mgmt(err)) => (false, Err(err), None, None),
+                Err(err) => return Err(anyhow::Error::new(err)),
+            };
             anyhow::Ok((connected, result, resident, facts, current))
         })?;
         // A loss still being re-established counts too: over TCP the probe can
@@ -384,7 +381,7 @@ pub fn run(
     if parameters_only {
         return crate::flash_params::run(crate::flash_params::Context {
             runtime: &runtime,
-            handle,
+            service,
             target,
             source,
             gateway: gateway.clone(),
@@ -558,7 +555,7 @@ pub fn run(
     let restart_started = std::cell::Cell::new(None);
     let download_started = std::time::Instant::now();
     let outcome = runtime.block_on(execute(
-        handle,
+        service,
         target,
         source,
         plan_ref,
@@ -1297,7 +1294,7 @@ fn product_display(product: &ProductData) -> String {
 /// and builds a [`LeaseChannel`] over it, so the flash observes the bus without
 /// stealing frames from other subscribers.
 struct LeaseConnector<'a> {
-    handle: &'a BusHandle,
+    service: &'a BusService,
     target: IndividualAddress,
     source: IndividualAddress,
     /// The KNX Data Secure tool key for the target, when the device is
@@ -1342,40 +1339,41 @@ impl bussard_download::Connector for LeaseConnector<'_> {
     type Channel = LeaseChannel;
 
     async fn connect(&mut self) -> Result<Layer4Connection<LeaseChannel>, WriteError> {
-        // After a gateway link loss (issue #177) wait for the re-established
-        // tunnel before the fresh T_Connect; immediate when connected.
-        self.handle
-            .wait_connected(self.handle.reconnect_budget())
-            .await;
-        let lease = self.handle.lease().await.map_err(|_| {
+        // The service waits for a tunnel re-established after a gateway link
+        // loss (issue #177) before the fresh T_Connect; immediate when
+        // connected. KNX Data Secure seam (spec §6.1/§6.2): a plain connection
+        // when no tool key is set (byte-identical to today), or a wrapped one
+        // when the device is security-activated. The download session
+        // authorizes itself, so the service does not.
+        let options = L4Options {
+            source: SourcePolicy::Known(self.source),
+            tool_key: self.secure_tool_key.clone(),
+            high_water: self.secure_seq.clone(),
+            timeouts: flash_l4_timeouts().unwrap_or_default(),
+            authorize: Authorize::Skip,
+        };
+        match self.service.connect_l4(self.target, &options).await {
+            Ok(l4) => Ok(l4),
+            Err(ServiceError::Mgmt(err)) => Err(WriteError::Mgmt(err)),
             // Leasing fails only if the bus actor is gone or the connection went
             // stale; either way the L4 session is unusable.
-            WriteError::Mgmt(MgmtError::Transport(
+            Err(_) => Err(WriteError::Mgmt(MgmtError::Transport(
                 bussard_transport::TransportError::Closed,
-            ))
-        })?;
-        let channel = LeaseChannel::new(lease);
-        // KNX Data Secure seam (spec §6.1/§6.2): a plain connection when no tool
-        // key is set (byte-identical to today), or a wrapped one when the device
-        // is security-activated.
-        let secure = crate::secure_key::layer(&self.secure_tool_key, &self.secure_seq);
-        let timeouts = flash_l4_timeouts().unwrap_or_default();
-        Layer4Connection::connect_with_secure(channel, self.target, self.source, timeouts, secure)
-            .await
-            .map_err(WriteError::Mgmt)
+            ))),
+        }
     }
 
     fn link_losses(&self) -> u64 {
         // Lets the session tell a failure the gateway caused (the count moved)
         // from one the device caused, and retry the former (issue #192).
-        self.handle.link_losses()
+        self.service.handle().link_losses()
     }
 }
 
 /// Runs the on-bus flash sequence with a progress line.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute(
-    handle: &BusHandle,
+    service: &BusService,
     target: IndividualAddress,
     source: IndividualAddress,
     plan: &FlashPlan,
@@ -1387,7 +1385,7 @@ pub(crate) async fn execute(
     restart_started: &std::cell::Cell<Option<std::time::Instant>>,
 ) -> Result<bussard_download::FlashOutcome, WriteError> {
     let connector = LeaseConnector {
-        handle,
+        service,
         target,
         source,
         secure_seq,
