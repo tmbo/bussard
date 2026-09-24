@@ -173,7 +173,8 @@ pub(crate) fn apply_desired(
     // is security-activated and a tool key is given. One high-water mark for the
     // whole command keeps the send sequence monotonic across both connections
     // (spec §5.9).
-    let material = crate::secure_key::resolve_material(target, tool_key_source)?;
+    let activated = crate::secure_key::model_activated(model, target);
+    let material = crate::secure_key::resolve_material(target, tool_key_source, activated)?;
     let tool_key = material.tool_key.clone();
     let secure_seq = bussard_secure::SequenceHighWater::new();
     let desired = desired.clone();

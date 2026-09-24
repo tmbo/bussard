@@ -652,75 +652,83 @@ impl Server {
         let Ok(mut line) = self.line.lock() else {
             return Vec::new();
         };
-        let tool = cemi.source;
-        let mut out = Vec::new();
-        match cemi.destination {
-            Destination::Group(group) if group.raw() == 0 => {
-                let Apdu::Other { apci, data } = &cemi.apdu else {
-                    return out;
-                };
-                for dev in line.iter_mut() {
-                    if let Some((rapci, rdata)) = dev.handle_broadcast(*apci, data) {
-                        out.push(indication(CemiFrame::t_broadcast(
-                            dev.address,
-                            rapci,
-                            &rdata,
-                        )));
-                    }
-                }
-            }
-            Destination::Group(_) => {}
-            Destination::Individual(dest) => {
-                let Some(dev) = line.iter_mut().find(|d| d.address == dest) else {
-                    return out;
-                };
-                match tpci::classify(cemi.tpci_octet()) {
-                    TpciKind::Connect => {
-                        dev.send_seq = Some(0);
-                        dev.connects += 1;
-                    }
-                    TpciKind::Disconnect => dev.send_seq = None,
-                    TpciKind::NumberedData(client_seq) => {
-                        let (Tpci::Other(_), Apdu::Other { apci, data }) = (&cemi.tpci, &cemi.apdu)
-                        else {
-                            return out;
-                        };
-                        match dev.handle_request(*apci, data) {
-                            Reaction::Silent => {}
-                            Reaction::Nak => out.push(indication(CemiFrame::t_control(
-                                tool,
-                                dest,
-                                tpci::t_nak(client_seq),
-                            ))),
-                            Reaction::Ack => out.push(indication(CemiFrame::t_control(
-                                tool,
-                                dest,
-                                tpci::t_ack(client_seq),
-                            ))),
-                            Reaction::Answer(rapci, rdata) => {
-                                out.push(indication(CemiFrame::t_control(
-                                    tool,
-                                    dest,
-                                    tpci::t_ack(client_seq),
-                                )));
-                                let seq = dev.send_seq.unwrap_or(0);
-                                out.push(indication(CemiFrame::t_data_connected(
-                                    tool,
-                                    dest,
-                                    tpci::ndt(seq),
-                                    rapci,
-                                    &rdata,
-                                )));
-                                dev.send_seq = Some((seq + 1) & 0x0f);
-                            }
-                        }
-                    }
-                    _ => {}
+        line_replies(&mut line, cemi)
+    }
+}
+
+/// The answers of a line of [`MockDevice`]s to one client frame: broadcast
+/// management, connected-mode transport control and the devices' application
+/// answers, each as an `L_Data.ind`. Shared by [`MockGateway`] and the secure
+/// gateway mock.
+pub(crate) fn line_replies(line: &mut [MockDevice], cemi: &CemiFrame) -> Vec<CemiFrame> {
+    let tool = cemi.source;
+    let mut out = Vec::new();
+    match cemi.destination {
+        Destination::Group(group) if group.raw() == 0 => {
+            let Apdu::Other { apci, data } = &cemi.apdu else {
+                return out;
+            };
+            for dev in line.iter_mut() {
+                if let Some((rapci, rdata)) = dev.handle_broadcast(*apci, data) {
+                    out.push(indication(CemiFrame::t_broadcast(
+                        dev.address,
+                        rapci,
+                        &rdata,
+                    )));
                 }
             }
         }
-        out
+        Destination::Group(_) => {}
+        Destination::Individual(dest) => {
+            let Some(dev) = line.iter_mut().find(|d| d.address == dest) else {
+                return out;
+            };
+            match tpci::classify(cemi.tpci_octet()) {
+                TpciKind::Connect => {
+                    dev.send_seq = Some(0);
+                    dev.connects += 1;
+                }
+                TpciKind::Disconnect => dev.send_seq = None,
+                TpciKind::NumberedData(client_seq) => {
+                    let (Tpci::Other(_), Apdu::Other { apci, data }) = (&cemi.tpci, &cemi.apdu)
+                    else {
+                        return out;
+                    };
+                    match dev.handle_request(*apci, data) {
+                        Reaction::Silent => {}
+                        Reaction::Nak => out.push(indication(CemiFrame::t_control(
+                            tool,
+                            dest,
+                            tpci::t_nak(client_seq),
+                        ))),
+                        Reaction::Ack => out.push(indication(CemiFrame::t_control(
+                            tool,
+                            dest,
+                            tpci::t_ack(client_seq),
+                        ))),
+                        Reaction::Answer(rapci, rdata) => {
+                            out.push(indication(CemiFrame::t_control(
+                                tool,
+                                dest,
+                                tpci::t_ack(client_seq),
+                            )));
+                            let seq = dev.send_seq.unwrap_or(0);
+                            out.push(indication(CemiFrame::t_data_connected(
+                                tool,
+                                dest,
+                                tpci::ndt(seq),
+                                rapci,
+                                &rdata,
+                            )));
+                            dev.send_seq = Some((seq + 1) & 0x0f);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
     }
+    out
 }
 
 /// Marks a device-originated frame as an `L_Data.ind`, as a real interface

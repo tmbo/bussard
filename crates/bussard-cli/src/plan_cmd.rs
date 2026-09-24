@@ -120,7 +120,8 @@ pub(crate) fn read_device(
     product: Option<&ProductSource>,
     model: Option<&Model>,
 ) -> anyhow::Result<DeviceRead> {
-    let tool_key = crate::secure_key::resolve(target, tool_key_source)?;
+    let activated = crate::secure_key::model_activated(model, target);
+    let tool_key = crate::secure_key::resolve(target, tool_key_source, activated)?;
     let presented_tool_key = tool_key.is_some();
     let options = L4Options {
         source: SourcePolicy::Check {

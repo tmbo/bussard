@@ -584,6 +584,19 @@ On a KNXnet/IP Secure interface each slot is bound to a tunnelling user. With
 `--keyring` bussard picks a user whose slot is free; with `--secure-user` the
 slot is fixed by the user you name, so pick one Home Assistant does not hold.
 
+**Keyring without a device entry (issue #189).** On a secure-only interface
+every command needs the keyring, if only to open the tunnel. A device the
+keyring lists is managed over KNX Data Secure with its tool key. A device the
+keyring does not list is managed in the clear through the encrypted tunnel,
+exactly as through a plain interface. A device whose model file says
+`security.activated: true` is never tried in the clear: without a keyring
+entry the command refuses before anything is sent to it. A device the model
+does not mark activated but that is activated on the bus refuses the plain
+access; the command fails with the hint to export a current keyring from ETS.
+`connection.keyring` in `bussard.yaml` sets the keyring once for every
+command; the password stays in `BUSSARD_KEYRING_PASSWORD` and the keyring file
+stays out of git.
+
 ## Known limitations
 
 - **KNX Secure: Data Secure tool access, verified on a physical device;

@@ -16,6 +16,10 @@
 #   scripts/campaign/20-per-device.sh 1.0.1 plan --go --dry-run \
 #       --dir knx-sim/examples/small-installation/knx
 #
+# Environment: BUSSARD_KEYRING=<file.knxkeys> passes `--keyring` to the probes
+# and the step (a Secure-only interface needs it for the tunnel on every
+# command, issue #189); the password stays in BUSSARD_KEYRING_PASSWORD.
+#
 # Around the step it records, per issue #89's "data per device":
 #   - describe --json and reconstruct BEFORE
 #   - the step itself with -vv and BUSSARD_WIRE_TRACE=1
@@ -74,6 +78,8 @@ fi
 # A step against a Data Secure device carries `--keyring <file>`; the
 # before/after probes need the same keyring or they cannot sync with the device
 # (issue #166). BUSSARD_KEYRING_PASSWORD is already in the environment.
+# With BUSSARD_KEYRING set, every invocation gets `--keyring "$BUSSARD_KEYRING"`
+# unless the step already has one (see below).
 SNAP_KEYRING=()
 prev=""
 for a in ${CMD+"${CMD[@]}"}; do
@@ -83,6 +89,13 @@ for a in ${CMD+"${CMD[@]}"}; do
   esac
   prev="$a"
 done
+# A Secure-only interface needs the keyring on EVERY invocation, for the
+# tunnel alone when the device is plain (issue #189). BUSSARD_KEYRING names it
+# once for the campaign; a step that brings its own --keyring keeps it.
+if [ "${#SNAP_KEYRING[@]}" -eq 0 ] && [ -n "${BUSSARD_KEYRING:-}" ]; then
+  SNAP_KEYRING=(--keyring "$BUSSARD_KEYRING")
+  CMD=(${CMD+"${CMD[@]}"} --keyring "$BUSSARD_KEYRING")
+fi
 CMD=(${CMD+"${CMD[@]}"} --dir "$MODEL_DIR" --gateway "$GATEWAY_RESOLVED" -vv)
 if ! is_loopback; then CMD=(${CMD+"${CMD[@]}"} --allow-remote-gateway); fi
 

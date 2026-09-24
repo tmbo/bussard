@@ -93,6 +93,14 @@ pub fn run(
     }
     let config = resolve_config(Some(&model), &overrides)?;
     let gateway = gateway_display(&config);
+    // The targets the model records as security-activated: a keyring without
+    // their entry is an error for them, while any other device the keyring does
+    // not list is read in the clear (issue #189).
+    let activated: std::collections::BTreeSet<IndividualAddress> = targets
+        .iter()
+        .copied()
+        .filter(|&t| crate::secure_key::model_activated(Some(&model), t))
+        .collect();
 
     let started = SystemTime::now();
     let out_dir: PathBuf = match out {
@@ -117,7 +125,7 @@ pub fn run(
         }
         let source = checked_source_or_close(&handle, &overrides).await?;
         let captured = tokio::select! {
-            captured = capture_all(&handle, source, &targets, tool_key_source) => captured,
+            captured = capture_all(&handle, source, &targets, &activated, tool_key_source) => captured,
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\ninterrupted; closing the bus connection");
                 Vec::new()
@@ -220,12 +228,14 @@ async fn capture_all(
     handle: &BusHandle,
     source: IndividualAddress,
     targets: &[IndividualAddress],
+    activated: &std::collections::BTreeSet<IndividualAddress>,
     tool_key_source: crate::secure_key::ToolKeySource<'_>,
 ) -> Vec<Capture> {
     let mut out = Vec::with_capacity(targets.len());
     for (n, &target) in targets.iter().enumerate() {
         eprintln!("[{}/{}] reading {target}…", n + 1, targets.len());
-        out.push(capture_one(handle, source, target, tool_key_source).await);
+        let is_activated = activated.contains(&target);
+        out.push(capture_one(handle, source, target, is_activated, tool_key_source).await);
     }
     out
 }
@@ -235,9 +245,10 @@ async fn capture_one(
     handle: &BusHandle,
     source: IndividualAddress,
     target: IndividualAddress,
+    activated: bool,
     tool_key_source: crate::secure_key::ToolKeySource<'_>,
 ) -> Capture {
-    let tool_key = match crate::secure_key::resolve(target, tool_key_source) {
+    let tool_key = match crate::secure_key::resolve(target, tool_key_source, activated) {
         Ok(key) => key,
         Err(err) => return Capture::failed(target, format!("resolving the tool key: {err}")),
     };

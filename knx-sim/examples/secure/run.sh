@@ -37,6 +37,8 @@
 #   NEGATIVE  scan without credentials -> refused at once, names KNXnet/IP Secure (#182)
 #   POSITIVE  flash 1.1.10 --keyring   -> secure tunnel picked from the keyring, Data
 #             Secure inside it, verified Loaded
+#   POSITIVE  describe 1.1.3 --keyring -> the keyring lists no 1.1.3: it opens the
+#             tunnel only and the plain device is read in the clear (#189)
 #   POSITIVE  describe 1.1.3 --secure-user 2 --secure-password-env -> explicit user
 #   NEGATIVE  a wrong tunnelling password -> refused, the sim reports the failed auth
 #
@@ -578,6 +580,23 @@ if log_has "$mark" "SECURE session authenticated" && log_has "$mark" "SECURE rec
 else
   bad "the sim saw no authenticated secure session or no Data Secure frames"
   log_since "$mark" | grep -i "secure" | head -5 | sed 's/^/      /'
+fi
+
+# Issue #189: the keyring has no entry for the plain 1.1.3, so it serves the
+# tunnel alone and the device is read in the clear through it.
+mark=$(log_mark)
+out="$("$BUSSARD" describe 1.1.3 --json --dir "$MODEL" --gateway "$GATEWAY2" \
+  --keyring "$KEYRING" 2>/dev/null)"
+rc=$?
+if [[ $rc -eq 0 ]] && grep -q '"object_type"' <<<"$out"; then
+  ok "describe 1.1.3 --keyring: the keyring opened the tunnel, the plain device read in the clear"
+else
+  bad "describe 1.1.3 --keyring (no keyring entry) failed (exit $rc)"; tail -4 <<<"$out" | sed 's/^/      /'
+fi
+if log_has "$mark" "SECURE session authenticated"; then
+  ok "the sim authenticated the keyring's user for the plain-device read"
+else
+  bad "the sim saw no authenticated secure session for describe 1.1.3 --keyring"
 fi
 
 mark=$(log_mark)

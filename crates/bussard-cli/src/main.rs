@@ -79,11 +79,14 @@ struct Cli {
     command: Command,
 }
 
-/// The `--keyring` of the subcommand, if it takes one: its tunnelling users
-/// open a KNXnet/IP Secure tunnel to a secure interface (issue #71 Phase B).
-fn command_keyring(command: &Command) -> Option<&std::path::Path> {
+/// The `--keyring` slot of the subcommand, if it takes one: its tunnelling
+/// users open a KNXnet/IP Secure tunnel to a secure interface (issue #71 Phase
+/// B), and its device entries carry the tool keys for secured management.
+fn command_keyring_slot(command: &mut Command) -> Option<&mut Option<PathBuf>> {
     match command {
-        Command::Reconstruct { keyring, .. }
+        Command::Scan { keyring, .. }
+        | Command::Assign { keyring, .. }
+        | Command::Reconstruct { keyring, .. }
         | Command::Describe { keyring, .. }
         | Command::Flash { keyring, .. }
         | Command::Plan { keyring, .. }
@@ -98,25 +101,117 @@ fn command_keyring(command: &Command) -> Option<&std::path::Path> {
         | Command::Write { keyring, .. }
         | Command::Viz { keyring, .. }
         | Command::Audit { keyring, .. }
-        | Command::Mcp { keyring, .. } => keyring.as_deref(),
+        | Command::Mcp { keyring, .. } => Some(keyring),
         _ => None,
+    }
+}
+
+/// The model directory of a subcommand that talks to the bus, whose
+/// `bussard.yaml` may name a default keyring (`connection.keyring`, issue
+/// #189). `init` is left out: it writes that file.
+fn bus_command_dir(command: &Command) -> Option<&std::path::Path> {
+    match command {
+        Command::Scan { dir, .. }
+        | Command::Assign { dir, .. }
+        | Command::Reconstruct { dir, .. }
+        | Command::Describe { dir, .. }
+        | Command::Adopt { dir, .. }
+        | Command::Flash { dir, .. }
+        | Command::Plan { dir, .. }
+        | Command::Apply { dir, .. }
+        | Command::Commission { dir, .. }
+        | Command::Backup { dir, .. }
+        | Command::Restore { dir, .. }
+        | Command::Replace { dir, .. }
+        | Command::Monitor { dir, .. }
+        | Command::Capture { dir, .. }
+        | Command::Read { dir, .. }
+        | Command::Write { dir, .. }
+        | Command::Viz { dir, .. }
+        | Command::Learn { dir, .. }
+        | Command::Test { dir, .. }
+        | Command::Audit { dir, .. }
+        | Command::Mcp { dir, .. } => Some(dir),
+        _ => None,
+    }
+}
+
+/// Whether the subcommand was given `--tool-key`. A config default keyring
+/// must not collide with it (the two are mutually exclusive tool-key
+/// sources), so it then serves the tunnel only.
+fn command_has_tool_key(command: &Command) -> bool {
+    match command {
+        Command::Reconstruct { tool_key, .. }
+        | Command::Describe { tool_key, .. }
+        | Command::Flash { tool_key, .. }
+        | Command::Plan { tool_key, .. }
+        | Command::Apply { tool_key, .. }
+        | Command::Commission { tool_key, .. }
+        | Command::Backup { tool_key, .. }
+        | Command::Restore { tool_key, .. }
+        | Command::Replace { tool_key, .. } => tool_key.is_some(),
+        _ => false,
+    }
+}
+
+/// The keyring this invocation uses, if any: the subcommand's `--keyring`,
+/// else `connection.keyring` from its model's `bussard.yaml` (issue #189). The
+/// flag is `true` when the keyring came from the config.
+///
+/// A default from the config is written into the subcommand's `--keyring`
+/// slot, so every consumer (tool keys, group keys, the tunnel) sees one
+/// keyring. A subcommand without a slot (`adopt`, `learn`, `test`), or one
+/// given `--tool-key`, uses it for the tunnel only. A `bussard.yaml` that does
+/// not parse is left for the subcommand's own model load to report.
+fn effective_keyring(command: &mut Command) -> Option<(PathBuf, bool)> {
+    let configured = bus_command_dir(command).and_then(|dir| {
+        let config = bussard_model::load_config(dir).ok()?;
+        config.connection.keyring_path(dir)
+    });
+    if command_has_tool_key(command) {
+        return configured.map(|path| (path, true));
+    }
+    match command_keyring_slot(command) {
+        Some(slot) => match slot {
+            Some(path) => Some((path.clone(), false)),
+            None => {
+                *slot = configured.clone();
+                configured.map(|path| (path, true))
+            }
+        },
+        None => configured.map(|path| (path, true)),
     }
 }
 
 /// Resolves the KNXnet/IP Secure tunnelling credentials once, before the
 /// subcommand runs, so every connection it opens uses them.
-fn setup_secure_tunnel(cli: &Cli) -> anyhow::Result<()> {
-    let keyring = command_keyring(&cli.command);
+fn setup_secure_tunnel(cli: &mut Cli) -> anyhow::Result<()> {
+    use anyhow::Context as _;
+    let keyring = effective_keyring(&mut cli.command);
     // Without explicit flags, only a keyring can carry tunnelling users.
     if keyring.is_none() && cli.secure_user.is_none() && cli.secure_password_env.is_none() {
         return Ok(());
     }
     let config =
         bussard_service::secure::tunnel_config(bussard_service::secure::TunnelCredentialSource {
-            keyring,
+            keyring: keyring.as_ref().map(|(path, _)| path.as_path()),
             user: cli.secure_user,
             password_env: cli.secure_password_env.as_deref(),
+        })
+        .with_context(|| match &keyring {
+            Some((path, true)) => format!(
+                "the keyring {} comes from connection.keyring in bussard.yaml (pass --keyring \
+                 to use another one)",
+                path.display()
+            ),
+            _ => "resolving the KNXnet/IP Secure tunnelling credentials".to_string(),
         })?;
+    if let Some((path, true)) = &keyring {
+        tracing::info!(
+            "using the keyring {} from connection.keyring in bussard.yaml",
+            path.display()
+        );
+    }
     conn_cmd::set_secure_tunnel(config);
     Ok(())
 }
@@ -279,6 +374,12 @@ enum Command {
         /// Override the gateway `host[:port]` for tunneling.
         #[arg(long, value_name = "HOST")]
         gateway: Option<String>,
+        /// An ETS `.knxkeys` keyring whose KNXnet/IP Secure tunnelling users open
+        /// the tunnel to a secure interface (issue #189); the devices are talked
+        /// to in the clear. Default: `connection.keyring` in `bussard.yaml`. The
+        /// password comes from `BUSSARD_KEYRING_PASSWORD`.
+        #[arg(long, value_name = "FILE")]
+        keyring: Option<PathBuf>,
         /// Force KNXnet/IP routing (multicast) transport.
         #[arg(long)]
         routing: bool,
@@ -306,6 +407,12 @@ enum Command {
         /// Override the gateway `host[:port]` for tunneling.
         #[arg(long, value_name = "HOST")]
         gateway: Option<String>,
+        /// An ETS `.knxkeys` keyring whose KNXnet/IP Secure tunnelling users open
+        /// the tunnel to a secure interface (issue #189); the devices are talked
+        /// to in the clear. Default: `connection.keyring` in `bussard.yaml`. The
+        /// password comes from `BUSSARD_KEYRING_PASSWORD`.
+        #[arg(long, value_name = "FILE")]
+        keyring: Option<PathBuf>,
         /// Force KNXnet/IP routing (multicast) transport.
         #[arg(long)]
         routing: bool,
@@ -1393,7 +1500,7 @@ fn main() -> ExitCode {
 /// The whole CLI: parse arguments, set up logging, run the subcommand. Runs on
 /// the `bussard-main` thread spawned by [`main`].
 fn cli_main() -> ExitCode {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
 
     // The live progress display (issue #147) is only possible on a terminal;
     // when it is, bus-layer events also feed its "last event" line, and log
@@ -1422,7 +1529,7 @@ fn cli_main() -> ExitCode {
     // invocation's elapsed time on stderr. Speed is a project goal, so this stays
     // available for regression spotting, but a plain 0.1.0 run is quiet.
     let started = std::time::Instant::now();
-    if let Err(err) = setup_secure_tunnel(&cli) {
+    if let Err(err) = setup_secure_tunnel(&mut cli) {
         eprintln!("error: {err:#}");
         return ExitCode::FAILURE;
     }
@@ -1491,6 +1598,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             to,
             dir,
             json,
+            keyring: _,
             gateway,
             routing,
             skip_address_check,
@@ -1510,6 +1618,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             address,
             dir,
             yes,
+            keyring: _,
             gateway,
             routing,
             skip_address_check,

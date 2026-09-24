@@ -77,7 +77,13 @@ pub fn run(
     // KNX Data Secure (issue #71, spec §6.2): the target's tool key, from the
     // keyring (the real flow) or a raw `--tool-key` (test/bench). `None` is the
     // plain, byte-identical path. The key is never printed or logged (§2.3).
-    let secure_material = crate::secure_key::resolve_material(target, tool_key_source)?;
+    // A flash is a management command: a present-but-broken model is a hard
+    // error (its parameter overrides drive what is written to the device). It
+    // is loaded first because it also says whether a device the keyring does
+    // not list is security-activated (issue #189).
+    let model = load_model_required(dir)?;
+    let activated = crate::secure_key::model_activated(model.as_ref(), target);
+    let secure_material = crate::secure_key::resolve_material(target, tool_key_source, activated)?;
     let tool_key = secure_material.tool_key.clone();
     // One send-sequence high-water mark for the whole command (spec §5.9): the
     // pre-flight probe, the flash, and every mid-flash reconnect share it, so no
@@ -126,9 +132,6 @@ pub fn run(
     // the flash engine expects (the #46 contract: keys are `<slug>@<ref-id>`; the
     // part after `@` is the ETS-stable identity). The model is also the source of
     // the connection config.
-    // A flash is a management command: a present-but-broken model is a hard
-    // error (its parameter overrides drive what is written to the device).
-    let model = load_model_required(dir)?;
     let overrides_map = collect_parameter_overrides(model.as_ref(), target);
     // Module-instance base offsets persisted by the importer (issue #48): the
     // keys are module-instance selectors, byte-identical to what

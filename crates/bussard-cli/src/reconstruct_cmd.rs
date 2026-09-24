@@ -860,17 +860,22 @@ fn model_config(overrides: &ConnOverrides, dir: &Path) -> BussardConfig {
     // for the gateway/multicast text when no override was given.
     let base = load_model_optional(dir).map(|m| m.config.connection);
     let resolved = resolve_config(None, overrides);
+    // The keyring setting is the operator's, not derived from the connection
+    // used: carry it over from the input model.
+    let keyring = base.as_ref().and_then(|c| c.keyring.clone());
 
     let connection = match resolved {
         Ok(cfg) if cfg.transport == TransportKind::Routing => ModelConnection {
             transport: ModelTransport::Routing,
             gateway: None,
             multicast: Some(cfg.multicast.to_string()),
+            keyring,
         },
         Ok(cfg) => ModelConnection {
             transport: ModelTransport::Tunnel,
             gateway: cfg.gateway.map(|g| g.to_string()),
             multicast: None,
+            keyring,
         },
         // No override resolvable on its own (e.g. tunnel with no gateway flag):
         // fall back to whatever the input model had.
