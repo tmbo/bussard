@@ -106,7 +106,7 @@ pub fn run(
 
     // A parse error is a hard failure here (surfaced with the file detail); an
     // absent model still bails, since `apply` needs the links in the device files.
-    let Some(model) = load_model_required(dir)? else {
+    let Some(mut model) = load_model_required(dir)? else {
         bail!(
             "`bussard apply` needs the model (the links in devices/<address>.toml) to compute the desired tables; \
              none was loaded from {}",
@@ -117,6 +117,9 @@ pub fn run(
     // An edit made outside bussard (an editor, an assistant writing TOML) is
     // recorded before this command acts on it, so it is never lost.
     crate::history_cmd::capture_external_edit(dir);
+    // A group address the device files use but groups.toml does not define is
+    // declared there first, named after the object that uses it.
+    crate::groups_cmd::declare_used(dir, &mut model, "apply", false)?;
     let desired = plan_cmd::compute_desired(&model, target)?;
     hint_installation_backup(dir);
     apply_desired(

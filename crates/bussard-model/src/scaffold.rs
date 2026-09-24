@@ -1,10 +1,13 @@
-//! Group-address scaffolding from a room-and-function plan (issue #103).
+//! Group-address reservation from rooms and functions (issue #103).
 //!
 //! An integrator's room book lists floors, rooms and the functions each room
 //! needs. The KNX guidelines describe how that becomes a group-address plan, but
 //! every integrator implements the mapping by hand. This module implements it:
 //! [`scaffold`] turns a [`Plan`] into `groups.toml` entries with reserved blocks,
-//! conventional names and DPTs, under one of two addressing schemes.
+//! conventional names and DPTs, under one of two addressing schemes. `bussard
+//! groups reserve "<Floor> <Room>" <function>` and the MCP tools
+//! `knx_reserve_groups` / `knx_scaffold_groups` build the [`Plan`] from their
+//! arguments; there is no plan file.
 //!
 //! # The two schemes
 //!
@@ -405,7 +408,7 @@ fn known_functions() -> String {
         .join(", ")
 }
 
-/// A device-free planning file: which rooms exist and what each one needs.
+/// Which rooms exist and what each one needs: the input of [`scaffold`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Plan {
@@ -427,22 +430,31 @@ pub struct PlanRoom {
     pub functions: Vec<String>,
 }
 
-impl Plan {
-    /// Parses a plan from TOML, or from JSON when the text is a JSON object
-    /// (starts with `{`), so the CLI and the MCP tool share one entry point.
+impl PlanRoom {
+    /// A room from its label `"<Floor> <Room>"` (split at the first whitespace,
+    /// so the floor is one word and the room may be several) and the functions
+    /// it needs.
     ///
-    /// ```toml
-    /// [[rooms]]
-    /// floor = "EG"
-    /// room = "Küche"
-    /// functions = ["light", "blind"]
     /// ```
-    pub fn parse(text: &str) -> Result<Self, ScaffoldError> {
-        if text.trim_start().starts_with('{') {
-            return serde_json::from_str(text).map_err(|e| ScaffoldError::Plan(e.to_string()));
+    /// use bussard_model::PlanRoom;
+    /// let room = PlanRoom::from_label("EG Wohnen Süd", &["light".to_string()])?;
+    /// assert_eq!((room.floor.as_str(), room.room.as_str()), ("EG", "Wohnen Süd"));
+    /// # Ok::<(), bussard_model::scaffold::ScaffoldError>(())
+    /// ```
+    pub fn from_label(label: &str, functions: &[String]) -> Result<Self, ScaffoldError> {
+        let label = label.trim();
+        let Some((floor, room)) = label.split_once(char::is_whitespace) else {
+            return Err(ScaffoldError::Room(label.to_string()));
+        };
+        let room = room.trim();
+        if floor.is_empty() || room.is_empty() {
+            return Err(ScaffoldError::Room(label.to_string()));
         }
-        crate::toml_io::parse(Path::new("plan"), text)
-            .map_err(|e| ScaffoldError::Plan(e.rendered.clone()))
+        Ok(PlanRoom {
+            floor: floor.to_string(),
+            room: room.to_string(),
+            functions: functions.to_vec(),
+        })
     }
 }
 
@@ -518,9 +530,12 @@ pub enum ScaffoldError {
     /// The merged plan could not be written.
     #[error(transparent)]
     Save(#[from] crate::loader::SaveError),
-    /// The plan file was not valid TOML/JSON.
-    #[error("the plan is not valid TOML or JSON: {0}")]
-    Plan(String),
+    /// A room label did not name both a floor and a room.
+    #[error(
+        "{0:?} does not name a floor and a room; write them as one argument, floor first, \
+         e.g. \"EG Küche\""
+    )]
+    Room(String),
     /// A file could not be read or written.
     #[error("{path}: {source}")]
     Io {
@@ -959,10 +974,15 @@ mod tests {
     }
 
     #[test]
-    fn test_plan_parses_from_json_too() -> Result<(), Box<dyn std::error::Error>> {
-        let p = Plan::parse(r#"{"rooms":[{"floor":"EG","room":"Küche","functions":["light"]}]}"#)?;
-        assert_eq!(p.rooms.len(), 1);
-        assert_eq!(p.rooms[0].room, "Küche");
+    fn test_plan_room_from_label_splits_floor_and_room() -> Result<(), Box<dyn std::error::Error>> {
+        let room = PlanRoom::from_label("  OG Kind 2 Süd ", &["blind".to_string()])?;
+        assert_eq!(room.floor, "OG");
+        assert_eq!(room.room, "Kind 2 Süd");
+        assert_eq!(room.functions, vec!["blind".to_string()]);
+        assert!(matches!(
+            PlanRoom::from_label("Küche", &[]),
+            Err(ScaffoldError::Room(_))
+        ));
         Ok(())
     }
 
@@ -976,15 +996,6 @@ mod tests {
         // It parses as the lint table of a `bussard.toml`.
         let config: crate::schema::BussardConfig = toml::from_str(&text)?;
         assert!(config.lint.is_some());
-        Ok(())
-    }
-
-    #[test]
-    fn test_plan_parses_from_toml() -> Result<(), Box<dyn std::error::Error>> {
-        let p =
-            Plan::parse("[[rooms]]\nfloor = \"EG\"\nroom = \"Küche\"\nfunctions = [\"light\"]\n")?;
-        assert_eq!(p.rooms.len(), 1);
-        assert_eq!(p.rooms[0].functions, vec!["light".to_string()]);
         Ok(())
     }
 

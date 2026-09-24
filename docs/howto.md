@@ -506,38 +506,26 @@ The payoff is closing the loop between an intent and a reviewed change. "I added
 
 ## ... plan the group addresses for a new house?
 
-Write the room book as a plan file and let bussard do the numbering:
-
-```yaml
-# plan.yaml
-rooms:
-  - floor: Ground floor
-    room: Kitchen
-    functions: [light, light-dim, blind, heating]
-  - floor: Ground floor
-    room: Living room
-    functions: [light-dim, blind, heating, socket]
-  - floor: First floor
-    room: Bedroom
-    functions: [light, blind, heating]
-```
+Reserve the addresses room by room and let bussard do the numbering:
 
 ```console
-$ bussard scaffold plan.yaml --dir knx
-Scaffolded 62 group address(es) into knx/groups.yaml using the floor-trade-block scheme.
-  1/1/0     1.001    Ground floor Kitchen Light Switch
-  1/1/3     1.001    Ground floor Kitchen Light Switch status
-  1/1/5     1.001    Ground floor Kitchen Dimmer Switch
+$ bussard groups reserve "EG Küche" light light-dim blind heating --dir knx
+reserved 20 group address(es) for EG Küche in knx/groups.toml (floor-trade-block scheme):
+  1/1/0     1.001    EG Küche Light Switch
+  1/1/3     1.001    EG Küche Light Switch status
+  1/1/5     1.001    EG Küche Dimmer Switch
   ...
-Wrote a matching lint: block to knx/bussard.yaml - `bussard validate` now checks the convention.
-Validation: 0 error(s), 0 warning(s).
+wrote the floor-trade-block scheme to the [lint] table of knx/bussard.toml; `bussard validate` now checks the convention.
+validation: 0 error(s), 0 warning(s).
+$ bussard groups reserve "EG Wohnen" light-dim blind heating socket --dir knx
+$ bussard groups reserve "OG Schlafen" light blind heating --dir knx
 ```
 
-Each function reserves a fixed block (five addresses for a light, ten for a blind or heating zone) and fills only the roles it needs, so the unused slots are there when the plain light later becomes a dimmer. Pick the other scheme with `--scheme function-floor` (trade on the main group, floor on the middle). Add rooms to `plan.yaml` and re-run: existing addresses and names are kept verbatim, only the new rooms are numbered.
+The room is one argument, floor first. Each function reserves a fixed block (five addresses for a light, ten for a blind or heating zone) and fills only the roles it needs, so the unused slots are there when the plain light later becomes a dimmer. For the other scheme (trade on the main group, floor on the middle), pass `--scheme function-floor` on the first reservation, or set `[lint.groups] scheme` in `bussard.toml`. Re-running for a room that already has its block adds nothing; existing addresses and names are kept verbatim.
 
-The written `lint:` block makes `bussard validate` check the convention from then on: a GA outside its block, a switch with no feedback address, a DPT that contradicts its role ([codes L005-L008](reference.md#validation-diagnostics)).
+The written `[lint]` table makes `bussard validate` check the convention from then on: a GA outside its block, a switch with no feedback address, a DPT that contradicts its role ([codes L005-L008](reference.md#validation-diagnostics)).
 
-An assistant driving `bussard mcp` can do the same over the `knx_scaffold_groups` tool, drafting the room list from a conversation. Confirm the floors, rooms and functions before it writes.
+An assistant driving `bussard mcp` can do the same over `knx_reserve_groups` (one room) or `knx_scaffold_groups` (a JSON room list), drafting the rooms from a conversation. Confirm the floors, rooms and functions before it writes.
 
 ## ... get my names into ETS?
 

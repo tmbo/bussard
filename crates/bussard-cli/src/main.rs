@@ -20,6 +20,7 @@ mod export_groups_cmd;
 mod flash_cmd;
 mod flash_dump;
 mod flash_params;
+mod groups_cmd;
 mod ha_config_cmd;
 mod history_cmd;
 mod import_bundle;
@@ -38,7 +39,7 @@ mod read_cmd;
 mod reconstruct_cmd;
 mod replace_cmd;
 mod restore_cmd;
-mod scaffold_cmd;
+
 mod scan_cmd;
 mod secure_key;
 mod test_cmd;
@@ -317,6 +318,36 @@ impl From<DocOutputFormat> for bussard_model::DocFormat {
             DocOutputFormat::Html => bussard_model::DocFormat::Html,
         }
     }
+}
+
+/// The `bussard groups` subcommands.
+#[derive(Debug, Subcommand)]
+enum GroupsCommand {
+    /// Append the conventional group-address block for a room and trade to
+    /// `groups.toml` and print the addresses.
+    ///
+    /// The scheme is `[lint.groups] scheme` in `bussard.toml` (written on the
+    /// first reservation). Re-running for a room and function that already
+    /// have their block adds nothing.
+    Reserve {
+        /// The room, floor first, as one argument: `"EG Küche"`.
+        #[arg(value_name = "FLOOR ROOM")]
+        room: String,
+        /// The functions the room needs: light, light-dim, blind, heating,
+        /// socket.
+        #[arg(value_name = "FUNCTION", required = true)]
+        functions: Vec<String>,
+        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
+        #[arg(long, default_value = "knx")]
+        dir: PathBuf,
+        /// The addressing scheme for a project that has none yet (default
+        /// floor-trade-block). Refused when it contradicts `bussard.toml`.
+        #[arg(long, value_enum)]
+        scheme: Option<SchemeArg>,
+        /// Emit JSON instead of the address list.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// The top-level subcommands.
@@ -1183,26 +1214,11 @@ enum Command {
         #[arg(long, value_enum, default_value_t = Format::Text)]
         format: Format,
     },
-    /// Draft a group-address plan from a room and function list.
-    Scaffold {
-        /// The plan file: `rooms: [{floor, room, functions: [...]}]`.
-        #[arg(value_name = "PLAN")]
-        plan: PathBuf,
-        /// The directory containing the model (`bussard.toml`, `groups.toml`, …).
-        #[arg(long, default_value = "knx")]
-        dir: PathBuf,
-        /// The addressing scheme (default: `lint.groups.scheme`, else floor-trade-block).
-        #[arg(long, value_enum)]
-        scheme: Option<SchemeArg>,
-        /// Write to this file instead of `<dir>/groups.toml`.
-        #[arg(long, value_name = "FILE")]
-        out: Option<PathBuf>,
-        /// Emit JSON instead of the table format.
-        #[arg(long)]
-        json: bool,
-        /// Do not add a matching `[lint]` table to `bussard.toml`.
-        #[arg(long)]
-        no_lint_config: bool,
+    /// Work with the group-address plan (`groups.toml`): reserve the
+    /// conventional addresses for a room.
+    Groups {
+        #[command(subcommand)]
+        command: GroupsCommand,
     },
     /// Export the group-address plan in a format ETS can import.
     ExportGroups {
@@ -2136,21 +2152,15 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             },
         ),
         Command::Validate { dir, format } => validate_cmd::run(&dir, format == Format::Json),
-        Command::Scaffold {
-            plan,
-            dir,
-            scheme,
-            out,
-            json,
-            no_lint_config,
-        } => scaffold_cmd::run(
-            &plan,
-            &dir,
-            scheme.map(Into::into),
-            out.as_deref(),
-            json,
-            no_lint_config,
-        ),
+        Command::Groups { command } => match command {
+            GroupsCommand::Reserve {
+                room,
+                functions,
+                dir,
+                scheme,
+                json,
+            } => groups_cmd::run_reserve(&dir, &room, &functions, scheme.map(Into::into), json),
+        },
         Command::ExportGroups { dir, format, out } => export_groups_cmd::run(&dir, format, &out),
         Command::Doc {
             dir,

@@ -538,28 +538,30 @@ Validate the YAML model and report diagnostics (see [the diagnostics table](#val
 | `--dir <DIR>` | `knx` | The model directory. |
 | `--format <FORMAT>` | `text` | `text` (rustc-style diagnostics) or `json` (a JSON array). |
 
-### `bussard scaffold <PLAN>`
+### `bussard groups reserve "<FLOOR> <ROOM>" <FUNCTION>...`
 
-Draft a group-address plan from a room and function list. Reserves the conventional block per function (five addresses for a light, ten for a blind or a heating zone), names every address `<Floor> <Room> <Function> <Role>`, fills the DPTs, and leaves the unused slots in each block free for growth. Re-running on an extended plan adds addresses and never renumbers or renames the ones already there.
+Reserve the conventional group addresses for one room and append them to `groups.toml`, then print them. Each function gets the block of its trade (five addresses for a light, ten for a blind or a heating zone); every address is named `<Floor> <Room> <Function> <Role>` with its DPT, and the unused slots in the block stay free for growth. Running it again for a room and function that already have their block adds nothing, and existing addresses are never renumbered or renamed.
 
-The plan file is device-free:
-
-```yaml
-rooms:
-  - floor: Ground floor
-    room: Kitchen
-    functions: [light, light-dim, blind, heating]
+```
+$ bussard groups reserve "EG Küche" light blind
+reserved 9 group address(es) for EG Küche in knx/groups.toml (floor-trade-block scheme):
+  1/1/0     1.001    EG Küche Light Switch
+  1/1/3     1.001    EG Küche Light Switch status
+  1/2/0     1.008    EG Küche Blind Move
+  ...
 ```
 
-Functions: `light` (switch + feedback), `light-dim` (switch, dim, value, both feedbacks), `blind`, `heating`, `socket`.
+The room is one argument, floor first: the first word is the floor, the rest the room. Functions: `light` (switch + feedback), `light-dim` (switch, dim, value, both feedbacks), `blind`, `heating`, `socket`.
+
+The scheme is `[lint.groups] scheme` in `bussard.toml`. The first reservation in a project without one writes a `[lint]` table with the scheme, so every later reservation and `bussard validate` follow the same convention. There is no plan file; for several rooms at once, run the command once per room, or have an assistant call `knx_scaffold_groups` with the room list as JSON.
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--dir <DIR>` | `knx` | The model directory. |
-| `--scheme <SCHEME>` | `lint.groups.scheme`, else `floor-trade-block` | `floor-trade-block` (main = floor, middle = trade) or `function-floor` (main = trade, middle = floor). |
-| `--out <FILE>` | `<dir>/groups.yaml` | Write (and extend) this file instead. |
-| `--json` | off | Emit JSON instead of the table. |
-| `--no-lint-config` | off | Do not append a matching `lint:` block to `bussard.yaml`. |
+| `--scheme <SCHEME>` | `[lint.groups] scheme`, else `floor-trade-block` | `floor-trade-block` (main = floor, middle = trade) or `function-floor` (main = trade, middle = floor), for a project that has no scheme yet. Refused when it contradicts `bussard.toml`. |
+| `--json` | off | Emit JSON (`room`, `scheme`, `file`, `added`, `lint_config_written`, `validation`) instead of the list. |
+
+A group address that a device file uses but `groups.toml` does not define is declared there by `import`, `apply` and the MCP edit tools, named `<channel name or device name> <object function or key>` with the object's DPT, and reported (`added 0/1/3 "Fenster Süd Langzeitbetrieb" (DPT 1.008) to groups.toml, first used by 1.1.47 object 144`). `bussard validate` alone only warns (E001).
 
 Addressing under the two schemes:
 
@@ -759,7 +761,7 @@ Run the MCP server over stdio (see [the MCP server](#the-mcp-server)).
 | `--allow-programming` | off | Register the programming tier, `knx_plan_device` and `knx_apply_device` (see [the programming tier](#the-programming-tier)). Mutually exclusive with `--passive`. |
 | `--plan-ttl-minutes <MINUTES>` | `10` | How long a `knx_plan_device` digest stays valid for `knx_apply_device`. Needs `--allow-programming`. |
 | `--allow-remote-gateway` | off | Permit `--allow-writes` or `--allow-programming` against a non-loopback (real) gateway. The same gate as `bussard write`; without it (or `BUSSARD_ALLOW_REAL_GATEWAY=1`) such a server pointed at a real gateway refuses to start. |
-| `--no-model-edits` | off | Withhold the model-edit tools (`knx_set_group`, `knx_add_link`, `knx_remove_link`, `knx_set_device`, `knx_set_parameter`, `knx_undo`, `knx_scaffold_groups`). They write YAML files behind a history snapshot and never touch the bus, so they are registered by default. |
+| `--no-model-edits` | off | Withhold the model-edit tools (`knx_set_group`, `knx_add_link`, `knx_remove_link`, `knx_set_device`, `knx_set_parameter`, `knx_undo`, `knx_scaffold_groups`, `knx_reserve_groups`). They write the model's TOML files behind a history snapshot and never touch the bus, so they are registered by default. |
 | `--capture-db <PATH>` | | A `bussard capture` database to extend `knx_recent_telegrams` history beyond the in-memory ring. |
 | `--keyring <FILE>` | `connection.keyring` | ETS keyring export (`.knxkeys`) for KNX Data Secure management: `knx_describe_device` and `knx_plan_device` wrap their session with the target's tool key, as `bussard describe --keyring` and `bussard plan --keyring` do. Both read a device the keyring does not list in the clear, through the secure tunnel the keyring opens, unless the model marks it `security.activated` (then they refuse, issue #189); `knx_apply_device` refuses a device the keyring lists, since that write also reprograms the security object (use `bussard apply --keyring`). Its group keys also secure `knx_read_group` and `knx_write_group` on a secured GA (issue #172; the results carry `secured`), and decrypt secured telegrams re-decoded from `--capture`; a secured GA without a key is refused. The password comes from `BUSSARD_KEYRING_PASSWORD`. |
 
@@ -924,7 +926,7 @@ connection:
 | `connection.multicast` | string, optional | Multicast `addr:port` for routing; defaults to `224.0.23.12:3671`. |
 | `connection.keyring` | path, optional | The ETS `.knxkeys` keyring every bus command uses when `--keyring` is not given: for the [KNXnet/IP Secure tunnel](#knxnetip-secure-tunnelling), the tool keys of the devices it lists, and the group keys. A relative path is resolved against the model directory. `--keyring` overrides it. The password comes from `BUSSARD_KEYRING_PASSWORD`. Keep the keyring file itself out of git. |
 
-An optional `lint:` block turns on the topology and convention rules (`L001`-`L008` in [the diagnostics table](#validation-diagnostics)). Without it nothing extra is reported, so adding the feature cannot change an existing project. `bussard scaffold` writes the block for you.
+An optional `lint:` block turns on the topology and convention rules (`L001`-`L008` in [the diagnostics table](#validation-diagnostics)). Without it nothing extra is reported, so adding the feature cannot change an existing project. `bussard groups reserve` writes the block for you.
 
 ```yaml
 lint:
@@ -1189,9 +1191,9 @@ CREATE INDEX idx_telegrams_dest_ts ON telegrams (destination, ts_utc);
 | Read (default) | none | May send GroupValueReads, rate-limited. |
 | Write | `--allow-writes` | Adds `knx_write_group` and `knx_run_tests`. |
 | Programming | `--allow-programming` | Adds `knx_plan_device` and `knx_apply_device`, which write one device's link tables after a plan the human approved. Needs a loopback gateway or the real-gateway opt-in. Independent of `--allow-writes`; not available with `--passive`. |
-| No model edits | `--no-model-edits` | Withholds the six model-edit tools and `knx_scaffold_groups`. Orthogonal to the tiers above: they write YAML files, never the bus, so they are registered in every tier by default. |
+| No model edits | `--no-model-edits` | Withholds the six model-edit tools, `knx_scaffold_groups` and `knx_reserve_groups`. Orthogonal to the tiers above: they write the model's TOML files, never the bus, so they are registered in every tier by default. |
 
-The model tools (`knx_describe_change`, `knx_history`, the six that edit, and `knx_scaffold_groups`) touch files under the model directory and nothing else. `knx_export_bundle` and `knx_diff_project` only read the model (the export writes one bundle file) and are registered in every tier, `--no-model-edits` included. Every edit snapshots the model first, validates after, and returns the change as sentences for the caller to quote to the human. Nothing reaches a device until a human runs `bussard plan` and `bussard apply`, or approves a plan in the conversation on a server started with `--allow-programming`.
+The model tools (`knx_describe_change`, `knx_history`, the six that edit, `knx_scaffold_groups` and `knx_reserve_groups`) touch files under the model directory and nothing else. `knx_export_bundle` and `knx_diff_project` only read the model (the export writes one bundle file) and are registered in every tier, `--no-model-edits` included. Every edit snapshots the model first, validates after, and returns the change as sentences for the caller to quote to the human. Nothing reaches a device until a human runs `bussard plan` and `bussard apply`, or approves a plan in the conversation on a server started with `--allow-programming`.
 
 Tool counts: 20 in `--passive`, 22 by default, 24 with `--allow-writes`. `--no-model-edits` takes seven away from each (13, 15 and 17). `--allow-programming` adds two to any non-passive tier.
 
@@ -1209,7 +1211,8 @@ Bus operations share one rate limiter (minimum 250 ms between operations, at mos
 | `knx_wait_for_telegram` | `timeout_seconds` (max 300), `ga`, `source` (optional) | Blocks until a matching telegram arrives or the timeout elapses. A timeout is a normal result, not an error. Enables "press the button now" debugging. |
 | `knx_validate` | none | Every diagnostic (code, severity, message, location) plus counts. |
 | `knx_audit` | `live` (default false), `window_seconds` (default 30, max 3600) | The `bussard audit --json` object. The server's `--keyring` (password in `BUSSARD_KEYRING_PASSWORD` of the server's environment) fills the static keyring check. With `live: true` it adds the gateway description with tunnel slots, a traffic sample taken from the server's telegram buffer, and `live.secure`: the model's Data Secure devices probed as `bussard audit --live` probes them, with the same fields. `live.scan` is `null` (line scans are CLI-only). `live: true` is refused in `--passive` mode; the static audit is always available. |
-| `knx_scaffold_groups` | `plan` (JSON `{rooms: [{floor, room, functions}]}`), `scheme` (optional) | Writes `groups.yaml` from a room and function list, returns the addresses added and the model's validation counts. Confirm the room list with the human first. |
+| `knx_scaffold_groups` | `plan` (JSON `{rooms: [{floor, room, functions}]}`), `scheme` (optional) | Writes `groups.toml` from a room and function list, returns the addresses added and the model's validation counts. Confirm the room list with the human first. |
+| `knx_reserve_groups` | `room` (`"<Floor> <Room>"`), `functions` | The same for one room, as `bussard groups reserve` does it, under the project's scheme. |
 | `knx_read_group` | `ga` | Transmits a GroupValueRead and returns the decoded response. Omitted in `--passive` mode. |
 | `knx_describe_device` | `address` | Introspects a device: enumerates its interface objects and each property's description (PID, type, element count, access levels). Read-only on the bus. With `--keyring`, a KNX Data Secure device is addressed with its tool key. Omitted in `--passive` mode. |
 | `knx_infer_group` | `ga`, `payload_hex` (optional) | What the traffic on a GA says it is: ranked DPT candidates (`dpt`, `confidence` of `low`/`medium`/`high`, `reason`), the sender (address, name, location), its channel and com object (index, name, declared DPT, flags), the GA's current model entry, a proposed name, and a `next_step` telling the assistant to confirm with the human before calling `knx_set_group` and `knx_add_link`. Uses every telegram seen on the GA, or `payload_hex` when given. Reads only; also registered in `--passive`. |

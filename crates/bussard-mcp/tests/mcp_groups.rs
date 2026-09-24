@@ -100,3 +100,45 @@ async fn test_knx_scaffold_groups_writes_the_plan() -> Result<(), Box<dyn Error>
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
+
+#[tokio::test]
+async fn test_knx_reserve_groups_appends_one_room() -> Result<(), Box<dyn Error>> {
+    let dir = model_dir()?.join("reserve");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(
+        dir.join("bussard.toml"),
+        "[connection]\ntransport = \"tunnel\"\ngateway = \"127.0.0.1:3671\"\n",
+    )?;
+    let server = server_over(&dir)?;
+    let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+    let server_task = tokio::spawn(async move {
+        if let Ok(running) = server.serve(server_io).await {
+            let _ = running.waiting().await;
+        }
+    });
+    let client = ().serve(client_io).await?;
+
+    let serde_json::Value::Object(args) =
+        serde_json::json!({"room": "EG Küche", "functions": ["light"]})
+    else {
+        panic!("arguments must be an object");
+    };
+    let res = client
+        .call_tool(CallToolRequestParams::new("knx_reserve_groups").with_arguments(args))
+        .await?;
+    let Some(structured) = res.structured_content else {
+        panic!("the tool must return structured content");
+    };
+    assert_eq!(structured["added_count"], 2, "{structured}");
+    assert_eq!(structured["added"][0]["address"], "1/1/0", "{structured}");
+    assert_eq!(
+        structured["added"][0]["name"], "EG Küche Light Switch",
+        "{structured}"
+    );
+    assert_eq!(structured["scheme"], "floor-trade-block", "{structured}");
+
+    client.cancel().await?;
+    server_task.abort();
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}

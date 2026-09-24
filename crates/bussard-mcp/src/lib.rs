@@ -24,7 +24,8 @@
 //! | `knx_wait_for_telegram` | Block for the next matching telegram ("press the button now"). |
 //! | `knx_validate` | Model validation diagnostics as JSON. |
 //! | `knx_audit` | Installation audit: model gaps, one-sided links, mask capabilities, Secure devices; with `live`, tunnel slots and a traffic sample (live refused in `--passive`). |
-//! | `knx_scaffold_groups` | Draft or extend `groups.toml` from a room and function list. |
+//! | `knx_scaffold_groups` | Draft or extend `groups.toml` from a room and function list (JSON). |
+//! | `knx_reserve_groups` | Reserve the conventional addresses for one room in `groups.toml`. |
 //! | `knx_read_group` | Send a GroupValueRead and return the value (omitted in `--passive`). |
 //! | `knx_describe_device` | Introspect a device: enumerate its interface objects and each property's description (omitted in `--passive`). |
 //! | `knx_infer_group` | Infer a GA's DPT and a proposed name from the traffic seen on it (issue #95). |
@@ -45,7 +46,8 @@
 //! The eight from `knx_describe_change` to `knx_undo` are model tools: they
 //! read and write the model files (TOML) under the model directory and never touch the bus,
 //! so they are available in every tier including `--passive`. The six that
-//! edit, and `knx_scaffold_groups`, which writes `groups.toml`, are withheld by
+//! edit, and `knx_scaffold_groups` and `knx_reserve_groups`, which write
+//! `groups.toml`, are withheld by
 //! `--no-model-edits`. Every edit snapshots first, validates after, and returns
 //! the change as sentences for the caller to quote to the human. The last two
 //! only read the model (the export writes one file outside it) and are
@@ -59,9 +61,9 @@
 //! started with `--allow-writes` (which conflicts with `--passive`); both write
 //! to the physical bus, and both hard-refuse `protected` GAs.
 //!
-//! Tool counts per tier: `--passive` 20, default 22, `--allow-writes` 24. With
-//! `--no-model-edits` the seven model-edit tools (the six above plus
-//! `knx_scaffold_groups`) are withheld, giving 13, 15 and 17.
+//! Tool counts per tier: `--passive` 21, default 23, `--allow-writes` 25. With
+//! `--no-model-edits` the eight model-edit tools (the six above plus the two
+//! reservation tools) are withheld, giving 13, 15 and 17.
 //!
 //! `--allow-programming` (issue #118) adds the two programming tools
 //! ([`tools_program::PROGRAMMING_TOOLS`]) to any non-passive tier. They write
@@ -265,19 +267,19 @@ pub async fn run(config: &McpConfig) -> anyhow::Result<()> {
 
 /// The set of tool names exposed, in registration order. Used by tests and docs.
 ///
-/// - passive mode: 20 tools (no bus-touching tools: no `knx_read_group`, no
+/// - passive mode: 21 tools (no bus-touching tools: no `knx_read_group`, no
 ///   `knx_describe_device`, no `knx_write_group`, no `knx_run_tests`).
 ///   `knx_infer_group` is there: it only reads the telegram ring. `knx_audit`
 ///   is there too, but refuses `live: true`.
-/// - default mode: 22 tools (adds `knx_read_group` and `knx_describe_device`).
-/// - `--allow-writes`: 24 tools (adds `knx_write_group` and `knx_run_tests`).
-/// - `--no-model-edits` removes the seven model-edit tools
-///   ([`tools_model::MODEL_EDIT_TOOLS`], including `knx_scaffold_groups`) from
+/// - default mode: 23 tools (adds `knx_read_group` and `knx_describe_device`).
+/// - `--allow-writes`: 25 tools (adds `knx_write_group` and `knx_run_tests`).
+/// - `--no-model-edits` removes the eight model-edit tools
+///   ([`tools_model::MODEL_EDIT_TOOLS`], including the two reservation tools) from
 ///   any of those (13, 15 and 17 tools).
 ///
 /// The two model/history read tools (`knx_describe_change`, `knx_history`),
 /// the two bundle/diff tools (`knx_export_bundle`, `knx_diff_project`) and the
-/// seven model-edit tools touch files only, so they are present in every tier
+/// eight model-edit tools touch files only, so they are present in every tier
 /// including `--passive`.
 pub fn tool_names(passive: bool, allow_writes: bool, no_model_edits: bool) -> Vec<&'static str> {
     tool_names_for(passive, allow_writes, no_model_edits, false)

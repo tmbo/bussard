@@ -127,10 +127,11 @@ pub struct UndoArgs {
 /// The names of the tools that edit the model, removed from the router when the
 /// server is started with `--no-model-edits`.
 ///
-/// `knx_scaffold_groups` lives on the group-planning router but writes
-/// `groups.toml`, so it is withheld with the others.
-pub const MODEL_EDIT_TOOLS: [&str; 7] = [
+/// `knx_scaffold_groups` and `knx_reserve_groups` live on the group-planning
+/// router but write `groups.toml`, so they are withheld with the others.
+pub const MODEL_EDIT_TOOLS: [&str; 8] = [
     "knx_scaffold_groups",
+    "knx_reserve_groups",
     "knx_set_group",
     "knx_add_link",
     "knx_remove_link",
@@ -336,7 +337,9 @@ impl BussardMcp {
     #[tool(
         description = "Bind a device's com object to a group address in its device file (devices/<address>.toml): role \"send\" \
         makes the com object transmit on that GA (a com object has at most one, so an existing one \
-        is replaced), role \"listen\" makes it react to the GA. This edits FILES ONLY — the device \
+        is replaced), role \"listen\" makes it react to the GA. A GA that groups.toml does not \
+        define yet is added there, named `<channel or device name> <object function>` with the \
+        object's DPT, and reported in groups_declared. This edits FILES ONLY — the device \
         keeps its current wiring until a human runs `bussard plan <ia>` and `bussard apply <ia>`. \
         Protected group addresses are refused outright. Returns the change as sentences: quote \
         them to the human before she confirms."
@@ -664,6 +667,13 @@ impl BussardMcp {
         if let Err(reason) = apply(&mut edited) {
             return refusal(reason);
         }
+        // A group address the edit links but groups.toml does not define is
+        // declared there, named after the object that uses it first; the
+        // change set below reports it with the rest.
+        let declared: Vec<String> = bussard_model::declare_used_groups(&mut edited)
+            .iter()
+            .map(|d| d.sentence())
+            .collect();
         let changes = describe(&before, &edited);
         if changes.is_empty() {
             return ok(json!({
@@ -699,6 +709,7 @@ impl BussardMcp {
             "changes": sentences(&changes),
             "detail": changes.changes,
             "touches_protected": changes.touches_protected(),
+            "groups_declared": declared,
             "validation": validation_json(&diagnostics),
             "next_step": "Nothing has reached any device. A human runs `bussard plan <ia>` and \
                           `bussard apply <ia>` to push this to the bus.",

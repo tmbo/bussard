@@ -331,3 +331,39 @@ async fn test_set_parameter_refuses_without_a_product_model() -> TestResult {
     std::fs::remove_dir_all(&dir)?;
     Ok(())
 }
+
+/// A GA that `groups.toml` does not define is declared there by the edit that
+/// first links it, named after the channel and the object, and reported.
+#[tokio::test]
+async fn test_add_link_declares_an_undefined_group_address() -> TestResult {
+    let dir = model_dir("declare")?;
+    let (client, task) = connect(server_over(&dir)?).await?;
+
+    let res = call(
+        &client,
+        "knx_add_link",
+        json!({"device": "1.1.4", "com_object": 12, "ga": "0/0/9", "role": "send"}),
+    )
+    .await;
+    assert_eq!(res["ok"], true, "{res}");
+    assert_eq!(
+        res["groups_declared"][0],
+        "added 0/0/9 \"B object 12\" to groups.toml, first used by 1.1.4 object 12",
+        "{res}"
+    );
+    let saved = Model::load(&dir)?;
+    let ga: bussard_model::GroupAddress = "0/0/9".parse()?;
+    assert_eq!(saved.groups.groups[&ga].name, "B object 12");
+    // The declared address is part of the change the human is shown.
+    assert!(
+        res["changes"].as_array().is_some_and(|c| c
+            .iter()
+            .any(|s| s.as_str().is_some_and(|s| s.contains("0/0/9")))),
+        "{res}"
+    );
+
+    client.cancel().await?;
+    task.abort();
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}

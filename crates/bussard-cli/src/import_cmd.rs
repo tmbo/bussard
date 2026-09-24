@@ -98,7 +98,7 @@ pub(crate) fn write_model(
     // A re-import is any target that already holds a loadable model.
     let existing = load_existing_model(dir);
 
-    let (to_save, merge_report) = match existing {
+    let (mut to_save, merge_report) = match existing {
         Some(mut ours) => {
             bussard_model::normalize_spellings(&mut ours, &model);
             let (mut merged, report) = bussard_model::merge(&ours, &model);
@@ -114,6 +114,10 @@ pub(crate) fn write_model(
         }
         None => (model, None),
     };
+
+    // A group address a device file uses but the plan does not define is
+    // declared in groups.toml, named after the object that uses it first.
+    let declared = bussard_model::declare_used_groups(&mut to_save);
 
     // An import that changes nothing leaves the files alone, so hand-written
     // comments and formatting survive a no-op re-import.
@@ -136,6 +140,9 @@ pub(crate) fn write_model(
         to_save.links.links.values().map(Vec::len).sum::<usize>(),
         dir.display()
     );
+    for d in &declared {
+        println!("{}", d.sentence());
+    }
     if !report.renamed.is_empty() {
         println!("renamed {} device file(s)", report.renamed.len());
     }

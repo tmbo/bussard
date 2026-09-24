@@ -374,7 +374,7 @@ fn run_line(
     let (area, line_no) = parse_line(line)?;
     let line = format!("{area}.{line_no}");
 
-    let Some(model) = load_model_required(dir)? else {
+    let Some(mut model) = load_model_required(dir)? else {
         bail!(
             "`bussard {} --line` needs the model (devices/<address>.toml) to know which \
              devices are on the line; none was loaded from {}",
@@ -386,6 +386,9 @@ fn run_line(
     if mode == Mode::Apply {
         // Safety envelope (issue #74): the same gate every write goes through.
         enforce_write_gate(&config, options.allow_remote_gateway)?;
+        // A group address a device file uses first is declared in groups.toml.
+        crate::history_cmd::capture_external_edit(dir);
+        crate::groups_cmd::declare_used(dir, &mut model, "apply --line", options.json)?;
     }
     let gateway = gateway_display(&config);
     // Applying writes the devices' tables; the other modes only read.

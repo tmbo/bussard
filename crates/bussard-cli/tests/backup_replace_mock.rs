@@ -824,3 +824,27 @@ fn test_replace_no_flash_restores_the_pre_failure_tables() -> TestResult {
     );
     Ok(())
 }
+
+/// `apply` declares a group address the device file uses but `groups.toml`
+/// does not define (named after the device and the object), and a device whose
+/// tables already match the model is not written at all.
+#[test]
+fn test_apply_declares_used_groups_and_writes_nothing_when_the_device_matches() -> TestResult {
+    let bench = Bench::start("apply-declare", vec![model_tables_device("1.1.4")])?;
+    write_model(&bench.model(), &[])?;
+
+    let out = bench.bussard(&["apply", "1.1.4", "--yes"])?;
+    let (stdout, stderr) = text(&out);
+    assert!(out.status.success(), "apply failed:\n{stdout}\n{stderr}");
+    assert!(
+        stdout.contains(
+            "added 1/2/0 \"Rollladen Wohnzimmer object 20\" to groups.toml, first used by \
+             1.1.4 object 20"
+        ),
+        "stdout:\n{stdout}"
+    );
+    let groups = std::fs::read_to_string(bench.model().join("groups.toml"))?;
+    assert!(groups.contains("\"1/2/1\""), "{groups}");
+    assert_eq!(bench.total_writes(), 0, "a matching device is not written");
+    Ok(())
+}
