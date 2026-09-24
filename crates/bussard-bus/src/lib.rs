@@ -230,11 +230,14 @@ struct Shared {
 impl Shared {
     fn set_state(&self, state: BusState) {
         self.state.store(state.as_u8(), Ordering::Relaxed);
-        // Wake any `wait_connected`/`state_changes` waiters. `send` never fails
-        // here: `Shared` owns the sender for its whole lifetime, so a receiver
-        // can always be borrowed from it, and `send` errors only when all
-        // receivers are gone.
-        let _ = self.state_tx.send(state);
+        // Store the state in the watch and wake any `wait_connected` /
+        // `state_changes` waiters. This MUST be `send_replace`, not `send`:
+        // `watch::Sender::send` drops the value without storing it when no
+        // receiver exists, and nothing holds a receiver until the first waiter
+        // subscribes. A tunnel that connected before that first waiter then left
+        // the watch at `Connecting`, and every later waiter sat out its full
+        // timeout (issue #207).
+        self.state_tx.send_replace(state);
     }
 
     fn state(&self) -> BusState {
@@ -441,7 +444,13 @@ impl BusHandle {
         let mut rx = self.shared.state_tx.subscribe();
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
-            match *rx.borrow_and_update() {
+            // Mark the watch value seen first, then check the current state
+            // (the atomic, which `Shared::set_state` writes before the watch)
+            // before awaiting a change. A state that is already `Connected`
+            // returns at once (issue #207); a transition after the mark still
+            // wakes `changed()` below.
+            rx.borrow_and_update();
+            match self.shared.state() {
                 BusState::Connected => return true,
                 BusState::Closed => return false,
                 _ => {}

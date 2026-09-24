@@ -53,8 +53,9 @@ impl CancelToken {
     /// Signals cancellation. The stream loop stops and the bus is closed cleanly
     /// before it returns `Ok(())`.
     pub fn cancel(&self) {
-        // Ignore the error if all watchers are gone: nothing to cancel.
-        let _ = self.tx.send(true);
+        // `send_replace` stores the flag even when no watcher is currently
+        // subscribed (plain `send` would drop it; see issue #207).
+        self.tx.send_replace(true);
     }
 }
 

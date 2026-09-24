@@ -373,3 +373,109 @@ async fn test_secure_only_interface_stops_the_actor_with_a_fatal_error() -> Test
     assert_eq!(gw.stats()?.plain_refusals, 1, "no retry");
     Ok(())
 }
+
+/// Waits (by polling the atomic status, never subscribing to the watch) until
+/// the handle reports `want`, up to ~5 s.
+async fn poll_status(handle: &bussard_bus::BusHandle, want: BusState) -> TestResult {
+    for _ in 0..500 {
+        if handle.status() == want {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    Err(format!("actor never reached {}", want.tag()).into())
+}
+
+/// Issue #207: the tunnel connects before any `wait_connected` or
+/// `state_changes` subscriber exists. The watch must still hold `Connected`,
+/// and a later `wait_connected` must return at once instead of sitting out its
+/// timeout.
+#[tokio::test]
+async fn test_wait_connected_returns_immediately_when_connected_before_first_waiter() -> TestResult
+{
+    let gw = start_mock(AckPolicy::Ack).await?;
+    let (handle, _task) = Bus::connect(ConnectionConfig::tunnel(gw.addr()));
+
+    // No watch receiver exists while the actor connects.
+    poll_status(&handle, BusState::Connected).await?;
+
+    assert_eq!(
+        *handle.state_changes().borrow(),
+        BusState::Connected,
+        "the watch stores the transition even with no receiver"
+    );
+    let started = std::time::Instant::now();
+    let connected = handle.wait_connected(Duration::from_secs(10)).await;
+    let elapsed = started.elapsed();
+    assert!(connected, "wait_connected returns true once connected");
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "wait_connected must not wait for a change that already happened: {elapsed:?}"
+    );
+
+    let _ = handle.close().await;
+    let _ = gw.finish(FINISH).await;
+    Ok(())
+}
+
+/// Issue #207: a `Reconnecting` transition published while no receiver exists
+/// must be stored too, so a later subscriber sees it and `wait_connected` does
+/// not report a stale `Connected`.
+#[tokio::test]
+async fn test_state_changes_stores_reconnecting_without_a_receiver() -> TestResult {
+    let gw = MockGateway::builder()
+        .channel(CHANNEL)
+        .outage(1, Duration::from_millis(2500))
+        .keep_serving()
+        .start()
+        .await?;
+    let reconnect = TunnelReconnect {
+        budget: Duration::from_secs(15),
+        initial_backoff: Duration::from_millis(100),
+        max_backoff: Duration::from_millis(200),
+        attempt_timeout: Duration::from_millis(300),
+        ..TunnelReconnect::default()
+    };
+    let (handle, _task) =
+        Bus::connect(ConnectionConfig::tunnel(gw.addr()).with_reconnect(reconnect));
+
+    // Observe Connected through one receiver, then drop it so the Reconnecting
+    // transition happens with no receiver alive.
+    assert!(handle.wait_connected(Duration::from_secs(5)).await);
+    assert_eq!(*handle.state_changes().borrow(), BusState::Connected);
+
+    let frame = |v: u8| -> TestResult<CemiFrame> {
+        Ok(CemiFrame::group_write_packed(
+            ga("3/0/4")?,
+            ia("1.1.255")?,
+            &[v],
+        ))
+    };
+    handle.send(frame(1)?).await?;
+    // The second send hits the outage and drives the tunnel into re-establish.
+    let sender = handle.clone();
+    let pending = tokio::spawn(async move {
+        let receipt: TestResult<bussard_bus::SendReceipt> = Ok(sender.send(frame(0)?).await?);
+        receipt
+    });
+
+    poll_status(&handle, BusState::Reconnecting).await?;
+    assert_eq!(
+        *handle.state_changes().borrow(),
+        BusState::Reconnecting,
+        "the watch stores Reconnecting even with no receiver"
+    );
+    assert!(
+        !handle.wait_connected(Duration::from_millis(50)).await,
+        "wait_connected must not report a stale Connected while reconnecting"
+    );
+
+    // Once the tunnel is back, a fresh waiter sees Connected.
+    assert!(handle.wait_connected(Duration::from_secs(12)).await);
+    let receipt: TestResult<bussard_bus::SendReceipt> =
+        tokio::time::timeout(Duration::from_secs(12), pending).await??;
+    receipt?;
+
+    let _ = handle.close().await;
+    Ok(())
+}
