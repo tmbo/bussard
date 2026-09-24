@@ -333,6 +333,10 @@ fn overlay_device(
                 }
                 // Hand-authored name wins, in the channel set theirs defines.
                 their_ch.name = our_ch.name.clone();
+                // A handle the lock assigned survives until the import derives one.
+                if their_ch.key.is_none() {
+                    their_ch.key = our_ch.key.clone();
+                }
             }
             None => report.notes.push(format!(
                 "{path}: channel `{key}` ({}) is gone from the project and was dropped",
@@ -350,6 +354,37 @@ fn overlay_device(
     // a re-import from ETS knows nothing about it, so keeping ours is the only
     // way the record survives (issue #98).
     theirs.replaced = ours.replaced.clone();
+
+    // The `application` override is the user's (device file); the lock pins
+    // the fresh import's program underneath it.
+    if let Some(app) = &ours.application_override {
+        theirs.lock.application = theirs
+            .product
+            .as_ref()
+            .and_then(|p| p.application_ref.clone());
+        theirs.application_override = Some(app.clone());
+        if let Some(p) = theirs.product.as_mut() {
+            p.application_ref = Some(app.clone());
+        }
+    }
+    // Keys the lock assigned (objects, parameters) survive a re-import that
+    // derives none.
+    for (number, co) in &mut theirs.com_objects {
+        if let Some(our_co) = ours.com_objects.get(number) {
+            if co.key.is_none() {
+                co.key = our_co.key.clone();
+            }
+            if co.text.is_none() {
+                co.text = our_co.text.clone();
+            }
+            if co.function.is_none() {
+                co.function = our_co.function.clone();
+            }
+        }
+    }
+    if theirs.lock.parameters.is_empty() {
+        theirs.lock.parameters = ours.lock.parameters.clone();
+    }
 
     // A com-object may name the channel it belongs to; after the merge that name
     // must resolve, or the model points at a channel that does not exist.

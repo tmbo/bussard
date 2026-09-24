@@ -653,3 +653,168 @@ fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), SaveError> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema::{Device, Group};
+
+    type R = Result<(), Box<dyn std::error::Error>>;
+
+    fn tmp_dir(tag: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let dir = std::env::temp_dir().join(format!(
+            "bussard-loader-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        Ok(dir)
+    }
+
+    /// A tiny one-device model.
+    fn small_model() -> Result<Model, Box<dyn std::error::Error>> {
+        let addr: IndividualAddress = "1.1.4".parse()?;
+        let mut groups = Groups::default();
+        groups.groups.insert(
+            "3/0/4".parse()?,
+            Group {
+                name: "Jalousie Wohnen".to_string(),
+                dpt: Some("1.008".parse()?),
+                ..Default::default()
+            },
+        );
+        let device = Device {
+            address: addr,
+            name: "Jalousieaktor Wohnen".to_string(),
+            description: None,
+            location: None,
+            replaced: None,
+            product: None,
+            channels: BTreeMap::new(),
+            parameters: BTreeMap::new(),
+            module_bases: BTreeMap::new(),
+            com_objects: BTreeMap::new(),
+            security: None,
+            application_override: None,
+            lock: Default::default(),
+        };
+        let mut devices = BTreeMap::new();
+        devices.insert(
+            addr,
+            LoadedDevice {
+                device,
+                file_stem: addr.to_string(),
+            },
+        );
+        Ok(Model {
+            config: BussardConfig::default(),
+            groups,
+            links: Links::default(),
+            devices,
+        })
+    }
+
+    #[test]
+    fn save_then_load_roundtrips() -> R {
+        let dir = tmp_dir("roundtrip")?;
+        let model = small_model()?;
+        model.save(&dir)?;
+        assert_eq!(Model::load(&dir)?, model);
+        let first = fs::read_to_string(dir.join(GROUPS_FILE))?;
+        model.save(&dir)?;
+        assert_eq!(first, fs::read_to_string(dir.join(GROUPS_FILE))?);
+        // Nothing generated, so no lock is written.
+        assert!(!dir.join(LOCK_FILE).exists());
+        fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn save_creates_bussard_toml_when_absent() -> R {
+        let dir = tmp_dir("config-fresh")?;
+        small_model()?.save(&dir)?;
+        let text = fs::read_to_string(dir.join(CONFIG_FILE))?;
+        assert!(text.starts_with("# bussard.toml"), "{text}");
+        assert!(text.contains("[connection]"), "{text}");
+        fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn save_leaves_existing_bussard_toml_byte_untouched() -> R {
+        let dir = tmp_dir("config-owned")?;
+        fs::create_dir_all(&dir)?;
+        let hand = "# mine\n[connection]\ntransport = \"tunnel\"\ngateway = \"10.0.0.9:3671\"\n";
+        fs::write(dir.join(CONFIG_FILE), hand)?;
+        small_model()?.save_pruning(&dir)?;
+        assert_eq!(fs::read_to_string(dir.join(CONFIG_FILE))?, hand);
+        fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn save_pruning_removes_stale_and_renamed_files() -> R {
+        let dir = tmp_dir("prune")?;
+        let mut model = small_model()?;
+        fs::create_dir_all(dir.join(DEVICES_DIR))?;
+        // An old slug-named file for the same address is a rename.
+        fs::write(
+            dir.join("devices/1.1.4-old.toml"),
+            "address = \"1.1.9\"\nname = \"x\"\n",
+        )?;
+        let report = model.save_pruning(&dir)?;
+        assert_eq!(
+            report.renamed,
+            vec![("1.1.4-old.toml".to_string(), "1.1.4.toml".to_string())]
+        );
+        assert_eq!(list_device_files(&dir.join(DEVICES_DIR)), vec!["1.1.4.toml"]);
+        model.devices.clear();
+        let report = model.save_pruning(&dir)?;
+        assert_eq!(report.pruned, vec!["1.1.4.toml"]);
+        assert!(list_device_files(&dir.join(DEVICES_DIR)).is_empty());
+        fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn orphan_links_are_refused() -> R {
+        let mut model = small_model()?;
+        model.links.links.insert(
+            "1.1.99".parse()?,
+            vec![Link {
+                object: 1,
+                name: None,
+                send: None,
+                listen: vec![],
+            }],
+        );
+        assert!(matches!(
+            model.to_texts(),
+            Err(SaveError::OrphanLinks { .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn atomic_write_failure_leaves_original_intact() -> R {
+        let dir = tmp_dir("atomic")?;
+        fs::create_dir_all(&dir)?;
+        let target = dir.join(GROUPS_FILE);
+        fs::write(&target, "groups = []\n")?;
+        let doomed = dir.join("missing").join(GROUPS_FILE);
+        let err = atomic_write(&doomed, b"new");
+        assert!(matches!(err, Err(SaveError::TempWrite { .. })), "{err:?}");
+        assert_eq!(fs::read_to_string(&target)?, "groups = []\n");
+        let stray: Vec<_> = fs::read_dir(&dir)?
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(stray.is_empty());
+        atomic_write(&target, b"short")?;
+        assert_eq!(fs::read_to_string(&target)?, "short");
+        fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+}

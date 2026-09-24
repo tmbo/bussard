@@ -176,18 +176,19 @@ fn check_device(
     if lock.is_none() {
         let first = entries
             .channels
-            .first()
-            .and_then(|(_, _, s)| s.clone())
-            .or_else(|| {
+            .iter()
+            .filter_map(|(_, _, s)| s.clone())
+            .chain(
                 entries
                     .entries
                     .iter()
-                    .find(|e| match &e.value {
+                    .filter(|e| match &e.value {
                         EntryValue::Param(_) => true,
                         EntryValue::Object { .. } => e.key.parse::<u16>().is_err(),
                     })
-                    .and_then(|e| e.span.clone())
-            });
+                    .filter_map(|e| e.span.clone()),
+            )
+            .min_by_key(|s| s.start);
         if let Some(span) = first {
             diags.push(Diagnostic::new(
                 "E021",

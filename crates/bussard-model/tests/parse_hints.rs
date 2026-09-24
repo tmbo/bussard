@@ -497,7 +497,12 @@ fn test_hint_bare_word_value() {
     let (file, input) = case("bare_word_value");
     assert_eq!(
         render(file, input),
-        r##"TOML parse error in bussard
+        r##"TOML parse error in bussard.toml at line 2, column 13
+  |
+2 | transport = tunnel
+  |             ^^^^^^
+invalid boolean, expected `true`
+help: write `transport = "tunnel"`
 "##
     );
 }
