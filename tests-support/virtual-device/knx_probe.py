@@ -15,16 +15,15 @@ It reports three facts that scope any ladder failure precisely:
   3. Whether the device answers the BROADCAST A_IndividualAddress_Read that
      `bussard assign` relies on for programming-mode discovery (rung a).
 
-# The interop wall this documents
+# What this found
 
 The pinned thelsing commit defaults the device individual address to 0xFFFF, so
 its demo's `main.cpp` guard `if (individualAddress()==0) knx.progMode(true)`
-never fires: a factory-fresh device is NOT in programming mode. Even after we set
-PID_PROG_MODE=1 over a connection (confirmed by reading it back as 0x01), the
-device still does not answer the broadcast A_IndividualAddress_Read over routing.
-So `bussard assign`'s prog-mode discovery finds nothing. This is a property of
-thelsing's stack over IP routing, not a bussard bug and not a networking issue
-(the connection-oriented path to 15.15.255 works fine on the same socket).
+never fires: a factory-fresh device is NOT in programming mode and ignores the
+broadcast read (fact 3a). After PID_PROG_MODE=1 over a connection it should
+answer (fact 3b); the ladder test presses the "button" the same way before
+`bussard assign`. An earlier version of this probe encoded the read's APCI
+octets backwards and so reported a false "no reply" for 3b.
 
 Exit status is always 0: this is a diagnostic, not a gate.
 """
@@ -60,8 +59,11 @@ def wrap(cemi_body):
 def read_cemi(ctrl1):
     """A_IndividualAddress_Read broadcast (dst 0/0/0), src 0.0.255."""
     # msg L_Data.req 0x11, ai_len 0, ctrl1, ctrl2 0xE0 (group dst, hop 6),
-    # src 0x00FF, dst 0x0000, npdu_len 1, TPDU 0x00 0x01 (APCI 0x0100).
-    return bytes([0x11, 0x00, ctrl1, 0xE0, 0x00, 0xFF, 0x00, 0x00, 0x01, 0x00, 0x01])
+    # src 0x00FF, dst 0x0000, npdu_len 1, TPDU 0x01 0x00 (APCI 0x0100: the
+    # top two APCI bits sit in the TPCI octet). An earlier version sent 0x00
+    # 0x01, which the device decodes as A_GroupValue_Read and ignores
+    # ("Broadcast-indication: unhandled APDU-Type: 0").
+    return bytes([0x11, 0x00, ctrl1, 0xE0, 0x00, 0xFF, 0x00, 0x00, 0x01, 0x01, 0x00])
 
 
 def co_frame(tpdu):

@@ -39,8 +39,11 @@
 //!
 //! Consequences, rung by rung:
 //!   (a) programming-mode discovery — WORKS. A fresh device (no flash.bin) boots
-//!       unconfigured and auto-enters prog mode; `assign`'s broadcast read finds
-//!       it.
+//!       unconfigured at 15.15.255 and does NOT enter prog mode by itself, so
+//!       the harness presses its programming button first (a raw
+//!       `PID_PROG_MODE = 1` write to 15.15.255, see
+//!       `VirtualDevice::press_programming_button`); `assign`'s broadcast read
+//!       then finds it.
 //!   (b) assign — WORKS. `A_IndividualAddress_Write` lands, and the post-write
 //!       descriptor read verifies (the device answers `57B0`).
 //!   (c) scan — WORKS. It reports the device with mask `57B0`, classified
@@ -230,6 +233,84 @@ impl VirtualDevice {
     }
 }
 
+/// KNXnet/IP routing multicast group and port the device listens on.
+const ROUTING_GROUP: (&str, u16) = ("224.0.23.12", 3671);
+
+/// Wraps a cEMI body in a KNXnet/IP `ROUTING_INDICATION` (0x0530).
+fn routing_indication(cemi: &[u8]) -> Vec<u8> {
+    let total = u16::try_from(6 + cemi.len()).unwrap_or(u16::MAX);
+    let mut f = vec![0x06, 0x10, 0x05, 0x30];
+    f.extend_from_slice(&total.to_be_bytes());
+    f.extend_from_slice(cemi);
+    f
+}
+
+/// A point-to-point `L_Data.req` from 0.0.255 to 15.15.255 (the factory
+/// address of the fresh device) carrying `tpdu` (TPCI byte first).
+fn to_factory_address(tpdu: &[u8]) -> Vec<u8> {
+    let npdu_len = u8::try_from(tpdu.len().saturating_sub(1)).unwrap_or(u8::MAX);
+    let mut cemi = vec![0x11, 0x00, 0xBC, 0x60, 0x00, 0xFF, 0xFF, 0xFF, npdu_len];
+    cemi.extend_from_slice(tpdu);
+    routing_indication(&cemi)
+}
+
+impl VirtualDevice {
+    /// Presses the device's programming button, then waits until the device
+    /// logs `progmode on`. Returns whether that was observed.
+    ///
+    /// A real installer presses a physical button before `bussard assign`.
+    /// thelsing's demo boots at 15.15.255 (its `DeviceObject` default), so its
+    /// `if (individualAddress() == 0) progMode(true)` guard never fires and a
+    /// fresh device is NOT in programming mode. The harness stands in for the
+    /// installer: it opens a transport connection to 15.15.255 over routing and
+    /// writes `PID_PROG_MODE` (device object 0, property 54) = 1, which is what
+    /// the button does. This is raw KNX on a plain UDP socket, deliberately
+    /// independent of bussard's own stack, so rung (a) still tests bussard's
+    /// discovery and not the harness.
+    fn press_programming_button(&self) -> bool {
+        let log_path = self._workdir.path().join("dev.log");
+        let progmode_on = || {
+            std::fs::read_to_string(&log_path)
+                .map(|s| s.contains("progmode on"))
+                .unwrap_or(false)
+        };
+        let Ok(tx) = std::net::UdpSocket::bind("0.0.0.0:0") else {
+            return false;
+        };
+        let _ = tx.set_multicast_ttl_v4(2);
+        // A_PropertyValue_Write, sequence 0: object 0, PID 54, count 1 /
+        // start 1, value 1. APCI 0x3D7 split across the TPCI and APCI octets.
+        let apci: u16 = 0x3D7;
+        let write = [
+            0x40 | ((apci >> 8) as u8 & 0x03),
+            (apci & 0xFF) as u8,
+            0x00,
+            54,
+            0x10,
+            0x01,
+            0x01,
+        ];
+        for _attempt in 0..3 {
+            let frames: [&[u8]; 4] = [&[0x80], &write, &[0xC2], &[0x81]];
+            // T_Connect, the write, T_ACK for the device's response (seq 0),
+            // T_Disconnect. Small gaps let the single-threaded device loop
+            // service each frame in order.
+            for tpdu in frames {
+                let _ = tx.send_to(&to_factory_address(tpdu), ROUTING_GROUP);
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_secs(2) {
+                if progmode_on() {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+        progmode_on()
+    }
+}
+
 impl Drop for VirtualDevice {
     fn drop(&mut self) {
         let _ = self.child.kill();
@@ -292,6 +373,16 @@ fn ladder_against_thelsing_knx_linux_ip() {
     // A short settle after the group join so the device's receive loop is
     // servicing the socket before the first broadcast read.
     std::thread::sleep(Duration::from_millis(1500));
+
+    // The fresh device boots at 15.15.255 and is not in programming mode;
+    // press its button the way an installer would before running assign.
+    if !device.press_programming_button() {
+        eprintln!(
+            "warning: the virtual device did not log `progmode on` after the \
+             PID_PROG_MODE write; continuing (assign will fail with the log below)"
+        );
+        device.dump_log();
+    }
 
     // --- Rung (a)+(b): assign finds the fresh device and writes its address ---
     // It internally does the programming-mode broadcast read (rung a) and then
