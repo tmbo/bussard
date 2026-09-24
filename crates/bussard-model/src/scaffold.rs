@@ -3,7 +3,7 @@
 //! An integrator's room book lists floors, rooms and the functions each room
 //! needs. The KNX guidelines describe how that becomes a group-address plan, but
 //! every integrator implements the mapping by hand. This module implements it:
-//! [`scaffold`] turns a [`Plan`] into `groups.yaml` entries with reserved blocks,
+//! [`scaffold`] turns a [`Plan`] into `groups.toml` entries with reserved blocks,
 //! conventional names and DPTs, under one of two addressing schemes.
 //!
 //! # The two schemes
@@ -61,7 +61,7 @@ pub enum Scheme {
 }
 
 impl Scheme {
-    /// The scheme's name as it appears in `bussard.yaml` (`floor-trade-block`).
+    /// The scheme's name as it appears in `bussard.toml` (`floor-trade-block`).
     pub fn as_str(self) -> &'static str {
         match self {
             Scheme::FloorTradeBlock => "floor-trade-block",
@@ -428,10 +428,20 @@ pub struct PlanRoom {
 }
 
 impl Plan {
-    /// Parses a plan from YAML (a JSON document parses too, YAML being a
-    /// superset), so the CLI and the MCP tool share one entry point.
-    pub fn from_yaml(text: &str) -> Result<Self, ScaffoldError> {
-        Ok(serde_norway::from_str(text)?)
+    /// Parses a plan from TOML, or from JSON when the text is a JSON object
+    /// (starts with `{`), so the CLI and the MCP tool share one entry point.
+    ///
+    /// ```toml
+    /// [[rooms]]
+    /// floor = "EG"
+    /// room = "Küche"
+    /// functions = ["light", "blind"]
+    /// ```
+    pub fn parse(text: &str) -> Result<Self, ScaffoldError> {
+        if text.trim_start().starts_with('{') {
+            return serde_json::from_str(text).map_err(|e| ScaffoldError::Plan(e.to_string()));
+        }
+        crate::toml_io::parse(Path::new("plan"), text).map_err(|e| ScaffoldError::Plan(e.rendered))
     }
 }
 
@@ -507,9 +517,9 @@ pub enum ScaffoldError {
     /// The merged plan could not be written.
     #[error(transparent)]
     Save(#[from] crate::loader::SaveError),
-    /// The plan file was not valid YAML/JSON.
-    #[error("the plan is not valid YAML: {0}")]
-    Plan(#[from] serde_norway::Error),
+    /// The plan file was not valid TOML/JSON.
+    #[error("the plan is not valid TOML or JSON: {0}")]
+    Plan(String),
     /// A file could not be read or written.
     #[error("{path}: {source}")]
     Io {
@@ -719,40 +729,52 @@ pub fn scaffold_file(
     Ok(report)
 }
 
-/// The `lint:` block that matches a scaffolded plan, as YAML text.
+/// The `[lint]` table that matches a scaffolded plan, as TOML text.
 ///
 /// Emitted with the trades the plan actually used, so the convention lints check
 /// exactly the blocks that exist.
-pub fn lint_config_yaml(scheme: Scheme, trades_used: &[&str]) -> String {
+pub fn lint_config_toml(scheme: Scheme, trades_used: &[&str]) -> String {
     let mut out = String::from(
         "\n# Lint rules for `bussard validate` (written by `bussard scaffold`).\n\
          # Topology limits and the group-address convention this project follows.\n\
-         lint:\n  topology:\n    max_devices_per_line: 64\n  groups:\n",
+         [lint]\n[lint.topology]\nmax_devices_per_line = 64\n[lint.groups]\n",
     );
-    out.push_str(&format!("    scheme: {}\n", scheme.as_str()));
-    out.push_str("    blocks:\n");
+    out.push_str(&format!("scheme = \"{}\"\n", scheme.as_str()));
+    out.push_str("feedback_pairing = true\n");
+    out.push_str("name_pattern = \"* * *\"\n");
+    out.push_str("[lint.groups.blocks]\n");
     let mut any = false;
     for spec in TRADES {
         if trades_used.contains(&spec.key) {
-            out.push_str(&format!("      {}: {}\n", spec.key, spec.block));
+            out.push_str(&format!("{} = {}\n", spec.key, spec.block));
             any = true;
         }
     }
     if !any {
         for spec in TRADES {
-            out.push_str(&format!("      {}: {}\n", spec.key, spec.block));
+            out.push_str(&format!("{} = {}\n", spec.key, spec.block));
         }
     }
-    out.push_str("    feedback_pairing: true\n");
-    out.push_str("    name_pattern: \"* * *\"\n");
     out
 }
 
-/// Appends [`lint_config_yaml`] to `bussard.yaml` unless it already has a
-/// `lint:` block. Returns whether it wrote anything.
+/// Whether a `bussard.toml` text already has a `[lint]` table (or any
+/// `lint.*` key).
+fn has_lint_table(text: &str) -> bool {
+    match text.parse::<toml_edit::DocumentMut>() {
+        Ok(doc) => doc.get("lint").is_some(),
+        Err(_) => text.lines().any(|l| {
+            let l = l.trim();
+            l == "[lint]" || l.starts_with("[lint.") || l.starts_with("lint.")
+        }),
+    }
+}
+
+/// Appends [`lint_config_toml`] to `bussard.toml` unless it already has a
+/// `[lint]` table. Returns whether it wrote anything.
 ///
-/// The append is textual so a hand-written `bussard.yaml` keeps its comments and
-/// key order; `lint:` is a new top-level key, so appending is a valid merge.
+/// The append is textual so a hand-written `bussard.toml` keeps its comments and
+/// key order; `[lint]` is a new table, so appending at the end is a valid merge.
 pub fn ensure_lint_config(
     config_path: &Path,
     scheme: Scheme,
@@ -768,14 +790,14 @@ pub fn ensure_lint_config(
             });
         }
     };
-    if existing.lines().any(|l| l.trim_end() == "lint:") {
+    if has_lint_table(&existing) {
         return Ok(false);
     }
     let mut text = existing;
     if !text.is_empty() && !text.ends_with('\n') {
         text.push('\n');
     }
-    text.push_str(&lint_config_yaml(scheme, trades_used));
+    text.push_str(&lint_config_toml(scheme, trades_used));
     std::fs::write(config_path, text).map_err(|source| ScaffoldError::Io {
         path: config_path.display().to_string(),
         source,
@@ -937,19 +959,39 @@ mod tests {
 
     #[test]
     fn test_plan_parses_from_json_too() -> Result<(), Box<dyn std::error::Error>> {
-        let p =
-            Plan::from_yaml(r#"{"rooms":[{"floor":"EG","room":"Küche","functions":["light"]}]}"#)?;
+        let p = Plan::parse(r#"{"rooms":[{"floor":"EG","room":"Küche","functions":["light"]}]}"#)?;
         assert_eq!(p.rooms.len(), 1);
         assert_eq!(p.rooms[0].room, "Küche");
         Ok(())
     }
 
     #[test]
-    fn test_lint_config_yaml_lists_used_trades() {
-        let text = lint_config_yaml(Scheme::FloorTradeBlock, &["light", "heating"]);
-        assert!(text.contains("scheme: floor-trade-block"), "{text}");
-        assert!(text.contains("light: 5"), "{text}");
-        assert!(text.contains("heating: 10"), "{text}");
-        assert!(!text.contains("blind:"), "{text}");
+    fn test_lint_config_toml_lists_used_trades() -> Result<(), Box<dyn std::error::Error>> {
+        let text = lint_config_toml(Scheme::FloorTradeBlock, &["light", "heating"]);
+        assert!(text.contains("scheme = \"floor-trade-block\""), "{text}");
+        assert!(text.contains("light = 5"), "{text}");
+        assert!(text.contains("heating = 10"), "{text}");
+        assert!(!text.contains("blind ="), "{text}");
+        // It parses as the lint table of a `bussard.toml`.
+        let config: crate::schema::BussardConfig = toml::from_str(&text)?;
+        assert!(config.lint.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_parses_from_toml() -> Result<(), Box<dyn std::error::Error>> {
+        let p =
+            Plan::parse("[[rooms]]\nfloor = \"EG\"\nroom = \"Küche\"\nfunctions = [\"light\"]\n")?;
+        assert_eq!(p.rooms.len(), 1);
+        assert_eq!(p.rooms[0].functions, vec!["light".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_has_lint_table_detects_the_table() {
+        assert!(has_lint_table(
+            "[connection]\ntransport = \"tunnel\"\n[lint.groups]\n"
+        ));
+        assert!(!has_lint_table("[connection]\ntransport = \"tunnel\"\n"));
     }
 }

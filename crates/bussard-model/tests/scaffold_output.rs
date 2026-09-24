@@ -52,19 +52,19 @@ fn scaffold_and_validate(tag: &str, scheme: Scheme) -> Result<(), Box<dyn Error>
     let dir = temp_dir(tag);
     std::fs::create_dir_all(&dir)?;
     std::fs::write(
-        dir.join("bussard.yaml"),
-        "connection:\n  transport: tunnel\n  gateway: \"127.0.0.1:3671\"\n",
+        dir.join("bussard.toml"),
+        "[connection]\ntransport = \"tunnel\"\ngateway = \"127.0.0.1:3671\"\n",
     )?;
 
     let plan = demo_plan();
-    let report = scaffold::scaffold_file(&dir.join("groups.yaml"), &plan, scheme)?;
+    let report = scaffold::scaffold_file(&dir.join("groups.toml"), &plan, scheme)?;
     assert!(!report.added.is_empty(), "the demo plan must add addresses");
-    scaffold::ensure_lint_config(&dir.join("bussard.yaml"), scheme, &report.trades_used)?;
+    scaffold::ensure_lint_config(&dir.join("bussard.toml"), scheme, &report.trades_used)?;
 
     let model = Model::load(&dir)?;
     assert!(
         model.config.lint.is_some(),
-        "the scaffolder must have written a lint: block"
+        "the scaffolder must have written a [lint] table"
     );
     let diags = validate_in_dir(&model, &dir);
 
@@ -101,7 +101,7 @@ fn test_function_floor_output_passes_validate_and_lints() -> Result<(), Box<dyn 
 fn test_rerun_on_an_extended_plan_keeps_every_address() -> Result<(), Box<dyn Error>> {
     let dir = temp_dir("extend");
     std::fs::create_dir_all(&dir)?;
-    let groups_path = dir.join("groups.yaml");
+    let groups_path = dir.join("groups.toml");
 
     let first = scaffold::scaffold_file(&groups_path, &demo_plan(), Scheme::FloorTradeBlock)?;
 
@@ -139,8 +139,8 @@ fn test_rerun_on_an_extended_plan_keeps_every_address() -> Result<(), Box<dyn Er
 fn test_lint_config_is_written_once() -> Result<(), Box<dyn Error>> {
     let dir = temp_dir("lintcfg");
     std::fs::create_dir_all(&dir)?;
-    let config = dir.join("bussard.yaml");
-    std::fs::write(&config, "connection:\n  transport: routing\n")?;
+    let config = dir.join("bussard.toml");
+    std::fs::write(&config, "[connection]\ntransport = \"routing\"\n")?;
 
     assert!(scaffold::ensure_lint_config(
         &config,
@@ -150,10 +150,15 @@ fn test_lint_config_is_written_once() -> Result<(), Box<dyn Error>> {
     let after_first = std::fs::read_to_string(&config)?;
     assert!(
         !scaffold::ensure_lint_config(&config, Scheme::FloorTradeBlock, &["light"])?,
-        "a second run must not append a second lint: block"
+        "a second run must not append a second [lint] table"
     );
     assert_eq!(after_first, std::fs::read_to_string(&config)?);
-    assert!(after_first.contains("transport: routing"), "{after_first}");
+    assert!(
+        after_first.contains("transport = \"routing\""),
+        "{after_first}"
+    );
+    let parsed: bussard_model::schema::BussardConfig = toml::from_str(&after_first)?;
+    assert!(parsed.lint.is_some(), "{after_first}");
 
     std::fs::remove_dir_all(&dir)?;
     Ok(())

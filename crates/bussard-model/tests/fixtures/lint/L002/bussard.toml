@@ -1,0 +1,8 @@
+# Fixture for lint L002: two 10 mA devices on a 15 mA supply.
+
+[connection]
+transport = "tunnel"
+gateway = "127.0.0.1:3671"
+
+[lint.topology.supply_ma]
+"1.1" = 15

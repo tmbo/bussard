@@ -9,10 +9,12 @@
 //!
 //! ```text
 //! manifest.json                      # always the first entry
-//! bussard.yaml
-//! groups.yaml
-//! links.yaml
-//! devices/*.yaml
+//! bussard.toml
+//! groups.toml
+//! bussard.lock
+//! tests.toml                         # when present
+//! ha.toml                            # when present
+//! devices/*.toml
 //! .bussard/history/<id>/...          # unless exported with --no-history
 //! ```
 //!
@@ -60,7 +62,7 @@ pub const FORMAT_VERSION: u32 = 1;
 ///
 /// Bumped only when the model files change shape incompatibly; a reader refuses
 /// a bundle with a newer model version than it knows.
-pub const MODEL_VERSION: u32 = 1;
+pub const MODEL_VERSION: u32 = 2;
 
 /// The manifest's name inside the zip.
 pub const MANIFEST_NAME: &str = "manifest.json";
@@ -177,7 +179,7 @@ pub struct BundleManifest {
     pub bussard_version: String,
     /// When the bundle was written, RFC3339 in UTC.
     pub exported_at: String,
-    /// The ETS project name from `groups.yaml`, when there is one.
+    /// The ETS project name from `groups.toml`, when there is one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
     /// How many devices the model holds.
@@ -409,16 +411,16 @@ impl Bundle {
     }
 
     /// Writes the bundled files byte for byte into `dir`, which must not hold
-    /// a model yet (no `groups.yaml`, no device file). With `include_history`,
+    /// a model yet (no `groups.toml`, no device file). With `include_history`,
     /// the history snapshots are restored too, so `bussard history` and `undo`
     /// work on the copy.
     ///
-    /// An existing `bussard.yaml` (for example from `bussard init`) is left
+    /// An existing `bussard.toml` (for example from `bussard init`) is left
     /// untouched: the connection is local, exactly as a re-import keeps it.
     /// Into an empty directory the result is identical to the exported model.
     pub fn extract(&self, dir: &Path, include_history: bool) -> Result<(), BundleError> {
         let existing = read_model_files(dir)?;
-        if existing.keys().any(|k| k != "bussard.yaml") {
+        if existing.keys().any(|k| k != crate::loader::CONFIG_FILE) {
             return Err(BundleError::TargetHasModel {
                 dir: dir.to_path_buf(),
             });
@@ -476,8 +478,9 @@ pub fn last_export(dir: &Path) -> Option<LastExport> {
     serde_json::from_str(&text).ok()
 }
 
-/// The model files currently in `dir` (`bussard.yaml`, `groups.yaml`,
-/// `links.yaml`, `devices/*.yaml`), keyed by model-relative path, as bytes.
+/// The model files currently in `dir` (`bussard.toml`, `groups.toml`,
+/// `bussard.lock`, `tests.toml`, `ha.toml`, `devices/*.toml`), keyed by
+/// model-relative path, as bytes.
 pub fn model_files(dir: &Path) -> Result<BTreeMap<String, Vec<u8>>, BundleError> {
     read_model_files(dir)
 }
@@ -568,7 +571,7 @@ fn is_model_path(name: &str) -> bool {
     !file.is_empty()
         && !file.starts_with('.')
         && !file.contains(['/', '\\'])
-        && (file.ends_with(".yaml") || file.ends_with(".yml"))
+        && file.ends_with(".toml")
 }
 
 /// Reads the model files of `dir`, keyed by model-relative path.
@@ -731,13 +734,16 @@ mod tests {
         let dir = temp_dir(tag)?;
         fs::create_dir_all(dir.join("devices"))?;
         fs::write(
-            dir.join("groups.yaml"),
-            "groups:\n  \"0/0/4\":\n    name: Porch light\n    dpt: \"1.001\"\n",
+            dir.join("groups.toml"),
+            "groups = [\n  { address = \"0/0/4\", name = \"Porch light\", dpt = \"1.001\" },\n]\n",
         )?;
-        fs::write(dir.join("links.yaml"), "links: {}\n")?;
         fs::write(
-            dir.join("devices/1.1.4-actuator.yaml"),
-            "address: 1.1.4\nname: Actuator\n",
+            dir.join("bussard.lock"),
+            "version = 1\nsource = \"home.knxproj\"\n",
+        )?;
+        fs::write(
+            dir.join("devices/1.1.4.toml"),
+            "address = \"1.1.4\"\nname = \"Actuator\"\n",
         )?;
         // Things that must never enter a bundle.
         fs::create_dir_all(dir.join("models"))?;
@@ -751,17 +757,22 @@ mod tests {
     fn test_classify_accepts_layout_and_rejects_everything_else() {
         for ok in [
             "manifest.json",
-            "groups.yaml",
-            "devices/1.1.4-x.yaml",
+            "groups.toml",
+            "bussard.lock",
+            "tests.toml",
+            "ha.toml",
+            "devices/1.1.4.toml",
             ".bussard/history/20260922T101112Z-001/manifest.json",
-            ".bussard/history/20260922T101112Z-001/devices/1.1.4-x.yaml",
+            ".bussard/history/20260922T101112Z-001/devices/1.1.4.toml",
         ] {
             assert!(classify(ok).is_some(), "{ok}");
         }
         for bad in [
-            "../evil.yaml",
-            "devices/../../evil.yaml",
-            "devices/.hidden.yaml",
+            "../evil.toml",
+            "devices/../../evil.toml",
+            "devices/.hidden.toml",
+            "devices/1.1.4.yaml",
+            "groups.yaml",
             "models/M-1.yaml",
             ".env",
             "home.knxproj",
@@ -799,7 +810,7 @@ mod tests {
         let mut bundle = Bundle::from_dir(&dir, ExportOptions::default())?;
         bundle
             .model_files
-            .insert("groups.yaml".to_string(), b"groups: {}\n".to_vec());
+            .insert("groups.toml".to_string(), b"groups = []\n".to_vec());
         let err = Bundle::from_zip_bytes(&bundle.to_zip_bytes()?);
         assert!(
             matches!(err, Err(BundleError::FileDigest { .. })),
@@ -812,7 +823,7 @@ mod tests {
     #[test]
     fn test_from_zip_bytes_rejects_an_unexpected_entry() -> TestResult {
         let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-        writer.start_file("../evil.yaml", zip::write::SimpleFileOptions::default())?;
+        writer.start_file("../evil.toml", zip::write::SimpleFileOptions::default())?;
         writer.write_all(b"x")?;
         let bytes = writer.finish()?.into_inner();
         let err = Bundle::from_zip_bytes(&bytes);

@@ -1,0 +1,12 @@
+# Fixture for lint L005: middle group 6 addresses no declared trade.
+
+[connection]
+transport = "tunnel"
+gateway = "127.0.0.1:3671"
+
+[lint.groups]
+scheme = "floor-trade-block"
+feedback_pairing = true
+
+[lint.groups.blocks]
+light = 5

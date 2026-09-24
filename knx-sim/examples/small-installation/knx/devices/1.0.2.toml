@@ -1,0 +1,9 @@
+address = "1.0.2"
+name = "Switch Kitchen"
+description = "MDT AKK switch actuator, kitchen light"
+
+[links]
+1.listen = ["1/0/1"]
+1.name = "Switch"
+7.send = "1/0/2"
+7.name = "Status"

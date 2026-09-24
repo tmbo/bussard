@@ -1,0 +1,3 @@
+groups = [
+  { address = "1/1/1", name = "Ground floor Kitchen Light Dim", dpt = "1.001" },
+]

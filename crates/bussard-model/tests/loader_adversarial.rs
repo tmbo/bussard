@@ -1,7 +1,7 @@
-//! Adversarial YAML-loader and validation tests (bussard-model).
+//! Adversarial TOML-loader and validation tests (bussard-model).
 //!
 //! Exercises the on-disk loader with hostile files (duplicate keys, wrong types,
-//! CRLF/BOM, non-UTF8, alias bombs, duplicate device addresses) and a validation
+//! CRLF/BOM, non-UTF8, deep nesting, duplicate device addresses) and a validation
 //! performance smoke test at scale.
 
 use std::fs;
@@ -39,36 +39,47 @@ fn write(dir: &Path, name: &str, contents: &[u8]) {
 
 #[test]
 fn duplicate_ga_key_rejected() {
+    // Two entries for one GA parse (they are array elements); validation
+    // reports both lines as E020.
     let dir = tmp("dupga");
     write(
         &dir,
-        "groups.yaml",
-        b"groups:\n  \"1/0/0\":\n    name: a\n  \"1/0/0\":\n    name: b\n",
+        "groups.toml",
+        b"groups = [\n  { address = \"1/0/0\", name = \"a\" },\n  { address = \"1/0/0\", name = \"b\" },\n]\n",
     );
-    let err = Model::load(&dir).unwrap_err();
-    let msg = err.to_string();
-    assert!(msg.contains("groups.yaml"), "path in error: {msg}");
+    let m = Model::load(&dir).unwrap();
+    let diags = bussard_model::validate_in_dir(&m, &dir);
+    let e020: Vec<_> = diags.iter().filter(|d| d.code == "E020").collect();
+    assert_eq!(e020.len(), 2, "one E020 per line: {diags:?}");
+    assert!(e020[0].location.starts_with("groups.toml:2:"), "{e020:?}");
+    assert!(e020[1].location.starts_with("groups.toml:3:"), "{e020:?}");
     let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn duplicate_nested_field_rejected() {
     let dir = tmp("dupnested");
-    // Duplicate `name:` inside one group.
+    // Duplicate `name` inside one group entry.
     write(
         &dir,
-        "groups.yaml",
-        b"groups:\n  \"1/0/0\":\n    name: a\n    name: b\n",
+        "groups.toml",
+        b"groups = [{ address = \"1/0/0\", name = \"a\", name = \"b\" }]\n",
     );
-    assert!(Model::load(&dir).is_err());
+    let err = Model::load(&dir).unwrap_err();
+    assert!(err.to_string().contains("duplicate key"), "{err}");
+    assert!(
+        err.to_string().contains("groups.toml"),
+        "path in error: {err}"
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn duplicate_top_level_key_rejected() {
     let dir = tmp("duptop");
-    write(&dir, "groups.yaml", b"groups: {}\ngroups: {}\n");
-    assert!(Model::load(&dir).is_err());
+    write(&dir, "groups.toml", b"project = \"a\"\nproject = \"b\"\n");
+    let err = Model::load(&dir).unwrap_err();
+    assert!(err.to_string().contains("first defined here"), "{err}");
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -79,7 +90,7 @@ fn duplicate_top_level_key_rejected() {
 #[test]
 fn unknown_field_rejected() {
     let dir = tmp("unknown");
-    write(&dir, "groups.yaml", b"groups: {}\nbogus: 1\n");
+    write(&dir, "groups.toml", b"groups = []\nbogus = 1\n");
     assert!(Model::load(&dir).is_err());
     let _ = fs::remove_dir_all(&dir);
 }
@@ -89,11 +100,13 @@ fn wrong_type_for_dpt_rejected_with_path() {
     let dir = tmp("wrongtype");
     write(
         &dir,
-        "groups.yaml",
-        b"groups:\n  \"1/0/0\":\n    name: a\n    dpt: {nested: 1}\n",
+        "groups.toml",
+        b"groups = [\n  { address = \"1/0/0\", name = \"a\", dpt = { nested = 1 } },\n]\n",
     );
     let err = Model::load(&dir).unwrap_err();
-    assert!(err.to_string().contains("1/0/0"), "path in error: {err}");
+    let msg = err.to_string();
+    assert!(msg.contains("groups.toml"), "path in error: {msg}");
+    assert!(msg.contains("line 2"), "line in error: {msg}");
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -102,8 +115,8 @@ fn out_of_range_ga_key_rejected() {
     let dir = tmp("oorga");
     write(
         &dir,
-        "groups.yaml",
-        b"groups:\n  \"99/0/0\":\n    name: a\n",
+        "groups.toml",
+        b"groups = [{ address = \"99/0/0\", name = \"a\" }]\n",
     );
     assert!(Model::load(&dir).is_err());
     let _ = fs::remove_dir_all(&dir);
@@ -117,12 +130,11 @@ fn out_of_range_ga_key_rejected() {
 fn utf8_bom_prefixed_file_handling() {
     let dir = tmp("bom");
     let mut bytes = vec![0xEF, 0xBB, 0xBF];
-    bytes.extend_from_slice(b"groups:\n  \"1/0/0\":\n    name: a\n");
-    write(&dir, "groups.yaml", &bytes);
-    // Whatever serde_norway decides (accept or reject), it must not panic and
+    bytes.extend_from_slice(b"groups = [{ address = \"1/0/0\", name = \"a\" }]\n");
+    write(&dir, "groups.toml", &bytes);
+    // Whatever the parser decides (accept or reject), it must not panic and
     // must return a clean Result.
     let r = Model::load(&dir);
-    // Document behaviour: a BOM is either tolerated or a clean Yaml error.
     if let Ok(m) = &r {
         assert!(m.groups.groups.contains_key(&"1/0/0".parse().unwrap()));
     }
@@ -134,8 +146,8 @@ fn crlf_line_endings_load_fine() {
     let dir = tmp("crlf");
     write(
         &dir,
-        "groups.yaml",
-        b"groups:\r\n  \"1/0/0\":\r\n    name: a\r\n",
+        "groups.toml",
+        b"groups = [\r\n  { address = \"1/0/0\", name = \"a\" },\r\n]\r\n",
     );
     let m = Model::load(&dir).expect("CRLF should load");
     assert_eq!(m.groups.groups.len(), 1);
@@ -143,14 +155,14 @@ fn crlf_line_endings_load_fine() {
 }
 
 // ---------------------------------------------------------------------------
-// Non-UTF8 bytes: must be a clean error (Io/Yaml), never a panic.
+// Non-UTF8 bytes: must be a clean error (Io/Parse), never a panic.
 // ---------------------------------------------------------------------------
 
 #[test]
 fn non_utf8_file_is_clean_error() {
     let dir = tmp("nonutf8");
     // Invalid UTF-8 sequence.
-    write(&dir, "groups.yaml", &[0xff, 0xfe, 0x00, 0x01, 0x80, 0x81]);
+    write(&dir, "groups.toml", &[0xff, 0xfe, 0x00, 0x01, 0x80, 0x81]);
     let r = std::panic::catch_unwind(|| Model::load(&dir));
     assert!(r.is_ok(), "non-UTF8 file must not panic");
     assert!(r.unwrap().is_err(), "non-UTF8 file must error");
@@ -158,40 +170,32 @@ fn non_utf8_file_is_clean_error() {
 }
 
 // ---------------------------------------------------------------------------
-// Alias bomb (billion-laughs shape): must terminate quickly, not hang/OOM.
+// Deep nesting (TOML's stand-in for YAML's alias bomb): must terminate
+// quickly, not hang or overflow the stack.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn modest_alias_bomb_terminates_quickly() {
-    let dir = tmp("bomb");
-    // A modest billion-laughs: each level references the previous a few times.
-    // We keep it small enough that a bounded parser finishes instantly, and rely
-    // on the overall <30s suite budget + this timing assertion to catch runaway
-    // expansion.
-    let bomb = r#"
-groups:
-  "1/0/0":
-    name: &a "aaaaaaaa"
-    description: &b [*a, *a, *a, *a, *a]
-"#;
-    write(&dir, "groups.yaml", bomb.as_bytes());
+fn deeply_nested_values_terminate_quickly() {
+    let dir = tmp("deep");
+    let depth = 5000;
+    let text = format!(
+        "project = \"x\"\ngroups = [{{ address = \"1/0/0\", name = \"a\", description = {}{} }}]\n",
+        "[".repeat(depth),
+        "]".repeat(depth)
+    );
+    write(&dir, "groups.toml", text.as_bytes());
     let start = Instant::now();
     let r = std::panic::catch_unwind(|| Model::load(&dir));
     let elapsed = start.elapsed();
-    assert!(r.is_ok(), "alias handling must not panic");
-    // Either loads or errors on the type mismatch (description is a seq); the key
-    // property is it returns fast.
-    assert!(
-        elapsed.as_secs() < 5,
-        "alias parse took too long: {elapsed:?}"
-    );
+    assert!(r.is_ok(), "deep nesting must not panic");
+    assert!(r.unwrap().is_err(), "description is a string, not an array");
+    assert!(elapsed.as_secs() < 5, "parse took too long: {elapsed:?}");
     let _ = fs::remove_dir_all(&dir);
 }
 
 // ---------------------------------------------------------------------------
 // Duplicate device addresses across files: a hard load error naming both files
-// (issue #39). Previously the loader silently collapsed to last-wins in the map,
-// dropping a device and misattributing its links; that is now rejected.
+// (issue #39).
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -199,16 +203,16 @@ fn duplicate_device_address_across_files_is_a_load_error() {
     use bussard_model::loader::LoadError;
 
     let dir = tmp("dupdev");
-    write(&dir, "groups.yaml", b"groups: {}\n");
+    write(&dir, "groups.toml", b"groups = []\n");
     write(
         &dir,
-        "devices/1.1.4-aaa.yaml",
-        b"address: 1.1.4\nname: First\n",
+        "devices/1.1.4.toml",
+        b"address = \"1.1.4\"\nname = \"First\"\n",
     );
     write(
         &dir,
-        "devices/1.1.4-bbb.yaml",
-        b"address: 1.1.4\nname: Second\n",
+        "devices/1.1.40.toml",
+        b"address = \"1.1.4\"\nname = \"Second\"\n",
     );
     let err = Model::load(&dir).expect_err("duplicate device address must be rejected");
     match err {
@@ -218,9 +222,9 @@ fn duplicate_device_address_across_files_is_a_load_error() {
             second,
         } => {
             assert_eq!(address, "1.1.4".parse().unwrap());
-            // Sorted order: the "aaa" file is first, the "bbb" file second.
-            assert!(first.ends_with("1.1.4-aaa.yaml"), "first: {first:?}");
-            assert!(second.ends_with("1.1.4-bbb.yaml"), "second: {second:?}");
+            // Sorted order: `1.1.4.toml` is first, `1.1.40.toml` second.
+            assert!(first.ends_with("1.1.4.toml"), "first: {first:?}");
+            assert!(second.ends_with("1.1.40.toml"), "second: {second:?}");
         }
         other => panic!("expected DuplicateDeviceAddress, got {other:?}"),
     }
@@ -230,9 +234,13 @@ fn duplicate_device_address_across_files_is_a_load_error() {
 #[test]
 fn device_filename_address_mismatch_flags_e002() {
     let dir = tmp("mismatch");
-    write(&dir, "groups.yaml", b"groups: {}\n");
-    // filename does not start with the address.
-    write(&dir, "devices/wrongname.yaml", b"address: 1.1.4\nname: X\n");
+    write(&dir, "groups.toml", b"groups = []\n");
+    // The file name is not the address.
+    write(
+        &dir,
+        "devices/wrongname.toml",
+        b"address = \"1.1.4\"\nname = \"X\"\n",
+    );
     let m = Model::load(&dir).expect("load");
     let diags = validate(&m);
     assert!(
@@ -243,7 +251,7 @@ fn device_filename_address_mismatch_flags_e002() {
 }
 
 // ---------------------------------------------------------------------------
-// Missing files: groups/links are optional, absent devices dir is fine.
+// Missing files: every file is optional, an absent devices dir is fine.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -256,6 +264,15 @@ fn empty_directory_loads_empty_model() {
     let _ = fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn a_yaml_only_directory_is_refused() {
+    let dir = tmp("yaml");
+    write(&dir, "groups.yaml", b"groups: {}\n");
+    let err = Model::load(&dir).expect_err("the YAML model is not read any more");
+    assert!(err.to_string().contains("YAML model"), "{err}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
 // ---------------------------------------------------------------------------
 // Validation performance smoke test: 1000+ synthetic GAs under 1s.
 // ---------------------------------------------------------------------------
@@ -263,8 +280,8 @@ fn empty_directory_loads_empty_model() {
 #[test]
 fn validate_1000_plus_gas_is_fast() {
     let dir = tmp("perf");
-    // Build a groups.yaml with ~1500 GAs, and links referencing many of them.
-    let mut groups = String::from("groups:\n");
+    // Build a groups.toml with ~1500 GAs, and links referencing many of them.
+    let mut groups = String::from("groups = [\n");
     let mut n = 0;
     'outer: for main in 1..=31u32 {
         for middle in 0..=7u32 {
@@ -273,32 +290,35 @@ fn validate_1000_plus_gas_is_fast() {
                     break 'outer;
                 }
                 groups.push_str(&format!(
-                    "  \"{main}/{middle}/{sub}\":\n    name: G{n}\n    dpt: \"1.001\"\n"
+                    "  {{ address = \"{main}/{middle}/{sub}\", name = \"G{n}\", dpt = \"1.001\" }},\n"
                 ));
                 n += 1;
             }
         }
     }
-    write(&dir, "groups.yaml", groups.as_bytes());
+    groups.push_str("]\n");
+    write(&dir, "groups.toml", groups.as_bytes());
 
-    // A device with many com-objects and links.
-    let mut dev = String::from("address: 1.1.4\nname: Big\ncom_objects:\n");
-    let mut links = String::from("links:\n  \"1.1.4\":\n");
+    // A device with many com-objects (in the lock) and links (in its file).
+    let mut dev = String::from("address = \"1.1.4\"\nname = \"Big\"\n\n[links]\n");
+    let mut lock = String::from("version = 1\n\n[[device]]\naddress = \"1.1.4\"\nobjects = [\n");
     for obj in 0..500u16 {
-        dev.push_str(&format!("  {obj}:\n    dpt: \"1.001\"\n    flags: CW\n"));
+        lock.push_str(&format!(
+            "  {{ number = {obj}, dpt = \"1.001\", flags = \"CW\" }},\n"
+        ));
         // Link each object to a distinct GA (main derived to stay in range).
         let main = 1 + (obj as u32 % 31);
         let middle = (obj as u32 / 31) % 8;
         let sub = (obj as u32) % 256;
-        links.push_str(&format!(
-            "    - object: {obj}\n      listen: [\"{main}/{middle}/{sub}\"]\n"
-        ));
+        dev.push_str(&format!("{obj}.listen = [\"{main}/{middle}/{sub}\"]\n"));
     }
-    write(&dir, "devices/1.1.4-big.yaml", dev.as_bytes());
-    write(&dir, "links.yaml", links.as_bytes());
+    lock.push_str("]\n");
+    write(&dir, "devices/1.1.4.toml", dev.as_bytes());
+    write(&dir, "bussard.lock", lock.as_bytes());
 
     let m = Model::load(&dir).expect("load big model");
     assert!(m.groups.groups.len() >= 1000);
+    assert_eq!(m.links.links[&"1.1.4".parse().unwrap()].len(), 500);
 
     let start = Instant::now();
     let diags = validate(&m);

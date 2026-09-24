@@ -1,9 +1,0 @@
-# bussard connection config for the small-installation example.
-#
-# Points at the knx-sim gateway on loopback. run.sh starts the simulator
-# (knx-sim/examples/small-installation/sim.yaml) on 127.0.0.1:13671 and drives
-# every bussard command in this model directory against it. The port is high and
-# non-standard so the example never fights a real gateway on the standard 3671.
-connection:
-  transport: tunnel
-  gateway: 127.0.0.1:13671

@@ -1,7 +1,0 @@
-# Fixture for lint L004: a Secure-capable device behind a plain line coupler.
-connection:
-  transport: tunnel
-  gateway: "127.0.0.1:3671"
-
-lint:
-  topology: {}

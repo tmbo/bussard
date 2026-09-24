@@ -1,0 +1,6 @@
+address = "1.1.5"
+name = "Hallway push button"
+
+[links]
+1.send = "0/0/4"
+1.name = "Rocker 1"

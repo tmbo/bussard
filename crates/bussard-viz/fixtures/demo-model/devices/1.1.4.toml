@@ -1,0 +1,39 @@
+address = "1.1.4"
+name = "Blind Actuator 4-fold"
+description = "DIN-rail blind actuator with wind-alarm inputs"
+product = "BA-4"
+
+[location]
+floor = "Ground Floor"
+room = "Utility Room"
+
+[links]
+9.listen = ["2/0/1"]
+9.name = "Wind Speed"
+10.listen = ["2/0/2"]
+10.name = "Brightness East"
+
+[channel.CH-1]
+name = "Blind 1 - Living Room"
+1.listen = ["0/1/0"]
+1.name = "Living Room Blind - Move"
+2.listen = ["0/1/1"]
+2.name = "Living Room Blind - Stop"
+3.send = "0/1/2"
+3.name = "Living Room Blind - Position"
+4.listen = ["3/0/0"]
+4.name = "Living Room Blind - Wind Alarm"
+
+[channel.CH-2]
+name = "Blind 2 - Kitchen"
+5.listen = ["0/1/3"]
+5.name = "Kitchen Blind - Move"
+
+[channel.CH-3]
+name = "Blind 3 - Bedroom"
+6.listen = ["1/1/0"]
+6.name = "Bedroom Blind - Move"
+7.send = "1/1/1"
+7.name = "Bedroom Blind - Position"
+8.listen = ["3/0/0"]
+8.name = "Bedroom Blind - Wind Alarm"

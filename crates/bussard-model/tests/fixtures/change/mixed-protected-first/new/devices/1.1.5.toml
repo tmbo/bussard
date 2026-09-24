@@ -1,0 +1,7 @@
+address = "1.1.5"
+name = "Hallway rocker"
+
+[links]
+1.send = "0/0/4"
+1.listen = ["3/2/0"]
+1.name = "Rocker 1"

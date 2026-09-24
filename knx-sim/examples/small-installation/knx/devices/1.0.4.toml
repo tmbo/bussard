@@ -1,0 +1,7 @@
+address = "1.0.4"
+name = "Heating Living"
+description = "MDT AKH heating actuator, living-room"
+
+[links]
+1.send = "3/0/1"
+1.name = "Room temperature"

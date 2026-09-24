@@ -1,0 +1,43 @@
+address = "1.1.2"
+name = "Push Button Living Room"
+description = "6-fold push button"
+product = "PB-6F"
+
+[location]
+floor = "Ground Floor"
+room = "Living Room"
+
+[channel.CH-1]
+name = "Rocker 1 - Living Room Light"
+0.send = "0/0/2"
+0.name = "Living Room Light - Switch"
+1.listen = ["0/0/5"]
+1.name = "Living Room Light - Status LED"
+2.send = "0/0/3"
+2.name = "Living Room Light - Dim"
+7.send = "0/0/4"
+7.name = "Living Room Light - Brightness"
+
+[channel.CH-2]
+name = "Rocker 2 - Blind"
+3.send = "0/1/0"
+3.name = "Living Room Blind - Move"
+4.send = "0/1/1"
+4.name = "Living Room Blind - Stop"
+11.listen = ["0/1/2"]
+11.name = "Living Room Blind - Position (display)"
+
+[channel.CH-3]
+name = "Rocker 3 - Scenes"
+5.send = "3/0/3"
+5.name = "Scene Central"
+6.send = "0/0/6"
+6.name = "Kitchen Light - Switch"
+8.send = "0/2/3"
+8.name = "Living Room - Operating Mode"
+9.send = "0/2/0"
+9.name = "Living Room - Measured Temperature"
+10.send = "0/2/1"
+10.name = "Living Room - Setpoint"
+12.listen = ["0/2/2"]
+12.name = "Living Room - Valve Position (display)"

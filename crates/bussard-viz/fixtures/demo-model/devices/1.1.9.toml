@@ -1,0 +1,21 @@
+address = "1.1.9"
+name = "Room Thermostat Bedroom"
+description = "Wall thermostat, sends the measured value and the setpoint"
+product = "RT-1"
+
+[location]
+floor = "First Floor"
+room = "Bedroom"
+
+[channel.CH-1]
+name = "Thermostat"
+1.send = "1/2/0"
+1.name = "Bedroom - Measured Temperature"
+2.send = "1/2/1"
+2.name = "Bedroom - Setpoint"
+3.listen = ["2/0/0"]
+3.name = "Outside Temperature"
+4.send = "1/0/0"
+4.name = "Bedroom Light - Switch"
+5.listen = ["1/0/1"]
+5.name = "Bedroom Light - Status LED"

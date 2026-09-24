@@ -1,3 +1,0 @@
-connection:
-  transport: tunnel
-  gateway: "192.0.2.10:3671"

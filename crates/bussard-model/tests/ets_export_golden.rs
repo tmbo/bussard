@@ -19,7 +19,7 @@ fn fixtures() -> PathBuf {
 
 #[test]
 fn test_csv_matches_the_golden_file() -> Result<(), Box<dyn Error>> {
-    let groups = load_groups(&fixtures().join("groups.yaml"))?;
+    let groups = load_groups(&fixtures().join("groups.toml"))?;
     let actual = to_ets_csv(&groups);
     let expected = std::fs::read_to_string(fixtures().join("expected.csv"))?;
     assert_eq!(actual, expected);
@@ -28,7 +28,7 @@ fn test_csv_matches_the_golden_file() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn test_xml_matches_the_golden_file() -> Result<(), Box<dyn Error>> {
-    let groups = load_groups(&fixtures().join("groups.yaml"))?;
+    let groups = load_groups(&fixtures().join("groups.toml"))?;
     let actual = to_ets_xml(&groups);
     let expected = std::fs::read_to_string(fixtures().join("expected.xml"))?;
     assert_eq!(actual, expected);
@@ -59,7 +59,7 @@ fn csv_fields(line: &str) -> Vec<String> {
 
 #[test]
 fn test_csv_round_trips_through_a_reader() -> Result<(), Box<dyn Error>> {
-    let groups = load_groups(&fixtures().join("groups.yaml"))?;
+    let groups = load_groups(&fixtures().join("groups.toml"))?;
     let csv = to_ets_csv(&groups);
     let body = csv.trim_start_matches('\u{feff}');
     let lines: Vec<&str> = body.split("\r\n").filter(|l| !l.is_empty()).collect();
@@ -98,7 +98,7 @@ fn test_csv_round_trips_through_a_reader() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn test_xml_is_well_formed_and_carries_every_address() -> Result<(), Box<dyn Error>> {
-    let groups = load_groups(&fixtures().join("groups.yaml"))?;
+    let groups = load_groups(&fixtures().join("groups.toml"))?;
     let xml = to_ets_xml(&groups);
 
     let mut reader = Reader::from_str(&xml);
@@ -137,7 +137,7 @@ fn test_xml_is_well_formed_and_carries_every_address() -> Result<(), Box<dyn Err
 
 #[test]
 fn test_xml_unescapes_back_to_the_original_text() -> Result<(), Box<dyn Error>> {
-    let groups = load_groups(&fixtures().join("groups.yaml"))?;
+    let groups = load_groups(&fixtures().join("groups.toml"))?;
     let xml = to_ets_xml(&groups);
     let mut reader = Reader::from_str(&xml);
     let mut found = false;

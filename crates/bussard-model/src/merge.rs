@@ -478,6 +478,8 @@ mod tests {
             module_bases: BTreeMap::new(),
             com_objects: BTreeMap::new(),
             security: None,
+            application_override: None,
+            lock: Default::default(),
         }
     }
 
@@ -542,6 +544,9 @@ mod tests {
                 reference: None,
                 channel: None,
                 secure: false,
+                function: None,
+                key: None,
+                text: None,
             },
         );
         let ours = model_with(vec![our_dev], Groups::default(), Links::default());
@@ -557,6 +562,9 @@ mod tests {
                 reference: None,
                 channel: None,
                 secure: false,
+                function: None,
+                key: None,
+                text: None,
             },
         );
         their_dev.com_objects.insert(
@@ -568,6 +576,9 @@ mod tests {
                 reference: None,
                 channel: None,
                 secure: false,
+                function: None,
+                key: None,
+                text: None,
             },
         );
         let theirs = model_with(vec![their_dev], Groups::default(), Links::default());

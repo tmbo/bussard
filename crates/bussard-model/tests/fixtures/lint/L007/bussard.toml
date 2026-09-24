@@ -1,0 +1,13 @@
+# Fixture for lint L007: the name has fewer than three parts.
+
+[connection]
+transport = "tunnel"
+gateway = "127.0.0.1:3671"
+
+[lint.groups]
+scheme = "floor-trade-block"
+feedback_pairing = false
+name_pattern = "* * *"
+
+[lint.groups.blocks]
+light = 5

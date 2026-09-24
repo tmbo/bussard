@@ -1,0 +1,5 @@
+address = "1.1.4"
+name = "Living room blind actuator"
+
+[channel.CH-2]
+name = "Bedroom"

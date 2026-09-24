@@ -1,6 +1,0 @@
-links:
-  "1.1.5":
-    - object: 1
-      name: Rocker 1
-      send: "0/0/4"
-      listen: ["3/2/0"]

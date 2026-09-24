@@ -999,6 +999,8 @@ mod tests {
                 com_objects: BTreeMap::new(),
                 security: None,
                 replaced: None,
+                application_override: None,
+                lock: Default::default(),
             },
             file_stem: format!("{ia_str}-{name}"),
         }
@@ -1079,6 +1081,9 @@ mod tests {
             "CH-2".to_string(),
             Channel {
                 name: "B".to_string(),
+                key: None,
+                number: None,
+                text: None,
             },
         );
         dev.device.com_objects.insert(

@@ -3,7 +3,7 @@
 //! bussard owns its own history, so an owner who does not use git can still ask
 //! "what changed last Tuesday, put it back". Every command that writes model
 //! files (or the bus) takes a snapshot first; an edit made outside bussard — in
-//! an editor, or by an assistant writing YAML — is captured as an
+//! an editor, or by an assistant writing TOML — is captured as an
 //! `external edit` snapshot at the start of the next command, so nothing is
 //! lost.
 //!
@@ -12,10 +12,12 @@
 //! ```text
 //! knx/.bussard/history/20260922T101112Z-001/
 //!   manifest.json     # reason, gateway, result, version, created_at
-//!   bussard.yaml
-//!   groups.yaml
-//!   links.yaml
-//!   devices/*.yaml
+//!   bussard.toml
+//!   groups.toml
+//!   bussard.lock
+//!   tests.toml        # when present
+//!   ha.toml           # when present
+//!   devices/*.toml
 //! ```
 //!
 //! A house model is well under a megabyte, so a snapshot is a full copy with no
@@ -24,7 +26,7 @@
 //!
 //! # What is never copied
 //!
-//! Only the four model inputs above. `models/`, `vendor/`, `captures/`,
+//! Only the model files above. `models/`, `vendor/`, `captures/`,
 //! keyrings, `.knxproj` and `.knxprod` files are vendor-derived, local or
 //! secret (see `docs/product-data.md`), and never enter a snapshot.
 //!
@@ -49,9 +51,10 @@ pub const HISTORY_DIR: &str = ".bussard/history";
 /// The manifest filename inside a snapshot.
 const MANIFEST: &str = "manifest.json";
 
-/// The model files a snapshot copies. Everything else in the model directory is
-/// local, vendor-derived or secret and is never snapshotted.
-pub(crate) const MODEL_FILES: [&str; 3] = ["bussard.yaml", "groups.yaml", "links.yaml"];
+/// The model files a snapshot copies (besides `devices/*.toml`). Everything
+/// else in the model directory is local, vendor-derived or secret and is never
+/// snapshotted.
+pub(crate) const MODEL_FILES: [&str; 5] = crate::loader::MODEL_FILES;
 
 /// An error reading or writing the history.
 #[derive(Debug, thiserror::Error)]
@@ -252,7 +255,8 @@ impl History {
     }
 
     /// Whether the model directory holds any model file at all
-    /// (`bussard.yaml`, `groups.yaml`, `links.yaml` or a `devices/*.yaml`).
+    /// (`bussard.toml`, `groups.toml`, `bussard.lock`, `tests.toml`, `ha.toml`
+    /// or a `devices/*.toml`).
     ///
     /// The hooks use it to stay silent for a directory that has no model yet,
     /// so they never create one.
@@ -278,8 +282,9 @@ impl History {
 
     /// Copies the current model files into a new snapshot and returns its id.
     ///
-    /// Only `bussard.yaml`, `groups.yaml`, `links.yaml` and `devices/*.yaml` are
-    /// copied; product data, captures, keyrings and project files never are.
+    /// Only the model files (`bussard.toml`, `groups.toml`, `bussard.lock`,
+    /// `tests.toml`, `ha.toml`, `devices/*.toml`) are copied; product data,
+    /// captures, keyrings and project files never are.
     pub fn snapshot(&self, reason: SnapshotReason) -> Result<SnapshotId, HistoryError> {
         let now = SystemTime::now();
         let id = self.next_id(now)?;
@@ -492,10 +497,15 @@ impl History {
                 .with_result(format!("state before restoring {id}")),
         )?;
 
+        // The top-level files end up exactly as in the snapshot: one the
+        // snapshot did not have (a lock written by a later import) goes away.
         for name in MODEL_FILES {
             let from = source_dir.join(name);
+            let to = self.dir.join(name);
             if from.is_file() {
-                copy(&from, &self.dir.join(name))?;
+                copy(&from, &to)?;
+            } else if to.is_file() {
+                fs::remove_file(&to).map_err(|source| HistoryError::Io { path: to, source })?;
             }
         }
 
@@ -562,7 +572,7 @@ pub fn snapshot_if_changed_externally(dir: &Path) -> Result<Option<SnapshotId>, 
     History::open(dir).snapshot_if_changed_externally()
 }
 
-/// The `*.yaml` / `*.yml` filenames in a `devices/` directory, sorted.
+/// The `*.toml` filenames in a `devices/` directory, sorted.
 fn device_files(dir: &Path) -> Result<Vec<String>, HistoryError> {
     let entries = fs::read_dir(dir).map_err(|source| HistoryError::Io {
         path: dir.to_path_buf(),
@@ -575,7 +585,7 @@ fn device_files(dir: &Path) -> Result<Vec<String>, HistoryError> {
             p.is_file()
                 && p.extension()
                     .and_then(|e| e.to_str())
-                    .is_some_and(|e| e == "yaml" || e == "yml")
+                    .is_some_and(|e| e == crate::loader::DEVICE_EXTENSION)
         })
         .filter_map(|p| p.file_name().and_then(|n| n.to_str()).map(str::to_string))
         .collect();
@@ -669,13 +679,16 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(dir.join("devices"))?;
         fs::write(
-            dir.join("groups.yaml"),
-            "groups:\n  \"3/0/4\":\n    name: Blind\n    dpt: \"1.008\"\n",
+            dir.join("groups.toml"),
+            "groups = [\n  { address = \"3/0/4\", name = \"Blind\", dpt = \"1.008\" },\n]\n",
         )?;
-        fs::write(dir.join("links.yaml"), "links: {}\n")?;
         fs::write(
-            dir.join("devices").join("1.1.4-blind.yaml"),
-            "address: \"1.1.4\"\nname: Blind actuator\n",
+            dir.join("bussard.lock"),
+            "version = 1\n\n[[device]]\naddress = \"1.1.4\"\nproduct = \"BA-4\"\n",
+        )?;
+        fs::write(
+            dir.join("devices").join("1.1.4.toml"),
+            "address = \"1.1.4\"\nname = \"Blind actuator\"\nproduct = \"BA-4\"\n",
         )?;
         Ok(dir)
     }
@@ -691,8 +704,9 @@ mod tests {
         let history = History::open(&dir);
         let id = history.snapshot(SnapshotReason::new("import").with_args(["home.knxproj"]))?;
         let snap = history.snapshot_dir(&id);
-        assert!(snap.join("groups.yaml").is_file());
-        assert!(snap.join("devices").join("1.1.4-blind.yaml").is_file());
+        assert!(snap.join("groups.toml").is_file());
+        assert!(snap.join("bussard.lock").is_file());
+        assert!(snap.join("devices").join("1.1.4.toml").is_file());
         assert!(
             !snap.join("vendor").exists(),
             "vendor data must never be snapshotted"
@@ -725,8 +739,8 @@ mod tests {
         );
 
         fs::write(
-            dir.join("groups.yaml"),
-            "groups:\n  \"3/0/4\":\n    name: Kitchen blind\n    dpt: \"1.008\"\n",
+            dir.join("groups.toml"),
+            "groups = [\n  { address = \"3/0/4\", name = \"Kitchen blind\", dpt = \"1.008\" },\n]\n",
         )?;
         assert!(
             history.snapshot_if_changed_externally()?.is_some(),
@@ -746,13 +760,14 @@ mod tests {
         let first = history.snapshot(SnapshotReason::new("import"))?;
 
         fs::write(
-            dir.join("groups.yaml"),
-            "groups:\n  \"3/0/4\":\n    name: Kitchen blind\n    dpt: \"1.008\"\n",
+            dir.join("groups.toml"),
+            "groups = [\n  { address = \"3/0/4\", name = \"Kitchen blind\", dpt = \"1.008\" },\n]\n",
         )?;
         fs::write(
-            dir.join("devices").join("1.1.9-new.yaml"),
-            "address: \"1.1.9\"\nname: New device\n",
+            dir.join("devices").join("1.1.9.toml"),
+            "address = \"1.1.9\"\nname = \"New device\"\n",
         )?;
+        fs::write(dir.join("tests.toml"), "allow_protected = false\n")?;
 
         let undo = history.restore(&first)?;
         assert_ne!(undo, first);
@@ -760,9 +775,14 @@ mod tests {
         let ga: crate::GroupAddress = "3/0/4".parse()?;
         assert_eq!(restored.groups.groups[&ga].name, "Blind");
         assert!(
-            !dir.join("devices").join("1.1.9-new.yaml").exists(),
+            !dir.join("devices").join("1.1.9.toml").exists(),
             "a device file the snapshot did not have must be removed"
         );
+        assert!(
+            !dir.join("tests.toml").exists(),
+            "a model file the snapshot did not have must be removed"
+        );
+        assert!(dir.join("bussard.lock").is_file(), "the lock comes back");
         assert_eq!(history.list()?.len(), 2, "the undo itself is a snapshot");
 
         fs::remove_dir_all(&dir)?;
@@ -775,8 +795,8 @@ mod tests {
         let history = History::open(&dir);
         history.snapshot(SnapshotReason::new("import"))?;
         fs::write(
-            dir.join("groups.yaml"),
-            "groups:\n  \"3/0/4\":\n    name: Kitchen blind\n    dpt: \"1.008\"\n",
+            dir.join("groups.toml"),
+            "groups = [\n  { address = \"3/0/4\", name = \"Kitchen blind\", dpt = \"1.008\" },\n]\n",
         )?;
         let pending = history.pending()?;
         assert!(pending.base.is_some());

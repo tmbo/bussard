@@ -38,3 +38,6 @@ __pycache__/
 # website build output (see website/README.md)
 _site/
 website/site/
+
+# The TOML conversion of the private house model (phase 1 of the TOML switch).
+/knx-toml/

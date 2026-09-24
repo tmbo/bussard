@@ -1,9 +1,0 @@
-# Fixture for lint L003: only line 1.1 is declared, but a device sits on 1.2.
-connection:
-  transport: tunnel
-  gateway: "127.0.0.1:3671"
-
-lint:
-  topology:
-    supply_ma:
-      "1.1": 640

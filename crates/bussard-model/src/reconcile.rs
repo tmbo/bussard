@@ -265,23 +265,23 @@ mod tests {
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    /// A model from `groups.yaml` and one device file.
+    /// A model from `groups.toml` and one device file.
     fn model(groups: &str, device: &str) -> Result<Model, Box<dyn std::error::Error>> {
         let mut files = BTreeMap::new();
-        files.insert("groups.yaml".to_string(), groups.to_string());
-        files.insert("devices/1.1.4-x.yaml".to_string(), device.to_string());
+        files.insert("groups.toml".to_string(), groups.to_string());
+        files.insert("devices/1.1.4.toml".to_string(), device.to_string());
         Ok(Model::from_texts(&files)?)
     }
 
     #[test]
     fn test_take_theirs_applies_every_reported_conflict() -> TestResult {
         let ours = model(
-            "groups:\n  \"0/0/4\":\n    name: Porch light\n    dpt: \"1.001\"\n",
-            "address: 1.1.4\nname: Actuator\nlocation:\n  room: Hall\n",
+            "groups = [{ address = \"0/0/4\", name = \"Porch light\", dpt = \"1.001\" }]\n",
+            "address = \"1.1.4\"\nname = \"Actuator\"\n[location]\nroom = \"Hall\"\n",
         )?;
         let theirs = model(
-            "groups:\n  \"0/0/4\":\n    name: Front light\n    dpt: \"1.001\"\n",
-            "address: 1.1.4\nname: Switch actuator\nlocation:\n  room: Porch\n",
+            "groups = [{ address = \"0/0/4\", name = \"Front light\", dpt = \"1.001\" }]\n",
+            "address = \"1.1.4\"\nname = \"Switch actuator\"\n[location]\nroom = \"Porch\"\n",
         )?;
         let (mut merged, report) = crate::merge::merge(&ours, &theirs);
         assert_eq!(report.conflicts.len(), 3, "{:?}", report.conflicts);
@@ -293,7 +293,10 @@ mod tests {
 
     #[test]
     fn test_conflict_sentence_names_the_device_and_values() -> TestResult {
-        let ours = model("groups: {}\n", "address: 1.1.4\nname: Actuator\n")?;
+        let ours = model(
+            "groups = []\n",
+            "address = \"1.1.4\"\nname = \"Actuator\"\n",
+        )?;
         let conflict = Conflict {
             path: "devices/1.1.4".into(),
             field: "location.room".into(),

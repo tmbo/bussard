@@ -1,0 +1,4 @@
+groups = [
+  { address = "0/0/4", name = "Porch light", dpt = "1.001" },
+  { address = "3/2/0", name = "Wind alarm",  dpt = "1.005", protected = true },
+]

@@ -14,11 +14,11 @@ const APP: &str = "M-0083_A-1";
 /// A one-device model with the night-setback parameter at `value`.
 fn model(value: &str) -> Result<Model, Box<dyn std::error::Error>> {
     let device = format!(
-        "address: 1.1.4\nname: Thermostat\nproduct:\n  application_ref: {APP}\n\
-         parameters:\n  nachtabsenkung@P-1312_R-2140: \"{value}\"\n"
+        "address = \"1.1.4\"\nname = \"Thermostat\"\napplication = \"{APP}\"\n\n\
+         [parameters]\n\"nachtabsenkung@P-1312_R-2140\" = \"{value}\"\n"
     );
     let mut files = BTreeMap::new();
-    files.insert("devices/1.1.4-thermostat.yaml".to_string(), device);
+    files.insert("devices/1.1.4.toml".to_string(), device);
     Ok(Model::from_texts(&files)?)
 }
 

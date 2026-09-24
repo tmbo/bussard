@@ -396,6 +396,8 @@ mod tests {
             com_objects: Default::default(),
             security: None,
             replaced: None,
+            application_override: None,
+            lock: Default::default(),
         }
     }
 
@@ -470,6 +472,9 @@ mod tests {
                 reference: None,
                 channel: None,
                 secure: false,
+                function: None,
+                key: None,
+                text: None,
             },
         );
         dev.com_objects.insert(
@@ -481,6 +486,9 @@ mod tests {
                 reference: None,
                 channel: None,
                 secure: false,
+                function: None,
+                key: None,
+                text: None,
             },
         );
         let model = model_with(

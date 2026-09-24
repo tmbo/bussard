@@ -1,0 +1,9 @@
+address = "1.0.3"
+name = "Switch Hallway"
+description = "MDT AKI/AKS switch actuator, hallway light"
+
+[links]
+1.listen = ["1/1/1"]
+1.name = "Switch On/Off"
+8.send = "1/1/2"
+8.name = "State"

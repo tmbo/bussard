@@ -1,0 +1,14 @@
+address = "1.1.8"
+name = "Presence Detector Hallway"
+description = "Ceiling presence detector with a brightness output"
+product = "PD-1"
+
+[location]
+floor = "Ground Floor"
+room = "Hallway"
+
+[links]
+1.send = "2/0/3"
+1.name = "Presence"
+2.send = "0/0/0"
+2.name = "Hallway Light - Switch"

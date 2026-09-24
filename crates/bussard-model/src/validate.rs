@@ -104,8 +104,8 @@ pub fn validate(model: &Model) -> Vec<Diagnostic> {
     check_ga_consistency(model, &mut diags);
     check_orphans_and_unlinked(model, &mut diags);
     check_protected_gas(model, &mut diags);
-    // Opt-in topology/convention lints (issue #102). Without a `lint:` block in
-    // `bussard.yaml` this contributes nothing, so existing models are unchanged.
+    // Opt-in topology/convention lints (issue #102). Without a `[lint]` table in
+    // `bussard.toml` this contributes nothing, so existing models are unchanged.
     // The bus-current rule (L002) needs the on-disk product cache and therefore
     // only runs from `validate_in_dir`.
     diags.extend(crate::lint::lint(model, None));
@@ -119,12 +119,15 @@ pub fn validate(model: &Model) -> Vec<Diagnostic> {
 /// `<dir>/models/`.
 ///
 /// This runs every rule [`validate`] runs, plus the parameter rules (E016 /
-/// E017 / I017 / I018 — unknown key, bad value, redundant value, no model). The
-/// product models are read lazily and only here; a device whose application has
-/// no model file yields an info note rather than a hard error, since `models/`
-/// is local-only vendor-derived data that is frequently absent.
+/// E017 / I017 / E026 — unknown key, bad value, redundant value, no model) and
+/// the rules that need the files themselves (E020–E023: duplicates, a missing
+/// or stale lock entry, keys the lock does not know), which report
+/// `file:line:column`. The product models are read lazily and only here; a
+/// device whose application has no model file yields a warning rather than a
+/// hard error, since `models/` is local-only vendor-derived data that is
+/// frequently absent.
 pub fn validate_in_dir(model: &Model, dir: &Path) -> Vec<Diagnostic> {
-    let mut diags = Vec::new();
+    let mut diags = crate::file_checks::check_dir(dir);
 
     check_reserved_gas(model, &mut diags);
     check_links(model, &mut diags);
@@ -144,8 +147,9 @@ pub fn validate_in_dir(model: &Model, dir: &Path) -> Vec<Diagnostic> {
 /// Parameter rules (issue #46), run only by [`validate_in_dir`] since they need
 /// the on-disk `models/`:
 ///
-/// * **I018** — a device carries parameters but its application has no model
-///   file under `models/`, so its values cannot be checked (info).
+/// * **E026** — a device carries parameters but its application has no model
+///   file under `models/`, so its values cannot be normalized or checked
+///   (warning).
 /// * **E016** — a parameter key names a parameter absent from the model (a typo
 ///   or a stale key after a re-import that dropped the parameter).
 /// * **E017** — a value is not parseable for its type, is out of the declared
@@ -158,7 +162,7 @@ fn check_parameters(model: &Model, models: &ProductModels, diags: &mut Vec<Diagn
         if dev.parameters.is_empty() {
             continue;
         }
-        let file = format!("devices/{}.yaml", loaded.file_stem);
+        let file = format!("devices/{}.toml", loaded.file_stem);
         let app_ref = dev
             .product
             .as_ref()
@@ -169,13 +173,17 @@ fn check_parameters(model: &Model, models: &ProductModels, diags: &mut Vec<Diagn
         let Some(product_model) = product_model else {
             let reason = match app_ref {
                 Some(r) => format!("no model for {r}"),
-                None => "the device declares no product.application_ref".to_string(),
+                None => "the lock pins no application for the device".to_string(),
             };
             diags.push(Diagnostic::new(
-                "I018",
-                Severity::Info,
+                "E026",
+                Severity::Warning,
                 format!("{file} parameters"),
-                format!("parameters on {ia} not validated ({reason})"),
+                format!(
+                    "{} parameter value(s) on {ia} could not be normalized or checked ({reason}); \
+                     run `bussard import-product` to fetch the product model",
+                    dev.parameters.len()
+                ),
             ));
             continue;
         };
@@ -297,7 +305,7 @@ fn value_error(kind: &ParamKind, value: &str) -> Option<String> {
 
 /// E012: invalid/reserved GA (`0/0/0`) that is referenced in the model.
 fn check_reserved_gas(model: &Model, diags: &mut Vec<Diagnostic>) {
-    // Defined in groups.yaml.
+    // Defined in groups.toml.
     for ga in model.groups.groups.keys() {
         if ga.is_reserved() {
             diags.push(Diagnostic::new(
@@ -310,8 +318,8 @@ fn check_reserved_gas(model: &Model, diags: &mut Vec<Diagnostic>) {
     }
 }
 
-/// Rules that walk over the links: E001, E003, E007, E013, W008, and the
-/// duplicate-object-within-a-device error.
+/// Rules that walk over the links: E001 (warning), E003, E007, E013, E024,
+/// E025, and the duplicate-object-within-a-device error.
 fn check_links(model: &Model, diags: &mut Vec<Diagnostic>) {
     for (ia, links) in &model.links.links {
         let device = model.devices.get(ia);
@@ -353,14 +361,15 @@ fn check_links(model: &Model, diags: &mut Vec<Diagnostic>) {
                 refs.push((ga, "listen"));
             }
 
-            // E001: referenced GA not defined in groups.yaml.
+            // E001: referenced GA not defined in groups.toml. A warning: import,
+            // apply and the MCP edit tools add such a GA to the plan.
             for (ga, role) in &refs {
                 if !model.groups.groups.contains_key(ga) {
                     diags.push(Diagnostic::new(
                         "E001",
-                        Severity::Error,
+                        Severity::Warning,
                         loc.clone(),
-                        format!("{role} GA {ga} is not defined in groups.yaml"),
+                        format!("{role} GA {ga} is not defined in groups.toml"),
                     ));
                 }
             }
@@ -393,10 +402,10 @@ fn check_links(model: &Model, diags: &mut Vec<Diagnostic>) {
                                 ),
                             ));
                         }
-                        // E007: send: on an object without the T flag.
+                        // E025: `send` on an object without the T flag.
                         if link.send.is_some() && !co.flags.contains(Flags::TRANSMIT) {
                             diags.push(Diagnostic::new(
-                                "E007",
+                                "E025",
                                 Severity::Error,
                                 loc.clone(),
                                 format!(
@@ -405,21 +414,37 @@ fn check_links(model: &Model, diags: &mut Vec<Diagnostic>) {
                                 ),
                             ));
                         }
-                        // W008: listen-only object with neither W nor U.
-                        let listen_only = link.send.is_none() && !link.listen.is_empty();
-                        if listen_only
-                            && !co.flags.contains(Flags::WRITE)
-                            && !co.flags.contains(Flags::UPDATE)
-                        {
+                        // E025: `listen` on an object without the W flag.
+                        if !link.listen.is_empty() && !co.flags.contains(Flags::WRITE) {
                             diags.push(Diagnostic::new(
-                                "W008",
-                                Severity::Warning,
+                                "E025",
+                                Severity::Error,
                                 loc.clone(),
                                 format!(
-                                    "object {} only listens but has neither W nor U flag",
+                                    "object {} has listen GAs but lacks the W (write) flag",
                                     link.object
                                 ),
                             ));
+                        }
+                        // E024: the object's DPT is of another main type than
+                        // the GA's.
+                        if let Some(odpt) = &co.dpt {
+                            for (ga, _) in &refs {
+                                let gdpt = model.groups.groups.get(*ga).and_then(|g| g.dpt);
+                                if let Some(gdpt) = gdpt
+                                    && gdpt.main != odpt.main
+                                {
+                                    diags.push(Diagnostic::new(
+                                        "E024",
+                                        Severity::Error,
+                                        loc.clone(),
+                                        format!(
+                                            "object {} is DPT {odpt} but GA {ga} is DPT {gdpt}",
+                                            link.object
+                                        ),
+                                    ));
+                                }
+                            }
                         }
                     }
                 }
@@ -430,29 +455,25 @@ fn check_links(model: &Model, diags: &mut Vec<Diagnostic>) {
     check_duplicate_individual_addresses(model, diags);
 }
 
-/// E002: duplicate individual address across device files, plus the filename/
-/// address mismatch warning.
+/// E002: a device file whose name is not its address.
 fn check_duplicate_individual_addresses(model: &Model, diags: &mut Vec<Diagnostic>) {
     for (ia, loaded) in &model.devices {
-        // Warn if the filename prefix does not start with the address.
-        let expected_prefix = ia.to_string();
-        if !loaded.file_stem.starts_with(&expected_prefix) {
+        // The file must be named `<address>.toml`.
+        let expected = ia.to_string();
+        if loaded.file_stem != expected {
             diags.push(Diagnostic::new(
                 "E002",
                 Severity::Error,
-                format!("devices/{}.yaml", loaded.file_stem),
+                format!("devices/{}.toml", loaded.file_stem),
                 format!(
-                    "device file name {:?} does not start with its address {ia}",
+                    "device file name {:?} does not match its address {ia}; rename it to \
+                     devices/{ia}.toml",
                     loaded.file_stem
                 ),
             ));
         }
     }
-    // Note: distinct files declaring the *same* address collapse in the map on
-    // load (last wins). We surface true duplicates by re-reading is out of
-    // scope for the in-memory model; the filename/address check above catches
-    // the common mislabeling. A dedicated cross-file pass belongs in the
-    // loader once it retains all raw entries.
+    // Two files declaring one address are a load error (the loader names both).
 }
 
 /// GA-level consistency: E004, W005, W006, W011, I010.
@@ -470,13 +491,13 @@ fn check_ga_consistency(model: &Model, diags: &mut Vec<Diagnostic>) {
 
     let mut infos: BTreeMap<GroupAddress, GaInfo> = BTreeMap::new();
 
-    // Seed from groups.yaml (also records W011 candidates below).
+    // Seed from groups.toml (also records W011 candidates below).
     for (ga, group) in &model.groups.groups {
         let info = infos.entry(*ga).or_default();
         if let Some(dpt) = &group.dpt {
             if let Some(size) = dpt.expected_size() {
                 let si = SizeInfo::from_apdu(size);
-                info.sizes.insert((si, "groups.yaml".to_string()));
+                info.sizes.insert((si, "groups.toml".to_string()));
                 info.sizes_only.insert(si);
             }
             info.subtypes.insert(dpt.to_string());
@@ -566,7 +587,7 @@ fn check_ga_consistency(model: &Model, diags: &mut Vec<Diagnostic>) {
         }
     }
 
-    // W011 and I010 walk groups.yaml directly (so they only apply to defined
+    // W011 and I010 walk groups.toml directly (so they only apply to defined
     // GAs, not GAs that appear only in links — those are already E001).
     for (ga, group) in &model.groups.groups {
         let loc = format!("groups.\"{ga}\"");
@@ -608,7 +629,7 @@ fn check_orphans_and_unlinked(model: &Model, diags: &mut Vec<Diagnostic>) {
                 diags.push(Diagnostic::new(
                     "I009",
                     Severity::Info,
-                    format!("devices/{}.yaml com_objects.{obj_num}", loaded.file_stem),
+                    format!("devices/{}.toml object {obj_num}", loaded.file_stem),
                     format!("com object {obj_num} on {ia} has T/W flags but is not linked"),
                 ));
             }
@@ -621,7 +642,7 @@ fn check_orphans_and_unlinked(model: &Model, diags: &mut Vec<Diagnostic>) {
 /// This surfaces the safety-critical GAs in `bussard validate` output so a
 /// reviewer can see, at a glance, which objects are guarded against casual
 /// writes (see the design document §8). Emitted once per protected GA, in the
-/// deterministic GA order of `groups.yaml`.
+/// deterministic GA order of `groups.toml`.
 fn check_protected_gas(model: &Model, diags: &mut Vec<Diagnostic>) {
     for (ga, group) in &model.groups.groups {
         if group.protected {
@@ -679,6 +700,9 @@ mod tests {
             reference: None,
             channel: None,
             secure: false,
+            function: None,
+            key: None,
+            text: None,
         }
     }
 
@@ -696,6 +720,8 @@ mod tests {
                 module_bases: BTreeMap::new(),
                 com_objects: objs.into_iter().collect(),
                 security: None,
+                application_override: None,
+                lock: Default::default(),
             },
             file_stem: stem.to_string(),
         }
@@ -726,7 +752,7 @@ mod tests {
             ia("1.1.4"),
             device(
                 "1.1.4",
-                "1.1.4-jalousie",
+                "1.1.4",
                 vec![(12, com_object("Auf/Ab", Some("1.008"), "CW"))],
             ),
         );
@@ -779,7 +805,8 @@ mod tests {
                 },
             ],
         );
-        // Device 1.1.2: send without T flag (E007), and no C flag object (E007).
+        // Device 1.1.2: send without T flag (E025), no C flag object (E007), and
+        // a 14.x object on a 1.x GA (E024).
         links_map.insert(
             ia("1.1.2"),
             vec![Link {
@@ -789,7 +816,7 @@ mod tests {
                 listen: vec![],
             }],
         );
-        // Device 1.1.3: listen-only with neither W nor U (W008).
+        // Device 1.1.3: listens without the W flag (E025).
         links_map.insert(
             ia("1.1.3"),
             vec![Link {
@@ -849,22 +876,23 @@ mod tests {
                 vec![(1, com_object("o", Some("1.001"), "CT"))],
             ),
         );
-        // 1.1.2 object 5: no C, no T, with a big DPT -> E004 on 2/0/0, E007 x2.
+        // 1.1.2 object 5: no C, no T, with a big DPT -> E004 and E024 on 2/0/0,
+        // E007 (no C) and E025 (send without T).
         devices.insert(
             ia("1.1.2"),
             device(
                 "1.1.2",
-                "1.1.2-dev",
+                "1.1.2",
                 vec![(5, com_object("o", Some("14.076"), "W"))], // 4 bytes vs 1 bit
             ),
         );
-        // 1.1.3 object 7: listen only, flags C only (no W/U) -> W008; dpt 1.002
+        // 1.1.3 object 7: listen only, flags C only (no W) -> E025; dpt 1.002
         // (same 1-bit size as group 3/0/0's 1.001 but different subtype -> W005).
         devices.insert(
             ia("1.1.3"),
             device(
                 "1.1.3",
-                "1.1.3-dev",
+                "1.1.3",
                 vec![
                     (7, com_object("o", Some("1.002"), "C")),
                     // orphan with T flag, never linked -> I009
@@ -872,12 +900,12 @@ mod tests {
                 ],
             ),
         );
-        devices.insert(ia("1.1.4"), device("1.1.4", "1.1.4-dev", vec![]));
+        devices.insert(ia("1.1.4"), device("1.1.4", "1.1.4", vec![]));
         devices.insert(
             ia("1.1.5"),
             device(
                 "1.1.5",
-                "1.1.5-dev",
+                "1.1.5",
                 vec![
                     (1, com_object("s1", Some("1.001"), "CT")),
                     (2, com_object("s2", Some("1.001"), "CT")),
@@ -900,9 +928,16 @@ mod tests {
         let diags = validate(&model);
         let found: BTreeSet<&str> = codes(&diags).into_iter().collect();
 
+        assert!(
+            diags
+                .iter()
+                .filter(|d| d.code == "E001")
+                .all(|d| d.severity == Severity::Warning),
+            "an undeclared GA is a warning: {diags:#?}"
+        );
         for expected in [
-            "E001", "E002", "E003", "E004", "E007", "E012", "E013", "E014", "W005", "W006", "W008",
-            "W011", "I009", "I010",
+            "E001", "E002", "E003", "E004", "E007", "E012", "E013", "E014", "E024", "E025", "W005",
+            "W006", "W011", "I009", "I010",
         ] {
             assert!(
                 found.contains(expected),
@@ -1008,7 +1043,7 @@ mod tests {
 
     const APP_REF: &str = "M-00FA_A-1";
 
-    /// A model with one device whose `parameters:` map is `params`, plus a
+    /// A model with one device whose parameter map is `params`, plus a
     /// product identity pointing at `APP_REF`.
     fn model_with_params(params: &[(&str, &str)]) -> Model {
         let mut parameters = BTreeMap::new();
@@ -1034,13 +1069,15 @@ mod tests {
             module_bases: BTreeMap::new(),
             com_objects: BTreeMap::new(),
             security: None,
+            application_override: None,
+            lock: Default::default(),
         };
         let mut devices = BTreeMap::new();
         devices.insert(
             ia("1.1.4"),
             crate::loader::LoadedDevice {
                 device,
-                file_stem: "1.1.4-dev".to_string(),
+                file_stem: "1.1.4".to_string(),
             },
         );
         Model {
@@ -1091,15 +1128,16 @@ parameters:
     }
 
     #[test]
-    fn parameters_no_model_yields_info_i018() {
-        // No models/ directory: a device with parameters gets an I018 note.
+    fn parameters_no_model_yields_warning_e026() {
+        // No models/ directory: a device with parameters gets an E026 warning
+        // (the values could not be normalized or checked).
         let dir = tmp_dir("no-model");
         let model = model_with_params(&[("windalarm@MD-1_M-3_MI-1_P-3_R-5", "1")]);
         let diags = validate_in_dir(&model, &dir);
-        let i018: Vec<_> = diags.iter().filter(|d| d.code == "I018").collect();
-        assert_eq!(i018.len(), 1, "{diags:#?}");
-        assert_eq!(i018[0].severity, Severity::Info);
-        assert!(i018[0].message.contains("no model"));
+        let e026: Vec<_> = diags.iter().filter(|d| d.code == "E026").collect();
+        assert_eq!(e026.len(), 1, "{diags:#?}");
+        assert_eq!(e026[0].severity, Severity::Warning);
+        assert!(e026[0].message.contains("no model"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

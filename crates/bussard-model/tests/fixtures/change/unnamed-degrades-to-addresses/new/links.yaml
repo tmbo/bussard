@@ -1,4 +1,0 @@
-links:
-  "1.1.9":
-    - object: 5
-      listen: ["1/2/3"]

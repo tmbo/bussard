@@ -1351,11 +1351,16 @@ mod tests {
             com_objects: BTreeMap::new(),
             security: None,
             replaced: None,
+            application_override: None,
+            lock: Default::default(),
         };
         device.channels.insert(
             "ch1".to_string(),
             crate::schema::Channel {
                 name: "Rocker 1".to_string(),
+                key: None,
+                number: None,
+                text: None,
             },
         );
         device.com_objects.insert(

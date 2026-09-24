@@ -1,0 +1,26 @@
+address = "1.1.1"
+name = "Push Button Hallway"
+description = "4-fold push button with status LEDs"
+product = "PB-4F"
+
+[location]
+floor = "Ground Floor"
+room = "Hallway"
+
+[links]
+40.send = "3/1/0"
+40.name = "Spare Output"
+
+[channel.CH-1]
+name = "Rocker 1 - Hallway Light"
+0.send = "0/0/0"
+0.name = "Hallway Light - Switch"
+1.listen = ["0/0/1"]
+1.name = "Hallway Light - Status LED"
+
+[channel.CH-2]
+name = "Rocker 2 - Central"
+2.send = "3/0/1"
+2.name = "Central Off"
+3.send = "1/1/0"
+3.name = "Bedroom Blind - Move"

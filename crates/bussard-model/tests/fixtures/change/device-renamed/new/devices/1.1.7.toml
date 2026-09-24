@@ -1,0 +1,7 @@
+address = "1.1.7"
+name = "Bath thermostat"
+product = "2118REGHE"
+
+[location]
+floor = "OG"
+room = "Bad"

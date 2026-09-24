@@ -52,6 +52,9 @@ fn device_with_comobject(addr: &str, name: &str, dpt: Dpt) -> LoadedDevice {
             reference: None,
             channel: None,
             secure: false,
+            function: None,
+            key: None,
+            text: None,
         },
     );
     let device = Device {
@@ -66,6 +69,8 @@ fn device_with_comobject(addr: &str, name: &str, dpt: Dpt) -> LoadedDevice {
         module_bases: BTreeMap::new(),
         com_objects,
         security: None,
+        application_override: None,
+        lock: Default::default(),
     };
     let file_stem = format!("{addr}-{}", name.to_lowercase().replace(' ', "-"));
     LoadedDevice { device, file_stem }
@@ -148,6 +153,9 @@ fn test_reimport_preserves_hand_edits_and_refreshes_generated() -> anyhow::Resul
             reference: None,
             channel: None,
             secure: false,
+            function: None,
+            key: None,
+            text: None,
         },
     );
     let fresh = model(vec![fresh_dev], fresh_groups);
@@ -242,12 +250,18 @@ fn test_reimport_takes_the_new_application_ref_with_the_new_tables() -> anyhow::
         "ch1".to_string(),
         Channel {
             name: "Küche (hand-named)".to_string(),
+            key: None,
+            number: None,
+            text: None,
         },
     );
     ours_dev.device.channels.insert(
         "ch9".to_string(),
         Channel {
             name: "Kanal der weggeht".to_string(),
+            key: None,
+            number: None,
+            text: None,
         },
     );
     ours_dev
@@ -272,12 +286,18 @@ fn test_reimport_takes_the_new_application_ref_with_the_new_tables() -> anyhow::
         "ch1".to_string(),
         Channel {
             name: "Channel 1".to_string(),
+            key: None,
+            number: None,
+            text: None,
         },
     );
     fresh_dev.device.channels.insert(
         "ch2".to_string(),
         Channel {
             name: "Channel 2".to_string(),
+            key: None,
+            number: None,
+            text: None,
         },
     );
     fresh_dev
@@ -295,6 +315,9 @@ fn test_reimport_takes_the_new_application_ref_with_the_new_tables() -> anyhow::
             reference: None,
             channel: Some("ch9".to_string()),
             secure: false,
+            function: None,
+            key: None,
+            text: None,
         },
     );
     let fresh = model(vec![fresh_dev], Groups::default());

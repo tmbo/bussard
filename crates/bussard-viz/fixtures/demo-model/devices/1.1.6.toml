@@ -1,0 +1,26 @@
+address = "1.1.6"
+name = "Heating Actuator 6-fold"
+description = "Valve actuator for the living-room and bedroom circuits"
+product = "HA-6"
+
+[location]
+floor = "Ground Floor"
+room = "Utility Room"
+
+[channel.CH-1]
+name = "Valve 1 - Living Room"
+1.listen = ["0/2/0"]
+1.name = "Living Room - Measured Temperature"
+2.listen = ["0/2/1"]
+2.name = "Living Room - Setpoint"
+3.send = "0/2/2"
+3.name = "Living Room - Valve Position"
+4.listen = ["0/2/3"]
+4.name = "Living Room - Operating Mode"
+
+[channel.CH-2]
+name = "Valve 2 - Bedroom"
+5.listen = ["1/2/0"]
+5.name = "Bedroom - Measured Temperature"
+6.listen = ["1/2/1"]
+6.name = "Bedroom - Setpoint"

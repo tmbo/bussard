@@ -52,7 +52,7 @@ fn test_every_lint_code_has_a_fixture_that_triggers_it() -> Result<(), Box<dyn E
     Ok(())
 }
 
-/// Collects every directory under `root` that holds a `groups.yaml`, skipping
+/// Collects every directory under `root` that holds a `groups.toml`, skipping
 /// build output and VCS metadata.
 fn model_dirs(root: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(root) else {
@@ -69,7 +69,7 @@ fn model_dirs(root: &Path, out: &mut Vec<PathBuf>) {
                 continue;
             }
             subdirs.push(path);
-        } else if name == "groups.yaml" {
+        } else if name == "groups.toml" {
             has_groups = true;
         }
     }

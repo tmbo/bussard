@@ -1,0 +1,8 @@
+# bussard.toml: connection settings for `bussard`, hand-editable.
+# Sets the transport ("tunnel" or "routing"), the gateway, the multicast
+# endpoint and, optionally, the KNX Secure keyring file (relative to this
+# directory). See docs/model-format.md.
+
+[connection]
+transport = "tunnel"
+gateway = "192.0.2.10:3671"

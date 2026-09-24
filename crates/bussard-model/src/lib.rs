@@ -1,11 +1,12 @@
 //! Core KNX domain model for bussard.
 //!
 //! This crate defines the address, DPT and flag types; DPT value codecs; the
-//! on-disk YAML schema; the loader/saver; and the validation rules. Everything
-//! downstream (transport, monitor, MCP, CLI) builds on these types.
+//! in-memory model; the TOML loader/saver (`docs/model-format.md`); and the
+//! validation rules. Everything downstream (transport, monitor, MCP, CLI)
+//! builds on these types.
 //!
-//! All YAML serialization is isolated in [`loader`] so the underlying crate
-//! (`serde_norway`) can be swapped without touching the rest of the codebase.
+//! All model-file (de)serialization is isolated in [`loader`], [`toml_io`]
+//! and the private `files`/`emit` modules.
 
 #![warn(missing_docs)]
 
@@ -16,9 +17,13 @@ pub mod change;
 pub mod codec;
 pub mod doc;
 pub mod dpt;
+mod emit;
 pub mod ets_export;
+mod file_checks;
+mod files;
 pub mod flags;
 pub mod history;
+pub mod legacy_yaml;
 pub mod lint;
 pub mod loader;
 pub mod merge;
@@ -27,6 +32,7 @@ pub mod reconcile;
 pub mod scaffold;
 pub mod schema;
 pub mod tests_schema;
+pub mod toml_io;
 pub mod validate;
 
 pub use address::{AddressParseError, GroupAddress, IndividualAddress};
@@ -40,6 +46,7 @@ pub use codec::{
 pub use doc::{DocError, DocFile, DocFormat, InstallationDoc};
 pub use dpt::{ApduSize, Dpt, DptParseError};
 pub use ets_export::{to_ets_csv, to_ets_xml};
+pub use files::slug;
 pub use flags::{Flags, FlagsParseError};
 pub use history::{History, HistoryError, Snapshot, SnapshotId, SnapshotReason};
 pub use lint::{GroupsLint, LintConfig, TopologyLint, lint};
@@ -50,4 +57,5 @@ pub use scaffold::{Plan, PlanRoom, Scheme, scaffold, scaffold_file};
 pub use tests_schema::{
     Expectation, TestCase, TestFileError, TestSuite, WriteStep, load_tests, load_tests_in_dir,
 };
+pub use toml_io::ParseError;
 pub use validate::{Diagnostic, Severity, has_errors, validate, validate_in_dir};

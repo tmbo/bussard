@@ -1,0 +1,17 @@
+# Fixture model for the ETS group-address export golden tests.
+
+project = "Export demo"
+
+ranges = [
+  { address = "1",   name = "Light" },
+  { address = "1/0", name = "Ground floor" },
+  { address = "2",   name = "Safety" },
+  { address = "2/0", name = "Alarms" },
+]
+
+groups = [
+  { address = "1/0/0", name = "Ground floor Kitchen Light Switch",        dpt = "1.001" },
+  { address = "1/0/3", name = "Ground floor Kitchen Light Switch status", dpt = "1.001", description = "Feedback from the actuator" },
+  { address = "2/0/0", name = "Wind alarm",                               dpt = "1.005", description = "Roof & facade", protected = true },
+  { address = "2/0/1", name = "Untyped scene trigger" },
+]

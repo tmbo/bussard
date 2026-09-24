@@ -1,0 +1,19 @@
+address = "1.1.5"
+name = "Dimming Actuator 2-fold"
+description = "Universal dimmer for the living-room light"
+product = "DA-2"
+
+[location]
+floor = "Ground Floor"
+room = "Utility Room"
+
+[channel.CH-1]
+name = "Dimmer 1 - Living Room"
+1.listen = ["0/0/2", "3/0/1"]
+1.name = "Living Room Light - Switch"
+2.listen = ["0/0/3"]
+2.name = "Living Room Light - Dim"
+3.listen = ["0/0/4"]
+3.name = "Living Room Light - Brightness"
+4.send = "0/0/5"
+4.name = "Living Room Light - Status"

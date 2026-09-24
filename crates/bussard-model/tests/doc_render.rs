@@ -106,6 +106,8 @@ fn reconstructed_model() -> Result<Model, Box<dyn std::error::Error>> {
         com_objects: BTreeMap::new(),
         security: None,
         replaced: None,
+        application_override: None,
+        lock: Default::default(),
     };
     device.com_objects.insert(0, ComObject::default());
     model.links.links.insert(

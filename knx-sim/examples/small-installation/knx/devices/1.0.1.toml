@@ -1,0 +1,9 @@
+address = "1.0.1"
+name = "Dimmer Living"
+description = "DA.tp dimming actuator (KNX-Virtual), living-room light"
+
+[links]
+1.listen = ["2/0/1"]
+1.name = "Dimming Control"
+2.listen = ["2/0/2"]
+2.name = "Dimming Value"

@@ -1,5 +1,0 @@
-address: "1.1.5"
-name: Hallway push button
-com_objects:
-  1:
-    flags: "CRT"

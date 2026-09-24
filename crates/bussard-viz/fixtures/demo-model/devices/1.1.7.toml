@@ -1,0 +1,19 @@
+address = "1.1.7"
+name = "Weather Station"
+description = "Combined temperature, wind and brightness sensor on the roof"
+product = "WS-3"
+
+[location]
+floor = "Outdoor"
+room = "Roof"
+
+[channel.CH-1]
+name = "Weather"
+1.send = "2/0/0"
+1.name = "Outside Temperature"
+2.send = "2/0/1"
+2.name = "Wind Speed"
+3.send = "2/0/2"
+3.name = "Brightness East"
+4.send = "3/0/0"
+4.name = "Wind Alarm"

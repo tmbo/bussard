@@ -1,20 +1,23 @@
-//! The acceptance-test file (`tests.yaml`) in the model directory (issue #101).
+//! The acceptance-test file (`tests.toml`) in the model directory (issue #101).
 //!
 //! `bussard test` runs a list of scripted functional checks against the live
 //! bus: write a value, expect a telegram; or instruct a human to do something,
 //! then expect a telegram. The file is the handover protocol an integrator
 //! leaves behind and the owner reruns later, so it lives in the model directory
-//! next to `groups.yaml` and belongs in git.
+//! next to `groups.toml` and belongs in git.
 //!
-//! ```yaml
-//! allow_protected: false
-//! tests:
-//!   - name: Kitchen ceiling light switches and reports
-//!     write: { ga: "1/0/10", value: "on" }
-//!     expect: { ga: "1/0/12", value: "on", within: 2s }
-//!   - name: Wind alarm raises the blinds
-//!     manual: "Trigger the wind alarm on the weather station"
-//!     expect: { ga: "3/1/0", value: "up", within: 5s }
+//! ```toml
+//! allow_protected = false
+//!
+//! [[tests]]
+//! name = "Kitchen ceiling light switches and reports"
+//! write = { ga = "1/0/10", value = "on" }
+//! expect = { ga = "1/0/12", value = "on", within = "2s" }
+//!
+//! [[tests]]
+//! name = "Wind alarm raises the blinds"
+//! manual = "Trigger the wind alarm on the weather station"
+//! expect = { ga = "3/1/0", value = "up", within = "5s" }
 //! ```
 //!
 //! This module only defines and loads the shape. The runner (which owns the
@@ -35,12 +38,12 @@ use crate::dpt::Dpt;
 
 /// The conventional file name of the acceptance-test file inside a model
 /// directory.
-pub const TESTS_FILE: &str = "tests.yaml";
+pub const TESTS_FILE: &str = "tests.toml";
 
-/// The default expectation window when a test does not give a `within:`.
+/// The default expectation window when a test does not give a `within`.
 pub const DEFAULT_WITHIN: Duration = Duration::from_secs(3);
 
-/// An error loading or validating a `tests.yaml`.
+/// An error loading or validating a `tests.toml`.
 #[derive(Debug, thiserror::Error)]
 pub enum TestFileError {
     /// The file could not be read.
@@ -51,24 +54,10 @@ pub enum TestFileError {
         /// The underlying error.
         source: std::io::Error,
     },
-    /// The YAML was syntactically invalid or contained a duplicate key.
-    #[error("parsing {path}: {source}")]
-    Yaml {
-        /// The offending file.
-        path: PathBuf,
-        /// The underlying parse error.
-        source: serde_norway::Error,
-    },
-    /// The YAML parsed but did not match the schema.
-    #[error("in {path} at `{yaml_path}`: {message}")]
-    Schema {
-        /// The offending file.
-        path: PathBuf,
-        /// Human-readable YAML path to the offending value.
-        yaml_path: String,
-        /// The error message.
-        message: String,
-    },
+    /// The file was not valid TOML (a duplicate key included) or did not
+    /// match the schema; the rendered error carries the caret and any hint.
+    #[error("{0}")]
+    Parse(#[from] crate::toml_io::ParseError),
     /// The file parsed but a test is not runnable as written.
     #[error("in {path}: test {test:?} {message}")]
     Invalid {
@@ -86,7 +75,7 @@ pub enum TestFileError {
 #[serde(deny_unknown_fields)]
 pub struct TestSuite {
     /// Opt-in for tests that write to a group address marked `protected: true`
-    /// in `groups.yaml`.
+    /// in `groups.toml`.
     ///
     /// This is only half the gate: `bussard test` additionally requires
     /// `--force` on the command line, and the `knx_run_tests` MCP tool refuses
@@ -141,7 +130,7 @@ pub struct WriteStep {
     #[serde(deserialize_with = "de_scalar_string")]
     pub value: String,
     /// Override the DPT to encode as. Defaults to the GA's DPT in
-    /// `groups.yaml`.
+    /// `groups.toml`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dpt: Option<Dpt>,
 }
@@ -175,7 +164,7 @@ fn default_within() -> Duration {
     DEFAULT_WITHIN
 }
 
-/// Loads a `tests.yaml` from an explicit path.
+/// Loads a `tests.toml` from an explicit path.
 ///
 /// Duplicate keys and unknown fields are errors, as everywhere else in the
 /// model, and every test is checked for runnability before the suite is
@@ -185,30 +174,12 @@ pub fn load_tests(path: &Path) -> Result<TestSuite, TestFileError> {
         path: path.to_path_buf(),
         source,
     })?;
-    // Stage 1: an untyped parse, which rejects duplicate keys at any depth.
-    let value: serde_norway::Value =
-        serde_norway::from_str(&text).map_err(|source| TestFileError::Yaml {
-            path: path.to_path_buf(),
-            source,
-        })?;
-    // Stage 2: the typed deserialize, tracking the YAML path for errors.
-    let suite: TestSuite = serde_path_to_error::deserialize(value).map_err(|err| {
-        let yaml_path = err.path().to_string();
-        TestFileError::Schema {
-            path: path.to_path_buf(),
-            yaml_path: if yaml_path.is_empty() {
-                ".".to_string()
-            } else {
-                yaml_path
-            },
-            message: err.into_inner().to_string(),
-        }
-    })?;
+    let suite: TestSuite = crate::toml_io::parse(path, &text)?;
     check_suite(path, &suite)?;
     Ok(suite)
 }
 
-/// Loads `<dir>/tests.yaml`, returning `Ok(None)` when the file is absent.
+/// Loads `<dir>/tests.toml`, returning `Ok(None)` when the file is absent.
 pub fn load_tests_in_dir(dir: &Path) -> Result<Option<TestSuite>, TestFileError> {
     let path = dir.join(TESTS_FILE);
     if !path.exists() {
@@ -232,37 +203,37 @@ fn check_suite(path: &Path, suite: &TestSuite) -> Result<(), TestFileError> {
         };
         if test.name.trim().is_empty() {
             return Err(invalid(
-                "has an empty `name:`; every test needs one to report it",
+                "has an empty `name`; every test needs one to report it",
             ));
         }
         if test.write.is_none() && test.manual.is_none() {
             return Err(invalid(
-                "has neither `write:` nor `manual:`; a test needs a stimulus",
+                "has neither `write` nor `manual`; a test needs a stimulus",
             ));
         }
         if test.write.is_some() && test.manual.is_some() {
             return Err(invalid(
-                "has both `write:` and `manual:`; use one stimulus per test",
+                "has both `write` and `manual`; use one stimulus per test",
             ));
         }
         if test.expect.is_none() && test.manual.is_some() {
             return Err(invalid(
-                "is a manual test with no `expect:`, so nothing would be checked",
+                "is a manual test with no `expect`, so nothing would be checked",
             ));
         }
     }
     Ok(())
 }
 
-/// Deserializes a YAML scalar (string, boolean, integer or float) as the string
+/// Deserializes a TOML scalar (string, boolean, integer or float) as the string
 /// the value parser expects.
 ///
-/// `value: on` is already a string in YAML 1.2, but `value: true` and
-/// `value: 21.5` are not, and both are natural to write. Rendering them back to
+/// `value = "on"` is a string, but `value = true` and `value = 21.5` are not,
+/// and both are natural to write. Rendering them back to
 /// text keeps one code path: everything goes through
 /// [`parse_value`](crate::codec::parse_value) against the GA's DPT.
 fn de_scalar_string<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
-    let value = serde_norway::Value::deserialize(deserializer)?;
+    let value = toml::Value::deserialize(deserializer)?;
     scalar_to_string(&value)
         .ok_or_else(|| de::Error::custom("expected a scalar value (a string, boolean or number)"))
 }
@@ -271,21 +242,19 @@ fn de_scalar_string<'de, D: Deserializer<'de>>(deserializer: D) -> Result<String
 fn de_optional_scalar_string<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<String>, D::Error> {
-    let value = serde_norway::Value::deserialize(deserializer)?;
-    if value.is_null() {
-        return Ok(None);
-    }
+    let value = toml::Value::deserialize(deserializer)?;
     scalar_to_string(&value)
         .map(Some)
         .ok_or_else(|| de::Error::custom("expected a scalar value (a string, boolean or number)"))
 }
 
-/// Renders a YAML scalar as text, or `None` for a sequence/mapping/null.
-fn scalar_to_string(value: &serde_norway::Value) -> Option<String> {
+/// Renders a TOML scalar as text, or `None` for an array, table or datetime.
+fn scalar_to_string(value: &toml::Value) -> Option<String> {
     match value {
-        serde_norway::Value::String(s) => Some(s.clone()),
-        serde_norway::Value::Bool(b) => Some(b.to_string()),
-        serde_norway::Value::Number(n) => Some(n.to_string()),
+        toml::Value::String(s) => Some(s.clone()),
+        toml::Value::Boolean(b) => Some(b.to_string()),
+        toml::Value::Integer(n) => Some(n.to_string()),
+        toml::Value::Float(n) => Some(n.to_string()),
         _ => None,
     }
 }
@@ -293,7 +262,7 @@ fn scalar_to_string(value: &serde_norway::Value) -> Option<String> {
 /// Deserializes a duration written as `2s`, `500ms`, `1m`, or a bare number of
 /// seconds.
 fn de_duration<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Duration, D::Error> {
-    let value = serde_norway::Value::deserialize(deserializer)?;
+    let value = toml::Value::deserialize(deserializer)?;
     let text = scalar_to_string(&value)
         .ok_or_else(|| de::Error::custom("expected a duration like `2s`, `500ms` or `2`"))?;
     parse_duration(&text).map_err(de::Error::custom)
@@ -316,7 +285,7 @@ fn render_duration(value: Duration) -> String {
 
 /// Parses `2s`, `500ms`, `1m`, `1.5s` or a bare number of seconds.
 ///
-/// Returns a message naming the accepted forms, so a typo in `tests.yaml`
+/// Returns a message naming the accepted forms, so a typo in `tests.toml`
 /// points at the fix.
 pub fn parse_duration(text: &str) -> Result<Duration, DurationParseError> {
     let raw = text.trim();
@@ -380,14 +349,17 @@ mod tests {
         let path = write_temp(
             "example",
             r#"
-allow_protected: true
-tests:
-  - name: Kitchen ceiling light switches and reports
-    write: { ga: "1/0/10", value: on }
-    expect: { ga: "1/0/12", value: on, within: 2s }
-  - name: Wind alarm raises the blinds
-    manual: "Trigger the wind alarm on the weather station"
-    expect: { ga: "3/1/0", value: up, within: 5s }
+allow_protected = true
+
+[[tests]]
+name = "Kitchen ceiling light switches and reports"
+write = { ga = "1/0/10", value = "on" }
+expect = { ga = "1/0/12", value = "on", within = "2s" }
+
+[[tests]]
+name = "Wind alarm raises the blinds"
+manual = "Trigger the wind alarm on the weather station"
+expect = { ga = "3/1/0", value = "up", within = "5s" }
 "#,
         )?;
         let suite = load_tests(&path)?;
@@ -427,12 +399,12 @@ tests:
     fn test_load_tests_rejects_unknown_fields() -> R {
         let path = write_temp(
             "unknown",
-            "tests:\n  - name: a\n    write: { ga: \"1/0/1\", value: on, oops: 1 }\n",
+            "[[tests]]\nname = \"a\"\nwrite = { ga = \"1/0/1\", value = \"on\", oops = 1 }\n",
         )?;
         let err = load_tests(&path).err().ok_or("must reject")?;
         assert!(
-            matches!(err, TestFileError::Schema { .. }),
-            "expected a schema error, got {err}"
+            matches!(err, TestFileError::Parse(_)),
+            "expected a parse error, got {err}"
         );
         let _ = std::fs::remove_dir_all(path.parent().ok_or("parent")?);
         Ok(())
@@ -442,7 +414,7 @@ tests:
     fn test_load_tests_rejects_a_test_without_a_stimulus() -> R {
         let path = write_temp(
             "no-stimulus",
-            "tests:\n  - name: nothing happens\n    expect: { ga: \"1/0/1\" }\n",
+            "[[tests]]\nname = \"nothing happens\"\nexpect = { ga = \"1/0/1\" }\n",
         )?;
         let err = load_tests(&path).err().ok_or("must reject")?;
         assert!(err.to_string().contains("stimulus"), "got {err}");
@@ -454,7 +426,7 @@ tests:
     fn test_load_tests_rejects_both_stimuli() -> R {
         let path = write_temp(
             "both",
-            "tests:\n  - name: two ways\n    manual: press it\n    write: { ga: \"1/0/1\", value: on }\n    expect: { ga: \"1/0/2\" }\n",
+            "[[tests]]\nname = \"two ways\"\nmanual = \"press it\"\nwrite = { ga = \"1/0/1\", value = \"on\" }\nexpect = { ga = \"1/0/2\" }\n",
         )?;
         let err = load_tests(&path).err().ok_or("must reject")?;
         assert!(err.to_string().contains("one stimulus"), "got {err}");
@@ -466,7 +438,7 @@ tests:
     fn test_expectation_defaults_the_window() -> R {
         let path = write_temp(
             "default-within",
-            "tests:\n  - name: a\n    write: { ga: \"1/0/1\", value: on }\n    expect: { ga: \"1/0/2\" }\n",
+            "[[tests]]\nname = \"a\"\nwrite = { ga = \"1/0/1\", value = \"on\" }\nexpect = { ga = \"1/0/2\" }\n",
         )?;
         let suite = load_tests(&path)?;
         let expect = suite.tests[0].expect.as_ref().ok_or("expect")?;
@@ -480,7 +452,7 @@ tests:
     fn test_scalar_values_accept_booleans_and_numbers() -> R {
         let path = write_temp(
             "scalars",
-            "tests:\n  - name: a\n    write: { ga: \"1/0/1\", value: true }\n    expect: { ga: \"1/0/2\", value: 21.5 }\n",
+            "[[tests]]\nname = \"a\"\nwrite = { ga = \"1/0/1\", value = true }\nexpect = { ga = \"1/0/2\", value = 21.5 }\n",
         )?;
         let suite = load_tests(&path)?;
         assert_eq!(suite.tests[0].write.as_ref().ok_or("write")?.value, "true");

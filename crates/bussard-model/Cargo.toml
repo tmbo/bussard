@@ -6,15 +6,18 @@ repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Core KNX domain model for bussard: GA/IA/DPT/flags types, DPT codecs, YAML schema, loader, validation"
+description = "Core KNX domain model for bussard: GA/IA/DPT/flags types, DPT codecs, TOML schema, loader, validation"
 
 [dependencies]
 serde = { workspace = true }
 # JSON for the history manifest (`.bussard/history/<id>/manifest.json`) and for
 # the change-set payload the MCP tools return. Already a workspace dependency.
 serde_json = { workspace = true }
+# YAML only for the local `models/*.yaml` product-model cache (param_model.rs).
 serde_norway = { workspace = true }
-serde_path_to_error = { workspace = true }
+# TOML: the model files. `toml` parses (with spans), `toml_edit` writes.
+toml = { workspace = true }
+toml_edit = { workspace = true }
 thiserror = { workspace = true }
 bitflags = { workspace = true }
 # The `.bussard` bundle (issue #111): a deflate zip with a SHA-256 manifest.

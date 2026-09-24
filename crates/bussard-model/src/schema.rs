@@ -1,11 +1,12 @@
-//! The on-disk YAML schema for a bussard KNX-as-code repository.
+//! The in-memory model of a bussard KNX-as-code repository.
 //!
-//! These structs mirror the files described in the design document (§5.2):
-//! `bussard.yaml`, `groups.yaml`, `links.yaml` and `devices/*.yaml`. All use
-//! `deny_unknown_fields` so typos are rejected rather than silently ignored.
-//!
-//! Serialization is isolated in the [`crate::loader`] module; these types just
-//! define the shape.
+//! The files on disk are described in `docs/model-format.md`: `bussard.toml`,
+//! `groups.toml`, `devices/<address>.toml` and the generated `bussard.lock`.
+//! [`crate::loader`] joins a device file with its lock entry into the
+//! [`Device`] defined here and splits it again on save; `bussard.toml` maps
+//! onto [`BussardConfig`] directly. The serde derives are what that config file,
+//! and the JSON the MCP tools return, use; all use `deny_unknown_fields` so
+//! typos are rejected rather than silently ignored.
 
 use std::collections::BTreeMap;
 
@@ -29,7 +30,7 @@ pub enum Transport {
     Routing,
 }
 
-/// Connection configuration (`bussard.yaml`).
+/// Connection configuration (`bussard.toml`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct BussardConfig {
@@ -42,7 +43,7 @@ pub struct BussardConfig {
     pub lint: Option<LintConfig>,
 }
 
-/// The `connection` block of `bussard.yaml`.
+/// The `[connection]` table of `bussard.toml`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Connection {
@@ -56,7 +57,7 @@ pub struct Connection {
     pub multicast: Option<String>,
     /// The ETS `.knxkeys` keyring every bus command uses when `--keyring` is
     /// not given (issue #189). A relative path is resolved against the model
-    /// directory (the directory holding `bussard.yaml`). The password still
+    /// directory (the directory holding `bussard.toml`). The password still
     /// comes from `BUSSARD_KEYRING_PASSWORD`; the file never lives in the
     /// committed model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -88,14 +89,15 @@ impl Default for Connection {
     }
 }
 
-/// The group-address plan (`groups.yaml`).
+/// The group-address plan (`groups.toml`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Groups {
     /// Optional project name metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
-    /// Optional provenance metadata (e.g. source `.knxproj`).
+    /// Optional provenance metadata (e.g. source `.knxproj`). Stored in
+    /// `bussard.lock` as `source`, not in `groups.toml`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub imported_from: Option<String>,
     /// Named main/middle ranges, keyed by `"3"` or `"3/2"`.
@@ -150,7 +152,8 @@ fn is_false(b: &bool) -> bool {
     !*b
 }
 
-/// Com-object → GA assignments (`links.yaml`).
+/// Com-object → GA assignments. On disk they live in each device file (the
+/// object entries of `[links]` and the `[channel.<handle>]` tables).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Links {
@@ -165,7 +168,8 @@ pub struct Links {
 pub struct Link {
     /// The ETS com-object number (the stable handle).
     pub object: u16,
-    /// Informational name (refreshed on import).
+    /// The user's display name for the object (the `name` of the object entry
+    /// in the device file).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// The single sending GA, if any.
@@ -176,7 +180,8 @@ pub struct Link {
     pub listen: Vec<GroupAddress>,
 }
 
-/// A device definition (`devices/*.yaml`).
+/// A device: its `devices/<address>.toml` file joined with its `bussard.lock`
+/// entry.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Device {
@@ -209,11 +214,11 @@ pub struct Device {
     /// Per-device parameter values, keyed by a stable parameter **key** (see the
     /// key-scheme note below), each mapped to its configured value string.
     ///
-    /// This block sits in the hand-editable zone *above* the generated
-    /// `com_objects:` marker: it is user-owned like `links.yaml` names, but a
-    /// re-import **replaces** it wholesale with ETS truth (the emitted device
-    /// banner says so). Only values that differ from the vendor default are
-    /// stored, so the block is diff-friendly and small.
+    /// On disk the values live in the device file (`[parameters]` and the
+    /// `[channel.<handle>]` tables) under the key `bussard.lock` assigns; the
+    /// loader translates between that key and the ref. A re-import **replaces**
+    /// the values wholesale with ETS truth. Only values that differ from the
+    /// vendor default are stored, so the block is diff-friendly and small.
     ///
     /// # The key scheme (why it looks like this)
     ///
@@ -263,9 +268,9 @@ pub struct Device {
     /// selector (`MD-<d>_M-<m>_MI-<n>`) and mapping to the byte the instance's
     /// module parameters are placed *relative to*.
     ///
-    /// This is a **generated** table, sitting in the regenerated zone below the
-    /// GENERATED marker alongside `com_objects:` (a re-import replaces it), and is
-    /// serialized only when non-empty so non-module devices stay diff-clean.
+    /// This is a **generated** table, stored in `bussard.lock` (as a channel's
+    /// `base`, or in `module_bases` for instances that own no channel); a
+    /// re-import replaces it.
     ///
     /// # Why it exists
     ///
@@ -290,8 +295,17 @@ pub struct Device {
     /// Generated com-object table, keyed by com-object number.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub com_objects: BTreeMap<u16, ComObject>,
+    /// The `application` override from the device file: the program to use
+    /// instead of the one pinned in `bussard.lock`. When set,
+    /// [`Product::application_ref`] holds this value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub application_override: Option<String>,
+    /// Lock-side bookkeeping that has no other home in memory (see
+    /// [`DeviceLock`]). Never part of the JSON the tools return.
+    #[serde(skip)]
+    pub lock: DeviceLock,
     /// KNX Secure status flags (issue #71, spec §11). **Flags and seqnum state
-    /// only** — the committed YAML NEVER carries a key, FDSK, or password
+    /// only** — the committed model NEVER carries a key, FDSK, or password
     /// (spec §2.2). Absent (`None`) for a plain, non-secure-capable device so
     /// existing device files are unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -299,7 +313,7 @@ pub struct Device {
 }
 
 /// The KNX Secure status of a device, recorded as flags-only in the committed
-/// YAML model (issue #71, spec §11 / §2.2).
+/// model (issue #71, spec §11 / §2.2).
 ///
 /// This carries **no key material**: it records whether the device's application
 /// is Data-Secure-capable, whether a factory device certificate (FDSK) was
@@ -376,17 +390,58 @@ pub struct Product {
 }
 
 /// A named device channel.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Channel {
     /// Channel display name.
     pub name: String,
+    /// The handle used in `[channel.<key>]` in the device file, recorded in
+    /// `bussard.lock`. When absent the channel id (this channel's key in
+    /// [`Device::channels`]) is the handle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// The vendor's channel number, when the product data gives one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub number: Option<u32>,
+    /// The vendor's channel text, when the product data gives one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+/// Lock-side data of a device that the rest of the in-memory [`Device`] cannot
+/// hold, so a load/save cycle reproduces `bussard.lock` exactly.
+///
+/// Only what differs from what the save would derive anyway is kept: a device
+/// that was never loaded from a lock (a fresh import) has an empty one.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DeviceLock {
+    /// The order number the lock entry was generated for, when it differs from
+    /// the device file's `product` (the E022 staleness check).
+    pub product: Option<String>,
+    /// The application the lock pins, when the device file overrides it with
+    /// `application`.
+    pub application: Option<String>,
+    /// The lock's parameter index, keyed by the parameter's app-relative ref
+    /// (`MD-1_M-3_MI-1_P-3_R-45`): only the entries whose file key or channel
+    /// differ from the defaults, or that name no stored value.
+    pub parameters: BTreeMap<String, LockedParameter>,
+}
+
+/// One `parameters[]` entry of a device's lock entry.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LockedParameter {
+    /// The key the device file uses for the parameter.
+    pub key: String,
+    /// The owning channel id (a key of [`Device::channels`]), if any.
+    pub channel: Option<String>,
+    /// The application parameter id (the memory cell), e.g. `MD-3_P-14`.
+    pub param: Option<String>,
 }
 
 /// A single generated com object on a device.
 ///
-/// The informational name lives in `links.yaml` (the single home for it — see
-/// issue #19), not here. The on-wire payload size is a pure function of the DPT
+/// The user's display name lives on the link (the object entry in the device
+/// file, issue #19); the vendor's `text`/`function` live here. The on-wire payload size is a pure function of the DPT
 /// (see [`Dpt::expected_size`]); it is only serialized in the rare case where a
 /// com-object has no DPT at all, so nothing about it can otherwise be inferred
 /// (issue #17).
@@ -415,6 +470,16 @@ pub struct ComObject {
     /// `PID_GO_SECURITY_FLAGS`. Serialized only when `true`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub secure: bool,
+    /// The object's key in the device file, recorded in `bussard.lock`. When
+    /// absent the file names the object by its number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// The vendor's object text (ETS `Text`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// The vendor's object function text (ETS `FunctionText`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function: Option<String>,
 }
 
 #[cfg(test)]
@@ -425,8 +490,8 @@ mod tests {
     #[test]
     fn test_keyring_path_resolves_relative_to_the_model_dir()
     -> Result<(), Box<dyn std::error::Error>> {
-        let config: BussardConfig = serde_norway::from_str(
-            "connection:\n  transport: tunnel\n  keyring: ../keys/site.knxkeys\n",
+        let config: BussardConfig = toml::from_str(
+            "[connection]\ntransport = \"tunnel\"\nkeyring = \"../keys/site.knxkeys\"\n",
         )?;
         assert_eq!(
             config.connection.keyring_path(Path::new("/repo/knx")),
