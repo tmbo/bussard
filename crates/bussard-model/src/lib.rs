@@ -51,7 +51,7 @@ pub use flags::{Flags, FlagsParseError};
 pub use history::{History, HistoryError, Snapshot, SnapshotId, SnapshotReason};
 pub use lint::{GroupsLint, LintConfig, TopologyLint, lint};
 pub use loader::{LoadError, LoadedDevice, Model, SaveError, load_config};
-pub use merge::{Conflict, MergeReport, merge};
+pub use merge::{Conflict, MergeReport, merge, normalize_spellings};
 pub use param_model::{ParamDef, ParamKind, ProductModel, ProductModels};
 pub use scaffold::{Plan, PlanRoom, Scheme, scaffold, scaffold_file};
 pub use tests_schema::{

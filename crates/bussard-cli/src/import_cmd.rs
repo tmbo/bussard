@@ -99,7 +99,8 @@ pub(crate) fn write_model(
     let existing = load_existing_model(dir);
 
     let (to_save, merge_report) = match existing {
-        Some(ours) => {
+        Some(mut ours) => {
+            bussard_model::normalize_spellings(&mut ours, &model);
             let (mut merged, report) = bussard_model::merge(&ours, &model);
             let kept = crate::import_bundle::resolve_conflicts(
                 &ours,

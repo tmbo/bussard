@@ -132,6 +132,33 @@ pub fn merge(ours: &Model, theirs: &Model) -> (Model, MergeReport) {
     (merged, report)
 }
 
+/// Reads `ours`' enum labels as codes where the fresh import (`theirs`) spells
+/// the same parameter's code that way.
+///
+/// A model loaded without its product models (`models/`) keeps an enum label
+/// as the file writes it (`"Jalousie"`), while a fresh import holds the code
+/// (`"2"`) and the label as its spelling. Before comparing the two (the
+/// re-import's no-op check and change report) the on-disk model is brought to
+/// codes with the import's spellings, so an unchanged value does not read as a
+/// change.
+pub fn normalize_spellings(ours: &mut Model, theirs: &Model) {
+    for (address, loaded) in &mut ours.devices {
+        let Some(fresh) = theirs.devices.get(address) else {
+            continue;
+        };
+        let device = &mut loaded.device;
+        for (key, spelling) in &fresh.device.lock.spellings {
+            if let Some(value) = device.parameters.get_mut(key)
+                && *value == spelling.text
+                && !device.lock.spellings.contains_key(key)
+            {
+                *value = spelling.code.clone();
+                device.lock.spellings.insert(key.clone(), spelling.clone());
+            }
+        }
+    }
+}
+
 /// Records a conflict when two optional string-ish fields differ, keeping ours.
 fn report_opt(
     report: &mut MergeReport,
