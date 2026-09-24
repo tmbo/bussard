@@ -11,6 +11,7 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddrV4;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::net::UdpSocket;
@@ -52,6 +53,12 @@ struct TableDevice {
     /// If set, cap the number of elements answered per property read to
     /// simulate a device that returns fewer elements than requested.
     max_elems_per_read: Option<usize>,
+    /// When set, a `PID_TABLE` read of more than one element is refused with a
+    /// zero-count answer (as the real device refused a multi-element MCB read,
+    /// issue #89).
+    refuse_multi_element: bool,
+    /// Every `PID_TABLE` read the device served, as `(object, count, start)`.
+    table_reads: Arc<Mutex<Vec<(u8, u8, u16)>>>,
 }
 
 impl TableDevice {
@@ -288,6 +295,11 @@ fn device_response(dev: &TableDevice, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)
             let Some(elems) = dev.props.get(&(pv.object_index, pv.property_id)) else {
                 return Some((apci::A_PROPERTY_VALUE_RESPONSE, empty()));
             };
+            if pv.property_id == PID_TABLE
+                && let Ok(mut log) = dev.table_reads.lock()
+            {
+                log.push((pv.object_index, pv.count, pv.start));
+            }
             let resp = if pv.start == 0 {
                 property_response(
                     pv.object_index,
@@ -298,7 +310,7 @@ fn device_response(dev: &TableDevice, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)
                 )
             } else {
                 let start = usize::from(pv.start);
-                if start > elems.len() {
+                if start > elems.len() || (dev.refuse_multi_element && pv.count > 1) {
                     empty()
                 } else {
                     let mut want = usize::from(pv.count).min(elems.len() - start + 1);
@@ -437,6 +449,79 @@ async fn chunk_capped_device_still_reads_full_table() {
     assert_eq!(read.associations.len(), 4);
 
     gw_task.abort();
+}
+
+/// The property device advertising `PID_MAX_APDU_LENGTH = 233`.
+fn capable_property_device() -> TableDevice {
+    let mut dev = property_device();
+    dev.props
+        .insert((0, apci::PID_MAX_APDU_LENGTH), vec![be16(233)]);
+    // A 40-entry address table: more than one 15-element read.
+    dev.props.insert(
+        (1, PID_TABLE),
+        (0..40u16).map(|i| be16(0x0A00 + i)).collect(),
+    );
+    dev
+}
+
+/// The `PID_TABLE` reads of elements 1.. the device served for `object`.
+fn element_reads(dev: &TableDevice, object: u8) -> Vec<(u8, u16)> {
+    dev.table_reads
+        .lock()
+        .map(|log| {
+            log.iter()
+                .filter(|(o, _, start)| *o == object && *start > 0)
+                .map(|(_, count, start)| (*count, *start))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[tokio::test]
+async fn test_read_tables_negotiated_apdu_reads_many_elements_per_request()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Issue #194: with PID_MAX_APDU_LENGTH negotiated, the 40-entry address
+    // table goes out in 15-element reads (the 4-bit count field's ceiling), not
+    // the standard-frame 4 (8 octets / 2).
+    let (addr, gw) = bind_mock().await;
+    let target: IndividualAddress = "1.1.4".parse()?;
+    let dev = capable_property_device();
+    let gw_task = tokio::spawn(run_mock(gw, target, dev.clone()));
+
+    let read = read_tables_from(addr, target).await?;
+    gw_task.abort();
+    assert_eq!(read.addresses.len(), 40);
+    assert_eq!(read.addresses[39], GroupAddress::from_raw(0x0A27));
+    assert_eq!(
+        element_reads(&dev, 1),
+        vec![(15, 1), (15, 16), (10, 31)],
+        "three reads for 40 two-octet elements"
+    );
+    // The 4-octet association entries: 4 of them in one read.
+    assert_eq!(element_reads(&dev, 2), vec![(4, 1)]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_read_tables_multi_element_refusal_falls_back_to_one_element()
+-> Result<(), Box<dyn std::error::Error>> {
+    // A device that refuses count > 1 still yields the whole table, one element
+    // per read after the first refusal.
+    let (addr, gw) = bind_mock().await;
+    let target: IndividualAddress = "1.1.4".parse()?;
+    let mut dev = capable_property_device();
+    dev.refuse_multi_element = true;
+    let gw_task = tokio::spawn(run_mock(gw, target, dev.clone()));
+
+    let read = read_tables_from(addr, target).await?;
+    gw_task.abort();
+    assert_eq!(read.addresses.len(), 40);
+    assert_eq!(read.associations.len(), 4);
+    let reads = element_reads(&dev, 1);
+    assert_eq!(reads.first(), Some(&(15, 1)), "the multi-element attempt");
+    assert_eq!(reads.len(), 41, "one refused read, then 40 single ones");
+    assert!(reads[1..].iter().all(|(count, _)| *count == 1));
+    Ok(())
 }
 
 #[tokio::test]

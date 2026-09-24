@@ -40,6 +40,7 @@ const PID_LOAD_STATE_CONTROL: u8 = 5;
 const PID_TABLE_REFERENCE: u8 = 7;
 const PID_PROGRAM_VERSION: u8 = 13;
 const PID_TABLE: u8 = 23;
+const PID_MAX_APDU_LENGTH: u8 = 56;
 
 const LS_UNLOADED: u8 = 0;
 const LS_LOADED: u8 = 1;
@@ -151,6 +152,13 @@ struct MockDevice {
     secured_requests: usize,
     /// Plain requests an activated device dropped.
     plain_refused: usize,
+    /// The inner (plain) APCI of every request the device served, in order.
+    served_apcis: Vec<u16>,
+    /// `PID_MAX_APDU_LENGTH` (device object), when the device exposes it.
+    max_apdu: Option<u16>,
+    /// Where the parameter segment sits (`PID_TABLE_REFERENCE` of the app
+    /// object).
+    param_base: u32,
 }
 
 impl MockDevice {
@@ -187,7 +195,26 @@ impl MockDevice {
             wire_apcis: Vec::new(),
             secured_requests: 0,
             plain_refused: 0,
+            served_apcis: Vec::new(),
+            max_apdu: None,
+            param_base: PARAM_BASE,
         }
+    }
+
+    /// A device running the large-segment app (see [`large_app_xml`]): a
+    /// `size`-octet parameter segment at `base` holding `params` then zeros,
+    /// advertising `PID_MAX_APDU_LENGTH = max_apdu`.
+    fn running_large(params: [u8; 2], size: usize, base: u32, max_apdu: u16) -> MockDevice {
+        let mut dev = MockDevice::running(params);
+        dev.memory.remove(&PARAM_BASE);
+        dev.memory.remove(&(PARAM_BASE + 1));
+        for i in 0..size {
+            let b = params.get(i).copied().unwrap_or(0);
+            dev.memory.insert(base + i as u32, b);
+        }
+        dev.param_base = base;
+        dev.max_apdu = Some(max_apdu);
+        dev
     }
 
     /// The same device, KNX Data Secure-activated with [`TOOL_KEY`].
@@ -318,6 +345,16 @@ fn decode_prop_header(payload: &[u8]) -> Option<(u8, u8, u8, u16)> {
 
 /// Answers one connected management request.
 fn respond(dev: &mut MockDevice, req_apci: u16, data: &[u8]) -> Option<(u16, Vec<u8>)> {
+    dev.served_apcis.push(req_apci);
+    if req_apci == apci::A_MEMORY_EXTENDED_READ {
+        let req = apci::decode_memory_extended_request(data, false)?;
+        let out: Vec<u8> = (0..u32::from(req.count))
+            .map(|i| dev.memory.get(&(req.addr + i)).copied().unwrap_or(0xFF))
+            .collect();
+        return Some(apci::encode_memory_extended_read_response(
+            0, req.addr, &out,
+        ));
+    }
     if req_apci == apci::A_AUTHORIZE_REQUEST {
         return Some((apci::A_AUTHORIZE_RESPONSE, vec![0x00]));
     }
@@ -363,7 +400,11 @@ fn respond(dev: &mut MockDevice, req_apci: u16, data: &[u8]) -> Option<(u16, Vec
             (1..=3, PID_LOAD_STATE_CONTROL) => {
                 answer(&[dev.load_states.get(&oi).copied().unwrap_or(LS_UNLOADED)])
             }
-            (APP_OBJECT, PID_TABLE_REFERENCE) => answer(&PARAM_BASE.to_be_bytes()),
+            (APP_OBJECT, PID_TABLE_REFERENCE) => answer(&dev.param_base.to_be_bytes()),
+            (0, PID_MAX_APDU_LENGTH) => match dev.max_apdu {
+                Some(v) => answer(&v.to_be_bytes()),
+                None => empty,
+            },
             (APP_OBJECT, PID_PROGRAM_VERSION) => answer(&dev.program_version),
             (1 | 2, PID_TABLE) => {
                 let size = if oi == 2 { 4 } else { 2 };
@@ -539,6 +580,16 @@ impl Bench {
         device: MockDevice,
         model_params: &str,
     ) -> Result<Option<Bench>, Box<dyn Error>> {
+        Bench::start_with_app(tag, device, model_params, APP_XML)
+    }
+
+    /// [`Bench::start`] with another application XML.
+    fn start_with_app(
+        tag: &str,
+        device: MockDevice,
+        model_params: &str,
+        app_xml: &str,
+    ) -> Result<Option<Bench>, Box<dyn Error>> {
         let rt = tokio::runtime::Runtime::new()?;
         let sock = rt.block_on(UdpSocket::bind("127.0.0.1:0"))?;
         let port = sock.local_addr()?.port();
@@ -548,7 +599,7 @@ impl Bench {
             std::env::temp_dir().join(format!("bussard-{tag}-{}-{}", std::process::id(), port));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp)?;
-        let Some(product) = build_knxprod(&tmp)? else {
+        let Some(product) = build_knxprod(&tmp, app_xml)? else {
             task.abort();
             return Ok(None);
         };
@@ -602,10 +653,10 @@ impl Drop for Bench {
 }
 
 /// Zips the synthetic application into `<dir>/param-test.knxprod`.
-fn build_knxprod(dir: &Path) -> Result<Option<PathBuf>, Box<dyn Error>> {
+fn build_knxprod(dir: &Path, app_xml: &str) -> Result<Option<PathBuf>, Box<dyn Error>> {
     let src = dir.join("prod");
     std::fs::create_dir_all(src.join("M-00FA"))?;
-    std::fs::write(src.join("M-00FA").join("M-00FA_A-0002.xml"), APP_XML)?;
+    std::fs::write(src.join("M-00FA").join("M-00FA_A-0002.xml"), app_xml)?;
     let archive = dir.join("param-test.knxprod");
     let Ok(status) = Command::new("zip")
         .current_dir(&src)
@@ -1042,5 +1093,157 @@ fn test_reconstruct_without_key_on_a_secure_device_fails_with_hint() -> TestResu
     let dev = bench.device();
     assert_eq!(dev.secured_requests, 0);
     assert!(!dev.wire_apcis.contains(&bussard_secure::A_SECURE_DATA));
+    Ok(())
+}
+
+/// The synthetic application with a `size`-octet parameter segment (a multiple
+/// of 3, so its zero `Data` is `AAAA` repeated). The two parameters stay at
+/// offsets 0 and 1.
+fn large_app_xml(size: usize) -> String {
+    let data = "AAAA".repeat(size / 3);
+    APP_XML
+        .replace(
+            r#"<RelativeSegment Id="M-00FA_A-0002_RS-2" Size="2" LoadStateMachine="4" Offset="0"><Data>AAA=</Data>"#,
+            &format!(
+                r#"<RelativeSegment Id="M-00FA_A-0002_RS-2" Size="{size}" LoadStateMachine="4" Offset="0"><Data>{data}</Data>"#
+            ),
+        )
+        .replace(
+            r#"<LdCtrlRelSegment LsmIdx="4" Size="2" AppliesTo="par" />"#,
+            &format!(r#"<LdCtrlRelSegment LsmIdx="4" Size="{size}" AppliesTo="par" />"#),
+        )
+        .replace(
+            r#"<LdCtrlWriteRelMem ObjIdx="0" Offset="0" Size="2" AppliesTo="par" />"#,
+            &format!(r#"<LdCtrlWriteRelMem ObjIdx="0" Offset="0" Size="{size}" AppliesTo="par" />"#),
+        )
+}
+
+/// The 1.1.5 shape of issue #194: a 19 155-octet parameter segment.
+const LARGE_SEGMENT: usize = 19_155;
+/// Above `0xFFFF`, where the 07B0 actuators keep their segments, so the read
+/// goes out as `A_MemoryExtended_Read`.
+const LARGE_BASE: u32 = 0x1_0000;
+
+/// What a pre-flight run left: the device state, stdout and stderr.
+type Preflight = (MockDevice, String, String);
+
+/// Runs the flash pre-flight against the large-segment device without
+/// `--yes` (so it stops at the confirmation) and returns the device and the
+/// output.
+fn large_preflight(tag: &str, extra: &[&str]) -> Result<Option<Preflight>, Box<dyn Error>> {
+    let Some(bench) = Bench::start_with_app(
+        tag,
+        MockDevice::running_large([7, 0], LARGE_SEGMENT, LARGE_BASE, 233).activated(),
+        "  thr@P-0_R-1: \"12\"\n",
+        &large_app_xml(LARGE_SEGMENT),
+    )?
+    else {
+        return Ok(None);
+    };
+    let mut args = vec![
+        "flash",
+        "1.1.4",
+        "--product",
+        bench.product()?,
+        "--tool-key",
+        TOOL_KEY_HEX,
+    ];
+    args.extend_from_slice(extra);
+    let out = bench.bussard(&args)?;
+    let (stdout, stderr) = text(&out);
+    // No terminal to confirm on: the pre-flight runs, nothing is written.
+    assert!(
+        !out.status.success(),
+        "stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    let dev = bench.device();
+    assert!(dev.memory_writes.is_empty() && dev.load_events.is_empty());
+    Ok(Some((dev, stdout, stderr)))
+}
+
+/// How many memory reads (plain `A_Memory_Read`, whose APCI carries the count,
+/// or `A_MemoryExtended_Read`) the device served.
+fn memory_reads(dev: &MockDevice) -> usize {
+    dev.served_apcis
+        .iter()
+        .filter(|&&a| a & 0x3C0 == apci::A_MEMORY_READ || a == apci::A_MEMORY_EXTENDED_READ)
+        .count()
+}
+
+/// How many numbered requests of `service` the device served.
+fn served(dev: &MockDevice, service: u16) -> usize {
+    dev.served_apcis.iter().filter(|&&a| a == service).count()
+}
+
+/// Issue #194: the System B pre-flight reads a 19 KB parameter segment of a
+/// Data Secure device on the probe connection, in APDU-sized chunks
+/// (`233 - 13` secure overhead `- 5` = 215 octets per
+/// `A_MemoryExtended_Read`), not 12-octet chunks on a second connection.
+#[test]
+fn test_flash_preflight_reads_a_large_parameter_segment_in_apdu_sized_chunks() -> TestResult {
+    let Some((dev, stdout, stderr)) = large_preflight("preflight-large", &[])? else {
+        return Ok(());
+    };
+    let reads = memory_reads(&dev);
+    eprintln!(
+        "pre-flight: {} numbered request(s) on the wire, {reads} memory read(s)",
+        dev.wire_apcis.len(),
+    );
+    assert!(stdout.contains("Threshold: 7 to 12"), "{stdout}\n{stderr}");
+    assert_eq!(reads, LARGE_SEGMENT.div_ceil(215), "{stderr}");
+    assert_eq!(served(&dev, apci::A_MEMORY_EXTENDED_READ), reads);
+    // Everything rode one connection: the probe's Data Secure sync is the only one.
+    assert_eq!(dev.plain_refused, 0);
+    assert!(
+        dev.wire_apcis.len() < 150,
+        "{} requests",
+        dev.wire_apcis.len()
+    );
+    Ok(())
+}
+
+/// Issue #194 item 2: with `--force` the current-parameter read is skipped;
+/// the plan says so instead of showing a diff.
+#[test]
+fn test_flash_preflight_with_force_skips_the_parameter_read() -> TestResult {
+    let Some((dev, stdout, stderr)) = large_preflight("preflight-force", &["--force"])? else {
+        return Ok(());
+    };
+    assert_eq!(memory_reads(&dev), 0, "{stderr}");
+    assert!(stdout.contains("current values not read back"), "{stdout}");
+    Ok(())
+}
+
+/// Issue #194 item 6: `flash -v` ends with the wall-clock time per phase.
+#[test]
+fn test_flash_verbose_reports_phase_timings() -> TestResult {
+    let Some(bench) = Bench::start(
+        "flash-timing",
+        MockDevice::running([7, 0]),
+        "  thr@P-0_R-1: \"12\"\n",
+    )?
+    else {
+        return Ok(());
+    };
+    let out = bench.bussard(&[
+        "flash",
+        "1.1.4",
+        "--product",
+        bench.product()?,
+        "--yes",
+        "-v",
+    ])?;
+    let (stdout, stderr) = text(&out);
+    assert!(
+        stderr.contains("timing: pre-flight "),
+        "stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("restart + verification") || stderr.contains("did not reach"),
+        "{stderr}"
+    );
+    if let Some(line) = stderr.lines().find(|l| l.starts_with("timing:")) {
+        eprintln!("{line}");
+    }
     Ok(())
 }

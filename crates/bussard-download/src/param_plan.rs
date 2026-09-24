@@ -318,10 +318,22 @@ pub async fn read_current_parameter_memory<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     plan: &FlashPlan,
 ) -> CurrentMemory {
+    read_current_parameter_memory_with_objects(l4, plan, &[]).await
+}
+
+/// [`read_current_parameter_memory`] with the interface-object table the
+/// caller already walked on this connection (the flash pre-flight's
+/// freshness probe), so the read-back does not sweep `PID_OBJECT_TYPE` again.
+/// An empty `objects` walks the table as usual.
+pub async fn read_current_parameter_memory_with_objects<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    plan: &FlashPlan,
+    objects: &[(u8, u16)],
+) -> CurrentMemory {
     if plan.is_sys7() {
         return CurrentMemory::new();
     }
-    read_parameter_regions(l4, plan)
+    read_parameter_regions_with_objects(l4, plan, objects)
         .await
         .into_iter()
         .map(|(segment, region)| (segment, region.bytes))
@@ -445,11 +457,31 @@ pub fn planned_parameter_regions(plan: &FlashPlan) -> ParamRegions {
 ///   the object only reports the base of its last allocation.
 /// - **System 7**: every `AbsSegment` whose image carries parameters is read at
 ///   the segment's absolute address.
+///
+/// The reads are sized from the device's `PID_MAX_APDU_LENGTH` (issue #194):
+/// it is negotiated here, best-effort, unless the connection already carries
+/// it (negotiated or seeded), so a 19 KB System B parameter segment goes out
+/// in 215-octet `A_MemoryExtended_Read`s under Data Secure (228 plain, 63 for
+/// the plain service below `0xFFFF`) instead of the 12-octet standard-frame
+/// floor. A device that does not expose the property keeps the floor.
 pub async fn read_parameter_regions<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     plan: &FlashPlan,
 ) -> ParamRegions {
+    read_parameter_regions_with_objects(l4, plan, &[]).await
+}
+
+/// [`read_parameter_regions`] with an interface-object table the caller
+/// already read on this connection; an empty `objects` walks it here.
+pub async fn read_parameter_regions_with_objects<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    plan: &FlashPlan,
+    objects: &[(u8, u16)],
+) -> ParamRegions {
     let mut out = ParamRegions::new();
+    // Cached when the caller negotiated or seeded it: then no request goes out.
+    // A dead connection surfaces on the first memory read below.
+    let _ = l4.negotiate_max_apdu().await;
     if plan.is_sys7() {
         for step in &plan.steps {
             let FlashStep::Sys7AbsSegment {
@@ -491,12 +523,16 @@ pub async fn read_parameter_regions<Ch: L4Channel>(
     }
     // The same resolution the download engine applies: an op's index names a
     // device object when the device exposes it, else the application object.
-    let table = match bussard_mgmt::probe_object_types(l4).await {
-        Ok(table) => table,
-        Err(err) => {
-            tracing::debug!(%err, "object table unreadable; skipping the parameter read-back");
-            return out;
+    let table = if objects.is_empty() {
+        match bussard_mgmt::probe_object_types(l4).await {
+            Ok(table) => table,
+            Err(err) => {
+                tracing::debug!(%err, "object table unreadable; skipping the parameter read-back");
+                return out;
+            }
         }
+    } else {
+        objects.to_vec()
     };
     let Some(app_object) = table
         .iter()

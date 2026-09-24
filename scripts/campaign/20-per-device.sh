@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One campaign step against one device, wrapped in evidence.
 #
-#   scripts/campaign/20-per-device.sh <IA> <PHASE> [--go] [-- <bussard args>]
+#   scripts/campaign/20-per-device.sh <IA> <PHASE> [--go] [--probes full] [-- <bussard args>]
 #
 # PHASE is one of: plan, apply, flash, flash-force, assign, describe, custom.
 # It picks the default command and names the output directory; `-- ...` replaces
@@ -21,12 +21,16 @@
 # command, issue #189); the password stays in BUSSARD_KEYRING_PASSWORD.
 #
 # Around the step it records, per issue #89's "data per device":
-#   - describe --json and reconstruct BEFORE
+#   - describe --json BEFORE (plus reconstruct with --probes full)
 #   - the step itself with -vv and BUSSARD_WIRE_TRACE=1
 #   - a per-step pcap (or, when tcpdump cannot run, the time window to slice the
 #     campaign-wide capture with)
-#   - describe --json and reconstruct AFTER
-#   - a row appended to the baseline findings.md
+#   - describe --json AFTER (plus reconstruct with --probes full)
+#   - a row appended to the baseline findings.md, with the step's wall-clock time
+#
+# `--probes describe` (the default) keeps the before/after probes to one
+# `describe` each; `--probes full` adds the `reconstruct` read-back, which on a
+# Data Secure device costs minutes per probe (issue #194).
 #
 # This step can write, so it refuses a non-loopback gateway without the opt-in.
 
@@ -34,13 +38,18 @@
 
 IA=""
 PHASE=""
+PROBES="describe"
 CUSTOM=()
 seen_dashdash=0
+want_probes=0
 args=()
 for a in "$@"; do
   if [ "$seen_dashdash" -eq 1 ]; then CUSTOM[${#CUSTOM[@]}]="$a"; continue; fi
+  if [ "$want_probes" -eq 1 ]; then PROBES="$a"; want_probes=0; continue; fi
   case "$a" in
     --) seen_dashdash=1 ;;
+    --probes)   want_probes=1 ;;
+    --probes=*) PROBES="${a#--probes=}" ;;
     -*) args[${#args[@]}]="$a" ;;
     *)  if   [ -z "$IA" ];    then IA="$a"
         elif [ -z "$PHASE" ]; then PHASE="$a"
@@ -49,8 +58,12 @@ for a in "$@"; do
 done
 parse_common_args ${args+"${args[@]}"}
 
-[ -n "$IA" ]    || die "usage: $0 <IA> <PHASE> [--go] [-- <bussard args>]"
-[ -n "$PHASE" ] || die "usage: $0 <IA> <PHASE> [--go] [-- <bussard args>]"
+[ -n "$IA" ]    || die "usage: $0 <IA> <PHASE> [--go] [--probes full] [-- <bussard args>]"
+[ -n "$PHASE" ] || die "usage: $0 <IA> <PHASE> [--go] [--probes full] [-- <bussard args>]"
+case "$PROBES" in
+  describe|full) ;;
+  *) die "--probes takes 'describe' (the default) or 'full', not '$PROBES'" ;;
+esac
 case "$IA" in
   [0-9]*.[0-9]*.[0-9]*) ;;
   *) die "'$IA' is not an individual address (expected area.line.device, e.g. 1.1.5)" ;;
@@ -111,12 +124,13 @@ note "model         $MODEL_DIR"
 note "gateway       $GATEWAY_RESOLVED  $(is_loopback && echo '(loopback)' || echo '(REAL BUS)')"
 note "output        $OUT"
 echo
+if [ "$PROBES" = "full" ]; then PROBE_DESC="describe --json and reconstruct"; else PROBE_DESC="describe --json"; fi
 note "It will:"
-note "  1. describe --json and reconstruct $IA  (before)"
+note "  1. $PROBE_DESC $IA  (before)"
 note "  2. start a per-step tcpdump (or record the window to slice later)"
 note "  3. run: bussard ${CMD[*]}"
 note "     with BUSSARD_WIRE_TRACE=1"
-note "  4. describe --json and reconstruct $IA  (after)"
+note "  4. $PROBE_DESC $IA  (after)"
 note "  5. append a row to $ROOT/baseline/findings.md"
 echo
 case "$PHASE" in
@@ -130,6 +144,7 @@ require_gateway_optin
 require_go
 
 ensure_dir "$OUT"
+WALL_START="$(date +%s)"
 
 # The before/after reads deliberately run WITHOUT the wire trace: they are
 # context, and the trace belongs to the step itself.
@@ -150,6 +165,10 @@ snapshot() {
   else
     printf 'failed  '
   fi
+  if [ "$PROBES" != "full" ]; then
+    printf '(reconstruct skipped: --probes full adds it)\n'
+    return 0
+  fi
   printf 'reconstruct ... '
   if WIRE_TRACE=0 run_bussard "$OUT/$when-reconstruct.log" reconstruct "$IA" \
       --dir "$MODEL_DIR" --gateway "$GATEWAY_RESOLVED" \
@@ -169,8 +188,10 @@ start_tcpdump "$OUT/step.pcap" || note "no per-step pcap; the window file will l
 
 say "3/5  the step"
 note "bussard ${CMD[*]}"
+STEP_START="$(date +%s)"
 WIRE_TRACE=1 run_bussard "$OUT/step.log" ${CMD+"${CMD[@]}"}
 STEP_RC=$?
+STEP_SECS=$(( $(date +%s) - STEP_START ))
 END="$(now_utc)"
 stop_tcpdump
 write_window "$OUT/window.txt" "$START" "$END"
@@ -188,7 +209,7 @@ say "5/5  findings"
 FINDINGS="$ROOT/baseline/findings.md"
 if [ -f "$FINDINGS" ]; then
   EXPECTED="exit 0, verified"
-  OBSERVED="exit $STEP_RC"
+  OBSERVED="exit $STEP_RC, ${STEP_SECS} s"
   if grep -qi "refus" "$OUT/step.log" 2>/dev/null; then
     OBSERVED="$OBSERVED, REFUSED — record the message verbatim"
   fi
@@ -201,6 +222,7 @@ fi
 
 rule
 say "Step recorded in $OUT"
+note "wall-clock    step ${STEP_SECS} s, with probes $(( $(date +%s) - WALL_START )) s (--probes $PROBES)"
 note "diff it against an ETS capture of the same device with:"
 note "  uv run tools/knxtrace/knxtrace.py diff <ets.pcap> $OUT/step.pcap --device $IA"
 note "functional check now, then power-cycle and re-verify (issue #89 ground rules)."

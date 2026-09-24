@@ -83,6 +83,10 @@ session goes to linking and to waiting on the bus, so:
 - `[profile.dev] debug = "line-tables-only"` is deliberate. Do not switch it
   back to full debuginfo. If `target/` has grown past tens of GB, run
   `cargo clean` while no build is running.
+- The crypto, archive and XML crates build at `opt-level = 3` even in the dev
+  and test profiles (`[profile.{dev,test}.package.*]` in the root
+  `Cargo.toml`), so a debug `bussard` derives keys and runs KNX Secure at
+  release speed. Keep new crypto dependencies on that list.
 - Against a real device, prefer the knx-sim loop for iteration and go to the
   bus only to confirm.
 

@@ -183,6 +183,7 @@ pub(crate) fn run(ctx: Context<'_>) -> anyhow::Result<ExitCode> {
         ctx.tool_key.clone(),
         ctx.secure_seq.clone(),
         ctx.json,
+        &std::cell::Cell::new(None),
     ));
     match outcome {
         Ok(outcome) if outcome.ok() => {}
@@ -317,6 +318,9 @@ async fn read_device(ctx: &Context<'_>) -> anyhow::Result<DeviceRead> {
     .with_context(|| format!("connecting to {} to read its parameters", ctx.target))?;
     let key = ctx.bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY);
     let _ = dev.authorize(key).await;
+    // The pre-flight negotiated PID_MAX_APDU_LENGTH; seed it so the read-back
+    // goes out in APDU-sized chunks without re-reading it (issue #194).
+    dev.l4_mut().set_max_apdu(ctx.facts.max_apdu);
     let regions = read_parameter_regions(dev.l4_mut(), ctx.plan).await;
     let (code_mismatch, table_change) = if ctx.plan.is_sys7() {
         (

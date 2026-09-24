@@ -31,11 +31,11 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
-use bussard_bus::{BusHandle, ops};
+use bussard_bus::BusHandle;
 use bussard_download::{
     CurrentMemory, FlashPlan, FlashStep, Freshness, ParamPlan, ParamValue, assess_freshness, flash,
-    param_plan, plan_flash_with_object_flags, probe_resident_state, read_current_parameter_memory,
-    select_application, trace,
+    param_plan, plan_flash_with_object_flags, probe_resident_state,
+    read_current_parameter_memory_with_objects, select_application, trace,
 };
 use bussard_mgmt::load::WriteError;
 use bussard_mgmt::{DeviceConnection, Layer4Connection, LeaseChannel, MgmtError, Timeouts};
@@ -190,9 +190,47 @@ pub fn run(
     // `BusSession` closes the tunnel if the check refuses.
     let source = runtime.block_on(checked_source(handle, &overrides))?;
 
-    // Phase A (read-only): read the device descriptor and probe what is already
-    // resident on the device (issue #79). Both run over one connection; neither
+    // The plan inputs that do not depend on the device: the master-template
+    // `Load` procedure for this app's mask, if the archive shipped a
+    // `knx_master.xml` (a merged application, e.g. KNX Virtual DA.tp, only
+    // carries its own app-segment blocks; the load-control ops for the table
+    // objects obj1/obj2/obj3 live in the template and are spliced in), and the
+    // computed table images (obj1 address, obj2 association, obj3 group-object)
+    // from the model links. A merged app's template writes these objects; a
+    // self-contained (thelsing) app's does not, so an empty map simply leaves
+    // the single-object flash untouched. Computed before the pre-flight so the
+    // plan can be built on its connection as soon as the mask is known.
+    let template_ops = template_ops_for(&product_data, app);
+    let table_images = build_table_images(model.as_ref(), target, app, &overrides_map);
+    let object_flags = linked_object_flags(model.as_ref(), target);
+    let plan_for_mask = |mask: u16| {
+        plan_flash_with_object_flags(
+            app,
+            address,
+            mask,
+            &overrides_map,
+            &base_offsets,
+            template_ops.as_deref(),
+            &table_images,
+            &object_flags,
+        )
+    };
+    // The plan for the mask the application declares, which is what a
+    // matching device reports: built before the device connection opens, so
+    // planning a large application never holds an idle Layer-4 connection
+    // (a device drops one after 6 s of silence). A device reporting another
+    // (compatible) mask is planned again once the mask is known.
+    let declared_mask = app
+        .mask_version
+        .as_deref()
+        .and_then(|m| u16::from_str_radix(m.trim(), 16).ok());
+    let precomputed = declared_mask.map(|mask| (mask, plan_for_mask(mask)));
+
+    // Phase A (read-only): read the device descriptor, probe what is already
+    // resident on the device (issue #79) and read back the current parameter
+    // memory (issue #109). All of it runs over one connection; none of it
     // writes anything.
+    let preflight_started = std::time::Instant::now();
     let secure_probe = tool_key.is_some();
     // The phase is read-only, so a connection loss in the middle of it (the
     // gateway link or the device's Layer-4 connection, issue #177) simply
@@ -217,56 +255,89 @@ pub fn run(
             // outcome, the max APDU, and — filled in from the freshness probe
             // below — the interface-object table).
             let mut facts = bussard_download::DeviceFacts::default();
-            let (connected, result, resident) = match DeviceConnection::connect_with_secure(
-                channel,
-                target,
-                source,
-                Timeouts::default(),
-                secure,
-            )
-            .await
-            {
-                Ok(mut dev) => {
-                    // Authorize the read-only descriptor probe too (best-effort):
-                    // ETS authorizes every management session, so a keyed device
-                    // that would otherwise drop the descriptor read is unlocked
-                    // first. Tolerate a device that does not implement authorize.
-                    let key = bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY);
-                    let r = match dev.authorize(key).await {
-                        Ok(outcome) => {
-                            // Remember the verdict: a device that does not
-                            // implement authorize must not be asked again in the
-                            // write phase, where the unanswered request costs a
-                            // full RESPONSE_TIMEOUT per connection window.
-                            facts.authorize = Some(outcome);
-                            dev.device_descriptor().await
+            let (connected, result, resident, current) =
+                match DeviceConnection::connect_with_secure(
+                    channel,
+                    target,
+                    source,
+                    Timeouts::default(),
+                    secure,
+                )
+                .await
+                {
+                    Ok(mut dev) => {
+                        // Authorize the read-only descriptor probe too (best-effort):
+                        // ETS authorizes every management session, so a keyed device
+                        // that would otherwise drop the descriptor read is unlocked
+                        // first. Tolerate a device that does not implement authorize.
+                        let key = bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY);
+                        let r = match dev.authorize(key).await {
+                            Ok(outcome) => {
+                                // Remember the verdict: a device that does not
+                                // implement authorize must not be asked again in the
+                                // write phase, where the unanswered request costs a
+                                // full RESPONSE_TIMEOUT per connection window.
+                                facts.authorize = Some(outcome);
+                                dev.device_descriptor().await
+                            }
+                            Err(err) => Err(err),
+                        };
+                        // PID_MAX_APDU_LENGTH is device-stable: negotiate it here, on
+                        // the read-only connection, so the write phase seeds it
+                        // instead of spending an exchange from its tight
+                        // per-connection budget on it.
+                        facts.max_apdu = dev.l4_mut().negotiate_max_apdu().await.ok().flatten();
+                        // The factory-freshness probe (issue #79): read the load
+                        // state (and, on System B, the resident application id) of
+                        // the objects this flash would unload and rewrite. Purely
+                        // read-only, and only once the mask is known — it is the
+                        // mask that decides System B objects vs System 7 LSMs. It
+                        // rides the same (possibly secured) connection.
+                        let resident = match &r {
+                            Ok(mask) => Some(probe_resident_state(dev.l4_mut(), *mask, None).await),
+                            Err(_) => None,
+                        };
+                        if let Some(state) = &resident {
+                            facts.object_table = state.object_table.clone();
                         }
-                        Err(err) => Err(err),
-                    };
-                    // PID_MAX_APDU_LENGTH is device-stable: negotiate it here, on
-                    // the read-only connection, so the write phase seeds it
-                    // instead of spending an exchange from its tight
-                    // per-connection budget on it.
-                    facts.max_apdu = dev.l4_mut().negotiate_max_apdu().await.ok().flatten();
-                    // The factory-freshness probe (issue #79): read the load
-                    // state (and, on System B, the resident application id) of
-                    // the objects this flash would unload and rewrite. Purely
-                    // read-only, and only once the mask is known — it is the
-                    // mask that decides System B objects vs System 7 LSMs. It
-                    // rides the same (possibly secured) connection.
-                    let resident = match &r {
-                        Ok(mask) => Some(probe_resident_state(dev.l4_mut(), *mask, None).await),
-                        Err(_) => None,
-                    };
-                    if let Some(state) = &resident {
-                        facts.object_table = state.object_table.clone();
+                        // The plan needs only the mask, so it is built here, and the
+                        // parameter read-back (issue #109) rides this same
+                        // connection: no second T_Connect, no second Data Secure
+                        // sync, and the reads are sized from the APDU negotiated
+                        // above (issue #194), not the 12-octet floor.
+                        let replanned;
+                        let planned = match (&r, &precomputed) {
+                            (Ok(mask), Some((declared, Ok(plan)))) if mask == declared => {
+                                Some(plan)
+                            }
+                            (Ok(mask), _) => {
+                                replanned = plan_for_mask(*mask);
+                                replanned.as_ref().ok()
+                            }
+                            (Err(_), _) => None,
+                        };
+                        let current = match (planned, &resident) {
+                            (Some(plan), Some(state))
+                                if wants_current_parameters(force, parameters_only, state)
+                                    && !plan.is_sys7() =>
+                            {
+                                Some(
+                                    read_current_parameter_memory_with_objects(
+                                        dev.l4_mut(),
+                                        plan,
+                                        &facts.object_table,
+                                    )
+                                    .await,
+                                )
+                            }
+                            _ => None,
+                        };
+                        let _ = dev.disconnect().await;
+                        (true, r, resident, current)
                     }
-                    let _ = dev.disconnect().await;
-                    (true, r, resident)
-                }
-                Err(err) => (false, Err(err), None),
-            };
-            anyhow::Ok((connected, result, resident, facts))
+                    Err(err) => (false, Err(err), None, None),
+                };
+            anyhow::Ok((connected, result, resident, facts, current))
         })?;
         // A loss still being re-established counts too: over TCP the probe can
         // run into the silence before the tunnel has noticed it (issue #192).
@@ -285,7 +356,7 @@ pub fn run(
         runtime.block_on(handle.wait_connected(handle.reconnect_budget()));
     };
 
-    let (connected, device_mask, resident, facts) = probe;
+    let (connected, device_mask, resident, facts, current) = probe;
     let device_mask = match device_mask {
         Ok(mask) => mask,
         Err(err) => {
@@ -293,31 +364,14 @@ pub fn run(
         }
     };
 
-    // The master-template `Load` procedure for this app's mask, if the archive
-    // shipped a `knx_master.xml`. A merged application (e.g. KNX Virtual DA.tp)
-    // only carries its own app-segment blocks; the load-control ops for the
-    // table objects (obj1/obj2/obj3) live in the template and are spliced in.
-    let template_ops = template_ops_for(&product_data, app);
-
-    // The computed table images (obj1 address, obj2 association, obj3
-    // group-object) this device requires, from its model links. A merged app's
-    // template writes these objects; a self-contained (thelsing) app's does not,
-    // so an empty map simply leaves the single-object flash untouched.
-    let table_images = build_table_images(model.as_ref(), target, app, &overrides_map);
-    let object_flags = linked_object_flags(model.as_ref(), target);
-
     // Pre-flight: build and validate the plan (System B gate, mask match,
-    // unsupported-op refusal all happen here).
-    let plan = match plan_flash_with_object_flags(
-        app,
-        address,
-        device_mask,
-        &overrides_map,
-        &base_offsets,
-        template_ops.as_deref(),
-        &table_images,
-        &object_flags,
-    ) {
+    // unsupported-op refusal all happen here), reusing the one built ahead of
+    // the connection when the device reports the declared mask.
+    let plan = match precomputed
+        .filter(|(declared, _)| *declared == device_mask)
+        .map(|(_, plan)| plan)
+        .unwrap_or_else(|| plan_for_mask(device_mask))
+    {
         Ok(plan) => plan,
         Err(err) => {
             eprintln!("cannot flash: {err}");
@@ -385,27 +439,18 @@ pub fn run(
     }
 
     // The parameter-level plan (issue #109): what this flash changes in the
-    // vendor's own words, before the memory-level plan. Reading the current
-    // values back is only meaningful on a device that already carries an
-    // application; a factory-fresh one has no segment to read, so every value is
+    // vendor's own words, before the memory-level plan. The current values were
+    // read on the pre-flight connection above, and only where they mean
+    // something (see `wants_current_parameters`): a factory-fresh device has no
+    // segment to read, and `--force` rewrites everything, so every value is then
     // reported as an unknown current value.
-    let current_params = if resident
-        .as_ref()
-        .is_some_and(|r| r.has_loaded_application())
-    {
-        read_current_parameters(
-            &runtime,
-            handle,
-            target,
-            &plan,
-            bcu_key,
-            tool_key.clone(),
-            secure_seq.clone(),
-        )
-    } else {
-        CurrentMemory::new()
-    };
-    let params = if plan.is_sys7() {
+    let skipped_for_force = force
+        && !plan.is_sys7()
+        && resident
+            .as_ref()
+            .is_some_and(|r| r.has_loaded_application());
+    let current_params = current.unwrap_or_else(CurrentMemory::new);
+    let mut params = if plan.is_sys7() {
         // System 7 writes whole absolute memory regions rather than a parameter
         // image over an allocated segment, so the memory-level plan is the
         // authoritative one there.
@@ -416,6 +461,11 @@ pub fn run(
     } else {
         param_plan(app, &overrides_map, &base_offsets, &current_params)
     };
+    if skipped_for_force {
+        // Replaces the "could not be read" note: nothing was attempted.
+        params.note = Some(FORCE_SKIPS_READBACK_NOTE.to_string());
+    }
+    let preflight_elapsed = preflight_started.elapsed();
 
     if output.json {
         print_plan_json(target, device_mask, &plan, &params)?;
@@ -505,6 +555,8 @@ pub fn run(
     };
     // The same tunnel phase A used: the pre-flight's L4 session and its bus lease
     // are both released by now, so the write phase simply takes the lease again.
+    let restart_started = std::cell::Cell::new(None);
+    let download_started = std::time::Instant::now();
     let outcome = runtime.block_on(execute(
         handle,
         target,
@@ -515,7 +567,19 @@ pub fn run(
         tool_key,
         secure_seq,
         output.json,
+        &restart_started,
     ));
+    if output.verbose > 0 {
+        eprintln!(
+            "{}",
+            phase_timings(
+                preflight_elapsed,
+                download_started,
+                restart_started.get(),
+                std::time::Instant::now()
+            )
+        );
+    }
 
     match outcome {
         Ok(verify) if verify.ok() => {
@@ -1320,6 +1384,7 @@ pub(crate) async fn execute(
     secure_tool_key: Option<bussard_secure::Key16>,
     secure_seq: bussard_secure::SequenceHighWater,
     json: bool,
+    restart_started: &std::cell::Cell<Option<std::time::Instant>>,
 ) -> Result<bussard_download::FlashOutcome, WriteError> {
     let connector = LeaseConnector {
         handle,
@@ -1350,7 +1415,17 @@ pub(crate) async fn execute(
     // Progress (issue #147): the plain `  [k/n] label` / `n/m bytes` lines, or
     // the live view on an interactive terminal.
     let mut display = crate::progress::FlashDisplay::new(plan, json);
-    let result = flash(&mut session, plan, options, |p| display.on_progress(p)).await;
+    let result = flash(&mut session, plan, options, |p| {
+        // The terminal restart is the last step: from here on the flash waits
+        // out the reboot and verifies, so `flash -v` reports it as its own phase.
+        if let bussard_download::Progress::Step { index, total, .. } = &p
+            && index == total
+        {
+            restart_started.set(Some(std::time::Instant::now()));
+        }
+        display.on_progress(p)
+    })
+    .await;
     let _ = session.into_disconnect().await;
     display.finish(result.as_ref().is_ok_and(|outcome| outcome.ok()));
     result
@@ -1381,55 +1456,48 @@ pub struct DryRun {
     pub dump_images: Option<std::path::PathBuf>,
 }
 
-/// Reads the device's current parameter memory over a read-only management
-/// session, so the parameter plan can name what the device holds today.
+/// The note the parameter plan carries when `--force` skipped the read-back.
+const FORCE_SKIPS_READBACK_NOTE: &str = "current values not read back: --force rewrites the whole \
+     application, so the device's parameter memory only fed this display (issue #194)";
+
+/// Whether the pre-flight reads the device's current parameter memory for the
+/// parameter plan (issue #109).
 ///
-/// Best-effort: any failure yields an empty map and every parameter is then
-/// reported with an unknown current value. Nothing here writes to the device.
-#[allow(clippy::too_many_arguments)]
-fn read_current_parameters(
-    runtime: &tokio::runtime::Runtime,
-    handle: &BusHandle,
-    target: IndividualAddress,
-    plan: &FlashPlan,
-    bcu_key: Option<u32>,
-    tool_key: Option<bussard_secure::Key16>,
-    secure_seq: bussard_secure::SequenceHighWater,
-) -> CurrentMemory {
-    let result: anyhow::Result<CurrentMemory> = runtime.block_on(async {
-        // Runs over the command's tunnel: the lease below serialises it against
-        // the pre-flight and write phases, so no second tunnel is opened. The
-        // same tunnel means the same source, already checked by `run`.
-        let source = ops::group_source(handle);
-        let lease = handle.lease().await.context("leasing the bus")?;
-        let channel = LeaseChannel::new(lease);
-        let secure = crate::secure_key::layer(&tool_key, &secure_seq);
-        let current = match DeviceConnection::connect_with_secure(
-            channel,
-            target,
-            source,
-            Timeouts::default(),
-            secure,
-        )
-        .await
-        {
-            Ok(mut dev) => {
-                let key = bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY);
-                let _ = dev.authorize(key).await;
-                let current = read_current_parameter_memory(dev.l4_mut(), plan).await;
-                let _ = dev.disconnect().await;
-                current
-            }
-            Err(_) => CurrentMemory::new(),
-        };
-        anyhow::Ok(current)
-    });
-    match result {
-        Ok(current) => current,
-        Err(err) => {
-            tracing::debug!(%err, "the parameter read-back did not run; values stay unknown");
-            CurrentMemory::new()
-        }
+/// Only a device that already carries an application has a segment to read.
+/// `--force` is a full rewrite whose read-back only fed the "N change(s)"
+/// display, so it is skipped there (issue #194), and `--parameters-only` reads
+/// the regions itself, with their addresses, on its own path.
+fn wants_current_parameters(
+    force: bool,
+    parameters_only: bool,
+    resident: &bussard_download::ResidentState,
+) -> bool {
+    !force && !parameters_only && resident.has_loaded_application()
+}
+
+/// The `flash -v` timing line (issue #194): the pre-flight (descriptor, probe,
+/// plan and parameter read-back; the confirmation prompt excluded), the
+/// download up to the terminal restart, and the restart with the post-reboot
+/// verification.
+fn phase_timings(
+    preflight: std::time::Duration,
+    download_started: std::time::Instant,
+    restart_started: Option<std::time::Instant>,
+    finished: std::time::Instant,
+) -> String {
+    let secs = |d: std::time::Duration| format!("{:.1} s", d.as_secs_f64());
+    match restart_started {
+        Some(at) => format!(
+            "timing: pre-flight {}, download {}, restart + verification {}",
+            secs(preflight),
+            secs(at.saturating_duration_since(download_started)),
+            secs(finished.saturating_duration_since(at)),
+        ),
+        None => format!(
+            "timing: pre-flight {}, download {} (did not reach the terminal restart)",
+            secs(preflight),
+            secs(finished.saturating_duration_since(download_started)),
+        ),
     }
 }
 
