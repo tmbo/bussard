@@ -223,15 +223,15 @@ pub fn analyze(model: &Model) -> ModelAnalysis {
         if !located {
             devices_without_location.push(addr.to_string());
         }
-        if let Some(security) = &device.security {
-            if security.secure_capable || security.activated {
-                secure_devices.push(SecureDevice {
-                    address: addr.to_string(),
-                    name: device.name.clone(),
-                    secure_capable: security.secure_capable,
-                    activated: security.activated,
-                });
-            }
+        if let Some(security) = &device.security
+            && (security.secure_capable || security.activated)
+        {
+            secure_devices.push(SecureDevice {
+                address: addr.to_string(),
+                name: device.name.clone(),
+                secure_capable: security.secure_capable,
+                activated: security.activated,
+            });
         }
 
         // A com-object is "unlinked" when no link on this device gives it a send

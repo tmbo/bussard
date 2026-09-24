@@ -282,41 +282,41 @@ impl BussardMcp {
         // and its rows are re-filtered against the same `Filter` (so a GA prefix
         // like "3/" is honoured, not silently dropped) and de-duplicated against
         // the ring rows we already have.
-        if telegrams.len() < limit {
-            if let Some(db) = self.state.capture_db.clone() {
-                let want = limit - telegrams.len();
-                let state = self.state.clone();
-                let filter = filter.clone();
-                // Push only *exact* terms into SQL; a GA prefix stays out of the
-                // query and is enforced by the `Filter` re-check post-decode.
-                let exact_ga = args.ga.as_deref().and_then(|s| s.parse().ok());
-                let exact_source = args.source.as_deref().and_then(|s| s.parse().ok());
-                let extra = tokio::task::spawn_blocking(move || {
-                    query_capture(&state, &db, &filter, exact_ga, exact_source, since, want)
-                })
-                .await
-                .ok()
-                .flatten();
+        if telegrams.len() < limit
+            && let Some(db) = self.state.capture_db.clone()
+        {
+            let want = limit - telegrams.len();
+            let state = self.state.clone();
+            let filter = filter.clone();
+            // Push only *exact* terms into SQL; a GA prefix stays out of the
+            // query and is enforced by the `Filter` re-check post-decode.
+            let exact_ga = args.ga.as_deref().and_then(|s| s.parse().ok());
+            let exact_source = args.source.as_deref().and_then(|s| s.parse().ok());
+            let extra = tokio::task::spawn_blocking(move || {
+                query_capture(&state, &db, &filter, exact_ga, exact_source, since, want)
+            })
+            .await
+            .ok()
+            .flatten();
 
-                if let Some(extra) = extra {
-                    // Drop any store row that duplicates a ring row (same
-                    // instant/source/dest/payload): the ring is the source of
-                    // truth for the recent window and the two can overlap.
-                    let seen: std::collections::HashSet<TelegramKey> =
-                        telegrams.iter().map(telegram_key).collect();
-                    let mut combined: Vec<_> = extra
-                        .into_iter()
-                        .filter(|t| !seen.contains(&telegram_key(t)))
-                        .collect();
-                    // Prepend older store rows before the newer ring rows.
-                    combined.extend(telegrams);
-                    // Keep the newest `limit`, chronological.
-                    if combined.len() > limit {
-                        let start = combined.len() - limit;
-                        combined.drain(0..start);
-                    }
-                    telegrams = combined;
+            if let Some(extra) = extra {
+                // Drop any store row that duplicates a ring row (same
+                // instant/source/dest/payload): the ring is the source of
+                // truth for the recent window and the two can overlap.
+                let seen: std::collections::HashSet<TelegramKey> =
+                    telegrams.iter().map(telegram_key).collect();
+                let mut combined: Vec<_> = extra
+                    .into_iter()
+                    .filter(|t| !seen.contains(&telegram_key(t)))
+                    .collect();
+                // Prepend older store rows before the newer ring rows.
+                combined.extend(telegrams);
+                // Keep the newest `limit`, chronological.
+                if combined.len() > limit {
+                    let start = combined.len() - limit;
+                    combined.drain(0..start);
                 }
+                telegrams = combined;
             }
         }
 
@@ -575,18 +575,18 @@ impl BussardMcp {
         let model = self.state.model.current();
 
         // Hard-refuse protected GAs. There is no override via MCP.
-        if let Some(group) = model.groups.groups.get(&ga) {
-            if group.protected {
-                return ok(json!({
-                    "ga": ga.to_string(),
-                    "ok": false,
-                    "refused": true,
-                    "reason": format!(
-                        "GA {ga} ({:?}) is protected (safety-critical); writes are refused via MCP",
-                        group.name
-                    ),
-                }));
-            }
+        if let Some(group) = model.groups.groups.get(&ga)
+            && group.protected
+        {
+            return ok(json!({
+                "ga": ga.to_string(),
+                "ok": false,
+                "refused": true,
+                "reason": format!(
+                    "GA {ga} ({:?}) is protected (safety-critical); writes are refused via MCP",
+                    group.name
+                ),
+            }));
         }
 
         // Resolve the DPT: the model is authoritative where it has one.

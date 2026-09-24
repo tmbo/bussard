@@ -29,11 +29,11 @@ pub fn run(dir: &Path, format: ExportFormat, out: &Path) -> anyhow::Result<ExitC
         ExportFormat::EtsXml => to_ets_xml(&model.groups),
     };
 
-    if let Some(parent) = out.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating {}", parent.display()))?;
-        }
+    if let Some(parent) = out.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
     }
     std::fs::write(out, body.as_bytes()).with_context(|| format!("writing {}", out.display()))?;
 

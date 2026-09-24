@@ -8,26 +8,19 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use bussard_model::{GroupAddress, IndividualAddress};
 use bussard_monitor::store::{
     CaptureRecord, CaptureStore, CaptureWriter, QueryFilter, StoredTelegram,
 };
 use bussard_monitor::{DecodedTelegram, Filter, TelegramRing};
+use bussard_testkit::{BoxError, TestResult, ga, ia};
 use bussard_transport::TimestampedFrame;
 use bussard_transport::cemi::CemiFrame;
 
-fn ga(s: &str) -> GroupAddress {
-    s.parse().unwrap()
-}
-fn ia(s: &str) -> IndividualAddress {
-    s.parse().unwrap()
-}
-
-fn frame(dest: &str, at: SystemTime) -> TimestampedFrame {
-    TimestampedFrame {
+fn frame(dest: &str, at: SystemTime) -> TestResult<TimestampedFrame> {
+    Ok(TimestampedFrame {
         received_at: at,
-        frame: CemiFrame::group_write_packed(ga(dest), ia("1.1.30"), &[1]),
-    }
+        frame: CemiFrame::group_write_packed(ga(dest)?, ia("1.1.30")?, &[1]),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -35,10 +28,10 @@ fn frame(dest: &str, at: SystemTime) -> TimestampedFrame {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn ten_thousand_telegrams_all_land() {
-    let dir = tempfile::tempdir().unwrap();
+async fn ten_thousand_telegrams_all_land() -> TestResult {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("flood.db");
-    let writer = CaptureWriter::open(&path).unwrap();
+    let writer = CaptureWriter::open(&path)?;
 
     let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
     const N: usize = 10_000;
@@ -50,18 +43,19 @@ async fn ten_thousand_telegrams_all_land() {
         let f = frame(
             &format!("{main}/{middle}/{sub}"),
             base + Duration::from_millis(i as u64),
-        );
+        )?;
         let decoded = DecodedTelegram::from_frame(&f, None);
         assert!(
             writer.record(CaptureRecord::from_decoded(&decoded, &f)),
             "record {i} rejected"
         );
     }
-    let written = writer.finish().unwrap();
+    let written = writer.finish()?;
     assert_eq!(written, N as u64, "all records written");
 
-    let store = CaptureStore::open(&path).unwrap();
-    assert_eq!(store.count().unwrap(), N as u64, "all rows present");
+    let store = CaptureStore::open(&path)?;
+    assert_eq!(store.count()?, N as u64, "all rows present");
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -69,10 +63,10 @@ async fn ten_thousand_telegrams_all_land() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn many_producers_one_writer_lands_all() {
-    let dir = tempfile::tempdir().unwrap();
+async fn many_producers_one_writer_lands_all() -> TestResult {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("multi.db");
-    let writer = Arc::new(CaptureWriter::open(&path).unwrap());
+    let writer = Arc::new(CaptureWriter::open(&path)?);
 
     const TASKS: usize = 8;
     const PER: usize = 1000;
@@ -85,25 +79,27 @@ async fn many_producers_one_writer_lands_all() {
                 let f = frame(
                     &format!("{}/{}/{}", 1 + t, i % 8, i % 256),
                     base + Duration::from_millis(i as u64),
-                );
+                )?;
                 let decoded = DecodedTelegram::from_frame(&f, None);
                 assert!(w.record(CaptureRecord::from_decoded(&decoded, &f)));
                 if i % 128 == 0 {
                     tokio::task::yield_now().await;
                 }
             }
+            Ok::<(), BoxError>(())
         }));
     }
     for h in handles {
-        h.await.unwrap();
+        h.await??;
     }
     // Unwrap the Arc to finish() the writer (join the thread).
-    let writer = Arc::try_unwrap(writer).ok().expect("sole owner");
-    let written = writer.finish().unwrap();
+    let writer = Arc::try_unwrap(writer).map_err(|_| "the writer must have a sole owner")?;
+    let written = writer.finish()?;
     assert_eq!(written, (TASKS * PER) as u64);
 
-    let store = CaptureStore::open(&path).unwrap();
-    assert_eq!(store.count().unwrap(), (TASKS * PER) as u64);
+    let store = CaptureStore::open(&path)?;
+    assert_eq!(store.count()?, (TASKS * PER) as u64);
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -111,9 +107,9 @@ async fn many_producers_one_writer_lands_all() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn many_waiters_all_see_the_one_match() {
+async fn many_waiters_all_see_the_one_match() -> TestResult {
     let ring = TelegramRing::with_capacity(100);
-    let filter = Filter::parse("3/2/0").unwrap();
+    let filter = Filter::parse("3/2/0")?;
 
     // Spawn many waiters BEFORE the match is pushed.
     let mut waiters = Vec::new();
@@ -129,28 +125,29 @@ async fn many_waiters_all_see_the_one_match() {
 
     // Push a few non-matching, then the single match (broadcast to all waiters).
     let r2 = ring.clone();
-    r2.push(mk_tel("9/1/9"));
-    r2.push(mk_tel("3/2/0")); // the match
-    r2.push(mk_tel("8/1/8"));
+    r2.push(mk_tel("9/1/9")?);
+    r2.push(mk_tel("3/2/0")?); // the match
+    r2.push(mk_tel("8/1/8")?);
 
     let mut matched = 0;
     for w in waiters {
-        if let Some(t) = w.await.unwrap() {
+        if let Some(t) = w.await? {
             assert_eq!(t.destination.to_string(), "3/2/0");
             matched += 1;
         }
     }
     assert_eq!(matched, 32, "every waiter received the broadcast match");
+    Ok(())
 }
 
-fn mk_tel(dest: &str) -> DecodedTelegram {
+fn mk_tel(dest: &str) -> TestResult<DecodedTelegram> {
     use bussard_model::codec::TypedValue;
     use bussard_monitor::{ApciKind, DestinationRef};
-    DecodedTelegram {
+    Ok(DecodedTelegram {
         timestamp: SystemTime::UNIX_EPOCH,
-        source: ia("1.1.1"),
+        source: ia("1.1.1")?,
         source_name: None,
-        destination: DestinationRef::Group(ga(dest)),
+        destination: DestinationRef::Group(ga(dest)?),
         destination_name: None,
         apci: ApciKind::Write,
         payload: vec![1],
@@ -158,7 +155,7 @@ fn mk_tel(dest: &str) -> DecodedTelegram {
         dpt: None,
         object_name: None,
         decode_note: None,
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -166,7 +163,7 @@ fn mk_tel(dest: &str) -> DecodedTelegram {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn ring_flood_evicts_to_capacity() {
+fn ring_flood_evicts_to_capacity() -> TestResult {
     let ring = TelegramRing::with_capacity(500);
     for i in 0..10_000u32 {
         ring.push(mk_tel(&format!(
@@ -174,20 +171,22 @@ fn ring_flood_evicts_to_capacity() {
             1 + i % 30,
             (i / 30) % 8,
             i % 256
-        )));
+        ))?);
     }
     assert_eq!(ring.len(), 500, "ring capped at capacity");
     // The newest 500 are retained; the very newest is first.
     let recent = ring.recent(&Filter::default(), Some(1));
     assert_eq!(recent.len(), 1);
+    Ok(())
 }
 
 #[test]
-fn ring_with_capacity_zero_is_clamped_to_one() {
+fn ring_with_capacity_zero_is_clamped_to_one() -> TestResult {
     let ring = TelegramRing::with_capacity(0);
-    ring.push(mk_tel("1/1/1"));
-    ring.push(mk_tel("2/2/2"));
+    ring.push(mk_tel("1/1/1")?);
+    ring.push(mk_tel("2/2/2")?);
     assert_eq!(ring.len(), 1, "capacity floored at 1");
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -195,7 +194,7 @@ fn ring_with_capacity_zero_is_clamped_to_one() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn redecode_corrupt_blob_falls_back_to_snapshot() {
+async fn redecode_corrupt_blob_falls_back_to_snapshot() -> TestResult {
     // Various malformed raw_cemi buffers must yield Err(snapshot), never panic.
     for raw in [
         vec![0xFF],
@@ -215,11 +214,12 @@ async fn redecode_corrupt_blob_falls_back_to_snapshot() {
         };
         let r = std::panic::catch_unwind(|| stored.redecode(None));
         assert!(r.is_ok(), "redecode panicked on raw {raw:?}");
-        match r.unwrap() {
+        match r.map_err(|_| "redecode panicked")? {
             Ok(_) => { /* some short buffers may coincidentally decode; fine */ }
             Err(snap) => assert_eq!(snap.as_deref(), Some("{\"snap\":1}")),
         }
     }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -227,37 +227,36 @@ async fn redecode_corrupt_blob_falls_back_to_snapshot() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn reopened_reader_sees_committed_rows() {
-    let dir = tempfile::tempdir().unwrap();
+async fn reopened_reader_sees_committed_rows() -> TestResult {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("reopen.db");
 
     // Write & finish (commits + closes writer).
     {
-        let writer = CaptureWriter::open(&path).unwrap();
+        let writer = CaptureWriter::open(&path)?;
         for i in 0..50u8 {
-            let f = frame(&format!("1/0/{i}"), SystemTime::UNIX_EPOCH);
+            let f = frame(&format!("1/0/{i}"), SystemTime::UNIX_EPOCH)?;
             let decoded = DecodedTelegram::from_frame(&f, None);
             writer.record(CaptureRecord::from_decoded(&decoded, &f));
         }
-        writer.finish().unwrap();
+        writer.finish()?;
     }
 
     // First reader.
-    let store1 = CaptureStore::open(&path).unwrap();
-    assert_eq!(store1.count().unwrap(), 50);
-    assert_eq!(store1.journal_mode().unwrap().to_lowercase(), "wal");
+    let store1 = CaptureStore::open(&path)?;
+    assert_eq!(store1.count()?, 50);
+    assert_eq!(store1.journal_mode()?.to_lowercase(), "wal");
 
     // A second, independent reader opened on the same file sees the same rows.
-    let store2 = CaptureStore::open(&path).unwrap();
-    let rows = store2
-        .query(&QueryFilter {
-            limit: Some(10),
-            ..Default::default()
-        })
-        .unwrap();
+    let store2 = CaptureStore::open(&path)?;
+    let rows = store2.query(&QueryFilter {
+        limit: Some(10),
+        ..Default::default()
+    })?;
     assert_eq!(rows.len(), 10);
     // Ordered newest-first by id.
     assert_eq!(rows[0].destination, "1/0/49");
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -265,45 +264,40 @@ async fn reopened_reader_sees_committed_rows() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn query_filters_and_limit_are_consistent() {
-    let dir = tempfile::tempdir().unwrap();
+async fn query_filters_and_limit_are_consistent() -> TestResult {
+    let dir = tempfile::tempdir()?;
     let path = dir.path().join("filt.db");
-    let writer = CaptureWriter::open(&path).unwrap();
+    let writer = CaptureWriter::open(&path)?;
     let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
     for i in 0..200u32 {
         let f = frame(
             &format!("3/2/{}", i % 256),
             base + Duration::from_secs(i as u64),
-        );
+        )?;
         let decoded = DecodedTelegram::from_frame(&f, None);
         writer.record(CaptureRecord::from_decoded(&decoded, &f));
     }
-    writer.finish().unwrap();
+    writer.finish()?;
 
-    let store = CaptureStore::open(&path).unwrap();
+    let store = CaptureStore::open(&path)?;
     // Limit is honoured.
-    let limited = store
-        .query(&QueryFilter {
-            limit: Some(5),
-            ..Default::default()
-        })
-        .unwrap();
+    let limited = store.query(&QueryFilter {
+        limit: Some(5),
+        ..Default::default()
+    })?;
     assert_eq!(limited.len(), 5);
     // Since filter reduces the set.
-    let since = store
-        .query(&QueryFilter {
-            since: Some(base + Duration::from_secs(100)),
-            ..Default::default()
-        })
-        .unwrap();
+    let since = store.query(&QueryFilter {
+        since: Some(base + Duration::from_secs(100)),
+        ..Default::default()
+    })?;
     assert_eq!(since.len(), 100);
     // GA filter on a specific destination.
-    let by_ga = store
-        .query(&QueryFilter {
-            ga: Some(ga("3/2/0")),
-            ..Default::default()
-        })
-        .unwrap();
+    let by_ga = store.query(&QueryFilter {
+        ga: Some(ga("3/2/0")?),
+        ..Default::default()
+    })?;
     // 3/2/0 appears at i=0 only (i%256 == 0 for i in 0..200 -> just i=0).
     assert_eq!(by_ga.len(), 1);
+    Ok(())
 }

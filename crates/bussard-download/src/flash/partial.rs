@@ -197,15 +197,14 @@ impl FlashPlan {
                 image: Some(image),
                 ..
             } = step
+                && carries_params(&image.segment_id)
             {
-                if carries_params(&image.segment_id) {
-                    if !regions.contains_key(&image.segment_id) {
-                        return Err(PartialPlanError::UnreadableSegment {
-                            segment: image.segment_id.clone(),
-                        });
-                    }
-                    lsms.insert(*lsm);
+                if !regions.contains_key(&image.segment_id) {
+                    return Err(PartialPlanError::UnreadableSegment {
+                        segment: image.segment_id.clone(),
+                    });
                 }
+                lsms.insert(*lsm);
             }
         }
         if lsms.is_empty() {

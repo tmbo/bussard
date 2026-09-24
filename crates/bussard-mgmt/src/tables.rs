@@ -246,15 +246,19 @@ pub async fn read_tables<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Result
     let (addr_bytes, addr_source) = read_table(l4, addr_index, 2, "group address table").await?;
     sources.push(("addresses", addr_source));
     let addresses: Vec<GroupAddress> = addr_bytes
-        .chunks_exact(2)
-        .map(|c| GroupAddress::from_raw(u16::from_be_bytes([c[0], c[1]])))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| GroupAddress::from_raw(u16::from_be_bytes(*c)))
         .collect();
 
     // Association table: 4-octet elements, big-endian (TSAP, ASAP).
     let (assoc_bytes, assoc_source) = read_table(l4, assoc_index, 4, "association table").await?;
     sources.push(("associations", assoc_source));
     let associations: Vec<(u16, u16)> = assoc_bytes
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| {
             (
                 u16::from_be_bytes([c[0], c[1]]),

@@ -58,14 +58,12 @@ pub async fn discover(timeout: Duration, interface: Ipv4Addr) -> Result<Vec<Gate
         }
         match tokio::time::timeout(remaining, socket.recv_from(&mut buf)).await {
             Ok(Ok((n, _from))) => {
-                if let Ok(parsed) = knxnet::parse(&buf[..n]) {
-                    if parsed.service == ServiceType::SearchResponse {
-                        if let Ok(info) = knxnet::parse_search_response(parsed.body) {
-                            if !found.iter().any(|g| g.endpoint == info.endpoint) {
-                                found.push(info);
-                            }
-                        }
-                    }
+                if let Ok(parsed) = knxnet::parse(&buf[..n])
+                    && parsed.service == ServiceType::SearchResponse
+                    && let Ok(info) = knxnet::parse_search_response(parsed.body)
+                    && !found.iter().any(|g| g.endpoint == info.endpoint)
+                {
+                    found.push(info);
                 }
             }
             Ok(Err(e)) => return Err(e.into()),
@@ -118,10 +116,10 @@ pub async fn describe_gateway(
         }
         match tokio::time::timeout(remaining, socket.recv(&mut buf)).await {
             Ok(Ok(n)) => {
-                if let Ok(parsed) = knxnet::parse(&buf[..n]) {
-                    if parsed.service == ServiceType::DescriptionResponse {
-                        return knxnet::parse_description_response(parsed.body);
-                    }
+                if let Ok(parsed) = knxnet::parse(&buf[..n])
+                    && parsed.service == ServiceType::DescriptionResponse
+                {
+                    return knxnet::parse_description_response(parsed.body);
                 }
                 // Anything else on this ephemeral port is not ours; keep waiting.
             }

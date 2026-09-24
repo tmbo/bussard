@@ -105,15 +105,15 @@ pub(super) async fn resident_match_objects<C: Connector>(
     // The candidate objects: those the executor would resolve a WriteRelMem onto.
     let mut candidates: BTreeSet<u8> = BTreeSet::new();
     for step in &plan.steps {
-        if let FlashStep::WriteRelMem { target, .. } = step {
-            if let Some(obj) = resolve_object_target_opt(
+        if let FlashStep::WriteRelMem { target, .. } = step
+            && let Some(obj) = resolve_object_target_opt(
                 *target,
                 object_table,
                 app_obj,
                 plan.spliced_from_template,
-            ) {
-                candidates.insert(obj);
-            }
+            )
+        {
+            candidates.insert(obj);
         }
     }
 

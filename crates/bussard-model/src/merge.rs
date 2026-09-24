@@ -354,14 +354,14 @@ fn overlay_device(
     // A com-object may name the channel it belongs to; after the merge that name
     // must resolve, or the model points at a channel that does not exist.
     for (number, co) in &mut theirs.com_objects {
-        if let Some(key) = co.channel.clone() {
-            if !theirs.channels.contains_key(&key) {
-                report.notes.push(format!(
-                    "{path}: com-object {number} referenced channel `{key}`, which the project \
+        if let Some(key) = co.channel.clone()
+            && !theirs.channels.contains_key(&key)
+        {
+            report.notes.push(format!(
+                "{path}: com-object {number} referenced channel `{key}`, which the project \
                      no longer defines; the reference was dropped"
-                ));
-                co.channel = None;
-            }
+            ));
+            co.channel = None;
         }
     }
 }
@@ -414,13 +414,13 @@ fn overlay_product(path: &str, ours: &Device, theirs: &mut Device, report: &mut 
         ),
         ("mask", field(op, |p| &p.mask), field(tp, |p| &p.mask)),
     ] {
-        if let (Some(o), Some(t)) = (o, t) {
-            if o != t {
-                report.notes.push(format!(
-                    "{path}: product.{name} changed {o} -> {t}; parameters and com_objects were \
+        if let (Some(o), Some(t)) = (o, t)
+            && o != t
+        {
+            report.notes.push(format!(
+                "{path}: product.{name} changed {o} -> {t}; parameters and com_objects were \
                      regenerated for the new application program"
-                ));
-            }
+            ));
         }
     }
 

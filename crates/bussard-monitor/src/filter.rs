@@ -161,22 +161,16 @@ fn term_matches_dest(term: &Term, dest: DestinationRef) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bussard_testkit::{TestResult, ga, ia};
     use std::time::SystemTime;
 
     use crate::decode::ApciKind;
     use bussard_model::codec::TypedValue;
 
-    fn ia(s: &str) -> IndividualAddress {
-        s.parse().unwrap()
-    }
-    fn ga(s: &str) -> GroupAddress {
-        s.parse().unwrap()
-    }
-
-    fn tel(source: &str, dest: DestinationRef) -> DecodedTelegram {
-        DecodedTelegram {
+    fn tel(source: &str, dest: DestinationRef) -> TestResult<DecodedTelegram> {
+        Ok(DecodedTelegram {
             timestamp: SystemTime::UNIX_EPOCH,
-            source: ia(source),
+            source: ia(source)?,
             source_name: None,
             destination: dest,
             destination_name: None,
@@ -186,68 +180,75 @@ mod tests {
             dpt: None,
             object_name: None,
             decode_note: None,
-        }
+        })
     }
 
     #[test]
-    fn empty_matches_everything() {
-        let f = Filter::parse("").unwrap();
+    fn empty_matches_everything() -> TestResult {
+        let f = Filter::parse("")?;
         assert!(f.is_empty());
-        assert!(f.matches(&tel("1.1.1", DestinationRef::Group(ga("9/1/9")))));
+        assert!(f.matches(&tel("1.1.1", DestinationRef::Group(ga("9/1/9")?))?));
 
         // Whitespace-only and stray commas are also empty.
-        assert!(Filter::parse("  ").unwrap().is_empty());
-        assert!(Filter::parse(" , , ").unwrap().is_empty());
+        assert!(Filter::parse("  ")?.is_empty());
+        assert!(Filter::parse(" , , ")?.is_empty());
+        Ok(())
     }
 
     #[test]
-    fn exact_ga() {
-        let f = Filter::parse("3/2/0").unwrap();
-        assert!(f.matches(&tel("1.1.1", DestinationRef::Group(ga("3/2/0")))));
-        assert!(!f.matches(&tel("1.1.1", DestinationRef::Group(ga("3/2/1")))));
+    fn exact_ga() -> TestResult {
+        let f = Filter::parse("3/2/0")?;
+        assert!(f.matches(&tel("1.1.1", DestinationRef::Group(ga("3/2/0")?))?));
+        assert!(!f.matches(&tel("1.1.1", DestinationRef::Group(ga("3/2/1")?))?));
+        Ok(())
     }
 
     #[test]
-    fn ga_main_prefix() {
-        let f = Filter::parse("3/").unwrap();
-        assert!(f.matches(&tel("1.1.1", DestinationRef::Group(ga("3/0/4")))));
-        assert!(f.matches(&tel("1.1.1", DestinationRef::Group(ga("3/7/255")))));
-        assert!(!f.matches(&tel("1.1.1", DestinationRef::Group(ga("4/0/0")))));
+    fn ga_main_prefix() -> TestResult {
+        let f = Filter::parse("3/")?;
+        assert!(f.matches(&tel("1.1.1", DestinationRef::Group(ga("3/0/4")?))?));
+        assert!(f.matches(&tel("1.1.1", DestinationRef::Group(ga("3/7/255")?))?));
+        assert!(!f.matches(&tel("1.1.1", DestinationRef::Group(ga("4/0/0")?))?));
+        Ok(())
     }
 
     #[test]
-    fn ga_main_middle_prefix() {
-        let f = Filter::parse("3/2/").unwrap();
-        assert!(f.matches(&tel("1.1.1", DestinationRef::Group(ga("3/2/9")))));
-        assert!(!f.matches(&tel("1.1.1", DestinationRef::Group(ga("3/3/9")))));
+    fn ga_main_middle_prefix() -> TestResult {
+        let f = Filter::parse("3/2/")?;
+        assert!(f.matches(&tel("1.1.1", DestinationRef::Group(ga("3/2/9")?))?));
+        assert!(!f.matches(&tel("1.1.1", DestinationRef::Group(ga("3/3/9")?))?));
+        Ok(())
     }
 
     #[test]
-    fn individual_matches_source_or_dest() {
-        let f = Filter::parse("1.1.30").unwrap();
+    fn individual_matches_source_or_dest() -> TestResult {
+        let f = Filter::parse("1.1.30")?;
         // As source.
-        assert!(f.matches(&tel("1.1.30", DestinationRef::Group(ga("9/1/9")))));
+        assert!(f.matches(&tel("1.1.30", DestinationRef::Group(ga("9/1/9")?))?));
         // As destination.
-        assert!(f.matches(&tel("2.2.2", DestinationRef::Individual(ia("1.1.30")))));
+        assert!(f.matches(&tel("2.2.2", DestinationRef::Individual(ia("1.1.30")?))?));
         // Neither.
-        assert!(!f.matches(&tel("2.2.2", DestinationRef::Group(ga("9/1/9")))));
+        assert!(!f.matches(&tel("2.2.2", DestinationRef::Group(ga("9/1/9")?))?));
+        Ok(())
     }
 
     #[test]
-    fn multiple_terms_any_match() {
-        let f = Filter::parse("3/2/0, 1.1.30, 5/").unwrap();
-        assert!(f.matches(&tel("9.9.9", DestinationRef::Group(ga("3/2/0")))));
-        assert!(f.matches(&tel("1.1.30", DestinationRef::Group(ga("9/1/9")))));
-        assert!(f.matches(&tel("9.9.9", DestinationRef::Group(ga("5/1/2")))));
-        assert!(!f.matches(&tel("9.9.9", DestinationRef::Group(ga("6/1/2")))));
+    fn multiple_terms_any_match() -> TestResult {
+        let f = Filter::parse("3/2/0, 1.1.30, 5/")?;
+        assert!(f.matches(&tel("9.9.9", DestinationRef::Group(ga("3/2/0")?))?));
+        assert!(f.matches(&tel("1.1.30", DestinationRef::Group(ga("9/1/9")?))?));
+        assert!(f.matches(&tel("9.9.9", DestinationRef::Group(ga("5/1/2")?))?));
+        assert!(!f.matches(&tel("9.9.9", DestinationRef::Group(ga("6/1/2")?))?));
+        Ok(())
     }
 
     #[test]
-    fn parse_errors() {
+    fn parse_errors() -> TestResult {
         assert!(Filter::parse("abc").is_err());
         assert!(Filter::parse("3/2/0/1").is_err());
         assert!(Filter::parse("32/0/0").is_err()); // main out of range
         assert!(Filter::parse("3/8/").is_err()); // middle out of range
         assert!(Filter::parse("1.1").is_err()); // incomplete IA
+        Ok(())
     }
 }

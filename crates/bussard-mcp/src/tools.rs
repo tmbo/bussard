@@ -409,34 +409,29 @@ pub(crate) mod test_fixtures {
     use bussard_model::schema::{
         BussardConfig, Channel, Device, Group, Groups, Link, Links, Location, Range,
     };
-    use bussard_model::{GroupAddress, IndividualAddress, LoadedDevice, Model};
+    use bussard_model::{LoadedDevice, Model};
     use bussard_monitor::{ApciKind, DecodedTelegram, DestinationRef, TelegramRing};
 
-    pub fn ga(s: &str) -> GroupAddress {
-        s.parse().unwrap()
-    }
-    pub fn ia(s: &str) -> IndividualAddress {
-        s.parse().unwrap()
-    }
+    pub use bussard_testkit::{TestResult, ga, ia};
 
     /// Two GAs (one with DPT), one device in a room, one send + one listen link.
-    pub fn model() -> Model {
+    pub fn model() -> TestResult<Model> {
         let mut groups = BTreeMap::new();
         groups.insert(
-            ga("3/2/0"),
+            ga("3/2/0")?,
             Group {
                 name: "Windalarm".to_string(),
-                dpt: Some("1.005".parse().unwrap()),
+                dpt: Some("1.005".parse()?),
                 description: Some("wind alarm".to_string()),
                 protected: true,
                 secure: false,
             },
         );
         groups.insert(
-            ga("3/0/4"),
+            ga("3/0/4")?,
             Group {
                 name: "Living Room Blind Move".to_string(),
-                dpt: Some("1.008".parse().unwrap()),
+                dpt: Some("1.008".parse()?),
                 description: None,
                 protected: false,
                 secure: false,
@@ -453,21 +448,21 @@ pub(crate) mod test_fixtures {
 
         let mut links = BTreeMap::new();
         links.insert(
-            ia("1.1.30"),
+            ia("1.1.30")?,
             vec![Link {
                 object: 3,
                 name: Some("Windalarm 1".to_string()),
-                send: Some(ga("3/2/0")),
+                send: Some(ga("3/2/0")?),
                 listen: vec![],
             }],
         );
         links.insert(
-            ia("1.1.4"),
+            ia("1.1.4")?,
             vec![Link {
                 object: 12,
                 name: Some("A: Behang Auf/Ab".to_string()),
                 send: None,
-                listen: vec![ga("3/0/4")],
+                listen: vec![ga("3/0/4")?],
             }],
         );
 
@@ -481,10 +476,10 @@ pub(crate) mod test_fixtures {
 
         let mut devices = BTreeMap::new();
         devices.insert(
-            ia("1.1.4"),
+            ia("1.1.4")?,
             LoadedDevice {
                 device: Device {
-                    address: ia("1.1.4"),
+                    address: ia("1.1.4")?,
                     name: "Blind Actuator 4-fold".to_string(),
                     description: None,
                     location: Some(Location {
@@ -503,10 +498,10 @@ pub(crate) mod test_fixtures {
             },
         );
         devices.insert(
-            ia("1.1.30"),
+            ia("1.1.30")?,
             LoadedDevice {
                 device: Device {
-                    address: ia("1.1.30"),
+                    address: ia("1.1.30")?,
                     name: "Weather Station".to_string(),
                     description: None,
                     location: Some(Location {
@@ -525,7 +520,7 @@ pub(crate) mod test_fixtures {
             },
         );
 
-        Model {
+        Ok(Model {
             config: BussardConfig::default(),
             groups: Groups {
                 project: Some("Home".to_string()),
@@ -535,16 +530,16 @@ pub(crate) mod test_fixtures {
             },
             links: Links { links },
             devices,
-        }
+        })
     }
 
     /// A telegram to `dest` at `secs` past the epoch.
-    pub fn tel(dest: &str, secs: u64) -> DecodedTelegram {
-        DecodedTelegram {
+    pub fn tel(dest: &str, secs: u64) -> TestResult<DecodedTelegram> {
+        Ok(DecodedTelegram {
             timestamp: SystemTime::UNIX_EPOCH + Duration::from_secs(secs),
-            source: ia("1.1.30"),
+            source: ia("1.1.30")?,
             source_name: Some("Weather Station".to_string()),
-            destination: DestinationRef::Group(ga(dest)),
+            destination: DestinationRef::Group(ga(dest)?),
             destination_name: Some("Windalarm".to_string()),
             apci: ApciKind::Write,
             payload: vec![1],
@@ -552,18 +547,18 @@ pub(crate) mod test_fixtures {
                 value: true,
                 label: "Alarm",
             }),
-            dpt: Some("1.005".parse().unwrap()),
+            dpt: Some("1.005".parse()?),
             object_name: Some("Windalarm 1".to_string()),
             decode_note: None,
-        }
+        })
     }
 
-    pub fn ring_with(dests: &[(&str, u64)]) -> TelegramRing {
+    pub fn ring_with(dests: &[(&str, u64)]) -> TestResult<TelegramRing> {
         let ring = TelegramRing::new();
         for (d, s) in dests {
-            ring.push(tel(d, *s));
+            ring.push(tel(d, *s)?);
         }
-        ring
+        Ok(ring)
     }
 }
 
@@ -575,8 +570,8 @@ mod tests {
     use bussard_transport::TransportKind;
 
     #[test]
-    fn summary_counts_and_ranges() {
-        let m = model();
+    fn summary_counts_and_ranges() -> TestResult {
+        let m = model()?;
         let bus = BusStatus::new(TransportKind::Tunnel);
         let v = project_summary(&m, &bus);
         assert_eq!(v["project"], "Home");
@@ -584,92 +579,99 @@ mod tests {
         assert_eq!(v["counts"]["group_addresses"], 2);
         assert_eq!(v["counts"]["links"], 2);
         // Two rooms with one device each.
-        assert_eq!(v["rooms"].as_array().unwrap().len(), 2);
+        assert_eq!(v["rooms"].as_array().ok_or("not an array")?.len(), 2);
         // One main range "3".
         assert_eq!(v["ga_main_ranges"][0]["main"], "3");
         assert_eq!(v["ga_main_ranges"][0]["name"], "Verschattung");
         // Bus starts connecting.
         assert_eq!(v["bus"]["state"], "connecting");
         assert_eq!(v["bus"]["transport"], "tunnel");
+        Ok(())
     }
 
     #[test]
-    fn lookup_matches_across_kinds() {
-        let m = model();
+    fn lookup_matches_across_kinds() -> TestResult {
+        let m = model()?;
         // "wind" hits the GA name and the object name.
         let v = model_lookup(&m, "wind", 50);
-        assert_eq!(v["groups"].as_array().unwrap().len(), 1);
+        assert_eq!(v["groups"].as_array().ok_or("not an array")?.len(), 1);
         assert_eq!(v["groups"][0]["address"], "3/2/0");
-        assert_eq!(v["objects"].as_array().unwrap().len(), 1);
+        assert_eq!(v["objects"].as_array().ok_or("not an array")?.len(), 1);
         assert_eq!(v["objects"][0]["linked_gas"][0], "3/2/0");
 
         // A room-name match returns the device.
         let v = model_lookup(&m, "wohnzimmer", 50);
-        assert_eq!(v["devices"].as_array().unwrap().len(), 1);
+        assert_eq!(v["devices"].as_array().ok_or("not an array")?.len(), 1);
         assert_eq!(v["devices"][0]["ia"], "1.1.4");
 
         // An address substring match.
         let v = model_lookup(&m, "3/0/4", 50);
         assert_eq!(v["groups"][0]["address"], "3/0/4");
+        Ok(())
     }
 
     #[test]
-    fn lookup_respects_limit() {
-        let m = model();
+    fn lookup_respects_limit() -> TestResult {
+        let m = model()?;
         // Both GAs contain "3/" — limit to 1.
         let v = model_lookup(&m, "3/", 1);
-        assert_eq!(v["groups"].as_array().unwrap().len(), 1);
+        assert_eq!(v["groups"].as_array().ok_or("not an array")?.len(), 1);
+        Ok(())
     }
 
     #[test]
-    fn get_group_assembles_links_and_last_telegram() {
-        let m = model();
-        let ring = ring_with(&[("3/2/0", 100)]);
-        let v = get_group(&m, &ring, ga("3/2/0"));
+    fn get_group_assembles_links_and_last_telegram() -> TestResult {
+        let m = model()?;
+        let ring = ring_with(&[("3/2/0", 100)])?;
+        let v = get_group(&m, &ring, ga("3/2/0")?);
         assert_eq!(v["found"], true);
         assert_eq!(v["group"]["name"], "Windalarm");
         // The sending link is present with role "send".
-        let links = v["links"].as_array().unwrap();
+        let links = v["links"].as_array().ok_or("not an array")?;
         assert_eq!(links.len(), 1);
         assert_eq!(links[0]["device_ia"], "1.1.30");
         assert_eq!(links[0]["role"], "send");
         // Last telegram resolved.
         assert_eq!(v["last_telegram"]["destination"], "3/2/0");
+        Ok(())
     }
 
     #[test]
-    fn get_group_listen_role() {
-        let m = model();
+    fn get_group_listen_role() -> TestResult {
+        let m = model()?;
         let ring = TelegramRing::new();
-        let v = get_group(&m, &ring, ga("3/0/4"));
-        let links = v["links"].as_array().unwrap();
+        let v = get_group(&m, &ring, ga("3/0/4")?);
+        let links = v["links"].as_array().ok_or("not an array")?;
         assert_eq!(links.len(), 1);
         assert_eq!(links[0]["role"], "listen");
         assert_eq!(links[0]["object"], 12);
         assert!(v["last_telegram"].is_null());
+        Ok(())
     }
 
     #[test]
-    fn get_device_full_and_links() {
-        let m = model();
-        let v = get_device(&m, ia("1.1.4"));
+    fn get_device_full_and_links() -> TestResult {
+        let m = model()?;
+        let v = get_device(&m, ia("1.1.4")?);
         assert_eq!(v["found"], true);
         assert_eq!(v["device"]["name"], "Blind Actuator 4-fold");
         assert_eq!(v["device"]["location"]["room"], "Wohnzimmer");
-        assert_eq!(v["links"].as_array().unwrap().len(), 1);
+        assert_eq!(v["links"].as_array().ok_or("not an array")?.len(), 1);
         assert_eq!(v["links"][0]["listen"][0], "3/0/4");
+        Ok(())
     }
 
     #[test]
-    fn get_device_not_found() {
-        let m = model();
-        let v = get_device(&m, ia("9.9.9"));
+    fn get_device_not_found() -> TestResult {
+        let m = model()?;
+        let v = get_device(&m, ia("9.9.9")?);
         assert_eq!(v["found"], false);
+        Ok(())
     }
 
     #[test]
-    fn recent_filters_since_and_orders_chronologically() {
-        let ring = ring_with(&[("3/2/0", 10), ("3/2/0", 20), ("3/2/0", 30)]);
+    fn recent_filters_since_and_orders_chronologically() -> TestResult {
+        let ring = ring_with(&[("3/2/0", 10), ("3/2/0", 20), ("3/2/0", 30)])?;
         let filter = Filter::default();
         // No since: all three, newest last.
         let all = recent_telegrams(&ring, &filter, None, 50);
@@ -684,22 +686,24 @@ mod tests {
         // Limit to 1: newest only.
         let one = recent_telegrams(&ring, &filter, None, 1);
         assert_eq!(one.len(), 1);
+        Ok(())
     }
 
     #[test]
-    fn validate_shape_and_counts() {
-        let m = model();
+    fn validate_shape_and_counts() -> TestResult {
+        let m = model()?;
         let v = validate_result(&m);
         assert!(v["counts"]["total"].as_u64().is_some());
         assert!(v["diagnostics"].is_array());
         // A well-formed fixture: `ok` reflects zero errors.
-        let errors = v["counts"]["errors"].as_u64().unwrap();
+        let errors = v["counts"]["errors"].as_u64().ok_or("not a u64")?;
         assert_eq!(v["ok"], errors == 0);
+        Ok(())
     }
 
     #[test]
-    fn decode_for_dpt_bool() {
-        let (display, typed) = decode_for_dpt(Some("1.005".parse().unwrap()), &[1]);
+    fn decode_for_dpt_bool() -> TestResult {
+        let (display, typed) = decode_for_dpt(Some("1.005".parse()?), &[1]);
         assert_eq!(display.as_deref(), Some("Alarm"));
         assert_eq!(typed["bool"], true);
         assert_eq!(typed["label"], "Alarm");
@@ -707,5 +711,6 @@ mod tests {
         let (display, typed) = decode_for_dpt(None, &[1]);
         assert!(display.is_none());
         assert!(typed.is_null());
+        Ok(())
     }
 }

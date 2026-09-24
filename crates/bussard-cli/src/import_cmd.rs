@@ -116,15 +116,15 @@ pub(crate) fn write_model(
 
     // An import that changes nothing leaves the files alone, so hand-written
     // comments and formatting survive a no-op re-import.
-    if let Some((ours, merge, kept)) = &merge_report {
-        if *ours == to_save {
-            println!(
-                "{} already matches the import; no file written",
-                dir.display()
-            );
-            crate::import_bundle::print_changes(ours, &to_save);
-            return Ok(report_merge(merge, *kept, choice));
-        }
+    if let Some((ours, merge, kept)) = &merge_report
+        && *ours == to_save
+    {
+        println!(
+            "{} already matches the import; no file written",
+            dir.display()
+        );
+        crate::import_bundle::print_changes(ours, &to_save);
+        return Ok(report_merge(merge, *kept, choice));
     }
 
     let report = to_save.save_pruning(dir)?;

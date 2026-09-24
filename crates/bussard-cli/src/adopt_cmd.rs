@@ -410,20 +410,21 @@ async fn adopt_flow(
 
     // Cross-check the read-back order number against the product's order numbers.
     let mut mismatch = false;
-    if let (Some(sel), Some(read_order)) = (selected, verified.order.as_deref()) {
-        if !sel.order_numbers.is_empty() && !order_matches(read_order, &sel.order_numbers) {
-            mismatch = true;
-            eprintln!();
-            eprintln!(
-                "WARNING: the device reported order number {read_order:?}, which is not among the \
+    if let (Some(sel), Some(read_order)) = (selected, verified.order.as_deref())
+        && !sel.order_numbers.is_empty()
+        && !order_matches(read_order, &sel.order_numbers)
+    {
+        mismatch = true;
+        eprintln!();
+        eprintln!(
+            "WARNING: the device reported order number {read_order:?}, which is not among the \
                  product's order numbers ({}).",
-                sel.order_numbers.join(", ")
-            );
-            eprintln!(
-                "         the product data may not match this hardware — double-check before \
+            sel.order_numbers.join(", ")
+        );
+        eprintln!(
+            "         the product data may not match this hardware — double-check before \
                  wiring links. (continuing anyway)"
-            );
-        }
+        );
     }
 
     // Step 3: write the rich device file.

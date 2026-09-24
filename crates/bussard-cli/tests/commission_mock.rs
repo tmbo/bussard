@@ -141,12 +141,11 @@ fn handle_property_write(
     if object_index == apci::DEVICE_OBJECT_INDEX
         && property_id == apci::PID_PROGMODE
         && value.first() == Some(&0x00)
+        && let Ok(mut devs) = devices.lock()
     {
-        if let Ok(mut devs) = devices.lock() {
-            for d in devs.iter_mut() {
-                if d.address == dest {
-                    d.programming = false;
-                }
+        for d in devs.iter_mut() {
+            if d.address == dest {
+                d.programming = false;
             }
         }
     }

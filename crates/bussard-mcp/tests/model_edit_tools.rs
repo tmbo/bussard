@@ -70,18 +70,21 @@ fn server_over(dir: &Path) -> Result<BussardMcp, Box<dyn std::error::Error>> {
 
 async fn connect(
     server: BussardMcp,
-) -> (
-    rmcp::service::RunningService<rmcp::RoleClient, ()>,
-    tokio::task::JoinHandle<()>,
-) {
+) -> Result<
+    (
+        rmcp::service::RunningService<rmcp::RoleClient, ()>,
+        tokio::task::JoinHandle<()>,
+    ),
+    Box<dyn std::error::Error>,
+> {
     let (server_io, client_io) = tokio::io::duplex(8 * 1024);
     let task = tokio::spawn(async move {
         if let Ok(running) = server.serve(server_io).await {
             let _ = running.waiting().await;
         }
     });
-    let client = ().serve(client_io).await.expect("client connects");
-    (client, task)
+    let client = ().serve(client_io).await?;
+    Ok((client, task))
 }
 
 /// Calls one tool and returns its structured content.
@@ -105,7 +108,7 @@ async fn call(
 #[tokio::test]
 async fn test_model_edit_tools_snapshot_edit_and_describe() -> TestResult {
     let dir = model_dir("edit")?;
-    let (client, task) = connect(server_over(&dir)?).await;
+    let (client, task) = connect(server_over(&dir)?).await?;
 
     // The edit tools are registered in passive mode: they never touch the bus.
     let names: Vec<String> = client
@@ -178,7 +181,7 @@ async fn test_model_edit_tools_snapshot_edit_and_describe() -> TestResult {
 #[tokio::test]
 async fn test_protected_group_addresses_are_refused() -> TestResult {
     let dir = model_dir("protected")?;
-    let (client, task) = connect(server_over(&dir)?).await;
+    let (client, task) = connect(server_over(&dir)?).await?;
 
     let res = call(
         &client,
@@ -228,7 +231,7 @@ async fn test_protected_group_addresses_are_refused() -> TestResult {
 #[tokio::test]
 async fn test_undo_puts_the_model_back_without_touching_devices() -> TestResult {
     let dir = model_dir("undo")?;
-    let (client, task) = connect(server_over(&dir)?).await;
+    let (client, task) = connect(server_over(&dir)?).await?;
 
     call(
         &client,
@@ -268,7 +271,7 @@ async fn test_undo_puts_the_model_back_without_touching_devices() -> TestResult 
         .device
         .location
         .as_ref()
-        .expect("the device kept its location");
+        .ok_or("the device lost its location")?;
     assert_eq!(location.room.as_deref(), Some("Wohnzimmer"));
 
     client.cancel().await?;
@@ -286,7 +289,7 @@ async fn test_set_parameter_refuses_without_a_product_model() -> TestResult {
          name: Bathroom thermostat\n\
          parameters:\n  \"nachtabsenkung@P-1312_R-2140\": \"18\"\n",
     )?;
-    let (client, task) = connect(server_over(&dir)?).await;
+    let (client, task) = connect(server_over(&dir)?).await?;
 
     let res = call(
         &client,

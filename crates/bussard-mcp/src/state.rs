@@ -277,7 +277,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_limiter_caps_concurrency() {
+    async fn read_limiter_caps_concurrency() -> Result<(), Box<dyn std::error::Error>> {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -299,11 +299,12 @@ mod tests {
             }));
         }
         for h in handles {
-            h.await.unwrap();
+            h.await?;
         }
         assert!(
             max_seen.load(Ordering::SeqCst) <= 2,
             "never more than 2 concurrent reads"
         );
+        Ok(())
     }
 }

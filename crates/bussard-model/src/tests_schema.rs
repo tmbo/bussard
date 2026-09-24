@@ -307,7 +307,7 @@ fn ser_duration<S: Serializer>(value: &Duration, serializer: S) -> Result<S::Ok,
 /// Renders a duration as `2s` or `500ms`.
 fn render_duration(value: Duration) -> String {
     let millis = value.as_millis();
-    if millis % 1000 == 0 {
+    if millis.is_multiple_of(1000) {
         format!("{}s", millis / 1000)
     } else {
         format!("{millis}ms")

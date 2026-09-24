@@ -12,12 +12,13 @@ use bussard_mcp::state::{BusStatus, ReadLimiter};
 use bussard_mcp::{BussardMcp, SharedState};
 use bussard_model::schema::{BussardConfig, Group, Groups, Link, Links};
 use bussard_model::{GroupAddress, IndividualAddress, Model};
+use bussard_testkit::MockGateway;
+use bussard_testkit::wire::description_response_body;
 use bussard_transport::TransportKind;
-use bussard_transport::knxnet::{self, ServiceType};
+use bussard_transport::knxnet::ServiceType;
 use rmcp::ServiceExt;
 use rmcp::model::CallToolRequestParams;
 use serde_json::{Value, json};
-use tokio::net::UdpSocket;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -164,41 +165,25 @@ async fn test_knx_audit_live_refused_in_passive_mode() -> TestResult {
     Ok(())
 }
 
-/// A device-info DIB plus a tunnelling-info DIB with two slots, one in use.
-fn description_body() -> Vec<u8> {
-    let mut body = vec![0u8; 54];
-    body[0] = 54;
-    body[1] = 0x01;
-    body[2] = 0x02;
-    body[4..6].copy_from_slice(&0x1000u16.to_be_bytes());
-    body[24..33].copy_from_slice(b"Mock Gate");
-    body.extend_from_slice(&[12, 0x07, 0x00, 0xF8]);
-    body.extend_from_slice(&[0x10, 0xF1, 0x00, 0x06]); // in use
-    body.extend_from_slice(&[0x10, 0xF2, 0x00, 0x07]); // free
-    body
-}
-
 #[tokio::test]
 async fn test_knx_audit_live_reports_tunnel_slots() -> TestResult {
-    let gw = UdpSocket::bind("127.0.0.1:0").await?;
-    let std::net::SocketAddr::V4(addr) = gw.local_addr()? else {
-        return Err("expected an IPv4 mock".into());
-    };
-    let mock = tokio::spawn(async move {
-        let mut buf = [0u8; 512];
-        while let Ok((n, peer)) = gw.recv_from(&mut buf).await {
-            let Ok(parsed) = knxnet::parse(&buf[..n]) else {
-                continue;
-            };
-            // The live audit may only ever ask the interface to describe itself.
-            assert_eq!(parsed.service, ServiceType::DescriptionRequest);
-            let reply = knxnet::frame(ServiceType::DescriptionResponse, &description_body());
-            let _ = gw.send_to(&reply, peer).await;
-        }
-    });
+    // An interface with two tunnelling slots, one in use.
+    let gw = MockGateway::builder()
+        .description(description_response_body("Mock Gate", 2, 1))
+        .start()
+        .await?;
 
-    let report = call_audit(server(false, Some(addr))?, json!({ "live": true })).await??;
-    mock.abort();
+    let report = call_audit(server(false, Some(gw.addr()))?, json!({ "live": true })).await??;
+
+    // The live audit may only ever ask the interface to describe itself.
+    let services = gw.stats().services;
+    assert!(!services.is_empty(), "the live audit sent nothing");
+    assert!(
+        services
+            .iter()
+            .all(|s| *s == ServiceType::DescriptionRequest),
+        "only DESCRIPTION_REQUEST is allowed, got {services:?}"
+    );
 
     let gateway = &report["live"]["gateway"];
     assert_eq!(gateway["name"], "Mock Gate");

@@ -370,50 +370,47 @@ pub fn parse_project(xml: &str, schema: SchemaVersion) -> Result<RawProject> {
                         if in_com_object_refs {
                             // ETS 5.7/6 form: a self-closing element carrying the
                             // space-separated `Links` attribute directly.
-                            if let Some(dev) = current_device.as_mut() {
-                                if let Some(ci) = parse_com_object_instance(&e, context)? {
-                                    dev.com_objects.push(ci);
-                                }
+                            if let Some(dev) = current_device.as_mut()
+                                && let Some(ci) = parse_com_object_instance(&e, context)?
+                            {
+                                dev.com_objects.push(ci);
                             }
                         }
                     }
                     // ETS 4/5 link children: `Send` leads, `Receive` follows.
                     b"Send" | b"Receive" if current_com_object.is_some() => {
-                        if let Some(suffix) = connector_ga_suffix(&e, context)? {
-                            if let Some(ci) = current_com_object.as_mut() {
-                                // `Send` is the primary/sending GA: keep it first.
-                                if e.local_name().as_ref() == b"Send" {
-                                    ci.links.insert(0, suffix);
-                                } else {
-                                    ci.links.push(suffix);
-                                }
+                        if let Some(suffix) = connector_ga_suffix(&e, context)?
+                            && let Some(ci) = current_com_object.as_mut()
+                        {
+                            // `Send` is the primary/sending GA: keep it first.
+                            if e.local_name().as_ref() == b"Send" {
+                                ci.links.insert(0, suffix);
+                            } else {
+                                ci.links.push(suffix);
                             }
                         }
                     }
                     b"ParameterInstanceRef" => {
-                        if in_parameter_refs {
-                            if let Some(dev) = current_device.as_mut() {
-                                if let (Some(ref_id), Some(value)) = (
-                                    attr_value(&e, b"RefId", context)?,
-                                    attr_value(&e, b"Value", context)?,
-                                ) {
-                                    dev.parameters.push((ref_id, value));
-                                }
-                            }
+                        if in_parameter_refs
+                            && let Some(dev) = current_device.as_mut()
+                            && let (Some(ref_id), Some(value)) = (
+                                attr_value(&e, b"RefId", context)?,
+                                attr_value(&e, b"Value", context)?,
+                            )
+                        {
+                            dev.parameters.push((ref_id, value));
                         }
                     }
                     b"Argument" => {
                         if let (Some(dev), Some(mi_id)) =
                             (current_device.as_mut(), current_module_instance.as_ref())
-                        {
-                            if let (Some(ref_id), Some(value)) = (
+                            && let (Some(ref_id), Some(value)) = (
                                 attr_value(&e, b"RefId", context)?,
                                 attr_value(&e, b"Value", context)?,
-                            ) {
-                                if let Some(args) = dev.module_instances.get_mut(mi_id) {
-                                    args.insert(ref_id, value);
-                                }
-                            }
+                            )
+                            && let Some(args) = dev.module_instances.get_mut(mi_id)
+                        {
+                            args.insert(ref_id, value);
                         }
                     }
                     b"DeviceInstanceRef" => {

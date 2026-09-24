@@ -268,35 +268,29 @@ fn size_mismatch_note(dpt: &Dpt, payload: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bussard_testkit::{TestResult, ga, ia};
     use std::collections::BTreeMap;
 
     use bussard_model::LoadedDevice;
     use bussard_model::schema::{BussardConfig, Device, Group, Groups, Link, Links};
     use bussard_transport::cemi::CemiFrame;
 
-    fn ia(s: &str) -> IndividualAddress {
-        s.parse().unwrap()
-    }
-    fn ga(s: &str) -> GroupAddress {
-        s.parse().unwrap()
-    }
-
     /// A small in-code model: two GAs (one with a DPT, one without), one device
     /// with a link whose `send` GA is 3/2/0.
-    fn fixture_model() -> Model {
+    fn fixture_model() -> TestResult<Model> {
         let mut groups = BTreeMap::new();
         groups.insert(
-            ga("3/2/0"),
+            ga("3/2/0")?,
             Group {
                 name: "Windalarm".to_string(),
-                dpt: Some("1.005".parse().unwrap()),
+                dpt: Some("1.005".parse()?),
                 description: None,
                 ..Default::default()
             },
         );
         // A GA present but with no DPT.
         groups.insert(
-            ga("3/2/1"),
+            ga("3/2/1")?,
             Group {
                 name: "Nodpt".to_string(),
                 dpt: None,
@@ -306,10 +300,10 @@ mod tests {
         );
         // A GA whose DPT is 9.001 (2-byte temperature) — used for size mismatch.
         groups.insert(
-            ga("3/2/2"),
+            ga("3/2/2")?,
             Group {
                 name: "Temp".to_string(),
-                dpt: Some("9.001".parse().unwrap()),
+                dpt: Some("9.001".parse()?),
                 description: None,
                 ..Default::default()
             },
@@ -317,21 +311,21 @@ mod tests {
 
         let mut links = BTreeMap::new();
         links.insert(
-            ia("1.1.30"),
+            ia("1.1.30")?,
             vec![Link {
                 object: 3,
                 name: Some("Windalarm 1".to_string()),
-                send: Some(ga("3/2/0")),
+                send: Some(ga("3/2/0")?),
                 listen: vec![],
             }],
         );
 
         let mut devices = BTreeMap::new();
         devices.insert(
-            ia("1.1.30"),
+            ia("1.1.30")?,
             LoadedDevice {
                 device: Device {
-                    address: ia("1.1.30"),
+                    address: ia("1.1.30")?,
                     name: "Meteodata".to_string(),
                     description: None,
                     location: None,
@@ -347,7 +341,7 @@ mod tests {
             },
         );
 
-        Model {
+        Ok(Model {
             config: BussardConfig::default(),
             groups: Groups {
                 project: None,
@@ -357,7 +351,7 @@ mod tests {
             },
             links: Links { links },
             devices,
-        }
+        })
     }
 
     fn stamped(frame: CemiFrame) -> TimestampedFrame {
@@ -368,21 +362,21 @@ mod tests {
     }
 
     #[test]
-    fn known_ga_with_dpt_resolves_everything() {
-        let model = fixture_model();
+    fn known_ga_with_dpt_resolves_everything() -> TestResult {
+        let model = fixture_model()?;
         let frame = stamped(CemiFrame::group_write_packed(
-            ga("3/2/0"),
-            ia("1.1.30"),
+            ga("3/2/0")?,
+            ia("1.1.30")?,
             &[1],
         ));
         let d = DecodedTelegram::from_frame(&frame, Some(&model));
 
-        assert_eq!(d.source, ia("1.1.30"));
+        assert_eq!(d.source, ia("1.1.30")?);
         assert_eq!(d.source_name.as_deref(), Some("Meteodata"));
-        assert_eq!(d.destination, DestinationRef::Group(ga("3/2/0")));
+        assert_eq!(d.destination, DestinationRef::Group(ga("3/2/0")?));
         assert_eq!(d.destination_name.as_deref(), Some("Windalarm"));
         assert_eq!(d.apci, ApciKind::Write);
-        assert_eq!(d.dpt, Some("1.005".parse().unwrap()));
+        assert_eq!(d.dpt, Some("1.005".parse()?));
         assert_eq!(d.object_name.as_deref(), Some("Windalarm 1"));
         assert_eq!(
             d.value,
@@ -392,14 +386,15 @@ mod tests {
             })
         );
         assert!(d.decode_note.is_none());
+        Ok(())
     }
 
     #[test]
-    fn ga_without_dpt_is_raw_no_note() {
-        let model = fixture_model();
+    fn ga_without_dpt_is_raw_no_note() -> TestResult {
+        let model = fixture_model()?;
         let frame = stamped(CemiFrame::group_write_packed(
-            ga("3/2/1"),
-            ia("1.1.30"),
+            ga("3/2/1")?,
+            ia("1.1.30")?,
             &[1],
         ));
         let d = DecodedTelegram::from_frame(&frame, Some(&model));
@@ -407,14 +402,15 @@ mod tests {
         assert_eq!(d.dpt, None);
         assert_eq!(d.value, Some(TypedValue::Raw(vec![1])));
         assert!(d.decode_note.is_none());
+        Ok(())
     }
 
     #[test]
-    fn unknown_ga_degrades_to_numeric_and_raw() {
-        let model = fixture_model();
+    fn unknown_ga_degrades_to_numeric_and_raw() -> TestResult {
+        let model = fixture_model()?;
         let frame = stamped(CemiFrame::group_write_packed(
-            ga("7/7/7"),
-            ia("2.2.2"),
+            ga("7/7/7")?,
+            ia("2.2.2")?,
             &[1],
         ));
         let d = DecodedTelegram::from_frame(&frame, Some(&model));
@@ -423,13 +419,14 @@ mod tests {
         assert_eq!(d.object_name, None);
         assert_eq!(d.dpt, None);
         assert_eq!(d.value, Some(TypedValue::Raw(vec![1])));
+        Ok(())
     }
 
     #[test]
-    fn no_model_stays_numeric() {
+    fn no_model_stays_numeric() -> TestResult {
         let frame = stamped(CemiFrame::group_write_packed(
-            ga("3/2/0"),
-            ia("1.1.30"),
+            ga("3/2/0")?,
+            ia("1.1.30")?,
             &[1],
         ));
         let d = DecodedTelegram::from_frame(&frame, None);
@@ -437,74 +434,79 @@ mod tests {
         assert_eq!(d.destination_name, None);
         assert_eq!(d.dpt, None);
         assert_eq!(d.value, Some(TypedValue::Raw(vec![1])));
+        Ok(())
     }
 
     #[test]
-    fn individual_destination_resolves_device_name() {
-        let model = fixture_model();
+    fn individual_destination_resolves_device_name() -> TestResult {
+        let model = fixture_model()?;
         // A management-ish frame to the device at 1.1.30 (individual dest).
         let hex: &[u8] = &[
             0x29, 0x00, 0xBC, 0x60, 0x11, 0x01, 0x11, 0x1E, 0x02, 0x43, 0x00, 0x00,
         ];
-        let frame = stamped(CemiFrame::decode(hex).unwrap());
+        let frame = stamped(CemiFrame::decode(hex)?);
         let d = DecodedTelegram::from_frame(&frame, Some(&model));
         match d.destination {
-            DestinationRef::Individual(i) => assert_eq!(i, ia("1.1.30")),
+            DestinationRef::Individual(i) => assert_eq!(i, ia("1.1.30")?),
             other => panic!("expected individual, got {other:?}"),
         }
         assert_eq!(d.destination_name.as_deref(), Some("Meteodata"));
         assert!(matches!(d.apci, ApciKind::Other(_)));
         assert_eq!(d.value, None);
+        Ok(())
     }
 
     #[test]
-    fn size_mismatch_produces_note_but_still_decodes() {
-        let model = fixture_model();
+    fn size_mismatch_produces_note_but_still_decodes() -> TestResult {
+        let model = fixture_model()?;
         // 3/2/2 declares DPT 9.001 (2 bytes) but we send a single byte.
         let frame = stamped(CemiFrame::group_write_packed(
-            ga("3/2/2"),
-            ia("1.1.30"),
+            ga("3/2/2")?,
+            ia("1.1.30")?,
             &[0x05],
         ));
         let d = DecodedTelegram::from_frame(&frame, Some(&model));
-        assert_eq!(d.dpt, Some("9.001".parse().unwrap()));
-        let note = d.decode_note.expect("expected a size-mismatch note");
+        assert_eq!(d.dpt, Some("9.001".parse()?));
+        let note = d.decode_note.ok_or("expected a size-mismatch note")?;
         assert!(note.contains("1 byte"), "note was {note:?}");
         assert!(note.contains("9.001"), "note was {note:?}");
         assert!(note.contains("2 bytes"), "note was {note:?}");
         // Still yields a value (raw fallback, since the payload is too short).
         assert!(d.value.is_some());
+        Ok(())
     }
 
     #[test]
-    fn apci_other_has_no_value() {
+    fn apci_other_has_no_value() -> TestResult {
         // A management APDU (numbered/connected TPCI).
         let hex: &[u8] = &[
             0x29, 0x00, 0xBC, 0x60, 0x11, 0x01, 0x11, 0x02, 0x02, 0x43, 0x00, 0x00,
         ];
-        let frame = stamped(CemiFrame::decode(hex).unwrap());
+        let frame = stamped(CemiFrame::decode(hex)?);
         let d = DecodedTelegram::from_frame(&frame, None);
         assert!(matches!(d.apci, ApciKind::Other(_)));
         assert_eq!(d.value, None);
         assert!(d.decode_note.is_none());
+        Ok(())
     }
 
     #[test]
-    fn read_has_no_value() {
-        let model = fixture_model();
-        let frame = stamped(CemiFrame::group_read(ga("3/2/0"), ia("1.1.30")));
+    fn read_has_no_value() -> TestResult {
+        let model = fixture_model()?;
+        let frame = stamped(CemiFrame::group_read(ga("3/2/0")?, ia("1.1.30")?));
         let d = DecodedTelegram::from_frame(&frame, Some(&model));
         assert_eq!(d.apci, ApciKind::Read);
         assert!(d.payload.is_empty());
         assert_eq!(d.value, None);
+        Ok(())
     }
 
     #[test]
-    fn response_is_classified_and_decoded() {
-        let model = fixture_model();
+    fn response_is_classified_and_decoded() -> TestResult {
+        let model = fixture_model()?;
         let frame = stamped(CemiFrame::group_response_packed(
-            ga("3/2/0"),
-            ia("1.1.30"),
+            ga("3/2/0")?,
+            ia("1.1.30")?,
             &[0],
         ));
         let d = DecodedTelegram::from_frame(&frame, Some(&model));
@@ -516,5 +518,6 @@ mod tests {
                 label: "No Alarm"
             })
         );
+        Ok(())
     }
 }

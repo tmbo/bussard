@@ -185,26 +185,19 @@ pub fn json_line(t: &DecodedTelegram) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bussard_testkit::{TestResult, ga, ia};
     use std::collections::BTreeMap;
     use std::time::Duration;
 
     use bussard_model::codec::TypedValue;
-    use bussard_model::{GroupAddress, IndividualAddress};
-
-    fn ia(s: &str) -> IndividualAddress {
-        s.parse().unwrap()
-    }
-    fn ga(s: &str) -> GroupAddress {
-        s.parse().unwrap()
-    }
 
     /// A fully-resolved write at t=1.5s past the epoch.
-    fn sample() -> DecodedTelegram {
-        DecodedTelegram {
+    fn sample() -> TestResult<DecodedTelegram> {
+        Ok(DecodedTelegram {
             timestamp: SystemTime::UNIX_EPOCH + Duration::from_millis(1_500),
-            source: ia("1.1.30"),
+            source: ia("1.1.30")?,
             source_name: Some("Meteodata".to_string()),
-            destination: DestinationRef::Group(ga("3/2/0")),
+            destination: DestinationRef::Group(ga("3/2/0")?),
             destination_name: Some("Windalarm".to_string()),
             apci: ApciKind::Write,
             payload: vec![1],
@@ -212,50 +205,54 @@ mod tests {
                 value: true,
                 label: "Alarm",
             }),
-            dpt: Some("1.005".parse().unwrap()),
+            dpt: Some("1.005".parse()?),
             object_name: Some("Windalarm 1".to_string()),
             decode_note: None,
-        }
+        })
     }
 
     #[test]
-    fn pretty_no_color_exact() {
-        let line = pretty_line(&sample(), false);
+    fn pretty_no_color_exact() -> TestResult {
+        let line = pretty_line(&sample()?, false);
         assert_eq!(
             line,
             "00:00:01.500  1.1.30 Meteodata         → 3/2/0 Windalarm          = Alarm (1.005, obj \"Windalarm 1\")"
         );
+        Ok(())
     }
 
     #[test]
-    fn pretty_no_color_has_no_escapes() {
-        let line = pretty_line(&sample(), false);
+    fn pretty_no_color_has_no_escapes() -> TestResult {
+        let line = pretty_line(&sample()?, false);
         assert!(!line.contains('\u{1b}'), "should have no ANSI escapes");
+        Ok(())
     }
 
     #[test]
-    fn pretty_read_has_no_value_section() {
-        let mut t = sample();
+    fn pretty_read_has_no_value_section() -> TestResult {
+        let mut t = sample()?;
         t.apci = ApciKind::Read;
         t.value = None;
         t.payload = vec![];
         let line = pretty_line(&t, false);
         assert!(line.contains("?→"));
         assert!(!line.contains('='), "read has no value: {line:?}");
+        Ok(())
     }
 
     #[test]
-    fn pretty_note_is_appended() {
-        let mut t = sample();
+    fn pretty_note_is_appended() -> TestResult {
+        let mut t = sample()?;
         t.decode_note = Some("payload is 1 byte, but DPT 9.001 expects 2 bytes".to_string());
         let line = pretty_line(&t, false);
         assert!(line.ends_with("[payload is 1 byte, but DPT 9.001 expects 2 bytes]"));
+        Ok(())
     }
 
     #[test]
-    fn json_line_stable_fields() {
-        let line = json_line(&sample());
-        let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+    fn json_line_stable_fields() -> TestResult {
+        let line = json_line(&sample()?);
+        let v: serde_json::Value = serde_json::from_str(&line)?;
         assert_eq!(v["ts_utc"], "1970-01-01T00:00:01.500Z");
         assert_eq!(v["source"], "1.1.30");
         assert_eq!(v["source_name"], "Meteodata");
@@ -268,14 +265,15 @@ mod tests {
         assert_eq!(v["dpt"], "1.005");
         assert_eq!(v["object_name"], "Windalarm 1");
         assert_eq!(v["note"], serde_json::Value::Null);
+        Ok(())
     }
 
     #[test]
-    fn json_value_field_set_is_exact() {
+    fn json_value_field_set_is_exact() -> TestResult {
         // The viz server extends this object with `seq`; if the field set drifts,
         // the frontend contract and the JSON Lines schema both break. Pin it.
-        let v = json_value(&sample());
-        let obj = v.as_object().expect("json_value is an object");
+        let v = json_value(&sample()?);
+        let obj = v.as_object().ok_or("json_value is an object")?;
         let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
         keys.sort_unstable();
         assert_eq!(
@@ -295,22 +293,24 @@ mod tests {
                 "value",
             ]
         );
+        Ok(())
     }
 
     #[test]
-    fn json_line_matches_json_value() {
+    fn json_line_matches_json_value() -> TestResult {
         // The line form must be exactly the serialized value form.
-        let t = sample();
+        let t = sample()?;
         assert_eq!(json_line(&t), json_value(&t).to_string());
+        Ok(())
     }
 
     #[test]
-    fn json_line_nulls_when_unknown() {
+    fn json_line_nulls_when_unknown() -> TestResult {
         let t = DecodedTelegram {
             timestamp: SystemTime::UNIX_EPOCH,
-            source: ia("1.1.1"),
+            source: ia("1.1.1")?,
             source_name: None,
-            destination: DestinationRef::Group(ga("9/1/9")),
+            destination: DestinationRef::Group(ga("9/1/9")?),
             destination_name: None,
             apci: ApciKind::Read,
             payload: vec![],
@@ -319,17 +319,18 @@ mod tests {
             object_name: None,
             decode_note: None,
         };
-        let v: serde_json::Value = serde_json::from_str(&json_line(&t)).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json_line(&t))?;
         assert_eq!(v["source_name"], serde_json::Value::Null);
         assert_eq!(v["value"], serde_json::Value::Null);
         assert_eq!(v["payload"], "");
         assert_eq!(v["apci"], "read");
+        Ok(())
     }
 
     #[test]
-    fn unknown_ga_pretty_dims_when_colored() {
+    fn unknown_ga_pretty_dims_when_colored() -> TestResult {
         // With color on, an unknown destination should include a dim escape.
-        let mut t = sample();
+        let mut t = sample()?;
         t.destination_name = None;
         t.dpt = None;
         t.object_name = None;
@@ -347,5 +348,6 @@ mod tests {
             "unknown dest has no name: {plain:?}"
         );
         let _ = BTreeMap::<u8, u8>::new();
+        Ok(())
     }
 }

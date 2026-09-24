@@ -269,19 +269,19 @@ async fn run_one(
 
     // The protected-GA gate, ahead of everything else: a refused test never
     // reaches the bus.
-    if let Some(write) = &test.write {
-        if let Some(group) = model.groups.groups.get(&write.ga) {
-            if group.protected && !options.allow_protected {
-                return outcome(
-                    Status::Refused,
-                    format!(
-                        "writes to protected GA {} ({:?}); needs `allow_protected: true` in the \
+    if let Some(write) = &test.write
+        && let Some(group) = model.groups.groups.get(&write.ga)
+        && group.protected
+        && !options.allow_protected
+    {
+        return outcome(
+            Status::Refused,
+            format!(
+                "writes to protected GA {} ({:?}); needs `allow_protected: true` in the \
                          test file and --force on the command line",
-                        write.ga, group.name
-                    ),
-                );
-            }
-        }
+                write.ga, group.name
+            ),
+        );
     }
 
     // Subscribe before the stimulus so a fast answer cannot be missed.
@@ -434,7 +434,7 @@ fn parse_hex(text: &str) -> Option<Vec<u8>> {
         .chars()
         .filter(|c| !c.is_whitespace())
         .collect();
-    if cleaned.is_empty() || cleaned.len() % 2 != 0 {
+    if cleaned.is_empty() || !cleaned.len().is_multiple_of(2) {
         return None;
     }
     (0..cleaned.len())
@@ -471,7 +471,7 @@ fn hex(payload: &[u8]) -> String {
 /// Renders a duration the way `tests.yaml` writes it.
 fn format_duration(value: Duration) -> String {
     let millis = value.as_millis();
-    if millis % 1000 == 0 {
+    if millis.is_multiple_of(1000) {
         format!("{}s", millis / 1000)
     } else {
         format!("{millis}ms")

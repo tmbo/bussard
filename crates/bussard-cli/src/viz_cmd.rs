@@ -78,10 +78,10 @@ pub fn run(
     // opted in to a non-loopback gateway. Loopback (the simulator, the test
     // suite) is exempt, and a read-only viz never reaches this.
     let transmits = options.allow_writes || options.watch_prog;
-    if let Some(conn) = &connection {
-        if transmits {
-            enforce_write_gate(conn, options.allow_remote_gateway)?;
-        }
+    if let Some(conn) = &connection
+        && transmits
+    {
+        enforce_write_gate(conn, options.allow_remote_gateway)?;
     }
 
     // Say plainly what this server may do; a read-only viewer is the default.

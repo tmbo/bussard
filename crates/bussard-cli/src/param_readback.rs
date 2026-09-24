@@ -105,10 +105,10 @@ fn select_app(
             return Ok(app.id.clone());
         }
     }
-    if let Some(order) = order {
-        if let Ok(app) = crate::flash_cmd::resolve_by_order_number(product, order) {
-            return Ok(app.id.clone());
-        }
+    if let Some(order) = order
+        && let Ok(app) = crate::flash_cmd::resolve_by_order_number(product, order)
+    {
+        return Ok(app.id.clone());
     }
     match product.applications.as_slice() {
         [only] => Ok(only.id.clone()),
@@ -202,10 +202,10 @@ pub(crate) async fn read<Ch: L4Channel>(
     if let Err(why) = crate::flash_params::identity_gate(&plan, Some(&resident)) {
         return Readback::noted(&app.id, format!("parameters not decoded: {why}"));
     }
-    if plan.is_sys7() {
-        if let Some(why) = crate::flash_params::sys7_code_mismatch(l4, &plan).await {
-            return Readback::noted(&app.id, format!("parameters not decoded: {why}"));
-        }
+    if plan.is_sys7()
+        && let Some(why) = crate::flash_params::sys7_code_mismatch(l4, &plan).await
+    {
+        return Readback::noted(&app.id, format!("parameters not decoded: {why}"));
     }
     let regions = read_parameter_regions(l4, &plan).await;
     if regions.is_empty() {

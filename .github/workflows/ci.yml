@@ -240,13 +240,19 @@ jobs:
       - name: cargo-deny (knx-sim workspace)
         run: cargo deny --all-features --manifest-path knx-sim/Cargo.toml check
 
-  # MSRV gate: the workspace declares rust-version = "1.85", so verify the code
+  # MSRV gate: the workspace declares rust-version = "1.88", so verify the code
   # still builds on exactly that toolchain. This is `cargo check` only (no
   # tests): it type-checks the whole workspace without paying for codegen +
-  # test execution, which is enough to catch use of newer-than-1.85 std/lang
-  # features. The `test` matrix already exercises behaviour on stable.
+  # test execution, which is enough to catch use of newer-than-1.88 std/lang
+  # features and dependencies whose own rust-version is newer. The `test`
+  # matrix already exercises behaviour on stable.
+  #
+  # The check step pins RUSTUP_TOOLCHAIN to the toolchain installed here.
+  # Without it the repo's rust-toolchain.toml (channel = "stable") overrides
+  # it, and this job silently checked on stable: it stayed green while
+  # rmcp 3.x already required 1.88 (issue #87).
   msrv:
-    name: MSRV 1.85 (cargo check --all-targets)
+    name: MSRV 1.88 (cargo check --all-targets)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -254,19 +260,24 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Install Rust 1.85
-        uses: dtolnay/rust-toolchain@1.85
+      - name: Install Rust 1.88
+        id: msrv-toolchain
+        uses: dtolnay/rust-toolchain@1.88
 
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-          # Own cache key: the 1.85 build graph differs from the stable one, so
+          # Own cache key: the 1.88 build graph differs from the stable one, so
           # it must not share with the rust-ubuntu cache used by lint/test.
-          shared-key: rust-msrv-1-85
+          shared-key: rust-msrv-1-88
 
       - name: cargo check (workspace)
-        run: cargo check --workspace --all-targets
+        env:
+          RUSTUP_TOOLCHAIN: ${{ steps.msrv-toolchain.outputs.name }}
+        run: |
+          rustc --version
+          cargo check --workspace --all-targets
 
   # knx-sim is a SEPARATE Cargo workspace (it has its own `[workspace]` table and
   # the root manifest excludes it), so every job above — lint, test, deny, msrv —
