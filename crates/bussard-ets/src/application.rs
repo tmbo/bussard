@@ -70,6 +70,53 @@ pub struct ComObjectRef {
     pub dpt: Option<Dpt>,
     /// Flags declared on the ref (override the base's).
     pub flags: FlagSet,
+    /// The `TextParameterRefId`, app-relative (e.g. `MD-1_P-1_R-1`): the
+    /// parameter ref whose value replaces the `{{0}}`/`{{0:…}}` placeholder in
+    /// [`Self::text`] (see [`crate::label::substitute_label`]).
+    pub text_parameter_ref: Option<String>,
+}
+
+/// A `<Channel>` as a location in the Dynamic section: the channel an active
+/// parameter or com-object sits in (see
+/// [`crate::dynamic::Placement::channel`]), and the richer record kept for every
+/// channel in [`ApplicationProgram::channel_refs`].
+///
+/// All ids are app-relative. For a channel of a module definition the id is the
+/// definition's (`MD-1_CH-1`); the module instance is recorded next to it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct ChannelRef {
+    /// The channel id, app-relative (e.g. `CH-2`, `MD-1_CH-1`).
+    pub id: String,
+    /// The `Number` attribute (the vendor's channel number), if present.
+    pub number: Option<u32>,
+    /// The `Name` attribute (the vendor's short label), if non-empty.
+    pub name: Option<String>,
+    /// The `Text` attribute (the display label, en-US translation applied),
+    /// which may carry `{{0:…}}` and `{{Arg…}}` placeholders.
+    pub text: Option<String>,
+    /// The `TextParameterRefId`, app-relative: the parameter ref whose value
+    /// fills the text's `{{0}}` placeholder.
+    pub text_parameter_ref: Option<String>,
+}
+
+/// A `<ParameterBlock>` as a location in the Dynamic section: one level of the
+/// block path an active parameter or com-object sits in (see
+/// [`crate::dynamic::Placement::blocks`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+pub struct BlockRef {
+    /// The block id, app-relative (e.g. `PB-13`, `MD-1_PB-2`).
+    pub id: String,
+    /// The `Name` attribute, if non-empty.
+    pub name: Option<String>,
+    /// The `Text` attribute (en-US translation applied), if non-empty; may
+    /// carry `{{0:…}}` and `{{Arg…}}` placeholders.
+    pub text: Option<String>,
+    /// The `TextParameterRefId`, app-relative: the parameter ref whose value
+    /// fills the text's `{{0}}` placeholder.
+    pub text_parameter_ref: Option<String>,
+    /// The `ParamRefId`, app-relative: a block that is titled by a parameter
+    /// ref (it has no `Text` of its own; ETS shows that ref's text).
+    pub param_ref: Option<String>,
 }
 
 /// A `<Channel>` definition from the application program's Dynamic section.
@@ -304,12 +351,47 @@ impl ConditionalGroup {
 /// section can be evaluated against a device's parameter values (see
 /// [`crate::dynamic::evaluate_dynamic`]).
 ///
-/// Containers that carry no condition (`<ChannelIndependentBlock>`,
-/// `<Channel>`, `<ParameterBlock>`, `<Rows>`/`<Columns>`) are flattened into
-/// their parent: only what decides visibility and what it makes visible is
-/// kept. All ids are app-relative (the program-id prefix stripped).
+/// `<Channel>` and `<ParameterBlock>` are kept as containers
+/// ([`DynamicNode::Channel`], [`DynamicNode::ParameterBlock`]) so a walk knows
+/// where each item sits; they carry no condition of their own, so evaluation
+/// treats them transparently. A container left with no children is dropped.
+/// The other unconditional containers (`<ChannelIndependentBlock>`,
+/// `<Rows>`/`<Columns>`, …) are flattened into their parent.
+/// [`flatten_containers`] gives the fully flattened view. All ids are
+/// app-relative (the program-id prefix stripped).
 #[derive(Debug, Clone, PartialEq)]
 pub enum DynamicNode {
+    /// `<Channel>`: a labelled group of the configuration.
+    Channel {
+        /// The channel id, app-relative (e.g. `MD-1_CH-1`).
+        id: String,
+        /// The `Name` attribute, if non-empty.
+        name: Option<String>,
+        /// The `Text` attribute (en-US translation applied), if non-empty.
+        text: Option<String>,
+        /// The `Number` attribute.
+        number: Option<u32>,
+        /// The `TextParameterRefId`, app-relative.
+        text_parameter_ref: Option<String>,
+        /// The nodes inside the channel, in document order.
+        children: Vec<DynamicNode>,
+    },
+    /// `<ParameterBlock>`: one page (or inline group) of parameters.
+    ParameterBlock {
+        /// The block id, app-relative (e.g. `PB-13`).
+        id: String,
+        /// The `Name` attribute, if non-empty.
+        name: Option<String>,
+        /// The `Text` attribute (en-US translation applied), if non-empty.
+        text: Option<String>,
+        /// The `TextParameterRefId`, app-relative.
+        text_parameter_ref: Option<String>,
+        /// The `ParamRefId`, app-relative: the ref that titles a block without
+        /// a `Text` of its own.
+        param_ref: Option<String>,
+        /// The nodes inside the block, in document order.
+        children: Vec<DynamicNode>,
+    },
     /// `<ParameterRefRef RefId>`: the parameter ref is shown (and its memory
     /// written) when this node is reached.
     ParameterRefRef(String),
@@ -345,6 +427,82 @@ pub enum DynamicNode {
         /// The literal value assigned when there is no source.
         value: Option<String>,
     },
+}
+
+impl DynamicNode {
+    /// The channel this node describes, if it is a [`DynamicNode::Channel`].
+    pub fn channel_ref(&self) -> Option<ChannelRef> {
+        match self {
+            DynamicNode::Channel {
+                id,
+                name,
+                text,
+                number,
+                text_parameter_ref,
+                ..
+            } => Some(ChannelRef {
+                id: id.clone(),
+                number: *number,
+                name: name.clone(),
+                text: text.clone(),
+                text_parameter_ref: text_parameter_ref.clone(),
+            }),
+            _ => None,
+        }
+    }
+
+    /// The block this node describes, if it is a
+    /// [`DynamicNode::ParameterBlock`].
+    pub fn block_ref(&self) -> Option<BlockRef> {
+        match self {
+            DynamicNode::ParameterBlock {
+                id,
+                name,
+                text,
+                text_parameter_ref,
+                param_ref,
+                ..
+            } => Some(BlockRef {
+                id: id.clone(),
+                name: name.clone(),
+                text: text.clone(),
+                text_parameter_ref: text_parameter_ref.clone(),
+                param_ref: param_ref.clone(),
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// The Dynamic tree with every [`DynamicNode::Channel`] and
+/// [`DynamicNode::ParameterBlock`] replaced by its children, recursively
+/// (inside `<when>` branches too): the shape the parser produced before it
+/// kept those containers.
+pub fn flatten_containers(nodes: &[DynamicNode]) -> Vec<DynamicNode> {
+    let mut out = Vec::with_capacity(nodes.len());
+    for node in nodes {
+        match node {
+            DynamicNode::Channel { children, .. }
+            | DynamicNode::ParameterBlock { children, .. } => {
+                out.extend(flatten_containers(children));
+            }
+            DynamicNode::Choose {
+                param_ref_id,
+                whens,
+            } => out.push(DynamicNode::Choose {
+                param_ref_id: param_ref_id.clone(),
+                whens: whens
+                    .iter()
+                    .map(|w| DynamicWhen {
+                        test: w.test.clone(),
+                        children: flatten_containers(&w.children),
+                    })
+                    .collect(),
+            }),
+            other => out.push(other.clone()),
+        }
+    }
+    out
 }
 
 /// One `<when>` branch of a [`DynamicNode::Choose`].
@@ -399,6 +557,12 @@ impl ResolvedComObject<'_> {
             .function_text
             .as_deref()
             .or(self.base.function_text.as_deref())
+    }
+
+    /// The ref's `TextParameterRefId` (app-relative), which fills the
+    /// `{{0}}` placeholder of [`Self::text`].
+    pub fn text_parameter_ref(&self) -> Option<&str> {
+        self.cref.text_parameter_ref.as_deref()
     }
 
     /// The effective flags: base merged with the ref (ref wins per-flag).
@@ -584,6 +748,9 @@ pub struct ParameterRef {
     pub value: Option<String>,
     /// An `Access` override, if present.
     pub access: Option<String>,
+    /// A `Text` override (en-US translation applied), if present: the label
+    /// ETS shows for this ref instead of the parameter's own `Text`.
+    pub text: Option<String>,
 }
 
 /// A code segment (`<RelativeSegment>` / `<AbsoluteSegment>`).
@@ -938,6 +1105,10 @@ pub struct ApplicationProgram {
     /// Dynamic-section channel definitions, keyed by the app-relative channel id
     /// (e.g. `MD-1_CH-13`, or `CH-2` for a non-module channel).
     pub channels: HashMap<String, ChannelDef>,
+    /// Every Dynamic-section `<Channel>` with its id, `Number` and
+    /// `TextParameterRefId`, keyed like [`Self::channels`]. Unlike
+    /// [`ChannelDef`], the `Text` here has the en-US translation applied.
+    pub channel_refs: HashMap<String, ChannelRef>,
     /// Module `<Argument>` name → app-relative argument id (e.g.
     /// `ArgBeschriftung` → `MD-1_A-3`), used to resolve `{{Arg…}}` placeholders
     /// in channel and com-object texts against a module instance's values.
@@ -1023,6 +1194,19 @@ impl ApplicationProgram {
     /// Resolves an app-relative channel id (e.g. `MD-1_CH-13`) to its definition.
     pub fn channel(&self, app_channel_id: &str) -> Option<&ChannelDef> {
         self.channels.get(app_channel_id)
+    }
+
+    /// Resolves an app-relative channel id to its [`ChannelRef`] (id, number,
+    /// name, translated text and label parameter).
+    pub fn channel_ref(&self, app_channel_id: &str) -> Option<&ChannelRef> {
+        self.channel_refs.get(app_channel_id)
+    }
+
+    /// Resolves an app-relative `ParameterRef` id (e.g. `MD-1_P-3_R-5`) to
+    /// its ref.
+    pub fn parameter_ref(&self, app_param_ref_id: &str) -> Option<&ParameterRef> {
+        self.parameter_refs
+            .get(&format!("{}_{app_param_ref_id}", self.id))
     }
 
     /// Looks up the app-relative argument id (e.g. `MD-1_A-3`) for an argument
@@ -1584,6 +1768,52 @@ fn apply_translations(app: &mut ApplicationProgram, translations: &TranslationCo
             param.text = Some(t.to_string());
         }
     }
+    for (id, pref) in app.parameter_refs.iter_mut() {
+        if let Some(t) = translations.get(id, "Text") {
+            pref.text = Some(t.to_string());
+        }
+    }
+    let app_id = app.id.clone();
+    let full = |rel: &str| format!("{app_id}_{rel}");
+    for (rel, ch) in app.channel_refs.iter_mut() {
+        if let Some(t) = translations.get(&full(rel), "Text") {
+            ch.text = Some(t.to_string());
+        }
+    }
+    fn translate_tree(
+        nodes: &mut [DynamicNode],
+        full: &dyn Fn(&str) -> String,
+        translations: &TranslationCollector,
+    ) {
+        for node in nodes {
+            match node {
+                DynamicNode::Channel {
+                    id, text, children, ..
+                }
+                | DynamicNode::ParameterBlock {
+                    id, text, children, ..
+                } => {
+                    if let Some(t) = translations.get(&full(id), "Text") {
+                        *text = Some(t.to_string());
+                    }
+                    translate_tree(children, full, translations);
+                }
+                DynamicNode::Choose { whens, .. } => {
+                    for w in whens {
+                        translate_tree(&mut w.children, full, translations);
+                    }
+                }
+                DynamicNode::ParameterRefRef(_)
+                | DynamicNode::ComObjectRefRef(_)
+                | DynamicNode::Module { .. }
+                | DynamicNode::Assign { .. } => {}
+            }
+        }
+    }
+    translate_tree(&mut app.dynamic, &full, translations);
+    for body in app.module_dynamics.values_mut() {
+        translate_tree(body, &full, translations);
+    }
 }
 
 fn insert_com_object(app: &mut ApplicationProgram, m: &Attrs) {
@@ -1621,8 +1851,22 @@ fn insert_com_object_ref(app: &mut ApplicationProgram, m: &Attrs) {
             object_size: get(m, b"ObjectSize").map(str::to_string),
             dpt: get(m, b"DatapointType").and_then(parse_ets_dpt),
             flags: flagset_from(m),
+            text_parameter_ref: relative_attr(m, b"TextParameterRefId", &app.id),
         },
     );
+}
+
+/// An id-valued attribute with the `<app-id>_` prefix stripped (kept verbatim
+/// when it lacks the prefix); `None` when absent or empty.
+fn relative_attr(m: &Attrs, key: &[u8], app_id: &str) -> Option<String> {
+    get(m, key)
+        .filter(|s| !s.is_empty())
+        .map(|id| app_relative_id(id, app_id).unwrap_or(id).to_string())
+}
+
+/// A non-empty string attribute.
+fn non_empty_attr(m: &Attrs, key: &[u8]) -> Option<String> {
+    get(m, key).filter(|s| !s.is_empty()).map(str::to_string)
 }
 
 /// Inserts a Dynamic-section `<Channel>` keyed by its app-relative id.
@@ -1640,6 +1884,16 @@ fn insert_channel(app: &mut ApplicationProgram, m: &Attrs) {
             text: get(m, b"Text")
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
+        },
+    );
+    app.channel_refs.insert(
+        rel.to_string(),
+        ChannelRef {
+            id: rel.to_string(),
+            number: get(m, b"Number").and_then(|s| s.trim().parse().ok()),
+            name: non_empty_attr(m, b"Name"),
+            text: non_empty_attr(m, b"Text"),
+            text_parameter_ref: relative_attr(m, b"TextParameterRefId", &app.id),
         },
     );
 }
@@ -1719,6 +1973,7 @@ fn insert_parameter_ref(app: &mut ApplicationProgram, m: &Attrs) {
             ref_id: ref_id.to_string(),
             value: get(m, b"Value").map(str::to_string),
             access: get(m, b"Access").map(str::to_string),
+            text: get(m, b"Text").map(str::to_string),
         },
     );
 }
@@ -1808,13 +2063,20 @@ enum DynFrame {
         module_def: String,
         args: HashMap<String, i64>,
     },
+    /// An open `<Channel>` and its children so far.
+    Channel(ChannelRef, Vec<DynamicNode>),
+    /// An open `<ParameterBlock>` and its children so far.
+    Block(BlockRef, Vec<DynamicNode>),
 }
 
 impl DynTreeBuilder {
     /// Appends a finished node to the innermost frame that holds children.
     fn push_node(&mut self, node: DynamicNode) {
         match self.frames.last_mut() {
-            Some(DynFrame::Root(children)) | Some(DynFrame::When(DynamicWhen { children, .. })) => {
+            Some(DynFrame::Root(children))
+            | Some(DynFrame::When(DynamicWhen { children, .. }))
+            | Some(DynFrame::Channel(_, children))
+            | Some(DynFrame::Block(_, children)) => {
                 children.push(node);
             }
             // A node directly under `<choose>` or `<Module>` is not valid
@@ -1874,6 +2136,26 @@ impl DynTreeBuilder {
                 module_def: rel(b"RefId"),
                 args: HashMap::new(),
             }),
+            b"Channel" => self.frames.push(DynFrame::Channel(
+                ChannelRef {
+                    id: rel(b"Id"),
+                    number: get(m, b"Number").and_then(|s| s.trim().parse().ok()),
+                    name: non_empty_attr(m, b"Name"),
+                    text: non_empty_attr(m, b"Text"),
+                    text_parameter_ref: relative_attr(m, b"TextParameterRefId", app_id),
+                },
+                Vec::new(),
+            )),
+            b"ParameterBlock" => self.frames.push(DynFrame::Block(
+                BlockRef {
+                    id: rel(b"Id"),
+                    name: non_empty_attr(m, b"Name"),
+                    text: non_empty_attr(m, b"Text"),
+                    text_parameter_ref: relative_attr(m, b"TextParameterRefId", app_id),
+                    param_ref: relative_attr(m, b"ParamRefId", app_id),
+                },
+                Vec::new(),
+            )),
             _ => {
                 self.leaf(name, m, app_id);
             }
@@ -1896,9 +2178,9 @@ impl DynTreeBuilder {
                     args.insert(arg.to_string(), value);
                 }
             }
-            b"when" | b"choose" | b"Module" => {
-                // An empty branch, choose or argument-less module: open and
-                // close it at once.
+            b"when" | b"choose" | b"Module" | b"Channel" | b"ParameterBlock" => {
+                // An empty branch, choose, argument-less module or empty
+                // container: open and close it at once.
                 self.start(name, m, app_id);
                 self.end(name, None);
             }
@@ -1945,6 +2227,36 @@ impl DynTreeBuilder {
                         id,
                         module_def,
                         args,
+                    });
+                }
+            }
+            b"Channel" => {
+                if let Some(DynFrame::Channel(..)) = self.frames.last()
+                    && let Some(DynFrame::Channel(ch, children)) = self.frames.pop()
+                    && !children.is_empty()
+                {
+                    self.push_node(DynamicNode::Channel {
+                        id: ch.id,
+                        name: ch.name,
+                        text: ch.text,
+                        number: ch.number,
+                        text_parameter_ref: ch.text_parameter_ref,
+                        children,
+                    });
+                }
+            }
+            b"ParameterBlock" => {
+                if let Some(DynFrame::Block(..)) = self.frames.last()
+                    && let Some(DynFrame::Block(block, children)) = self.frames.pop()
+                    && !children.is_empty()
+                {
+                    self.push_node(DynamicNode::ParameterBlock {
+                        id: block.id,
+                        name: block.name,
+                        text: block.text,
+                        text_parameter_ref: block.text_parameter_ref,
+                        param_ref: block.param_ref,
+                        children,
                     });
                 }
             }
@@ -2703,21 +3015,22 @@ mod tests {
           </Dynamic>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program_str("A", xml)?;
+        // The containers are kept now; this test pins the flattened view.
         assert_eq!(
-            app.module_dynamics.get("MD-1"),
-            Some(&vec![DynamicNode::ComObjectRefRef("MD-1_O-1_R-1".into())])
+            app.module_dynamics
+                .get("MD-1")
+                .map(|b| flatten_containers(b)),
+            Some(vec![DynamicNode::ComObjectRefRef("MD-1_O-1_R-1".into())])
         );
-        assert_eq!(app.dynamic.len(), 3);
-        assert_eq!(
-            app.dynamic[0],
-            DynamicNode::ParameterRefRef("P-1_R-1".into())
-        );
+        let dynamic = flatten_containers(&app.dynamic);
+        assert_eq!(dynamic.len(), 3);
+        assert_eq!(dynamic[0], DynamicNode::ParameterRefRef("P-1_R-1".into()));
         let DynamicNode::Choose {
             param_ref_id,
             whens,
-        } = &app.dynamic[1]
+        } = &dynamic[1]
         else {
-            panic!("expected a choose, got {:?}", app.dynamic[1]);
+            panic!("expected a choose, got {:?}", dynamic[1]);
         };
         assert_eq!(param_ref_id, "P-1_R-1");
         assert_eq!(whens.len(), 2);
@@ -2737,7 +3050,7 @@ mod tests {
         assert_eq!((id.as_str(), module_def.as_str()), ("MD-1_M-3", "MD-1"));
         assert_eq!(args.get("MD-1_A-1"), Some(&65));
         assert!(
-            matches!(&app.dynamic[2], DynamicNode::Assign { target, source: Some(src), .. }
+            matches!(&dynamic[2], DynamicNode::Assign { target, source: Some(src), .. }
             if target == "P-3_R-3" && src == "P-1_R-1")
         );
         assert_eq!(app.module_instances[0].id, "MD-1_M-3");

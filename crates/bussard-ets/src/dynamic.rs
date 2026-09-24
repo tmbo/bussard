@@ -15,6 +15,14 @@
 //! resolved parameter values (overrides, `<Assign>` results, then the vendor
 //! defaults).
 //!
+//! `<Channel>` and `<ParameterBlock>` containers are transparent to the walk,
+//! but it records where each reached item sits: its channel, its block path
+//! and the module instance (with its ordinal) whose body contains it, in
+//! [`DynamicConfig::parameter_placements`] and
+//! [`DynamicConfig::com_object_placements`]. [`visible_parameter_refs`] picks
+//! one ref per parameter from the result, and [`DynamicConfig::label`] reads a
+//! `TextParameterRefId` label for [`crate::label::substitute_label`].
+//!
 //! A `<choose>` whose controlling parameter is itself inactive selects no
 //! branch at all, not even a `<when default="true">` one (issue #159). ETS
 //! decides activity by the same walk: a parameter is active while one of its
@@ -35,6 +43,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 
 use crate::application::{ApplicationProgram, DynamicNode, ParameterType, WhenTest};
+pub use crate::application::{BlockRef, ChannelRef};
 
 /// How deep `<Module>` instantiations may nest before the walk stops (real
 /// products nest at most one level; the bound only guards a malformed file).
@@ -53,6 +62,55 @@ pub struct ActiveModule {
     pub module_def: String,
     /// The instance's argument values, keyed by app-relative argument id.
     pub args: HashMap<String, i64>,
+    /// The instance's 1-based ordinal among all instances of the same module
+    /// definition, in `M-<m>` order (by the numeric `m`). Counted over every
+    /// `<Module>` element of the application, reached or not, so it is stable
+    /// under parameter changes.
+    pub ordinal: u32,
+}
+
+/// Where an active parameter or com-object sits in the Dynamic section.
+///
+/// [`DynamicConfig::parameter_placements`] and
+/// [`DynamicConfig::com_object_placements`] hold one per entry of
+/// [`DynamicConfig::parameters`] and [`DynamicConfig::com_objects`], at the
+/// same index. The placement is that of the first reach of the entry in walk
+/// (document) order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Placement {
+    /// The enclosing `<Channel>`, if any.
+    pub channel: Option<ChannelRef>,
+    /// The enclosing `<ParameterBlock>`s, outermost first.
+    pub blocks: Vec<BlockRef>,
+    /// Index into [`DynamicConfig::modules`] of the module instance whose
+    /// Dynamic body contains the element, `None` at the application level.
+    /// This is where the element sits, which can differ from the scope of an
+    /// application ref reached inside a module body (see
+    /// [`ActiveParameter::module`]).
+    pub module: Option<usize>,
+    /// The id of that module instance (e.g. `MD-1_M-3`).
+    pub module_instance: Option<String>,
+    /// That instance's ordinal ([`ActiveModule::ordinal`]).
+    pub module_ordinal: Option<u32>,
+    /// Whether the entry was reached through a `<ParameterRefRef>` or
+    /// `<ComObjectRefRef>` (shown in ETS). `false` for a parameter that is
+    /// only the target or source of a reached `<Assign>`; its channel and
+    /// blocks are then those of the `<Assign>` element.
+    pub shown: bool,
+}
+
+/// The location context while walking: the enclosing channel and block path.
+#[derive(Debug, Default)]
+struct Context {
+    channel: Option<ChannelRef>,
+    blocks: Vec<BlockRef>,
+}
+
+/// Where a walk reached an item: the shared context plus the enclosing module.
+#[derive(Debug, Clone, Default)]
+struct Place {
+    ctx: Rc<Context>,
+    module: Option<usize>,
 }
 
 /// A parameter ref the walk reached (shown in ETS, so written to memory).
@@ -86,6 +144,10 @@ pub struct DynamicConfig {
     pub parameters: Vec<ActiveParameter>,
     /// The com-object refs reached, in walk order and without duplicates.
     pub com_objects: Vec<ActiveComObject>,
+    /// Where each entry of [`Self::parameters`] sits, at the same index.
+    pub parameter_placements: Vec<Placement>,
+    /// Where each entry of [`Self::com_objects`] sits, at the same index.
+    pub com_object_placements: Vec<Placement>,
     /// Override keys that name no `ParameterRef` of this application.
     pub unresolved_overrides: Vec<String>,
     /// Resolved values keyed by (module instance id or `""`, app-relative
@@ -170,6 +232,58 @@ impl DynamicConfig {
         module
             .and_then(|i| self.modules.get(i))
             .map(|m| m.id.as_str())
+    }
+
+    /// The label a `TextParameterRefId` gives, read in the context of the
+    /// module instance `module` the labelled element sits in (a module's own
+    /// ref resolves in that instance, an application ref at the application
+    /// level, as in the walk).
+    ///
+    /// The value is the effective one ([`DynamicConfig::value`]); for an
+    /// enumeration parameter it is the matching enumeration text. Returns
+    /// `None` when the ref is unknown or the value is empty after trimming.
+    /// Feed the result to [`crate::label::substitute_label`].
+    pub fn label(
+        &self,
+        app: &ApplicationProgram,
+        module: Option<usize>,
+        text_parameter_ref: &str,
+    ) -> Option<String> {
+        let scope = scope_of(&self.modules, module, text_parameter_ref);
+        let raw = self.value(app, scope, text_parameter_ref)?;
+        let kind = app
+            .parameter_ref(text_parameter_ref)
+            .and_then(|r| app.parameters.get(&r.ref_id))
+            .and_then(|p| p.parameter_type.as_deref())
+            .and_then(|t| app.parameter_types.get(t))
+            .map(|d| &d.kind);
+        let text = match kind {
+            Some(ParameterType::Enum { values, .. }) => raw
+                .trim()
+                .parse::<i64>()
+                .ok()
+                .and_then(|v| values.iter().find(|e| e.value == v))
+                .map(|e| e.text.clone())
+                .unwrap_or(raw),
+            _ => raw,
+        };
+        let text = text.trim();
+        (!text.is_empty()).then(|| text.to_string())
+    }
+
+    /// `text` with its `{{0}}`/`{{0:…}}` placeholder filled from
+    /// `text_parameter_ref` in the context of `module` (see
+    /// [`DynamicConfig::label`] and [`crate::label::substitute_label`]).
+    /// Without a ref or a label the text is returned unchanged.
+    pub fn labelled_text(
+        &self,
+        app: &ApplicationProgram,
+        module: Option<usize>,
+        text: &str,
+        text_parameter_ref: Option<&str>,
+    ) -> String {
+        let label = text_parameter_ref.and_then(|r| self.label(app, module, r));
+        crate::label::substitute_label(text, label.as_deref())
     }
 
     /// The instance id used as the value key for `module`.
@@ -275,34 +389,71 @@ pub fn evaluate_dynamic(
 
     // The written parameters: every reached ParameterRefRef plus the target
     // and source of every reached Assign, without duplicates.
+    let ordinals = module_ordinals(app);
+    for m in &mut walk.modules {
+        m.ordinal = ordinals.get(&m.id).copied().unwrap_or(0);
+    }
+    let modules = walk.modules;
+    let placement = |place: &Place, shown: bool| {
+        let active = place.module.and_then(|i| modules.get(i));
+        Placement {
+            channel: place.ctx.channel.clone(),
+            blocks: place.ctx.blocks.clone(),
+            module: place.module,
+            module_instance: active.map(|m| m.id.clone()),
+            module_ordinal: active.map(|m| m.ordinal),
+            shown,
+        }
+    };
     let mut seen = HashSet::new();
     let mut parameters = Vec::new();
+    let mut parameter_placements = Vec::new();
     let assigned = walk.assigns.iter().flat_map(|a| {
-        std::iter::once(ActiveParameter {
-            module: a.target_module,
-            param_ref_id: a.target.clone(),
-        })
-        .chain(a.source.iter().map(|s| ActiveParameter {
-            module: a.source_module,
-            param_ref_id: s.clone(),
+        std::iter::once((
+            ActiveParameter {
+                module: a.target_module,
+                param_ref_id: a.target.clone(),
+            },
+            &a.place,
+        ))
+        .chain(a.source.iter().map(|s| {
+            (
+                ActiveParameter {
+                    module: a.source_module,
+                    param_ref_id: s.clone(),
+                },
+                &a.place,
+            )
         }))
     });
-    for p in walk.parameters.iter().cloned().chain(assigned) {
+    let reached = walk
+        .parameters
+        .iter()
+        .cloned()
+        .zip(walk.parameter_places.iter())
+        .map(|(p, place)| (p, place, true));
+    for (p, place, shown) in reached.chain(assigned.map(|(p, place)| (p, place, false))) {
         if seen.insert(p.clone()) {
             parameters.push(p);
+            parameter_placements.push(placement(place, shown));
         }
     }
     let mut seen = HashSet::new();
-    let com_objects = walk
-        .com_objects
-        .into_iter()
-        .filter(|c| seen.insert(c.clone()))
-        .collect();
+    let mut com_objects = Vec::new();
+    let mut com_object_placements = Vec::new();
+    for (c, place) in walk.com_objects.into_iter().zip(&walk.com_object_places) {
+        if seen.insert(c.clone()) {
+            com_objects.push(c);
+            com_object_placements.push(placement(place, true));
+        }
+    }
 
     DynamicConfig {
-        modules: walk.modules,
+        modules,
         parameters,
         com_objects,
+        parameter_placements,
+        com_object_placements,
         unresolved_overrides: unresolved,
         values,
         overridden,
@@ -351,6 +502,8 @@ fn placed_parameters(app: &ApplicationProgram) -> HashSet<String> {
                         visit(app, &w.children, out);
                     }
                 }
+                DynamicNode::Channel { children, .. }
+                | DynamicNode::ParameterBlock { children, .. } => visit(app, children, out),
                 DynamicNode::ComObjectRefRef(_)
                 | DynamicNode::Module { .. }
                 | DynamicNode::Assign { .. } => {}
@@ -361,6 +514,171 @@ fn placed_parameters(app: &ApplicationProgram) -> HashSet<String> {
     visit(app, &app.dynamic, &mut out);
     for body in app.module_dynamics.values() {
         visit(app, body, &mut out);
+    }
+    out
+}
+
+/// The scope a ref reached inside `module` belongs to (see [`Walk::scope`]).
+fn scope_of(modules: &[ActiveModule], module: Option<usize>, ref_id: &str) -> Option<usize> {
+    let m = modules.get(module?)?;
+    let own = ref_id
+        .strip_prefix(m.module_def.as_str())
+        .is_some_and(|rest| rest.starts_with('_'));
+    if own || ref_id.starts_with("MD-") {
+        module
+    } else {
+        None
+    }
+}
+
+/// The device-file key of an app-relative id in a module instance: the id
+/// itself at the application level (`instance` `None`), else the id with the
+/// project module-instance selector inserted after its module definition
+/// (`MD-1_M-3` and `MD-1_P-3_R-5` give `MD-1_M-3_MI-1_P-3_R-5`). This is the
+/// key form device files use for parameters (and the inverse of
+/// [`split_selector`]); it applies to parameter ids (`MD-1_P-3`), refs and
+/// channel ids alike.
+pub fn selector_key(instance: Option<&str>, app_relative_id: &str) -> String {
+    let Some(instance) = instance else {
+        return app_relative_id.to_string();
+    };
+    let module_def = instance.split_once("_M-").map_or(instance, |(md, _)| md);
+    let rest = app_relative_id
+        .strip_prefix(module_def)
+        .and_then(|r| r.strip_prefix('_'))
+        .unwrap_or(app_relative_id);
+    format!("{instance}_MI-1_{rest}")
+}
+
+/// The one ref through which a parameter (one memory cell) is stored: see
+/// [`visible_parameter_refs`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VisibleParameter {
+    /// The parameter's key: its app-relative id with the module-instance
+    /// selector (`P-12`, `MD-1_M-3_MI-1_P-3`; see [`selector_key`]).
+    pub key: String,
+    /// The app-relative `Parameter` id (`P-12`, `MD-1_P-3`).
+    pub parameter_id: String,
+    /// The scope of the parameter: index into [`DynamicConfig::modules`], as
+    /// in [`ActiveParameter::module`].
+    pub module: Option<usize>,
+    /// The chosen app-relative `ParameterRef` id (`MD-1_P-3_R-5`).
+    pub param_ref_id: String,
+    /// The chosen ref in device-key form (`MD-1_M-3_MI-1_P-3_R-5`).
+    pub ref_key: String,
+    /// Index of the chosen ref in [`DynamicConfig::parameters`] (and
+    /// [`DynamicConfig::parameter_placements`]).
+    pub index: usize,
+    /// The other active refs of the same parameter in the same scope,
+    /// app-relative, in walk order.
+    pub alternatives: Vec<String>,
+}
+
+/// Picks one active `ParameterRef` per parameter (per module instance), so a
+/// parameter is stored once per memory cell.
+///
+/// The rule: among the entries of [`DynamicConfig::parameters`] that point at
+/// the same `Parameter` in the same scope, take the first one that is shown
+/// (reached through a `<ParameterRefRef>`, [`Placement::shown`]) in walk
+/// order, which is document order with each reached module body expanded in
+/// place; when none is shown (the parameter is only touched by an
+/// `<Assign>`), take the first entry. Every other active ref of that
+/// parameter is listed in [`VisibleParameter::alternatives`]. Refs that
+/// resolve to no parameter are skipped. The result is ordered by the chosen
+/// entry's index.
+pub fn visible_parameter_refs(
+    app: &ApplicationProgram,
+    config: &DynamicConfig,
+) -> Vec<VisibleParameter> {
+    let prefix = format!("{}_", app.id);
+    // (instance, parameter id) -> indices into config.parameters, walk order.
+    type Key = (Option<usize>, String);
+    let mut groups: Vec<(Key, Vec<usize>)> = Vec::new();
+    let mut slot: HashMap<Key, usize> = HashMap::new();
+    for (i, p) in config.parameters.iter().enumerate() {
+        let Some(pid) = parameter_id(app, &p.param_ref_id) else {
+            continue;
+        };
+        let rel = pid.strip_prefix(&prefix).unwrap_or(pid).to_string();
+        let key = (p.module, rel);
+        match slot.get(&key) {
+            Some(&g) => groups[g].1.push(i),
+            None => {
+                slot.insert(key.clone(), groups.len());
+                groups.push((key, vec![i]));
+            }
+        }
+    }
+    let shown = |i: usize| config.parameter_placements.get(i).is_some_and(|p| p.shown);
+    let mut out: Vec<VisibleParameter> = groups
+        .into_iter()
+        .filter_map(|((module, parameter_id), indices)| {
+            let chosen = indices
+                .iter()
+                .copied()
+                .find(|&i| shown(i))
+                .or_else(|| indices.first().copied())?;
+            let param_ref_id = config.parameters.get(chosen)?.param_ref_id.clone();
+            let mut alternatives: Vec<String> = Vec::new();
+            for &i in &indices {
+                let r = &config.parameters[i].param_ref_id;
+                if *r != param_ref_id && !alternatives.contains(r) {
+                    alternatives.push(r.clone());
+                }
+            }
+            let instance = config.module_instance_id(module);
+            Some(VisibleParameter {
+                key: selector_key(instance, &parameter_id),
+                ref_key: selector_key(instance, &param_ref_id),
+                parameter_id,
+                module,
+                param_ref_id,
+                index: chosen,
+                alternatives,
+            })
+        })
+        .collect();
+    out.sort_by_key(|v| v.index);
+    out
+}
+
+/// The 1-based ordinal of every module instance id among the instances of
+/// its module definition, in `M-<m>` order (numeric `m`), counted over every
+/// `<Module>` in the application's and the module definitions' Dynamic
+/// sections, in any branch.
+fn module_ordinals(app: &ApplicationProgram) -> HashMap<String, u32> {
+    fn visit(nodes: &[DynamicNode], out: &mut BTreeMap<String, Vec<String>>) {
+        for node in nodes {
+            match node {
+                DynamicNode::Module { id, module_def, .. } => {
+                    out.entry(module_def.clone()).or_default().push(id.clone());
+                }
+                DynamicNode::Choose { whens, .. } => {
+                    for w in whens {
+                        visit(&w.children, out);
+                    }
+                }
+                DynamicNode::Channel { children, .. }
+                | DynamicNode::ParameterBlock { children, .. } => visit(children, out),
+                DynamicNode::ParameterRefRef(_)
+                | DynamicNode::ComObjectRefRef(_)
+                | DynamicNode::Assign { .. } => {}
+            }
+        }
+    }
+    let mut by_def = BTreeMap::new();
+    visit(&app.dynamic, &mut by_def);
+    for body in app.module_dynamics.values() {
+        visit(body, &mut by_def);
+    }
+    let m_number = |id: &str| -> Option<u64> { id.rsplit_once("_M-")?.1.parse().ok() };
+    let mut out = HashMap::new();
+    for mut ids in by_def.into_values() {
+        ids.sort_by(|a, b| m_number(a).cmp(&m_number(b)).then_with(|| a.cmp(b)));
+        ids.dedup();
+        for (i, id) in ids.into_iter().enumerate() {
+            out.insert(id, u32::try_from(i + 1).unwrap_or(u32::MAX));
+        }
     }
     out
 }
@@ -448,6 +766,8 @@ struct ReachedAssign {
     source_module: Option<usize>,
     source: Option<String>,
     value: Option<String>,
+    /// Where the `<Assign>` element sits.
+    place: Place,
 }
 
 /// One pass over the Dynamic tree.
@@ -456,6 +776,12 @@ struct Walk {
     modules: Vec<ActiveModule>,
     parameters: Vec<ActiveParameter>,
     com_objects: Vec<ActiveComObject>,
+    /// Where each entry of `parameters` was reached, same index.
+    parameter_places: Vec<Place>,
+    /// Where each entry of `com_objects` was reached, same index.
+    com_object_places: Vec<Place>,
+    /// The channel and block path at the current point of the walk.
+    ctx: Rc<Context>,
     assigns: Vec<ReachedAssign>,
     /// What the previous pass left in the unions' shared memory.
     shared: SharedUnions,
@@ -666,6 +992,14 @@ impl Walk {
             .unwrap_or("")
     }
 
+    /// The current location, inside the module instance `module`.
+    fn place(&self, module: Option<usize>) -> Place {
+        Place {
+            ctx: Rc::clone(&self.ctx),
+            module,
+        }
+    }
+
     /// The scope a ref reached inside `module` belongs to: the module instance
     /// for a ref of its own `ModuleDef` (`MD-3_P-3_R-3` inside an `MD-3`
     /// instance), the application for an application ref (`P-15_R-16`).
@@ -676,15 +1010,7 @@ impl Walk {
     /// its own. Those resolve to the application's values, never to a
     /// per-instance copy (issue #126).
     fn scope(&self, module: Option<usize>, ref_id: &str) -> Option<usize> {
-        let m = self.modules.get(module?)?;
-        let own = ref_id
-            .strip_prefix(m.module_def.as_str())
-            .is_some_and(|rest| rest.starts_with('_'));
-        if own || ref_id.starts_with("MD-") {
-            module
-        } else {
-            None
-        }
+        scope_of(&self.modules, module, ref_id)
     }
 
     fn run(
@@ -707,11 +1033,35 @@ impl Walk {
                         module: scope,
                         param_ref_id: r.clone(),
                     });
+                    self.parameter_places.push(self.place(module));
                 }
-                DynamicNode::ComObjectRefRef(r) => self.com_objects.push(ActiveComObject {
-                    module: self.scope(module, r),
-                    com_object_ref_id: r.clone(),
-                }),
+                DynamicNode::ComObjectRefRef(r) => {
+                    self.com_objects.push(ActiveComObject {
+                        module: self.scope(module, r),
+                        com_object_ref_id: r.clone(),
+                    });
+                    self.com_object_places.push(self.place(module));
+                }
+                DynamicNode::Channel { children, .. } => {
+                    let outer = Rc::clone(&self.ctx);
+                    self.ctx = Rc::new(Context {
+                        channel: node.channel_ref(),
+                        blocks: outer.blocks.clone(),
+                    });
+                    self.run(app, values, children, module, depth);
+                    self.ctx = outer;
+                }
+                DynamicNode::ParameterBlock { children, .. } => {
+                    let outer = Rc::clone(&self.ctx);
+                    let mut blocks = outer.blocks.clone();
+                    blocks.extend(node.block_ref());
+                    self.ctx = Rc::new(Context {
+                        channel: outer.channel.clone(),
+                        blocks,
+                    });
+                    self.run(app, values, children, module, depth);
+                    self.ctx = outer;
+                }
                 DynamicNode::Choose {
                     param_ref_id,
                     whens,
@@ -765,6 +1115,7 @@ impl Walk {
                         id: id.clone(),
                         module_def: module_def.clone(),
                         args: args.clone(),
+                        ordinal: 0,
                     });
                     self.run(app, values, body, Some(idx), depth + 1);
                 }
@@ -778,6 +1129,7 @@ impl Walk {
                     source_module: source.as_deref().and_then(|s| self.scope(module, s)),
                     source: source.clone(),
                     value: value.clone(),
+                    place: self.place(module),
                 }),
             }
         }

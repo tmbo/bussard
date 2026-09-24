@@ -30,14 +30,16 @@ pub mod dynamic;
 pub mod error;
 pub mod flags;
 pub mod hardware;
+pub mod label;
 pub mod master;
 pub mod translation;
 pub mod zip_util;
 
 pub use application::{
-    ApplicationProgram, ChannelDef, CodeSegment, ComObject, ComObjectRef, EnumValue, LoadOp,
-    LoadProcedure, Memory, Parameter, ParameterRef, ParameterType, ParameterTypeDecl,
-    ResolvedComObject, ResolvedParameter, SegmentKind, parse_application_program,
+    ApplicationProgram, BlockRef, ChannelDef, ChannelRef, CodeSegment, ComObject, ComObjectRef,
+    EnumValue, LoadOp, LoadProcedure, Memory, Parameter, ParameterRef, ParameterType,
+    ParameterTypeDecl, ResolvedComObject, ResolvedParameter, SegmentKind,
+    parse_application_program,
 };
 pub use attrs::{Attrs, attr_value, attrs_map, flagset_from, get, strip_bom, strip_bom_bytes};
 pub use dpt::{dpt_from_object_size, parse_ets_dpt};
