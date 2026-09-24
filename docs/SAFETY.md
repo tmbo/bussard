@@ -223,6 +223,22 @@ specification shows harm, so the rule above applies unchanged: the reset runs
 when the device carries an image `flash` did not recognise or when the
 download is sparse. `--no-factory-reset` still leaves it out.
 
+After any restart `flash` itself triggers on a Data Secure device (the
+factory reset, a load procedure's master reset, the terminal restart before the
+post-restart check), the device can answer at the transport layer before its
+security layer is ready, and then drops the first S-A_Sync_Req without an
+answer (issue #166, seen on 1.1.12). `flash` waits like ETS instead: it probes
+the rebooted device with a plain `A_DeviceDescriptor_Read`, backing off 1, 2,
+4 and then 8 s between probes for up to 30 s (ETS's capture shows the device
+back about 14 s after the reset; a probe that answers earlier ends the wait),
+keeps that connection and sends the Sync_Req on it. A Sync_Req the device
+acknowledges but does not answer is repeated on the same connection, up to
+five attempts with a 1, 2, 4, 8 s backoff after a restart and three attempts
+(1, 2 s) on any other secured connection, before the flash stops with "did not
+answer the Data Secure sync request". Plain devices keep the shorter reboot
+poll and see no extra frames. If the flash still stops right after the factory
+reset, the device is left unloaded: re-run the same `flash`.
+
 Activation itself (turning Data Secure on, writing the tool key and the
 sending sequence number) is ETS's job: bussard operates devices ETS has
 activated and never activates or deactivates one.

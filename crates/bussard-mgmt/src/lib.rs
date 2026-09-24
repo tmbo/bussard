@@ -70,8 +70,9 @@ pub use broadcast::{
 };
 pub use connection::{
     AuthorizeOutcome, L4Channel, Layer4Connection, LeaseChannel, MAX_OBJECT_INDEX, PID_OBJECT_TYPE,
-    PROBE_TIMEOUT, PropertyDesc, SECURE_APDU_OVERHEAD, STANDARD_FRAME_APDU, Timeouts,
+    PROBE_TIMEOUT, PropertyDesc, SECURE_APDU_OVERHEAD, STANDARD_FRAME_APDU, SyncRetry, Timeouts,
     describe_object_properties, probe_object_type, probe_object_types, read_device_descriptor,
+    read_device_descriptor_unsecured,
 };
 pub use device::DeviceConnection;
 pub use error::{MgmtError, Result, SilenceKind};

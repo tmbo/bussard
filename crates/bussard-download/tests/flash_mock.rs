@@ -41,7 +41,7 @@ use std::time::Duration;
 
 use bussard_download::{FlashStep, Session, flash, plan_flash};
 use bussard_mgmt::connection::Layer4Connection;
-use bussard_mgmt::load::LoadState;
+use bussard_mgmt::load::{LoadState, WriteError};
 use bussard_prod::application::{ApplicationProgram, parse_application_program};
 use bussard_transport::cemi::{Apdu, CemiFrame, Destination, Tpci};
 use bussard_transport::knxnet::{self, ConnectionHeader, ServiceType};
@@ -393,6 +393,20 @@ struct DeviceState {
     secure_refusals: u32,
     /// Plain management APDUs refused because the device is activated (spec §6.4).
     plain_refusals: u32,
+    /// How many S-A_Sync_Reqs an activated device T_ACKs without answering after
+    /// each restart it accepts (`u32::MAX`: it never answers again), modelling a
+    /// security layer that comes up after the transport layer (issue #166).
+    sync_drops_after_restart: u32,
+    /// Sync_Reqs still to be dropped since the last restart.
+    sync_drops_pending: u32,
+    /// Sync_Reqs dropped (T_ACK only) so far.
+    sync_reqs_dropped: u32,
+    /// Plain `A_DeviceDescriptor_Read`s an activated device answered in the
+    /// clear (the readiness probe ETS and bussard send before the Sync_Req).
+    plain_descriptor_reads: u32,
+    /// The connection-level events an activated device saw, in order: a
+    /// readable log of the wire sequence around a restart.
+    secure_log: Vec<String>,
 }
 
 type Shared = Arc<Mutex<DeviceState>>;
@@ -526,6 +540,7 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
         }
         s.last_master_reset_payload = data.to_vec();
         s.l4_dead_after_master_reset = true;
+        s.sync_drops_pending = s.sync_drops_after_restart;
         s.app_load_state = LS_UNLOADED;
         for state in s.object_load_states.values_mut() {
             *state = LS_UNLOADED;
@@ -543,6 +558,7 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
     if req_apci == A_RESTART_MASTER_RESET && data.first() == Some(&0x01) {
         s.confirmed_restarts_seen += 1;
         s.l4_dead_after_master_reset = true;
+        s.sync_drops_pending = s.sync_drops_after_restart;
         return Reaction::Answer(A_RESTART_RESPONSE, vec![0x00, 0x00, 0x00]);
     }
     if req_apci == A_RESTART_MASTER_RESET {
@@ -1046,6 +1062,7 @@ fn unwrap_secure(
     match session.unwrap(&addr, apci, data) {
         Ok(bussard_secure::UnwrapOutcome::Secured { apci, data }) => {
             s.secure_frames_accepted += 1;
+            s.secure_log.push(format!("S-A_Data({apci:#05x})"));
             Some((apci, data))
         }
         Ok(bussard_secure::UnwrapOutcome::Plain | bussard_secure::UnwrapOutcome::Synced { .. })
@@ -1192,6 +1209,9 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
                         // intermediate state across a graceful window.
                         let mut s = state.lock().unwrap();
                         s.connects += 1;
+                        if s.secure.is_some() {
+                            s.secure_log.push("T_Connect".to_string());
+                        }
                         s.exchanges_this_connection = 0;
                         s.write_phase_exchanges = None;
                         // A fresh connection is a fresh authorization context: the
@@ -1225,6 +1245,9 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
                         // the L4 session was released even after a failed flash.
                         let mut s = state.lock().unwrap();
                         s.disconnects += 1;
+                        if s.secure.is_some() {
+                            s.secure_log.push("T_Disconnect".to_string());
+                        }
                         s.was_loading_at_disconnect = s.app_load_state == LS_LOADING;
                     }
                     TpciKind::NumberedData(client_seq) => {
@@ -1280,9 +1303,33 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
                         if wire_apci == bussard_secure::A_SECURE_DATA
                             && wire_payload.first() == Some(&0x92)
                         {
+                            // A security layer that is not ready yet (issue
+                            // #166): the transport layer acknowledges the
+                            // request, the security layer never answers it.
+                            let dropped = {
+                                let mut s = state.lock().unwrap();
+                                if s.secure.is_some() && s.sync_drops_pending > 0 {
+                                    s.sync_drops_pending -= 1;
+                                    s.sync_reqs_dropped += 1;
+                                    s.secure_log.push("S-A_Sync_Req (T_ACK only)".to_string());
+                                    true
+                                } else {
+                                    false
+                                }
+                            };
+                            if dropped {
+                                let ack =
+                                    CemiFrame::t_control(tool, address, tpci::t_ack(client_seq));
+                                push(&gw, from, &mut gw_seq, &ack).await;
+                                continue;
+                            }
                             let resp_tpci = tpci::ndt(dev_seq);
                             let answered = {
                                 let mut s = state.lock().unwrap();
+                                if s.secure.is_some() {
+                                    s.secure_log
+                                        .push("S-A_Sync_Req -> S-A_Sync_Res".to_string());
+                                }
                                 s.secure.as_mut().map(|session| {
                                     session.answer_sync_request(
                                         &mock_addressing(tool, address, cemi.tpci_octet()),
@@ -1300,6 +1347,35 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
                             push(&gw, from, &mut gw_seq, &ack).await;
                             let resp = CemiFrame::t_data_connected(
                                 tool, address, resp_tpci, rapci, &rdata,
+                            );
+                            push(&gw, from, &mut gw_seq, &resp).await;
+                            dev_seq = (dev_seq + 1) & 0x0f;
+                            continue;
+                        }
+                        // An activated device still answers a plain
+                        // A_DeviceDescriptor_Read in the clear, as the real
+                        // device does for ETS's opening probe (issue #166).
+                        let plain_probe = wire_apci & APCI_SELECTOR == A_DEVICE_DESCRIPTOR_READ_SEL
+                            && {
+                                let mut s = state.lock().unwrap();
+                                if s.secure.is_some() {
+                                    s.plain_descriptor_reads += 1;
+                                    s.secure_log
+                                        .push("A_DeviceDescriptor_Read (plain)".to_string());
+                                    true
+                                } else {
+                                    false
+                                }
+                            };
+                        if plain_probe {
+                            let ack = CemiFrame::t_control(tool, address, tpci::t_ack(client_seq));
+                            push(&gw, from, &mut gw_seq, &ack).await;
+                            let resp = CemiFrame::t_data_connected(
+                                tool,
+                                address,
+                                tpci::ndt(dev_seq),
+                                A_DEVICE_DESCRIPTOR_RESPONSE,
+                                &[0x07, 0xB0],
                             );
                             push(&gw, from, &mut gw_seq, &resp).await;
                             dev_seq = (dev_seq + 1) & 0x0f;
@@ -1420,6 +1496,11 @@ fn fresh_device(fault: Fault) -> Shared {
         secure_frames_accepted: 0,
         secure_refusals: 0,
         plain_refusals: 0,
+        sync_drops_after_restart: 0,
+        sync_drops_pending: 0,
+        sync_reqs_dropped: 0,
+        plain_descriptor_reads: 0,
+        secure_log: Vec::new(),
     }))
 }
 
@@ -5685,5 +5766,151 @@ async fn test_parameters_only_download_with_nothing_changed_writes_nothing()
     assert_eq!(readings[0].line(), "thr: 9 (default 7)");
     let s = state.lock().unwrap_or_else(|e| e.into_inner());
     assert_eq!(s.control_writes, 0, "planning writes nothing");
+    Ok(())
+}
+
+/// Flashes [`app_with_sparse_segment`] (factory reset first, confirmed restart
+/// last) onto a Data Secure mock whose security layer drops the first
+/// `sync_drops` S-A_Sync_Reqs after every restart, and returns the flash result
+/// and the device state (issue #166).
+async fn secure_flash_across_slow_security_layer(
+    sync_drops: u32,
+) -> Result<(Result<bussard_download::FlashOutcome, WriteError>, Shared), Box<dyn std::error::Error>>
+{
+    // Shorten the post-reboot poll and the Sync backoff; the var only bounds
+    // sleeps.
+    // SAFETY of env: nextest runs this test in its own process.
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
+    }
+    let (handle, state, gw) = setup_bus_with(secure_device(Fault::None)).await;
+    state
+        .lock()
+        .map_err(|_| "poisoned")?
+        .sync_drops_after_restart = sync_drops;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source = bussard_bus::ops::group_source(&handle);
+    let plan = plan_flash(
+        &app_with_sparse_segment(),
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    assert_eq!(
+        plan.steps.first(),
+        Some(&FlashStep::FactoryReset { erase_code: 7 }),
+        "the plan opens with the erase-7 factory reset"
+    );
+    // A short L4 budget: each unanswered Sync_Req costs one response timeout.
+    let budget = bussard_mgmt::Timeouts {
+        ack_timeout: Duration::from_millis(300),
+        max_repetitions: 1,
+        response_timeout: Duration::from_millis(300),
+    };
+    let connector =
+        LeaseConnector::secure(handle.clone(), target, source, Some(budget), MOCK_TOOL_KEY);
+    let mut session = Session::open_with_key(connector, Some(0xFFFF_FFFF)).await?;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions {
+            verify_after_restart: true,
+            ..Default::default()
+        },
+        |_| {},
+    )
+    .await;
+    let _ = session.into_disconnect().await;
+    gw.abort();
+    Ok((outcome, state))
+}
+
+/// Issue #166: after the factory reset (and again after the terminal confirmed
+/// restart) the Secure device T_ACKs the first two S-A_Sync_Reqs without
+/// answering. bussard probes readiness with a plain `A_DeviceDescriptor_Read`
+/// on the new connection, repeats the Sync_Req on that same connection, and the
+/// flash completes.
+#[tokio::test]
+async fn test_flash_secure_factory_reset_retries_unanswered_sync_reqs()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (outcome, state) = secure_flash_across_slow_security_layer(2).await?;
+    let outcome = outcome?;
+    assert!(outcome.ok(), "the secure flash must verify: {outcome:?}");
+    assert_eq!(outcome.load_state, LoadState::Loaded);
+    let s = state.lock().map_err(|_| "poisoned")?;
+    assert_eq!(s.factory_resets_seen, 1);
+    assert_eq!(s.confirmed_restarts_seen, 1);
+    assert_eq!(
+        s.sync_reqs_dropped, 4,
+        "two dropped Sync_Reqs after each of the two restarts"
+    );
+    assert_eq!(s.secure_refusals, 0, "no stale or unverifiable frame");
+    assert_eq!(
+        s.plain_refusals, 0,
+        "only the descriptor probe goes in the clear"
+    );
+    assert!(
+        s.plain_descriptor_reads >= 2,
+        "one readiness probe per restart (got {})",
+        s.plain_descriptor_reads
+    );
+    // The wire sequence right after the factory reset, as ETS does it: one
+    // connection that opens with the plain descriptor read, then the Sync_Req
+    // (repeated until answered), then the secured authorize.
+    let reset = s
+        .secure_log
+        .iter()
+        .position(|e| e == "S-A_Data(0x381)")
+        .ok_or("the factory reset went out secured")?;
+    let after: Vec<&str> = s.secure_log[reset + 1..]
+        .iter()
+        .take(6)
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        after,
+        vec![
+            "T_Connect",
+            "A_DeviceDescriptor_Read (plain)",
+            "S-A_Sync_Req (T_ACK only)",
+            "S-A_Sync_Req (T_ACK only)",
+            "S-A_Sync_Req -> S-A_Sync_Res",
+            "S-A_Data(0x3d1)",
+        ]
+    );
+    Ok(())
+}
+
+/// Issue #166: a Secure device that never answers the Sync_Req after the
+/// factory reset fails the flash with `SyncUnanswered` once the bounded
+/// retries (five attempts on the post-restart connection) are spent.
+#[tokio::test]
+async fn test_flash_secure_factory_reset_gives_up_on_a_sync_never_answered()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (outcome, state) = secure_flash_across_slow_security_layer(u32::MAX).await?;
+    let err = match outcome {
+        Ok(outcome) => return Err(format!("the flash must fail, got {outcome:?}").into()),
+        Err(err) => err,
+    };
+    assert!(
+        matches!(
+            err,
+            WriteError::Mgmt(bussard_mgmt::MgmtError::Secure {
+                source: bussard_secure::AsduError::SyncUnanswered,
+                ..
+            })
+        ),
+        "got {err:?}"
+    );
+    let s = state.lock().map_err(|_| "poisoned")?;
+    assert_eq!(s.factory_resets_seen, 1);
+    assert_eq!(
+        s.sync_reqs_dropped,
+        bussard_mgmt::SyncRetry::after_restart().attempts,
+        "the Sync_Req is repeated a bounded number of times"
+    );
     Ok(())
 }

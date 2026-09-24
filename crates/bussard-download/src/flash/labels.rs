@@ -154,7 +154,8 @@ pub(super) fn step_label(step: &FlashStep) -> String {
         FlashStep::Restart => "restart device".to_string(),
         FlashStep::FactoryReset { erase_code } => format!(
             "factory reset (A_Restart master reset, erase code {erase_code}): erase application, \
-             parameters and links, keep the individual address; reconnect"
+             parameters and links, keep the individual address; wait for the reboot and reconnect \
+             (a Data Secure device: plain descriptor probes for up to 30 s, then S-A_Sync with retries)"
         ),
         FlashStep::MasterReset {
             erase_code,
