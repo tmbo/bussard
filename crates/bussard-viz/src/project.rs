@@ -9,7 +9,7 @@
 //!
 //! * `com_objects` on a device is the **union** of the device's own
 //!   `com_objects` map keys and the object numbers appearing in that device's
-//!   `links.yaml` entries. A link-only object (present in links but not in the
+//!   device-file links. A link-only object (present in links but not in the
 //!   device's com-object table) is emitted with `null` `dpt`/`flags`.
 //! * A group address that appears **only** in links (never declared in
 //!   `groups.toml`) is synthesized into `groups` with `name: null`, so the
@@ -154,7 +154,7 @@ fn project_device(model: &Model, addr: IndividualAddress, device: &Device) -> Va
 }
 
 /// Projects a device's com-objects as the union of its own com-object table and
-/// the object numbers referenced by its `links.yaml` entries.
+/// the object numbers referenced by its links (in its device file).
 ///
 /// For each object number, `name`/`send`/`listen` come from the matching link
 /// (the informational name lives only in links); `dpt`/`flags`/`channel` come

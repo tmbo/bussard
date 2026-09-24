@@ -956,7 +956,7 @@ mod tests {
         // A single declared group with a DPT and a name.
         writeln!(
             f,
-            "groups:\n  3/0/4:\n    name: Living Room Blind\n    dpt: \"1.008\""
+            "groups = [{{ address = \"3/0/4\", name = \"Living Room Blind\", dpt = \"1.008\" }}]"
         )
         .expect("write groups.toml");
     }
@@ -996,7 +996,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_reload_broken_yaml_422_keeps_old_model() -> Result<(), Box<dyn std::error::Error>>
+    async fn test_reload_broken_toml_422_keeps_old_model() -> Result<(), Box<dyn std::error::Error>>
     {
         // Load a good one-group model, then corrupt groups.toml on disk and
         // reload: the response is 422 model_invalid and the old model survives.
@@ -1006,8 +1006,8 @@ mod tests {
         assert_eq!(state.model.current().version, 1);
         assert_eq!(state.model.current().json["stats"]["groups"], 1);
 
-        // Corrupt the file: not valid YAML for the Groups schema.
-        std::fs::write(tmp.path().join("groups.toml"), b": : not yaml : :\n")?;
+        // Corrupt the file: not valid TOML for the Groups schema.
+        std::fs::write(tmp.path().join("groups.toml"), b": : not toml : :\n")?;
 
         let handle = state.model.clone();
         let (status, body) = call(state, empty_post("/api/reload")).await;

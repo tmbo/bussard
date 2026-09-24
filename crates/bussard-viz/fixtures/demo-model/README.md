@@ -23,11 +23,11 @@ names and the full group-address plan of that building.
 
 * named `ranges:` at both main and main/middle level, plus a GA whose range is
   unnamed;
-* devices with and without `location:` / `product:` / `channels:`;
+* devices with and without `[location]` / `product` / `[channel.*]` tables;
 * a com-object present in the device table but never linked (the "unused
   com-object" info counter);
 * a link-only com-object with no table entry (`dpt`/`flags` project to `null`);
-* a GA referenced only by a link and never declared in `groups.yaml`
+* a GA referenced only by a link and never declared in `groups.toml`
   (synthesized with `name: null`);
 * a declared GA with no `dpt` (the write path must refuse it);
 * declared-but-unlinked GAs (the "unused group address" info counter);
