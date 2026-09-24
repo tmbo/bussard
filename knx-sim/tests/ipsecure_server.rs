@@ -31,6 +31,15 @@ const USER_PASSWORD: &str = "sim-tunnel-user-2";
 /// Starts a secure-only sim with one synthetic device at 1.1.2, serving on a
 /// background thread.
 fn start() -> Result<SocketAddr, Box<dyn std::error::Error>> {
+    start_with(true, false, None)
+}
+
+/// [`start`] with the TCP / UDP endpoints and the session timeout chosen.
+fn start_with(
+    tcp: bool,
+    udp: bool,
+    session_timeout_ms: Option<u64>,
+) -> Result<SocketAddr, Box<dyn std::error::Error>> {
     let sink = Arc::new(TracingSink);
     let pd = synthetic_system_b_product();
     let dev = Device::from_product(
@@ -46,6 +55,9 @@ fn start() -> Result<SocketAddr, Box<dyn std::error::Error>> {
         individual_address: "1.1.200".into(),
         device_authentication_code: DEVICE_CODE.into(),
         secure_only: true,
+        tcp,
+        udp,
+        session_timeout_ms,
         users: vec![IpSecureUserConfig {
             id: 2,
             password: USER_PASSWORD.into(),
@@ -147,6 +159,49 @@ impl Client {
     }
 }
 
+/// A frame carrier: a TCP stream, or a UDP socket connected to the sim.
+trait Wire {
+    /// The HPAI this carrier advertises.
+    fn hpai(&self) -> std::io::Result<Vec<u8>>;
+    /// Sends one frame.
+    fn send_frame(&mut self, bytes: &[u8]) -> std::io::Result<()>;
+    /// Receives one frame.
+    fn recv_frame(&mut self) -> std::io::Result<Vec<u8>>;
+}
+
+impl Wire for TcpStream {
+    fn hpai(&self) -> std::io::Result<Vec<u8>> {
+        Ok(vec![0x08, 0x02, 0, 0, 0, 0, 0, 0])
+    }
+    fn send_frame(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        self.write_all(bytes)
+    }
+    fn recv_frame(&mut self) -> std::io::Result<Vec<u8>> {
+        read_frame(self)
+    }
+}
+
+impl Wire for UdpSocket {
+    fn hpai(&self) -> std::io::Result<Vec<u8>> {
+        let SocketAddr::V4(local) = self.local_addr()? else {
+            return Err(std::io::Error::other("IPv6 socket"));
+        };
+        let mut out = vec![0x08, 0x01];
+        out.extend_from_slice(&local.ip().octets());
+        out.extend_from_slice(&local.port().to_be_bytes());
+        Ok(out)
+    }
+    fn send_frame(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        self.send(bytes).map(|_| ())
+    }
+    fn recv_frame(&mut self) -> std::io::Result<Vec<u8>> {
+        let mut buf = vec![0u8; 2048];
+        let n = self.recv(&mut buf)?;
+        buf.truncate(n);
+        Ok(buf)
+    }
+}
+
 /// Runs the handshake as user 2 with `password`; returns the stream, the
 /// client session and the plain SESSION_STATUS the server answered.
 fn handshake(
@@ -155,13 +210,22 @@ fn handshake(
 ) -> Result<(TcpStream, Client, Vec<u8>), Box<dyn std::error::Error>> {
     let mut stream = TcpStream::connect(addr)?;
     stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+    let (client, status) = handshake_on(&mut stream, password)?;
+    Ok((stream, client, status))
+}
+
+/// The handshake on any [`Wire`].
+fn handshake_on(
+    wire: &mut impl Wire,
+    password: &str,
+) -> Result<(Client, Vec<u8>), Box<dyn std::error::Error>> {
     let secret = x25519_dalek::StaticSecret::from([0x21u8; 32]);
     let public = x25519_dalek::PublicKey::from(&secret).to_bytes();
-    let mut body = vec![0x08, 0x02, 0, 0, 0, 0, 0, 0];
+    let mut body = wire.hpai()?;
     body.extend_from_slice(&public);
-    stream.write_all(&frame(0x0951, &body))?;
+    wire.send_frame(&frame(0x0951, &body))?;
 
-    let response = read_frame(&mut stream)?;
+    let response = wire.recv_frame()?;
     assert_eq!(response.len(), 56, "SESSION_RESPONSE is 56 octets");
     assert_eq!(&response[2..4], &[0x09, 0x52]);
     let session_id = u16::from_be_bytes([response[6], response[7]]);
@@ -203,9 +267,9 @@ fn handshake(
     );
     auth.extend_from_slice(&auth_mac);
     let wrapped = client.seal(&auth);
-    stream.write_all(&wrapped)?;
-    let status = client.open(&read_frame(&mut stream)?)?;
-    Ok((stream, client, status))
+    wire.send_frame(&wrapped)?;
+    let status = client.open(&wire.recv_frame()?)?;
+    Ok((client, status))
 }
 
 #[test]
@@ -314,5 +378,106 @@ fn test_wrong_password_is_refused_with_auth_failed() -> TestResult {
     let mut buf = [0u8; 16];
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
     assert!(matches!(stream.read(&mut buf), Ok(0) | Err(_)));
+    Ok(())
+}
+
+/// A UDP socket connected to the sim with a read timeout.
+fn udp_to(addr: SocketAddr) -> Result<UdpSocket, Box<dyn std::error::Error>> {
+    let udp = UdpSocket::bind("127.0.0.1:0")?;
+    udp.connect(addr)?;
+    udp.set_read_timeout(Some(Duration::from_secs(3)))?;
+    Ok(udp)
+}
+
+#[test]
+fn test_secure_session_over_udp_tunnels_with_acks() -> TestResult {
+    // A UDP-only secure interface (bussard issue #197): no TCP endpoint.
+    let addr = start_with(false, true, None)?;
+    assert!(
+        TcpStream::connect_timeout(&addr, Duration::from_secs(1)).is_err(),
+        "TCP is refused"
+    );
+    let mut udp = udp_to(addr)?;
+    let (mut client, status) = handshake_on(&mut udp, USER_PASSWORD)?;
+    assert_eq!(status, vec![0x06, 0x10, 0x09, 0x54, 0x00, 0x08, 0x00, 0x00]);
+
+    // CONNECT with the client's UDP HPAI as control and data endpoint.
+    let hpai = udp.hpai()?;
+    let mut connect = hpai.clone();
+    connect.extend_from_slice(&hpai);
+    connect.extend_from_slice(&[0x04, 0x04, 0x02, 0x00]);
+    udp.send_frame(&client.seal(&frame(service::CONNECT_REQUEST, &connect)))?;
+    let resp = KnxnetIpFrame::decode(&client.open(&udp.recv_frame()?)?)?;
+    assert_eq!(resp.service, service::CONNECT_RESPONSE);
+    assert_eq!(resp.body[1], 0x00, "granted");
+    assert_eq!(&resp.body[2..4], &[0x08, 0x01], "UDP data endpoint HPAI");
+    assert_eq!(&resp.body[12..14], &[0x11, 0x16], "user 2's tunnel address");
+    let channel = resp.body[0];
+
+    // T_Connect then A_DeviceDescriptor_Read to 1.1.2; each is ACKed inside
+    // the session before anything else.
+    let src = IndividualAddress::new(1, 1, 22);
+    let t_connect = CemiLData {
+        message_code: MessageCode::LDataReq,
+        ctrl1: 0xB0,
+        ctrl2: 0x60,
+        source: src,
+        dest: IndividualAddress::new(1, 1, 2).raw(),
+        tpdu: vec![0x80],
+    };
+    let read = CemiLData {
+        tpdu: vec![0x43, 0x00],
+        ..t_connect.clone()
+    };
+    let mut acks = 0;
+    let mut saw_response = false;
+    for (seq, cemi) in [(0u8, &t_connect), (1u8, &read)] {
+        let mut body = vec![0x04, channel, seq, 0x00];
+        body.extend_from_slice(&cemi.encode());
+        udp.send_frame(&client.seal(&frame(service::TUNNELLING_REQUEST, &body)))?;
+    }
+    for _ in 0..8 {
+        let Ok(raw) = udp.recv_frame() else {
+            break;
+        };
+        let inner = KnxnetIpFrame::decode(&client.open(&raw)?)?;
+        match inner.service {
+            service::TUNNELLING_ACK => acks += 1,
+            service::TUNNELLING_REQUEST => {
+                let cemi = CemiLData::decode(&inner.body[4..])?;
+                if cemi.tpdu.len() >= 2
+                    && (cemi.tpdu[0] & 0x03) == 0x03
+                    && cemi.tpdu[1] & 0xC0 == 0x40
+                {
+                    saw_response = true;
+                }
+            }
+            _ => {}
+        }
+        if saw_response && acks >= 2 {
+            break;
+        }
+    }
+    assert_eq!(acks, 2, "each request ACKed inside the session");
+    assert!(saw_response, "the device answered through the session");
+    udp.send_frame(&client.seal(&frame(0x0954, &[0x05, 0x00])))?;
+    Ok(())
+}
+
+#[test]
+fn test_idle_secure_session_times_out_with_status_timeout() -> TestResult {
+    // Long enough for the client's PBKDF2 (unoptimized in a debug test
+    // build) to finish inside the handshake, short for the test.
+    let addr = start_with(true, true, Some(1500))?;
+    // TCP: a wrapped STATUS_TIMEOUT, then the connection closes.
+    let (mut stream, client, _) = handshake(addr, USER_PASSWORD)?;
+    let notice = client.open(&read_frame(&mut stream)?)?;
+    assert_eq!(&notice[2..4], &[0x09, 0x54], "SESSION_STATUS");
+    assert_eq!(notice[6], 0x03, "STATUS_TIMEOUT");
+    // UDP: the same notice.
+    let mut udp = udp_to(addr)?;
+    let (client, _) = handshake_on(&mut udp, USER_PASSWORD)?;
+    let notice = client.open(&udp.recv_frame()?)?;
+    assert_eq!(notice[6], 0x03, "STATUS_TIMEOUT over UDP");
     Ok(())
 }

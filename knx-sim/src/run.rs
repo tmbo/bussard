@@ -70,7 +70,9 @@ pub fn serve_config(config_path: &Path) -> Result<()> {
             %addr,
             users = secure.users.len(),
             secure_only = secure.secure_only,
-            "KNXnet/IP Secure tunnelling on TCP"
+            tcp = secure.tcp,
+            udp = secure.udp,
+            "KNXnet/IP Secure tunnelling"
         );
     }
     tracing::info!(%addr, "KNXnet/IP tunnelling gateway listening");

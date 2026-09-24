@@ -115,6 +115,92 @@ pub fn run(dir: &Path, options: TestOptions, overrides: ConnOverrides) -> anyhow
     })
 }
 
+/// Runs `bussard test --secure-idle <secs>` (issue #197): opens a KNXnet/IP
+/// Secure session, stays idle without keepalive for `idle`, and reports
+/// whether the interface dropped it. Read-only: no tunnel, no bus traffic, so
+/// no write gate and no confirmation.
+pub fn run_secure_idle(
+    dir: &Path,
+    idle: Duration,
+    json: bool,
+    overrides: ConnOverrides,
+) -> anyhow::Result<ExitCode> {
+    let model = load_model_required(dir)?;
+    let config = resolve_config(model.as_ref(), &overrides)?;
+    if config.secure.is_none() {
+        bail!(
+            "--secure-idle needs KNXnet/IP Secure tunnelling credentials: pass --secure-user <id> \
+             --secure-password-env <VAR>, or set connection.keyring in bussard.yaml (password in \
+             BUSSARD_KEYRING_PASSWORD)"
+        );
+    }
+    eprintln!("gateway: {}", gateway_display(&config));
+    eprintln!(
+        "opening a KNXnet/IP Secure session and staying idle for {} s (read-only, no tunnel)",
+        idle.as_secs()
+    );
+    let runtime = tokio::runtime::Runtime::new()?;
+    let report = runtime.block_on(bussard_transport::probe_secure_idle(&config, idle))?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&idle_json(&report))?);
+    } else {
+        println!("{}", idle_text(&report));
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The one-line text report of an idle probe.
+fn idle_text(report: &bussard_transport::SecureIdleReport) -> String {
+    use bussard_transport::SecureIdleOutcome;
+    let head = format!(
+        "secure session with {} (user {}, {}) idle {} s:",
+        report.gateway,
+        report.user_id,
+        report.transport,
+        report.idle.as_secs()
+    );
+    match &report.outcome {
+        SecureIdleOutcome::Alive { answered_in } => format!(
+            "{head} ALIVE (the interface answered the probe after the idle period in {} ms)",
+            answered_in.as_millis()
+        ),
+        SecureIdleOutcome::Dropped { after, reason } => format!(
+            "{head} DROPPED after {:.1} s ({reason})",
+            after.as_secs_f64()
+        ),
+        SecureIdleOutcome::Silent => {
+            format!("{head} SILENT (no answer to the probe; the interface forgot the session)")
+        }
+    }
+}
+
+/// The JSON report of an idle probe.
+fn idle_json(report: &bussard_transport::SecureIdleReport) -> serde_json::Value {
+    use bussard_transport::SecureIdleOutcome;
+    let mut out = serde_json::json!({
+        "gateway": report.gateway.to_string(),
+        "user_id": report.user_id,
+        "transport": report.transport.to_string(),
+        "idle_secs": report.idle.as_secs(),
+    });
+    let outcome = match &report.outcome {
+        SecureIdleOutcome::Alive { answered_in } => serde_json::json!({
+            "outcome": "alive",
+            "answered_ms": answered_in.as_millis() as u64,
+        }),
+        SecureIdleOutcome::Dropped { after, reason } => serde_json::json!({
+            "outcome": "dropped",
+            "after_ms": after.as_millis() as u64,
+            "reason": reason,
+        }),
+        SecureIdleOutcome::Silent => serde_json::json!({ "outcome": "silent" }),
+    };
+    if let (Some(obj), Some(extra)) = (out.as_object_mut(), outcome.as_object()) {
+        obj.extend(extra.clone());
+    }
+    out
+}
+
 /// Connects, runs the suite, and closes the bus cleanly.
 fn execute(
     suite: &TestSuite,
@@ -401,5 +487,37 @@ mod tests {
             ManualDecision::Skip(reason) => assert!(reason.contains("--skip-manual"), "{reason}"),
             ManualDecision::Proceed => panic!("--skip-manual must skip"),
         }
+    }
+
+    #[test]
+    fn test_idle_report_text_and_json() -> Result<(), Box<dyn Error>> {
+        use bussard_transport::{SecureIdleOutcome, SecureIdleReport, SecureTransport};
+        let mut report = SecureIdleReport {
+            gateway: "127.0.0.1:3671".parse()?,
+            user_id: 2,
+            transport: SecureTransport::Tcp,
+            idle: Duration::from_secs(90),
+            outcome: SecureIdleOutcome::Dropped {
+                after: Duration::from_millis(61_500),
+                reason: "SESSION_STATUS timeout".into(),
+            },
+        };
+        let text = idle_text(&report);
+        assert!(
+            text.contains("user 2, tcp) idle 90 s: DROPPED after 61.5 s"),
+            "{text}"
+        );
+        let json = idle_json(&report);
+        assert_eq!(json["outcome"], "dropped");
+        assert_eq!(json["after_ms"], 61_500);
+        assert_eq!(json["transport"], "tcp");
+        report.outcome = SecureIdleOutcome::Alive {
+            answered_in: Duration::from_millis(12),
+        };
+        assert!(idle_text(&report).contains("ALIVE"));
+        assert_eq!(idle_json(&report)["answered_ms"], 12);
+        report.outcome = SecureIdleOutcome::Silent;
+        assert_eq!(idle_json(&report)["outcome"], "silent");
+        Ok(())
     }
 }

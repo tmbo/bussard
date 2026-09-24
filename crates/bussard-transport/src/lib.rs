@@ -7,7 +7,7 @@
 //!   the full CONNECT / heartbeat / TUNNELING_REQUEST+ACK / DISCONNECT state
 //!   machine and sequence counters. With KNXnet/IP Secure credentials
 //!   ([`SecureTunnelConfig`]) the same state machine runs inside an
-//!   authenticated secure session over TCP (issue #71 Phase B).
+//!   authenticated secure session over TCP or UDP (issue #71 Phase B, #197).
 //! - [`Router`] — a **routing** (multicast) participant on `224.0.23.12:3671`.
 //!
 //! Underneath sits a pure, heavily-tested [`cemi`] codec for the KNX link-layer
@@ -56,13 +56,15 @@ mod error;
 pub mod knxnet;
 mod router;
 mod secure;
+mod secure_idle;
 pub mod tpci;
 mod tunnel;
 pub mod wire_trace;
 pub mod write_gate;
 
 pub use config::{
-    ConnectionConfig, SecureSource, SecureTunnelConfig, SecureUser, TransportKind, TunnelReconnect,
+    ConnectionConfig, SecureSource, SecureTransport, SecureTunnelConfig, SecureUser, TransportKind,
+    TunnelReconnect,
 };
 pub use conn::{BusConnection, TimestampedFrame};
 pub use discovery::{
@@ -70,6 +72,7 @@ pub use discovery::{
 };
 pub use error::{E_NO_MORE_CONNECTIONS, Result, TransportError};
 pub use router::Router;
+pub use secure_idle::{SecureIdleOutcome, SecureIdleReport, probe_secure_idle};
 pub use tunnel::{LinkState, Tunnel};
 
 use crate::cemi::CemiFrame;

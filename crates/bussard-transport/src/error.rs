@@ -104,6 +104,16 @@ pub enum TransportError {
         reason: String,
     },
 
+    /// A KNXnet/IP Secure session was asked for (the idle probe of issue
+    /// #197) but the credentials select none for this gateway.
+    #[error("no KNXnet/IP Secure session for {gateway}: {reason}")]
+    SecureNotSelected {
+        /// The gateway.
+        gateway: SocketAddrV4,
+        /// Why no secure session was selected.
+        reason: String,
+    },
+
     /// The interface refused the tunnelling user's password (SESSION_STATUS
     /// `STATUS_AUTHENTICATION_FAILED`). Fatal: retrying cannot help.
     #[error(

@@ -75,8 +75,34 @@ struct Cli {
     /// `--secure-user` password (never the password itself).
     #[arg(long, global = true, value_name = "VAR")]
     secure_password_env: Option<String>,
+    /// KNXnet/IP Secure: the carrier of the secure session. Default `auto`:
+    /// TCP, and UDP when the interface refuses TCP but advertises Secure
+    /// (issue #197). UDP is verified against knx-sim only.
+    #[arg(long, global = true, value_enum, value_name = "TRANSPORT")]
+    secure_transport: Option<SecureTransportArg>,
     #[command(subcommand)]
     command: Command,
+}
+
+/// The `--secure-transport` values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum SecureTransportArg {
+    /// TCP first, UDP when TCP is refused and the interface advertises Secure.
+    Auto,
+    /// TCP only.
+    Tcp,
+    /// UDP only.
+    Udp,
+}
+
+impl From<SecureTransportArg> for bussard_transport::SecureTransport {
+    fn from(arg: SecureTransportArg) -> Self {
+        match arg {
+            SecureTransportArg::Auto => bussard_transport::SecureTransport::Auto,
+            SecureTransportArg::Tcp => bussard_transport::SecureTransport::Tcp,
+            SecureTransportArg::Udp => bussard_transport::SecureTransport::Udp,
+        }
+    }
 }
 
 /// The `--keyring` slot of the subcommand, if it takes one: its tunnelling
@@ -190,6 +216,12 @@ fn setup_secure_tunnel(cli: &mut Cli) -> anyhow::Result<()> {
     let keyring = effective_keyring(&mut cli.command);
     // Without explicit flags, only a keyring can carry tunnelling users.
     if keyring.is_none() && cli.secure_user.is_none() && cli.secure_password_env.is_none() {
+        if cli.secure_transport.is_some() {
+            anyhow::bail!(
+                "--secure-transport needs KNXnet/IP Secure tunnelling credentials: pass --keyring \
+                 <file.knxkeys> or --secure-user <id> --secure-password-env <VAR>"
+            );
+        }
         return Ok(());
     }
     let config =
@@ -212,6 +244,14 @@ fn setup_secure_tunnel(cli: &mut Cli) -> anyhow::Result<()> {
             path.display()
         );
     }
+    let config = match (config, cli.secure_transport) {
+        (Some(config), Some(transport)) => Some(config.with_transport(transport.into())),
+        (None, Some(_)) => anyhow::bail!(
+            "--secure-transport needs KNXnet/IP Secure tunnelling credentials, and the keyring \
+             lists no tunnelling user"
+        ),
+        (config, None) => config,
+    };
     conn_cmd::set_secure_tunnel(config);
     Ok(())
 }
@@ -1375,6 +1415,12 @@ enum Command {
         /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
         #[arg(long)]
         allow_remote_gateway: bool,
+        /// Instead of running `tests.yaml`: open a KNXnet/IP Secure session,
+        /// stay idle (no keepalive, no tunnel) for SECS seconds, and report
+        /// whether the interface dropped it (issue #197). Read-only: nothing
+        /// is written to the bus and no tunnel slot is taken.
+        #[arg(long, value_name = "SECS", conflicts_with_all = ["file", "force", "skip_manual", "only"])]
+        secure_idle: Option<u64>,
     },
     /// Audit the installation: model gaps, one-sided links, what bussard can do
     /// per device mask, KNX Secure coverage; with `--live`, the gateway's tunnel
@@ -2209,6 +2255,23 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             },
         ),
         Command::Test {
+            json,
+            dir,
+            gateway,
+            routing,
+            secure_idle: Some(secs),
+            ..
+        } => test_cmd::run_secure_idle(
+            &dir,
+            std::time::Duration::from_secs(secs),
+            json,
+            conn_cmd::ConnOverrides {
+                gateway,
+                routing,
+                skip_address_check: false,
+            },
+        ),
+        Command::Test {
             file,
             json,
             force,
@@ -2219,6 +2282,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             gateway,
             routing,
             allow_remote_gateway,
+            secure_idle: None,
         } => test_cmd::run(
             &dir,
             test_cmd::TestOptions {

@@ -200,8 +200,8 @@ pub fn tunnel_config(
                 .unwrap_or_default()
                 .into_iter()
                 .find(|u| u.user_id == user_id);
-            Ok(Some(SecureTunnelConfig {
-                users: vec![SecureUser {
+            Ok(Some(SecureTunnelConfig::new(
+                vec![SecureUser {
                     user_id,
                     password,
                     device_authentication_code: from_keyring
@@ -210,15 +210,15 @@ pub fn tunnel_config(
                     tunnel_ia: from_keyring.as_ref().and_then(|u| u.tunnel_ia),
                     host_ia: from_keyring.as_ref().and_then(|u| u.host_ia),
                 }],
-                source: SecureSource::Explicit,
-            }))
+                SecureSource::Explicit,
+            )))
         }
         (None, None) => {
             let users = keyring.as_ref().map(secure_users).unwrap_or_default();
-            Ok((!users.is_empty()).then_some(SecureTunnelConfig {
-                users,
-                source: SecureSource::Keyring,
-            }))
+            Ok(
+                (!users.is_empty())
+                    .then_some(SecureTunnelConfig::new(users, SecureSource::Keyring)),
+            )
         }
         _ => Err(SecureKeyError::SecureFlagsIncomplete),
     }
