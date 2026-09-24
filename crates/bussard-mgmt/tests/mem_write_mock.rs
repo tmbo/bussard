@@ -538,7 +538,8 @@ async fn allocate_segment_in_wrong_state_is_refused() -> TestResult {
     let source: IndividualAddress = "0.0.255".parse()?;
     let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
 
-    // Allocating while Unloaded must be refused before any write.
+    // Allocating while Unloaded is refused: the device ignores the record
+    // and both its answer and the read-back report Unloaded.
     let err = load::allocate_segment(&mut l4, 1, 128, None)
         .await
         .err()

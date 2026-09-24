@@ -404,10 +404,13 @@ impl LsmAccess {
     ///
     /// Sends `control` as a simple 10-octet event and takes the resulting state
     /// from the event's answer (property realisation) or a status read
-    /// (memory-mapped realisation, as ETS does there). `LoadCompleted` always
-    /// reads the state back with a separate read: that read is the machine's
-    /// verdict on the whole load. A device that lands in
-    /// [`LoadState::Error`] fails with
+    /// (memory-mapped realisation, as ETS does there). The verdict on the whole
+    /// load, the state after `LoadCompleted`, comes from the answer only when it
+    /// is exactly `Loaded` (the `01` every write answer in the Jung `0705`
+    /// captures carries, where ETS never reads PID 5, issue #211); any other
+    /// answer is confirmed by a separate read, and the memory-mapped
+    /// realisation (Theben `0701`) always reads, as ETS does there (#186). A
+    /// device that lands in [`LoadState::Error`] fails with
     /// [`WriteError::LoadError`]. `StartLoading` accepts `Loading` or (on a lenient
     /// stack) `Loaded`; `LoadCompleted` must reach `Loaded`; `Unload` is not
     /// state-checked (mirrors the System B discipline in
@@ -421,11 +424,11 @@ impl LsmAccess {
         let address = l4.target();
         let event = simple_event(control);
         let reported = self.send_event(l4, lsm, &event).await?;
-        // The verdict on the load is a read of its own, never the write's
-        // answer (issue #116): it is the one state read-back kept on the
-        // property realisation.
+        // The verdict on the load trusts the write's answer only when it is
+        // the `Loaded` a conformant 0705 device answers (issue #211); anything
+        // else, or no answer state at all, is read back as before (#116).
         let reported = if control == LoadControl::LoadCompleted {
-            None
+            reported.filter(|state| *state == LoadState::Loaded)
         } else {
             reported
         };

@@ -908,6 +908,45 @@ pub async fn compare_rel_mem<Ch: L4Channel>(
     Ok(())
 }
 
+/// The load state a device reports in the `A_PropertyValue_Response` to a
+/// load-control write when the event took effect the conformant way, or `None`
+/// for an event whose answer is never trusted on its own.
+///
+/// Every ETS download in the captures sends one `PID_LOAD_STATE_CONTROL` write
+/// per event and continues on this answer without reading PID 5 back (issue
+/// #211): the 07B0 pcaps of 1.1.12, 1.1.16, 1.1.5 (Data Secure) carry 20/19/19
+/// load-control writes and no PID 5 read, the 0705 pcap of 1.1.52 carries 24.
+/// The devices answer `Unload` with `00` (Unloaded), `StartLoading` and the
+/// `LdCtrlRelSegment` record with `02` (Loading) and `LoadCompleted` with `01`
+/// (Loaded).
+fn trusted_echo(control: LoadControl) -> Option<LoadState> {
+    match control {
+        LoadControl::Unload => Some(LoadState::Unloaded),
+        LoadControl::StartLoading | LoadControl::AdditionalLoadControls => Some(LoadState::Loading),
+        LoadControl::LoadCompleted => Some(LoadState::Loaded),
+        LoadControl::NoOperation => None,
+    }
+}
+
+/// The resulting load state carried by the answer to a load-control write,
+/// when it can stand in for a separate `PID_LOAD_STATE_CONTROL` read: the
+/// answer has a non-zero element count, exactly one data octet, and that octet
+/// is the state [`trusted_echo`] expects for `control`.
+///
+/// Anything else (no octet, the 10-octet event echoed back, another state such
+/// as KNX Virtual's `Loaded` after `StartLoading`, #47, or `Error`) yields
+/// `None` and the caller falls back to the read-back it always did.
+pub fn echoed_load_state(
+    control: LoadControl,
+    response: &crate::apci::PropertyValueResponse,
+) -> Option<LoadState> {
+    let expected = trusted_echo(control)?;
+    match (response.count, response.data.as_slice()) {
+        (1.., [octet]) if LoadState::from_octet(*octet) == expected => Some(expected),
+        _ => None,
+    }
+}
+
 /// Writes a load control to a loadable object and confirms the resulting load
 /// state.
 ///
@@ -917,9 +956,13 @@ pub async fn compare_rel_mem<Ch: L4Channel>(
 /// including the ETS→KNX-Virtual DA.tp capture, so bussard is byte-identical to
 /// ETS on these transitions.
 ///
-/// The device echoes `PID_LOAD_STATE_CONTROL` after the write, which is the
-/// *resulting* [`LoadState`]; this validates it against
-/// [`LoadControl::expected_state`]. A device that lands in [`LoadState::Error`]
+/// The device answers the write with the *resulting* [`LoadState`]. When that
+/// answer is the one octet a conformant device sends for `control` (see
+/// [`echoed_load_state`]) it is the confirmation, as for ETS, and no read
+/// follows (issue #211). Otherwise the state is read back with
+/// [`read_load_state`], the fallback for a stack that answers without a state
+/// octet or with an unexpected one. The state is then validated against
+/// [`LoadControl::expected_state`]: a device that lands in [`LoadState::Error`]
 /// surfaces [`WriteError::LoadError`]; any other mismatch surfaces
 /// [`WriteError::UnexpectedLoadState`].
 pub async fn write_load_control<Ch: L4Channel>(
@@ -929,11 +972,7 @@ pub async fn write_load_control<Ch: L4Channel>(
 ) -> Result<LoadState> {
     let address = l4.target();
     let control_value = control.encode_full();
-    // Some devices echo the resulting state; some echo nothing meaningful. Write
-    // without a strict echo compare, then read the state back to validate — the
-    // read-back is the reliable confirmation across stacks.
-    // Decode is best-effort here; the authoritative state comes from a fresh read.
-    let _ = property_write_request(
+    let resp = property_write_request(
         l4,
         object_index,
         PID_LOAD_STATE_CONTROL,
@@ -942,8 +981,10 @@ pub async fn write_load_control<Ch: L4Channel>(
         &control_value,
     )
     .await?;
-
-    let state = read_load_state(l4, object_index).await?;
+    let state = match echoed_load_state(control, &resp) {
+        Some(state) => state,
+        None => read_load_state(l4, object_index).await?,
+    };
     if state == LoadState::Error {
         return Err(WriteError::LoadError {
             address,
@@ -1044,31 +1085,33 @@ pub struct SegmentAllocation {
 /// Preconditions and sequence (KNX 3/5/2 `LdCtrlRelSegment`):
 ///
 /// 1. The object must already be in [`LoadState::Loading`] — the standard only
-///    dispatches `AdditionalLoadControls` from the loading state; in any other
-///    state the 10-octet write is ignored (`Unloaded`/`Loaded`) or errors, so
-///    this checks the state first and fails with
-///    [`WriteError::UnexpectedLoadState`] rather than issuing a write that the
-///    device silently drops.
+///    dispatches `AdditionalLoadControls` from the loading state. The caller
+///    opened it with `StartLoading` right before, whose answer confirmed it.
 /// 2. Writes the 10-octet [`encode_rel_segment`] structure to
 ///    `PID_LOAD_STATE_CONTROL`. The device frees any prior backing store and
 ///    allocates `size` octets, optionally filled; on failure (e.g. maximum table
-///    length exceeded) the object goes to [`LoadState::Error`].
-/// 3. Re-reads the load state: `Error` means the device **refused** the
-///    allocation (out of memory / too large) → [`WriteError::LoadError`]; still
-///    `Loading` means success.
+///    length exceeded) the object goes to [`LoadState::Error`]. In any state but
+///    `Loading` the device ignores the record and answers that state.
+/// 3. Takes the resulting load state from the write's answer when it is the
+///    single `Loading` octet ETS continues on (issue #211; see
+///    [`echoed_load_state`]), else reads it back: `Error` means the device
+///    **refused** the allocation (out of memory / too large) →
+///    [`WriteError::LoadError`]; `Unloaded` means the object was never open →
+///    [`WriteError::UnexpectedLoadState`]; `Loading` means success.
 /// 4. Reads `PID_TABLE_REFERENCE` element 1 — a big-endian `u32` — which after a
 ///    successful allocation is the segment's start address (a device reports `0`
-///    while `Unloaded`). That address is where the caller writes the table
-///    content with [`crate::device::DeviceConnection::write_memory`].
+///    while `Unloaded`). ETS reads it here too. That address is where the caller
+///    writes the table content with
+///    [`crate::device::DeviceConnection::write_memory`].
 ///
 /// `fill_byte` mirrors the relative structure's fill flag/byte: `Some(b)` asks
 /// the device to pre-fill the segment with `b`, `None` leaves it uninitialised.
 ///
-/// Load-state handling: the object must stay *open* — `Loading` on a conformant
-/// device, or `Loaded` on a lenient stack (KNX Virtual snaps straight to
-/// `Loaded`) — both as the allocation precondition and after the allocation
-/// write. Only `Unloaded` (the write was dropped) or `Error` (the device refused
-/// the allocation, e.g. out of memory) fail here; the image's actual integrity is
+/// Load-state handling: the object must stay *open* after the allocation write
+/// — `Loading` on a conformant device, or `Loaded` on a lenient stack (KNX
+/// Virtual snaps straight to `Loaded`, which the read-back fallback accepts).
+/// Only `Unloaded` (the write was dropped) or `Error` (the device refused the
+/// allocation, e.g. out of memory) fail here; the image's actual integrity is
 /// confirmed downstream by the `LdCtrlLoadImageProp` MCB CRC check, so a device
 /// that cannot truly hold the segment is caught there rather than by guessing
 /// from the load-state octet.
@@ -1080,33 +1123,19 @@ pub async fn allocate_segment<Ch: L4Channel>(
 ) -> Result<SegmentAllocation> {
     let address = l4.target();
 
-    // 1. The object must be open (Loading, or Loaded on a lenient stack like KNX
-    //    Virtual) for the allocation to be accepted. Unloaded/Error mean the
-    //    object never opened.
-    let state = read_load_state(l4, object_index).await?;
-    if !matches!(state, LoadState::Loading | LoadState::Loaded) {
-        return Err(WriteError::UnexpectedLoadState {
-            address,
-            object_index,
-            control: LoadControl::AdditionalLoadControls,
-            expected: LoadState::Loading,
-            actual: state,
-            context: LoadStateContext::default(),
-        });
-    }
-
-    // 2. Write the 10-octet relative-allocation structure. The device echoes the
-    //    resulting load state (best-effort); the authoritative check is the
-    //    fresh read-back below, matching `write_load_control`'s discipline.
+    // 1-2. Write the 10-octet relative-allocation structure.
     let structure = encode_rel_segment(size, fill_byte);
-    let _ =
+    let resp =
         property_write_request(l4, object_index, PID_LOAD_STATE_CONTROL, 1, 1, &structure).await?;
 
     // 3. A refused allocation drops the object into Error. Otherwise the object
-    //    stays open — Loading on a conformant device, or Loaded on a lenient stack
-    //    (KNX Virtual); either is fine, only Unloaded/Error indicate the write was
-    //    dropped or rejected.
-    let state = read_load_state(l4, object_index).await?;
+    //    stays open — Loading on a conformant device (the answer carries it), or
+    //    Loaded on a lenient stack (KNX Virtual, confirmed by the read-back);
+    //    only Unloaded/Error indicate the write was dropped or rejected.
+    let state = match echoed_load_state(LoadControl::AdditionalLoadControls, &resp) {
+        Some(state) => state,
+        None => read_load_state(l4, object_index).await?,
+    };
     if state == LoadState::Error {
         return Err(WriteError::LoadError {
             address,
@@ -1548,6 +1577,48 @@ mod tests {
             assert_eq!(c.encode_full()[0], c.octet());
             assert!(c.encode_full()[1..].iter().all(|&b| b == 0));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_echoed_load_state_accepts_only_the_expected_single_octet()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use crate::apci::PropertyValueResponse;
+        let answer = |count: u8, data: &[u8]| PropertyValueResponse {
+            object_index: 4,
+            property_id: PID_LOAD_STATE_CONTROL,
+            count,
+            start: 1,
+            data: data.to_vec(),
+        };
+        // The ETS-capture answers (issue #211).
+        for (control, octet, state) in [
+            (LoadControl::Unload, 0x00, LoadState::Unloaded),
+            (LoadControl::StartLoading, 0x02, LoadState::Loading),
+            (
+                LoadControl::AdditionalLoadControls,
+                0x02,
+                LoadState::Loading,
+            ),
+            (LoadControl::LoadCompleted, 0x01, LoadState::Loaded),
+        ] {
+            assert_eq!(
+                echoed_load_state(control, &answer(1, &[octet])),
+                Some(state)
+            );
+        }
+        // Everything else falls back to the read-back.
+        let start_loading = LoadControl::StartLoading;
+        assert_eq!(echoed_load_state(start_loading, &answer(1, &[])), None);
+        assert_eq!(echoed_load_state(start_loading, &answer(0, &[0x02])), None);
+        assert_eq!(echoed_load_state(start_loading, &answer(1, &[0x01])), None);
+        assert_eq!(echoed_load_state(start_loading, &answer(1, &[0x03])), None);
+        let event = start_loading.encode_full();
+        assert_eq!(echoed_load_state(start_loading, &answer(1, &event)), None);
+        assert_eq!(
+            echoed_load_state(LoadControl::NoOperation, &answer(1, &[0x00])),
+            None
+        );
         Ok(())
     }
 

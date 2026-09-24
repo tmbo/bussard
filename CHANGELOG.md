@@ -306,6 +306,17 @@ entry supersedes it and is not a diff against it.
   with per-address probe times and outcomes, and stderr ends with a summary
   of how each absent address was classified (#45).
 
+- A load-state change (`Unload`, `StartLoading`, the `LdCtrlRelSegment`
+  allocation, `LoadCompleted`) on System B and on System 7 `0705` is
+  confirmed by the one-octet state the device returns in its answer to the
+  PID 5 write, as ETS does, instead of a separate PID 5 read. A device that
+  answers without a state octet, with the event echoed back or with another
+  state (KNX Virtual's `Loaded` after `StartLoading`) is read back as before;
+  `0701` keeps its per-event status reads. The written frames are unchanged.
+  A System B object costs 5 requests instead of 10 for unload, open,
+  allocate and complete (about 1 s less per object at 200 ms per request)
+  (#211).
+
 ### Fixed
 
 - Group writes: DPT-blind 6-bit APCI packing corrupted values on the live bus

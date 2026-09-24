@@ -152,7 +152,10 @@ records `replaced: <date>` in the device file.
 **`flash --product <FILE> <ADDRESS>`** downloads an application program from
 vendor product data (the ETS-free application download). It runs a pre-flight
 plan, then writes, then verifies the application reads back as `Loaded` and
-spot-checks written segments. A flash takes **no backup**, because a
+spot-checks written segments. Each load-state change (unload, open, segment
+allocation, completion) is confirmed by the state the device returns in its
+answer to the write, as ETS does; when that answer carries no state octet or
+not the expected state, `flash` reads the state back instead (issue #211). A flash takes **no backup**, because a
 factory-fresh device has no prior application to save. The command states this
 plainly before it writes:
 

@@ -3732,7 +3732,9 @@ async fn flash_resumes_when_connection_drops_inside_a_write() -> TestResult {
     // the multi-chunk write trips it — the drop lands inside the write. On the fresh
     // window the preamble is not re-run (only the write step replays), so the budget
     // comfortably covers finishing the segment.
-    lock(&state)?.die_after_exchanges = Some(10);
+    // 7 since the load-control writes trust the echoed state (issue #211):
+    // StartLoading and the allocation send three requests fewer.
+    lock(&state)?.die_after_exchanges = Some(7);
     let source = bussard_bus::ops::group_source(&handle);
     let app = fabricated_app_big()?;
     let plan = plan_flash(
