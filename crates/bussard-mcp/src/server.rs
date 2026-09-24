@@ -519,12 +519,19 @@ impl BussardMcp {
 
         // KNX Data Secure (issue #71): with `--keyring`, the target's tool key
         // wraps every management APDU, exactly as `bussard describe --keyring`.
+        // A device the keyring does not list is read in the clear, unless the
+        // model records it as security-activated (issue #189).
+        let activated = bussard_service::secure::model_activated(
+            Some(self.state.model.current().as_ref()),
+            target,
+        );
         let tool_key = match bussard_service::secure::resolve(
             target,
             ToolKeySource {
                 keyring: self.state.keyring.as_deref(),
                 tool_key: None,
             },
+            activated,
         ) {
             Ok(key) => key,
             Err(err) => {

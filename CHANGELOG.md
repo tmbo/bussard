@@ -161,9 +161,23 @@ entry supersedes it and is not a diff against it.
   that names KNXnet/IP Secure, instead of retrying a refused CONNECT (#182).
   `init` and discovery report an interface as KNXnet/IP Secure capable or
   secure-only from the extended search.
-- `bussard keyring` lists the tunnelling users per interface and which devices
-  carry KNXnet/IP Secure credentials, never the passwords; the keyring parser
-  decrypts `Device@ManagementPassword` and `@Authentication` too.
+- `bussard keyring` lists the tunnelling users per interface
+  (`user <id> -> <tunnel IA> (host <IA>)`) and which devices carry KNXnet/IP
+  Secure credentials, never the passwords; the keyring parser decrypts
+  `Device@ManagementPassword` and `@Authentication` too (#188).
+- A keyring without a `Device` entry for the target serves the secure tunnel
+  alone: the device is managed in the clear through it, so the plain devices
+  behind a secure-only interface stay reachable. A device the keyring lists
+  keeps secured management; a device the model marks `security.activated` but
+  the keyring lacks is refused as before. `describe`, `reconstruct`, `plan`,
+  `flash`, `apply`, `commission`, `replace`, `backup`, `restore`, the line
+  walks and the MCP device tools follow this rule; `scan` and `assign` take
+  `--keyring` for the tunnel (#189).
+- `connection.keyring` in `bussard.yaml` is the default for `--keyring` on
+  every bus command (the flag overrides it; the password stays in
+  `BUSSARD_KEYRING_PASSWORD`). The campaign wrapper passes
+  `--keyring "$BUSSARD_KEYRING"` to its probes and the step when that variable
+  is set (#189).
 - The frame shapes, the Secure DIBs and the interface's SESSION_RESPONSE MAC
   are checked against an ETS capture of a Jung interface by an ignored oracle
   test; knx-sim gained a secure-only interface mode; knxtrace decodes the

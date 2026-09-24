@@ -54,6 +54,27 @@ pub struct Connection {
     /// Multicast `addr:port` for routing (default `224.0.23.12:3671`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub multicast: Option<String>,
+    /// The ETS `.knxkeys` keyring every bus command uses when `--keyring` is
+    /// not given (issue #189). A relative path is resolved against the model
+    /// directory (the directory holding `bussard.yaml`). The password still
+    /// comes from `BUSSARD_KEYRING_PASSWORD`; the file never lives in the
+    /// committed model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keyring: Option<std::path::PathBuf>,
+}
+
+impl Connection {
+    /// The configured keyring path, resolved against the model directory
+    /// `dir` when relative, or `None` when `connection.keyring` is unset.
+    pub fn keyring_path(&self, dir: &std::path::Path) -> Option<std::path::PathBuf> {
+        self.keyring.as_ref().map(|path| {
+            if path.is_absolute() {
+                path.clone()
+            } else {
+                dir.join(path)
+            }
+        })
+    }
 }
 
 impl Default for Connection {
@@ -62,6 +83,7 @@ impl Default for Connection {
             transport: Transport::Tunnel,
             gateway: None,
             multicast: None,
+            keyring: None,
         }
     }
 }
@@ -393,4 +415,36 @@ pub struct ComObject {
     /// `PID_GO_SECURITY_FLAGS`. Serialized only when `true`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub secure: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn test_keyring_path_resolves_relative_to_the_model_dir()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let config: BussardConfig = serde_norway::from_str(
+            "connection:\n  transport: tunnel\n  keyring: ../keys/site.knxkeys\n",
+        )?;
+        assert_eq!(
+            config.connection.keyring_path(Path::new("/repo/knx")),
+            Some(PathBuf::from("/repo/knx/../keys/site.knxkeys"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_keyring_path_keeps_an_absolute_path() {
+        let connection = Connection {
+            keyring: Some(PathBuf::from("/secrets/site.knxkeys")),
+            ..Connection::default()
+        };
+        assert_eq!(
+            connection.keyring_path(Path::new("/repo/knx")),
+            Some(PathBuf::from("/secrets/site.knxkeys"))
+        );
+        assert_eq!(Connection::default().keyring_path(Path::new("/x")), None);
+    }
 }

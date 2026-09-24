@@ -97,7 +97,15 @@ pub fn run(file: &Path, json: bool) -> anyhow::Result<ExitCode> {
                 host: i.host.map(|h| h.to_string()),
                 user_id: i.user_id,
                 has_password: i.password.is_some(),
-                has_device_authentication: i.authentication.is_some(),
+                // The code is on the interface, or on the host device's
+                // entry (as the tunnel client resolves it).
+                has_device_authentication: i.authentication.is_some()
+                    || i.host.is_some_and(|host| {
+                        keyring
+                            .devices
+                            .iter()
+                            .any(|d| d.ia == host && d.authentication.is_some())
+                    }),
             })
             .collect(),
         ip_secure_devices: keyring
@@ -114,6 +122,20 @@ pub fn run(file: &Path, json: bool) -> anyhow::Result<ExitCode> {
         print_text(&summary);
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// One tunnelling user as `user <id> -> <tunnel IA> (host <IA>)`, with a note
+/// when the keyring lacks a credential the secure session needs. Never a
+/// credential itself.
+fn tunnelling_user_line(u: &TunnellingUser) -> String {
+    let host = u.host.as_deref().unwrap_or("?");
+    let mut line = format!("user {} -> {} (host {host})", u.user_id, u.tunnel_address);
+    if !u.has_password {
+        line.push_str(", no password in the keyring");
+    } else if !u.has_device_authentication {
+        line.push_str(", no device authentication code (interface identity not verified)");
+    }
+    line
 }
 
 /// Prints the human-readable keyring summary (no key material).
@@ -134,19 +156,17 @@ fn print_text(s: &KeyringSummary) {
         s.interfaces.join(", ")
     );
     println!("  group keys: {}", s.group_key_count);
-    if !s.tunnelling_users.is_empty() {
-        println!("  KNXnet/IP Secure tunnelling users:");
+    // One line per user (issue #188): the id, the tunnel address and the
+    // interface, never a credential.
+    if s.tunnelling_users.is_empty() {
+        println!("  KNXnet/IP Secure tunnelling users: none");
+    } else {
+        println!(
+            "  KNXnet/IP Secure tunnelling users ({}):",
+            s.tunnelling_users.len()
+        );
         for u in &s.tunnelling_users {
-            let host = u.host.as_deref().unwrap_or("?");
-            let creds = match (u.has_password, u.has_device_authentication) {
-                (true, true) => "password + device authentication code",
-                (true, false) => "password only (interface identity not verifiable)",
-                (false, _) => "no password",
-            };
-            println!(
-                "    user {} -> tunnel {} on interface {host}: {creds}",
-                u.user_id, u.tunnel_address
-            );
+            println!("    {}", tunnelling_user_line(u));
         }
     }
     if !s.ip_secure_devices.is_empty() {

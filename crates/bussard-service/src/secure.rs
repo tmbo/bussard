@@ -17,6 +17,13 @@
 //!   users on the machine, so this is documented as unsuitable for a production
 //!   key.
 //!
+//! A keyring serves two purposes (issue #189): its tunnelling users open a
+//! KNXnet/IP Secure tunnel ([`tunnel_config`]), and its device entries carry
+//! tool keys. A device the keyring does not list is managed in the clear
+//! through that tunnel, unless the model records it as security-activated
+//! (`security.activated: true`), in which case plain access cannot work and the
+//! resolver refuses with [`SecureKeyError::NoEntry`]. See [`resolve_material`].
+//!
 //! Nothing here ever prints, logs, or `Debug`-formats key material: every error
 //! names the *source* of the problem (file, address, length) and never the bytes
 //! (spec §2.3).
@@ -88,7 +95,9 @@ pub enum SecureKeyError {
         #[source]
         source: bussard_project::KeyringError,
     },
-    /// The keyring has no tool key for the target device.
+    /// The keyring has no tool key for a target the model records as
+    /// security-activated (a device the model does not mark activated is
+    /// managed in the clear instead, issue #189).
     #[error(
         "the keyring {} has no tool key for {target}: it lists {devices} device(s). A device is \
          only in the keyring once ETS has commissioned its security; an uncommissioned \
@@ -215,19 +224,33 @@ pub fn tunnel_config(
     }
 }
 
+/// Whether `model` records `target` as KNX Data Secure-activated
+/// (`security.activated: true` in its device file). A device the model does not
+/// know, or no model at all, is not activated.
+pub fn model_activated(model: Option<&bussard_model::Model>, target: IndividualAddress) -> bool {
+    model
+        .and_then(|m| m.devices.get(&target))
+        .and_then(|d| d.device.security.as_ref())
+        .is_some_and(|s| s.activated)
+}
+
 /// Resolves the tool key for `target`, or `None` for the plain path.
+///
+/// `activated` is whether the model records `target` as security-activated
+/// ([`model_activated`]); see [`resolve_material`] for the rule.
 ///
 /// # Errors
 ///
 /// Both sources given, a keyring without [`KEYRING_PASSWORD_ENV`], an
-/// unreadable file, a wrong password, no entry for `target`, or a raw key that
-/// is not exactly 32 hexadecimal characters. No error message ever contains key
-/// bytes (spec §2.3).
+/// unreadable file, a wrong password, an activated `target` without a keyring
+/// entry, or a raw key that is not exactly 32 hexadecimal characters. No error
+/// message ever contains key bytes (spec §2.3).
 pub fn resolve(
     target: IndividualAddress,
     source: ToolKeySource<'_>,
+    activated: bool,
 ) -> Result<Option<Key16>, SecureKeyError> {
-    Ok(resolve_material(target, source)?.tool_key)
+    Ok(resolve_material(target, source, activated)?.tool_key)
 }
 
 /// The Data Secure key material a secured download needs: the target's tool
@@ -250,17 +273,36 @@ pub struct SecureMaterial {
 /// Like [`resolve`], but also returns the keyring's group keys. The keyring is
 /// decrypted once.
 ///
+/// The rule for a keyring (issue #189):
+///
+/// - the keyring lists `target`: secured management with its tool key;
+/// - the keyring does not list `target` and `activated` is false: the plain
+///   path (`SecureMaterial::default()`). The keyring still serves the
+///   KNXnet/IP Secure tunnel; the device is talked to in the clear through it;
+/// - the keyring does not list `target` but `activated` is true: plain access
+///   cannot reach an activated device, so this is [`SecureKeyError::NoEntry`].
+///
+/// A raw tool key is always used as given.
+///
 /// # Errors
 ///
 /// As [`resolve`].
 pub fn resolve_material(
     target: IndividualAddress,
     source: ToolKeySource<'_>,
+    activated: bool,
 ) -> Result<SecureMaterial, SecureKeyError> {
     match (source.keyring, source.tool_key) {
         (Some(_), Some(_)) => Err(SecureKeyError::BothSources),
         (Some(path), None) => {
             let keyring = load_keyring(path)?;
+            if keyring.tool_key(target).is_none() && !activated {
+                tracing::info!(
+                    "the keyring {} has no tool key for {target}; managing it in the clear",
+                    path.display()
+                );
+                return Ok(SecureMaterial::default());
+            }
             let tool_key = tool_key_from(&keyring, target, path)?;
             Ok(SecureMaterial {
                 tool_key: Some(tool_key),
@@ -385,7 +427,7 @@ mod tests {
 
     #[test]
     fn test_resolve_none_is_the_plain_path() -> Result<(), Box<dyn std::error::Error>> {
-        assert!(resolve(ia("1.1.2")?, ToolKeySource::default())?.is_none());
+        assert!(resolve(ia("1.1.2")?, ToolKeySource::default(), false)?.is_none());
         Ok(())
     }
 
@@ -397,6 +439,7 @@ mod tests {
                 keyring: None,
                 tool_key: Some("0102030405060708090a0b0c0d0e0f10"),
             },
+            false,
         )?;
         assert_eq!(
             key,
@@ -443,6 +486,7 @@ mod tests {
                 keyring: Some(Path::new("/nonexistent.knxkeys")),
                 tool_key: Some("0102030405060708090a0b0c0d0e0f10"),
             },
+            false,
         )
         .err()
         .map(|e| e.to_string())

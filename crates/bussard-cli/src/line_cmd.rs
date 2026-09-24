@@ -625,10 +625,12 @@ async fn visit_one(
 
     // KNX Data Secure (issue #71): one key per device, since a keyring holds one
     // per address. A device the keyring does not cover fails alone.
-    let material = match crate::secure_key::resolve_material(target.address, tool_key_source) {
-        Ok(material) => material,
-        Err(err) => return make(None, DeviceStatus::Failed(format!("{err:#}"))),
-    };
+    let activated = crate::secure_key::model_activated(Some(model), target.address);
+    let material =
+        match crate::secure_key::resolve_material(target.address, tool_key_source, activated) {
+            Ok(material) => material,
+            Err(err) => return make(None, DeviceStatus::Failed(format!("{err:#}"))),
+        };
     let tool_key = material.tool_key.clone();
     // A secured System B write reprograms the security object too (issue
     // #156); on a line walk the keyring is the source of the secured GAs. The

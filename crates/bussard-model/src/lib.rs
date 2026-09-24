@@ -43,7 +43,7 @@ pub use ets_export::{to_ets_csv, to_ets_xml};
 pub use flags::{Flags, FlagsParseError};
 pub use history::{History, HistoryError, Snapshot, SnapshotId, SnapshotReason};
 pub use lint::{GroupsLint, LintConfig, TopologyLint, lint};
-pub use loader::{LoadError, LoadedDevice, Model, SaveError};
+pub use loader::{LoadError, LoadedDevice, Model, SaveError, load_config};
 pub use merge::{Conflict, MergeReport, merge};
 pub use param_model::{ParamDef, ParamKind, ProductModel, ProductModels};
 pub use scaffold::{Plan, PlanRoom, Scheme, scaffold, scaffold_file};

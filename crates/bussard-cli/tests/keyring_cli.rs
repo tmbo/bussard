@@ -82,6 +82,10 @@ fn test_keyring_cli_empty_text() -> TestResult {
     let text = String::from_utf8(out.stdout)?;
     assert!(text.contains("\"Synthetic\""), "{text}");
     assert!(text.contains("group keys: 0"), "{text}");
+    assert!(
+        text.contains("KNXnet/IP Secure tunnelling users: none"),
+        "{text}"
+    );
     Ok(())
 }
 
@@ -124,7 +128,9 @@ fn test_keyring_cli_lists_tunnelling_users_without_secrets() -> TestResult {
     let text_out = run(&file, PASSWORD, &[])?;
     let text = String::from_utf8(text_out.stdout)?;
     assert!(
-        text.contains("user 2 -> tunnel 1.1.200 on interface 1.1.0"),
+        text.contains(
+            "KNXnet/IP Secure tunnelling users (1):\n    user 2 -> 1.1.200 (host 1.1.0)\n"
+        ),
         "{text}"
     );
     for secret in ["tunnel-user-pw", "device-auth-pw"] {

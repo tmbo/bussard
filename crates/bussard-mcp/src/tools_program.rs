@@ -47,7 +47,7 @@ use bussard_mgmt::{
 use bussard_model::history::{History, SnapshotReason};
 use bussard_model::{IndividualAddress, Model};
 use bussard_secure::{Key16, SequenceHighWater};
-use bussard_service::secure::{SecureKeyError, ToolKeySource};
+use bussard_service::secure::ToolKeySource;
 use bussard_transport::ConnectionConfig;
 use bussard_transport::write_gate::{check_write_gate, gateway_display};
 use rmcp::ErrorData;
@@ -222,17 +222,20 @@ impl BussardMcp {
 
     /// The tool key for `target` from the server's `--keyring`, or `None` for
     /// the plain path: no keyring, or a keyring that does not list the device
-    /// (ETS only lists a device once its security is commissioned).
-    fn plan_tool_key(&self, target: IndividualAddress) -> Result<Option<Key16>, String> {
+    /// (ETS only lists a device once its security is commissioned). A device
+    /// the model records as security-activated but the keyring lacks is a
+    /// refusal (issue #189): plain access cannot reach it.
+    fn plan_tool_key(
+        &self,
+        target: IndividualAddress,
+        model: &bussard_model::Model,
+    ) -> Result<Option<Key16>, String> {
         let source = ToolKeySource {
             keyring: self.state().keyring.as_deref(),
             tool_key: None,
         };
-        match bussard_service::secure::resolve(target, source) {
-            Ok(key) => Ok(key),
-            Err(SecureKeyError::NoEntry { .. }) => Ok(None),
-            Err(err) => Err(chain(&err)),
-        }
+        let activated = bussard_service::secure::model_activated(Some(model), target);
+        bussard_service::secure::resolve(target, source, activated).map_err(|err| chain(&err))
     }
 
     /// `knx_plan_device`'s body; `Err` is a refusal reason.
@@ -243,7 +246,7 @@ impl BussardMcp {
         let model = self.state().model.reload();
         let desired = desired_tables_for(&model, target).map_err(|e| e.to_string())?;
 
-        let tool_key = self.plan_tool_key(target)?;
+        let tool_key = self.plan_tool_key(target, &model)?;
         let _guard = tier.bus_lock.lock().await;
         let (_, live) = read_live(&handle, target, &tool_key).await?;
         let tables = live.tables();
@@ -354,7 +357,10 @@ impl BussardMcp {
             ));
         }
 
-        if self.plan_tool_key(target)?.is_some() {
+        if self
+            .plan_tool_key(target, &self.state().model.current())?
+            .is_some()
+        {
             return Err(format!(
                 "{target} has a Data Secure tool key in the keyring: writing its tables also \
                  reprograms its security object (group key table, group-object flags), which \

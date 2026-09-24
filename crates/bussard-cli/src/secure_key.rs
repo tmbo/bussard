@@ -14,15 +14,17 @@ use bussard_model::IndividualAddress;
 use bussard_service::GroupKeys;
 
 pub use bussard_service::secure::{
-    KEYRING_PASSWORD_ENV, SecureMaterial, ToolKeySource, layer, resolve, resolve_material,
+    KEYRING_PASSWORD_ENV, SecureMaterial, ToolKeySource, layer, model_activated, resolve,
+    resolve_material,
 };
 
 /// The guidance for a device without a tool key that may be Data Secure-activated
 /// (issue #71, spec §6.4).
 pub(crate) fn no_key_guidance() -> &'static str {
     "if this device is KNX Data Secure-activated it refuses unsecured management — pass its \
-     tool key with --keyring <file.knxkeys> (password in BUSSARD_KEYRING_PASSWORD), or \
-     --tool-key <32 hex> for a test device"
+     tool key with --keyring <file.knxkeys> (password in BUSSARD_KEYRING_PASSWORD; a keyring \
+     that does not list the device only opens the tunnel, so export a current one from ETS), \
+     or --tool-key <32 hex> for a test device"
 }
 
 /// Adds KNX Data Secure guidance to a failed management session (issue #71,

@@ -160,11 +160,15 @@ pub fn run(
     // KNX Data Secure (issue #71, spec §6.2): a security-activated device refuses
     // the plain reads below, so `describe` takes the same tool-key surfaces as
     // `flash`. `None` is the plain, byte-identical path.
-    let tool_key = crate::secure_key::resolve(target, tool_key_source)?;
-    let secure_seq = bussard_secure::SequenceHighWater::new();
-    let presented_tool_key = tool_key.is_some();
     // A management command: a present-but-broken model is a hard error.
     let model = load_model_required(dir)?;
+    // A keyring without an entry for the target serves the tunnel only; the
+    // device is read in the clear unless the model says it is activated
+    // (issue #189).
+    let activated = crate::secure_key::model_activated(model.as_ref(), target);
+    let tool_key = crate::secure_key::resolve(target, tool_key_source, activated)?;
+    let secure_seq = bussard_secure::SequenceHighWater::new();
+    let presented_tool_key = tool_key.is_some();
     let config = resolve_config(model.as_ref(), &overrides)?;
 
     let runtime = tokio::runtime::Runtime::new()?;

@@ -13,7 +13,8 @@
 //!   key); a wrapped SESSION_AUTHENTICATE checked against the configured
 //!   users; a wrapped SESSION_STATUS; then CONNECT, CONNECTIONSTATE,
 //!   DISCONNECT and TUNNELLING_REQUEST inside SECURE_WRAPPERs, no ACKs. Each
-//!   client L_Data.req is confirmed with an L_Data.con.
+//!   client L_Data.req is confirmed with an L_Data.con, then answered by the
+//!   [`MockDevice`]s on the line behind the interface, if any.
 //!
 //! The crypto comes from `bussard_secure::ipsecure`, so this mock checks the
 //! client's state machine, not the byte layout; the independent peer for the
@@ -31,6 +32,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
 use tokio::task::JoinHandle;
 
+use crate::MockDevice;
 use crate::MockError;
 
 /// The interface's own individual address (1.1.200, as in the capture).
@@ -81,6 +83,8 @@ pub struct SecureGatewayStats {
 /// Configures a [`MockSecureGateway`].
 pub struct SecureGatewayBuilder {
     device_auth: Key16,
+    individual_address: u16,
+    devices: Vec<MockDevice>,
     users: Vec<MockSecureUser>,
     drop_after_requests: Option<usize>,
     push_after_connect: Vec<CemiFrame>,
@@ -100,6 +104,22 @@ impl SecureGatewayBuilder {
     /// Sets the device authentication key the SESSION_RESPONSE MAC uses.
     pub fn device_auth(mut self, key: Key16) -> Self {
         self.device_auth = key;
+        self
+    }
+
+    /// Sets the interface's own individual address (default
+    /// [`SECURE_GATEWAY_IA`]), reported in the search/description answers: a
+    /// keyring tunnelling user is matched to the interface by it.
+    pub fn individual_address(mut self, ia: u16) -> Self {
+        self.individual_address = ia;
+        self
+    }
+
+    /// Puts a [`MockDevice`] on the line behind the interface: it answers the
+    /// management frames tunnelled to it (issue #189: a plain device reached
+    /// through the secure tunnel).
+    pub fn device(mut self, device: MockDevice) -> Self {
+        self.devices.push(device);
         self
     }
 
@@ -139,6 +159,8 @@ impl SecureGatewayBuilder {
 /// Shared configuration of the serving tasks.
 struct Config {
     device_auth: Key16,
+    individual_address: u16,
+    line: Mutex<Vec<MockDevice>>,
     users: Vec<MockSecureUser>,
     drop_after_requests: Option<usize>,
     push_after_connect: Vec<CemiFrame>,
@@ -164,6 +186,8 @@ impl MockSecureGateway {
     pub fn builder() -> SecureGatewayBuilder {
         SecureGatewayBuilder {
             device_auth: Key16::new([0x11; 16]),
+            individual_address: SECURE_GATEWAY_IA,
+            devices: Vec::new(),
             users: Vec::new(),
             drop_after_requests: None,
             push_after_connect: Vec::new(),
@@ -190,11 +214,13 @@ impl MockSecureGateway {
         let stats = Arc::new(Mutex::new(SecureGatewayStats::default()));
         let config = Arc::new(Config {
             device_auth: builder.device_auth,
+            individual_address: builder.individual_address,
+            line: Mutex::new(builder.devices),
             users: builder.users,
             drop_after_requests: builder.drop_after_requests,
             push_after_connect: builder.push_after_connect,
         });
-        let udp_task = tokio::spawn(serve_udp(udp, stats.clone()));
+        let udp_task = tokio::spawn(serve_udp(udp, stats.clone(), config.individual_address));
         let tcp_stats = stats.clone();
         let tcp_task = tokio::spawn(async move {
             let mut first = true;
@@ -232,11 +258,16 @@ fn bump(stats: &Mutex<SecureGatewayStats>, f: impl FnOnce(&mut SecureGatewayStat
 /// families incl. security, secured families (device management, tunnelling),
 /// tunnelling info with two slots 1.1.22 (free) and 1.1.23 (free).
 pub fn extended_description_dibs() -> Vec<u8> {
+    extended_description_dibs_for(SECURE_GATEWAY_IA)
+}
+
+/// [`extended_description_dibs`] with the interface at individual address `ia`.
+pub fn extended_description_dibs_for(ia: u16) -> Vec<u8> {
     let mut dibs = vec![0u8; 54];
     dibs[0] = 54;
     dibs[1] = knxnet::DIB_DEVICE_INFO;
     dibs[2] = 0x02;
-    dibs[4..6].copy_from_slice(&SECURE_GATEWAY_IA.to_be_bytes());
+    dibs[4..6].copy_from_slice(&ia.to_be_bytes());
     dibs[24..34].copy_from_slice(b"MockSecure");
     dibs.extend_from_slice(&[0x0A, 0x02, 0x02, 0x02, 0x03, 0x02, 0x04, 0x02, 0x09, 0x01]);
     dibs.extend_from_slice(&[0x06, 0x06, 0x03, 0x01, 0x04, 0x01]);
@@ -246,7 +277,7 @@ pub fn extended_description_dibs() -> Vec<u8> {
 }
 
 /// The plain side: refuse CONNECT with 0x22, answer the searches.
-async fn serve_udp(socket: UdpSocket, stats: Arc<Mutex<SecureGatewayStats>>) {
+async fn serve_udp(socket: UdpSocket, stats: Arc<Mutex<SecureGatewayStats>>, ia: u16) {
     let mut buf = [0u8; 1024];
     while let Ok((n, peer)) = socket.recv_from(&mut buf).await {
         let Ok(parsed) = knxnet::parse(&buf[..n]) else {
@@ -260,7 +291,7 @@ async fn serve_udp(socket: UdpSocket, stats: Arc<Mutex<SecureGatewayStats>>) {
             ServiceType::SearchRequestExtended => {
                 bump(&stats, |s| s.extended_searches += 1);
                 let mut body = udp_hpai(peer);
-                body.extend_from_slice(&extended_description_dibs());
+                body.extend_from_slice(&extended_description_dibs_for(ia));
                 knxnet::frame(ServiceType::SearchResponseExtended, &body)
             }
             ServiceType::DescriptionRequest => {
@@ -268,7 +299,7 @@ async fn serve_udp(socket: UdpSocket, stats: Arc<Mutex<SecureGatewayStats>>) {
                 // the Jung interface).
                 knxnet::frame(
                     ServiceType::DescriptionResponse,
-                    &extended_description_dibs()[..54],
+                    &extended_description_dibs_for(ia)[..54],
                 )
             }
             _ => continue,
@@ -319,7 +350,7 @@ async fn serve_tcp(
             ServiceType::SearchRequestExtended => {
                 bump(&stats, |s| s.extended_searches += 1);
                 let mut body = vec![0x08, 0x02, 0, 0, 0, 0, 0, 0];
-                body.extend_from_slice(&extended_description_dibs());
+                body.extend_from_slice(&extended_description_dibs_for(config.individual_address));
                 let reply = knxnet::frame(ServiceType::SearchResponseExtended, &body);
                 stream.write_all(&reply).await?;
             }
@@ -429,15 +460,21 @@ async fn serve_tcp(
                     requests += 1;
                     let mut con = req.cemi.clone();
                     con.message_code = MessageCode::LDataCon;
+                    let answers = match config.line.lock() {
+                        Ok(mut line) => crate::gateway::line_replies(&mut line, &req.cemi),
+                        Err(_) => Vec::new(),
+                    };
                     bump(&stats, |s| s.requests.push(req.cemi));
-                    replies.push(knxnet::tunneling_request(
-                        ConnectionHeader {
-                            channel_id: channel,
-                            seq: tx_seq,
-                        },
-                        &con,
-                    ));
-                    tx_seq = tx_seq.wrapping_add(1);
+                    for frame in std::iter::once(con).chain(answers) {
+                        replies.push(knxnet::tunneling_request(
+                            ConnectionHeader {
+                                channel_id: channel,
+                                seq: tx_seq,
+                            },
+                            &frame,
+                        ));
+                        tx_seq = tx_seq.wrapping_add(1);
+                    }
                 }
             }
             _ => {}
