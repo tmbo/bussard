@@ -18,9 +18,8 @@ device on a bus.
 ## CI shakedown findings (2026-09, `ci/virtual-device-shakedown`)
 
 The first live run of the `virtual-device` CI job failed at rung (a): assign
-found no device in programming mode. Two independent root causes were found and
-one is a hard interop wall. The job stays `continue-on-error` because the
-management ladder cannot go green against this pinned device over routing.
+found no device in programming mode. Two independent root causes were found;
+both are fixed harness-side. The job stays `continue-on-error` (advisory).
 
 ### 1. Same-host multicast delivery (FIXED)
 
@@ -40,7 +39,7 @@ device runs under `ip netns exec knxdev`. A bidirectional multicast probe and th
 in-namespace packet capture confirm the group crosses the veth both ways. This
 fix is correct and necessary and should be kept.
 
-### 2. The device is never in programming mode (INTEROP WALL)
+### 2. The device is not in programming mode at boot (FIXED, harness-side)
 
 With the multicast path fixed, bussard's broadcast `A_IndividualAddress_Read`
 physically reaches the device (confirmed in the in-namespace pcap) but the device
@@ -48,40 +47,24 @@ never replies. Root cause, from the pinned source:
 
 - `src/knx/device_object.h` defaults `_ownAddress = 0xFFFF` (15.15.255), **not
   0**. So the demo's `main.cpp` guard `if (knx.individualAddress() == 0)
-  knx.progMode(true)` never fires — a factory-fresh device does **not** enter
+  knx.progMode(true)` never fires: a factory-fresh device does **not** enter
   programming mode. thelsing's `individualAddressReadIndication` only answers in
   programming mode, so the read is silently ignored. This is correct behaviour
-  for a device booted at 15.15.255; the harness premise that a fresh device
-  auto-enters prog mode does not hold for this commit.
+  for a device booted at 15.15.255.
 
-A bussard-independent raw-KNX probe (`knx_probe.py`) establishes, on the same
-socket:
+Fix: the ladder presses the programming button before `assign`, the way an
+installer does on real hardware. `VirtualDevice::press_programming_button` in
+`virtual_device.rs` opens a transport connection to 15.15.255 over routing,
+writes `PID_PROG_MODE` (device object 0, property 54) = 1 and disconnects, then
+waits for the device to log `progmode on`. It uses raw frames on a plain UDP
+socket, not bussard's stack, so rung (a) still tests bussard's discovery.
 
-- the device IS reachable **connection-oriented** at 15.15.255: it answers
-  `T_Connect` and `A_PropertyValue_Read`/`Write`, including a write of
-  `PID_PROG_MODE` (device object 0, property 54) which reads back as `0x01`;
-- yet **even with programming mode confirmed on**, the device still does not
-  answer the broadcast `A_IndividualAddress_Read` over routing (both the normal
-  and system-broadcast forms were tried, with `L_Data.req` and `L_Data.ind`).
-
-So rung (a) — programming-mode broadcast discovery — cannot be driven against
-this pinned `knx-linux-ip` over KNXnet/IP routing. A pivot to tunnelling would
-not help: the same `frameReceived` path handles both, and the device would still
-need to be in prog mode and answer the same read. The realistic routes to a green
-management ladder are:
-
-1. add a bussard capability to place a device into programming mode via a
-   connection-oriented `PID_PROG_MODE` write to its current address (15.15.255),
-   then re-architect `assign` around it — this is outside the harness and out of
-   scope for the shakedown; or
-2. seed the device with a valid `flash.bin` whose stored individual address is 0
-   (so the demo auto-enters prog mode), which requires reproducing thelsing's
-   exact flash serialization for this commit; or
-3. drive `knx-linux-tp` (which reports the `07B0` mask bussard's later rungs
-   want) over a real/virtual TP-UART instead of routing multicast.
-
-Until one of those lands, the job is kept non-blocking and the diagnostic probe
-plus packet captures are uploaded as artifacts on every run.
+An earlier version of this README called the broadcast read an "interop wall":
+`knx_probe.py` set prog mode, yet the device still did not answer. That finding
+was a probe bug. The probe sent the TPCI/APCI octets as `00 01` instead of
+`01 00`, which the device decodes as `A_GroupValue_Read` (its log shows
+`Broadcast-indication: unhandled APDU-Type: 0`). With the octets fixed, the
+device answers the broadcast read once prog mode is on.
 
 ## Platform: Linux only
 
@@ -102,7 +85,7 @@ with an explanation and a non-zero exit, and the integration test self-skips.
   `knx-linux-ip` CMake target. Prints the built binary path as its last stdout
   line and to `target/virtual-device/binary-path.txt`.
 - `run-device.sh`: boots the demo. Factory-fresh by default (an empty working
-  directory, so no `flash.bin`, so the device enters programming mode); can
+  directory, so no `flash.bin`; the device boots at 15.15.255, not in programming mode); can
   pre-seed a saved `flash.bin` with `--seed` for table tests. The Rust test
   spawns the binary directly and does not need this wrapper, but it documents the
   boot contract and is handy for manual runs.
@@ -114,10 +97,9 @@ with an explanation and a non-zero exit, and the integration test self-skips.
 
 ## The flash oracle (`bussard flash` end-to-end)
 
-The management ladder above stops at rung (a) because a factory-fresh thelsing
-device boots at 15.15.255 and never enters programming mode, so `assign`'s
-broadcast discovery finds nothing. `bussard flash` sidesteps that wall entirely:
-it needs no programming-mode discovery, only a connection-oriented management
+A factory-fresh thelsing device boots at 15.15.255 and does not enter
+programming mode by itself (the ladder presses its button first, see finding 2).
+`bussard flash` does not need programming mode at all: it needs no programming-mode discovery, only a connection-oriented management
 session to a **known** address — and `knx_probe.py` already proved the device is
 reachable connection-oriented at its default 15.15.255. So the flash oracle
 flashes the device **at 15.15.255 directly** and drives its ApplicationProgram
@@ -147,9 +129,7 @@ bussard flash 15.15.255 --product <built.knxprod> --dir <empty> --yes \
 - `MaskVersion="MV-57B0"` — bussard's flash pre-flight gates on `is_system_b`
   (true for the whole `x7B0` family, so 57B0 passes) **and** an exact
   app-mask == device-mask compare, so the app must declare 57B0 to be accepted
-  against this device. (This is why the ladder's `reconstruct` rung (d) refused
-  57B0 but flash accepts it: flash matches the app's own declared mask, it does
-  not gate on the TP-only `07B0`.)
+  against this device.
 - a 6-byte relative code segment and a single `ProductDefault` load procedure
   that lowers to exactly: Unload / StartLoading / **relative** segment allocation
   (`LdCtrlRelSegment`) / WriteRelMem / LoadCompleted / Restart.
@@ -193,7 +173,7 @@ address/association/group-object tables, load-state machine, the full
 application-layer service set), so the difference bussard sees is purely the mask
 and the medium.
 
-## The test ladder and where it stops
+## The test ladder
 
 Enable and run (Linux):
 
@@ -209,11 +189,11 @@ and `BUSSARD_TEST_MULTICAST=1`, so it never runs in the normal suite.
 
 | rung | step                              | result | why                                                         |
 | ---- | --------------------------------- | ------ | ----------------------------------------------------------- |
-| a    | programming-mode discovery        | works  | fresh device (no `flash.bin`) auto-enters prog mode         |
+| a    | programming-mode discovery        | works  | after the harness writes `PID_PROG_MODE = 1` (the "button") |
 | b    | `assign` writes + verifies address | works  | `A_IndividualAddress_Write` lands; descriptor read returns `57B0` |
-| c    | `scan` finds it with its mask      | works  | reports `57B0`, classified `System ?` by bussard            |
-| d    | `reconstruct` reads its tables     | stops  | `reconstruct` gates on `07B0`; refuses `57B0` cleanly       |
-| e    | `apply` writes a tiny links set    | n/a    | same `07B0` gate as (d), not reachable over routing         |
+| c    | `scan` finds it with its mask      | works  | reports `57B0`, classified `System B (IP)` by bussard       |
+| d    | `reconstruct` reads its tables     | works  | 57B0 is System B in the mask profile; tables read (empty)  |
+| e    | `apply` writes a tiny links set    | n/a    | not attempted: the fresh device has no application program  |
 
 ## Interop findings
 
@@ -221,23 +201,17 @@ and `BUSSARD_TEST_MULTICAST=1`, so it never runs in the normal suite.
   broadcast discovery, individual-address assignment, the post-write descriptor
   read, and a line scan all work against thelsing's stack over multicast. This is
   the first validation of bussard's management layer against a non-bussard peer.
-- **The mask gate is the wall.** `reconstruct`/`apply` accept `07B0` only, and the
-  routing-reachable demo is `57B0`. There is no stock thelsing binary that both
-  speaks IP multicast and reports `07B0`, so the table-level rungs cannot be
-  reached over routing without either (1) relaxing bussard's mask gate to also
-  accept `57B0` (they share the `BauSystemBDevice` table stack, so it is
-  plausibly safe), or (2) building a modified thelsing variant that pairs
-  `IpDataLinkLayer` with a `07B0` `maskVersion`, or (3) driving `knx-linux-tp`
-  over a real/virtual TP-UART. Option (1) is the cleanest next step to reach the
-  full apply cycle against a foreign device.
+- **57B0 is read like 07B0.** The mask profile treats every System B mask
+  (07B0 TP, 27B0 RF, 57B0 IP) the same, so `reconstruct` reads the
+  routing-reachable demo's tables. Before that change this rung stopped at a
+  07B0-only gate.
 - **bussard's table-layout assumptions match thelsing's.** bussard's
   `bussard-mgmt::tables` read side was written with thelsing's table objects as a
   behavioural reference (address table word 0 = entry count, 1-based TSAPs,
   association entries TSAP-then-ASAP, table content served through memory with
   `PID_TABLE_REFERENCE` giving the address). The memory-fallback read path is the
   one that would exercise here, because thelsing's group-object table registers no
-  `PID_TABLE` property. This alignment is why rung (d) is a mask-gate refusal
-  rather than a decode failure.
+  `PID_TABLE` property. Rung (d) exercises that path against the foreign stack.
 
 ## Pinned upstream
 

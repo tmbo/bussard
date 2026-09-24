@@ -28,7 +28,7 @@
 //! gate the transport crate's `routing_loopback` test uses, because multicast on
 //! a loopback-only host is unreliable.
 //!
-//! # The ladder (and where it is expected to stop)
+//! # The ladder
 //!
 //! The demo binary that speaks KNXnet/IP routing is `knx-linux-ip`, which is a
 //! System B **device** stack (`BauSystemBDevice`) reachable over multicast — but
@@ -39,19 +39,20 @@
 //!
 //! Consequences, rung by rung:
 //!   (a) programming-mode discovery — WORKS. A fresh device (no flash.bin) boots
-//!       unconfigured and auto-enters prog mode; `assign`'s broadcast read finds
-//!       it.
+//!       unconfigured at 15.15.255 and does NOT enter prog mode by itself, so
+//!       the harness presses its programming button first (a raw
+//!       `PID_PROG_MODE = 1` write to 15.15.255, see
+//!       `VirtualDevice::press_programming_button`); `assign`'s broadcast read
+//!       then finds it.
 //!   (b) assign — WORKS. `A_IndividualAddress_Write` lands, and the post-write
 //!       descriptor read verifies (the device answers `57B0`).
 //!   (c) scan — WORKS. It reports the device with mask `57B0`, classified
-//!       "System ?" by bussard (an honest interop signal, not a bug).
-//!   (d) reconstruct — STOPS. `bussard reconstruct` gates on `07B0` and refuses a
-//!       `57B0` mask. This is the documented boundary, asserted here so the
-//!       divergence is pinned by a test rather than described in prose.
-//!   (e) apply — not attempted over routing for the same reason (07B0 gate).
+//!       "System B (IP)" by bussard's mask profile.
+//!   (d) reconstruct — WORKS. The mask profile treats 57B0 as System B, so the
+//!       tables are read (empty on a fresh device, which has no application).
+//!   (e) apply — not attempted: the fresh device carries no application program.
 //!
-//! The value of this test is proving (a)-(c) against a foreign stack and pinning
-//! (d) as a concrete, reproducible interop finding.
+//! The value of this test is proving (a)-(d) against a foreign stack.
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -230,6 +231,84 @@ impl VirtualDevice {
     }
 }
 
+/// KNXnet/IP routing multicast group and port the device listens on.
+const ROUTING_GROUP: (&str, u16) = ("224.0.23.12", 3671);
+
+/// Wraps a cEMI body in a KNXnet/IP `ROUTING_INDICATION` (0x0530).
+fn routing_indication(cemi: &[u8]) -> Vec<u8> {
+    let total = u16::try_from(6 + cemi.len()).unwrap_or(u16::MAX);
+    let mut f = vec![0x06, 0x10, 0x05, 0x30];
+    f.extend_from_slice(&total.to_be_bytes());
+    f.extend_from_slice(cemi);
+    f
+}
+
+/// A point-to-point `L_Data.req` from 0.0.255 to 15.15.255 (the factory
+/// address of the fresh device) carrying `tpdu` (TPCI byte first).
+fn to_factory_address(tpdu: &[u8]) -> Vec<u8> {
+    let npdu_len = u8::try_from(tpdu.len().saturating_sub(1)).unwrap_or(u8::MAX);
+    let mut cemi = vec![0x11, 0x00, 0xBC, 0x60, 0x00, 0xFF, 0xFF, 0xFF, npdu_len];
+    cemi.extend_from_slice(tpdu);
+    routing_indication(&cemi)
+}
+
+impl VirtualDevice {
+    /// Presses the device's programming button, then waits until the device
+    /// logs `progmode on`. Returns whether that was observed.
+    ///
+    /// A real installer presses a physical button before `bussard assign`.
+    /// thelsing's demo boots at 15.15.255 (its `DeviceObject` default), so its
+    /// `if (individualAddress() == 0) progMode(true)` guard never fires and a
+    /// fresh device is NOT in programming mode. The harness stands in for the
+    /// installer: it opens a transport connection to 15.15.255 over routing and
+    /// writes `PID_PROG_MODE` (device object 0, property 54) = 1, which is what
+    /// the button does. This is raw KNX on a plain UDP socket, deliberately
+    /// independent of bussard's own stack, so rung (a) still tests bussard's
+    /// discovery and not the harness.
+    fn press_programming_button(&self) -> bool {
+        let log_path = self._workdir.path().join("dev.log");
+        let progmode_on = || {
+            std::fs::read_to_string(&log_path)
+                .map(|s| s.contains("progmode on"))
+                .unwrap_or(false)
+        };
+        let Ok(tx) = std::net::UdpSocket::bind("0.0.0.0:0") else {
+            return false;
+        };
+        let _ = tx.set_multicast_ttl_v4(2);
+        // A_PropertyValue_Write, sequence 0: object 0, PID 54, count 1 /
+        // start 1, value 1. APCI 0x3D7 split across the TPCI and APCI octets.
+        let apci: u16 = 0x3D7;
+        let write = [
+            0x40 | ((apci >> 8) as u8 & 0x03),
+            (apci & 0xFF) as u8,
+            0x00,
+            54,
+            0x10,
+            0x01,
+            0x01,
+        ];
+        for _attempt in 0..3 {
+            let frames: [&[u8]; 4] = [&[0x80], &write, &[0xC2], &[0x81]];
+            // T_Connect, the write, T_ACK for the device's response (seq 0),
+            // T_Disconnect. Small gaps let the single-threaded device loop
+            // service each frame in order.
+            for tpdu in frames {
+                let _ = tx.send_to(&to_factory_address(tpdu), ROUTING_GROUP);
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            let start = Instant::now();
+            while start.elapsed() < Duration::from_secs(2) {
+                if progmode_on() {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        }
+        progmode_on()
+    }
+}
+
 impl Drop for VirtualDevice {
     fn drop(&mut self) {
         let _ = self.child.kill();
@@ -293,6 +372,16 @@ fn ladder_against_thelsing_knx_linux_ip() {
     // servicing the socket before the first broadcast read.
     std::thread::sleep(Duration::from_millis(1500));
 
+    // The fresh device boots at 15.15.255 and is not in programming mode;
+    // press its button the way an installer would before running assign.
+    if !device.press_programming_button() {
+        eprintln!(
+            "warning: the virtual device did not log `progmode on` after the \
+             PID_PROG_MODE write; continuing (assign will fail with the log below)"
+        );
+        device.dump_log();
+    }
+
     // --- Rung (a)+(b): assign finds the fresh device and writes its address ---
     // It internally does the programming-mode broadcast read (rung a) and then
     // the A_IndividualAddress_Write + descriptor-read verify (rung b).
@@ -314,7 +403,7 @@ fn ladder_against_thelsing_knx_linux_ip() {
     // The verify read-back reports the device's mask. thelsing knx-linux-ip is a
     // 57B0 (KNXnet/IP System B) device — this is the key interop fact.
     assert!(
-        out.contains("57B0") || out.contains("0x57B0") || err.contains("57B0"),
+        out.to_uppercase().contains("57B0") || err.to_uppercase().contains("57B0"),
         "rung (b): expected the verified mask to be 57B0 (knx-linux-ip); \
          stdout:\n{out}\nstderr:\n{err}"
     );
@@ -344,34 +433,29 @@ fn ladder_against_thelsing_knx_linux_ip() {
         dev["mask"], "57B0",
         "rung (c): the foreign device reports mask 57B0"
     );
-    // bussard classifies 57B0 as an unknown system (it only tables the TP masks).
-    // Asserting this pins the classification behaviour against a real 57B0 device.
+    // bussard classifies 57B0 as System B on the IP medium (the mask family
+    // profile). Asserting this pins the classification against a real 57B0 device.
     assert_eq!(
-        dev["system_type"], "System ?",
-        "rung (c): 57B0 is classified 'System ?' by bussard (interop signal)"
+        dev["system_type"], "System B (IP)",
+        "rung (c): 57B0 is classified 'System B (IP)' by bussard"
     );
 
-    // --- Rung (d): reconstruct STOPS at the 07B0 gate ---
-    // This is the documented divergence: reconstruct/apply support System B
-    // (07B0) only, and the routing-reachable demo is 57B0. We assert the clean
-    // refusal (non-zero exit, explanatory message) rather than a crash.
+    // --- Rung (d): reconstruct reads the 57B0 device's tables ---
+    // The mask profile made reconstruct medium-agnostic: 57B0 (System B, IP)
+    // is read like 07B0. The fresh device has no application loaded, so the
+    // tables are empty, but the read must succeed against the foreign stack.
     let (ok, out, err) = bussard(&["reconstruct", assigned, "--dir", dir.to_str().unwrap()]);
     eprintln!("--- reconstruct stdout ---\n{out}\n--- reconstruct stderr ---\n{err}");
+    if !ok {
+        device.dump_log();
+    }
     assert!(
-        !ok,
-        "rung (d): reconstruct must refuse a 57B0 device (07B0-only gate); \
-         it unexpectedly succeeded:\n{out}"
-    );
-    assert!(
-        err.contains("57B0") && err.to_lowercase().contains("system b"),
-        "rung (d): the refusal should name the 57B0 mask and the System B (07B0) \
-         limitation; stderr:\n{err}"
+        ok,
+        "rung (d): reconstruct should read the 57B0 (System B, IP) device; stderr:\n{err}"
     );
 
     eprintln!(
         "ladder complete: (a) prog-mode discovery, (b) assign+verify (mask 57B0), \
-         (c) scan classified 57B0 as 'System ?', (d) reconstruct correctly refused \
-         the 57B0 device at the 07B0 gate. Rung (e) apply is not reachable over \
-         routing for the same reason."
+         (c) scan classified 57B0 as 'System B (IP)', (d) reconstruct read it."
     );
 }
