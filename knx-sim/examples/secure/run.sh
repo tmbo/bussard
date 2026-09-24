@@ -31,6 +31,12 @@
 #   POSITIVE  reconstruct 1.1.2 with the tool key -> secured read: mask 07B0, tables and
 #             the parameter read-back (issue #170)
 #   NEGATIVE  reconstruct 1.1.2 with NO tool key  -> fails with the --keyring hint
+#   POSITIVE  scan --keyring (issue #203) -> 1.1.10 read secured (mask 07B0,
+#             secure: activated), 1.1.2 labelled activated_no_key (mask FFFF),
+#             the plain 1.1.3 row unchanged
+#   POSITIVE  assign 1.1.10 -> 1.1.11 --keyring (issue #203; a sim restarted with
+#             1.1.10 in programming mode) -> verified over A_SecureData with the
+#             old address's keyring entry, keyring re-export hint printed
 #
 # KNXnet/IP Secure (Phase B, issue #71; sim-ipsecure.yaml, a secure-only
 # interface on port 13694):
@@ -531,7 +537,75 @@ else
   tail -4 <<<"$out" | sed 's/^/      /'
 fi
 
+# 6. scan (issue #203): the keyring lists 1.1.10, so it is identified over
+#    A_SecureData with its real mask; 1.1.2 is activated but not in the keyring,
+#    so it is labelled (plain descriptor read -> mask FFFF); 1.1.3 is plain.
+export BUSSARD_KEYRING_PASSWORD="synthetic-keyring-pw"   # SYNTHETIC
+out="$(BUSSARD_SCAN_DISCOVERY_MS=300 "$BUSSARD" scan 1.1 --from 1 --to 10 --json \
+  --dir "$MODEL" --gateway "$GATEWAY" --keyring "$KEYRING" 2>/dev/null)"
+rc=$?
+row() { python3 -c "import json,sys; d=json.load(sys.stdin); r=[x for x in d['found'] if x['address']==sys.argv[1]]; print(r[0].get('mask'), r[0].get('secure', 'plain')) if r else print('absent')" "$1" <<<"$out"; }
+if [[ $rc -eq 0 ]] && [[ "$(row 1.1.10)" == "07B0 activated" ]]; then
+  ok "scan --keyring: 1.1.10 read secured, mask 07B0, secure: activated"
+else
+  bad "scan --keyring: 1.1.10 was not read secured (exit $rc, row: $(row 1.1.10))"
+fi
+if [[ "$(row 1.1.2)" == "FFFF activated_no_key" ]]; then
+  ok "scan --keyring: 1.1.2 (not in the keyring) labelled activated_no_key"
+else
+  bad "scan --keyring: 1.1.2 not labelled (row: $(row 1.1.2))"
+fi
+if [[ "$(row 1.1.3)" == "07B0 plain" ]]; then
+  ok "scan --keyring: the plain 1.1.3 row is unchanged"
+else
+  bad "scan --keyring: 1.1.3 row changed (row: $(row 1.1.3))"
+fi
+unset BUSSARD_KEYRING_PASSWORD
+
 unset BUSSARD_FLASH_L4_TIMEOUT_MS
+kill "$SIM_PID" 2>/dev/null
+
+# --- assign a Data Secure device (issue #203) -----------------------------------
+# A fresh sim with 1.1.10 in programming mode. The keyring lists 1.1.10 (its old
+# address) only, so `assign 1.1.11` verifies with that entry's tool key over
+# A_SecureData and asks for a keyring re-export. A scratch model keeps the stub
+# device file out of $MODEL.
+say "assign: secured verification of a Data Secure device"
+sleep 1
+SIM_LOG="$(mktemp -t knxsimassign.XXXXXX)"
+KNX_SIM_PROG_MODE="1.1.10" RUST_LOG=${RUST_LOG:-info,knx_sim=debug} \
+  "$SERVE" "$SIM_YAML" >"$SIM_LOG" 2>&1 &
+SIM_PID=$!
+trap 'kill "$SIM_PID" 2>/dev/null; exit 130' INT TERM
+sleep 2
+if ! kill -0 "$SIM_PID" 2>/dev/null; then
+  echo "simulator did not start:"; cat "$SIM_LOG"; exit 1
+fi
+ASSIGN_MODEL="$(mktemp -d -t bussardassign.XXXXXX)"
+printf 'connection:\n  transport: tunnel\n  gateway: %s\n' "$GATEWAY" > "$ASSIGN_MODEL/bussard.yaml"
+export BUSSARD_KEYRING_PASSWORD="synthetic-keyring-pw"   # SYNTHETIC
+mark=$(log_mark)
+out="$("$BUSSARD" assign 1.1.11 --yes --dir "$ASSIGN_MODEL" --gateway "$GATEWAY" \
+  --keyring "$KEYRING" </dev/null 2>&1)"
+rc=$?
+if [[ $rc -eq 0 ]] && grep -q "verified (secured): mask 0x07b0" <<<"$out"; then
+  ok "assign 1.1.10 -> 1.1.11: verified over A_SecureData, mask 07B0"
+else
+  bad "assign 1.1.10 -> 1.1.11 was not verified secured (exit $rc)"
+  tail -6 <<<"$out" | sed 's/^/      /'
+fi
+if grep -q "old address 1.1.10" <<<"$out" && grep -q "Re-export the keyring" <<<"$out"; then
+  ok "assign: the old-address key was used and the re-export hint printed"
+else
+  bad "assign: no keyring re-export hint"
+fi
+if log_has "$mark" "SECURE recv scf=0x90"; then
+  ok "assign: the verification rode A_SecureData"
+else
+  bad "assign: the simulator saw no secured frames"
+fi
+unset BUSSARD_KEYRING_PASSWORD
+rm -rf "$ASSIGN_MODEL"
 kill "$SIM_PID" 2>/dev/null
 
 # --- KNXnet/IP Secure (Phase B, issue #71) ------------------------------------

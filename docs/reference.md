@@ -27,7 +27,7 @@ These apply to every subcommand:
 An interface with KNXnet/IP Secure enabled and no plain tunnel refuses an ordinary connection. bussard then needs a tunnelling user's credentials and opens an authenticated, encrypted session over TCP (issue #71 Phase B): X25519 key agreement, the interface proves its device authentication code, bussard proves the user password, and every frame after that travels in a SECURE_WRAPPER.
 
 - **From a keyring (automatic).** A command that takes `--keyring <file.knxkeys>` also uses the keyring's tunnelling users (`Interface Type="Tunneling"` entries, see [`bussard keyring`](#bussard-keyring-file)). bussard asks the gateway for its extended description; when a keyring interface names the gateway's individual address as its host and the gateway advertises KNXnet/IP Secure, the tunnel goes secure as the user whose tunnel address is free. The keyring also carries the interface's device authentication code, so bussard checks the interface's identity before it authenticates. A plain gateway stays on the plain tunnel.
-- **One keyring, two jobs (issue #189).** The keyring opens the tunnel, and its `Device` entries carry the tool keys. A device the keyring lists is managed over KNX Data Secure with its tool key. A device it does not list is managed in the clear through the secure tunnel, so the plain devices behind a secure-only interface stay reachable. The exception: a device whose model file says `security.activated: true` but that the keyring does not list is refused with `the keyring ... has no tool key for <IA>`, because plain access cannot reach it. This holds for `describe`, `reconstruct`, `plan`, `flash`, `apply`, `commission`, `replace`, `backup`, `restore`, the `--line` walks, and the MCP device tools. `scan` and `assign` take `--keyring` for the tunnel only.
+- **One keyring, two jobs (issue #189).** The keyring opens the tunnel, and its `Device` entries carry the tool keys. A device the keyring lists is managed over KNX Data Secure with its tool key. A device it does not list is managed in the clear through the secure tunnel, so the plain devices behind a secure-only interface stay reachable. The exception: a device whose model file says `security.activated: true` but that the keyring does not list is refused with `the keyring ... has no tool key for <IA>`, because plain access cannot reach it. This holds for `describe`, `reconstruct`, `plan`, `flash`, `apply`, `commission`, `replace`, `backup`, `restore`, the `--line` walks, and the MCP device tools. `scan`, `assign` and `audit --live` identify devices with the same rule but never refuse: a Data Secure-activated device that answers a plain descriptor read with mask `FFFF` and has no tool key is labelled "Data Secure activated (mask hidden), no tool key in the keyring" (issue #203).
 - **The config default.** `connection.keyring` in [`bussard.yaml`](#bussardyaml) names the keyring every bus command uses when `--keyring` is not given (`adopt`, `learn` and `test` use it for the tunnel). The flag overrides it. The password still comes from `BUSSARD_KEYRING_PASSWORD`.
 - **Explicit.** `--secure-user <ID> --secure-password-env <VAR>` on any command always opens a secure session as that user. Without a keyring the interface's identity is not verified (a warning says so).
 - **Neither.** Against a secure-only interface the command fails at once, with no retries: `interface <gateway> requires KNXnet/IP Secure (secure tunnelling only) and no tunnelling credentials were given ...`. `bussard init --gateway <ip>` prints `KNXnet/IP Secure: tunnelling is secure-only` for such an interface.
@@ -132,6 +132,8 @@ Group addresses are matched by address and devices by individual address, so a G
 
 Scan a line for devices: mask version, manufacturer, order number, and the delta against the model (known, unexpected, missing). Sweeps addresses sequentially, so a full line takes a while.
 
+A Data Secure-activated device answers a plain descriptor read with mask `FFFF` (issue #203). When the keyring lists the address, `scan` reads the descriptor and the properties over `A_SecureData` (after the S-A_Sync handshake) and shows the real mask; the row is marked `Data Secure activated` and `--json` adds `"secure": "activated"`. Without a tool key the row keeps mask `FFFF` with the label `Data Secure activated (mask hidden), no tool key in the keyring` and `"secure": "activated_no_key"`; a key that the device does not accept gives `"secure": "key_refused"`. A plain device's row and frames are unchanged (no `secure` field).
+
 | Flag / arg | Default | Meaning |
 |---|---|---|
 | `[LINE]` | `1.1` | The line to scan. |
@@ -139,7 +141,7 @@ Scan a line for devices: mask version, manufacturer, order number, and the delta
 | `--to <N>` | `255` | The last device number to probe (0-255). |
 | `--dir <DIR>` | `knx` | The model directory. |
 | `--json` | off | Emit JSON instead of the table format. |
-| `--keyring <FILE>` | `connection.keyring` | An ETS `.knxkeys` keyring whose tunnelling users open the [KNXnet/IP Secure tunnel](#knxnetip-secure-tunnelling); the devices are talked to in the clear. Password from `BUSSARD_KEYRING_PASSWORD`. |
+| `--keyring <FILE>` | `connection.keyring` | An ETS `.knxkeys` keyring: its tunnelling users open the [KNXnet/IP Secure tunnel](#knxnetip-secure-tunnelling), and a device it lists is identified over KNX Data Secure with its tool key (real mask, `secure: activated`). Unlisted devices are read in the clear. Password from `BUSSARD_KEYRING_PASSWORD`. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
 | `--skip-address-check` | off | Skip the pre-flight check that no bus device answers at bussard's own source address. See [SAFETY.md](SAFETY.md#source-address-check). |
@@ -148,12 +150,15 @@ Scan a line for devices: mask version, manufacturer, order number, and the delta
 
 Assign an individual address to the device in programming mode. Refuses when more than one device is in programming mode. Confirms on a terminal (naming the gateway); a non-TTY needs `--yes` (an explicit address is not itself consent).
 
+The verification after the write reads the device at its new address. For a Data Secure-activated device it runs over `A_SecureData` with the tool key (issue #203): `--tool-key` if given, else the keyring entry of the new address, else the entry of the old address. In the last case `assign` prints a note to re-export the keyring from ETS: the keyring lists devices by individual address, so later commands only find the key under the new address once the keyring does (see [SAFETY.md](SAFETY.md#what-each-write-command-does-and-its-rails)). Without any key an activated device answers mask `FFFF`: the address is verified, the output says `Data Secure activated (mask hidden), no tool key in the keyring`, and the stub device file records no mask.
+
 | Flag / arg | Default | Meaning |
 |---|---|---|
 | `[ADDRESS]` | next free on the line | The address to assign, e.g. `1.1.47`. |
 | `--yes` | off | Skip the confirmation prompt (required for a non-TTY assign). |
 | `--dir <DIR>` | `knx` | The model directory. |
-| `--keyring <FILE>` | `connection.keyring` | An ETS `.knxkeys` keyring whose tunnelling users open the [KNXnet/IP Secure tunnel](#knxnetip-secure-tunnelling); the devices are talked to in the clear. Password from `BUSSARD_KEYRING_PASSWORD`. |
+| `--keyring <FILE>` | `connection.keyring` | An ETS `.knxkeys` keyring: its tunnelling users open the [KNXnet/IP Secure tunnel](#knxnetip-secure-tunnelling), and its tool key for the new (else the old) address verifies a Data Secure-activated device. Password from `BUSSARD_KEYRING_PASSWORD`. |
+| `--tool-key <HEX>` | | A raw 16-byte tool key (32 hex characters) for the verification of a Data Secure-activated device; overrides the keyring's device entries (the keyring still opens the tunnel). For test or bench devices: process arguments are visible to other users. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
 | `--skip-address-check` | off | Skip the pre-flight check that no bus device answers at bussard's own source address. See [SAFETY.md](SAFETY.md#source-address-check). |
@@ -697,7 +702,7 @@ Report what the installation holds and what bussard can do with it. Read-only. T
 | `--json` | off | Emit one JSON object instead of the sectioned text report. The same object the `knx_audit` MCP tool returns. |
 | `--live` | off | Add the live part: gateway description, traffic sample, scan of the modelled devices. |
 | `--window <SECS>` | `30` | Traffic-sample window for `--live`. |
-| `--keyring <FILE>` | | An ETS `.knxkeys` keyring; each Secure device is reported with or without a tool-key entry. Password from `BUSSARD_KEYRING_PASSWORD`. No key material is printed. |
+| `--keyring <FILE>` | `connection.keyring` | An ETS `.knxkeys` keyring; each Secure device is reported with or without a tool-key entry, and with `--live` probed over KNX Data Secure with its tool key. Password from `BUSSARD_KEYRING_PASSWORD`. No key material is printed. |
 | `--gateway <HOST>` | | Gateway override. |
 | `--routing` | off | Force routing transport. |
 | `--skip-address-check` | off | With `--live`, skip the check that no bus device answers at bussard's own source address before the scan. See [SAFETY.md](SAFETY.md#source-address-check). |
@@ -713,7 +718,8 @@ Live sections (`live`, with `--live`):
 
 - **Gateway** (`live.gateway`): name, individual address and `N tunnels, M in use` from the interface's description. A full interface stops the audit with exit code `4`.
 - **Traffic sample** (`live.traffic`): group telegrams seen during `--window`, per GA with its repetition rate (frames marked repeated in the cEMI control field, or identical telegrams from the same source within 500 ms), GAs sent on the bus that have no listener in the model, and source addresses the model does not know.
-- **Scan delta** (`live.scan`): every modelled device probed with the `scan` machinery, one at a time and at most one probe per 250 ms, per line: which answered (with a mask mismatch against the model flagged) and which did not. Only modelled addresses are probed; unexpected devices show up as unknown traffic sources, or run `bussard scan`.
+- **Scan delta** (`live.scan`): every modelled device probed with the `scan` machinery, one at a time and at most one probe per 250 ms, per line: which answered (with a mask mismatch against the model flagged) and which did not. Only modelled addresses are probed; unexpected devices show up as unknown traffic sources, or run `bussard scan`. A Data Secure device's row carries `secure` (its `live.secure` status) and the real mask when the secured probe read it; a hidden `FFFF` mask is never flagged as a mismatch.
+- **KNX Secure (live)** (`live.secure`, issue #203): every Data Secure device (one that answers the plain probe with mask `FFFF`, has a `security:` block in the model, or is in the keyring) with `activated`, `reachable_secured` (the secured probe with the keyring's tool key answered; `null` when none ran), `plain_reads_refused` (the plain descriptor read returned `FFFF`), `in_keyring` (`null` without `--keyring`), the real `mask`, and one `status`: `reachable_secured`, `key_refused`, `not_in_keyring`, `plain_reads_refused` (no keyring given), `plain`, or `not_answering`. The secured probe runs like `describe --keyring`: S-A_Sync, then the descriptor and device-object property reads inside `A_SecureData`.
 
 The live part sends only management reads (device descriptor, authorize, device-object properties) to individual addresses and never a group telegram.
 
@@ -1138,7 +1144,7 @@ Bus operations share one rate limiter (minimum 250 ms between operations, at mos
 | `knx_recent_telegrams` | `limit` (default 50, max 1000), `ga` (GA or prefix), `source` (IA), `since` (RFC3339), all optional | Recent decoded telegrams, oldest first. With `--capture-db`, windows that predate the in-memory ring are topped up from the capture database. |
 | `knx_wait_for_telegram` | `timeout_seconds` (max 300), `ga`, `source` (optional) | Blocks until a matching telegram arrives or the timeout elapses. A timeout is a normal result, not an error. Enables "press the button now" debugging. |
 | `knx_validate` | none | Every diagnostic (code, severity, message, location) plus counts. |
-| `knx_audit` | `live` (default false), `window_seconds` (default 30, max 3600) | The `bussard audit --json` object. With `live: true` it adds the gateway description with tunnel slots and a traffic sample taken from the server's telegram buffer; `live.scan` is `null` (line scans are CLI-only) and the keyring check is not available. `live: true` is refused in `--passive` mode; the static audit is always available. |
+| `knx_audit` | `live` (default false), `window_seconds` (default 30, max 3600) | The `bussard audit --json` object. The server's `--keyring` (password in `BUSSARD_KEYRING_PASSWORD` of the server's environment) fills the static keyring check. With `live: true` it adds the gateway description with tunnel slots, a traffic sample taken from the server's telegram buffer, and `live.secure`: the model's Data Secure devices probed as `bussard audit --live` probes them, with the same fields. `live.scan` is `null` (line scans are CLI-only). `live: true` is refused in `--passive` mode; the static audit is always available. |
 | `knx_scaffold_groups` | `plan` (JSON `{rooms: [{floor, room, functions}]}`), `scheme` (optional) | Writes `groups.yaml` from a room and function list, returns the addresses added and the model's validation counts. Confirm the room list with the human first. |
 | `knx_read_group` | `ga` | Transmits a GroupValueRead and returns the decoded response. Omitted in `--passive` mode. |
 | `knx_describe_device` | `address` | Introspects a device: enumerates its interface objects and each property's description (PID, type, element count, access levels). Read-only on the bus. With `--keyring`, a KNX Data Secure device is addressed with its tool key. Omitted in `--passive` mode. |

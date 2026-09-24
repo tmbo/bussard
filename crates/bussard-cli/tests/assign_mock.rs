@@ -392,3 +392,249 @@ fn assign_warns_when_device_stays_in_programming_mode() -> TestResult {
     );
     Ok(())
 }
+
+// --- KNX Data Secure verification (issue #203) ---
+
+/// The synthetic keyring's made-up password.
+const KEYRING_PASSWORD: &str = "synthetic-keyring-pw";
+
+/// The committed SYNTHETIC keyring; it lists one device, 1.1.10.
+fn keyring_path() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../knx-sim/examples/secure/synthetic.knxkeys")
+}
+
+/// The tool key the synthetic keyring holds for 1.1.10 (never printed).
+fn keyring_tool_key() -> TestResult<[u8; 16]> {
+    let xml = std::fs::read_to_string(keyring_path())?;
+    let keyring = bussard_project::parse_keyring(&xml, KEYRING_PASSWORD)?;
+    let key = keyring
+        .tool_key(ia("1.1.10")?)
+        .ok_or("the synthetic keyring lists no tool key for 1.1.10")?;
+    Ok(*key.bytes())
+}
+
+/// A Data Secure-activated device in programming mode at `addr`: a plain
+/// descriptor read gets mask FFFF.
+fn secure_factory_device(addr: &str, key: [u8; 16]) -> TestResult<MockDevice> {
+    Ok(MockDevice::new(ia(addr)?)
+        .with_programming(true)
+        .with_mask(0x07B0)
+        .with_manufacturer(0x0083)
+        .with_order_info(b"MDT-SECURE")
+        .with_data_secure(key))
+}
+
+/// What one secure assign run produced.
+struct SecureRun {
+    success: bool,
+    stdout: String,
+    stderr: String,
+    stub: Option<String>,
+    secured_requests: usize,
+}
+
+/// Runs `bussard assign <target> <extra…>` against `device`.
+fn secure_assign(
+    tag: &str,
+    device: MockDevice,
+    target: &str,
+    extra: &[&str],
+) -> TestResult<SecureRun> {
+    let rt = tokio::runtime::Runtime::new()?;
+    let gw = start_gateway(&rt, device)?;
+    let tmp = std::env::temp_dir().join(format!("bussard-assign-{tag}-{}", std::process::id()));
+    let model_dir = tmp.join("knx");
+    write_model(&model_dir)?;
+    let mut args = vec![
+        "assign".to_string(),
+        target.to_string(),
+        "--yes".to_string(),
+        "--dir".to_string(),
+        model_dir
+            .to_str()
+            .ok_or("temp path is not UTF-8")?
+            .to_string(),
+        "--gateway".to_string(),
+        format!("127.0.0.1:{}", gw.port()),
+    ];
+    args.extend(extra.iter().map(|s| s.to_string()));
+    let output = Command::new(env!("CARGO_BIN_EXE_bussard"))
+        .args(&args)
+        .env("BUSSARD_ASSIGN_WAIT_MS", "200")
+        .env("BUSSARD_KEYRING_PASSWORD", KEYRING_PASSWORD)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()?;
+    let secured_requests = gw
+        .devices()?
+        .first()
+        .map(|d| d.secured_requests)
+        .unwrap_or(0);
+    drop(gw);
+    let stub = std::fs::read_to_string(
+        model_dir
+            .join("devices")
+            .join(format!("{target}-new-device-assign.yaml")),
+    )
+    .ok();
+    let _ = std::fs::remove_dir_all(&tmp);
+    Ok(SecureRun {
+        success: output.status.success(),
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        stub,
+        secured_requests,
+    })
+}
+
+/// The keyring lists the NEW address: the verification rides A_SecureData and
+/// reports the real mask.
+#[test]
+fn test_assign_verifies_secured_with_the_keyring_entry_of_the_new_address() -> TestResult {
+    let key = keyring_tool_key()?;
+    let keyring = keyring_path();
+    let keyring = keyring.to_str().ok_or("keyring path is not UTF-8")?;
+    let run = secure_assign(
+        "secure-new",
+        secure_factory_device("15.15.255", key)?,
+        "1.1.10",
+        &["--keyring", keyring],
+    )?;
+    assert!(
+        run.success,
+        "stdout:\n{}\nstderr:\n{}",
+        run.stdout, run.stderr
+    );
+    assert!(
+        run.stdout.contains("verified (secured): mask 0x07b0"),
+        "stdout:\n{}",
+        run.stdout
+    );
+    assert!(!run.stdout.contains("0xffff"), "stdout:\n{}", run.stdout);
+    assert!(run.secured_requests > 0, "the verify rode A_SecureData");
+    assert!(!run.stderr.contains("re-export"), "stderr:\n{}", run.stderr);
+    let stub = run.stub.ok_or("stub device file")?;
+    assert!(stub.contains("MDT-SECURE"), "stub:\n{stub}");
+    Ok(())
+}
+
+/// The keyring lists only the OLD address: its key verifies, and the operator
+/// is told to re-export the keyring.
+#[test]
+fn test_assign_uses_the_old_address_key_and_asks_for_a_keyring_reexport() -> TestResult {
+    let key = keyring_tool_key()?;
+    let keyring = keyring_path();
+    let keyring = keyring.to_str().ok_or("keyring path is not UTF-8")?;
+    let run = secure_assign(
+        "secure-old",
+        secure_factory_device("1.1.10", key)?,
+        "1.1.11",
+        &["--keyring", keyring],
+    )?;
+    assert!(
+        run.success,
+        "stdout:\n{}\nstderr:\n{}",
+        run.stdout, run.stderr
+    );
+    assert!(
+        run.stdout.contains("verified (secured): mask 0x07b0"),
+        "stdout:\n{}",
+        run.stdout
+    );
+    assert!(
+        run.stderr.contains("old address 1.1.10") && run.stderr.contains("Re-export the keyring"),
+        "stderr:\n{}",
+        run.stderr
+    );
+    Ok(())
+}
+
+/// `--tool-key` verifies an address the keyring does not know yet.
+#[test]
+fn test_assign_tool_key_verifies_secured() -> TestResult {
+    let key = keyring_tool_key()?;
+    let hex: String = key.iter().map(|b| format!("{b:02x}")).collect();
+    let run = secure_assign(
+        "secure-raw",
+        secure_factory_device("15.15.255", key)?,
+        "1.1.7",
+        &["--tool-key", &hex],
+    )?;
+    assert!(
+        run.success,
+        "stdout:\n{}\nstderr:\n{}",
+        run.stdout, run.stderr
+    );
+    assert!(
+        run.stdout.contains("verified (secured): mask 0x07b0"),
+        "stdout:\n{}",
+        run.stdout
+    );
+    assert!(run.secured_requests > 0);
+    Ok(())
+}
+
+/// Without a tool key the device answers mask FFFF: the address is verified,
+/// the row is labelled, and the stub records no bogus mask.
+#[test]
+fn test_assign_without_key_labels_a_secure_device() -> TestResult {
+    let run = secure_assign(
+        "secure-nokey",
+        secure_factory_device("15.15.255", [0x24; 16])?,
+        "1.1.7",
+        &[],
+    )?;
+    assert!(
+        run.success,
+        "stdout:\n{}\nstderr:\n{}",
+        run.stdout, run.stderr
+    );
+    assert!(
+        run.stdout
+            .contains("Data Secure activated (mask hidden), no tool key in the keyring"),
+        "stdout:\n{}",
+        run.stdout
+    );
+    assert!(
+        !run.stdout.contains("mask 0xffff"),
+        "stdout:\n{}",
+        run.stdout
+    );
+    let stub = run.stub.ok_or("stub device file")?;
+    assert!(!stub.to_ascii_uppercase().contains("FFFF"), "stub:\n{stub}");
+    Ok(())
+}
+
+/// A keyring entry for a device that is not activated: the secured read is not
+/// answered, the plain one is, and the assignment is verified with a warning.
+#[test]
+fn test_assign_listed_but_plain_device_falls_back_to_a_plain_verify() -> TestResult {
+    let keyring = keyring_path();
+    let keyring = keyring.to_str().ok_or("keyring path is not UTF-8")?;
+    let run = secure_assign(
+        "secure-stale",
+        MockDevice::new(ia("15.15.255")?)
+            .with_programming(true)
+            .with_mask(0x07B0),
+        "1.1.10",
+        &["--keyring", keyring],
+    )?;
+    assert!(
+        run.success,
+        "stdout:\n{}\nstderr:\n{}",
+        run.stdout, run.stderr
+    );
+    assert!(
+        run.stdout.contains("verified: mask 0x07b0"),
+        "stdout:\n{}",
+        run.stdout
+    );
+    assert!(
+        run.stderr.contains("answers in the clear"),
+        "stderr:\n{}",
+        run.stderr
+    );
+    Ok(())
+}

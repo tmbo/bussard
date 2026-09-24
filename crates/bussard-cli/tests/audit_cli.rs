@@ -280,3 +280,166 @@ fn test_read_full_interface_exits_with_distinct_code() -> TestResult {
     assert!(stderr.contains("E_NO_MORE_CONNECTIONS"), "{stderr}");
     Ok(())
 }
+
+// --- KNX Data Secure live probe (issue #203) -----------------------------------
+
+/// The synthetic keyring's made-up password.
+const KEYRING_PASSWORD: &str = "synthetic-keyring-pw";
+
+/// The committed SYNTHETIC keyring; it lists one device, 1.1.10.
+fn keyring_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../knx-sim/examples/secure/synthetic.knxkeys")
+}
+
+/// The tool key the synthetic keyring holds for 1.1.10 (never printed).
+fn keyring_tool_key() -> TestResult<[u8; 16]> {
+    let xml = std::fs::read_to_string(keyring_path())?;
+    let keyring = bussard_project::parse_keyring(&xml, KEYRING_PASSWORD)?;
+    let key = keyring
+        .tool_key(ia("1.1.10")?)
+        .ok_or("the synthetic keyring lists no tool key for 1.1.10")?;
+    Ok(*key.bytes())
+}
+
+/// A model with a plain 1.1.4 and two activated devices: 1.1.10 (in the
+/// keyring) and 1.1.12 (not in it).
+fn secure_model(tag: &str) -> TestResult<PathBuf> {
+    let dir = std::env::temp_dir().join(format!("bussard-audit-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("devices"))?;
+    std::fs::write(
+        dir.join("bussard.yaml"),
+        "connection:\n  transport: tunnel\n",
+    )?;
+    std::fs::write(dir.join("groups.yaml"), "groups: {}\n")?;
+    std::fs::write(dir.join("links.yaml"), "links: {}\n")?;
+    std::fs::write(
+        dir.join("devices").join("1.1.4-plain.yaml"),
+        "address: 1.1.4\nname: Plain actuator\nproduct:\n  mask: 07B0\n",
+    )?;
+    for (addr, name) in [("1.1.10", "Secure dimmer"), ("1.1.12", "Secure sensor")] {
+        std::fs::write(
+            dir.join("devices").join(format!("{addr}-secure.yaml")),
+            format!(
+                "address: {addr}\nname: {name}\nproduct:\n  mask: 07B0\nsecurity:\n  \
+                 secure_capable: true\n  activated: true\n"
+            ),
+        )?;
+    }
+    Ok(dir)
+}
+
+#[test]
+fn test_audit_live_probes_secure_devices_with_the_keyring_tool_key() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let key = keyring_tool_key()?;
+    let mock = rt.block_on(
+        MockGateway::builder()
+            .channel(CHANNEL)
+            .keep_serving()
+            .idle_timeout(Duration::from_secs(60))
+            .description(description_response_body("Mock Gate", 2, 0))
+            .device(MockDevice::new(ia("1.1.4")?))
+            .device(MockDevice::new(ia("1.1.10")?).with_data_secure(key))
+            .device(MockDevice::new(ia("1.1.12")?).with_data_secure([0x24; 16]))
+            .start(),
+    )?;
+    let dir = secure_model("secure-live")?;
+    let keyring = keyring_path();
+    let out = Command::new(env!("CARGO_BIN_EXE_bussard"))
+        .args([
+            "audit",
+            "--live",
+            "--json",
+            "--window",
+            "1",
+            "--keyring",
+            keyring.to_str().ok_or("path")?,
+            "--gateway",
+            &format!("127.0.0.1:{}", mock.port()),
+            "--dir",
+            dir.to_str().ok_or("path")?,
+        ])
+        .env("BUSSARD_SCAN_DISCOVERY_MS", "60")
+        .env("BUSSARD_KEYRING_PASSWORD", KEYRING_PASSWORD)
+        .output()?;
+    let devices = mock.devices()?;
+    drop(mock);
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: Value = serde_json::from_slice(&out.stdout)?;
+
+    // Static coverage from the keyring.
+    let secure = report["secure"]["devices"]
+        .as_array()
+        .ok_or("secure devices")?;
+    let entry = |addr: &str| {
+        secure
+            .iter()
+            .find(|d| d["address"] == addr)
+            .map(|d| d["keyring_entry"].clone())
+    };
+    assert_eq!(entry("1.1.10"), Some(Value::Bool(true)));
+    assert_eq!(entry("1.1.12"), Some(Value::Bool(false)));
+
+    // The live probe.
+    let live = &report["live"]["secure"];
+    let row = |addr: &str| -> TestResult<Value> {
+        Ok(live["devices"]
+            .as_array()
+            .and_then(|a| a.iter().find(|d| d["address"] == addr))
+            .ok_or(format!("{addr} in live.secure: {live}"))?
+            .clone())
+    };
+    let d10 = row("1.1.10")?;
+    assert_eq!(d10["status"], "reachable_secured", "{live}");
+    assert_eq!(d10["activated"], true);
+    assert_eq!(d10["reachable_secured"], true);
+    assert_eq!(d10["plain_reads_refused"], true);
+    assert_eq!(d10["in_keyring"], true);
+    assert_eq!(d10["mask"], "07B0");
+    let d12 = row("1.1.12")?;
+    assert_eq!(d12["status"], "not_in_keyring", "{live}");
+    assert_eq!(d12["activated"], true);
+    assert_eq!(d12["reachable_secured"], Value::Null);
+    assert_eq!(d12["plain_reads_refused"], true);
+    assert_eq!(d12["in_keyring"], false);
+    assert!(
+        live["devices"]
+            .as_array()
+            .is_some_and(|a| a.iter().all(|d| d["address"] != "1.1.4")),
+        "a plain device without a security block is not a Secure row: {live}"
+    );
+
+    // The scan delta shows the real mask and no false mismatch.
+    let answered = report["live"]["scan"]["lines"][0]["answered"]
+        .as_array()
+        .ok_or("answered")?;
+    let scan10 = answered
+        .iter()
+        .find(|d| d["address"] == "1.1.10")
+        .ok_or("1.1.10 answered")?;
+    assert_eq!(scan10["mask"], "07B0");
+    assert_eq!(scan10["mask_mismatch"], false);
+    assert_eq!(scan10["secure"], "reachable_secured");
+    let scan12 = answered
+        .iter()
+        .find(|d| d["address"] == "1.1.12")
+        .ok_or("1.1.12 answered")?;
+    assert_eq!(scan12["mask"], "FFFF");
+    assert_eq!(
+        scan12["mask_mismatch"], false,
+        "a hidden mask is not a mismatch"
+    );
+
+    let dev10 = devices
+        .iter()
+        .find(|d| d.address.to_string() == "1.1.10")
+        .ok_or("1.1.10 on the line")?;
+    assert!(dev10.secured_requests > 0, "1.1.10 was probed secured");
+    Ok(())
+}

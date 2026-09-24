@@ -141,7 +141,8 @@ fn bus_command_dir(command: &Command) -> Option<&std::path::Path> {
 /// sources), so it then serves the tunnel only.
 fn command_has_tool_key(command: &Command) -> bool {
     match command {
-        Command::Reconstruct { tool_key, .. }
+        Command::Assign { tool_key, .. }
+        | Command::Reconstruct { tool_key, .. }
         | Command::Describe { tool_key, .. }
         | Command::Flash { tool_key, .. }
         | Command::Plan { tool_key, .. }
@@ -374,10 +375,12 @@ enum Command {
         /// Override the gateway `host[:port]` for tunneling.
         #[arg(long, value_name = "HOST")]
         gateway: Option<String>,
-        /// An ETS `.knxkeys` keyring whose KNXnet/IP Secure tunnelling users open
-        /// the tunnel to a secure interface (issue #189); the devices are talked
-        /// to in the clear. Default: `connection.keyring` in `bussard.yaml`. The
-        /// password comes from `BUSSARD_KEYRING_PASSWORD`.
+        /// An ETS `.knxkeys` keyring: its KNXnet/IP Secure tunnelling users open
+        /// the tunnel to a secure interface (issue #189), and a device it lists
+        /// is identified over KNX Data Secure with its tool key, showing the real
+        /// mask (issue #203). Unlisted devices are read in the clear. Default:
+        /// `connection.keyring` in `bussard.yaml`. The password comes from
+        /// `BUSSARD_KEYRING_PASSWORD`.
         #[arg(long, value_name = "FILE")]
         keyring: Option<PathBuf>,
         /// Force KNXnet/IP routing (multicast) transport.
@@ -407,10 +410,12 @@ enum Command {
         /// Override the gateway `host[:port]` for tunneling.
         #[arg(long, value_name = "HOST")]
         gateway: Option<String>,
-        /// An ETS `.knxkeys` keyring whose KNXnet/IP Secure tunnelling users open
-        /// the tunnel to a secure interface (issue #189); the devices are talked
-        /// to in the clear. Default: `connection.keyring` in `bussard.yaml`. The
-        /// password comes from `BUSSARD_KEYRING_PASSWORD`.
+        /// An ETS `.knxkeys` keyring: its KNXnet/IP Secure tunnelling users open
+        /// the tunnel to a secure interface (issue #189), and the tool key it
+        /// lists for the new (else the old) address verifies a Data
+        /// Secure-activated device after the write (issue #203). Default:
+        /// `connection.keyring` in `bussard.yaml`. The password comes from
+        /// `BUSSARD_KEYRING_PASSWORD`.
         #[arg(long, value_name = "FILE")]
         keyring: Option<PathBuf>,
         /// Force KNXnet/IP routing (multicast) transport.
@@ -429,6 +434,13 @@ enum Command {
         /// gateway that is not 127.0.0.0/8 or ::1 (or set BUSSARD_ALLOW_REAL_GATEWAY=1).
         #[arg(long)]
         allow_remote_gateway: bool,
+        /// A raw KNX Data Secure tool key (32 hex characters) to verify a
+        /// security-activated device with after the address write (issue #203).
+        /// Overrides the keyring, which lists devices by individual address and
+        /// so only knows the new address once ETS re-exports it. For a test or
+        /// bench device: process arguments are visible to other users.
+        #[arg(long, value_name = "HEX")]
+        tool_key: Option<String>,
     },
     /// Read a device's tables back over the bus and diff them against the model,
     /// or (with `--line`) sweep a whole line and synthesize a fresh model.
@@ -1598,7 +1610,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             to,
             dir,
             json,
-            keyring: _,
+            keyring,
             gateway,
             routing,
             skip_address_check,
@@ -1608,6 +1620,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             to,
             &dir,
             json,
+            keyring.as_deref(),
             conn_cmd::ConnOverrides {
                 gateway,
                 routing,
@@ -1618,16 +1631,23 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             address,
             dir,
             yes,
-            keyring: _,
+            keyring,
             gateway,
             routing,
             skip_address_check,
             allow_remote_gateway,
+            tool_key,
         } => assign_cmd::run(
             address.as_deref(),
             &dir,
             yes,
             allow_remote_gateway,
+            // `--tool-key` overrides the keyring's device entries; the keyring
+            // still opens a KNXnet/IP Secure tunnel (issue #203).
+            secure_key::ToolKeySource {
+                keyring: keyring.as_deref().filter(|_| tool_key.is_none()),
+                tool_key: tool_key.as_deref(),
+            },
             conn_cmd::ConnOverrides {
                 gateway,
                 routing,

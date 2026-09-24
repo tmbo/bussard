@@ -173,6 +173,18 @@ entry supersedes it and is not a diff against it.
   `flash`, `apply`, `commission`, `replace`, `backup`, `restore`, the line
   walks and the MCP device tools follow this rule; `scan` and `assign` take
   `--keyring` for the tunnel (#189).
+- Identity reads of Data Secure devices (#203). A Data Secure-activated device
+  answers a plain descriptor read with mask `FFFF`. `scan --keyring` reads a
+  keyring-listed device over `A_SecureData` and shows its real mask
+  (`secure: activated` in `--json`); an activated device without a tool key is
+  labelled "Data Secure activated (mask hidden), no tool key in the keyring"
+  (`secure: activated_no_key`). Plain devices see the same frames as before.
+  `assign` verifies a Secure device over `A_SecureData` with the tool key of
+  the new address, or of the old one with a note to re-export the keyring, or
+  `--tool-key`; without a key it reports the hidden mask instead of "verified:
+  mask 0xffff". `audit --live` and MCP `knx_audit` probe each Secure device
+  with its tool key and report `activated`, `reachable_secured`,
+  `plain_reads_refused` and `in_keyring` (`live.secure`).
 - `connection.keyring` in `bussard.yaml` is the default for `--keyring` on
   every bus command (the flag overrides it; the password stays in
   `BUSSARD_KEYRING_PASSWORD`). The campaign wrapper passes

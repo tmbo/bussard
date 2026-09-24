@@ -37,6 +37,7 @@ pub mod bus;
 pub mod describe;
 pub mod error;
 pub mod group;
+pub mod identity;
 pub mod model_handle;
 pub mod policy;
 pub mod secure;
