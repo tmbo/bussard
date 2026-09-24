@@ -1,81 +1,46 @@
 //! End-to-end test of `bussard scan` against an in-process mock KNX line.
 //!
-//! A mock KNXnet/IP gateway task answers the management protocol for three
-//! present devices among otherwise-absent addresses on line `1.1`. The built
-//! `bussard` binary is run as a subprocess with `--gateway 127.0.0.1:PORT
-//! --json`, and its JSON output is asserted for device content and the model
-//! cross-reference (one device present on the bus but missing from the model,
-//! one model device that did not respond).
+//! A mock KNXnet/IP gateway (`bussard-testkit`) answers the management protocol
+//! for three present devices among otherwise-absent addresses on line `1.1`. The
+//! built `bussard` binary is run as a subprocess with `--gateway
+//! 127.0.0.1:PORT --json`, and its JSON output is asserted for device content
+//! and the model cross-reference (one device present on the bus but missing
+//! from the model, one model device that did not respond).
 
-use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use bussard_mgmt::apci;
-use bussard_model::IndividualAddress;
-use bussard_transport::cemi::{Apdu, CemiFrame, Destination, Tpci};
-use bussard_transport::knxnet::{self, ConnectionHeader, ServiceType};
-use bussard_transport::tpci::{self, TpciKind};
-use tokio::net::UdpSocket;
+use bussard_testkit::{MockDevice, MockGateway, Reaction, TestResult, ia};
 
 const CHANNEL: u8 = 0x21;
 
+#[derive(Clone)]
 struct Device {
-    address: IndividualAddress,
     mask: u16,
     manufacturer: u16,
     serial: Vec<u8>,
     order: Vec<u8>,
 }
 
-fn device(addr: &str, mask: u16, manufacturer: u16, order: &[u8]) -> Device {
-    Device {
-        address: addr.parse().unwrap(),
+/// A device on the mock line: it `T_ACK`s every numbered request and answers
+/// the management reads a scan issues.
+fn device(addr: &str, mask: u16, manufacturer: u16, order: &[u8]) -> TestResult<MockDevice> {
+    let dev = Device {
         mask,
         manufacturer,
         serial: vec![0x11, 0x22, 0x33, 0x44, 0x55, 0x66],
         order: order.to_vec(),
-    }
-}
-
-fn knxnet_frame(service: ServiceType, body: &[u8]) -> Vec<u8> {
-    let total = (6 + body.len()) as u16;
-    let mut out = Vec::with_capacity(total as usize);
-    out.push(0x06);
-    out.push(0x10);
-    out.extend_from_slice(&(service as u16).to_be_bytes());
-    out.extend_from_slice(&total.to_be_bytes());
-    out.extend_from_slice(body);
-    out
-}
-
-fn connect_response_body(channel: u8, gw: &UdpSocket) -> Vec<u8> {
-    let mut body = vec![channel, 0x00];
-    body.push(0x08);
-    body.push(0x01);
-    body.extend_from_slice(&[127, 0, 0, 1]);
-    body.extend_from_slice(&gw.local_addr().unwrap().port().to_be_bytes());
-    body.extend_from_slice(&[0x04, 0x04, 0x11, 0xFF]);
-    body
-}
-
-async fn push(gw: &UdpSocket, peer: SocketAddr, gw_seq: &mut u8, cemi: &CemiFrame) {
-    let hdr = ConnectionHeader {
-        channel_id: CHANNEL,
-        seq: *gw_seq,
     };
-    gw.send_to(&knxnet::tunneling_request(hdr, cemi), peer)
-        .await
-        .unwrap();
-    *gw_seq = gw_seq.wrapping_add(1);
+    Ok(MockDevice::new(ia(addr)?).with_hook(move |_, apci, data| {
+        Some(match device_response(&dev, apci, data) {
+            Some((rapci, rdata)) => Reaction::Answer(rapci, rdata),
+            None => Reaction::Ack,
+        })
+    }))
 }
 
-fn device_response(dev: &Device, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)> {
-    let (apci, data) = match (&cemi.tpci, &cemi.apdu) {
-        (Tpci::Other(_), Apdu::Other { apci, data }) => (*apci, data.clone()),
-        _ => return None,
-    };
+fn device_response(dev: &Device, apci: u16, data: &[u8]) -> Option<(u16, Vec<u8>)> {
     match apci {
         // Authorize (issue #52 finding #1): grant full access (level 0).
         apci::A_AUTHORIZE_REQUEST => Some((apci::A_AUTHORIZE_RESPONSE, vec![0x00])),
@@ -84,7 +49,7 @@ fn device_response(dev: &Device, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)> {
             dev.mask.to_be_bytes().to_vec(),
         )),
         apci::A_PROPERTY_VALUE_READ => {
-            let pv = apci::decode_property_value_read(&data)?;
+            let pv = apci::decode_property_value_read(data)?;
             let value = match pv.property_id {
                 apci::PID_MANUFACTURER_ID => dev.manufacturer.to_be_bytes().to_vec(),
                 apci::PID_SERIAL_NUMBER => dev.serial.clone(),
@@ -105,136 +70,51 @@ fn device_response(dev: &Device, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)> {
     }
 }
 
-async fn handle(
-    gw: &UdpSocket,
-    peer: SocketAddr,
-    devices: &[Device],
-    cemi: &CemiFrame,
-    gw_seq: &mut u8,
-    dev_seq: &mut HashMap<u16, u8>,
-) {
-    let dest = match cemi.destination {
-        Destination::Individual(ia) => ia,
-        Destination::Group(_) => return,
-    };
-    let Some(dev) = devices.iter().find(|d| d.address == dest) else {
-        return; // absent address
-    };
-    let tool = cemi.source;
-    match tpci::classify(cemi.tpci_octet()) {
-        TpciKind::Connect => {
-            dev_seq.insert(dev.address.raw(), 0);
-        }
-        TpciKind::Disconnect => {
-            dev_seq.remove(&dev.address.raw());
-        }
-        TpciKind::NumberedData(client_seq) => {
-            // ACK the request.
-            let ack = CemiFrame::t_control(tool, dev.address, tpci::t_ack(client_seq));
-            push(gw, peer, gw_seq, &ack).await;
-            // Answer.
-            if let Some((rapci, rdata)) = device_response(dev, cemi) {
-                let seq = *dev_seq.get(&dev.address.raw()).unwrap_or(&0);
-                let resp =
-                    CemiFrame::t_data_connected(tool, dev.address, tpci::ndt(seq), rapci, &rdata);
-                push(gw, peer, gw_seq, &resp).await;
-                dev_seq.insert(dev.address.raw(), (seq + 1) & 0x0f);
-            }
-        }
-        _ => {}
-    }
+/// Starts the mock gateway on `rt` with `devices` on its line.
+fn start_gateway(
+    rt: &tokio::runtime::Runtime,
+    devices: Vec<MockDevice>,
+) -> TestResult<MockGateway> {
+    Ok(rt.block_on(
+        MockGateway::builder()
+            .channel(CHANNEL)
+            .idle_timeout(Duration::from_secs(30))
+            .devices(devices)
+            .start(),
+    )?)
 }
 
-/// Runs the mock gateway until the client disconnects or it goes idle.
-async fn run_gateway(gw: UdpSocket, devices: Vec<Device>) {
-    let mut gw_seq = 0u8;
-    let mut dev_seq: HashMap<u16, u8> = HashMap::new();
-    loop {
-        let mut buf = [0u8; 1024];
-        let (n, from) =
-            match tokio::time::timeout(Duration::from_secs(30), gw.recv_from(&mut buf)).await {
-                Ok(Ok(v)) => v,
-                _ => return,
-            };
-        let Ok(parsed) = knxnet::parse(&buf[..n]) else {
-            continue;
-        };
-        match parsed.service {
-            ServiceType::ConnectRequest => {
-                let resp = knxnet_frame(
-                    ServiceType::ConnectResponse,
-                    &connect_response_body(CHANNEL, &gw),
-                );
-                gw.send_to(&resp, from).await.unwrap();
-            }
-            ServiceType::ConnectionstateRequest => {
-                gw.send_to(&knxnet::connectionstate_response(CHANNEL, 0), from)
-                    .await
-                    .unwrap();
-            }
-            ServiceType::DisconnectRequest => {
-                gw.send_to(&knxnet::disconnect_response(CHANNEL, 0), from)
-                    .await
-                    .unwrap();
-                return;
-            }
-            ServiceType::TunnelingRequest => {
-                let Ok(tr) = knxnet::parse_tunneling_request(parsed.body) else {
-                    continue;
-                };
-                gw.send_to(
-                    &knxnet::tunneling_ack(tr.header.channel_id, tr.header.seq, 0),
-                    from,
-                )
-                .await
-                .unwrap();
-                handle(&gw, from, &devices, &tr.cemi, &mut gw_seq, &mut dev_seq).await;
-            }
-            _ => {}
-        }
-    }
-}
-
-fn write_model(dir: &std::path::Path) {
-    std::fs::create_dir_all(dir.join("devices")).unwrap();
+fn write_model(dir: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir.join("devices"))?;
     // Model knows 1.1.4 and 1.1.6; 1.1.6 will NOT respond (missing from bus),
     // and 1.1.7 responds but is NOT in the model. Kept in a tight device-number
     // cluster so the test can restrict the sweep to `--from 1 --to 8`.
     std::fs::write(
         dir.join("devices").join("1.1.4-jal.yaml"),
         "address: 1.1.4\nname: Rollladen Wohnzimmer\n",
-    )
-    .unwrap();
+    )?;
     std::fs::write(
         dir.join("devices").join("1.1.6-dimmer.yaml"),
         "address: 1.1.6\nname: Dimmer Flur\n",
     )
-    .unwrap();
 }
 
 #[test]
-fn scan_reports_devices_and_model_delta() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    // Bind the mock gateway and learn its port before spawning.
-    let (gw, port) = rt.block_on(async {
-        let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let port = sock.local_addr().unwrap().port();
-        (sock, port)
-    });
-
+fn scan_reports_devices_and_model_delta() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
     // Three present devices among absent addresses, all inside 1..=8 so the
     // sweep can be restricted to a handful of addresses.
     let devices = vec![
-        device("1.1.4", 0x07B0, 0x0083, b"MDT-JAL0410"), // MDT, System B, known
-        device("1.1.7", 0x0705, 0x0004, b"2118REGHE"),   // Jung, System 7, not in model
-        device("1.1.8", 0x0012, 0x0002, b"6197/15"),     // ABB, System 1, not in model
+        device("1.1.4", 0x07B0, 0x0083, b"MDT-JAL0410")?, // MDT, System B, known
+        device("1.1.7", 0x0705, 0x0004, b"2118REGHE")?,   // Jung, System 7, not in model
+        device("1.1.8", 0x0012, 0x0002, b"6197/15")?,     // ABB, System 1, not in model
     ];
-
-    let handle = rt.spawn(run_gateway(gw, devices));
+    let gw = start_gateway(&rt, devices)?;
+    let port = gw.port();
 
     let tmp = std::env::temp_dir().join(format!("bussard-scan-test-{}", std::process::id()));
     let model_dir = tmp.join("knx");
-    write_model(&model_dir);
+    write_model(&model_dir)?;
 
     let output = Command::new(env!("CARGO_BIN_EXE_bussard"))
         .args([
@@ -245,7 +125,7 @@ fn scan_reports_devices_and_model_delta() {
             "--to",
             "8",
             "--dir",
-            model_dir.to_str().unwrap(),
+            model_dir.to_str().ok_or("temp path is not UTF-8")?,
             "--gateway",
             &format!("127.0.0.1:{port}"),
             "--json",
@@ -255,10 +135,9 @@ fn scan_reports_devices_and_model_delta() {
         .env("BUSSARD_SCAN_DISCOVERY_MS", "40")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
-        .expect("run bussard scan");
+        .output()?;
 
-    rt.block_on(async { handle.abort() });
+    drop(gw);
     let _ = std::fs::remove_dir_all(&tmp);
 
     assert!(
@@ -266,18 +145,18 @@ fn scan_reports_devices_and_model_delta() {
         "scan should exit 0; stderr:\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stdout = String::from_utf8(output.stdout)?;
     let json: serde_json::Value = serde_json::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("scan --json must emit valid JSON: {e}\n{stdout}"));
+        .map_err(|e| format!("scan --json must emit valid JSON: {e}\n{stdout}"))?;
 
-    let found = json["found"].as_array().expect("found array");
+    let found = json["found"].as_array().ok_or("found array")?;
     assert_eq!(found.len(), 3, "three devices should respond: {stdout}");
 
     // Find 1.1.4 and check its decoded fields.
     let d4 = found
         .iter()
         .find(|d| d["address"] == "1.1.4")
-        .expect("1.1.4 present");
+        .ok_or("1.1.4 present")?;
     assert_eq!(d4["mask"], "07B0");
     assert_eq!(d4["system_type"], "System B");
     assert_eq!(d4["manufacturer"], "MDT");
@@ -288,7 +167,7 @@ fn scan_reports_devices_and_model_delta() {
     let d7 = found
         .iter()
         .find(|d| d["address"] == "1.1.7")
-        .expect("1.1.7 present");
+        .ok_or("1.1.7 present")?;
     assert_eq!(d7["manufacturer"], "Jung");
     assert_eq!(d7["system_type"], "System 7");
     assert_eq!(d7["model_status"], "not_in_model");
@@ -297,27 +176,28 @@ fn scan_reports_devices_and_model_delta() {
     let d8 = found
         .iter()
         .find(|d| d["address"] == "1.1.8")
-        .expect("1.1.8 present");
+        .ok_or("1.1.8 present")?;
     assert_eq!(d8["manufacturer"], "ABB");
     assert_eq!(d8["system_type"], "System 1");
 
     // Cross-reference deltas.
     let not_in_model: Vec<&str> = json["not_in_model"]
         .as_array()
-        .unwrap()
+        .ok_or("not_in_model array")?
         .iter()
-        .map(|v| v.as_str().unwrap())
+        .filter_map(|v| v.as_str())
         .collect();
     assert!(not_in_model.contains(&"1.1.7"));
     assert!(not_in_model.contains(&"1.1.8"));
 
     let missing: Vec<&str> = json["missing_from_bus"]
         .as_array()
-        .unwrap()
+        .ok_or("missing_from_bus array")?
         .iter()
-        .map(|v| v["address"].as_str().unwrap())
-        .collect();
+        .map(|v| v["address"].as_str().ok_or("address string"))
+        .collect::<Result<_, _>>()?;
     assert_eq!(missing, vec!["1.1.6"], "1.1.6 is in the model but silent");
+    Ok(())
 }
 
 /// The pre-flight source-address check: the mock hands out tunnel address
@@ -326,25 +206,20 @@ fn scan_reports_devices_and_model_delta() {
 /// address with a live device interleaves two management sessions inside one
 /// layer-4 connection at the device, so the command must refuse.
 #[test]
-fn scan_refuses_when_a_device_answers_at_our_source_address() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let (gw, port) = rt.block_on(async {
-        let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let port = sock.local_addr().unwrap().port();
-        (sock, port)
-    });
-
-    // 1.1.255 is the tunnel address this mock assigns (see
-    // `connect_response_body`): here it is also a live device.
+fn scan_refuses_when_a_device_answers_at_our_source_address() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    // 1.1.255 is the tunnel address the testkit gateway assigns in its
+    // CONNECT_RESPONSE: here it is also a live device.
     let devices = vec![
-        device("1.1.4", 0x07B0, 0x0083, b"MDT-JAL0410"),
-        device("1.1.255", 0x07B0, 0x0083, b"MDT-JAL0410"),
+        device("1.1.4", 0x07B0, 0x0083, b"MDT-JAL0410")?,
+        device("1.1.255", 0x07B0, 0x0083, b"MDT-JAL0410")?,
     ];
-    let handle = rt.spawn(run_gateway(gw, devices));
+    let gw = start_gateway(&rt, devices)?;
+    let port = gw.port();
 
     let tmp = std::env::temp_dir().join(format!("bussard-scan-dup-ia-{}", std::process::id()));
     let model_dir = tmp.join("knx");
-    write_model(&model_dir);
+    write_model(&model_dir)?;
 
     let output = Command::new(env!("CARGO_BIN_EXE_bussard"))
         .args([
@@ -355,7 +230,7 @@ fn scan_refuses_when_a_device_answers_at_our_source_address() {
             "--to",
             "8",
             "--dir",
-            model_dir.to_str().unwrap(),
+            model_dir.to_str().ok_or("temp path is not UTF-8")?,
             "--gateway",
             &format!("127.0.0.1:{port}"),
             "--json",
@@ -364,10 +239,9 @@ fn scan_refuses_when_a_device_answers_at_our_source_address() {
         .env("BUSSARD_ADDRESS_PROBE_MS", "200")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
-        .expect("run bussard scan");
+        .output()?;
 
-    rt.block_on(async { handle.abort() });
+    drop(gw);
     let _ = std::fs::remove_dir_all(&tmp);
 
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -383,28 +257,24 @@ fn scan_refuses_when_a_device_answers_at_our_source_address() {
         stderr.contains("--skip-address-check"),
         "the refusal must name the escape hatch; stderr:\n{stderr}"
     );
+    Ok(())
 }
 
 /// `--skip-address-check` is the escape hatch for a gateway that misbehaves on
 /// the probe: the same colliding bus still scans.
 #[test]
-fn scan_with_skip_address_check_runs_despite_a_shared_source_address() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let (gw, port) = rt.block_on(async {
-        let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let port = sock.local_addr().unwrap().port();
-        (sock, port)
-    });
-
+fn scan_with_skip_address_check_runs_despite_a_shared_source_address() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
     let devices = vec![
-        device("1.1.4", 0x07B0, 0x0083, b"MDT-JAL0410"),
-        device("1.1.255", 0x07B0, 0x0083, b"MDT-JAL0410"),
+        device("1.1.4", 0x07B0, 0x0083, b"MDT-JAL0410")?,
+        device("1.1.255", 0x07B0, 0x0083, b"MDT-JAL0410")?,
     ];
-    let handle = rt.spawn(run_gateway(gw, devices));
+    let gw = start_gateway(&rt, devices)?;
+    let port = gw.port();
 
     let tmp = std::env::temp_dir().join(format!("bussard-scan-skip-ia-{}", std::process::id()));
     let model_dir = tmp.join("knx");
-    write_model(&model_dir);
+    write_model(&model_dir)?;
 
     let output = Command::new(env!("CARGO_BIN_EXE_bussard"))
         .args([
@@ -415,7 +285,7 @@ fn scan_with_skip_address_check_runs_despite_a_shared_source_address() {
             "--to",
             "8",
             "--dir",
-            model_dir.to_str().unwrap(),
+            model_dir.to_str().ok_or("temp path is not UTF-8")?,
             "--gateway",
             &format!("127.0.0.1:{port}"),
             "--skip-address-check",
@@ -424,10 +294,9 @@ fn scan_with_skip_address_check_runs_despite_a_shared_source_address() {
         .env("BUSSARD_SCAN_DISCOVERY_MS", "40")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
-        .expect("run bussard scan");
+        .output()?;
 
-    rt.block_on(async { handle.abort() });
+    drop(gw);
     let _ = std::fs::remove_dir_all(&tmp);
 
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -435,12 +304,13 @@ fn scan_with_skip_address_check_runs_despite_a_shared_source_address() {
         output.status.success(),
         "--skip-address-check must let the scan run; stderr:\n{stderr}"
     );
-    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stdout = String::from_utf8(output.stdout)?;
     let json: serde_json::Value = serde_json::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("scan --json must emit valid JSON: {e}\n{stdout}"));
-    let found = json["found"].as_array().expect("found array");
+        .map_err(|e| format!("scan --json must emit valid JSON: {e}\n{stdout}"))?;
+    let found = json["found"].as_array().ok_or("found array")?;
     assert!(
         found.iter().any(|d| d["address"] == "1.1.4"),
         "the sweep still reports the devices it saw: {stdout}"
     );
+    Ok(())
 }

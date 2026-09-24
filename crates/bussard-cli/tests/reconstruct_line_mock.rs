@@ -10,7 +10,6 @@
 //! mode refuses a non-empty `--out`; a third checks the `--json` summary shape.
 
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -19,11 +18,8 @@ use bussard_mgmt::tables::{
     OT_ADDRESS_TABLE, OT_ASSOCIATION_TABLE, OT_DEVICE, OT_GROUP_OBJECT_TABLE, PID_OBJECT_TYPE,
     PID_TABLE,
 };
-use bussard_model::{GroupAddress, IndividualAddress, Model, Severity, validate};
-use bussard_transport::cemi::{Apdu, CemiFrame, Destination, Tpci};
-use bussard_transport::knxnet::{self, ConnectionHeader, ServiceType};
-use bussard_transport::tpci::{self, TpciKind};
-use tokio::net::UdpSocket;
+use bussard_model::{Model, Severity, validate};
+use bussard_testkit::{MockDevice, MockGateway, Reaction, TestResult, ga, ia};
 
 const CHANNEL: u8 = 0x22;
 
@@ -31,14 +27,9 @@ const CHANNEL: u8 = 0x22;
 /// arrays; a non-System-B one only answers the descriptor.
 #[derive(Clone)]
 struct TableDevice {
-    address: IndividualAddress,
     mask: u16,
     object_types: Vec<u16>,
     props: HashMap<(u8, u8), Vec<Vec<u8>>>,
-}
-
-fn ga(s: &str) -> GroupAddress {
-    s.parse().unwrap()
 }
 
 fn be16(v: u16) -> Vec<u8> {
@@ -49,38 +40,6 @@ fn assoc_elem(tsap: u16, asap: u16) -> Vec<u8> {
     let mut v = tsap.to_be_bytes().to_vec();
     v.extend_from_slice(&asap.to_be_bytes());
     v
-}
-
-fn knxnet_frame(service: ServiceType, body: &[u8]) -> Vec<u8> {
-    let total = (6 + body.len()) as u16;
-    let mut out = Vec::with_capacity(total as usize);
-    out.push(0x06);
-    out.push(0x10);
-    out.extend_from_slice(&(service as u16).to_be_bytes());
-    out.extend_from_slice(&total.to_be_bytes());
-    out.extend_from_slice(body);
-    out
-}
-
-fn connect_response_body(channel: u8, gw: &UdpSocket) -> Vec<u8> {
-    let mut body = vec![channel, 0x00];
-    body.push(0x08);
-    body.push(0x01);
-    body.extend_from_slice(&[127, 0, 0, 1]);
-    body.extend_from_slice(&gw.local_addr().unwrap().port().to_be_bytes());
-    body.extend_from_slice(&[0x04, 0x04, 0x11, 0xFF]);
-    body
-}
-
-async fn push(gw: &UdpSocket, peer: SocketAddr, gw_seq: &mut u8, cemi: &CemiFrame) {
-    let hdr = ConnectionHeader {
-        channel_id: CHANNEL,
-        seq: *gw_seq,
-    };
-    gw.send_to(&knxnet::tunneling_request(hdr, cemi), peer)
-        .await
-        .unwrap();
-    *gw_seq = gw_seq.wrapping_add(1);
 }
 
 fn property_response(object_index: u8, pid: u8, count: u8, start: u16, data: &[u8]) -> Vec<u8> {
@@ -94,11 +53,7 @@ fn property_response(object_index: u8, pid: u8, count: u8, start: u16, data: &[u
     resp
 }
 
-fn device_response(dev: &TableDevice, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)> {
-    let (req_apci, data) = match (&cemi.tpci, &cemi.apdu) {
-        (Tpci::Other(_), Apdu::Other { apci, data }) => (*apci, data.clone()),
-        _ => return None,
-    };
+fn device_response(dev: &TableDevice, req_apci: u16, data: &[u8]) -> Option<(u16, Vec<u8>)> {
     match req_apci {
         // Authorize (issue #52 finding #1): grant full access (level 0).
         apci::A_AUTHORIZE_REQUEST => Some((apci::A_AUTHORIZE_RESPONSE, vec![0x00])),
@@ -107,7 +62,7 @@ fn device_response(dev: &TableDevice, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)
             dev.mask.to_be_bytes().to_vec(),
         )),
         apci::A_PROPERTY_VALUE_READ => {
-            let pv = apci::decode_property_value_read(&data)?;
+            let pv = apci::decode_property_value_read(data)?;
             let empty = || property_response(pv.object_index, pv.property_id, 0, pv.start, &[]);
             if pv.property_id == PID_OBJECT_TYPE {
                 let resp = match dev.object_types.get(usize::from(pv.object_index)) {
@@ -155,94 +110,19 @@ fn device_response(dev: &TableDevice, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)
     }
 }
 
-/// Runs a mock gateway hosting a whole line of scripted devices.
-async fn run_gateway(gw: UdpSocket, devices: Vec<TableDevice>) {
-    let by_addr: HashMap<IndividualAddress, TableDevice> =
-        devices.into_iter().map(|d| (d.address, d)).collect();
-    let mut gw_seq = 0u8;
-    let mut dev_seq = 0u8;
-    loop {
-        let mut buf = [0u8; 1024];
-        let (n, from) =
-            match tokio::time::timeout(Duration::from_secs(30), gw.recv_from(&mut buf)).await {
-                Ok(Ok(v)) => v,
-                _ => return,
-            };
-        let Ok(parsed) = knxnet::parse(&buf[..n]) else {
-            continue;
-        };
-        match parsed.service {
-            ServiceType::ConnectRequest => {
-                let resp = knxnet_frame(
-                    ServiceType::ConnectResponse,
-                    &connect_response_body(CHANNEL, &gw),
-                );
-                gw.send_to(&resp, from).await.unwrap();
-            }
-            ServiceType::ConnectionstateRequest => {
-                gw.send_to(&knxnet::connectionstate_response(CHANNEL, 0), from)
-                    .await
-                    .unwrap();
-            }
-            ServiceType::DisconnectRequest => {
-                gw.send_to(&knxnet::disconnect_response(CHANNEL, 0), from)
-                    .await
-                    .unwrap();
-                return;
-            }
-            ServiceType::TunnelingRequest => {
-                let Ok(tr) = knxnet::parse_tunneling_request(parsed.body) else {
-                    continue;
-                };
-                gw.send_to(
-                    &knxnet::tunneling_ack(tr.header.channel_id, tr.header.seq, 0),
-                    from,
-                )
-                .await
-                .unwrap();
-
-                let cemi = &tr.cemi;
-                let dest = match cemi.destination {
-                    Destination::Individual(ia) => ia,
-                    Destination::Group(_) => continue,
-                };
-                // Absent address: no device answers (the sweep times out on it).
-                let Some(device) = by_addr.get(&dest) else {
-                    continue;
-                };
-                let tool = cemi.source;
-                match tpci::classify(cemi.tpci_octet()) {
-                    TpciKind::Connect => dev_seq = 0,
-                    TpciKind::NumberedData(client_seq) => {
-                        let ack =
-                            CemiFrame::t_control(tool, device.address, tpci::t_ack(client_seq));
-                        push(&gw, from, &mut gw_seq, &ack).await;
-                        if let Some((rapci, rdata)) = device_response(device, cemi) {
-                            let resp = CemiFrame::t_data_connected(
-                                tool,
-                                device.address,
-                                tpci::ndt(dev_seq),
-                                rapci,
-                                &rdata,
-                            );
-                            push(&gw, from, &mut gw_seq, &resp).await;
-                            dev_seq = (dev_seq + 1) & 0x0f;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
 /// A System B device with `PID_TABLE`-served tables.
-fn system_b_device(addr: &str, addresses: &[&str], assocs: &[(u16, u16)]) -> TableDevice {
+fn system_b_device(
+    addr: &str,
+    addresses: &[&str],
+    assocs: &[(u16, u16)],
+) -> TestResult<MockDevice> {
     let mut props = HashMap::new();
     props.insert(
         (1u8, PID_TABLE),
-        addresses.iter().map(|a| be16(ga(a).raw())).collect(),
+        addresses
+            .iter()
+            .map(|a| Ok(be16(ga(a)?.raw())))
+            .collect::<TestResult<Vec<_>>>()?,
     );
     props.insert(
         (2u8, PID_TABLE),
@@ -254,8 +134,7 @@ fn system_b_device(addr: &str, addresses: &[&str], assocs: &[(u16, u16)]) -> Tab
         (3u8, PID_TABLE),
         (0..max_asap).map(|_| be16(0x079C)).collect(),
     );
-    TableDevice {
-        address: addr.parse().unwrap(),
+    let dev = TableDevice {
         mask: 0x07B0,
         object_types: vec![
             OT_DEVICE,
@@ -264,18 +143,31 @@ fn system_b_device(addr: &str, addresses: &[&str], assocs: &[(u16, u16)]) -> Tab
             OT_GROUP_OBJECT_TABLE,
         ],
         props,
-    }
+    };
+    Ok(table_device(ia(addr)?, dev))
 }
 
 /// A non-System-B device: only answers the descriptor (System 7 mask), so
 /// reconstruction records it as a stub.
-fn non_system_b_device(addr: &str) -> TableDevice {
-    TableDevice {
-        address: addr.parse().unwrap(),
+fn non_system_b_device(addr: &str) -> TestResult<MockDevice> {
+    let dev = TableDevice {
         mask: 0x0705,
         object_types: vec![],
         props: HashMap::new(),
-    }
+    };
+    Ok(table_device(ia(addr)?, dev))
+}
+
+/// Puts `dev` on the line at `address`: it `T_ACK`s every numbered request and
+/// answers what [`device_response`] knows. Absent addresses have no device, so
+/// the sweep times out on them.
+fn table_device(address: bussard_model::IndividualAddress, dev: TableDevice) -> MockDevice {
+    MockDevice::new(address).with_hook(move |_, apci, data| {
+        Some(match device_response(&dev, apci, data) {
+            Some((rapci, rdata)) => Reaction::Answer(rapci, rdata),
+            None => Reaction::Ack,
+        })
+    })
 }
 
 /// The scripted line:
@@ -283,29 +175,34 @@ fn non_system_b_device(addr: &str) -> TableDevice {
 /// - 1.1.5 (System B): GAs 3/1/0..1, assocs (1,10),(2,11)
 /// - 1.1.9 (non-B): System 7, recorded as a stub
 /// - everything else absent
-fn scripted_line() -> Vec<TableDevice> {
-    vec![
+fn scripted_line() -> TestResult<Vec<MockDevice>> {
+    Ok(vec![
         system_b_device(
             "1.1.4",
             &["1/2/0", "1/2/1", "1/2/2"],
             &[(1, 20), (2, 21), (3, 21)],
-        ),
-        system_b_device("1.1.5", &["3/1/0", "3/1/1"], &[(1, 10), (2, 11)]),
-        non_system_b_device("1.1.9"),
-    ]
+        )?,
+        system_b_device("1.1.5", &["3/1/0", "3/1/1"], &[(1, 10), (2, 11)])?,
+        non_system_b_device("1.1.9")?,
+    ])
 }
 
-fn spawn_line(rt: &tokio::runtime::Runtime) -> (u16, tokio::task::JoinHandle<()>) {
-    let (gw, port) = rt.block_on(async {
-        let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let port = sock.local_addr().unwrap().port();
-        (sock, port)
-    });
-    let handle = rt.spawn(run_gateway(gw, scripted_line()));
-    (port, handle)
+/// Starts the mock gateway hosting the scripted line on `rt`.
+fn spawn_line(rt: &tokio::runtime::Runtime) -> TestResult<MockGateway> {
+    Ok(rt.block_on(
+        MockGateway::builder()
+            .channel(CHANNEL)
+            .idle_timeout(Duration::from_secs(30))
+            .devices(scripted_line()?)
+            .start(),
+    )?)
 }
 
-fn run_reconstruct_line(port: u16, out: &std::path::Path, extra: &[&str]) -> std::process::Output {
+fn run_reconstruct_line(
+    port: u16,
+    out: &std::path::Path,
+    extra: &[&str],
+) -> TestResult<std::process::Output> {
     let gw = format!("127.0.0.1:{port}");
     let mut args = vec![
         "reconstruct",
@@ -317,31 +214,31 @@ fn run_reconstruct_line(port: u16, out: &std::path::Path, extra: &[&str]) -> std
         "--to",
         "10",
         "--out",
-        out.to_str().unwrap(),
+        out.to_str().ok_or("temp path is not UTF-8")?,
         "--gateway",
         &gw,
     ];
     args.extend_from_slice(extra);
-    Command::new(env!("CARGO_BIN_EXE_bussard"))
+    Ok(Command::new(env!("CARGO_BIN_EXE_bussard"))
         .args(&args)
         // Short discovery timeout so absent addresses do not stall the sweep.
         .env("BUSSARD_SCAN_DISCOVERY_MS", "150")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
-        .expect("run bussard reconstruct --line")
+        .output()?)
 }
 
 #[test]
-fn line_mode_synthesizes_a_valid_model() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let (port, handle) = spawn_line(&rt);
+fn line_mode_synthesizes_a_valid_model() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let gw = spawn_line(&rt)?;
+    let port = gw.port();
 
     let tmp = std::env::temp_dir().join(format!("bussard-reconstruct-line-{}", std::process::id()));
     let out = tmp.join("fresh");
 
-    let output = run_reconstruct_line(port, &out, &[]);
-    rt.block_on(async { handle.abort() });
+    let output = run_reconstruct_line(port, &out, &[])?;
+    drop(gw);
 
     assert!(
         output.status.success(),
@@ -350,19 +247,19 @@ fn line_mode_synthesizes_a_valid_model() {
     );
 
     // The synthesized model loads.
-    let model = Model::load(&out).expect("synthesized model must load");
+    let model = Model::load(&out).map_err(|e| format!("synthesized model must load: {e}"))?;
 
     // groups.yaml has every GA read from both System B devices (5 total).
     for g in ["1/2/0", "1/2/1", "1/2/2", "3/1/0", "3/1/1"] {
         assert!(
-            model.groups.groups.contains_key(&ga(g)),
+            model.groups.groups.contains_key(&ga(g)?),
             "GA {g} must be in groups.yaml; have {:?}",
             model.groups.groups.keys().collect::<Vec<_>>()
         );
     }
     assert_eq!(model.groups.groups.len(), 5, "exactly the 5 read GAs");
     // Reconstructed GAs carry a placeholder name and no DPT.
-    let g = &model.groups.groups[&ga("1/2/0")];
+    let g = &model.groups.groups[&ga("1/2/0")?];
     assert!(
         g.name.contains("reconstructed"),
         "placeholder name: {}",
@@ -371,23 +268,26 @@ fn line_mode_synthesizes_a_valid_model() {
     assert!(g.dpt.is_none(), "reconstructed GAs have no DPT");
 
     // links.yaml: 1.1.4 → objects 20 (1/2/0) and 21 (1/2/1, 1/2/2), all listen.
-    let ia4: IndividualAddress = "1.1.4".parse().unwrap();
+    let ia4 = ia("1.1.4")?;
     let links4 = &model.links.links[&ia4];
     assert_eq!(links4.len(), 2, "two linked objects on 1.1.4");
-    let obj21 = links4.iter().find(|l| l.object == 21).unwrap();
+    let obj21 = links4
+        .iter()
+        .find(|l| l.object == 21)
+        .ok_or("object 21 linked")?;
     assert!(obj21.send.is_none(), "direction unknown → no send");
     assert_eq!(
         obj21.listen,
-        vec![ga("1/2/1"), ga("1/2/2")],
+        vec![ga("1/2/1")?, ga("1/2/2")?],
         "both GAs recorded as listen"
     );
 
     // 1.1.5 was also read.
-    let ia5: IndividualAddress = "1.1.5".parse().unwrap();
+    let ia5 = ia("1.1.5")?;
     assert_eq!(model.links.links[&ia5].len(), 2, "two objects on 1.1.5");
 
     // The non-System-B device is a stub: present as a device, no links.
-    let ia9: IndividualAddress = "1.1.9".parse().unwrap();
+    let ia9 = ia("1.1.9")?;
     assert!(
         model.devices.contains_key(&ia9),
         "1.1.9 recorded as a device"
@@ -405,12 +305,12 @@ fn line_mode_synthesizes_a_valid_model() {
     );
 
     // The synthesized files carry the reconstruction banner.
-    let groups_txt = std::fs::read_to_string(out.join("groups.yaml")).unwrap();
+    let groups_txt = std::fs::read_to_string(out.join("groups.yaml"))?;
     assert!(
         groups_txt.contains("RECONSTRUCTED from on-device table read-back"),
         "groups.yaml must carry the reconstruction banner:\n{groups_txt}"
     );
-    let links_txt = std::fs::read_to_string(out.join("links.yaml")).unwrap();
+    let links_txt = std::fs::read_to_string(out.join("links.yaml"))?;
     assert!(
         links_txt.contains("send/listen DIRECTION is not recoverable"),
         "links.yaml banner must state the direction limitation"
@@ -428,23 +328,25 @@ fn line_mode_synthesizes_a_valid_model() {
     );
 
     let _ = std::fs::remove_dir_all(&tmp);
+    Ok(())
 }
 
 #[test]
-fn line_mode_refuses_a_non_empty_out() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let (port, handle) = spawn_line(&rt);
+fn line_mode_refuses_a_non_empty_out() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let gw = spawn_line(&rt)?;
+    let port = gw.port();
 
     let tmp = std::env::temp_dir().join(format!(
         "bussard-reconstruct-line-nonempty-{}",
         std::process::id()
     ));
     let out = tmp.join("existing");
-    std::fs::create_dir_all(&out).unwrap();
-    std::fs::write(out.join("groups.yaml"), "groups: {}\n").unwrap();
+    std::fs::create_dir_all(&out)?;
+    std::fs::write(out.join("groups.yaml"), "groups: {}\n")?;
 
-    let output = run_reconstruct_line(port, &out, &[]);
-    rt.block_on(async { handle.abort() });
+    let output = run_reconstruct_line(port, &out, &[])?;
+    drop(gw);
 
     assert!(
         !output.status.success(),
@@ -457,17 +359,19 @@ fn line_mode_refuses_a_non_empty_out() {
     );
     // The existing file is untouched.
     assert_eq!(
-        std::fs::read_to_string(out.join("groups.yaml")).unwrap(),
+        std::fs::read_to_string(out.join("groups.yaml"))?,
         "groups: {}\n"
     );
 
     let _ = std::fs::remove_dir_all(&tmp);
+    Ok(())
 }
 
 #[test]
-fn line_mode_json_summary_shape() {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let (port, handle) = spawn_line(&rt);
+fn line_mode_json_summary_shape() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let gw = spawn_line(&rt)?;
+    let port = gw.port();
 
     let tmp = std::env::temp_dir().join(format!(
         "bussard-reconstruct-line-json-{}",
@@ -475,17 +379,17 @@ fn line_mode_json_summary_shape() {
     ));
     let out = tmp.join("fresh");
 
-    let output = run_reconstruct_line(port, &out, &["--json"]);
-    rt.block_on(async { handle.abort() });
+    let output = run_reconstruct_line(port, &out, &["--json"])?;
+    drop(gw);
 
     assert!(
         output.status.success(),
         "line reconstruct --json should exit 0; stderr:\n{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let stdout = String::from_utf8(output.stdout).unwrap();
+    let stdout = String::from_utf8(output.stdout)?;
     let json: serde_json::Value = serde_json::from_str(&stdout)
-        .unwrap_or_else(|e| panic!("--json must emit valid JSON: {e}\n{stdout}"));
+        .map_err(|e| format!("--json must emit valid JSON: {e}\n{stdout}"))?;
 
     assert_eq!(json["line"], "1.1");
     assert_eq!(json["devices_found"], 3);
@@ -497,17 +401,23 @@ fn line_mode_json_summary_shape() {
         "2 + 2 links across the two System B devices"
     );
 
-    let details = json["device_details"].as_array().unwrap();
+    let details = json["device_details"]
+        .as_array()
+        .ok_or("device_details array")?;
     assert_eq!(details.len(), 3);
-    let stub = details.iter().find(|d| d["address"] == "1.1.9").unwrap();
+    let stub = details
+        .iter()
+        .find(|d| d["address"] == "1.1.9")
+        .ok_or("1.1.9 in details")?;
     assert_eq!(stub["status"], "stub");
     assert!(
         stub["skip_reason"]
             .as_str()
-            .unwrap()
+            .ok_or("skip_reason string")?
             .contains("not System B"),
         "the stub reason must be named: {stub}"
     );
 
     let _ = std::fs::remove_dir_all(&tmp);
+    Ok(())
 }

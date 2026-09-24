@@ -24,10 +24,8 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddrV4;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
-
-use tokio::net::UdpSocket;
 
 use bussard_mgmt::apci;
 use bussard_mgmt::load::{self, LoadControl, LoadState};
@@ -35,9 +33,7 @@ use bussard_mgmt::{
     DeviceConnection, Layer4Connection, MgmtError, SilenceKind, Timeouts, WriteError,
 };
 use bussard_model::IndividualAddress;
-use bussard_transport::cemi::{Apdu, CemiFrame, Destination, Tpci};
-use bussard_transport::knxnet::{self, ConnectionHeader, ServiceType};
-use bussard_transport::tpci::{self, TpciKind};
+use bussard_testkit::{BoxError, MockDevice, MockError, MockGateway, Reaction, TestResult};
 use bussard_transport::{ConnectionConfig, Transport};
 
 const CHANNEL: u8 = 0x17;
@@ -92,149 +88,47 @@ struct WriteDevice {
 
 type Shared = Arc<Mutex<WriteDevice>>;
 
-// --- Mock gateway plumbing (same shape as tests/mock_device.rs) ---
-
-async fn bind_mock() -> (SocketAddrV4, UdpSocket) {
-    let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let addr = match sock.local_addr().unwrap() {
-        std::net::SocketAddr::V4(v4) => v4,
-        _ => panic!("expected v4"),
-    };
-    (addr, sock)
+/// Locks the device state. A panicking holder only poisons the lock in a test
+/// that has already failed, so the state is used as is.
+fn lock(dev: &Shared) -> MutexGuard<'_, WriteDevice> {
+    dev.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn connect_response_body(channel: u8, gw: &UdpSocket) -> Vec<u8> {
-    let mut body = vec![channel, 0x00];
-    body.push(0x08);
-    body.push(0x01);
-    body.extend_from_slice(&[127, 0, 0, 1]);
-    body.extend_from_slice(&gw.local_addr().unwrap().port().to_be_bytes());
-    body.extend_from_slice(&[0x04, 0x04, 0x11, 0xFF]);
-    body
-}
-
-fn knxnet_frame(service: ServiceType, body: &[u8]) -> Vec<u8> {
-    let total = (6 + body.len()) as u16;
-    let mut out = Vec::with_capacity(total as usize);
-    out.push(0x06);
-    out.push(0x10);
-    out.extend_from_slice(&(service as u16).to_be_bytes());
-    out.extend_from_slice(&total.to_be_bytes());
-    out.extend_from_slice(body);
-    out
-}
-
-async fn push_indication(
-    gw: &UdpSocket,
-    peer: std::net::SocketAddr,
-    gw_seq: &mut u8,
-    cemi: &CemiFrame,
-) {
-    let hdr = ConnectionHeader {
-        channel_id: CHANNEL,
-        seq: *gw_seq,
-    };
-    let frame = knxnet::tunneling_request(hdr, cemi);
-    gw.send_to(&frame, peer).await.unwrap();
-    *gw_seq = gw_seq.wrapping_add(1);
-}
-
-/// Runs the mock gateway + de-mirrored device until the client disconnects.
+/// Starts a testkit gateway with the de-mirrored device at `address`.
 ///
-/// The loop only returns after 5 s of silence, so tests end with
-/// `gw_task.abort()` rather than awaiting the task: awaiting it (even
-/// under a 1 s timeout) added that wait to every test.
-async fn run_mock(gw: UdpSocket, address: IndividualAddress, dev: Shared) {
-    let mut gw_seq: u8 = 0;
-    let mut dev_send_seq: u8 = 0;
+/// The gateway stops when the client disconnects or when it is dropped.
+async fn start_mock(address: IndividualAddress, dev: Shared) -> Result<MockGateway, MockError> {
+    MockGateway::builder()
+        .channel(CHANNEL)
+        .idle_timeout(Duration::from_secs(5))
+        .device(
+            MockDevice::new(address)
+                .with_hook(move |_, apci_val, data| Some(react(&dev, apci_val, data))),
+        )
+        .start()
+        .await
+}
 
-    loop {
-        let mut buf = [0u8; 1024];
-        let (n, from) =
-            match tokio::time::timeout(Duration::from_secs(5), gw.recv_from(&mut buf)).await {
-                Ok(Ok(v)) => v,
-                _ => return,
-            };
-        let parsed = match knxnet::parse(&buf[..n]) {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-        match parsed.service {
-            ServiceType::ConnectRequest => {
-                let resp = knxnet_frame(
-                    ServiceType::ConnectResponse,
-                    &connect_response_body(CHANNEL, &gw),
-                );
-                gw.send_to(&resp, from).await.unwrap();
-            }
-            ServiceType::ConnectionstateRequest => {
-                let resp = knxnet::connectionstate_response(CHANNEL, 0);
-                gw.send_to(&resp, from).await.unwrap();
-            }
-            ServiceType::DisconnectRequest => {
-                let resp = knxnet::disconnect_response(CHANNEL, 0);
-                gw.send_to(&resp, from).await.unwrap();
-                return;
-            }
-            ServiceType::TunnelingAck => {}
-            ServiceType::TunnelingRequest => {
-                let tr = match knxnet::parse_tunneling_request(parsed.body) {
-                    Ok(tr) => tr,
-                    Err(_) => continue,
-                };
-                let ack = knxnet::tunneling_ack(tr.header.channel_id, tr.header.seq, 0);
-                gw.send_to(&ack, from).await.unwrap();
-
-                let cemi = &tr.cemi;
-                let dest = match cemi.destination {
-                    Destination::Individual(ia) => ia,
-                    Destination::Group(_) => continue,
-                };
-                if dest != address {
-                    continue; // absent address
-                }
-                let tool = cemi.source;
-                match tpci::classify(cemi.tpci_octet()) {
-                    TpciKind::Connect => dev_send_seq = 0,
-                    TpciKind::NumberedData(client_seq) => {
-                        // Count this numbered telegram, and honour the mid-session
-                        // silence script: once the tool has sent `silent_after_ndt`
-                        // NDTs, the device wedges — no ACK, no response — so the
-                        // tool's ACK timeout fires and surfaces a silence error.
-                        let go_silent = {
-                            let mut d = dev.lock().unwrap();
-                            d.client_ndt_count += 1;
-                            matches!(d.silent_after_ndt, Some(n) if d.client_ndt_count > n)
-                        };
-                        if go_silent {
-                            continue;
-                        }
-                        // Decide whether to NAK (write-failure script) or ACK.
-                        let nak = should_nak(&dev, cemi);
-                        if nak {
-                            let nak = CemiFrame::t_control(tool, address, tpci::t_nak(client_seq));
-                            push_indication(&gw, from, &mut gw_seq, &nak).await;
-                        } else {
-                            let ack = CemiFrame::t_control(tool, address, tpci::t_ack(client_seq));
-                            push_indication(&gw, from, &mut gw_seq, &ack).await;
-                            if let Some((rapci, rdata)) = device_response(&dev, cemi) {
-                                let resp = CemiFrame::t_data_connected(
-                                    tool,
-                                    address,
-                                    tpci::ndt(dev_send_seq),
-                                    rapci,
-                                    &rdata,
-                                );
-                                push_indication(&gw, from, &mut gw_seq, &resp).await;
-                                dev_send_seq = (dev_send_seq + 1) & 0x0f;
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            _ => {}
-        }
+/// The device's reaction to one numbered data telegram.
+fn react(dev: &Shared, apci_val: u16, data: &[u8]) -> Reaction {
+    // Count this numbered telegram, and honour the mid-session silence script:
+    // once the tool has sent `silent_after_ndt` NDTs, the device wedges (no ACK,
+    // no response), so the tool's ACK timeout fires and surfaces a silence error.
+    let go_silent = {
+        let mut d = lock(dev);
+        d.client_ndt_count += 1;
+        matches!(d.silent_after_ndt, Some(n) if d.client_ndt_count > n)
+    };
+    if go_silent {
+        return Reaction::Silent;
+    }
+    // Decide whether to NAK (write-failure script) or ACK.
+    if should_nak(dev, apci_val, data) {
+        return Reaction::Nak;
+    }
+    match device_response(dev, apci_val, data) {
+        Some((rapci, rdata)) => Reaction::Answer(rapci, rdata),
+        None => Reaction::Ack,
     }
 }
 
@@ -243,21 +137,11 @@ const APCI_SELECTOR: u16 = 0x3C0;
 const A_MEMORY_READ: u16 = 0x200;
 const A_MEMORY_WRITE: u16 = 0x280;
 
-fn apci_and_data(cemi: &CemiFrame) -> Option<(u16, Vec<u8>)> {
-    match (&cemi.tpci, &cemi.apdu) {
-        (Tpci::Other(_), Apdu::Other { apci, data }) => Some((*apci, data.clone())),
-        _ => None,
-    }
-}
-
 /// Whether this telegram should be NAKed per the write-failure script. Applies
 /// the write to memory as a side effect when it is *not* NAKed and is a write.
-fn should_nak(dev: &Shared, cemi: &CemiFrame) -> bool {
-    let Some((apci_val, data)) = apci_and_data(cemi) else {
-        return false;
-    };
+fn should_nak(dev: &Shared, apci_val: u16, data: &[u8]) -> bool {
     if apci_val & APCI_SELECTOR == A_MEMORY_WRITE {
-        let mut d = dev.lock().unwrap();
+        let mut d = lock(dev);
         // Persistent NAK: once the scripted chunk index is reached, this write
         // (and every retransmission of it — style-1 repeats the same telegram)
         // is NAKed, so the client exhausts its retries and fails, as a real
@@ -283,9 +167,7 @@ fn should_nak(dev: &Shared, cemi: &CemiFrame) -> bool {
 
 /// The de-mirrored device reaction that produces a *response* NDT (reads and the
 /// allocation flow). Writes are applied in `should_nak` and produce no response.
-fn device_response(dev: &Shared, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)> {
-    let (apci_val, data) = apci_and_data(cemi)?;
-
+fn device_response(dev: &Shared, apci_val: u16, data: &[u8]) -> Option<(u16, Vec<u8>)> {
     // A_Memory_Read: answer from sparse memory (verify-on-read), honouring the
     // corrupt-cell script.
     if apci_val & APCI_SELECTOR == A_MEMORY_READ {
@@ -294,7 +176,7 @@ fn device_response(dev: &Shared, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)> {
         }
         let count = (apci_val & 0x3f) as u8;
         let addr = u16::from_be_bytes([data[0], data[1]]);
-        let mut d = dev.lock().unwrap();
+        let mut d = lock(dev);
         d.read_counts.push(count);
         let bytes: Vec<u8> = (0..count)
             .map(|i| {
@@ -314,10 +196,10 @@ fn device_response(dev: &Shared, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)> {
 
     // Property services drive the load-state machine and allocation.
     if apci_val == apci::A_PROPERTY_VALUE_WRITE {
-        return handle_property_write(dev, &data);
+        return handle_property_write(dev, data);
     }
     if apci_val == apci::A_PROPERTY_VALUE_READ {
-        return handle_property_read(dev, &data);
+        return handle_property_read(dev, data);
     }
     None
 }
@@ -344,7 +226,7 @@ fn handle_property_write(dev: &Shared, data: &[u8]) -> Option<(u16, Vec<u8>)> {
     let start = (((data[2] & 0x0f) as u16) << 8) | data[3] as u16;
     let value = &data[4..];
 
-    let mut d = dev.lock().unwrap();
+    let mut d = lock(dev);
     if pid == PID_LOAD_STATE_CONTROL {
         // De-mirrored decode of the load event (data[0] of the value).
         let event = value.first().copied().unwrap_or(0);
@@ -396,7 +278,7 @@ fn handle_property_read(dev: &Shared, data: &[u8]) -> Option<(u16, Vec<u8>)> {
     let pid = data[1];
     let start = (((data[2] & 0x0f) as u16) << 8) | data[3] as u16;
 
-    let d = dev.lock().unwrap();
+    let d = lock(dev);
     match pid {
         PID_LOAD_STATE_CONTROL => {
             let resp = property_response(object_index, pid, 1, start, &[d.load_state]);
@@ -415,9 +297,9 @@ fn handle_property_read(dev: &Shared, data: &[u8]) -> Option<(u16, Vec<u8>)> {
     }
 }
 
-async fn open_bus(addr: SocketAddrV4) -> Transport {
+async fn open_bus(addr: SocketAddrV4) -> Result<Transport, BoxError> {
     let config = ConnectionConfig::tunnel(addr);
-    Transport::connect(&config).await.unwrap()
+    Ok(Transport::connect(&config).await?)
 }
 
 fn device() -> WriteDevice {
@@ -441,66 +323,63 @@ fn fast() -> Timeouts {
 /// frames, and the fixed 63-octet chunk this used to send is an extended frame such
 /// a device may reject (issue #80).
 #[tokio::test]
-async fn compare_rel_mem_chunks_by_the_negotiated_apdu() {
-    let (addr, gw) = bind_mock().await;
-    let target: IndividualAddress = "1.1.4".parse().unwrap();
+async fn compare_rel_mem_chunks_by_the_negotiated_apdu() -> TestResult {
+    let target: IndividualAddress = "1.1.4".parse()?;
     let shared: Shared = Arc::new(Mutex::new(device()));
     // Seed 40 octets of segment content the compare will match.
     let expected: Vec<u8> = (0..40u8).map(|i| i.wrapping_mul(3)).collect();
     {
-        let mut d = shared.lock().unwrap();
+        let mut d = lock(&shared);
         for (i, b) in expected.iter().enumerate() {
             d.memory.insert(0x4200 + i as u16, *b);
         }
     }
-    let gw_task = tokio::spawn(run_mock(gw, target, shared.clone()));
+    let gw = start_mock(target, shared.clone()).await?;
+    let addr = gw.addr();
 
-    let mut bus = open_bus(addr).await;
-    let source: IndividualAddress = "0.0.255".parse().unwrap();
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
+    let mut bus = open_bus(addr).await?;
+    let source: IndividualAddress = "0.0.255".parse()?;
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
     // A 15-octet APDU device: 15 - 3 octets of memory-read overhead = 12.
     l4.set_max_apdu(Some(15));
 
     load::compare_rel_mem(&mut l4, 1, 0x4200, 0, &expected, None, false)
         .await
-        .expect("the segment content matches, so the compare passes");
+        .map_err(|e| format!("the segment content matches, so the compare passes: {e}"))?;
 
-    let counts = shared.lock().unwrap().read_counts.clone();
+    let counts = lock(&shared).read_counts.clone();
     assert_eq!(
         counts,
         vec![12, 12, 12, 4],
         "a 40-octet compare on a 15-octet-APDU device is four standard-frame reads"
     );
 
-    gw_task.abort();
+    drop(gw);
+    Ok(())
 }
 
 // --- Tests --------------------------------------------------------------
 
 #[tokio::test]
-async fn write_memory_chunks_and_verifies_round_trip() {
-    let (addr, gw) = bind_mock().await;
-    let target: IndividualAddress = "1.1.4".parse().unwrap();
+async fn write_memory_chunks_and_verifies_round_trip() -> TestResult {
+    let target: IndividualAddress = "1.1.4".parse()?;
     let shared: Shared = Arc::new(Mutex::new(device()));
-    let gw_task = tokio::spawn(run_mock(gw, target, shared.clone()));
+    let gw = start_mock(target, shared.clone()).await?;
+    let addr = gw.addr();
 
-    let mut bus = open_bus(addr).await;
-    let source: IndividualAddress = "0.0.255".parse().unwrap();
-    let mut dev = DeviceConnection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
+    let mut bus = open_bus(addr).await?;
+    let source: IndividualAddress = "0.0.255".parse()?;
+    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
 
     // 135 bytes forces three chunks at the 63-octet chunk size: 63 + 63 + an odd
     // 9-byte tail.
     let payload: Vec<u8> = (0..135u16).map(|i| (i as u8).wrapping_mul(7)).collect();
-    dev.write_memory(0x4000, &payload).await.unwrap();
-    dev.disconnect().await.unwrap();
+    dev.write_memory(0x4000, &payload).await?;
+    dev.disconnect().await?;
 
     // Every byte landed at its address in the device's independent memory map.
     {
-        let d = shared.lock().unwrap();
+        let d = lock(&shared);
         for (i, b) in payload.iter().enumerate() {
             assert_eq!(
                 d.memory.get(&(0x4000 + i as u16)).copied(),
@@ -514,58 +393,57 @@ async fn write_memory_chunks_and_verifies_round_trip() {
             "135 bytes = three A_Memory_Write telegrams at a 63-octet chunk size"
         );
     }
-    gw_task.abort();
+    drop(gw);
+    Ok(())
 }
 
 #[tokio::test]
-async fn write_memory_exact_single_chunk_boundary() {
-    let (addr, gw) = bind_mock().await;
-    let target: IndividualAddress = "1.1.4".parse().unwrap();
+async fn write_memory_exact_single_chunk_boundary() -> TestResult {
+    let target: IndividualAddress = "1.1.4".parse()?;
     let shared: Shared = Arc::new(Mutex::new(device()));
-    let gw_task = tokio::spawn(run_mock(gw, target, shared.clone()));
+    let gw = start_mock(target, shared.clone()).await?;
+    let addr = gw.addr();
 
-    let mut bus = open_bus(addr).await;
-    let source: IndividualAddress = "0.0.255".parse().unwrap();
-    let mut dev = DeviceConnection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
+    let mut bus = open_bus(addr).await?;
+    let source: IndividualAddress = "0.0.255".parse()?;
+    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
 
     // Exactly 63 bytes: one full chunk at the 63-octet chunk size, no tail.
     let payload: Vec<u8> = (0..63u8).collect();
-    dev.write_memory(0x5000, &payload).await.unwrap();
-    dev.disconnect().await.unwrap();
+    dev.write_memory(0x5000, &payload).await?;
+    dev.disconnect().await?;
 
     {
-        let d = shared.lock().unwrap();
+        let d = lock(&shared);
         assert_eq!(d.write_count, 1, "63 bytes is a single A_Memory_Write");
         assert_eq!(d.memory.get(&0x5000).copied(), Some(0));
         assert_eq!(d.memory.get(&0x503E).copied(), Some(62));
     }
-    gw_task.abort();
+    drop(gw);
+    Ok(())
 }
 
 #[tokio::test]
-async fn write_memory_verify_mismatch_surfaces_address_and_diff() {
-    let (addr, gw) = bind_mock().await;
-    let target: IndividualAddress = "1.1.4".parse().unwrap();
+async fn write_memory_verify_mismatch_surfaces_address_and_diff() -> TestResult {
+    let target: IndividualAddress = "1.1.4".parse()?;
     let mut dev_state = device();
     // Address 0x4002 always reads back 0xFF regardless of what was written.
     dev_state.corrupt_addr = Some(0x4002);
     dev_state.corrupt_byte = 0xFF;
     let shared: Shared = Arc::new(Mutex::new(dev_state));
-    let gw_task = tokio::spawn(run_mock(gw, target, shared.clone()));
+    let gw = start_mock(target, shared.clone()).await?;
+    let addr = gw.addr();
 
-    let mut bus = open_bus(addr).await;
-    let source: IndividualAddress = "0.0.255".parse().unwrap();
-    let mut dev = DeviceConnection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
+    let mut bus = open_bus(addr).await?;
+    let source: IndividualAddress = "0.0.255".parse()?;
+    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
 
     // Write 4 bytes covering the corrupt cell 0x4002.
     let err = dev
         .write_memory(0x4000, &[0x10, 0x11, 0x12, 0x13])
         .await
-        .unwrap_err();
+        .err()
+        .ok_or("expected the call to fail, it succeeded")?;
     assert!(err.device_present(), "a verify failure means present");
     match err {
         MgmtError::MemoryVerifyFailed {
@@ -581,59 +459,57 @@ async fn write_memory_verify_mismatch_surfaces_address_and_diff() {
         }
         other => panic!("expected MemoryVerifyFailed, got {other:?}"),
     }
-    dev.disconnect().await.unwrap();
-    gw_task.abort();
+    dev.disconnect().await?;
+    drop(gw);
+    Ok(())
 }
 
 #[tokio::test]
-async fn write_memory_nak_mid_chunk_fails() {
-    let (addr, gw) = bind_mock().await;
-    let target: IndividualAddress = "1.1.4".parse().unwrap();
+async fn write_memory_nak_mid_chunk_fails() -> TestResult {
+    let target: IndividualAddress = "1.1.4".parse()?;
     let mut dev_state = device();
     // NAK the second write telegram (0-based index 1).
     dev_state.nak_write_index = Some(1);
     let shared: Shared = Arc::new(Mutex::new(dev_state));
-    let gw_task = tokio::spawn(run_mock(gw, target, shared.clone()));
+    let gw = start_mock(target, shared.clone()).await?;
+    let addr = gw.addr();
 
-    let mut bus = open_bus(addr).await;
-    let source: IndividualAddress = "0.0.255".parse().unwrap();
-    let mut dev = DeviceConnection::connect_with(&mut bus, target, source, fast())
-        .await
-        .unwrap();
+    let mut bus = open_bus(addr).await?;
+    let source: IndividualAddress = "0.0.255".parse()?;
+    let mut dev = DeviceConnection::connect_with(&mut bus, target, source, fast()).await?;
 
     // 126 bytes = two 63-byte chunks; the second write NAKs.
     let payload: Vec<u8> = (0..126u16).map(|i| i as u8).collect();
-    let err = dev.write_memory(0x4000, &payload).await.unwrap_err();
+    let err = dev
+        .write_memory(0x4000, &payload)
+        .await
+        .err()
+        .ok_or("expected the call to fail, it succeeded")?;
     assert!(
         matches!(err, MgmtError::Nak { .. }),
         "a NAK mid-chunk surfaces as Nak: {err:?}"
     );
-    gw_task.abort();
+    drop(gw);
+    Ok(())
 }
 
 #[tokio::test]
-async fn allocate_segment_round_trip_returns_device_address() {
-    let (addr, gw) = bind_mock().await;
-    let target: IndividualAddress = "1.1.4".parse().unwrap();
+async fn allocate_segment_round_trip_returns_device_address() -> TestResult {
+    let target: IndividualAddress = "1.1.4".parse()?;
     let shared: Shared = Arc::new(Mutex::new(device()));
-    let gw_task = tokio::spawn(run_mock(gw, target, shared.clone()));
+    let gw = start_mock(target, shared.clone()).await?;
+    let addr = gw.addr();
 
-    let mut bus = open_bus(addr).await;
-    let source: IndividualAddress = "0.0.255".parse().unwrap();
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
+    let mut bus = open_bus(addr).await?;
+    let source: IndividualAddress = "0.0.255".parse()?;
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
 
     // Object 1 must be Loading first (StartLoading).
-    let state = load::write_load_control(&mut l4, 1, LoadControl::StartLoading)
-        .await
-        .unwrap();
+    let state = load::write_load_control(&mut l4, 1, LoadControl::StartLoading).await?;
     assert_eq!(state, LoadState::Loading);
 
     // Allocate a 320-octet segment, fill with 0x00.
-    let seg = load::allocate_segment(&mut l4, 1, 320, Some(0x00))
-        .await
-        .unwrap();
+    let seg = load::allocate_segment(&mut l4, 1, 320, Some(0x00)).await?;
     assert_eq!(seg.address, 0x4200, "the device-placed segment address");
     assert_eq!(seg.size, 320);
 
@@ -641,31 +517,31 @@ async fn allocate_segment_round_trip_returns_device_address() {
 
     // The fill wrote 0x00 across the segment; the object stayed Loading.
     {
-        let d = shared.lock().unwrap();
+        let d = lock(&shared);
         assert!(d.allocated);
         assert_eq!(d.load_state, 2, "object is still Loading after allocation");
     }
-    gw_task.abort();
+    drop(gw);
+    Ok(())
 }
 
 #[tokio::test]
-async fn allocate_segment_in_wrong_state_is_refused() {
-    let (addr, gw) = bind_mock().await;
-    let target: IndividualAddress = "1.1.4".parse().unwrap();
+async fn allocate_segment_in_wrong_state_is_refused() -> TestResult {
+    let target: IndividualAddress = "1.1.4".parse()?;
     // Object starts Unloaded (load_state 0); no StartLoading is issued.
     let shared: Shared = Arc::new(Mutex::new(device()));
-    let gw_task = tokio::spawn(run_mock(gw, target, shared));
+    let gw = start_mock(target, shared).await?;
+    let addr = gw.addr();
 
-    let mut bus = open_bus(addr).await;
-    let source: IndividualAddress = "0.0.255".parse().unwrap();
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
+    let mut bus = open_bus(addr).await?;
+    let source: IndividualAddress = "0.0.255".parse()?;
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
 
     // Allocating while Unloaded must be refused before any write.
     let err = load::allocate_segment(&mut l4, 1, 128, None)
         .await
-        .unwrap_err();
+        .err()
+        .ok_or("expected the call to fail, it succeeded")?;
     match err {
         WriteError::UnexpectedLoadState {
             expected, actual, ..
@@ -676,64 +552,64 @@ async fn allocate_segment_in_wrong_state_is_refused() {
         other => panic!("expected UnexpectedLoadState, got {other:?}"),
     }
     let _ = l4.disconnect().await;
-    gw_task.abort();
+    drop(gw);
+    Ok(())
 }
 
 #[tokio::test]
-async fn allocate_segment_refusal_surfaces_load_error() {
-    let (addr, gw) = bind_mock().await;
-    let target: IndividualAddress = "1.1.4".parse().unwrap();
+async fn allocate_segment_refusal_surfaces_load_error() -> TestResult {
+    let target: IndividualAddress = "1.1.4".parse()?;
     let mut dev_state = device();
     dev_state.refuse_allocation = true; // device drops to Error on allocation
     let shared: Shared = Arc::new(Mutex::new(dev_state));
-    let gw_task = tokio::spawn(run_mock(gw, target, shared));
+    let gw = start_mock(target, shared).await?;
+    let addr = gw.addr();
 
-    let mut bus = open_bus(addr).await;
-    let source: IndividualAddress = "0.0.255".parse().unwrap();
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
+    let mut bus = open_bus(addr).await?;
+    let source: IndividualAddress = "0.0.255".parse()?;
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
 
-    load::write_load_control(&mut l4, 1, LoadControl::StartLoading)
-        .await
-        .unwrap();
+    load::write_load_control(&mut l4, 1, LoadControl::StartLoading).await?;
 
     let err = load::allocate_segment(&mut l4, 1, 0xFFFF_FFF0, None)
         .await
-        .unwrap_err();
+        .err()
+        .ok_or("expected the call to fail, it succeeded")?;
     match err {
         WriteError::LoadError { object_index, .. } => assert_eq!(object_index, 1),
         other => panic!("expected LoadError, got {other:?}"),
     }
     let _ = l4.disconnect().await;
-    gw_task.abort();
+    drop(gw);
+    Ok(())
 }
 
 #[tokio::test]
-async fn mid_session_silence_error_carries_exchange_counter() {
+async fn mid_session_silence_error_carries_exchange_counter() -> TestResult {
     // #50 item 3: when a device goes silent mid-session, the error folds in how
     // many numbered exchanges completed (and how many times the sequence wrapped),
     // so the next KV run measures the stall in protocol units, not just bytes.
-    let (addr, gw) = bind_mock().await;
-    let target: IndividualAddress = "1.1.4".parse().unwrap();
+    let target: IndividualAddress = "1.1.4".parse()?;
     let mut dev_state = device();
     // Answer the first 3 numbered telegrams, then wedge on the 4th.
     dev_state.silent_after_ndt = Some(3);
     let shared: Shared = Arc::new(Mutex::new(dev_state));
-    let gw_task = tokio::spawn(run_mock(gw, target, shared));
+    let gw = start_mock(target, shared).await?;
+    let addr = gw.addr();
 
-    let mut bus = open_bus(addr).await;
-    let source: IndividualAddress = "0.0.255".parse().unwrap();
-    let mut l4 = Layer4Connection::connect_with(&mut bus, target, source, fast())
-        .await
-        .unwrap();
+    let mut bus = open_bus(addr).await?;
+    let source: IndividualAddress = "0.0.255".parse()?;
+    let mut l4 = Layer4Connection::connect_with(&mut bus, target, source, fast()).await?;
 
     // Three property reads succeed (3 acknowledged exchanges); the fourth draws
     // silence and surfaces the mid-session error with the counter.
     for _ in 0..3 {
-        let _ = load::read_load_state(&mut l4, 1).await.unwrap();
+        let _ = load::read_load_state(&mut l4, 1).await?;
     }
-    let err = load::read_load_state(&mut l4, 1).await.unwrap_err();
+    let err = load::read_load_state(&mut l4, 1)
+        .await
+        .err()
+        .ok_or("expected the call to fail, it succeeded")?;
     match err {
         WriteError::Mgmt(MgmtError::MidSessionSilence {
             kind,
@@ -748,5 +624,6 @@ async fn mid_session_silence_error_carries_exchange_counter() {
         other => panic!("expected MidSessionSilence, got {other:?}"),
     }
     let _ = l4.disconnect().await;
-    gw_task.abort();
+    drop(gw);
+    Ok(())
 }

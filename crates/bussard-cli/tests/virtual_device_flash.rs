@@ -231,7 +231,7 @@ fn build_knxprod(out_dir: &Path) -> Result<PathBuf, String> {
 /// reach a real bus. Inside this job it reaches only the veth namespace holding
 /// the device, so the harness opts in explicitly; without it every write refuses
 /// before it starts.
-fn bussard(args: &[&str]) -> (bool, String, String) {
+fn bussard(args: &[&str]) -> std::io::Result<(bool, String, String)> {
     let out = Command::new(env!("CARGO_BIN_EXE_bussard"))
         .args(args)
         .arg("--routing")
@@ -239,13 +239,12 @@ fn bussard(args: &[&str]) -> (bool, String, String) {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
-        .expect("run bussard");
-    (
+        .output()?;
+    Ok((
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
+    ))
 }
 
 /// The full-flash oracle: download the synthetic application into thelsing's
@@ -292,13 +291,14 @@ fn flash_reaches_loaded_against_thelsing_knx_linux_ip() -> Result<(), String> {
         "flash",
         target,
         "--product",
-        knxprod.to_str().unwrap(),
+        knxprod.to_str().ok_or("non-UTF-8 path")?,
         "--dir",
-        model_dir.to_str().unwrap(),
+        model_dir.to_str().ok_or("non-UTF-8 path")?,
         "--yes",
         "--bcu-key",
         "FFFFFFFF",
-    ]);
+    ])
+    .map_err(|e| e.to_string())?;
     eprintln!("--- flash stdout ---\n{out}\n--- flash stderr ---\n{err}");
     if !ok {
         device.dump_log();

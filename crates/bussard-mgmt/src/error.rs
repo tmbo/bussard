@@ -238,20 +238,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn raw_response_detail_is_greppable_hex() {
+    fn raw_response_detail_is_greppable_hex() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
         assert_eq!(
             raw_response_detail(0x0340, &[0x07, 0xB0]),
             "APCI 0x0340, payload [07 B0]"
         );
+        Ok(())
     }
 
     #[test]
-    fn raw_response_detail_handles_empty_payload() {
+    fn raw_response_detail_handles_empty_payload()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         assert_eq!(raw_response_detail(0x0000, &[]), "APCI 0x0000, payload []");
+        Ok(())
     }
 
     #[test]
-    fn descriptor_reason_names_the_echo_pattern() {
+    fn descriptor_reason_names_the_echo_pattern()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // The KNX Virtual IP interface answers A_DeviceDescriptor_Read with an
         // echo of the read (0x0300) rather than a Response (0x0340). The reason
         // must name that pattern verbatim, not report a bare "unexpected type".
@@ -272,13 +277,15 @@ mod tests {
             reason.contains("KNX Virtual IP"),
             "must name where it is seen: {reason}"
         );
+        Ok(())
     }
 
     #[test]
-    fn mid_session_silence_renders_exchange_and_wrap_counts() {
+    fn mid_session_silence_renders_exchange_and_wrap_counts()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // The #50 counter: a mid-session silence names the numbered-exchange count
         // and how many times the 4-bit sequence wrapped, in protocol units.
-        let addr: IndividualAddress = "1.1.4".parse().unwrap();
+        let addr: IndividualAddress = "1.1.4".parse()?;
         let err = MgmtError::MidSessionSilence {
             address: addr,
             kind: SilenceKind::NoResponse,
@@ -302,10 +309,12 @@ mod tests {
         };
         assert!(disc.device_present());
         assert!(disc.to_string().contains("connection was disconnected"));
+        Ok(())
     }
 
     #[test]
-    fn descriptor_reason_falls_through_for_other_wrong_apci() {
+    fn descriptor_reason_falls_through_for_other_wrong_apci()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // A genuinely wrong service (not the echo) keeps the generic
         // "descriptor type (low APCI bits)" form with raw evidence.
         let reason = descriptor_response_reason(crate::apci::A_PROPERTY_VALUE_RESPONSE, &[0x01]);
@@ -314,5 +323,6 @@ mod tests {
             "generic form: {reason}"
         );
         assert!(!reason.contains("echoed"), "not the echo path: {reason}");
+        Ok(())
     }
 }

@@ -142,7 +142,7 @@ session goes to linking and to waiting on the bus, so:
 - Unit tests: `#[cfg(test)]` module at the bottom of each file.
 - Integration tests: the crate's `tests/` directory.
 - Test naming: `test_<function_name>_<scenario>` pattern.
-- The no-`.unwrap()` rule is enforced by `[workspace.lints.clippy] unwrap_used = "deny"` in the root `Cargo.toml`; a crate opts in with `[lints] workspace = true` once its tests are clean (issue #87 lists the crates still to migrate).
+- The no-`.unwrap()` rule is enforced by `[workspace.lints.clippy] unwrap_used = "deny"` in the root `Cargo.toml`; every crate with mock-gateway tests opts in with `[lints] workspace = true` (bus, cli, download, mcp, mgmt, monitor, service, testkit, transport), and a new crate must too.
 - Mock KNXnet/IP gateways and devices come from the `bussard-testkit` dev-dependency (`MockGateway`, `MockDevice`, `wire::RawGateway`); do not hand-roll a new one.
 - nextest runs each test in its own process; mock-gateway/device tests each bind
   their own `127.0.0.1:0` UDP socket and rely on that isolation.

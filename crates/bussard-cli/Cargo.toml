@@ -54,3 +54,6 @@ rpassword = "=7.3.1"
 bussard-testkit = { workspace = true }
 # Builds the synthetic `.knxprod` / `.knxproj` fixtures for the import-product tests.
 zip = { workspace = true }
+
+[lints]
+workspace = true

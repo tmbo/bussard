@@ -766,7 +766,7 @@ mod tests {
     fn model_with(addrs: &[&str]) -> Model {
         let mut model = empty_model();
         for s in addrs {
-            let addr: IndividualAddress = s.parse().unwrap();
+            let addr: IndividualAddress = s.parse().expect("test fixture");
             model.devices.insert(
                 addr,
                 LoadedDevice {
@@ -791,33 +791,27 @@ mod tests {
     }
 
     #[test]
-    fn allocate_picks_lowest_free_on_dominant_line() {
+    fn allocate_picks_lowest_free_on_dominant_line() -> Result<(), Box<dyn std::error::Error>> {
         let model = model_with(&["1.1.1", "1.1.2", "1.1.4"]);
         // Lowest free ≥ 1 on 1.1 is 3.
-        assert_eq!(
-            allocate_address(Some(&model)),
-            Some("1.1.3".parse().unwrap())
-        );
+        assert_eq!(allocate_address(Some(&model)), Some("1.1.3".parse()?));
+        Ok(())
     }
 
     #[test]
-    fn allocate_starts_at_one_not_zero() {
+    fn allocate_starts_at_one_not_zero() -> Result<(), Box<dyn std::error::Error>> {
         let model = model_with(&["1.1.5"]);
-        assert_eq!(
-            allocate_address(Some(&model)),
-            Some("1.1.1".parse().unwrap())
-        );
+        assert_eq!(allocate_address(Some(&model)), Some("1.1.1".parse()?));
+        Ok(())
     }
 
     #[test]
-    fn dominant_line_is_the_busiest() {
+    fn dominant_line_is_the_busiest() -> Result<(), Box<dyn std::error::Error>> {
         // 2.4 has two devices, 1.1 has one → dominant is 2.4.
         let model = model_with(&["1.1.1", "2.4.1", "2.4.9"]);
         assert_eq!(dominant_line(&model), Some((2, 4)));
-        assert_eq!(
-            allocate_address(Some(&model)),
-            Some("2.4.2".parse().unwrap())
-        );
+        assert_eq!(allocate_address(Some(&model)), Some("2.4.2".parse()?));
+        Ok(())
     }
 
     #[test]
@@ -827,13 +821,11 @@ mod tests {
     }
 
     #[test]
-    fn empty_model_falls_back_to_one_one() {
+    fn empty_model_falls_back_to_one_one() -> Result<(), Box<dyn std::error::Error>> {
         let model = empty_model();
         assert_eq!(dominant_line(&model), None);
-        assert_eq!(
-            allocate_address(Some(&model)),
-            Some("1.1.1".parse().unwrap())
-        );
+        assert_eq!(allocate_address(Some(&model)), Some("1.1.1".parse()?));
+        Ok(())
     }
 
     #[test]
@@ -842,12 +834,10 @@ mod tests {
     }
 
     #[test]
-    fn allocate_on_line_skips_used() {
+    fn allocate_on_line_skips_used() -> Result<(), Box<dyn std::error::Error>> {
         let used: BTreeSet<u8> = [1, 2, 3, 5].into_iter().collect();
-        assert_eq!(
-            allocate_on_line(1, 1, &used),
-            Some("1.1.4".parse().unwrap())
-        );
+        assert_eq!(allocate_on_line(1, 1, &used), Some("1.1.4".parse()?));
+        Ok(())
     }
 
     #[test]
@@ -859,33 +849,32 @@ mod tests {
     #[test]
     fn explicit_address_rejects_already_used() {
         let model = model_with(&["1.1.1"]);
-        let err = validate_explicit_address("1.1.1", Some(&model)).unwrap_err();
+        let err = validate_explicit_address("1.1.1", Some(&model)).expect_err("expected an error");
         assert!(err.to_string().contains("already used"), "got {err}");
     }
 
     #[test]
     fn explicit_address_rejects_unmodeled_line() {
         let model = model_with(&["1.1.1"]);
-        let err = validate_explicit_address("2.2.5", Some(&model)).unwrap_err();
+        let err = validate_explicit_address("2.2.5", Some(&model)).expect_err("expected an error");
         assert!(err.to_string().contains("does not use"), "got {err}");
     }
 
     #[test]
-    fn explicit_address_accepts_free_on_known_line() {
+    fn explicit_address_accepts_free_on_known_line() -> Result<(), Box<dyn std::error::Error>> {
         let model = model_with(&["1.1.1"]);
         assert_eq!(
-            validate_explicit_address("1.1.9", Some(&model)).unwrap(),
-            "1.1.9".parse().unwrap()
+            validate_explicit_address("1.1.9", Some(&model))?,
+            "1.1.9".parse()?
         );
+        Ok(())
     }
 
     #[test]
-    fn explicit_address_without_model_just_parses() {
-        assert_eq!(
-            validate_explicit_address("3.4.5", None).unwrap(),
-            "3.4.5".parse().unwrap()
-        );
+    fn explicit_address_without_model_just_parses() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(validate_explicit_address("3.4.5", None)?, "3.4.5".parse()?);
         assert!(validate_explicit_address("not-an-address", None).is_err());
+        Ok(())
     }
 
     #[test]
@@ -895,14 +884,15 @@ mod tests {
     }
 
     #[test]
-    fn stub_device_omits_empty_product() {
-        let dev = build_stub_device("1.1.7".parse().unwrap(), &Verified::default());
+    fn stub_device_omits_empty_product() -> Result<(), Box<dyn std::error::Error>> {
+        let dev = build_stub_device("1.1.7".parse()?, &Verified::default());
         assert!(dev.product.is_none());
         assert_eq!(dev.name, "New device (assign)");
+        Ok(())
     }
 
     #[test]
-    fn stub_device_carries_readable_product() {
+    fn stub_device_carries_readable_product() -> Result<(), Box<dyn std::error::Error>> {
         let v = Verified {
             mask: Some(0x07B0),
             manufacturer_id: Some(0x0083),
@@ -910,10 +900,11 @@ mod tests {
             order: Some("MDT-JAL0410".to_string()),
             ..Default::default()
         };
-        let dev = build_stub_device("1.1.7".parse().unwrap(), &v);
-        let product = dev.product.unwrap();
+        let dev = build_stub_device("1.1.7".parse()?, &v);
+        let product = dev.product.ok_or("expected a value")?;
         assert_eq!(product.manufacturer.as_deref(), Some("MDT"));
         assert_eq!(product.order_number.as_deref(), Some("MDT-JAL0410"));
         assert_eq!(product.mask.as_deref(), Some("0x07B0"));
+        Ok(())
     }
 }

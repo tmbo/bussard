@@ -16,15 +16,15 @@ use std::collections::BTreeMap;
 use bussard_download::{PlanError, plan_flash, trace};
 
 #[test]
-fn dry_run_trace_of_real_vendor_procedures() {
+fn dry_run_trace_of_real_vendor_procedures() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../home_test.knxproj");
     if !path.exists() {
         eprintln!("home_test.knxproj absent; skipping real-data dry-run trace test");
-        return;
+        return Ok(());
     }
 
-    let file = std::fs::File::open(&path).unwrap();
-    let mut zip = zip::ZipArchive::new(file).unwrap();
+    let file = std::fs::File::open(&path)?;
+    let mut zip = zip::ZipArchive::new(file)?;
     let names: Vec<String> = zip.file_names().map(str::to_string).collect();
     let app_entries: Vec<String> = names
         .iter()
@@ -44,7 +44,7 @@ fn dry_run_trace_of_real_vendor_procedures() {
     let mut jung_image_prop_steps = 0usize;
 
     for entry in &app_entries {
-        let mut f = zip.by_name(entry).unwrap();
+        let mut f = zip.by_name(entry)?;
         let mut xml = String::new();
         use std::io::Read as _;
         if f.read_to_string(&mut xml).is_err() {
@@ -55,10 +55,9 @@ fn dry_run_trace_of_real_vendor_procedures() {
         let id = entry
             .rsplit('/')
             .next()
-            .unwrap()
-            .strip_suffix(".xml")
-            .unwrap();
-        let app = bussard_prod::parse_application_program(id, xml.as_bytes()).unwrap();
+            .and_then(|file| file.strip_suffix(".xml"))
+            .ok_or("an application entry ends in .xml")?;
+        let app = bussard_prod::parse_application_program(id, xml.as_bytes())?;
 
         // Build the plan in dry-run against the app's OWN declared mask, so the
         // System B gate and the mask compare pass and we exercise the op lowering
@@ -151,4 +150,5 @@ fn dry_run_trace_of_real_vendor_procedures() {
         planned + refused > 0,
         "expected at least one System B app to be planned or explicitly refused"
     );
+    Ok(())
 }

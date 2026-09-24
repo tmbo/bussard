@@ -182,37 +182,37 @@ mod tests {
     use super::*;
     use bussard_secure::{Key16, Sequence};
 
-    fn ia(s: &str) -> IndividualAddress {
-        s.parse().unwrap()
+    fn ia(s: &str) -> std::result::Result<IndividualAddress, Box<dyn std::error::Error>> {
+        Ok(s.parse()?)
     }
 
     #[test]
-    fn test_plain_layer_passes_through() {
+    fn test_plain_layer_passes_through() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let mut layer = SecureLayer::plain();
         assert!(!layer.is_active());
-        let (apci, data) = layer
-            .wrap_outgoing(ia("1.1.10"), ia("1.1.1"), 0x42, 0x280, &[0x00, 0x10])
-            .unwrap();
+        let (apci, data) =
+            layer.wrap_outgoing(ia("1.1.10")?, ia("1.1.1")?, 0x42, 0x280, &[0x00, 0x10])?;
         assert_eq!(apci, 0x280);
         assert_eq!(data, vec![0x00, 0x10]);
+        Ok(())
     }
 
     #[test]
-    fn test_activated_layer_wraps() {
+    fn test_activated_layer_wraps() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let session =
             DataSecureSession::new(Key16::new([0x24; 16])).with_send_sequence(Sequence::new(500));
         let mut layer = SecureLayer::activated(session);
         assert!(layer.is_active());
-        let (apci, data) = layer
-            .wrap_outgoing(ia("1.1.10"), ia("1.1.1"), 0x42, 0x280, &[0x00, 0x10])
-            .unwrap();
+        let (apci, data) =
+            layer.wrap_outgoing(ia("1.1.10")?, ia("1.1.1")?, 0x42, 0x280, &[0x00, 0x10])?;
         assert_eq!(apci, bussard_secure::A_SECURE_DATA);
         // The wrapped ASDU is longer than the plain payload.
         assert!(data.len() > 2);
+        Ok(())
     }
 
     #[test]
-    fn test_round_trip_through_two_layers() {
+    fn test_round_trip_through_two_layers() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // A "tool" layer wraps; a "device" layer with the same key unwraps.
         let key = [0x24u8; 16];
         let mut tool = SecureLayer::activated(
@@ -220,35 +220,33 @@ mod tests {
         );
         let mut device = SecureLayer::activated(DataSecureSession::new(Key16::new(key)));
 
-        let src = ia("1.1.1");
-        let dst = ia("1.1.10");
-        let (outer_apci, outer_data) = tool
-            .wrap_outgoing(dst, src, 0x42, 0x3D1, &[0x00, 0xFF, 0xFF, 0xFF, 0xFF])
-            .unwrap();
+        let src = ia("1.1.1")?;
+        let dst = ia("1.1.10")?;
+        let (outer_apci, outer_data) =
+            tool.wrap_outgoing(dst, src, 0x42, 0x3D1, &[0x00, 0xFF, 0xFF, 0xFF, 0xFF])?;
         // The device sees the frame as src → dst with the same tpci.
-        let (apci, data) = device
-            .unwrap_incoming(src, dst, 0x42, outer_apci, &outer_data)
-            .unwrap();
+        let (apci, data) = device.unwrap_incoming(src, dst, 0x42, outer_apci, &outer_data)?;
         assert_eq!(apci, 0x3D1);
         assert_eq!(data, vec![0x00, 0xFF, 0xFF, 0xFF, 0xFF]);
+        Ok(())
     }
 
     #[test]
-    fn test_wrong_mac_rejected() {
+    fn test_wrong_mac_rejected() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let key = [0x24u8; 16];
         let mut tool = SecureLayer::activated(
             DataSecureSession::new(Key16::new(key)).with_send_sequence(Sequence::new(500)),
         );
         // The device has a DIFFERENT key, so the MAC will not verify.
         let mut device = SecureLayer::activated(DataSecureSession::new(Key16::new([0x99; 16])));
-        let src = ia("1.1.1");
-        let dst = ia("1.1.10");
-        let (outer_apci, outer_data) = tool
-            .wrap_outgoing(dst, src, 0x42, 0x280, &[0x00, 0x10])
-            .unwrap();
+        let src = ia("1.1.1")?;
+        let dst = ia("1.1.10")?;
+        let (outer_apci, outer_data) = tool.wrap_outgoing(dst, src, 0x42, 0x280, &[0x00, 0x10])?;
         let err = device
             .unwrap_incoming(src, dst, 0x42, outer_apci, &outer_data)
-            .unwrap_err();
+            .err()
+            .ok_or("expected an error")?;
         assert!(matches!(err, MgmtError::Secure { .. }), "got {err:?}");
+        Ok(())
     }
 }

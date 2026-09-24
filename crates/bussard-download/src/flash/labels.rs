@@ -245,7 +245,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
-    fn trace_renders_every_step() {
+    fn trace_renders_every_step() -> Result<(), Box<dyn std::error::Error>> {
         let app = fabricated_app();
         let plan = plan_flash(
             &app,
@@ -255,11 +255,11 @@ mod tests {
             &BTreeMap::new(),
             None,
             &BTreeMap::new(),
-        )
-        .unwrap();
+        )?;
         let lines = trace(&plan);
         assert_eq!(lines.len(), plan.steps.len());
         assert!(lines[0].contains("unload"));
-        assert!(lines.last().unwrap().contains("restart"));
+        assert!(lines.last().ok_or("a non-empty trace")?.contains("restart"));
+        Ok(())
     }
 }

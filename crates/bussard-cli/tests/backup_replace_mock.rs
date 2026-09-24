@@ -23,7 +23,6 @@
 
 use std::collections::HashMap;
 use std::error::Error;
-use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -31,10 +30,7 @@ use std::time::Duration;
 
 use bussard_mgmt::apci;
 use bussard_model::{GroupAddress, IndividualAddress};
-use bussard_transport::cemi::{Apdu, CemiFrame, Destination, Tpci};
-use bussard_transport::knxnet::{self, ConnectionHeader, ServiceType};
-use bussard_transport::tpci::{self, TpciKind};
-use tokio::net::UdpSocket;
+use bussard_testkit::{MockGateway, Reaction};
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -76,7 +72,8 @@ struct TableObject {
     elem_size: usize,
 }
 
-/// One mock device on the bus.
+/// One mock device on the bus: the application model behind a testkit device
+/// (see [`on_line`]).
 #[derive(Clone)]
 struct MockDevice {
     address: IndividualAddress,
@@ -167,30 +164,14 @@ impl MockDevice {
     }
 }
 
-type Shared = Arc<Mutex<Vec<MockDevice>>>;
+/// A device model shared between its testkit hook and the test.
+type Shared = Arc<Mutex<MockDevice>>;
 
-fn lock(shared: &Shared) -> MutexGuard<'_, Vec<MockDevice>> {
+fn lock(shared: &Shared) -> MutexGuard<'_, MockDevice> {
     match shared.lock() {
         Ok(g) => g,
         Err(poisoned) => poisoned.into_inner(),
     }
-}
-
-fn knxnet_frame(service: ServiceType, body: &[u8]) -> Vec<u8> {
-    let total = (6 + body.len()) as u16;
-    let mut out = Vec::with_capacity(total as usize);
-    out.extend_from_slice(&[0x06, 0x10]);
-    out.extend_from_slice(&(service as u16).to_be_bytes());
-    out.extend_from_slice(&total.to_be_bytes());
-    out.extend_from_slice(body);
-    out
-}
-
-fn connect_response_body(port: u16) -> Vec<u8> {
-    let mut body = vec![CHANNEL, 0x00, 0x08, 0x01, 127, 0, 0, 1];
-    body.extend_from_slice(&port.to_be_bytes());
-    body.extend_from_slice(&[0x04, 0x04, 0x11, 0xFF]);
-    body
 }
 
 fn prop_response(oi: u8, pid: u8, count: u8, start: u16, data: &[u8]) -> Vec<u8> {
@@ -378,167 +359,79 @@ fn respond(dev: &mut MockDevice, req_apci: u16, data: &[u8]) -> Option<(u16, Vec
     None
 }
 
-async fn push(gw: &UdpSocket, peer: SocketAddr, gw_seq: &mut u8, cemi: &CemiFrame) {
-    let hdr = ConnectionHeader {
-        channel_id: CHANNEL,
-        seq: *gw_seq,
-    };
-    let _ = gw
-        .send_to(&knxnet::tunneling_request(hdr, cemi), peer)
-        .await;
-    *gw_seq = gw_seq.wrapping_add(1);
+/// Puts a device model on a testkit gateway line. The testkit device holds the
+/// address and programming mode (it answers the programming-mode broadcast and
+/// takes an address write without leaving programming mode, as this bench's
+/// devices always did); the hook `T_ACK`s every numbered request and answers
+/// it from the model.
+fn on_line(model: MockDevice) -> (bussard_testkit::MockDevice, Shared) {
+    let mut dev = bussard_testkit::MockDevice::new(model.address).with_mask(model.mask);
+    dev.programming = model.programming;
+    dev.stuck_programming = true;
+    let shared: Shared = Arc::new(Mutex::new(model));
+    let hook_model = Arc::clone(&shared);
+    let dev = dev.with_hook(move |dev, req_apci, data| {
+        let mut model = lock(&hook_model);
+        model.address = dev.address;
+        model.programming = dev.programming;
+        let reply = respond(&mut model, req_apci, data);
+        dev.programming = model.programming;
+        Some(match reply {
+            Some((rapci, rdata)) => Reaction::Answer(rapci, rdata),
+            None => Reaction::Ack,
+        })
+    });
+    (dev, shared)
 }
 
-/// Handles one tunnelled cEMI frame from the tool.
-async fn handle_frame(
-    gw: &UdpSocket,
-    peer: SocketAddr,
-    shared: &Shared,
-    cemi: &CemiFrame,
-    gw_seq: &mut u8,
-    dev_seq: &mut HashMap<u16, u8>,
-) {
-    let tool = cemi.source;
-    match &cemi.destination {
-        Destination::Group(_) => {
-            let (req_apci, data) = match (&cemi.tpci, &cemi.apdu) {
-                (Tpci::DataGroup, Apdu::Other { apci, data }) => (*apci, data.clone()),
-                _ => return,
-            };
-            if req_apci == apci::A_INDIVIDUAL_ADDRESS_READ {
-                let responders: Vec<IndividualAddress> = lock(shared)
-                    .iter()
-                    .filter(|d| d.programming)
-                    .map(|d| d.address)
-                    .collect();
-                for addr in responders {
-                    let resp =
-                        CemiFrame::t_broadcast(addr, apci::A_INDIVIDUAL_ADDRESS_RESPONSE, &[]);
-                    push(gw, peer, gw_seq, &resp).await;
-                }
-            } else if req_apci == apci::A_INDIVIDUAL_ADDRESS_WRITE && data.len() >= 2 {
-                let new = IndividualAddress::from_raw(u16::from_be_bytes([data[0], data[1]]));
-                for d in lock(shared).iter_mut().filter(|d| d.programming) {
-                    d.address = new;
-                }
-            }
-        }
-        Destination::Individual(dest) => {
-            let dest = *dest;
-            if !lock(shared).iter().any(|d| d.address == dest) {
-                return; // absent address: silence
-            }
-            match tpci::classify(cemi.tpci_octet()) {
-                TpciKind::Connect => {
-                    dev_seq.insert(dest.raw(), 0);
-                }
-                TpciKind::Disconnect => {
-                    dev_seq.remove(&dest.raw());
-                }
-                TpciKind::NumberedData(client_seq) => {
-                    let ack = CemiFrame::t_control(tool, dest, tpci::t_ack(client_seq));
-                    push(gw, peer, gw_seq, &ack).await;
-                    let (req_apci, data) = match (&cemi.tpci, &cemi.apdu) {
-                        (Tpci::Other(_), Apdu::Other { apci, data }) => (*apci, data.clone()),
-                        _ => return,
-                    };
-                    let reply = {
-                        let mut devs = lock(shared);
-                        devs.iter_mut()
-                            .find(|d| d.address == dest)
-                            .and_then(|d| respond(d, req_apci, &data))
-                    };
-                    if let Some((rapci, rdata)) = reply {
-                        let seq = dev_seq.get(&dest.raw()).copied().unwrap_or(0);
-                        let resp =
-                            CemiFrame::t_data_connected(tool, dest, tpci::ndt(seq), rapci, &rdata);
-                        push(gw, peer, gw_seq, &resp).await;
-                        dev_seq.insert(dest.raw(), (seq + 1) & 0x0f);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
-/// The gateway loop. Unlike the single-shot mocks it keeps serving after a
-/// tunnel disconnect, so several bussard sessions can run against it.
-async fn run_gateway(gw: UdpSocket, shared: Shared) {
-    let port = gw.local_addr().map(|a| a.port()).unwrap_or(0);
-    let mut gw_seq = 0u8;
-    let mut dev_seq: HashMap<u16, u8> = HashMap::new();
-    loop {
-        let mut buf = [0u8; 1024];
-        let (n, from) =
-            match tokio::time::timeout(Duration::from_secs(120), gw.recv_from(&mut buf)).await {
-                Ok(Ok(v)) => v,
-                _ => return,
-            };
-        let Ok(parsed) = knxnet::parse(&buf[..n]) else {
-            continue;
-        };
-        match parsed.service {
-            ServiceType::ConnectRequest => {
-                gw_seq = 0;
-                dev_seq.clear();
-                let resp = knxnet_frame(ServiceType::ConnectResponse, &connect_response_body(port));
-                let _ = gw.send_to(&resp, from).await;
-            }
-            ServiceType::ConnectionstateRequest => {
-                let _ = gw
-                    .send_to(&knxnet::connectionstate_response(CHANNEL, 0), from)
-                    .await;
-            }
-            ServiceType::DisconnectRequest => {
-                let _ = gw
-                    .send_to(&knxnet::disconnect_response(CHANNEL, 0), from)
-                    .await;
-            }
-            ServiceType::TunnelingRequest => {
-                let Ok(tr) = knxnet::parse_tunneling_request(parsed.body) else {
-                    continue;
-                };
-                let _ = gw
-                    .send_to(
-                        &knxnet::tunneling_ack(tr.header.channel_id, tr.header.seq, 0),
-                        from,
-                    )
-                    .await;
-                handle_frame(&gw, from, &shared, &tr.cemi, &mut gw_seq, &mut dev_seq).await;
-            }
-            _ => {}
-        }
-    }
-}
-
-/// A running mock bus: the runtime, the gateway port and the shared devices.
+/// A running mock bus: the gateway, the device models in line order, and the
+/// runtime the gateway runs on.
 struct Bench {
-    rt: tokio::runtime::Runtime,
+    gw: MockGateway,
     port: u16,
-    shared: Shared,
-    task: tokio::task::JoinHandle<()>,
+    models: Mutex<Vec<Shared>>,
     tmp: PathBuf,
+    // Dropped last, after the gateway.
+    _rt: tokio::runtime::Runtime,
 }
 
 impl Bench {
     fn start(tag: &str, devices: Vec<MockDevice>) -> Result<Bench, Box<dyn Error>> {
         let rt = tokio::runtime::Runtime::new()?;
-        let sock = rt.block_on(UdpSocket::bind("127.0.0.1:0"))?;
-        let port = sock.local_addr()?.port();
-        let shared: Shared = Arc::new(Mutex::new(devices));
-        let task = rt.spawn(run_gateway(sock, Arc::clone(&shared)));
+        let (line, models): (Vec<_>, Vec<_>) = devices.into_iter().map(on_line).unzip();
+        // Keep serving after a tunnel disconnect, so several bussard sessions
+        // can run against it (`replace` runs three).
+        let gw = rt.block_on(
+            MockGateway::builder()
+                .channel(CHANNEL)
+                .keep_serving()
+                .idle_timeout(Duration::from_secs(120))
+                .devices(line)
+                .start(),
+        )?;
+        let port = gw.port();
         let tmp =
             std::env::temp_dir().join(format!("bussard-{tag}-{}-{}", std::process::id(), port));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp)?;
         Ok(Bench {
-            rt,
+            gw,
             port,
-            shared,
-            task,
+            models: Mutex::new(models),
             tmp,
+            _rt: rt,
         })
+    }
+
+    /// Replaces every device on the bus with `devices`.
+    fn swap_line(&self, devices: Vec<MockDevice>) -> Result<(), Box<dyn Error>> {
+        let (line, models): (Vec<_>, Vec<_>) = devices.into_iter().map(on_line).unzip();
+        self.gw.with_line(|l| *l = line)?;
+        *self
+            .models
+            .lock()
+            .map_err(|_| "the model list is poisoned")? = models;
+        Ok(())
     }
 
     fn model(&self) -> PathBuf {
@@ -566,23 +459,29 @@ impl Bench {
             .output()?)
     }
 
+    /// The model of the device now at `addr`, with its current address and
+    /// programming mode.
     fn device(&self, addr: &str) -> Option<MockDevice> {
         let addr: IndividualAddress = addr.parse().ok()?;
-        lock(&self.shared)
-            .iter()
-            .find(|d| d.address == addr)
-            .cloned()
+        let line = self.gw.devices().ok()?;
+        let index = line.iter().position(|d| d.address == addr)?;
+        let models = self.models.lock().ok()?;
+        let mut model = lock(models.get(index)?).clone();
+        model.address = line[index].address;
+        model.programming = line[index].programming;
+        Some(model)
     }
 
     fn total_writes(&self) -> usize {
-        lock(&self.shared).iter().map(|d| d.writes).sum()
+        self.models
+            .lock()
+            .map(|models| models.iter().map(|m| lock(m).writes).sum())
+            .unwrap_or(0)
     }
 }
 
 impl Drop for Bench {
     fn drop(&mut self) {
-        self.task.abort();
-        self.rt.block_on(async { tokio::task::yield_now().await });
         let _ = std::fs::remove_dir_all(&self.tmp);
     }
 }
@@ -862,13 +761,9 @@ fn test_replace_no_flash_restores_the_pre_failure_tables() -> TestResult {
     )?;
 
     // The actuator dies; a factory-fresh spare of the same product goes in.
-    {
-        let mut devs = lock(&bench.shared);
-        devs.clear();
-        let mut spare = MockDevice::system_b("15.15.255", "MDT-JAL0410", &[], &[]);
-        spare.programming = true;
-        devs.push(spare);
-    }
+    let mut spare = MockDevice::system_b("15.15.255", "MDT-JAL0410", &[], &[]);
+    spare.programming = true;
+    bench.swap_line(vec![spare])?;
 
     let out = bench.bussard(&[
         "replace",

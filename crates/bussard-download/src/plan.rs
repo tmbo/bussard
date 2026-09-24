@@ -136,7 +136,7 @@ mod tests {
     use bussard_mgmt::tables::{DeviceTables, ResolvedLink, TableSource};
 
     fn ga(s: &str) -> GroupAddress {
-        s.parse().unwrap()
+        s.parse().expect("a valid test group address")
     }
 
     fn live_tables(resolved: &[(u16, &str)]) -> DeviceTables {

@@ -27,6 +27,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 
 [dev-dependencies]
+bussard-testkit = { workspace = true }
 serde_json = { workspace = true }
 # For the env-gated dry-run trace test that reads the developer's local
 # `home_test.knxproj` (a plain-zip container) and for the committed-fixture sweep
@@ -36,3 +37,6 @@ serde_json = { workspace = true }
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
 # The fixture sweep test builds throwaway `.knxprod` containers in a temp dir.
 tempfile = "3"
+
+[lints]
+workspace = true

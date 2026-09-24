@@ -8,13 +8,15 @@
 
 use std::process::{Command, Stdio};
 
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
 /// A gateway host guaranteed not to be a real endpoint: TEST-NET-1 (RFC 5737),
 /// which is non-loopback so it exercises the opt-in gate but is never contacted
 /// (the gate refuses first).
 const NON_LOOPBACK: &str = "192.0.2.1:3671";
 
 /// Runs `bussard` with the given args and no TTY, returning (success, stderr).
-fn run(args: &[&str], allow_env: bool) -> (bool, String) {
+fn run(args: &[&str], allow_env: bool) -> std::io::Result<(bool, String)> {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_bussard"));
     cmd.args(args)
         .env_remove("BUSSARD_ALLOW_REAL_GATEWAY")
@@ -24,15 +26,15 @@ fn run(args: &[&str], allow_env: bool) -> (bool, String) {
     if allow_env {
         cmd.env("BUSSARD_ALLOW_REAL_GATEWAY", "1");
     }
-    let out = cmd.output().expect("run bussard");
-    (
+    let out = cmd.output()?;
+    Ok((
         out.status.success(),
         String::from_utf8_lossy(&out.stderr).to_string(),
-    )
+    ))
 }
 
 #[test]
-fn write_refuses_non_loopback_gateway_without_optin() {
+fn write_refuses_non_loopback_gateway_without_optin() -> TestResult {
     // No model dir needed: with --dpt the write is unmodeled, and the gate fires
     // before any bus contact.
     let (success, stderr) = run(
@@ -48,7 +50,7 @@ fn write_refuses_non_loopback_gateway_without_optin() {
             NON_LOOPBACK,
         ],
         false,
-    );
+    )?;
     assert!(!success, "must refuse; stderr:\n{stderr}");
     assert!(
         stderr.contains("refusing to write to non-loopback gateway"),
@@ -62,10 +64,11 @@ fn write_refuses_non_loopback_gateway_without_optin() {
         stderr.contains("--allow-remote-gateway"),
         "must state how to proceed; stderr:\n{stderr}"
     );
+    Ok(())
 }
 
 #[test]
-fn write_non_tty_without_yes_is_refused_on_loopback() {
+fn write_non_tty_without_yes_is_refused_on_loopback() -> TestResult {
     // Loopback is exempt from the opt-in gate, but a non-TTY write still needs
     // --yes: it must not fire blind. The confirmation refusal names the gateway.
     // The loopback port is bogus and never reached (the confirmation fails
@@ -83,7 +86,7 @@ fn write_non_tty_without_yes_is_refused_on_loopback() {
             "127.0.0.1:1",
         ],
         false,
-    );
+    )?;
     assert!(!success, "must refuse without --yes; stderr:\n{stderr}");
     assert!(
         stderr.contains("refusing to write") && stderr.contains("--yes"),
@@ -94,10 +97,11 @@ fn write_non_tty_without_yes_is_refused_on_loopback() {
         stderr.contains("127.0.0.1:1"),
         "confirmation must name the gateway; stderr:\n{stderr}"
     );
+    Ok(())
 }
 
 #[test]
-fn flash_refuses_non_loopback_gateway_without_optin() {
+fn flash_refuses_non_loopback_gateway_without_optin() -> TestResult {
     // A missing product file would fail eventually, but the gate fires first —
     // assert the refusal names the host. `--yes` is present so only the gate can
     // stop it.
@@ -114,7 +118,7 @@ fn flash_refuses_non_loopback_gateway_without_optin() {
             NON_LOOPBACK,
         ],
         false,
-    );
+    )?;
     assert!(!success, "must refuse; stderr:\n{stderr}");
     // The product read happens before the gate in flash, so this may fail on the
     // product instead; accept either the gate refusal or a product error, but if
@@ -125,10 +129,11 @@ fn flash_refuses_non_loopback_gateway_without_optin() {
             "gate must name the host; stderr:\n{stderr}"
         );
     }
+    Ok(())
 }
 
 #[test]
-fn assign_non_tty_without_yes_is_refused() {
+fn assign_non_tty_without_yes_is_refused() -> TestResult {
     // An explicit address is no longer consent: a non-TTY assign without --yes
     // must refuse before touching the bus. Loopback keeps the opt-in gate out of
     // the way so the confirmation gate is what fires.
@@ -142,12 +147,13 @@ fn assign_non_tty_without_yes_is_refused() {
             "127.0.0.1:1",
         ],
         false,
-    );
+    )?;
     assert!(!success, "must refuse without --yes; stderr:\n{stderr}");
     assert!(
         stderr.contains("refusing to assign") && stderr.contains("--yes"),
         "expected the non-TTY refusal naming --yes; stderr:\n{stderr}"
     );
+    Ok(())
 }
 
 // --- the long-running servers (issue #74 follow-up) --------------------------
@@ -161,7 +167,7 @@ fn assign_non_tty_without_yes_is_refused() {
 ///
 /// Both servers load the model before resolving the connection, so the gate
 /// cases need a directory that exists and parses.
-fn model_dir(tag: &str) -> std::path::PathBuf {
+fn model_dir(tag: &str) -> std::io::Result<std::path::PathBuf> {
     let dir = std::env::temp_dir().join(format!(
         "bussard-gate-{tag}-{}-{:?}",
         std::process::id(),
@@ -171,14 +177,13 @@ fn model_dir(tag: &str) -> std::path::PathBuf {
             .as_nanos()
     ));
     let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("create model dir");
+    std::fs::create_dir_all(&dir)?;
     std::fs::write(
         dir.join("groups.yaml"),
         "groups:\n  \"3/0/4\":\n    name: Living Room Blind Move\n    dpt: \"1.008\"\n",
-    )
-    .expect("write groups.yaml");
-    std::fs::write(dir.join("links.yaml"), "links: {}\n").expect("write links.yaml");
-    dir
+    )?;
+    std::fs::write(dir.join("links.yaml"), "links: {}\n")?;
+    Ok(dir)
 }
 
 /// Asserts that a server refused to start on the non-loopback write gate.
@@ -199,46 +204,48 @@ fn assert_gate_refusal(success: bool, stderr: &str) {
 }
 
 #[test]
-fn mcp_allow_writes_refuses_non_loopback_gateway_without_optin() {
-    let dir = model_dir("mcp");
+fn mcp_allow_writes_refuses_non_loopback_gateway_without_optin() -> TestResult {
+    let dir = model_dir("mcp")?;
     let (success, stderr) = run(
         &[
             "mcp",
             "--allow-writes",
             "--dir",
-            dir.to_str().expect("utf-8 dir"),
+            dir.to_str().ok_or("non-UTF-8 dir")?,
             "--gateway",
             NON_LOOPBACK,
         ],
         false,
-    );
+    )?;
     assert_gate_refusal(success, &stderr);
     let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
 }
 
 #[test]
-fn mcp_allow_programming_refuses_non_loopback_gateway_without_optin() {
+fn mcp_allow_programming_refuses_non_loopback_gateway_without_optin() -> TestResult {
     // The programming tier (issue #118) writes device tables: the server must
     // refuse to start against a real gateway without the opt-in.
-    let dir = model_dir("mcp-program");
+    let dir = model_dir("mcp-program")?;
     let (success, stderr) = run(
         &[
             "mcp",
             "--allow-programming",
             "--dir",
-            dir.to_str().expect("utf-8 dir"),
+            dir.to_str().ok_or("non-UTF-8 dir")?,
             "--gateway",
             NON_LOOPBACK,
         ],
         false,
-    );
+    )?;
     assert_gate_refusal(success, &stderr);
     let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
 }
 
 #[test]
-fn viz_allow_writes_refuses_non_loopback_gateway_without_optin() {
-    let dir = model_dir("viz-write");
+fn viz_allow_writes_refuses_non_loopback_gateway_without_optin() -> TestResult {
+    let dir = model_dir("viz-write")?;
     let (success, stderr) = run(
         &[
             "viz",
@@ -246,21 +253,22 @@ fn viz_allow_writes_refuses_non_loopback_gateway_without_optin() {
             "--listen",
             "127.0.0.1:0",
             "--dir",
-            dir.to_str().expect("utf-8 dir"),
+            dir.to_str().ok_or("non-UTF-8 dir")?,
             "--gateway",
             NON_LOOPBACK,
         ],
         false,
-    );
+    )?;
     assert_gate_refusal(success, &stderr);
     let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
 }
 
 #[test]
-fn viz_watch_prog_refuses_non_loopback_gateway_without_optin() {
+fn viz_watch_prog_refuses_non_loopback_gateway_without_optin() -> TestResult {
     // `--watch-prog` puts broadcast reads on the bus on a timer: also a write
     // in the gate's sense, and it must not run unnoticed against a real house.
-    let dir = model_dir("viz-prog");
+    let dir = model_dir("viz-prog")?;
     let (success, stderr) = run(
         &[
             "viz",
@@ -268,12 +276,13 @@ fn viz_watch_prog_refuses_non_loopback_gateway_without_optin() {
             "--listen",
             "127.0.0.1:0",
             "--dir",
-            dir.to_str().expect("utf-8 dir"),
+            dir.to_str().ok_or("non-UTF-8 dir")?,
             "--gateway",
             NON_LOOPBACK,
         ],
         false,
-    );
+    )?;
     assert_gate_refusal(success, &stderr);
     let _ = std::fs::remove_dir_all(&dir);
+    Ok(())
 }

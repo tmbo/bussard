@@ -1490,7 +1490,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn load_state_round_trips_octets() {
+    fn load_state_round_trips_octets() -> std::result::Result<(), Box<dyn std::error::Error>> {
         for (v, s) in [
             (0, LoadState::Unloaded),
             (1, LoadState::Loaded),
@@ -1502,19 +1502,23 @@ mod tests {
         }
         assert_eq!(LoadState::from_octet(9), LoadState::Other(9));
         assert_eq!(LoadState::Other(9).octet(), 9);
+        Ok(())
     }
 
     #[test]
-    fn load_control_octets_match_the_standard() {
+    fn load_control_octets_match_the_standard()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         assert_eq!(LoadControl::NoOperation.octet(), 0);
         assert_eq!(LoadControl::StartLoading.octet(), 1);
         assert_eq!(LoadControl::LoadCompleted.octet(), 2);
         assert_eq!(LoadControl::AdditionalLoadControls.octet(), 3);
         assert_eq!(LoadControl::Unload.octet(), 4);
+        Ok(())
     }
 
     #[test]
-    fn load_control_encode_full_matches_ets_da_tp_capture() {
+    fn load_control_encode_full_matches_ets_da_tp_capture()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // The ETS→KNX-Virtual DA.tp capture (dumpfile.pcap) writes the full
         // 10-octet PID_LOAD_STATE_CONTROL value for every simple transition:
         // the control octet followed by nine reserved zero octets. These are the
@@ -1544,10 +1548,11 @@ mod tests {
             assert_eq!(c.encode_full()[0], c.octet());
             assert!(c.encode_full()[1..].iter().all(|&b| b == 0));
         }
+        Ok(())
     }
 
     #[test]
-    fn load_control_expected_states() {
+    fn load_control_expected_states() -> std::result::Result<(), Box<dyn std::error::Error>> {
         assert_eq!(
             LoadControl::StartLoading.expected_state(),
             Some(LoadState::Loading)
@@ -1561,10 +1566,12 @@ mod tests {
         assert_eq!(LoadControl::Unload.expected_state(), None);
         assert_eq!(LoadControl::NoOperation.expected_state(), None);
         assert_eq!(LoadControl::AdditionalLoadControls.expected_state(), None);
+        Ok(())
     }
 
     #[test]
-    fn rel_segment_structure_matches_spec_offsets() {
+    fn rel_segment_structure_matches_spec_offsets()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // event=3, sub=0x0B, size u32 BE, fill flag + byte, reserved tail
         // (KNX 3/5/2 LdCtrlRelSegment).
         let v = encode_rel_segment(0x0000_0140, Some(0xEE));
@@ -1588,12 +1595,14 @@ mod tests {
         // those first 8 octets, byte-for-byte with the ETS capture.
         let v = encode_rel_segment(0x0000_28C1, Some(0x00));
         assert_eq!(&v[0..8], &[0x03, 0x0B, 0x00, 0x00, 0x28, 0xC1, 0x01, 0x00]);
+        Ok(())
     }
 
     #[test]
-    fn connection_death_classified_for_exchange_retry() {
+    fn connection_death_classified_for_exchange_retry()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // The three transient-blip shapes a bounded per-exchange retry recovers from.
-        let ia: IndividualAddress = "1.1.4".parse().unwrap();
+        let ia: IndividualAddress = "1.1.4".parse()?;
         assert!(is_connection_death(&WriteError::Mgmt(
             MgmtError::Disconnected { address: ia }
         )));
@@ -1622,10 +1631,12 @@ mod tests {
             address: ia,
             object_index: 3,
         }));
+        Ok(())
     }
 
     #[test]
-    fn test_is_connection_death_covers_gateway_link_loss() {
+    fn test_is_connection_death_covers_gateway_link_loss()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         use bussard_transport::TransportError;
         // Issue #177: a lost gateway link resumes like a Layer-4 death ...
         for e in [
@@ -1656,29 +1667,34 @@ mod tests {
                 context: "TUNNELING_ACK"
             })
         )));
+        Ok(())
     }
 
     #[test]
-    fn displays_are_human_readable() {
+    fn displays_are_human_readable() -> std::result::Result<(), Box<dyn std::error::Error>> {
         assert_eq!(LoadState::Loading.to_string(), "Loading");
         assert_eq!(LoadState::Error.to_string(), "Error");
         assert_eq!(LoadControl::StartLoading.to_string(), "StartLoading");
         assert_eq!(LoadControl::LoadCompleted.to_string(), "LoadCompleted");
+        Ok(())
     }
 
     #[test]
-    fn empty_load_state_context_renders_nothing() {
+    fn empty_load_state_context_renders_nothing()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // The table-apply path drives write_load_control without discovery, so an
         // empty context must not alter the original message.
         assert_eq!(LoadStateContext::default().to_string(), "");
+        Ok(())
     }
 
     #[test]
-    fn unexpected_load_state_folds_in_discovered_context() {
+    fn unexpected_load_state_folds_in_discovered_context()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // The finding-1 rich error: a load-state failure names the targeted
         // object's type and the full discovered object table.
         let err = WriteError::UnexpectedLoadState {
-            address: "1.0.1".parse().unwrap(),
+            address: "1.0.1".parse()?,
             object_index: 3,
             control: LoadControl::StartLoading,
             expected: LoadState::Loading,
@@ -1695,10 +1711,12 @@ mod tests {
              object table [0:0(device), 1:1(address-table), 2:2(association-table), \
              3:3(application-program)]"
         );
+        Ok(())
     }
 
     #[test]
-    fn crc16_ccitt_matches_the_standard_check_vector() {
+    fn crc16_ccitt_matches_the_standard_check_vector()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // The catalogued CRC-16/AUG-CCITT check value for "123456789" is 0xE5CC
         // (the augmented CCITT variant the KNX MCB uses; CCITT-FALSE would be
         // 0x29B1).
@@ -1708,10 +1726,11 @@ mod tests {
         assert_eq!(crc16_ccitt(b""), 0x1D0F);
         // A single zero byte.
         assert_eq!(crc16_ccitt(&[0x00]), 0xCC9C);
+        Ok(())
     }
 
     #[test]
-    fn mcb_entry_matches_spec_layout() {
+    fn mcb_entry_matches_spec_layout() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // [size u32 BE][crc_ctrl=0x00][access=0xFF][crc16 u16 BE], 8 octets
         // (KNX 3/5/1 System B PID_MCB_TABLE).
         let data = b"123456789";
@@ -1723,21 +1742,24 @@ mod tests {
         assert_eq!(&e[6..8], &0xE5CCu16.to_be_bytes()); // CRC-16/AUG-CCITT of "123456789"
 
         // Round-trips through the decoder.
-        let dec = McbEntry::decode(&e).unwrap();
+        let dec = McbEntry::decode(&e).ok_or("missing value")?;
         assert_eq!(dec.segment_size, 9);
         assert_eq!(dec.crc_control, 0x00);
         assert_eq!(dec.access, 0xFF);
         assert_eq!(dec.crc16, 0xE5CC);
+        Ok(())
     }
 
     #[test]
-    fn mcb_decode_rejects_short_slices() {
+    fn mcb_decode_rejects_short_slices() -> std::result::Result<(), Box<dyn std::error::Error>> {
         assert!(McbEntry::decode(&[0u8; 7]).is_none());
         assert!(McbEntry::decode(&[0u8; 8]).is_some());
+        Ok(())
     }
 
     #[test]
-    fn rel_mem_compare_exact_match_and_mismatch() {
+    fn rel_mem_compare_exact_match_and_mismatch()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // No mask, no invert: equal bytes pass, any difference fails.
         assert!(rel_mem_compare_passes(&[0xFF], &[0xFF], None, false));
         assert!(!rel_mem_compare_passes(&[0xFF], &[0x00], None, false));
@@ -1753,10 +1775,11 @@ mod tests {
             None,
             false
         ));
+        Ok(())
     }
 
     #[test]
-    fn rel_mem_compare_honours_mask() {
+    fn rel_mem_compare_honours_mask() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Mask 0x0F ignores the high nibble: 0xA5 vs 0xB5 match on the low nibble.
         assert!(rel_mem_compare_passes(
             &[0xA5],
@@ -1785,10 +1808,11 @@ mod tests {
             Some(&[0xFF]),
             false
         ));
+        Ok(())
     }
 
     #[test]
-    fn rel_mem_compare_inverts_sense() {
+    fn rel_mem_compare_inverts_sense() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Invert: the memory must DIFFER from expected under the mask.
         assert!(rel_mem_compare_passes(&[0xFF], &[0x00], None, true));
         assert!(!rel_mem_compare_passes(&[0xFF], &[0xFF], None, true));
@@ -1805,13 +1829,16 @@ mod tests {
             Some(&[0x0F]),
             true
         ));
+        Ok(())
     }
 
     #[test]
-    fn rel_mem_compare_short_read_never_passes() {
+    fn rel_mem_compare_short_read_never_passes()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // A short read (fewer octets than expected) fails regardless of sense.
         assert!(!rel_mem_compare_passes(&[0xFF, 0xFF], &[0xFF], None, false));
         assert!(!rel_mem_compare_passes(&[0xFF, 0xFF], &[0xFF], None, true));
         assert!(!rel_mem_compare_passes(&[0xFF], &[], None, false));
+        Ok(())
     }
 }

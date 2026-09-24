@@ -1,7 +1,7 @@
 //! End-to-end test of `bussard learn` against an in-process mock KNX gateway
 //! (issue #95).
 //!
-//! The mock gateway pushes a repeating set of group telegrams from a device the
+//! The `bussard-testkit` mock gateway pushes a repeating set of group telegrams from a device the
 //! fixture model knows, and counts every TUNNELING_REQUEST the client sends. A
 //! scripted `--yes` session names and types three group addresses; afterwards
 //! the model must pass `bussard validate` with no `W011` (no DPT) warning for
@@ -10,134 +10,46 @@
 //!
 //! Everything binds `127.0.0.1:0`, so no real gateway is ever contacted.
 
-use std::net::SocketAddr;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::time::Duration;
 
-use bussard_model::{GroupAddress, IndividualAddress};
+use bussard_model::GroupAddress;
+use bussard_testkit::{MockGateway, TestResult, ga, ia};
 use bussard_transport::cemi::{CemiFrame, MessageCode};
-use bussard_transport::knxnet::{self, ConnectionHeader, ServiceType};
-use tokio::net::UdpSocket;
 
 const CHANNEL: u8 = 0x21;
 
 /// The device the fixture model knows; every pushed telegram comes from it.
 const SENDER: &str = "1.1.30";
 
-fn knxnet_frame(service: ServiceType, body: &[u8]) -> Vec<u8> {
-    let total = (6 + body.len()) as u16;
-    let mut out = Vec::with_capacity(total as usize);
-    out.push(0x06);
-    out.push(0x10);
-    out.extend_from_slice(&(service as u16).to_be_bytes());
-    out.extend_from_slice(&total.to_be_bytes());
-    out.extend_from_slice(body);
-    out
-}
-
-fn connect_response_body(channel: u8, port: u16) -> Vec<u8> {
-    let mut body = vec![channel, 0x00];
-    body.push(0x08);
-    body.push(0x01);
-    body.extend_from_slice(&[127, 0, 0, 1]);
-    body.extend_from_slice(&port.to_be_bytes());
-    body.extend_from_slice(&[0x04, 0x04, 0x11, 0xFF]);
-    body
-}
-
 /// The telegrams the mock bus carries, pushed in a loop.
-fn telegrams() -> Vec<(GroupAddress, Vec<u8>)> {
-    vec![
+fn telegrams() -> TestResult<Vec<(GroupAddress, Vec<u8>)>> {
+    Ok(vec![
         // A 1-bit switch on a GA the model already links to com object 3.
-        ("1/0/1".parse().expect("ga"), vec![0x01]),
+        (ga("1/0/1")?, vec![0x01]),
         // A byte-wide value that reads as a percentage.
-        ("1/0/2".parse().expect("ga"), vec![0x32]),
+        (ga("1/0/2")?, vec![0x32]),
         // 21.5 °C as a 2-byte float.
-        ("1/0/3".parse().expect("ga"), vec![0x0c, 0x33]),
-    ]
+        (ga("1/0/3")?, vec![0x0c, 0x33]),
+    ])
 }
 
-/// Runs the mock gateway: answers the KNXnet/IP handshake, pushes bus
-/// indications on a timer, and counts the tunnelling requests it receives.
-async fn run_gateway(socket: Arc<UdpSocket>, port: u16, requests: Arc<AtomicUsize>) {
-    let gw_seq = Arc::new(AtomicU8::new(0));
-    let mut pusher: Option<tokio::task::JoinHandle<()>> = None;
-
-    loop {
-        let mut buf = [0u8; 1024];
-        let (n, from) =
-            match tokio::time::timeout(Duration::from_secs(60), socket.recv_from(&mut buf)).await {
-                Ok(Ok(v)) => v,
-                _ => break,
-            };
-        let Ok(parsed) = knxnet::parse(&buf[..n]) else {
-            continue;
-        };
-        match parsed.service {
-            ServiceType::ConnectRequest => {
-                let resp = knxnet_frame(
-                    ServiceType::ConnectResponse,
-                    &connect_response_body(CHANNEL, port),
-                );
-                let _ = socket.send_to(&resp, from).await;
-                if pusher.is_none() {
-                    pusher = Some(tokio::spawn(push_telegrams(
-                        socket.clone(),
-                        from,
-                        gw_seq.clone(),
-                    )));
-                }
-            }
-            ServiceType::ConnectionstateRequest => {
-                let _ = socket
-                    .send_to(&knxnet::connectionstate_response(CHANNEL, 0), from)
-                    .await;
-            }
-            ServiceType::DisconnectRequest => {
-                let _ = socket
-                    .send_to(&knxnet::disconnect_response(CHANNEL, 0), from)
-                    .await;
-                break;
-            }
-            ServiceType::TunnelingRequest => {
-                // The whole point of the test: learn mode must never get here.
-                requests.fetch_add(1, Ordering::SeqCst);
-                if let Ok(tr) = knxnet::parse_tunneling_request(parsed.body) {
-                    let _ = socket
-                        .send_to(
-                            &knxnet::tunneling_ack(tr.header.channel_id, tr.header.seq, 0),
-                            from,
-                        )
-                        .await;
-                }
-            }
-            _ => {}
-        }
+/// Pushes the fixture telegrams to the connected client, over and over from
+/// the first CONNECT on, so the session sees each group address whenever it
+/// starts waiting for it. Ends when the gateway has stopped.
+async fn push_telegrams(gw: Arc<MockGateway>, frames: Vec<CemiFrame>) {
+    if !gw
+        .wait_until(Duration::from_secs(60), |s| s.connects > 0)
+        .await
+    {
+        return;
     }
-    if let Some(pusher) = pusher {
-        pusher.abort();
-    }
-}
-
-/// Pushes the fixture telegrams to the connected client, over and over, so the
-/// session sees each group address whenever it starts waiting for it.
-async fn push_telegrams(socket: Arc<UdpSocket>, peer: SocketAddr, gw_seq: Arc<AtomicU8>) {
-    let source: IndividualAddress = SENDER.parse().expect("sender address");
-    let telegrams = telegrams();
     loop {
-        for (ga, payload) in &telegrams {
-            let mut cemi = CemiFrame::group_write_packed(*ga, source, payload);
-            // A bus indication, not our own request echoing back.
-            cemi.message_code = MessageCode::LDataInd;
-            let header = ConnectionHeader {
-                channel_id: CHANNEL,
-                seq: gw_seq.fetch_add(1, Ordering::SeqCst),
-            };
-            let _ = socket
-                .send_to(&knxnet::tunneling_request(header, &cemi), peer)
-                .await;
+        for frame in &frames {
+            if gw.push(frame.clone()).is_err() {
+                return;
+            }
             tokio::time::sleep(Duration::from_millis(60)).await;
         }
     }
@@ -182,19 +94,30 @@ fn temp_dir(tag: &str) -> std::path::PathBuf {
 }
 
 #[test]
-fn learn_names_and_types_group_addresses_without_transmitting()
--> Result<(), Box<dyn std::error::Error>> {
+fn learn_names_and_types_group_addresses_without_transmitting() -> TestResult {
     let rt = tokio::runtime::Runtime::new()?;
-    let (socket, port) = rt.block_on(async {
-        let sock = UdpSocket::bind("127.0.0.1:0")
-            .await
-            .expect("bind mock gateway");
-        let port = sock.local_addr().expect("local addr").port();
-        (Arc::new(sock), port)
-    });
-
-    let requests = Arc::new(AtomicUsize::new(0));
-    let gateway = rt.spawn(run_gateway(socket, port, requests.clone()));
+    // The mock gateway answers the KNXnet/IP handshake and counts the
+    // tunnelling requests it receives; a pusher task plays the bus traffic.
+    let gw = Arc::new(
+        rt.block_on(
+            MockGateway::builder()
+                .channel(CHANNEL)
+                .idle_timeout(Duration::from_secs(60))
+                .start(),
+        )?,
+    );
+    let port = gw.port();
+    let source = ia(SENDER)?;
+    let frames = telegrams()?
+        .into_iter()
+        .map(|(ga, payload)| {
+            let mut cemi = CemiFrame::group_write_packed(ga, source, &payload);
+            // A bus indication, not our own request echoing back.
+            cemi.message_code = MessageCode::LDataInd;
+            cemi
+        })
+        .collect();
+    let pusher = rt.spawn(push_telegrams(Arc::clone(&gw), frames));
 
     let tmp = temp_dir("session");
     let model_dir = tmp.join("knx");
@@ -231,7 +154,7 @@ fn learn_names_and_types_group_addresses_without_transmitting()
 
     // Learn mode never transmits: not one tunnelling request reached the bus.
     assert_eq!(
-        requests.load(Ordering::SeqCst),
+        gw.stats().requests,
         0,
         "learn transmitted on the bus.\nstderr:\n{stderr}"
     );
@@ -297,7 +220,7 @@ fn learn_names_and_types_group_addresses_without_transmitting()
         }
     }
 
-    rt.block_on(async { gateway.abort() });
+    pusher.abort();
     let _ = std::fs::remove_dir_all(&tmp);
     Ok(())
 }

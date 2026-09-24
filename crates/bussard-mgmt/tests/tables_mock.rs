@@ -1,6 +1,6 @@
 //! Integration tests for [`bussard_mgmt::tables`]: System B table read-back
-//! against an in-process **mock KNX device** behind a mock KNXnet/IP gateway
-//! (the same UDP-loopback pattern as `mock_device.rs`).
+//! against an in-process **mock KNX device** behind the testkit mock KNXnet/IP
+//! gateway (the same pattern as `mock_device.rs`).
 //!
 //! The scripted device serves object-index discovery (`PID_OBJECT_TYPE`),
 //! `PID_TABLE` property arrays with real element counts and chunked reads,
@@ -14,8 +14,6 @@ use std::net::SocketAddrV4;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::net::UdpSocket;
-
 use bussard_mgmt::apci;
 use bussard_mgmt::tables::{
     self, OT_ADDRESS_TABLE, OT_APPLICATION_PROGRAM, OT_ASSOCIATION_TABLE, OT_DEVICE,
@@ -24,9 +22,7 @@ use bussard_mgmt::tables::{
 };
 use bussard_mgmt::{Layer4Connection, Timeouts};
 use bussard_model::{GroupAddress, IndividualAddress};
-use bussard_transport::cemi::{Apdu, CemiFrame, Destination, Tpci};
-use bussard_transport::knxnet::{self, ConnectionHeader, ServiceType};
-use bussard_transport::tpci::{self, TpciKind};
+use bussard_testkit::{BoxError, MockDevice, MockError, MockGateway, Reaction, TestResult, ga};
 use bussard_transport::{ConnectionConfig, Transport};
 
 /// The channel id the mock gateway hands out.
@@ -69,10 +65,6 @@ impl TableDevice {
     }
 }
 
-fn ga(s: &str) -> GroupAddress {
-    s.parse().unwrap()
-}
-
 fn be16(v: u16) -> Vec<u8> {
     v.to_be_bytes().to_vec()
 }
@@ -83,131 +75,27 @@ fn assoc_elem(tsap: u16, asap: u16) -> Vec<u8> {
     v
 }
 
-// --- Mock gateway plumbing (same shape as tests/mock_device.rs) ---
-
-async fn bind_mock() -> (SocketAddrV4, UdpSocket) {
-    let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let addr = match sock.local_addr().unwrap() {
-        std::net::SocketAddr::V4(v4) => v4,
-        _ => panic!("expected v4"),
-    };
-    (addr, sock)
-}
-
-fn connect_response_body(channel: u8, gw: &UdpSocket) -> Vec<u8> {
-    let mut body = vec![channel, 0x00];
-    body.push(0x08);
-    body.push(0x01);
-    body.extend_from_slice(&[127, 0, 0, 1]);
-    body.extend_from_slice(&gw.local_addr().unwrap().port().to_be_bytes());
-    body.extend_from_slice(&[0x04, 0x04, 0x11, 0xFF]);
-    body
-}
-
-fn knxnet_frame(service: ServiceType, body: &[u8]) -> Vec<u8> {
-    let total = (6 + body.len()) as u16;
-    let mut out = Vec::with_capacity(total as usize);
-    out.push(0x06);
-    out.push(0x10);
-    out.extend_from_slice(&(service as u16).to_be_bytes());
-    out.extend_from_slice(&total.to_be_bytes());
-    out.extend_from_slice(body);
-    out
-}
-
-async fn push_indication(
-    gw: &UdpSocket,
-    peer: std::net::SocketAddr,
-    gw_seq: &mut u8,
-    cemi: &CemiFrame,
-) {
-    let hdr = ConnectionHeader {
-        channel_id: CHANNEL,
-        seq: *gw_seq,
-    };
-    let frame = knxnet::tunneling_request(hdr, cemi);
-    gw.send_to(&frame, peer).await.unwrap();
-    *gw_seq = gw_seq.wrapping_add(1);
-}
-
-/// Runs the mock gateway + scripted device until the client disconnects.
+/// Starts a testkit gateway with the scripted device at `address`. Every
+/// numbered request is `T_ACK`ed; [`device_response`] decides the answer.
 ///
-/// The loop only returns after 5 s of silence, so tests end with
-/// `gw_task.abort()` rather than awaiting the task: awaiting it (even
-/// under a 1 s timeout) added that wait to every test.
-async fn run_mock(gw: UdpSocket, address: IndividualAddress, device: TableDevice) {
-    let mut gw_seq: u8 = 0;
-    let mut dev_send_seq: u8 = 0;
-
-    loop {
-        let mut buf = [0u8; 1024];
-        let (n, from) =
-            match tokio::time::timeout(Duration::from_secs(5), gw.recv_from(&mut buf)).await {
-                Ok(Ok(v)) => v,
-                _ => return,
-            };
-        let parsed = match knxnet::parse(&buf[..n]) {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
-        match parsed.service {
-            ServiceType::ConnectRequest => {
-                let resp = knxnet_frame(
-                    ServiceType::ConnectResponse,
-                    &connect_response_body(CHANNEL, &gw),
-                );
-                gw.send_to(&resp, from).await.unwrap();
-            }
-            ServiceType::ConnectionstateRequest => {
-                let resp = knxnet::connectionstate_response(CHANNEL, 0);
-                gw.send_to(&resp, from).await.unwrap();
-            }
-            ServiceType::DisconnectRequest => {
-                let resp = knxnet::disconnect_response(CHANNEL, 0);
-                gw.send_to(&resp, from).await.unwrap();
-                return;
-            }
-            ServiceType::TunnelingAck => {}
-            ServiceType::TunnelingRequest => {
-                let tr = match knxnet::parse_tunneling_request(parsed.body) {
-                    Ok(tr) => tr,
-                    Err(_) => continue,
-                };
-                let ack = knxnet::tunneling_ack(tr.header.channel_id, tr.header.seq, 0);
-                gw.send_to(&ack, from).await.unwrap();
-
-                let cemi = &tr.cemi;
-                let dest = match cemi.destination {
-                    Destination::Individual(ia) => ia,
-                    Destination::Group(_) => continue,
-                };
-                if dest != address {
-                    continue; // absent address
-                }
-                let tool = cemi.source;
-                match tpci::classify(cemi.tpci_octet()) {
-                    TpciKind::Connect => dev_send_seq = 0,
-                    TpciKind::NumberedData(client_seq) => {
-                        let ack = CemiFrame::t_control(tool, address, tpci::t_ack(client_seq));
-                        push_indication(&gw, from, &mut gw_seq, &ack).await;
-                        if let Some((rapci, rdata)) = device_response(&device, cemi) {
-                            let resp = CemiFrame::t_data_connected(
-                                tool,
-                                address,
-                                tpci::ndt(dev_send_seq),
-                                rapci,
-                                &rdata,
-                            );
-                            push_indication(&gw, from, &mut gw_seq, &resp).await;
-                            dev_send_seq = (dev_send_seq + 1) & 0x0f;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            _ => {}
-        }
-    }
+/// The gateway stops when the client disconnects or when it is dropped.
+async fn start_mock(
+    address: IndividualAddress,
+    device: TableDevice,
+) -> Result<MockGateway, MockError> {
+    MockGateway::builder()
+        .channel(CHANNEL)
+        .idle_timeout(Duration::from_secs(5))
+        .device(
+            MockDevice::new(address).with_hook(move |_, req_apci, data| {
+                Some(match device_response(&device, req_apci, data) {
+                    Some((rapci, rdata)) => Reaction::Answer(rapci, rdata),
+                    None => Reaction::Ack,
+                })
+            }),
+        )
+        .start()
+        .await
 }
 
 /// Builds an `A_PropertyValue_Response` payload with an explicit element count.
@@ -223,11 +111,7 @@ fn property_response(object_index: u8, pid: u8, count: u8, start: u16, data: &[u
 }
 
 /// The scripted device's reaction to one management request.
-fn device_response(dev: &TableDevice, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)> {
-    let (req_apci, data) = match (&cemi.tpci, &cemi.apdu) {
-        (Tpci::Other(_), Apdu::Other { apci, data }) => (*apci, data.clone()),
-        _ => return None,
-    };
+fn device_response(dev: &TableDevice, req_apci: u16, data: &[u8]) -> Option<(u16, Vec<u8>)> {
     // Strict wire encodings, like a real System B device (verified live against
     // a Jung 23024): the descriptor type / memory octet count live in the low
     // 6 APCI bits, so the request APCI is masked with 0x3C0 and the payload
@@ -266,7 +150,7 @@ fn device_response(dev: &TableDevice, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)
     // A_MemoryExtended_Read: a full count octet and a 3-octet address, answered
     // with `[return_code][addr:3][data…]`.
     if req_apci == apci::A_MEMORY_EXTENDED_READ {
-        let req = apci::decode_memory_extended_request(&data, false)?;
+        let req = apci::decode_memory_extended_request(data, false)?;
         let bytes: Vec<u8> = (0..u32::from(req.count))
             .map(|i| dev.memory.get(&(req.addr + i)).copied().unwrap_or(0))
             .collect();
@@ -277,7 +161,7 @@ fn device_response(dev: &TableDevice, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)
     }
     match req_apci {
         apci::A_PROPERTY_VALUE_READ => {
-            let pv = apci::decode_property_value_read(&data)?;
+            let pv = apci::decode_property_value_read(data)?;
             let empty = || property_response(pv.object_index, pv.property_id, 0, pv.start, &[]);
 
             // Object discovery: PID_OBJECT_TYPE, element 1.
@@ -337,13 +221,13 @@ fn device_response(dev: &TableDevice, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)
     }
 }
 
-async fn open_bus(addr: SocketAddrV4) -> Transport {
+async fn open_bus(addr: SocketAddrV4) -> Result<Transport, BoxError> {
     let config = ConnectionConfig::tunnel(addr);
-    Transport::connect(&config).await.unwrap()
+    Ok(Transport::connect(&config).await?)
 }
 
 /// A System B device whose tables are exposed as PID_TABLE property arrays.
-fn property_device() -> TableDevice {
+fn property_device() -> Result<TableDevice, BoxError> {
     let mut dev = TableDevice {
         mask: 0x07B0,
         object_types: vec![
@@ -359,9 +243,9 @@ fn property_device() -> TableDevice {
     dev.props.insert(
         (1, PID_TABLE),
         vec![
-            be16(ga("1/2/0").raw()),
-            be16(ga("1/2/1").raw()),
-            be16(ga("1/3/0").raw()),
+            be16(ga("1/2/0")?.raw()),
+            be16(ga("1/2/1")?.raw()),
+            be16(ga("1/3/0")?.raw()),
         ],
     );
     // Association table (object index 2): (TSAP, ASAP) pairs. The ASAP is the
@@ -378,33 +262,35 @@ fn property_device() -> TableDevice {
     // Group object table (object index 3): 22 descriptor words (content unused).
     dev.props
         .insert((3, PID_TABLE), (0..22u16).map(|_| be16(0x079C)).collect());
-    dev
+    Ok(dev)
 }
 
 async fn read_tables_from(
     addr: SocketAddrV4,
     target: IndividualAddress,
-) -> Result<tables::DeviceTables, TablesError> {
-    let mut bus = open_bus(addr).await;
-    let source: IndividualAddress = "0.0.255".parse().unwrap();
-    let mut l4 = Layer4Connection::connect_with(&mut bus, target, source, Timeouts::discovery())
-        .await
-        .unwrap();
+) -> Result<Result<tables::DeviceTables, TablesError>, BoxError> {
+    let mut bus = open_bus(addr).await?;
+    let source: IndividualAddress = "0.0.255".parse()?;
+    let mut l4 =
+        Layer4Connection::connect_with(&mut bus, target, source, Timeouts::discovery()).await?;
     let result = tables::read_tables(&mut l4).await;
     let _ = l4.disconnect().await;
-    result
+    Ok(result)
 }
 
 #[tokio::test]
-async fn reads_tables_via_property_path() {
-    let (addr, gw) = bind_mock().await;
-    let target: IndividualAddress = "1.1.4".parse().unwrap();
-    let gw_task = tokio::spawn(run_mock(gw, target, property_device()));
+async fn reads_tables_via_property_path() -> TestResult {
+    let target: IndividualAddress = "1.1.4".parse()?;
+    let gw = start_mock(target, property_device()?).await?;
+    let addr = gw.addr();
 
-    let read = read_tables_from(addr, target).await.unwrap();
+    let read = read_tables_from(addr, target).await??;
 
     assert_eq!(read.mask, 0x07B0);
-    assert_eq!(read.addresses, vec![ga("1/2/0"), ga("1/2/1"), ga("1/3/0")]);
+    assert_eq!(
+        read.addresses,
+        vec![ga("1/2/0")?, ga("1/2/1")?, ga("1/3/0")?]
+    );
     assert_eq!(read.associations, vec![(1, 21), (2, 22), (3, 21), (3, 22)]);
     // object = asap; TSAP is 1-based into the GA table.
     let resolved: Vec<(u16, GroupAddress)> =
@@ -412,10 +298,10 @@ async fn reads_tables_via_property_path() {
     assert_eq!(
         resolved,
         vec![
-            (21, ga("1/2/0")),
-            (22, ga("1/2/1")),
-            (21, ga("1/3/0")),
-            (22, ga("1/3/0")),
+            (21, ga("1/2/0")?),
+            (22, ga("1/2/1")?),
+            (21, ga("1/3/0")?),
+            (22, ga("1/3/0")?),
         ]
     );
     assert!(
@@ -431,29 +317,31 @@ async fn reads_tables_via_property_path() {
         read.notes
     );
 
-    gw_task.abort();
+    drop(gw);
+    Ok(())
 }
 
 #[tokio::test]
-async fn chunk_capped_device_still_reads_full_table() {
+async fn chunk_capped_device_still_reads_full_table() -> TestResult {
     // A device that answers at most one element per read must still yield the
     // complete table (the reader advances by what actually arrived).
-    let (addr, gw) = bind_mock().await;
-    let target: IndividualAddress = "1.1.4".parse().unwrap();
-    let mut dev = property_device();
+    let target: IndividualAddress = "1.1.4".parse()?;
+    let mut dev = property_device()?;
     dev.max_elems_per_read = Some(1);
-    let gw_task = tokio::spawn(run_mock(gw, target, dev));
+    let gw = start_mock(target, dev).await?;
+    let addr = gw.addr();
 
-    let read = read_tables_from(addr, target).await.unwrap();
+    let read = read_tables_from(addr, target).await??;
     assert_eq!(read.addresses.len(), 3);
     assert_eq!(read.associations.len(), 4);
 
-    gw_task.abort();
+    drop(gw);
+    Ok(())
 }
 
 /// The property device advertising `PID_MAX_APDU_LENGTH = 233`.
-fn capable_property_device() -> TableDevice {
-    let mut dev = property_device();
+fn capable_property_device() -> Result<TableDevice, BoxError> {
+    let mut dev = property_device()?;
     dev.props
         .insert((0, apci::PID_MAX_APDU_LENGTH), vec![be16(233)]);
     // A 40-entry address table: more than one 15-element read.
@@ -461,7 +349,7 @@ fn capable_property_device() -> TableDevice {
         (1, PID_TABLE),
         (0..40u16).map(|i| be16(0x0A00 + i)).collect(),
     );
-    dev
+    Ok(dev)
 }
 
 /// The `PID_TABLE` reads of elements 1.. the device served for `object`.
@@ -478,18 +366,17 @@ fn element_reads(dev: &TableDevice, object: u8) -> Vec<(u8, u16)> {
 }
 
 #[tokio::test]
-async fn test_read_tables_negotiated_apdu_reads_many_elements_per_request()
--> Result<(), Box<dyn std::error::Error>> {
+async fn test_read_tables_negotiated_apdu_reads_many_elements_per_request() -> TestResult {
     // Issue #194: with PID_MAX_APDU_LENGTH negotiated, the 40-entry address
     // table goes out in 15-element reads (the 4-bit count field's ceiling), not
     // the standard-frame 4 (8 octets / 2).
-    let (addr, gw) = bind_mock().await;
     let target: IndividualAddress = "1.1.4".parse()?;
-    let dev = capable_property_device();
-    let gw_task = tokio::spawn(run_mock(gw, target, dev.clone()));
+    let dev = capable_property_device()?;
+    let gw = start_mock(target, dev.clone()).await?;
+    let addr = gw.addr();
 
-    let read = read_tables_from(addr, target).await?;
-    gw_task.abort();
+    let read = read_tables_from(addr, target).await??;
+    drop(gw);
     assert_eq!(read.addresses.len(), 40);
     assert_eq!(read.addresses[39], GroupAddress::from_raw(0x0A27));
     assert_eq!(
@@ -503,18 +390,17 @@ async fn test_read_tables_negotiated_apdu_reads_many_elements_per_request()
 }
 
 #[tokio::test]
-async fn test_read_tables_multi_element_refusal_falls_back_to_one_element()
--> Result<(), Box<dyn std::error::Error>> {
+async fn test_read_tables_multi_element_refusal_falls_back_to_one_element() -> TestResult {
     // A device that refuses count > 1 still yields the whole table, one element
     // per read after the first refusal.
-    let (addr, gw) = bind_mock().await;
     let target: IndividualAddress = "1.1.4".parse()?;
-    let mut dev = capable_property_device();
+    let mut dev = capable_property_device()?;
     dev.refuse_multi_element = true;
-    let gw_task = tokio::spawn(run_mock(gw, target, dev.clone()));
+    let gw = start_mock(target, dev.clone()).await?;
+    let addr = gw.addr();
 
-    let read = read_tables_from(addr, target).await?;
-    gw_task.abort();
+    let read = read_tables_from(addr, target).await??;
+    drop(gw);
     assert_eq!(read.addresses.len(), 40);
     assert_eq!(read.associations.len(), 4);
     let reads = element_reads(&dev, 1);
@@ -525,29 +411,32 @@ async fn test_read_tables_multi_element_refusal_falls_back_to_one_element()
 }
 
 #[tokio::test]
-async fn non_system_b_mask_is_refused() {
-    let (addr, gw) = bind_mock().await;
-    let target: IndividualAddress = "1.1.7".parse().unwrap();
+async fn non_system_b_mask_is_refused() -> TestResult {
+    let target: IndividualAddress = "1.1.7".parse()?;
     let dev = TableDevice {
         mask: 0x0705,
         object_types: vec![OT_DEVICE],
         ..TableDevice::default()
     };
-    let gw_task = tokio::spawn(run_mock(gw, target, dev));
+    let gw = start_mock(target, dev).await?;
+    let addr = gw.addr();
 
-    let err = read_tables_from(addr, target).await.unwrap_err();
+    let err = read_tables_from(addr, target)
+        .await?
+        .err()
+        .ok_or("expected the read to fail, it succeeded")?;
     match err {
         TablesError::UnsupportedMask { mask, .. } => assert_eq!(mask, 0x0705),
         other => panic!("expected UnsupportedMask, got {other:?}"),
     }
 
-    gw_task.abort();
+    drop(gw);
+    Ok(())
 }
 
 #[tokio::test]
-async fn falls_back_to_memory_when_pid_table_is_unreadable() {
-    let (addr, gw) = bind_mock().await;
-    let target: IndividualAddress = "1.1.9".parse().unwrap();
+async fn falls_back_to_memory_when_pid_table_is_unreadable() -> TestResult {
+    let target: IndividualAddress = "1.1.9".parse()?;
 
     // Tables live only in memory; PID_TABLE is not served by this mock.
     let mut dev = TableDevice {
@@ -559,8 +448,8 @@ async fn falls_back_to_memory_when_pid_table_is_unreadable() {
     dev.props
         .insert((1, PID_TABLE_REFERENCE), vec![be16(0x4000)]);
     let mut addr_blob = be16(2);
-    addr_blob.extend_from_slice(&be16(ga("1/2/0").raw()));
-    addr_blob.extend_from_slice(&be16(ga("4/0/7").raw()));
+    addr_blob.extend_from_slice(&be16(ga("1/2/0")?.raw()));
+    addr_blob.extend_from_slice(&be16(ga("4/0/7")?.raw()));
     dev.put_memory(0x4000, &addr_blob);
     // Association table at 0x4100 with a 4-octet PID_TABLE_REFERENCE value:
     // count 2, entries (1, 1) and (2, 5).
@@ -573,14 +462,15 @@ async fn falls_back_to_memory_when_pid_table_is_unreadable() {
     assoc_blob.extend_from_slice(&assoc_elem(2, 5));
     dev.put_memory(0x4100, &assoc_blob);
 
-    let gw_task = tokio::spawn(run_mock(gw, target, dev));
+    let gw = start_mock(target, dev).await?;
+    let addr = gw.addr();
 
-    let read = read_tables_from(addr, target).await.unwrap();
-    assert_eq!(read.addresses, vec![ga("1/2/0"), ga("4/0/7")]);
+    let read = read_tables_from(addr, target).await??;
+    assert_eq!(read.addresses, vec![ga("1/2/0")?, ga("4/0/7")?]);
     assert_eq!(read.associations, vec![(1, 1), (2, 5)]);
     let resolved: Vec<(u16, GroupAddress)> =
         read.resolved.iter().map(|l| (l.object, l.ga)).collect();
-    assert_eq!(resolved, vec![(1, ga("1/2/0")), (5, ga("4/0/7"))]);
+    assert_eq!(resolved, vec![(1, ga("1/2/0")?), (5, ga("4/0/7")?)]);
     assert!(
         read.sources.iter().all(|(_, s)| *s == TableSource::Memory),
         "both tables should come from the memory path: {:?}",
@@ -594,19 +484,19 @@ async fn falls_back_to_memory_when_pid_table_is_unreadable() {
         read.notes
     );
 
-    gw_task.abort();
+    drop(gw);
+    Ok(())
 }
 
 #[tokio::test]
-async fn memory_table_above_64k_is_read_via_extended_memory() {
+async fn memory_table_above_64k_is_read_via_extended_memory() -> TestResult {
     // The read-back that motivated the extended memory service: a 07B0 actuator
     // whose tables live above `0xFFFF` (real segments run `0xf000..0x1aad3`). The
     // device here refuses the plain `A_Memory_Read` outright, so the tables can
     // only be read if `read_tables` really issues `A_MemoryExtended_Read` — before
     // issue #80 this path refused the table reference as "exceeds the 16-bit
     // A_Memory_Read address space" and reconstruct/apply verification failed.
-    let (addr, gw) = bind_mock().await;
-    let target: IndividualAddress = "1.1.11".parse().unwrap();
+    let target: IndividualAddress = "1.1.11".parse()?;
 
     let mut dev = TableDevice {
         mask: 0x07B0,
@@ -621,8 +511,8 @@ async fn memory_table_above_64k_is_read_via_extended_memory() {
         vec![ADDR_TABLE.to_be_bytes().to_vec()],
     );
     let mut addr_blob = be16(2);
-    addr_blob.extend_from_slice(&be16(ga("1/2/0").raw()));
-    addr_blob.extend_from_slice(&be16(ga("4/0/7").raw()));
+    addr_blob.extend_from_slice(&be16(ga("1/2/0")?.raw()));
+    addr_blob.extend_from_slice(&be16(ga("4/0/7")?.raw()));
     dev.put_memory(ADDR_TABLE, &addr_blob);
     // Association table at 0x01_AAD3 — the top of the real actuators' span.
     const ASSOC_TABLE: u32 = 0x0001_AAD3;
@@ -635,10 +525,11 @@ async fn memory_table_above_64k_is_read_via_extended_memory() {
     assoc_blob.extend_from_slice(&assoc_elem(2, 5));
     dev.put_memory(ASSOC_TABLE, &assoc_blob);
 
-    let gw_task = tokio::spawn(run_mock(gw, target, dev));
+    let gw = start_mock(target, dev).await?;
+    let addr = gw.addr();
 
-    let read = read_tables_from(addr, target).await.unwrap();
-    assert_eq!(read.addresses, vec![ga("1/2/0"), ga("4/0/7")]);
+    let read = read_tables_from(addr, target).await??;
+    assert_eq!(read.addresses, vec![ga("1/2/0")?, ga("4/0/7")?]);
     assert_eq!(read.associations, vec![(1, 1), (2, 5)]);
     assert!(
         read.sources.iter().all(|(_, s)| *s == TableSource::Memory),
@@ -646,13 +537,13 @@ async fn memory_table_above_64k_is_read_via_extended_memory() {
         read.sources
     );
 
-    gw_task.abort();
+    drop(gw);
+    Ok(())
 }
 
 #[tokio::test]
-async fn device_with_no_readable_table_is_a_clean_error() {
-    let (addr, gw) = bind_mock().await;
-    let target: IndividualAddress = "1.1.11".parse().unwrap();
+async fn device_with_no_readable_table_is_a_clean_error() -> TestResult {
+    let target: IndividualAddress = "1.1.11".parse()?;
     // Interface objects exist, but neither PID_TABLE nor PID_TABLE_REFERENCE
     // answers.
     let dev = TableDevice {
@@ -660,9 +551,13 @@ async fn device_with_no_readable_table_is_a_clean_error() {
         object_types: vec![OT_DEVICE, OT_ADDRESS_TABLE, OT_ASSOCIATION_TABLE],
         ..TableDevice::default()
     };
-    let gw_task = tokio::spawn(run_mock(gw, target, dev));
+    let gw = start_mock(target, dev).await?;
+    let addr = gw.addr();
 
-    let err = read_tables_from(addr, target).await.unwrap_err();
+    let err = read_tables_from(addr, target)
+        .await?
+        .err()
+        .ok_or("expected the read to fail, it succeeded")?;
     match err {
         TablesError::TableUnreadable { reason, .. } => {
             assert!(
@@ -673,21 +568,25 @@ async fn device_with_no_readable_table_is_a_clean_error() {
         other => panic!("expected TableUnreadable, got {other:?}"),
     }
 
-    gw_task.abort();
+    drop(gw);
+    Ok(())
 }
 
 #[tokio::test]
-async fn device_without_address_table_object_is_a_clean_error() {
-    let (addr, gw) = bind_mock().await;
-    let target: IndividualAddress = "1.1.12".parse().unwrap();
+async fn device_without_address_table_object_is_a_clean_error() -> TestResult {
+    let target: IndividualAddress = "1.1.12".parse()?;
     let dev = TableDevice {
         mask: 0x07B0,
         object_types: vec![OT_DEVICE, OT_APPLICATION_PROGRAM],
         ..TableDevice::default()
     };
-    let gw_task = tokio::spawn(run_mock(gw, target, dev));
+    let gw = start_mock(target, dev).await?;
+    let addr = gw.addr();
 
-    let err = read_tables_from(addr, target).await.unwrap_err();
+    let err = read_tables_from(addr, target)
+        .await?
+        .err()
+        .ok_or("expected the read to fail, it succeeded")?;
     match err {
         TablesError::TableUnreadable { reason, .. } => {
             assert!(
@@ -698,5 +597,6 @@ async fn device_without_address_table_object_is_a_clean_error() {
         other => panic!("expected TableUnreadable, got {other:?}"),
     }
 
-    gw_task.abort();
+    drop(gw);
+    Ok(())
 }

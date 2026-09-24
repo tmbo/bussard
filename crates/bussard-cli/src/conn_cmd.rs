@@ -476,7 +476,7 @@ mod tests {
                 ..Default::default()
             },
         )
-        .unwrap()
+        .expect("test fixture")
     }
 
     #[test]
@@ -486,7 +486,8 @@ mod tests {
     }
 
     #[test]
-    fn is_loopback_gateway_false_for_real_host_and_routing() {
+    fn is_loopback_gateway_false_for_real_host_and_routing()
+    -> Result<(), Box<dyn std::error::Error>> {
         assert!(!is_loopback_gateway(&tunnel_to("192.0.2.10")));
         let routing = resolve_config(
             None,
@@ -494,16 +495,18 @@ mod tests {
                 routing: true,
                 ..Default::default()
             },
-        )
-        .unwrap();
+        )?;
         assert!(!is_loopback_gateway(&routing));
+        Ok(())
     }
 
     #[test]
-    fn enforce_write_gate_allows_loopback_without_optin() {
+    fn enforce_write_gate_allows_loopback_without_optin() -> Result<(), Box<dyn std::error::Error>>
+    {
         // Loopback (the local simulator, the test suite) is always permitted, no
         // flag or env needed.
-        enforce_write_gate(&tunnel_to("127.0.0.1:3671"), false).unwrap();
+        enforce_write_gate(&tunnel_to("127.0.0.1:3671"), false)?;
+        Ok(())
     }
 
     #[test]
@@ -512,7 +515,8 @@ mod tests {
         unsafe {
             std::env::remove_var(ALLOW_REAL_GATEWAY_ENV);
         }
-        let err = enforce_write_gate(&tunnel_to("192.0.2.10"), false).unwrap_err();
+        let err =
+            enforce_write_gate(&tunnel_to("192.0.2.10"), false).expect_err("expected an error");
         let msg = err.to_string();
         assert!(msg.contains("192.0.2.10"), "must name the host; got {msg}");
         assert!(
@@ -522,12 +526,14 @@ mod tests {
     }
 
     #[test]
-    fn enforce_write_gate_allows_non_loopback_with_flag() {
-        enforce_write_gate(&tunnel_to("192.0.2.10"), true).unwrap();
+    fn enforce_write_gate_allows_non_loopback_with_flag() -> Result<(), Box<dyn std::error::Error>>
+    {
+        enforce_write_gate(&tunnel_to("192.0.2.10"), true)?;
+        Ok(())
     }
 
     #[test]
-    fn enforce_write_gate_allows_non_loopback_with_env() {
+    fn enforce_write_gate_allows_non_loopback_with_env() -> Result<(), Box<dyn std::error::Error>> {
         // SAFETY: single-threaded test; nextest isolates each test in its own
         // process, so this env mutation cannot race another test.
         unsafe {
@@ -537,11 +543,12 @@ mod tests {
         unsafe {
             std::env::remove_var(ALLOW_REAL_GATEWAY_ENV);
         }
-        out.unwrap();
+        out?;
+        Ok(())
     }
 
     #[test]
-    fn gateway_display_renders_host_and_multicast() {
+    fn gateway_display_renders_host_and_multicast() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(
             gateway_display(&tunnel_to("10.0.0.5:1234")),
             "10.0.0.5:1234"
@@ -552,55 +559,57 @@ mod tests {
                 routing: true,
                 ..Default::default()
             },
-        )
-        .unwrap();
+        )?;
         assert!(gateway_display(&routing).starts_with("multicast "));
+        Ok(())
     }
 
     #[test]
-    fn parse_socket_adds_default_port() {
-        let a = parse_socket("127.0.0.1").unwrap();
+    fn parse_socket_adds_default_port() -> Result<(), Box<dyn std::error::Error>> {
+        let a = parse_socket("127.0.0.1")?;
         assert_eq!(a.port(), DEFAULT_PORT);
         assert_eq!(a.ip().to_string(), "127.0.0.1");
+        Ok(())
     }
 
     #[test]
-    fn parse_socket_explicit_port() {
-        let a = parse_socket("10.0.0.5:1234").unwrap();
+    fn parse_socket_explicit_port() -> Result<(), Box<dyn std::error::Error>> {
+        let a = parse_socket("10.0.0.5:1234")?;
         assert_eq!(a.port(), 1234);
+        Ok(())
     }
 
     #[test]
-    fn routing_override_forces_multicast() {
+    fn routing_override_forces_multicast() -> Result<(), Box<dyn std::error::Error>> {
         let cfg = resolve_config(
             None,
             &ConnOverrides {
                 routing: true,
                 ..Default::default()
             },
-        )
-        .unwrap();
+        )?;
         assert_eq!(cfg.transport, TransportKind::Routing);
         assert_eq!(cfg.multicast.ip(), &DEFAULT_MULTICAST);
+        Ok(())
     }
 
     #[test]
-    fn gateway_override_forces_tunnel() {
+    fn gateway_override_forces_tunnel() -> Result<(), Box<dyn std::error::Error>> {
         let cfg = resolve_config(
             None,
             &ConnOverrides {
                 gateway: Some("192.0.2.10".to_string()),
                 ..Default::default()
             },
-        )
-        .unwrap();
+        )?;
         assert_eq!(cfg.transport, TransportKind::Tunnel);
-        assert_eq!(cfg.gateway.unwrap().port(), DEFAULT_PORT);
+        assert_eq!(cfg.gateway.ok_or("expected a value")?.port(), DEFAULT_PORT);
+        Ok(())
     }
 
     #[test]
     fn tunnel_without_gateway_errors() {
-        let err = resolve_config(None, &ConnOverrides::default()).unwrap_err();
+        let err = resolve_config(None, &ConnOverrides::default()).expect_err("expected an error");
         assert!(err.to_string().contains("no gateway"), "got {err}");
     }
 
@@ -610,7 +619,7 @@ mod tests {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
+                .expect("test fixture")
                 .as_nanos()
         ));
         let _ = std::fs::remove_dir_all(&dir);
@@ -618,27 +627,27 @@ mod tests {
     }
 
     #[test]
-    fn load_model_required_absent_dir_is_ok_none() {
+    fn load_model_required_absent_dir_is_ok_none() -> Result<(), Box<dyn std::error::Error>> {
         // A fresh project: the directory does not exist. Required-load returns
         // Ok(None) so the caller may proceed unmodeled (issue #55).
         let dir = tmp_dir("absent");
-        let out = load_model_required(&dir).unwrap();
+        let out = load_model_required(&dir)?;
         assert!(out.is_none(), "absent dir must be Ok(None)");
+        Ok(())
     }
 
     #[test]
-    fn load_model_required_broken_model_is_hard_error() {
+    fn load_model_required_broken_model_is_hard_error() -> Result<(), Box<dyn std::error::Error>> {
         // A present-but-malformed groups.yaml must be a hard error, NOT a silent
         // None that would fail the protected-GA gate open (issue #55).
         let dir = tmp_dir("broken");
-        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&dir)?;
         // Duplicate keys make the YAML parse fail.
         std::fs::write(
             dir.join("groups.yaml"),
             "groups:\n  \"1/0/0\":\n    name: a\n  \"1/0/0\":\n    name: b\n",
-        )
-        .unwrap();
-        let err = load_model_required(&dir).unwrap_err();
+        )?;
+        let err = load_model_required(&dir).expect_err("expected an error");
         let msg = err.to_string();
         assert!(msg.contains("failed to load model"), "got {msg}");
         assert!(
@@ -646,17 +655,19 @@ mod tests {
             "got {msg}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
     }
 
     #[test]
-    fn load_model_required_empty_dir_is_fresh_project() {
+    fn load_model_required_empty_dir_is_fresh_project() -> Result<(), Box<dyn std::error::Error>> {
         // An existing but empty project dir (no groups.yaml) loads to the default
         // empty model — a fresh project with nothing to protect.
         let dir = tmp_dir("empty");
-        std::fs::create_dir_all(&dir).unwrap();
-        let out = load_model_required(&dir).unwrap();
+        std::fs::create_dir_all(&dir)?;
+        let out = load_model_required(&dir)?;
         assert!(out.is_some(), "empty dir loads the default model");
-        assert!(out.unwrap().groups.groups.is_empty());
+        assert!(out.ok_or("expected a value")?.groups.groups.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
     }
 }

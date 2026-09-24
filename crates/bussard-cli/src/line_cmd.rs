@@ -952,11 +952,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_parse_line_accepts_area_line() {
-        assert_eq!(parse_line("1.1").unwrap(), (1, 1));
-        assert_eq!(parse_line("0.15").unwrap(), (0, 15));
+    fn test_parse_line_accepts_area_line() -> Result<(), Box<dyn std::error::Error>> {
+        assert_eq!(parse_line("1.1")?, (1, 1));
+        assert_eq!(parse_line("0.15")?, (0, 15));
         // A full address is accepted, its device part ignored.
-        assert_eq!(parse_line("2.3.47").unwrap(), (2, 3));
+        assert_eq!(parse_line("2.3.47")?, (2, 3));
+        Ok(())
     }
 
     #[test]

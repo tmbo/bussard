@@ -52,8 +52,11 @@ fn baseline_md() -> PathBuf {
 /// Writes a single-app `.knxprod` from a committed `.app.xml`, wrapping it in the
 /// minimal container `read_knxprod` expects (`knx_master.xml`, `Hardware.xml`,
 /// the app xml). The app id is read from the file's `Id="…"` attribute.
-fn build_single_app_knxprod(app_xml_path: &Path, out: &Path) {
-    let xml = std::fs::read_to_string(app_xml_path).expect("read fixture app xml");
+fn build_single_app_knxprod(
+    app_xml_path: &Path,
+    out: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let xml = std::fs::read_to_string(app_xml_path)?;
     let app_id = extract_attr(&xml, "Id").unwrap_or_else(|| "M-0000_A-0000".to_string());
     let manuf = app_id.split('_').next().unwrap_or("M-0000").to_string();
 
@@ -70,37 +73,34 @@ fn build_single_app_knxprod(app_xml_path: &Path, out: &Path) {
 </KNX>"#
     );
 
-    let f = std::fs::File::create(out).expect("create knxprod");
+    let f = std::fs::File::create(out)?;
     let mut zip = zip::ZipWriter::new(f);
     let opts = SimpleFileOptions::default();
-    zip.start_file("knx_master.xml", opts).unwrap();
-    zip.write_all(b"<KNX/>").unwrap();
-    zip.start_file(format!("{manuf}/Hardware.xml"), opts)
-        .unwrap();
-    zip.write_all(hardware.as_bytes()).unwrap();
-    zip.start_file(format!("{manuf}/{app_id}.xml"), opts)
-        .unwrap();
-    zip.write_all(xml.as_bytes()).unwrap();
-    zip.finish().unwrap();
+    zip.start_file("knx_master.xml", opts)?;
+    zip.write_all(b"<KNX/>")?;
+    zip.start_file(format!("{manuf}/Hardware.xml"), opts)?;
+    zip.write_all(hardware.as_bytes())?;
+    zip.start_file(format!("{manuf}/{app_id}.xml"), opts)?;
+    zip.write_all(xml.as_bytes())?;
+    zip.finish()?;
+    Ok(())
 }
 
 /// Writes a multi-app `.knxprod` from a committed `*.knxprod.d/` directory that
 /// holds a `Hardware.xml` plus several `M-*.xml` application programs.
-fn build_multi_app_knxprod(dir: &Path, out: &Path) {
-    let hardware = std::fs::read_to_string(dir.join("Hardware.xml")).expect("read Hardware.xml");
+fn build_multi_app_knxprod(dir: &Path, out: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let hardware = std::fs::read_to_string(dir.join("Hardware.xml"))?;
     let manuf = extract_attr(&hardware, "RefId").unwrap_or_else(|| "M-0000".to_string());
 
-    let f = std::fs::File::create(out).expect("create knxprod");
+    let f = std::fs::File::create(out)?;
     let mut zip = zip::ZipWriter::new(f);
     let opts = SimpleFileOptions::default();
-    zip.start_file("knx_master.xml", opts).unwrap();
-    zip.write_all(b"<KNX/>").unwrap();
-    zip.start_file(format!("{manuf}/Hardware.xml"), opts)
-        .unwrap();
-    zip.write_all(hardware.as_bytes()).unwrap();
+    zip.start_file("knx_master.xml", opts)?;
+    zip.write_all(b"<KNX/>")?;
+    zip.start_file(format!("{manuf}/Hardware.xml"), opts)?;
+    zip.write_all(hardware.as_bytes())?;
 
-    let mut app_files: Vec<PathBuf> = std::fs::read_dir(dir)
-        .unwrap()
+    let mut app_files: Vec<PathBuf> = std::fs::read_dir(dir)?
         .flatten()
         .map(|e| e.path())
         .filter(|p| {
@@ -111,12 +111,17 @@ fn build_multi_app_knxprod(dir: &Path, out: &Path) {
         .collect();
     app_files.sort();
     for p in &app_files {
-        let name = p.file_name().unwrap().to_string_lossy().into_owned();
-        let xml = std::fs::read_to_string(p).unwrap();
-        zip.start_file(format!("{manuf}/{name}"), opts).unwrap();
-        zip.write_all(xml.as_bytes()).unwrap();
+        let name = p
+            .file_name()
+            .ok_or("fixture path has a file name")?
+            .to_string_lossy()
+            .into_owned();
+        let xml = std::fs::read_to_string(p)?;
+        zip.start_file(format!("{manuf}/{name}"), opts)?;
+        zip.write_all(xml.as_bytes())?;
     }
-    zip.finish().unwrap();
+    zip.finish()?;
+    Ok(())
 }
 
 /// Minimal attribute extractor for the fixture assembly (avoids pulling an XML
@@ -131,43 +136,48 @@ fn extract_attr(xml: &str, key: &str) -> Option<String> {
 }
 
 /// Assembles every committed fixture into a temp corpus dir and returns it.
-fn assemble_corpus(tmp: &Path) {
+fn assemble_corpus(tmp: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let fx = fixtures_dir();
     // Single-app fixtures: every *.app.xml.
-    for entry in std::fs::read_dir(&fx).unwrap().flatten() {
+    for entry in std::fs::read_dir(&fx)?.flatten() {
         let p = entry.path();
-        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        let name = p
+            .file_name()
+            .ok_or("fixture path has a file name")?
+            .to_string_lossy()
+            .into_owned();
         if name.ends_with(".app.xml") {
             let stem = name.trim_end_matches(".app.xml");
-            build_single_app_knxprod(&p, &tmp.join(format!("{stem}.knxprod")));
+            build_single_app_knxprod(&p, &tmp.join(format!("{stem}.knxprod")))?;
         }
     }
     // Multi-app fixtures: every *.knxprod.d/ directory.
-    for entry in std::fs::read_dir(&fx).unwrap().flatten() {
+    for entry in std::fs::read_dir(&fx)?.flatten() {
         let p = entry.path();
-        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        let name = p
+            .file_name()
+            .ok_or("fixture path has a file name")?
+            .to_string_lossy()
+            .into_owned();
         if p.is_dir() && name.ends_with(".knxprod.d") {
             let stem = name.trim_end_matches(".d");
-            build_multi_app_knxprod(&p, &tmp.join(stem));
+            build_multi_app_knxprod(&p, &tmp.join(stem))?;
         }
     }
+    Ok(())
 }
 
 #[test]
-fn fixture_corpus_sweep_buckets_as_expected() {
-    let tmp = tempfile::tempdir().unwrap();
-    assemble_corpus(tmp.path());
+fn fixture_corpus_sweep_buckets_as_expected() -> Result<(), Box<dyn std::error::Error>> {
+    let tmp = tempfile::tempdir()?;
+    assemble_corpus(tmp.path())?;
     let manifest = sweep_corpus(tmp.path());
 
     // Regenerate the baseline first, so a deliberate refresh does not trip the
     // shape assertions below (which encode the *current* intent).
     if std::env::var_os("BUSSARD_UPDATE_SWEEP_MANIFEST").is_some() {
-        std::fs::write(
-            baseline_json(),
-            manifest.to_json().expect("the manifest serializes"),
-        )
-        .expect("write baseline json");
-        std::fs::write(baseline_md(), manifest.to_markdown()).expect("write baseline md");
+        std::fs::write(baseline_json(), manifest.to_json()?)?;
+        std::fs::write(baseline_md(), manifest.to_markdown())?;
         eprintln!("baseline regenerated (BUSSARD_UPDATE_SWEEP_MANIFEST set)");
     }
 
@@ -249,7 +259,7 @@ fn fixture_corpus_sweep_buckets_as_expected() {
 
     // Baseline diff (skipped on a regen run, which already wrote it above).
     if std::env::var_os("BUSSARD_UPDATE_SWEEP_MANIFEST").is_some() {
-        return;
+        return Ok(());
     }
     let expected = std::fs::read_to_string(baseline_json()).unwrap_or_else(|_| {
         panic!(
@@ -257,7 +267,7 @@ fn fixture_corpus_sweep_buckets_as_expected() {
             baseline_json().display()
         )
     });
-    let expected_manifest = SweepManifest::from_json(&expected).expect("parse baseline");
+    let expected_manifest = SweepManifest::from_json(&expected)?;
     assert_eq!(
         manifest,
         expected_manifest,
@@ -266,4 +276,5 @@ fn fixture_corpus_sweep_buckets_as_expected() {
          BUSSARD_UPDATE_SWEEP_MANIFEST=1 and review the diff.",
         baseline_json().display()
     );
+    Ok(())
 }

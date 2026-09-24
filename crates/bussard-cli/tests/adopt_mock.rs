@@ -5,7 +5,7 @@
 //! are supplied (the env var stands in for the address the wizard would prompt
 //! for). These tests assemble a tiny fabricated `.knxprod` in a temp dir — the
 //! same technique `bussard-prod`'s own tests use — and drive the built binary as
-//! a subprocess against a mock gateway hosting one device in programming mode.
+//! a subprocess against a `bussard-testkit` mock gateway hosting one device in programming mode.
 //!
 //! Cases:
 //!   * happy path — device adopted, rich device file with a com-object table;
@@ -15,18 +15,11 @@
 //!   * product-less stub path — no `--product` and a non-TTY → refused (the
 //!     wizard needs inputs), documenting the gate.
 
-use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bussard_mgmt::apci;
-use bussard_model::IndividualAddress;
-use bussard_transport::cemi::{Apdu, CemiFrame, Destination, Tpci};
-use bussard_transport::knxnet::{self, ConnectionHeader, ServiceType};
-use bussard_transport::tpci::{self, TpciKind};
-use tokio::net::UdpSocket;
+use bussard_testkit::{MockDevice, MockGateway, Reaction, TestResult, ia};
 
 const CHANNEL: u8 = 0x22;
 
@@ -68,7 +61,7 @@ const APP_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
  </ApplicationPrograms></Manufacturer></ManufacturerData>
 </KNX>"#;
 
-fn build_knxprod(path: &std::path::Path) {
+fn build_knxprod(path: &std::path::Path) -> std::io::Result<()> {
     // A `.knxprod` is a plain ZIP. To keep this test free of a `zip` dev-dep
     // (file-set discipline — only adopt_*.rs is ours to add), we emit a
     // store-mode (uncompressed, method 0) ZIP by hand. Store mode needs only a
@@ -79,7 +72,7 @@ fn build_knxprod(path: &std::path::Path) {
         ("M-0083/M-0083_A-1234-11-ABCD-O000A.xml", APP_XML.as_bytes()),
     ];
     let bytes = zip_store(entries);
-    std::fs::write(path, bytes).unwrap();
+    std::fs::write(path, bytes)
 }
 
 /// Emits a minimal store-mode (method 0) ZIP archive for the given entries.
@@ -163,140 +156,19 @@ fn crc32(data: &[u8]) -> u32 {
 }
 
 // ---------------------------------------------------------------------------
-// Mock gateway (a trimmed copy of tests/assign_mock.rs — same protocol shape).
+// Mock device on the `bussard-testkit` gateway.
 // ---------------------------------------------------------------------------
 
+/// What the factory device reports about itself.
 #[derive(Clone)]
-struct DeviceState {
-    address: IndividualAddress,
-    programming: bool,
+struct Identity {
     mask: u16,
     manufacturer: u16,
     serial: [u8; 6],
     order: Vec<u8>,
 }
 
-type Shared = Arc<Mutex<Vec<DeviceState>>>;
-
-fn knxnet_frame(service: ServiceType, body: &[u8]) -> Vec<u8> {
-    let total = (6 + body.len()) as u16;
-    let mut out = Vec::with_capacity(total as usize);
-    out.push(0x06);
-    out.push(0x10);
-    out.extend_from_slice(&(service as u16).to_be_bytes());
-    out.extend_from_slice(&total.to_be_bytes());
-    out.extend_from_slice(body);
-    out
-}
-
-fn connect_response_body(channel: u8, gw: &UdpSocket) -> Vec<u8> {
-    let mut body = vec![channel, 0x00];
-    body.push(0x08);
-    body.push(0x01);
-    body.extend_from_slice(&[127, 0, 0, 1]);
-    body.extend_from_slice(&gw.local_addr().unwrap().port().to_be_bytes());
-    body.extend_from_slice(&[0x04, 0x04, 0x11, 0xFF]);
-    body
-}
-
-async fn push(gw: &UdpSocket, peer: SocketAddr, gw_seq: &mut u8, cemi: &CemiFrame) {
-    let hdr = ConnectionHeader {
-        channel_id: CHANNEL,
-        seq: *gw_seq,
-    };
-    gw.send_to(&knxnet::tunneling_request(hdr, cemi), peer)
-        .await
-        .unwrap();
-    *gw_seq = gw_seq.wrapping_add(1);
-}
-
-async fn handle(
-    gw: &UdpSocket,
-    peer: SocketAddr,
-    devices: &Shared,
-    cemi: &CemiFrame,
-    gw_seq: &mut u8,
-    dev_seq: &mut HashMap<u16, u8>,
-) {
-    let tool = cemi.source;
-    match &cemi.destination {
-        Destination::Group(_) => {
-            let (apci_val, data) = match (&cemi.tpci, &cemi.apdu) {
-                (Tpci::DataGroup, Apdu::Other { apci, data }) => (*apci, data.clone()),
-                _ => return,
-            };
-            match apci_val {
-                apci::A_INDIVIDUAL_ADDRESS_READ => {
-                    let responders: Vec<IndividualAddress> = {
-                        let devs = devices.lock().unwrap();
-                        devs.iter()
-                            .filter(|d| d.programming)
-                            .map(|d| d.address)
-                            .collect()
-                    };
-                    for addr in responders {
-                        let resp =
-                            CemiFrame::t_broadcast(addr, apci::A_INDIVIDUAL_ADDRESS_RESPONSE, &[]);
-                        push(gw, peer, gw_seq, &resp).await;
-                    }
-                }
-                apci::A_INDIVIDUAL_ADDRESS_WRITE if data.len() >= 2 => {
-                    let new_addr =
-                        IndividualAddress::from_raw(u16::from_be_bytes([data[0], data[1]]));
-                    let mut devs = devices.lock().unwrap();
-                    for d in devs.iter_mut() {
-                        if d.programming {
-                            d.address = new_addr;
-                            d.programming = false;
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        Destination::Individual(dest) => {
-            let dest = *dest;
-            let dev = {
-                let devs = devices.lock().unwrap();
-                devs.iter().find(|d| d.address == dest).cloned()
-            };
-            let Some(dev) = dev else {
-                return;
-            };
-            match tpci::classify(cemi.tpci_octet()) {
-                TpciKind::Connect => {
-                    dev_seq.insert(dev.address.raw(), 0);
-                }
-                TpciKind::Disconnect => {
-                    dev_seq.remove(&dev.address.raw());
-                }
-                TpciKind::NumberedData(client_seq) => {
-                    let ack = CemiFrame::t_control(tool, dev.address, tpci::t_ack(client_seq));
-                    push(gw, peer, gw_seq, &ack).await;
-                    if let Some((rapci, rdata)) = device_response(&dev, cemi) {
-                        let seq = *dev_seq.get(&dev.address.raw()).unwrap_or(&0);
-                        let resp = CemiFrame::t_data_connected(
-                            tool,
-                            dev.address,
-                            tpci::ndt(seq),
-                            rapci,
-                            &rdata,
-                        );
-                        push(gw, peer, gw_seq, &resp).await;
-                        dev_seq.insert(dev.address.raw(), (seq + 1) & 0x0f);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
-fn device_response(dev: &DeviceState, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)> {
-    let (apci_val, data) = match (&cemi.tpci, &cemi.apdu) {
-        (Tpci::Other(_), Apdu::Other { apci, data }) => (*apci, data.clone()),
-        _ => return None,
-    };
+fn device_response(dev: &Identity, apci_val: u16, data: &[u8]) -> Option<(u16, Vec<u8>)> {
     match apci_val {
         // Authorize (issue #52 finding #1): grant full access (level 0).
         apci::A_AUTHORIZE_REQUEST => Some((apci::A_AUTHORIZE_RESPONSE, vec![0x00])),
@@ -305,7 +177,7 @@ fn device_response(dev: &DeviceState, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)
             dev.mask.to_be_bytes().to_vec(),
         )),
         apci::A_PROPERTY_VALUE_READ => {
-            let pv = apci::decode_property_value_read(&data)?;
+            let pv = apci::decode_property_value_read(data)?;
             let value = match pv.property_id {
                 apci::PID_MANUFACTURER_ID => dev.manufacturer.to_be_bytes().to_vec(),
                 apci::PID_SERIAL_NUMBER => dev.serial.to_vec(),
@@ -326,95 +198,55 @@ fn device_response(dev: &DeviceState, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)
     }
 }
 
-async fn run_gateway(gw: UdpSocket, devices: Shared) {
-    let mut gw_seq = 0u8;
-    let mut dev_seq: HashMap<u16, u8> = HashMap::new();
-    loop {
-        let mut buf = [0u8; 1024];
-        let (n, from) =
-            match tokio::time::timeout(Duration::from_secs(30), gw.recv_from(&mut buf)).await {
-                Ok(Ok(v)) => v,
-                _ => return,
-            };
-        let Ok(parsed) = knxnet::parse(&buf[..n]) else {
-            continue;
-        };
-        match parsed.service {
-            ServiceType::ConnectRequest => {
-                let resp = knxnet_frame(
-                    ServiceType::ConnectResponse,
-                    &connect_response_body(CHANNEL, &gw),
-                );
-                gw.send_to(&resp, from).await.unwrap();
-            }
-            ServiceType::ConnectionstateRequest => {
-                gw.send_to(&knxnet::connectionstate_response(CHANNEL, 0), from)
-                    .await
-                    .unwrap();
-            }
-            ServiceType::DisconnectRequest => {
-                gw.send_to(&knxnet::disconnect_response(CHANNEL, 0), from)
-                    .await
-                    .unwrap();
-                return;
-            }
-            ServiceType::TunnelingRequest => {
-                let Ok(tr) = knxnet::parse_tunneling_request(parsed.body) else {
-                    continue;
-                };
-                gw.send_to(
-                    &knxnet::tunneling_ack(tr.header.channel_id, tr.header.seq, 0),
-                    from,
-                )
-                .await
-                .unwrap();
-                handle(&gw, from, &devices, &tr.cemi, &mut gw_seq, &mut dev_seq).await;
-            }
-            _ => {}
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Test harness helpers.
 // ---------------------------------------------------------------------------
 
-fn write_model(dir: &std::path::Path) {
-    std::fs::create_dir_all(dir.join("devices")).unwrap();
+fn write_model(dir: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir.join("devices"))?;
     // One existing device on line 1.1 so the explicit 1.1.7 sits on a known line.
     std::fs::write(
         dir.join("devices").join("1.1.4-jal.yaml"),
         "address: 1.1.4\nname: Rollladen Wohnzimmer\n",
-    )
-    .unwrap();
+    )?;
     std::fs::write(
         dir.join("bussard.yaml"),
         "connection:\n  transport: tunnel\n",
     )
-    .unwrap();
 }
 
-/// Spawns the gateway and returns (runtime, port, join-handle, shared-devices).
-fn spawn_gateway(devices: Shared) -> (tokio::runtime::Runtime, u16, tokio::task::JoinHandle<()>) {
-    let rt = tokio::runtime::Runtime::new().unwrap();
-    let (gw, port) = rt.block_on(async {
-        let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let port = sock.local_addr().unwrap().port();
-        (sock, port)
-    });
-    let handle = rt.spawn(run_gateway(gw, devices));
-    (rt, port, handle)
+/// Starts a runtime and the mock gateway on it, with `devices` on the line.
+fn start_gateway(devices: Vec<MockDevice>) -> TestResult<(tokio::runtime::Runtime, MockGateway)> {
+    let rt = tokio::runtime::Runtime::new()?;
+    let gw = rt.block_on(
+        MockGateway::builder()
+            .channel(CHANNEL)
+            .idle_timeout(Duration::from_secs(30))
+            .devices(devices)
+            .start(),
+    )?;
+    Ok((rt, gw))
 }
 
-fn factory_device(order: &[u8]) -> DeviceState {
-    DeviceState {
-        address: "15.15.255".parse().unwrap(),
-        programming: true,
+/// A factory device in programming mode at 15.15.255 reporting `order`. It
+/// `T_ACK`s every numbered request and answers the reads `adopt` issues; the
+/// testkit device answers the programming-mode broadcast and takes the new
+/// address (leaving programming mode).
+fn factory_device(order: &[u8]) -> TestResult<MockDevice> {
+    let identity = Identity {
         mask: 0x07B0,
         manufacturer: 0x0083,
         serial: [0x00, 0x01, 0x02, 0x03, 0x04, 0x05],
         order: order.to_vec(),
-    }
+    };
+    Ok(MockDevice::new(ia("15.15.255")?)
+        .with_programming(true)
+        .with_hook(move |_, apci, data| {
+            Some(match device_response(&identity, apci, data) {
+                Some((rapci, rdata)) => Reaction::Answer(rapci, rdata),
+                None => Reaction::Ack,
+            })
+        }))
 }
 
 // ---------------------------------------------------------------------------
@@ -422,24 +254,24 @@ fn factory_device(order: &[u8]) -> DeviceState {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn adopt_happy_path_writes_rich_device_file() {
-    let shared: Shared = Arc::new(Mutex::new(vec![factory_device(b"MDT-BE-04001.02")]));
-    let (rt, port, gw_handle) = spawn_gateway(shared);
+fn adopt_happy_path_writes_rich_device_file() -> TestResult {
+    let (_rt, gw) = start_gateway(vec![factory_device(b"MDT-BE-04001.02")?])?;
+    let port = gw.port();
 
     let tmp = std::env::temp_dir().join(format!("bussard-adopt-happy-{}", std::process::id()));
     let model_dir = tmp.join("knx");
-    write_model(&model_dir);
+    write_model(&model_dir)?;
     let knxprod = tmp.join("fixture.knxprod");
-    build_knxprod(&knxprod);
+    build_knxprod(&knxprod)?;
 
     let output = Command::new(env!("CARGO_BIN_EXE_bussard"))
         .args([
             "adopt",
             "--yes",
             "--product",
-            knxprod.to_str().unwrap(),
+            knxprod.to_str().ok_or("temp path is not UTF-8")?,
             "--dir",
-            model_dir.to_str().unwrap(),
+            model_dir.to_str().ok_or("temp path is not UTF-8")?,
             "--gateway",
             &format!("127.0.0.1:{port}"),
         ])
@@ -448,10 +280,9 @@ fn adopt_happy_path_writes_rich_device_file() {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
-        .expect("run bussard adopt");
+        .output()?;
 
-    rt.block_on(async { gw_handle.abort() });
+    drop(gw);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let success = output.status.success();
@@ -490,7 +321,7 @@ fn adopt_happy_path_writes_rich_device_file() {
     );
 
     // The rich device file: address, product identity, and a com-object table.
-    let body = body.expect("device file should exist");
+    let body = body.ok_or("device file should exist")?;
     assert!(body.contains("address: 1.1.7"), "device body:\n{body}");
     assert!(body.contains("Taster BE 04001"), "device body:\n{body}");
     assert!(body.contains("MDT-BE-04001.02"), "device body:\n{body}");
@@ -509,28 +340,29 @@ fn adopt_happy_path_writes_rich_device_file() {
         vendor_cached,
         "expected the vendor file cached under vendor/"
     );
+    Ok(())
 }
 
 #[test]
-fn adopt_warns_on_order_number_mismatch() {
+fn adopt_warns_on_order_number_mismatch() -> TestResult {
     // The device reports a totally different order number than the product lists.
-    let shared: Shared = Arc::new(Mutex::new(vec![factory_device(b"JUNG-4093TSM")]));
-    let (rt, port, gw_handle) = spawn_gateway(shared);
+    let (_rt, gw) = start_gateway(vec![factory_device(b"JUNG-4093TSM")?])?;
+    let port = gw.port();
 
     let tmp = std::env::temp_dir().join(format!("bussard-adopt-mismatch-{}", std::process::id()));
     let model_dir = tmp.join("knx");
-    write_model(&model_dir);
+    write_model(&model_dir)?;
     let knxprod = tmp.join("fixture.knxprod");
-    build_knxprod(&knxprod);
+    build_knxprod(&knxprod)?;
 
     let output = Command::new(env!("CARGO_BIN_EXE_bussard"))
         .args([
             "adopt",
             "--yes",
             "--product",
-            knxprod.to_str().unwrap(),
+            knxprod.to_str().ok_or("temp path is not UTF-8")?,
             "--dir",
-            model_dir.to_str().unwrap(),
+            model_dir.to_str().ok_or("temp path is not UTF-8")?,
             "--gateway",
             &format!("127.0.0.1:{port}"),
         ])
@@ -539,10 +371,9 @@ fn adopt_warns_on_order_number_mismatch() {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
-        .expect("run bussard adopt");
+        .output()?;
 
-    rt.block_on(async { gw_handle.abort() });
+    drop(gw);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let success = output.status.success();
@@ -561,28 +392,29 @@ fn adopt_warns_on_order_number_mismatch() {
         stdout.contains("adopted 15.15.255 → 1.1.7"),
         "still adopts; stdout:\n{stdout}"
     );
+    Ok(())
 }
 
 #[test]
-fn adopt_times_out_with_no_device() {
+fn adopt_times_out_with_no_device() -> TestResult {
     // No device in programming mode → clean failure after the (shortened) budget.
-    let shared: Shared = Arc::new(Mutex::new(vec![]));
-    let (rt, port, gw_handle) = spawn_gateway(shared);
+    let (_rt, gw) = start_gateway(vec![])?;
+    let port = gw.port();
 
     let tmp = std::env::temp_dir().join(format!("bussard-adopt-timeout-{}", std::process::id()));
     let model_dir = tmp.join("knx");
-    write_model(&model_dir);
+    write_model(&model_dir)?;
     let knxprod = tmp.join("fixture.knxprod");
-    build_knxprod(&knxprod);
+    build_knxprod(&knxprod)?;
 
     let output = Command::new(env!("CARGO_BIN_EXE_bussard"))
         .args([
             "adopt",
             "--yes",
             "--product",
-            knxprod.to_str().unwrap(),
+            knxprod.to_str().ok_or("temp path is not UTF-8")?,
             "--dir",
-            model_dir.to_str().unwrap(),
+            model_dir.to_str().ok_or("temp path is not UTF-8")?,
             "--gateway",
             &format!("127.0.0.1:{port}"),
         ])
@@ -591,10 +423,9 @@ fn adopt_times_out_with_no_device() {
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
-        .expect("run bussard adopt");
+        .output()?;
 
-    rt.block_on(async { gw_handle.abort() });
+    drop(gw);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let success = output.status.success();
@@ -616,28 +447,28 @@ fn adopt_times_out_with_no_device() {
         !device_written,
         "no device file should be written on timeout"
     );
+    Ok(())
 }
 
 #[test]
-fn adopt_refuses_product_less_non_tty() {
+fn adopt_refuses_product_less_non_tty() -> TestResult {
     // No --product and a non-TTY: the wizard needs inputs, so it must refuse.
     let tmp = std::env::temp_dir().join(format!("bussard-adopt-refuse-{}", std::process::id()));
     let model_dir = tmp.join("knx");
-    write_model(&model_dir);
+    write_model(&model_dir)?;
 
     let output = Command::new(env!("CARGO_BIN_EXE_bussard"))
         .args([
             "adopt",
             "--dir",
-            model_dir.to_str().unwrap(),
+            model_dir.to_str().ok_or("temp path is not UTF-8")?,
             "--gateway",
             "127.0.0.1:1", // never contacted — the gate fails first
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
-        .expect("run bussard adopt");
+        .output()?;
 
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let success = output.status.success();
@@ -651,6 +482,7 @@ fn adopt_refuses_product_less_non_tty() {
         stderr.contains("interactive wizard") && stderr.contains("BUSSARD_ADOPT_ADDRESS"),
         "expected the wizard-needs-inputs refusal; stderr:\n{stderr}"
     );
+    Ok(())
 }
 
 /// Whether the vendor `.knxprod` was cached under `<dir>/vendor/`.

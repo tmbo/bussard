@@ -1620,11 +1620,13 @@ mod tests {
         }
     }
 
+    /// 1.1.4.
     fn dev() -> IndividualAddress {
-        "1.1.4".parse().unwrap()
+        IndividualAddress::from_raw(0x1104)
     }
+    /// 0.0.255.
     fn tool() -> IndividualAddress {
-        "0.0.255".parse().unwrap()
+        IndividualAddress::from_raw(0x00FF)
     }
 
     /// A device→tool control frame (T_ACK / T_NAK / T_Disconnect).
@@ -1646,31 +1648,31 @@ mod tests {
     }
 
     #[test]
-    fn constants_are_within_spec_bounds() {
+    fn constants_are_within_spec_bounds() -> std::result::Result<(), Box<dyn std::error::Error>> {
         assert_eq!(ACK_TIMEOUT, Duration::from_secs(3));
         assert_eq!(MAX_REPETITIONS, 3);
+        Ok(())
     }
 
     #[test]
-    fn extract_apdu_reads_management_apci() {
+    fn extract_apdu_reads_management_apci() -> std::result::Result<(), Box<dyn std::error::Error>> {
         let frame = ndt_from_dev(0, crate::apci::A_DEVICE_DESCRIPTOR_RESPONSE, &[0x07, 0xB0]);
         let (apci, data) = extract_apdu(&frame);
         assert_eq!(apci, crate::apci::A_DEVICE_DESCRIPTOR_RESPONSE);
         assert_eq!(data, vec![0x07, 0xB0]);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn happy_path_request_response() {
+    async fn happy_path_request_response() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Script: T_ACK(0) for our request, then the response NDT(0).
         let inbox = vec![
             control_from_dev(tpci::t_ack(0)),
             ndt_from_dev(0, 0x340, &[0x07, 0xB0]),
         ];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool())
-            .await
-            .unwrap();
-        let (apci, data) = l4.request(0x300, &[0x00]).await.unwrap();
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool()).await?;
+        let (apci, data) = l4.request(0x300, &[0x00]).await?;
         assert_eq!(apci, 0x340);
         assert_eq!(data, vec![0x07, 0xB0]);
         // We sent: T_Connect, the request NDT, and the T_ACK for the response.
@@ -1679,6 +1681,7 @@ mod tests {
         // NDT seq 0 octet has APCI high bits folded in; mask them off.
         assert_eq!(octets[1] & 0xfc, tpci::ndt(0));
         assert_eq!(octets[2], tpci::t_ack(0));
+        Ok(())
     }
 
     #[tokio::test]
@@ -1736,7 +1739,8 @@ mod tests {
     }
 
     #[test]
-    fn test_restart_process_wait_is_bounded() {
+    fn test_restart_process_wait_is_bounded() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
         let huge = crate::apci::RestartResponse {
             error_code: 0,
             process_time_s: u16::MAX,
@@ -1745,10 +1749,11 @@ mod tests {
             crate::load::restart_process_wait(&huge),
             crate::load::MAX_RESTART_PROCESS_WAIT
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn retransmit_on_ack_timeout() {
+    async fn retransmit_on_ack_timeout() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Script: no ACK for the first send (empty inbox forces a timeout), then
         // after the retransmit, an ACK(0) + response. We prime the inbox so the
         // ACK only appears "after" one timeout by leaving it empty first — but
@@ -1756,10 +1761,12 @@ mod tests {
         // Here we let the first attempt time out (empty inbox) and never ACK, so
         // the send fails; we assert the request was sent max_repetitions+1 times.
         let mut bus = ScriptedBus::new(vec![]);
-        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast())
+        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast()).await?;
+        let err = l4
+            .send_data(0x300, &[0x00])
             .await
-            .unwrap();
-        let err = l4.send_data(0x300, &[0x00]).await.unwrap_err();
+            .err()
+            .ok_or("expected an error")?;
         assert!(matches!(err, MgmtError::NoResponse { .. }), "got {err:?}");
         // T_Connect + (1 initial + 1 retransmit) request sends = 3 frames.
         let ndt_sends = bus
@@ -1768,10 +1775,12 @@ mod tests {
             .filter(|f| matches!(tpci::classify(f.tpci_octet()), TpciKind::NumberedData(_)))
             .count();
         assert_eq!(ndt_sends, 2, "one initial send plus one retransmit");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn wrong_sequence_response_is_dropped_then_correct_delivered() {
+    async fn wrong_sequence_response_is_dropped_then_correct_delivered()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Script: ACK(0), then a WRONG-seq NDT(5), then the correct NDT(0).
         let inbox = vec![
             control_from_dev(tpci::t_ack(0)),
@@ -1779,10 +1788,8 @@ mod tests {
             ndt_from_dev(0, 0x340, &[0x07, 0xB0]),
         ];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool())
-            .await
-            .unwrap();
-        let (_apci, data) = l4.request(0x300, &[0x00]).await.unwrap();
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool()).await?;
+        let (_apci, data) = l4.request(0x300, &[0x00]).await?;
         // The wrong-seq frame was dropped; the correct one delivered.
         assert_eq!(data, vec![0x07, 0xB0]);
         // Among sent frames there is a T_ACK for the wrong seq's expected-1 (0-1
@@ -1796,20 +1803,20 @@ mod tests {
             })
             .collect();
         assert_eq!(acks, vec![15, 0], "wrong-seq ACKed with expected-1, then 0");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn folded_ack_response_is_delivered() {
+    async fn folded_ack_response_is_delivered()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // The device folds the ACK: instead of a T_ACK, it answers directly with
         // the response NDT(0). await_ack must stash it, advance recv_seq and ACK
         // it; recv_response then drains the stash. Without the fix the APDU is
         // lost and recv_response times out.
         let inbox = vec![ndt_from_dev(0, 0x340, &[0x07, 0xB0])];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool())
-            .await
-            .unwrap();
-        let (apci, data) = l4.request(0x300, &[0x00]).await.unwrap();
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool()).await?;
+        let (apci, data) = l4.request(0x300, &[0x00]).await?;
         assert_eq!(apci, 0x340);
         assert_eq!(data, vec![0x07, 0xB0]);
         // The receive sequence advanced exactly once.
@@ -1825,10 +1832,12 @@ mod tests {
             })
             .collect();
         assert_eq!(acks, vec![0], "the folded response NDT(0) was acknowledged");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn folded_wrong_seq_ndt_is_not_our_ack() {
+    async fn folded_wrong_seq_ndt_is_not_our_ack()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // #58: while awaiting the T_ACK for our seq-0 request, a WRONG-sequence
         // NDT arrives first — a re-delivery of a previous response (our earlier
         // T_ACK for it was lost, so the device retransmitted it). It is NOT our
@@ -1843,10 +1852,8 @@ mod tests {
             ndt_from_dev(0, 0x340, &[0x07, 0xB0]),
         ];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast())
-            .await
-            .unwrap();
-        let (apci, data) = l4.request(0x300, &[0x00]).await.unwrap();
+        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast()).await?;
+        let (apci, data) = l4.request(0x300, &[0x00]).await?;
         // The stale duplicate was not mistaken for the response; the real answer
         // was delivered.
         assert_eq!(apci, 0x340);
@@ -1873,10 +1880,11 @@ mod tests {
             vec![15, 0],
             "stale duplicate ACKed with expected-1, then the real response with 0"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn nak_retries_before_failing() {
+    async fn nak_retries_before_failing() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // A device that NAKs every attempt should be retransmitted
         // max_repetitions times before surfacing MgmtError::Nak.
         let mut inbox = Vec::new();
@@ -1884,10 +1892,12 @@ mod tests {
             inbox.push(control_from_dev(tpci::t_nak(0)));
         }
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast())
+        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast()).await?;
+        let err = l4
+            .send_data(0x300, &[0x00])
             .await
-            .unwrap();
-        let err = l4.send_data(0x300, &[0x00]).await.unwrap_err();
+            .err()
+            .ok_or("expected an error")?;
         assert!(matches!(err, MgmtError::Nak { .. }), "got {err:?}");
         // fast() has max_repetitions = 1: one initial send + one retransmit = 2
         // NDT sends before the NAK is fatal.
@@ -1897,10 +1907,12 @@ mod tests {
             .filter(|f| matches!(tpci::classify(f.tpci_octet()), TpciKind::NumberedData(_)))
             .count();
         assert_eq!(ndt_sends, 2, "one initial send plus one retransmit on NAK");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn sequence_wraps_around_at_fifteen() {
+    async fn sequence_wraps_around_at_fifteen()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Send 17 acknowledged requests (send_data only, no response) to focus on
         // send-sequence wraparound. await_ack matches the seq we sent, so script
         // one T_ACK per expected seq: 0..15 then wrap to 0, 1.
@@ -1909,18 +1921,18 @@ mod tests {
             inbox.push(control_from_dev(tpci::t_ack(i & 0x0f)));
         }
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool())
-            .await
-            .unwrap();
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool()).await?;
         for _ in 0..17 {
-            l4.send_data(0x300, &[0x00]).await.unwrap();
+            l4.send_data(0x300, &[0x00]).await?;
         }
         // After 17 sends starting at 0, the next send seq is 17 mod 16 = 1.
         assert_eq!(l4.send_seq, 1);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn recv_sequence_wraps_around_at_fifteen() {
+    async fn recv_sequence_wraps_around_at_fifteen()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Drive 18 request/response round-trips so the RECEIVE sequence wraps past
         // 15 back through 0 and 1. Each device response NDT carries the expected
         // receive sequence; the tool must ACK it, deliver it, and advance recv_seq
@@ -1932,11 +1944,9 @@ mod tests {
             inbox.push(ndt_from_dev(i & 0x0f, 0x340, &[0x07, 0xB0]));
         }
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool())
-            .await
-            .unwrap();
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool()).await?;
         for _ in 0..18 {
-            let (apci, _data) = l4.request(0x300, &[0x00]).await.unwrap();
+            let (apci, _data) = l4.request(0x300, &[0x00]).await?;
             assert_eq!(apci, 0x340);
         }
         // After 18 delivered responses starting at 0, recv_seq is 18 mod 16 = 2,
@@ -1954,10 +1964,12 @@ mod tests {
             .collect();
         let expected: Vec<u8> = (0..18u8).map(|i| i & 0x0f).collect();
         assert_eq!(acks, expected, "each response ACKed at its wrapping seq");
+        Ok(())
     }
 
     #[tokio::test]
-    async fn device_retransmit_across_wrap_is_reacked_not_redelivered() {
+    async fn device_retransmit_across_wrap_is_reacked_not_redelivered()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Near a wrap boundary: the device re-delivers a response whose T_ACK it
         // missed (a retransmit at the previous, off-window sequence). recv_response
         // must ACK it with expected-1 and drop it, then deliver the fresh response
@@ -1975,15 +1987,13 @@ mod tests {
         inbox.push(ndt_from_dev(14, 0x340, &[0xAA])); // stale duplicate
         inbox.push(ndt_from_dev(15, 0x340, &[0xBB])); // the real answer
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool())
-            .await
-            .unwrap();
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool()).await?;
         for _ in 0..15 {
-            l4.request(0x300, &[0x00]).await.unwrap();
+            l4.request(0x300, &[0x00]).await?;
         }
         assert_eq!(l4.recv_seq, 15);
         // The 16th delivers the FRESH answer (0xBB), not the stale duplicate.
-        let (_apci, data) = l4.request(0x300, &[0x00]).await.unwrap();
+        let (_apci, data) = l4.request(0x300, &[0x00]).await?;
         assert_eq!(
             data,
             vec![0xBB],
@@ -1993,20 +2003,20 @@ mod tests {
             l4.recv_seq, 0,
             "recv_seq wrapped 15 -> 0 after the real NDT"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn authorize_free_access_grants_level_zero() {
+    async fn authorize_free_access_grants_level_zero()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Script: ACK(0) for our authorize request, then A_Authorize_Response(0).
         let inbox = vec![
             control_from_dev(tpci::t_ack(0)),
             ndt_from_dev(0, crate::apci::A_AUTHORIZE_RESPONSE, &[0x00]),
         ];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool())
-            .await
-            .unwrap();
-        let outcome = l4.authorize(crate::apci::FREE_ACCESS_KEY).await.unwrap();
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool()).await?;
+        let outcome = l4.authorize(crate::apci::FREE_ACCESS_KEY).await?;
         assert_eq!(outcome, AuthorizeOutcome::Granted { level: 0 });
         // The tool sent the exact captured wire form [00 FF FF FF FF].
         let sent_ndt = bus
@@ -2020,21 +2030,21 @@ mod tests {
                 }
                 _ => None,
             })
-            .expect("an A_Authorize_Request must have been sent");
+            .ok_or("an A_Authorize_Request must have been sent")?;
         assert_eq!(sent_ndt, vec![0x00, 0xFF, 0xFF, 0xFF, 0xFF]);
+        Ok(())
     }
 
     #[tokio::test]
-    async fn authorize_nonzero_level_is_denied() {
+    async fn authorize_nonzero_level_is_denied()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let inbox = vec![
             control_from_dev(tpci::t_ack(0)),
             ndt_from_dev(0, crate::apci::A_AUTHORIZE_RESPONSE, &[0x03]),
         ];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool())
-            .await
-            .unwrap();
-        let outcome = l4.authorize(0x0011_2233).await.unwrap();
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool()).await?;
+        let outcome = l4.authorize(0x0011_2233).await?;
         assert_eq!(outcome, AuthorizeOutcome::Denied { level: 3 });
         // authorize_or_fail turns that into an explicit AccessDenied error.
         let inbox = vec![
@@ -2042,10 +2052,12 @@ mod tests {
             ndt_from_dev(0, crate::apci::A_AUTHORIZE_RESPONSE, &[0x03]),
         ];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool())
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool()).await?;
+        let err = l4
+            .authorize_or_fail(0x0011_2233)
             .await
-            .unwrap();
-        let err = l4.authorize_or_fail(0x0011_2233).await.unwrap_err();
+            .err()
+            .ok_or("expected an error")?;
         assert!(
             matches!(err, MgmtError::AccessDenied { level: 3, .. }),
             "got {err:?}"
@@ -2054,10 +2066,12 @@ mod tests {
             err.device_present(),
             "access-denied means the device is present"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn authorize_non_authorize_reply_is_unsupported_and_tolerated() {
+    async fn authorize_non_authorize_reply_is_unsupported_and_tolerated()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // A device that answers with a non-authorize APCI (does not implement the
         // service): the outcome is Unsupported and authorize_or_fail returns Ok
         // (tolerate-and-continue), leaving the connection usable.
@@ -2066,34 +2080,30 @@ mod tests {
             ndt_from_dev(0, crate::apci::A_DEVICE_DESCRIPTOR_RESPONSE, &[0x07, 0xB0]),
         ];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool())
-            .await
-            .unwrap();
-        let outcome = l4
-            .authorize_or_fail(crate::apci::FREE_ACCESS_KEY)
-            .await
-            .unwrap();
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool()).await?;
+        let outcome = l4.authorize_or_fail(crate::apci::FREE_ACCESS_KEY).await?;
         assert!(
             matches!(outcome, AuthorizeOutcome::Unsupported { .. }),
             "got {outcome:?}"
         );
+        Ok(())
     }
 
     #[tokio::test]
-    async fn authorize_no_response_is_unsupported() {
+    async fn authorize_no_response_is_unsupported()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         // The device ACKs but never answers (empty inbox after the ACK forces the
         // response timeout): a NoResponse folds to Unsupported (tolerated), not an
         // error — an unkeyed device that does not implement authorize is expected.
         let inbox = vec![control_from_dev(tpci::t_ack(0))];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast())
-            .await
-            .unwrap();
-        let outcome = l4.authorize(crate::apci::FREE_ACCESS_KEY).await.unwrap();
+        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast()).await?;
+        let outcome = l4.authorize(crate::apci::FREE_ACCESS_KEY).await?;
         assert!(
             matches!(outcome, AuthorizeOutcome::Unsupported { .. }),
             "got {outcome:?}"
         );
+        Ok(())
     }
 
     #[tokio::test]
@@ -2225,16 +2235,15 @@ mod tests {
     /// PLAIN PATH BYTE-IDENTITY: a plain connection emits NO A_SecureData
     /// (`0x03F1`) anywhere on the wire — the sent APDU is exactly the caller's.
     #[tokio::test]
-    async fn plain_path_emits_no_secure_data() {
+    async fn plain_path_emits_no_secure_data() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
         let inbox = vec![
             control_from_dev(tpci::t_ack(0)),
             ndt_from_dev(0, 0x340, &[0x07, 0xB0]),
         ];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool())
-            .await
-            .unwrap();
-        let (apci, data) = l4.request(0x300, &[0x00]).await.unwrap();
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool()).await?;
+        let (apci, data) = l4.request(0x300, &[0x00]).await?;
         assert_eq!(apci, 0x340);
         assert_eq!(data, vec![0x07, 0xB0]);
         // No frame we sent carries the A_SecureData APCI, and the request NDT's
@@ -2244,6 +2253,7 @@ mod tests {
                 assert_ne!(*apci, A_SECURE_DATA, "plain path must never emit 0x03F1");
             }
         }
+        Ok(())
     }
 
     /// ACTIVATED PATH: a secure connection wraps every management APDU in an
@@ -2449,7 +2459,8 @@ mod tests {
     /// could not reproduce, so every frame failed the peer's MAC check while
     /// bussard's own constructed-frame tests passed.
     #[tokio::test]
-    async fn activated_path_mac_verifies_from_a_decoded_cemi_frame() {
+    async fn activated_path_mac_verifies_from_a_decoded_cemi_frame()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let key = [0x24u8; 16];
         let tool_session =
             DataSecureSession::new(Key16::new(key)).with_send_sequence(Sequence::new(1000));
@@ -2464,11 +2475,8 @@ mod tests {
             Timeouts::default(),
             secure,
         )
-        .await
-        .unwrap();
-        l4.send_data(0x3D1, &[0x00, 0xFF, 0xFF, 0xFF, 0xFF])
-            .await
-            .unwrap();
+        .await?;
+        l4.send_data(0x3D1, &[0x00, 0xFF, 0xFF, 0xFF, 0xFF]).await?;
 
         drop(l4);
         let request = bus
@@ -2476,12 +2484,12 @@ mod tests {
             .iter()
             .filter(|f| matches!(tpci::classify(f.tpci_octet()), TpciKind::NumberedData(_)))
             .nth(1)
-            .expect("a numbered request was sent after the Sync_Req");
+            .ok_or("a numbered request was sent after the Sync_Req")?;
 
         // Round-trip through the wire encoding: this is exactly what a device
         // (or the simulator) receives.
         let wire = request.encode();
-        let decoded = CemiFrame::decode(&wire).expect("the frame decodes");
+        let decoded = CemiFrame::decode(&wire).map_err(|e| format!("the frame decodes: {e}"))?;
         let (apci, asdu_bytes) = match (&decoded.tpci, &decoded.apdu) {
             (Tpci::Other(_), Apdu::Other { apci, data }) => (*apci, data.clone()),
             other => panic!("expected a data APDU, got {other:?}"),
@@ -2493,23 +2501,25 @@ mod tests {
             source: decoded.source.raw(),
             destination: decoded
                 .individual_destination()
-                .expect("individually addressed")
+                .ok_or("individually addressed")?
                 .raw(),
             address_type_group: false,
             extended_frame_format: decoded.control2.extended_frame_format,
             tpci: decoded.tpci_octet(),
         };
         let inner = asdu::decode(&Key16::new(key), &asdu_bytes, &addr)
-            .expect("the MAC verifies from the decoded frame");
+            .map_err(|e| format!("the MAC verifies from the decoded frame: {e}"))?;
         assert_eq!(inner.apci, 0x3D1);
         assert_eq!(inner.data, vec![0x00, 0xFF, 0xFF, 0xFF, 0xFF]);
+        Ok(())
     }
 
     /// ACTIVATED PATH REJECTS A WRONG MAC: a secured response whose MAC does not
     /// verify (built with the wrong key) is rejected as an MgmtError::Secure, not
     /// accepted as an answer.
     #[tokio::test]
-    async fn activated_path_rejects_wrong_mac_response() {
+    async fn activated_path_rejects_wrong_mac_response()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
         let key = [0x24u8; 16];
         // The device builds its response with the WRONG key.
         let mut evil = DataSecureSession::new(Key16::new([0x99u8; 16]));
@@ -2520,7 +2530,7 @@ mod tests {
         let resp_tpci = tpci::ndt(1);
         let (resp_apci, resp_asdu) = {
             let addr = dev_to_tool_addr(resp_tpci);
-            evil.wrap(&addr, 0x340, &[0x07, 0xB0]).unwrap()
+            evil.wrap(&addr, 0x340, &[0x07, 0xB0])?
         };
 
         let inbox = vec![
@@ -2530,14 +2540,18 @@ mod tests {
             // for a real one (empty inbox), which is fine for this assertion.
         ];
         let mut bus = SyncingBus::new(key, inbox);
-        let mut l4 = Layer4Connection::connect_with_secure(&mut bus, dev(), tool(), fast(), secure)
-            .await
-            .unwrap();
+        let mut l4 =
+            Layer4Connection::connect_with_secure(&mut bus, dev(), tool(), fast(), secure).await?;
 
-        let err = l4.request(0x300, &[0x00]).await.unwrap_err();
+        let err = l4
+            .request(0x300, &[0x00])
+            .await
+            .err()
+            .ok_or("expected an error")?;
         assert!(
             matches!(err, MgmtError::Secure { .. }),
             "a wrong-MAC secured response must be rejected, got {err:?}"
         );
+        Ok(())
     }
 }

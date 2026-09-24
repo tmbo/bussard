@@ -46,42 +46,47 @@ fn live_fixture() -> Option<Value> {
 const GHOST_OBJECTS: [u16; 4] = [59, 106, 153, 200];
 
 #[test]
-fn computed_tables_reproduce_the_live_reference_minus_ghosts() {
+fn computed_tables_reproduce_the_live_reference_minus_ghosts()
+-> Result<(), Box<dyn std::error::Error>> {
     let Some(live) = live_fixture() else {
         eprintln!(
             "skipping golden table test: fixtures/private/1.1.4-tables-live.json not available"
         );
-        return;
+        return Ok(());
     };
 
     // Load the real model and compute the tables for 1.1.4.
-    let model = Model::load(&repo_root().join("knx")).expect("load knx/ model");
-    let device: IndividualAddress = "1.1.4".parse().unwrap();
+    let model = Model::load(&repo_root().join("knx"))?;
+    let device: IndividualAddress = "1.1.4".parse()?;
     let links = model
         .links
         .links
         .get(&device)
-        .expect("links for 1.1.4 in the model");
+        .ok_or("links for 1.1.4 in the model")?;
     let computed = compute_tables(links);
 
     // Parse the live tables from the fixture.
     let live_addresses: Vec<GroupAddress> = live["addresses"]
         .as_array()
-        .unwrap()
+        .ok_or("fixture addresses must be an array")?
         .iter()
-        .map(|v| v.as_str().unwrap().parse().unwrap())
-        .collect();
+        .map(|v| -> Result<GroupAddress, Box<dyn std::error::Error>> {
+            Ok(v.as_str()
+                .ok_or("fixture address must be a string")?
+                .parse()?)
+        })
+        .collect::<Result<_, _>>()?;
     let live_assocs: Vec<(u16, u16)> = live["associations"]
         .as_array()
-        .unwrap()
+        .ok_or("fixture associations must be an array")?
         .iter()
-        .map(|a| {
-            (
-                a["tsap"].as_u64().unwrap() as u16,
-                a["asap"].as_u64().unwrap() as u16,
-            )
+        .map(|a| -> Result<(u16, u16), Box<dyn std::error::Error>> {
+            Ok((
+                a["tsap"].as_u64().ok_or("fixture tsap must be a number")? as u16,
+                a["asap"].as_u64().ok_or("fixture asap must be a number")? as u16,
+            ))
         })
-        .collect();
+        .collect::<Result<_, _>>()?;
 
     // Strip ghost associations, then rebuild the expected address table from the
     // GAs the remaining associations actually reference, and re-index TSAPs.
@@ -132,4 +137,5 @@ fn computed_tables_reproduce_the_live_reference_minus_ghosts() {
         GHOST_OBJECTS.len(),
         "exactly the four ghost associations should be removed"
     );
+    Ok(())
 }

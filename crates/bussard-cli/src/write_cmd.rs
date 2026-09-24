@@ -208,7 +208,7 @@ mod tests {
     use bussard_model::schema::{BussardConfig, Group, Groups, Links};
 
     fn ga(s: &str) -> GroupAddress {
-        s.parse().unwrap()
+        s.parse().expect("test fixture")
     }
 
     fn model_with(protected: bool, dpt: Option<&str>) -> Model {
@@ -217,7 +217,7 @@ mod tests {
             ga("3/0/4"),
             Group {
                 name: "Living Room Blind Move".to_string(),
-                dpt: dpt.map(|d| d.parse().unwrap()),
+                dpt: dpt.map(|d| d.parse().expect("test fixture")),
                 description: None,
                 protected,
                 secure: false,

@@ -5,24 +5,25 @@
 
 use std::process::{Command, Stdio};
 
-fn run(args: &[&str]) -> (bool, String, String) {
+type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+fn run(args: &[&str]) -> std::io::Result<(bool, String, String)> {
     let out = Command::new(env!("CARGO_BIN_EXE_bussard"))
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
-        .expect("run bussard");
-    (
+        .output()?;
+    Ok((
         out.status.success(),
         String::from_utf8_lossy(&out.stdout).into_owned(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
+    ))
 }
 
 #[test]
-fn list_shows_index_entries() {
-    let (ok, stdout, stderr) = run(&["import-product", "--list"]);
+fn list_shows_index_entries() -> TestResult {
+    let (ok, stdout, stderr) = run(&["import-product", "--list"])?;
     assert!(ok, "--list should succeed; stderr={stderr}");
     // The seeded MDT entries and their order numbers appear.
     assert!(stdout.contains("MDT"), "stdout={stdout}");
@@ -46,11 +47,12 @@ fn list_shows_index_entries() {
     assert!(stdout.contains("ZVI-F1"), "stdout={stdout}");
 
     // The header reports the entry count; the corpus is well past 20 entries.
-    let count = parse_entry_count(&stdout).expect("--list should report an entry count");
+    let count = parse_entry_count(&stdout).ok_or("--list should report an entry count")?;
     assert!(
         count >= 20,
         "product index should hold at least 20 entries, got {count}; stdout={stdout}"
     );
+    Ok(())
 }
 
 /// Pulls the entry count out of the `--list` header line
@@ -64,18 +66,20 @@ fn parse_entry_count(stdout: &str) -> Option<usize> {
 }
 
 #[test]
-fn order_number_not_in_index_errors() {
-    let (ok, _stdout, stderr) = run(&["import-product", "--order-number", "NOPE-9999"]);
+fn order_number_not_in_index_errors() -> TestResult {
+    let (ok, _stdout, stderr) = run(&["import-product", "--order-number", "NOPE-9999"])?;
     assert!(!ok, "unknown order number should fail");
     assert!(
         stderr.contains("no product-data entry") || stderr.contains("NOPE-9999"),
         "stderr={stderr}"
     );
+    Ok(())
 }
 
 #[test]
-fn no_arguments_errors() {
-    let (ok, _stdout, stderr) = run(&["import-product"]);
+fn no_arguments_errors() -> TestResult {
+    let (ok, _stdout, stderr) = run(&["import-product"])?;
     assert!(!ok, "no arguments should fail");
     assert!(stderr.contains("nothing to import"), "stderr={stderr}");
+    Ok(())
 }

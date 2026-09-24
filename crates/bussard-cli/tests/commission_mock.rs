@@ -16,19 +16,13 @@
 //!
 //! **No test here ever reaches a real gateway**: the mock binds `127.0.0.1:0`.
 
-use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bussard_mgmt::apci;
 use bussard_model::IndividualAddress;
-use bussard_transport::cemi::{Apdu, CemiFrame, Destination, Tpci};
-use bussard_transport::knxnet::{self, ConnectionHeader, ServiceType};
-use bussard_transport::tpci::{self, TpciKind};
-use tokio::net::UdpSocket;
+use bussard_testkit::{MockDevice, MockGateway, Reaction};
 
 const CHANNEL: u8 = 0x66;
 
@@ -45,51 +39,8 @@ struct DeviceState {
     order: Vec<u8>,
 }
 
-type Shared = Arc<Mutex<Vec<DeviceState>>>;
-
-fn knxnet_frame(service: ServiceType, body: &[u8]) -> Vec<u8> {
-    let total = (6 + body.len()) as u16;
-    let mut out = Vec::with_capacity(total as usize);
-    out.push(0x06);
-    out.push(0x10);
-    out.extend_from_slice(&(service as u16).to_be_bytes());
-    out.extend_from_slice(&total.to_be_bytes());
-    out.extend_from_slice(body);
-    out
-}
-
-fn connect_response_body(channel: u8, port: u16) -> Vec<u8> {
-    let mut body = vec![channel, 0x00];
-    body.push(0x08);
-    body.push(0x01);
-    body.extend_from_slice(&[127, 0, 0, 1]);
-    body.extend_from_slice(&port.to_be_bytes());
-    body.extend_from_slice(&[0x04, 0x04, 0x11, 0xFF]);
-    body
-}
-
-async fn push(gw: &UdpSocket, peer: SocketAddr, gw_seq: &mut u8, cemi: &CemiFrame) -> bool {
-    let hdr = ConnectionHeader {
-        channel_id: CHANNEL,
-        seq: *gw_seq,
-    };
-    if gw
-        .send_to(&knxnet::tunneling_request(hdr, cemi), peer)
-        .await
-        .is_err()
-    {
-        return false;
-    }
-    *gw_seq = gw_seq.wrapping_add(1);
-    true
-}
-
 /// Answers the read-only device-object properties and the descriptor.
-fn device_response(dev: &DeviceState, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)> {
-    let (apci_val, data) = match (&cemi.tpci, &cemi.apdu) {
-        (Tpci::Other(_), Apdu::Other { apci, data }) => (*apci, data.clone()),
-        _ => return None,
-    };
+fn device_response(dev: &DeviceState, apci_val: u16, data: &[u8]) -> Option<(u16, Vec<u8>)> {
     match apci_val {
         apci::A_AUTHORIZE_REQUEST => Some((apci::A_AUTHORIZE_RESPONSE, vec![0x00])),
         apci::A_DEVICE_DESCRIPTOR_READ => Some((
@@ -97,7 +48,7 @@ fn device_response(dev: &DeviceState, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)
             dev.mask.to_be_bytes().to_vec(),
         )),
         apci::A_PROPERTY_VALUE_READ => {
-            let pv = apci::decode_property_value_read(&data)?;
+            let pv = apci::decode_property_value_read(data)?;
             let value = match pv.property_id {
                 apci::PID_MANUFACTURER_ID => dev.manufacturer.to_be_bytes().to_vec(),
                 apci::PID_SERIAL_NUMBER => dev.serial.to_vec(),
@@ -121,14 +72,10 @@ fn device_response(dev: &DeviceState, cemi: &CemiFrame) -> Option<(u16, Vec<u8>)
 /// Handles `A_PropertyValue_Write`, echoing the stored value back. A
 /// `PID_PROGMODE = 0` write clears programming mode, as a conformant device does.
 fn handle_property_write(
-    devices: &Shared,
-    dest: IndividualAddress,
-    cemi: &CemiFrame,
+    dev: &mut MockDevice,
+    apci_val: u16,
+    data: &[u8],
 ) -> Option<(u16, Vec<u8>)> {
-    let (apci_val, data) = match (&cemi.tpci, &cemi.apdu) {
-        (Tpci::Other(_), Apdu::Other { apci, data }) => (*apci, data.clone()),
-        _ => return None,
-    };
     if apci_val != apci::A_PROPERTY_VALUE_WRITE || data.len() < 4 {
         return None;
     }
@@ -141,13 +88,8 @@ fn handle_property_write(
     if object_index == apci::DEVICE_OBJECT_INDEX
         && property_id == apci::PID_PROGMODE
         && value.first() == Some(&0x00)
-        && let Ok(mut devs) = devices.lock()
     {
-        for d in devs.iter_mut() {
-            if d.address == dest {
-                d.programming = false;
-            }
-        }
+        dev.programming = false;
     }
     let mut resp = vec![
         object_index,
@@ -159,171 +101,21 @@ fn handle_property_write(
     Some((apci::A_PROPERTY_VALUE_RESPONSE, resp))
 }
 
-async fn handle(
-    gw: &UdpSocket,
-    peer: SocketAddr,
-    devices: &Shared,
-    cemi: &CemiFrame,
-    gw_seq: &mut u8,
-    dev_seq: &mut HashMap<u16, u8>,
-) -> bool {
-    let tool = cemi.source;
-    match &cemi.destination {
-        Destination::Group(_) => {
-            let (apci_val, data) = match (&cemi.tpci, &cemi.apdu) {
-                (Tpci::DataGroup, Apdu::Other { apci, data }) => (*apci, data.clone()),
-                _ => return true,
-            };
-            match apci_val {
-                apci::A_INDIVIDUAL_ADDRESS_READ => {
-                    let responders: Vec<IndividualAddress> = {
-                        let Ok(devs) = devices.lock() else {
-                            return false;
-                        };
-                        devs.iter()
-                            .filter(|d| d.programming)
-                            .map(|d| d.address)
-                            .collect()
-                    };
-                    for addr in responders {
-                        let resp =
-                            CemiFrame::t_broadcast(addr, apci::A_INDIVIDUAL_ADDRESS_RESPONSE, &[]);
-                        if !push(gw, peer, gw_seq, &resp).await {
-                            return false;
-                        }
-                    }
-                }
-                apci::A_INDIVIDUAL_ADDRESS_WRITE if data.len() >= 2 => {
-                    let new_addr =
-                        IndividualAddress::from_raw(u16::from_be_bytes([data[0], data[1]]));
-                    let Ok(mut devs) = devices.lock() else {
-                        return false;
-                    };
-                    for d in devs.iter_mut() {
-                        if d.programming {
-                            d.address = new_addr;
-                            d.programming = false;
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        Destination::Individual(dest) => {
-            let dest = *dest;
-            let dev = {
-                let Ok(devs) = devices.lock() else {
-                    return false;
-                };
-                devs.iter().find(|d| d.address == dest).cloned()
-            };
-            let Some(dev) = dev else {
-                return true; // absent address: silence
-            };
-            match tpci::classify(cemi.tpci_octet()) {
-                TpciKind::Connect => {
-                    dev_seq.insert(dev.address.raw(), 0);
-                }
-                TpciKind::Disconnect => {
-                    dev_seq.remove(&dev.address.raw());
-                }
-                TpciKind::NumberedData(client_seq) => {
-                    let ack = CemiFrame::t_control(tool, dev.address, tpci::t_ack(client_seq));
-                    if !push(gw, peer, gw_seq, &ack).await {
-                        return false;
-                    }
-                    let write_response = handle_property_write(devices, dest, cemi);
-                    if let Some((rapci, rdata)) =
-                        write_response.or_else(|| device_response(&dev, cemi))
-                    {
-                        let seq = dev_seq.get(&dev.address.raw()).copied().unwrap_or(0);
-                        let resp = CemiFrame::t_data_connected(
-                            tool,
-                            dev.address,
-                            tpci::ndt(seq),
-                            rapci,
-                            &rdata,
-                        );
-                        if !push(gw, peer, gw_seq, &resp).await {
-                            return false;
-                        }
-                        dev_seq.insert(dev.address.raw(), (seq + 1) & 0x0f);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    true
-}
-
-async fn run_gateway(gw: UdpSocket, devices: Shared) {
-    let Ok(local) = gw.local_addr() else {
-        return;
-    };
-    let port = local.port();
-    let mut gw_seq = 0u8;
-    let mut dev_seq: HashMap<u16, u8> = HashMap::new();
-    loop {
-        let mut buf = [0u8; 1024];
-        let (n, from) =
-            match tokio::time::timeout(Duration::from_secs(60), gw.recv_from(&mut buf)).await {
-                Ok(Ok(v)) => v,
-                _ => return,
-            };
-        let Ok(parsed) = knxnet::parse(&buf[..n]) else {
-            continue;
-        };
-        match parsed.service {
-            ServiceType::ConnectRequest => {
-                let resp = knxnet_frame(
-                    ServiceType::ConnectResponse,
-                    &connect_response_body(CHANNEL, port),
-                );
-                if gw.send_to(&resp, from).await.is_err() {
-                    return;
-                }
-            }
-            ServiceType::ConnectionstateRequest => {
-                if gw
-                    .send_to(&knxnet::connectionstate_response(CHANNEL, 0), from)
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-            }
-            ServiceType::DisconnectRequest => {
-                // Keep serving: `commission` opens one tunnel per device.
-                if gw
-                    .send_to(&knxnet::disconnect_response(CHANNEL, 0), from)
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-            }
-            ServiceType::TunnelingRequest => {
-                let Ok(tr) = knxnet::parse_tunneling_request(parsed.body) else {
-                    continue;
-                };
-                if gw
-                    .send_to(
-                        &knxnet::tunneling_ack(tr.header.channel_id, tr.header.seq, 0),
-                        from,
-                    )
-                    .await
-                    .is_err()
-                {
-                    return;
-                }
-                if !handle(&gw, from, &devices, &tr.cemi, &mut gw_seq, &mut dev_seq).await {
-                    return;
-                }
-            }
-            _ => {}
-        }
-    }
+/// Puts `state` on a testkit gateway line. The testkit device answers the
+/// programming-mode broadcast and takes `A_IndividualAddress_Write`; the hook
+/// `T_ACK`s every numbered request and answers property writes, the descriptor
+/// and the device-object property reads.
+fn gateway_device(state: DeviceState) -> MockDevice {
+    MockDevice::new(state.address)
+        .with_programming(state.programming)
+        .with_hook(move |dev, apci_val, data| {
+            let answer = handle_property_write(dev, apci_val, data)
+                .or_else(|| device_response(&state, apci_val, data));
+            Some(match answer {
+                Some((rapci, rdata)) => Reaction::Answer(rapci, rdata),
+                None => Reaction::Ack,
+            })
+        })
 }
 
 /// The bench device: in programming mode at the factory address, reporting
@@ -363,19 +155,18 @@ fn tmp_dir(tag: &str) -> std::path::PathBuf {
     ))
 }
 
-/// Spawns the mock bench, returning its port and the gateway task handle.
-fn spawn_bench(
-    rt: &tokio::runtime::Runtime,
-    order: &str,
-) -> anyhow::Result<(u16, Shared, tokio::task::JoinHandle<()>)> {
-    let (sock, port) = rt.block_on(async {
-        let sock = UdpSocket::bind("127.0.0.1:0").await?;
-        let port = sock.local_addr()?.port();
-        anyhow::Ok((sock, port))
-    })?;
-    let shared: Shared = Arc::new(Mutex::new(vec![bench_device(order)?]));
-    let handle = rt.spawn(run_gateway(sock, Arc::clone(&shared)));
-    Ok((port, shared, handle))
+/// Starts the mock bench gateway.
+fn spawn_bench(rt: &tokio::runtime::Runtime, order: &str) -> anyhow::Result<MockGateway> {
+    let device = gateway_device(bench_device(order)?);
+    // Keep serving: `commission` opens one tunnel per device.
+    Ok(rt.block_on(
+        MockGateway::builder()
+            .channel(CHANNEL)
+            .keep_serving()
+            .idle_timeout(Duration::from_secs(60))
+            .device(device)
+            .start(),
+    )?)
 }
 
 /// Runs the built `bussard` binary against the mock bench.
@@ -409,7 +200,7 @@ fn row<'a>(json: &'a serde_json::Value, address: &str) -> anyhow::Result<&'a ser
 #[test]
 fn test_commission_assigns_and_writes_the_label_row() -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
-    let (port, shared, task) = spawn_bench(&rt, "JAL-0810.03")?;
+    let gw = spawn_bench(&rt, "JAL-0810.03")?;
 
     let tmp = tmp_dir("happy");
     let model_dir = tmp.join("knx");
@@ -425,7 +216,7 @@ fn test_commission_assigns_and_writes_the_label_row() -> anyhow::Result<()> {
         .to_string();
 
     let output = run_commission(
-        port,
+        gw.port(),
         &[
             "commission",
             "--line",
@@ -437,16 +228,17 @@ fn test_commission_assigns_and_writes_the_label_row() -> anyhow::Result<()> {
             &labels_arg,
         ],
     )?;
-    task.abort();
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let success = output.status.success();
     let csv = std::fs::read_to_string(&labels).ok();
-    let assigned = shared
-        .lock()
-        .map_err(|_| anyhow::anyhow!("the mock device state was poisoned"))?[0]
+    let assigned = gw
+        .devices()?
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("the bench device is gone"))?
         .address;
+    drop(gw);
     let _ = std::fs::remove_dir_all(&tmp);
 
     assert!(
@@ -484,7 +276,7 @@ fn test_commission_assigns_and_writes_the_label_row() -> anyhow::Result<()> {
 fn test_commission_hard_stops_on_an_order_number_mismatch() -> anyhow::Result<()> {
     let rt = tokio::runtime::Runtime::new()?;
     // The bench device is the SECOND model device's product, not the first's.
-    let (port, shared, task) = spawn_bench(&rt, "AKK-0216.03")?;
+    let gw = spawn_bench(&rt, "AKK-0216.03")?;
 
     let tmp = tmp_dir("mismatch");
     let model_dir = tmp.join("knx");
@@ -496,7 +288,7 @@ fn test_commission_hard_stops_on_an_order_number_mismatch() -> anyhow::Result<()
         .to_string();
 
     let output = run_commission(
-        port,
+        gw.port(),
         &[
             "commission",
             "--line",
@@ -507,15 +299,16 @@ fn test_commission_hard_stops_on_an_order_number_mismatch() -> anyhow::Result<()
             &model_arg,
         ],
     )?;
-    task.abort();
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let success = output.status.success();
-    let assigned = shared
-        .lock()
-        .map_err(|_| anyhow::anyhow!("the mock device state was poisoned"))?[0]
+    let assigned = gw
+        .devices()?
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("the bench device is gone"))?
         .address;
+    drop(gw);
     let _ = std::fs::remove_dir_all(&tmp);
 
     assert!(

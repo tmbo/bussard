@@ -594,33 +594,35 @@ mod tests {
     }
 
     #[test]
-    fn refuses_non_empty_dir() {
+    fn refuses_non_empty_dir() -> Result<(), Box<dyn std::error::Error>> {
         let dir = temp_dir("nonempty");
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("something.txt"), "hi").unwrap();
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join("something.txt"), "hi")?;
 
-        let code = run_with(&dir, None, false, no_gateways, no_probe).unwrap();
+        let code = run_with(&dir, None, false, no_gateways, no_probe)?;
         assert_eq!(code, ExitCode::FAILURE);
         // Original content untouched: we didn't write a skeleton.
         assert!(!dir.join("bussard.yaml").exists());
 
         std::fs::remove_dir_all(&dir).ok();
+        Ok(())
     }
 
     #[test]
-    fn empty_dir_proceeds() {
+    fn empty_dir_proceeds() -> Result<(), Box<dyn std::error::Error>> {
         let dir = temp_dir("empty");
-        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&dir)?;
 
-        let code = run_with(&dir, None, true, no_gateways, no_probe).unwrap();
+        let code = run_with(&dir, None, true, no_gateways, no_probe)?;
         assert_eq!(code, ExitCode::SUCCESS);
         assert!(dir.join("bussard.yaml").exists());
 
         std::fs::remove_dir_all(&dir).ok();
+        Ok(())
     }
 
     #[test]
-    fn gateway_skips_discovery_and_writes_tunnel() {
+    fn gateway_skips_discovery_and_writes_tunnel() -> Result<(), Box<dyn std::error::Error>> {
         let dir = temp_dir("gateway");
         // A discovery source that would panic proves discovery is skipped, and an
         // instant no-op probe keeps the test off the network (the real probe
@@ -628,22 +630,23 @@ mod tests {
         fn boom() -> anyhow::Result<Vec<GatewayInfo>> {
             panic!("discovery must not run when --gateway is given");
         }
-        let code = run_with(&dir, Some("192.0.2.50"), false, boom, no_probe).unwrap();
+        let code = run_with(&dir, Some("192.0.2.50"), false, boom, no_probe)?;
         assert_eq!(code, ExitCode::SUCCESS);
 
-        let yaml = std::fs::read_to_string(dir.join("bussard.yaml")).unwrap();
+        let yaml = std::fs::read_to_string(dir.join("bussard.yaml"))?;
         assert!(yaml.contains("transport: tunnel"), "{yaml}");
         assert!(yaml.contains("192.0.2.50:3671"), "{yaml}");
         assert_validates(&dir);
 
         std::fs::remove_dir_all(&dir).ok();
+        Ok(())
     }
 
     /// The reachability probe is invoked exactly once for the given endpoint when
     /// `--gateway` is used. A thread-local counter proves the wiring without a
     /// real connect (item 2: the probe is injectable).
     #[test]
-    fn gateway_invokes_reachability_probe() {
+    fn gateway_invokes_reachability_probe() -> Result<(), Box<dyn std::error::Error>> {
         use std::cell::Cell;
         thread_local! {
             static PROBED: Cell<Option<SocketAddrV4>> = const { Cell::new(None) };
@@ -656,7 +659,7 @@ mod tests {
         }
 
         let dir = temp_dir("gateway-probe");
-        let code = run_with(&dir, Some("192.0.2.50:3671"), false, boom, record_probe).unwrap();
+        let code = run_with(&dir, Some("192.0.2.50:3671"), false, boom, record_probe)?;
         assert_eq!(code, ExitCode::SUCCESS);
         assert_eq!(
             PROBED.with(|p| p.get()),
@@ -665,54 +668,58 @@ mod tests {
         );
 
         std::fs::remove_dir_all(&dir).ok();
+        Ok(())
     }
 
     #[test]
-    fn routing_writes_routing_config() {
+    fn routing_writes_routing_config() -> Result<(), Box<dyn std::error::Error>> {
         let dir = temp_dir("routing");
-        let code = run_with(&dir, None, true, no_gateways, no_probe).unwrap();
+        let code = run_with(&dir, None, true, no_gateways, no_probe)?;
         assert_eq!(code, ExitCode::SUCCESS);
 
-        let yaml = std::fs::read_to_string(dir.join("bussard.yaml")).unwrap();
+        let yaml = std::fs::read_to_string(dir.join("bussard.yaml"))?;
         assert!(yaml.contains("transport: routing"), "{yaml}");
         assert!(yaml.contains("224.0.23.12:3671"), "{yaml}");
         assert_validates(&dir);
 
         std::fs::remove_dir_all(&dir).ok();
+        Ok(())
     }
 
     #[test]
-    fn single_discovered_gateway_is_used() {
+    fn single_discovered_gateway_is_used() -> Result<(), Box<dyn std::error::Error>> {
         let dir = temp_dir("discovered");
-        let code = run_with(&dir, None, false, one_gateway, no_probe).unwrap();
+        let code = run_with(&dir, None, false, one_gateway, no_probe)?;
         assert_eq!(code, ExitCode::SUCCESS);
 
-        let yaml = std::fs::read_to_string(dir.join("bussard.yaml")).unwrap();
+        let yaml = std::fs::read_to_string(dir.join("bussard.yaml"))?;
         assert!(yaml.contains("transport: tunnel"), "{yaml}");
         assert!(yaml.contains("192.0.2.10:3671"), "{yaml}");
         assert_validates(&dir);
 
         std::fs::remove_dir_all(&dir).ok();
+        Ok(())
     }
 
     #[test]
-    fn no_gateway_writes_placeholder_and_validates() {
+    fn no_gateway_writes_placeholder_and_validates() -> Result<(), Box<dyn std::error::Error>> {
         let dir = temp_dir("placeholder");
-        let code = run_with(&dir, None, false, no_gateways, no_probe).unwrap();
+        let code = run_with(&dir, None, false, no_gateways, no_probe)?;
         assert_eq!(code, ExitCode::SUCCESS);
 
-        let yaml = std::fs::read_to_string(dir.join("bussard.yaml")).unwrap();
+        let yaml = std::fs::read_to_string(dir.join("bussard.yaml"))?;
         assert!(yaml.contains("transport: tunnel"), "{yaml}");
         assert!(yaml.contains("TODO"), "placeholder comment present: {yaml}");
         assert_validates(&dir);
 
         std::fs::remove_dir_all(&dir).ok();
+        Ok(())
     }
 
     #[test]
-    fn skeleton_is_complete_and_validates() {
+    fn skeleton_is_complete_and_validates() -> Result<(), Box<dyn std::error::Error>> {
         let dir = temp_dir("skeleton");
-        run_with(&dir, None, true, no_gateways, no_probe).unwrap();
+        run_with(&dir, None, true, no_gateways, no_probe)?;
 
         for f in [
             "bussard.yaml",
@@ -730,26 +737,29 @@ mod tests {
         assert_validates(&dir);
 
         std::fs::remove_dir_all(&dir).ok();
+        Ok(())
     }
 
     #[test]
-    fn absent_dir_is_treated_as_empty() {
+    fn absent_dir_is_treated_as_empty() -> Result<(), Box<dyn std::error::Error>> {
         let dir = temp_dir("absent");
         // Deliberately do not create it.
         assert!(!dir.exists());
-        let code = run_with(&dir, None, true, no_gateways, no_probe).unwrap();
+        let code = run_with(&dir, None, true, no_gateways, no_probe)?;
         assert_eq!(code, ExitCode::SUCCESS);
         assert!(dir.join("bussard.yaml").exists());
 
         std::fs::remove_dir_all(&dir).ok();
+        Ok(())
     }
 
     #[test]
-    fn parse_gateway_defaults_port() {
-        let addr = parse_gateway("192.0.2.10").unwrap();
+    fn parse_gateway_defaults_port() -> Result<(), Box<dyn std::error::Error>> {
+        let addr = parse_gateway("192.0.2.10")?;
         assert_eq!(addr, SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 10), 3671));
-        let addr = parse_gateway("192.0.2.10:3672").unwrap();
+        let addr = parse_gateway("192.0.2.10:3672")?;
         assert_eq!(addr.port(), 3672);
+        Ok(())
     }
 
     #[test]

@@ -35,7 +35,7 @@
 //! **The flash path is only ever exercised here — never against a live bus.**
 
 use std::collections::{BTreeMap, HashMap};
-use std::net::SocketAddr;
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -43,11 +43,11 @@ use bussard_download::{FlashStep, Session, flash, plan_flash};
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_mgmt::load::{LoadState, WriteError};
 use bussard_prod::application::{ApplicationProgram, parse_application_program};
-use bussard_transport::cemi::{Apdu, CemiFrame, Destination, Tpci};
-use bussard_transport::knxnet::{self, ConnectionHeader, ServiceType};
+use bussard_testkit::{Inbound, MockDevice, MockGateway, Step, TestResult, Verdict, ia};
+use bussard_transport::cemi::{Apdu, CemiFrame, Destination};
+use bussard_transport::knxnet::ServiceType;
 use bussard_transport::tpci::{self, TpciKind};
 use bussard_transport::{ConnectionConfig, Transport};
-use tokio::net::UdpSocket;
 
 const CHANNEL: u8 = 0x33;
 
@@ -466,38 +466,6 @@ struct DeviceState {
 
 type Shared = Arc<Mutex<DeviceState>>;
 
-fn knxnet_frame(service: ServiceType, body: &[u8]) -> Vec<u8> {
-    let total = (6 + body.len()) as u16;
-    let mut out = Vec::with_capacity(total as usize);
-    out.push(0x06);
-    out.push(0x10);
-    out.extend_from_slice(&(service as u16).to_be_bytes());
-    out.extend_from_slice(&total.to_be_bytes());
-    out.extend_from_slice(body);
-    out
-}
-
-fn connect_response_body(channel: u8, gw: &UdpSocket) -> Vec<u8> {
-    let mut body = vec![channel, 0x00];
-    body.push(0x08);
-    body.push(0x01);
-    body.extend_from_slice(&[127, 0, 0, 1]);
-    body.extend_from_slice(&gw.local_addr().unwrap().port().to_be_bytes());
-    body.extend_from_slice(&[0x04, 0x04, 0x11, 0xFF]);
-    body
-}
-
-async fn push(gw: &UdpSocket, peer: SocketAddr, gw_seq: &mut u8, cemi: &CemiFrame) {
-    let hdr = ConnectionHeader {
-        channel_id: CHANNEL,
-        seq: *gw_seq,
-    };
-    gw.send_to(&knxnet::tunneling_request(hdr, cemi), peer)
-        .await
-        .unwrap();
-    *gw_seq = gw_seq.wrapping_add(1);
-}
-
 /// Builds a property-value response payload (4-octet header + data), from spec.
 fn prop_response(object_index: u8, pid: u8, count: u8, start: u16, data: &[u8]) -> Vec<u8> {
     let mut resp = vec![
@@ -549,7 +517,9 @@ enum Reaction {
 }
 
 fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
-    let mut s = state.lock().unwrap();
+    let Ok(mut s) = state.lock() else {
+        return Reaction::Nak;
+    };
 
     // Device descriptor read (empty payload, strict).
     if req_apci & APCI_SELECTOR == A_DEVICE_DESCRIPTOR_READ_SEL && data.is_empty() {
@@ -1108,7 +1078,7 @@ fn unwrap_secure(
     apci: u16,
     data: &[u8],
 ) -> Option<(u16, Vec<u8>)> {
-    let mut s = state.lock().unwrap();
+    let mut s = state.lock().ok()?;
     let Some(session) = s.secure.as_mut() else {
         return Some((apci, data.to_vec()));
     };
@@ -1132,7 +1102,8 @@ fn unwrap_secure(
 }
 
 /// The device side of the secure seam on send: wraps a response for an activated
-/// device, or returns it untouched on a plain one.
+/// device, or returns it untouched on a plain one. `None` when the state lock is
+/// poisoned or the wrap fails.
 fn wrap_secure(
     state: &Shared,
     address: bussard_model::IndividualAddress,
@@ -1140,417 +1111,352 @@ fn wrap_secure(
     tpci_octet: u8,
     apci: u16,
     data: Vec<u8>,
-) -> (u16, Vec<u8>) {
-    let mut s = state.lock().unwrap();
+) -> Option<(u16, Vec<u8>)> {
+    let mut s = state.lock().ok()?;
     match s.secure.as_mut() {
-        None => (apci, data),
+        None => Some((apci, data)),
         Some(session) => {
             let addr = mock_addressing(address, tool, tpci_octet);
-            session
-                .wrap(&addr, apci, &data)
-                .expect("the mock device wraps its response")
+            // A wrap failure leaves the device silent (the test then fails on
+            // the tool's timeout); it never happens with a valid session.
+            session.wrap(&addr, apci, &data).ok()
         }
     }
 }
 
-async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, state: Shared) {
-    let mut gw_seq = 0u8;
-    let mut dev_seq = 0u8;
-    loop {
-        let mut buf = [0u8; 1024];
-        let (n, from) =
-            match tokio::time::timeout(Duration::from_secs(30), gw.recv_from(&mut buf)).await {
-                Ok(Ok(v)) => v,
-                _ => return,
-            };
-        let Ok(parsed) = knxnet::parse(&buf[..n]) else {
-            continue;
-        };
-        // Gateway link outage (issue #177): while the link is down nothing gets
-        // through in either direction.
-        {
-            let mut s = state.lock().unwrap();
-            match s.tunnel_down_until {
-                Some(None) => {
-                    s.outage_swallowed += 1;
-                    continue;
-                }
-                Some(Some(until)) if tokio::time::Instant::now() < until => {
-                    s.outage_swallowed += 1;
-                    continue;
-                }
-                Some(Some(_)) => {
-                    s.tunnel_down_until = None;
-                    if s.outage_kills_l4 {
-                        s.l4_dead_after_outage = true;
-                    }
-                }
-                None => {}
-            }
-            if parsed.service == ServiceType::TunnelingRequest
-                && s.tunnel_outage.is_some()
-                && let Ok(tr) = knxnet::parse_tunneling_request(parsed.body)
-                && matches!(&tr.cemi.apdu, Apdu::Other { apci, .. }
-                    if (apci & APCI_SELECTOR == A_MEMORY_WRITE_SEL)
-                        || (apci & APCI_SELECTOR == A_MEMORY_READ_SEL))
-            {
-                s.outage_memory_frames += 1;
-                if let Some((after, duration)) = s.tunnel_outage
-                    && s.outage_memory_frames > after
-                {
-                    s.tunnel_outage = None;
-                    s.tunnel_down_until = Some(tokio::time::Instant::now().checked_add(duration));
-                    s.outage_swallowed += 1;
-                    continue;
-                }
-            }
-            // The post-restart outage (issue #192): count the numbered frames
-            // the tool sends the device after the arming restart.
-            if s.restart_outage_armed
-                && parsed.service == ServiceType::TunnelingRequest
-                && let Ok(tr) = knxnet::parse_tunneling_request(parsed.body)
-                && tr.cemi.destination == Destination::Individual(address)
-                && matches!(
-                    tpci::classify(tr.cemi.tpci_octet()),
-                    TpciKind::NumberedData(_)
-                )
-            {
-                s.restart_outage_frames += 1;
-                if let Some(outage) = s.restart_outage
-                    && s.restart_outage_frames > outage.after_frame
-                {
-                    s.restart_outage = None;
-                    s.restart_outage_armed = false;
-                    s.tunnel_down_until =
-                        Some(tokio::time::Instant::now().checked_add(outage.duration));
-                    s.outage_swallowed += 1;
-                    continue;
-                }
+/// Whether `apci` is a plain memory read or write (the frames the tunnel-drop
+/// and outage budgets meter).
+fn is_memory_apci(apci: u16) -> bool {
+    (apci & APCI_SELECTOR == A_MEMORY_WRITE_SEL) || (apci & APCI_SELECTOR == A_MEMORY_READ_SEL)
+}
+
+/// Whether a tunnelled frame carries a plain memory read or write.
+fn is_memory_frame(cemi: &CemiFrame) -> bool {
+    matches!(&cemi.apdu, Apdu::Other { apci, .. } if is_memory_apci(*apci))
+}
+
+/// The gateway-level faults, as a testkit intercept hook: the link outage
+/// (issue #177), the post-restart outage (issue #192) and the tunnel drops
+/// (issue #52). Every datagram passes through here before the gateway acts.
+fn intercept(
+    state: &Shared,
+    address: bussard_model::IndividualAddress,
+    inbound: &Inbound<'_>,
+) -> Verdict {
+    let Ok(mut s) = state.lock() else {
+        return Verdict::Serve;
+    };
+    // Gateway link outage (issue #177): while the link is down nothing gets
+    // through in either direction.
+    match s.tunnel_down_until {
+        Some(None) => {
+            s.outage_swallowed += 1;
+            return Verdict::Swallow;
+        }
+        Some(Some(until)) if tokio::time::Instant::now() < until => {
+            s.outage_swallowed += 1;
+            return Verdict::Swallow;
+        }
+        Some(Some(_)) => {
+            s.tunnel_down_until = None;
+            if s.outage_kills_l4 {
+                s.l4_dead_after_outage = true;
             }
         }
-        match parsed.service {
-            ServiceType::ConnectRequest => {
-                {
-                    // A fresh KNXnet/IP tunnel: reset the per-connection tunnel-drop
-                    // frame counter and record the (re)connect.
-                    let mut s = state.lock().unwrap();
-                    s.tunnel_frames_this_connection = 0;
-                    s.tunnel_dead_this_connection = false;
-                    s.tunnel_connects += 1;
-                }
-                let resp = knxnet_frame(
-                    ServiceType::ConnectResponse,
-                    &connect_response_body(CHANNEL, &gw),
-                );
-                gw.send_to(&resp, from).await.unwrap();
+        None => {}
+    }
+    if let Some(cemi) = inbound.cemi {
+        if s.tunnel_outage.is_some() && is_memory_frame(cemi) {
+            s.outage_memory_frames += 1;
+            if let Some((after, duration)) = s.tunnel_outage
+                && s.outage_memory_frames > after
+            {
+                s.tunnel_outage = None;
+                s.tunnel_down_until = Some(tokio::time::Instant::now().checked_add(duration));
+                s.outage_swallowed += 1;
+                return Verdict::Swallow;
             }
-            ServiceType::ConnectionstateRequest => {
-                gw.send_to(&knxnet::connectionstate_response(CHANNEL, 0), from)
-                    .await
-                    .unwrap();
+        }
+        // The post-restart outage (issue #192): count the numbered frames
+        // the tool sends the device after the arming restart.
+        if s.restart_outage_armed
+            && cemi.destination == Destination::Individual(address)
+            && matches!(tpci::classify(cemi.tpci_octet()), TpciKind::NumberedData(_))
+        {
+            s.restart_outage_frames += 1;
+            if let Some(outage) = s.restart_outage
+                && s.restart_outage_frames > outage.after_frame
+            {
+                s.restart_outage = None;
+                s.restart_outage_armed = false;
+                s.tunnel_down_until =
+                    Some(tokio::time::Instant::now().checked_add(outage.duration));
+                s.outage_swallowed += 1;
+                return Verdict::Swallow;
             }
-            ServiceType::DisconnectRequest => {
-                // Answer the KNXnet/IP disconnect but KEEP SERVING: a client that
-                // drops and re-establishes the tunnel mid-test (a bus-actor
-                // reconnect after a tunnel drop, issue #52) tears down the old
-                // Transport — which sends this DISCONNECT_REQUEST — before opening a
-                // fresh one. If the gateway exited here, the actor's follow-up
-                // CONNECT_REQUEST would have nothing to answer it and the flash would
-                // hang. Every test aborts the gateway task explicitly at the end, so
-                // the gateway never needs to self-terminate.
-                gw.send_to(&knxnet::disconnect_response(CHANNEL, 0), from)
-                    .await
-                    .unwrap();
-            }
-            ServiceType::TunnelingRequest => {
-                let Ok(tr) = knxnet::parse_tunneling_request(parsed.body) else {
-                    continue;
-                };
-                // Tunnel-drop injection: if this frame trips the tunnel-drop budget,
-                // do NOT send the TUNNELING_ACK. The client's Transport then times
-                // out waiting for the ACK, the bus actor tears the tunnel down and
-                // reconnects — modelling KV dropping the underlying KNXnet/IP tunnel
-                // (issue #52), distinct from an L4 silence over a live tunnel. The
-                // budget is metered against MEMORY frames on the current connection
-                // (writes and their read-backs), so a drop always lands strictly
-                // inside the write — the discovery/authorize/load-control preamble
-                // gets through on every fresh tunnel, isolating the mid-write path.
-                {
-                    let mut s = state.lock().unwrap();
-                    // Once the tunnel is dead on this connection, swallow EVERY
-                    // further frame (including the client's retransmit of the frame
-                    // that tripped the drop) so the Transport really times out and
-                    // the actor reconnects — a single-frame drop would be defeated
-                    // by the transport's one retransmit sneaking through.
-                    if s.tunnel_dead_this_connection {
-                        continue;
-                    }
-                    let is_memory_frame = matches!(&tr.cemi.apdu, Apdu::Other { apci, .. }
-                        if (apci & APCI_SELECTOR == A_MEMORY_WRITE_SEL)
-                            || (apci & APCI_SELECTOR == A_MEMORY_READ_SEL));
-                    if is_memory_frame {
-                        s.tunnel_frames_this_connection += 1;
-                        if let Some(budget) = s.drop_tunnel_after_frames
-                            && s.tunnel_drops_remaining > 0
-                            && s.tunnel_frames_this_connection > budget
-                        {
-                            s.tunnel_drops_remaining -= 1;
-                            s.tunnel_dead_this_connection = true;
-                            // Drop: swallow this and all further frames on this
-                            // connection with no ACK. The next CONNECT_REQUEST
-                            // resets the counters so the fresh tunnel's preamble
-                            // serves normally before the next drop.
-                            continue;
-                        }
-                    }
-                }
-                gw.send_to(
-                    &knxnet::tunneling_ack(tr.header.channel_id, tr.header.seq, 0),
-                    from,
-                )
-                .await
-                .unwrap();
-
-                let cemi = &tr.cemi;
-                let dest = match cemi.destination {
-                    Destination::Individual(ia) => ia,
-                    Destination::Group(_) => continue,
-                };
-                if dest != address {
-                    continue;
-                }
-                let tool = cemi.source;
-                match tpci::classify(cemi.tpci_octet()) {
-                    TpciKind::Connect => {
-                        dev_seq = 0;
-                        // A fresh connection window: reset the per-connection
-                        // exchange budget and, if configured, drop the app object
-                        // out of Loading to model a peer that does not persist the
-                        // intermediate state across a graceful window.
-                        let mut s = state.lock().unwrap();
-                        s.connects += 1;
-                        if s.secure.is_some() {
-                            s.secure_log.push("T_Connect".to_string());
-                        }
-                        s.exchanges_this_connection = 0;
-                        s.write_phase_exchanges = None;
-                        // A fresh connection is a fresh authorization context: the
-                        // session must re-authorize before any config write.
-                        s.authorized = false;
-                        // A fresh connection after a master-reset reboot: the device
-                        // is alive again on the new link.
-                        s.l4_dead_after_master_reset = false;
-                        s.l4_dead_after_outage = false;
-                        // A device that discarded a content-incomplete load on
-                        // reboot (Fault::UnloadedAfterBasicRestart) comes back up
-                        // with the app object Unloaded — the post-restart verify
-                        // must observe this and fail the flash.
-                        if s.revert_app_on_next_connect {
-                            s.revert_app_on_next_connect = false;
-                            s.app_load_state = LS_UNLOADED;
-                            if s.multi_object
-                                && let Some(app) = app_object_index(&s)
-                            {
-                                s.object_load_states.insert(app, LS_UNLOADED);
-                            }
-                        }
-                        if s.drop_loading_on_reconnect
-                            && s.was_loading_at_disconnect
-                            && s.app_load_state == LS_LOADING
-                        {
-                            s.app_load_state = LS_UNLOADED;
-                        }
-                    }
-                    TpciKind::Disconnect => {
-                        // Record the tool's clean teardown so a test can assert
-                        // the L4 session was released even after a failed flash.
-                        let mut s = state.lock().unwrap();
-                        s.disconnects += 1;
-                        if s.secure.is_some() {
-                            s.secure_log.push("T_Disconnect".to_string());
-                        }
-                        s.was_loading_at_disconnect = s.app_load_state == LS_LOADING;
-                    }
-                    TpciKind::NumberedData(client_seq) => {
-                        // Per-connection death budget: once this connection has run
-                        // its allotted exchanges, the device goes silent for the
-                        // rest of the connection (KV drops the L4 link, issue #52).
-                        {
-                            let mut s = state.lock().unwrap();
-                            s.exchanges_this_connection += 1;
-                            // Master-reset reboot: once a master reset was accepted
-                            // on this connection, the device is rebooting and answers
-                            // nothing more until a fresh T_Connect. The tool must
-                            // reconnect to continue.
-                            if s.l4_dead_after_master_reset || s.l4_dead_after_outage {
-                                continue;
-                            }
-                            if let Some(budget) = s.die_after_exchanges
-                                && s.exchanges_this_connection > budget
-                            {
-                                // No ACK, no response: the connection is dead
-                                // until a fresh T_Connect resets the budget.
-                                continue;
-                            }
-                            // Write-phase death: once the write is under way (the
-                            // first memory write of the connection armed the
-                            // counter), meter only MEMORY frames (writes and their
-                            // read-backs) against the write-phase budget and go
-                            // silent past it — a death strictly INSIDE the memory
-                            // write (KV's random mid-write drop), leaving the
-                            // post-write property steps (LoadCompleted, verify)
-                            // untouched so this fault models exactly a mid-write
-                            // drop and nothing else.
-                            let is_memory_frame = matches!(&cemi.apdu, Apdu::Other { apci, .. }
-                                if (apci & APCI_SELECTOR == A_MEMORY_WRITE_SEL)
-                                    || (apci & APCI_SELECTOR == A_MEMORY_READ_SEL));
-                            if let (Some(budget), Some(seen)) =
-                                (s.die_after_write_exchanges, s.write_phase_exchanges)
-                                && is_memory_frame
-                            {
-                                if seen >= budget {
-                                    continue;
-                                }
-                                s.write_phase_exchanges = Some(seen + 1);
-                            }
-                        }
-                        let (wire_apci, wire_payload) = match (&cemi.tpci, &cemi.apdu) {
-                            (Tpci::Other(_), Apdu::Other { apci, data }) => (*apci, data.clone()),
-                            _ => continue,
-                        };
-                        // KNX Data Secure S-A_Sync (spec §6.3): an activated
-                        // device answers the tool's Sync_Req with a Sync_Res, as
-                        // the real device does in the ETS capture.
-                        if wire_apci == bussard_secure::A_SECURE_DATA
-                            && wire_payload.first() == Some(&0x92)
-                        {
-                            // A security layer that is not ready yet (issue
-                            // #166): the transport layer acknowledges the
-                            // request, the security layer never answers it.
-                            let dropped = {
-                                let mut s = state.lock().unwrap();
-                                if s.secure.is_some() && s.sync_drops_pending > 0 {
-                                    s.sync_drops_pending -= 1;
-                                    s.sync_reqs_dropped += 1;
-                                    s.secure_log.push("S-A_Sync_Req (T_ACK only)".to_string());
-                                    true
-                                } else {
-                                    false
-                                }
-                            };
-                            if dropped {
-                                let ack =
-                                    CemiFrame::t_control(tool, address, tpci::t_ack(client_seq));
-                                push(&gw, from, &mut gw_seq, &ack).await;
-                                continue;
-                            }
-                            let resp_tpci = tpci::ndt(dev_seq);
-                            let answered = {
-                                let mut s = state.lock().unwrap();
-                                if s.secure.is_some() {
-                                    s.secure_log
-                                        .push("S-A_Sync_Req -> S-A_Sync_Res".to_string());
-                                }
-                                s.secure.as_mut().map(|session| {
-                                    session.answer_sync_request(
-                                        &mock_addressing(tool, address, cemi.tpci_octet()),
-                                        &wire_payload,
-                                        &mock_addressing(address, tool, resp_tpci),
-                                    )
-                                })
-                            };
-                            let Some(Ok((rapci, rdata))) = answered else {
-                                // A Sync_Req that does not verify is dropped.
-                                state.lock().unwrap().secure_refusals += 1;
-                                continue;
-                            };
-                            let ack = CemiFrame::t_control(tool, address, tpci::t_ack(client_seq));
-                            push(&gw, from, &mut gw_seq, &ack).await;
-                            let resp = CemiFrame::t_data_connected(
-                                tool, address, resp_tpci, rapci, &rdata,
-                            );
-                            push(&gw, from, &mut gw_seq, &resp).await;
-                            dev_seq = (dev_seq + 1) & 0x0f;
-                            continue;
-                        }
-                        // An activated device still answers a plain
-                        // A_DeviceDescriptor_Read in the clear, as the real
-                        // device does for ETS's opening probe (issue #166).
-                        let plain_probe = wire_apci & APCI_SELECTOR == A_DEVICE_DESCRIPTOR_READ_SEL
-                            && {
-                                let mut s = state.lock().unwrap();
-                                if s.secure.is_some() {
-                                    s.plain_descriptor_reads += 1;
-                                    s.secure_log
-                                        .push("A_DeviceDescriptor_Read (plain)".to_string());
-                                    true
-                                } else {
-                                    false
-                                }
-                            };
-                        if plain_probe {
-                            let ack = CemiFrame::t_control(tool, address, tpci::t_ack(client_seq));
-                            push(&gw, from, &mut gw_seq, &ack).await;
-                            let resp = CemiFrame::t_data_connected(
-                                tool,
-                                address,
-                                tpci::ndt(dev_seq),
-                                A_DEVICE_DESCRIPTOR_RESPONSE,
-                                &[0x07, 0xB0],
-                            );
-                            push(&gw, from, &mut gw_seq, &resp).await;
-                            dev_seq = (dev_seq + 1) & 0x0f;
-                            continue;
-                        }
-                        // KNX Data Secure (issue #71): an activated device unwraps
-                        // A_SecureData and refuses plain management outright. A
-                        // refused frame is DROPPED — no ACK, no response — exactly
-                        // as a real activated device (and the knx-sim) behaves.
-                        let (req_apci, payload) = match unwrap_secure(
-                            &state,
-                            tool,
-                            address,
-                            cemi.tpci_octet(),
-                            wire_apci,
-                            &wire_payload,
-                        ) {
-                            Some(inner) => inner,
-                            None => continue,
-                        };
-                        match handle_request(&state, req_apci, &payload) {
-                            Reaction::Nak => {
-                                let nak =
-                                    CemiFrame::t_control(tool, address, tpci::t_nak(client_seq));
-                                push(&gw, from, &mut gw_seq, &nak).await;
-                            }
-                            Reaction::Ack => {
-                                let ack =
-                                    CemiFrame::t_control(tool, address, tpci::t_ack(client_seq));
-                                push(&gw, from, &mut gw_seq, &ack).await;
-                            }
-                            Reaction::Answer(rapci, rdata) => {
-                                let ack =
-                                    CemiFrame::t_control(tool, address, tpci::t_ack(client_seq));
-                                push(&gw, from, &mut gw_seq, &ack).await;
-                                // An activated device answers in kind: the response
-                                // rides back inside A_SecureData under the same key.
-                                let resp_tpci = tpci::ndt(dev_seq);
-                                let (rapci, rdata) =
-                                    wrap_secure(&state, address, tool, resp_tpci, rapci, rdata);
-                                let resp = CemiFrame::t_data_connected(
-                                    tool, address, resp_tpci, rapci, &rdata,
-                                );
-                                push(&gw, from, &mut gw_seq, &resp).await;
-                                dev_seq = (dev_seq + 1) & 0x0f;
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            _ => {}
         }
     }
+    if inbound.service == ServiceType::ConnectRequest {
+        // A fresh KNXnet/IP tunnel: reset the per-connection tunnel-drop
+        // frame counter and record the (re)connect.
+        s.tunnel_frames_this_connection = 0;
+        s.tunnel_dead_this_connection = false;
+        s.tunnel_connects += 1;
+    }
+    if let Some(cemi) = inbound.cemi {
+        // Tunnel-drop injection: if this frame trips the tunnel-drop budget,
+        // do NOT send the TUNNELING_ACK. The client's Transport then times
+        // out waiting for the ACK, the bus actor tears the tunnel down and
+        // reconnects — modelling KV dropping the underlying KNXnet/IP tunnel
+        // (issue #52), distinct from an L4 silence over a live tunnel. The
+        // budget is metered against MEMORY frames on the current connection
+        // (writes and their read-backs), so a drop always lands strictly
+        // inside the write — the discovery/authorize/load-control preamble
+        // gets through on every fresh tunnel, isolating the mid-write path.
+        //
+        // Once the tunnel is dead on this connection, swallow EVERY
+        // further frame (including the client's retransmit of the frame
+        // that tripped the drop) so the Transport really times out and
+        // the actor reconnects — a single-frame drop would be defeated
+        // by the transport's one retransmit sneaking through.
+        if s.tunnel_dead_this_connection {
+            return Verdict::Swallow;
+        }
+        if is_memory_frame(cemi) {
+            s.tunnel_frames_this_connection += 1;
+            if let Some(budget) = s.drop_tunnel_after_frames
+                && s.tunnel_drops_remaining > 0
+                && s.tunnel_frames_this_connection > budget
+            {
+                s.tunnel_drops_remaining -= 1;
+                s.tunnel_dead_this_connection = true;
+                // Drop: swallow this and all further frames on this
+                // connection with no ACK. The next CONNECT_REQUEST
+                // resets the counters so the fresh tunnel's preamble
+                // serves normally before the next drop.
+                return Verdict::Swallow;
+            }
+        }
+    }
+    Verdict::Serve
+}
+
+/// The device's reaction to the tool's transport control frames.
+fn on_control(state: &Shared, kind: TpciKind) -> Vec<Step> {
+    let Ok(mut s) = state.lock() else {
+        return Vec::new();
+    };
+    match kind {
+        TpciKind::Connect => {
+            // A fresh connection window: reset the per-connection
+            // exchange budget and, if configured, drop the app object
+            // out of Loading to model a peer that does not persist the
+            // intermediate state across a graceful window.
+            s.connects += 1;
+            if s.secure.is_some() {
+                s.secure_log.push("T_Connect".to_string());
+            }
+            s.exchanges_this_connection = 0;
+            s.write_phase_exchanges = None;
+            // A fresh connection is a fresh authorization context: the
+            // session must re-authorize before any config write.
+            s.authorized = false;
+            // A fresh connection after a master-reset reboot: the device
+            // is alive again on the new link.
+            s.l4_dead_after_master_reset = false;
+            s.l4_dead_after_outage = false;
+            // A device that discarded a content-incomplete load on
+            // reboot (Fault::UnloadedAfterBasicRestart) comes back up
+            // with the app object Unloaded — the post-restart verify
+            // must observe this and fail the flash.
+            if s.revert_app_on_next_connect {
+                s.revert_app_on_next_connect = false;
+                s.app_load_state = LS_UNLOADED;
+                if s.multi_object
+                    && let Some(app) = app_object_index(&s)
+                {
+                    s.object_load_states.insert(app, LS_UNLOADED);
+                }
+            }
+            if s.drop_loading_on_reconnect
+                && s.was_loading_at_disconnect
+                && s.app_load_state == LS_LOADING
+            {
+                s.app_load_state = LS_UNLOADED;
+            }
+        }
+        TpciKind::Disconnect => {
+            // Record the tool's clean teardown so a test can assert
+            // the L4 session was released even after a failed flash.
+            s.disconnects += 1;
+            if s.secure.is_some() {
+                s.secure_log.push("T_Disconnect".to_string());
+            }
+            s.was_loading_at_disconnect = s.app_load_state == LS_LOADING;
+        }
+        _ => {}
+    }
+    Vec::new()
+}
+
+/// The device's reaction to one numbered data telegram (`wire_apci` and
+/// `wire_payload` as they came off the wire, before any Data Secure unwrap).
+fn on_numbered(
+    state: &Shared,
+    dev: &MockDevice,
+    wire_apci: u16,
+    wire_payload: &[u8],
+) -> bussard_testkit::Reaction {
+    use bussard_testkit::Reaction as Tk;
+    let (tool, address) = (dev.tool, dev.address);
+    let dev_seq = dev.send_seq().unwrap_or(0);
+    // Per-connection death budget: once this connection has run
+    // its allotted exchanges, the device goes silent for the
+    // rest of the connection (KV drops the L4 link, issue #52).
+    {
+        let Ok(mut s) = state.lock() else {
+            return Tk::Silent;
+        };
+        s.exchanges_this_connection += 1;
+        // Master-reset reboot: once a master reset was accepted
+        // on this connection, the device is rebooting and answers
+        // nothing more until a fresh T_Connect. The tool must
+        // reconnect to continue.
+        if s.l4_dead_after_master_reset || s.l4_dead_after_outage {
+            return Tk::Silent;
+        }
+        if let Some(budget) = s.die_after_exchanges
+            && s.exchanges_this_connection > budget
+        {
+            // No ACK, no response: the connection is dead
+            // until a fresh T_Connect resets the budget.
+            return Tk::Silent;
+        }
+        // Write-phase death: once the write is under way (the
+        // first memory write of the connection armed the
+        // counter), meter only MEMORY frames (writes and their
+        // read-backs) against the write-phase budget and go
+        // silent past it — a death strictly INSIDE the memory
+        // write (KV's random mid-write drop), leaving the
+        // post-write property steps (LoadCompleted, verify)
+        // untouched so this fault models exactly a mid-write
+        // drop and nothing else.
+        if let (Some(budget), Some(seen)) = (s.die_after_write_exchanges, s.write_phase_exchanges)
+            && is_memory_apci(wire_apci)
+        {
+            if seen >= budget {
+                return Tk::Silent;
+            }
+            s.write_phase_exchanges = Some(seen + 1);
+        }
+    }
+    // KNX Data Secure S-A_Sync (spec §6.3): an activated
+    // device answers the tool's Sync_Req with a Sync_Res, as
+    // the real device does in the ETS capture.
+    if wire_apci == bussard_secure::A_SECURE_DATA && wire_payload.first() == Some(&0x92) {
+        let Ok(mut s) = state.lock() else {
+            return Tk::Silent;
+        };
+        // A security layer that is not ready yet (issue
+        // #166): the transport layer acknowledges the
+        // request, the security layer never answers it.
+        if s.secure.is_some() && s.sync_drops_pending > 0 {
+            s.sync_drops_pending -= 1;
+            s.sync_reqs_dropped += 1;
+            s.secure_log.push("S-A_Sync_Req (T_ACK only)".to_string());
+            return Tk::Ack;
+        }
+        let resp_tpci = tpci::ndt(dev_seq);
+        if s.secure.is_some() {
+            s.secure_log
+                .push("S-A_Sync_Req -> S-A_Sync_Res".to_string());
+        }
+        let answered = s.secure.as_mut().map(|session| {
+            session.answer_sync_request(
+                &mock_addressing(tool, address, dev.request_tpci),
+                wire_payload,
+                &mock_addressing(address, tool, resp_tpci),
+            )
+        });
+        let Some(Ok((rapci, rdata))) = answered else {
+            // A Sync_Req that does not verify is dropped.
+            s.secure_refusals += 1;
+            return Tk::Silent;
+        };
+        return Tk::Answer(rapci, rdata);
+    }
+    // An activated device still answers a plain
+    // A_DeviceDescriptor_Read in the clear, as the real
+    // device does for ETS's opening probe (issue #166).
+    let plain_probe = wire_apci & APCI_SELECTOR == A_DEVICE_DESCRIPTOR_READ_SEL && {
+        let Ok(mut s) = state.lock() else {
+            return Tk::Silent;
+        };
+        if s.secure.is_some() {
+            s.plain_descriptor_reads += 1;
+            s.secure_log
+                .push("A_DeviceDescriptor_Read (plain)".to_string());
+            true
+        } else {
+            false
+        }
+    };
+    if plain_probe {
+        return Tk::Answer(A_DEVICE_DESCRIPTOR_RESPONSE, vec![0x07, 0xB0]);
+    }
+    // KNX Data Secure (issue #71): an activated device unwraps
+    // A_SecureData and refuses plain management outright. A
+    // refused frame is DROPPED — no ACK, no response — exactly
+    // as a real activated device (and the knx-sim) behaves.
+    let Some((req_apci, payload)) = unwrap_secure(
+        state,
+        tool,
+        address,
+        dev.request_tpci,
+        wire_apci,
+        wire_payload,
+    ) else {
+        return Tk::Silent;
+    };
+    match handle_request(state, req_apci, &payload) {
+        Reaction::Nak => Tk::Nak,
+        Reaction::Ack => Tk::Ack,
+        Reaction::Answer(rapci, rdata) => {
+            // An activated device answers in kind: the response
+            // rides back inside A_SecureData under the same key.
+            let resp_tpci = tpci::ndt(dev_seq);
+            match wrap_secure(state, address, tool, resp_tpci, rapci, rdata) {
+                Some((rapci, rdata)) => Tk::Answer(rapci, rdata),
+                None => Tk::Silent,
+            }
+        }
+    }
+}
+
+/// The mock gateway in front of the device modelled by `state` at 1.1.4: the
+/// testkit gateway with this suite's faults (see [`intercept`]) and device
+/// model (see [`on_numbered`], [`on_control`]).
+///
+/// It keeps serving after a DISCONNECT: a client that drops and re-establishes
+/// the tunnel mid-test (a bus-actor reconnect after a tunnel drop, issue #52)
+/// tears down the old Transport — which sends a DISCONNECT_REQUEST — before
+/// opening a fresh one, and the follow-up CONNECT_REQUEST must be answered.
+async fn start_gateway(state: &Shared) -> TestResult<MockGateway> {
+    let address = ia("1.1.4")?;
+    let hook_state = Arc::clone(state);
+    let control_state = Arc::clone(state);
+    let intercept_state = Arc::clone(state);
+    let device = MockDevice::new(address)
+        .with_hook(move |dev, apci, data| Some(on_numbered(&hook_state, dev, apci, data)))
+        .with_control_hook(move |_, kind| on_control(&control_state, kind));
+    Ok(MockGateway::builder()
+        .channel(CHANNEL)
+        .keep_serving()
+        .idle_timeout(Duration::from_secs(30))
+        .intercept(move |inbound| intercept(&intercept_state, address, inbound))
+        .device(device)
+        .start()
+        .await?)
 }
 
 /// A factory-fresh System B device: objects 0..3, application object Unloaded.
@@ -1637,17 +1543,17 @@ fn fresh_device(fault: Fault) -> Shared {
 /// A factory-fresh System B device that is ALSO security-ACTIVATED (issue #71):
 /// it holds [`MOCK_TOOL_KEY`] and refuses any management access that does not
 /// ride `A_SecureData`.
-fn secure_device(fault: Fault) -> Shared {
+fn secure_device(fault: Fault) -> TestResult<Shared> {
     let state = fresh_device(fault);
-    state.lock().unwrap().secure = Some(bussard_secure::DataSecureSession::new(
+    lock(&state)?.secure = Some(bussard_secure::DataSecureSession::new(
         bussard_secure::Key16::new(MOCK_TOOL_KEY),
     ));
-    state
+    Ok(state)
 }
 
 /// A minimal single-application System B app: code segment (6 bytes) + parameter
 /// segment (1 byte, default 7 over a zero base).
-fn fabricated_app() -> ApplicationProgram {
+fn fabricated_app() -> TestResult<ApplicationProgram> {
     let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
      <ApplicationProgram Id="M-1_A-1" ApplicationNumber="1" ApplicationVersion="1"
         MaskVersion="MV-07B0" Name="Fab" LoadProcedureStyle="ProductDefault">
@@ -1674,13 +1580,13 @@ fn fabricated_app() -> ApplicationProgram {
        </LoadProcedures>
       </Static>
      </ApplicationProgram></KNX>"#;
-    parse_application_program("M-1_A-1", xml.as_bytes()).unwrap()
+    Ok(parse_application_program("M-1_A-1", xml.as_bytes())?)
 }
 
 /// A single-application System B app in the real MDT A-0007 / Jung 23024 shape:
 /// one relative segment written as a combined `full,par` image, followed by four
 /// `LdCtrlLoadImageProp` MCB integrity checks (ObjIdx 1..4, the last Count=2).
-fn app_with_image_prop() -> ApplicationProgram {
+fn app_with_image_prop() -> TestResult<ApplicationProgram> {
     let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
      <ApplicationProgram Id="M-2_A-7" ApplicationNumber="7" ApplicationVersion="35"
         MaskVersion="MV-07B0" Name="AKK" LoadProcedureStyle="MergedProcedure">
@@ -1706,7 +1612,7 @@ fn app_with_image_prop() -> ApplicationProgram {
        </LoadProcedures>
       </Static>
      </ApplicationProgram></KNX>"#;
-    parse_application_program("M-2_A-7", xml.as_bytes()).unwrap()
+    Ok(parse_application_program("M-2_A-7", xml.as_bytes())?)
 }
 
 /// A single-application System B app in the MDT SCN-DA64x DALI-gateway shape: a
@@ -1714,7 +1620,7 @@ fn app_with_image_prop() -> ApplicationProgram {
 /// `AAECAw==`/`00 01 02 03`) verified before the download proper writes the
 /// segment. The compare gates the flash: only a device whose property matches
 /// proceeds. `mask`, when set, is emitted as the op's hex `Mask` attribute.
-fn app_with_compare_prop(mask: Option<&str>) -> ApplicationProgram {
+fn app_with_compare_prop(mask: Option<&str>) -> TestResult<ApplicationProgram> {
     let mask_attr = mask.map(|m| format!(" Mask=\"{m}\"")).unwrap_or_default();
     let xml = format!(
         r#"<KNX xmlns="http://knx.org/xml/project/23">
@@ -1742,13 +1648,13 @@ fn app_with_compare_prop(mask: Option<&str>) -> ApplicationProgram {
       </Static>
      </ApplicationProgram></KNX>"#
     );
-    parse_application_program("M-3_A-8", xml.as_bytes()).unwrap()
+    Ok(parse_application_program("M-3_A-8", xml.as_bytes())?)
 }
 
 /// A single-application System B app whose procedure carries a value-carrying
 /// `LdCtrlWriteProp` (object 0, PID 204, value `01 02`) after the segment write.
 /// Used to prove the value actually lands on the device (issue #54).
-fn app_with_write_prop() -> ApplicationProgram {
+fn app_with_write_prop() -> TestResult<ApplicationProgram> {
     let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
      <ApplicationProgram Id="M-4_A-9" ApplicationNumber="9" ApplicationVersion="1"
         MaskVersion="MV-07B0" Name="WriteProp" LoadProcedureStyle="ProductDefault">
@@ -1771,7 +1677,7 @@ fn app_with_write_prop() -> ApplicationProgram {
        </LoadProcedures>
       </Static>
      </ApplicationProgram></KNX>"#;
-    parse_application_program("M-4_A-9", xml.as_bytes()).unwrap()
+    Ok(parse_application_program("M-4_A-9", xml.as_bytes())?)
 }
 
 /// A single-application System B app whose procedure carries an
@@ -1779,7 +1685,7 @@ fn app_with_write_prop() -> ApplicationProgram {
 /// KNX-Virtual shape: allocate the segment, master-reset the device, then write
 /// the segment and complete the load. The master reset reboots the device and
 /// drops the L4 connection, so the download engine must reconnect and resume.
-fn app_with_master_reset() -> ApplicationProgram {
+fn app_with_master_reset() -> TestResult<ApplicationProgram> {
     let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
      <ApplicationProgram Id="M-5_A-1" ApplicationNumber="1" ApplicationVersion="1"
         MaskVersion="MV-07B0" Name="MasterReset" LoadProcedureStyle="ProductDefault">
@@ -1802,37 +1708,20 @@ fn app_with_master_reset() -> ApplicationProgram {
        </LoadProcedures>
       </Static>
      </ApplicationProgram></KNX>"#;
-    parse_application_program("M-5_A-1", xml.as_bytes()).unwrap()
+    Ok(parse_application_program("M-5_A-1", xml.as_bytes())?)
 }
 
-async fn setup(fault: Fault) -> (Transport, Shared, tokio::task::JoinHandle<()>) {
-    let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let port = sock.local_addr().unwrap().port();
-    let state = fresh_device(fault);
-    let addr: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let handle = tokio::spawn(run_gateway(sock, addr, Arc::clone(&state)));
-    let bus = Transport::connect(&ConnectionConfig::tunnel(
-        format!("127.0.0.1:{port}").parse().unwrap(),
-    ))
-    .await
-    .unwrap();
-    (bus, state, handle)
+async fn setup(fault: Fault) -> TestResult<(Transport, Shared, MockGateway)> {
+    setup_device(fresh_device(fault)).await
 }
 
 /// Like [`setup`] but installs a caller-provided device state, so a test can model
 /// a device whose object layout differs from the factory default (e.g. exposing an
 /// extra loadable object for the LsmIdx-resolution test).
-async fn setup_device(state: Shared) -> (Transport, Shared, tokio::task::JoinHandle<()>) {
-    let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let port = sock.local_addr().unwrap().port();
-    let addr: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let handle = tokio::spawn(run_gateway(sock, addr, Arc::clone(&state)));
-    let bus = Transport::connect(&ConnectionConfig::tunnel(
-        format!("127.0.0.1:{port}").parse().unwrap(),
-    ))
-    .await
-    .unwrap();
-    (bus, state, handle)
+async fn setup_device(state: Shared) -> TestResult<(Transport, Shared, MockGateway)> {
+    let gw = start_gateway(&state).await?;
+    let bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
+    Ok((bus, state, gw))
 }
 
 fn no_overrides() -> BTreeMap<String, String> {
@@ -1858,20 +1747,20 @@ fn fast_timeouts() -> bussard_mgmt::Timeouts {
 /// level 0 / full access).
 async fn authed_session<Ch: bussard_mgmt::L4Channel>(
     mut l4: Layer4Connection<Ch>,
-) -> Session<bussard_download::SingleConnector<Ch>> {
+) -> TestResult<Session<bussard_download::SingleConnector<Ch>>> {
     l4.authorize_or_fail(0xFFFF_FFFF)
         .await
-        .expect("free-access authorize must be granted by the mock");
-    Session::from_connection(l4)
+        .map_err(|e| format!("free-access authorize must be granted by the mock: {e:?}"))?;
+    Ok(Session::from_connection(l4))
 }
 
 #[tokio::test]
-async fn flash_happy_path_loads_and_verifies() {
-    let (mut bus, state, handle) = setup(Fault::None).await;
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+async fn flash_happy_path_loads_and_verifies() -> TestResult {
+    let (mut bus, state, handle) = setup(Fault::None).await?;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
-    let app = fabricated_app();
+    let app = fabricated_app()?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -1880,21 +1769,17 @@ async fn flash_happy_path_loads_and_verifies() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
-    let mut session = authed_session(l4).await;
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         |_| {},
     )
-    .await
-    .unwrap();
+    .await?;
     let _ = session.into_disconnect().await;
 
     assert!(outcome.ok(), "flash must verify: {outcome:?}");
@@ -1903,27 +1788,28 @@ async fn flash_happy_path_loads_and_verifies() {
 
     // The code image landed at the first segment base 0x4000; the parameter
     // image at the second base (0x4000 + 6 = 0x4006).
-    let s = state.lock().unwrap();
+    let s = lock(&state)?;
     let code: Vec<u8> = (0x4000u16..0x4006)
         .map(|a| *s.memory.get(&u32::from(a)).unwrap_or(&0))
         .collect();
     assert_eq!(code, vec![0, 1, 2, 3, 4, 5]);
     assert_eq!(*s.memory.get(&0x4006).unwrap_or(&0), 7); // parameter default 7
 
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn flash_with_image_prop_loads_and_verifies_mcb() {
+async fn flash_with_image_prop_loads_and_verifies_mcb() -> TestResult {
     // A full flash of the real MDT/Jung shape: write the segment, complete the
     // load, then four LoadImageProp MCB checks. The device computes its own CRC
     // over the stored segment; the tool's CRC over the bytes it sent matches, so
     // the flash reaches Loaded and every integrity check passes.
-    let (mut bus, state, handle) = setup(Fault::None).await;
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+    let (mut bus, state, handle) = setup(Fault::None).await?;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
-    let app = app_with_image_prop();
+    let app = app_with_image_prop()?;
     let mut plan = plan_flash(
         &app,
         "1.1.4",
@@ -1932,8 +1818,7 @@ async fn flash_with_image_prop_loads_and_verifies_mcb() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
     // The fill (`Mode=1`) makes the planner add a factory reset, which a
     // single-connection session cannot reconnect after; this test exercises the
     // `--no-factory-reset` path.
@@ -1946,18 +1831,15 @@ async fn flash_with_image_prop_loads_and_verifies_mcb() {
         .count();
     assert_eq!(checks, 4);
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
-    let mut session = authed_session(l4).await;
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         |_| {},
     )
-    .await
-    .unwrap();
+    .await?;
     let _ = session.into_disconnect().await;
 
     assert!(
@@ -1967,22 +1849,23 @@ async fn flash_with_image_prop_loads_and_verifies_mcb() {
     assert_eq!(outcome.load_state, LoadState::Loaded);
 
     // The code image landed at the segment base.
-    let s = state.lock().unwrap();
+    let s = lock(&state)?;
     let code: Vec<u8> = (0x4000u16..0x4006)
         .map(|a| *s.memory.get(&u32::from(a)).unwrap_or(&0))
         .collect();
     assert_eq!(code, vec![0, 1, 2, 3, 4, 5]);
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 /// A device whose application object is already Loaded and holds `image` in its
 /// segment at `0x4000`, with `PID_MCB_TABLE` reporting that resident segment —
 /// so a pre-download MCB read (issue #73 item 2) sees the resident size+CRC and
 /// can skip the re-stream. Model of a re-download onto an unchanged install.
-fn preloaded_device(image: &[u8]) -> Shared {
+fn preloaded_device(image: &[u8]) -> TestResult<Shared> {
     let state = fresh_device(Fault::None);
     {
-        let mut s = state.lock().unwrap();
+        let mut s = lock(&state)?;
         s.app_load_state = LS_LOADED;
         s.last_segment_base = 0x4000;
         s.last_segment_size = image.len() as u32;
@@ -1990,88 +1873,23 @@ fn preloaded_device(image: &[u8]) -> Shared {
             s.memory.insert(0x4000u32 + i as u32, *b);
         }
     }
-    state
+    Ok(state)
 }
 
 #[tokio::test]
-async fn flash_skips_restream_when_resident_mcb_matches() {
+async fn flash_skips_restream_when_resident_mcb_matches() -> TestResult {
     // Item 2 (issue #73), match→skip branch: the device already holds the exact
     // image bussard would stream (resident MCB size+CRC match). With
     // `skip_matching_mcb` on, the pre-pass reads PID 27, sees the match and skips
     // the object's re-load — ZERO body bytes stream — yet the flash still reaches
     // Loaded and the LoadImageProp MCB re-verify passes.
     let image = [0u8, 1, 2, 3, 4, 5];
-    let state = preloaded_device(&image);
-    let (mut bus, state, handle) = setup_device(state).await;
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
-
-    let app = app_with_image_prop();
-    let mut plan = plan_flash(
-        &app,
-        "1.1.4",
-        0x07B0,
-        &no_overrides(),
-        &BTreeMap::new(),
-        None,
-        &BTreeMap::new(),
-    )
-    .unwrap();
-    // The fill (`Mode=1`) makes the planner add a factory reset, which a
-    // single-connection session cannot reconnect after; this test exercises the
-    // `--no-factory-reset` path.
-    plan.skip_factory_reset();
-
-    let l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
-    let mut session = authed_session(l4).await;
-    let outcome = flash(
-        &mut session,
-        &plan,
-        bussard_download::FlashOptions {
-            skip_matching_mcb: true,
-            ..Default::default()
-        },
-        |_| {},
-    )
-    .await
-    .unwrap();
-    let _ = session.into_disconnect().await;
-
-    assert!(
-        outcome.ok(),
-        "a resident-match re-download must still verify Loaded: {outcome:?}"
-    );
-    let s = state.lock().unwrap();
-    assert_eq!(
-        s.memory_writes_seen, 0,
-        "a resident-MCB match must stream ZERO body bytes"
-    );
-    handle.abort();
-}
-
-#[tokio::test]
-async fn test_flash_full_streams_when_resident_mcb_matches_but_object_not_loaded()
--> Result<(), Box<dyn std::error::Error>> {
-    // Differential download guard: the device still describes the exact image
-    // bussard would stream (MCB size+CRC match) but the object is NOT Loaded —
-    // an interrupted flash or an app-unload leaves the stored bytes intact while
-    // the load state says Unloaded. Skipping the re-load here would also skip the
-    // StartLoading/LoadCompleted that bring the object back, so the flash must
-    // full-stream and end Loaded.
-    let image = [0u8, 1, 2, 3, 4, 5];
-    let state = preloaded_device(&image);
-    {
-        let mut s = state.lock().map_err(|e| e.to_string())?;
-        s.app_load_state = LS_UNLOADED;
-        s.mcb_survives_unload = true;
-    }
-    let (mut bus, state, handle) = setup_device(state).await;
+    let state = preloaded_device(&image)?;
+    let (mut bus, state, handle) = setup_device(state).await?;
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
-    let app = app_with_image_prop();
+    let app = app_with_image_prop()?;
     let mut plan = plan_flash(
         &app,
         "1.1.4",
@@ -2087,7 +1905,68 @@ async fn test_flash_full_streams_when_resident_mcb_matches_but_object_not_loaded
     plan.skip_factory_reset();
 
     let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
-    let mut session = authed_session(l4).await;
+    let mut session = authed_session(l4).await?;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions {
+            skip_matching_mcb: true,
+            ..Default::default()
+        },
+        |_| {},
+    )
+    .await?;
+    let _ = session.into_disconnect().await;
+
+    assert!(
+        outcome.ok(),
+        "a resident-match re-download must still verify Loaded: {outcome:?}"
+    );
+    let s = lock(&state)?;
+    assert_eq!(
+        s.memory_writes_seen, 0,
+        "a resident-MCB match must stream ZERO body bytes"
+    );
+    drop(handle);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_full_streams_when_resident_mcb_matches_but_object_not_loaded() -> TestResult {
+    // Differential download guard: the device still describes the exact image
+    // bussard would stream (MCB size+CRC match) but the object is NOT Loaded —
+    // an interrupted flash or an app-unload leaves the stored bytes intact while
+    // the load state says Unloaded. Skipping the re-load here would also skip the
+    // StartLoading/LoadCompleted that bring the object back, so the flash must
+    // full-stream and end Loaded.
+    let image = [0u8, 1, 2, 3, 4, 5];
+    let state = preloaded_device(&image)?;
+    {
+        let mut s = state.lock().map_err(|e| e.to_string())?;
+        s.app_load_state = LS_UNLOADED;
+        s.mcb_survives_unload = true;
+    }
+    let (mut bus, state, handle) = setup_device(state).await?;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
+
+    let app = app_with_image_prop()?;
+    let mut plan = plan_flash(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    // The fill (`Mode=1`) makes the planner add a factory reset, which a
+    // single-connection session cannot reconnect after; this test exercises the
+    // `--no-factory-reset` path.
+    plan.skip_factory_reset();
+
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
         &plan,
@@ -2109,21 +1988,21 @@ async fn test_flash_full_streams_when_resident_mcb_matches_but_object_not_loaded
         s.memory_writes_seen > 0,
         "an object that is not Loaded must full-stream even when its MCB matches"
     );
-    handle.abort();
+    drop(handle);
     Ok(())
 }
 
 #[tokio::test]
-async fn flash_full_streams_when_resident_mcb_absent_even_with_skip_on() {
+async fn flash_full_streams_when_resident_mcb_absent_even_with_skip_on() -> TestResult {
     // Item 2 (issue #73), mismatch→write branch: a fresh/blank device answers no
     // MCB entry, so even with `skip_matching_mcb` on the pre-pass finds no match
     // and the object full-streams exactly as before — a needed write is NEVER
     // skipped. Contrast with the match case above.
-    let (mut bus, state, handle) = setup(Fault::None).await;
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+    let (mut bus, state, handle) = setup(Fault::None).await?;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
-    let app = app_with_image_prop();
+    let app = app_with_image_prop()?;
     let mut plan = plan_flash(
         &app,
         "1.1.4",
@@ -2132,17 +2011,14 @@ async fn flash_full_streams_when_resident_mcb_absent_even_with_skip_on() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
     // The fill (`Mode=1`) makes the planner add a factory reset, which a
     // single-connection session cannot reconnect after; this test exercises the
     // `--no-factory-reset` path.
     plan.skip_factory_reset();
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
-    let mut session = authed_session(l4).await;
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
         &plan,
@@ -2152,12 +2028,11 @@ async fn flash_full_streams_when_resident_mcb_absent_even_with_skip_on() {
         },
         |_| {},
     )
-    .await
-    .unwrap();
+    .await?;
     let _ = session.into_disconnect().await;
 
     assert!(outcome.ok(), "a blank device must full-stream: {outcome:?}");
-    let s = state.lock().unwrap();
+    let s = lock(&state)?;
     assert!(
         s.memory_writes_seen > 0,
         "a blank device (no resident MCB) must full-stream even with skip on"
@@ -2166,21 +2041,22 @@ async fn flash_full_streams_when_resident_mcb_absent_even_with_skip_on() {
         .map(|a| *s.memory.get(&u32::from(a)).unwrap_or(&0))
         .collect();
     assert_eq!(code, vec![0, 1, 2, 3, 4, 5]);
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn flash_full_streams_when_resident_mcb_matches_but_skip_off() {
+async fn flash_full_streams_when_resident_mcb_matches_but_skip_off() -> TestResult {
     // Item 2 (issue #73), default-off guard: with `skip_matching_mcb` OFF (the
     // default, and the DA.tp-validated path), even a resident-match device
     // full-streams — the skip is opt-in, so no existing path changes byte-for-byte.
     let image = [0u8, 1, 2, 3, 4, 5];
-    let state = preloaded_device(&image);
-    let (mut bus, state, handle) = setup_device(state).await;
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+    let state = preloaded_device(&image)?;
+    let (mut bus, state, handle) = setup_device(state).await?;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
-    let app = app_with_image_prop();
+    let app = app_with_image_prop()?;
     let mut plan = plan_flash(
         &app,
         "1.1.4",
@@ -2189,47 +2065,44 @@ async fn flash_full_streams_when_resident_mcb_matches_but_skip_off() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
     // The fill (`Mode=1`) makes the planner add a factory reset, which a
     // single-connection session cannot reconnect after; this test exercises the
     // `--no-factory-reset` path.
     plan.skip_factory_reset();
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
-    let mut session = authed_session(l4).await;
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         |_| {},
     )
-    .await
-    .unwrap();
+    .await?;
     let _ = session.into_disconnect().await;
 
     assert!(outcome.ok(), "default-off must still verify: {outcome:?}");
-    let s = state.lock().unwrap();
+    let s = lock(&state)?;
     assert!(
         s.memory_writes_seen > 0,
         "skip OFF must full-stream even when the resident MCB would match"
     );
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn flash_image_prop_catches_corrupted_stored_image() {
+async fn flash_image_prop_catches_corrupted_stored_image() -> TestResult {
     // The device stores a corrupted segment (one octet flipped after the load
     // completes). Its own MCB CRC therefore diverges from the CRC the tool
     // computed over the bytes it sent, and the LoadImageProp step must surface
     // an ImagePropMismatch — proving the mock's independent CRC really gates it.
-    let (mut bus, _state, handle) = setup(Fault::CorruptStoredImage).await;
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+    let (mut bus, _state, handle) = setup(Fault::CorruptStoredImage).await?;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
-    let app = app_with_image_prop();
+    let app = app_with_image_prop()?;
     let mut plan = plan_flash(
         &app,
         "1.1.4",
@@ -2238,17 +2111,14 @@ async fn flash_image_prop_catches_corrupted_stored_image() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
     // The fill (`Mode=1`) makes the planner add a factory reset, which a
     // single-connection session cannot reconnect after; this test exercises the
     // `--no-factory-reset` path.
     plan.skip_factory_reset();
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
-    let mut session = authed_session(l4).await;
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await?;
     let err = flash(
         &mut session,
         &plan,
@@ -2266,16 +2136,17 @@ async fn flash_image_prop_catches_corrupted_stored_image() {
         ),
         "expected ImagePropMismatch, got {err:?}"
     );
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn flash_surfaces_load_error_on_completed() {
-    let (mut bus, _state, handle) = setup(Fault::ErrorOnLoadCompleted).await;
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+async fn flash_surfaces_load_error_on_completed() -> TestResult {
+    let (mut bus, _state, handle) = setup(Fault::ErrorOnLoadCompleted).await?;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
-    let app = fabricated_app();
+    let app = fabricated_app()?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -2284,13 +2155,10 @@ async fn flash_surfaces_load_error_on_completed() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
-    let mut session = authed_session(l4).await;
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await?;
     let err = flash(
         &mut session,
         &plan,
@@ -2305,16 +2173,17 @@ async fn flash_surfaces_load_error_on_completed() {
         matches!(err, bussard_mgmt::load::WriteError::LoadError { .. }),
         "expected LoadError, got {err:?}"
     );
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn flash_aborts_on_memory_write_nak() {
-    let (mut bus, _state, handle) = setup(Fault::NakMemoryWrite).await;
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+async fn flash_aborts_on_memory_write_nak() -> TestResult {
+    let (mut bus, _state, handle) = setup(Fault::NakMemoryWrite).await?;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
-    let app = fabricated_app();
+    let app = fabricated_app()?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -2323,13 +2192,10 @@ async fn flash_aborts_on_memory_write_nak() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
-    let mut session = authed_session(l4).await;
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await?;
     let err = flash(
         &mut session,
         &plan,
@@ -2344,22 +2210,23 @@ async fn flash_aborts_on_memory_write_nak() {
         matches!(err, bussard_mgmt::load::WriteError::Mgmt(_)),
         "expected a Mgmt error from the NAK, got {err:?}"
     );
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn flash_disconnects_even_when_it_fails_mid_procedure() {
+async fn flash_disconnects_even_when_it_fails_mid_procedure() -> TestResult {
     // Finding 3: after a failed flash the L4 session must be torn down, or the
     // device holds a stale connection and the next `reconstruct` reports it
     // absent. Here the device ignores StartLoading and stays Unloaded, so the
     // load-state check rejects it — an application-level error that leaves the
     // connection OPEN. The flash body returns Err, and the explicit
     // `l4.disconnect()` must still emit a T_Disconnect that reaches the device.
-    let (mut bus, state, handle) = setup(Fault::IgnoresStartLoading).await;
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+    let (mut bus, state, handle) = setup(Fault::IgnoresStartLoading).await?;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
-    let app = fabricated_app();
+    let app = fabricated_app()?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -2368,13 +2235,10 @@ async fn flash_disconnects_even_when_it_fails_mid_procedure() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
-    let mut session = authed_session(l4).await;
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await?;
     // The device never opens the object, so the load-state check fails.
     let err = flash(
         &mut session,
@@ -2393,7 +2257,7 @@ async fn flash_disconnects_even_when_it_fails_mid_procedure() {
     );
     // Before the disconnect the device saw none; the connection is still open.
     assert_eq!(
-        state.lock().unwrap().disconnects,
+        lock(&state)?.disconnects,
         0,
         "the failed flash must not have disconnected on its own yet"
     );
@@ -2404,7 +2268,7 @@ async fn flash_disconnects_even_when_it_fails_mid_procedure() {
     // Poll briefly for the async gateway to record the T_Disconnect.
     let mut saw = false;
     for _ in 0..50 {
-        if state.lock().unwrap().disconnects >= 1 {
+        if lock(&state)?.disconnects >= 1 {
             saw = true;
             break;
         }
@@ -2414,20 +2278,21 @@ async fn flash_disconnects_even_when_it_fails_mid_procedure() {
         saw,
         "a failed flash must still emit T_Disconnect to release the L4 session"
     );
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn flash_unexpected_load_state_names_object_and_table() {
+async fn flash_unexpected_load_state_names_object_and_table() -> TestResult {
     // When the device lands in a genuinely-wrong load state (here: it ignores
     // StartLoading and stays Unloaded), the flash fails with a RICH error — it
     // names the targeted object's discovered interface-object type and the full
     // discovered object table, so "object 3 did not reach Loading" is actionable.
-    let (mut bus, _state, handle) = setup(Fault::IgnoresStartLoading).await;
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+    let (mut bus, _state, handle) = setup(Fault::IgnoresStartLoading).await?;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
-    let app = fabricated_app();
+    let app = fabricated_app()?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -2436,13 +2301,10 @@ async fn flash_unexpected_load_state_names_object_and_table() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
-    let mut session = authed_session(l4).await;
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await?;
     let err = flash(
         &mut session,
         &plan,
@@ -2485,22 +2347,23 @@ async fn flash_unexpected_load_state_names_object_and_table() {
         rendered.contains("discovered object table"),
         "message must include the discovered object table: {rendered}"
     );
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn flash_tolerates_snap_to_loaded() {
+async fn flash_tolerates_snap_to_loaded() -> TestResult {
     // KNX Virtual (and other lenient stacks) snap the object straight to Loaded
     // instead of exposing the intermediate Loading state — either right after
     // StartLoading or on the AdditionalLoadControls allocation. Both are open
     // states, so the flash must proceed and reach Loaded (the image's real
     // integrity is confirmed by the MCB CRC check, not by the load-state octet).
     for fault in [Fault::LoadedAfterStartLoading, Fault::LoadedOnAllocate] {
-        let (mut bus, _state, handle) = setup(fault).await;
-        let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-        let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+        let (mut bus, _state, handle) = setup(fault).await?;
+        let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+        let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
-        let app = fabricated_app();
+        let app = fabricated_app()?;
         let plan = plan_flash(
             &app,
             "1.1.4",
@@ -2509,13 +2372,10 @@ async fn flash_tolerates_snap_to_loaded() {
             &BTreeMap::new(),
             None,
             &BTreeMap::new(),
-        )
-        .unwrap();
+        )?;
 
-        let l4 = Layer4Connection::connect(&mut bus, target, source)
-            .await
-            .unwrap();
-        let mut session = authed_session(l4).await;
+        let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+        let mut session = authed_session(l4).await?;
         let outcome = flash(
             &mut session,
             &plan,
@@ -2530,17 +2390,18 @@ async fn flash_tolerates_snap_to_loaded() {
             "the flash must reach Loaded despite the {fault:?} snap"
         );
         let _ = session.into_disconnect().await;
-        handle.abort();
+        drop(handle);
     }
+    Ok(())
 }
 
 #[tokio::test]
-async fn plan_only_touches_no_load_state() {
-    let (_bus, state, handle) = setup(Fault::None).await;
+async fn plan_only_touches_no_load_state() -> TestResult {
+    let (_bus, state, handle) = setup(Fault::None).await?;
 
     // Building a plan is a pure, offline operation: it must never write a load
     // control (or anything) to the device.
-    let app = fabricated_app();
+    let app = fabricated_app()?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -2549,33 +2410,33 @@ async fn plan_only_touches_no_load_state() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
     assert!(!plan.steps.is_empty());
     // The first supported device step is the unload of the application object
     // (LsmIdx=4 in the fabricated app).
     assert_eq!(plan.steps[0], FlashStep::Unload { target: Some(4) });
 
-    let s = state.lock().unwrap();
+    let s = lock(&state)?;
     assert_eq!(
         s.control_writes, 0,
         "a plan-only pre-flight must not write any load-state control"
     );
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn flash_applies_device_file_parameter_override() {
+async fn flash_applies_device_file_parameter_override() -> TestResult {
     // A device-file override (keyed by app-relative ParameterRef id) changes the
     // parameter byte away from the vendor default 7. The overridden value must
     // reach device memory AND be reflected in the segment the device CRCs — the
     // MCB integrity check passing proves the OVERRIDDEN image (not the default)
     // is what actually flowed onto the device.
-    let (mut bus, state, handle) = setup(Fault::None).await;
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+    let (mut bus, state, handle) = setup(Fault::None).await?;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
-    let app = fabricated_app();
+    let app = fabricated_app()?;
 
     // The default plan writes the parameter default (7).
     let default_plan = plan_flash(
@@ -2586,8 +2447,7 @@ async fn flash_applies_device_file_parameter_override() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
     assert_eq!(default_plan.param_images["M-1_A-1_RS-2"], vec![7]);
 
     // The override plan (P-0_R-1 = 42) writes 42 instead — proving the override
@@ -2602,57 +2462,52 @@ async fn flash_applies_device_file_parameter_override() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
     assert_eq!(
         plan.param_images["M-1_A-1_RS-2"],
         vec![42],
         "the override must change the computed parameter image"
     );
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
-    let mut session = authed_session(l4).await;
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         |_| {},
     )
-    .await
-    .unwrap();
+    .await?;
     let _ = session.into_disconnect().await;
 
     assert!(outcome.ok(), "override flash must verify: {outcome:?}");
 
     // The overridden byte 42 (not the default 7) landed in device memory at the
     // parameter segment base (0x4000 + 6 = 0x4006).
-    let s = state.lock().unwrap();
+    let s = lock(&state)?;
     assert_eq!(
         *s.memory.get(&0x4006).unwrap_or(&0),
         42,
         "the device stored the overridden value, not the default"
     );
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn flash_compare_prop_passes_when_property_matches() {
+async fn flash_compare_prop_passes_when_property_matches() -> TestResult {
     // The device's object-0 PID-78 property holds exactly the bytes the
     // LdCtrlCompareProp expects, so the precondition passes and the flash reaches
     // Loaded.
-    let (mut bus, state, handle) = setup(Fault::None).await;
-    state
-        .lock()
-        .unwrap()
+    let (mut bus, state, handle) = setup(Fault::None).await?;
+    lock(&state)?
         .compare_props
         .insert((0, 78), vec![0x00, 0x01, 0x02, 0x03]);
 
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
-    let app = app_with_compare_prop(None);
+    let app = app_with_compare_prop(None)?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -2661,8 +2516,7 @@ async fn flash_compare_prop_passes_when_property_matches() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
     // The plan carries the CompareProp precondition.
     assert_eq!(
         plan.steps
@@ -2672,18 +2526,15 @@ async fn flash_compare_prop_passes_when_property_matches() {
         1
     );
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
-    let mut session = authed_session(l4).await;
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         |_| {},
     )
-    .await
-    .unwrap();
+    .await?;
     let _ = session.into_disconnect().await;
 
     assert!(
@@ -2691,20 +2542,21 @@ async fn flash_compare_prop_passes_when_property_matches() {
         "matching compare must let the flash verify: {outcome:?}"
     );
     assert_eq!(outcome.load_state, LoadState::Loaded);
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn flash_write_prop_value_lands_on_the_device() {
+async fn flash_write_prop_value_lands_on_the_device() -> TestResult {
     // Issue #54: a value-carrying LdCtrlWriteProp is executed as a real,
     // echo-validated property write — the value must land on the device, not be
     // silently dropped as a no-op.
-    let (mut bus, state, handle) = setup(Fault::None).await;
+    let (mut bus, state, handle) = setup(Fault::None).await?;
 
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
-    let app = app_with_write_prop();
+    let app = app_with_write_prop()?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -2713,8 +2565,7 @@ async fn flash_write_prop_value_lands_on_the_device() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
     // The plan lists the WriteProp as a real write carrying the value.
     let write_props: Vec<&FlashStep> = plan
         .steps
@@ -2727,18 +2578,15 @@ async fn flash_write_prop_value_lands_on_the_device() {
         other => panic!("expected WriteProp, got {other:?}"),
     }
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
-    let mut session = authed_session(l4).await;
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         |_| {},
     )
-    .await
-    .unwrap();
+    .await?;
     let _ = session.into_disconnect().await;
 
     assert!(
@@ -2746,31 +2594,30 @@ async fn flash_write_prop_value_lands_on_the_device() {
         "flash with a WriteProp must succeed: {outcome:?}"
     );
     // The value landed on the mock device at object 0 / PID 204.
-    let stored = state.lock().unwrap().prop_writes.get(&(0, 204)).cloned();
+    let stored = lock(&state)?.prop_writes.get(&(0, 204)).cloned();
     assert_eq!(
         stored,
         Some(vec![0x01, 0x02]),
         "the WriteProp value must have been written to the device"
     );
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn flash_compare_prop_aborts_when_property_differs() {
+async fn flash_compare_prop_aborts_when_property_differs() -> TestResult {
     // The device's object-0 PID-78 property holds different bytes than the
     // LdCtrlCompareProp expects: the precondition fails and the flash aborts with
     // PropCompareMismatch — before the segment is written.
-    let (mut bus, state, handle) = setup(Fault::None).await;
-    state
-        .lock()
-        .unwrap()
+    let (mut bus, state, handle) = setup(Fault::None).await?;
+    lock(&state)?
         .compare_props
         .insert((0, 78), vec![0xDE, 0xAD, 0xBE, 0xEF]);
 
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
-    let app = app_with_compare_prop(None);
+    let app = app_with_compare_prop(None)?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -2779,13 +2626,10 @@ async fn flash_compare_prop_aborts_when_property_differs() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
-    let mut session = authed_session(l4).await;
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await?;
     let err = flash(
         &mut session,
         &plan,
@@ -2806,30 +2650,29 @@ async fn flash_compare_prop_aborts_when_property_differs() {
 
     // The abort happened before the download proper: the app object never reached
     // Loaded and the segment was never written.
-    let s = state.lock().unwrap();
+    let s = lock(&state)?;
     assert_ne!(
         s.app_load_state, LS_LOADED,
         "flash must not have completed the load"
     );
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn flash_compare_prop_mask_ignores_don_t_care_bytes() {
+async fn flash_compare_prop_mask_ignores_don_t_care_bytes() -> TestResult {
     // The compare expects 00 01 02 03 under mask FF 00 FF 00: the device holds
     // 00 AA 02 BB, differing only in the masked-out (don't-care) positions, so
     // the masked compare passes and the flash reaches Loaded.
-    let (mut bus, state, handle) = setup(Fault::None).await;
-    state
-        .lock()
-        .unwrap()
+    let (mut bus, state, handle) = setup(Fault::None).await?;
+    lock(&state)?
         .compare_props
         .insert((0, 78), vec![0x00, 0xAA, 0x02, 0xBB]);
 
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
-    let app = app_with_compare_prop(Some("FF00FF00"));
+    let app = app_with_compare_prop(Some("FF00FF00"))?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -2838,21 +2681,17 @@ async fn flash_compare_prop_mask_ignores_don_t_care_bytes() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
-    let mut session = authed_session(l4).await;
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         |_| {},
     )
-    .await
-    .unwrap();
+    .await?;
     let _ = session.into_disconnect().await;
 
     assert!(
@@ -2860,16 +2699,17 @@ async fn flash_compare_prop_mask_ignores_don_t_care_bytes() {
         "a difference only in masked-out bytes must pass: {outcome:?}"
     );
     assert_eq!(outcome.load_state, LoadState::Loaded);
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn flash_reports_progress_for_every_step() {
-    let (mut bus, _state, handle) = setup(Fault::None).await;
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+async fn flash_reports_progress_for_every_step() -> TestResult {
+    let (mut bus, _state, handle) = setup(Fault::None).await?;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
-    let app = fabricated_app();
+    let app = fabricated_app()?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -2878,38 +2718,37 @@ async fn flash_reports_progress_for_every_step() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
     let total = plan.steps.len();
 
     let steps_seen = Arc::new(Mutex::new(0usize));
     let seen = Arc::clone(&steps_seen);
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
-    let mut session = authed_session(l4).await;
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         move |p| {
-            if let bussard_download::Progress::Step { .. } = p {
-                *seen.lock().unwrap() += 1;
+            if let bussard_download::Progress::Step { .. } = p
+                && let Ok(mut n) = seen.lock()
+            {
+                *n += 1;
             }
         },
     )
-    .await
-    .unwrap();
+    .await?;
     let _ = session.into_disconnect().await;
 
     assert!(outcome.ok());
     assert_eq!(
-        *steps_seen.lock().unwrap(),
+        *steps_seen.lock().map_err(|_| "step counter poisoned")?,
         total,
         "one Step event per step"
     );
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 // ===========================================================================
@@ -2924,16 +2763,16 @@ async fn flash_reports_progress_for_every_step() {
 // ===========================================================================
 
 #[tokio::test]
-async fn flash_sends_free_access_authorize_and_the_gate_opens() {
+async fn flash_sends_free_access_authorize_and_the_gate_opens() -> TestResult {
     // A device with the authorization gate ON (the default fresh device): the
     // flash must authorize with the free-access key before any write, or the
     // gate refuses. Assert the flash completes AND the tool sent exactly the
     // captured payload [00 FF FF FF FF].
-    let (mut bus, state, handle) = setup(Fault::None).await;
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+    let (mut bus, state, handle) = setup(Fault::None).await?;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
-    let app = fabricated_app();
+    let app = fabricated_app()?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -2942,25 +2781,21 @@ async fn flash_sends_free_access_authorize_and_the_gate_opens() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
-    let mut session = authed_session(l4).await;
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         |_| {},
     )
-    .await
-    .unwrap();
+    .await?;
     let _ = session.into_disconnect().await;
 
     assert!(outcome.ok(), "authorized flash must verify: {outcome:?}");
-    let s = state.lock().unwrap();
+    let s = lock(&state)?;
     assert!(s.authorizes_seen >= 1, "the tool must have authorized");
     let mut want = vec![0x00];
     want.extend_from_slice(&FREE_ACCESS_KEY);
@@ -2969,19 +2804,20 @@ async fn flash_sends_free_access_authorize_and_the_gate_opens() {
         "the authorize payload must be the reserved octet + free-access key"
     );
     assert!(s.authorized, "the gate must be open after the grant");
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn flash_without_authorize_is_refused_by_the_gate() {
+async fn flash_without_authorize_is_refused_by_the_gate() -> TestResult {
     // The regression that proves authorize is REQUIRED: wrap the raw connection
     // in a session WITHOUT authorizing (Session::from_connection directly), so the
     // first config write hits the closed gate and is NAKed.
-    let (mut bus, _state, handle) = setup(Fault::None).await;
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+    let (mut bus, _state, handle) = setup(Fault::None).await?;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
-    let app = fabricated_app();
+    let app = fabricated_app()?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -2990,12 +2826,9 @@ async fn flash_without_authorize_is_refused_by_the_gate() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
     // Deliberately skip the authorize step.
     let mut session = Session::from_connection(l4);
     let err = flash(
@@ -3014,24 +2847,25 @@ async fn flash_without_authorize_is_refused_by_the_gate() {
         ),
         "the closed gate NAKs the first config write, got {err:?}"
     );
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn flash_tolerates_a_device_without_authorize() {
+async fn flash_tolerates_a_device_without_authorize() -> TestResult {
     // An older/simpler device that does not implement authorize: it answers the
     // request with a non-authorize APCI rather than an A_Authorize_Response. The
     // tool must recognise that as "authorize unsupported", tolerate it (the gate
     // is open for such a device), keep the live connection, and complete the flash.
-    let (mut bus, state, handle) = setup(Fault::None).await;
+    let (mut bus, state, handle) = setup(Fault::None).await?;
     {
-        let mut s = state.lock().unwrap();
+        let mut s = lock(&state)?;
         s.authorize_unsupported = true;
     }
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
-    let app = fabricated_app();
+    let app = fabricated_app()?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -3040,47 +2874,42 @@ async fn flash_tolerates_a_device_without_authorize() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
-    let mut session = authed_session(l4).await;
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         |_| {},
     )
-    .await
-    .unwrap();
+    .await?;
     let _ = session.into_disconnect().await;
 
     assert!(
         outcome.ok(),
         "a device without authorize must be tolerated and flashed: {outcome:?}"
     );
-    let s = state.lock().unwrap();
+    let s = lock(&state)?;
     assert!(s.authorizes_seen >= 1, "the tool still attempted authorize");
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn flash_surfaces_access_denied_on_a_nonzero_level() {
+async fn flash_surfaces_access_denied_on_a_nonzero_level() -> TestResult {
     // A keyed device that grants only a non-zero (insufficient) level for the
     // presented free-access key: the tool must surface AccessDenied, not proceed.
-    let (mut bus, state, handle) = setup(Fault::None).await;
+    let (mut bus, state, handle) = setup(Fault::None).await?;
     {
-        let mut s = state.lock().unwrap();
+        let mut s = lock(&state)?;
         s.grant_level = 3; // deny full access
     }
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
     // authorize_or_fail must map the non-zero grant to AccessDenied.
     let err = {
         let mut l4 = l4;
@@ -3095,8 +2924,9 @@ async fn flash_surfaces_access_denied_on_a_nonzero_level() {
         bussard_mgmt::MgmtError::AccessDenied { level, .. } => assert_eq!(level, 3),
         other => panic!("expected AccessDenied, got {other:?}"),
     }
-    assert!(state.lock().unwrap().authorizes_seen >= 1);
-    handle.abort();
+    assert!(lock(&state)?.authorizes_seen >= 1);
+    drop(handle);
+    Ok(())
 }
 
 // ===========================================================================
@@ -3204,7 +3034,7 @@ impl bussard_download::Connector for LeaseConnector {
 /// Spins up the mock gateway and a bus actor over it, returning the actor handle
 /// and shared device state. The caller drives the flash through a leasing
 /// [`Session`] so it can reconnect.
-async fn setup_bus(fault: Fault) -> (bussard_bus::BusHandle, Shared, tokio::task::JoinHandle<()>) {
+async fn setup_bus(fault: Fault) -> TestResult<(bussard_bus::BusHandle, Shared, MockGateway)> {
     setup_bus_with(fresh_device(fault)).await
 }
 
@@ -3215,39 +3045,31 @@ async fn setup_bus(fault: Fault) -> (bussard_bus::BusHandle, Shared, tokio::task
 async fn setup_bus_reconnect(
     state: Shared,
     reconnect: bussard_transport::TunnelReconnect,
-) -> (
+) -> TestResult<(
     bussard_bus::BusHandle,
     Shared,
-    tokio::task::JoinHandle<()>,
+    MockGateway,
     std::net::SocketAddrV4,
-) {
-    let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let port = sock.local_addr().unwrap().port();
-    let addr: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let gw = tokio::spawn(run_gateway(sock, addr, Arc::clone(&state)));
-    let gateway = std::net::SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, port);
+)> {
+    let gw = start_gateway(&state).await?;
+    let gateway = gw.addr();
     let (handle, _actor) =
         bussard_bus::Bus::connect(ConnectionConfig::tunnel(gateway).with_reconnect(reconnect));
     handle.wait_connected(Duration::from_secs(5)).await;
-    (handle, state, gw, gateway)
+    Ok((handle, state, gw, gateway))
 }
 
 async fn setup_bus_with(
     state: Shared,
-) -> (bussard_bus::BusHandle, Shared, tokio::task::JoinHandle<()>) {
-    let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let port = sock.local_addr().unwrap().port();
-    let addr: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let gw = tokio::spawn(run_gateway(sock, addr, Arc::clone(&state)));
-    let (handle, _actor) = bussard_bus::Bus::connect(ConnectionConfig::tunnel(
-        format!("127.0.0.1:{port}").parse().unwrap(),
-    ));
+) -> TestResult<(bussard_bus::BusHandle, Shared, MockGateway)> {
+    let gw = start_gateway(&state).await?;
+    let (handle, _actor) = bussard_bus::Bus::connect(ConnectionConfig::tunnel(gw.addr()));
     handle.wait_connected(Duration::from_secs(5)).await;
-    (handle, state, gw)
+    Ok((handle, state, gw))
 }
 
 #[tokio::test]
-async fn flash_master_reset_reconnects_and_reaches_loaded() {
+async fn flash_master_reset_reconnects_and_reaches_loaded() -> TestResult {
     // The full acceptance case for LdCtrlMasterReset: the procedure allocates the
     // segment, master-resets the device mid-flash, then writes the segment and
     // completes the load. The device confirms the reset, reboots (goes silent on
@@ -3267,15 +3089,15 @@ async fn flash_master_reset_reconnects_and_reaches_loaded() {
         std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
     }
 
-    let (handle, state, gw) = setup_bus(Fault::None).await;
+    let (handle, state, gw) = setup_bus(Fault::None).await?;
     // Model KV's EraseCode=4: the master reset wipes the app object to Unloaded and
     // drops its segment, so the re-allocation after the reconnect must be placed at
     // a FRESH base and the tool must re-read it (not reuse the stale pre-reset one).
-    state.lock().unwrap().wipe_app_on_master_reset = true;
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    lock(&state)?.wipe_app_on_master_reset = true;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
     let source = bussard_bus::ops::group_source(&handle);
 
-    let app = app_with_master_reset();
+    let app = app_with_master_reset()?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -3284,8 +3106,7 @@ async fn flash_master_reset_reconnects_and_reaches_loaded() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
     // The plan lowers the master reset to a MasterReset step carrying the op's
     // EraseCode/ChannelNumber.
     let master_resets: Vec<&FlashStep> = plan
@@ -3307,15 +3128,14 @@ async fn flash_master_reset_reconnects_and_reaches_loaded() {
     ));
 
     let connector = LeaseConnector::plain(handle.clone(), target, source, None);
-    let mut session = Session::open_with_key(connector, None).await.unwrap();
+    let mut session = Session::open_with_key(connector, None).await?;
     let outcome = flash(
         &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         |_| {},
     )
-    .await
-    .unwrap();
+    .await?;
     let _ = session.into_disconnect().await;
 
     assert!(
@@ -3325,7 +3145,7 @@ async fn flash_master_reset_reconnects_and_reaches_loaded() {
     assert_eq!(outcome.load_state, LoadState::Loaded);
 
     {
-        let s = state.lock().unwrap();
+        let s = lock(&state)?;
         // The tool issued exactly one master reset, and it was a BARE A_Restart
         // (0x380) with NO payload — exactly as ETS→KNX-Virtual sends it, NOT the
         // confirmed master-reset A_Restart (0x381 + [erase_code, channel_number]).
@@ -3392,14 +3212,15 @@ async fn flash_master_reset_reconnects_and_reaches_loaded() {
     }
 
     let _ = handle.close().await;
-    gw.abort();
+    drop(gw);
     unsafe {
         std::env::remove_var("BUSSARD_FLASH_REBOOT_WAIT_MS");
     }
+    Ok(())
 }
 
 #[tokio::test]
-async fn flash_cycles_l4_connection_before_the_exchange_budget_and_reaches_loaded() {
+async fn flash_cycles_l4_connection_before_the_exchange_budget_and_reaches_loaded() -> TestResult {
     // Proactive periodic L4 reconnection (the ETS pattern): a real
     // connection-oriented device drops a long-held L4 connection after a bounded
     // number of numbered exchanges (KNX Virtual DA.tp at ~35). Running the whole
@@ -3435,17 +3256,17 @@ async fn flash_cycles_l4_connection_before_the_exchange_budget_and_reaches_loade
     const BUDGET: u32 = 12;
     const THRESHOLD: u32 = 5;
 
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
 
     // --- 1. Proactive cycling OFF: resume-on-drop alone still reaches Loaded. ---
     unsafe {
         std::env::set_var("BUSSARD_FLASH_RECONNECT_EXCHANGES", "0");
     }
     {
-        let (handle, state, gw) = setup_bus(Fault::None).await;
-        state.lock().unwrap().die_after_exchanges = Some(BUDGET);
+        let (handle, state, gw) = setup_bus(Fault::None).await?;
+        lock(&state)?.die_after_exchanges = Some(BUDGET);
         let source = bussard_bus::ops::group_source(&handle);
-        let app = fabricated_app();
+        let app = fabricated_app()?;
         let plan = plan_flash(
             &app,
             "1.1.4",
@@ -3454,14 +3275,13 @@ async fn flash_cycles_l4_connection_before_the_exchange_budget_and_reaches_loade
             &BTreeMap::new(),
             None,
             &BTreeMap::new(),
-        )
-        .unwrap();
+        )?;
         // Fast L4 timeouts: the drop the mock forces below is only observed as
         // silence, so with the default 3 s ACK budget x repetitions each
         // forced drop would cost seconds of pure waiting (~24 s for the test).
         let connector =
             LeaseConnector::plain(handle.clone(), target, source, Some(fast_timeouts()));
-        let mut session = Session::open_with_key(connector, None).await.unwrap();
+        let mut session = Session::open_with_key(connector, None).await?;
         let outcome = flash(
             &mut session,
             &plan,
@@ -3469,14 +3289,19 @@ async fn flash_cycles_l4_connection_before_the_exchange_budget_and_reaches_loade
             |_| {},
         )
         .await
-        .expect("resume-on-drop alone must recover the dropped connection and finish the flash");
+        .map_err(|e| {
+            format!(
+                "{}: {e:?}",
+                "resume-on-drop alone must recover the dropped connection and finish the flash"
+            )
+        })?;
         let _ = session.into_disconnect().await;
         assert!(
             outcome.ok(),
             "the resumed flash must verify as Loaded: {outcome:?}"
         );
         {
-            let s = state.lock().unwrap();
+            let s = lock(&state)?;
             // The single-connection budget was exceeded at least once, so the engine
             // must have reconnected (resume-on-drop) to finish — several T_Connects.
             assert!(
@@ -3486,7 +3311,7 @@ async fn flash_cycles_l4_connection_before_the_exchange_budget_and_reaches_loade
             );
         }
         let _ = handle.close().await;
-        gw.abort();
+        drop(gw);
     }
 
     // --- 2. With the fix: cycling before the budget reaches Loaded reliably. ---
@@ -3494,10 +3319,10 @@ async fn flash_cycles_l4_connection_before_the_exchange_budget_and_reaches_loade
         std::env::set_var("BUSSARD_FLASH_RECONNECT_EXCHANGES", THRESHOLD.to_string());
     }
     {
-        let (handle, state, gw) = setup_bus(Fault::None).await;
-        state.lock().unwrap().die_after_exchanges = Some(BUDGET);
+        let (handle, state, gw) = setup_bus(Fault::None).await?;
+        lock(&state)?.die_after_exchanges = Some(BUDGET);
         let source = bussard_bus::ops::group_source(&handle);
-        let app = fabricated_app();
+        let app = fabricated_app()?;
         let plan = plan_flash(
             &app,
             "1.1.4",
@@ -3506,12 +3331,11 @@ async fn flash_cycles_l4_connection_before_the_exchange_budget_and_reaches_loade
             &BTreeMap::new(),
             None,
             &BTreeMap::new(),
-        )
-        .unwrap();
+        )?;
         // Fast L4 timeouts, as in the first half.
         let connector =
             LeaseConnector::plain(handle.clone(), target, source, Some(fast_timeouts()));
-        let mut session = Session::open_with_key(connector, None).await.unwrap();
+        let mut session = Session::open_with_key(connector, None).await?;
         let outcome = flash(
             &mut session,
             &plan,
@@ -3519,7 +3343,12 @@ async fn flash_cycles_l4_connection_before_the_exchange_budget_and_reaches_loade
             |_| {},
         )
         .await
-        .expect("proactive cycling must keep every window under budget and complete the flash");
+        .map_err(|e| {
+            format!(
+                "{}: {e:?}",
+                "proactive cycling must keep every window under budget and complete the flash"
+            )
+        })?;
         let _ = session.into_disconnect().await;
         assert!(
             outcome.ok(),
@@ -3527,7 +3356,7 @@ async fn flash_cycles_l4_connection_before_the_exchange_budget_and_reaches_loade
         );
         assert_eq!(outcome.load_state, LoadState::Loaded);
         {
-            let s = state.lock().unwrap();
+            let s = lock(&state)?;
             // The engine cycled the connection at least once (the original connect
             // plus one proactive reconnect) to stay under the budget.
             assert!(
@@ -3550,17 +3379,18 @@ async fn flash_cycles_l4_connection_before_the_exchange_budget_and_reaches_loade
             );
         }
         let _ = handle.close().await;
-        gw.abort();
+        drop(gw);
     }
 
     unsafe {
         std::env::remove_var("BUSSARD_FLASH_RECONNECT_EXCHANGES");
         std::env::remove_var("BUSSARD_FLASH_REBOOT_WAIT_MS");
     }
+    Ok(())
 }
 
 #[tokio::test]
-async fn authorize_is_cached_and_not_repeated_on_a_device_without_authorize() {
+async fn authorize_is_cached_and_not_repeated_on_a_device_without_authorize() -> TestResult {
     // A device that does not implement authorize answers the request with silence,
     // so each reconnect/cycle window burns a full RESPONSE_TIMEOUT re-presenting a
     // key it will never answer. The session caches the first Unsupported outcome
@@ -3576,16 +3406,16 @@ async fn authorize_is_cached_and_not_repeated_on_a_device_without_authorize() {
         std::env::set_var("BUSSARD_FLASH_RECONNECT_EXCHANGES", THRESHOLD.to_string());
     }
 
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
 
-    let (handle, state, gw) = setup_bus(Fault::None).await;
+    let (handle, state, gw) = setup_bus(Fault::None).await?;
     {
-        let mut s = state.lock().unwrap();
+        let mut s = lock(&state)?;
         s.authorize_unsupported = true;
         s.die_after_exchanges = Some(BUDGET);
     }
     let source = bussard_bus::ops::group_source(&handle);
-    let app = fabricated_app();
+    let app = fabricated_app()?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -3594,10 +3424,9 @@ async fn authorize_is_cached_and_not_repeated_on_a_device_without_authorize() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
     let connector = LeaseConnector::plain(handle.clone(), target, source, None);
-    let mut session = Session::open_with_key(connector, None).await.unwrap();
+    let mut session = Session::open_with_key(connector, None).await?;
     let outcome = flash(
         &mut session,
         &plan,
@@ -3605,12 +3434,17 @@ async fn authorize_is_cached_and_not_repeated_on_a_device_without_authorize() {
         |_| {},
     )
     .await
-    .expect("a device without authorize must still flash while cycling connections");
+    .map_err(|e| {
+        format!(
+            "{}: {e:?}",
+            "a device without authorize must still flash while cycling connections"
+        )
+    })?;
     let _ = session.into_disconnect().await;
     assert!(outcome.ok(), "the cycled flash must verify: {outcome:?}");
 
     {
-        let s = state.lock().unwrap();
+        let s = lock(&state)?;
         // Several fresh connections were opened (initial + proactive cycles).
         assert!(
             s.connects >= 2,
@@ -3627,23 +3461,23 @@ async fn authorize_is_cached_and_not_repeated_on_a_device_without_authorize() {
         );
     }
     let _ = handle.close().await;
-    gw.abort();
+    drop(gw);
 
     unsafe {
         std::env::remove_var("BUSSARD_FLASH_RECONNECT_EXCHANGES");
         std::env::remove_var("BUSSARD_FLASH_REBOOT_WAIT_MS");
     }
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_open_with_facts_reuses_the_preflight_table_and_authorize_verdict()
--> Result<(), Box<dyn std::error::Error>> {
+async fn test_open_with_facts_reuses_the_preflight_table_and_authorize_verdict() -> TestResult {
     // The CLI's read-only pre-flight already walked PID_OBJECT_TYPE and found the
     // device does not implement authorize. A session opened with those facts
     // must neither walk the object table again nor re-present the key, and the
     // flash must still verify.
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
-    let (handle, state, gw) = setup_bus(Fault::None).await;
+    let (handle, state, gw) = setup_bus(Fault::None).await?;
     state
         .lock()
         .map_err(|e| e.to_string())?
@@ -3668,7 +3502,7 @@ async fn test_open_with_facts_reuses_the_preflight_table_and_authorize_verdict()
         }),
         max_apdu: None,
     };
-    let app = fabricated_app();
+    let app = fabricated_app()?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -3705,7 +3539,7 @@ async fn test_open_with_facts_reuses_the_preflight_table_and_authorize_verdict()
         );
     }
     let _ = handle.close().await;
-    gw.abort();
+    drop(gw);
     Ok(())
 }
 
@@ -3713,7 +3547,7 @@ async fn test_open_with_facts_reuses_the_preflight_table_and_authorize_verdict()
 /// its `WriteRelMem` spans several `A_Memory_Write` chunks (63 octets each) — big
 /// enough that a low per-connection exchange budget drops the connection *strictly
 /// inside* the write, exercising resume-on-drop of a partially-written segment.
-fn fabricated_app_big() -> ApplicationProgram {
+fn fabricated_app_big() -> TestResult<ApplicationProgram> {
     let data = base64_ff_256();
     let xml = format!(
         r#"<KNX xmlns="http://knx.org/xml/project/23">
@@ -3738,11 +3572,11 @@ fn fabricated_app_big() -> ApplicationProgram {
       </Static>
      </ApplicationProgram></KNX>"#
     );
-    parse_application_program("M-9_A-1", xml.as_bytes()).unwrap()
+    Ok(parse_application_program("M-9_A-1", xml.as_bytes())?)
 }
 
 #[tokio::test]
-async fn flash_resumes_when_connection_drops_inside_a_write() {
+async fn flash_resumes_when_connection_drops_inside_a_write() -> TestResult {
     // Resume-on-drop, the live-KV reliability fix: KNX Virtual drops the
     // connection-oriented L4 connection at a NON-DETERMINISTIC exchange count, so no
     // fixed proactive threshold is reliable. When a step dies from that unexpected
@@ -3764,15 +3598,15 @@ async fn flash_resumes_when_connection_drops_inside_a_write() {
         std::env::set_var("BUSSARD_FLASH_RECONNECT_EXCHANGES", "0");
     }
 
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let (handle, state, gw) = setup_bus(Fault::None).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let (handle, state, gw) = setup_bus(Fault::None).await?;
     // Budget above the discovery+authorize+load-control preamble but low enough that
     // the multi-chunk write trips it — the drop lands inside the write. On the fresh
     // window the preamble is not re-run (only the write step replays), so the budget
     // comfortably covers finishing the segment.
-    state.lock().unwrap().die_after_exchanges = Some(10);
+    lock(&state)?.die_after_exchanges = Some(10);
     let source = bussard_bus::ops::group_source(&handle);
-    let app = fabricated_app_big();
+    let app = fabricated_app_big()?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -3781,10 +3615,9 @@ async fn flash_resumes_when_connection_drops_inside_a_write() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
     let connector = LeaseConnector::plain(handle.clone(), target, source, Some(fast_timeouts()));
-    let mut session = Session::open_with_key(connector, None).await.unwrap();
+    let mut session = Session::open_with_key(connector, None).await?;
     let outcome = flash(
         &mut session,
         &plan,
@@ -3792,7 +3625,12 @@ async fn flash_resumes_when_connection_drops_inside_a_write() {
         |_| {},
     )
     .await
-    .expect("resume-on-drop must recover the mid-write connection death and finish");
+    .map_err(|e| {
+        format!(
+            "{}: {e:?}",
+            "resume-on-drop must recover the mid-write connection death and finish"
+        )
+    })?;
     let _ = session.into_disconnect().await;
 
     assert!(
@@ -3801,7 +3639,7 @@ async fn flash_resumes_when_connection_drops_inside_a_write() {
     );
     assert_eq!(outcome.load_state, LoadState::Loaded);
     {
-        let s = state.lock().unwrap();
+        let s = lock(&state)?;
         // The connection was dropped mid-flash, so the engine reconnected at least
         // once to resume (several T_Connects).
         assert!(
@@ -3820,12 +3658,13 @@ async fn flash_resumes_when_connection_drops_inside_a_write() {
         );
     }
     let _ = handle.close().await;
-    gw.abort();
+    drop(gw);
 
     unsafe {
         std::env::remove_var("BUSSARD_FLASH_RECONNECT_EXCHANGES");
         std::env::remove_var("BUSSARD_FLASH_REBOOT_WAIT_MS");
     }
+    Ok(())
 }
 
 /// A re-establish policy fast enough for the tunnel-loss tests (issue #177):
@@ -3848,8 +3687,7 @@ fn lock(state: &Shared) -> Result<std::sync::MutexGuard<'_, DeviceState>, String
 }
 
 #[tokio::test]
-async fn test_flash_resumes_after_gateway_tunnel_loss_mid_write()
--> Result<(), Box<dyn std::error::Error>> {
+async fn test_flash_resumes_after_gateway_tunnel_loss_mid_write() -> TestResult {
     // Issue #177 (S2.6 of #90): the IP interface's LAN cable is pulled for a few
     // seconds in the middle of the segment write. The gateway swallows every
     // datagram (the pending memory write, its retransmit, the first
@@ -3873,10 +3711,10 @@ async fn test_flash_resumes_after_gateway_tunnel_loss_mid_write()
         s.outage_kills_l4 = true;
     }
     let (handle, state, gw, _gateway) =
-        setup_bus_reconnect(state, fast_reconnect(Duration::from_secs(20))).await;
+        setup_bus_reconnect(state, fast_reconnect(Duration::from_secs(20))).await?;
     let source = bussard_bus::ops::group_source(&handle);
     let plan = plan_flash(
-        &fabricated_app_big(),
+        &fabricated_app_big()?,
         "1.1.4",
         0x07B0,
         &no_overrides(),
@@ -3923,7 +3761,7 @@ async fn test_flash_resumes_after_gateway_tunnel_loss_mid_write()
         );
     }
     let _ = handle.close().await;
-    gw.abort();
+    drop(gw);
     unsafe {
         std::env::remove_var("BUSSARD_FLASH_RECONNECT_EXCHANGES");
         std::env::remove_var("BUSSARD_FLASH_REBOOT_WAIT_MS");
@@ -3932,8 +3770,7 @@ async fn test_flash_resumes_after_gateway_tunnel_loss_mid_write()
 }
 
 #[tokio::test]
-async fn test_flash_fails_with_gateway_hint_when_tunnel_never_returns()
--> Result<(), Box<dyn std::error::Error>> {
+async fn test_flash_fails_with_gateway_hint_when_tunnel_never_returns() -> TestResult {
     // Issue #177: the link goes down mid-write and never comes back. After the
     // re-establish budget the flash fails with the original ACK timeout plus a
     // hint that names the gateway, instead of hanging or resuming forever.
@@ -3941,10 +3778,10 @@ async fn test_flash_fails_with_gateway_hint_when_tunnel_never_returns()
     let state = fresh_device(Fault::None);
     lock(&state)?.tunnel_outage = Some((3, Duration::MAX));
     let (handle, _state, gw, gateway) =
-        setup_bus_reconnect(state, fast_reconnect(Duration::from_secs(2))).await;
+        setup_bus_reconnect(state, fast_reconnect(Duration::from_secs(2))).await?;
     let source = bussard_bus::ops::group_source(&handle);
     let plan = plan_flash(
-        &fabricated_app_big(),
+        &fabricated_app_big()?,
         "1.1.4",
         0x07B0,
         &no_overrides(),
@@ -3984,12 +3821,12 @@ async fn test_flash_fails_with_gateway_hint_when_tunnel_never_returns()
         "gave up after {elapsed:?}"
     );
     drop(session);
-    gw.abort();
+    drop(gw);
     Ok(())
 }
 
 #[tokio::test]
-async fn flash_gives_up_cleanly_when_a_device_never_makes_progress() {
+async fn flash_gives_up_cleanly_when_a_device_never_makes_progress() -> TestResult {
     // The bound on resume-on-drop: a genuinely dead device that answers NOTHING —
     // it drops every numbered exchange on every window, so not one probe, write, or
     // read ever confirms — must fail cleanly after the retry budget, never loop
@@ -4010,13 +3847,13 @@ async fn flash_gives_up_cleanly_when_a_device_never_makes_progress() {
         std::env::set_var("BUSSARD_FLASH_RECONNECT_EXCHANGES", "0");
     }
 
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let (handle, state, gw) = setup_bus(Fault::None).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let (handle, state, gw) = setup_bus(Fault::None).await?;
     // Drop every numbered exchange (budget 0): the device answers nothing, so no
     // operation can make any forward progress on any window.
-    state.lock().unwrap().die_after_exchanges = Some(0);
+    lock(&state)?.die_after_exchanges = Some(0);
     let source = bussard_bus::ops::group_source(&handle);
-    let app = fabricated_app_big();
+    let app = fabricated_app_big()?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -4025,10 +3862,9 @@ async fn flash_gives_up_cleanly_when_a_device_never_makes_progress() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
     let connector = LeaseConnector::plain(handle.clone(), target, source, Some(fast_timeouts()));
-    let mut session = Session::open_with_key(connector, None).await.unwrap();
+    let mut session = Session::open_with_key(connector, None).await?;
     // Bound the wall-clock so a regression that loops forever fails the test loudly
     // rather than hanging: the give-up must happen within a handful of reconnects.
     let result = tokio::time::timeout(
@@ -4041,7 +3877,12 @@ async fn flash_gives_up_cleanly_when_a_device_never_makes_progress() {
         ),
     )
     .await
-    .expect("resume-on-drop must give up (not hang) when the device never makes progress");
+    .map_err(|e| {
+        format!(
+            "{}: {e:?}",
+            "resume-on-drop must give up (not hang) when the device never makes progress"
+        )
+    })?;
     let _ = session.into_disconnect().await;
 
     assert!(
@@ -4049,7 +3890,7 @@ async fn flash_gives_up_cleanly_when_a_device_never_makes_progress() {
         "a device that never makes progress must fail the flash, got {result:?}"
     );
     {
-        let s = state.lock().unwrap();
+        let s = lock(&state)?;
         // It DID retry (reconnected) before giving up — resume-on-drop was exercised,
         // it just could not make progress — but the number of reconnects is bounded,
         // proving no infinite loop.
@@ -4066,26 +3907,27 @@ async fn flash_gives_up_cleanly_when_a_device_never_makes_progress() {
         );
     }
     let _ = handle.close().await;
-    gw.abort();
+    drop(gw);
 
     unsafe {
         std::env::remove_var("BUSSARD_FLASH_RECONNECT_EXCHANGES");
         std::env::remove_var("BUSSARD_FLASH_REBOOT_WAIT_MS");
     }
+    Ok(())
 }
 
 #[tokio::test]
-async fn flash_final_restart_silence_is_success_not_failure() {
+async fn flash_final_restart_silence_is_success_not_failure() -> TestResult {
     // The terminal LdCtrlRestart is the SUCCESSFUL last step: bussard sends
     // A_Restart, the device reboots and goes silent, and that silence must be
     // treated as success — NOT surfaced as "device absent". The mock goes silent
     // on the current connection right after the basic restart; the flash must
     // still return Ok with load_state == Loaded (verified BEFORE the restart).
-    let (handle, state, gw) = setup_bus(Fault::SilentAfterBasicRestart).await;
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let (handle, state, gw) = setup_bus(Fault::SilentAfterBasicRestart).await?;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
     let source = bussard_bus::ops::group_source(&handle);
 
-    let app = fabricated_app();
+    let app = fabricated_app()?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -4094,8 +3936,7 @@ async fn flash_final_restart_silence_is_success_not_failure() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
     // The procedure ends with a Restart step.
     assert!(
         matches!(plan.steps.last(), Some(FlashStep::Restart)),
@@ -4103,7 +3944,7 @@ async fn flash_final_restart_silence_is_success_not_failure() {
     );
 
     let connector = LeaseConnector::plain(handle.clone(), target, source, None);
-    let mut session = Session::open_with_key(connector, None).await.unwrap();
+    let mut session = Session::open_with_key(connector, None).await?;
     let outcome = flash(
         &mut session,
         &plan,
@@ -4111,7 +3952,12 @@ async fn flash_final_restart_silence_is_success_not_failure() {
         |_| {},
     )
     .await
-    .expect("the final-restart silence must be success, not a flash failure");
+    .map_err(|e| {
+        format!(
+            "{}: {e:?}",
+            "the final-restart silence must be success, not a flash failure"
+        )
+    })?;
     let _ = session.into_disconnect().await;
 
     assert!(
@@ -4119,17 +3965,15 @@ async fn flash_final_restart_silence_is_success_not_failure() {
         "the flash must verify before the terminal restart: {outcome:?}"
     );
     assert_eq!(outcome.load_state, LoadState::Loaded);
-    assert!(
-        state.lock().unwrap().saw_basic_restart,
-        "the restart was sent"
-    );
+    assert!(lock(&state)?.saw_basic_restart, "the restart was sent");
 
     let _ = handle.close().await;
-    gw.abort();
+    drop(gw);
+    Ok(())
 }
 
 #[tokio::test]
-async fn flash_verifies_after_terminal_restart_when_it_can_reconnect() {
+async fn flash_verifies_after_terminal_restart_when_it_can_reconnect() -> TestResult {
     // With `verify_after_restart` set (the real `bussard flash`), the terminal
     // restart is fired, the reboot is waited out, the connection is re-opened and
     // re-authorized, and the load state is re-read on the FRESH connection. A
@@ -4141,11 +3985,11 @@ async fn flash_verifies_after_terminal_restart_when_it_can_reconnect() {
         std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
     }
 
-    let (handle, state, gw) = setup_bus(Fault::SilentAfterBasicRestart).await;
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let (handle, state, gw) = setup_bus(Fault::SilentAfterBasicRestart).await?;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
     let source = bussard_bus::ops::group_source(&handle);
 
-    let app = fabricated_app();
+    let app = fabricated_app()?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -4154,11 +3998,10 @@ async fn flash_verifies_after_terminal_restart_when_it_can_reconnect() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
 
     let connector = LeaseConnector::plain(handle.clone(), target, source, None);
-    let mut session = Session::open_with_key(connector, None).await.unwrap();
+    let mut session = Session::open_with_key(connector, None).await?;
     let outcome = flash(
         &mut session,
         &plan,
@@ -4170,7 +4013,12 @@ async fn flash_verifies_after_terminal_restart_when_it_can_reconnect() {
         |_| {},
     )
     .await
-    .expect("a persisting flash must verify after the restart");
+    .map_err(|e| {
+        format!(
+            "{}: {e:?}",
+            "a persisting flash must verify after the restart"
+        )
+    })?;
     let _ = session.into_disconnect().await;
 
     assert!(
@@ -4179,7 +4027,7 @@ async fn flash_verifies_after_terminal_restart_when_it_can_reconnect() {
     );
     assert_eq!(outcome.load_state, LoadState::Loaded);
     {
-        let s = state.lock().unwrap();
+        let s = lock(&state)?;
         assert!(s.saw_basic_restart, "the terminal restart was sent");
         // The tool opened at least two connection windows: the flash proper, then
         // the post-reboot reconnect for the verify.
@@ -4196,11 +4044,12 @@ async fn flash_verifies_after_terminal_restart_when_it_can_reconnect() {
         std::env::remove_var("BUSSARD_FLASH_REBOOT_WAIT_MS");
     }
     let _ = handle.close().await;
-    gw.abort();
+    drop(gw);
+    Ok(())
 }
 
 #[tokio::test]
-async fn flash_fails_when_load_does_not_persist_across_the_restart() {
+async fn flash_fails_when_load_does_not_persist_across_the_restart() -> TestResult {
     // The false-positive this fixes: KNX Virtual reports a transient `Loaded`
     // before the terminal restart, then comes back up `Unloaded` when the written
     // image is content-incomplete. A pre-restart verify would report success; the
@@ -4212,11 +4061,11 @@ async fn flash_fails_when_load_does_not_persist_across_the_restart() {
         std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
     }
 
-    let (handle, state, gw) = setup_bus(Fault::UnloadedAfterBasicRestart).await;
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let (handle, state, gw) = setup_bus(Fault::UnloadedAfterBasicRestart).await?;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
     let source = bussard_bus::ops::group_source(&handle);
 
-    let app = fabricated_app();
+    let app = fabricated_app()?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -4225,11 +4074,10 @@ async fn flash_fails_when_load_does_not_persist_across_the_restart() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
 
     let connector = LeaseConnector::plain(handle.clone(), target, source, None);
-    let mut session = Session::open_with_key(connector, None).await.unwrap();
+    let mut session = Session::open_with_key(connector, None).await?;
     let outcome = flash(
         &mut session,
         &plan,
@@ -4241,7 +4089,12 @@ async fn flash_fails_when_load_does_not_persist_across_the_restart() {
         |_| {},
     )
     .await
-    .expect("the flash executes; the non-persisting load is caught by the verify, not an error");
+    .map_err(|e| {
+        format!(
+            "{}: {e:?}",
+            "the flash executes; the non-persisting load is caught by the verify, not an error"
+        )
+    })?;
     let _ = session.into_disconnect().await;
 
     // The load did NOT persist: the post-restart verify read `Unloaded`, so the
@@ -4257,7 +4110,7 @@ async fn flash_fails_when_load_does_not_persist_across_the_restart() {
         "the post-restart re-read must observe the reverted (non-persisting) state"
     );
     assert!(
-        state.lock().unwrap().saw_basic_restart,
+        lock(&state)?.saw_basic_restart,
         "the terminal restart was sent"
     );
 
@@ -4266,7 +4119,8 @@ async fn flash_fails_when_load_does_not_persist_across_the_restart() {
         std::env::remove_var("BUSSARD_FLASH_REBOOT_WAIT_MS");
     }
     let _ = handle.close().await;
-    gw.abort();
+    drop(gw);
+    Ok(())
 }
 
 /// The ETS→KNX-Virtual DA.tp shape: the application-program-TYPE object is at
@@ -4276,7 +4130,7 @@ async fn flash_fails_when_load_does_not_persist_across_the_restart() {
 /// the load-control sequence, the PID7 base read, and the memory write all target
 /// object 4 — never the type-discovered object 3.
 #[tokio::test]
-async fn flash_targets_the_obj_idx_object_not_the_type_object() {
+async fn flash_targets_the_obj_idx_object_not_the_type_object() -> TestResult {
     // Object table: obj0 device, obj1 address, obj2 association, obj3
     // application-program (type 3 — what a type probe discovers), obj4 the app
     // segment (type 4). Model the loadable state on obj4 (the ObjIdx the write
@@ -4284,7 +4138,7 @@ async fn flash_targets_the_obj_idx_object_not_the_type_object() {
     // it Unloaded and fail.
     let state = fresh_device(Fault::None);
     {
-        let mut s = state.lock().unwrap();
+        let mut s = lock(&state)?;
         s.object_types = vec![
             OT_DEVICE,
             OT_ADDRESS_TABLE,
@@ -4294,9 +4148,9 @@ async fn flash_targets_the_obj_idx_object_not_the_type_object() {
         ];
         s.loadable_object_override = Some(4);
     }
-    let (mut bus, state, handle) = setup_device(state).await;
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+    let (mut bus, state, handle) = setup_device(state).await?;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
     // A DA.tp-shape procedure: allocate LsmIdx=4, write ObjIdx=4.
     let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
@@ -4316,7 +4170,7 @@ async fn flash_targets_the_obj_idx_object_not_the_type_object() {
        </LoadProcedures>
       </Static>
      </ApplicationProgram></KNX>"#;
-    let app = parse_application_program("M-1_A-DA", xml.as_bytes()).unwrap();
+    let app = parse_application_program("M-1_A-DA", xml.as_bytes())?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -4325,13 +4179,10 @@ async fn flash_targets_the_obj_idx_object_not_the_type_object() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
-    let mut session = authed_session(l4).await;
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await?;
     // The flash routes every load-control write, the PID7 base read, and the memory
     // write to object 4 (the ObjIdx). The final verify re-reads the
     // type-discovered object's load state — which for this device is obj3 (Unloaded
@@ -4345,11 +4196,10 @@ async fn flash_targets_the_obj_idx_object_not_the_type_object() {
         bussard_download::FlashOptions::default(),
         |_| {},
     )
-    .await
-    .unwrap();
+    .await?;
     let _ = session.into_disconnect().await;
 
-    let s = state.lock().unwrap();
+    let s = lock(&state)?;
     // Every load-control write (Unload, StartLoading, LoadCompleted, and the
     // allocate) targeted object 4 — never the type-discovered object 3.
     assert!(
@@ -4382,13 +4232,14 @@ async fn flash_targets_the_obj_idx_object_not_the_type_object() {
         "the app image landed at obj4's base"
     );
 
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 /// The MV-07B0 `Load/all` master-template op list, verbatim from the real
 /// `knx_master.xml` (parsed so the fixture cannot drift from the parser). This is
 /// the skeleton the DA.tp app's MergeId 2/4 blocks splice into.
-fn master_template_all_ops() -> Vec<bussard_prod::LoadOp> {
+fn master_template_all_ops() -> TestResult<Vec<bussard_prod::LoadOp>> {
     let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
      <MaskVersion Id="MV-07B0" Name="System B">
       <Procedures>
@@ -4428,8 +4279,11 @@ fn master_template_all_ops() -> Vec<bussard_prod::LoadOp> {
        </Procedure>
       </Procedures>
      </MaskVersion></KNX>"#;
-    let t = bussard_prod::parse_master_template(xml.as_bytes(), "test").unwrap();
-    t.full_load_procedure("07B0").unwrap().ops.clone()
+    let t = bussard_prod::parse_master_template(xml.as_bytes(), "test")?;
+    Ok(t.full_load_procedure("07B0")
+        .ok_or("the template has a 07B0 procedure")?
+        .ops
+        .clone())
 }
 
 /// 256 bytes of 0xFF as base64 (the DA.tp app segment `<Data>`).
@@ -4443,7 +4297,7 @@ fn base64_ff_256() -> String {
 /// The KNX-Virtual DA.tp merged application: only its own MergeId 2 (allocate the
 /// app segment + master reset) and MergeId 4 (write the app segment) blocks; one
 /// 256-byte LSM4 relative segment of 0xFF (like the real app).
-fn app_da_tp() -> ApplicationProgram {
+fn app_da_tp() -> TestResult<ApplicationProgram> {
     let data = base64_ff_256();
     let xml = format!(
         r#"<KNX xmlns="http://knx.org/xml/project/23">
@@ -4465,7 +4319,7 @@ fn app_da_tp() -> ApplicationProgram {
       </Static>
      </ApplicationProgram></KNX>"#
     );
-    parse_application_program("M-00FA_A-DA", xml.as_bytes()).unwrap()
+    Ok(parse_application_program("M-00FA_A-DA", xml.as_bytes())?)
 }
 
 /// A full 4-object flash of the KNX-Virtual DA.tp shape: the master `Load/all`
@@ -4475,7 +4329,7 @@ fn app_da_tp() -> ApplicationProgram {
 /// the LSM5 template ops are skipped (the device has no obj5). The final verify
 /// confirms every programmed object reached Loaded.
 #[tokio::test]
-async fn flash_da_tp_programs_all_four_objects() {
+async fn flash_da_tp_programs_all_four_objects() -> TestResult {
     use bussard_download::compute::{
         GroupObjectDescriptor, compute_group_object_table, table_image_with_count,
     };
@@ -4489,11 +4343,11 @@ async fn flash_da_tp_programs_all_four_objects() {
     unsafe {
         std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
     }
-    let (handle, state, gw) = setup_bus(Fault::None).await;
+    let (handle, state, gw) = setup_bus(Fault::None).await?;
     // obj0 device, obj1 address(1), obj2 association(2), obj3 group-object(9),
     // obj4 application(3). No obj5 — the LSM5 template ops must be skipped.
     {
-        let mut s = state.lock().unwrap();
+        let mut s = lock(&state)?;
         s.object_types = vec![
             OT_DEVICE,
             OT_ADDRESS_TABLE,       // 1
@@ -4504,7 +4358,7 @@ async fn flash_da_tp_programs_all_four_objects() {
         s.multi_object = true;
         s.wipe_app_on_master_reset = true; // DA.tp carries a MasterReset
     }
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
     let source = bussard_bus::ops::group_source(&handle);
 
     // A couple of links so the tables are non-empty.
@@ -4512,14 +4366,14 @@ async fn flash_da_tp_programs_all_four_objects() {
         Link {
             object: 0,
             name: None,
-            send: Some("1/1/1".parse().unwrap()),
+            send: Some("1/1/1".parse()?),
             listen: vec![],
         },
         Link {
             object: 1,
             name: None,
             send: None,
-            listen: vec!["1/1/2".parse().unwrap()],
+            listen: vec!["1/1/2".parse()?],
         },
     ];
     let desired = compute_tables(&links);
@@ -4546,11 +4400,11 @@ async fn flash_da_tp_programs_all_four_objects() {
             priority: bussard_download::Priority::Low,
         },
     ])
-    .unwrap();
+    .ok_or("the group-object table computes")?;
     table_images.insert(3, obj3.clone());
 
-    let app = app_da_tp();
-    let template = master_template_all_ops();
+    let app = app_da_tp()?;
+    let template = master_template_all_ops()?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -4559,19 +4413,17 @@ async fn flash_da_tp_programs_all_four_objects() {
         &BTreeMap::new(),
         Some(&template),
         &table_images,
-    )
-    .unwrap();
+    )?;
 
     let connector = LeaseConnector::plain(handle.clone(), target, source, None);
-    let mut session = Session::open_with_key(connector, None).await.unwrap();
+    let mut session = Session::open_with_key(connector, None).await?;
     let outcome = flash(
         &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         |_| {},
     )
-    .await
-    .unwrap();
+    .await?;
     let _ = session.into_disconnect().await;
 
     // Every programmed object reached Loaded (the verify_outcome fix): obj1..4.
@@ -4588,7 +4440,7 @@ async fn flash_da_tp_programs_all_four_objects() {
     }
 
     {
-        let s = state.lock().unwrap();
+        let s = lock(&state)?;
         for obj in [1u8, 2, 3, 4] {
             assert!(
                 s.load_control_targets.contains(&obj),
@@ -4613,13 +4465,19 @@ async fn flash_da_tp_programs_all_four_objects() {
             );
         }
         // The obj3 group-object image landed at obj3's own allocated base.
-        let obj3_base = *s.object_segment_bases.get(&3).unwrap();
+        let obj3_base = *s
+            .object_segment_bases
+            .get(&3)
+            .ok_or("no segment base for obj3")?;
         let obj3_written: Vec<u8> = (0..obj3.len() as u32)
             .map(|i| *s.memory.get(&obj3_base.wrapping_add(i)).unwrap_or(&0))
             .collect();
         assert_eq!(obj3_written, obj3, "obj3 table body landed at obj3's base");
         // The obj1 address image landed at obj1's own base.
-        let obj1_base = *s.object_segment_bases.get(&1).unwrap();
+        let obj1_base = *s
+            .object_segment_bases
+            .get(&1)
+            .ok_or("no segment base for obj1")?;
         let obj1_img = &table_images[&1];
         let obj1_written: Vec<u8> = (0..obj1_img.len() as u32)
             .map(|i| *s.memory.get(&obj1_base.wrapping_add(i)).unwrap_or(&0))
@@ -4631,7 +4489,8 @@ async fn flash_da_tp_programs_all_four_objects() {
     }
 
     let _ = handle.close().await;
-    gw.abort();
+    drop(gw);
+    Ok(())
 }
 
 /// A merged flash whose master template programs obj1/obj2/obj3 but the caller
@@ -4641,9 +4500,9 @@ async fn flash_da_tp_programs_all_four_objects() {
 /// image. Proves the table images are required when the template programs the
 /// table objects.
 #[tokio::test]
-async fn flash_da_tp_without_table_images_refuses() {
-    let app = app_da_tp();
-    let template = master_template_all_ops();
+async fn flash_da_tp_without_table_images_refuses() -> TestResult {
+    let app = app_da_tp()?;
+    let template = master_template_all_ops()?;
     let empty: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
     let result = plan_flash(
         &app,
@@ -4659,6 +4518,7 @@ async fn flash_da_tp_without_table_images_refuses() {
         "a template that writes obj1/2/3 with no table images must refuse, not \
          silently write the app segment to a table object"
     );
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -4699,7 +4559,7 @@ fn base64_encode(bytes: &[u8]) -> String {
 /// A single-object 07B0 app whose one relative code segment is `size` octets, so
 /// a flash chunks it (with the extended service, into ~228-octet pieces). The
 /// data is a deterministic ramp so a test can byte-compare what landed.
-fn app_with_segment_of(size: usize) -> (ApplicationProgram, Vec<u8>) {
+fn app_with_segment_of(size: usize) -> TestResult<(ApplicationProgram, Vec<u8>)> {
     let data: Vec<u8> = (0..size).map(|i| (i as u8).wrapping_mul(3)).collect();
     let b64 = base64_encode(&data);
     let xml = format!(
@@ -4725,27 +4585,27 @@ fn app_with_segment_of(size: usize) -> (ApplicationProgram, Vec<u8>) {
       </Static>
      </ApplicationProgram></KNX>"#
     );
-    (
-        parse_application_program("M-1_A-EXT", xml.as_bytes()).unwrap(),
+    Ok((
+        parse_application_program("M-1_A-EXT", xml.as_bytes())?,
         data,
-    )
+    ))
 }
 
 #[tokio::test]
-async fn flash_extended_memory_segment_above_64k_loads_and_verifies() {
+async fn flash_extended_memory_segment_above_64k_loads_and_verifies() -> TestResult {
     // A 400-octet segment placed at base 0x016000 (top address 0x01618F, well
     // above 0xFFFF): the whole segment must stream via A_MemoryExtended_Write in
     // 228-octet chunks (PID_MAX_APDU=233), confirm to Loaded, and land verbatim.
-    let (mut bus, state, handle) = setup(Fault::None).await;
+    let (mut bus, state, handle) = setup(Fault::None).await?;
     {
-        let mut s = state.lock().unwrap();
+        let mut s = lock(&state)?;
         s.max_apdu = Some(233);
         s.segment_base_override = Some(0x01_6000);
     }
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
-    let (app, data) = app_with_segment_of(400);
+    let (app, data) = app_with_segment_of(400)?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -4754,29 +4614,25 @@ async fn flash_extended_memory_segment_above_64k_loads_and_verifies() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
 
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
     // Negotiate PID_MAX_APDU on the connection so extended writes scale to 228,
     // exactly as `Session::open` does for the real connector-backed flow.
-    let negotiated = l4.negotiate_max_apdu().await.unwrap();
+    let negotiated = l4.negotiate_max_apdu().await?;
     assert_eq!(
         negotiated,
         Some(233),
         "the mock advertises PID_MAX_APDU=233"
     );
-    let mut session = authed_session(l4).await;
+    let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         |_| {},
     )
-    .await
-    .unwrap();
+    .await?;
     let _ = session.into_disconnect().await;
 
     assert!(
@@ -4786,7 +4642,7 @@ async fn flash_extended_memory_segment_above_64k_loads_and_verifies() {
     assert_eq!(outcome.load_state, LoadState::Loaded);
     assert!(outcome.spot_checks_match);
 
-    let s = state.lock().unwrap();
+    let s = lock(&state)?;
     // The segment was streamed with the extended service, NOT the plain write.
     assert!(
         s.extended_writes_seen > 0,
@@ -4802,25 +4658,26 @@ async fn flash_extended_memory_segment_above_64k_loads_and_verifies() {
         .map(|i| *s.memory.get(&(0x01_6000u32 + i)).unwrap_or(&0))
         .collect();
     assert_eq!(landed, data, "the image landed verbatim at 0x016000");
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn flash_small_image_stays_on_the_plain_write_path() {
+async fn flash_small_image_stays_on_the_plain_write_path() -> TestResult {
     // The byte-identical guarantee: a device whose segment fits 0xFFFF (base
     // 0x4000, the historical placement) is flashed with the plain A_Memory_Write
     // service and NO extended write is ever emitted, even when PID_MAX_APDU is
     // advertised. This is the small-image path the KV/DA.tp oracle depends on.
-    let (mut bus, state, handle) = setup(Fault::None).await;
+    let (mut bus, state, handle) = setup(Fault::None).await?;
     {
-        let mut s = state.lock().unwrap();
+        let mut s = lock(&state)?;
         s.max_apdu = Some(233);
         // No base override: the mock places the segment at 0x4000 (<=0xFFFF).
     }
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
-    let app = fabricated_app();
+    let app = fabricated_app()?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -4829,26 +4686,22 @@ async fn flash_small_image_stays_on_the_plain_write_path() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
-    let mut session = authed_session(l4).await;
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         |_| {},
     )
-    .await
-    .unwrap();
+    .await?;
     let _ = session.into_disconnect().await;
 
     assert!(outcome.ok(), "small-image flash must verify: {outcome:?}");
     assert_eq!(outcome.load_state, LoadState::Loaded);
-    let s = state.lock().unwrap();
+    let s = lock(&state)?;
     assert_eq!(
         s.extended_writes_seen, 0,
         "a <=0xFFFF segment must NEVER use the extended service (byte-identical plain path)"
@@ -4857,7 +4710,8 @@ async fn flash_small_image_stays_on_the_plain_write_path() {
         s.memory_writes_seen > 0,
         "the small image is streamed with the plain A_Memory_Write"
     );
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 // --- Pre-flight factory-freshness probe (issue #79) -------------------------
@@ -4874,7 +4728,7 @@ async fn flash_small_image_stays_on_the_plain_write_path() {
 /// identity yields the 5-octet `PID_PROGRAM_VERSION` value a completed flash
 /// stamps on the device: KNX Virtual DA.tp's `00 FA 25 00 10` (manufacturer
 /// `0x00FA`, application number 9472, version 16).
-fn identified_app() -> ApplicationProgram {
+fn identified_app() -> TestResult<ApplicationProgram> {
     let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
      <ApplicationProgram Id="M-00FA_A-2500-10-51CB" ApplicationNumber="9472" ApplicationVersion="16"
         MaskVersion="MV-07B0" Name="DA.tp" LoadProcedureStyle="ProductDefault">
@@ -4896,12 +4750,15 @@ fn identified_app() -> ApplicationProgram {
        </LoadProcedures>
       </Static>
      </ApplicationProgram></KNX>"#;
-    parse_application_program("M-00FA_A-2500-10-51CB", xml.as_bytes()).unwrap()
+    Ok(parse_application_program(
+        "M-00FA_A-2500-10-51CB",
+        xml.as_bytes(),
+    )?)
 }
 
 /// Plans the identified app against a 07B0 device.
-fn identified_plan(app: &ApplicationProgram) -> bussard_download::FlashPlan {
-    plan_flash(
+fn identified_plan(app: &ApplicationProgram) -> TestResult<bussard_download::FlashPlan> {
+    Ok(plan_flash(
         app,
         "1.1.4",
         0x07B0,
@@ -4909,39 +4766,37 @@ fn identified_plan(app: &ApplicationProgram) -> bussard_download::FlashPlan {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap()
+    )?)
 }
 
 /// Opens an authorized connection and runs the read-only pre-flight probe,
 /// exactly as `bussard flash`'s phase A does.
-async fn probe(bus: &mut Transport) -> bussard_download::ResidentState {
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
-    let mut l4 = Layer4Connection::connect(bus, target, source)
-        .await
-        .unwrap();
-    l4.authorize_or_fail(0xFFFF_FFFF).await.unwrap();
+async fn probe(bus: &mut Transport) -> TestResult<bussard_download::ResidentState> {
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
+    let mut l4 = Layer4Connection::connect(bus, target, source).await?;
+    l4.authorize_or_fail(0xFFFF_FFFF).await?;
     let resident = bussard_download::probe_resident_state(&mut l4, 0x07B0, None).await;
     let _ = l4.disconnect().await;
-    resident
+    Ok(resident)
 }
 
 /// Asserts the probe wrote nothing: no load control, no memory, no property.
-fn assert_probe_wrote_nothing(state: &Shared) {
-    let s = state.lock().unwrap();
+fn assert_probe_wrote_nothing(state: &Shared) -> TestResult {
+    let s = lock(state)?;
     assert_eq!(s.control_writes, 0, "the probe must write no load control");
     assert_eq!(s.memory_writes_seen, 0, "the probe must write no memory");
     assert!(s.prop_writes.is_empty(), "the probe must write no property");
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_probe_resident_state_factory_fresh_device_is_fresh() {
-    let (mut bus, state, handle) = setup(Fault::None).await;
-    let app = identified_app();
-    let plan = identified_plan(&app);
+async fn test_probe_resident_state_factory_fresh_device_is_fresh() -> TestResult {
+    let (mut bus, state, handle) = setup(Fault::None).await?;
+    let app = identified_app()?;
+    let plan = identified_plan(&app)?;
 
-    let resident = probe(&mut bus).await;
+    let resident = probe(&mut bus).await?;
 
     assert!(resident.unreadable.is_none(), "{resident:?}");
     // The three loadable objects answered; the device object (type 0) carries no
@@ -4962,26 +4817,27 @@ async fn test_probe_resident_state_factory_fresh_device_is_fresh() {
         bussard_download::assess_freshness(&resident, &plan.identity),
         bussard_download::Freshness::Fresh
     );
-    assert_probe_wrote_nothing(&state);
-    handle.abort();
+    assert_probe_wrote_nothing(&state)?;
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_probe_resident_state_other_application_is_refused() {
+async fn test_probe_resident_state_other_application_is_refused() -> TestResult {
     // The device runs MDT A-0007 v35 (`00 83 00 07 23`) and we are about to flash
     // DA.tp: a different application, so the verdict refuses and names what is
     // resident. Nothing is written — the CLI never gets as far as `flash`.
-    let (mut bus, state, handle) = setup(Fault::None).await;
+    let (mut bus, state, handle) = setup(Fault::None).await?;
     {
-        let mut s = state.lock().unwrap();
+        let mut s = lock(&state)?;
         s.app_load_state = LS_LOADED;
         s.compare_props
             .insert((3, 13), vec![0x00, 0x83, 0x00, 0x07, 0x23]);
     }
-    let app = identified_app();
-    let plan = identified_plan(&app);
+    let app = identified_app()?;
+    let plan = identified_plan(&app)?;
 
-    let resident = probe(&mut bus).await;
+    let resident = probe(&mut bus).await?;
 
     assert_eq!(
         resident.app_id_display().as_deref(),
@@ -4995,26 +4851,27 @@ async fn test_probe_resident_state_other_application_is_refused() {
         }
         other => panic!("expected a refusal verdict, got {other:?}"),
     }
-    assert_probe_wrote_nothing(&state);
-    handle.abort();
+    assert_probe_wrote_nothing(&state)?;
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_probe_resident_state_same_application_allows_reflash() {
+async fn test_probe_resident_state_same_application_allows_reflash() -> TestResult {
     // The device already runs the very application being flashed (DA.tp's
     // `00 FA 25 00 10`). Re-flashing it is the documented recovery path for an
     // interrupted flash, so the verdict allows it without --force.
-    let (mut bus, state, handle) = setup(Fault::None).await;
+    let (mut bus, state, handle) = setup(Fault::None).await?;
     {
-        let mut s = state.lock().unwrap();
+        let mut s = lock(&state)?;
         s.app_load_state = LS_LOADED;
         s.compare_props
             .insert((3, 13), vec![0x00, 0xFA, 0x25, 0x00, 0x10]);
     }
-    let app = identified_app();
-    let plan = identified_plan(&app);
+    let app = identified_app()?;
+    let plan = identified_plan(&app)?;
 
-    let resident = probe(&mut bus).await;
+    let resident = probe(&mut bus).await?;
 
     let verdict = bussard_download::assess_freshness(&resident, &plan.identity);
     assert_eq!(
@@ -5024,21 +4881,22 @@ async fn test_probe_resident_state_same_application_allows_reflash() {
         }
     );
     assert!(verdict.allows_flash());
-    assert_probe_wrote_nothing(&state);
-    handle.abort();
+    assert_probe_wrote_nothing(&state)?;
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_probe_resident_state_loaded_without_app_id_is_refused() {
+async fn test_probe_resident_state_loaded_without_app_id_is_refused() -> TestResult {
     // Loaded, but nothing answers PID 13 (the mock reports no such property):
     // the resident application cannot be identified, which must NOT be read as
     // "fresh" — it is refused, and the message says it could not be identified.
-    let (mut bus, state, handle) = setup(Fault::None).await;
-    state.lock().unwrap().app_load_state = LS_LOADED;
-    let app = identified_app();
-    let plan = identified_plan(&app);
+    let (mut bus, state, handle) = setup(Fault::None).await?;
+    lock(&state)?.app_load_state = LS_LOADED;
+    let app = identified_app()?;
+    let plan = identified_plan(&app)?;
 
-    let resident = probe(&mut bus).await;
+    let resident = probe(&mut bus).await?;
 
     assert!(resident.app_id.is_none());
     match bussard_download::assess_freshness(&resident, &plan.identity) {
@@ -5048,21 +4906,22 @@ async fn test_probe_resident_state_loaded_without_app_id_is_refused() {
         }
         other => panic!("expected a refusal verdict, got {other:?}"),
     }
-    assert_probe_wrote_nothing(&state);
-    handle.abort();
+    assert_probe_wrote_nothing(&state)?;
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_probe_resident_state_unreadable_device_is_unknown() {
+async fn test_probe_resident_state_unreadable_device_is_unknown() -> TestResult {
     // A device that answers no interface object at all: the load state is
     // unreadable, which is reported as unknown (not fresh) and refused without
     // --force. The message says it was unreadable, not Loaded.
-    let (mut bus, state, handle) = setup(Fault::None).await;
-    state.lock().unwrap().object_types = Vec::new();
-    let app = identified_app();
-    let plan = identified_plan(&app);
+    let (mut bus, state, handle) = setup(Fault::None).await?;
+    lock(&state)?.object_types = Vec::new();
+    let app = identified_app()?;
+    let plan = identified_plan(&app)?;
 
-    let resident = probe(&mut bus).await;
+    let resident = probe(&mut bus).await?;
 
     assert!(resident.objects.is_empty());
     match bussard_download::assess_freshness(&resident, &plan.identity) {
@@ -5074,68 +4933,68 @@ async fn test_probe_resident_state_unreadable_device_is_unknown() {
         }
         other => panic!("expected an unknown verdict, got {other:?}"),
     }
-    assert_probe_wrote_nothing(&state);
-    handle.abort();
+    assert_probe_wrote_nothing(&state)?;
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_probe_resident_state_interrupted_flash_still_flashes() {
+async fn test_probe_resident_state_interrupted_flash_still_flashes() -> TestResult {
     // An object left mid-`Loading` by an interrupted flash is not a programmed
     // device: re-running `flash` is the documented recovery, so the verdict is
     // Fresh and no --force is needed.
-    let (mut bus, state, handle) = setup(Fault::None).await;
-    state.lock().unwrap().app_load_state = LS_LOADING;
-    let app = identified_app();
-    let plan = identified_plan(&app);
+    let (mut bus, state, handle) = setup(Fault::None).await?;
+    lock(&state)?.app_load_state = LS_LOADING;
+    let app = identified_app()?;
+    let plan = identified_plan(&app)?;
 
-    let resident = probe(&mut bus).await;
+    let resident = probe(&mut bus).await?;
 
     assert_eq!(
         bussard_download::assess_freshness(&resident, &plan.identity),
         bussard_download::Freshness::Fresh
     );
-    assert_probe_wrote_nothing(&state);
-    handle.abort();
+    assert_probe_wrote_nothing(&state)?;
+    drop(handle);
+    Ok(())
 }
 
 #[tokio::test]
-async fn test_flash_after_a_fresh_probe_is_unchanged() {
+async fn test_flash_after_a_fresh_probe_is_unchanged() -> TestResult {
     // The probe is a separate read-only pass: a flash that follows it writes
     // exactly what it always did (the byte-path is untouched — this is the
     // end-to-end proof next to the byte-for-byte corpus tests).
-    let (mut bus, state, handle) = setup(Fault::None).await;
-    let app = identified_app();
-    let plan = identified_plan(&app);
+    let (mut bus, state, handle) = setup(Fault::None).await?;
+    let app = identified_app()?;
+    let plan = identified_plan(&app)?;
 
-    let resident = probe(&mut bus).await;
+    let resident = probe(&mut bus).await?;
     assert_eq!(
         bussard_download::assess_freshness(&resident, &plan.identity),
         bussard_download::Freshness::Fresh
     );
 
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
-    let l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
-    let mut session = authed_session(l4).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
         &plan,
         bussard_download::FlashOptions::default(),
         |_| {},
     )
-    .await
-    .unwrap();
+    .await?;
     let _ = session.into_disconnect().await;
 
     assert!(outcome.ok(), "flash must verify after a probe: {outcome:?}");
-    let s = state.lock().unwrap();
+    let s = lock(&state)?;
     let code: Vec<u8> = (0x4000u16..0x4006)
         .map(|a| *s.memory.get(&u32::from(a)).unwrap_or(&0))
         .collect();
     assert_eq!(code, vec![0, 1, 2, 3, 4, 5]);
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 // ===========================================================================
@@ -5154,12 +5013,12 @@ async fn test_flash_after_a_fresh_probe_is_unchanged() {
 /// `Loaded` with every management APDU wrapped in A_SecureData, and the device
 /// never sees a plain management APDU.
 #[tokio::test]
-async fn flash_secure_reaches_loaded_with_every_apdu_wrapped() {
-    let (handle, state, gw) = setup_bus_with(secure_device(Fault::None)).await;
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+async fn flash_secure_reaches_loaded_with_every_apdu_wrapped() -> TestResult {
+    let (handle, state, gw) = setup_bus_with(secure_device(Fault::None)?).await?;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
     let source = bussard_bus::ops::group_source(&handle);
 
-    let app = fabricated_app();
+    let app = fabricated_app()?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -5168,8 +5027,7 @@ async fn flash_secure_reaches_loaded_with_every_apdu_wrapped() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
 
     let connector = LeaseConnector::secure(
         handle.clone(),
@@ -5180,7 +5038,7 @@ async fn flash_secure_reaches_loaded_with_every_apdu_wrapped() {
     );
     let mut session = Session::open_with_key(connector, Some(0xFFFF_FFFF))
         .await
-        .expect("the secure authorize is granted");
+        .map_err(|e| format!("{}: {e:?}", "the secure authorize is granted"))?;
     let outcome = flash(
         &mut session,
         &plan,
@@ -5188,13 +5046,13 @@ async fn flash_secure_reaches_loaded_with_every_apdu_wrapped() {
         |_| {},
     )
     .await
-    .expect("the secure flash completes");
+    .map_err(|e| format!("{}: {e:?}", "the secure flash completes"))?;
     let _ = session.into_disconnect().await;
 
     assert!(outcome.ok(), "secure flash must verify: {outcome:?}");
     assert_eq!(outcome.load_state, LoadState::Loaded);
     {
-        let s = state.lock().unwrap();
+        let s = lock(&state)?;
         assert!(
             s.secure_frames_accepted > 10,
             "every management APDU must have been wrapped (accepted = {})",
@@ -5208,7 +5066,8 @@ async fn flash_secure_reaches_loaded_with_every_apdu_wrapped() {
             .collect();
         assert_eq!(code, vec![0, 1, 2, 3, 4, 5]);
     }
-    gw.abort();
+    drop(gw);
+    Ok(())
 }
 
 /// REGRESSION (spec §5.9): a flash that reconnects mid-procedure must CONTINUE
@@ -5217,19 +5076,19 @@ async fn flash_secure_reaches_loaded_with_every_apdu_wrapped() {
 /// sequences the device has already accepted and the device refuses every one of
 /// them — the divergence the knx-sim conformance loop caught.
 #[tokio::test]
-async fn flash_secure_master_reset_reconnect_keeps_the_sequence_monotonic() {
+async fn flash_secure_master_reset_reconnect_keeps_the_sequence_monotonic() -> TestResult {
     // Shorten the reboot wait so the test does not stall.
     // SAFETY of env: this test binds its own socket/actor; the var only shortens
     // a sleep and is read once per master-reset step.
     unsafe {
         std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
     }
-    let (handle, state, gw) = setup_bus_with(secure_device(Fault::None)).await;
-    state.lock().unwrap().wipe_app_on_master_reset = true;
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+    let (handle, state, gw) = setup_bus_with(secure_device(Fault::None)?).await?;
+    lock(&state)?.wipe_app_on_master_reset = true;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
     let source = bussard_bus::ops::group_source(&handle);
 
-    let app = app_with_master_reset();
+    let app = app_with_master_reset()?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -5238,8 +5097,7 @@ async fn flash_secure_master_reset_reconnect_keeps_the_sequence_monotonic() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
 
     // A short-but-not-tiny L4 budget: the happy path never waits on it, and a
     // regression (a reconnect that replays sequences, which the device refuses by
@@ -5253,7 +5111,7 @@ async fn flash_secure_master_reset_reconnect_keeps_the_sequence_monotonic() {
         LeaseConnector::secure(handle.clone(), target, source, Some(budget), MOCK_TOOL_KEY);
     let mut session = Session::open_with_key(connector, Some(0xFFFF_FFFF))
         .await
-        .expect("the secure authorize is granted");
+        .map_err(|e| format!("{}: {e:?}", "the secure authorize is granted"))?;
     let outcome = flash(
         &mut session,
         &plan,
@@ -5261,13 +5119,13 @@ async fn flash_secure_master_reset_reconnect_keeps_the_sequence_monotonic() {
         |_| {},
     )
     .await
-    .expect("the secure flash survives the reconnect");
+    .map_err(|e| format!("{}: {e:?}", "the secure flash survives the reconnect"))?;
     let _ = session.into_disconnect().await;
 
     assert!(outcome.ok(), "secure flash must verify: {outcome:?}");
     assert_eq!(outcome.load_state, LoadState::Loaded);
     {
-        let s = state.lock().unwrap();
+        let s = lock(&state)?;
         assert!(
             s.connects >= 2,
             "the master reset must have forced a reconnect (connects = {})",
@@ -5278,19 +5136,20 @@ async fn flash_secure_master_reset_reconnect_keeps_the_sequence_monotonic() {
             "a reconnected session must not replay a stale sequence"
         );
     }
-    gw.abort();
+    drop(gw);
+    Ok(())
 }
 
 /// NEGATIVE (spec §6.4): plain management against an activated device is refused
 /// outright — the device drops every frame, the flash fails, and nothing is
 /// written.
 #[tokio::test]
-async fn flash_plain_against_an_activated_device_is_refused() {
-    let (handle, state, gw) = setup_bus_with(secure_device(Fault::None)).await;
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+async fn flash_plain_against_an_activated_device_is_refused() -> TestResult {
+    let (handle, state, gw) = setup_bus_with(secure_device(Fault::None)?).await?;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
     let source = bussard_bus::ops::group_source(&handle);
 
-    let app = fabricated_app();
+    let app = fabricated_app()?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -5299,8 +5158,7 @@ async fn flash_plain_against_an_activated_device_is_refused() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
 
     // A PLAIN connector against the activated device. The authorize itself is
     // tolerated as "device does not implement authorize" (a silent device is
@@ -5309,7 +5167,12 @@ async fn flash_plain_against_an_activated_device_is_refused() {
     let connector = LeaseConnector::plain(handle.clone(), target, source, Some(fast_timeouts()));
     let mut session = Session::open_with_key(connector, Some(0xFFFF_FFFF))
         .await
-        .expect("the session opens; the device simply never answers");
+        .map_err(|e| {
+            format!(
+                "{}: {e:?}",
+                "the session opens; the device simply never answers"
+            )
+        })?;
     let err = flash(
         &mut session,
         &plan,
@@ -5320,25 +5183,26 @@ async fn flash_plain_against_an_activated_device_is_refused() {
     .expect_err("a plain flash of an activated device must fail");
     let _ = session.into_disconnect().await;
     {
-        let s = state.lock().unwrap();
+        let s = lock(&state)?;
         assert!(
             s.plain_refusals > 0,
             "the device must have refused the plain access"
         );
         assert!(s.memory.is_empty(), "nothing may be written: {err:?}");
     }
-    gw.abort();
+    drop(gw);
+    Ok(())
 }
 
 /// NEGATIVE (spec §5.6): a WRONG tool key fails the MAC on the device, which
 /// drops the frame. The flash fails cleanly and nothing is written.
 #[tokio::test]
-async fn flash_with_a_wrong_tool_key_is_refused() {
-    let (handle, state, gw) = setup_bus_with(secure_device(Fault::None)).await;
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
+async fn flash_with_a_wrong_tool_key_is_refused() -> TestResult {
+    let (handle, state, gw) = setup_bus_with(secure_device(Fault::None)?).await?;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
     let source = bussard_bus::ops::group_source(&handle);
 
-    let app = fabricated_app();
+    let app = fabricated_app()?;
     let plan = plan_flash(
         &app,
         "1.1.4",
@@ -5347,8 +5211,7 @@ async fn flash_with_a_wrong_tool_key_is_refused() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
 
     let connector = LeaseConnector::secure(
         handle.clone(),
@@ -5359,7 +5222,12 @@ async fn flash_with_a_wrong_tool_key_is_refused() {
     );
     let mut session = Session::open_with_key(connector, Some(0xFFFF_FFFF))
         .await
-        .expect("the session opens; the device simply never answers");
+        .map_err(|e| {
+            format!(
+                "{}: {e:?}",
+                "the session opens; the device simply never answers"
+            )
+        })?;
     let err = flash(
         &mut session,
         &plan,
@@ -5370,7 +5238,7 @@ async fn flash_with_a_wrong_tool_key_is_refused() {
     .expect_err("a wrong tool key must fail the flash");
     let _ = session.into_disconnect().await;
     {
-        let s = state.lock().unwrap();
+        let s = lock(&state)?;
         assert!(
             s.secure_refusals > 0,
             "the device must have refused the MAC"
@@ -5378,7 +5246,8 @@ async fn flash_with_a_wrong_tool_key_is_refused() {
         assert_eq!(s.secure_frames_accepted, 0, "nothing may authenticate");
         assert!(s.memory.is_empty(), "nothing may be written: {err:?}");
     }
-    gw.abort();
+    drop(gw);
+    Ok(())
 }
 
 // --- Parameter-level plan (issue #109) ---------------------------------------
@@ -5387,11 +5256,11 @@ async fn flash_with_a_wrong_tool_key_is_refused() {
 /// one parameter: the read-back must decode the device's current value and the
 /// parameter plan must show exactly one line, old value to new.
 #[tokio::test]
-async fn test_param_plan_one_changed_parameter_on_mock_device() {
-    let (mut bus, _state, handle) = setup(Fault::None).await;
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
-    let app = fabricated_app();
+async fn test_param_plan_one_changed_parameter_on_mock_device() -> TestResult {
+    let (mut bus, _state, handle) = setup(Fault::None).await?;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
+    let app = fabricated_app()?;
 
     // 1. The device carries the vendor-default application (parameter = 7).
     let default_plan = plan_flash(
@@ -5402,20 +5271,16 @@ async fn test_param_plan_one_changed_parameter_on_mock_device() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
-    let l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
-    let mut session = authed_session(l4).await;
+    )?;
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
         &default_plan,
         bussard_download::FlashOptions::default(),
         |_| {},
     )
-    .await
-    .unwrap();
+    .await?;
     let _ = session.into_disconnect().await;
     assert!(outcome.ok(), "the default flash must verify: {outcome:?}");
 
@@ -5429,14 +5294,11 @@ async fn test_param_plan_one_changed_parameter_on_mock_device() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
 
     // 3. Read the current parameter memory back (read-only) and diff.
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
-    l4.authorize_or_fail(0xFFFF_FFFF).await.unwrap();
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    l4.authorize_or_fail(0xFFFF_FFFF).await?;
     let current = bussard_download::read_current_parameter_memory(&mut l4, &plan).await;
     let _ = l4.disconnect().await;
     assert_eq!(
@@ -5449,17 +5311,18 @@ async fn test_param_plan_one_changed_parameter_on_mock_device() {
     assert_eq!(params.changes.len(), 1, "changes: {:?}", params.changes);
     assert_eq!(params.changes[0].line(), "thr: 7 to 42");
     assert_eq!(params.unknown, 0);
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 /// On a factory-fresh mock nothing is loaded, so nothing is read back and the
 /// one changed parameter is listed with an unknown current value.
 #[tokio::test]
-async fn test_param_plan_fresh_mock_device_reports_unknown() {
-    let (mut bus, _state, handle) = setup(Fault::None).await;
-    let target: bussard_model::IndividualAddress = "1.1.4".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
-    let app = fabricated_app();
+async fn test_param_plan_fresh_mock_device_reports_unknown() -> TestResult {
+    let (mut bus, _state, handle) = setup(Fault::None).await?;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
+    let app = fabricated_app()?;
     let overrides = BTreeMap::from([("P-0_R-1".to_string(), "42".to_string())]);
     let plan = plan_flash(
         &app,
@@ -5469,13 +5332,10 @@ async fn test_param_plan_fresh_mock_device_reports_unknown() {
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
-    )
-    .unwrap();
+    )?;
 
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source)
-        .await
-        .unwrap();
-    l4.authorize_or_fail(0xFFFF_FFFF).await.unwrap();
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    l4.authorize_or_fail(0xFFFF_FFFF).await?;
     let current = bussard_download::read_current_parameter_memory(&mut l4, &plan).await;
     let _ = l4.disconnect().await;
     assert!(
@@ -5487,13 +5347,14 @@ async fn test_param_plan_fresh_mock_device_reports_unknown() {
     assert_eq!(params.changes.len(), 1);
     assert_eq!(params.changes[0].old, bussard_download::ParamValue::Unknown);
     assert_eq!(params.unknown, 1);
-    handle.abort();
+    drop(handle);
+    Ok(())
 }
 
 /// A sparse System B app: one filled (`Mode=1 Fill=0`) segment whose image is
 /// half zeros, so the engine writes only octets 1, 3 and 5. Its plan therefore
 /// opens with a factory reset and ends with a confirmed restart.
-fn app_with_sparse_segment() -> ApplicationProgram {
+fn app_with_sparse_segment() -> TestResult<ApplicationProgram> {
     let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
      <ApplicationProgram Id="M-2_A-8" ApplicationNumber="8" ApplicationVersion="1"
         MaskVersion="MV-07B0" Name="Sparse" LoadProcedureStyle="MergedProcedure">
@@ -5515,7 +5376,7 @@ fn app_with_sparse_segment() -> ApplicationProgram {
        </LoadProcedures>
       </Static>
      </ApplicationProgram></KNX>"#;
-    parse_application_program("M-2_A-8", xml.as_bytes()).unwrap()
+    Ok(parse_application_program("M-2_A-8", xml.as_bytes())?)
 }
 
 /// Re-flashes [`app_with_sparse_segment`] onto a device whose segment at
@@ -5525,19 +5386,19 @@ fn app_with_sparse_segment() -> ApplicationProgram {
 /// `--no-factory-reset` plan.
 async fn reflash_over_stale_image(
     factory_reset: bool,
-) -> Result<(Vec<u8>, Shared, bussard_download::FlashOutcome), Box<dyn std::error::Error>> {
+) -> TestResult<(Vec<u8>, Shared, bussard_download::FlashOutcome)> {
     // Shorten the post-reboot poll so the test does not stall; the var only
     // bounds a sleep.
     unsafe {
         std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
     }
     let stale = [0xAAu8; 6];
-    let (handle, state, gw) = setup_bus_with(preloaded_device(&stale)).await;
+    let (handle, state, gw) = setup_bus_with(preloaded_device(&stale)?).await?;
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
     let source = bussard_bus::ops::group_source(&handle);
 
     let mut plan = plan_flash(
-        &app_with_sparse_segment(),
+        &app_with_sparse_segment()?,
         "1.1.4",
         0x07B0,
         &no_overrides(),
@@ -5562,7 +5423,7 @@ async fn reflash_over_stale_image(
     )
     .await?;
     let _ = session.into_disconnect().await;
-    gw.abort();
+    drop(gw);
 
     let image: Vec<u8> = {
         let s = state.lock().map_err(|_| "poisoned")?;
@@ -5574,15 +5435,14 @@ async fn reflash_over_stale_image(
 }
 
 #[tokio::test]
-async fn test_flash_factory_reset_clears_stale_octets_before_sparse_reflash()
--> Result<(), Box<dyn std::error::Error>> {
+async fn test_flash_factory_reset_clears_stale_octets_before_sparse_reflash() -> TestResult {
     // Issue #117 (#89 campaign): a filled segment is written sparsely, and the
     // device's fill is bookkeeping, not an erase. A re-flash therefore inherits
     // the previous image's octets wherever the new image writes nothing. The
     // factory reset (erase code 7) that opens the plan, like ETS's initial
     // download, is what makes the result equal the ETS image.
     let plan = plan_flash(
-        &app_with_sparse_segment(),
+        &app_with_sparse_segment()?,
         "1.1.4",
         0x07B0,
         &no_overrides(),
@@ -5621,8 +5481,7 @@ async fn test_flash_factory_reset_clears_stale_octets_before_sparse_reflash()
 }
 
 #[tokio::test]
-async fn test_flash_without_factory_reset_inherits_stale_octets()
--> Result<(), Box<dyn std::error::Error>> {
+async fn test_flash_without_factory_reset_inherits_stale_octets() -> TestResult {
     // The control for the test above: the same re-flash with the reset skipped
     // (`--no-factory-reset`) leaves the stale 0xAA octets wherever the sparse
     // image writes nothing, so the device does NOT hold the ETS image.
@@ -5642,13 +5501,12 @@ async fn test_flash_without_factory_reset_inherits_stale_octets()
 }
 
 #[tokio::test]
-async fn test_require_factory_reset_adds_one_step_and_skip_removes_it()
--> Result<(), Box<dyn std::error::Error>> {
+async fn test_require_factory_reset_adds_one_step_and_skip_removes_it() -> TestResult {
     // A plan without filled segments (the DA.tp / thelsing shape) has no reset
     // of its own; the CLI adds one for a device that is not factory-fresh, and
     // `--no-factory-reset` takes it out again.
     let mut plan = plan_flash(
-        &fabricated_app(),
+        &fabricated_app()?,
         "1.1.4",
         0x07B0,
         &no_overrides(),
@@ -5688,11 +5546,10 @@ async fn test_require_factory_reset_adds_one_step_and_skip_removes_it()
 /// writes the program version only to object 4. The plan keeps object 5's
 /// Unload and drops its StartLoading, LoadCompleted and PID 13 write.
 #[test]
-fn test_plan_flash_skips_program_version_of_an_unloaded_object()
--> Result<(), Box<dyn std::error::Error>> {
-    let app = app_da_tp();
+fn test_plan_flash_skips_program_version_of_an_unloaded_object() -> TestResult {
+    let app = app_da_tp()?;
     let tables = BTreeMap::from([(1, vec![0, 0]), (2, vec![0, 0]), (3, vec![0, 0])]);
-    let template = master_template_all_ops();
+    let template = master_template_all_ops()?;
     let plan = plan_flash(
         &app,
         "1.1.47",
@@ -5734,8 +5591,8 @@ fn test_plan_flash_skips_program_version_of_an_unloaded_object()
 /// before object 4, writes the PEI program's own id to object 5's PID 13, and
 /// checks object 5's image, as ETS does.
 #[test]
-fn test_plan_flash_streams_a_companion_pei_program() -> Result<(), Box<dyn std::error::Error>> {
-    let mut app = app_da_tp();
+fn test_plan_flash_streams_a_companion_pei_program() -> TestResult {
+    let mut app = app_da_tp()?;
     let pei = r#"<KNX xmlns="http://knx.org/xml/project/23">
      <ApplicationProgram Id="M-00FA_A-DB" ApplicationNumber="9472" ApplicationVersion="32"
         ProgramType="PeiProgram" MaskVersion="MV-07B0" Name="Pei" LoadProcedureStyle="MergedProcedure">
@@ -5760,7 +5617,7 @@ fn test_plan_flash_streams_a_companion_pei_program() -> Result<(), Box<dyn std::
     app.companion_programs.push(pei);
 
     let tables = BTreeMap::from([(1, vec![0, 0]), (2, vec![0, 0]), (3, vec![0, 0])]);
-    let template = master_template_all_ops();
+    let template = master_template_all_ops()?;
     let plan = plan_flash(
         &app,
         "1.1.39",
@@ -5842,9 +5699,8 @@ fn test_plan_flash_streams_a_companion_pei_program() -> Result<(), Box<dyn std::
 
 /// The 07B0 template with an extra `LdCtrlLoadImageProp` for object 4 after
 /// the MergeId 7 marker, to tell template checks apart from the app's own.
-fn master_template_with_image_check()
--> Result<Vec<bussard_prod::LoadOp>, Box<dyn std::error::Error>> {
-    let mut ops = master_template_all_ops();
+fn master_template_with_image_check() -> TestResult<Vec<bussard_prod::LoadOp>> {
+    let mut ops = master_template_all_ops()?;
     let at = ops
         .iter()
         .position(|op| matches!(op, bussard_prod::LoadOp::Restart))
@@ -5879,9 +5735,8 @@ fn image_checks(plan: &bussard_download::FlashPlan) -> Vec<(u32, bool)> {
 /// checks, a template check for an object it does not name is dropped; the
 /// app's checks stay authoritative.
 #[test]
-fn test_plan_flash_image_checks_follow_the_app_procedure() -> Result<(), Box<dyn std::error::Error>>
-{
-    let mut app = app_da_tp();
+fn test_plan_flash_image_checks_follow_the_app_procedure() -> TestResult {
+    let mut app = app_da_tp()?;
     app.load_procedures.push(bussard_prod::LoadProcedure {
         merge_id: Some("7".to_string()),
         ops: (1..=3)
@@ -5916,12 +5771,11 @@ fn test_plan_flash_image_checks_follow_the_app_procedure() -> Result<(), Box<dyn
 /// template-driven KNX Virtual DA.tp shape) keeps the template's checks, and
 /// they stay authoritative.
 #[test]
-fn test_plan_flash_template_image_checks_kept_without_app_checks()
--> Result<(), Box<dyn std::error::Error>> {
+fn test_plan_flash_template_image_checks_kept_without_app_checks() -> TestResult {
     let tables = BTreeMap::from([(1, vec![0, 0]), (2, vec![0, 0]), (3, vec![0, 0])]);
     let template = master_template_with_image_check()?;
     let plan = plan_flash(
-        &app_da_tp(),
+        &app_da_tp()?,
         "1.1.4",
         0x07B0,
         &BTreeMap::new(),
@@ -5957,14 +5811,13 @@ fn device_running_fabricated_app(param: u8) -> Shared {
 }
 
 #[tokio::test]
-async fn test_parameters_only_download_writes_only_the_changed_parameter()
--> Result<(), Box<dyn std::error::Error>> {
-    let (mut bus, state, handle) = setup_device(device_running_fabricated_app(7)).await;
+async fn test_parameters_only_download_writes_only_the_changed_parameter() -> TestResult {
+    let (mut bus, state, handle) = setup_device(device_running_fabricated_app(7)).await?;
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
     // The model changes the one parameter from its default 7 to 9.
-    let app = fabricated_app();
+    let app = fabricated_app()?;
     let overrides = BTreeMap::from([("P-0_R-0".to_string(), "9".to_string())]);
     let full = plan_flash(
         &app,
@@ -5977,7 +5830,7 @@ async fn test_parameters_only_download_writes_only_the_changed_parameter()
     )?;
 
     let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
-    let mut session = authed_session(l4).await;
+    let mut session = authed_session(l4).await?;
     let regions = bussard_download::read_parameter_regions(session.l4(), &full).await;
     let region = regions
         .get("M-1_A-1_RS-2")
@@ -6017,7 +5870,7 @@ async fn test_parameters_only_download_writes_only_the_changed_parameter()
     // Read back after the load: the new value decodes.
     let after = bussard_download::read_parameter_regions(session.l4(), &full).await;
     let _ = session.into_disconnect().await;
-    handle.abort();
+    drop(handle);
     assert!(
         outcome.ok(),
         "the parameter-only download must verify: {outcome:?}"
@@ -6050,12 +5903,11 @@ async fn test_parameters_only_download_writes_only_the_changed_parameter()
 }
 
 #[tokio::test]
-async fn test_parameters_only_download_with_nothing_changed_writes_nothing()
--> Result<(), Box<dyn std::error::Error>> {
-    let (mut bus, state, handle) = setup_device(device_running_fabricated_app(9)).await;
+async fn test_parameters_only_download_with_nothing_changed_writes_nothing() -> TestResult {
+    let (mut bus, state, handle) = setup_device(device_running_fabricated_app(9)).await?;
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
-    let app = fabricated_app();
+    let app = fabricated_app()?;
     let overrides = BTreeMap::from([("P-0_R-0".to_string(), "9".to_string())]);
     let full = plan_flash(
         &app,
@@ -6067,10 +5919,10 @@ async fn test_parameters_only_download_with_nothing_changed_writes_nothing()
         &BTreeMap::new(),
     )?;
     let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
-    let mut session = authed_session(l4).await;
+    let mut session = authed_session(l4).await?;
     let regions = bussard_download::read_parameter_regions(session.l4(), &full).await;
     let _ = session.into_disconnect().await;
-    handle.abort();
+    drop(handle);
     let partial = full.parameters_only(&regions)?;
     assert_eq!(partial.changed_octets(), 0);
     let readings = bussard_download::non_default_parameters(
@@ -6096,15 +5948,14 @@ async fn test_parameters_only_download_with_nothing_changed_writes_nothing()
 /// and the device state (issue #166).
 async fn secure_flash_across_slow_security_layer(
     sync_drops: u32,
-) -> Result<(Result<bussard_download::FlashOutcome, WriteError>, Shared), Box<dyn std::error::Error>>
-{
+) -> TestResult<(Result<bussard_download::FlashOutcome, WriteError>, Shared)> {
     // Shorten the post-reboot poll and the Sync backoff; the var only bounds
     // sleeps.
     // SAFETY of env: nextest runs this test in its own process.
     unsafe {
         std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
     }
-    let (handle, state, gw) = setup_bus_with(secure_device(Fault::None)).await;
+    let (handle, state, gw) = setup_bus_with(secure_device(Fault::None)?).await?;
     state
         .lock()
         .map_err(|_| "poisoned")?
@@ -6112,7 +5963,7 @@ async fn secure_flash_across_slow_security_layer(
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
     let source = bussard_bus::ops::group_source(&handle);
     let plan = plan_flash(
-        &app_with_sparse_segment(),
+        &app_with_sparse_segment()?,
         "1.1.4",
         0x07B0,
         &no_overrides(),
@@ -6145,7 +5996,7 @@ async fn secure_flash_across_slow_security_layer(
     )
     .await;
     let _ = session.into_disconnect().await;
-    gw.abort();
+    drop(gw);
     Ok((outcome, state))
 }
 
@@ -6155,8 +6006,7 @@ async fn secure_flash_across_slow_security_layer(
 /// on the new connection, repeats the Sync_Req on that same connection, and the
 /// flash completes.
 #[tokio::test]
-async fn test_flash_secure_factory_reset_retries_unanswered_sync_reqs()
--> Result<(), Box<dyn std::error::Error>> {
+async fn test_flash_secure_factory_reset_retries_unanswered_sync_reqs() -> TestResult {
     let (outcome, state) = secure_flash_across_slow_security_layer(2).await?;
     let outcome = outcome?;
     assert!(outcome.ok(), "the secure flash must verify: {outcome:?}");
@@ -6209,8 +6059,7 @@ async fn test_flash_secure_factory_reset_retries_unanswered_sync_reqs()
 /// factory reset fails the flash with `SyncUnanswered` once the bounded
 /// retries (five attempts on the post-restart connection) are spent.
 #[tokio::test]
-async fn test_flash_secure_factory_reset_gives_up_on_a_sync_never_answered()
--> Result<(), Box<dyn std::error::Error>> {
+async fn test_flash_secure_factory_reset_gives_up_on_a_sync_never_answered() -> TestResult {
     let (outcome, state) = secure_flash_across_slow_security_layer(u32::MAX).await?;
     let err = match outcome {
         Ok(outcome) => return Err(format!("the flash must fail, got {outcome:?}").into()),
@@ -6251,8 +6100,7 @@ async fn flash_across_restart_outage(
     kind: RestartKind,
     secure: bool,
     prepare: impl FnOnce(&mut DeviceState),
-) -> Result<(Result<bussard_download::FlashOutcome, WriteError>, Shared), Box<dyn std::error::Error>>
-{
+) -> TestResult<(Result<bussard_download::FlashOutcome, WriteError>, Shared)> {
     // SAFETY of env: nextest runs this test in its own process; the vars only
     // shorten the post-reboot poll and keep proactive cycling off.
     unsafe {
@@ -6260,7 +6108,7 @@ async fn flash_across_restart_outage(
         std::env::set_var("BUSSARD_FLASH_RECONNECT_EXCHANGES", "0");
     }
     let state = if secure {
-        secure_device(Fault::None)
+        secure_device(Fault::None)?
     } else {
         fresh_device(Fault::None)
     };
@@ -6275,7 +6123,7 @@ async fn flash_across_restart_outage(
         prepare(&mut s);
     }
     let (handle, state, gw, _gateway) =
-        setup_bus_reconnect(state, fast_reconnect(Duration::from_secs(20))).await;
+        setup_bus_reconnect(state, fast_reconnect(Duration::from_secs(20))).await?;
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
     let source = bussard_bus::ops::group_source(&handle);
     let plan = plan_flash(
@@ -6317,7 +6165,7 @@ async fn flash_across_restart_outage(
     .await;
     let _ = session.into_disconnect().await;
     let _ = handle.close().await;
-    gw.abort();
+    drop(gw);
     Ok((outcome, state))
 }
 
@@ -6326,7 +6174,7 @@ async fn flash_across_restart_outage(
 fn assert_resumed_across_outage(
     outcome: Result<bussard_download::FlashOutcome, WriteError>,
     state: &Shared,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> TestResult {
     let outcome = outcome?;
     assert!(outcome.ok(), "the resumed flash must verify: {outcome:?}");
     assert_eq!(outcome.load_state, LoadState::Loaded);
@@ -6360,15 +6208,14 @@ fn sparse_image(state: &Shared) -> Result<Vec<u8>, String> {
 }
 
 #[tokio::test]
-async fn test_flash_resumes_tunnel_loss_during_factory_reset_reconnect()
--> Result<(), Box<dyn std::error::Error>> {
+async fn test_flash_resumes_tunnel_loss_during_factory_reset_reconnect() -> TestResult {
     // The live failure of #192: the link drops while bussard reconnects to the
     // device after its factory reset. The unanswered authorize must not be
     // taken for "device has no authorize"; the reconnect phase waits for the
     // tunnel, probes readiness again, reconnects and the flash continues with
     // the same step. The reset itself is not repeated.
     let (outcome, state) = flash_across_restart_outage(
-        &app_with_sparse_segment(),
+        &app_with_sparse_segment()?,
         RestartKind::FactoryReset,
         false,
         |_| {},
@@ -6383,13 +6230,12 @@ async fn test_flash_resumes_tunnel_loss_during_factory_reset_reconnect()
 }
 
 #[tokio::test]
-async fn test_flash_secure_resumes_tunnel_loss_during_factory_reset_reconnect()
--> Result<(), Box<dyn std::error::Error>> {
+async fn test_flash_secure_resumes_tunnel_loss_during_factory_reset_reconnect() -> TestResult {
     // The same on a Data Secure device (the #90 S2.6 setup): the S-A_Sync_Req
     // of the post-reset connection is lost with the link; the Sync is redone
     // on a fresh connection once the tunnel is back.
     let (outcome, state) = flash_across_restart_outage(
-        &app_with_sparse_segment(),
+        &app_with_sparse_segment()?,
         RestartKind::FactoryReset,
         true,
         |_| {},
@@ -6408,12 +6254,11 @@ async fn test_flash_secure_resumes_tunnel_loss_during_factory_reset_reconnect()
 }
 
 #[tokio::test]
-async fn test_flash_resumes_tunnel_loss_during_terminal_restart_verify()
--> Result<(), Box<dyn std::error::Error>> {
+async fn test_flash_resumes_tunnel_loss_during_terminal_restart_verify() -> TestResult {
     // The link drops while bussard reconnects after the terminal (confirmed)
     // restart to verify the load: the verify still runs on a fresh connection.
     let (outcome, state) = flash_across_restart_outage(
-        &app_with_sparse_segment(),
+        &app_with_sparse_segment()?,
         RestartKind::ConfirmedRestart,
         false,
         |_| {},
@@ -6427,10 +6272,9 @@ async fn test_flash_resumes_tunnel_loss_during_terminal_restart_verify()
 }
 
 #[tokio::test]
-async fn test_flash_secure_resumes_tunnel_loss_during_terminal_restart_verify()
--> Result<(), Box<dyn std::error::Error>> {
+async fn test_flash_secure_resumes_tunnel_loss_during_terminal_restart_verify() -> TestResult {
     let (outcome, state) = flash_across_restart_outage(
-        &app_with_sparse_segment(),
+        &app_with_sparse_segment()?,
         RestartKind::ConfirmedRestart,
         true,
         |_| {},
@@ -6443,13 +6287,12 @@ async fn test_flash_secure_resumes_tunnel_loss_during_terminal_restart_verify()
 }
 
 #[tokio::test]
-async fn test_flash_resumes_tunnel_loss_during_master_reset_reconnect()
--> Result<(), Box<dyn std::error::Error>> {
+async fn test_flash_resumes_tunnel_loss_during_master_reset_reconnect() -> TestResult {
     // The mid-procedure `LdCtrlMasterReset` (KNX Virtual's bare A_Restart,
     // erase code 4): the link drops in its reconnect phase; the object is
     // re-opened and re-allocated on the fresh connection as usual.
     let (outcome, state) = flash_across_restart_outage(
-        &app_with_master_reset(),
+        &app_with_master_reset()?,
         RestartKind::BasicRestart,
         false,
         |s| s.wipe_app_on_master_reset = true,
