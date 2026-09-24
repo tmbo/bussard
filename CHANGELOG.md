@@ -325,6 +325,16 @@ entry supersedes it and is not a diff against it.
   to 22 writes and the 1.1.12 image from 23 to 6 at the 215-octet Data
   Secure chunk; ETS writes 197 and 38 (#210).
 
+- `flash` polls a rebooting device every 500 ms with a 2 s answer window
+  instead of a fixed 1.5 s wait, a 400 ms window and a 1, 2, 4, 8 s backoff
+  on Data Secure devices. After a confirmed restart the first probe goes out
+  0.5 s after the reported process time; a bare `A_Restart` keeps the 1.5 s
+  quiet period. A negative `L_Data.con` counts as "not up yet". After the
+  factory reset the device is probed from +3 s to measure its readiness, the
+  8 s process time is still waited out. `flash -v` appends the readiness per
+  restart to its timing line. On the mock with the 1.1.5 reboot pattern the
+  restart phase ends at +3.0 s instead of +9.7 s (#212).
+
 ### Fixed
 
 - Group writes: DPT-blind 6-bit APCI packing corrupted values on the live bus

@@ -8,7 +8,7 @@
 use super::execute_sys7::flash_sys7;
 use super::labels::step_label;
 use super::session::{
-    Connector, MAX_RESUME_RECONNECTS, Session, allocate_with_context_resumable,
+    Connector, MAX_RESUME_RECONNECTS, RestartKind, Session, allocate_with_context_resumable,
     read_load_state_resumable, reconnect_exchange_threshold, resumable_death,
     start_loading_resumable, write_load_control_resumable,
 };
@@ -232,6 +232,18 @@ pub(super) fn resolve_object_target_opt(
 /// from `bussard flash` after the plan is shown, confirmed, and the factory-fresh
 /// assumption stated.
 pub async fn flash<C: Connector, F: FnMut(Progress)>(
+    session: &mut Session<C>,
+    plan: &FlashPlan,
+    options: FlashOptions,
+    progress: F,
+) -> Result<FlashOutcome, WriteError> {
+    let mut outcome = flash_steps(session, plan, options, progress).await?;
+    outcome.reboot_readiness = session.reboot_readiness().to_vec();
+    Ok(outcome)
+}
+
+/// The body of [`flash`]: runs the plan and verifies it.
+async fn flash_steps<C: Connector, F: FnMut(Progress)>(
     session: &mut Session<C>,
     plan: &FlashPlan,
     options: FlashOptions,
@@ -914,9 +926,10 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                         // valid; the objects are back to `Unloaded` and the following
                         // Unload/StartLoading steps run as on a fresh device.
                         session
-                            .reconnect_after_master_reset(bussard_mgmt::restart_process_wait(
-                                &response,
-                            ))
+                            .reconnect_after_master_reset(
+                                RestartKind::FactoryReset,
+                                bussard_mgmt::restart_process_wait(&response),
+                            )
                             .await?;
                     }
                     FlashStep::Restart => {
@@ -967,6 +980,7 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                                     Ok(response) => {
                                         session
                                             .reconnect_after_master_reset(
+                                                RestartKind::Restart,
                                                 bussard_mgmt::restart_process_wait(&response),
                                             )
                                             .await?;

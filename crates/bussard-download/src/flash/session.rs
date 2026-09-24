@@ -20,39 +20,84 @@ use std::collections::BTreeMap;
 /// the reboot. A real ETS→KNX-Virtual capture showed ~6.5s of silence while the
 /// device rebooted; real devices vary, so the bound is deliberately generous.
 ///
-/// It is a *bound*, not a fixed sleep: after
-/// [`REBOOT_PROBE_MIN_WAIT`] of silence the session polls the device with a cheap
-/// liveness probe every [`REBOOT_PROBE_INTERVAL`] (see
-/// [`Session::reconnect_after_reboot`]), so a device that is back after 6.5 s is
-/// picked up then instead of costing the full bound. Only a device that never
-/// answers pays it.
+/// It is a *bound*, not a fixed sleep: the session polls the device with a
+/// cheap liveness probe (see [`Session::reconnect_after_reboot`]), so a device
+/// that is back after 6.5 s is picked up then instead of costing the full
+/// bound. Only a device that never answers pays it.
 const MASTER_RESET_REBOOT_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// How long the post-restart poll stays quiet before its first probe.
+/// How long the post-restart poll stays quiet before its first probe after a
+/// restart the device did **not** confirm (a bare `A_Restart`: the KNX Virtual
+/// master reset, the terminal restart of a plan without filled segments, or a
+/// confirmed restart whose answer was lost).
 ///
 /// A device that is still shutting down can answer for a few hundred
-/// milliseconds after it acknowledged the restart; probing immediately would
+/// milliseconds after it received the restart; probing immediately would
 /// mistake that dying stack for a rebooted one and resume the procedure against
-/// a device that is about to go away. Waiting a short minimum first makes the
-/// first probe meaningful. Capped by the overall bound (see
+/// a device that is about to go away. No capture measures this for the bare
+/// restart, so the historic 1.5 s stays. Capped by the overall bound (see
 /// [`reboot_wait_bound`]) so a test that shrinks the bound stays fast.
 const REBOOT_PROBE_MIN_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
 
-/// How long to wait between post-restart liveness probes.
+/// How long the post-restart poll stays quiet after a restart the device
+/// **confirmed** (`A_Restart_Response`) and its reported process time (issue
+/// #212): one [`REBOOT_PROBE_INTERVAL`], so the first probe goes out at +0.5 s.
+///
+/// Evidence, 2026-09-24 (erase code 1, process time 0): 1.1.12 answered
+/// bussard's first probe at +1.5 s within 34 ms
+/// (`captures/campaign/2026-09-24/devices/1.1.12/flash-force-20260924-202407`),
+/// and ETS's probe of the same device at +1.4 s was answered too; ETS's second
+/// probe of 1.1.5 was answered at +2.4 s. A device that answered its restart
+/// with a process time has said when it is done, so the 1.5 s of
+/// [`REBOOT_PROBE_MIN_WAIT`] is not stacked on it.
+const CONFIRMED_RESTART_QUIET: std::time::Duration = REBOOT_PROBE_INTERVAL;
+
+/// The cadence of post-restart liveness probes: a probe that stays unanswered
+/// ends after [`REBOOT_PROBE_TIMEOUTS`]'s 500 ms acknowledgement window and the
+/// next one goes out right away, so the device is asked every 500 ms (issue
+/// #212). A probe that fails faster (the connector could not open a
+/// connection) waits out the rest of the interval.
 const REBOOT_PROBE_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// The tight L4 budget one post-restart liveness probe runs on: a device that is
-/// still rebooting must be ruled out in a fraction of a second, not in the
-/// standard 3 s ACK wait times four attempts.
+/// The L4 budget of one post-restart liveness probe (issue #212).
+///
+/// - `ack_timeout` 500 ms: the poll interval. A device that does not
+///   acknowledge within it is asked again by the next probe; since every
+///   probe opens a fresh connection and sends its descriptor read with
+///   sequence number 0, a late `T_ACK` and answer to the previous probe are
+///   accepted by the next one instead of being lost.
+/// - `response_timeout` 2 s: once the device acknowledged, its answer is
+///   awaited this long. 1.1.5 acknowledged a probe after 0.18 s and answered
+///   1.96 s after it while sending its power-up group telegrams
+///   (`captures/campaign/2026-09-24/devices/1.1.5/flash-force-20260924-203822`,
+///   wire.log 18:40:00.429 / 00.613 / 02.385); the previous 400 ms window
+///   discarded that answer and one 1.3 s late (18:39:58.023 / 59.347), which
+///   cost the restart 5.5 s.
+/// - A negative `L_Data.con` does **not** end the probe: during a reboot it
+///   means "not up yet", not absent (issue #45 vs. #212). The same 1.1.5 log
+///   shows the interface reporting a negative con for the probe at
+///   18:39:58.023 (`2e 00 95`, 22-43 ms later) and the device acknowledging
+///   and answering that very probe 1.3 s later, so the probe keeps listening
+///   for its 500 ms and the poll carries on.
 const REBOOT_PROBE_TIMEOUTS: bussard_mgmt::Timeouts = bussard_mgmt::Timeouts {
-    ack_timeout: std::time::Duration::from_millis(400),
+    ack_timeout: std::time::Duration::from_millis(500),
     max_repetitions: 0,
-    response_timeout: std::time::Duration::from_millis(400),
-    // A negative L_Data.con during a reboot means "not up yet", not
-    // absent: the probe keeps its window and the poll retries (issue
-    // #212 owns using the con to shorten this).
+    response_timeout: std::time::Duration::from_secs(2),
     absent_on_negative_confirmation: false,
 };
+
+/// When the readiness of a device after a **factory reset** starts being
+/// measured, counted from the accepted reset (issue #212).
+///
+/// The erase-7 reset answers a process time of 8 s and both ETS (8.9 s) and
+/// bussard (8 s + probe) waited it out on 1.1.5 and 1.1.12, where the first
+/// probe was answered at once; no capture shows an earlier probe, so the real
+/// readiness is unknown. From +3 s the session probes every
+/// [`REBOOT_PROBE_INTERVAL`] and records the first answer
+/// ([`RebootReadiness`]), but still waits out the reported process time
+/// before it continues: the probes only measure, so a later change can shorten
+/// the wait from evidence.
+const FACTORY_RESET_PROBE_FROM: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Environment variable that overrides [`MASTER_RESET_REBOOT_WAIT`] with a
 /// millisecond value. Set by the mock-device restart tests so the reboot wait
@@ -79,13 +124,6 @@ fn reboot_wait_bound() -> std::time::Duration {
 /// a device whose plain descriptor probe answers earlier ends the wait then.
 /// Honours [`REBOOT_WAIT_MS_ENV`] like the plain bound, so tests stay fast.
 const SECURE_REBOOT_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// The first pause between two Secure readiness probes; it doubles after each
-/// unanswered probe up to [`SECURE_PROBE_MAX_BACKOFF`] (1, 2, 4, 8, 8 … s).
-const SECURE_PROBE_INITIAL_BACKOFF: std::time::Duration = std::time::Duration::from_secs(1);
-
-/// The cap on the pause between two Secure readiness probes.
-const SECURE_PROBE_MAX_BACKOFF: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// The upper bound on the post-restart poll of a Data Secure device, honouring
 /// [`REBOOT_WAIT_MS_ENV`].
@@ -283,6 +321,8 @@ impl<Ch: L4Channel> Session<SingleConnector<Ch>> {
             authorize_outcomes: BTreeMap::new(),
             facts: DeviceFacts::default(),
             max_apdu: None,
+            readiness: Vec::new(),
+            pending_readiness: None,
         }
     }
 }
@@ -401,6 +441,10 @@ pub struct Session<C: Connector> {
     secure: bool,
     /// The flash target, for log lines written while no connection is open.
     target: bussard_model::IndividualAddress,
+    /// The readiness measured after each confirmed restart (issue #212).
+    readiness: Vec<RebootReadiness>,
+    /// The measurement of the confirmed restart being waited out, if any.
+    pending_readiness: Option<PendingReadiness>,
 }
 
 impl<C: Connector> Session<C> {
@@ -485,6 +529,8 @@ impl<C: Connector> Session<C> {
             authorize_outcomes,
             facts,
             max_apdu,
+            readiness: Vec::new(),
+            pending_readiness: None,
         })
     }
 
@@ -673,21 +719,28 @@ impl<C: Connector> Session<C> {
     /// Waits out a device reboot with a **bounded poll**, then re-establishes the
     /// authorized connection.
     ///
-    /// Used after a master-reset `A_Restart` and after the terminal restart. The
-    /// device is unreachable while it reboots, but how long that takes varies by
+    /// Used after a restart the device did not confirm (a bare `A_Restart`: a
+    /// load procedure's master reset, the terminal restart of a plan without
+    /// filled segments, a confirmed restart whose answer was lost). The device
+    /// is unreachable while it reboots, but how long that takes varies by
     /// device (~6.5 s on KNX Virtual, less on others), so this does not burn a
     /// fixed [`MASTER_RESET_REBOOT_WAIT`]:
     ///
     /// 1. stay quiet for [`REBOOT_PROBE_MIN_WAIT`] (capped by the overall bound)
     ///    so a device that is still *shutting down* is not mistaken for one that
     ///    has come back;
-    /// 2. then, every [`REBOOT_PROBE_INTERVAL`], run a cheap liveness probe — a
-    ///    throwaway `T_Connect` + `A_DeviceDescriptor_Read` + `T_Disconnect` on a
-    ///    tight [`REBOOT_PROBE_TIMEOUTS`] budget — until it answers or the bound
+    /// 2. then run a cheap liveness probe every [`REBOOT_PROBE_INTERVAL`] — a
+    ///    throwaway `T_Connect` + `A_DeviceDescriptor_Read` on the
+    ///    [`REBOOT_PROBE_TIMEOUTS`] budget — until one answers or the bound
     ///    from [`reboot_wait_bound`] elapses;
     /// 3. either way, finish with the ordinary [`reconnect`](Session::reconnect),
     ///    so the session connection is established exactly as before and a device
     ///    that never came back surfaces that reconnect's error unchanged.
+    ///
+    /// A restart the device confirmed goes through
+    /// [`reconnect_after_master_reset`](Session::reconnect_after_master_reset)
+    /// instead, which waits the device's process time and then polls from
+    /// +0.5 s.
     ///
     /// The probe deliberately runs on its **own** connection rather than on the
     /// session's: it must not touch the session's authorize cache (a still-booting
@@ -707,6 +760,16 @@ impl<C: Connector> Session<C> {
     /// [`MAX_RESUME_RECONNECTS`] attempts within [`RECONNECT_RESUME_BUDGET`]
     /// from the first failure; past that the last error surfaces unchanged.
     pub(super) async fn reconnect_after_reboot(&mut self) -> Result<(), WriteError> {
+        self.reconnect_after_reboot_quiet(REBOOT_PROBE_MIN_WAIT)
+            .await
+    }
+
+    /// [`reconnect_after_reboot`](Session::reconnect_after_reboot) with the
+    /// quiet period before the first probe given by the caller.
+    async fn reconnect_after_reboot_quiet(
+        &mut self,
+        quiet: std::time::Duration,
+    ) -> Result<(), WriteError> {
         let mut retries = 0u32;
         let mut first_failure: Option<tokio::time::Instant> = None;
         loop {
@@ -717,9 +780,9 @@ impl<C: Connector> Session<C> {
             self.l4 = None;
             let losses = self.link_losses();
             let result = if self.secure {
-                self.reconnect_after_secure_reboot().await
+                self.reconnect_after_secure_reboot(quiet).await
             } else {
-                self.reconnect_after_plain_reboot().await
+                self.reconnect_after_plain_reboot(quiet).await
             };
             let err = match result {
                 Ok(()) => return Ok(()),
@@ -741,18 +804,22 @@ impl<C: Connector> Session<C> {
         }
     }
 
-    /// One plain post-restart wait: the bounded liveness poll of
+    /// One plain post-restart wait: `quiet`, the bounded liveness poll of
     /// [`reconnect_after_reboot`](Session::reconnect_after_reboot), then one
     /// reconnect attempt.
-    async fn reconnect_after_plain_reboot(&mut self) -> Result<(), WriteError> {
+    async fn reconnect_after_plain_reboot(
+        &mut self,
+        quiet: std::time::Duration,
+    ) -> Result<(), WriteError> {
         let bound = reboot_wait_bound();
         let started = tokio::time::Instant::now();
-        tokio::time::sleep(REBOOT_PROBE_MIN_WAIT.min(bound)).await;
+        tokio::time::sleep(quiet.min(bound)).await;
         // Only a session that owns a connector can probe; one built from a single
         // open connection falls straight through to `reconnect`'s error.
         if self.connector.is_some() {
             let deadline = started + bound;
             loop {
+                let probe_started = tokio::time::Instant::now();
                 if self.probe_rebooted_device().await {
                     break;
                 }
@@ -764,7 +831,7 @@ impl<C: Connector> Session<C> {
                     );
                     break;
                 }
-                tokio::time::sleep(REBOOT_PROBE_INTERVAL.min(deadline - now)).await;
+                sleep_rest_of_interval(probe_started, deadline).await;
             }
         }
         self.reconnect_once().await
@@ -773,12 +840,12 @@ impl<C: Connector> Session<C> {
     /// One post-reboot liveness probe: is the device answering management again?
     ///
     /// Opens a throwaway connection through the retained [`Connector`], asks for
-    /// the device descriptor on the tight [`REBOOT_PROBE_TIMEOUTS`] budget, and
-    /// tears it down again. Every failure path — no connector, a connector error,
-    /// a silent device — is just `false`, so a failed probe leaves no state
+    /// the device descriptor on the [`REBOOT_PROBE_TIMEOUTS`] budget, and tears
+    /// it down again. Every failure path — no connector, a connector error, a
+    /// silent device — is just `false`, so a failed probe leaves no state
     /// behind: the throwaway connection (and, on the real path, its bus lease) is
     /// released before returning, and the session still holds no connection of its
-    /// own.
+    /// own. An answered probe is recorded for the readiness measurement.
     async fn probe_rebooted_device(&mut self) -> bool {
         let Some(connector) = self.connector.as_mut() else {
             return false;
@@ -793,6 +860,9 @@ impl<C: Connector> Session<C> {
         // answered (so the device frees the slot immediately), a no-op when the
         // probe already tore it down.
         let _ = l4.disconnect().await;
+        if alive {
+            self.note_probe_answered();
+        }
         alive
     }
 
@@ -804,11 +874,12 @@ impl<C: Connector> Session<C> {
     /// ETS, which opens every secured session with a plain
     /// `A_DeviceDescriptor_Read`:
     ///
-    /// 1. stay quiet for [`REBOOT_PROBE_MIN_WAIT`] (capped by the bound);
+    /// 1. stay quiet for `quiet` (capped by the bound);
     /// 2. probe with `T_Connect` + a plain `A_DeviceDescriptor_Read` on the
-    ///    tight [`REBOOT_PROBE_TIMEOUTS`] budget, backing off 1, 2, 4, 8, 8 … s
-    ///    between probes until one answers or [`secure_reboot_wait_bound`]
-    ///    (30 s) has passed since the reboot wait began;
+    ///    [`REBOOT_PROBE_TIMEOUTS`] budget every [`REBOOT_PROBE_INTERVAL`] until
+    ///    one answers or [`secure_reboot_wait_bound`] (30 s) has passed since the
+    ///    reboot wait began (issue #212: the 1, 2, 4, 8 s backoff and the 400 ms
+    ///    window it replaces missed two late answers of 1.1.5);
     /// 3. keep the connection whose probe answered (no `T_Disconnect` /
     ///    `T_Connect` in between, as in the ETS capture), restore its normal
     ///    timeouts and authorize it. The authorize runs the S-A_Sync handshake
@@ -819,15 +890,18 @@ impl<C: Connector> Session<C> {
     /// When no probe answers within the bound, a fresh connection is opened
     /// anyway with the same Sync retry, so a device that never came back
     /// surfaces its error unchanged.
-    async fn reconnect_after_secure_reboot(&mut self) -> Result<(), WriteError> {
+    async fn reconnect_after_secure_reboot(
+        &mut self,
+        quiet: std::time::Duration,
+    ) -> Result<(), WriteError> {
         let bound = secure_reboot_wait_bound();
         let started = tokio::time::Instant::now();
         let deadline = started + bound;
-        tokio::time::sleep(REBOOT_PROBE_MIN_WAIT.min(bound)).await;
-        let mut backoff = SECURE_PROBE_INITIAL_BACKOFF;
+        tokio::time::sleep(quiet.min(bound)).await;
         let mut ready = None;
         if self.connector.is_some() {
             loop {
+                let probe_started = tokio::time::Instant::now();
                 if let Some(l4) = self.probe_secure_device().await {
                     ready = Some(l4);
                     break;
@@ -840,8 +914,7 @@ impl<C: Connector> Session<C> {
                     );
                     break;
                 }
-                tokio::time::sleep(backoff.min(deadline - now)).await;
-                backoff = backoff.saturating_mul(2).min(SECURE_PROBE_MAX_BACKOFF);
+                sleep_rest_of_interval(probe_started, deadline).await;
             }
         }
         let (mut l4, losses) = match ready {
@@ -859,7 +932,7 @@ impl<C: Connector> Session<C> {
     }
 
     /// One Secure readiness probe: opens a connection, reads the device
-    /// descriptor in the clear on the tight [`REBOOT_PROBE_TIMEOUTS`] budget and
+    /// descriptor in the clear on the [`REBOOT_PROBE_TIMEOUTS`] budget and
     /// returns the connection, with its normal timeouts restored, when the device
     /// answered, with the connector's link-loss count from before it was
     /// opened. A silent device yields `None` and its connection is released.
@@ -872,6 +945,7 @@ impl<C: Connector> Session<C> {
         match bussard_mgmt::read_device_descriptor_unsecured(&mut l4).await {
             Ok(_) => {
                 l4.set_timeouts(normal);
+                self.note_probe_answered();
                 Some((l4, losses))
             }
             Err(err) => {
@@ -882,21 +956,73 @@ impl<C: Connector> Session<C> {
         }
     }
 
+    /// Records that a readiness probe was answered now, for the
+    /// [`RebootReadiness`] of the restart being waited out (the first answer
+    /// wins).
+    fn note_probe_answered(&mut self) {
+        if let Some(pending) = self.pending_readiness.as_mut() {
+            pending
+                .first_answer
+                .get_or_insert_with(tokio::time::Instant::now);
+        }
+    }
+
+    /// Measures when a factory-reset device first answers a probe, from
+    /// [`FACTORY_RESET_PROBE_FROM`] until `until` (issue #212). Probes every
+    /// [`REBOOT_PROBE_INTERVAL`] and stops at the first answer; the caller
+    /// still waits out the device's process time.
+    async fn measure_readiness_until(
+        &mut self,
+        accepted: tokio::time::Instant,
+        until: tokio::time::Instant,
+    ) {
+        if self.connector.is_none() {
+            return;
+        }
+        tokio::time::sleep_until(accepted + FACTORY_RESET_PROBE_FROM).await;
+        while tokio::time::Instant::now() < until {
+            let probe_started = tokio::time::Instant::now();
+            let answered = if self.secure {
+                match self.probe_secure_device().await {
+                    Some((l4, _)) => {
+                        let _ = l4.disconnect().await;
+                        true
+                    }
+                    None => false,
+                }
+            } else {
+                self.probe_rebooted_device().await
+            };
+            if answered {
+                return;
+            }
+            sleep_rest_of_interval(probe_started, until).await;
+        }
+    }
+
     /// Waits out a confirmed master reset (factory reset or confirmed restart)
     /// and re-establishes the authorized connection.
     ///
     /// The device answered the `A_Restart_Response` and is rebooting, so the old
     /// connection is dropped without a `T_Disconnect` (the ETS capture sends none
-    /// after the factory reset either), then the session sleeps for `process_wait`
+    /// after the factory reset either). The session then waits `process_wait`
     /// (the device's own process time, already capped by
-    /// [`bussard_mgmt::restart_process_wait`]) and finishes with the bounded
+    /// [`bussard_mgmt::restart_process_wait`]; never shortened, issue #212),
+    /// stays quiet for [`CONFIRMED_RESTART_QUIET`] and finishes with the bounded
     /// liveness poll and reconnect of
     /// [`reconnect_after_reboot`](Session::reconnect_after_reboot).
+    ///
+    /// A process time longer than [`FACTORY_RESET_PROBE_FROM`] (the 8 s of a
+    /// factory reset) is probed from +3 s to measure when the device answers
+    /// again; the wait itself is unchanged. The time from the accepted restart
+    /// to the first answered probe is recorded as a [`RebootReadiness`]
+    /// ([`Session::reboot_readiness`]).
     ///
     /// A session built from an already-open connection cannot reconnect and fails
     /// with [`MgmtError::Transport`]`(Closed)` before sleeping.
     pub(super) async fn reconnect_after_master_reset(
         &mut self,
+        kind: RestartKind,
         process_wait: std::time::Duration,
     ) -> Result<(), WriteError> {
         if !self.can_reconnect() {
@@ -905,8 +1031,35 @@ impl<C: Connector> Session<C> {
             )));
         }
         self.l4 = None;
-        tokio::time::sleep(process_wait).await;
-        self.reconnect_after_reboot().await
+        let accepted = tokio::time::Instant::now();
+        self.pending_readiness = Some(PendingReadiness {
+            accepted,
+            first_answer: None,
+        });
+        let until = accepted + process_wait;
+        if process_wait > FACTORY_RESET_PROBE_FROM {
+            self.measure_readiness_until(accepted, until).await;
+        }
+        tokio::time::sleep_until(until).await;
+        let result = self
+            .reconnect_after_reboot_quiet(CONFIRMED_RESTART_QUIET)
+            .await;
+        if let Some(pending) = self.pending_readiness.take() {
+            self.readiness.push(RebootReadiness {
+                kind,
+                process_time: process_wait,
+                ready_after: pending
+                    .first_answer
+                    .map(|at| at.saturating_duration_since(pending.accepted)),
+            });
+        }
+        result
+    }
+
+    /// The readiness measured after each restart the device confirmed during
+    /// this session, in order (issue #212).
+    pub fn reboot_readiness(&self) -> &[RebootReadiness] {
+        &self.readiness
     }
 
     /// Proactively cycles the L4 connection **between** flash steps to stay under
@@ -959,6 +1112,64 @@ impl<C: Connector> Session<C> {
             None => Ok(()),
         }
     }
+}
+
+/// Sleeps until [`REBOOT_PROBE_INTERVAL`] after `probe_started`, but not past
+/// `deadline`: an unanswered probe that already used its window goes straight
+/// on to the next one.
+async fn sleep_rest_of_interval(
+    probe_started: tokio::time::Instant,
+    deadline: tokio::time::Instant,
+) {
+    let next = (probe_started + REBOOT_PROBE_INTERVAL).min(deadline);
+    tokio::time::sleep_until(next).await;
+}
+
+/// Which confirmed restart a [`RebootReadiness`] measured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestartKind {
+    /// The factory reset (`A_Restart` master reset, erase code 7) that opens a
+    /// sparse System B download.
+    FactoryReset,
+    /// The confirmed restart (`A_Restart` master reset, erase code 1) that ends
+    /// it.
+    Restart,
+}
+
+impl std::fmt::Display for RestartKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RestartKind::FactoryReset => write!(f, "factory reset"),
+            RestartKind::Restart => write!(f, "restart"),
+        }
+    }
+}
+
+/// How long a device took to answer management again after a restart it
+/// confirmed (issue #212): the time from its `A_Restart_Response` to the first
+/// answered readiness probe, next to the process time it reported.
+///
+/// `flash -v` prints these on its timing line so the post-restart waits can be
+/// tuned per product from evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RebootReadiness {
+    /// Which restart.
+    pub kind: RestartKind,
+    /// The process time the device reported (capped, see
+    /// [`bussard_mgmt::restart_process_wait`]).
+    pub process_time: std::time::Duration,
+    /// From the accepted restart to the first answered probe; `None` when no
+    /// probe answered (the reconnect then ran without one).
+    pub ready_after: Option<std::time::Duration>,
+}
+
+/// The readiness measurement of the restart being waited out.
+#[derive(Debug, Clone, Copy)]
+struct PendingReadiness {
+    /// When the device's `A_Restart_Response` arrived.
+    accepted: tokio::time::Instant,
+    /// When the first readiness probe was answered.
+    first_answer: Option<tokio::time::Instant>,
 }
 
 /// Drives a `StartLoading` on the application object, enriching a non-conformant

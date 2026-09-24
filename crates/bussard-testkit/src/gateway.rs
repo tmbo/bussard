@@ -627,6 +627,15 @@ impl Server {
                     }
                 }
                 Out::Pause(pause) => tokio::time::sleep(pause).await,
+                Out::Delayed(delay, frames) => {
+                    let tx = self.cmd_tx.clone();
+                    tokio::spawn(async move {
+                        tokio::time::sleep(delay).await;
+                        for frame in frames {
+                            let _ = tx.send(Command::Push(frame));
+                        }
+                    });
+                }
             }
         }
         Flow::Continue
@@ -889,11 +898,13 @@ impl Server {
     }
 }
 
-/// One item of a line's output: a frame to push, or a pause.
+/// One item of a line's output: a frame to push, a pause, or frames to push
+/// later without holding up the gateway.
 #[derive(Debug, Clone)]
 pub(crate) enum Out {
     Frame(CemiFrame),
     Pause(Duration),
+    Delayed(Duration, Vec<CemiFrame>),
 }
 
 /// The frames of a line's output, dropping pauses. For the secure gateway mock,
@@ -902,9 +913,11 @@ pub(crate) fn line_replies(line: &mut [MockDevice], cemi: &CemiFrame) -> Vec<Cem
     line_output(line, cemi)
         .into_iter()
         .filter_map(|out| match out {
-            Out::Frame(frame) => Some(frame),
+            Out::Frame(frame) => Some(vec![frame]),
+            Out::Delayed(_, frames) => Some(frames),
             Out::Pause(_) => None,
         })
+        .flatten()
         .collect()
 }
 
@@ -1006,6 +1019,23 @@ fn emit(
             Step::Frame(frame) => frame,
             Step::Pause(pause) => {
                 out.push(Out::Pause(pause));
+                continue;
+            }
+            Step::After(delay, steps) => {
+                let steps = steps
+                    .into_iter()
+                    .filter(|s| !matches!(s, Step::Pause(_) | Step::After(..)))
+                    .collect();
+                let mut later = Vec::new();
+                emit(dev, tool, client_seq, steps, &mut later);
+                let frames = later
+                    .into_iter()
+                    .filter_map(|o| match o {
+                        Out::Frame(frame) => Some(frame),
+                        Out::Pause(_) | Out::Delayed(..) => None,
+                    })
+                    .collect();
+                out.push(Out::Delayed(delay, frames));
                 continue;
             }
         };
