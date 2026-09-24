@@ -42,6 +42,10 @@ const GROUP_KEY: [u8; 16] = [
     0x10, 0x21, 0x32, 0x43, 0x54, 0x65, 0x76, 0x87, 0x98, 0xa9, 0xba, 0xcb, 0xdc, 0xed, 0xfe, 0x0f,
 ];
 const DEV_RX_FLOOR: u64 = 1000;
+/// The peer's sequence in the device's security individual address table.
+const PEER_SEQ: u64 = 1500;
+/// A sender the security individual address table does not list.
+const STRANGER: u16 = 0x1102; // 1.1.2
 
 /// The flashing tool plus the group peer around one activated device on a bus.
 struct Rig {
@@ -118,11 +122,20 @@ impl Rig {
         go.extend_from_slice(&(crw | 0x07).to_be_bytes());
         rig.load_table(3, 0x8000, &go)?;
 
-        // Security object: StartLoading, PID 53 row (index 2 = 1/2/3, group
-        // key), PID 61 flags (object 1 secured), LoadCompleted.
+        // Security object: StartLoading, PID 54 clear and one row (the peer
+        // 1.1.1, sequence 1500), PID 53 row (index 2 = 1/2/3, group key), PID 61
+        // flags (object 1 secured), LoadCompleted.
         rig.secobj(
             "01d4 0011 001005 01000000000000000000",
             "01d6 0011 001005 00 02",
+        )?;
+        rig.secobj(
+            "01ce 0011 001036 01 0000 0000",
+            "01cf 0011 001036 01 0000 00",
+        )?;
+        rig.secobj(
+            &format!("01ce 0011 001036 01 0001 {PEER:04x} {PEER_SEQ:012x}"),
+            "01cf 0011 001036 01 0001 00",
         )?;
         rig.secobj(
             &format!("01ce 0011 001035 01 0001 0002 {}", to_hex(&GROUP_KEY)),
@@ -223,9 +236,25 @@ impl Rig {
         seq: u64,
         inner: &[u8],
     ) -> Vec<CemiLData> {
+        self.secure_group_from(PEER, key, alg, seq, inner)
+    }
+
+    /// A secured group telegram from `src` with `key` at `seq`.
+    fn secure_group_from(
+        &mut self,
+        src: u16,
+        key: &Key16,
+        alg: SecAlgorithm,
+        seq: u64,
+        inner: &[u8],
+    ) -> Vec<CemiLData> {
         let mut tpdu = vec![0x03, 0xF1];
-        tpdu.extend_from_slice(&seal_group(key, alg, seq, PEER, GA_SECURE, inner));
-        self.group(GA_SECURE, tpdu)
+        tpdu.extend_from_slice(&seal_group(key, alg, seq, src, GA_SECURE, inner));
+        self.bus
+            .deliver_from_tool(&cemi(src, GA_SECURE, true, tpdu))
+            .into_iter()
+            .filter(|r| r.source == IndividualAddress(DEV))
+            .collect()
     }
 
     fn object_value(&self, object: u16) -> Option<Vec<u8>> {
@@ -421,5 +450,42 @@ fn test_secure_group_stimulus_sends_secured_write() -> TestResult {
     };
     assert_eq!(open_reply(write)?.inner_tpdu, vec![0x00, 0x85]);
     assert_eq!(rig.object_value(1), Some(vec![0x05]));
+    Ok(())
+}
+
+/// The security individual address table (PID 54) gates secured group
+/// telegrams (issue #181): an unlisted sender is dropped even with the right
+/// group key, and a listed sender's sequence must exceed its table entry.
+#[test]
+fn test_secure_group_unlisted_sender_and_table_sequence_refused() -> TestResult {
+    let mut rig = Rig::programmed()?;
+    let key = Key16::new(GROUP_KEY);
+    let replies = rig.secure_group_from(STRANGER, &key, SecAlgorithm::AuthEnc, 5000, &[0x00, 0x81]);
+    assert!(replies.is_empty());
+    assert_eq!(
+        rig.object_value(1),
+        Some(vec![]),
+        "a dropped write changes nothing"
+    );
+    assert!(
+        rig.has_line(
+            "REJECTED SECURE group recv 1.1.2 -> 1/2/3: sender not in the security individual \
+             address table (PID 54)"
+        ),
+        "{:#?}",
+        rig.secure_lines()
+    );
+    // Above the receive floor (1000) but not above the peer's entry (1500).
+    assert!(
+        rig.secure_group(&key, SecAlgorithm::AuthEnc, 1200, &[0x00, 0x81])
+            .is_empty()
+    );
+    assert!(rig.has_line(
+        "REJECTED SECURE group recv 1.1.1 -> 1/2/3: sequence 1200 not above the PID 54 entry 1500"
+    ));
+    assert_eq!(rig.object_value(1), Some(vec![]));
+    // Above it: accepted.
+    rig.secure_group(&key, SecAlgorithm::AuthEnc, 1501, &[0x00, 0x81]);
+    assert_eq!(rig.object_value(1), Some(vec![0x01]));
     Ok(())
 }

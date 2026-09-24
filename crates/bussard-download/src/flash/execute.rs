@@ -418,6 +418,10 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                     FlashStep::SecurityClearAddressTable => {
                         crate::security::clear_security_address_table(session.l4()).await?;
                     }
+                    FlashStep::SecuritySenders { entries } => {
+                        crate::security::write_security_address_table(session.l4(), entries)
+                            .await?;
+                    }
                     FlashStep::SecurityGroupKeys { entries } => {
                         crate::security::write_group_key_table(session.l4(), entries).await?;
                     }

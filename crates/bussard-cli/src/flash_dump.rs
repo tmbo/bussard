@@ -148,6 +148,12 @@ fn security_property_records(step: &FlashStep) -> Vec<serde_json::Value> {
             "pid": PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE, "start_element": 0, "length": 2,
             "data": "0000",
         })],
+        FlashStep::SecuritySenders { entries } => chunked(
+            PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE,
+            bussard_download::SecureSenderEntry::LEN,
+            &bussard_download::sender_table_bytes(entries),
+            false,
+        ),
         FlashStep::SecurityGroupKeys { entries } => {
             let table: Vec<u8> = entries.iter().flat_map(|e| e.encode()).collect();
             chunked(PID_GRP_KEY_TABLE, 18, &table, true)
@@ -279,6 +285,7 @@ pub fn write_dump(
             }
             FlashStep::SecurityLoadControl { .. }
             | FlashStep::SecurityClearAddressTable
+            | FlashStep::SecuritySenders { .. }
             | FlashStep::SecurityGroupKeys { .. }
             | FlashStep::SecurityGoFlags { .. } => {
                 record["properties"] = json!(security_property_records(step));

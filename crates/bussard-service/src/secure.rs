@@ -140,6 +140,10 @@ pub struct SecureMaterial {
     /// The keyring's group keys; `None` with a raw tool key (which carries
     /// none) or on the plain path.
     pub group_keys: Option<HashMap<GroupAddress, Key16>>,
+    /// The keyring's per-device `SequenceNumber` (issue #181: the sequence a
+    /// secured sender's security individual address table entry starts from);
+    /// empty with a raw tool key or on the plain path.
+    pub device_sequences: HashMap<IndividualAddress, u64>,
 }
 
 /// Like [`resolve`], but also returns the keyring's group keys. The keyring is
@@ -160,11 +164,13 @@ pub fn resolve_material(
             Ok(SecureMaterial {
                 tool_key: Some(tool_key),
                 group_keys: Some(keyring.group_keys.clone()),
+                device_sequences: keyring.devices.iter().map(|d| (d.ia, d.seq)).collect(),
             })
         }
         (None, Some(hex)) => Ok(SecureMaterial {
             tool_key: Some(parse_hex_key(hex)?),
             group_keys: None,
+            device_sequences: HashMap::new(),
         }),
         (None, None) => Ok(SecureMaterial::default()),
     }

@@ -140,6 +140,13 @@ entry supersedes it and is not a diff against it.
   `secured`; `read` and `write --keyring` (and MCP, viz) send a secured GA as
   `A_SecureData` and refuse one without a key; a keyless `flash` of an
   activated device names the missing key (#172).
+- A secured `flash` or `apply` writes the security individual address table
+  (PID 54) like ETS: one `[IA][sequence]` entry per device that sends on a
+  secured group address the device listens to, with the sender's keyring
+  sequence number. `--secure-sender <IA>` (off by default) adds bussard's own
+  tunnel address, so the device accepts `write --keyring`; without it the
+  device drops bussard's secured group telegrams. knx-sim enforces the table
+  (#181).
 
 **Live progress display**
 

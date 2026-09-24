@@ -339,6 +339,13 @@ pub enum FlashStep {
     /// Empty the security individual address table (PID 54, element 0 =
     /// `00 00`), as ETS does in every secured download.
     SecurityClearAddressTable,
+    /// Write the security individual address table entries (PID 54) from
+    /// element 1: one 8-octet `[IA][sequence]` element per secured sender the
+    /// device receives from (issue #181), chunked to the APDU budget.
+    SecuritySenders {
+        /// The entries, ascending individual address.
+        entries: Vec<crate::security::SecureSenderEntry>,
+    },
     /// Write the group key table (PID 53): one 18-octet element per keyed group
     /// address. Key bytes are held in redacting [`Key16`](bussard_secure::Key16)s.
     SecurityGroupKeys {
@@ -791,7 +798,8 @@ impl FlashPlan {
     ///
     /// - `SecurityLoadControl(Unload)` right after the opening `Unload` run,
     ///   before the first `StartLoading`;
-    /// - `SecurityLoadControl(StartLoading)`, the IA-table clear, the group key
+    /// - `SecurityLoadControl(StartLoading)`, the IA-table clear, the IA-table
+    ///   entries (when the device has secured senders), the group key
     ///   table (when there are keys), the group-object flags and
     ///   `SecurityLoadControl(LoadCompleted)` after the last memory write, before
     ///   the property writes (`PID_PROGRAM_VERSION`) that precede the first
@@ -818,6 +826,11 @@ impl FlashPlan {
             },
             FlashStep::SecurityClearAddressTable,
         ];
+        if !program.senders.is_empty() {
+            block.push(FlashStep::SecuritySenders {
+                entries: program.senders,
+            });
+        }
         if !program.group_keys.is_empty() {
             block.push(FlashStep::SecurityGroupKeys {
                 entries: program.group_keys,
@@ -1173,6 +1186,7 @@ mod tests {
         )?;
         let before = plan.steps.len();
         let program = crate::security::SecurityProgram {
+            senders: Vec::new(),
             group_keys: vec![crate::security::GroupKeyEntry {
                 address_index: 1,
                 group_address: "1/0/1".parse()?,
@@ -1243,6 +1257,58 @@ mod tests {
             labels
                 .iter()
                 .any(|l| l.contains("PID 53") && l.contains("keys not shown"))
+        );
+        Ok(())
+    }
+
+    /// The PID 54 entries follow the clear and precede the group key table
+    /// (issue #181, the ETS order in the S3 captures), and the label names the
+    /// senders.
+    #[test]
+    fn test_add_security_program_writes_senders_after_the_clear()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::FlashStep;
+        let app = fabricated_app();
+        let mut plan = plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?;
+        let program = crate::security::SecurityProgram {
+            senders: vec![crate::security::SecureSenderEntry {
+                address: "1.1.16".parse()?,
+                sequence: 0,
+            }],
+            group_keys: vec![crate::security::GroupKeyEntry {
+                address_index: 1,
+                group_address: "1/0/1".parse()?,
+                key: bussard_secure::Key16::new([7; 16]),
+            }],
+            go_flags: vec![3],
+        };
+        plan.add_security_program(program);
+        let clear = plan
+            .steps
+            .iter()
+            .position(|s| matches!(s, FlashStep::SecurityClearAddressTable))
+            .ok_or("no clear")?;
+        assert!(matches!(
+            plan.steps[clear + 1],
+            FlashStep::SecuritySenders { .. }
+        ));
+        assert!(matches!(
+            plan.steps[clear + 2],
+            FlashStep::SecurityGroupKeys { .. }
+        ));
+        let labels: Vec<String> = super::trace(&plan);
+        assert!(
+            labels
+                .iter()
+                .any(|l| l.contains("PID 54, 1 secured sender(s): 1.1.16 seq 0"))
         );
         Ok(())
     }

@@ -361,6 +361,23 @@ impl SecurityObject {
         self.ia_table.count()
     }
 
+    /// The sequence number of the security individual address table row for
+    /// sender `ia` (raw individual address), or `None` when the table does not
+    /// list it (issue #181: a device drops secured group telegrams from
+    /// senders it does not list).
+    pub fn ia_table_sequence(&self, ia: u16) -> Option<u64> {
+        self.ia_table
+            .bytes
+            .chunks_exact(IA_ROW)
+            .take(self.ia_table.count())
+            .find(|row| u16::from_be_bytes([row[0], row[1]]) == ia)
+            .map(|row| {
+                let mut buf = [0u8; 8];
+                buf[2..].copy_from_slice(&row[2..]);
+                u64::from_be_bytes(buf)
+            })
+    }
+
     /// Number of group-object security flags written.
     pub fn go_flag_count(&self) -> usize {
         self.go_flags.count()

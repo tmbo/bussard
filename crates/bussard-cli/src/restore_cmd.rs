@@ -85,6 +85,7 @@ pub fn run(
         yes,
         allow_remote_gateway,
         tool_key_source,
+        None,
         &DesiredSource::Backup(path),
         &overrides,
         model.as_ref(),

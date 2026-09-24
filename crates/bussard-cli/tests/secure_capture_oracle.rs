@@ -11,6 +11,11 @@
 //! cargo test -p bussard-cli --test secure_capture_oracle -- --ignored --nocapture
 //! ```
 //!
+//! `test_security_object_program_matches_ets` also compares the security
+//! individual address table (PID 54) entries when `BUSSARD_SECURE_MODEL` names
+//! the model directory imported from the same project (issue #181): the
+//! secured senders are derived from its links.
+//!
 //! It extracts every `A_SecureData` frame to or from the device (KNXnet/IP
 //! tunnelling over UDP or TCP), verifies each one with bussard-secure's own
 //! codec and the device's keyring tool key, and prints one line per frame:
@@ -400,6 +405,11 @@ fn test_every_ets_capture_frame_verifies() -> TestResult {
 /// with ETS's `PID_GRP_KEY_TABLE` (53), `PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE`
 /// (54) and `PID_GO_SECURITY_FLAGS` (61) writes and with the order of the
 /// security-object operations. Only lengths, counts and verdicts are printed.
+///
+/// With `BUSSARD_SECURE_MODEL` (the model directory imported from the project
+/// of the capture) the PID 54 entries after the clear are derived with
+/// `secured_senders` from the model and the keyring's sequence numbers and
+/// compared byte for byte (issue #181); without it only the clear is checked.
 #[test]
 #[ignore = "needs BUSSARD_SECURE_PCAP, BUSSARD_SECURE_KEYRING, BUSSARD_KEYRING_PASSWORD and BUSSARD_SECURE_DEVICE"]
 fn test_security_object_program_matches_ets() -> TestResult {
@@ -484,12 +494,77 @@ fn test_security_object_program_matches_ets() -> TestResult {
         .ok_or("no security-object Unload in the capture")?;
     let sec_ops = &sec_ops[unload..];
 
+    // PID 54 (issue #181): the clear, then the secured senders' entries. The
+    // IA table is not key material: its bytes are printed.
+    let ets_54: Vec<(u16, Vec<u8>)> = sec_ops
+        .iter()
+        .filter(|(p, _, _)| *p == PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE)
+        .map(|(_, s, d)| (*s, d.clone()))
+        .collect();
+    println!("PID 54: ETS writes {ets_54:?}");
+    assert_eq!(
+        ets_54.first(),
+        Some(&(0u16, vec![0u8, 0u8])),
+        "ETS does not clear the IA table first"
+    );
+    if let Ok(dir) = std::env::var("BUSSARD_SECURE_MODEL") {
+        let model = bussard_model::Model::load(std::path::Path::new(&dir))?;
+        // A keyring exported after the capture knows sequences ETS did not
+        // know yet at capture time (a sender downloaded later): list those
+        // senders in BUSSARD_SECURE_UNKNOWN_SENDERS (comma-separated) to
+        // treat their sequence as absent, as ETS did.
+        let unknown: Vec<IndividualAddress> = std::env::var("BUSSARD_SECURE_UNKNOWN_SENDERS")
+            .unwrap_or_default()
+            .split(',')
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.trim().parse())
+            .collect::<Result<_, _>>()?;
+        let sequences: HashMap<IndividualAddress, u64> = keys
+            .devices
+            .iter()
+            .filter(|d| !unknown.contains(&d.ia))
+            .map(|d| (d.ia, d.seq))
+            .collect();
+        let senders = bussard_download::secured_senders(
+            Some(&model),
+            device,
+            &keys.group_keys,
+            &sequences,
+            &[],
+        );
+        println!(
+            "PID 54: bussard entries {:?}",
+            senders
+                .iter()
+                .map(|e| format!("{} seq {}", e.address, e.sequence))
+                .collect::<Vec<_>>()
+        );
+        let ets_entries: Vec<u8> = ets_54.iter().skip(1).flat_map(|(_, d)| d.clone()).collect();
+        assert_eq!(
+            ets_entries,
+            bussard_download::sender_table_bytes(&senders),
+            "security individual address table entries differ from ETS"
+        );
+        if let Some((start, _)) = ets_54.get(1) {
+            assert_eq!(*start, 1, "ETS writes the entries from element 1");
+        }
+    }
+
     let word = |b: &[u8], i: usize| -> Option<u16> {
         Some(u16::from_be_bytes([*b.get(i)?, *b.get(i + 1)?]))
     };
-    let addr_img = images.get(&1).ok_or("no address table image")?;
-    let assoc_img = images.get(&2).ok_or("no association table image")?;
-    let go_img = images.get(&3).ok_or("no group-object table image")?;
+    let (Some(addr_img), Some(assoc_img), Some(go_img)) =
+        (images.get(&1), images.get(&2), images.get(&3))
+    else {
+        // A download that rewrites only part of the tables (the S3 re-downloads
+        // of 1.1.12, 1.1.47, 1.1.48) carries no complete set of images to
+        // rebuild the key table and flags from; PID 54 above is still checked.
+        println!(
+            "table images in the capture: {:?}; PID 53/61 not compared",
+            images.keys().collect::<Vec<_>>()
+        );
+        return Ok(());
+    };
     let n_addr = usize::from(word(addr_img, 0).ok_or("addr count")?);
     let addresses: Vec<bussard_model::GroupAddress> = (0..n_addr)
         .filter_map(|i| word(addr_img, 2 + 2 * i))
@@ -529,11 +604,6 @@ fn test_security_object_program_matches_ets() -> TestResult {
             .collect()
     };
     let ets_53 = ets_concat(PID_GRP_KEY_TABLE);
-    let ets_54: Vec<(u16, Vec<u8>)> = sec_ops
-        .iter()
-        .filter(|(p, _, _)| *p == PID_SECURITY_INDIVIDUAL_ADDRESS_TABLE)
-        .map(|(_, s, d)| (*s, d.clone()))
-        .collect();
     let ets_61 = ets_concat(PID_GO_SECURITY_FLAGS);
     let ours_53 = program.group_key_table_bytes();
     println!(
@@ -549,7 +619,7 @@ fn test_security_object_program_matches_ets() -> TestResult {
         ets_61 == program.go_flags,
         program.secured_objects()
     );
-    println!("PID 54: ETS writes {:?}", ets_54);
+
     let order: Vec<String> = sec_ops
         .iter()
         .map(|(p, _, d)| match *p {
@@ -568,7 +638,6 @@ fn test_security_object_program_matches_ets() -> TestResult {
         ets_61, program.go_flags,
         "GO security flags differ from ETS"
     );
-    assert_eq!(ets_54, vec![(0u16, vec![0u8, 0u8])]);
     assert_eq!(
         dedup,
         vec!["PID5:04", "PID5:01", "PID54", "PID53", "PID61", "PID5:02"],

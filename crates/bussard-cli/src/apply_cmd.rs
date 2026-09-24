@@ -96,6 +96,7 @@ pub fn run(
     yes: bool,
     allow_remote_gateway: bool,
     tool_key_source: crate::secure_key::ToolKeySource<'_>,
+    secure_sender: Option<IndividualAddress>,
     overrides: ConnOverrides,
 ) -> anyhow::Result<ExitCode> {
     let target: IndividualAddress = address
@@ -125,6 +126,7 @@ pub fn run(
         yes,
         allow_remote_gateway,
         tool_key_source,
+        secure_sender,
         &DesiredSource::Model,
         &overrides,
         Some(&model),
@@ -161,6 +163,7 @@ pub(crate) fn apply_desired(
     yes: bool,
     allow_remote_gateway: bool,
     tool_key_source: crate::secure_key::ToolKeySource<'_>,
+    secure_sender: Option<IndividualAddress>,
     origin: &DesiredSource,
     overrides: &ConnOverrides,
     model: Option<&bussard_model::Model>,
@@ -179,7 +182,17 @@ pub(crate) fn apply_desired(
     let security = tool_key.as_ref().map(|_| {
         let empty = std::collections::HashMap::new();
         let keys = material.group_keys.as_ref().unwrap_or(&empty);
-        bussard_download::security_inputs_for(model, target, &desired, keys)
+        let mut inputs = bussard_download::security_inputs_for(model, target, &desired, keys);
+        // The security individual address table (issue #181): the secured
+        // senders this device receives from, plus `--secure-sender`.
+        inputs.senders = bussard_download::secured_senders(
+            model,
+            target,
+            keys,
+            &material.device_sequences,
+            secure_sender.as_slice(),
+        );
+        inputs
     });
 
     // Safety envelope (issue #74): refuse a write to a real (non-loopback)
@@ -306,9 +319,19 @@ pub(crate) fn apply_desired(
             .iter()
             .map(ToString::to_string)
             .collect();
+        let senders: Vec<String> = inputs
+            .senders
+            .iter()
+            .map(|e| format!("{} seq {}", e.address, e.sequence))
+            .collect();
         println!(
-            "Data Secure: the security object is reprogrammed too (unload, group key table: {}, \
-             group-object flags: {}, complete)",
+            "Data Secure: the security object is reprogrammed too (unload, security individual \
+             address table: {}, group key table: {}, group-object flags: {}, complete)",
+            if senders.is_empty() {
+                "no secured senders".to_string()
+            } else {
+                format!("{} secured sender(s) {}", senders.len(), senders.join(", "))
+            },
             if keyed.is_empty() {
                 "no keys".to_string()
             } else {

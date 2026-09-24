@@ -162,6 +162,7 @@ pub fn run(
             allow_remote_gateway,
             bcu_key,
             tool_key_source,
+            None,
             overrides.clone(),
             crate::flash_cmd::FlashOutput::default(),
         )?;
@@ -185,6 +186,7 @@ pub fn run(
         true,
         allow_remote_gateway,
         tool_key_source,
+        None,
         overrides,
     )?;
     if code != ExitCode::SUCCESS {
