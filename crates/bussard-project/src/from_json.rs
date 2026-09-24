@@ -215,6 +215,8 @@ pub fn model_from_json(json: &str) -> Result<Model> {
             com_objects: BTreeMap::new(),
             // The JSON (xknxproject) dump carries no KNX Secure state.
             security: None,
+            application_override: None,
+            lock: Default::default(),
         };
         let file_stem = format!("{address}-{}", crate::build::slugify(&device.name));
         devices.insert(address, LoadedDevice { device, file_stem });
@@ -270,6 +272,9 @@ pub fn model_from_json(json: &str) -> Result<Model> {
                     reference: None,
                     channel: co.channel.clone().filter(|s| !s.is_empty()),
                     secure: false,
+                    function: None,
+                    key: None,
+                    text: None,
                 },
             );
         }

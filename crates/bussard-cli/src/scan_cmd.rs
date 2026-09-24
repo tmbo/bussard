@@ -596,6 +596,8 @@ mod tests {
                         module_bases: Default::default(),
                         com_objects: BTreeMap::new(),
                         security: None,
+                        application_override: None,
+                        lock: Default::default(),
                     },
                     file_stem: a.to_string(),
                 },

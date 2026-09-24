@@ -321,6 +321,9 @@ pub fn build_model(project: RawProject, container: &mut Container) -> Result<Mod
                             gas.iter().any(|ga| secure_gas.contains(ga))
                         }
                     },
+                    function: None,
+                    key: None,
+                    text: None,
                 },
             );
             // Channel labels (issue #11): the com-object keeps its raw channel
@@ -334,9 +337,12 @@ pub fn build_model(project: RawProject, container: &mut Container) -> Result<Mod
             if let Some(ch) = &r.channel {
                 let label = resolve_channel_label(ch, &apps, &raw_dev.module_instances);
                 if let Some(label) = label.filter(|l| l != ch) {
-                    channels
-                        .entry(ch.clone())
-                        .or_insert_with(|| Channel { name: label });
+                    channels.entry(ch.clone()).or_insert_with(|| Channel {
+                        name: label,
+                        key: None,
+                        number: None,
+                        text: None,
+                    });
                 }
             }
 
@@ -437,6 +443,8 @@ pub fn build_model(project: RawProject, container: &mut Container) -> Result<Mod
             module_bases,
             com_objects,
             security,
+            application_override: None,
+            lock: Default::default(),
         };
 
         let file_stem = format!("{}-{}", raw_dev.address, slugify(&device.name));

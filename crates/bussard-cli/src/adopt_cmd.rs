@@ -468,6 +468,9 @@ fn build_device(
                             reference: Some(shape.ref_id.clone()),
                             channel: None,
                             secure: false,
+                            function: None,
+                            key: None,
+                            text: None,
                         },
                     )
                 })
@@ -489,6 +492,8 @@ fn build_device(
         // KNX Secure state is populated only by the knxproj importer (issue #71);
         // an adopted-from-bus device carries none.
         security: None,
+        application_override: None,
+        lock: Default::default(),
     }
 }
 
@@ -809,6 +814,8 @@ mod tests {
                         module_bases: Default::default(),
                         com_objects: Default::default(),
                         security: None,
+                        application_override: None,
+                        lock: Default::default(),
                     },
                     file_stem: format!("{addr}-d"),
                 },

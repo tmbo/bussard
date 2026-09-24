@@ -892,6 +892,9 @@ mod tests {
             "A".to_string(),
             Channel {
                 name: "Ceiling light".to_string(),
+                key: None,
+                number: None,
+                text: None,
             },
         );
         let mut com_objects = BTreeMap::new();
@@ -904,6 +907,9 @@ mod tests {
                 reference: None,
                 channel: Some("A".to_string()),
                 secure: false,
+                function: None,
+                key: None,
+                text: None,
             },
         );
         let device = Device {
@@ -921,6 +927,8 @@ mod tests {
             com_objects,
             security: None,
             replaced: None,
+            application_override: None,
+            lock: Default::default(),
         };
         let mut devices = BTreeMap::new();
         devices.insert(
@@ -1009,6 +1017,9 @@ mod tests {
             "A".to_string(),
             Channel {
                 name: "Kitchen ceiling light".to_string(),
+                key: None,
+                number: None,
+                text: None,
             },
         );
         let name = propose_name(&m, "1.1.30".parse()?, 3).ok_or("a name should be proposed")?;

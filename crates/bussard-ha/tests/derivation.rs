@@ -56,6 +56,8 @@ impl ModelBuilder {
                 module_bases: Default::default(),
                 com_objects: BTreeMap::new(),
                 security: None,
+                application_override: None,
+                lock: Default::default(),
             },
             links: Vec::new(),
         }
@@ -93,6 +95,9 @@ impl ModelBuilder {
                 reference: None,
                 channel: channel.map(str::to_string),
                 secure: false,
+                function: None,
+                key: None,
+                text: None,
             },
         );
         self.links.push(Link {
@@ -399,11 +404,16 @@ fn no_duplicate_entity_for_shared_command_ga() {
                     reference: None,
                     channel: None,
                     secure: false,
+                    function: None,
+                    key: None,
+                    text: None,
                 },
             );
             m
         },
         security: None,
+        application_override: None,
+        lock: Default::default(),
     };
     model.devices.insert(
         ia("1.1.10"),
@@ -545,11 +555,16 @@ fn cover_requires_command_ga_not_a_button_sender() {
                         reference: None,
                         channel: None,
                         secure: false,
+                        function: None,
+                        key: None,
+                        text: None,
                     },
                 );
                 m
             },
             security: None,
+            application_override: None,
+            lock: Default::default(),
         };
         model.devices.insert(
             ia("1.1.10"),

@@ -675,6 +675,9 @@ fn synthesize_model(found: &[LineDevice], overrides: &ConnOverrides, dir: &Path)
                         reference: None,
                         channel: None,
                         secure: false,
+                        function: None,
+                        key: None,
+                        text: None,
                     },
                 );
                 device_links.push(Link {
@@ -702,6 +705,8 @@ fn synthesize_model(found: &[LineDevice], overrides: &ConnOverrides, dir: &Path)
             com_objects,
             // KNX Secure state comes only from the knxproj importer (issue #71).
             security: None,
+            application_override: None,
+            lock: Default::default(),
         };
         devices.insert(
             dev.address,

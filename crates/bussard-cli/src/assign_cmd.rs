@@ -805,6 +805,8 @@ pub(crate) fn build_stub_device(address: IndividualAddress, v: &Verified) -> Dev
         com_objects: Default::default(),
         // KNX Secure state comes only from the knxproj importer (issue #71).
         security: None,
+        application_override: None,
+        lock: Default::default(),
     }
 }
 
@@ -922,6 +924,8 @@ mod tests {
                         module_bases: Default::default(),
                         com_objects: Default::default(),
                         security: None,
+                        application_override: None,
+                        lock: Default::default(),
                     },
                     file_stem: format!("{addr}-d"),
                 },

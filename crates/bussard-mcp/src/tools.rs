@@ -443,6 +443,9 @@ pub(crate) mod test_fixtures {
             "A".to_string(),
             Channel {
                 name: "Raffstore Süd".to_string(),
+                key: None,
+                number: None,
+                text: None,
             },
         );
 
@@ -465,6 +468,8 @@ pub(crate) mod test_fixtures {
                     module_bases: Default::default(),
                     com_objects: BTreeMap::new(),
                     security: None,
+                    application_override: None,
+                    lock: Default::default(),
                 },
                 file_stem: "1.1.4-jalousieaktor".to_string(),
             },
@@ -487,6 +492,8 @@ pub(crate) mod test_fixtures {
                     module_bases: Default::default(),
                     com_objects: BTreeMap::new(),
                     security: None,
+                    application_override: None,
+                    lock: Default::default(),
                 },
                 file_stem: "1.1.30-wetterstation".to_string(),
             },

@@ -763,6 +763,8 @@ mod tests {
                     ..Default::default()
                 }),
                 replaced: None,
+                application_override: None,
+                lock: Default::default(),
             };
             devices.insert(
                 device.address,

@@ -597,6 +597,8 @@ mod tests {
                         module_bases: Default::default(),
                         com_objects: Default::default(),
                         security: None,
+                        application_override: None,
+                        lock: Default::default(),
                     },
                     file_stem: s.to_string(),
                 },

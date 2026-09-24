@@ -364,6 +364,8 @@ mod tests {
                     module_bases: Default::default(),
                     com_objects: BTreeMap::new(),
                     security: None,
+                    application_override: None,
+                    lock: Default::default(),
                 },
                 file_stem: "1.1.30-meteodata".to_string(),
             },

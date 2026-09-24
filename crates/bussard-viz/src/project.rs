@@ -391,6 +391,9 @@ mod tests {
             "CH-1".to_string(),
             Channel {
                 name: "Channel 1".to_string(),
+                key: None,
+                number: None,
+                text: None,
             },
         );
         let mut com_objects = BTreeMap::new();
@@ -403,6 +406,9 @@ mod tests {
                 reference: None,
                 channel: Some("CH-1".to_string()),
                 secure: false,
+                function: None,
+                key: None,
+                text: None,
             },
         );
         let sender = Device {
@@ -427,6 +433,8 @@ mod tests {
             module_bases: BTreeMap::new(),
             com_objects,
             security: None,
+            application_override: None,
+            lock: Default::default(),
         };
 
         // Device 1.1.4: listener, no product/location.
@@ -442,6 +450,8 @@ mod tests {
             module_bases: BTreeMap::new(),
             com_objects: BTreeMap::new(),
             security: None,
+            application_override: None,
+            lock: Default::default(),
         };
 
         let mut devices = BTreeMap::new();

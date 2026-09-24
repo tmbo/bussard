@@ -28,8 +28,8 @@ pub fn run(
 ) -> anyhow::Result<ExitCode> {
     let text = std::fs::read_to_string(plan_path)
         .with_context(|| format!("reading the plan {}", plan_path.display()))?;
-    let plan = Plan::from_yaml(&text)
-        .with_context(|| format!("parsing the plan {}", plan_path.display()))?;
+    let plan =
+        Plan::parse(&text).with_context(|| format!("parsing the plan {}", plan_path.display()))?;
 
     let config_path = dir.join("bussard.yaml");
     let scheme = match scheme {

@@ -65,6 +65,9 @@ fn colliding_switch_model(n: u16) -> Model {
                 reference: None,
                 channel: None,
                 secure: false,
+                function: None,
+                key: None,
+                text: None,
             },
         );
         devices.insert(
@@ -82,6 +85,8 @@ fn colliding_switch_model(n: u16) -> Model {
                     module_bases: Default::default(),
                     com_objects,
                     security: None,
+                    application_override: None,
+                    lock: Default::default(),
                 },
                 file_stem: format!("dev{i}"),
             },
@@ -184,6 +189,9 @@ fn one_switch_model() -> Model {
             reference: None,
             channel: None,
             secure: false,
+            function: None,
+            key: None,
+            text: None,
         },
     );
     let mut devices = BTreeMap::new();
@@ -202,6 +210,8 @@ fn one_switch_model() -> Model {
                 module_bases: Default::default(),
                 com_objects,
                 security: None,
+                application_override: None,
+                lock: Default::default(),
             },
             file_stem: "1.1.4-aktor".to_string(),
         },

@@ -769,7 +769,10 @@ mod tests {
             report.renamed,
             vec![("1.1.4-old.toml".to_string(), "1.1.4.toml".to_string())]
         );
-        assert_eq!(list_device_files(&dir.join(DEVICES_DIR)), vec!["1.1.4.toml"]);
+        assert_eq!(
+            list_device_files(&dir.join(DEVICES_DIR)),
+            vec!["1.1.4.toml"]
+        );
         model.devices.clear();
         let report = model.save_pruning(&dir)?;
         assert_eq!(report.pruned, vec!["1.1.4.toml"]);

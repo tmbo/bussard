@@ -39,6 +39,9 @@ fn model() -> Result<Model, Box<dyn std::error::Error>> {
         "A".to_string(),
         Channel {
             name: "Ceiling light".to_string(),
+            key: None,
+            number: None,
+            text: None,
         },
     );
     let mut com_objects = BTreeMap::new();
@@ -51,6 +54,9 @@ fn model() -> Result<Model, Box<dyn std::error::Error>> {
             reference: None,
             channel: Some("A".to_string()),
             secure: false,
+            function: None,
+            key: None,
+            text: None,
         },
     );
     let device = Device {
@@ -68,6 +74,8 @@ fn model() -> Result<Model, Box<dyn std::error::Error>> {
         com_objects,
         security: None,
         replaced: None,
+        application_override: None,
+        lock: Default::default(),
     };
     let mut devices = BTreeMap::new();
     devices.insert(
