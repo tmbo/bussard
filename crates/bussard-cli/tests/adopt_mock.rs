@@ -39,12 +39,28 @@ const HARDWARE_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/23">
 </KNX>"#;
 
 // Two com-objects: one transmit-capable (a button, #0) and one write-only
-// (#1). `adopt` should list the transmit-capable one first.
+// (#1). `adopt` should list the transmit-capable one first. The Dynamic
+// section puts both and an enum parameter in one channel, which `adopt` turns
+// into the lock's channel handle and keys.
 const APP_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <KNX xmlns="http://knx.org/xml/project/23">
  <ManufacturerData><Manufacturer RefId="M-0083"><ApplicationPrograms>
   <ApplicationProgram Id="M-0083_A-1234-11-ABCD-O000A" ApplicationNumber="1" ApplicationVersion="17" MaskVersion="MV-07B0" Name="Taster BE 04001" LoadProcedureStyle="MergedProcedure">
    <Static>
+    <ParameterTypes>
+     <ParameterType Id="M-0083_A-1234-11-ABCD-O000A_PT-Mode" Name="Mode">
+      <TypeRestriction Base="Value" SizeInBit="8">
+       <Enumeration Text="Schalten" Value="0" Id="M-0083_A-1234-11-ABCD-O000A_PT-Mode_EN-0" />
+       <Enumeration Text="Dimmen" Value="1" Id="M-0083_A-1234-11-ABCD-O000A_PT-Mode_EN-1" />
+      </TypeRestriction>
+     </ParameterType>
+    </ParameterTypes>
+    <Parameters>
+     <Parameter Id="M-0083_A-1234-11-ABCD-O000A_P-1" Name="Mode1" Text="Funktion" ParameterType="M-0083_A-1234-11-ABCD-O000A_PT-Mode" Value="0" />
+    </Parameters>
+    <ParameterRefs>
+     <ParameterRef Id="M-0083_A-1234-11-ABCD-O000A_P-1_R-1" RefId="M-0083_A-1234-11-ABCD-O000A_P-1" />
+    </ParameterRefs>
     <ComObjectTable>
      <ComObject Id="M-0083_A-1234-11-ABCD-O000A_O-0" Number="0" Text="Taste 1" ObjectSize="1 Bit" CommunicationFlag="Enabled" TransmitFlag="Enabled" ReadFlag="Disabled" WriteFlag="Disabled" />
      <ComObject Id="M-0083_A-1234-11-ABCD-O000A_O-1" Number="1" Text="LED 1" ObjectSize="1 Bit" CommunicationFlag="Enabled" WriteFlag="Enabled" />
@@ -54,6 +70,15 @@ const APP_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
      <ComObjectRef Id="M-0083_A-1234-11-ABCD-O000A_O-1_R-1" RefId="M-0083_A-1234-11-ABCD-O000A_O-1" DatapointType="DPST-1-1" />
     </ComObjectRefs>
    </Static>
+   <Dynamic>
+    <Channel Id="M-0083_A-1234-11-ABCD-O000A_CH-1" Name="Taste" Number="1" Text="Taste 1">
+     <ParameterBlock Id="M-0083_A-1234-11-ABCD-O000A_PB-1" Name="General" Text="Allgemein">
+      <ParameterRefRef RefId="M-0083_A-1234-11-ABCD-O000A_P-1_R-1" />
+      <ComObjectRefRef RefId="M-0083_A-1234-11-ABCD-O000A_O-0_R-1" />
+      <ComObjectRefRef RefId="M-0083_A-1234-11-ABCD-O000A_O-1_R-1" />
+     </ParameterBlock>
+    </Channel>
+   </Dynamic>
    <LoadProcedures>
     <LoadProcedure MergeId="1"><LdCtrlConnect /><LdCtrlRestart /></LoadProcedure>
    </LoadProcedures>
@@ -343,6 +368,23 @@ fn adopt_happy_path_writes_rich_device_file() -> TestResult {
     assert!(
         lock.contains("dpt = \"1.001\""),
         "expected a DPT; lock:\n{lock}"
+    );
+    // Channel handle, object and parameter keys derived from the vendor
+    // defaults.
+    for line in [
+        r#"  { key = "taste-1", id = "CH-1", number = 1, text = "Taste 1" },"#,
+        r#"  { number = 0, key = "taste-1", channel = "taste-1", text = "Taste 1", dpt = "1.001""#,
+        r#"  { number = 1, key = "led-1", channel = "taste-1", text = "LED 1", dpt = "1.001""#,
+        r#"  { key = "funktion", channel = "taste-1", ref = "P-1_R-1", param = "P-1" },"#,
+    ] {
+        assert!(lock.contains(line), "lock lacks {line}; lock:\n{lock}");
+    }
+    // A fresh device stores no parameter values.
+    assert!(!body.contains("[channel."), "device body:\n{body}");
+    // The snippet names the object by its key in its channel.
+    assert!(
+        stdout.contains("[channel.taste-1]") && stdout.contains("taste-1.send = \"0/0/1\""),
+        "expected a keyed snippet; stdout:\n{stdout}"
     );
     // The vendor .knxprod is cached under vendor/.
     assert!(

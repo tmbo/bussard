@@ -163,6 +163,9 @@ struct SelectedProduct {
     mask_version: Option<String>,
     order_numbers: Vec<String>,
     com_objects: BTreeMap<u16, ComObjectShape>,
+    /// The parsed program, when the product data is at hand: the lock facts
+    /// (channel handles, object and parameter keys) are derived from it.
+    app: Option<ApplicationProgram>,
 }
 
 impl SelectedProduct {
@@ -246,6 +249,7 @@ fn resolve_product(
     Ok(Some(SelectedProduct {
         manufacturer_ref: id.split('_').next().map(str::to_string),
         application_ref: id.clone(),
+        app: vendor_application(dir, &id),
         identity_id: id,
         name: None,
         mask_version: None,
@@ -293,6 +297,7 @@ fn shape_selected(app: &ApplicationProgram, data: &ProductData) -> SelectedProdu
         mask_version: app.mask_version.clone(),
         order_numbers: order_numbers_for(app, data),
         com_objects: shape_com_objects(app),
+        app: Some(app.clone()),
     }
 }
 
@@ -478,7 +483,7 @@ fn build_device(
         })
         .unwrap_or_default();
 
-    Device {
+    let mut device = Device {
         address,
         name,
         description: None,
@@ -494,7 +499,33 @@ fn build_device(
         security: None,
         application_override: None,
         lock: Default::default(),
+    };
+    // The lock facts under the vendor defaults: the objects the program
+    // shows, with channel handles and keys from day one.
+    if let Some(app) = selected.and_then(|s| s.app.as_ref()) {
+        let facts =
+            bussard_project::facts::derive_facts(app, &BTreeMap::new(), &Default::default());
+        device.com_objects.clear();
+        bussard_project::facts::apply_facts(&mut device, app, &facts, &BTreeMap::new());
     }
+    device
+}
+
+/// The application program `app_ref` from a `.knxprod` cached under
+/// `<dir>/vendor/`, if one carries it.
+fn vendor_application(dir: &Path, app_ref: &str) -> Option<ApplicationProgram> {
+    let entries = std::fs::read_dir(dir.join("vendor")).ok()?;
+    entries.flatten().find_map(|e| {
+        let path = e.path();
+        let is_knxprod = path
+            .extension()
+            .is_some_and(|x| x.eq_ignore_ascii_case("knxprod"));
+        if !is_knxprod {
+            return None;
+        }
+        let product = bussard_prod::read_knxprod(&path).ok()?;
+        product.applications.into_iter().find(|a| a.id == app_ref)
+    })
 }
 
 /// The device's product block: identity from the matched application where we
@@ -882,6 +913,7 @@ mod tests {
             mask_version: Some("07B0".to_string()),
             order_numbers: vec!["MDT-BE-04001.02".to_string()],
             com_objects: BTreeMap::new(),
+            app: None,
         };
         let p = build_product(&v, Some(&sel)).ok_or("expected a value")?;
         assert_eq!(p.order_number.as_deref(), Some("MDT-BE-04001.02"));
@@ -930,6 +962,7 @@ mod tests {
             mask_version: None,
             order_numbers: vec![],
             com_objects: com,
+            app: None,
         };
         let v = Verified::default();
         let dev = build_device("1.1.7".parse()?, &v, Some(&sel));
