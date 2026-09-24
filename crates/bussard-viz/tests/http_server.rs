@@ -70,6 +70,7 @@ async fn model_only_degradation_over_real_http() -> Result<(), Box<dyn std::erro
         // read/state endpoints, not the probe.
         watch_prog: false,
         allow_writes: false,
+        allow_remote_gateway: false,
         allowed_hosts: Vec::new(),
     };
 
@@ -127,6 +128,7 @@ async fn model_only_mode_with_no_connection() -> Result<(), Box<dyn std::error::
         connection: None,
         watch_prog: false,
         allow_writes: false,
+        allow_remote_gateway: false,
         allowed_hosts: Vec::new(),
     };
     let (state, handle, watch) = bussard_viz::build_state(&config)?;

@@ -246,6 +246,7 @@ async fn browser_smoke_dom_renders() -> Result<(), Box<dyn Error + Send + Sync>>
         connection: None, // model-only mode: no bus, reads still work
         watch_prog: false,
         allow_writes: false,
+        allow_remote_gateway: false,
         allowed_hosts: Vec::new(),
     };
     let (state, handle, _watch) = bussard_viz::build_state(&config)?;

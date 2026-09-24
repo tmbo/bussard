@@ -31,16 +31,17 @@
 //! touching the bus at all. A run that ends with no failures deletes the file.
 
 use std::collections::BTreeMap;
-use std::io::{IsTerminal, Write};
+
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, bail};
-use bussard_bus::{Bus, BusHandle};
+use bussard_bus::BusHandle;
 use bussard_download::{DesiredTables, compute_tables, plan, sys7_table_images};
 use bussard_mgmt::{Layer4Connection, LeaseChannel, MaskProfile, system_type};
 use bussard_model::{IndividualAddress, Model};
+use bussard_service::{BusService, WritePolicy};
 
 use crate::apply_cmd;
 use crate::conn_cmd::{
@@ -387,6 +388,12 @@ fn run_line(
         enforce_write_gate(&config, options.allow_remote_gateway)?;
     }
     let gateway = gateway_display(&config);
+    // Applying writes the devices' tables; the other modes only read.
+    let line_policy = if mode == Mode::Apply {
+        WritePolicy::transmit(options.allow_remote_gateway)
+    } else {
+        WritePolicy::ReadOnly
+    };
 
     let targets = targets_on_line(&model, area, line_no);
     if targets.is_empty() {
@@ -445,7 +452,8 @@ fn run_line(
         let state_path = state_path.clone();
         let conn = overrides.clone();
         runtime.block_on(async move {
-            let (handle, _task) = Bus::connect(config);
+            let service = BusService::open(config, line_policy)?;
+            let handle = service.handle().clone();
             if !handle
                 .wait_connected(std::time::Duration::from_secs(10))
                 .await
@@ -854,22 +862,16 @@ fn write_state(path: &Path, state: &LineState) -> anyhow::Result<()> {
 /// Asks the one confirmation for the whole run, naming the resolved gateway
 /// (issue #74). Non-interactive without `--yes` is refused.
 fn confirm(line: &str, devices: usize, gateway: &str, yes: bool) -> anyhow::Result<bool> {
-    if yes {
-        return Ok(true);
-    }
-    if !std::io::stdin().is_terminal() {
-        bail!(
-            "refusing to apply to {devices} device(s) on line {line} via {gateway} without a \
-             terminal to confirm on; pass --yes to apply non-interactively"
-        );
-    }
-    eprint!("apply the model's links to {devices} device(s) on line {line} via {gateway}? [y/N] ");
-    let _ = std::io::stderr().flush();
-    let mut answer = String::new();
-    std::io::stdin()
-        .read_line(&mut answer)
-        .context("reading confirmation")?;
-    Ok(matches!(answer.trim(), "y" | "Y" | "yes" | "Yes"))
+    crate::confirm::confirm(
+        yes,
+        &format!("apply the model's links to {devices} device(s) on line {line} via {gateway}?"),
+        || {
+            format!(
+                "refusing to apply to {devices} device(s) on line {line} via {gateway} without a \
+                 terminal to confirm on; pass --yes to apply non-interactively"
+            )
+        },
+    )
 }
 
 /// Builds the JSON summary.

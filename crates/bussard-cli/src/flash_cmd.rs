@@ -27,7 +27,6 @@
 //! that keep it from touching an unsupported or mismatched device.
 
 use std::collections::BTreeMap;
-use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -175,7 +174,11 @@ pub fn run(
     // gateway's only tunnel slot — for no gain; the tunnel heartbeat holds the
     // slot across the confirmation prompt.
     let runtime = tokio::runtime::Runtime::new()?;
-    let bus = BusSession::open(&runtime, config);
+    let bus = BusSession::open(
+        &runtime,
+        config,
+        bussard_service::WritePolicy::transmit(allow_remote_gateway),
+    )?;
     let handle = bus.handle();
     // The tunnel-assigned source address, resolved and checked against the bus
     // once for both phases (they share this tunnel, so one probe covers both).
@@ -1653,16 +1656,6 @@ fn confirm(
     plan: &FlashPlan,
     prompt_note: Option<&str>,
 ) -> anyhow::Result<bool> {
-    if yes {
-        return Ok(true);
-    }
-    let stdin = std::io::stdin();
-    if !stdin.is_terminal() {
-        bail!(
-            "refusing to flash {target} without a terminal to confirm on; \
-             pass --yes to flash non-interactively"
-        );
-    }
     let writes = plan
         .steps
         .iter()
@@ -1673,19 +1666,21 @@ fn confirm(
             )
         })
         .count();
-    if let Some(note) = prompt_note {
-        eprintln!("{note}");
-    }
-    eprint!(
-        "flash {} ({writes} memory write(s)) to {target} via {gateway}? [y/N] ",
+    let question = format!(
+        "flash {} ({writes} memory write(s)) to {target} via {gateway}?",
         plan.identity.id
     );
-    let _ = std::io::stderr().flush();
-    let mut line = String::new();
-    std::io::stdin()
-        .read_line(&mut line)
-        .context("reading confirmation")?;
-    Ok(matches!(line.trim(), "y" | "Y" | "yes" | "Yes"))
+    // The note goes on its own line above the question, as before.
+    let prompt = match prompt_note {
+        Some(note) => format!("{note}\n{question}"),
+        None => question,
+    };
+    crate::confirm::confirm(yes, &prompt, || {
+        format!(
+            "refusing to flash {target} without a terminal to confirm on; \
+             pass --yes to flash non-interactively"
+        )
+    })
 }
 
 /// Prints loud recovery guidance on any flash failure.

@@ -31,18 +31,19 @@
 //! adds sequencing, the identity cross-check and the record — nothing that
 //! touches the bus on its own.
 
-use std::io::{IsTerminal, Write};
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, anyhow, bail};
-use bussard_bus::{Bus, BusHandle};
+use bussard_bus::BusHandle;
 use bussard_download::backup::rfc3339_utc;
 use bussard_mgmt::apci::PID_ORDER_INFO;
 use bussard_mgmt::{
     DeviceConnection, LeaseChannel, Timeouts, system_type, write_individual_address,
 };
 use bussard_model::{IndividualAddress, Model};
+use bussard_service::{BusService, WritePolicy};
 
 use crate::assign_cmd;
 use crate::conn_cmd::{
@@ -110,7 +111,8 @@ pub fn run(
         let gateway = gateway.clone();
         let conn = overrides.clone();
         runtime.block_on(async move {
-            let (handle, _task) = Bus::connect(config);
+            let service = BusService::open(config, WritePolicy::transmit(allow_remote_gateway))?;
+            let handle = service.handle().clone();
             if !handle
                 .wait_connected(std::time::Duration::from_secs(10))
                 .await
@@ -477,25 +479,19 @@ fn confirm(
     gateway: &str,
     yes: bool,
 ) -> anyhow::Result<bool> {
-    if yes {
-        return Ok(true);
-    }
-    if !std::io::stdin().is_terminal() {
-        bail!(
-            "refusing to replace {target} without a terminal to confirm on; pass --yes to \
-             replace non-interactively"
-        );
-    }
-    eprint!(
-        "replace {target}: address {current} → {target}, flash the application and apply the \
-         model's tables, via {gateway}? [y/N] "
-    );
-    let _ = std::io::stderr().flush();
-    let mut line = String::new();
-    std::io::stdin()
-        .read_line(&mut line)
-        .context("reading confirmation")?;
-    Ok(matches!(line.trim(), "y" | "Y" | "yes" | "Yes"))
+    crate::confirm::confirm(
+        yes,
+        &format!(
+            "replace {target}: address {current} → {target}, flash the application and apply \
+             the model's tables, via {gateway}?"
+        ),
+        || {
+            format!(
+                "refusing to replace {target} without a terminal to confirm on; pass --yes to \
+                 replace non-interactively"
+            )
+        },
+    )
 }
 
 /// Records `replaced: <when>` in the device file, in place.

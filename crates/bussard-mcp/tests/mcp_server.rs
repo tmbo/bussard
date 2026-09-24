@@ -83,6 +83,7 @@ fn build_server_over(model: Model, passive: bool, allow_writes: bool) -> TestRes
         allow_programming: false,
         allow_remote_gateway: false,
         plan_ttl: bussard_mcp::tools_program::DEFAULT_PLAN_TTL,
+        keyring: None,
     };
     // Reconstruct state directly so we control passivity without touching disk.
     // No bus handle is wired here (the tools we exercise are model-only, and the
@@ -103,6 +104,7 @@ fn build_server_over(model: Model, passive: bool, allow_writes: bool) -> TestRes
         capture_db: None,
         source_ia: "0.0.255".parse()?,
         programming: None,
+        keyring: None,
     });
     Ok(BussardMcp::new(state))
 }
@@ -429,6 +431,7 @@ fn build_server_with_capture(
         capture_db: Some(capture_db),
         source_ia: "0.0.255".parse()?,
         programming: None,
+        keyring: None,
     });
     Ok(BussardMcp::new(state))
 }

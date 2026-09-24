@@ -105,6 +105,7 @@ fn server(
         capture_db: None,
         source_ia: "0.0.255".parse()?,
         programming: None,
+        keyring: None,
     });
     Ok(BussardMcp::new(state))
 }

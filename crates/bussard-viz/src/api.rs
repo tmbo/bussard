@@ -1,10 +1,10 @@
 //! The JSON API handlers: model, state, SSE traffic, and group-write.
 //!
 //! Handlers take the shared [`AppState`] and return either a JSON body or an
-//! [`ApiError`] (mapped to the contract's status codes). The write path
-//! replicates the CLI's `protected_refusal` + `resolve_dpt` gate so a protected
-//! GA is never written without `force`, and encodes with the same
-//! `parse_value` + `encode` + `bussard_bus::ops::write_group` stack.
+//! [`ApiError`] (mapped to the contract's status codes). The write path is the
+//! shared checked write in [`bussard_service::write`] (issue #86), the same one
+//! `bussard write` and the MCP server use: a protected GA is never written
+//! without `force`. This module only maps its [`WriteRefusal`] to HTTP.
 
 use std::convert::Infallible;
 use std::time::Duration;
@@ -13,15 +13,17 @@ use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use bussard_bus::ops::{self, WriteOptions};
-use bussard_model::{ApduSize, Dpt, GroupAddress, Model, encode, parse_value};
+use bussard_model::{GroupAddress, Model};
+use bussard_service::{
+    DptOverridePolicy, WriteCheck, WriteRefusal, WriteValue, prepare_group_write,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{Stream, StreamExt};
 
 use crate::error::ApiError;
-use crate::state::{AppState, ModelSnapshot};
+use crate::state::AppState;
 use crate::traffic::HubEvent;
 
 /// The default number of backlog telegrams replayed to a fresh SSE subscriber.
@@ -212,23 +214,56 @@ pub async fn post_group_write(
     let model = snapshot.model.as_ref();
 
     // Exactly one of value / payload.
-    match (&req.value, &req.payload) {
-        (Some(value), None) => write_value(&state, ga, model, value, &req).await,
-        (None, Some(payload_hex)) => write_payload(&state, ga, model, payload_hex, &req).await,
-        (Some(_), Some(_)) => Err(ApiError::BadRequest(
-            "provide exactly one of value or payload, not both".to_string(),
-        )),
-        (None, None) => Err(ApiError::BadRequest(
-            "provide exactly one of value or payload".to_string(),
-        )),
-    }
+    let value = match (&req.value, &req.payload) {
+        (Some(value), None) => WriteValue::Human(value),
+        (None, Some(payload_hex)) => WriteValue::Hex(payload_hex),
+        (Some(_), Some(_)) => {
+            return Err(ApiError::BadRequest(
+                "provide exactly one of value or payload, not both".to_string(),
+            ));
+        }
+        (None, None) => {
+            return Err(ApiError::BadRequest(
+                "provide exactly one of value or payload".to_string(),
+            ));
+        }
+    };
+
+    // Every check short of sending: protected (unless force), the DPT (the
+    // `dpt` override wins, else groups.yaml), then encode or validate the raw
+    // payload's size.
+    let check = WriteCheck {
+        dpt: req.dpt.as_deref(),
+        dpt_policy: DptOverridePolicy::Trust,
+        force: req.force,
+    };
+    let write =
+        prepare_group_write(Some(model), ga, value, &check).map_err(|r| api_refusal(ga, r))?;
+
+    let service = state.bus.service().ok_or_else(|| {
+        ApiError::BusUnavailable("bus not configured; running in model-only mode".to_string())
+    })?;
+    let sent = service
+        .send_prepared(write)
+        .await
+        .map_err(|r| api_refusal(ga, r))?;
+
+    Ok(Json(json!({
+        "ok": true,
+        "address": ga.to_string(),
+        "name": sent.write.name,
+        "value": sent.write.value,
+        "payload": hex_encode(&sent.write.payload),
+        "dpt": sent.write.dpt.map(|d| d.to_string()),
+        "confirmed": sent.confirmed,
+    })))
 }
 
 /// `POST /api/reload` — reload the model from disk and swap it atomically.
 ///
-/// Re-runs `Model::load` on the server's model directory. On success it builds a
-/// fresh [`ModelSnapshot`] (with the next `model_version`), swaps it into the
-/// shared [`ModelHandle`](crate::state::ModelHandle) in one move, emits a `model`
+/// Re-runs `Model::load` on the server's model directory. On success it installs
+/// the model into the shared [`ModelHandle`](crate::state::ModelHandle) as the
+/// next `model_version` in one move, emits a `model`
 /// SSE event so connected pages refetch `/api/model`, and returns `200` with the
 /// new `{model_version, stats}`.
 ///
@@ -241,13 +276,10 @@ pub async fn post_reload(State(state): State<AppState>) -> Result<Json<Value>, A
     let model = Model::load(&state.dir)
         .map_err(|e| ApiError::ModelInvalid(format!("model reload failed: {e}")))?;
 
-    // Build the next snapshot at version = current + 1, then swap it in. The
-    // read + increment is not a CAS, but reloads are user-initiated and rare
-    // (one clicked button); a monotonic bump is all the contract requires.
-    let next_version = state.model.current().version + 1;
-    let snapshot = ModelSnapshot::new(model, next_version);
+    // Install it as the next version (current + 1).
+    let snapshot = state.model.install(model);
+    let next_version = snapshot.version;
     let stats = snapshot.json.get("stats").cloned().unwrap_or(Value::Null);
-    state.model.swap(std::sync::Arc::new(snapshot));
 
     // Tell connected pages to refetch /api/model.
     let event = json!({ "model_version": next_version, "stats": stats });
@@ -260,178 +292,25 @@ pub async fn post_reload(State(state): State<AppState>) -> Result<Json<Value>, A
     })))
 }
 
-/// The `value` write path: resolve a DPT, encode the human value, send it.
-async fn write_value(
-    state: &AppState,
-    ga: GroupAddress,
-    model: &Model,
-    value: &str,
-    req: &GroupWrite,
-) -> Result<Json<Value>, ApiError> {
-    // Resolve the DPT: --dpt wins, else the GA's DPT from groups.yaml.
-    let dpt = resolve_dpt(req.dpt.as_deref(), model, ga)?;
-
-    // Refuse a protected GA unless force.
-    if let Some(reason) = protected_refusal(model, ga, req.force) {
-        return Err(ApiError::Protected(reason));
-    }
-
-    // Parse and encode the value against the DPT.
-    let typed = parse_value(&dpt, value)
-        .map_err(|e| ApiError::BadRequest(format!("parsing value {value:?} for GA {ga}: {e}")))?;
-    let payload = encode(&dpt, &typed).map_err(|e| {
-        ApiError::BadRequest(format!("encoding {typed} as DPT {dpt} for GA {ga}: {e}"))
-    })?;
-
-    let outcome = send_write(state, ga, &payload, dpt.is_packable()).await?;
-    let ga_name = model.groups.groups.get(&ga).map(|g| g.name.clone());
-
-    Ok(Json(json!({
-        "ok": true,
-        "address": ga.to_string(),
-        "name": ga_name,
-        "value": typed.to_string(),
-        "payload": hex_encode(&payload),
-        "dpt": dpt.to_string(),
-        "confirmed": outcome.confirmed,
-    })))
-}
-
-/// The raw `payload` write path: decode hex, validate against a known DPT size,
-/// send verbatim.
-///
-/// Unlike the `value` path, a missing DPT is NOT an error here: raw bytes can be
-/// sent with no DPT at all (sent unpacked). When a DPT IS known, the byte length
-/// is validated and a packable DPT's single byte is sent packed.
-async fn write_payload(
-    state: &AppState,
-    ga: GroupAddress,
-    model: &Model,
-    payload_hex: &str,
-    req: &GroupWrite,
-) -> Result<Json<Value>, ApiError> {
-    // Refuse a protected GA unless force (identically to the value path).
-    if let Some(reason) = protected_refusal(model, ga, req.force) {
-        return Err(ApiError::Protected(reason));
-    }
-
-    let payload = decode_hex(payload_hex)
-        .map_err(|e| ApiError::BadRequest(format!("invalid payload hex {payload_hex:?}: {e}")))?;
-    if payload.is_empty() {
-        return Err(ApiError::BadRequest(
-            "payload must decode to at least one byte".to_string(),
-        ));
-    }
-
-    // A DPT may or may not be known for a raw write: the `dpt` override wins,
-    // else the GA's DPT from the model, else none.
-    let dpt = optional_dpt(req.dpt.as_deref(), model, ga)?;
-
-    // Decide packing and validate the byte length against a known DPT size.
-    let packed = match dpt {
-        Some(d) => {
-            validate_payload_size(d, &payload, ga)?;
-            d.is_packable()
-        }
-        // No DPT anywhere: safe default is unpacked (full octet). See the
-        // endpoint docs.
-        None => false,
-    };
-
-    let outcome = send_write(state, ga, &payload, packed).await?;
-    let ga_name = model.groups.groups.get(&ga).map(|g| g.name.clone());
-
-    Ok(Json(json!({
-        "ok": true,
-        "address": ga.to_string(),
-        "name": ga_name,
-        "value": Value::Null,
-        "payload": hex_encode(&payload),
-        "dpt": dpt.map(|d| d.to_string()),
-        "confirmed": outcome.confirmed,
-    })))
-}
-
-/// Sends the payload on the bus, mapping the absent-bus case to 503.
-async fn send_write(
-    state: &AppState,
-    ga: GroupAddress,
-    payload: &[u8],
-    packed: bool,
-) -> Result<ops::WriteOutcome, ApiError> {
-    let handle = state.bus.handle().ok_or_else(|| {
-        ApiError::BusUnavailable("bus not configured; running in model-only mode".to_string())
-    })?;
-
-    ops::write_group(handle, ga, payload, packed, WriteOptions::default())
-        .await
-        .map_err(|e| ApiError::BusUnavailable(format!("could not write {ga}: {e}")))
-}
-
-/// Validates a raw payload's byte length against a known DPT's expected size.
-///
-/// A packable DPT ([`ApduSize::Bits`]) expects exactly one byte holding a value
-/// that fits in the 6-bit APDU (`<= 0x3F`); a byte-sized DPT expects exactly that
-/// many whole octets. A DPT whose size bussard does not model is not validated.
-fn validate_payload_size(dpt: Dpt, payload: &[u8], ga: GroupAddress) -> Result<(), ApiError> {
-    match dpt.expected_size() {
-        Some(ApduSize::Bits(_)) => {
-            if payload.len() != 1 {
-                return Err(ApiError::BadRequest(format!(
-                    "payload for GA {ga} DPT {dpt} must be 1 byte (sub-byte / packable), got {}",
-                    payload.len()
-                )));
-            }
-            // The value must fit in the low 6 bits, or packing would truncate it.
-            if payload[0] > 0x3f {
-                return Err(ApiError::BadRequest(format!(
-                    "payload byte {:#04x} for GA {ga} DPT {dpt} exceeds the 6-bit packable range (max 0x3f)",
-                    payload[0]
-                )));
-            }
-            Ok(())
-        }
-        Some(ApduSize::Bytes(n)) => {
-            if payload.len() != usize::from(n) {
-                return Err(ApiError::BadRequest(format!(
-                    "payload for GA {ga} DPT {dpt} must be {n} byte(s), got {}",
-                    payload.len()
-                )));
-            }
-            Ok(())
-        }
-        // Size not modelled: allow any length (mirrors is_packable's None case).
-        None => Ok(()),
-    }
-}
-
-/// Decodes an even-length hex string (upper- or lowercase) into bytes.
-///
-/// Returns a human-readable error message for an odd length or a non-hex digit.
-fn decode_hex(s: &str) -> Result<Vec<u8>, String> {
-    if !s.len().is_multiple_of(2) {
-        return Err(format!(
-            "odd length ({} chars); hex must be byte-aligned",
-            s.len()
-        ));
-    }
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(s.len() / 2);
-    for pair in bytes.chunks(2) {
-        let hi = hex_nibble(pair[0])?;
-        let lo = hex_nibble(pair[1])?;
-        out.push((hi << 4) | lo);
-    }
-    Ok(out)
-}
-
-/// Decodes a single ASCII hex digit into its 0..=15 value.
-fn hex_nibble(c: u8) -> Result<u8, String> {
-    match c {
-        b'0'..=b'9' => Ok(c - b'0'),
-        b'a'..=b'f' => Ok(c - b'a' + 10),
-        b'A'..=b'F' => Ok(c - b'A' + 10),
-        other => Err(format!("non-hex character {:?}", other as char)),
+/// Maps a [`WriteRefusal`] to the `/api/group-write` contract: `403` for a
+/// protected GA without `force`, `422` when no DPT resolves, `503` when the bus
+/// cannot take the write, `400` for anything wrong with the request.
+fn api_refusal(ga: GroupAddress, refusal: WriteRefusal) -> ApiError {
+    match refusal {
+        WriteRefusal::Protected { name, .. } => ApiError::Protected(format!(
+            "refusing to write to protected GA {ga} ({name:?}); pass force to override"
+        )),
+        WriteRefusal::NoDpt { .. } => ApiError::NoDpt(format!(
+            "GA {ga} has no DPT in groups.yaml; supply a dpt (e.g. 1.001)"
+        )),
+        WriteRefusal::WritesDisabled => ApiError::WritesDisabled(
+            "this viz server's bus is read-only; restart it with `bussard viz --allow-writes` \
+             to enable group writes"
+                .to_string(),
+        ),
+        WriteRefusal::Bus(err) => ApiError::BusUnavailable(format!("could not write {ga}: {err}")),
+        // Invalid dpt / value / encode / hex / empty / size: the request is bad.
+        other => ApiError::BadRequest(other.to_string()),
     }
 }
 
@@ -444,64 +323,6 @@ fn hex_encode(bytes: &[u8]) -> String {
     s
 }
 
-/// Returns a refusal message if `ga` is protected in the model and `force` is
-/// not set; otherwise `None`. Replicated from the CLI write path.
-fn protected_refusal(model: &Model, ga: GroupAddress, force: bool) -> Option<String> {
-    if force {
-        return None;
-    }
-    let group = model.groups.groups.get(&ga)?;
-    if group.protected {
-        Some(format!(
-            "refusing to write to protected GA {ga} ({:?}); pass force to override",
-            group.name
-        ))
-    } else {
-        None
-    }
-}
-
-/// Resolves the DPT to encode against: the `dpt` override wins, else the GA's
-/// DPT from the model. Errors (as [`ApiError::NoDpt`] / [`ApiError::BadRequest`])
-/// when neither is available or the override is malformed. Replicated from the
-/// CLI write path.
-fn resolve_dpt(
-    dpt_override: Option<&str>,
-    model: &Model,
-    ga: GroupAddress,
-) -> Result<Dpt, ApiError> {
-    if let Some(s) = dpt_override {
-        return s
-            .parse()
-            .map_err(|e| ApiError::BadRequest(format!("invalid dpt {s:?}: {e}")));
-    }
-    match model.groups.groups.get(&ga).and_then(|g| g.dpt) {
-        Some(dpt) => Ok(dpt),
-        None => Err(ApiError::NoDpt(format!(
-            "GA {ga} has no DPT in groups.yaml; supply a dpt (e.g. 1.001)"
-        ))),
-    }
-}
-
-/// Resolves an optional DPT for a raw write: the `dpt` override wins (a malformed
-/// override is a 400), else the GA's DPT from the model, else `None`.
-///
-/// Unlike [`resolve_dpt`], a missing DPT is not an error: raw payloads may be
-/// sent unmodelled.
-fn optional_dpt(
-    dpt_override: Option<&str>,
-    model: &Model,
-    ga: GroupAddress,
-) -> Result<Option<Dpt>, ApiError> {
-    if let Some(s) = dpt_override {
-        return s
-            .parse()
-            .map(Some)
-            .map_err(|e| ApiError::BadRequest(format!("invalid dpt {s:?}: {e}")));
-    }
-    Ok(model.groups.groups.get(&ga).and_then(|g| g.dpt))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -509,23 +330,21 @@ mod tests {
 
     use bussard_model::schema::{BussardConfig, Group, Groups, Links};
 
-    fn ga(s: &str) -> GroupAddress {
-        s.parse().expect("valid GA")
-    }
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    fn model_with(protected: bool, dpt: Option<&str>) -> Model {
+    fn model_with(protected: bool, dpt: Option<&str>) -> Result<Model, Box<dyn std::error::Error>> {
         let mut groups = BTreeMap::new();
         groups.insert(
-            ga("3/0/4"),
+            "3/0/4".parse()?,
             Group {
                 name: "Living Room Blind".to_string(),
-                dpt: dpt.map(|d| d.parse().expect("dpt")),
+                dpt: dpt.map(str::parse).transpose()?,
                 description: None,
                 protected,
                 secure: false,
             },
         );
-        Model {
+        Ok(Model {
             config: BussardConfig::default(),
             groups: Groups {
                 project: None,
@@ -537,131 +356,68 @@ mod tests {
                 links: BTreeMap::new(),
             },
             devices: BTreeMap::new(),
+        })
+    }
+
+    /// The API error a write to `3/0/4` is refused with.
+    fn refused(
+        model: &Model,
+        value: WriteValue<'_>,
+        dpt: Option<&str>,
+    ) -> Result<ApiError, Box<dyn std::error::Error>> {
+        let ga: GroupAddress = "3/0/4".parse()?;
+        let check = WriteCheck {
+            dpt,
+            dpt_policy: DptOverridePolicy::Trust,
+            force: false,
+        };
+        match prepare_group_write(Some(model), ga, value, &check) {
+            Ok(write) => Err(format!("expected a refusal, got {write:?}").into()),
+            Err(refusal) => Ok(api_refusal(ga, refusal)),
         }
     }
 
     #[test]
-    fn test_protected_refused_without_force() {
-        let m = model_with(true, Some("1.008"));
-        let msg = protected_refusal(&m, ga("3/0/4"), false).expect("must refuse");
-        assert!(msg.contains("protected"));
-        assert!(msg.contains("Living Room Blind"));
+    fn test_api_refusal_protected_is_403_with_force_hint() -> TestResult {
+        let m = model_with(true, Some("1.008"))?;
+        let err = refused(&m, WriteValue::Human("down"), None)?;
+        assert!(
+            matches!(&err, ApiError::Protected(msg)
+            if msg.contains("Living Room Blind") && msg.contains("pass force")),
+            "{err:?}"
+        );
+        // A raw payload is refused identically.
+        let err = refused(&m, WriteValue::Hex("01"), None)?;
+        assert!(matches!(err, ApiError::Protected(_)), "{err:?}");
+        Ok(())
     }
 
     #[test]
-    fn test_protected_allowed_with_force() {
-        let m = model_with(true, Some("1.008"));
-        assert!(protected_refusal(&m, ga("3/0/4"), true).is_none());
+    fn test_api_refusal_missing_dpt_is_no_dpt() -> TestResult {
+        let m = model_with(false, None)?;
+        let err = refused(&m, WriteValue::Human("on"), None)?;
+        assert!(matches!(err, ApiError::NoDpt(_)), "{err:?}");
+        Ok(())
     }
 
     #[test]
-    fn test_unprotected_not_refused() {
-        let m = model_with(false, Some("1.008"));
-        assert!(protected_refusal(&m, ga("3/0/4"), false).is_none());
+    fn test_api_refusal_bad_request_shapes() -> TestResult {
+        let m = model_with(false, Some("1.008"))?;
+        for (value, dpt) in [
+            (WriteValue::Human("on"), Some("not-a-dpt")),
+            (WriteValue::Human("sideways"), None),
+            (WriteValue::Hex("0"), None),
+            (WriteValue::Hex(""), None),
+            (WriteValue::Hex("0101"), None),
+        ] {
+            let err = refused(&m, value, dpt)?;
+            assert!(matches!(err, ApiError::BadRequest(_)), "{value:?}: {err:?}");
+        }
+        Ok(())
     }
 
     #[test]
-    fn test_dpt_override_wins() {
-        let m = model_with(false, Some("1.008"));
-        let d = resolve_dpt(Some("5.001"), &m, ga("3/0/4")).expect("dpt");
-        assert_eq!(d.to_string(), "5.001");
-    }
-
-    #[test]
-    fn test_dpt_from_model() {
-        let m = model_with(false, Some("1.008"));
-        let d = resolve_dpt(None, &m, ga("3/0/4")).expect("dpt");
-        assert_eq!(d.to_string(), "1.008");
-    }
-
-    #[test]
-    fn test_dpt_missing_is_no_dpt_error() {
-        let m = model_with(false, None);
-        let err = resolve_dpt(None, &m, ga("3/0/4")).unwrap_err();
-        assert!(matches!(err, ApiError::NoDpt(_)), "got {err:?}");
-    }
-
-    #[test]
-    fn test_dpt_override_malformed_is_bad_request() {
-        let m = model_with(false, Some("1.008"));
-        let err = resolve_dpt(Some("not-a-dpt"), &m, ga("3/0/4")).unwrap_err();
-        assert!(matches!(err, ApiError::BadRequest(_)), "got {err:?}");
-    }
-
-    // --- hex helpers ---------------------------------------------------------
-
-    #[test]
-    fn test_decode_hex_roundtrip_and_case() {
-        assert_eq!(decode_hex("0b64").expect("hex"), vec![0x0b, 0x64]);
-        assert_eq!(decode_hex("0B64").expect("hex"), vec![0x0b, 0x64]);
-        assert_eq!(decode_hex("").expect("hex"), Vec::<u8>::new());
-        assert_eq!(hex_encode(&[0x0b, 0x64]), "0b64");
-    }
-
-    #[test]
-    fn test_decode_hex_odd_length_errors() {
-        let err = decode_hex("abc").unwrap_err();
-        assert!(err.contains("odd length"), "got {err}");
-    }
-
-    #[test]
-    fn test_decode_hex_bad_char_errors() {
-        let err = decode_hex("zz").unwrap_err();
-        assert!(err.contains("non-hex"), "got {err}");
-    }
-
-    // --- optional_dpt --------------------------------------------------------
-
-    #[test]
-    fn test_optional_dpt_none_when_unmodelled() {
-        let m = model_with(false, None);
-        let d = optional_dpt(None, &m, ga("3/0/4")).expect("ok");
-        assert!(d.is_none(), "got {d:?}");
-    }
-
-    #[test]
-    fn test_optional_dpt_override_malformed_is_bad_request() {
-        let m = model_with(false, None);
-        let err = optional_dpt(Some("nope"), &m, ga("3/0/4")).unwrap_err();
-        assert!(matches!(err, ApiError::BadRequest(_)), "got {err:?}");
-    }
-
-    // --- validate_payload_size -----------------------------------------------
-
-    fn dpt(s: &str) -> Dpt {
-        s.parse().expect("dpt")
-    }
-
-    #[test]
-    fn test_validate_payload_size_packable_one_byte_ok() {
-        // 1.x is 1-bit / packable: a single byte <= 0x3f is fine.
-        validate_payload_size(dpt("1.001"), &[0x01], ga("3/0/4")).expect("ok");
-    }
-
-    #[test]
-    fn test_validate_payload_size_packable_wrong_length() {
-        let err = validate_payload_size(dpt("1.001"), &[0x00, 0x01], ga("3/0/4")).unwrap_err();
-        assert!(matches!(err, ApiError::BadRequest(_)), "got {err:?}");
-    }
-
-    #[test]
-    fn test_validate_payload_size_packable_over_6_bits() {
-        // A 1-byte payload > 0x3f cannot be packed into the 6-bit APDU.
-        let err = validate_payload_size(dpt("3.007"), &[0x40], ga("3/0/4")).unwrap_err();
-        assert!(matches!(err, ApiError::BadRequest(_)), "got {err:?}");
-    }
-
-    #[test]
-    fn test_validate_payload_size_bytes_ok_and_mismatch() {
-        // 9.x is a 2-byte float.
-        validate_payload_size(dpt("9.001"), &[0x0c, 0x1a], ga("3/0/4")).expect("ok");
-        let err = validate_payload_size(dpt("9.001"), &[0x0c], ga("3/0/4")).unwrap_err();
-        assert!(matches!(err, ApiError::BadRequest(_)), "got {err:?}");
-    }
-
-    #[test]
-    fn test_validate_payload_size_unmodelled_allows_any() {
-        // Main 99 has no modelled size: any length passes.
-        validate_payload_size(dpt("99"), &[0x01, 0x02, 0x03], ga("3/0/4")).expect("ok");
+    fn test_hex_encode_lowercase() {
+        assert_eq!(hex_encode(&[0x0a, 0xff]), "0aff");
     }
 }

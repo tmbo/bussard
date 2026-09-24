@@ -248,6 +248,7 @@ dependencies = [
  "bussard-prod",
  "bussard-project",
  "bussard-secure",
+ "bussard-service",
  "bussard-transport",
  "bussard-viz",
  "clap",
@@ -315,6 +316,7 @@ dependencies = [
  "bussard-model",
  "bussard-monitor",
  "bussard-project",
+ "bussard-service",
  "bussard-testkit",
  "bussard-transport",
  "rmcp",
@@ -427,6 +429,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "bussard-service"
+version = "0.1.0"
+dependencies = [
+ "bussard-bus",
+ "bussard-mgmt",
+ "bussard-model",
+ "bussard-project",
+ "bussard-secure",
+ "bussard-transport",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "bussard-testkit"
 version = "0.1.0"
 dependencies = [
@@ -458,6 +475,7 @@ dependencies = [
  "bussard-mgmt",
  "bussard-model",
  "bussard-monitor",
+ "bussard-service",
  "bussard-transport",
  "futures-util",
  "http-body-util",

@@ -14,6 +14,9 @@ path = "src/main.rs"
 
 [dependencies]
 bussard-model = { workspace = true }
+# The service layer (issue #86): gated bus access, management sessions, the
+# checked group write and the live model handle.
+bussard-service = { workspace = true }
 bussard-project = { workspace = true }
 bussard-prod = { workspace = true }
 bussard-transport = { workspace = true }

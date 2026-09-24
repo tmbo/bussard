@@ -12,7 +12,7 @@ use std::process::ExitCode;
 use bussard_mcp::McpConfig;
 use bussard_model::Model;
 
-use crate::conn_cmd::{ConnOverrides, enforce_write_gate, resolve_config};
+use crate::conn_cmd::{ConnOverrides, resolve_config};
 
 /// Runs `bussard mcp`.
 ///
@@ -22,9 +22,9 @@ use crate::conn_cmd::{ConnOverrides, enforce_write_gate, resolve_config};
 ///
 /// With `--allow-writes` the server registers `knx_write_group`, so an LLM can
 /// put telegrams on the bus for the whole session. That goes through the same
-/// non-loopback gate as `bussard write` (issue #74), applied once here at
-/// server construction: against a real gateway the server refuses to start
-/// unless the operator passed `--allow-remote-gateway` or set
+/// non-loopback gate as `bussard write` (issue #74), applied when the server
+/// opens its [`bussard_service::BusService`]: against a real gateway the server
+/// refuses to start unless the operator passed `--allow-remote-gateway` or set
 /// `BUSSARD_ALLOW_REAL_GATEWAY=1`. `--allow-programming` (issue #118) hands
 /// the LLM the table write of `bussard apply`, so it passes the same gate here,
 /// and the programming tools check it again on every call. A read-only or
@@ -52,6 +52,7 @@ pub fn run(
     overrides: ConnOverrides,
     modes: McpModes,
     capture_db: Option<PathBuf>,
+    keyring: Option<PathBuf>,
 ) -> anyhow::Result<ExitCode> {
     let McpModes {
         passive,
@@ -73,12 +74,6 @@ pub fn run(
         .map_err(|e| anyhow::anyhow!("failed to load model from {}: {e}", dir.display()))?;
     let connection = resolve_config(Some(&model), &overrides)?;
 
-    // A write-enabled MCP server hands an LLM the bus for the session, so it
-    // passes the same non-loopback gate as the CLI write verbs before starting.
-    if allow_writes || allow_programming {
-        enforce_write_gate(&connection, allow_remote_gateway)?;
-    }
-
     let config = McpConfig {
         dir: dir.to_path_buf(),
         connection,
@@ -89,6 +84,7 @@ pub fn run(
         allow_programming,
         allow_remote_gateway,
         plan_ttl,
+        keyring,
     };
 
     let runtime = tokio::runtime::Runtime::new()?;

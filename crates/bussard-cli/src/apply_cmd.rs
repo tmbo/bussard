@@ -36,7 +36,6 @@
 //! against the live reference bus is out of scope until that device exists. The
 //! command still gates on the mask family and always writes a backup first.
 
-use std::io::{IsTerminal, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -195,7 +194,11 @@ pub(crate) fn apply_desired(
     // the gateway's only tunnel slot — for no gain; the tunnel heartbeat holds
     // the slot across the confirmation prompt.
     let runtime = tokio::runtime::Runtime::new()?;
-    let bus = BusSession::open(&runtime, config);
+    let bus = BusSession::open(
+        &runtime,
+        config,
+        bussard_service::WritePolicy::transmit(allow_remote_gateway),
+    )?;
     let handle = bus.handle();
     // The tunnel-assigned source address, resolved and checked against the bus
     // once for both phases (they share this tunnel, so one probe covers both).
@@ -464,28 +467,21 @@ fn confirm(
     report: &PlanReport,
     origin: &DesiredSource,
 ) -> anyhow::Result<bool> {
-    if yes {
-        return Ok(true);
-    }
-    let stdin = std::io::stdin();
-    if !stdin.is_terminal() {
-        bail!(
-            "refusing to write to {target} without a terminal to confirm on; \
-             pass --yes to {} non-interactively",
+    let changes = report.additions.len() + report.removals.len();
+    crate::confirm::confirm(
+        yes,
+        &format!(
+            "{} {changes} change(s) to {target} via {gateway}?",
             origin.verb()
-        );
-    }
-    eprint!(
-        "{} {} change(s) to {target} via {gateway}? [y/N] ",
-        origin.verb(),
-        report.additions.len() + report.removals.len()
-    );
-    let _ = std::io::stderr().flush();
-    let mut line = String::new();
-    std::io::stdin()
-        .read_line(&mut line)
-        .context("reading confirmation")?;
-    Ok(matches!(line.trim(), "y" | "Y" | "yes" | "Yes"))
+        ),
+        || {
+            format!(
+                "refusing to write to {target} without a terminal to confirm on; \
+                 pass --yes to {} non-interactively",
+                origin.verb()
+            )
+        },
+    )
 }
 
 /// Serialises the live pre-state tables to a JSON backup under

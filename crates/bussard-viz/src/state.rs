@@ -5,17 +5,20 @@
 //! connection ([`BusStatus`]) used for status reporting and group writes. The
 //! whole thing is cloneable (`Arc` inside) so axum can share it across handlers.
 //!
-//! The model was originally immutable for the process lifetime. To support
-//! `POST /api/reload` (issue #65) it now lives behind a [`ModelHandle`]: an
-//! `Arc<RwLock<Arc<ModelSnapshot>>>` whose reloads swap atomically. Every reader
-//! (the model/state endpoints, the write gate, the decode feeder) reads through
-//! the handle, so a swap is picked up immediately without restarting the server.
+//! The model lives behind a [`ModelHandle`], a thin layer over the shared
+//! [`bussard_service::ModelHandle`] (the same one the MCP server uses, issue
+//! #86): it reloads by itself when the files on disk change, and
+//! `POST /api/reload` (issue #65) installs a freshly loaded model explicitly.
+//! Every reader (the model/state endpoints, the write gate, the decode feeder)
+//! reads through the handle, so a new model is picked up without a restart.
 
 use std::sync::{Arc, RwLock};
 
 use bussard_bus::{BusHandle, BusState};
 use bussard_model::Model;
+use bussard_service::BusService;
 use bussard_transport::TransportKind;
+use bussard_transport::write_gate::is_loopback_gateway;
 use serde_json::{Value, json};
 
 use crate::project;
@@ -55,43 +58,40 @@ impl ConnState {
 
 /// The bus status view for the API.
 ///
-/// Wraps an optional bus [`BusHandle`] and the configured transport kind. When
-/// there is no handle (model-only degraded mode, where connection resolution
-/// failed) it reports `disconnected` and rejects group writes with `503`.
+/// Wraps an optional [`BusService`] (opened under the server's write policy, so
+/// the non-loopback gate has already been applied) and the configured transport
+/// kind. When there is no service (model-only degraded mode, where connection
+/// resolution failed) it reports `disconnected` and rejects group writes with
+/// `503`.
 #[derive(Clone)]
 pub struct BusStatus {
-    handle: Option<BusHandle>,
+    service: Option<BusService>,
     transport: Option<TransportKind>,
     gateway: Option<String>,
     loopback: bool,
 }
 
 impl BusStatus {
-    /// A status with a live bus handle (normal connected/reconnecting mode).
+    /// A status with a live bus service (normal connected/reconnecting mode).
     ///
-    /// `gateway` is the resolved endpoint as the operator would read it
-    /// (`192.0.2.10:3671`, or `multicast 224.0.23.12:3671` for routing) and
-    /// `loopback` says whether that endpoint is a loopback address. Both are
-    /// reported in `/api/state` so the page can name the bus it is about to
-    /// write to, which `docs/SAFETY.md` promises of every write path.
-    pub fn connected(
-        transport: TransportKind,
-        gateway: String,
-        loopback: bool,
-        handle: BusHandle,
-    ) -> Self {
+    /// The gateway is reported as the operator would read it
+    /// (`192.0.2.10:3671`, or `multicast 224.0.23.12:3671` for routing) together
+    /// with whether it is a loopback address, in `/api/state`, so the page can
+    /// name the bus it is about to write to, which `docs/SAFETY.md` promises of
+    /// every write path.
+    pub fn connected(service: BusService) -> Self {
         BusStatus {
-            handle: Some(handle),
-            transport: Some(transport),
-            gateway: Some(gateway),
-            loopback,
+            transport: Some(service.config().transport.clone()),
+            gateway: Some(service.gateway_display()),
+            loopback: is_loopback_gateway(service.config()),
+            service: Some(service),
         }
     }
 
     /// A status with no bus (model-only degraded mode). Reports `disconnected`.
     pub fn none() -> Self {
         BusStatus {
-            handle: None,
+            service: None,
             transport: None,
             gateway: None,
             loopback: false,
@@ -100,14 +100,19 @@ impl BusStatus {
 
     /// The current connection state, or `None` when there is no bus at all.
     pub fn state(&self) -> Option<ConnState> {
-        self.handle
+        self.service
             .as_ref()
-            .map(|h| ConnState::from_bus(h.status()))
+            .map(|s| ConnState::from_bus(s.handle().status()))
     }
 
     /// The bus handle, if a bus is configured.
     pub fn handle(&self) -> Option<&BusHandle> {
-        self.handle.as_ref()
+        self.service.as_ref().map(BusService::handle)
+    }
+
+    /// The bus service, if a bus is configured: group writes go through it.
+    pub fn service(&self) -> Option<&BusService> {
+        self.service.as_ref()
     }
 
     /// The transport tag (`tunnel`/`routing`), or `null` with no bus.
@@ -154,7 +159,11 @@ pub struct ModelSnapshot {
 impl ModelSnapshot {
     /// Builds a snapshot from a model, precomputing its `/api/model` projection.
     pub fn new(model: Model, version: u64) -> Self {
-        let model = Arc::new(model);
+        Self::from_shared(Arc::new(model), version)
+    }
+
+    /// Builds a snapshot from a shared model, precomputing its projection.
+    pub fn from_shared(model: Arc<Model>, version: u64) -> Self {
         let json = Arc::new(project::project_model(&model));
         ModelSnapshot {
             model,
@@ -164,44 +173,81 @@ impl ModelSnapshot {
     }
 }
 
-/// A swappable handle to the current [`ModelSnapshot`].
+/// The viz server's handle to the current [`ModelSnapshot`].
 ///
-/// Cloning is cheap (an `Arc`). Readers call [`current`](Self::current) to grab
-/// the live snapshot (an `Arc` clone under a short read lock, never held across
-/// an `.await`); a reload calls [`swap`](Self::swap) to install a new snapshot.
+/// Cloning is cheap (`Arc`s). The model itself lives in a shared
+/// [`bussard_service::ModelHandle`]; this adds the `/api/model` projection,
+/// recomputed only when the model's version changes. Readers call
+/// [`current`](Self::current); `POST /api/reload` calls
+/// [`install`](Self::install) after `Model::load` succeeded, so a broken model
+/// never replaces a good one.
 ///
 /// A `std::sync::RwLock` is deliberate: every access is synchronous and holds
 /// the lock only long enough to clone one `Arc`, so it never blocks the async
-/// runtime. This mirrors [`TrafficHub`]'s own `std::sync::RwLock` for its GA
-/// state map and avoids pulling in `arc-swap` (not in the dependency tree).
+/// runtime.
 #[derive(Clone)]
 pub struct ModelHandle {
-    inner: Arc<RwLock<Arc<ModelSnapshot>>>,
+    shared: bussard_service::ModelHandle,
+    projection: Arc<RwLock<Arc<ModelSnapshot>>>,
 }
 
 impl ModelHandle {
-    /// Creates a handle wrapping an initial model snapshot (version 1).
+    /// A handle over a model that only changes through
+    /// [`install`](Self::install) (version 1). For in-code models in tests.
     pub fn new(model: Model) -> Self {
+        Self::over(bussard_service::ModelHandle::fixed(model))
+    }
+
+    /// A handle that also reloads by itself when the files under `dir` change,
+    /// like the MCP server's model: a `protected: true` saved in an editor is in
+    /// force on the next write without anyone pressing reload.
+    pub fn watching(dir: std::path::PathBuf, model: Model) -> Self {
+        Self::over(bussard_service::ModelHandle::new(dir, model))
+    }
+
+    /// Wraps a shared service handle, projecting its current model.
+    fn over(shared: bussard_service::ModelHandle) -> Self {
+        let (model, version) = shared.snapshot();
         ModelHandle {
-            inner: Arc::new(RwLock::new(Arc::new(ModelSnapshot::new(model, 1)))),
+            shared,
+            projection: Arc::new(RwLock::new(Arc::new(ModelSnapshot::from_shared(
+                model, version,
+            )))),
         }
     }
 
-    /// Returns the current snapshot, cloning the inner `Arc` under a read lock.
+    /// Returns the current snapshot, reprojecting only when the model changed.
     ///
-    /// The lock is poisoned only if a writer panicked mid-swap; we recover the
-    /// guard so a single panic cannot wedge every reader.
+    /// A poisoned lock (a panicking writer) is recovered so a single panic
+    /// cannot wedge every reader.
     pub fn current(&self) -> Arc<ModelSnapshot> {
-        self.inner.read().unwrap_or_else(|p| p.into_inner()).clone()
+        let (model, version) = self.shared.snapshot();
+        {
+            let cached = self.projection.read().unwrap_or_else(|p| p.into_inner());
+            if cached.version == version {
+                return cached.clone();
+            }
+        }
+        let next = Arc::new(ModelSnapshot::from_shared(model, version));
+        let mut guard = self.projection.write().unwrap_or_else(|p| p.into_inner());
+        if guard.version < next.version {
+            *guard = next;
+        }
+        guard.clone()
     }
 
-    /// Atomically replaces the current snapshot with `next`.
+    /// Installs `model` as the next version and returns its snapshot.
     ///
     /// Only ever called after `Model::load` succeeds, so a broken model never
     /// reaches this method (the reload handler keeps serving the old one).
-    pub fn swap(&self, next: Arc<ModelSnapshot>) {
-        let mut guard = self.inner.write().unwrap_or_else(|p| p.into_inner());
-        *guard = next;
+    pub fn install(&self, model: Model) -> Arc<ModelSnapshot> {
+        self.shared.install(model);
+        self.current()
+    }
+
+    /// The shared model handle underneath, for code that needs the model only.
+    pub fn shared(&self) -> &bussard_service::ModelHandle {
+        &self.shared
     }
 }
 
@@ -274,7 +320,7 @@ mod tests {
         assert_eq!(j["transport"], Value::Null);
     }
 
-    // --- ModelHandle swap semantics -----------------------------------------
+    // --- ModelHandle install semantics -----------------------------------------
 
     use std::collections::BTreeMap;
 
@@ -317,15 +363,14 @@ mod tests {
     }
 
     #[test]
-    fn test_model_handle_swap_installs_new_snapshot_and_version() {
+    fn test_model_handle_install_installs_new_snapshot_and_version() {
         let handle = ModelHandle::new(model_with("Old", false));
         let before = handle.current();
         assert_eq!(before.version, 1);
         assert_eq!(before.json["stats"]["groups"], 1);
 
-        // A reload builds the next snapshot at version 2 and swaps it in.
-        let next = Arc::new(ModelSnapshot::new(model_with("New", false), 2));
-        handle.swap(next);
+        // A reload installs the next model at version 2.
+        handle.install(model_with("New", false));
 
         let after = handle.current();
         assert_eq!(after.version, 2);
@@ -337,7 +382,7 @@ mod tests {
     }
 
     #[test]
-    fn test_model_handle_swap_reflects_new_protected_flag() {
+    fn test_model_handle_install_reflects_new_protected_flag() {
         // The protected-GA gate reads through the handle, so a newly protected
         // GA must be visible immediately after a swap.
         let ga: GroupAddress = "3/0/4".parse().expect("ga");
@@ -353,10 +398,7 @@ mod tests {
                 .protected
         );
 
-        handle.swap(Arc::new(ModelSnapshot::new(
-            model_with("Living Room Blind", true),
-            2,
-        )));
+        handle.install(model_with("Living Room Blind", true));
 
         assert!(
             handle

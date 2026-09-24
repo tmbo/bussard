@@ -16,9 +16,15 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use bussard_bus::ops::{self, WriteOptions};
-use bussard_model::{Dpt, GroupAddress, IndividualAddress};
+use bussard_bus::ops;
+use bussard_model::{GroupAddress, IndividualAddress};
 use bussard_monitor::{CaptureStore, Filter, QueryFilter};
+use bussard_service::describe::walk_objects;
+use bussard_service::secure::ToolKeySource;
+use bussard_service::{
+    DptOverridePolicy, L4Options, ServiceError, SourcePolicy, WriteCheck, WriteRefusal, WriteValue,
+    prepare_group_write,
+};
 use rmcp::ErrorData;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
@@ -469,7 +475,7 @@ impl BussardMcp {
             .parse()
             .map_err(|_| invalid(format!("invalid individual address {:?}", args.address)))?;
 
-        let Some(handle) = self.state.bus.handle() else {
+        let Some(service) = self.state.bus.service() else {
             return ok(json!({
                 "address": target.to_string(),
                 "ok": false,
@@ -486,25 +492,46 @@ impl BussardMcp {
             }));
         }
 
+        // KNX Data Secure (issue #71): with `--keyring`, the target's tool key
+        // wraps every management APDU, exactly as `bussard describe --keyring`.
+        let tool_key = match bussard_service::secure::resolve(
+            target,
+            ToolKeySource {
+                keyring: self.state.keyring.as_deref(),
+                tool_key: None,
+            },
+        ) {
+            Ok(key) => key,
+            Err(err) => {
+                return ok(json!({
+                    "address": target.to_string(),
+                    "ok": false,
+                    "reason": error_chain(&err),
+                }));
+            }
+        };
+
         // Rate limit + concurrency cap, shared with the group read/write tools:
         // a full introspection is a burst of management round-trips, so hold the
         // permit across the whole session.
         let _permit = self.state.read_limiter.acquire().await;
 
-        let source = ops::group_source(handle);
-        let lease = match handle.lease().await {
-            Ok(lease) => lease,
-            Err(err) => {
+        // Authorize (free access) as ETS does before configuration access; a
+        // best-effort read tolerates a device without authorize.
+        let options = L4Options {
+            source: SourcePolicy::Known(ops::group_source(service.handle())),
+            tool_key,
+            ..L4Options::default()
+        };
+        let mut l4 = match service.connect_l4(target, &options).await {
+            Ok(l4) => l4,
+            Err(ServiceError::Lease(err)) => {
                 return ok(json!({
                     "address": target.to_string(),
                     "ok": false,
                     "reason": format!("could not lease the bus: {err}"),
                 }));
             }
-        };
-        let channel = bussard_mgmt::LeaseChannel::new(lease);
-        let mut l4 = match bussard_mgmt::Layer4Connection::connect(channel, target, source).await {
-            Ok(l4) => l4,
             Err(err) => {
                 return ok(json!({
                     "address": target.to_string(),
@@ -513,14 +540,6 @@ impl BussardMcp {
                 }));
             }
         };
-        // Authorize (free access) as ETS does before configuration access; a
-        // best-effort read tolerates a device without authorize.
-        if let Err(err) = l4
-            .authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY)
-            .await
-        {
-            tracing::debug!("{target} authorize (free access) did not grant: {err}");
-        }
 
         let result = describe_over_l4(&mut l4).await;
         let _ = l4.disconnect().await;
@@ -574,22 +593,8 @@ impl BussardMcp {
         // force on the very next write rather than after a restart.
         let model = self.state.model.current();
 
-        // Hard-refuse protected GAs. There is no override via MCP.
-        if let Some(group) = model.groups.groups.get(&ga)
-            && group.protected
-        {
-            return ok(json!({
-                "ga": ga.to_string(),
-                "ok": false,
-                "refused": true,
-                "reason": format!(
-                    "GA {ga} ({:?}) is protected (safety-critical); writes are refused via MCP",
-                    group.name
-                ),
-            }));
-        }
-
-        // Resolve the DPT: the model is authoritative where it has one.
+        // The shared write policy (bussard_service::write). Protected GAs are
+        // hard-refused: `force` is never set, so there is no override via MCP.
         //
         // An unchecked `dpt` override is a hole in the protected/typed model: a
         // caller could send `dpt: "5.001", value: "255"` at a 1.001 GA and put
@@ -598,61 +603,21 @@ impl BussardMcp {
         // has no human in the loop, so a mismatching override is refused. The
         // override still works where it is genuinely needed: a GA the model
         // does not type.
-        let modelled = model.groups.groups.get(&ga).and_then(|g| g.dpt);
-        let requested: Option<Dpt> = match &args.dpt {
-            Some(s) => Some(
-                s.parse()
-                    .map_err(|e| invalid(format!("invalid dpt {s:?}: {e}")))?,
-            ),
-            None => None,
+        let check = WriteCheck {
+            dpt: args.dpt.as_deref(),
+            dpt_policy: DptOverridePolicy::MustMatchModel,
+            force: false,
         };
-        let dpt: Dpt = match (requested, modelled) {
-            (Some(requested), Some(known)) if requested != known => {
-                return ok(json!({
-                    "ga": ga.to_string(),
-                    "ok": false,
-                    "refused": true,
-                    "reason": format!(
-                        "GA {ga} is declared as DPT {known} in the model; refusing to write it \
-                         as {requested}. Correct groups.yaml if the model is wrong — the model \
-                         is the source of truth, not the caller"
-                    ),
-                }));
-            }
-            (_, Some(known)) => known,
-            (Some(requested), None) => requested,
-            (None, None) => {
-                return ok(json!({
-                    "ga": ga.to_string(),
-                    "ok": false,
-                    "reason": format!("GA {ga} has no DPT in the model; pass `dpt` to write it"),
-                }));
-            }
-        };
+        let write =
+            match prepare_group_write(Some(&model), ga, WriteValue::Human(&args.value), &check) {
+                Ok(write) => write,
+                Err(WriteRefusal::InvalidDpt { input, reason }) => {
+                    return Err(invalid(format!("invalid dpt {input:?}: {reason}")));
+                }
+                Err(refusal) => return ok(write_refusal_json(ga, &refusal)),
+            };
 
-        // Parse + encode the value. Parse/encode errors are structured refusals.
-        let typed = match bussard_model::parse_value(&dpt, &args.value) {
-            Ok(v) => v,
-            Err(e) => {
-                return ok(json!({
-                    "ga": ga.to_string(),
-                    "ok": false,
-                    "reason": e.to_string(),
-                }));
-            }
-        };
-        let payload = match bussard_model::encode(&dpt, &typed) {
-            Ok(p) => p,
-            Err(e) => {
-                return ok(json!({
-                    "ga": ga.to_string(),
-                    "ok": false,
-                    "reason": e.to_string(),
-                }));
-            }
-        };
-
-        let Some(handle) = self.state.bus.handle() else {
+        let Some(service) = self.state.bus.service() else {
             return ok(json!({
                 "ga": ga.to_string(),
                 "ok": false,
@@ -672,40 +637,68 @@ impl BussardMcp {
         // Share the read rate limiter (spacing + concurrency cap) with writes.
         let _permit = self.state.read_limiter.acquire().await;
 
-        // The shared write implementation: send (completion-tracked against the
-        // gateway ACK). A transport failure surfaces as ok:false — an honest
-        // failure, not a silent success.
-        let name = model.groups.groups.get(&ga).map(|g| g.name.clone());
-
-        // Pack only sub-byte DPTs into the 6-bit APDU; a byte-sized DPT with a
-        // small value must be sent whole (issue #59).
-        match ops::write_group(
-            handle,
-            ga,
-            &payload,
-            dpt.is_packable(),
-            WriteOptions::default(),
-        )
-        .await
-        {
-            Ok(outcome) => ok(json!({
+        // Send once (completion-tracked against the gateway ACK). A transport
+        // failure surfaces as ok:false — an honest failure, not a silent success.
+        match service.send_prepared(write).await {
+            Ok(sent) => ok(json!({
                 "ga": ga.to_string(),
                 "ok": true,
-                "confirmed": outcome.confirmed,
+                "confirmed": sent.confirmed,
                 "written": {
                     "address": ga.to_string(),
-                    "name": name,
-                    "value": typed.to_string(),
-                    "dpt": dpt.to_string(),
+                    "name": sent.write.name,
+                    "value": sent.write.value,
+                    "dpt": sent.write.dpt.map(|d| d.to_string()),
                 },
             })),
-            Err(err) => ok(json!({
-                "ga": ga.to_string(),
-                "ok": false,
-                "reason": format!("bus send failed: {err}"),
-            })),
+            Err(refusal) => ok(write_refusal_json(ga, &refusal)),
         }
     }
+}
+
+/// Renders a [`WriteRefusal`] as the `knx_write_group` result: `ok: false`, a
+/// reason in MCP words, and `refused: true` for the policy refusals (protected,
+/// DPT mismatch) as opposed to plain failures.
+fn write_refusal_json(ga: GroupAddress, refusal: &WriteRefusal) -> Value {
+    let (refused, reason) = match refusal {
+        WriteRefusal::Protected { name, .. } => (
+            true,
+            format!(
+                "GA {ga} ({name:?}) is protected (safety-critical); writes are refused via MCP"
+            ),
+        ),
+        WriteRefusal::DptMismatch {
+            declared,
+            requested,
+            ..
+        } => (
+            true,
+            format!(
+                "GA {ga} is declared as DPT {declared} in the model; refusing to write it \
+                 as {requested}. Correct groups.yaml if the model is wrong — the model \
+                 is the source of truth, not the caller"
+            ),
+        ),
+        WriteRefusal::NoDpt { .. } => (
+            false,
+            format!("GA {ga} has no DPT in the model; pass `dpt` to write it"),
+        ),
+        WriteRefusal::InvalidValue { reason, .. } | WriteRefusal::Encode { reason, .. } => {
+            (false, reason.clone())
+        }
+        WriteRefusal::WritesDisabled => (false, "bus writes are disabled on this server".into()),
+        WriteRefusal::Bus(err) => (false, format!("bus send failed: {err}")),
+        other => (false, other.to_string()),
+    };
+    let mut body = json!({
+        "ga": ga.to_string(),
+        "ok": false,
+        "reason": reason,
+    });
+    if refused {
+        body["refused"] = json!(true);
+    }
+    body
 }
 
 /// Discovers a device's interface objects and enumerates each one's property
@@ -719,17 +712,24 @@ async fn describe_over_l4<Ch: bussard_mgmt::L4Channel>(
 ) -> Result<Vec<Value>, String> {
     // Scale property reads to the device's max APDU when it exposes it.
     let _ = l4.negotiate_max_apdu().await;
-    let objects = bussard_mgmt::tables::discover_interface_objects(l4)
-        .await
-        .map_err(|e| format!("discovering interface objects: {e}"))?;
-    let mut out = Vec::with_capacity(objects.len());
-    for (index, object_type) in objects {
-        let props = bussard_mgmt::describe_object_properties(l4, index)
-            .await
-            .map_err(|e| format!("enumerating properties of object {index}: {e}"))?;
-        out.push(tools::describe_object_json(index, object_type, &props));
+    let objects = walk_objects(l4).await.map_err(|e| error_chain(&e))?;
+    Ok(objects
+        .iter()
+        .map(|o| tools::describe_object_json(o.index, o.object_type, &o.properties))
+        .collect())
+}
+
+/// Renders an error with its source chain on one line (`outer: inner: ...`),
+/// the shape an MCP `reason` string wants.
+fn error_chain(err: &dyn std::error::Error) -> String {
+    let mut out = err.to_string();
+    let mut source = err.source();
+    while let Some(inner) = source {
+        out.push_str(": ");
+        out.push_str(&inner.to_string());
+        source = inner.source();
     }
-    Ok(out)
+    out
 }
 
 /// A dedup key for a telegram: the fields that uniquely identify one bus event.
