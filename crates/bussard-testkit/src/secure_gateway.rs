@@ -154,13 +154,36 @@ impl SecureGatewayBuilder {
     /// # Errors
     /// A socket error, or no port free for both protocols after a few tries.
     pub async fn start(self) -> Result<MockSecureGateway, MockError> {
+        // The sockets of failed attempts are held until a pair binds, so the
+        // OS cannot hand the same ephemeral port back on the next try. On
+        // Windows a TCP bind inside an excluded port range fails with
+        // WSAEACCES, and consecutive ephemeral UDP ports often all fall in one
+        // such range, so the attempts alternate between UDP-first and
+        // TCP-first.
+        let mut held_udp = Vec::new();
+        let mut held_tcp = Vec::new();
         let mut last_err = None;
-        for _ in 0..16 {
-            let udp = UdpSocket::bind("127.0.0.1:0").await?;
-            let port = udp.local_addr()?.port();
-            match TcpListener::bind(("127.0.0.1", port)).await {
-                Ok(tcp) => return Ok(MockSecureGateway::spawn(self, udp, tcp, port)),
-                Err(err) => last_err = Some(err),
+        for attempt in 0..32 {
+            if attempt % 2 == 0 {
+                let udp = UdpSocket::bind("127.0.0.1:0").await?;
+                let port = udp.local_addr()?.port();
+                match TcpListener::bind(("127.0.0.1", port)).await {
+                    Ok(tcp) => return Ok(MockSecureGateway::spawn(self, udp, tcp, port)),
+                    Err(err) => {
+                        last_err = Some(err);
+                        held_udp.push(udp);
+                    }
+                }
+            } else {
+                let tcp = TcpListener::bind("127.0.0.1:0").await?;
+                let port = tcp.local_addr()?.port();
+                match UdpSocket::bind(("127.0.0.1", port)).await {
+                    Ok(udp) => return Ok(MockSecureGateway::spawn(self, udp, tcp, port)),
+                    Err(err) => {
+                        last_err = Some(err);
+                        held_tcp.push(tcp);
+                    }
+                }
             }
         }
         Err(MockError::Io(last_err.unwrap_or_else(|| {
