@@ -90,6 +90,18 @@ session goes to linking and to waiting on the bus, so:
 - Against a real device, prefer the knx-sim loop for iteration and go to the
   bus only to confirm.
 
+## Speed Changes
+
+Speed is a goal, stability and parity with ETS are constraints. A change that
+makes a bus command faster must keep the offline oracle byte-identical
+(`scripts/campaign/95-offline-oracle.sh`, plain and `--keyring` rows), keep every
+verification step (MCB, read-back, refusals), fall back to the previous
+behaviour on the first refusal or timeout when it relies on a device capability
+(multi-element reads, echoed load state, negative confirmations), derive every
+shortened wait from capture or live evidence cited in a comment, and report
+request counts and wall-clock before/after. It is closed only after a live run
+on the reference installation.
+
 ## Rust Edition and Toolchain
 
 - Edition: **2024**, set once in `[workspace.package]` (do not set it per crate).
