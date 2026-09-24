@@ -2,7 +2,7 @@
 # System B (mask 07B0) devices behind a KNXnet/IP tunnelling gateway on loopback.
 #
 # Run:   knx-sim knx-sim/examples/small-installation/sim.yaml
-# then drive bussard against 127.0.0.1:13671 (see knx/bussard.yaml and run.sh).
+# then drive bussard against 127.0.0.1:13671 (see knx/bussard.toml and run.sh).
 #
 # The devices start `unloaded` (fresh from the factory). run.sh flashes each one
 # with `bussard flash`; after a successful download a device parses its own
