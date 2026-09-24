@@ -110,7 +110,8 @@ GA the device listens to) and leave bussard out of it unless you pass
 `--secure-sender <tunnel IA>`: that adds bussard's own address with sequence 0,
 so the device accepts `write --keyring` from it. It is off by default because
 it widens who the device trusts; the next ETS download of the device removes
-it again. `monitor --keyring` is read-only on the bus.
+it again. `monitor --keyring` is read-only on the bus. See [Secured group
+writes from bussard](#secured-group-writes-from-bussard) for the workflow.
 
 **`apply <ADDRESS>`** writes the model's link tables (group address and
 association tables) to a device. It backs up first: the device's pre-apply
@@ -285,12 +286,14 @@ without starting over:
   pre-flight simply runs again. `BUSSARD_TUNNEL_RECONNECT_SECS` changes the
   60 s budget (`0` turns the re-establish off).
 
-A KNXnet/IP Secure tunnel runs over TCP, which has no ACK to time out: a pulled
+A KNXnet/IP Secure tunnel over TCP has no ACK to time out: a pulled
 cable used to go unnoticed until the kernel gave up on the connection, about
 37 s later. The tunnel now probes the link with a CONNECTIONSTATE_REQUEST once
 it has received nothing for 5 s and treats an answer missing for 2 more seconds
 as a lost link, so a loss is noticed after about 7 s.
-`BUSSARD_TCP_READ_DEADLINE_MS` changes the 5 s (`0` turns the probe off).
+`BUSSARD_TCP_READ_DEADLINE_MS` changes the 5 s (`0` turns the probe off). A
+secure session over UDP keeps its TUNNELING_ACKs, so its ACK timeout detects a
+loss as on a plain tunnel.
 
 Both kinds of loss are also covered while bussard waits for a device it
 restarted: the factory reset that opens a System B download, an
@@ -383,6 +386,34 @@ reported and the run moves on. `apply --line` records every outcome in
 `<dir>/captures/apply-line-<line>.json` as it goes, so after an interruption
 `--resume` continues without rewriting finished devices; a clean run deletes
 the file.
+
+### Secured group writes from bussard
+
+A secured group write from bussard reaches a receiver only if the receiver
+admits bussard's tunnel address as a sender. ETS never does that on its own:
+the S3 captures of issue #90 show ETS lists only device senders in the
+security individual address table (PID 54), never a tunnel address. The
+recommended ways, in order:
+
+1. **Admit the tunnel address on the receivers.** Find bussard's tunnel
+   address (the keyring's tunnelling user, or the address `write` names in its
+   note). Program each receiver of the secured GA once with
+   `bussard flash <device> --keyring <file> --secure-sender <tunnel IA>`, or
+   `bussard apply <device> --keyring <file> --secure-sender <tunnel IA>` for a
+   link-table-only update. The device then accepts that address with sequence
+   0 and tracks its sequence from the first write on. Use the same tunnelling
+   user (and so the same tunnel address) for later writes.
+2. **Send through a secured device.** Write to a plain GA that a secured
+   device (a logic module, a push button with a logic function) forwards to the
+   secured GA. The receivers keep their ETS sender list and bussard sends in
+   the clear.
+
+Either way the next ETS download of a receiver rewrites PID 54 without
+bussard's address, and `write --keyring` goes back to being dropped. The
+receiver gives no error: `write` reports success and nothing moves. bussard
+does not record which devices were programmed with `--secure-sender`, so after
+every secured write it prints a note with its tunnel address, the receivers
+the model links to the GA, and the command above.
 
 ## Protected group addresses
 
@@ -674,7 +705,11 @@ stays out of git.
   before any write. What the wire cannot yet confirm: the MAC input of the
   wrapped frames (a mismatch shows as a refused authentication, never as a
   wrong write) and the interface's idle timeout (bussard sends a keepalive
-  every 30 s). Secure routing (multicast) is not implemented. The tunnel
+  every 30 s, `BUSSARD_SECURE_KEEPALIVE_SECS` changes it; `bussard test
+  --secure-idle <secs>` measures the timeout read-only). An interface without
+  a TCP endpoint gets a UDP session ([#197](https://github.com/tmbo/bussard/issues/197)),
+  implemented from the KNX specification and verified against knx-sim only.
+  Secure routing (multicast) is not implemented. The tunnel
   slots on a secure interface belong to users: each ETS tunnelling user has
   its own tunnel address, and bussard picks a free one from the keyring.
 

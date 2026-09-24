@@ -18,14 +18,18 @@
 //! # KNXnet/IP Secure (issue #71 Phase B)
 //!
 //! With [`SecureTunnelConfig`](crate::SecureTunnelConfig) credentials the same
-//! state machine runs over a TCP connection carrying an authenticated
-//! KNXnet/IP Secure session: every frame is wrapped in a SECURE_WRAPPER, no
-//! TUNNELING_ACK is exchanged (TCP is reliable; the ETS capture of the Jung
-//! interface shows none), every HPAI is the TCP route-back HPAI, and a wrapped
-//! SESSION_STATUS keepalive goes out every
-//! [`SECURE_KEEPALIVE_INTERVAL`](crate::config::SECURE_KEEPALIVE_INTERVAL). A
-//! lost link re-establishes a new TCP connection and a new session before the
-//! CONNECT. [`Tunnel::connect`] picks the user: explicitly given, or from a
+//! state machine runs inside an authenticated KNXnet/IP Secure session: every
+//! frame is wrapped in a SECURE_WRAPPER and a wrapped SESSION_STATUS keepalive
+//! goes out every [`SecureTunnelConfig::keepalive`](crate::SecureTunnelConfig::keepalive)
+//! (30 s by default). Over TCP no TUNNELING_ACK is exchanged (TCP is reliable;
+//! the ETS capture of the Jung interface shows none) and every HPAI is the TCP
+//! route-back HPAI. Over UDP (issue #197, INFERRED, knx-sim-verified) the
+//! TUNNELING_ACK is back in the loop, wrapped, and the HPAIs name the real
+//! local endpoint as on a plain UDP tunnel. TCP is tried first; UDP is used
+//! when [`SecureTransport::Udp`] is configured, or with the default
+//! [`SecureTransport::Auto`] when the TCP connect is refused and the
+//! interface's extended search advertises KNXnet/IP Secure. A lost link
+//! re-establishes a new session on the same carrier before the CONNECT. [`Tunnel::connect`] picks the user: explicitly given, or from a
 //! keyring by matching the gateway's individual address (read with a
 //! SEARCH_REQUEST_EXTENDED) and preferring a free tunnel slot. A plain CONNECT
 //! refused by a secure-only interface becomes
@@ -110,8 +114,8 @@ use tokio::time::{self, Instant};
 use crate::cemi::CemiFrame;
 use crate::config::{
     CONNECT_TIMEOUT, ConnectionConfig, DISCONNECT_TIMEOUT, HEARTBEAT_INTERVAL, HEARTBEAT_RETRIES,
-    HEARTBEAT_TIMEOUT, SECURE_KEEPALIVE_INTERVAL, SECURE_PROBE_TIMEOUT, SecureSource, SecureUser,
-    TUNNELING_ACK_TIMEOUT, TUNNELING_RETRANSMITS, TunnelReconnect,
+    HEARTBEAT_TIMEOUT, SECURE_KEEPALIVE_INTERVAL, SECURE_PROBE_TIMEOUT, SecureSource,
+    SecureTransport, SecureUser, TUNNELING_ACK_TIMEOUT, TUNNELING_RETRANSMITS, TunnelReconnect,
 };
 use crate::conn::{BusConnection, TimestampedFrame};
 use crate::error::{Result, TransportError};
@@ -153,12 +157,12 @@ pub enum LinkState {
 }
 
 /// The socket under a tunnel: plain UDP, or a KNXnet/IP Secure session over
-/// TCP (issue #71 Phase B). The tunnel state machine talks plain KNXnet/IP
-/// frames to either.
+/// TCP or UDP (issue #71 Phase B, #197). The tunnel state machine talks plain
+/// KNXnet/IP frames to either.
 enum Link {
     /// A connected UDP socket (the classic tunnel).
     Udp(UdpSocket),
-    /// An authenticated secure session over TCP.
+    /// An authenticated secure session.
     Secure(Box<SecureLink>),
 }
 
@@ -191,10 +195,10 @@ impl Link {
     /// on `recv`), macOS mostly not at all. The error is consumed by the call
     /// that returns it and the socket stays usable, so while re-establishing a
     /// tunnel it is one more sign the gateway is away, not a reason to abandon
-    /// the attempt (issue #177). Never true on a secure (TCP) link, where a
+    /// the attempt (issue #177). Never true on a secure TCP link, where a
     /// reset is final.
     fn is_deferred_refusal(&self, err: &TransportError) -> bool {
-        matches!(self, Link::Udp(_))
+        self.is_udp()
             && matches!(
                 err,
                 TransportError::Io { source, .. }
@@ -205,10 +209,19 @@ impl Link {
             )
     }
 
-    /// Whether the tunnelling layer uses TUNNELING_ACK. Over TCP it does not
-    /// (CONFIRMED against the ETS capture: no ACKs on a TCP tunnel).
+    /// Whether the link runs over UDP (plain, or a secure session on UDP).
+    fn is_udp(&self) -> bool {
+        match self {
+            Link::Udp(_) => true,
+            Link::Secure(link) => link.is_udp(),
+        }
+    }
+
+    /// Whether the tunnelling layer uses TUNNELING_ACK: over UDP, plain or
+    /// secure. Over TCP it does not (CONFIRMED against the ETS capture: no
+    /// ACKs on a TCP tunnel).
     fn acks(&self) -> bool {
-        matches!(self, Link::Udp(_))
+        self.is_udp()
     }
 
     /// Sends the secure session keepalive; a no-op on UDP.
@@ -228,7 +241,7 @@ impl Link {
 }
 
 /// What [`Tunnel::connect`] decided to open.
-enum Plan {
+pub(crate) enum Plan {
     /// The plain UDP tunnel.
     Plain {
         /// What a secure probe already learned, so a refused CONNECT does not
@@ -238,7 +251,12 @@ enum Plan {
         keyring_note: Option<String>,
     },
     /// A secure tunnel with this user.
-    Secure(Box<SecureUser>),
+    Secure {
+        /// The chosen user.
+        user: Box<SecureUser>,
+        /// What the keyring probe learned, reused by the UDP fallback.
+        probed: Option<Box<GatewayDescription>>,
+    },
 }
 
 /// Command sent from a [`Tunnel`] handle to its background task.
@@ -285,19 +303,36 @@ impl Tunnel {
 
         let plan = plan_connection(config, gateway).await?;
         let secure_user = match &plan {
-            Plan::Secure(user) => Some(UserKeys::derive(user)),
+            Plan::Secure { user, .. } => Some(UserKeys::derive(user)),
             Plan::Plain { .. } => None,
         };
-        let (mut link, local_hpai) = match &secure_user {
-            Some(user) => {
-                let link = SecureLink::open(gateway, config.local_interface, user, CONNECT_TIMEOUT)
-                    .await?;
-                (Link::Secure(Box::new(link)), Hpai::tcp_route_back())
+        let requested = config
+            .secure
+            .as_ref()
+            .map(|s| s.transport)
+            .unwrap_or_default();
+        let (mut link, local_hpai) = match (&secure_user, &plan) {
+            (Some(user), Plan::Secure { probed, .. }) => {
+                let link = open_secure(
+                    gateway,
+                    config.local_interface,
+                    user,
+                    requested,
+                    probed.as_deref(),
+                    CONNECT_TIMEOUT,
+                )
+                .await?;
+                let hpai = link.hpai();
+                (Link::Secure(Box::new(link)), hpai)
             }
-            None => {
+            _ => {
                 let (socket, hpai) = udp_socket(gateway, config.local_interface).await?;
                 (Link::Udp(socket), hpai)
             }
+        };
+        let secure_transport = match &link {
+            Link::Secure(l) => l.transport(),
+            Link::Udp(_) => SecureTransport::Tcp,
         };
 
         let handshake = Self::handshake(&mut link, local_hpai).await;
@@ -320,9 +355,15 @@ impl Tunnel {
         let (link_tx, link_rx) = watch::channel(LinkState::Up { assigned_ia });
         if secure_user.is_some() {
             tracing::info!(
-                "KNXnet/IP Secure tunnel to {gateway} established (channel {channel_id})"
+                "KNXnet/IP Secure tunnel to {gateway} established over {secure_transport} \
+                 (channel {channel_id})"
             );
         }
+        let keepalive = config
+            .secure
+            .as_ref()
+            .map(|s| s.keepalive)
+            .unwrap_or(SECURE_KEEPALIVE_INTERVAL);
 
         let (cmd_tx, cmd_rx) = mpsc::channel(16);
         // Unbounded and never awaited: the task must not be able to block on
@@ -344,6 +385,8 @@ impl Tunnel {
             gateway,
             local_interface: config.local_interface,
             secure_user,
+            secure_transport,
+            keepalive,
             reconnect: config.reconnect,
             link_state: link_tx,
             last_rx: Instant::now(),
@@ -401,9 +444,12 @@ impl Tunnel {
     }
 }
 
-/// Binds the UDP socket of a plain tunnel and returns it with the HPAI it
-/// advertises.
-async fn udp_socket(gateway: SocketAddrV4, local_interface: Ipv4Addr) -> Result<(UdpSocket, Hpai)> {
+/// Binds the UDP socket of a plain tunnel (or a secure session over UDP) and
+/// returns it with the HPAI it advertises.
+pub(crate) async fn udp_socket(
+    gateway: SocketAddrV4,
+    local_interface: Ipv4Addr,
+) -> Result<(UdpSocket, Hpai)> {
     // Bind an ephemeral local UDP port on the chosen interface.
     let local_bind = SocketAddrV4::new(local_interface, 0);
     let socket = UdpSocket::bind(local_bind).await?;
@@ -433,7 +479,10 @@ async fn udp_socket(gateway: SocketAddrV4, local_interface: Ipv4Addr) -> Result<
 ///   when a keyring interface names this gateway's individual address as its
 ///   host and the gateway advertises KNXnet/IP Secure; the user whose tunnel
 ///   address is a free slot is preferred. Otherwise plain.
-async fn plan_connection(config: &ConnectionConfig, gateway: SocketAddrV4) -> Result<Plan> {
+pub(crate) async fn plan_connection(
+    config: &ConnectionConfig,
+    gateway: SocketAddrV4,
+) -> Result<Plan> {
     let Some(secure) = &config.secure else {
         return Ok(Plan::Plain {
             probed: None,
@@ -442,7 +491,10 @@ async fn plan_connection(config: &ConnectionConfig, gateway: SocketAddrV4) -> Re
     };
     if secure.source == SecureSource::Explicit {
         return match secure.users.first() {
-            Some(user) => Ok(Plan::Secure(Box::new(user.clone()))),
+            Some(user) => Ok(Plan::Secure {
+                user: Box::new(user.clone()),
+                probed: None,
+            }),
             None => Ok(Plan::Plain {
                 probed: None,
                 keyring_note: None,
@@ -511,13 +563,70 @@ async fn plan_connection(config: &ConnectionConfig, gateway: SocketAddrV4) -> Re
                 "KNXnet/IP Secure: using keyring tunnelling user {} for {gateway}",
                 user.user_id
             );
-            Ok(Plan::Secure(Box::new(user)))
+            Ok(Plan::Secure {
+                user: Box::new(user),
+                probed: Some(Box::new(probed)),
+            })
         }
         None => Ok(Plan::Plain {
             probed: Some(probed),
             keyring_note: None,
         }),
     }
+}
+
+/// Opens the secure session of a tunnel over the carrier `requested` names.
+///
+/// `Tcp` and `Udp` are taken literally. `Auto` tries TCP first, as ETS does
+/// with the tested interface, and falls back to UDP only when the TCP connect
+/// is refused and the interface's extended search (`probed`, or a fresh probe)
+/// advertises KNXnet/IP Secure: an interface without a TCP endpoint
+/// (issue #197). Any other TCP failure is returned as it is.
+pub(crate) async fn open_secure(
+    gateway: SocketAddrV4,
+    local: Ipv4Addr,
+    user: &UserKeys,
+    requested: SecureTransport,
+    probed: Option<&GatewayDescription>,
+    timeout: std::time::Duration,
+) -> Result<SecureLink> {
+    match requested {
+        SecureTransport::Tcp | SecureTransport::Udp => {
+            SecureLink::open(gateway, local, user, requested, timeout).await
+        }
+        SecureTransport::Auto => {
+            match SecureLink::open(gateway, local, user, SecureTransport::Tcp, timeout).await {
+                Err(err) if is_tcp_refusal(&err) => {
+                    let secure_capable = match probed {
+                        Some(d) => d.secure_capable(),
+                        None => crate::discovery::describe_gateway_extended(
+                            gateway,
+                            SECURE_PROBE_TIMEOUT,
+                        )
+                        .await
+                        .is_ok_and(|d| d.secure_capable()),
+                    };
+                    if !secure_capable {
+                        return Err(err);
+                    }
+                    tracing::info!(
+                        "KNXnet/IP Secure: {gateway} refused TCP but advertises Secure; \
+                         opening the session over UDP"
+                    );
+                    SecureLink::open(gateway, local, user, SecureTransport::Udp, timeout).await
+                }
+                other => other,
+            }
+        }
+    }
+}
+
+/// Whether `err` is a refused TCP connect (nothing listens on the port).
+fn is_tcp_refusal(err: &TransportError) -> bool {
+    matches!(
+        err,
+        TransportError::Io { source, .. } if source.kind() == std::io::ErrorKind::ConnectionRefused
+    )
 }
 
 /// Turns a refused plain CONNECT into its error: a secure-only interface
@@ -651,6 +760,11 @@ struct TaskState {
     /// The KNXnet/IP Secure user of this tunnel, if it is secure; a
     /// re-establish opens a fresh secure session with it.
     secure_user: Option<UserKeys>,
+    /// The carrier the secure session was opened on (`Tcp` or `Udp`); a
+    /// re-establish uses the same one. Unused on a plain tunnel.
+    secure_transport: SecureTransport,
+    /// The secure session keepalive interval (`ZERO` = none).
+    keepalive: std::time::Duration,
     /// How a lost link is re-established (issue #177).
     reconnect: TunnelReconnect,
     /// Publishes the link state to the handle (and through it the bus actor).
@@ -689,10 +803,15 @@ impl TaskState {
     async fn run(mut self) {
         let mut heartbeat =
             time::interval_at(Instant::now() + HEARTBEAT_INTERVAL, HEARTBEAT_INTERVAL);
-        let mut keepalive = time::interval_at(
-            Instant::now() + SECURE_KEEPALIVE_INTERVAL,
-            SECURE_KEEPALIVE_INTERVAL,
-        );
+        // A zero interval turns the keepalive off; the timer is then never
+        // polled (tokio's interval rejects a zero period).
+        let keepalive_on = !self.keepalive.is_zero();
+        let period = if keepalive_on {
+            self.keepalive
+        } else {
+            SECURE_KEEPALIVE_INTERVAL
+        };
+        let mut keepalive = time::interval_at(Instant::now() + period, period);
         let mut buf = [0u8; 1024];
 
         loop {
@@ -738,7 +857,7 @@ impl TaskState {
                 }
 
                 // Secure session keepalive (a no-op on a plain UDP tunnel).
-                _ = keepalive.tick() => {
+                _ = keepalive.tick(), if keepalive_on => {
                     if let Err(e) = self.link.keepalive().await
                         && let Err(err) = self.recover(e, &mut buf).await
                     {
@@ -1204,11 +1323,20 @@ impl TaskState {
     ) -> Result<(u8, Option<u16>)> {
         let deadline = Instant::now() + wait;
         if let Some(user) = &self.secure_user {
-            // A secure tunnel needs a fresh TCP connection and session: the old
-            // session died with the link. Closing its TCP connection releases
-            // the old channel on the gateway, so no DISCONNECT is owed.
-            let link = SecureLink::open(self.gateway, self.local_interface, user, wait).await?;
+            // A secure tunnel needs a fresh session on the same carrier: the
+            // old session died with the link. Ending it releases the old
+            // channel on the gateway, so no DISCONNECT is owed.
+            let link = SecureLink::open(
+                self.gateway,
+                self.local_interface,
+                user,
+                self.secure_transport,
+                wait,
+            )
+            .await?;
             self.link.close().await;
+            // A UDP session has a new socket, so a new endpoint to advertise.
+            self.local_hpai = link.hpai();
             self.link = Link::Secure(Box::new(link));
             *old_open = false;
         }

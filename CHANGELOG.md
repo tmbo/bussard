@@ -190,6 +190,13 @@ entry supersedes it and is not a diff against it.
   `BUSSARD_KEYRING_PASSWORD`). The campaign wrapper passes
   `--keyring "$BUSSARD_KEYRING"` to its probes and the step when that variable
   is set (#189).
+- KNXnet/IP Secure over UDP for an interface without a TCP endpoint: TCP is
+  tried first, UDP follows when the TCP connect is refused and the interface
+  advertises Secure; `--secure-transport auto|tcp|udp` forces one. The
+  session keepalive is configurable (`BUSSARD_SECURE_KEEPALIVE_SECS`), and
+  `bussard test --secure-idle <secs>` measures the interface's idle timeout
+  read-only. `write --keyring` prints a note on sender admission (PID 54,
+  `--secure-sender`) after a secured write (#197).
 - The frame shapes, the Secure DIBs and the interface's SESSION_RESPONSE MAC
   are checked against an ETS capture of a Jung interface by an ignored oracle
   test; knx-sim gained a secure-only interface mode; knxtrace decodes the
@@ -307,9 +314,9 @@ entry supersedes it and is not a diff against it.
 
 ### Known limitations
 
-- KNXnet/IP Secure runs over TCP only, as ETS does with the tested interface;
-  UDP secure sessions are not implemented, and the 30 s keepalive interval is
-  inferred rather than confirmed (#71).
+- KNXnet/IP Secure over UDP is implemented from the KNX specification and
+  verified against knx-sim only, and the 30 s keepalive interval is inferred
+  rather than confirmed (#71, #197).
 - ETS3-era products shipped only as encrypted `.vd4` files need the ETS
   project export as product source (#135).
 - Some Data Secure memory layouts are still inferred rather than confirmed by

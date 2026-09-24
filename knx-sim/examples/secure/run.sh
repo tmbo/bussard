@@ -48,6 +48,15 @@
 #   POSITIVE  describe 1.1.3 --secure-user 2 --secure-password-env -> explicit user
 #   NEGATIVE  a wrong tunnelling password -> refused, the sim reports the failed auth
 #
+# KNXnet/IP Secure over UDP (issue #197; sim-ipsecure-udp.yaml, a secure-only
+# interface WITHOUT a TCP endpoint on port 13695, 4 s session timeout):
+#   POSITIVE  describe 1.1.3 --keyring -> TCP refused, the secure session falls
+#             back to UDP (keepalive every 1 s via BUSSARD_SECURE_KEEPALIVE_SECS)
+#   POSITIVE  describe 1.1.3 --secure-transport udp --secure-user 2 -> explicit UDP
+#   NEGATIVE  describe 1.1.3 --secure-transport tcp -> fails, no UDP fallback
+#   POSITIVE  test --secure-idle 1 -> ALIVE; test --secure-idle 6 -> DROPPED
+#             (the sim's STATUS_TIMEOUT after 4 s), read-only
+#
 # The negatives are checked on both sides: bussard must exit non-zero with an
 # actionable message, and the simulator's event log must show the refusal reason.
 #
@@ -697,7 +706,75 @@ if log_has "$mark" "SECURE authentication refused"; then
 else
   bad "the sim did not report the refused authentication"
 fi
-unset BUSSARD_KEYRING_PASSWORD SIM_TUNNEL_PW SIM_WRONG_PW
+unset SIM_WRONG_PW
+kill "$SIM_PID" 2>/dev/null
+
+# --- KNXnet/IP Secure over UDP (issue #197) -------------------------------------
+say "KNXnet/IP Secure over UDP: an interface without a TCP endpoint"
+GATEWAY3="127.0.0.1:13695"
+SIM_LOG="$(mktemp -t knxsimipsecudp.XXXXXX)"
+RUST_LOG=${RUST_LOG:-info,knx_sim=debug} "$SERVE" "$HERE/sim-ipsecure-udp.yaml" >"$SIM_LOG" 2>&1 &
+SIM_PID=$!
+trap 'kill "$SIM_PID" 2>/dev/null; exit 130' INT TERM
+sleep 2
+if ! kill -0 "$SIM_PID" 2>/dev/null; then
+  echo "UDP secure simulator did not start:"; cat "$SIM_LOG"; exit 1
+fi
+ok "UDP-only secure simulator listening on $GATEWAY3 (pid $SIM_PID)"
+# The sim times an idle session out after 4 s; a 1 s keepalive keeps the
+# describe sessions alive (and exercises the env override).
+export BUSSARD_SECURE_KEEPALIVE_SECS=1
+
+mark=$(log_mark)
+out="$("$BUSSARD" describe 1.1.3 --json --dir "$MODEL" --gateway "$GATEWAY3" \
+  --keyring "$KEYRING" 2>/dev/null)"
+rc=$?
+if [[ $rc -eq 0 ]] && grep -q '"object_type"' <<<"$out"; then
+  ok "describe 1.1.3 --keyring: TCP refused, the secure tunnel fell back to UDP"
+else
+  bad "describe 1.1.3 --keyring over the UDP-only interface failed (exit $rc)"
+  tail -4 <<<"$out" | sed 's/^/      /'
+fi
+if log_has "$mark" "SECURE session authenticated" && log_has "$mark" "SecureUdp"; then
+  ok "the sim authenticated a secure session over UDP"
+else
+  bad "the sim saw no authenticated UDP secure session"
+fi
+
+out="$("$BUSSARD" describe 1.1.3 --json --dir "$MODEL" --gateway "$GATEWAY3" \
+  --secure-transport udp --secure-user 2 --secure-password-env SIM_TUNNEL_PW 2>/dev/null)"
+rc=$?
+if [[ $rc -eq 0 ]] && grep -q '"object_type"' <<<"$out"; then
+  ok "describe 1.1.3 --secure-transport udp --secure-user 2: explicit UDP session"
+else
+  bad "describe 1.1.3 with --secure-transport udp failed (exit $rc)"; tail -4 <<<"$out" | sed 's/^/      /'
+fi
+
+out="$(BUSSARD_TUNNEL_RECONNECT_SECS=0 "$BUSSARD" describe 1.1.3 --dir "$MODEL" \
+  --gateway "$GATEWAY3" --secure-transport tcp --secure-user 2 \
+  --secure-password-env SIM_TUNNEL_PW 2>&1)"
+rc=$?
+if [[ $rc -ne 0 ]]; then
+  ok "describe 1.1.3 --secure-transport tcp: fails without a UDP fallback (exit $rc)"
+else
+  bad "--secure-transport tcp reached a UDP-only interface"
+fi
+
+out="$("$BUSSARD" test --secure-idle 1 --dir "$MODEL" --gateway "$GATEWAY3" \
+  --secure-user 2 --secure-password-env SIM_TUNNEL_PW 2>/dev/null)"
+if grep -q "udp) idle 1 s: ALIVE" <<<"$out"; then
+  ok "test --secure-idle 1: the session survived (UDP)"
+else
+  bad "test --secure-idle 1 did not report ALIVE"; tail -3 <<<"$out" | sed 's/^/      /'
+fi
+out="$("$BUSSARD" test --secure-idle 6 --json --dir "$MODEL" --gateway "$GATEWAY3" \
+  --secure-user 2 --secure-password-env SIM_TUNNEL_PW 2>/dev/null)"
+if grep -q '"outcome": "dropped"' <<<"$out" && grep -q "STATUS_TIMEOUT" <<<"$out"; then
+  ok "test --secure-idle 6: the sim's 4 s session timeout was measured (dropped)"
+else
+  bad "test --secure-idle 6 did not report the drop"; tail -6 <<<"$out" | sed 's/^/      /'
+fi
+unset BUSSARD_KEYRING_PASSWORD SIM_TUNNEL_PW BUSSARD_SECURE_KEEPALIVE_SECS
 
 # --- Verdict ----------------------------------------------------------------
 kill "$SIM_PID" 2>/dev/null
@@ -712,4 +789,4 @@ echo "  KNX Data Secure conformance loop OK: tool-access flash to verified Loade
 echo "  both CCM modes, negatives refused on both sides, plain path unchanged,"
 echo "  secured group read/write/monitor on 1/2/3, PID 54 secured senders,"
 echo "  KNXnet/IP Secure tunnelling (keyring and explicit user, secure-only"
-echo "  refusal, wrong password)"
+echo "  refusal, wrong password), over UDP (fallback, explicit, idle probe)"

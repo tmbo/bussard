@@ -157,10 +157,11 @@ impl TunnelReconnect {
     }
 }
 
-/// Interval of the KNXnet/IP Secure session keepalive (a wrapped
+/// Default interval of the KNXnet/IP Secure session keepalive (a wrapped
 /// SESSION_STATUS `STATUS_KEEPALIVE`). The server drops an idle session after
 /// its session timeout (60 s in the KNX specification); every 30 s keeps well
-/// inside that with one lost keepalive to spare.
+/// inside that with one lost keepalive to spare. INFERRED (the XKNX rate);
+/// [`SecureTunnelConfig::keepalive`] overrides it (issue #197).
 pub const SECURE_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Timeout for the KNXnet/IP Secure probe (SEARCH_REQUEST_EXTENDED) that
@@ -227,8 +228,35 @@ pub enum SecureSource {
     Explicit,
 }
 
-/// KNXnet/IP Secure tunnelling configuration: the candidate users and how
-/// they were supplied.
+/// Which carrier a KNXnet/IP Secure session runs over (issue #197).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SecureTransport {
+    /// TCP first, as ETS does with the tested interface; UDP when the TCP
+    /// connect is refused and the interface's extended search advertises
+    /// KNXnet/IP Secure.
+    #[default]
+    Auto,
+    /// TCP only: no TUNNELING_ACK, route-back HPAIs (CONFIRMED against the
+    /// Jung interface).
+    Tcp,
+    /// UDP only: the session and the tunnel on one UDP socket, TUNNELING_ACK
+    /// inside SECURE_WRAPPERs, the real local endpoint in every HPAI.
+    /// INFERRED from the KNX specification, verified against knx-sim only.
+    Udp,
+}
+
+impl std::fmt::Display for SecureTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            SecureTransport::Auto => "auto",
+            SecureTransport::Tcp => "tcp",
+            SecureTransport::Udp => "udp",
+        })
+    }
+}
+
+/// KNXnet/IP Secure tunnelling configuration: the candidate users, how they
+/// were supplied, the carrier and the session keepalive.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecureTunnelConfig {
     /// The candidate users. With [`SecureSource::Keyring`] the transport picks
@@ -236,6 +264,38 @@ pub struct SecureTunnelConfig {
     pub users: Vec<SecureUser>,
     /// Where the users came from.
     pub source: SecureSource,
+    /// TCP, UDP, or TCP with a UDP fallback (the default).
+    pub transport: SecureTransport,
+    /// How often the tunnel sends a wrapped `STATUS_KEEPALIVE`
+    /// ([`SECURE_KEEPALIVE_INTERVAL`] by default). [`Duration::ZERO`] sends
+    /// none, leaving the session to the tunnel's own traffic and heartbeats.
+    pub keepalive: Duration,
+}
+
+impl SecureTunnelConfig {
+    /// `users` from `source`, with the default carrier ([`SecureTransport::Auto`])
+    /// and keepalive ([`SECURE_KEEPALIVE_INTERVAL`]).
+    pub fn new(users: Vec<SecureUser>, source: SecureSource) -> Self {
+        SecureTunnelConfig {
+            users,
+            source,
+            transport: SecureTransport::Auto,
+            keepalive: SECURE_KEEPALIVE_INTERVAL,
+        }
+    }
+
+    /// This configuration over `transport`.
+    pub fn with_transport(mut self, transport: SecureTransport) -> Self {
+        self.transport = transport;
+        self
+    }
+
+    /// This configuration with a different keepalive interval
+    /// (`Duration::ZERO` turns the keepalive off).
+    pub fn with_keepalive(mut self, keepalive: Duration) -> Self {
+        self.keepalive = keepalive;
+        self
+    }
 }
 
 /// Which transport to use.
@@ -307,5 +367,23 @@ impl ConnectionConfig {
     pub fn with_reconnect(mut self, reconnect: TunnelReconnect) -> Self {
         self.reconnect = reconnect;
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_secure_tunnel_config_new_defaults_and_overrides() {
+        let config = SecureTunnelConfig::new(Vec::new(), SecureSource::Explicit);
+        assert_eq!(config.transport, SecureTransport::Auto);
+        assert_eq!(config.keepalive, SECURE_KEEPALIVE_INTERVAL);
+        let config = config
+            .with_transport(SecureTransport::Udp)
+            .with_keepalive(Duration::from_secs(10));
+        assert_eq!(config.transport, SecureTransport::Udp);
+        assert_eq!(config.keepalive, Duration::from_secs(10));
+        assert_eq!(SecureTransport::Udp.to_string(), "udp");
     }
 }

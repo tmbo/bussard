@@ -38,6 +38,8 @@ pub const SESSION_STATUS: u16 = 0x0954;
 pub const STATUS_SUCCESS: u8 = 0x00;
 /// SESSION_STATUS: authentication failed.
 pub const STATUS_AUTH_FAILED: u8 = 0x01;
+/// SESSION_STATUS: the session timed out (idle).
+pub const STATUS_TIMEOUT: u8 = 0x03;
 /// SESSION_STATUS: keepalive.
 pub const STATUS_KEEPALIVE: u8 = 0x04;
 /// SESSION_STATUS: close.

@@ -310,7 +310,12 @@ pub fn resolve_config(
         multicast: SocketAddrV4::new(DEFAULT_MULTICAST, DEFAULT_PORT),
         local_interface: Ipv4Addr::UNSPECIFIED,
         reconnect: tunnel_reconnect(),
-        secure: secure_tunnel(),
+        secure: secure_tunnel().map(|secure| {
+            apply_secure_keepalive(
+                secure,
+                std::env::var(SECURE_KEEPALIVE_SECS_ENV).ok().as_deref(),
+            )
+        }),
     })
 }
 
@@ -324,6 +329,20 @@ pub(crate) const TUNNEL_RECONNECT_SECS_ENV: &str = "BUSSARD_TUNNEL_RECONNECT_SEC
 /// traffic the tunnel probes the link and re-establishes it when the probe goes
 /// unanswered. `0` turns the check off. Unset means the default (5000 ms).
 pub(crate) const TCP_READ_DEADLINE_MS_ENV: &str = "BUSSARD_TCP_READ_DEADLINE_MS";
+
+/// Environment variable that sets the KNXnet/IP Secure session keepalive
+/// interval in seconds (issue #197): a wrapped `STATUS_KEEPALIVE` goes out this
+/// often. `0` sends none. Unset means the default (30 s).
+pub(crate) const SECURE_KEEPALIVE_SECS_ENV: &str = "BUSSARD_SECURE_KEEPALIVE_SECS";
+
+/// Applies a [`SECURE_KEEPALIVE_SECS_ENV`] value to `secure`; an absent or
+/// unparsable value keeps its interval.
+fn apply_secure_keepalive(secure: SecureTunnelConfig, value: Option<&str>) -> SecureTunnelConfig {
+    match value.and_then(|v| v.trim().parse::<u64>().ok()) {
+        Some(secs) => secure.with_keepalive(std::time::Duration::from_secs(secs)),
+        None => secure,
+    }
+}
 
 /// The tunnel re-establish policy, honouring [`TUNNEL_RECONNECT_SECS_ENV`] and
 /// [`TCP_READ_DEADLINE_MS_ENV`].
@@ -465,6 +484,22 @@ mod tests {
                 .is_zero()
         );
     }
+
+    #[test]
+    fn test_apply_secure_keepalive_maps_env_values() {
+        use bussard_transport::SecureSource;
+        use bussard_transport::config::SECURE_KEEPALIVE_INTERVAL;
+        let base = SecureTunnelConfig::new(Vec::new(), SecureSource::Explicit);
+        assert_eq!(base.keepalive, SECURE_KEEPALIVE_INTERVAL);
+        assert_eq!(apply_secure_keepalive(base.clone(), None), base);
+        assert_eq!(apply_secure_keepalive(base.clone(), Some("junk")), base);
+        assert_eq!(
+            apply_secure_keepalive(base.clone(), Some(" 45 ")).keepalive,
+            std::time::Duration::from_secs(45)
+        );
+        assert!(apply_secure_keepalive(base, Some("0")).keepalive.is_zero());
+    }
+
     use bussard_transport::write_gate::{ALLOW_REAL_GATEWAY_ENV, is_loopback_gateway};
 
     /// Builds a tunnel [`ConnectionConfig`] pointed at `host` for gate tests.

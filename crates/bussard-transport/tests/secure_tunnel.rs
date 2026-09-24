@@ -12,8 +12,8 @@ use bussard_testkit::secure_gateway::SECURE_GATEWAY_IA;
 use bussard_testkit::{MockSecureGateway, TestResult, ga, ia};
 use bussard_transport::cemi::{CemiFrame, MessageCode};
 use bussard_transport::{
-    BusConnection, ConnectionConfig, LinkState, SecureSource, SecureTunnelConfig, SecureUser,
-    Transport, TransportError, TunnelReconnect,
+    BusConnection, ConnectionConfig, LinkState, SecureIdleOutcome, SecureSource, SecureTransport,
+    SecureTunnelConfig, SecureUser, Transport, TransportError, TunnelReconnect, probe_secure_idle,
 };
 
 const DEVICE_AUTH: &str = "device-auth-code";
@@ -76,10 +76,10 @@ async fn expect_con(conn: &mut Transport) -> TestResult<CemiFrame> {
 #[tokio::test]
 async fn test_secure_tunnel_explicit_user_connects_sends_and_closes() -> TestResult {
     let gw = gateway().await?;
-    let secure = SecureTunnelConfig {
-        users: vec![user(3, USER3_KEY, TUNNEL_23, None)],
-        source: SecureSource::Explicit,
-    };
+    let secure = SecureTunnelConfig::new(
+        vec![user(3, USER3_KEY, TUNNEL_23, None)],
+        SecureSource::Explicit,
+    );
     let mut conn = Transport::connect(&config(&gw, Some(secure))).await?;
     // The interface assigns the authenticated user's tunnel address.
     assert_eq!(conn.assigned_individual_address(), Some(TUNNEL_23));
@@ -110,15 +110,15 @@ async fn test_secure_tunnel_explicit_user_connects_sends_and_closes() -> TestRes
 #[tokio::test]
 async fn test_secure_tunnel_keyring_picks_the_user_of_this_interface() -> TestResult {
     let gw = gateway().await?;
-    let secure = SecureTunnelConfig {
-        users: vec![
+    let secure = SecureTunnelConfig::new(
+        vec![
             // Another interface's user: never chosen.
             user(7, "other-interface", 0x1201, Some(0x1200)),
             user(2, USER2_KEY, TUNNEL_22, Some(SECURE_GATEWAY_IA)),
             user(3, USER3_KEY, TUNNEL_23, Some(SECURE_GATEWAY_IA)),
         ],
-        source: SecureSource::Keyring,
-    };
+        SecureSource::Keyring,
+    );
     let conn = Transport::connect(&config(&gw, Some(secure))).await?;
     assert_eq!(conn.assigned_individual_address(), Some(TUNNEL_22));
     conn.close().await?;
@@ -152,10 +152,10 @@ async fn test_secure_only_interface_without_credentials_fails_fast() -> TestResu
 #[tokio::test]
 async fn test_keyring_without_a_user_for_this_interface_names_it() -> TestResult {
     let gw = gateway().await?;
-    let secure = SecureTunnelConfig {
-        users: vec![user(7, "other-interface", 0x1201, Some(0x1200))],
-        source: SecureSource::Keyring,
-    };
+    let secure = SecureTunnelConfig::new(
+        vec![user(7, "other-interface", 0x1201, Some(0x1200))],
+        SecureSource::Keyring,
+    );
     let err = match Transport::connect(&config(&gw, Some(secure))).await {
         Ok(_) => return Err("must refuse".into()),
         Err(err) => err,
@@ -171,10 +171,10 @@ async fn test_keyring_without_a_user_for_this_interface_names_it() -> TestResult
 #[tokio::test]
 async fn test_wrong_password_is_a_fatal_auth_failure() -> TestResult {
     let gw = gateway().await?;
-    let secure = SecureTunnelConfig {
-        users: vec![user(3, "wrong-password", TUNNEL_23, None)],
-        source: SecureSource::Explicit,
-    };
+    let secure = SecureTunnelConfig::new(
+        vec![user(3, "wrong-password", TUNNEL_23, None)],
+        SecureSource::Explicit,
+    );
     let err = match Transport::connect(&config(&gw, Some(secure))).await {
         Ok(_) => return Err("a wrong password must fail".into()),
         Err(err) => err,
@@ -193,10 +193,7 @@ async fn test_wrong_device_authentication_code_refuses_the_interface() -> TestRe
     let gw = gateway().await?;
     let mut bad = user(3, USER3_KEY, TUNNEL_23, None);
     bad.device_authentication_code = Some(Password::new("not-the-code"));
-    let secure = SecureTunnelConfig {
-        users: vec![bad],
-        source: SecureSource::Explicit,
-    };
+    let secure = SecureTunnelConfig::new(vec![bad], SecureSource::Explicit);
     let err = match Transport::connect(&config(&gw, Some(secure))).await {
         Ok(_) => return Err("an unverified interface must be refused".into()),
         Err(err) => err,
@@ -219,10 +216,10 @@ async fn test_secure_tunnel_reestablishes_a_new_session_after_link_loss() -> Tes
         .drop_after_requests(1)
         .start()
         .await?;
-    let secure = SecureTunnelConfig {
-        users: vec![user(3, USER3_KEY, TUNNEL_23, None)],
-        source: SecureSource::Explicit,
-    };
+    let secure = SecureTunnelConfig::new(
+        vec![user(3, USER3_KEY, TUNNEL_23, None)],
+        SecureSource::Explicit,
+    );
     let cfg = ConnectionConfig::tunnel(gw.addr())
         .with_reconnect(TunnelReconnect::with_budget(Duration::from_secs(10)))
         .with_secure(Some(secure));
@@ -261,10 +258,10 @@ async fn test_secure_tunnel_reestablishes_a_new_session_after_link_loss() -> Tes
 /// A secure tunnel to `gw` with a 10 s re-establish budget and `deadline` as
 /// its TCP read deadline.
 fn stall_config(gw: &MockSecureGateway, deadline: Duration) -> ConnectionConfig {
-    let secure = SecureTunnelConfig {
-        users: vec![user(3, USER3_KEY, TUNNEL_23, None)],
-        source: SecureSource::Explicit,
-    };
+    let secure = SecureTunnelConfig::new(
+        vec![user(3, USER3_KEY, TUNNEL_23, None)],
+        SecureSource::Explicit,
+    );
     ConnectionConfig::tunnel(gw.addr())
         .with_reconnect(
             TunnelReconnect::with_budget(Duration::from_secs(10)).with_tcp_read_deadline(deadline),
@@ -393,5 +390,212 @@ async fn test_secure_tunnel_without_read_deadline_does_not_probe() -> TestResult
         .is_ok();
     assert!(!noticed, "without a read deadline nothing probes the link");
     assert_eq!(gw.stats()?.heartbeats, 0);
+    Ok(())
+}
+
+// --- KNXnet/IP Secure over UDP, keepalive, idle probe (issue #197) ---------
+
+/// Explicit user 3 over `transport`, with the TCP read deadline off so the
+/// only idle traffic is what the test is about.
+fn explicit(gw: &MockSecureGateway, transport: SecureTransport) -> ConnectionConfig {
+    let secure = SecureTunnelConfig::new(
+        vec![user(3, USER3_KEY, TUNNEL_23, None)],
+        SecureSource::Explicit,
+    )
+    .with_transport(transport);
+    ConnectionConfig::tunnel(gw.addr())
+        .with_reconnect(TunnelReconnect::disabled().with_tcp_read_deadline(Duration::ZERO))
+        .with_secure(Some(secure))
+}
+
+/// A mock that also serves secure sessions over UDP.
+async fn udp_gateway() -> TestResult<MockSecureGateway> {
+    Ok(MockSecureGateway::builder()
+        .device_auth(device_key())
+        .user(3, user_key(USER3_KEY), TUNNEL_23)
+        .udp_sessions()
+        .start()
+        .await?)
+}
+
+#[tokio::test]
+async fn test_secure_tunnel_over_udp_acks_inside_the_wrappers() -> TestResult {
+    let gw = udp_gateway().await?;
+    let mut conn = Transport::connect(&explicit(&gw, SecureTransport::Udp)).await?;
+    assert_eq!(conn.assigned_individual_address(), Some(TUNNEL_23));
+
+    let frame = CemiFrame::group_write_packed(ga("1/2/3")?, ia("1.1.23")?, &[1]);
+    conn.send(frame.clone()).await?;
+    let con = expect_con(&mut conn).await?;
+    assert_eq!(con.destination, frame.destination);
+    conn.close().await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let stats = gw.stats()?;
+    assert_eq!(stats.udp_sessions, 1, "the session ran over UDP");
+    assert_eq!(stats.sessions, 1);
+    assert_eq!(stats.connects, 1);
+    assert_eq!(stats.requests, vec![frame]);
+    // The client acknowledged the gateway's L_Data.con: TUNNELING_ACK is back
+    // in the loop over UDP (and the send itself waited for the gateway's).
+    assert!(stats.client_acks >= 1, "no TUNNELING_ACK from the client");
+    assert_eq!(stats.disconnects, 1);
+    assert_eq!(stats.closes, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_secure_tunnel_auto_falls_back_to_udp_when_tcp_is_refused() -> TestResult {
+    let gw = MockSecureGateway::builder()
+        .device_auth(device_key())
+        .user(3, user_key(USER3_KEY), TUNNEL_23)
+        .udp_sessions()
+        .without_tcp()
+        .start()
+        .await?;
+    let mut conn = Transport::connect(&explicit(&gw, SecureTransport::Auto)).await?;
+    let frame = CemiFrame::group_write_packed(ga("1/2/3")?, ia("1.1.23")?, &[0]);
+    conn.send(frame.clone()).await?;
+    let _ = expect_con(&mut conn).await?;
+    conn.close().await?;
+    let stats = gw.stats()?;
+    assert_eq!(stats.udp_sessions, 1, "fell back to UDP");
+    assert!(
+        stats.extended_searches >= 1,
+        "the fallback checked that the interface advertises Secure"
+    );
+    assert_eq!(stats.requests, vec![frame]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_secure_tunnel_keyring_falls_back_to_udp_when_tcp_is_refused() -> TestResult {
+    let gw = MockSecureGateway::builder()
+        .device_auth(device_key())
+        .user(2, user_key(USER2_KEY), TUNNEL_22)
+        .udp_sessions()
+        .without_tcp()
+        .start()
+        .await?;
+    let secure = SecureTunnelConfig::new(
+        vec![user(2, USER2_KEY, TUNNEL_22, Some(SECURE_GATEWAY_IA))],
+        SecureSource::Keyring,
+    );
+    let conn = Transport::connect(&config(&gw, Some(secure))).await?;
+    assert_eq!(conn.assigned_individual_address(), Some(TUNNEL_22));
+    conn.close().await?;
+    assert_eq!(gw.stats()?.udp_sessions, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_secure_tunnel_tcp_only_does_not_fall_back() -> TestResult {
+    let gw = MockSecureGateway::builder()
+        .device_auth(device_key())
+        .user(3, user_key(USER3_KEY), TUNNEL_23)
+        .udp_sessions()
+        .without_tcp()
+        .start()
+        .await?;
+    let err = match Transport::connect(&explicit(&gw, SecureTransport::Tcp)).await {
+        Ok(_) => return Err("--secure-transport tcp must not use UDP".into()),
+        Err(err) => err,
+    };
+    assert!(matches!(err, TransportError::Io { .. }), "got {err:?}");
+    assert_eq!(gw.stats()?.udp_sessions, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_secure_tunnel_keepalive_interval_is_configurable() -> TestResult {
+    let gw = gateway().await?;
+    let fast = explicit(&gw, SecureTransport::Tcp);
+    let fast = fast.clone().with_secure(
+        fast.secure
+            .map(|s| s.with_keepalive(Duration::from_millis(150))),
+    );
+    let conn = Transport::connect(&fast).await?;
+    tokio::time::sleep(Duration::from_millis(1000)).await;
+    conn.close().await?;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let keepalives = gw.stats()?.keepalives;
+    assert!(keepalives >= 4, "150 ms keepalive sent only {keepalives}");
+
+    // Zero turns it off.
+    let gw = gateway().await?;
+    let off = explicit(&gw, SecureTransport::Tcp);
+    let off = off
+        .clone()
+        .with_secure(off.secure.map(|s| s.with_keepalive(Duration::ZERO)));
+    let conn = Transport::connect(&off).await?;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    conn.close().await?;
+    assert_eq!(gw.stats()?.keepalives, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_probe_secure_idle_reports_a_live_session() -> TestResult {
+    let gw = udp_gateway().await?;
+    for transport in [SecureTransport::Tcp, SecureTransport::Udp] {
+        let report =
+            probe_secure_idle(&explicit(&gw, transport), Duration::from_millis(300)).await?;
+        assert_eq!(report.transport, transport);
+        assert_eq!(report.user_id, 3);
+        assert!(
+            matches!(report.outcome, SecureIdleOutcome::Alive { .. }),
+            "{transport}: {:?}",
+            report.outcome
+        );
+    }
+    let stats = gw.stats()?;
+    assert_eq!(stats.connects, 0, "the probe never opens a tunnel");
+    assert_eq!(stats.keepalives, 0, "nor sends a keepalive");
+    assert!(stats.requests.is_empty(), "nothing reaches the bus");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_probe_secure_idle_detects_the_session_timeout() -> TestResult {
+    let gw = MockSecureGateway::builder()
+        .device_auth(device_key())
+        .user(3, user_key(USER3_KEY), TUNNEL_23)
+        .udp_sessions()
+        .session_timeout(Duration::from_millis(300))
+        .start()
+        .await?;
+    // TCP: the interface announces the timeout and closes.
+    let report =
+        probe_secure_idle(&explicit(&gw, SecureTransport::Tcp), Duration::from_secs(1)).await?;
+    match report.outcome {
+        SecureIdleOutcome::Dropped { after, reason } => {
+            assert!(
+                after >= Duration::from_millis(300),
+                "dropped after {after:?}"
+            );
+            assert!(after < Duration::from_secs(1), "dropped after {after:?}");
+            assert!(reason.contains("SESSION_STATUS"), "{reason}");
+        }
+        other => return Err(format!("expected a drop over TCP, got {other:?}").into()),
+    }
+    // UDP: the interface forgets the session; the probe goes unanswered.
+    let report =
+        probe_secure_idle(&explicit(&gw, SecureTransport::Udp), Duration::from_secs(1)).await?;
+    assert_eq!(report.outcome, SecureIdleOutcome::Silent);
+    assert_eq!(gw.stats()?.timeouts, 2);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_probe_secure_idle_without_credentials_is_refused() -> TestResult {
+    let gw = gateway().await?;
+    let err = match probe_secure_idle(&config(&gw, None), Duration::from_millis(10)).await {
+        Ok(r) => return Err(format!("no credentials must be refused, got {r:?}").into()),
+        Err(err) => err,
+    };
+    assert!(
+        matches!(err, TransportError::SecureNotSelected { .. }),
+        "got {err:?}"
+    );
     Ok(())
 }
