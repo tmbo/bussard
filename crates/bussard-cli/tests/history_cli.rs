@@ -14,10 +14,12 @@ use bussard_model::history::{History, SnapshotReason};
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 /// The `groups.toml` the baseline snapshot holds.
-const BASE_GROUPS: &str = "groups:\n  \"0/0/4\":\n    name: Porch light\n    dpt: \"1.001\"\n";
+const BASE_GROUPS: &str =
+    "groups = [\n  { address = \"0/0/4\", name = \"Porch light\", dpt = \"1.001\" },\n]\n";
 
 /// The `groups.toml` after the edit under test.
-const EDITED_GROUPS: &str = "groups:\n  \"0/0/4\":\n    name: Front light\n    dpt: \"1.001\"\n";
+const EDITED_GROUPS: &str =
+    "groups = [\n  { address = \"0/0/4\", name = \"Front light\", dpt = \"1.001\" },\n]\n";
 
 /// A fresh temporary model directory.
 fn model_dir(tag: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -29,7 +31,7 @@ fn model_dir(tag: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("devices"))?;
     std::fs::write(dir.join("groups.toml"), BASE_GROUPS)?;
-    std::fs::write(dir.join("links.yaml"), "links: {}\n")?;
+    std::fs::write(dir.join("bussard.lock"), "version = 1\nsource = \"home.knxproj\"\n")?;
     Ok(dir)
 }
 
@@ -86,10 +88,10 @@ fn test_status_history_show_and_undo_round_trip() -> TestResult {
     assert_eq!(json["changes"][0]["group"], "0/0/4");
     assert!(json["base"].is_string());
 
-    // `--raw` is the file-level view for the people who do read YAML.
+    // `--raw` is the file-level view for the people who do read TOML.
     let out = run(&dir, &["status", "--raw"])?;
     assert!(out.contains("--- snapshot/groups.toml"), "{out}");
-    assert!(out.contains("+    name: Front light"), "{out}");
+    assert!(out.contains("+  { address = \"0/0/4\", name = \"Front light\""), "{out}");
 
     // A second snapshot, so there is something to undo back to.
     history.snapshot(SnapshotReason::new("apply").with_args(["1.1.5"]))?;
@@ -157,9 +159,9 @@ fn test_history_snapshots_never_hold_product_data_or_captures() -> TestResult {
     assert_eq!(
         names,
         vec![
+            "bussard.lock".to_string(),
             "devices".to_string(),
             "groups.toml".to_string(),
-            "links.yaml".to_string(),
             "manifest.json".to_string(),
         ],
         "a snapshot holds the model files and nothing else"

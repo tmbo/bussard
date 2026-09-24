@@ -167,10 +167,11 @@ fn start_gateway(rt: &tokio::runtime::Runtime, device: MockDevice) -> TestResult
 /// The model: object 20 matches; object 21 has one matching GA and one the
 /// device does not have; object 99 exists only in the model.
 fn write_model(dir: &std::path::Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
+    std::fs::create_dir_all(dir.join("devices"))?;
     std::fs::write(
-        dir.join("links.yaml"),
-        "links:\n  1.1.4:\n  - object: 20\n    send: 1/2/0\n  - object: 21\n    listen:\n    - 1/2/1\n    - 5/5/5\n  - object: 99\n    send: 4/4/4\n",
+        dir.join("devices").join("1.1.4.toml"),
+        "address = \"1.1.4\"\nname = \"Jalousieaktor\"\n\n[links]\n20.send = \"1/2/0\"\n\
+         21.listen = [\"1/2/1\", \"5/5/5\"]\n99.send = \"4/4/4\"\n",
     )
 }
 

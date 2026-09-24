@@ -267,7 +267,7 @@ fn line_mode_synthesizes_a_valid_model() -> TestResult {
     );
     assert!(g.dpt.is_none(), "reconstructed GAs have no DPT");
 
-    // links.yaml: 1.1.4 → objects 20 (1/2/0) and 21 (1/2/1, 1/2/2), all listen.
+    // Links (devices/1.1.4.toml): 1.1.4 → objects 20 (1/2/0) and 21 (1/2/1, 1/2/2), all listen.
     let ia4 = ia("1.1.4")?;
     let links4 = &model.links.links[&ia4];
     assert_eq!(links4.len(), 2, "two linked objects on 1.1.4");
@@ -310,10 +310,14 @@ fn line_mode_synthesizes_a_valid_model() -> TestResult {
         groups_txt.contains("RECONSTRUCTED from on-device table read-back"),
         "groups.toml must carry the reconstruction banner:\n{groups_txt}"
     );
-    let links_txt = std::fs::read_to_string(out.join("links.yaml"))?;
+    let links_txt = std::fs::read_to_string(out.join("devices").join("1.1.4.toml"))?;
     assert!(
         links_txt.contains("send/listen DIRECTION is not recoverable"),
-        "links.yaml banner must state the direction limitation"
+        "the device file's banner must state the direction limitation"
+    );
+    assert!(
+        !out.join("links.yaml").exists(),
+        "links live in the device files"
     );
 
     // The model validates without ERRORS (warnings — e.g. W011 no-DPT — fine).
