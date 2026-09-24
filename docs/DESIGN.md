@@ -156,7 +156,13 @@ copy of each safety rule:
   without it, so a new surface inherits the gate by construction.
 - `with_l4` / `connect_l4` run the management-session skeleton (source-address check,
   lease, `T_Connect`, the KNX Data Secure layer from a keyring or tool key, authorize,
-  disconnect) that device commands used to copy.
+  disconnect) that device commands used to copy; `with_device` hands the body the typed
+  `DeviceConnection` instead. Every CLI device command opens its sessions this way. A
+  command that must authorize at a specific point in its frame sequence (after the
+  descriptor read, as `scan` and `assign` do) passes `Authorize::Skip` and authorizes in
+  the body. The download engine opens its own connections, so `flash` and `apply` hand
+  it a channel from `lease_channel` (or, for the flash connector, a `connect_l4`
+  session) rather than a body.
 - `prepare_group_write` and `write_group_checked` implement the group-write policy once:
   protected-GA check, DPT resolution, encode (or raw-payload size check), one send. The
   result is a typed `WriteRefusal`; the CLI renders it with a `--force` hint, MCP as a

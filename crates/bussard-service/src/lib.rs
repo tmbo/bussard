@@ -42,7 +42,7 @@ pub mod policy;
 pub mod secure;
 pub mod write;
 
-pub use bus::{Authorize, BusService, L4Options, Management, SourcePolicy};
+pub use bus::{Authorize, BusService, Device, L4Options, Management, SourcePolicy};
 pub use error::ServiceError;
 pub use group::{
     GroupKeys, GroupRead, GroupSendError, SecureGroupError, SecuredSend, group_key_for,

@@ -76,6 +76,16 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
         Ok(DeviceConnection { inner })
     }
 
+    /// Wraps a management session that is already open (a `T_Connect` sent,
+    /// authorized or not) in the typed client.
+    ///
+    /// For a caller that opens the session elsewhere, such as the service
+    /// layer's `BusService::with_device`, and wants the typed procedures
+    /// below on it. Sends nothing.
+    pub fn from_l4(inner: Layer4Connection<Ch>) -> DeviceConnection<Ch> {
+        DeviceConnection { inner }
+    }
+
     /// The device this connection targets.
     pub fn target(&self) -> IndividualAddress {
         self.inner.target()

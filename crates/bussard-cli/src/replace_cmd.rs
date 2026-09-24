@@ -36,19 +36,16 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, anyhow, bail};
-use bussard_bus::BusHandle;
 use bussard_download::backup::rfc3339_utc;
 use bussard_mgmt::apci::PID_ORDER_INFO;
-use bussard_mgmt::{
-    DeviceConnection, LeaseChannel, Timeouts, system_type, write_individual_address,
-};
+use bussard_mgmt::{Timeouts, system_type, write_individual_address};
 use bussard_model::{IndividualAddress, Model};
-use bussard_service::{BusService, WritePolicy};
+use bussard_service::{Authorize, BusService, L4Options, ServiceError, SourcePolicy, WritePolicy};
 
 use crate::assign_cmd;
 use crate::conn_cmd::{
     ConnOverrides, checked_source_or_close, enforce_write_gate, gateway_display,
-    load_model_required, resolve_config,
+    load_model_required, open_service, resolve_config,
 };
 
 /// Runs `bussard replace`.
@@ -111,25 +108,17 @@ pub fn run(
         let gateway = gateway.clone();
         let conn = overrides.clone();
         runtime.block_on(async move {
-            let service = BusService::open(config, WritePolicy::transmit(allow_remote_gateway))?;
-            let handle = service.handle().clone();
-            if !handle
-                .wait_connected(std::time::Duration::from_secs(10))
-                .await
-            {
-                eprintln!(
-                    "warning: bus not connected yet; management traffic may use the 0.0.255 fallback source"
-                );
-            }
-            let source = checked_source_or_close(&handle, &conn).await?;
+            let service =
+                open_service(config, WritePolicy::transmit(allow_remote_gateway)).await?;
+            let source = checked_source_or_close(&service, &conn).await?;
             let result = tokio::select! {
-                result = swap_flow(&handle, source, target, &expected, &gateway, yes, force) => result,
+                result = swap_flow(&service, source, target, &expected, &gateway, yes, force) => result,
                 _ = tokio::signal::ctrl_c() => {
                     eprintln!("\ninterrupted; closing the bus connection");
                     Err(anyhow!("replace interrupted by Ctrl-C"))
                 }
             };
-            let _ = handle.close().await;
+            service.close().await;
             result
         })?
     };
@@ -253,7 +242,7 @@ struct Pressed {
 /// when the run was declined or nothing could be identified (a clean command
 /// failure, not an error).
 async fn swap_flow(
-    handle: &BusHandle,
+    service: &BusService,
     source: IndividualAddress,
     target: IndividualAddress,
     expected: &Expected,
@@ -262,7 +251,7 @@ async fn swap_flow(
     force: bool,
 ) -> anyhow::Result<Option<Pressed>> {
     // 1. The old device must be gone.
-    if let Some(mask) = probe_present(handle, source, target).await {
+    if let Some(mask) = probe_present(service, source, target).await {
         if !force {
             eprintln!(
                 "{target} still answers on the bus (mask {mask:04X}, {}).\n\
@@ -280,10 +269,10 @@ async fn swap_flow(
 
     // 2. The replacement, via its programming button.
     println!("\nPress the programming button on the replacement device for {target}.");
-    let Some(current) = assign_cmd::wait_for_single_device(handle, source).await? else {
+    let Some(current) = assign_cmd::wait_for_single_device(service, source).await? else {
         return Ok(None);
     };
-    let pressed = identify(handle, source, current).await;
+    let pressed = identify(service, source, current).await;
     print_identity(&pressed);
 
     // 3. Cross-check against the model's device file.
@@ -307,16 +296,16 @@ async fn swap_flow(
     }
 
     // 5. The address, exactly as `assign` writes it.
-    let channel = LeaseChannel::new(handle.lease().await.context("leasing the bus")?);
+    let channel = service.lease_channel().await?;
     write_individual_address(channel, source, target)
         .await
         .context("broadcasting the new individual address")?;
     eprintln!("wrote {target}; verifying…");
-    let verified = assign_cmd::verify_assignment(handle, source, target).await?;
+    let verified = assign_cmd::verify_assignment(service, source, target).await?;
     if verified.programming_mode_cleared {
         eprintln!("cleared programming mode on {target} (PID_PROGMODE = 0), as ETS does.");
     }
-    assign_cmd::warn_if_still_in_programming_mode(handle, source, target).await;
+    assign_cmd::warn_if_still_in_programming_mode(service, source, target).await;
     println!("assigned {current} → {target}");
 
     Ok(Some(Pressed {
@@ -330,18 +319,23 @@ async fn swap_flow(
 
 /// Probes `target` with the fast discovery budget; `Some(mask)` if it answers.
 async fn probe_present(
-    handle: &BusHandle,
+    service: &BusService,
     source: IndividualAddress,
     target: IndividualAddress,
 ) -> Option<u16> {
-    let lease = handle.lease().await.ok()?;
-    let channel = LeaseChannel::new(lease);
-    let mut dev = DeviceConnection::connect_with(channel, target, source, Timeouts::discovery())
+    let options = L4Options {
+        source: SourcePolicy::Known(source),
+        timeouts: Timeouts::discovery(),
+        authorize: Authorize::Skip,
+        ..L4Options::default()
+    };
+    service
+        .with_device(target, &options, async |dev| {
+            Ok::<_, ServiceError>(dev.device_descriptor().await.ok())
+        })
         .await
-        .ok()?;
-    let mask = dev.device_descriptor().await.ok();
-    let _ = dev.disconnect().await;
-    mask
+        .ok()
+        .flatten()
 }
 
 /// Reads the identity of the device that answered the programming-mode
@@ -350,7 +344,7 @@ async fn probe_present(
 /// Every read is best-effort — a field that cannot be read is simply unknown,
 /// and an unknown field never satisfies the cross-check by default.
 async fn identify(
-    handle: &BusHandle,
+    service: &BusService,
     source: IndividualAddress,
     current: IndividualAddress,
 ) -> Pressed {
@@ -361,36 +355,40 @@ async fn identify(
         application: None,
         serial: None,
     };
-    let Ok(lease) = handle.lease().await else {
-        return pressed;
+    // Authorize comes after the descriptor read (below), so the session opens
+    // without it.
+    let options = L4Options {
+        source: SourcePolicy::Known(source),
+        authorize: Authorize::Skip,
+        ..L4Options::default()
     };
-    let channel = LeaseChannel::new(lease);
-    let Ok(mut dev) = DeviceConnection::connect(channel, current, source).await else {
-        return pressed;
-    };
-    pressed.mask = dev.device_descriptor().await.ok();
-    if let Err(err) = dev.authorize(bussard_mgmt::apci::FREE_ACCESS_KEY).await {
-        tracing::debug!("{current} authorize (free access) did not grant: {err}");
-    }
-    pressed.order = dev
-        .read_device_property(PID_ORDER_INFO)
-        .await
-        .ok()
-        .map(|v| clean_ascii(&v))
-        .filter(|s| !s.is_empty());
-    pressed.serial = dev
-        .read_device_property(bussard_mgmt::apci::PID_SERIAL_NUMBER)
-        .await
-        .ok()
-        .filter(|v| !v.is_empty());
-    if let Ok(obj) = bussard_download::discover_application_object(dev.l4_mut()).await {
-        pressed.application = bussard_mgmt::read_program_version(dev.l4_mut(), obj)
-            .await
-            .ok()
-            .flatten()
-            .map(|id| bussard_download::format_app_id(&id));
-    }
-    let _ = dev.disconnect().await;
+    let _ = service
+        .with_device(current, &options, async |dev| {
+            pressed.mask = dev.device_descriptor().await.ok();
+            if let Err(err) = dev.authorize(bussard_mgmt::apci::FREE_ACCESS_KEY).await {
+                tracing::debug!("{current} authorize (free access) did not grant: {err}");
+            }
+            pressed.order = dev
+                .read_device_property(PID_ORDER_INFO)
+                .await
+                .ok()
+                .map(|v| assign_cmd::clean_ascii(&v))
+                .filter(|s| !s.is_empty());
+            pressed.serial = dev
+                .read_device_property(bussard_mgmt::apci::PID_SERIAL_NUMBER)
+                .await
+                .ok()
+                .filter(|v| !v.is_empty());
+            if let Ok(obj) = bussard_download::discover_application_object(dev.l4_mut()).await {
+                pressed.application = bussard_mgmt::read_program_version(dev.l4_mut(), obj)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|id| bussard_download::format_app_id(&id));
+            }
+            Ok::<_, ServiceError>(())
+        })
+        .await;
     pressed
 }
 
@@ -569,17 +567,6 @@ fn print_summary(
     println!("\nnext steps:");
     println!("  - `bussard plan {target}` to confirm the links match the model");
     println!("  - `bussard backup` to refresh the installation snapshot");
-}
-
-/// Cleans a raw property value to printable ASCII (as `scan` and `assign` do).
-fn clean_ascii(bytes: &[u8]) -> String {
-    let s: String = bytes
-        .iter()
-        .take_while(|b| **b != 0)
-        .filter(|b| b.is_ascii_graphic() || **b == b' ')
-        .map(|b| *b as char)
-        .collect();
-    s.trim().to_string()
 }
 
 /// The model's device file for `target`, for callers that only have the model.

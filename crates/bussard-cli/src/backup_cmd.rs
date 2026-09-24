@@ -39,21 +39,24 @@ use std::process::ExitCode;
 use std::time::SystemTime;
 
 use anyhow::{Context, anyhow, bail};
-use bussard_bus::BusHandle;
 use bussard_download::backup::{
     BackupManifest, BackupStatus, DeviceBackup, ManifestEntry, ParameterMemory, ParameterStatus,
     backups_root, encode_hex, rfc3339_utc, timestamp_dir_name, write_device_backup, write_manifest,
 };
 use bussard_mgmt::apci::PID_ORDER_INFO;
 use bussard_mgmt::{
-    DeviceConnection, L4Channel, Layer4Connection, LeaseChannel, MaskProfile, Timeouts,
-    read_mcb_table, read_memory_range, read_table_reference, system_type,
+    L4Channel, Layer4Connection, MaskProfile, Timeouts, read_mcb_table, read_memory_range,
+    read_table_reference, system_type,
 };
 use bussard_model::{IndividualAddress, Model};
-use bussard_service::{BusService, WritePolicy};
+use bussard_service::{
+    Authorize, BusService, Device, L4Options, ServiceError, SourcePolicy, WritePolicy,
+};
 
+use crate::assign_cmd::clean_ascii;
 use crate::conn_cmd::{
-    ConnOverrides, checked_source_or_close, gateway_display, load_model_required, resolve_config,
+    ConnOverrides, checked_source_or_close, gateway_display, load_model_required, open_service,
+    resolve_config, session_error_detail,
 };
 use crate::plan_cmd::{self, LiveRead};
 
@@ -116,22 +119,16 @@ pub fn run(
 
     let runtime = tokio::runtime::Runtime::new()?;
     let captured = runtime.block_on(async move {
-        let service = BusService::open(config, WritePolicy::ReadOnly)?;
-        let handle = service.handle().clone();
-        if !handle.wait_connected(std::time::Duration::from_secs(10)).await {
-            eprintln!(
-                "warning: bus not connected yet; management traffic may use the 0.0.255 fallback source"
-            );
-        }
-        let source = checked_source_or_close(&handle, &overrides).await?;
+        let service = open_service(config, WritePolicy::ReadOnly).await?;
+        let source = checked_source_or_close(&service, &overrides).await?;
         let captured = tokio::select! {
-            captured = capture_all(&handle, source, &targets, &activated, tool_key_source) => captured,
+            captured = capture_all(&service, source, &targets, &activated, tool_key_source) => captured,
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\ninterrupted; closing the bus connection");
                 Vec::new()
             }
         };
-        let _ = handle.close().await;
+        service.close().await;
         anyhow::Ok(captured)
     })?;
 
@@ -225,7 +222,7 @@ fn parse_line(line: &str) -> anyhow::Result<(u8, u8)> {
 
 /// Reads every target in turn over one bus connection, leasing it per device.
 async fn capture_all(
-    handle: &BusHandle,
+    service: &BusService,
     source: IndividualAddress,
     targets: &[IndividualAddress],
     activated: &std::collections::BTreeSet<IndividualAddress>,
@@ -235,14 +232,14 @@ async fn capture_all(
     for (n, &target) in targets.iter().enumerate() {
         eprintln!("[{}/{}] reading {target}…", n + 1, targets.len());
         let is_activated = activated.contains(&target);
-        out.push(capture_one(handle, source, target, is_activated, tool_key_source).await);
+        out.push(capture_one(service, source, target, is_activated, tool_key_source).await);
     }
     out
 }
 
 /// Reads one device: identity, tables, and (where bounded) parameter memory.
 async fn capture_one(
-    handle: &BusHandle,
+    service: &BusService,
     source: IndividualAddress,
     target: IndividualAddress,
     activated: bool,
@@ -252,11 +249,9 @@ async fn capture_one(
         Ok(key) => key,
         Err(err) => return Capture::failed(target, format!("resolving the tool key: {err}")),
     };
-    let secure_seq = bussard_secure::SequenceHighWater::new();
-
     // Presence first, on the fast discovery budget `scan` uses: an absent device
     // is ruled out in about three seconds instead of the full management budget.
-    let mask = match probe_mask(handle, source, target).await {
+    let mask = match probe_mask(service, source, target).await {
         Probe::Present(mask) => mask,
         Probe::Absent => return Capture::unreachable(target),
         Probe::Error(detail) => return Capture::failed(target, detail),
@@ -264,31 +259,32 @@ async fn capture_one(
 
     // Then a fresh session on the normal budget for the reads themselves, as
     // `reconstruct --line` does after its descriptor probe.
-    let lease = match handle.lease().await {
-        Ok(lease) => lease,
-        Err(err) => return Capture::failed(target, format!("leasing the bus: {err}")),
-    };
-    let channel = LeaseChannel::new(lease);
-    let secure = crate::secure_key::layer(&tool_key, &secure_seq);
-    let mut dev = match DeviceConnection::connect_with_secure(
-        channel,
-        target,
-        source,
-        Timeouts::default(),
-        secure,
-    )
-    .await
-    {
-        Ok(dev) => dev,
-        Err(err) => return Capture::failed(target, format!("connecting: {err}")),
-    };
-
     // Authorize with the free-access key before reading, as ETS does and as
     // System 7 requires before any memory access. Best-effort on a read-only run.
-    if let Err(err) = dev.authorize(bussard_mgmt::apci::FREE_ACCESS_KEY).await {
-        tracing::debug!("{target} authorize (free access) did not grant: {err}");
+    let options = L4Options {
+        source: SourcePolicy::Known(source),
+        tool_key,
+        high_water: bussard_secure::SequenceHighWater::new(),
+        authorize: Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
+        ..L4Options::default()
+    };
+    let session = service
+        .with_device(target, &options, async |dev| {
+            Ok::<_, ServiceError>(read_one(dev, target).await)
+        })
+        .await;
+    match session {
+        Ok(capture) => {
+            tracing::debug!("{target} answered the presence probe with mask {mask:04X}");
+            capture
+        }
+        Err(err) => Capture::failed(target, session_error_detail(&err)),
     }
+}
 
+/// Reads one device's identity, tables and parameter memory on an open,
+/// authorized session.
+async fn read_one(dev: &mut Device, target: IndividualAddress) -> Capture {
     let order = dev
         .read_device_property(PID_ORDER_INFO)
         .await
@@ -298,7 +294,7 @@ async fn capture_one(
 
     let read_at = SystemTime::now();
     let live = plan_cmd::read_live_tables(dev.l4_mut()).await;
-    let capture = match live {
+    match live {
         Err(err) => Capture::failed(target, format!("reading the tables: {err:#}")),
         Ok(LiveRead::UnsupportedMask { mask, .. }) => Capture {
             entry: ManifestEntry {
@@ -341,10 +337,7 @@ async fn capture_one(
                 backup: Some(backup),
             }
         }
-    };
-    let _ = dev.disconnect().await;
-    tracing::debug!("{target} answered the presence probe with mask {mask:04X}");
-    capture
+    }
 }
 
 /// The outcome of the fast presence probe.
@@ -359,34 +352,30 @@ enum Probe {
 
 /// Reads the device descriptor on the discovery budget.
 async fn probe_mask(
-    handle: &BusHandle,
+    service: &BusService,
     source: IndividualAddress,
     target: IndividualAddress,
 ) -> Probe {
-    let lease = match handle.lease().await {
-        Ok(lease) => lease,
-        Err(err) => return Probe::Error(format!("leasing the bus: {err}")),
+    let options = L4Options {
+        source: SourcePolicy::Known(source),
+        timeouts: Timeouts::discovery(),
+        authorize: Authorize::Skip,
+        ..L4Options::default()
     };
-    let channel = LeaseChannel::new(lease);
-    let mut dev = match DeviceConnection::connect_with(
-        channel,
-        target,
-        source,
-        Timeouts::discovery(),
-    )
-    .await
-    {
-        Ok(dev) => dev,
-        Err(err) if !err.device_present() => return Probe::Absent,
-        Err(err) => return Probe::Error(format!("connecting: {err}")),
-    };
-    let out = match dev.device_descriptor().await {
-        Ok(mask) => Probe::Present(mask),
-        Err(err) if !err.device_present() => Probe::Absent,
-        Err(err) => Probe::Error(format!("reading the device descriptor: {err}")),
-    };
-    let _ = dev.disconnect().await;
-    out
+    let session = service
+        .with_device(target, &options, async |dev| {
+            Ok::<_, ServiceError>(match dev.device_descriptor().await {
+                Ok(mask) => Probe::Present(mask),
+                Err(err) if !err.device_present() => Probe::Absent,
+                Err(err) => Probe::Error(format!("reading the device descriptor: {err}")),
+            })
+        })
+        .await;
+    match session {
+        Ok(probe) => probe,
+        Err(ServiceError::Mgmt(err)) if !err.device_present() => Probe::Absent,
+        Err(err) => Probe::Error(session_error_detail(&err)),
+    }
 }
 
 impl Capture {
@@ -574,17 +563,6 @@ fn print_text(manifest: &BackupManifest, out_dir: &Path, manifest_path: &Path) {
         "\nrestore one device with `bussard restore {} <ia>`",
         out_dir.display()
     );
-}
-
-/// Cleans a raw property value to printable ASCII (as `scan` and `assign` do).
-fn clean_ascii(bytes: &[u8]) -> String {
-    let s: String = bytes
-        .iter()
-        .take_while(|b| **b != 0)
-        .filter(|b| b.is_ascii_graphic() || **b == b' ')
-        .map(|b| *b as char)
-        .collect();
-    s.trim().to_string()
 }
 
 #[cfg(test)]

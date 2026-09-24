@@ -46,14 +46,15 @@ use bussard_download::{
     sys7_table_images, write_tables_secured,
 };
 use bussard_mgmt::tables::DeviceTables;
-use bussard_mgmt::{Layer4Connection, LeaseChannel, MaskProfile, system_type};
+use bussard_mgmt::{LeaseChannel, MaskProfile, system_type};
 use bussard_model::IndividualAddress;
+use bussard_service::{Authorize, L4Options, SourcePolicy};
 
 use bussard_transport::ConnectionConfig;
 
 use crate::conn_cmd::{
-    BusSession, ConnOverrides, checked_source, enforce_write_gate, gateway_display,
-    load_model_required, resolve_config,
+    BusSession, ConnOverrides, enforce_write_gate, gateway_display, load_model_required,
+    resolve_config,
 };
 use crate::plan_cmd;
 
@@ -213,51 +214,30 @@ pub(crate) fn apply_desired(
         config,
         bussard_service::WritePolicy::transmit(allow_remote_gateway),
     )?;
-    let handle = bus.handle();
     // The tunnel-assigned source address, resolved and checked against the bus
     // once for both phases (they share this tunnel, so one probe covers both).
     // `BusSession` closes the tunnel if the check refuses.
-    let source = runtime.block_on(checked_source(handle, overrides))?;
+    let source = runtime.block_on(bus.service().checked_source(overrides.skip_address_check))?;
 
     // Phase A (read-only): read the live tables and build the plan.
-    let read = {
-        let read_key = tool_key.clone();
-        let read_seq = secure_seq.clone();
-        runtime.block_on(async {
-            let lease = handle.lease().await.context("leasing the bus")?;
-            let channel = LeaseChannel::new(lease);
-            let secure = crate::secure_key::layer(&read_key, &read_seq);
-            let result = match Layer4Connection::connect_with_secure(
-                channel,
-                target,
-                source,
-                bussard_mgmt::Timeouts::default(),
-                secure,
-            )
-            .await
-            {
-                Ok(mut l4) => {
-                    // Authorize (free access) before reading, as ETS does (issue
-                    // #52 finding #1) and as System 7 requires before any memory
-                    // access. Best-effort on this read-only pre-pass.
-                    if let Err(err) = l4
-                        .authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY)
-                        .await
-                    {
-                        tracing::debug!("{target} authorize (free access) did not grant: {err}");
-                    }
-                    let r = plan_cmd::read_live_tables(&mut l4).await;
-                    let _ = l4.disconnect().await;
-                    r
-                }
-                Err(err) => Err(
-                    anyhow::Error::new(bussard_mgmt::tables::TablesError::Mgmt(err))
-                        .context("connecting to the device"),
-                ),
-            };
-            anyhow::Ok(result)
-        })?
+    let service = bus.service();
+    let read_options = L4Options {
+        source: SourcePolicy::Known(source),
+        tool_key: tool_key.clone(),
+        high_water: secure_seq.clone(),
+        // Authorize (free access) before reading, as ETS does (issue #52
+        // finding #1) and as System 7 requires before any memory access.
+        // Best-effort on this read-only pre-pass.
+        authorize: Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
+        ..L4Options::default()
     };
+    let read = runtime.block_on(async {
+        service
+            .with_l4(target, &read_options, async |l4| {
+                plan_cmd::read_live_tables(l4).await
+            })
+            .await
+    });
 
     let live = match read? {
         plan_cmd::LiveRead::Tables(live) => live,
@@ -395,8 +375,7 @@ pub(crate) fn apply_desired(
         false,
     );
     let outcome = runtime.block_on(async {
-        let lease = handle.lease().await.context("leasing the bus")?;
-        let channel = LeaseChannel::new(lease);
+        let channel = service.lease_channel().await?;
         let secure = crate::secure_key::layer(&tool_key, &secure_seq);
         let images = sys7.as_ref().map(|(_, images)| images);
         anyhow::Ok(
