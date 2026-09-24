@@ -389,6 +389,10 @@ fn run_line(
         // A group address a device file uses first is declared in groups.toml.
         crate::history_cmd::capture_external_edit(dir);
         crate::groups_cmd::declare_used(dir, &mut model, "apply --line", options.json)?;
+        // Validation is part of apply: a model with errors is never written.
+        if !crate::validate_cmd::gate(&model, dir, "apply") {
+            return Ok(ExitCode::FAILURE);
+        }
     }
     let gateway = gateway_display(&config);
     // Applying writes the devices' tables; the other modes only read.

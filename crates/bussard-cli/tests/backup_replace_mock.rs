@@ -848,3 +848,29 @@ fn test_apply_declares_used_groups_and_writes_nothing_when_the_device_matches() 
     assert_eq!(bench.total_writes(), 0, "a matching device is not written");
     Ok(())
 }
+
+/// Validation is part of `apply`: a model with an error is refused before the
+/// bus is touched, with the diagnostic.
+#[test]
+fn test_apply_refuses_a_model_with_validation_errors() -> TestResult {
+    let bench = Bench::start(
+        "apply-invalid",
+        vec![MockDevice::system_b("1.1.4", "MDT-JAL0410", &[], &[])],
+    )?;
+    write_model(&bench.model(), &[])?;
+    std::fs::write(
+        bench.model().join("groups.toml"),
+        "groups = [\n  { address = \"1/2/0\", name = \"A\" },\n  { address = \"1/2/0\", name = \"B\" },\n  \
+         { address = \"1/2/1\", name = \"C\" },\n]\n",
+    )?;
+    let out = bench.bussard(&["apply", "1.1.4", "--yes"])?;
+    let (stdout, stderr) = text(&out);
+    assert!(!out.status.success(), "must refuse:\n{stdout}\n{stderr}");
+    assert!(
+        stderr.contains("refusing to apply: the model has"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("E020"), "{stderr}");
+    assert_eq!(bench.total_writes(), 0, "nothing is written");
+    Ok(())
+}

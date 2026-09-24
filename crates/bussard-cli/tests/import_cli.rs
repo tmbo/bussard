@@ -40,13 +40,13 @@ fn bussard(args: &[&str], envs: &[(&str, &str)]) -> std::io::Result<Output> {
     cmd.output()
 }
 
-/// The fixture with the status object also listening on `1/0/9`, which the
+/// The fixture with the switch object also listening on `1/0/9`, which the
 /// project does not define.
 fn fixture_with_undefined_ga(dir: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let text = std::fs::read_to_string(fixture())?;
     let text = text.replace(
-        "\"group_address_links\": [\"1/0/2\"]",
-        "\"group_address_links\": [\"1/0/2\", \"1/0/9\"]",
+        "\"group_address_links\": [\"1/0/1\"]",
+        "\"group_address_links\": [\"1/0/1\", \"1/0/9\"]",
     );
     let path = dir.join("project.json");
     std::fs::write(&path, text)?;
@@ -72,11 +72,13 @@ fn test_import_declares_a_group_address_the_project_uses_but_does_not_define() -
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{stdout}\n{stderr}");
     assert!(
-        stdout.contains("added 1/0/9 \"Test Switch Actuator object 1\""),
+        stdout.contains("added 1/0/9 \"Test Switch Actuator object 0\""),
         "{stdout}"
     );
     let groups = std::fs::read_to_string(dir.join("groups.toml"))?;
     assert!(groups.contains("\"1/0/9\""), "{groups}");
+    // Validation runs after the write and prints its summary.
+    assert!(stdout.contains("validation: 0 error(s)"), "{stdout}");
     std::fs::remove_dir_all(&tmp)?;
     Ok(())
 }

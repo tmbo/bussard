@@ -118,3 +118,56 @@ fn print_json(diagnostics: &[Diagnostic]) {
         Err(e) => eprintln!("error: failed to serialize diagnostics: {e}"),
     }
 }
+
+/// Counts `(errors, warnings)` in a diagnostic list.
+fn counts(diagnostics: &[Diagnostic]) -> (usize, usize) {
+    let count = |s: Severity| diagnostics.iter().filter(|d| d.severity == s).count();
+    (count(Severity::Error), count(Severity::Warning))
+}
+
+/// The one-line validation summary `import` prints after writing:
+/// `validation: 0 error(s), 2 warning(s)`, followed by each error.
+///
+/// Errors never undo the import (the files are what the project says); they
+/// are what the owner fixes next, so they are listed with their location.
+pub(crate) fn print_summary(dir: &Path) {
+    let model = match Model::load(dir) {
+        Ok(model) => model,
+        Err(err) => {
+            println!("validation: the written model does not load: {err}");
+            return;
+        }
+    };
+    let diagnostics = validate_in_dir(&model, dir);
+    let (errors, warnings) = counts(&diagnostics);
+    println!("validation: {errors} error(s), {warnings} warning(s)");
+    for d in diagnostics.iter().filter(|d| d.severity == Severity::Error) {
+        println!("  error[{}]: {} ({})", d.code, d.message, d.location);
+    }
+    if errors + warnings > 0 {
+        println!(
+            "  run `bussard validate --dir {}` for the details",
+            dir.display()
+        );
+    }
+}
+
+/// The validation gate in front of a device write: prints every error (and the
+/// warning count) and returns `false` when the model has errors, so the caller
+/// stops before the bus is touched.
+pub(crate) fn gate(model: &Model, dir: &Path, verb: &str) -> bool {
+    let diagnostics = validate_in_dir(model, dir);
+    let (errors, warnings) = counts(&diagnostics);
+    if errors == 0 {
+        return true;
+    }
+    eprintln!(
+        "refusing to {verb}: the model has {errors} error(s) ({warnings} warning(s)); nothing \
+         was written. Fix these first:"
+    );
+    for d in diagnostics.iter().filter(|d| d.severity == Severity::Error) {
+        eprintln!("  error[{}]: {}", d.code, d.message);
+        eprintln!("    --> {}", d.location);
+    }
+    false
+}

@@ -120,6 +120,10 @@ pub fn run(
     // A group address the device files use but groups.toml does not define is
     // declared there first, named after the object that uses it.
     crate::groups_cmd::declare_used(dir, &mut model, "apply", false)?;
+    // Validation is part of apply: a model with errors is never written.
+    if !crate::validate_cmd::gate(&model, dir, "apply") {
+        return Ok(ExitCode::FAILURE);
+    }
     let desired = plan_cmd::compute_desired(&model, target)?;
     hint_installation_backup(dir);
     apply_desired(

@@ -377,6 +377,22 @@ fn check_links(model: &Model, diags: &mut Vec<Diagnostic>) {
             // Rules needing the device's com object.
             if let Some(loaded) = device {
                 match loaded.device.com_objects.get(&link.object) {
+                    // A device with no com-object table at all (adopted or
+                    // imported without product data) cannot have its links
+                    // checked; that is a gap to fill, not a contradiction.
+                    None if loaded.device.com_objects.is_empty() => {
+                        diags.push(Diagnostic::new(
+                            "E003",
+                            Severity::Warning,
+                            loc.clone(),
+                            format!(
+                                "object {} cannot be checked: device {ia} has no com-object \
+                                 table (no product data; `bussard import-product` or a \
+                                 re-import adds it)",
+                                link.object
+                            ),
+                        ));
+                    }
                     None => {
                         // E003: object absent from the device's com_objects.
                         diags.push(Diagnostic::new(

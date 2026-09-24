@@ -129,6 +129,7 @@ pub(crate) fn write_model(
             dir.display()
         );
         crate::import_bundle::print_changes(ours, &to_save);
+        crate::validate_cmd::print_summary(dir);
         return Ok(report_merge(merge, *kept, choice));
     }
 
@@ -150,6 +151,8 @@ pub(crate) fn write_model(
         println!("pruned {} stale device file(s)", report.pruned.len());
     }
 
+    // Validation is part of import: the summary says what to fix next.
+    crate::validate_cmd::print_summary(dir);
     if let Some((ours, merge, kept)) = merge_report {
         crate::import_bundle::print_changes(&ours, &to_save);
         return Ok(report_merge(&merge, kept, choice));
