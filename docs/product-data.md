@@ -25,6 +25,23 @@ To save you hunting for the right file, bussard ships a
 `bussard import-product --order-number <ORDER>` uses it to fetch and verify the file for
 a device you saw on the bus.
 
+### The ETS project export as product source
+
+An ETS 6 project export (`.knxproj`) carries the converted ApplicationProgram XML of
+every product used in the project, unencrypted under `M-<manufacturer>/`. This is the
+only route for devices whose vendor ships product data solely as ETS3-era `.vd4`
+files, and it is convenient whenever the project already holds the exact application
+version a device runs. `bussard import-product <project>.knxproj` (project password
+from `BUSSARD_PROJECT_PASSWORD`) generates the product models from that XML, and
+`bussard flash <ia> --product <project>.knxproj --application <application-id>`
+reads it directly; `--application` is required because a project holds several
+application programs. The generated models are byte-for-byte the same as from the
+vendor `.knxprod` when the versions match: two ETS3-era Jung devices were flashed from
+their project export and verified against ETS captures (issue #135).
+
+A project export is not cached under `vendor/`: it is the owner's project, not vendor
+product data, and it is large. Keep it where it is and pass its path.
+
 ## What is inside a `.knxprod`
 
 A `.knxprod` is a plain ZIP (no encryption, unlike a password-protected `.knxproj`). It
