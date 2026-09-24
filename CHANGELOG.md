@@ -317,6 +317,14 @@ entry supersedes it and is not a diff against it.
   allocate and complete (about 1 s less per object at 200 ms per request)
   (#211).
 
+- The sparse writer of a filled System B segment (and of a parameters-only
+  download) joins two runs across a gap of up to 100 octets when that saves a
+  memory-write request (`BUSSARD_SPARSE_MERGE_GAP`, was a fixed 4). The
+  joined gap is written with the octets the device already holds, so the
+  image is unchanged. The 1.1.5 parameter image (19155 octets) goes from 71
+  to 22 writes and the 1.1.12 image from 23 to 6 at the 215-octet Data
+  Secure chunk; ETS writes 197 and 38 (#210).
+
 ### Fixed
 
 - Group writes: DPT-blind 6-bit APCI packing corrupted values on the live bus

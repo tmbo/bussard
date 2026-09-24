@@ -465,7 +465,16 @@ async fn stream_sys7_image<C: Connector, F: FnMut(Progress)>(
     let mask = ctx.segment_masks.get(segment_id);
     let diff_mask = plan.baseline.get(segment_id).map(|current| {
         let mut owned = vec![0u8; bytes.len()];
-        for (start, end) in super::execute::diff_regions(bytes, current, mask.map(Vec::as_slice)) {
+        // The historic gap on System 7 (see `LEGACY_MERGE_GAP`): any join
+        // within it counts as saving a request, as before issue #210.
+        let regions = super::execute::diff_regions(
+            bytes,
+            current,
+            mask.map(Vec::as_slice),
+            super::execute::LEGACY_MERGE_GAP,
+            &|_, _| usize::MAX,
+        );
+        for (start, end) in regions {
             owned[start..end].fill(0xFF);
         }
         owned

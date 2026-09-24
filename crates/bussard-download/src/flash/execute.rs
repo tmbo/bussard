@@ -544,7 +544,16 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                             // everywhere: write only the runs that differ, as ETS
                             // does (the F50 obj4 image is 276 of 6152 octets).
                             Some(fill) => {
-                                for (start, run) in fill_regions(&bytes, fill) {
+                                let (plain, extended) = (
+                                    session.l4().max_memory_chunk(),
+                                    session.l4().max_extended_memory_chunk(),
+                                );
+                                let chunk = |start: usize, len: usize| {
+                                    chunk_at(addr + start as u32, len, plain, extended)
+                                };
+                                let regions =
+                                    fill_regions(&bytes, fill, sparse_merge_gap(), &chunk);
+                                for (start, run) in regions {
                                     write_image(session, addr + start as u32, run, &mut progress)
                                         .await?;
                                 }
@@ -575,7 +584,16 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                             // A parameter-only download (issue #119): write only
                             // the octets that differ from what the device holds.
                             Some(current) => {
-                                for (start, end) in diff_regions(&bytes, current, None) {
+                                let (plain, extended) = (
+                                    session.l4().max_memory_chunk(),
+                                    session.l4().max_extended_memory_chunk(),
+                                );
+                                let chunk = |start: usize, len: usize| {
+                                    chunk_at(addr + start as u32, len, plain, extended)
+                                };
+                                let regions =
+                                    diff_regions(&bytes, current, None, sparse_merge_gap(), &chunk);
+                                for (start, end) in regions {
                                     write_image(
                                         session,
                                         addr + start as u32,
@@ -1072,33 +1090,109 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
     Ok(outcome)
 }
 
-/// Gaps of up to this many fill octets between two differing runs are written
-/// through rather than split: a new memory-write telegram costs more than a few
-/// payload octets.
-pub(super) const FILL_MERGE_GAP: usize = 4;
+/// The historic merge gap: runs separated by at most this many octets are
+/// written as one. System 7 parameter-only downloads keep it (their
+/// read-compare walks a fixed chunk grid, where a wider merge adds reads that
+/// were not measured, issue #210).
+pub(super) const LEGACY_MERGE_GAP: usize = 4;
 
-/// The regions of `image` that differ from a segment pre-filled with `fill`, as
-/// `(offset, bytes)` pairs in ascending order. Runs separated by at most
-/// [`FILL_MERGE_GAP`] fill octets are merged. Writing only these regions over
-/// the pre-filled segment leaves the same memory as writing the whole image.
-pub(super) fn fill_regions(image: &[u8], fill: u8) -> Vec<(usize, &[u8])> {
-    let mut regions: Vec<(usize, usize)> = Vec::new();
+/// The default largest gap (octets) the sparse writer writes through to join
+/// two runs of a System B image into fewer memory-write requests (issue #210).
+///
+/// Cost model from the live cycles of 2026-09-24 (Data Secure, System B,
+/// `captures/campaign/2026-09-24/speed-deep-dive.md` §3.1): a request costs
+/// ~200 ms fixed plus ~1.7 ms per payload octet (small cycle 204 ms, 233-octet
+/// APDU cycle 561 ms), so writing a gap through pays off below ~115 octets.
+/// 100 stays under that break-even with a margin; [`merge_runs`] additionally
+/// merges only when the merged run needs fewer requests than the two apart.
+pub(super) const SPARSE_MERGE_GAP: usize = 100;
+
+/// Environment variable that overrides [`SPARSE_MERGE_GAP`] (octets; `0`
+/// disables merging).
+pub(super) const SPARSE_MERGE_GAP_ENV: &str = "BUSSARD_SPARSE_MERGE_GAP";
+
+/// The sparse merge gap for this process: [`SPARSE_MERGE_GAP_ENV`] when it
+/// parses, else [`SPARSE_MERGE_GAP`].
+pub(super) fn sparse_merge_gap() -> usize {
+    std::env::var(SPARSE_MERGE_GAP_ENV)
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(SPARSE_MERGE_GAP)
+}
+
+/// How many memory-write requests a run of `len` octets at image offset
+/// `start` costs when `chunk(start, len)` is the write chunk the writer picks
+/// for it.
+fn requests_for(start: usize, len: usize, chunk: &dyn Fn(usize, usize) -> usize) -> usize {
+    len.div_ceil(chunk(start, len).max(1))
+}
+
+/// Joins ascending, disjoint runs `[start, end)` whose gap is at most
+/// `max_gap` octets, `gap_ok(end, start)` holds for the gap, and the joined run
+/// costs fewer write requests than the two runs apart (see [`requests_for`]).
+///
+/// The joined run writes the gap's octets too, so the caller must only offer
+/// gaps whose image octets equal what the device already holds there: fill
+/// octets over a freshly filled segment ([`fill_regions`]) or octets equal to
+/// the read-back device memory ([`diff_regions`]). The memory the device ends
+/// up with is then the same as writing the runs alone.
+fn merge_runs(
+    runs: impl IntoIterator<Item = (usize, usize)>,
+    max_gap: usize,
+    chunk: &dyn Fn(usize, usize) -> usize,
+    gap_ok: impl Fn(usize, usize) -> bool,
+) -> Vec<(usize, usize)> {
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (start, end) in runs {
+        if let Some((m_start, m_end)) = merged.last_mut() {
+            let (m_start, prev_end) = (*m_start, *m_end);
+            let apart = requests_for(m_start, prev_end - m_start, chunk)
+                + requests_for(start, end - start, chunk);
+            let joined = requests_for(m_start, end - m_start, chunk);
+            if start - prev_end <= max_gap && gap_ok(prev_end, start) && joined < apart {
+                *m_end = end;
+                continue;
+            }
+        }
+        merged.push((start, end));
+    }
+    merged
+}
+
+/// The maximal runs of `[0, len)` for which `differs` holds, in ascending
+/// order.
+fn differing_runs(len: usize, differs: impl Fn(usize) -> bool) -> Vec<(usize, usize)> {
+    let mut runs = Vec::new();
     let mut i = 0;
-    while i < image.len() {
-        if image[i] == fill {
+    while i < len {
+        if !differs(i) {
             i += 1;
             continue;
         }
         let start = i;
-        while i < image.len() && image[i] != fill {
+        while i < len && differs(i) {
             i += 1;
         }
-        match regions.last_mut() {
-            Some((_, end)) if start - *end <= FILL_MERGE_GAP => *end = i,
-            _ => regions.push((start, i)),
-        }
+        runs.push((start, i));
     }
-    regions
+    runs
+}
+
+/// The regions of `image` that differ from a segment pre-filled with `fill`, as
+/// `(offset, bytes)` pairs in ascending order. Runs are joined across gaps of
+/// up to `max_gap` fill octets when that saves write requests (see
+/// [`merge_runs`]; `chunk(offset, len)` is the write chunk the writer uses for a
+/// run). The joined bytes come from `image`, whose gap octets are the fill
+/// byte, so writing only these regions over the pre-filled segment leaves the
+/// same memory as writing the whole image.
+pub(super) fn fill_regions<'a>(
+    image: &'a [u8],
+    fill: u8,
+    max_gap: usize,
+    chunk: &dyn Fn(usize, usize) -> usize,
+) -> Vec<(usize, &'a [u8])> {
+    let runs = differing_runs(image.len(), |i| image[i] != fill);
+    merge_runs(runs, max_gap, chunk, |_, _| true)
         .into_iter()
         .map(|(start, end)| (start, &image[start..end]))
         .collect()
@@ -1106,36 +1200,35 @@ pub(super) fn fill_regions(image: &[u8], fill: u8) -> Vec<(usize, &[u8])> {
 
 /// The octet ranges `[start, end)` of `image` that differ from `current`, the
 /// memory the device holds today, in ascending order (issue #119). With a
-/// `mask`, only octets whose mask byte is `0xFF` are considered. Ranges
-/// separated by at most [`FILL_MERGE_GAP`] unchanged (and writable) octets are
-/// merged, since rewriting an octet with its own value is cheaper than another
-/// telegram. An octet past the end of `current` counts as different.
+/// `mask`, only octets whose mask byte is `0xFF` are considered. Ranges are
+/// joined across gaps of up to `max_gap` unchanged (and writable) octets when
+/// that saves write requests (see [`merge_runs`]), since rewriting an octet with
+/// its own value is cheaper than another telegram. An octet past the end of
+/// `current` counts as different.
 pub(super) fn diff_regions(
     image: &[u8],
     current: &[u8],
     mask: Option<&[u8]>,
+    max_gap: usize,
+    chunk: &dyn Fn(usize, usize) -> usize,
 ) -> Vec<(usize, usize)> {
     let writable = |i: usize| mask.is_none_or(|m| m.get(i) == Some(&0xFF));
     let differs = |i: usize| writable(i) && current.get(i) != Some(&image[i]);
-    let mut regions: Vec<(usize, usize)> = Vec::new();
-    let mut i = 0;
-    while i < image.len() {
-        if !differs(i) {
-            i += 1;
-            continue;
-        }
-        let start = i;
-        while i < image.len() && differs(i) {
-            i += 1;
-        }
-        match regions.last_mut() {
-            Some((_, end)) if start - *end <= FILL_MERGE_GAP && (*end..start).all(writable) => {
-                *end = i;
-            }
-            _ => regions.push((start, i)),
-        }
+    let runs = differing_runs(image.len(), differs);
+    merge_runs(runs, max_gap, chunk, |end, start| {
+        (end..start).all(writable)
+    })
+}
+
+/// The write chunk [`write_image`] uses for a run of `len` octets at `addr`:
+/// the extended service's chunk when the run reaches past `0xFFFF`, else the
+/// plain one (see [`bussard_mgmt::write_memory_chunked`]).
+fn chunk_at(addr: u32, len: usize, plain: u8, extended: u16) -> usize {
+    if bussard_mgmt::select_extended_memory(addr, len) {
+        usize::from(extended)
+    } else {
+        usize::from(plain)
     }
-    regions
 }
 
 /// Streams `bytes` to `addr` over the session's connection, emitting a
@@ -1214,40 +1307,153 @@ mod tests {
 
     #[test]
     fn test_diff_regions_writes_only_changed_octets() {
+        let legacy = |_: usize, _: usize| usize::MAX;
         let current = [0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
         let mut image = current;
         image[1] = 0xAA;
         image[10] = 0xBB;
-        assert_eq!(diff_regions(&image, &current, None), vec![(1, 2), (10, 11)]);
+        let regions = |image: &[u8], mask: Option<&[u8]>| {
+            diff_regions(image, &current, mask, LEGACY_MERGE_GAP, &legacy)
+        };
+        assert_eq!(regions(&image, None), vec![(1, 2), (10, 11)]);
         // Two changes two octets apart merge into one write.
         image[4] = 0xCC;
-        assert_eq!(diff_regions(&image, &current, None), vec![(1, 5), (10, 11)]);
+        assert_eq!(regions(&image, None), vec![(1, 5), (10, 11)]);
         // A device-owned octet (mask 0x00) is never written nor merged across.
         let mut mask = [0xFFu8; 12];
         mask[3] = 0x00;
+        assert_eq!(regions(&image, Some(&mask)), vec![(1, 2), (4, 5), (10, 11)]);
+        assert!(regions(&current, None).is_empty());
+    }
+
+    #[test]
+    fn test_diff_regions_merges_wide_gaps_with_the_unchanged_octets() {
+        let current: Vec<u8> = (0..200u8).collect();
+        let mut image = current.clone();
+        image[10] = 0xAA;
+        image[150] = 0xBB;
+        let chunk = |_: usize, _: usize| 215;
+        let regions = diff_regions(&image, &current, None, SPARSE_MERGE_GAP, &chunk);
+        // 139 unchanged octets apart: past the 100-octet gap, two writes.
+        assert_eq!(regions, vec![(10, 11), (150, 151)]);
+        image[60] = 0xCC;
+        let regions = diff_regions(&image, &current, None, SPARSE_MERGE_GAP, &chunk);
         assert_eq!(
-            diff_regions(&image, &current, Some(&mask)),
-            vec![(1, 2), (4, 5), (10, 11)]
+            regions,
+            vec![(10, 151)],
+            "gaps of 49 and 89 are written through"
         );
-        assert!(diff_regions(&current, &current, None).is_empty());
+        // The octets written in the gaps are the device's own.
+        for i in (11..60).chain(61..150) {
+            assert_eq!(image[i], current[i]);
+        }
+        // A device-owned octet in a gap still splits the run.
+        let mut mask = vec![0xFFu8; 200];
+        mask[100] = 0x00;
+        let regions = diff_regions(&image, &current, Some(&mask), SPARSE_MERGE_GAP, &chunk);
+        assert_eq!(regions, vec![(10, 61), (150, 151)]);
     }
 
     #[test]
     fn test_fill_regions_skips_fill_and_merges_small_gaps() {
+        let legacy = |_: usize, _: usize| usize::MAX;
         let image = [0, 0, 1, 2, 0, 3, 0, 0, 0, 0, 0, 0, 4, 0];
-        let regions = fill_regions(&image, 0);
+        let regions = fill_regions(&image, 0, LEGACY_MERGE_GAP, &legacy);
         assert_eq!(
             regions,
             vec![(2usize, &image[2..6]), (12usize, &image[12..13])]
         );
         // All fill: nothing to write.
-        assert!(fill_regions(&[0xFF; 8], 0xFF).is_empty());
+        assert!(fill_regions(&[0xFF; 8], 0xFF, LEGACY_MERGE_GAP, &legacy).is_empty());
         // Composing the regions over the fill reproduces the image.
-        let mut composed = vec![0u8; image.len()];
-        for (start, run) in fill_regions(&image, 0) {
-            composed[start..start + run.len()].copy_from_slice(run);
+        assert_eq!(compose(&image, 0, &regions), image);
+    }
+
+    /// Writes `regions` over a segment pre-filled with `fill`, as the device
+    /// ends up after a sparse download.
+    fn compose(image: &[u8], fill: u8, regions: &[(usize, &[u8])]) -> Vec<u8> {
+        let mut memory = vec![fill; image.len()];
+        for (start, run) in regions {
+            memory[*start..*start + run.len()].copy_from_slice(run);
         }
-        assert_eq!(composed, image);
+        memory
+    }
+
+    /// The write requests `regions` cost with a fixed `chunk`.
+    fn requests(regions: &[(usize, &[u8])], chunk: usize) -> usize {
+        regions
+            .iter()
+            .map(|(_, run)| run.len().div_ceil(chunk))
+            .sum()
+    }
+
+    #[test]
+    fn test_fill_regions_merges_only_when_it_saves_a_request() {
+        // Two 10-octet runs 50 octets apart.
+        let mut image = vec![0u8; 100];
+        image[..10].fill(1);
+        image[60..70].fill(2);
+        // One 215-octet chunk holds both: joined.
+        let wide = fill_regions(&image, 0, SPARSE_MERGE_GAP, &|_, _| 215);
+        assert_eq!(wide.len(), 1);
+        assert_eq!(requests(&wide, 215), 1);
+        // A 12-octet chunk (a plain, non-negotiated write) would need 6
+        // requests for the joined 70 octets instead of 2: kept apart.
+        let narrow = fill_regions(&image, 0, SPARSE_MERGE_GAP, &|_, _| 12);
+        assert_eq!(narrow.len(), 2);
+        assert_eq!(requests(&narrow, 12), 2);
+        // Gap 0 (BUSSARD_SPARSE_MERGE_GAP=0) never joins.
+        assert_eq!(fill_regions(&image, 0, 0, &|_, _| 215).len(), 2);
+        for regions in [&wide, &narrow] {
+            assert_eq!(compose(&image, 0, regions), image);
+        }
+    }
+
+    /// The F50 parameter segment ETS wrote to 1.1.18 (6152 octets over a zero
+    /// fill, `tests/fixtures/ets-golden/f50-obj4.hex`, issue #123).
+    fn f50_obj4() -> Vec<u8> {
+        let hex: String = include_str!("../../tests/fixtures/ets-golden/f50-obj4.hex")
+            .split_whitespace()
+            .collect();
+        (0..hex.len())
+            .step_by(2)
+            .filter_map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok())
+            .collect()
+    }
+
+    #[test]
+    fn test_fill_regions_over_the_ets_write_map_keep_the_image() {
+        let image = f50_obj4();
+        assert_eq!(image.len(), 6152);
+        // ETS writes every non-zero run on its own (issue #210): the finest
+        // partition, gap 0.
+        let ets = fill_regions(&image, 0, 0, &|_, _| usize::MAX);
+        // 215 octets per request, the Data Secure extended chunk of the
+        // 2026-09-24 flashes.
+        let chunk = |_: usize, _: usize| 215;
+        let legacy = fill_regions(&image, 0, LEGACY_MERGE_GAP, &|_, _| usize::MAX);
+        let merged = fill_regions(&image, 0, SPARSE_MERGE_GAP, &chunk);
+        assert_eq!(
+            (
+                requests(&ets, 215),
+                requests(&legacy, 215),
+                requests(&merged, 215)
+            ),
+            (61, 24, 7),
+            "ETS runs / gap 4 / gap 100"
+        );
+        for regions in [&ets, &legacy, &merged] {
+            assert_eq!(compose(&image, 0, regions), image, "same image");
+        }
+        // Every octet the merged runs add over the ETS runs is fill.
+        let written: usize = merged.iter().map(|(_, run)| run.len()).sum();
+        let non_fill = image.iter().filter(|&&b| b != 0).count();
+        let extra: usize = merged
+            .iter()
+            .flat_map(|(_, run)| run.iter())
+            .filter(|&&b| b == 0)
+            .count();
+        assert_eq!(written, non_fill + extra);
     }
 
     #[test]
