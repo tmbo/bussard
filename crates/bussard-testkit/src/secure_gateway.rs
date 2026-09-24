@@ -78,6 +78,9 @@ pub struct SecureGatewayStats {
     pub requests: Vec<CemiFrame>,
     /// Wrappers that failed to verify.
     pub bad_wrappers: usize,
+    /// Frames read and ignored on a stalled connection (see
+    /// [`SecureGatewayBuilder::stall_after_requests`]).
+    pub stalled_frames: usize,
 }
 
 /// Configures a [`MockSecureGateway`].
@@ -87,6 +90,7 @@ pub struct SecureGatewayBuilder {
     devices: Vec<MockDevice>,
     users: Vec<MockSecureUser>,
     drop_after_requests: Option<usize>,
+    stall_after_requests: Option<usize>,
     push_after_connect: Vec<CemiFrame>,
 }
 
@@ -130,6 +134,15 @@ impl SecureGatewayBuilder {
         self
     }
 
+    /// Stalls the first secure TCP connection after it carried `n`
+    /// TUNNELLING_REQUESTs: the connection stays open but nothing is answered
+    /// any more, which is what a pulled LAN cable looks like to the client
+    /// (no FIN, no RST, just silence; issue #192).
+    pub fn stall_after_requests(mut self, n: usize) -> Self {
+        self.stall_after_requests = Some(n);
+        self
+    }
+
     /// Pushes this indication to the client right after each CONNECT.
     pub fn push_after_connect(mut self, frame: CemiFrame) -> Self {
         self.push_after_connect.push(frame);
@@ -163,6 +176,7 @@ struct Config {
     line: Mutex<Vec<MockDevice>>,
     users: Vec<MockSecureUser>,
     drop_after_requests: Option<usize>,
+    stall_after_requests: Option<usize>,
     push_after_connect: Vec<CemiFrame>,
 }
 
@@ -190,6 +204,7 @@ impl MockSecureGateway {
             devices: Vec::new(),
             users: Vec::new(),
             drop_after_requests: None,
+            stall_after_requests: None,
             push_after_connect: Vec::new(),
         }
     }
@@ -218,6 +233,7 @@ impl MockSecureGateway {
             line: Mutex::new(builder.devices),
             users: builder.users,
             drop_after_requests: builder.drop_after_requests,
+            stall_after_requests: builder.stall_after_requests,
             push_after_connect: builder.push_after_connect,
         });
         let udp_task = tokio::spawn(serve_udp(udp, stats.clone(), config.individual_address));
@@ -226,17 +242,20 @@ impl MockSecureGateway {
             let mut first = true;
             let mut channel = 0x40u8;
             while let Ok((stream, _)) = tcp.accept().await {
-                let drop_after = if first {
-                    config.drop_after_requests
+                let faults = if first {
+                    Faults {
+                        drop_after: config.drop_after_requests,
+                        stall_after: config.stall_after_requests,
+                    }
                 } else {
-                    None
+                    Faults::default()
                 };
                 first = false;
                 channel = channel.wrapping_add(1);
                 let stats = tcp_stats.clone();
                 let config = config.clone();
                 tokio::spawn(async move {
-                    let _ = serve_tcp(stream, config, stats, drop_after, channel).await;
+                    let _ = serve_tcp(stream, config, stats, faults, channel).await;
                 });
             }
         });
@@ -334,12 +353,21 @@ async fn read_frame(stream: &mut TcpStream) -> Result<Vec<u8>, MockError> {
     Ok(frame)
 }
 
+/// The link faults one TCP connection models.
+#[derive(Default, Clone, Copy)]
+struct Faults {
+    /// Close the connection after this many TUNNELLING_REQUESTs.
+    drop_after: Option<usize>,
+    /// Stop answering (but keep the connection open) after this many.
+    stall_after: Option<usize>,
+}
+
 /// One TCP connection: plain searches, or a secure session.
 async fn serve_tcp(
     mut stream: TcpStream,
     config: Arc<Config>,
     stats: Arc<Mutex<SecureGatewayStats>>,
-    drop_after: Option<usize>,
+    faults: Faults,
     channel: u8,
 ) -> Result<(), MockError> {
     // Handshake.
@@ -483,10 +511,18 @@ async fn serve_tcp(
             let wrapped = session.seal(&reply).map_err(secure_err)?;
             stream.write_all(&wrapped).await?;
         }
-        if drop_after.is_some_and(|n| requests >= n) {
+        if faults.drop_after.is_some_and(|n| requests >= n) {
             // Model a link loss: close the TCP connection abruptly.
             tokio::time::sleep(Duration::from_millis(10)).await;
             return Ok(());
+        }
+        if faults.stall_after.is_some_and(|n| requests >= n) {
+            // Model a pulled cable: keep the connection open, read what the
+            // client sends so its writes never block, answer nothing.
+            loop {
+                read_frame(&mut stream).await?;
+                bump(&stats, |s| s.stalled_frames += 1);
+            }
         }
     }
 }

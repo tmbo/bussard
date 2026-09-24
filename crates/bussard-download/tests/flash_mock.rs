@@ -164,6 +164,38 @@ enum Fault {
     IgnoresStartLoading,
 }
 
+/// Which restart arms a [`RestartOutage`] (issue #192).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RestartKind {
+    /// The factory reset (`A_Restart` master reset, erase code 7).
+    FactoryReset,
+    /// The terminal confirmed restart (`A_Restart` master reset, erase code 1).
+    ConfirmedRestart,
+    /// A bare `A_Restart` (the KNX Virtual master reset or a terminal restart).
+    BasicRestart,
+}
+
+/// A gateway link outage in the reconnect phase after a restart (issue #192,
+/// S2.6 of #90): once the device accepted a restart of `kind`, the
+/// `after_frame + 1`-th numbered frame the tool sends it takes the link down
+/// for `duration`, swallowing every datagram. It is the testkit
+/// `outage(after_frame, duration)` fault, counted from the restart instead of
+/// from the start of the tunnel.
+#[derive(Clone, Copy, Debug)]
+struct RestartOutage {
+    kind: RestartKind,
+    after_frame: u32,
+    duration: Duration,
+}
+
+/// Arms `s.restart_outage` when it waits for a restart of `kind`.
+fn arm_restart_outage(s: &mut DeviceState, kind: RestartKind) {
+    if s.restart_outage.is_some_and(|o| o.kind == kind) {
+        s.restart_outage_armed = true;
+        s.restart_outage_frames = 0;
+    }
+}
+
 /// The mutable mock-device state, shared with the gateway task.
 struct DeviceState {
     object_types: Vec<u16>,
@@ -329,6 +361,13 @@ struct DeviceState {
     outage_kills_l4: bool,
     /// Set when an outage ended with `outage_kills_l4`; cleared by T_Connect.
     l4_dead_after_outage: bool,
+    /// A link outage in the reconnect phase after a restart (issue #192).
+    /// Taken (`None`) once it trips.
+    restart_outage: Option<RestartOutage>,
+    /// Set once the restart `restart_outage` waits for was accepted.
+    restart_outage_armed: bool,
+    /// Numbered frames to the device since the arming restart.
+    restart_outage_frames: u32,
     /// Count of KNXnet/IP CONNECT_REQUESTs the gateway answered — i.e. how many
     /// times the tunnel was (re)established. A tunnel-drop test asserts this
     /// reaches ≥2 (the actor reconnected the tunnel).
@@ -557,6 +596,7 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
         s.last_master_reset_payload = data.to_vec();
         s.l4_dead_after_master_reset = true;
         s.sync_drops_pending = s.sync_drops_after_restart;
+        arm_restart_outage(&mut s, RestartKind::FactoryReset);
         s.app_load_state = LS_UNLOADED;
         for state in s.object_load_states.values_mut() {
             *state = LS_UNLOADED;
@@ -575,6 +615,7 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
         s.confirmed_restarts_seen += 1;
         s.l4_dead_after_master_reset = true;
         s.sync_drops_pending = s.sync_drops_after_restart;
+        arm_restart_outage(&mut s, RestartKind::ConfirmedRestart);
         return Reaction::Answer(A_RESTART_RESPONSE, vec![0x00, 0x00, 0x00]);
     }
     if req_apci == A_RESTART_MASTER_RESET {
@@ -612,6 +653,7 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
     // the flag is unset, every bare restart is a plain terminal restart.
     if req_apci & APCI_SELECTOR == A_RESTART_SEL {
         s.saw_basic_restart = true;
+        arm_restart_outage(&mut s, RestartKind::BasicRestart);
         let is_master_reset = s.wipe_app_on_master_reset && s.master_resets_seen == 0;
         if is_master_reset {
             s.master_resets_seen += 1;
@@ -1162,6 +1204,29 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
                     continue;
                 }
             }
+            // The post-restart outage (issue #192): count the numbered frames
+            // the tool sends the device after the arming restart.
+            if s.restart_outage_armed
+                && parsed.service == ServiceType::TunnelingRequest
+                && let Ok(tr) = knxnet::parse_tunneling_request(parsed.body)
+                && tr.cemi.destination == Destination::Individual(address)
+                && matches!(
+                    tpci::classify(tr.cemi.tpci_octet()),
+                    TpciKind::NumberedData(_)
+                )
+            {
+                s.restart_outage_frames += 1;
+                if let Some(outage) = s.restart_outage
+                    && s.restart_outage_frames > outage.after_frame
+                {
+                    s.restart_outage = None;
+                    s.restart_outage_armed = false;
+                    s.tunnel_down_until =
+                        Some(tokio::time::Instant::now().checked_add(outage.duration));
+                    s.outage_swallowed += 1;
+                    continue;
+                }
+            }
         }
         match parsed.service {
             ServiceType::ConnectRequest => {
@@ -1540,6 +1605,9 @@ fn fresh_device(fault: Fault) -> Shared {
         outage_swallowed: 0,
         outage_kills_l4: false,
         l4_dead_after_outage: false,
+        restart_outage: None,
+        restart_outage_armed: false,
+        restart_outage_frames: 0,
         master_resets_seen: 0,
         factory_resets_seen: 0,
         control_writes_at_factory_reset: None,
@@ -3127,6 +3195,10 @@ impl bussard_download::Connector for LeaseConnector {
             .await
             .map_err(bussard_mgmt::load::WriteError::Mgmt)
     }
+
+    fn link_losses(&self) -> u64 {
+        self.handle.link_losses()
+    }
 }
 
 /// Spins up the mock gateway and a bus actor over it, returning the actor handle
@@ -3764,6 +3836,7 @@ fn fast_reconnect(budget: Duration) -> bussard_transport::TunnelReconnect {
         initial_backoff: Duration::from_millis(100),
         max_backoff: Duration::from_millis(200),
         attempt_timeout: Duration::from_millis(300),
+        ..bussard_transport::TunnelReconnect::default()
     }
 }
 
@@ -6160,5 +6233,230 @@ async fn test_flash_secure_factory_reset_gives_up_on_a_sync_never_answered()
         bussard_mgmt::SyncRetry::after_restart().attempts,
         "the Sync_Req is repeated a bounded number of times"
     );
+    Ok(())
+}
+
+// --- issue #192: a gateway link loss in the post-restart reconnect phase -----
+
+/// Flashes `app` over a reconnecting session while a gateway link outage of
+/// 1.5 s hits the reconnect phase after the device accepted a restart of
+/// `kind` (issue #192, S2.6 of #90). The outage trips on the second numbered
+/// frame after the restart: the readiness probe's `A_DeviceDescriptor_Read`
+/// gets through, then the session connection's first frame (the authorize, or
+/// the S-A_Sync_Req on a Data Secure device) is swallowed and the device drops
+/// its L4 connection while the link is down. Returns the flash result and the
+/// device state.
+async fn flash_across_restart_outage(
+    app: &ApplicationProgram,
+    kind: RestartKind,
+    secure: bool,
+    prepare: impl FnOnce(&mut DeviceState),
+) -> Result<(Result<bussard_download::FlashOutcome, WriteError>, Shared), Box<dyn std::error::Error>>
+{
+    // SAFETY of env: nextest runs this test in its own process; the vars only
+    // shorten the post-reboot poll and keep proactive cycling off.
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
+        std::env::set_var("BUSSARD_FLASH_RECONNECT_EXCHANGES", "0");
+    }
+    let state = if secure {
+        secure_device(Fault::None)
+    } else {
+        fresh_device(Fault::None)
+    };
+    {
+        let mut s = lock(&state)?;
+        s.restart_outage = Some(RestartOutage {
+            kind,
+            after_frame: 1,
+            duration: Duration::from_millis(1500),
+        });
+        s.outage_kills_l4 = true;
+        prepare(&mut s);
+    }
+    let (handle, state, gw, _gateway) =
+        setup_bus_reconnect(state, fast_reconnect(Duration::from_secs(20))).await;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source = bussard_bus::ops::group_source(&handle);
+    let plan = plan_flash(
+        app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    // A short-but-not-tiny L4 budget: each silent exchange costs one timeout.
+    let budget = bussard_mgmt::Timeouts {
+        ack_timeout: Duration::from_millis(300),
+        max_repetitions: 1,
+        response_timeout: Duration::from_millis(300),
+    };
+    let (connector, key) = if secure {
+        (
+            LeaseConnector::secure(handle.clone(), target, source, Some(budget), MOCK_TOOL_KEY),
+            Some(0xFFFF_FFFF),
+        )
+    } else {
+        (
+            LeaseConnector::plain(handle.clone(), target, source, Some(budget)),
+            None,
+        )
+    };
+    let mut session = Session::open_with_key(connector, key).await?;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions {
+            verify_after_restart: true,
+            ..Default::default()
+        },
+        |_| {},
+    )
+    .await;
+    let _ = session.into_disconnect().await;
+    let _ = handle.close().await;
+    gw.abort();
+    Ok((outcome, state))
+}
+
+/// The assertions every post-restart outage case shares: the flash verified,
+/// the outage really fired and the tunnel was re-established.
+fn assert_resumed_across_outage(
+    outcome: Result<bussard_download::FlashOutcome, WriteError>,
+    state: &Shared,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let outcome = outcome?;
+    assert!(outcome.ok(), "the resumed flash must verify: {outcome:?}");
+    assert_eq!(outcome.load_state, LoadState::Loaded);
+    let s = lock(state)?;
+    assert!(s.restart_outage.is_none(), "the outage fired");
+    assert!(s.outage_swallowed >= 1, "the outage swallowed the frame");
+    assert!(
+        s.tunnel_connects >= 2,
+        "the tunnel was re-established (connects = {})",
+        s.tunnel_connects
+    );
+    assert_eq!(s.secure_refusals, 0, "no stale or unverifiable frame");
+    // The authorize the outage swallowed was not cached as "device has no
+    // authorize": the last connection presented the key again.
+    assert!(
+        s.authorized,
+        "the final connection was authorized, not skipped as unsupported"
+    );
+    Ok(())
+}
+
+/// The sparse image [`app_with_sparse_segment`] writes, as ETS leaves it.
+const SPARSE_IMAGE: [u8; 6] = [0x00, 0x01, 0x00, 0x03, 0x00, 0x05];
+
+/// The six octets at the sparse segment's base.
+fn sparse_image(state: &Shared) -> Result<Vec<u8>, String> {
+    let s = lock(state)?;
+    Ok((0x4000u32..0x4006)
+        .map(|a| *s.memory.get(&a).unwrap_or(&0))
+        .collect())
+}
+
+#[tokio::test]
+async fn test_flash_resumes_tunnel_loss_during_factory_reset_reconnect()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The live failure of #192: the link drops while bussard reconnects to the
+    // device after its factory reset. The unanswered authorize must not be
+    // taken for "device has no authorize"; the reconnect phase waits for the
+    // tunnel, probes readiness again, reconnects and the flash continues with
+    // the same step. The reset itself is not repeated.
+    let (outcome, state) = flash_across_restart_outage(
+        &app_with_sparse_segment(),
+        RestartKind::FactoryReset,
+        false,
+        |_| {},
+    )
+    .await?;
+    assert_resumed_across_outage(outcome, &state)?;
+    assert_eq!(sparse_image(&state)?, SPARSE_IMAGE.to_vec());
+    let s = lock(&state)?;
+    assert_eq!(s.factory_resets_seen, 1, "the reset was not sent again");
+    assert_eq!(s.confirmed_restarts_seen, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_secure_resumes_tunnel_loss_during_factory_reset_reconnect()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The same on a Data Secure device (the #90 S2.6 setup): the S-A_Sync_Req
+    // of the post-reset connection is lost with the link; the Sync is redone
+    // on a fresh connection once the tunnel is back.
+    let (outcome, state) = flash_across_restart_outage(
+        &app_with_sparse_segment(),
+        RestartKind::FactoryReset,
+        true,
+        |_| {},
+    )
+    .await?;
+    assert_resumed_across_outage(outcome, &state)?;
+    assert_eq!(sparse_image(&state)?, SPARSE_IMAGE.to_vec());
+    let s = lock(&state)?;
+    assert_eq!(s.factory_resets_seen, 1, "the reset was not sent again");
+    assert!(
+        s.plain_descriptor_reads >= 3,
+        "the readiness probe ran again after the outage (got {})",
+        s.plain_descriptor_reads
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_resumes_tunnel_loss_during_terminal_restart_verify()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The link drops while bussard reconnects after the terminal (confirmed)
+    // restart to verify the load: the verify still runs on a fresh connection.
+    let (outcome, state) = flash_across_restart_outage(
+        &app_with_sparse_segment(),
+        RestartKind::ConfirmedRestart,
+        false,
+        |_| {},
+    )
+    .await?;
+    assert_resumed_across_outage(outcome, &state)?;
+    let s = lock(&state)?;
+    assert_eq!(s.factory_resets_seen, 1);
+    assert_eq!(s.confirmed_restarts_seen, 1, "the restart was not repeated");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_secure_resumes_tunnel_loss_during_terminal_restart_verify()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (outcome, state) = flash_across_restart_outage(
+        &app_with_sparse_segment(),
+        RestartKind::ConfirmedRestart,
+        true,
+        |_| {},
+    )
+    .await?;
+    assert_resumed_across_outage(outcome, &state)?;
+    let s = lock(&state)?;
+    assert_eq!(s.confirmed_restarts_seen, 1, "the restart was not repeated");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_resumes_tunnel_loss_during_master_reset_reconnect()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The mid-procedure `LdCtrlMasterReset` (KNX Virtual's bare A_Restart,
+    // erase code 4): the link drops in its reconnect phase; the object is
+    // re-opened and re-allocated on the fresh connection as usual.
+    let (outcome, state) = flash_across_restart_outage(
+        &app_with_master_reset(),
+        RestartKind::BasicRestart,
+        false,
+        |s| s.wipe_app_on_master_reset = true,
+    )
+    .await?;
+    assert_resumed_across_outage(outcome, &state)?;
+    let s = lock(&state)?;
+    assert_eq!(s.master_resets_seen, 1, "the master reset was not repeated");
     Ok(())
 }

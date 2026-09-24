@@ -34,11 +34,14 @@
 //! # Re-establishing a lost tunnel (issue #177)
 //!
 //! A pulled LAN cable on the IP interface, a switch reboot or a Wi-Fi hiccup
-//! leaves the gateway unreachable for a few seconds. The tunnel treats three
+//! leaves the gateway unreachable for a few seconds. The tunnel treats four
 //! signals as a lost link: a TUNNELING_REQUEST still unacknowledged after its
-//! retransmit, a failed CONNECTIONSTATE heartbeat, and a socket error. On any
-//! of them it runs the [`TunnelReconnect`] policy from the
-//! [`ConnectionConfig`]:
+//! retransmit, a failed CONNECTIONSTATE heartbeat, a socket error, and (over
+//! TCP, which has no ACK to time out) an unanswered liveness probe after
+//! [`TunnelReconnect::tcp_read_deadline`] without inbound traffic (issue #192;
+//! 5 s by default, so a pulled cable is noticed after about 7 s instead of the
+//! kernel's ~37 s TCP timeout). On any of them it runs the [`TunnelReconnect`]
+//! policy from the [`ConnectionConfig`]:
 //!
 //! 1. publish [`LinkState::Reconnecting`] and log `gateway connection lost`,
 //! 2. send a best-effort DISCONNECT_REQUEST for the old channel (repeated per
@@ -320,6 +323,7 @@ impl Tunnel {
             secure_user,
             reconnect: config.reconnect,
             link_state: link_tx,
+            last_rx: Instant::now(),
         };
         let task = tokio::spawn(task_state.run());
 
@@ -628,6 +632,9 @@ struct TaskState {
     reconnect: TunnelReconnect,
     /// Publishes the link state to the handle (and through it the bus actor).
     link_state: watch::Sender<LinkState>,
+    /// When the link last delivered anything, for the TCP read deadline
+    /// (issue #192).
+    last_rx: Instant,
 }
 
 impl TaskState {
@@ -666,6 +673,8 @@ impl TaskState {
         let mut buf = [0u8; 1024];
 
         loop {
+            let link_check = self.link_check_enabled();
+            let link_check_at = self.link_check_at();
             tokio::select! {
                 // A command from the handle.
                 cmd = self.commands.recv() => {
@@ -691,6 +700,7 @@ impl TaskState {
                 res = self.link.recv(&mut buf) => {
                     match res {
                         Ok(n) => {
+                            self.last_rx = Instant::now();
                             if !self.handle_inbound(&buf[..n]).await {
                                 return; // disconnected
                             }
@@ -714,6 +724,18 @@ impl TaskState {
                     }
                 }
 
+                // TCP read deadline (issue #192): the link has been silent for
+                // the deadline, so probe it; an unanswered probe is a lost link.
+                _ = time::sleep_until(link_check_at), if link_check => {
+                    let timeout = self.reconnect.tcp_probe_timeout();
+                    if let Err(e) = self.probe_link(timeout, &mut buf).await
+                        && let Err(err) = self.recover(e, &mut buf).await
+                    {
+                        self.deliver(Err(err));
+                        return;
+                    }
+                }
+
                 // Heartbeat tick.
                 _ = heartbeat.tick() => {
                     if let Err(e) = self.do_heartbeat(&mut buf).await
@@ -724,6 +746,38 @@ impl TaskState {
                     }
                 }
             }
+        }
+    }
+
+    /// Whether the TCP read deadline applies: a link without TUNNELING_ACKs
+    /// (KNXnet/IP Secure over TCP) and a non-zero deadline.
+    fn link_check_enabled(&self) -> bool {
+        !self.link.acks() && !self.reconnect.tcp_read_deadline.is_zero()
+    }
+
+    /// When the TCP read deadline expires: the last inbound frame plus the
+    /// deadline.
+    fn link_check_at(&self) -> Instant {
+        self.last_rx + self.reconnect.tcp_read_deadline
+    }
+
+    /// Probes a silent TCP link with one CONNECTIONSTATE_REQUEST, waiting
+    /// `timeout` for the answer. Success moves the read deadline on; silence
+    /// is [`TransportError::Timeout`], which the caller treats as a lost link.
+    async fn probe_link(&mut self, timeout: std::time::Duration, buf: &mut [u8]) -> Result<()> {
+        tracing::debug!(
+            silent_ms = self.last_rx.elapsed().as_millis() as u64,
+            "no traffic from the gateway within the TCP read deadline; probing the link"
+        );
+        match self.heartbeat_with(1, timeout, buf).await {
+            Ok(()) => {
+                self.last_rx = Instant::now();
+                Ok(())
+            }
+            Err(TransportError::HeartbeatLost) => Err(TransportError::Timeout(
+                "CONNECTIONSTATE_RESPONSE (TCP read deadline)",
+            )),
+            Err(err) => Err(err),
         }
     }
 
@@ -976,14 +1030,31 @@ impl TaskState {
 
     /// Sends a heartbeat and awaits its response, retrying per the spec.
     async fn do_heartbeat(&mut self, buf: &mut [u8]) -> Result<()> {
+        let r = self
+            .heartbeat_with(HEARTBEAT_RETRIES, HEARTBEAT_TIMEOUT, buf)
+            .await;
+        if r.is_ok() {
+            self.last_rx = Instant::now();
+        }
+        r
+    }
+
+    /// Sends up to `attempts` CONNECTIONSTATE_REQUESTs, each waiting `timeout`
+    /// for its response, delivering interleaved traffic meanwhile.
+    async fn heartbeat_with(
+        &mut self,
+        attempts: u32,
+        timeout: std::time::Duration,
+        buf: &mut [u8],
+    ) -> Result<()> {
         // The same real control HPAI the CONNECT used (see `connect` for why
         // wildcard route-back breaks literal-minded gateways like KNX Virtual).
         let control = self.local_hpai;
         let req = knxnet::connectionstate_request(self.channel_id, control);
 
-        for attempt in 0..HEARTBEAT_RETRIES {
+        for attempt in 0..attempts {
             self.link.send(&req).await?;
-            let deadline = Instant::now() + HEARTBEAT_TIMEOUT;
+            let deadline = Instant::now() + timeout;
             loop {
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
@@ -1072,6 +1143,7 @@ impl TaskState {
                          attempt {attempt})"
                     );
                     self.link_state.send_replace(LinkState::Up { assigned_ia });
+                    self.last_rx = Instant::now();
                     return Ok(());
                 }
                 Err(err) => {

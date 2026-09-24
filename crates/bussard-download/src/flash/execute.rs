@@ -407,11 +407,21 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
         // makes progress fails cleanly instead of looping forever; any step that
         // completes starts the next with a full budget (forward progress resets it).
         //
-        // `MasterReset` and the terminal `Restart` reboot the device and reconnect
-        // themselves, so they are excluded from resume-on-drop — their own silence
-        // is expected, not a death to recover from.
+        // `FactoryReset`, `MasterReset` and the terminal `Restart` reboot the
+        // device and reconnect themselves: their own silence is expected, not a
+        // death to recover from, and their reconnect phase already resumes across
+        // a gateway link loss (see [`Session::reconnect_after_reboot`]). They are
+        // re-run only when a death escapes them *and* the gateway link was lost
+        // meanwhile (issue #192): the restart may never have reached the device,
+        // so it is sent again after waiting for the device to answer. Re-sending
+        // is safe: a factory reset erases a device nothing was written to yet, a
+        // master reset is followed by the same re-open/re-allocate, and a
+        // terminal restart only reboots a loaded device once more. Without a
+        // link loss the old behaviour stands: an unanswered factory reset fails
+        // the flash before anything is written.
         let mut resume_reconnects = 0u32;
         'resume: loop {
+            let losses_before_attempt = session.link_losses();
             let step_result: Result<(), WriteError> = async {
                 match step {
                     FlashStep::SecurityLoadControl { control } => {
@@ -1025,6 +1035,24 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                     // drops the dead connection outright rather than trying a graceful
                     // T_Disconnect the dead peer would not answer.
                     session.reconnect().await?;
+                }
+                // A restart step cut short by a gateway link loss (issue #192): wait
+                // for the device (it may be rebooting from the restart that did get
+                // through) and send the step again.
+                Err(e)
+                    if resumable_death(&e, session)
+                        && self_reconnecting_step
+                        && session.link_losses() != losses_before_attempt
+                        && resume_reconnects < MAX_RESUME_RECONNECTS =>
+                {
+                    resume_reconnects += 1;
+                    tracing::warn!(
+                        "step {} ({}) was cut short by a gateway link loss ({e}); \
+                         reconnecting and repeating it",
+                        i + 1,
+                        step_label(step)
+                    );
+                    session.reconnect_after_reboot().await?;
                 }
                 Err(e) => return Err(e),
             }

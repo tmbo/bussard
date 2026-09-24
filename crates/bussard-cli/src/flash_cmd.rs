@@ -268,7 +268,10 @@ pub fn run(
             };
             anyhow::Ok((connected, result, resident, facts))
         })?;
-        let link_lost = handle.link_losses() != losses_before;
+        // A loss still being re-established counts too: over TCP the probe can
+        // run into the silence before the tunnel has noticed it (issue #192).
+        let link_lost = handle.link_losses() != losses_before
+            || handle.status() == bussard_bus::BusState::Reconnecting;
         if preflight_attempt >= PREFLIGHT_ATTEMPTS
             || !preflight_interrupted(&outcome.1, outcome.2.as_ref(), link_lost)
         {
@@ -1296,6 +1299,12 @@ impl bussard_download::Connector for LeaseConnector<'_> {
         Layer4Connection::connect_with_secure(channel, self.target, self.source, timeouts, secure)
             .await
             .map_err(WriteError::Mgmt)
+    }
+
+    fn link_losses(&self) -> u64 {
+        // Lets the session tell a failure the gateway caused (the count moved)
+        // from one the device caused, and retry the former (issue #192).
+        self.handle.link_losses()
     }
 }
 

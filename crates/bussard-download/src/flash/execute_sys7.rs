@@ -87,9 +87,14 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
         // device state that survive the drop, and every System 7 memory write is
         // absolute-addressed and idempotent, so replaying the step is safe. The
         // terminal Restart reboots the device and is excluded (its silence is
-        // expected). Bounded by MAX_RESUME_RECONNECTS per step.
+        // expected) unless the gateway link was lost while it ran (issue #192):
+        // then it is sent again once the device answers, which only reboots a
+        // loaded device once more. Its reconnect phase resumes across a link
+        // loss on its own (see `Session::reconnect_after_reboot`). Bounded by
+        // MAX_RESUME_RECONNECTS per step.
         let mut resume_reconnects = 0u32;
         'resume: loop {
+            let losses_before_attempt = session.link_losses();
             let step_result: Result<(), WriteError> = async {
                 match step {
                     FlashStep::Sys7Unload { lsm: idx } => {
@@ -377,6 +382,23 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                     resume_reconnects += 1;
                     session.reconnect().await?;
                 }
+                // The terminal restart cut short by a gateway link loss (#192).
+                Err(e)
+                    if resumable_death(&e, session)
+                        && self_reconnecting
+                        && verified.is_none()
+                        && session.link_losses() != losses_before_attempt
+                        && resume_reconnects < MAX_RESUME_RECONNECTS =>
+                {
+                    resume_reconnects += 1;
+                    tracing::warn!(
+                        "step {} ({}) was cut short by a gateway link loss ({e}); \
+                         reconnecting and repeating it",
+                        i + 1,
+                        plan.step_label(step)
+                    );
+                    session.reconnect_after_reboot().await?;
+                }
                 // Unloading an object the device does not have leaves nothing
                 // loaded on it: the goal of the step already holds.
                 Err(WriteError::ObjectAbsent { object_index, .. })
@@ -480,15 +502,20 @@ pub(super) async fn verify_sys7<C: Connector>(
     let mut all_loaded = true;
     for idx in completed_lsms {
         let octet = lsm_octet(session.l4().target(), *idx)?;
-        // Re-read once through a resumable death: a just-rebooted device can drop
-        // the first probe on the fresh connection before it is fully back.
-        let state = match lsm.read_state(session.l4(), octet).await {
-            Ok(state) => state,
-            Err(e) if resumable_death(&e, session) && session.can_reconnect() => {
-                session.reconnect().await?;
-                lsm.read_state(session.l4(), octet).await?
+        // Re-read through a resumable death: a just-rebooted device can drop the
+        // first probe on the fresh connection before it is fully back, and a
+        // gateway link loss can hit the read too (issue #192). Bounded by
+        // MAX_RESUME_RECONNECTS consecutive reconnects.
+        let mut reconnects = 0u32;
+        let state = loop {
+            match lsm.read_state(session.l4(), octet).await {
+                Ok(state) => break state,
+                Err(e) if resumable_death(&e, session) && reconnects < MAX_RESUME_RECONNECTS => {
+                    reconnects += 1;
+                    session.reconnect().await?;
+                }
+                Err(e) => return Err(e),
             }
-            Err(e) => return Err(e),
         };
         if state != LoadState::Loaded {
             all_loaded = false;

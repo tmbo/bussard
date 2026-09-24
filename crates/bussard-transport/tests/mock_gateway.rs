@@ -894,6 +894,7 @@ fn fast_reconnect(budget: Duration) -> TunnelReconnect {
         initial_backoff: Duration::from_millis(100),
         max_backoff: Duration::from_millis(200),
         attempt_timeout: Duration::from_millis(300),
+        ..TunnelReconnect::default()
     }
 }
 

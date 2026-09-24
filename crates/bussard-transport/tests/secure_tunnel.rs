@@ -257,3 +257,141 @@ async fn test_secure_tunnel_reestablishes_a_new_session_after_link_loss() -> Tes
     assert_eq!(stats.requests.last(), Some(&second));
     Ok(())
 }
+
+/// A secure tunnel to `gw` with a 10 s re-establish budget and `deadline` as
+/// its TCP read deadline.
+fn stall_config(gw: &MockSecureGateway, deadline: Duration) -> ConnectionConfig {
+    let secure = SecureTunnelConfig {
+        users: vec![user(3, USER3_KEY, TUNNEL_23, None)],
+        source: SecureSource::Explicit,
+    };
+    ConnectionConfig::tunnel(gw.addr())
+        .with_reconnect(
+            TunnelReconnect::with_budget(Duration::from_secs(10)).with_tcp_read_deadline(deadline),
+        )
+        .with_secure(Some(secure))
+}
+
+/// Waits until the link state reports `Reconnecting`.
+async fn until_reconnecting(link: &mut tokio::sync::watch::Receiver<LinkState>) -> TestResult {
+    loop {
+        link.changed().await?;
+        if matches!(*link.borrow(), LinkState::Reconnecting) {
+            return Ok(());
+        }
+    }
+}
+
+#[tokio::test]
+async fn test_secure_tunnel_read_deadline_detects_a_silent_link() -> TestResult {
+    // Issue #192: a pulled cable on a TCP tunnel is silence, not a socket
+    // error, until the kernel gives up (~37 s). With a 300 ms read deadline
+    // the idle link is probed with a CONNECTIONSTATE_REQUEST; the stalled
+    // interface answers nothing, so the loss is detected within the deadline
+    // plus the probe wait and a new secure session is opened.
+    let gw = MockSecureGateway::builder()
+        .device_auth(device_key())
+        .user(3, user_key(USER3_KEY), TUNNEL_23)
+        .stall_after_requests(1)
+        .start()
+        .await?;
+    let deadline = Duration::from_millis(300);
+    let mut conn = Transport::connect(&stall_config(&gw, deadline)).await?;
+    let mut link = conn.link_state().ok_or("a tunnel has a link state")?;
+
+    conn.send(CemiFrame::group_write_packed(
+        ga("1/2/3")?,
+        ia("1.1.23")?,
+        &[1],
+    ))
+    .await?;
+    let _ = expect_con(&mut conn).await?;
+    let stalled_at = std::time::Instant::now();
+    // The loss must be noticed within the deadline plus the probe wait (with
+    // slack for a loaded CI machine), far below the kernel's TCP timeout.
+    tokio::time::timeout(Duration::from_secs(3), until_reconnecting(&mut link)).await??;
+    let detected = stalled_at.elapsed();
+    assert!(
+        detected >= deadline,
+        "no probe before the deadline expired (detected after {detected:?})"
+    );
+    let wait_up = async {
+        loop {
+            link.changed().await?;
+            if matches!(*link.borrow(), LinkState::Up { .. }) {
+                return Ok::<(), tokio::sync::watch::error::RecvError>(());
+            }
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(8), wait_up).await??;
+
+    let second = CemiFrame::group_write_packed(ga("1/2/4")?, ia("1.1.23")?, &[0]);
+    conn.send(second.clone()).await?;
+    let _ = expect_con(&mut conn).await?;
+    conn.close().await?;
+    let stats = gw.stats()?;
+    assert_eq!(
+        stats.sessions, 2,
+        "the lost link got a second secure session"
+    );
+    assert!(
+        stats.stalled_frames >= 1,
+        "the liveness probe went into the stalled connection"
+    );
+    assert_eq!(stats.requests.last(), Some(&second));
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_secure_tunnel_read_deadline_keeps_a_healthy_idle_link() -> TestResult {
+    // An idle but healthy link answers every probe: it stays up on its one
+    // session, and the probes are the only traffic.
+    let gw = gateway().await?;
+    let mut conn = Transport::connect(&stall_config(&gw, Duration::from_millis(200))).await?;
+    let link = conn.link_state().ok_or("a tunnel has a link state")?;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    assert!(matches!(*link.borrow(), LinkState::Up { .. }));
+    conn.send(CemiFrame::group_write_packed(
+        ga("1/2/3")?,
+        ia("1.1.23")?,
+        &[1],
+    ))
+    .await?;
+    let _ = expect_con(&mut conn).await?;
+    conn.close().await?;
+    let stats = gw.stats()?;
+    assert_eq!(stats.sessions, 1, "no re-establish on a healthy link");
+    assert!(
+        stats.heartbeats >= 3,
+        "the idle link was probed every 200 ms (got {})",
+        stats.heartbeats
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_secure_tunnel_without_read_deadline_does_not_probe() -> TestResult {
+    // The control: with the check off (`Duration::ZERO`) a stalled link is not
+    // noticed within the same window, which is the ~37 s blind spot of #192.
+    let gw = MockSecureGateway::builder()
+        .device_auth(device_key())
+        .user(3, user_key(USER3_KEY), TUNNEL_23)
+        .stall_after_requests(1)
+        .start()
+        .await?;
+    let mut conn = Transport::connect(&stall_config(&gw, Duration::ZERO)).await?;
+    let mut link = conn.link_state().ok_or("a tunnel has a link state")?;
+    conn.send(CemiFrame::group_write_packed(
+        ga("1/2/3")?,
+        ia("1.1.23")?,
+        &[1],
+    ))
+    .await?;
+    let _ = expect_con(&mut conn).await?;
+    let noticed = tokio::time::timeout(Duration::from_millis(1500), until_reconnecting(&mut link))
+        .await
+        .is_ok();
+    assert!(!noticed, "without a read deadline nothing probes the link");
+    assert_eq!(gw.stats()?.heartbeats, 0);
+    Ok(())
+}

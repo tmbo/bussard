@@ -175,6 +175,27 @@ struct DeviceState {
     lsm_state_reads: usize,
     /// Every numbered request the device answered or acknowledged.
     requests_seen: usize,
+    /// A gateway link outage in the reconnect phase after a restart (issue
+    /// #192): `(restart, after_frame, duration)` takes the link down for
+    /// `duration` at the `after_frame + 1`-th numbered frame the tool sends
+    /// after the `restart`-th restart (1-based) — the testkit
+    /// `outage(after_frame, duration)` fault counted from that restart. The
+    /// device drops its L4 connection while the link is down. Taken once it
+    /// trips.
+    restart_outage: Option<(usize, u32, Duration)>,
+    /// Set once the restart `restart_outage` waits for was seen.
+    restart_outage_armed: bool,
+    /// Numbered frames to the device since the arming restart.
+    restart_outage_frames: u32,
+    /// While the link is down: when it comes back.
+    tunnel_down_until: Option<tokio::time::Instant>,
+    /// Datagrams the outage swallowed.
+    outage_swallowed: usize,
+    /// Set when an outage ended; the device answers no numbered frame until a
+    /// fresh T_Connect.
+    l4_dead_after_outage: bool,
+    /// KNXnet/IP CONNECT_REQUESTs answered (tunnel (re)establishments).
+    tunnel_connects: usize,
 }
 
 impl DeviceState {
@@ -223,6 +244,13 @@ fn fresh_device(mode: LsmMode, fault: Fault) -> Shared {
         verify_echoes_sent: 0,
         lsm_state_reads: 0,
         requests_seen: 0,
+        restart_outage: None,
+        restart_outage_armed: false,
+        restart_outage_frames: 0,
+        tunnel_down_until: None,
+        outage_swallowed: 0,
+        l4_dead_after_outage: false,
+        tunnel_connects: 0,
     }))
 }
 
@@ -414,6 +442,12 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
     if sel == A_RESTART_SEL {
         let mut s = state.lock().unwrap();
         s.restarts_seen += 1;
+        if s.restart_outage
+            .is_some_and(|(nth, _, _)| nth == s.restarts_seen)
+        {
+            s.restart_outage_armed = true;
+            s.restart_outage_frames = 0;
+        }
         let writes = s.memory_writes_seen;
         s.restart_at_writes.push(writes);
         // PID_DEVICE_CONTROL lives in RAM: the restart clears verify mode.
@@ -740,8 +774,45 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
         let Ok(parsed) = knxnet::parse(&buf[..n]) else {
             continue;
         };
+        // Gateway link outage (issue #192): nothing gets through while it
+        // lasts; when it ends the device has dropped its L4 connection.
+        {
+            let mut s = lock(&state);
+            match s.tunnel_down_until {
+                Some(until) if tokio::time::Instant::now() < until => {
+                    s.outage_swallowed += 1;
+                    continue;
+                }
+                Some(_) => {
+                    s.tunnel_down_until = None;
+                    s.l4_dead_after_outage = true;
+                }
+                None => {}
+            }
+            if s.restart_outage_armed
+                && parsed.service == ServiceType::TunnelingRequest
+                && let Ok(tr) = knxnet::parse_tunneling_request(parsed.body)
+                && tr.cemi.destination == Destination::Individual(address)
+                && matches!(
+                    tpci::classify(tr.cemi.tpci_octet()),
+                    TpciKind::NumberedData(_)
+                )
+            {
+                s.restart_outage_frames += 1;
+                if let Some((_, after, duration)) = s.restart_outage
+                    && s.restart_outage_frames > after
+                {
+                    s.restart_outage = None;
+                    s.restart_outage_armed = false;
+                    s.tunnel_down_until = tokio::time::Instant::now().checked_add(duration);
+                    s.outage_swallowed += 1;
+                    continue;
+                }
+            }
+        }
         match parsed.service {
             ServiceType::ConnectRequest => {
+                lock(&state).tunnel_connects += 1;
                 let resp = knxnet_frame(
                     ServiceType::ConnectResponse,
                     &connect_response_body(CHANNEL, &gw),
@@ -795,6 +866,7 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
                         // The tool reconnecting after a reboot: the device is back
                         // up and answers the fresh connection normally.
                         s.rebooting = false;
+                        s.l4_dead_after_outage = false;
                     }
                     TpciKind::Disconnect => {}
                     TpciKind::NumberedData(client_seq) => {
@@ -813,7 +885,7 @@ async fn run_gateway(gw: UdpSocket, address: bussard_model::IndividualAddress, s
                             // A rebooting device is unreachable: it went silent when
                             // it saw the restart and stays silent until the tool
                             // reconnects (a fresh T_Connect clears `rebooting`).
-                            if s.rebooting {
+                            if s.rebooting || s.l4_dead_after_outage {
                                 continue;
                             }
                         }
@@ -1231,6 +1303,11 @@ impl bussard_download::Connector for LeaseConnector {
     async fn connect(
         &mut self,
     ) -> Result<Layer4Connection<bussard_mgmt::LeaseChannel>, bussard_mgmt::load::WriteError> {
+        // After a gateway link loss wait for the re-established tunnel, as the
+        // CLI's connector does; immediate when connected.
+        self.handle
+            .wait_connected(self.handle.reconnect_budget())
+            .await;
         let lease = self.handle.lease().await.map_err(|_| {
             bussard_mgmt::load::WriteError::Mgmt(bussard_mgmt::MgmtError::Transport(
                 bussard_transport::TransportError::Closed,
@@ -1241,6 +1318,10 @@ impl bussard_download::Connector for LeaseConnector {
         Layer4Connection::connect_with(channel, self.target, self.source, timeouts)
             .await
             .map_err(bussard_mgmt::load::WriteError::Mgmt)
+    }
+
+    fn link_losses(&self) -> u64 {
+        self.handle.link_losses()
     }
 }
 
@@ -2536,5 +2617,124 @@ async fn test_flash_sys7_leaves_verify_mode_alone_when_already_on()
     }
     handle.abort();
     let _ = session.into_disconnect().await;
+    Ok(())
+}
+
+// --- issue #192: a gateway link loss in the post-restart reconnect phase -----
+
+/// Flashes the MDT app onto a rebooting System 7 device while a 1.5 s gateway
+/// link outage hits the reconnect phase after the `restart`-th restart (1 =
+/// the pre-download restart, 2 = the terminal one). The readiness probe's
+/// descriptor read gets through; the session connection's authorize is lost
+/// with the link and the device drops its L4 connection meanwhile.
+async fn run_flash_across_restart_outage(
+    restart: usize,
+) -> Result<
+    (
+        Result<bussard_download::FlashOutcome, bussard_mgmt::load::WriteError>,
+        Shared,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    // SAFETY of env: nextest runs this test in its own process; the vars only
+    // shorten the post-reboot poll and select the LSM realisation.
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
+    }
+    set_sys7_lsm_env(LsmMode::MemoryMapped);
+    let sock = UdpSocket::bind("127.0.0.1:0").await?;
+    let port = sock.local_addr()?.port();
+    let addr: bussard_model::IndividualAddress = "1.1.99".parse()?;
+    let state = fresh_device(LsmMode::MemoryMapped, Fault::None);
+    {
+        let mut s = lock(&state);
+        s.reboot_on_restart = true;
+        s.restart_outage = Some((restart, 1, Duration::from_millis(1500)));
+    }
+    let gw = tokio::spawn(run_gateway(sock, addr, Arc::clone(&state)));
+    let reconnect = bussard_transport::TunnelReconnect {
+        budget: Duration::from_secs(20),
+        initial_backoff: Duration::from_millis(100),
+        max_backoff: Duration::from_millis(200),
+        attempt_timeout: Duration::from_millis(300),
+        ..bussard_transport::TunnelReconnect::default()
+    };
+    let (handle, _actor) = bussard_bus::Bus::connect(
+        ConnectionConfig::tunnel(format!("127.0.0.1:{port}").parse()?).with_reconnect(reconnect),
+    );
+    handle.wait_connected(Duration::from_secs(5)).await;
+    let connector = LeaseConnector {
+        handle: handle.clone(),
+        target: addr,
+        source: "0.0.255".parse()?,
+        timeouts: Some(bussard_mgmt::Timeouts {
+            ack_timeout: Duration::from_millis(300),
+            max_repetitions: 1,
+            response_timeout: Duration::from_millis(300),
+        }),
+    };
+    let mut session = Session::open_with_key(connector, None).await?;
+    let plan = plan_flash(
+        &mdt_canonical_app(),
+        "1.1.99",
+        MASK_0705,
+        &no_overrides(),
+        &std::collections::BTreeMap::new(),
+        None,
+        &std::collections::BTreeMap::new(),
+    )?;
+    let options = bussard_download::FlashOptions {
+        verify_after_restart: true,
+        ..Default::default()
+    };
+    let result = flash(&mut session, &plan, options, |_p| {}).await;
+    let _ = session.into_disconnect().await;
+    let _ = handle.close().await;
+    gw.abort();
+    Ok((result, state))
+}
+
+/// The shared assertions: the flash verified after the outage fired and the
+/// tunnel was re-established, and every LSM is `Loaded`.
+fn assert_sys7_resumed(
+    result: Result<bussard_download::FlashOutcome, bussard_mgmt::load::WriteError>,
+    state: &Shared,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let outcome = result?;
+    assert!(outcome.ok(), "the resumed flash must verify: {outcome:?}");
+    let s = lock(state);
+    assert!(s.restart_outage.is_none(), "the outage fired");
+    assert!(s.outage_swallowed >= 1);
+    assert!(
+        s.tunnel_connects >= 2,
+        "the tunnel was re-established (connects = {})",
+        s.tunnel_connects
+    );
+    assert_eq!(s.restarts_seen, 2, "no restart was repeated");
+    for lsm in [1u8, 2, 3] {
+        assert_eq!(s.lsm_state(lsm), LS_LOADED, "LSM {lsm}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_system7_resumes_tunnel_loss_after_pre_download_restart()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The download has not written anything yet: the lost authorize must not
+    // leave the session unauthorized, or the device's gate would refuse the
+    // first segment write.
+    let (result, state) = run_flash_across_restart_outage(1).await?;
+    assert_sys7_resumed(result, &state)
+}
+
+#[tokio::test]
+async fn test_flash_system7_resumes_tunnel_loss_during_terminal_restart_verify()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (result, state) = run_flash_across_restart_outage(2).await?;
+    assert_sys7_resumed(result, &state)?;
+    assert!(
+        lock(&state).authorized,
+        "the verify connection presented the key again"
+    );
     Ok(())
 }

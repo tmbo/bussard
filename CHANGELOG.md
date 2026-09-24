@@ -255,6 +255,16 @@ entry supersedes it and is not a diff against it.
   resumes like after a device connection drop, and its read-only pre-flight
   runs again. When the gateway stays away the error names it (#177, S2.6 of
   #90).
+- A tunnel loss while `flash` reconnects to a device it restarted (after the
+  factory reset, an `LdCtrlMasterReset`, the final restart, or a System 7
+  restart) no longer fails with "connection to <ia> was disconnected" and
+  leaves a reset, unloaded device. The readiness probe, Data Secure sync and
+  authorize run again once the tunnel is back, and the flash continues with
+  the same step, within the 60 s tunnel and 30 s readiness budgets. An
+  authorize lost with the link is no longer cached as "device has no
+  authorize". A KNXnet/IP Secure (TCP) tunnel now notices a pulled cable
+  after about 7 s instead of about 37 s: after 5 s without traffic it probes
+  the link (`BUSSARD_TCP_READ_DEADLINE_MS`) (#192, S2.6 of #90).
 
 ### Security
 

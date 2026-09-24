@@ -209,6 +209,7 @@ async fn test_send_rides_out_gateway_outage_and_reports_reconnecting() -> TestRe
         initial_backoff: Duration::from_millis(100),
         max_backoff: Duration::from_millis(200),
         attempt_timeout: Duration::from_millis(300),
+        ..TunnelReconnect::default()
     };
     let (handle, _task) =
         Bus::connect(ConnectionConfig::tunnel(gw.addr()).with_reconnect(reconnect));
