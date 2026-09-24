@@ -459,12 +459,7 @@ fn derive_channels(ctx: &Ctx<'_>) -> Vec<ChannelFact> {
         let module_ordinal = module
             .and_then(|m| ctx.config.modules.get(m))
             .map(|m| m.ordinal);
-        let handle = match (name, module_ordinal, channel.number) {
-            (Some(name), Some(ordinal), _) => format!("{}-{ordinal}", slug(name)),
-            (Some(name), None, Some(number)) => format!("{}-{number}", slug(name)),
-            _ => format!("ch-{ordinal}"),
-        };
-        handles.push(handle);
+        handles.push(base_handle(name, module_ordinal, channel.number, ordinal));
 
         let label_ref = channel
             .text_parameter_ref
@@ -490,17 +485,39 @@ fn derive_channels(ctx: &Ctx<'_>) -> Vec<ChannelFact> {
         });
     }
 
-    // Collisions append the ordinal.
+    let keys = unique_handles(&handles);
+    for (fact, key) in out.iter_mut().zip(keys) {
+        fact.key = key;
+    }
+    out
+}
+
+/// A channel's handle before collisions: `<slug of Name>-<module ordinal>`
+/// for a module channel, `<slug of Name>-<Number>` for an application
+/// channel, else `ch-<ordinal>`.
+fn base_handle(
+    name: Option<&str>,
+    module_ordinal: Option<u32>,
+    number: Option<u32>,
+    ordinal: usize,
+) -> String {
+    match (name, module_ordinal, number) {
+        (Some(name), Some(m), _) => format!("{}-{m}", slug(name)),
+        (Some(name), None, Some(number)) => format!("{}-{number}", slug(name)),
+        _ => format!("ch-{ordinal}"),
+    }
+}
+
+/// The handles made unique: every handle that repeats gets `-<ordinal>` (the
+/// channel's 1-based position) appended.
+fn unique_handles(handles: &[String]) -> Vec<String> {
     let mut taken: BTreeSet<String> = BTreeSet::new();
-    let colliding: BTreeSet<&String> = handles
-        .iter()
-        .filter(|h| handles.iter().filter(|o| o == h).count() > 1)
-        .collect();
-    let keys: Vec<String> = handles
+    handles
         .iter()
         .enumerate()
         .map(|(i, h)| {
-            let mut key = if colliding.contains(h) {
+            let repeated = handles.iter().filter(|o| *o == h).count() > 1;
+            let mut key = if repeated {
                 format!("{h}-{}", i + 1)
             } else {
                 h.clone()
@@ -511,11 +528,7 @@ fn derive_channels(ctx: &Ctx<'_>) -> Vec<ChannelFact> {
             taken.insert(key.clone());
             key
         })
-        .collect();
-    for (fact, key) in out.iter_mut().zip(keys) {
-        fact.key = key;
-    }
-    out
+        .collect()
 }
 
 /// The module a ref resolves in when read from `module`: the instance for
@@ -1030,6 +1043,30 @@ mod tests {
                 "dauer@P-4_R-4",
                 "modus"
             ]
+        );
+    }
+
+    #[test]
+    fn test_base_handle_name_number_module_ordinal_and_fallback() {
+        assert_eq!(
+            base_handle(Some("Relaisausgänge"), None, Some(1), 3),
+            "relaisausgaenge-1"
+        );
+        // A module channel counts instances, not its (shared) Number.
+        assert_eq!(base_handle(Some("Output"), Some(2), Some(1), 1), "output-2");
+        assert_eq!(base_handle(Some("Output"), None, None, 4), "ch-4");
+        assert_eq!(base_handle(None, None, Some(7), 2), "ch-2");
+    }
+
+    #[test]
+    fn test_unique_handles_append_the_ordinal_on_collision() {
+        let handles: Vec<String> = ["kanal-1", "kanal-1", "licht-2", "kanal-1-2"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            unique_handles(&handles),
+            ["kanal-1-1", "kanal-1-2", "licht-2", "kanal-1-2-4"]
         );
     }
 
