@@ -14,7 +14,7 @@ use std::process::ExitCode;
 use bussard_model::Model;
 use bussard_viz::VizConfig;
 
-use crate::conn_cmd::{ConnOverrides, enforce_write_gate, resolve_config};
+use crate::conn_cmd::{ConnOverrides, resolve_config};
 
 /// Options for `bussard viz` beyond the connection and the model directory.
 #[derive(Debug, Clone, Default)]
@@ -73,16 +73,11 @@ pub fn run(
         }
     };
 
-    // The same gate the five CLI write verbs use, applied once at server
-    // construction: if this server can transmit at all, the operator must have
-    // opted in to a non-loopback gateway. Loopback (the simulator, the test
-    // suite) is exempt, and a read-only viz never reaches this.
-    let transmits = options.allow_writes || options.watch_prog;
-    if let Some(conn) = &connection
-        && transmits
-    {
-        enforce_write_gate(conn, options.allow_remote_gateway)?;
-    }
+    // The non-loopback write gate is applied when the server opens its
+    // `BusService` (`bussard_viz::build_state`): if this server can transmit at
+    // all, the operator must have opted in to a non-loopback gateway. Loopback
+    // (the simulator, the test suite) is exempt, and a read-only viz is never
+    // gated.
 
     // Say plainly what this server may do; a read-only viewer is the default.
     if options.allow_writes {
@@ -113,6 +108,7 @@ pub fn run(
         connection,
         watch_prog: options.watch_prog,
         allow_writes: options.allow_writes,
+        allow_remote_gateway: options.allow_remote_gateway,
         allowed_hosts: options.allowed_hosts,
     };
 
@@ -179,8 +175,8 @@ async fn serve_with_ctrl_c(config: VizConfig) -> anyhow::Result<()> {
     if let Some(w) = watch {
         w.abort();
     }
-    if let Some(h) = handle {
-        let _ = h.close().await;
+    if let Some(service) = handle {
+        service.close().await;
     }
     result
 }

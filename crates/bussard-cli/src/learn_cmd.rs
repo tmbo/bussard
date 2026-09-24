@@ -23,11 +23,11 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow, bail};
-use bussard_bus::Bus;
 use bussard_model::schema::{BussardConfig, Groups, Link, Links};
 use bussard_model::{Dpt, Flags, GroupAddress, IndividualAddress, Model};
 use bussard_monitor::infer::{self, DptCandidate};
 use bussard_monitor::{DecodedTelegram, Filter, TelegramRing};
+use bussard_service::{BusService, WritePolicy};
 
 use crate::conn_cmd::{ConnOverrides, gateway_display, load_model_required, resolve_config};
 
@@ -76,8 +76,13 @@ pub fn run(
     );
 
     let runtime = tokio::runtime::Runtime::new()?;
+    // Listening only: a read-only service, never gated.
+    let service = {
+        let _context = runtime.enter();
+        BusService::open(config, WritePolicy::ReadOnly)?
+    };
     let session = runtime.block_on(async move {
-        let (handle, _task) = Bus::connect(config);
+        let handle = service.handle().clone();
         let ring = TelegramRing::new();
 
         // Feed the ring from the inbound frames, decoded against the model as

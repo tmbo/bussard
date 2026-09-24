@@ -329,37 +329,9 @@ pub fn decode_for_dpt(dpt: Option<Dpt>, payload: &[u8]) -> (Option<String>, Valu
     }
 }
 
-/// A human name for a well-known standardised interface-object type (KNX 3/5/1),
-/// or `"?"`.
-pub fn object_type_name(object_type: u16) -> &'static str {
-    match object_type {
-        0 => "device",
-        1 => "address table",
-        2 => "association table",
-        3 => "application program",
-        9 => "group object table",
-        _ => "?",
-    }
-}
-
-/// A human name for a well-known standardised PID, or `"?"`. Mirrors the CLI
-/// `describe` naming so the MCP and CLI surfaces agree.
-pub fn pid_name(pid: u8) -> &'static str {
-    match pid {
-        1 => "PID_OBJECT_TYPE",
-        5 => "PID_LOAD_STATE_CONTROL",
-        7 => "PID_TABLE_REFERENCE",
-        11 => "PID_SERIAL_NUMBER",
-        12 => "PID_MANUFACTURER_ID",
-        15 => "PID_ORDER_INFO",
-        23 => "PID_TABLE",
-        27 => "PID_MCB_TABLE",
-        54 => "PID_PROGMODE",
-        56 => "PID_MAX_APDU_LENGTH",
-        78 => "PID_HARDWARE_TYPE",
-        _ => "?",
-    }
-}
+/// The object-type and PID name tables, shared with `bussard describe` so the
+/// MCP and CLI surfaces agree (they live in [`bussard_service::describe`]).
+pub use bussard_service::describe::{object_type_name, pid_name};
 
 /// Renders one enumerated interface object and its property descriptions to the
 /// JSON shape the `knx_describe_device` tool returns (issue #72).

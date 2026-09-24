@@ -10,11 +10,13 @@ use std::net::{Ipv4Addr, SocketAddrV4, ToSocketAddrs};
 use std::path::Path;
 
 use anyhow::{Context, anyhow};
-use bussard_bus::{Bus, BusHandle};
+use bussard_bus::BusHandle;
 use bussard_model::IndividualAddress;
 use bussard_model::Model;
 use bussard_model::schema::Transport as ModelTransport;
+use bussard_service::{BusService, WritePolicy};
 use bussard_transport::config::{DEFAULT_MULTICAST, DEFAULT_PORT};
+use bussard_transport::write_gate::WriteGate;
 use bussard_transport::{ConnectionConfig, TransportKind};
 
 /// Command-line connection overrides shared by `monitor` and `capture`.
@@ -115,38 +117,39 @@ pub fn no_free_tunnel_message(gateway: impl std::fmt::Display) -> String {
 /// `Drop`, so every early return, refusal, declined confirmation and error path
 /// releases the gateway slot exactly once (issue #31's guarantee, now on one
 /// connection instead of two).
+///
+/// The session wraps a [`BusService`], so the write gate for its
+/// [`WritePolicy`] is applied when it opens (issue #86).
 pub struct BusSession {
-    handle: BusHandle,
+    service: BusService,
     runtime: tokio::runtime::Handle,
 }
 
 impl BusSession {
-    /// Opens the tunnel on `runtime` and waits (bounded) for it to come up.
+    /// Opens the tunnel on `runtime` under `policy` (applying the write gate)
+    /// and waits (bounded) for it to come up.
     ///
     /// A gateway that has not answered in time only warns: management traffic
     /// then presents the 0.0.255 fallback source, exactly as before.
-    pub fn open(runtime: &tokio::runtime::Runtime, config: ConnectionConfig) -> BusSession {
-        let handle = runtime.block_on(async {
-            let (handle, _task) = Bus::connect(config);
-            if !handle
-                .wait_connected(std::time::Duration::from_secs(10))
-                .await
-            {
-                eprintln!(
-                    "warning: bus not connected yet; management traffic may use the 0.0.255 fallback source"
-                );
-            }
-            handle
-        });
-        BusSession {
-            handle,
+    ///
+    /// # Errors
+    ///
+    /// The write gate refused `policy` for this gateway; nothing is connected.
+    pub fn open(
+        runtime: &tokio::runtime::Runtime,
+        config: ConnectionConfig,
+        policy: WritePolicy,
+    ) -> anyhow::Result<BusSession> {
+        let service = runtime.block_on(open_service(config, policy))?;
+        Ok(BusSession {
+            service,
             runtime: runtime.handle().clone(),
-        }
+        })
     }
 
     /// The bus handle every phase of the command runs over.
     pub fn handle(&self) -> &BusHandle {
-        &self.handle
+        self.service.handle()
     }
 }
 
@@ -155,7 +158,7 @@ impl Drop for BusSession {
         // Close the tunnel cleanly (release the gateway's slot) whichever way the
         // command exited. `run` is synchronous here, so blocking on the runtime
         // handle is safe; a gone actor makes this a no-op.
-        let _ = self.runtime.block_on(self.handle.close());
+        self.runtime.block_on(self.service.close());
     }
 }
 
@@ -285,17 +288,38 @@ pub use bussard_transport::write_gate::gateway_display;
 /// [`bussard_transport::write_gate::check_write_gate`]; this adds the CLI's
 /// stderr warning on an acknowledged opt-in.
 pub fn enforce_write_gate(config: &ConnectionConfig, allow_flag: bool) -> anyhow::Result<()> {
-    match bussard_transport::write_gate::check_write_gate(config, allow_flag) {
-        Ok(bussard_transport::write_gate::WriteGate::Loopback) => Ok(()),
-        Ok(bussard_transport::write_gate::WriteGate::OptedIn) => {
+    match BusService::check(config, WritePolicy::transmit(allow_flag))? {
+        Some(WriteGate::OptedIn) => {
             eprintln!(
                 "warning: writing to non-loopback gateway {} (opt-in acknowledged)",
                 gateway_display(config)
             );
             Ok(())
         }
-        Err(refused) => Err(anyhow!(refused)),
+        Some(WriteGate::Loopback) | None => Ok(()),
     }
+}
+
+/// Opens a [`BusService`] under `policy` (which applies the write gate) and
+/// waits, bounded, for the first connect.
+///
+/// A gateway that has not answered in time only warns: management traffic then
+/// presents the 0.0.255 fallback source, exactly as a bare `Bus::connect` did.
+/// Must run inside the command's tokio runtime.
+pub async fn open_service(
+    config: ConnectionConfig,
+    policy: WritePolicy,
+) -> anyhow::Result<BusService> {
+    let service = BusService::open(config, policy)?;
+    if !service
+        .wait_connected(std::time::Duration::from_secs(10))
+        .await
+    {
+        eprintln!(
+            "warning: bus not connected yet; management traffic may use the 0.0.255 fallback source"
+        );
+    }
+    Ok(service)
 }
 
 /// Parses `host[:port]`, defaulting the port to the KNXnet/IP default, and

@@ -83,6 +83,7 @@ fn state_for() -> TestResult<Arc<SharedState>> {
         capture_db: None,
         source_ia: "0.0.255".parse()?,
         programming: None,
+        keyring: None,
     }))
 }
 
@@ -94,8 +95,16 @@ async fn connect_client_over(
     // actor, wire it into the status, feed the ring from a subscription, serve.
     let (server_io, client_io) = tokio::io::duplex(16 * 1024);
 
-    let (handle, _task) = bussard_bus::Bus::connect(config);
-    state.bus.wire(handle.clone());
+    let (handle, _task) = bussard_bus::Bus::connect(config.clone());
+    // The mock gateway is loopback, so the transmitting policy's write gate
+    // passes, exactly as `bussard mcp --allow-writes` against the simulator.
+    let service = bussard_service::BusService::from_handle(
+        config,
+        handle.clone(),
+        bussard_service::WritePolicy::transmit(false),
+    )
+    .expect("a loopback gateway passes the write gate");
+    state.bus.wire(service);
 
     let model = state.model.clone();
     let ring = state.ring.clone();
@@ -306,5 +315,9 @@ async fn wait_for_telegram_returns_pushed_write() -> TestResult {
 /// keeps the public entry point covered by a reference.
 #[allow(dead_code)]
 async fn _serve_stdio_is_public(state: Arc<SharedState>, config: ConnectionConfig) {
-    let _ = serve_stdio(state, config).await;
+    if let Ok(service) =
+        bussard_service::BusService::open(config, bussard_service::WritePolicy::ReadOnly)
+    {
+        let _ = serve_stdio(state, service).await;
+    }
 }

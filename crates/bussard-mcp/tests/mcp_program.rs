@@ -177,14 +177,15 @@ async fn serve(
         allow_programming: true,
         allow_remote_gateway: false,
         plan_ttl,
+        keyring: None,
     };
     let state = bussard_mcp::build_state(&config)?;
     if with_bus {
-        let (handle, _task) = bussard_bus::Bus::connect(connection);
-        if !handle.wait_connected(Duration::from_secs(5)).await {
+        let service = bussard_service::BusService::open(connection, config.write_policy())?;
+        if !service.wait_connected(Duration::from_secs(5)).await {
             anyhow::bail!("the mock tunnel did not come up");
         }
-        state.bus.wire(handle);
+        state.bus.wire(service);
     }
     let (server_io, client_io) = tokio::io::duplex(64 * 1024);
     let server = bussard_mcp::server::BussardMcp::new(state);

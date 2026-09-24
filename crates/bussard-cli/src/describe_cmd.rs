@@ -15,20 +15,13 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, anyhow};
-use bussard_bus::Bus;
 use bussard_mgmt::profile::{MaskFamily, MaskProfile};
-use bussard_mgmt::tables::{
-    OT_ADDRESS_TABLE, OT_APPLICATION_PROGRAM, OT_ASSOCIATION_TABLE, OT_DEVICE,
-    OT_GROUP_OBJECT_TABLE, discover_interface_objects,
-};
-use bussard_mgmt::{
-    Layer4Connection, LeaseChannel, PropertyDesc, describe_object_properties, system_type,
-};
+use bussard_mgmt::{Layer4Connection, PropertyDesc, system_type};
 use bussard_model::IndividualAddress;
+use bussard_service::describe::{object_type_name, pid_name, walk_objects};
+use bussard_service::{Authorize, L4Options, SourcePolicy, WritePolicy};
 
-use crate::conn_cmd::{
-    ConnOverrides, checked_source_or_close, load_model_required, resolve_config,
-};
+use crate::conn_cmd::{ConnOverrides, load_model_required, open_service, resolve_config};
 
 /// One interface object plus its enumerated properties, shaped for text and
 /// `--json`.
@@ -175,48 +168,28 @@ pub fn run(
     let config = resolve_config(model.as_ref(), &overrides)?;
 
     let runtime = tokio::runtime::Runtime::new()?;
-    let result = runtime.block_on(async move {
-        let (handle, _task) = Bus::connect(config);
-        if !handle
-            .wait_connected(std::time::Duration::from_secs(10))
-            .await
-        {
-            eprintln!(
-                "warning: bus not connected yet; management traffic may use the 0.0.255 fallback source"
-            );
-        }
-        let source = checked_source_or_close(&handle, &overrides).await?;
-        let lease = handle.lease().await.context("leasing the bus")?;
-        let channel = LeaseChannel::new(lease);
-        let secure = crate::secure_key::layer(&tool_key, &secure_seq);
-        let outcome = match Layer4Connection::connect_with_secure(
-            channel,
-            target,
-            source,
-            bussard_mgmt::Timeouts::default(),
-            secure,
-        )
-        .await
-        {
-            Ok(mut l4) => {
-                // Authorize (free access) as ETS does before configuration access
-                // (issue #52 finding #1). Best-effort for a read.
-                if let Err(err) = l4
-                    .authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY)
-                    .await
-                {
-                    tracing::debug!("{target} authorize (free access) did not grant: {err}");
-                }
-                let out = introspect(&mut l4).await;
-                let _ = l4.disconnect().await;
-                out
-            }
-            Err(err) => Err(anyhow::Error::new(err)),
-        };
-        let _ = handle.close().await;
-        outcome
-    })
-    .map_err(|err| secure_hint(target, presented_tool_key, err))?;
+    let result = runtime
+        .block_on(async move {
+            // Read-only on the bus: descriptor, property and description reads.
+            let service = open_service(config, WritePolicy::ReadOnly).await?;
+            let options = L4Options {
+                source: SourcePolicy::Check {
+                    skip: overrides.skip_address_check,
+                },
+                tool_key,
+                high_water: secure_seq,
+                // Authorize (free access) as ETS does before configuration
+                // access (issue #52 finding #1). Best-effort for a read.
+                authorize: Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
+                ..L4Options::default()
+            };
+            let outcome = service
+                .with_l4(target, &options, async |l4| introspect(l4).await)
+                .await;
+            service.close().await;
+            outcome
+        })
+        .map_err(|err| secure_hint(target, presented_tool_key, err))?;
 
     // An empty walk after a successful descriptor read is a refusal, not an
     // empty device (issue #155): an activated device answers the plain
@@ -347,22 +320,16 @@ async fn introspect<Ch: bussard_mgmt::L4Channel>(
         ));
     };
 
-    let objects = discover_interface_objects(l4)
-        .await
-        .context("discovering interface objects")?;
-
-    let mut object_reports = Vec::with_capacity(objects.len());
-    for (index, object_type) in objects {
-        let properties = describe_object_properties(l4, index)
-            .await
-            .with_context(|| format!("enumerating properties of object {index}"))?;
-        object_reports.push(ObjectReport {
-            index,
-            object_type,
-            object_type_name: object_type_name(object_type),
-            properties: properties.iter().map(property_report).collect(),
-        });
-    }
+    let object_reports = walk_objects(l4)
+        .await?
+        .into_iter()
+        .map(|object| ObjectReport {
+            index: object.index,
+            object_type: object.object_type,
+            object_type_name: object_type_name(object.object_type),
+            properties: object.properties.iter().map(property_report).collect(),
+        })
+        .collect();
 
     Ok(Introspection {
         mask_family: MaskProfile::from_mask(mask).family(),
@@ -399,39 +366,6 @@ fn property_report(p: &PropertyDesc) -> PropertyReport {
         max_elements: p.max_elements,
         read_level: p.read_level,
         write_level: p.write_level,
-    }
-}
-
-/// A human name for a well-known interface-object type, or `"?"`.
-fn object_type_name(object_type: u16) -> &'static str {
-    match object_type {
-        OT_DEVICE => "device",
-        OT_ADDRESS_TABLE => "address table",
-        OT_ASSOCIATION_TABLE => "association table",
-        OT_APPLICATION_PROGRAM => "application program",
-        OT_GROUP_OBJECT_TABLE => "group object table",
-        _ => "?",
-    }
-}
-
-/// A human name for a well-known standardised PID (KNX 3/5/1 global properties
-/// and the common device-object PIDs bussard already knows), or `"?"`. Only the
-/// PIDs bussard names elsewhere are covered; an unknown PID is honestly `"?"`.
-fn pid_name(pid: u8) -> &'static str {
-    use bussard_mgmt::apci;
-    match pid {
-        1 => "PID_OBJECT_TYPE",
-        apci::PID_SERIAL_NUMBER => "PID_SERIAL_NUMBER",
-        apci::PID_MANUFACTURER_ID => "PID_MANUFACTURER_ID",
-        apci::PID_ORDER_INFO => "PID_ORDER_INFO",
-        apci::PID_PROGMODE => "PID_PROGMODE",
-        apci::PID_MAX_APDU_LENGTH => "PID_MAX_APDU_LENGTH",
-        apci::PID_HARDWARE_TYPE => "PID_HARDWARE_TYPE",
-        5 => "PID_LOAD_STATE_CONTROL",
-        7 => "PID_TABLE_REFERENCE",
-        23 => "PID_TABLE",
-        27 => "PID_MCB_TABLE",
-        _ => "?",
     }
 }
 

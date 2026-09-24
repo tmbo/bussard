@@ -55,9 +55,10 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
-use bussard_bus::Bus;
 use bussard_model::Model;
+use bussard_service::{BusService, WritePolicy};
 use bussard_transport::ConnectionConfig;
+use bussard_transport::write_gate::WriteGate;
 
 use crate::state::{AppState, BusStatus, ModelHandle, Security};
 use crate::traffic::TrafficHub;
@@ -79,10 +80,15 @@ pub struct VizConfig {
     pub watch_prog: bool,
     /// Whether `POST /api/group-write` may put telegrams on the bus. DEFAULT
     /// OFF: a bare `bussard viz` is a viewer, and the write endpoint answers
-    /// `403` until `--allow-writes` is passed. The CLI additionally runs the
-    /// non-loopback write gate (`--allow-remote-gateway`) before enabling this,
+    /// `403` until `--allow-writes` is passed. With this or
+    /// [`watch_prog`](Self::watch_prog) set, the bus is opened as a
+    /// transmitting [`BusService`], which applies the non-loopback write gate,
     /// so the viz write path is gated exactly like `bussard write`.
     pub allow_writes: bool,
+    /// The operator's opt-in to a non-loopback gateway for a transmitting
+    /// server (`--allow-remote-gateway`); `BUSSARD_ALLOW_REAL_GATEWAY=1` also
+    /// opts in.
+    pub allow_remote_gateway: bool,
     /// Extra `Host` header values to accept beyond loopback names and IP
     /// literals. Empty in the normal case; see [`guard`] for why this matters.
     pub allowed_hosts: Vec<String>,
@@ -91,6 +97,11 @@ pub struct VizConfig {
 /// Errors surfaced while starting the viz server.
 #[derive(Debug, thiserror::Error)]
 pub enum VizError {
+    /// The bus could not be opened: the non-loopback write gate refused a
+    /// transmitting server (issue #74).
+    #[error(transparent)]
+    Bus(#[from] bussard_service::ServiceError),
+
     /// The model failed to load. The server must not start without one: the
     /// protected-GA gate would otherwise fail open.
     #[error("failed to load model from {dir}: {source}")]
@@ -138,34 +149,6 @@ pub fn router(state: AppState) -> Router {
         .with_state(state)
 }
 
-/// Renders a resolved connection's endpoint for the UI and the logs, e.g.
-/// `192.0.2.10:3671` for a tunnel or `multicast 224.0.23.12:3671` for routing.
-///
-/// Mirrors `bussard_cli::conn_cmd::gateway_display`; the viz crate must not
-/// depend on the CLI, and the two are a handful of lines each.
-fn gateway_display(config: &ConnectionConfig) -> String {
-    match (&config.transport, config.gateway) {
-        (bussard_transport::TransportKind::Tunnel, Some(gw)) => gw.to_string(),
-        (bussard_transport::TransportKind::Routing, _) => {
-            format!("multicast {}", config.multicast)
-        }
-        (bussard_transport::TransportKind::Tunnel, None) => "<no gateway>".to_string(),
-    }
-}
-
-/// Whether a resolved connection points at loopback. Routing (multicast)
-/// reaches the real bus, so it counts as non-loopback, exactly as the CLI's
-/// write gate treats it.
-fn is_loopback_gateway(config: &ConnectionConfig) -> bool {
-    match config.transport {
-        bussard_transport::TransportKind::Tunnel => config
-            .gateway
-            .map(|gw| gw.ip().is_loopback())
-            .unwrap_or(false),
-        bussard_transport::TransportKind::Routing => false,
-    }
-}
-
 /// `GET /` — the `index.html` shell.
 async fn index() -> Html<&'static str> {
     Html(assets::INDEX_HTML)
@@ -193,7 +176,7 @@ async fn serve_asset(Path(file): Path<String>, State(_): State<AppState>) -> Res
 /// optionals are `None` in model-only mode.
 pub type BuiltState = (
     AppState,
-    Option<bussard_bus::BusHandle>,
+    Option<BusService>,
     Option<tokio::task::JoinHandle<()>>,
 );
 
@@ -201,24 +184,40 @@ pub type BuiltState = (
 /// (and, when `watch_prog` is set, the programming-mode watch) when a connection
 /// is configured. See [`BuiltState`] for the returned handles.
 ///
-/// The model load is a hard error: the server must never run without one.
+/// The model load is a hard error: the server must never run without one. The
+/// model is watched, so an edit on disk (a `protected: true` added) is in force
+/// on the next write even without `POST /api/reload`.
+///
+/// The bus is opened as a [`BusService`]: transmitting (and so behind the
+/// non-loopback write gate) when `allow_writes` or `watch_prog` is set,
+/// read-only otherwise. A refused gate is [`VizError::Bus`], before any bus
+/// contact and before the listener binds.
+///
+/// Must be called from within a tokio runtime (it spawns the bus actor).
 pub fn build_state(config: &VizConfig) -> Result<BuiltState, VizError> {
     let model = Model::load(&config.dir).map_err(|source| VizError::ModelLoad {
         dir: config.dir.display().to_string(),
         source,
     })?;
-    let model = ModelHandle::new(model);
+    let model = ModelHandle::watching(config.dir.clone(), model);
     let hub = TrafficHub::new();
 
     let (bus, handle, watch) = match &config.connection {
         Some(conn) => {
-            let (handle, _task) = Bus::connect(conn.clone());
-            let bus = BusStatus::connected(
-                conn.transport.clone(),
-                gateway_display(conn),
-                is_loopback_gateway(conn),
-                handle.clone(),
-            );
+            let policy = if config.allow_writes || config.watch_prog {
+                WritePolicy::transmit(config.allow_remote_gateway)
+            } else {
+                WritePolicy::ReadOnly
+            };
+            let service = BusService::open(conn.clone(), policy)?;
+            if service.gate() == Some(WriteGate::OptedIn) {
+                tracing::warn!(
+                    "writing to non-loopback gateway {} (opt-in acknowledged)",
+                    service.gateway_display()
+                );
+            }
+            let handle = service.handle().clone();
+            let bus = BusStatus::connected(service.clone());
             // Spawn the feeder: it fills the hub from the live bus and emits
             // `bus` events on state changes. It resolves names through the
             // `ModelHandle`, so a reload swap is reflected on the next telegram.
@@ -240,7 +239,7 @@ pub fn build_state(config: &VizConfig) -> Result<BuiltState, VizError> {
             } else {
                 None
             };
-            (bus, Some(handle), watch)
+            (bus, Some(service), watch)
         }
         None => (BusStatus::none(), None, None),
     };
@@ -288,8 +287,8 @@ pub async fn serve(config: VizConfig) -> Result<(), VizError> {
     if let Some(w) = watch {
         w.abort();
     }
-    if let Some(h) = handle {
-        let _ = h.close().await;
+    if let Some(service) = handle {
+        service.close().await;
     }
     result
 }

@@ -1,0 +1,27 @@
+[package]
+name = "bussard-service"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The service layer between bussard's surfaces (CLI, MCP, viz) and its domain crates: gated bus access, management sessions, the checked group write and a live model handle"
+
+[dependencies]
+bussard-model = { workspace = true }
+bussard-transport = { workspace = true }
+bussard-bus = { workspace = true }
+bussard-mgmt = { workspace = true }
+bussard-secure = { workspace = true }
+# `.knxkeys` keyring parsing for the tool-key resolver (`secure`).
+bussard-project = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+
+[lints]
+workspace = true

@@ -17,9 +17,10 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow, bail};
-use bussard_bus::{Bus, BusHandle};
+use bussard_bus::BusHandle;
 use bussard_mcp::tools_audit::{self, SampledTelegram};
 use bussard_model::{IndividualAddress, Model};
+use bussard_service::{BusService, WritePolicy};
 use bussard_transport::cemi::{Apdu, Destination, MessageCode};
 use bussard_transport::{BusConnection, ConnectionConfig, Transport, TransportKind};
 use serde_json::{Value, json};
@@ -129,7 +130,9 @@ async fn live_report(
         }
     }
 
-    let (handle, _task) = Bus::connect(config);
+    let service = BusService::open(config, WritePolicy::ReadOnly)?;
+
+    let handle = service.handle().clone();
     if !handle.wait_connected(Duration::from_secs(10)).await {
         let _ = handle.close().await;
         bail!("the bus did not connect within 10 s; the live audit needs a working gateway");

@@ -9,6 +9,7 @@ mod audit_cmd;
 mod backup_cmd;
 mod capture_cmd;
 mod commission_cmd;
+mod confirm;
 mod conn_cmd;
 mod describe_cmd;
 mod diff_cmd;
@@ -1232,6 +1233,11 @@ enum Command {
         /// history beyond the in-memory ring window.
         #[arg(long, value_name = "PATH")]
         capture_db: Option<PathBuf>,
+        /// ETS keyring export (`.knxkeys`) for KNX Data Secure management:
+        /// `knx_describe_device` looks the target's tool key up in it. The
+        /// password comes from BUSSARD_KEYRING_PASSWORD.
+        #[arg(long, value_name = "FILE")]
+        keyring: Option<PathBuf>,
     },
 }
 
@@ -1990,6 +1996,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
             allow_remote_gateway,
             no_model_edits,
             capture_db,
+            keyring,
         } => mcp_cmd::run(
             &dir,
             conn_cmd::ConnOverrides {
@@ -2006,6 +2013,7 @@ fn run(command: Command, verbose: u8) -> anyhow::Result<ExitCode> {
                 no_model_edits,
             },
             capture_db,
+            keyring,
         ),
     }
 }

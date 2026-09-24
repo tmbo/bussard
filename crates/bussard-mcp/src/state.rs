@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use bussard_bus::{BusHandle, BusState};
 use bussard_monitor::TelegramRing;
+use bussard_service::BusService;
 use bussard_transport::TransportKind;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
@@ -54,15 +55,16 @@ impl ConnState {
     }
 }
 
-/// Bus status: a view onto the bus actor for tool output.
+/// Bus status: a view onto the bus service for tool output.
 ///
-/// Wraps the actor [`BusHandle`] (present once the server has wired the bus) and
-/// the configured transport kind. When there is no handle (a test that never
-/// spawned the actor, or before wiring) it reports `connecting`.
+/// Wraps the [`BusService`] (present once the server has wired the bus; opened
+/// under the server's write policy, so the non-loopback gate has already been
+/// applied) and the configured transport kind. When there is no service (a test
+/// that never spawned the actor, or before wiring) it reports `connecting`.
 #[derive(Clone)]
 pub struct BusStatus {
-    /// Wired once by the runner after the actor is spawned. Cheap to share.
-    handle: Arc<OnceLock<BusHandle>>,
+    /// Wired once by the runner after the service is opened. Cheap to share.
+    service: Arc<OnceLock<BusService>>,
     transport: TransportKind,
     /// The tunnelling gateway's control endpoint, when the transport is a
     /// tunnel. Used by `knx_audit` to ask the interface for its tunnel slots.
@@ -73,18 +75,18 @@ impl BusStatus {
     /// Creates a status with no handle yet (reports `connecting`).
     pub fn new(transport: TransportKind) -> Self {
         BusStatus {
-            handle: Arc::new(OnceLock::new()),
+            service: Arc::new(OnceLock::new()),
             transport,
             gateway: None,
         }
     }
 
-    /// Creates a status already backed by a live bus handle.
-    pub fn with_handle(transport: TransportKind, handle: BusHandle) -> Self {
+    /// Creates a status already backed by a live bus service.
+    pub fn with_service(transport: TransportKind, service: BusService) -> Self {
         let cell = OnceLock::new();
-        let _ = cell.set(handle);
+        let _ = cell.set(service);
         BusStatus {
-            handle: Arc::new(cell),
+            service: Arc::new(cell),
             transport,
             gateway: None,
         }
@@ -101,16 +103,16 @@ impl BusStatus {
         self.gateway
     }
 
-    /// Wires the bus handle once (called by the runner after spawning the
-    /// actor). A second call is a no-op.
-    pub fn wire(&self, handle: BusHandle) {
-        let _ = self.handle.set(handle);
+    /// Wires the bus service once (called by the runner after opening it). A
+    /// second call is a no-op.
+    pub fn wire(&self, service: BusService) {
+        let _ = self.service.set(service);
     }
 
     /// The current connection state (from the handle, or `connecting`).
     pub fn state(&self) -> ConnState {
-        match self.handle.get() {
-            Some(h) => ConnState::from_bus(h.status()),
+        match self.service.get() {
+            Some(s) => ConnState::from_bus(s.handle().status()),
             None => ConnState::Connecting,
         }
     }
@@ -125,7 +127,13 @@ impl BusStatus {
 
     /// The bus handle, if wired.
     pub fn handle(&self) -> Option<&BusHandle> {
-        self.handle.get()
+        self.service.get().map(BusService::handle)
+    }
+
+    /// The bus service, if wired: the checked group write and management
+    /// sessions go through it.
+    pub fn service(&self) -> Option<&BusService> {
+        self.service.get()
     }
 
     /// A JSON object describing the bus status.
@@ -214,6 +222,11 @@ pub struct SharedState {
     /// configuration and the plans produced this session. `None` keeps
     /// `knx_plan_device` and `knx_apply_device` unregistered.
     pub programming: Option<crate::tools_program::ProgrammingTier>,
+    /// The ETS `.knxkeys` keyring for KNX Data Secure management
+    /// (`bussard mcp --keyring`, issue #71). `knx_describe_device` looks the
+    /// target's tool key up in it; the password comes from
+    /// `BUSSARD_KEYRING_PASSWORD`. `None` is plain management.
+    pub keyring: Option<PathBuf>,
 }
 
 #[cfg(test)]
