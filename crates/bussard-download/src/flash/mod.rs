@@ -122,6 +122,10 @@ pub use plan_sys7::{
 };
 pub use session::{Connector, DeviceFacts, Session, SingleConnector};
 
+/// The KNX manufacturer id of the KNX Association, which KNX Virtual devices
+/// report (`M-00FA_…` application ids).
+pub const KNX_VIRTUAL_MANUFACTURER: u16 = 0x00FA;
+
 /// A step of a validated flash, ready to render for the pre-flight display and
 /// to execute in order. Each corresponds to one supported [`LoadOp`](bussard_prod::application::LoadOp).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -446,6 +450,30 @@ pub enum FlashStep {
         /// The expected bytes (the op's `InlineData`).
         expected: Vec<u8>,
     },
+    /// ETS's System 7 pre-download pass (issue #116): unload the load-state
+    /// machines in `unload`, then send a basic `A_Restart`, wait out the reboot
+    /// and reconnect, before the vendor procedure changes anything.
+    ///
+    /// Every System 7 ETS capture restarts the device on its own connection
+    /// before the download; a full download of a new application first unloads
+    /// LSMs 1 to 4 on another connection (`schaltaktor-8fach-1-1-49`,
+    /// `binaereingang-6fach`, `meteodata-1-1-202-new`). The device then boots
+    /// with no application running and the download starts on a fresh stack. A
+    /// parameter-only download keeps the restart and unloads nothing
+    /// (`unload` empty). An LSM the device does not have is skipped with a
+    /// warning. A session that cannot reconnect (a mock built from one open
+    /// connection) runs the unloads and skips the restart.
+    Sys7PreDownloadRestart {
+        /// The 1-based LSM indices to unload before the restart, in order.
+        unload: Vec<u32>,
+    },
+    /// Switch on the device's verify mode (`obj0/PID_DEVICE_CONTROL` bit 2)
+    /// before the first segment write, as ETS does on a mask with the Hawk
+    /// `VerifyMode` feature (issue #116, see
+    /// [`bussard_mgmt::enable_verify_mode`]). Reads the property and writes it
+    /// back with the bit set only when the bit is clear; a device without the
+    /// property is left alone.
+    Sys7EnableVerifyMode,
 }
 
 /// The origin of the bytes a memory-write step streams, resolved at plan time so
@@ -969,6 +997,17 @@ impl FlashPlan {
     /// against, when this plan is one (see [`FlashPlan::parameters_only`]).
     pub fn baseline(&self, segment_id: &str) -> Option<&[u8]> {
         self.baseline.get(segment_id).map(Vec::as_slice)
+    }
+
+    /// Whether this plan programs a KNX Virtual device: its application comes
+    /// from the KNX Association's manufacturer id `0x00FA` (the KNX Virtual
+    /// DA.tp application `M-00FA_A-2500-10-51CB`).
+    ///
+    /// KNX Virtual is the device class that drops a long-held L4 connection after
+    /// a bounded number of exchanges (issue #80), so only its flashes cycle the
+    /// connection proactively by default (issue #116).
+    pub fn targets_knx_virtual(&self) -> bool {
+        manufacturer_from_app_id(&self.identity.id) == Some(KNX_VIRTUAL_MANUFACTURER)
     }
 
     /// Whether this is a parameter-only download (issue #119): it rewrites only

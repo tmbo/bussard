@@ -283,26 +283,36 @@ pub enum LsmAccess {
 }
 
 impl LsmAccess {
-    /// Sends a 10-octet load `event` to load-state machine `lsm` (1-based).
+    /// Sends a 10-octet load `event` to load-state machine `lsm` (1-based) and
+    /// returns the state the device reported in its answer, when the realisation
+    /// carries one.
     ///
     /// - `MemoryMapped`: wraps the event in the 11-octet record ([`wrap_memory_lsm_record`])
     ///   and writes it to `control_addr` via the shared
-    ///   [`crate::memory::write_memory`] (a plain `A_Memory_Write`; the LSM's own
-    ///   status read is what confirms the event took).
-    /// - `Property`: writes the event to `PID_LOAD_STATE_CONTROL` of object `lsm`;
-    ///   an answer with count 0 fails with [`WriteError::ObjectAbsent`].
+    ///   [`crate::memory::write_memory`] (a plain `A_Memory_Write`, which has no
+    ///   answer). Returns `None`: the LSM's own status read is what confirms the
+    ///   event took, and ETS reads it after every event on this realisation
+    ///   (Theben `0701` Meteodata capture).
+    /// - `Property`: writes the event to `PID_LOAD_STATE_CONTROL` of object `lsm`.
+    ///   The `A_PropertyValue_Response` to the write carries the state the event
+    ///   left the machine in (every write in the Jung `0705` captures, e.g.
+    ///   `Unload` answered `00`, `StartLoading` `02`, `LoadCompleted` `01`), so it
+    ///   is returned as `Some(state)` and ETS never reads the state separately.
+    ///   `None` when the answer is not a single state octet. An answer with count 0
+    ///   fails with [`WriteError::ObjectAbsent`].
     pub async fn send_event<Ch: L4Channel>(
         &self,
         l4: &mut Layer4Connection<Ch>,
         lsm: u8,
         event: &[u8; LOAD_EVENT_SIZE],
-    ) -> Result<()> {
+    ) -> Result<Option<LoadState>> {
         match self {
             LsmAccess::MemoryMapped { control_addr, .. } => {
                 let record = wrap_memory_lsm_record(lsm, event);
                 // System 7 addresses are always ≤16-bit, so this stays on the
                 // plain A_Memory_Write path (see `select_extended_memory`).
-                write_memory(l4, u32::from(*control_addr), &record).await
+                write_memory(l4, u32::from(*control_addr), &record).await?;
+                Ok(None)
             }
             LsmAccess::Property => {
                 let resp = property_write_request(
@@ -321,8 +331,28 @@ impl LsmAccess {
                         object_index: lsm,
                     });
                 }
-                Ok(())
+                // The state is one octet. A stack that echoes the written
+                // event instead (10 octets) says nothing about the state, so
+                // that answer falls back to a read.
+                Ok(match resp.data.as_slice() {
+                    [state] => Some(LoadState::from_octet(*state)),
+                    _ => None,
+                })
             }
+        }
+    }
+
+    /// The state `lsm` is in after an event: the state the event's answer
+    /// carried (`reported`), else a separate [`read_state`](Self::read_state).
+    async fn state_after<Ch: L4Channel>(
+        &self,
+        l4: &mut Layer4Connection<Ch>,
+        lsm: u8,
+        reported: Option<LoadState>,
+    ) -> Result<LoadState> {
+        match reported {
+            Some(state) => Ok(state),
+            None => self.read_state(l4, lsm).await,
         }
     }
 
@@ -372,8 +402,12 @@ impl LsmAccess {
 
     /// Drives `lsm` through a single load event and verifies the resulting state.
     ///
-    /// Sends `control` as a simple 10-octet event, then reads the state back. A
-    /// device that lands in [`LoadState::Error`] fails with
+    /// Sends `control` as a simple 10-octet event and takes the resulting state
+    /// from the event's answer (property realisation) or a status read
+    /// (memory-mapped realisation, as ETS does there). `LoadCompleted` always
+    /// reads the state back with a separate read: that read is the machine's
+    /// verdict on the whole load. A device that lands in
+    /// [`LoadState::Error`] fails with
     /// [`WriteError::LoadError`]. `StartLoading` accepts `Loading` or (on a lenient
     /// stack) `Loaded`; `LoadCompleted` must reach `Loaded`; `Unload` is not
     /// state-checked (mirrors the System B discipline in
@@ -386,8 +420,16 @@ impl LsmAccess {
     ) -> Result<LoadState> {
         let address = l4.target();
         let event = simple_event(control);
-        self.send_event(l4, lsm, &event).await?;
-        let state = self.read_state(l4, lsm).await?;
+        let reported = self.send_event(l4, lsm, &event).await?;
+        // The verdict on the load is a read of its own, never the write's
+        // answer (issue #116): it is the one state read-back kept on the
+        // property realisation.
+        let reported = if control == LoadControl::LoadCompleted {
+            None
+        } else {
+            reported
+        };
+        let state = self.state_after(l4, lsm, reported).await?;
         if state == LoadState::Error {
             return Err(WriteError::LoadError {
                 address,
@@ -428,6 +470,9 @@ impl LsmAccess {
     /// Sends an `AdditionalLoadControls` record (segment alloc, task segment, or
     /// task-control) to `lsm`, then confirms the LSM did not enter `Error`.
     ///
+    /// The state comes from the record's answer on the property realisation (no
+    /// extra read, like ETS) and from a status read on the memory-mapped one.
+    ///
     /// These records carry an already-built 10-octet event (from
     /// [`encode_alloc_segment`] / [`encode_task_segment`] / [`encode_task_ctrl1`]);
     /// the LSM must stay open (`Loading`, or `Loaded` on a lenient stack) after
@@ -439,8 +484,8 @@ impl LsmAccess {
         event: &[u8; LOAD_EVENT_SIZE],
     ) -> Result<()> {
         let address = l4.target();
-        self.send_event(l4, lsm, event).await?;
-        let state = self.read_state(l4, lsm).await?;
+        let reported = self.send_event(l4, lsm, event).await?;
+        let state = self.state_after(l4, lsm, reported).await?;
         match state {
             LoadState::Error => Err(WriteError::LoadError {
                 address,
@@ -457,6 +502,84 @@ impl LsmAccess {
             }),
         }
     }
+}
+
+/// `PID_DEVICE_CONTROL` (PID 14) of the device object: the 1-octet device
+/// control bit field (KNX 3/5/1, device object).
+///
+/// Bit 0 is "user application stopped", bit 1 "own individual address
+/// duplicated", bit 2 **verify mode** (the device answers every
+/// `A_Memory_Write` with an `A_Memory_Response` carrying the octets it
+/// stored), bit 3 "safe state".
+pub const PID_DEVICE_CONTROL: u8 = 14;
+
+/// The verify-mode bit of [`PID_DEVICE_CONTROL`].
+pub const DEVICE_CONTROL_VERIFY_MODE: u8 = 0x04;
+
+/// What [`enable_verify_mode`] found and did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerifyModeOutcome {
+    /// The bit was clear: the device held `previous` and now holds `written`.
+    Enabled {
+        /// The value read before the write.
+        previous: u8,
+        /// The value written (`previous` with the verify-mode bit set).
+        written: u8,
+    },
+    /// The bit was already set; nothing was written.
+    AlreadyOn(u8),
+    /// The device has no readable `PID_DEVICE_CONTROL` (the read answered
+    /// count 0 or no value); nothing was written.
+    Unsupported,
+    /// The device refused the write (count 0); it still holds `previous`.
+    Refused {
+        /// The value read before the refused write.
+        previous: u8,
+    },
+}
+
+/// Switches on the device's verify mode the way ETS does before the first
+/// memory write of a System 7 download on a mask with the Hawk `VerifyMode`
+/// feature (issue #116).
+///
+/// Every Jung `0705` capture (`schaltaktor-8fach-1-1-49`, `pm-mini-1-1-52`,
+/// `bad-eg-pm-1-1-18`) reads `obj0/PID_DEVICE_CONTROL` (answer `00`) and writes
+/// back `04`, the verify-mode bit, right after the first allocation record. The
+/// device then answers each segment write with an `A_Memory_Response` echo,
+/// which [`Layer4Connection`] drains. Reads first and writes only when the bit
+/// is clear, keeping every other bit as the device holds it. The bit lives in
+/// RAM: the terminal restart clears it again.
+pub async fn enable_verify_mode<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+) -> Result<VerifyModeOutcome> {
+    let read = property_request(
+        l4,
+        crate::apci::DEVICE_OBJECT_INDEX,
+        PID_DEVICE_CONTROL,
+        1,
+        1,
+    )
+    .await?;
+    let Some(previous) = read.data.first().copied().filter(|_| read.count > 0) else {
+        return Ok(VerifyModeOutcome::Unsupported);
+    };
+    if previous & DEVICE_CONTROL_VERIFY_MODE != 0 {
+        return Ok(VerifyModeOutcome::AlreadyOn(previous));
+    }
+    let written = previous | DEVICE_CONTROL_VERIFY_MODE;
+    let resp = property_write_request(
+        l4,
+        crate::apci::DEVICE_OBJECT_INDEX,
+        PID_DEVICE_CONTROL,
+        1,
+        1,
+        &[written],
+    )
+    .await?;
+    if resp.count == 0 {
+        return Ok(VerifyModeOutcome::Refused { previous });
+    }
+    Ok(VerifyModeOutcome::Enabled { previous, written })
 }
 
 /// Builds an [`LsmAccess`] from a [`crate::profile::Sys7Profile`]'s LSM realisation.

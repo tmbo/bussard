@@ -283,6 +283,17 @@ pub fn write_dump(
                     "fill_byte": fill,
                 }));
             }
+            // ETS's verify-mode write (issue #116): on a device that holds 00,
+            // as every Jung 0705 capture shows, it writes 04.
+            FlashStep::Sys7EnableVerifyMode => {
+                record["property"] = json!({
+                    "object": bussard_mgmt::apci::DEVICE_OBJECT_INDEX,
+                    "pid": bussard_mgmt::PID_DEVICE_CONTROL,
+                    "start_element": 1,
+                    "length": 1,
+                    "data": format!("{:02x}", bussard_mgmt::DEVICE_CONTROL_VERIFY_MODE),
+                });
+            }
             FlashStep::SecurityLoadControl { .. }
             | FlashStep::SecurityClearAddressTable
             | FlashStep::SecuritySenders { .. }

@@ -209,12 +209,102 @@ procedure. The table octets are identical, the device reports either placement
 through `PID_TABLE_REFERENCE`, and the live flash of 1.1.49 read back 14 of 14
 links. The capture's `Unload` of objects 1 to 4 and restart before the
 download run on their own connection, ahead of the procedure: an ETS unload
-pass, not a procedure step. The procedure unloads 1 to 3 only, as bussard does.
+pass, not a procedure step. The procedure unloads 1 to 3 only. bussard
+reproduces the pass as a step of its own (section 3.1).
 
 Each LSM is torn down (`Unload`) up front, then loaded in order. The LSM index on
 `Load`/`LoadCompleted`/`AbsSegment` names the machine, not an object index. The
 mapping LSM-index → memory region is per-mask (from `HawkConfigurationData`;
 default per the table above).
+
+### 3.1 ETS prelude and session discipline (issue #116)
+
+Diffing bussard's download of 1.1.36 against the ETS captures left three
+differences that change nothing the device stores. This section records what
+ETS does around the vendor procedure and what bussard reproduces. Captures:
+`schaltaktor-8fach-1-1-49`, `pm-mini-1-1-52`, `bad-eg-pm-1-1-18(-new)`,
+`jung-1131`, `binaereingang-6fach`, `automitschalter-standard-110` (0705);
+`meteodata-1-1-202(-new)`, `meteodata-140-s` (0701).
+
+**What ETS sends before the procedure.** In order, each on its own L4
+connection:
+
+1. *Unload pass* (full downloads only: 1.1.49, 1.1.31, 1.1.1, 1.1.46,
+   Meteodata new and 140 S; absent from 1.1.52, 1.1.32 and the Meteodata
+   parameter download): `A_Authorize`, `Unload` of LSMs 1, 2, 3 and 4, a
+   one-octet `A_Memory_Read` of `0x0060` (answer `00`), disconnect. On 0705
+   each unload's `A_PropertyValue_Response` carries the new state (`00`); on
+   0701 each record write to `0x0104` is followed by a status read at
+   `0xB6EA + lsm - 1`.
+2. *Restart pass* (every capture): a connect/descriptor/disconnect probe,
+   then connect, descriptor, `PID_MAX_APDU_LENGTH`, `PID_SERIAL_NUMBER`, basic
+   `A_Restart`. The device reboots and answers again on a fresh connection.
+3. *Procedure connection*: a second probe, then descriptor,
+   `PID_MAX_APDU_LENGTH`, `A_Authorize`, `PID_SERIAL_NUMBER`, a one-octet read
+   of `0xB6EC` (answer `00`; on 0701 the reads of `0xB6EA..0xB6ED` are the
+   LSM status octets), `PID_MANUFACTURER_ID`, `PID_HARDWARE_TYPE`, then the
+   procedure.
+
+**Verify mode (`PID_DEVICE_CONTROL`).** On every 0705 download ETS reads
+`obj0/PID_DEVICE_CONTROL` (PID 14, answer `00`) right after the first
+allocation record and writes `04`. The property is the device-control bit
+field of the device object: bit 0 user application stopped, bit 1 own
+individual address duplicated, bit 2 verify mode, bit 3 safe state. ETS sets
+verify mode only: from then on the device answers every `A_Memory_Write` with
+an `A_Memory_Response` carrying the octets it stored (1.1.49: `A_Memory_Write
+0x47CA` answered by `A_Memory_Response 0x47CA` with the same 12 octets). The
+bit lives in RAM; the terminal restart clears it. The 0701 Meteodata, which
+declares no Hawk `VerifyMode`, gets no PID 14 access and ETS
+read-compare-writes it instead (section 4.2 amendment).
+
+**What bussard reproduces.**
+
+- `Sys7PreDownloadRestart`: unload LSMs 1 to 4, basic restart, wait for the
+  reboot, reconnect and re-authorize. It goes in front of the procedure's
+  first state-changing step, after the vendor's read-only preconditions
+  (`CompareProp`, `CompareMem`), so a device that fails them is refused before
+  its application is unloaded. bussard cannot tell the ETS full-download case
+  from the "same application" case (1.1.52), so every full flash unloads; a
+  parameter-only flash restarts without unloading, like the Meteodata
+  parameter capture. An LSM the device lacks (count 0) or that answers Error
+  is skipped with a warning; the procedure's own unloads stay strict.
+- `Sys7EnableVerifyMode` on masks with `VerifyMode` (0705): read PID 14 and
+  write it back with bit 2 set, only when the bit is clear, keeping the other
+  bits. It goes right after the first `StartLoading`, one record earlier than
+  ETS (the allocation and its stream are one step in bussard; nothing depends
+  on the order). The connection drains the echoes, and `read_memory` skips a
+  late echo whose address is not the one it asked for.
+- **State read-backs follow the realisation.** On the property realisation
+  (0705) the state comes from each PID 5 write's answer, as for ETS; bussard
+  adds one separate read per LSM after `LoadCompleted` (the verdict) and the
+  post-restart verify reads. On the memory-mapped realisation (0701) the
+  status octet is read after every event, as ETS does.
+- **One connection.** ETS holds a single L4 connection for the whole
+  procedure. bussard cycles the connection proactively only for KNX Virtual
+  (manufacturer `0x00FA`, the device class that drops long connections,
+  issue #80); `BUSSARD_FLASH_RECONNECT_EXCHANGES` overrides it either way.
+  Resume-on-drop still reconnects after an unexpected drop.
+
+**What bussard skips on purpose.** All of these are reads or connection
+bookkeeping that change no device state:
+
+- the connect/descriptor/disconnect probes and the separate connections per
+  pass (bussard's session already probed the device in the pre-flight);
+- `PID_MAX_APDU_LENGTH` re-reads (negotiated once per session and re-seeded
+  across reconnects, issue #58);
+- `PID_SERIAL_NUMBER`, `PID_MANUFACTURER_ID`, `PID_HARDWARE_TYPE` (identity
+  checks the pre-flight covers; a vendor `CompareProp` on PID 78 still runs);
+- the `0x0060` read after the unload pass and the `0xB6EC` read on the
+  procedure connection (single status octets ETS reads and does not act on in
+  any capture).
+
+The effect on the 1.1.49 download (Jung 2308.16REGHM, 184 segment writes),
+counted from the plan: the numbered requests bussard sends drop from about 236
+to 222 (17 fewer state reads, no re-authorize per cycle) and the L4
+connections before the terminal restart from 6 to 2. The telegram count rises,
+because each segment write now draws a verify echo and its `T_ACK`, as it does
+for ETS: roughly 580 to 890 L_Data frames, against 939 in the ETS capture of
+the same download (which adds its probe connections and identity reads).
 
 ### Canonical op sequence (MDT `M-0083_A-000E`, smallest 0705, first target)
 

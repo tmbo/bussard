@@ -51,8 +51,10 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
     let mut completed_lsms: Vec<u32> = Vec::new();
 
     // The proactive-reconnect exchange threshold (0 = disabled), read once — the
-    // same ETS-pattern L4 cycling the System B path uses.
-    let reconnect_threshold = reconnect_exchange_threshold();
+    // same rule as the System B path: off unless the plan targets KNX Virtual
+    // or the environment asks for it (issue #116). ETS holds one connection for
+    // the whole System 7 download.
+    let reconnect_threshold = reconnect_exchange_threshold(plan);
     // Findings that do not fail the flash (a skipped step, see below).
     let mut warnings: Vec<String> = Vec::new();
 
@@ -62,9 +64,13 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
         // state, so they survive a graceful cycle. The terminal Restart reboots
         // the device itself, so it is excluded.
         let self_reconnecting = matches!(step, FlashStep::Restart);
+        // The pre-download pass reboots and reconnects too, so a cycle right
+        // before it would be wasted; unlike the terminal restart it stays
+        // resumable (its unloads are idempotent).
+        let reboots = self_reconnecting || matches!(step, FlashStep::Sys7PreDownloadRestart { .. });
         if reconnect_threshold > 0
             && session.can_reconnect()
-            && !self_reconnecting
+            && !reboots
             && session.numbered_exchanges() >= reconnect_threshold
         {
             session.cycle_l4().await?;
@@ -300,6 +306,49 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                                     .await?,
                             );
                             let _ = session.l4().send_data_unacked(apci, &payload).await;
+                        }
+                    }
+                    FlashStep::Sys7PreDownloadRestart { unload } => {
+                        for idx in unload {
+                            let octet = lsm_octet(session.l4().target(), *idx)?;
+                            match lsm.drive(session.l4(), octet, LoadControl::Unload).await {
+                                Ok(_) => {}
+                                // ETS unloads LSMs 1 to 4 whatever the procedure
+                                // loads; a machine the device lacks, or one that
+                                // refuses, is no reason to stop before anything
+                                // was written. The procedure's own unloads stay
+                                // strict.
+                                Err(
+                                    e @ (WriteError::ObjectAbsent { .. }
+                                    | WriteError::LoadError { .. }),
+                                ) => {
+                                    warnings.push(format!(
+                                        "step {}: pre-download unload of LSM {idx} skipped: {e}",
+                                        i + 1
+                                    ));
+                                }
+                                Err(e) => return Err(e),
+                            }
+                        }
+                        // Reboot the device into its unloaded state and start the
+                        // download on a fresh connection, as ETS does. Without a
+                        // connector (a mock built from one open connection) the
+                        // session could not come back, so the restart is skipped.
+                        if session.can_reconnect() {
+                            let (apci, payload) = bussard_mgmt::apci::encode_restart(0);
+                            let _ = session.l4().send_data_unacked(apci, &payload).await;
+                            session.reconnect_after_reboot().await?;
+                        }
+                    }
+                    FlashStep::Sys7EnableVerifyMode => {
+                        if let bussard_mgmt::VerifyModeOutcome::Refused { previous } =
+                            bussard_mgmt::enable_verify_mode(session.l4()).await?
+                        {
+                            warnings.push(format!(
+                                "step {}: the device refused verify mode \
+                                 (PID_DEVICE_CONTROL stays {previous:#04X})",
+                                i + 1
+                            ));
                         }
                     }
                     // System B steps never appear in a System 7 plan.

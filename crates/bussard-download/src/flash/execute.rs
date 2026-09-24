@@ -314,8 +314,9 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
     // then; the post-loop verify runs only if it is still `None`.
     let mut verified: Option<FlashOutcome> = None;
 
-    // The proactive-reconnect exchange threshold (0 = disabled), read once.
-    let reconnect_threshold = reconnect_exchange_threshold();
+    // The proactive-reconnect exchange threshold (0 = disabled, the default for
+    // every device but KNX Virtual, issue #116), read once.
+    let reconnect_threshold = reconnect_exchange_threshold(plan);
 
     // Item 2 (issue #73): the MCB-CRC re-download skip. When enabled, read each
     // to-be-written object's resident `PID_MCB_TABLE` *before* any step touches
@@ -361,9 +362,10 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
             });
             continue;
         }
-        // Proactive periodic L4 reconnection (the ETS pattern): before starting a
-        // step, if this connection's numbered-exchange count has reached the
-        // threshold, cycle the connection (graceful T_Disconnect / T_Connect +
+        // Proactive periodic L4 reconnection (KNX Virtual only by default, see
+        // `RECONNECT_EXCHANGE_THRESHOLD`): before starting a step, if this
+        // connection's numbered-exchange count has reached the threshold, cycle
+        // the connection (graceful T_Disconnect / T_Connect +
         // re-authorize) so it never approaches the device's per-connection budget
         // (~35 on KNX Virtual). The objects' load states and their allocated
         // segments are persistent device state, not connection state, so they
@@ -995,7 +997,9 @@ pub async fn flash<C: Connector, F: FnMut(Progress)>(
                     | FlashStep::Sys7TaskSegment { .. }
                     | FlashStep::Sys7TaskCtrl1 { .. }
                     | FlashStep::Sys7LoadCompleted { .. }
-                    | FlashStep::Sys7CompareMem { .. } => {}
+                    | FlashStep::Sys7CompareMem { .. }
+                    | FlashStep::Sys7PreDownloadRestart { .. }
+                    | FlashStep::Sys7EnableVerifyMode => {}
                 }
                 Ok(())
             }

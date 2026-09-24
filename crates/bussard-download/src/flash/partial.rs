@@ -19,7 +19,9 @@
 //! - **System 7** (issue #146): `StartLoading` the load-state machine that
 //!   holds the parameter segments, each parameter image as an absolute write at
 //!   its segment address, `LoadCompleted`, the procedure's MCB reads, and the
-//!   restart. No `AbsSegment` record, no task segment and no task-control op:
+//!   restart, preceded by ETS's pre-download restart (without its unloads) and,
+//!   on a `VerifyMode` mask, the verify-mode switch (issue #116). No
+//!   `AbsSegment` record, no task segment and no task-control op:
 //!   the segments stay allocated where they are. A re-sent allocation (the
 //!   `0x0700` RAM region) put the Jung 3361-1MWW (`1.1.32`, mask 0705) into load
 //!   state Error; ETS's partial download of the same device
@@ -249,7 +251,14 @@ impl FlashPlan {
                 | FlashStep::LoadImageProp { .. } => {
                     steps.push(step.clone());
                 }
-                FlashStep::Restart => steps.push(step.clone()),
+                FlashStep::Restart | FlashStep::Sys7EnableVerifyMode => {
+                    steps.push(step.clone());
+                }
+                // ETS restarts the device before a parameter download too, but
+                // unloads nothing (`meteodata-1-1-202.pcapng`, issue #116).
+                FlashStep::Sys7PreDownloadRestart { .. } => {
+                    steps.push(FlashStep::Sys7PreDownloadRestart { unload: Vec::new() });
+                }
                 _ => {}
             }
         }
