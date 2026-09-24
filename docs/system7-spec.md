@@ -191,7 +191,25 @@ System 7 runs **three** LSMs in parallel (System B uses one) `[corpus: 49/49]`:
 - **LSM 1** — table region at 0x4000 (address table + com-object descriptors).
 - **LSM 2** — table region at 0x4201 (association + group-object).
 - **LSM 3** — parameters (0x0700 RAM alloc + 0x4400 param image).
-- **LSM 5** — a fourth machine some vendors open *after restart* (Theben, §4.7).
+- **LSM 5** — named only by a tail some converted (pre-ETS4) procedures carry
+  *after* the restart (Theben FIX2 `M-0048_A-4947`, Jung 2308.16REGHM
+  `M-0004_A-2088-11`: `LdCtrlRestart`, `LdCtrlTaskSegment LsmIdx="5"`,
+  `LdCtrlLoad LsmIdx="5"`). ETS sends nothing after the restart (captures
+  `meteodata-1-1-202-new.pcapng`, `schaltaktor-8fach-1-1-49.pcapng`), and the
+  2308.16REGHM has no object 5 (its `PID_LOAD_STATE_CONTROL` read answers count
+  0). bussard cuts the procedure after the terminal restart (issue #178).
+
+**Two ETS differences bussard keeps (issue #178, 2308.16REGHM `A-2088-11`).**
+The application declares `DynamicTableManagement="1"`, and ETS places the
+tables itself instead of following the procedure's `LdCtrlAbsSegment`s: it
+allocates the address table at `0x4000` with its real length (31 octets) and
+the association table right behind it (`0x401F`, 991 octets up to `0x43FE`),
+where the procedure says `0x4000`/511 and `0x41FF`/511. bussard follows the
+procedure. The table octets are identical, the device reports either placement
+through `PID_TABLE_REFERENCE`, and the live flash of 1.1.49 read back 14 of 14
+links. The capture's `Unload` of objects 1 to 4 and restart before the
+download run on their own connection, ahead of the procedure: an ETS unload
+pass, not a procedure step. The procedure unloads 1 to 3 only, as bussard does.
 
 Each LSM is torn down (`Unload`) up front, then loaded in order. The LSM index on
 `Load`/`LoadCompleted`/`AbsSegment` names the machine, not an object index. The
@@ -654,8 +672,8 @@ Not errata but adjacent unknowns to resolve at capture: process-time unit
 2. **MDT `M-0083_A-0008`** (Switching 2-fold) — same shape, sanity-check the
    engine generalizes across sizes.
 3. **Theben `M-0048_A-4947`** (FIX2 DM 4 T, 0701) — exercises `TaskCtrl1` and the
-   post-restart LSM-5 dance (§4.7). Also surfaces the orthogonal wide-integer
-   parameter-image bug in `bussard-prod` (472-bit field) — track separately.
+   converted post-restart LSM-5 tail (§3, dropped since issue #178). Also
+   surfaces the orthogonal wide-integer parameter-image bug in `bussard-prod` (472-bit field) — track separately.
 4. **Jung `M-0004_A-A011`** (Präsenzmelder Mini Universal, 3361-1MWW) — 11 of the
    user's 17 real System 7 devices; **not yet in the corpus, fetch this
    `.knxprod` first**. Expected to match the MDT canonical LSM 1/2/3 shape.

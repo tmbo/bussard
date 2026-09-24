@@ -289,7 +289,8 @@ impl LsmAccess {
     ///   and writes it to `control_addr` via the shared
     ///   [`crate::memory::write_memory`] (a plain `A_Memory_Write`; the LSM's own
     ///   status read is what confirms the event took).
-    /// - `Property`: writes the event to `PID_LOAD_STATE_CONTROL` of object `lsm`.
+    /// - `Property`: writes the event to `PID_LOAD_STATE_CONTROL` of object `lsm`;
+    ///   an answer with count 0 fails with [`WriteError::ObjectAbsent`].
     pub async fn send_event<Ch: L4Channel>(
         &self,
         l4: &mut Layer4Connection<Ch>,
@@ -304,8 +305,22 @@ impl LsmAccess {
                 write_memory(l4, u32::from(*control_addr), &record).await
             }
             LsmAccess::Property => {
-                property_write_request(l4, lsm, crate::load::PID_LOAD_STATE_CONTROL, 1, 1, event)
-                    .await?;
+                let resp = property_write_request(
+                    l4,
+                    lsm,
+                    crate::load::PID_LOAD_STATE_CONTROL,
+                    1,
+                    1,
+                    event,
+                )
+                .await?;
+                // Count 0 is the negative answer: the device has no such object.
+                if resp.count == 0 {
+                    return Err(WriteError::ObjectAbsent {
+                        address: l4.target(),
+                        object_index: lsm,
+                    });
+                }
                 Ok(())
             }
         }
@@ -314,7 +329,8 @@ impl LsmAccess {
     /// Reads the current [`LoadState`] octet of load-state machine `lsm` (1-based).
     ///
     /// - `MemoryMapped`: reads one octet at `status_addr + (lsm - 1)`.
-    /// - `Property`: reads element 1 of `PID_LOAD_STATE_CONTROL` of object `lsm`.
+    /// - `Property`: reads element 1 of `PID_LOAD_STATE_CONTROL` of object `lsm`;
+    ///   an answer with count 0 fails with [`WriteError::ObjectAbsent`].
     pub async fn read_state<Ch: L4Channel>(
         &self,
         l4: &mut Layer4Connection<Ch>,
@@ -335,6 +351,14 @@ impl LsmAccess {
             LsmAccess::Property => {
                 let resp =
                     property_request(l4, lsm, crate::load::PID_LOAD_STATE_CONTROL, 1, 1).await?;
+                // Count 0 is the negative answer for an object the device does
+                // not have (issue #178), not a malformed response.
+                if resp.count == 0 {
+                    return Err(WriteError::ObjectAbsent {
+                        address: l4.target(),
+                        object_index: lsm,
+                    });
+                }
                 let octet = resp.data.first().copied().ok_or_else(|| {
                     WriteError::Mgmt(crate::MgmtError::MalformedResponse {
                         address: l4.target(),

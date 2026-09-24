@@ -299,6 +299,21 @@ pub enum WriteError {
         reason: String,
     },
 
+    /// The device has no interface object at `object_index`: its
+    /// `PID_LOAD_STATE_CONTROL` access answered with element count 0, the KNX
+    /// negative response for a property (or object) the device does not have
+    /// (issue #178: the Jung 2308.16REGHM answers `05 05 00 01` for object 5).
+    #[error(
+        "{address}: object {object_index} absent on the device (PID_LOAD_STATE_CONTROL answered \
+         with count 0)"
+    )]
+    ObjectAbsent {
+        /// The device.
+        address: IndividualAddress,
+        /// The interface object (load-state machine) index the device lacks.
+        object_index: u8,
+    },
+
     /// The object went into `Error` during a load — recover with `Unload`/ETS.
     #[error(
         "{address}: object {object_index} entered the load Error state (a bad table or refused \

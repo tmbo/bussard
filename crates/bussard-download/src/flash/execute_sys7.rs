@@ -53,6 +53,8 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
     // The proactive-reconnect exchange threshold (0 = disabled), read once — the
     // same ETS-pattern L4 cycling the System B path uses.
     let reconnect_threshold = reconnect_exchange_threshold();
+    // Findings that do not fail the flash (a skipped step, see below).
+    let mut warnings: Vec<String> = Vec::new();
 
     for (i, step) in plan.steps.iter().enumerate() {
         // Proactive periodic L4 reconnection between steps (never mid memory
@@ -326,6 +328,29 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                     resume_reconnects += 1;
                     session.reconnect().await?;
                 }
+                // Unloading an object the device does not have leaves nothing
+                // loaded on it: the goal of the step already holds.
+                Err(WriteError::ObjectAbsent { object_index, .. })
+                    if matches!(step, FlashStep::Sys7Unload { .. }) =>
+                {
+                    warnings.push(format!(
+                        "step {}: object {object_index} absent on the device, nothing to unload",
+                        i + 1
+                    ));
+                    break 'resume;
+                }
+                // The terminal restart already ran and verified the download
+                // (issue #178): a step after it cannot undo that, so its failure
+                // is reported, not turned into a failed, "partially written"
+                // flash. The planner emits no such step; a hand-built plan can.
+                Err(e) if verified.is_some() => {
+                    warnings.push(format!(
+                        "step {} ({}) after the final restart failed and was skipped: {e}",
+                        i + 1,
+                        plan.step_label(step)
+                    ));
+                    break 'resume;
+                }
                 Err(e) => return Err(e),
             }
         }
@@ -334,10 +359,12 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
     // The terminal restart captured the outcome (verify AFTER reboot). A procedure
     // with no final Restart falls back to verifying now over the still-open
     // connection.
-    match verified {
-        Some(outcome) => Ok(outcome),
-        None => verify_sys7(session, &lsm, &completed_lsms, &written_samples).await,
-    }
+    let mut outcome = match verified {
+        Some(outcome) => outcome,
+        None => verify_sys7(session, &lsm, &completed_lsms, &written_samples).await?,
+    };
+    outcome.warnings.extend(warnings);
+    Ok(outcome)
 }
 
 /// Streams the plan's image for `segment_id` to `addr` and reports whether it

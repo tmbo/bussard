@@ -152,6 +152,10 @@ struct DeviceState {
     lsm_events: Vec<(u8, u8)>,
     /// The address and length of every segment content write.
     segment_writes: Vec<(u16, usize)>,
+    /// Interface objects the device does not have: in property mode a
+    /// `PID_LOAD_STATE_CONTROL` read or write of one answers count 0, as the
+    /// Jung 2308.16REGHM does for object 5 (issue #178).
+    absent_objects: Vec<u8>,
 }
 
 impl DeviceState {
@@ -185,6 +189,7 @@ fn fresh_device(mode: LsmMode, fault: Fault) -> Shared {
         lsm5_property_accesses: 0,
         lsm_events: Vec::new(),
         segment_writes: Vec::new(),
+        absent_objects: Vec::new(),
     }))
 }
 
@@ -503,8 +508,14 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
                 prop_response(obj, pid, 1, start, &val),
             );
         }
-        // Property-mode LSM state read.
+        // Property-mode LSM state read. An absent object answers count 0.
         if s.lsm_mode == LsmMode::Property && pid == PID_LOAD_STATE_CONTROL {
+            if s.absent_objects.contains(&obj) {
+                return Reaction::Answer(
+                    A_PROPERTY_VALUE_RESPONSE,
+                    prop_response(obj, pid, 0, start, &[]),
+                );
+            }
             let st = s.lsm_state(obj);
             return Reaction::Answer(
                 A_PROPERTY_VALUE_RESPONSE,
@@ -564,8 +575,15 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
             }
             return Reaction::Nak;
         }
-        // Property-mode LSM control write: a 10-octet load event to PID 5.
+        // Property-mode LSM control write: a 10-octet load event to PID 5. An
+        // absent object refuses it with count 0.
         if s.lsm_mode == LsmMode::Property && pid == PID_LOAD_STATE_CONTROL {
+            if s.absent_objects.contains(&obj) {
+                return Reaction::Answer(
+                    A_PROPERTY_VALUE_RESPONSE,
+                    prop_response(obj, pid, 0, start, &[]),
+                );
+            }
             apply_lsm_event(&mut s, obj, value);
             let st = s.lsm_state(obj);
             return Reaction::Answer(
@@ -1159,23 +1177,23 @@ async fn lsm_access_property_drives_state() -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
-/// A **memory-mapped** device with a **post-restart LSM-5** section (spec §3/§4.7,
-/// the Theben 0701 shape) must reach Loaded, and every LSM — including the
-/// post-restart LSM 5 — must be driven through the memory-mapped 0x0104 record,
-/// never a property `A_PropertyValue` access to object 5 / PID 5. This is the
-/// corner that broke the live `run.sh` device 1.1.8: a memory-mapped device has
-/// no PID-5 property, so any property access to object 5 fails the flash. The
-/// mock rejects (and counts) such an access, so the assertion below fails loudly
-/// if the executor ever drives LSM 5 off the `LsmAccess` seam.
+/// A **memory-mapped** device whose procedure carries a **post-restart LSM-5**
+/// tail (the Theben FIX2 `M-0048_A-4947` shape: `LdCtrlRestart`, then a
+/// TaskSegment and a Load on LSM 5). ETS ends every System 7 download at the
+/// restart (the 0701 Meteodata and 0705 2308.16REGHM captures), and a device
+/// can lack object 5 altogether (issue #178), so the plan ends at the restart:
+/// the flash reaches Loaded, LSM 5 is never touched, and in particular never
+/// through an object-5/PID-5 property access, which a memory-mapped device
+/// rejects (the live `run.sh` device 1.1.8).
 #[tokio::test]
-async fn flash_system7_memory_mapped_post_restart_lsm5_reaches_loaded()
+async fn flash_system7_memory_mapped_post_restart_lsm5_tail_is_not_run()
 -> Result<(), Box<dyn std::error::Error>> {
     // 0701 defaults to memory-mapped; also flip the switch explicitly so the plan
     // and the mock device agree on the realisation.
     set_sys7_lsm_env(LsmMode::MemoryMapped);
     let (mut bus, state, handle) = setup(LsmMode::MemoryMapped, Fault::None).await;
-    let target: bussard_model::IndividualAddress = "1.1.99".parse().unwrap();
-    let source: bussard_model::IndividualAddress = "0.0.255".parse().unwrap();
+    let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
     let app = theben_post_restart_lsm5_app();
     // Mask 0x0701 → memory-mapped LSM realisation by mask-family default.
     let plan = plan_flash(
@@ -1191,6 +1209,11 @@ async fn flash_system7_memory_mapped_post_restart_lsm5_reaches_loaded()
         plan.is_sys7(),
         "the Theben app must lower to a System 7 plan"
     );
+    assert!(
+        matches!(plan.steps.last(), Some(FlashStep::Restart)),
+        "the plan must end at the restart: {:?}",
+        plan.steps.last()
+    );
 
     let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
     let mut session = authed_session(l4).await;
@@ -1204,27 +1227,136 @@ async fn flash_system7_memory_mapped_post_restart_lsm5_reaches_loaded()
 
     assert!(
         outcome.ok(),
-        "memory-mapped post-restart LSM-5 flash should reach Loaded: {outcome:?}"
+        "memory-mapped flash should reach Loaded: {outcome:?}"
     );
+    assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
     {
-        let s = state.lock().unwrap();
+        let s = state.lock().map_err(|e| e.to_string())?;
         // LSMs 1/2/3 completed and persisted.
         for lsm in [1u8, 2, 3] {
             assert_eq!(s.lsm_state(lsm), LS_LOADED, "LSM {lsm} should be Loaded");
         }
-        // The post-restart LSM 5 was opened (Loading, no LoadCompleted in the plan)
-        // via the memory-mapped record — never Error/Unloaded.
-        assert_eq!(
-            s.lsm_state(5),
-            LS_LOADING,
-            "post-restart LSM 5 should be open (Loading)"
+        assert!(
+            s.lsm_events.iter().all(|(lsm, _)| *lsm != 5),
+            "LSM 5 must not be driven: {:?}",
+            s.lsm_events
         );
-        // The load-bearing assertion: NO property access to object 5 / PID 5. A
-        // memory-mapped device has no such property; driving LSM 5 that way is the
-        // exact bug this test guards against.
         assert_eq!(
             s.lsm5_property_accesses, 0,
-            "LSM 5 must be driven memory-mapped, never via object-5/PID-5 property"
+            "LSM 5 must never be accessed via object-5/PID-5 property"
+        );
+    }
+    handle.abort();
+    let _ = session.into_disconnect().await;
+    Ok(())
+}
+
+/// Issue #178: a property-mode device without object 5 answers its
+/// `PID_LOAD_STATE_CONTROL` read with count 0 (`05 05 00 01`). That is an
+/// absent object, not a malformed response.
+#[tokio::test]
+async fn test_lsm_access_read_state_count_zero_is_object_absent()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (mut bus, state, handle) = setup(LsmMode::Property, Fault::None).await;
+    state.lock().map_err(|e| e.to_string())?.absent_objects = vec![5];
+    let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    l4.authorize_or_fail(0xFFFF_FFFF).await?;
+    let lsm = LsmAccess::Property;
+
+    let read = lsm.read_state(&mut l4, 5).await;
+    assert!(
+        matches!(
+            read,
+            Err(bussard_mgmt::load::WriteError::ObjectAbsent {
+                object_index: 5,
+                ..
+            })
+        ),
+        "{read:?}"
+    );
+    let message = read.err().map(|e| e.to_string()).unwrap_or_default();
+    assert!(
+        message.contains("object 5 absent on the device"),
+        "{message}"
+    );
+    assert!(!message.contains("malformed"), "{message}");
+
+    // A load event written to the absent object is refused the same way.
+    let drive = lsm
+        .drive(&mut l4, 5, bussard_mgmt::LoadControl::StartLoading)
+        .await;
+    assert!(
+        matches!(
+            drive,
+            Err(bussard_mgmt::load::WriteError::ObjectAbsent {
+                object_index: 5,
+                ..
+            })
+        ),
+        "{drive:?}"
+    );
+    // An object the device has still reads normally.
+    assert_eq!(lsm.read_state(&mut l4, 1).await?, LoadState::Unloaded);
+    handle.abort();
+    Ok(())
+}
+
+/// Issue #178: a completed download is not failed by a step after the final
+/// restart. A hand-built plan (the planner emits no such step) with the
+/// 2308.16REGHM's converted tail, a TaskSegment and a StartLoading on an
+/// object 5 the device lacks, still verifies Loaded; the skipped steps are
+/// reported as warnings naming the absent object. An Unload of the absent
+/// object up front is skipped with a warning too.
+#[tokio::test]
+async fn test_flash_sys7_post_restart_step_on_absent_object_warns()
+-> Result<(), Box<dyn std::error::Error>> {
+    set_sys7_lsm_env(LsmMode::Property);
+    let (mut bus, state, handle) = setup(LsmMode::Property, Fault::None).await;
+    state.lock().map_err(|e| e.to_string())?.absent_objects = vec![5];
+    let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
+    let mut plan = plan_flash(
+        &mdt_canonical_app(),
+        "1.1.99",
+        0x0705,
+        &no_overrides(),
+        &std::collections::BTreeMap::new(),
+        None,
+        &std::collections::BTreeMap::new(),
+    )?;
+    assert!(matches!(plan.steps.last(), Some(FlashStep::Restart)));
+    plan.steps.insert(0, FlashStep::Sys7Unload { lsm: 5 });
+    plan.steps.push(FlashStep::Sys7TaskSegment {
+        lsm: 5,
+        address: 0x43FF,
+        marker: [0x04, 0x20, 0x88, 0x11],
+    });
+    plan.steps.push(FlashStep::Sys7StartLoading { lsm: 5 });
+
+    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut session = authed_session(l4).await;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_p| {},
+    )
+    .await?;
+
+    assert!(outcome.ok(), "the download is complete: {outcome:?}");
+    assert_eq!(outcome.warnings.len(), 3, "{:?}", outcome.warnings);
+    assert!(
+        outcome.warnings[0].contains("object 5 absent on the device, nothing to unload"),
+        "{:?}",
+        outcome.warnings
+    );
+    for warning in &outcome.warnings[1..] {
+        assert!(
+            warning.contains("after the final restart failed and was skipped")
+                && warning.contains("object 5 absent on the device"),
+            "{warning}"
         );
     }
     handle.abort();

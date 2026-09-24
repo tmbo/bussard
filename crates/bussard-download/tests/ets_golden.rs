@@ -482,3 +482,62 @@ fn test_20de_plan_writes_program_version_only_to_loaded_objects() -> TestResult 
     assert_eq!(pid13, [(4, vec![0x00, 0x04, 0x20, 0xDE, 0x22])]);
     Ok(())
 }
+
+/// The Jung 2308.16REGHM switch actuator (1.1.49), an ETS3-era application
+/// converted from pre-ETS4 data and shipped only in the project export (#135).
+const A2088_11: &str = "M-0004_A-2088-11-C937-O000A";
+
+/// Issue #178: the application's `ProductProcedure` ends with
+/// `<LdCtrlRestart/>`, `<LdCtrlTaskSegment LsmIdx="5" Address="17407"/>`,
+/// `<LdCtrlLoad LsmIdx="5"/>`. The device has no object 5 and ETS's download
+/// (`schaltaktor-8fach-1-1-49.pcapng`) ends with the restart, so the plan ends
+/// there too and never names LSM 5.
+#[test]
+fn test_a2088_11_plan_ends_at_the_restart_without_lsm5() -> TestResult {
+    let Some(app) = load_from_project(A2088_11)? else {
+        return Ok(());
+    };
+    let plan = plan_flash(
+        &app,
+        "1.1.49",
+        0x0705,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    assert!(
+        matches!(plan.steps.last(), Some(FlashStep::Restart)),
+        "last step: {:?}",
+        plan.steps.last()
+    );
+    let restarts = plan
+        .steps
+        .iter()
+        .filter(|s| matches!(s, FlashStep::Restart))
+        .count();
+    assert_eq!(restarts, 1);
+    let lsm5 = plan.steps.iter().any(|s| {
+        matches!(
+            s,
+            FlashStep::Sys7Unload { lsm: 5 }
+                | FlashStep::Sys7StartLoading { lsm: 5 }
+                | FlashStep::Sys7LoadCompleted { lsm: 5 }
+                | FlashStep::Sys7TaskSegment { lsm: 5, .. }
+                | FlashStep::Sys7TaskCtrl1 { lsm: 5, .. }
+                | FlashStep::Sys7AbsSegment { lsm: 5, .. }
+        )
+    });
+    assert!(!lsm5, "no step may drive LSM 5: {:?}", plan.steps);
+    // The three machines the procedure loads, each completed before the restart.
+    let completed: Vec<u32> = plan
+        .steps
+        .iter()
+        .filter_map(|s| match s {
+            FlashStep::Sys7LoadCompleted { lsm } => Some(*lsm),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(completed, [1, 2, 3]);
+    Ok(())
+}
