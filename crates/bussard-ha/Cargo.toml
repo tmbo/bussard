@@ -11,5 +11,4 @@ license.workspace = true
 bussard-model = { workspace = true }
 serde = { workspace = true }
 serde_norway = { workspace = true }
-serde_path_to_error = { workspace = true }
 thiserror = { workspace = true }

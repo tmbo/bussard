@@ -287,7 +287,7 @@ fn exclusions_skip_gas() {
         .object(2, "1.001", "CWU", None, None, &["8/0/0"])
         .build();
 
-    let text = "global:\n  exclude:\n    - \"8/\"\n";
+    let text = "[global]\nexclude = [\"8/\"]\n";
     let ov = Overrides::parse("ha.toml", text).unwrap();
     let d = derive(&model, &ov);
     assert_eq!(d.entities.len(), 1, "the 8/ GA is excluded");
@@ -305,11 +305,11 @@ fn override_promotes_switch_to_light_and_renames() {
         .build();
 
     let text = r#"
-entities:
-  "0/0/1":
-    platform: light
-    name: "Kitchen ceiling"
-    device_class: outlet
+[[entity]]
+address = "0/0/1"
+platform = "light"
+name = "Kitchen ceiling"
+device_class = "outlet"
 "#;
     let ov = Overrides::parse("ha.toml", text).unwrap();
     let yaml = generate(&model, &ov).unwrap();
@@ -327,7 +327,7 @@ fn global_default_light_platform() {
 
     let ov = Overrides::parse(
         "ha.toml",
-        "global:\n  default_platform_for_switches: light\n",
+        "[global]\ndefault_platform_for_switches = \"light\"\n",
     )
     .unwrap();
     let yaml = generate(&model, &ov).unwrap();
@@ -468,9 +468,9 @@ fn merge_attaches_ga_and_clears_unmapped() {
         .build();
 
     let text = r#"
-entities:
-  "0/0/1":
-    merge: ["0/0/9"]
+[[entity]]
+address = "0/0/1"
+merge = ["0/0/9"]
 "#;
     let ov = Overrides::parse("ha.toml", text).unwrap();
     let d = derive(&model, &ov);
@@ -499,12 +499,12 @@ fn exclusion_wins_over_merge_and_warns_unmapped() {
         .build();
 
     let text = r#"
-global:
-  exclude:
-    - "0/0/9"
-entities:
-  "0/0/1":
-    merge: ["0/0/9"]
+[global]
+exclude = ["0/0/9"]
+
+[[entity]]
+address = "0/0/1"
+merge = ["0/0/9"]
 "#;
     let ov = Overrides::parse("ha.toml", text).unwrap();
     let yaml = generate(&model, &ov).unwrap();
@@ -854,9 +854,9 @@ fn climate_name_override_and_exclusion() {
     let model = climate_room(ModelBuilder::new("1.1.2", "Heizung", None), "Study", "0/3/").build();
 
     let text = r#"
-entities:
-  "0/3/2":
-    name: "Office climate"
+[[entity]]
+address = "0/3/2"
+name = "Office climate"
 "#;
     let ov = Overrides::parse("ha.toml", text).unwrap();
     let cs = only_climate(&model, &ov);
@@ -865,7 +865,7 @@ entities:
 
     // Excluding the anchor (operation-mode) GA removes the whole climate entity:
     // the operation mode is the only anchor, so nothing is left to control.
-    let ov2 = Overrides::parse("ha.toml", "global:\n  exclude:\n    - \"0/3/2\"\n").unwrap();
+    let ov2 = Overrides::parse("ha.toml", "[global]\nexclude = [\"0/3/2\"]\n").unwrap();
     assert!(only_climate(&model, &ov2).is_empty());
 }
 
@@ -878,9 +878,9 @@ fn climate_merge_wires_extra_state_ga() {
         .group("0/3/99", "Study Fühler extern", "9.001")
         .build();
     let text = r#"
-entities:
-  "0/3/2":
-    merge: ["0/3/99"]
+[[entity]]
+address = "0/3/2"
+merge = ["0/3/99"]
 "#;
     let ov = Overrides::parse("ha.toml", text).unwrap();
     let cs = only_climate(&model, &ov);

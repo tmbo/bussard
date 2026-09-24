@@ -245,16 +245,16 @@ fn exclusion_wins_over_a_conflicting_entity_override() {
     // Exclusion must win: the entity is dropped, and it is not renamed into
     // existence. This is the precedence contract in `apply_entity_override`.
     let model = one_switch_model();
-    let overrides_yaml = r#"
-global:
-  exclude:
-    - "1/1/1"
-entities:
-  "1/1/1":
-    name: "Should Not Appear"
-    platform: light
+    let overrides_toml = r#"
+[global]
+exclude = ["1/1/1"]
+
+[[entity]]
+address = "1/1/1"
+name = "Should Not Appear"
+platform = "light"
 "#;
-    let overrides = Overrides::parse("overrides.yaml", overrides_yaml).expect("overrides parse");
+    let overrides = Overrides::parse("ha.toml", overrides_toml).expect("overrides parse");
     let d = derive(&model, &overrides);
     assert!(
         d.entities.is_empty(),
@@ -271,13 +271,13 @@ entities:
 #[test]
 fn override_rename_and_platform_applied_when_not_excluded() {
     let model = one_switch_model();
-    let overrides_yaml = r#"
-entities:
-  "1/1/1":
-    name: "Renamed Light"
-    platform: light
+    let overrides_toml = r#"
+[[entity]]
+address = "1/1/1"
+name = "Renamed Light"
+platform = "light"
 "#;
-    let overrides = Overrides::parse("overrides.yaml", overrides_yaml).expect("overrides parse");
+    let overrides = Overrides::parse("ha.toml", overrides_toml).expect("overrides parse");
     let d = derive(&model, &overrides);
     assert_eq!(d.entities.len(), 1);
     assert_eq!(d.entities[0].name(), "Renamed Light");

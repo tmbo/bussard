@@ -8,31 +8,34 @@
 //!
 //! # Format
 //!
-//! ```yaml
-//! # ha.toml — overrides for `bussard ha-config`.
-//! global:
-//!   # Whether a plain switchable actuator becomes a `switch` (default) or a
-//!   # `light` entity.
-//!   default_platform_for_switches: switch   # or: light
-//!   # Group addresses (or GA prefixes ending in `/`) to skip entirely. A GA
-//!   # here is dropped from derivation and does not appear in the unmapped
-//!   # summary either.
-//!   exclude:
-//!     - "0/0/1"       # a single GA
-//!     - "8/"          # every GA under main group 8
-//!     - "4/1/"        # every GA under 4/1
+//! ```toml
+//! # ha.toml: overrides for `bussard ha-config`.
+//! [global]
+//! # Whether a plain switchable actuator becomes a `switch` (default) or a
+//! # `light` entity.
+//! default_platform_for_switches = "switch"   # or "light"
+//! # Group addresses (or GA prefixes ending in `/`) to skip entirely. A GA
+//! # here is dropped from derivation and does not appear in the unmapped
+//! # summary either.
+//! exclude = [
+//!   "0/0/1",   # a single GA
+//!   "8/",      # every GA under main group 8
+//!   "4/1/",    # every GA under 4/1
+//! ]
 //!
 //! # Per-entity overrides, keyed by the entity's *primary* group address (the
 //! # address HA sends to: `address` for switch/light/cover, `state_address` for
 //! # sensor/binary_sensor).
-//! entities:
-//!   "1/0/1":
-//!     platform: light          # force switch -> light
-//!     name: "Kitchen ceiling"  # override the derived name
-//!     device_class: outlet     # set/override the HA device_class
-//!   "3/1/5":
-//!     # Merge extra listening GAs onto the entity (e.g. a second state GA).
-//!     merge: ["3/1/6"]
+//! [[entity]]
+//! address = "1/0/1"
+//! platform = "light"          # force switch -> light
+//! name = "Kitchen ceiling"    # override the derived name
+//! device_class = "outlet"     # set/override the HA device_class
+//!
+//! [[entity]]
+//! address = "3/1/5"
+//! # Merge extra listening GAs onto the entity (e.g. a second state GA).
+//! merge = ["3/1/6"]
 //! ```
 //!
 //! Override precedence: exclusions win over everything (an excluded GA never
@@ -60,23 +63,17 @@ pub enum OverridesError {
         /// The underlying error.
         source: std::io::Error,
     },
-    /// The YAML was syntactically invalid or contained a duplicate key.
-    #[error("parsing {path}: {source}")]
-    Yaml {
+    /// The file was not valid TOML (a duplicate key included) or did not match
+    /// the schema; the rendered error carries the caret and any hint.
+    #[error("{0}")]
+    Parse(#[from] bussard_model::ParseError),
+    /// Two `[[entity]]` entries name the same address.
+    #[error("{path}: two [[entity]] entries override {address}; keep one")]
+    DuplicateEntity {
         /// The offending file.
         path: String,
-        /// The underlying parse error.
-        source: serde_norway::Error,
-    },
-    /// The YAML parsed but did not match the schema.
-    #[error("in {path} at `{yaml_path}`: {message}")]
-    Schema {
-        /// The offending file.
-        path: String,
-        /// Human-readable YAML path to the offending value.
-        yaml_path: String,
-        /// The error message.
-        message: String,
+        /// The address overridden twice.
+        address: String,
     },
 }
 
@@ -100,9 +97,36 @@ pub struct Overrides {
     pub global: Global,
     /// Per-entity overrides, keyed by primary GA (as a raw string so prefixes
     /// and exact GAs share one namespace at the parse boundary; validated into
-    /// [`GroupAddress`] on use).
+    /// [`GroupAddress`] on use). On disk: the `[[entity]]` array, each entry
+    /// with an `address`.
     #[serde(default)]
     pub entities: BTreeMap<String, EntityOverride>,
+}
+
+/// `ha.toml` as written: the entities are an `[[entity]]` array keyed by
+/// `address`, in line with `groups.toml`.
+#[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct OverridesFile {
+    #[serde(default)]
+    global: Global,
+    #[serde(default)]
+    entity: Vec<EntityEntry>,
+}
+
+/// One `[[entity]]` entry.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EntityEntry {
+    address: String,
+    #[serde(default)]
+    platform: Option<PlatformOverride>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    device_class: Option<String>,
+    #[serde(default)]
+    merge: Vec<GroupAddress>,
 }
 
 /// Global overrides.
@@ -183,26 +207,33 @@ impl Overrides {
         Self::parse(&path.display().to_string(), &text)
     }
 
-    /// Parses `ha.toml` text, rejecting duplicate keys and unknown fields.
+    /// Parses `ha.toml` text, rejecting duplicate keys, unknown fields and two
+    /// `[[entity]]` entries for one address.
     pub fn parse(path: &str, text: &str) -> Result<Self, OverridesError> {
-        // Stage 1: parse into an untyped value (rejects duplicate keys).
-        let value: serde_norway::Value =
-            serde_norway::from_str(text).map_err(|source| OverridesError::Yaml {
-                path: path.to_string(),
-                source,
-            })?;
-        // Stage 2: deserialize into the typed struct with a YAML path on errors.
-        serde_path_to_error::deserialize(value).map_err(|err| {
-            let yaml_path = err.path().to_string();
-            OverridesError::Schema {
-                path: path.to_string(),
-                yaml_path: if yaml_path.is_empty() {
-                    ".".to_string()
-                } else {
-                    yaml_path
-                },
-                message: err.into_inner().to_string(),
+        let file: OverridesFile = bussard_model::toml_io::parse(Path::new(path), text)?;
+        let mut entities = BTreeMap::new();
+        for e in file.entity {
+            let key = e.address.trim().to_string();
+            let key = key
+                .parse::<GroupAddress>()
+                .map(|g| g.to_string())
+                .unwrap_or(key);
+            let entry = EntityOverride {
+                platform: e.platform,
+                name: e.name,
+                device_class: e.device_class,
+                merge: e.merge,
+            };
+            if entities.insert(key.clone(), entry).is_some() {
+                return Err(OverridesError::DuplicateEntity {
+                    path: path.to_string(),
+                    address: key,
+                });
             }
+        }
+        Ok(Self {
+            global: file.global,
+            entities,
         })
     }
 
@@ -248,18 +279,19 @@ mod tests {
     #[test]
     fn parses_full_example() {
         let text = r#"
-global:
-  default_platform_for_switches: light
-  exclude:
-    - "0/0/1"
-    - "8/"
-entities:
-  "1/0/1":
-    platform: light
-    name: "Kitchen"
-    device_class: outlet
-  "3/1/5":
-    merge: ["3/1/6"]
+[global]
+default_platform_for_switches = "light"
+exclude = ["0/0/1", "8/"]
+
+[[entity]]
+address = "1/0/1"
+platform = "light"
+name = "Kitchen"
+device_class = "outlet"
+
+[[entity]]
+address = "3/1/5"
+merge = ["3/1/6"]
 "#;
         let ov = Overrides::parse("ha.toml", text).unwrap();
         assert_eq!(
@@ -279,25 +311,30 @@ entities:
 
     #[test]
     fn rejects_unknown_field() {
-        let text = "global:\n  bogus: 1\n";
+        let text = "[global]\nbogus = 1\n";
         assert!(matches!(
             Overrides::parse("ha.toml", text),
-            Err(OverridesError::Schema { .. })
+            Err(OverridesError::Parse(_))
         ));
     }
 
     #[test]
     fn rejects_duplicate_key() {
-        let text = "entities:\n  \"1/0/1\": {}\n  \"1/0/1\": {}\n";
+        let text = "[[entity]]\naddress = \"1/0/1\"\n\n[[entity]]\naddress = \"1/0/1\"\n";
         assert!(matches!(
             Overrides::parse("ha.toml", text),
-            Err(OverridesError::Yaml { .. })
+            Err(OverridesError::DuplicateEntity { .. })
+        ));
+        let text = "[global]\nexclude = []\nexclude = []\n";
+        assert!(matches!(
+            Overrides::parse("ha.toml", text),
+            Err(OverridesError::Parse(_))
         ));
     }
 
     #[test]
     fn prefix_exclusion_respects_boundaries() {
-        let text = "global:\n  exclude:\n    - \"1/\"\n";
+        let text = "[global]\nexclude = [\"1/\"]\n";
         let ov = Overrides::parse("ha.toml", text).unwrap();
         assert!(ov.is_excluded(ga("1/0/0")));
         assert!(ov.is_excluded(ga("1/7/255")));
